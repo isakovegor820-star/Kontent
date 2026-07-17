@@ -1,26 +1,584 @@
 @import "tailwindcss";
 
+/* ============================================================================
+   ДИЗАЙН-СИСТЕМА «AURORA GLASS»
+   Основа — ТЗ v2.0, раздел 7 «Дизайн-система».
+   Характер: строгий инструмент, который умеет улыбаться.
+   Все цвета — семантические переменные → тёмная тема включается без переделки.
+   ========================================================================= */
+
+/* Тёмная тема по классу, а не по media (нужен ручной переключатель) */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ---------------------------------------------------------------- ТОКЕНЫ */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  color-scheme: light;
+
+  /* Фирменный градиент (ТЗ 7.2).
+     Ступень #6366F1 → #8B5CF6 из ТЗ даёт белому тексту 4.47:1 и 4.23:1 при пороге AA 4.5 —
+     то есть главная кнопка продукта не проходила доступность по всей длине ленты. Взяли
+     соседнюю ступень той же шкалы: оттенок сохранён, контраст 6.29:1 и 5.70:1. */
+  --brand-1: #4f46e5; /* индиго */
+  --brand-2: #7c3aed; /* фиолетовый */
+  --brand-3: #a78bfa; /* мягкое свечение — только для теней и заливок, не для текста */
+  --gradient-brand: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+
+  /* Поверхности */
+  --bg: #ffffff;
+  --bg-section: #f8fafc;
+  --surface: #ffffff;
+  --surface-2: #f8fafc;
+  --surface-inset: #f1f5f9;
+
+  /* Liquid Glass */
+  --glass-bg: rgb(255 255 255 / 0.62);
+  --glass-bg-strong: rgb(255 255 255 / 0.88);
+  --glass-border: rgb(255 255 255 / 0.7);
+  --glass-highlight: rgb(255 255 255 / 0.55);
+
+  /* Текст.
+     Прежняя шкала не проходила AA: --text-3 (#94A3B8) давал 2.56:1 на белом при пороге 4.5,
+     а им набрана вся мелкая подпись лендинга. Сдвинули шкалу на ступень вниз — теперь
+     проходят все три уровня, включая подписи на секционном фоне #F8FAFC. */
+  --text: #0f172a; /* 17.85:1 */
+  --text-2: #475569; /* 7.58:1 */
+  /* Проверять надо по САМОЙ тёмной поверхности, на которой этот текст встречается.
+     #64748B давал бы 4.76 на белом, но всего 4.34 на surface-inset (#F1F5F9) — а именно
+     там стоят подписи в макетах и в таблице сравнения. #5B6A7D проходит на всех трёх. */
+  --text-3: #5b6a7d; /* 5.52 на #fff · 5.28 на #f8fafc · 5.04 на #f1f5f9 */
+
+  /* Границы */
+  --border: rgb(15 23 42 / 0.08);
+  --border-strong: rgb(15 23 42 / 0.14);
+
+  /* Семантика (ТЗ 7.2) */
+  --success: #10b981;
+  --success-soft: #ecfdf5;
+  --success-text: #047857;
+  --danger: #ef4444;
+  --danger-soft: #fef2f2;
+  --danger-text: #b91c1c;
+  --fire: #f59e0b; /* залёт / тренд */
+  --fire-soft: #fffbeb;
+  --fire-text: #b45309;
+  --info: #4f46e5;
+  --info-soft: #eef2ff;
+  --info-text: #4338ca;
+
+  /* Тени — мягкие вместо рамок (ТЗ 7.3) */
+  --shadow-xs: 0 1px 2px rgb(15 23 42 / 0.04);
+  --shadow-sm: 0 2px 8px -2px rgb(15 23 42 / 0.06), 0 1px 2px rgb(15 23 42 / 0.04);
+  --shadow-md: 0 8px 24px -8px rgb(15 23 42 / 0.1), 0 2px 6px -2px rgb(15 23 42 / 0.05);
+  --shadow-lg: 0 24px 56px -20px rgb(15 23 42 / 0.16), 0 6px 16px -8px rgb(15 23 42 / 0.06);
+  --shadow-brand: 0 12px 32px -10px rgb(99 102 241 / 0.45);
+
+  /* --------------------------------------------------- МЯГКИЙ ЯЗЫК (клей)
+     Объём лепится ДВУМЯ тенями: тёплый свет сверху-слева, холодная тень снизу-справа.
+     Известная болезнь клей-морфизма — падение контраста: границы растворяются в тенях.
+     Поэтому тени тут ТОЛЬКО лепят форму, а текст и активные состояния остаются на своих
+     токенах — 4.5:1 не трогаем. --clay-blur вынесен переменной: на слабой машине или при
+     prefers-reduced-motion его можно приглушить одной правкой. */
+  --clay-light: #ffffff;
+  --clay-dark: rgb(148 163 184 / 0.45);
+  --clay-blur: 14px;
+  --clay-raised: 5px 5px var(--clay-blur) var(--clay-dark), -5px -5px var(--clay-blur) var(--clay-light);
+  --clay-raised-sm: 3px 3px 7px var(--clay-dark), -3px -3px 7px var(--clay-light);
+  --clay-inset: inset 3px 3px 7px var(--clay-dark), inset -3px -3px 7px var(--clay-light);
+  --clay-press: inset 2px 2px 5px var(--clay-dark), inset -2px -2px 5px var(--clay-light);
+  --shadow-brand-lg: 0 22px 56px -16px rgb(99 102 241 / 0.5);
+
+  /* Фон-аврора */
+  --aurora-opacity: 0.55;
+  --grid-line: rgb(15 23 42 / 0.05);
+  --grain-opacity: 0.038;
 }
 
+.dark {
+  color-scheme: dark;
+
+  --brand-1: #818cf8;
+  --brand-2: #a78bfa;
+  --brand-3: #c4b5fd;
+  /* Тот же градиент, что и в светлой: белый текст на кнопке живёт по одним правилам
+     в обеих темах, поэтому и контраст должен быть один. */
+  --gradient-brand: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+
+  --bg: #070912;
+  --bg-section: #0b0e1a;
+  --surface: #0f1320;
+  --surface-2: #141827;
+  --surface-inset: #1b2032;
+
+  --glass-bg: rgb(22 27 43 / 0.6);
+  --glass-bg-strong: rgb(16 20 33 / 0.9);
+  --glass-border: rgb(255 255 255 / 0.1);
+  --glass-highlight: rgb(255 255 255 / 0.07);
+
+  --text: #f1f5f9; /* 18.14:1 */
+  --text-2: #cbd5e1; /* 13.38:1 */
+  --text-3: #94a3b8; /* 7.75:1 — прежний #64748B давал 4.18:1 и валил AA */
+
+  --border: rgb(255 255 255 / 0.09);
+  --border-strong: rgb(255 255 255 / 0.17);
+
+  --success: #34d399;
+  --success-soft: rgb(16 185 129 / 0.14);
+  --success-text: #6ee7b7;
+  --danger: #f87171;
+  --danger-soft: rgb(239 68 68 / 0.14);
+  --danger-text: #fca5a5;
+  --fire: #fbbf24;
+  --fire-soft: rgb(245 158 11 / 0.14);
+  --fire-text: #fcd34d;
+  --info: #818cf8;
+  --info-soft: rgb(99 102 241 / 0.16);
+  --info-text: #a5b4fc;
+
+  --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.35);
+  --shadow-sm: 0 2px 8px -2px rgb(0 0 0 / 0.45);
+  --shadow-md: 0 8px 24px -8px rgb(0 0 0 / 0.55);
+  --shadow-lg: 0 24px 56px -20px rgb(0 0 0 / 0.65);
+  --shadow-brand: 0 12px 32px -10px rgb(99 102 241 / 0.5);
+  --shadow-brand-lg: 0 22px 56px -16px rgb(99 102 241 / 0.55);
+
+  /* Клей в темноте. Честно: в тёмной теме этот язык слабее — объём держится на свете,
+     а светить в темноте нечем. Поэтому «блик» здесь не белый, а еле-еле светлее фона,
+     и тени сдержаннее. Лепим форму намёком, а не выдавливаем как на светлой. */
+  --clay-light: rgb(255 255 255 / 0.05);
+  --clay-dark: rgb(0 0 0 / 0.55);
+  --clay-blur: 12px;
+
+  --aurora-opacity: 0.38;
+  --grid-line: rgb(255 255 255 / 0.045);
+  --grain-opacity: 0.055;
+}
+
+/* --------------------------------------- МОСТ ТОКЕН → TAILWIND-УТИЛИТЫ */
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-sans: var(--font-golos), system-ui, -apple-system, sans-serif;
+  --font-mono: var(--font-jetbrains), ui-monospace, monospace;
+
+  --color-bg: var(--bg);
+  --color-bg-section: var(--bg-section);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-inset: var(--surface-inset);
+
+  --color-text: var(--text);
+  --color-text-2: var(--text-2);
+  --color-text-3: var(--text-3);
+
+  --color-line: var(--border);
+  --color-line-strong: var(--border-strong);
+
+  --color-brand: var(--brand-1);
+  --color-brand-2: var(--brand-2);
+  --color-brand-3: var(--brand-3);
+
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-success-text: var(--success-text);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-danger-text: var(--danger-text);
+  --color-fire: var(--fire);
+  --color-fire-soft: var(--fire-soft);
+  --color-fire-text: var(--fire-text);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --color-info-text: var(--info-text);
+
+  --radius-xs: 8px;
+  --radius-sm: 12px;
+  --radius-md: 16px;
+  --radius-lg: 20px;
+  --radius-xl: 28px;
+  --radius-2xl: 36px;
+
+  --shadow-soft: var(--shadow-sm);
+  --shadow-card: var(--shadow-md);
+  --shadow-float: var(--shadow-lg);
+  --shadow-glow: var(--shadow-brand);
+
+  --ease-soft: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+/* ------------------------------------------------------------------ БАЗА */
+html {
+  scroll-behavior: smooth;
+  -webkit-text-size-adjust: 100%;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background-color: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow-x: clip;
+}
+
+::selection {
+  background: rgb(99 102 241 / 0.22);
+  color: var(--text);
+}
+
+/* Фокус виден всегда — никогда не убираем (a11y) */
+:focus-visible {
+  outline: 2px solid var(--brand-1);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+button,
+a,
+[role="button"],
+label,
+summary {
+  touch-action: manipulation;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-3);
+  background-clip: padding-box;
+}
+
+/* --------------------------------------------------------------- УТИЛИТЫ */
+
+/* Стекло — «жидкое стекло» для плавающих слоёв над авророй */
+@utility glass {
+  background: var(--glass-bg);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--shadow-md), inset 0 1px 0 0 var(--glass-highlight);
+}
+
+@utility glass-strong {
+  background: var(--glass-bg-strong);
+  backdrop-filter: blur(28px) saturate(180%);
+  -webkit-backdrop-filter: blur(28px) saturate(180%);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--shadow-lg), inset 0 1px 0 0 var(--glass-highlight);
+}
+
+/* Спокойная карточка рабочего экрана — без стекла, много воздуха (ТЗ 7.1) */
+@utility card-plain {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
+}
+
+/* --------------------------------------------------------- МЯГКИЙ ЯЗЫК (клей)
+   clay      — поверхность выступает над фоном
+   clay-sm   — то же, но для мелочи (чипы, кнопки)
+   clay-in   — поверхность вдавлена (поле ввода, активный чип, дорожка прогресса)
+   Фон у всех — тот же, что у страницы: объём даёт тень, а не заливка. Именно поэтому
+   рамки не нужны — и именно поэтому текст обязан остаться на своих токенах. */
+@utility clay {
+  background: var(--bg-section);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--clay-raised);
+}
+
+@utility clay-sm {
+  background: var(--bg-section);
+  border-radius: 999px;
+  box-shadow: var(--clay-raised-sm);
+}
+
+@utility clay-in {
+  background: var(--bg-section);
+  box-shadow: var(--clay-inset);
+}
+
+/* Нажатие: выступающее — вдавливается. Единственная честная реакция для этого языка.
+   Габариты не трогаем (правило «press-feedback без сдвига layout»). */
+@utility clay-press {
+  box-shadow: var(--clay-press);
+}
+
+/* Уважаем reduced-motion: гасим размытие — тени становятся дешевле и спокойнее */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --clay-blur: 6px;
+  }
+}
+
+/* Градиентный текст — один магнит на экран (ТЗ 7.2).
+   Хвост НЕ доводим до --brand-3: на белом он даёт 2.72:1 и валит даже порог 3:1 для крупного
+   текста — то есть слово «сами», ради которого написан весь заголовок, читалось хуже всех. */
+@utility text-gradient {
+  background-image: linear-gradient(115deg, var(--brand-1) 0%, var(--brand-2) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+}
+
+/* Градиентная заливка поверхности */
+@utility bg-brand-gradient {
+  background-image: var(--gradient-brand);
+}
+
+/* Крупная типографика (Oversized) */
+@utility display {
+  font-weight: 800;
+  letter-spacing: -0.045em;
+  line-height: 0.94;
+}
+
+/* Табличные цифры — метрики не «прыгают» */
+@utility nums {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+/* Обрезка текста в N строк */
+@utility line-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+@utility line-3 {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* ------------------------------------------------------------------- ФОН */
+
+/* Аврора: медленно дрейфующие пятна. Только transform → GPU, без реflow. */
+.aurora-blob {
+  position: absolute;
+  border-radius: 9999px;
+  filter: blur(90px);
+  will-change: transform;
+  pointer-events: none;
+}
+
+@keyframes aurora-a {
+  0%,
+  100% {
+    transform: translate3d(-6%, -4%, 0) scale(1);
+  }
+  33% {
+    transform: translate3d(7%, 6%, 0) scale(1.15);
+  }
+  66% {
+    transform: translate3d(-3%, 10%, 0) scale(0.93);
+  }
+}
+@keyframes aurora-b {
+  0%,
+  100% {
+    transform: translate3d(5%, 4%, 0) scale(1.06);
+  }
+  40% {
+    transform: translate3d(-9%, -7%, 0) scale(0.9);
+  }
+  70% {
+    transform: translate3d(6%, -10%, 0) scale(1.18);
+  }
+}
+@keyframes aurora-c {
+  0%,
+  100% {
+    transform: translate3d(0, 6%, 0) scale(0.97);
+  }
+  50% {
+    transform: translate3d(-8%, -8%, 0) scale(1.22);
+  }
+}
+
+/* «Строгий скелет» из ТЗ — буквально, сеткой */
+.grid-skeleton {
+  background-image:
+    linear-gradient(to right, var(--grid-line) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid-line) 1px, transparent 1px);
+  background-size: 64px 64px;
+  mask-image: radial-gradient(ellipse 75% 55% at 50% 28%, #000 15%, transparent 78%);
+  -webkit-mask-image: radial-gradient(ellipse 75% 55% at 50% 28%, #000 15%, transparent 78%);
+}
+
+/* Плёночное зерно — премиальная текстура поверх фона */
+.grain {
+  position: absolute;
+  inset: -150%;
+  opacity: var(--grain-opacity);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)'/%3E%3C/svg%3E");
+  animation: grain-shift 8s steps(6) infinite;
+  pointer-events: none;
+  will-change: transform;
+}
+
+@keyframes grain-shift {
+  0%,
+  100% {
+    transform: translate(0, 0);
+  }
+  16% {
+    transform: translate(-1%, -2%);
+  }
+  33% {
+    transform: translate(-2%, 1%);
+  }
+  50% {
+    transform: translate(1%, -2%);
+  }
+  66% {
+    transform: translate(-2%, 2%);
+  }
+  83% {
+    transform: translate(2%, 1%);
+  }
+}
+
+/* --------------------------------------------------------- МИКРО-АНИМАЦИИ */
+
+/* Пульс градиентной кнопки — единственный «магнит» на экране */
+@keyframes glow-pulse {
+  0%,
+  100% {
+    box-shadow: var(--shadow-brand);
+  }
+  50% {
+    box-shadow: var(--shadow-brand-lg);
+  }
+}
+.glow-pulse {
+  animation: glow-pulse 3.2s ease-in-out infinite;
+}
+
+/* Бегущий блик */
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+/* Скелетон загрузки (ТЗ 7.4, уровень 1) */
+@keyframes skeleton-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+.skeleton {
+  background: var(--surface-inset);
+  border-radius: 8px;
+  animation: skeleton-pulse 1.6s ease-in-out infinite;
+}
+
+/* Курсор ИИ-набора в живом демо */
+@keyframes caret-blink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+.caret::after {
+  content: "";
+  display: inline-block;
+  width: 2px;
+  height: 1.05em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: var(--brand-2);
+  animation: caret-blink 1s step-end infinite;
+}
+
+/* Метка «залёт» — огонь дышит */
+@keyframes fire-ring {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgb(245 158 11 / 0.45);
+  }
+  50% {
+    box-shadow: 0 0 0 9px rgb(245 158 11 / 0);
+  }
+}
+.fire-ring {
+  animation: fire-ring 2.4s ease-out infinite;
+}
+
+/* Бегущая лента */
+@keyframes marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+.marquee-track {
+  animation: marquee 42s linear infinite;
+}
+.marquee-host:hover .marquee-track {
+  animation-play-state: paused;
+}
+
+/* Медленная орбита в hero */
+@keyframes orbit {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* -------------------------------------- УВАЖЕНИЕ К НАСТРОЙКАМ (ТЗ 7.4) */
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  .aurora-blob,
+  .grain,
+  .marquee-track {
+    animation: none !important;
+  }
+}
+
+/* Слабые устройства: анимации дешевле, но фон не исчезает (ТЗ 8.2) */
+@media (max-width: 640px) {
+  .aurora-blob {
+    filter: blur(64px);
+  }
+  .grain {
+    animation: none;
+  }
 }

@@ -1,36 +1,110 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Аврора
 
-## Getting Started
+Лендинг + платформа автопостинга с разведкой конкурентов, поиском залетающих тем и ИИ-автопилотом.
+Собрано по ТЗ v2.0 от 14 июля 2026.
 
-First, run the development server:
+## Запуск
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+npm run dev      # http://localhost:3000
+npm run build    # прод-сборка
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Что внутри
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+| Маршрут | Экран ТЗ | Что делает |
+|---|---|---|
+| `/` | А1 | Лендинг: 6 секций по ТЗ 8.1 + FAQ. Живое демо, лист ожидания |
+| `/register` | А2 | 4 кнопки входа, вход за 10 секунд |
+| `/app/onboarding` | А3 | Мастер: канал → конкуренты → тон. Цель — календарь за 5 минут |
+| `/app/calendar` | А4 | **Главный экран.** Неделя/месяц, пост кликом в день, очередь без дат |
+| `/app/composer` | А5 | Редактор: ИИ напиши/перепиши/сократи, предпросмотр TG и VK рядом |
+| `/app/competitors` | А6 | Карточки конкурентов: рост, активность, последний залёт |
+| `/app/competitors/[id]` | А7 | Досье: статистика, лучшие посты, темы, упоминания, реклама, сравнение |
+| `/app/trends` | А8 | «Сними это»: что залетает, почему, готовый сценарий |
+| `/app/studio` | А9 | ИИ-студия: диалог + быстрые команды, память стиля |
+| `/app/autopilot` | А10 | План на неделю, «одобрить всё» одной кнопкой |
+| `/app/analytics` | А11 | Графики + человеческие выводы |
+| `/app/settings` | А12 | Сети, бот, соло/команда, тихие часы, лимиты ИИ |
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Стек
 
-## Learn More
+- **Next.js 16** (App Router, Turbopack) + React 19
+- **Tailwind CSS v4** — токены через `@theme inline`, тёмная тема через `@custom-variant dark`
+- **Motion** (Framer Motion 12) — все четыре уровня анимаций из ТЗ 7.4
+- **Lucide** — единый набор иконок, линия 1.5–2px
 
-To learn more about Next.js, take a look at the following resources:
+Бэкенда нет: состояние живёт в `localStorage` через `src/lib/store.tsx`. Публикация,
+сбор досье и ИИ имитированы таймерами — поведение из ТЗ (сбой → повтор, досье за час,
+дневной лимит ИИ) видно вживую.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Дизайн-система «Aurora Glass»
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Liquid Glass + Bento + Oversized Typography на светлой основе.
+Характер по ТЗ 7.1 — «строгий инструмент, который умеет улыбаться»: рабочие экраны
+спокойные, яркость появляется в моменты ценности (залёт, готовый план, хороший отчёт).
 
-## Deploy on Vercel
+### Токены
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Все цвета — CSS-переменные в `src/app/globals.css`. Ничего не хардкодится.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+| Роль | Значение | Tailwind |
+|---|---|---|
+| Фирменный градиент | `#6366F1 → #8B5CF6` | `bg-brand-gradient`, `text-gradient` |
+| Фон / секции | `#FFFFFF` / `#F8FAFC` | `bg-bg`, `bg-bg-section` |
+| Текст / вторичный | `#0F172A` / `#64748B` | `text-text`, `text-text-2` |
+| Успех | `#10B981` | `text-success`, `bg-success-soft` |
+| Тревога | `#EF4444` | `text-danger`, `bg-danger-soft` |
+| Залёт / огонь | `#F59E0B` | `text-fire`, `bg-fire-soft` |
+
+**Правило одного магнита:** на экране одновременно не больше одного градиентного
+элемента. Градиент = главное действие.
+
+### Фон
+
+Фирменная «аврора» — `src/components/aurora-background.tsx`: четыре дрейфующих
+пятна света + строгая сетка-скелет + плёночное зерно. Всё на CSS-трансформах, ни одной
+картинки — фон весит 0 КБ и не создаёт layout shift. Интенсивность: `hero` (лендинг) →
+`section` → `app` (рабочие экраны, почти незаметно).
+
+### Анимации (ТЗ 7.4)
+
+1. **Микро** — 150–250 мс: отклик на каждое действие, скелетоны загрузки
+2. **Скролл** — 400–600 мс: секции лендинга оживают, каждый элемент один раз
+3. **Живое демо** — `src/components/landing/live-demo.tsx`: 20-секундный цикл
+   разведка → ИИ печатает → пост в календарь → уходит в TG/VK → тикают просмотры.
+   Это вёрстка, а не видео
+4. **3D** — лёгкий параллакс только в hero
+
+Потолок 600 мс в рабочем интерфейсе. `prefers-reduced-motion` уважается везде.
+
+### Тёмная тема
+
+ТЗ ставит её во вторую очередь, но требует «проектировать палитру сразу переменными».
+Переменные готовы — тема работает уже сейчас (переключатель в шапке и футере).
+
+## Структура
+
+```
+src/
+  app/                    маршруты
+  components/
+    aurora-background.tsx фирменный фон
+    brand.tsx             логотип, переключатель темы
+    landing/              секции лендинга
+    app/shell.tsx         каркас платформы (сайдбар, нижняя навигация)
+    ui/                   кнопка, поля, карточки, тосты
+  lib/
+    types.ts              доменная модель
+    store.tsx             состояние + localStorage
+    mock.ts               демо-данные
+    ai.ts                 имитация ИИ с посимвольной выдачей
+    utils.ts              формат чисел, дат, русская плюрализация
+```
+
+## Что дальше (этапы ТЗ, раздел 11)
+
+Этап 1 (дизайн + лендинг) закрыт. Дальше — фундамент: база (PostgreSQL), вход
+(почта + Telegram), очередь публикаций (Redis + BullMQ), Telegram Bot API и VK API.
+Фронт останется тем же — состояние переезжает со `store.tsx` на API.

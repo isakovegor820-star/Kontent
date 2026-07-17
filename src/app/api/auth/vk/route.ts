@@ -1,0 +1,70 @@
+// Д.2 — вход через VK ID (то же приложение VK, что будет постить в Д.4).
+// Принимаем code от VK ID → меняем на токен → получаем vk_id → вход.
+//
+// ВНИМАНИЕ: VK ID работает только с зарегистрированным приложением на dev.vk.com
+// и на настоящем домене. Приложение решено заводить на деплое (владелец),
+// поэтому этот обмен финализируется тогда же — точные параметры VK ID SDK
+// (device_id/code_verifier/PKCE) зависят от версии и проверяются на реальном
+// приложении. Структура — по ТЗ (раздел 13.4 / Д.2).
+
+import { NextRequest, NextResponse } from "next/server";
+import { findOrCreateUser } from "@/lib/users";
+import { createSession } from "@/lib/session";
+
+export const runtime = "nodejs";
+
+export async function POST(req: NextRequest) {
+  const appId = process.env.VK_APP_ID;
+  const secret = process.env.VK_APP_SECRET;
+  if (!appId || !secret) {
+    // Приложение VK ещё не заведено — вход через VK пока недоступен.
+    return NextResponse.json({ ok: false, error: "vk_not_configured" }, { status: 503 });
+  }
+
+  let data: { code?: unknown; device_id?: unknown; code_verifier?: unknown };
+  try {
+    data = await req.json();
+  } catch {
+    return NextResponse.json({ ok: false, error: "bad_request" }, { status: 400 });
+  }
+  const code = typeof data.code === "string" ? data.code : "";
+  if (!code) {
+    return NextResponse.json({ ok: false, error: "no_code" }, { status: 422 });
+  }
+
+  try {
+    // Обмен кода на токен через VK ID.
+    const params = new URLSearchParams({
+      grant_type: "authorization_code",
+      code,
+      client_id: appId,
+      client_secret: secret,
+      device_id: typeof data.device_id === "string" ? data.device_id : "",
+      code_verifier: typeof data.code_verifier === "string" ? data.code_verifier : "",
+    });
+    const tokenRes = await fetch("https://id.vk.com/oauth2/auth", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: params,
+    });
+    const tokenData = (await tokenRes.json().catch(() => null)) as {
+      access_token?: string;
+      user_id?: number;
+    } | null;
+
+    if (!tokenRes.ok || !tokenData?.user_id) {
+      console.error("[/api/auth/vk] обмен кода не удался:", tokenData);
+      return NextResponse.json({ ok: false, error: "vk_exchange_failed" }, { status: 401 });
+    }
+
+    const vk_id = Number(tokenData.user_id);
+    const { id } = await findOrCreateUser({ vk_id, name: `VK ${vk_id}` });
+
+    const res = NextResponse.json({ ok: true });
+    await createSession(res, id, req.headers.get("user-agent"));
+    return res;
+  } catch (err) {
+    console.error("[/api/auth/vk]", err);
+    return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
+  }
+}

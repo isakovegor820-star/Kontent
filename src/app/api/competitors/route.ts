@@ -1,0 +1,58 @@
+// Д.6 — список конкурентов пользователя со сводкой для карточек.
+// Кроме цифр отдаём честные признаки: сколько залётов найдено и хватает ли вообще
+// данных, чтобы этим цифрам верить (thin_data). Пороги — те же, что в воркере.
+
+import { NextRequest, NextResponse } from "next/server";
+import { getPool } from "@/lib/db";
+import { getSessionUser } from "@/lib/session";
+import { resolveChannel } from "@/lib/autopilot";
+import { MAX_COMPETITORS } from "@/lib/competitors";
+
+export const runtime = "nodejs";
+
+// Синхронно с worker.mjs: ниже этого статистика — шум.
+const MIN_POSTS_FOR_STATS = 8;
+const MIN_MEDIAN_VIEWS = 20;
+
+export async function GET(req: NextRequest) {
+  const user = await getSessionUser(req);
+  if (!user) return NextResponse.json({ competitors: [], limit: MAX_COMPETITORS });
+
+  try {
+    const pool = getPool();
+    const channelId = await resolveChannel(user.id, Number(req.nextUrl.searchParams.get("channel")) || null);
+    if (!channelId) return NextResponse.json({ competitors: [], limit: MAX_COMPETITORS });
+    const rows = (
+      await pool.query(
+        `select c.id, c.handle, c.title, c.subscribers, c.status, c.last_error, c.collected_at,
+                c.auto_added,
+                (select count(*)::int from competitor_posts p where p.competitor_id = c.id) as posts_count,
+                (select round(avg(views))::int from competitor_posts p
+                   where p.competitor_id = c.id and p.views is not null) as avg_views,
+                (select percentile_cont(0.5) within group (order by p.views) from competitor_posts p
+                   where p.competitor_id = c.id and p.views is not null) as median_views,
+                (select count(*)::int from competitor_posts p
+                   where p.competitor_id = c.id and p.views is not null) as with_views,
+                (select count(*)::int from competitor_posts p
+                   where p.competitor_id = c.id and p.is_hit) as hits_count
+           from competitors c
+          where c.channel_id = $1 and c.network = 'tg'
+          order by c.added_at desc`,
+        [channelId],
+      )
+    ).rows;
+
+    const competitors = rows.map((r) => ({
+      ...r,
+      median_views: r.median_views == null ? null : Math.round(Number(r.median_views)),
+      // Данных мало — цифры показываем, но честно предупреждаем, что верить им нельзя.
+      thin_data:
+        r.status === "ready" &&
+        (r.with_views < MIN_POSTS_FOR_STATS || Number(r.median_views ?? 0) < MIN_MEDIAN_VIEWS),
+    }));
+    return NextResponse.json({ competitors, limit: MAX_COMPETITORS });
+  } catch (err) {
+    console.error("[/api/competitors]", err);
+    return NextResponse.json({ competitors: [], limit: MAX_COMPETITORS });
+  }
+}
