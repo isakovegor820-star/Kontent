@@ -88,18 +88,19 @@ function MockConnect() {
           </Badge>
         </div>
 
-        {/* VK — честно: публикации в VK ещё нет. Рисовать здесь живую кнопку «Войти через
-            VK ID» значило бы обещать то, чего продукт сегодня не умеет. */}
-        <div className="flex items-center gap-3 rounded-sm border border-line bg-surface p-3.5 opacity-70">
-          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xs bg-surface-inset text-text-3">
+        {/* VK — публикует по-настоящему: подключаешь сообщество по ключу доступа
+            с правом «Стена», сервер постит сам — как в Telegram. */}
+        <div className="flex items-center gap-3 rounded-sm border border-line bg-surface p-3.5">
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xs bg-info-soft text-info-text">
             <VkIcon className="h-5 w-5" />
           </span>
           <div className="min-w-0 flex-1">
-            <p className="truncate text-[15px] font-bold -tracking-[0.01em] text-text-2">VK</p>
-            <p className="truncate text-[13px] text-text-3">Открываем следующей волной</p>
+            <p className="truncate text-[15px] font-bold -tracking-[0.01em] text-text">Кофе и код</p>
+            <p className="truncate text-[13px] text-text-3">vk.com/coffee_and_code</p>
           </div>
-          <Badge tone="neutral" className="shrink-0">
-            скоро
+          <Badge tone="success" className="shrink-0">
+            <Check className="h-3.5 w-3.5" strokeWidth={3} aria-hidden />
+            подключён
           </Badge>
         </div>
 

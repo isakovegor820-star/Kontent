@@ -17,7 +17,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { Check, Flame, Pause, Pencil, Play, Sparkles, TrendingUp } from "lucide-react";
-import { TelegramIcon } from "@/components/ui/primitives";
+import { TelegramIcon, VkIcon } from "@/components/ui/primitives";
 import { cn, fmtNum } from "@/lib/utils";
 
 type Phase = "recon" | "ai" | "approve" | "reactions";
@@ -384,7 +384,7 @@ export function LiveDemo() {
                   </div>
                 </div>
 
-                {/* Развязка: ушло. Только в Telegram — VK ещё не построен. */}
+                {/* Развязка: ушло в обе сети — Telegram и VK публикуют по-настоящему. */}
                 <div className="min-h-[52px]">
                   <AnimatePresence>
                     {sent && (
@@ -398,9 +398,12 @@ export function LiveDemo() {
                           <Check className="h-4 w-4" strokeWidth={3} aria-hidden />
                         </span>
                         <p className="text-[13px] leading-snug font-bold text-success-text">
-                          Пост ушёл в Telegram. Публикует сервер — ноутбук можно закрыть.
+                          Пост ушёл в Telegram и VK. Публикует сервер — ноутбук можно закрыть.
                         </p>
-                        <TelegramIcon className="ml-auto h-5 w-5 shrink-0 text-success-text" />
+                        <span className="ml-auto flex shrink-0 items-center gap-1 text-success-text">
+                          <TelegramIcon className="h-5 w-5" />
+                          <VkIcon className="h-5 w-5" />
+                        </span>
                       </motion.div>
                     )}
                   </AnimatePresence>

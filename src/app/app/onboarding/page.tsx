@@ -338,18 +338,38 @@ function connectError(code?: string): string {
   }
 }
 
+// Ошибки подключения VK-сообщества (connect-vk). Токен сообщества — проверяем его
+// сразу на живом API, поэтому «не подходит» означает ровно то, что написано.
+function connectVkError(code?: string): string {
+  switch (code) {
+    case "invalid_token":
+      return "Ключ не подошёл. Проверь, что создал ключ сообщества (не личный) и включил право «Стена» в «Управление → Работа с API».";
+    case "taken":
+      return "Это сообщество уже подключено к другому аккаунту Авроры. Одно сообщество — один аккаунт: так посты не задвоятся.";
+    case "empty":
+      return "Вставь ключ доступа сообщества.";
+    case "server":
+      return "Сервер не смог зашифровать ключ. Напиши в поддержку — это чинится на нашей стороне.";
+    case "unauthorized":
+      return "Сессия истекла — зайди заново.";
+    default:
+      return "Не получилось подключить. Попробуй ещё раз.";
+  }
+}
+
 function RealChannelRow({ channel }: { channel: RealChannel }) {
+  const isVk = channel.network === "vk";
   return (
     <li className="flex items-center gap-3 rounded-sm border border-line bg-surface p-3">
       <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xs bg-info-soft text-info-text">
-        <TelegramIcon className="h-5 w-5" />
+        {isVk ? <VkIcon className="h-5 w-5" /> : <TelegramIcon className="h-5 w-5" />}
       </span>
       <div className="min-w-0 flex-1">
         <p className="truncate text-[15px] font-bold -tracking-[0.01em] text-text">
           {channel.title || channel.handle}
         </p>
         <p className="truncate text-[13px] text-text-3">
-          {channel.handle ? `@${channel.handle}` : "Telegram"}
+          {channel.handle ? `@${channel.handle}` : isVk ? "VK" : "Telegram"}
         </p>
       </div>
       <Badge tone="success">
@@ -362,7 +382,9 @@ function RealChannelRow({ channel }: { channel: RealChannel }) {
 
 function StepConnect({ onNext }: { onNext: () => void }) {
   const s = useStore();
+  const [network, setNetwork] = useState<Network>("tg");
   const [handle, setHandle] = useState("");
+  const [vkToken, setVkToken] = useState("");
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string>();
 
@@ -371,32 +393,38 @@ function StepConnect({ onNext }: { onNext: () => void }) {
   async function connect(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (connecting) return;
-    if (!handle.trim()) {
-      setError("Вставь @адрес канала — например, @my_channel.");
-      return;
-    }
     setError(undefined);
     setConnecting(true);
-    const res = await s.connectChannel(handle.trim());
+
+    const res =
+      network === "vk"
+        ? await s.connectVkChannel(vkToken.trim())
+        : await s.connectChannel(handle.trim());
+
     setConnecting(false);
     if (res.ok) {
       s.toast({
         kind: "success",
-        title: `Канал «${res.title ?? handle.trim()}» подключён`,
+        title: `Канал «${res.title ?? (network === "vk" ? "VK" : handle.trim())}» подключён`,
         body: "Теперь сюда можно постить с сервера.",
       });
       setHandle("");
+      setVkToken("");
     } else {
-      setError(connectError(res.error));
+      setError(network === "vk" ? connectVkError(res.error) : connectError(res.error));
     }
+  }
+
+  function pick(n: Network) {
+    if (n === network) return;
+    setNetwork(n);
+    setError(undefined);
   }
 
   return (
     <>
       <StepHead time="2 минуты" title="Подключи канал">
-        Добавь нашего бота <b className="font-bold text-text">{BOT_USERNAME}</b> администратором
-        своего Telegram-канала с правом публикации — потом вставь сюда @адрес канала. Публиковать
-        будет сервер, твой компьютер не нужен.
+        Выбери сеть и добавь доступ — публиковать будет сервер, твой компьютер не нужен.
       </StepHead>
 
       <div className="mt-7">
@@ -408,22 +436,91 @@ function StepConnect({ onNext }: { onNext: () => void }) {
 
       <form onSubmit={connect} className="mt-7">
         <SubHead>Твой канал</SubHead>
-        <div className="mt-3 flex flex-col gap-2 sm:flex-row">
-          <Input
-            value={handle}
-            disabled={connecting}
-            placeholder="@my_channel"
-            aria-label="Адрес твоего Telegram-канала"
-            aria-invalid={error ? true : undefined}
-            onChange={(e) => {
-              setHandle(e.target.value);
-              if (error) setError(undefined);
-            }}
-          />
-          <Button type="submit" variant="solid" size="lg" loading={connecting} className="shrink-0">
-            Подключить
-          </Button>
+
+        {/* Переключатель сети: у TG и VK разные способы подключения */}
+        <div className="mt-3 inline-flex rounded-sm border border-line bg-surface p-1">
+          {(["tg", "vk"] as const).map((n) => (
+            <button
+              key={n}
+              type="button"
+              onClick={() => pick(n)}
+              aria-pressed={network === n}
+              className={cn(
+                "flex items-center gap-1.5 rounded-[3px] px-3 py-1.5 text-[13px] font-semibold transition-colors",
+                network === n ? "bg-info-soft text-info-text" : "text-text-3 hover:text-text",
+              )}
+            >
+              {n === "vk" ? <VkIcon className="h-4 w-4" /> : <TelegramIcon className="h-4 w-4" />}
+              {n === "vk" ? "VK" : "Telegram"}
+            </button>
+          ))}
         </div>
+
+        {network === "tg" ? (
+          <>
+            <p className="mt-3 text-[13px] leading-relaxed text-text-3">
+              Добавь нашего бота <b className="font-bold text-text">{BOT_USERNAME}</b>{" "}
+              администратором своего Telegram-канала с правом публикации — потом вставь сюда @адрес
+              канала.
+            </p>
+            <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+              <Input
+                value={handle}
+                disabled={connecting}
+                placeholder="@my_channel"
+                aria-label="Адрес твоего Telegram-канала"
+                aria-invalid={error ? true : undefined}
+                onChange={(e) => {
+                  setHandle(e.target.value);
+                  if (error) setError(undefined);
+                }}
+              />
+              <Button
+                type="submit"
+                variant="solid"
+                size="lg"
+                loading={connecting}
+                className="shrink-0"
+              >
+                Подключить
+              </Button>
+            </div>
+          </>
+        ) : (
+          <>
+            <p className="mt-3 text-[13px] leading-relaxed text-text-3">
+              В VK зайди в сообщество → <b className="font-semibold text-text">Управление → Работа с
+              API</b> → «Создать ключ» и включи право{" "}
+              <b className="font-semibold text-text">«Стена»</b>. Вставь ключ сюда — мы проверим его
+              и сами определим сообщество. Ключ шифруется и виден только тебе.
+            </p>
+            <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+              <Input
+                value={vkToken}
+                disabled={connecting}
+                type="password"
+                autoComplete="off"
+                placeholder="Ключ доступа сообщества"
+                aria-label="Ключ доступа VK-сообщества"
+                aria-invalid={error ? true : undefined}
+                onChange={(e) => {
+                  setVkToken(e.target.value);
+                  if (error) setError(undefined);
+                }}
+              />
+              <Button
+                type="submit"
+                variant="solid"
+                size="lg"
+                loading={connecting}
+                className="shrink-0"
+              >
+                Подключить
+              </Button>
+            </div>
+          </>
+        )}
+
         {error && (
           <p role="alert" className="mt-2 text-[13px] leading-relaxed font-medium text-danger-text">
             {error}
@@ -537,7 +634,7 @@ function StepCompetitors({
           label="Ссылка на чужой канал"
           htmlFor={linkId}
           error={error ?? undefined}
-          hint="Telegram или VK. Можно вставить прямо из адресной строки."
+          hint="Ссылка на канал конкурента: Telegram (t.me/...) или VK (vk.com/...). Можно вставить прямо из адресной строки."
         >
           <div className="flex gap-2">
             <Input

@@ -36,6 +36,8 @@ export interface Post {
   channelTitle?: string;
   /** id канала — устойчивый ключ для фильтра и оттенка аватарки (имя может меняться) */
   channelId?: number;
+  /** Ссылка на вышедший пост в сети (t.me/… или vk.com/wall-…). Для демо-постов пусто. */
+  postUrl?: string;
   /** Эмодзи-обложка/медиа-заглушка (медиа мы не грузим — это демо) */
   media?: { kind: "image" | "video"; label: string; hue: number } | null;
   metrics?: PostMetrics;
@@ -166,6 +168,8 @@ export interface RealPost {
   scheduled_at: string | null;
   status: PostStatus;
   tg_message_id: number | null;
+  /** id вышедшей записи VK (для ссылки «Открыть пост») */
+  vk_post_id: number | null;
   attempts: number;
   last_error: string | null;
   published_at: string | null;
@@ -173,6 +177,10 @@ export interface RealPost {
   network: Network;
   channel_title: string | null;
   channel_id: number | null;
+  /** screen_name канала (для TG-ссылки t.me/<handle>/<id>) */
+  handle: string | null;
+  /** id VK-сообщества (для ссылки vk.com/wall-<gid>_<pid>) */
+  vk_group_id: number | null;
 }
 
 export interface AppState {

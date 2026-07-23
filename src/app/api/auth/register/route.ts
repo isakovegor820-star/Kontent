@@ -7,6 +7,7 @@ import { EMAIL } from "@/lib/leads";
 import { findOrCreateUser } from "@/lib/users";
 import { createSession } from "@/lib/session";
 import { hashPassword, validatePassword } from "@/lib/password";
+import { checkRateLimit, clientIp, rateLimitResponse } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 
@@ -30,6 +31,10 @@ export async function POST(req: NextRequest) {
   if (pwProblem) {
     return NextResponse.json({ ok: false, error: "bad_password" }, { status: 422 });
   }
+
+  // Режем массовое создание аккаунтов: не больше 5 регистраций с одного IP в час.
+  const byIp = await checkRateLimit(`register:ip:${clientIp(req)}`, 5, 3600);
+  if (!byIp.allowed) return rateLimitResponse(byIp);
 
   if (!process.env.DATABASE_URL) {
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });

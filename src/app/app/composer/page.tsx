@@ -74,8 +74,10 @@ import {
 
 /* ------------------------------------------------------------------ ХЕЛПЕРЫ */
 
-/** Лимит Telegram на текст сообщения. VK стерпит больше. */
+/** Лимиты сетей на текст сообщения. Предпросмотр TG честно режет до своего. */
 const TG_LIMIT = 4096;
+const VK_LIMIT = 16384;
+const NETWORK_LIMIT: Record<Network, number> = { tg: TG_LIMIT, vk: VK_LIMIT };
 
 const NETWORK_ORDER: Network[] = ["tg", "vk"];
 
@@ -118,9 +120,14 @@ interface ComposerValue {
   toggleNetwork: (n: Network, on: boolean) => void;
   /** Активные Telegram-каналы аккаунта. Пусто — канал ещё не подключён. */
   tgChannels: RealChannel[];
-  /** В какой канал уходит пост. null — каналов нет или ещё грузятся. */
+  /** Активные VK-сообщества аккаунта. Пусто — сообщество ещё не подключено. */
+  vkChannels: RealChannel[];
+  /** В какой TG-канал уходит пост. null — каналов нет или ещё грузятся. */
   channelId: number | null;
   setChannelId: (id: number) => void;
+  /** В какое VK-сообщество уходит пост. null — сообществ нет или ещё грузятся. */
+  vkChannelId: number | null;
+  setVkChannelId: (id: number) => void;
   media: Post["media"];
   setMedia: (m: Post["media"]) => void;
   sourceRef: Post["sourceRef"];
@@ -168,6 +175,7 @@ export default function ComposerPage() {
   const [text, setText] = useState("");
   const [networks, setNetworks] = useState<Network[]>(["tg", "vk"]);
   const [pickedId, setPickedId] = useState<number | null>(null);
+  const [pickedVkId, setPickedVkId] = useState<number | null>(null);
   const [media, setMedia] = useState<Post["media"]>(null);
   const [sourceRef, setSourceRef] = useState<Post["sourceRef"]>(undefined);
   const [origin, setOrigin] = useState<Post["origin"]>("manual");
@@ -219,6 +227,10 @@ export default function ComposerPage() {
     () => s.realChannels.filter((c) => c.network === "tg" && c.is_active),
     [s.realChannels],
   );
+  const vkChannels = useMemo(
+    () => s.realChannels.filter((c) => c.network === "vk" && c.is_active),
+    [s.realChannels],
+  );
 
   // Выбранный канал ВЫЧИСЛЯЕМ, а не синхронизируем эффектом. Каналы приезжают асинхронно,
   // и выбранный мог быть отключён в другой вкладке — при вычислении оба случая
@@ -228,6 +240,10 @@ export default function ComposerPage() {
     if (pickedId && tgChannels.some((c) => c.id === pickedId)) return pickedId;
     return tgChannels[0]?.id ?? null;
   }, [pickedId, tgChannels]);
+  const vkChannelId = useMemo(() => {
+    if (pickedVkId && vkChannels.some((c) => c.id === pickedVkId)) return pickedVkId;
+    return vkChannels[0]?.id ?? null;
+  }, [pickedVkId, vkChannels]);
 
   const toggleNetwork = useCallback(
     (n: Network, on: boolean) => {
@@ -383,43 +399,37 @@ export default function ComposerPage() {
     const when = noDate ? null : parseWhen(date, time);
     const scheduledAt = when ? when.toISOString() : null;
 
-    // Настоящий постинг (Д.3): если выбран Telegram, канал подключён и есть время —
-    // пост уходит в реальную очередь и публикуется сервером.
-    //
-    // Канал берём ВЫБРАННЫЙ, а не первый попавшийся: при нескольких подключённых каналах
-    // .find() всегда слал бы всё в один и тот же — мультиканальность существовала бы
-    // только в базе.
-    let tgChannel = channelId
-      ? tgChannels.find((c) => c.id === channelId)
-      : tgChannels[0];
-    if (networks.includes("tg") && scheduledAt) {
-      // Каналы ещё не подгрузились (жёсткая перезагрузка/сразу после входа) — дотягиваем
-      // напрямую, чтобы не показать ложное «подключи канал» при реально подключённом (ревью).
-      if (!tgChannel && !s.realReady) {
-        setSaving(true); // блокируем кнопку на время дотягивания каналов — иначе окно двойного сабмита (ревью)
-        try {
-          const d = (await (await fetch("/api/channels", { cache: "no-store" })).json()) as {
-            channels?: (typeof s.realChannels)[number][];
-          };
-          const fresh = (d.channels ?? []).filter((c) => c.network === "tg" && c.is_active);
-          tgChannel = (channelId && fresh.find((c) => c.id === channelId)) || fresh[0];
-        } catch {
-          /* сеть — покажем обычную подсказку ниже */
-        }
+    // Настоящий постинг (Д.3): пост уходит в реальную очередь по одной записи на каждую
+    // выбранную сеть (у поста в базе один канал, воркер ветвится по network). Канал берём
+    // ВЫБРАННЫЙ, а не первый попавшийся: при нескольких подключённых каналах .find() всегда
+    // слал бы всё в один и тот же — мультиканальность существовала бы только в базе.
+    if (scheduledAt) {
+      const targets: { network: Network; channelId: number }[] = [];
+      if (networks.includes("tg")) {
+        const tg = channelId ? tgChannels.find((c) => c.id === channelId) : tgChannels[0];
+        if (tg) targets.push({ network: "tg", channelId: tg.id });
       }
-      if (!tgChannel) {
-        setSaving(false); // канал так и не нашли — разблокируем кнопку
+      if (networks.includes("vk")) {
+        const vk = vkChannelId ? vkChannels.find((c) => c.id === vkChannelId) : vkChannels[0];
+        if (vk) targets.push({ network: "vk", channelId: vk.id });
+      }
+
+      if (!targets.length) {
         s.toast({
           kind: "info",
           title: "Сначала подключи канал",
-          body: "В мастере первого запуска добавь Telegram-канал — тогда пост уйдёт по-настоящему.",
+          body: "В мастере первого запуска добавь Telegram-канал или VK-сообщество — тогда пост уйдёт по-настоящему.",
         });
         return;
       }
+
       setSaving(true);
-      const res = await s.createRealPost({ channelId: tgChannel.id, text, scheduledAt });
+      const results = await Promise.all(
+        targets.map((t) => s.createRealPost({ channelId: t.channelId, text, scheduledAt })),
+      );
       setSaving(false);
-      if (res.ok) {
+
+      if (results.every((r) => r.ok)) {
         s.toast({
           kind: "success",
           title: "Пост запланирован",
@@ -430,16 +440,13 @@ export default function ComposerPage() {
         s.toast({
           kind: "danger",
           title: "Не получилось запланировать",
-          body:
-            res.error === "no_channel"
-              ? "Канал не найден. Подключи его заново в мастере."
-              : "Сервер не принял пост. Попробуй ещё раз.",
+          body: "Сервер не принял пост. Попробуй ещё раз.",
         });
       }
       return;
     }
 
-    // Иначе (без даты — очередь, или только VK, которого пока нет) — демо-хранилище.
+    // Без даты — очередь в демо-хранилище (реальная очередь требует времени публикации).
     const status: PostStatus = scheduledAt ? "scheduled" : "queued";
     if (editingId) s.updatePost(editingId, { text, networks, media, scheduledAt, status });
     else s.addPost({ text, networks, media, scheduledAt, status, origin, sourceRef });
@@ -466,6 +473,8 @@ export default function ComposerPage() {
     tgChannels,
     time,
     validate,
+    vkChannelId,
+    vkChannels,
   ]);
 
   const saveDraft = useCallback(() => {
@@ -521,8 +530,11 @@ export default function ComposerPage() {
       networks,
       toggleNetwork,
       tgChannels,
+      vkChannels,
       channelId,
       setChannelId: setPickedId,
+      vkChannelId,
+      setVkChannelId: setPickedVkId,
       media,
       setMedia,
       sourceRef,
@@ -563,6 +575,8 @@ export default function ComposerPage() {
       networks,
       noDate,
       tgChannels,
+      vkChannels,
+      vkChannelId,
       quick,
       removeCurrent,
       runAi,
@@ -663,7 +677,10 @@ function ComposerInner() {
   if (!s.ready || !hydrated) return <ComposerSkeleton />;
 
   const len = text.length;
-  const over = len > TG_LIMIT;
+  // Лимит считаем по выбранной сети: TG режет на 4096, VK терпит до 16384.
+  // Если включены обе — ориентиром служит более строгий telegram-лимит.
+  const effLimit = c.networks.includes("tg") ? NETWORK_LIMIT.tg : NETWORK_LIMIT.vk;
+  const over = len > effLimit;
   const tgOn = c.networks.includes("tg");
   const vkOn = c.networks.includes("vk");
   const aiLeft = Math.max(0, s.settings.aiDailyLimit - s.settings.aiUsedToday);
@@ -741,7 +758,9 @@ function ComposerInner() {
             <div className="mt-2 flex items-start justify-between gap-4">
               {over ? (
                 <p className="text-[13px] font-medium text-danger">
-                  Для Telegram лимит 4096 символов — VK стерпит, Telegram обрежет.
+                  {c.networks.includes("tg")
+                    ? `Для Telegram лимит ${fmtNum(TG_LIMIT)} символов — VK стерпит, Telegram обрежет.`
+                    : `Для VK лимит ${fmtNum(VK_LIMIT)} символов — сократи текст.`}
                 </p>
               ) : (
                 <p className="text-[13px] text-text-3">Ctrl + Enter — запланировать</p>
@@ -942,6 +961,35 @@ function ComposerInner() {
                     >
                       <TelegramIcon className="h-4 w-4 shrink-0" />
                       <span className="truncate">{ch.title ?? ch.handle ?? `Канал ${ch.id}`}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {vkOn && c.vkChannels.length > 1 && (
+            <div className="space-y-2 pt-1">
+              <p className="text-[13px] font-semibold text-text-2">В какое сообщество</p>
+              <div className="flex flex-wrap gap-2">
+                {c.vkChannels.map((ch) => {
+                  const on = c.vkChannelId === ch.id;
+                  return (
+                    <button
+                      key={ch.id}
+                      type="button"
+                      onClick={() => c.setVkChannelId(ch.id)}
+                      aria-pressed={on}
+                      className={cn(
+                        "inline-flex h-11 max-w-full cursor-pointer items-center gap-2 rounded-xs px-3.5",
+                        "text-[14px] font-semibold transition-colors duration-200",
+                        on
+                          ? "bg-info-soft text-info-text ring-1 ring-brand/30 ring-inset"
+                          : "bg-surface-inset text-text-2 hover:text-text",
+                      )}
+                    >
+                      <VkIcon className="h-4 w-4 shrink-0" />
+                      <span className="truncate">{ch.title ?? ch.handle ?? `Сообщество ${ch.id}`}</span>
                     </button>
                   );
                 })}

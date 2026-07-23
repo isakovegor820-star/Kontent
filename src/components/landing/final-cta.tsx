@@ -230,14 +230,14 @@ export function FinalCta() {
               </Button>
             </Link>
 
-            {/* Честный состав раннего доступа (ТЗ 6). VK назван до того, как о нём спросят. */}
+            {/* Честный состав раннего доступа (ТЗ 6). Обе сети уже публикуют. */}
             <p className="mx-auto mt-4 max-w-md text-[13px] leading-relaxed text-text-2">
-              Сейчас работает Telegram: разведка, ИИ и автопилот уже внутри. VK — следующей волной.
+              Telegram и VK уже работают: разведка, ИИ и автопилот — внутри.
             </p>
           </motion.div>
 
-          {/* ЗАПАСНОЙ ПУТЬ. Продукт бесплатный и открыт, поэтому очередь нужна ровно одному
-              человеку — тому, кто пришёл за VK. Ему и адресована форма. */}
+          {/* ЗАПАСНОЙ ПУТЬ. Продукт бесплатный и открыт — форма для тех, кому проще
+              оставить контакт и получить помощь с подключением, а не разбираться самому. */}
           <motion.div
             initial="hidden"
             whileInView="show"
@@ -248,10 +248,10 @@ export function FinalCta() {
             <Divider className="mb-7" />
 
             <p className="text-[15px] leading-relaxed font-semibold text-text">
-              Пришёл за VK?
+              Хочешь попробовать?
             </p>
             <p id="cta-waitlist-why" className="mx-auto mt-1.5 max-w-md text-[14px] leading-relaxed text-text-2">
-              Оставь контакт — напишем в тот день, когда откроем VK. Одно письмо, без спама.
+              Оставь контакт — напишем и поможем подключить канал или сообщество. Одно письмо, без спама.
             </p>
 
             <form onSubmit={handleSubmit} noValidate className="mt-5 text-left">
@@ -312,7 +312,7 @@ export function FinalCta() {
                         className="flex h-[52px] w-full items-center justify-center gap-2 rounded-sm bg-success-soft text-[15px] font-bold text-success-text"
                       >
                         <Sparkles className="h-5 w-5" aria-hidden />
-                        Записали — позовём, как откроем VK
+                        Записали — напишем и поможем подключиться
                       </div>
                     </motion.div>
                   ) : (
@@ -325,7 +325,7 @@ export function FinalCta() {
                       {/* Вторичное действие — тёмная кнопка. Градиент здесь стоял бы вторым
                           магнитом и спорил с «Забрать ранний доступ» (ТЗ 7.2). */}
                       <Button type="submit" variant="solid" size="lg" loading={loading} className="w-full">
-                        Позовите меня, когда откроете VK
+                        Хочу подключить
                       </Button>
                     </motion.div>
                   )}
@@ -374,8 +374,8 @@ export function FinalCta() {
                   className="mt-4"
                 >
                   <p className="text-[13px] leading-relaxed text-text-2">
-                    Не шлём спам и не продаём контакты. Одно письмо — в день, когда откроем VK.
-                    Telegram можно подключить уже сейчас — кнопкой выше.
+                    Не шлём спам и не продаём контакты. Одно письмо — поможем подключить канал
+                    или сообщество. Telegram и VK уже работают — кнопкой выше.
                   </p>
                 </motion.div>
               )}

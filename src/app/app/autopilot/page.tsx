@@ -8,6 +8,8 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { motion, useReducedMotion } from "motion/react";
 import {
+  AlertTriangle,
+  BookText,
   CalendarCheck,
   Check,
   ChevronDown,
@@ -35,6 +37,12 @@ interface PlanItem {
   rubric?: string | null; // рубрика из брифа — по ней берём иконку
   draft: string;
   status: "pending" | "approved" | "rejected" | "published";
+  // На чём основан пост: куски базы знаний. Это доказательство, что цифры не выдуманы,
+  // а взяты из материалов автора. Пусто — пост написан без конкретики (её нечем подпереть).
+  sources?: { id: number; text: string }[];
+  // Конкретика, которой нет в базе: ИИ её выдумал, и вторая попытка не помогла. Такой пост
+  // автопилот НИКОГДА не публикует сам — решает человек.
+  invented?: string[];
 }
 interface Settings {
   enabled: boolean;
@@ -609,6 +617,42 @@ export default function AutopilotPage() {
                         >
                           {it.draft}
                         </p>
+                      )}
+
+                      {/* Невыверенная конкретика — ВСЕГДА на виду, без раскрытия карточки.
+                          Человек не должен раскапывать риск: выдуманный номер статьи в канале
+                          юриста — это его репутация. Автопилот такой пост сам не публикует. */}
+                      {editing !== it.i && it.invented && it.invented.length > 0 && (
+                        <div className="mt-3 flex items-start gap-2 rounded-sm bg-danger-soft p-3">
+                          <AlertTriangle
+                            className="mt-0.5 h-4 w-4 shrink-0 text-danger-text"
+                            strokeWidth={2}
+                            aria-hidden
+                          />
+                          <p className="text-[13px] leading-snug text-danger-text">
+                            <span className="font-semibold">Проверь перед публикацией:</span> в тексте есть{" "}
+                            {it.invented.join(", ")} — этого нет в твоей базе знаний. Возможно, ИИ
+                            выдумал. Сам такой пост я не опубликую.
+                          </p>
+                        </div>
+                      )}
+
+                      {/* На чём основан пост — только в раскрытой карточке. Это доказательство,
+                          что конкретика взята из базы знаний, а не выдумана. */}
+                      {isOpen && editing !== it.i && it.sources && it.sources.length > 0 && (
+                        <div className="mt-3 rounded-sm bg-surface-inset p-3">
+                          <p className="mb-1.5 flex items-center gap-1.5 text-[12px] font-semibold text-text-3">
+                            <BookText className="h-3.5 w-3.5" aria-hidden />
+                            На основе твоей базы знаний
+                          </p>
+                          <ul className="space-y-1">
+                            {it.sources.map((src) => (
+                              <li key={src.id} className="text-[13px] leading-snug text-text-3">
+                                — {src.text}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
                       )}
 
                       {it.status === "pending" && editing !== it.i && (

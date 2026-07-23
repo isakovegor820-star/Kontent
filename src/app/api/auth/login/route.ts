@@ -5,6 +5,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { createSession } from "@/lib/session";
 import { verifyPassword } from "@/lib/password";
+import { checkRateLimit, clientIp, rateLimitResponse } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 
@@ -23,6 +24,14 @@ export async function POST(req: NextRequest) {
   if (!email || !password) {
     return NextResponse.json({ ok: false, error: "invalid" }, { status: 401 });
   }
+
+  // Два потолка сразу: по IP (режем брутфорс с одного источника) и по аккаунту
+  // (режем распределённую атаку на одну почту с разных IP). Окно 15 минут.
+  const ip = clientIp(req);
+  const byIp = await checkRateLimit(`login:ip:${ip}`, 10, 900);
+  if (!byIp.allowed) return rateLimitResponse(byIp);
+  const byAccount = await checkRateLimit(`login:acct:${email}`, 5, 900);
+  if (!byAccount.allowed) return rateLimitResponse(byAccount);
 
   if (!process.env.DATABASE_URL) {
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });

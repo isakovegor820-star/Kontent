@@ -1,0 +1,52 @@
+# CI: линт, сборка и тесты на каждый push в main и каждый pull request.
+# Секреты не нужны — для шага build даём заглушки, чтобы статический пререндер
+# не падал без реальных значений (пулы БД/Redis ленивые и при сборке не подключаются).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    # Заглушки для сборки. Значения заведомо фейковые — на сборке живые сервисы
+    # не поднимаются (getPool/getRedis вызываются только внутри запросов).
+    env:
+      DATABASE_URL: "postgres://user:pass@localhost:5432/db"
+      REDIS_URL: "redis://127.0.0.1:6379"
+      TG_BOT_TOKEN: "0000000000:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      TG_BOT_USERNAME: "aurora_test_bot"
+      TG_CHAT_ID: "-1000000000000"
+      AI_API_KEY: "test-key"
+      AI_DAILY_LIMIT: "30"
+      # Мастер-ключ шифрования токенов сообществ (VK). В CI — заглушка: тесты
+      # token-crypto выставляют своё значение, а на сборке шифрование не вызывается.
+      TOKENS_MASTER_KEY: "ci-test-master-key-not-for-prod"
+      TOKENS_KEY_ID: "1"
+      VK_APP_ID: "0"
+      VK_APP_SECRET: "test-vk-secret"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test

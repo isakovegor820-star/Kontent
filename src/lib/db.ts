@@ -17,9 +17,14 @@ export function getPool(): Pool {
   // Локальная база идёт без SSL; удалённая (Neon/свой сервер) — с SSL.
   const isLocal = /@(localhost|127\.0\.0\.1)/.test(connectionString);
 
+  // По умолчанию проверяем сертификат хоста (защита от MITM). Аварийный выход —
+  // PGSSL_REJECT_UNAUTHORIZED=false, если cert-chain хоста не доверен Node. Neon использует
+  // сертификаты Amazon Trust Services/Let's Encrypt (в стандартном CA-бандле), так что true работает.
+  const sslRejectUnauthorized = process.env.PGSSL_REJECT_UNAUTHORIZED !== "false";
+
   const pool = new Pool({
     connectionString,
-    ssl: isLocal ? false : { rejectUnauthorized: false },
+    ssl: isLocal ? false : { rejectUnauthorized: sslRejectUnauthorized },
     max: 3, // бесплатным тарифам хватает; не упираемся в лимит соединений
   });
 

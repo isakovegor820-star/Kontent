@@ -78,15 +78,11 @@ create table if not exists sessions (
 );
 create index if not exists sessions_user_idx on sessions (user_id);
 
--- Одноразовые коды входа по почте. Один активный код на почту (email — ключ).
--- Живёт 10 минут; максимум 5 попыток ввода, потом нужен новый код.
-create table if not exists email_codes (
-  email       text        primary key,
-  code        text        not null,
-  expires_at  timestamptz not null,
-  attempts    int         not null default 0,
-  created_at  timestamptz not null default now()
-);
+-- Одноразовые коды входа по почте (email_codes): таблица была заложена под вход по кодам,
+-- но дизайн заменили на пароль (scrypt) и вход через Telegram/VK ID — кодом таблицу не
+-- использовал НИ ОДИН. Мёртвая схема путает при чтении, поэтому убираем: на новых базах
+-- она просто не создаётся, а на уже живых — сносим её при повторном накате файла.
+drop table if exists email_codes;
 
 
 -- --------------------------------------------- Д.3: публикация в Telegram
@@ -97,8 +93,8 @@ create table if not exists channels (
   user_id     bigint      not null references users (id) on delete cascade,
   network     text        not null default 'tg' check (network in ('tg', 'vk')),
   tg_chat_id  bigint,          -- id канала/чата в Telegram (для network='tg')
-  vk_group_id bigint,          -- id сообщества VK (для network='vk', появится в Д.4)
-  vk_token    text,            -- токен сообщества VK, зашифрованно (Д.4)
+  vk_group_id bigint,          -- id сообщества VK (для network='vk')
+  vk_token    text,            -- токен сообщества VK в виде AES-GCM-конверта (см. src/lib/token-crypto.mjs), никогда не plaintext
   title       text,
   handle      text,
   is_active   boolean     not null default true,
@@ -134,6 +130,7 @@ create table if not exists posts (
   status        text        not null default 'draft'
                             check (status in ('draft','scheduled','publishing','published','failed')),
   tg_message_id bigint,          -- id вышедшего сообщения в Telegram
+  vk_post_id    bigint,          -- id вышедшей записи VK (для network='vk'); ссылка: vk.com/wall-<group_id>_<vk_post_id>
   attempts      int         not null default 0,
   last_error    text,
   published_at  timestamptz,
@@ -565,3 +562,81 @@ create index if not exists competitors_channel_idx    on competitors (channel_id
 -- Кто добавил конкурента: человек или разведка сама (холодный старт, оба судьи ИИ «за»).
 -- Нужно, чтобы автоматика не была сюрпризом: карточка помечена, и её видно, что убрать.
 alter table competitors add column if not exists auto_added boolean not null default false;
+
+-- ---------------------------------------------------------- Д.10: база знаний (RAG)
+-- Откуда автопилот берёт ФАКТЫ для постов (src/app/api/knowledge/route.ts и воркер:
+-- indexSource / findSupport). Эти таблицы жили ТОЛЬКО в запросах кода, а не в схеме —
+-- свежий деплой по этому файлу ронял и API базы знаний, и RAG-часть воркера. Теперь
+-- фича воспроизводится с нуля.
+--
+-- Голос и факты — РАЗНЫЕ виды кусков: свои посты канала (голос) идут образцом стиля,
+-- опорой для утверждений они быть не могут. Иначе ИИ начал бы «опираться» на собственную
+-- прошлую выдумку и закольцевал враньё: один раз соврал — навсегда стало «фактом из базы».
+
+-- pgvector: косинусный поиск по эмбеддингам bge-m3 (1024 измерения). Сменишь модель
+-- эмбеддингов — меняй и vector(N) ниже (см. EMBED_DIM в worker.mjs: сверяет размерность
+-- на вставке, чтобы подмена модели не всплыла непонятной ошибкой Postgres).
+create extension if not exists vector;
+
+-- Источник знания: то, что человек вставил (форма/вставка), или срез стиля канала.
+create table if not exists knowledge_sources (
+  id          bigint generated always as identity primary key,
+  user_id     bigint      not null references users (id) on delete cascade,
+  channel_id  bigint      not null references channels (id) on delete cascade,
+
+  -- 'form' | 'paste' | 'channel'. 'channel' = срез стиля (голос): перечитал канал —
+  -- прежний срез сносим, свежие посты вернее старых (см. knowledge/read-channel).
+  kind        text        not null check (kind in ('form', 'paste', 'channel')),
+  title       text        not null,
+  raw_text    text        not null,
+
+  -- pending → ready | error. Векторы считает воркер асинхронно (очередь knowledge-index):
+  -- роут ждать не должен, человек видит «считаю» и через секунды «готово».
+  status      text        not null default 'pending'
+                          check (status in ('pending', 'ready', 'error')),
+  last_error  text,
+  added_at    timestamptz not null default now(),
+  indexed_at  timestamptz
+);
+
+-- Ищем источники по каналу: список в GET и удаление среза стиля при перечитывании.
+create index if not exists knowledge_sources_channel_idx on knowledge_sources (channel_id);
+
+-- Куски: нарезка источника по авторским абзацам («один кусок = одна мысль», 80–900 знаков).
+create table if not exists knowledge_chunks (
+  id          bigint generated always as identity primary key,
+  user_id     bigint      not null references users (id) on delete cascade,
+  channel_id  bigint      not null references channels (id) on delete cascade,
+  source_id   bigint      not null references knowledge_sources (id) on delete cascade,
+
+  -- Вид наследуется от источника (worker.mjs indexSource): channel→voice, form→service,
+  -- paste→fact. law/case/qa зарезервированы под будущие виды фактов.
+  kind        text        not null
+                          check (kind in ('voice', 'fact', 'law', 'case', 'qa', 'service')),
+  text        text        not null,
+
+  -- Вектор bge-m3, 1024 измерения. Считает воркер; null, пока не посчитан или движок
+  -- недоступен (источник тогда висит pending — наполовину проиндексированный хуже никакого).
+  embedding   vector(1024),
+
+  -- Полнотекст по-русски: векторы глухи к цифрам и реквизитам («статья 446 ГПК» уходила
+  -- в 0.395 при пороге 0.45), а слова — нет. Гибрид вектор+слова сливается по RRF
+  -- в воркере (findSupport). Колонка генерируемая — сама пересчитывается при правке text.
+  tsv         tsvector generated always as (to_tsvector('russian', text)) stored,
+
+  -- Факты устаревают (изменился закон/сумма): после этой даты кусок из поиска выпадает.
+  valid_until date,
+
+  -- Честная ротация тем: реже использованные куски всплывают в плане недели первыми.
+  used_count  int         not null default 0
+);
+
+-- Векторный поиск (косинус, оператор <=>): HNSW быстрее ivfflat и не требует тренировки.
+create index if not exists knowledge_chunks_embedding_idx
+  on knowledge_chunks using hnsw (embedding vector_cosine_ops);
+
+-- Полнотекст: оператор @@ и ts_rank в лексической ветке findSupport.
+create index if not exists knowledge_chunks_tsv_idx on knowledge_chunks using gin (tsv);
+
+-- Самый частый фильтр — куски канала по виду (findSupport, счётчики фактов/голоса, сиды плана).
+create index if not exists knowledge_chunks_channel_kind_idx on knowledge_chunks (channel_id, kind);

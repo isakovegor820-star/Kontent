@@ -15,6 +15,7 @@ import {
   ChevronRight,
   Eye,
   EyeOff,
+  ExternalLink,
   Flame,
   Inbox,
   LayoutGrid,
@@ -70,6 +71,19 @@ const EASE_SOFT: [number, number, number, number] = [0.22, 1, 0.36, 1];
 const isOnGrid = (p: Post): p is DatedPost =>
   typeof p.scheduledAt === "string" && GRID_STATUSES.includes(p.status);
 
+// Ссылка на вышедший пост по сети: TG — t.me/<handle>/<id>, VK — vk.com/wall-<gid>_<pid>.
+// Без handle (TG) или id записи ссылку не построить — тогда null, карточка живёт без неё.
+function postUrlFor(rp: RealPost): string | undefined {
+  if (rp.network === "vk") {
+    return rp.vk_group_id != null && rp.vk_post_id != null
+      ? `https://vk.com/wall-${rp.vk_group_id}_${rp.vk_post_id}`
+      : undefined;
+  }
+  return rp.handle && rp.tg_message_id != null
+    ? `https://t.me/${rp.handle.replace(/^@/, "")}/${rp.tg_message_id}`
+    : undefined;
+}
+
 // Настоящий пост из базы → форма Post для карточек календаря (Д.3).
 // id с префиксом real-, чтобы отличать от демо и доставать числовой id для повтора.
 function realToPost(rp: RealPost): Post {
@@ -86,6 +100,7 @@ function realToPost(rp: RealPost): Post {
     createdAt: rp.created_at,
     channelTitle: rp.channel_title ?? undefined,
     channelId: rp.channel_id ?? undefined,
+    postUrl: postUrlFor(rp),
   };
 }
 
@@ -190,8 +205,9 @@ function PostCard({
   // Метка канала нужна только при мультиканальности. Считаем здесь, а не прокидываем
   // пропом через календарь → неделю → день → карточку: стор всё равно контекст.
   const store = useStore();
-  const multiChannel =
-    store.realChannels.filter((c) => c.network === "tg" && c.is_active).length > 1;
+  // Мультиканальность — по всем активным каналам (TG + VK): метка канала нужна,
+  // когда их больше одного, независимо от сети.
+  const multiChannel = store.realChannels.filter((c) => c.is_active).length > 1;
   // Сервер публикует прямо сейчас — показываем это честно
   if (post.status === "publishing") {
     return (
@@ -266,6 +282,19 @@ function PostCard({
             <Eye className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />
             <span className="nums">{fmtCompact(post.metrics.views)}</span>
           </span>
+        )}
+
+        {/* Пост вышел — даём открыть его в самой сети (только настоящие посты, у демо нет ссылки) */}
+        {published && post.postUrl && (
+          <a
+            href={post.postUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="pointer-events-auto relative z-20 inline-flex items-center gap-1 self-start text-[13px] font-semibold text-brand transition-opacity duration-200 hover:opacity-70"
+          >
+            Открыть пост
+            <ExternalLink className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />
+          </a>
         )}
 
         {/* Сбой: что случилось → что делаем → что нужно от тебя (ТЗ 7.5) */}
@@ -539,7 +568,7 @@ export default function CalendarPage() {
   // поэтому вновь подключённый канал появляется в календаре сам, а не оказывается
   // невидимым из-за того, что его нет в списке «выбранных».
   const tgChannels = useMemo(
-    () => s.realChannels.filter((c) => c.network === "tg" && c.is_active),
+    () => s.realChannels.filter((c) => c.is_active),
     [s.realChannels],
   );
   const [hidden, setHidden] = useState<Set<number>>(new Set());

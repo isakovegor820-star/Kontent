@@ -15,6 +15,7 @@ import { NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { parseContact } from "@/lib/leads";
 import { notifyOwner, nowMoscow } from "@/lib/notify";
+import { checkRateLimit, clientIp, rateLimitResponse } from "@/lib/rate-limit";
 
 // Node-рантайм: драйвер базы работает в нём стабильно. Обработчик POST не кэшируется.
 export const runtime = "nodejs";
@@ -38,6 +39,11 @@ export async function POST(request: Request) {
   if (honeypot.trim() !== "") {
     return NextResponse.json({ ok: true, duplicate: false });
   }
+
+  // 2.5. Потолок частоты: не больше 10 заявок с одного IP в час. Режет спам строками
+  //      в базу в обход honeypot (honeypot ловит простых ботов, лимит — настойчивых).
+  const byIp = await checkRateLimit(`lead:ip:${clientIp(request)}`, 10, 3600);
+  if (!byIp.allowed) return rateLimitResponse(byIp);
 
   // 3. Проверяем контакт (той же логикой, что и на форме).
   const parsed = parseContact(rawContact);

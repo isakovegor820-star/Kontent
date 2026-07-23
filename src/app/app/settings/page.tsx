@@ -159,8 +159,8 @@ function ChannelsSection({ index }: { index: number }) {
   const addMore = () =>
     s.toast({
       kind: "info",
-      title: "В демо новые сети не подключаются",
-      body: "В платформе это Telegram-бот админом канала или вход через VK ID.",
+      title: "Подключи канал или сообщество",
+      body: "Telegram-канал — через бота-администратора в мастере первого запуска. VK-сообщество — по ключу доступа в блоке ниже.",
     });
 
   return (
@@ -279,12 +279,128 @@ function ChannelsSection({ index }: { index: number }) {
         </Button>
       </div>
 
+      <Divider className="my-6" />
+
+      {/* Настоящее подключение VK-сообщества (аналог TG bot-link): ключ доступа сообщества. */}
+      <VkConnect />
+
       {/* ТЗ 9: токены — только зашифрованными; никаких публикаций без ведома пользователя */}
       <p className="mt-5 flex items-start gap-2 text-[13px] leading-relaxed text-text-3">
         <Lock className="mt-0.5 h-4 w-4 shrink-0" strokeWidth={1.75} aria-hidden />
         Токены хранятся зашифрованными. Ни один пост не уйдёт без твоего ведома.
       </p>
     </Section>
+  );
+}
+
+/* ----------------------------------------- 1б. ПОДКЛЮЧЕНИЕ VK-СООБЩЕСТВА */
+
+/**
+ * Настоящее подключение VK (аналог TG bot-link). Админ сообщества создаёт в VK ключ
+ * доступа с правом «Стена» (Управление → Работа с API) и вставляет его сюда. Сервер
+ * проверяет ключ на живом API, шифрует (AES-GCM) и сохраняет сообщество как канал.
+ */
+function vkConnectError(code?: string): string {
+  switch (code) {
+    case "invalid_token":
+      return "Ключ не подошёл. Проверь, что создал ключ сообщества (не личный) и включил право «Стена».";
+    case "taken":
+      return "Это сообщество уже подключено к другому аккаунту Авроры.";
+    case "empty":
+      return "Вставь ключ доступа сообщества.";
+    case "server":
+      return "Сервер не смог зашифровать ключ. Напиши в поддержку.";
+    case "unauthorized":
+      return "Сессия истекла — зайди заново.";
+    default:
+      return "Не получилось подключить. Попробуй ещё раз.";
+  }
+}
+
+function VkConnect() {
+  const s = useStore();
+  const [token, setToken] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const vkChannels = s.realChannels.filter((c) => c.network === "vk" && c.is_active);
+
+  const connect = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (busy) return;
+    setError(null);
+    setBusy(true);
+    const res = await s.connectVkChannel(token.trim());
+    setBusy(false);
+    if (res.ok) {
+      s.toast({
+        kind: "success",
+        title: `Сообщество «${res.title ?? "VK"}» подключено`,
+        body: "Теперь сюда можно постить с сервера.",
+      });
+      setToken("");
+    } else {
+      setError(vkConnectError(res.error));
+    }
+  };
+
+  return (
+    <div className="rounded-md bg-surface-inset p-4">
+      <p className="flex items-center gap-2 text-[15px] font-semibold text-text">
+        <VkIcon className="h-5 w-5 text-brand" />
+        VK-сообщество
+      </p>
+      <p className="mt-1.5 text-[14px] leading-relaxed text-text-2">
+        Публикация в VK работает так же, как в Telegram: сервер постит сам. В сообществе зайди в{" "}
+        <b className="font-semibold text-text">Управление → Работа с API</b> → «Создать ключ» и
+        включи право <b className="font-semibold text-text">«Стена»</b>, затем вставь ключ сюда.
+      </p>
+
+      {vkChannels.length > 0 && (
+        <ul className="mt-3 space-y-2">
+          {vkChannels.map((ch) => (
+            <li
+              key={ch.id}
+              className="flex items-center gap-2.5 rounded-sm border border-line bg-surface px-3 py-2"
+            >
+              <VkIcon className="h-4 w-4 shrink-0 text-brand" />
+              <span className="min-w-0 flex-1 truncate text-[14px] font-semibold text-text">
+                {ch.title ?? ch.handle ?? "Сообщество"}
+              </span>
+              <Badge tone="success">
+                <Check className="h-3.5 w-3.5" strokeWidth={3} aria-hidden />
+                Подключено
+              </Badge>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <form onSubmit={connect} className="mt-3 flex flex-col gap-2 sm:flex-row">
+        <Input
+          value={token}
+          disabled={busy}
+          type="password"
+          autoComplete="off"
+          placeholder="Ключ доступа сообщества"
+          aria-label="Ключ доступа VK-сообщества"
+          aria-invalid={error ? true : undefined}
+          onChange={(e) => {
+            setToken(e.target.value);
+            if (error) setError(null);
+          }}
+        />
+        <Button type="submit" variant="outline" loading={busy} className="shrink-0">
+          <VkIcon className="h-4 w-4" aria-hidden />
+          Подключить VK
+        </Button>
+      </form>
+      {error && (
+        <p role="alert" className="mt-2 text-[13px] leading-relaxed font-medium text-danger-text">
+          {error}
+        </p>
+      )}
+    </div>
   );
 }
 

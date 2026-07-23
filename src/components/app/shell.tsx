@@ -17,6 +17,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { AnimatePresence, MotionConfig, motion } from "motion/react";
 import {
   BarChart3,
+  BookText,
   Calendar,
   Flame,
   LogOut,
@@ -54,6 +55,8 @@ const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
       { href: "/app/calendar", label: "Календарь", icon: Calendar, also: ["/app/composer"] },
       { href: "/app/studio", label: "ИИ-студия", icon: Sparkles },
       { href: "/app/autopilot", label: "Автопилот", icon: Rocket },
+      // База знаний — рядом с автопилотом: это то, ОТКУДА он берёт факты для постов.
+      { href: "/app/knowledge", label: "База знаний", icon: BookText },
     ],
   },
   {

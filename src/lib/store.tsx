@@ -55,6 +55,8 @@ interface StoreValue extends AppState {
   realReady: boolean;
   refreshReal: () => Promise<void>;
   connectChannel: (handle: string) => Promise<{ ok: boolean; error?: string; title?: string }>;
+  /** Подключить VK-сообщество по ключу доступа сообщества (право «Стена»). */
+  connectVkChannel: (token: string) => Promise<{ ok: boolean; error?: string; title?: string }>;
   createRealPost: (input: {
     channelId: number;
     text: string;
@@ -189,6 +191,29 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ handle }),
+        });
+        const data = (await res.json().catch(() => null)) as
+          | { ok: boolean; error?: string; title?: string }
+          | null;
+        if (res.ok && data?.ok) {
+          await refreshReal();
+          return { ok: true, title: data.title };
+        }
+        return { ok: false, error: data?.error };
+      } catch {
+        return { ok: false, error: "network" };
+      }
+    },
+    [refreshReal],
+  );
+
+  const connectVkChannel = useCallback<StoreValue["connectVkChannel"]>(
+    async (token) => {
+      try {
+        const res = await fetch("/api/channels/connect-vk", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ token }),
         });
         const data = (await res.json().catch(() => null)) as
           | { ok: boolean; error?: string; title?: string }
@@ -664,6 +689,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       realReady,
       refreshReal,
       connectChannel,
+      connectVkChannel,
       createRealPost,
       retryRealPost,
       aiUsed,
@@ -701,6 +727,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       realReady,
       refreshReal,
       connectChannel,
+      connectVkChannel,
       createRealPost,
       retryRealPost,
       aiUsed,

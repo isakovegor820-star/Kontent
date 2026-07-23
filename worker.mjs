@@ -8,6 +8,25 @@
 import { Worker, Queue } from "bullmq";
 import IORedis from "ioredis";
 import pg from "pg";
+// Чистые функции (парсинг, страж фактов, раскладка, разметка) вынесены в отдельный модуль
+// без сайд-эффектов — так их можно тестировать, не поднимая пул/Redis/BullMQ.
+import {
+  parseCount,
+  sumReactions,
+  decodeEntities,
+  splitChunks,
+  plural,
+  mskDatePlus,
+  weekSlots,
+  toTelegramHtml,
+  keyboard,
+  findInvented,
+  stripCites,
+  citedShare,
+  mapConcurrent,
+} from "./worker/lib.mjs";
+// Шифрование токенов сообществ (VK). Крипто НЕ дублируем — один модуль на роуты и воркер.
+import { decryptToken } from "./src/lib/token-crypto.mjs";
 
 const REDIS_URL = process.env.REDIS_URL || "redis://127.0.0.1:6379";
 const DATABASE_URL = process.env.DATABASE_URL;
@@ -74,55 +93,6 @@ async function embed(text) {
 
 /** Формат pgvector: '[0.1,0.2,...]'. */
 const toVector = (v) => `[${v.join(",")}]`;
-
-// Куски базы знаний — это НЕ «нарезка стены текста по N знаков». Материал юриста сам
-// состоит из готовых единиц: один кейс, один вопрос с ответом, одна услуга, один факт.
-// Пустая строка между ними — авторская граница мысли, и она надёжнее любой эвристики.
-//
-// Абзацы НЕ склеиваем, даже если влезают в один кусок. Замерено на трёх фактах в одном
-// источнике (срок процедуры / единственное жильё / МФЦ): склеенный кусок даёт вектор-смесь
-// трёх тем, и запрос «заберут ли единственную квартиру?» набрал по нему 0.426 — НИЖЕ порога
-// опоры. То есть факт в базе есть, а система ответила бы «не пишу». По абзацам — 0.519,
-// проходит. Один кусок = одна мысль.
-const CHUNK_MAX = 900; // знаков; выше — в куске неизбежно несколько тем, вектор мутнеет
-const CHUNK_MIN = 80; // ниже — обрывок без смысла, липнет к предыдущему куску
-
-function splitChunks(raw) {
-  const text = String(raw || "").replace(/\r/g, "").trim();
-  if (!text) return [];
-  const paras = text
-    .split(/\n\s*\n+/)
-    .map((x) => x.trim())
-    .filter(Boolean);
-
-  const out = [];
-  const push = (t) => {
-    const v = t.trim();
-    if (!v) return;
-    // Короткий хвост сам по себе бесполезен («Исключение:» без продолжения), но и терять
-    // его нельзя — приклеиваем к предыдущему куску.
-    if (v.length < CHUNK_MIN && out.length) out[out.length - 1] += "\n\n" + v;
-    else out.push(v);
-  };
-
-  for (const para of paras) {
-    if (para.length <= CHUNK_MAX) {
-      push(para);
-      continue;
-    }
-    // Абзац длиннее предела — режем по концам предложений, а не по счётчику знаков:
-    // обрыв на середине фразы даёт кусок, по которому нельзя написать пост.
-    let cur = "";
-    for (const sent of para.split(/(?<=[.!?…])\s+/)) {
-      if (cur && (cur + " " + sent).length > CHUNK_MAX) {
-        push(cur);
-        cur = sent;
-      } else cur += (cur ? " " : "") + sent;
-    }
-    push(cur);
-  }
-  return out;
-}
 
 // ── Поиск опоры в базе знаний ────────────────────────────────────────────────
 //
@@ -301,9 +271,13 @@ if (!DATABASE_URL) {
 }
 
 const isLocal = /@(localhost|127\.0\.0\.1)/.test(DATABASE_URL);
+// SSL: по умолчанию проверяем сертификат хоста (защита от MITM). Аварийный выход —
+// PGSSL_REJECT_UNAUTHORIZED=false, если cert-chain хоста не доверен Node. Neon использует
+// сертификаты Amazon Trust Services/Let's Encrypt (в стандартном CA-бандле), так что true работает.
+const sslRejectUnauthorized = process.env.PGSSL_REJECT_UNAUTHORIZED !== "false";
 const pool = new pg.Pool({
   connectionString: DATABASE_URL,
-  ssl: isLocal ? false : { rejectUnauthorized: false },
+  ssl: isLocal ? false : { rejectUnauthorized: sslRejectUnauthorized },
 });
 // Облачный Postgres рвёт простаивающие соединения. Без этого слушателя обрыв idle-клиента
 // = uncaught exception = падение всего воркера. Логируем — пул переподключится сам (ревью).
@@ -321,16 +295,6 @@ const RETRY_DELAYS_MS = (process.env.RETRY_DELAYS_MS || "60000,300000,900000")
   .map(Number);
 const MAX_ATTEMPTS = 3;
 
-// Наша разметка → HTML Telegram: ||спойлер|| и **жирный**. Спецсимволы экранируем.
-function toTelegramHtml(text) {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/\|\|([\s\S]+?)\|\|/g, "<tg-spoiler>$1</tg-spoiler>")
-    .replace(/\*\*([\s\S]+?)\*\*/g, "<b>$1</b>");
-}
-
 /** Вызов Bot API. Одна дверь наружу — таймаут и разбор ответа в одном месте. */
 async function tg(method, body, timeoutMs = 20_000) {
   const r = await fetch(`https://api.telegram.org/bot${TOKEN}/${method}`, {
@@ -340,16 +304,6 @@ async function tg(method, body, timeoutMs = 20_000) {
     body: JSON.stringify(body),
   });
   return r.json();
-}
-
-/** buttons — массив рядов: [[{ text, data }|{ text, url }]]. */
-function keyboard(buttons) {
-  if (!buttons?.length) return undefined;
-  return {
-    inline_keyboard: buttons.map((row) =>
-      row.map((b) => (b.url ? { text: b.text, url: b.url } : { text: b.text, callback_data: b.data })),
-    ),
-  };
 }
 
 async function tgSend(chatId, text, buttons) {
@@ -364,10 +318,148 @@ async function tgSend(chatId, text, buttons) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// ----------------------------------------------------------------------------
+// VK API (эгресс воркера). Мелкий сетевой хелпер сознательно дублирует src/lib/vk.ts —
+// воркер не импортирует TS (как tg() выше продублирован между воркером и роутами).
+// Крипто при этом НЕ дублируем: decryptToken импортирован из общего модуля.
+const VK_API_VERSION = "5.199";
+async function vkApi(method, params, token, timeoutMs = 20_000) {
+  const body = new URLSearchParams({ v: VK_API_VERSION, access_token: token });
+  for (const [k, val] of Object.entries(params)) body.set(k, String(val));
+  const r = await fetch(`https://api.vk.com/method/${method}`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body,
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  return r.json();
+}
+
+const vkPostUrl = (groupId, postId) => `https://vk.com/wall-${groupId}_${postId}`;
+
+/** Публикация записи от имени сообщества VK. */
+async function vkWallPost(token, groupId, message) {
+  const d = await vkApi("wall.post", { owner_id: `-${groupId}`, from_group: 1, message }, token);
+  if (d.error) return { ok: false, errorMsg: d.error.error_msg || "VK error" };
+  if (typeof d.response?.post_id === "number") return { ok: true, postId: d.response.post_id };
+  return { ok: false, errorMsg: "VK не вернул post_id" };
+}
+
+/** Подписчики сообщества VK (groups.getById, fields=members_count). */
+async function vkMembersCount(token, groupId) {
+  const d = await vkApi(
+    "groups.getById",
+    { group_id: String(groupId), fields: "members_count" },
+    token,
+  );
+  if (d.error) return null;
+  // Ответ менялся между версиями API: то массив, то { groups: [...] }.
+  const list = Array.isArray(d.response) ? d.response : d.response?.groups;
+  const g = Array.isArray(list) ? list[0] : null;
+  return typeof g?.members_count === "number" ? g.members_count : null;
+}
+
+/** Метрики поста VK (wall.getById): просмотры/лайки/репосты/комментарии. */
+async function vkPostStats(token, groupId, postId) {
+  const d = await vkApi("wall.getById", { posts: `-${groupId}_${postId}` }, token);
+  if (d.error || !Array.isArray(d.response)) return null;
+  const p = d.response[0];
+  if (!p) return null;
+  const num = (v) => (typeof v?.count === "number" ? v.count : null);
+  return {
+    views: num(p.views),
+    reactions: num(p.likes), // лайки — ближайший аналог реакций TG
+    reposts: num(p.reposts),
+    comments: num(p.comments),
+  };
+}
+
+// Паблишинг по сетям с НОРМАЛИЗОВАННЫМ результатом, чтобы успех/сбой/повторы были общими:
+//   { ok: true, externalId, postUrl } | { ok: false, reason }
+
+/** Telegram: текущий путь tgSend, без изменений логики. */
+async function publishTg(channel, text) {
+  let res;
+  try {
+    res = await tgSend(channel.tg_chat_id, text);
+  } catch (err) {
+    res = { ok: false, description: String(err?.message || err) };
+  }
+  if (!res.ok) return { ok: false, reason: res.description };
+  const messageId = res.result.message_id;
+  // Ссылка только у публичного канала: у приватного t.me/<handle>/<id> ведёт в никуда.
+  const postUrl = channel.handle ? `https://t.me/${channel.handle}/${messageId}` : null;
+  return { ok: true, externalId: messageId, postUrl };
+}
+
+/** VK: расшифровываем токен сообщества (привязка к владельцу) и публикуем на стену. */
+async function publishVk(channel, text) {
+  let token;
+  try {
+    token = decryptToken(channel.vk_token, { userId: channel.user_id, provider: "vk" });
+  } catch {
+    return { ok: false, reason: "не удалось расшифровать токен VK — переподключи сообщество" };
+  }
+  try {
+    const res = await vkWallPost(token, channel.vk_group_id, text);
+    if (!res.ok) return { ok: false, reason: res.errorMsg };
+    return { ok: true, externalId: res.postId, postUrl: vkPostUrl(channel.vk_group_id, res.postId) };
+  } catch (err) {
+    return { ok: false, reason: String(err?.message || err) };
+  }
+}
+
+const RECON_CONCURRENCY = 6; // скромно, чтобы самим не провоцировать 429 у t.me
+// Генерация поста — тяжёлый ИИ-вызов (~90с), а не лёгкий HTML-запрос. Провайдер/локальная Ollama
+// не бесконечны, поэтому лимит ниже разведочного: режем 45-минутную сборку плана примерно втрое,
+// не долбя движок десятком одновременных запросов.
+const AUTOPILOT_CONCURRENCY = 3;
+
+// t.me/s/ — единственный источник данных разведки, и он легко отдаёт 429, если долбить часто.
+// Раньше 429 молча ронял сбор (r.ok = false → пустой результат, данные пропадали до след. цикла).
+// Теперь при 429 читаем Retry-After, ждём и повторяем; при сетевой ошибке — экспоненциальный
+// бэкофф. Не-429 ответы (включая 404) возвращаем как есть — вызывающий код сам проверяет r.ok.
+const TG_FETCH_ATTEMPTS = 3;
+async function fetchTgWithBackoff(url) {
+  let delay = 2000;
+  for (let attempt = 1; attempt <= TG_FETCH_ATTEMPTS; attempt++) {
+    let res;
+    try {
+      res = await fetch(url, {
+        headers: { "user-agent": "Mozilla/5.0" },
+        signal: AbortSignal.timeout(15_000),
+      });
+    } catch (err) {
+      if (attempt === TG_FETCH_ATTEMPTS) throw err;
+      console.warn(`[recon] сеть: ${err?.message}; повтор через ${Math.round(delay / 1000)}с (попытка ${attempt})`);
+      await sleep(delay);
+      delay *= 2;
+      continue;
+    }
+    if (res.status === 429) {
+      const wait = Number(res.headers.get("retry-after")) * 1000 || delay;
+      if (attempt === TG_FETCH_ATTEMPTS) {
+        console.warn(`[recon] 429 от t.me, попытки исчерпаны — отдаю 429 вызывающему коду`);
+        return res; // r.ok = false → вызывающий обработает как пустой результат
+      }
+      console.warn(`[recon] 429 от t.me, ждём ${Math.round(wait / 1000)}с (попытка ${attempt})`);
+      await sleep(wait);
+      delay *= 2;
+      continue;
+    }
+    return res;
+  }
+}
+
 // Честная доставка (надёжность из ТЗ): возвращаем true ТОЛЬКО если Telegram реально
 // принял сообщение (ok:true). При сбое сети или ok:false — повторяем несколько раз с
 // паузой; если так и не ушло — честно логируем ошибку и возвращаем false.
 // Никогда не бросаем: уведомление не должно ронять обработку задачи.
+//
+// ВАЖНО (ревью безопасности): сюда шлём ТОЛЬКО события платформы как целого — недельный
+// отчёт владельца и сбой публикации при перезапуске сервера. События конкретного
+// пользователя (его пост вышел/упал, залёт конкурента, готовый план) сюда НЕ пересылаем:
+// раньше при непривязанном чате они светились в чате владельца — это была утечка.
 async function notifyOwner(text) {
   if (!TOKEN || !OWNER_CHAT) return false;
   const delays = [0, 1500, 5000]; // 3 попытки с нарастающей паузой
@@ -434,11 +526,19 @@ const worker = new Worker(
     }
     const post = claim.rows[0];
 
-    const ch = await pool.query(`select tg_chat_id, title, handle from channels where id = $1`, [
-      post.channel_id,
-    ]);
-    const chat = ch.rows[0];
-    if (!chat?.tg_chat_id) {
+    const ch = await pool.query(
+      `select user_id, network, tg_chat_id, vk_group_id, vk_token, title, handle
+         from channels where id = $1`,
+      [post.channel_id],
+    );
+    const channel = ch.rows[0];
+
+    // Канал подключён? Для каждой сети свой обязательный набор полей.
+    const connected =
+      channel?.network === "vk"
+        ? !!(channel.vk_group_id && channel.vk_token)
+        : !!channel?.tg_chat_id;
+    if (!connected) {
       await pool.query(`update posts set status = 'failed', last_error = $2 where id = $1`, [
         postId,
         "канал не подключён",
@@ -446,35 +546,34 @@ const worker = new Worker(
       return;
     }
 
-    let res;
-    try {
-      res = await tgSend(chat.tg_chat_id, post.text);
-    } catch (err) {
-      res = { ok: false, description: String(err?.message || err) };
-    }
+    // Публикуем по сети; результат нормализован (publishTg/publishVk).
+    const out =
+      channel.network === "vk"
+        ? await publishVk(channel, post.text)
+        : await publishTg(channel, post.text);
 
     // --- Успех ---
-    if (res.ok) {
+    if (out.ok) {
+      // id вышедшей записи кладём в колонку своей сети (tg_message_id / vk_post_id).
+      const idCol = channel.network === "vk" ? "vk_post_id" : "tg_message_id";
       await pool.query(
-        `update posts set status = 'published', tg_message_id = $2, published_at = now(),
+        `update posts set status = 'published', ${idCol} = $2, published_at = now(),
                           attempts = attempts + 1, last_error = null
          where id = $1`,
-        [postId, res.result.message_id],
+        [postId, out.externalId],
       );
-      console.log(`[worker] ✅ пост ${postId} вышел (message_id ${res.result.message_id})`);
+      console.log(`[worker] ✅ пост ${postId} вышел (${channel.network} id ${out.externalId})`);
       const okText =
-        `✅ Пост вышел${chat.title ? ` в «${chat.title}»` : ""}. Посмотрим, как зайдёт — цифры пришлю позже.`;
-      // Ссылка только у публичного канала: у приватного t.me/<handle>/<id> ведёт в никуда.
-      const okBtns = chat.handle
-        ? [[{ text: "Открыть пост", url: `https://t.me/${chat.handle}/${res.result.message_id}` }]]
-        : undefined;
-      if (!(await notifyUser(post.user_id, okText, okBtns))) await notifyOwner(okText);
+        `✅ Пост вышел${channel.title ? ` в «${channel.title}»` : ""}. Посмотрим, как зайдёт — цифры пришлю позже.`;
+      const okBtns = out.postUrl ? [[{ text: "Открыть пост", url: out.postUrl }]] : undefined;
+      // Нет привязанного чата — выбор пользователя, владельцу чужой пост не шлём (была утечка).
+      await notifyUser(post.user_id, okText, okBtns);
       return;
     }
 
     // --- Сбой: до 3 автоповторов ---
     const attempts = post.attempts + 1;
-    const reason = res.description || "Telegram не ответил";
+    const reason = out.reason || (channel.network === "vk" ? "VK не ответил" : "Telegram не ответил");
 
     if (attempts < MAX_ATTEMPTS) {
       await pool.query(
@@ -490,10 +589,13 @@ const worker = new Worker(
       console.log(
         `[worker] ⚠️ пост ${postId} не вышел (${reason}); повтор через ${Math.round(delay / 1000)}с (попытка ${attempts})`,
       );
-      // Сообщаем владельцу только после ПЕРВОГО сбоя — тоном из ТЗ 7.5.
+      // Успокаиваем АВТОРА поста после ПЕРВОГО сбоя — тоном из ТЗ 7.5. Раньше сообщение
+      // уходило владельцу: чужой пост и причина сбоя светились в чате платформы (утечка).
+      // Нет привязанного чата — notifyUser молча пропустит, это не ошибка.
       if (attempts === 1) {
         const nextMin = Math.max(1, Math.round((RETRY_DELAYS_MS[1] ?? 300000) / 60000));
-        await notifyOwner(
+        await notifyUser(
+          post.user_id,
           `⚠️ Пост не ушёл — ${reason}. Пробую ещё раз через ${nextMin} минут, ничего делать не нужно. ` +
             `Если не получится за 3 попытки — скажу.`,
         );
@@ -509,8 +611,9 @@ const worker = new Worker(
         `❌ Пост не вышел за 3 попытки — ${reason}.\n` +
         `Проверь, что бот всё ещё админ канала, и жми «Отправить снова».`;
       const failBtn = [[{ text: "Отправить снова", data: `retry:${postId}` }]];
-      const sent = await notifyUser(post.user_id, failText, failBtn);
-      if (!sent) await notifyOwner(failText);
+      // Только автору поста: неудача публикации — событие пользователя, а не платформы.
+      // Не привязал чат — его выбор, владельцу чужой пост не пересылаем (была утечка).
+      await notifyUser(post.user_id, failText, failBtn);
     }
   },
   { connection },
@@ -609,40 +712,11 @@ async function answerCb(id, text) {
 // вовсе, а прирост считался от позавчера — график роста врал (ревью).
 const mskToday = () => new Date().toLocaleDateString("en-CA", { timeZone: "Europe/Moscow" });
 
-// "1.2K"/"50" → число
-function parseCount(s) {
-  const t = String(s).trim().replace(/\s/g, "").replace(",", ".");
-  const m = t.match(/^([\d.]+)([KMkm]?)$/);
-  if (!m) return null;
-  let n = parseFloat(m[1]);
-  if (/k/i.test(m[2])) n *= 1000;
-  if (/m/i.test(m[2])) n *= 1e6;
-  return Math.round(n);
-}
-
-// Сумма реакций поста из блока его разметки. Число стоит ПОСЛЕ вложенного эмодзи:
-//   <span class="tgme_reaction"><tg-emoji …></tg-emoji>30.7K</span>
-// Поэтому берём span целиком, срезаем теги и читаем хвост. Старый вариант ловил текст сразу
-// после `tgme_reaction">` и упирался в первый же `<`, то есть всегда возвращал 0 (ревью).
-// null — реакции на канале выключены; 0 — реакции есть, но никто не поставил.
-function sumReactions(block) {
-  const spans = [...block.matchAll(/<span class="tgme_reaction[^"]*">([\s\S]*?)<\/span>/g)];
-  if (!spans.length) return null;
-  let sum = 0;
-  for (const s of spans) {
-    const plain = s[1].replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
-    const num = (plain.match(/([\d.,]+[KM]?)\s*$/i) || [])[1];
-    if (num) sum += parseCount(num) || 0;
-  }
-  return sum;
-}
-
 async function tgMemberCount(chatId) {
   try {
-    const r = await fetch(`https://api.telegram.org/bot${TOKEN}/getChatMemberCount?chat_id=${chatId}`, {
-      signal: AbortSignal.timeout(15_000),
-    });
-    const d = await r.json();
+    // POST через единый tg()-эгресс: параметры в теле, а не в query-string
+    // (токен и chat_id не оседают в access-логах прокси).
+    const d = await tg("getChatMemberCount", { chat_id: chatId }, 15_000);
     return d.ok ? d.result : null;
   } catch {
     return null;
@@ -654,10 +728,7 @@ async function fetchPublicStats(handle) {
   const h = String(handle).replace(/^@/, "");
   const result = {};
   try {
-    const r = await fetch(`https://t.me/s/${h}`, {
-      headers: { "user-agent": "Mozilla/5.0" },
-      signal: AbortSignal.timeout(15_000),
-    });
+    const r = await fetchTgWithBackoff(`https://t.me/s/${h}`);
     if (!r.ok) return result;
     const html = await r.text();
     const parts = html.split('data-post="');
@@ -682,7 +753,7 @@ async function collectStats() {
     )
   ).rows;
 
-  for (const ch of chans) {
+  await mapConcurrent(chans, RECON_CONCURRENCY, async (ch) => {
     // 1) Подписчики — реальное число + прирост за день.
     const subs = await tgMemberCount(ch.tg_chat_id);
     if (subs != null) {
@@ -751,8 +822,72 @@ async function collectStats() {
         [ch.id],
       );
     }
-  }
+  });
   console.log(`[stats] снимок собран за ${today} (каналов: ${chans.length})`);
+}
+
+// Суточный снимок аналитики VK-сообществ: подписчики + метрики вышедших постов.
+// Идёт тем же кроном «stats» следом за TG. Лимит VK ~3 rps на токен сообщества,
+// поэтому конкурентность ниже разведочной.
+const VK_CONCURRENCY = 3;
+async function collectVkStats() {
+  const today = mskToday();
+  const chans = (
+    await pool.query(
+      `select id, user_id, vk_group_id, vk_token from channels where network = 'vk' and is_active = true`,
+    )
+  ).rows;
+
+  await mapConcurrent(chans, VK_CONCURRENCY, async (ch) => {
+    let token;
+    try {
+      token = decryptToken(ch.vk_token, { userId: ch.user_id, provider: "vk" });
+    } catch {
+      return; // токен не читается — канал переподключат, снимок просто пропустим
+    }
+
+    // 1) Подписчики + прирост за день (логика один в один с TG).
+    const subs = await vkMembersCount(token, ch.vk_group_id);
+    if (subs != null) {
+      const prev = (
+        await pool.query(
+          `select subscribers from channel_stats where channel_id = $1 and snapshot_date < $2
+           order by snapshot_date desc limit 1`,
+          [ch.id, today],
+        )
+      ).rows[0];
+      const delta = prev ? subs - prev.subscribers : null;
+      await pool.query(
+        `insert into channel_stats (channel_id, snapshot_date, subscribers, subscribers_delta)
+         values ($1, $2, $3, $4)
+         on conflict (channel_id, snapshot_date)
+         do update set subscribers = $3, subscribers_delta = $4, collected_at = now()`,
+        [ch.id, today, subs, delta],
+      );
+    }
+
+    // 2) Метрики вышедших постов VK (просмотры/лайки/репосты/комментарии).
+    const posts = (
+      await pool.query(
+        `select id, vk_post_id from posts
+         where channel_id = $1 and status = 'published' and vk_post_id is not null`,
+        [ch.id],
+      )
+    ).rows;
+    for (const p of posts) {
+      const st = await vkPostStats(token, ch.vk_group_id, p.vk_post_id);
+      if (!st) continue;
+      await pool.query(
+        `insert into post_stats (post_id, snapshot_date, views, reactions, reposts, comments)
+         values ($1, $2, $3, $4, $5, $6)
+         on conflict (post_id, snapshot_date)
+         do update set views = $3, reactions = $4, reposts = $5, comments = $6, collected_at = now()`,
+        [p.id, today, st.views, st.reactions, st.reposts, st.comments],
+      );
+      await pool.query(`update posts set stats_state = 'ok' where id = $1`, [p.id]);
+    }
+  });
+  if (chans.length) console.log(`[stats] снимок VK собран за ${today} (сообществ: ${chans.length})`);
 }
 
 // Недельный отчёт одной страницей — в бот владельцу (ТЗ 5.7, Приложение В).
@@ -805,36 +940,11 @@ async function buildWeeklyReport() {
   return lines.join("\n");
 }
 
-function plural(n, one, few, many) {
-  const m10 = n % 10,
-    m100 = n % 100;
-  if (m10 === 1 && m100 !== 11) return one;
-  if (m10 >= 2 && m10 <= 4 && (m100 < 10 || m100 >= 20)) return few;
-  return many;
-}
-
 // ============================================================================
 // Д.6 — разведка конкурентов. ТОЛЬКО открытые данные публичного канала:
 // getChat (название) + getChatMemberCount (подписчики) + t.me/s/ (посты).
 // Закрытых данных не собираем. Тот же всегда-включённый воркер.
 // ============================================================================
-
-function decodeEntities(s) {
-  return String(s)
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#0?39;/g, "'")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&#(\d+);/g, (_, n) => {
-      try {
-        return String.fromCodePoint(Number(n));
-      } catch {
-        return "";
-      }
-    });
-}
 
 // Разбор публичной страницы канала: посты (id, текст, время, просмотры, реакции)
 // + запасные название/подписчики из шапки.
@@ -842,10 +952,7 @@ async function fetchCompetitorPage(handle) {
   const h = String(handle).replace(/^@/, "");
   const out = { ok: false, title: null, subscribers: null, posts: [] };
   try {
-    const r = await fetch(`https://t.me/s/${h}`, {
-      headers: { "user-agent": "Mozilla/5.0" },
-      signal: AbortSignal.timeout(15_000),
-    });
+    const r = await fetchTgWithBackoff(`https://t.me/s/${h}`);
     if (!r.ok) return out;
     const html = await r.text();
 
@@ -901,11 +1008,7 @@ async function collectCompetitor(comp) {
   const ref = "@" + comp.handle;
   let title = null;
   try {
-    const gc = await (
-      await fetch(`https://api.telegram.org/bot${TOKEN}/getChat?chat_id=${ref}`, {
-        signal: AbortSignal.timeout(15_000),
-      })
-    ).json();
+    const gc = await tg("getChat", { chat_id: ref }, 15_000);
     if (gc.ok && gc.result?.type === "channel") title = gc.result.title ?? null;
   } catch {
     /* сеть — возьмём название со страницы */
@@ -1465,7 +1568,8 @@ async function detectHits(comp) {
         link;
       // Тот самый вау-момент из ТЗ: залёт → кнопка → готовый черновик. Теперь без ноутбука.
       const hitBtns = [[{ text: "Сними это", data: `idea:${p.id}` }, { text: "Оригинал", url: link }]];
-      if (!(await notifyUser(comp.user_id, hitText, hitBtns))) await notifyOwner(hitText);
+      // Нет привязанного чата — выбор пользователя, владельцу чужой залёт не шлём (была утечка).
+      await notifyUser(comp.user_id, hitText, hitBtns);
       console.log(`[hits] @${comp.handle}: залёт ×${ratio}${idea ? " + идея" : " (идея позже)"}`);
     }
   }
@@ -1481,7 +1585,7 @@ async function collectCompetitors() {
           and (status = 'pending' or collected_at is null or collected_at < now() - interval '2 hours')`,
     )
   ).rows;
-  for (const c of rows) {
+  await mapConcurrent(rows, RECON_CONCURRENCY, async (c) => {
     try {
       await collectCompetitor(c);
     } catch (err) {
@@ -1493,7 +1597,7 @@ async function collectCompetitors() {
         ])
         .catch(() => {});
     }
-  }
+  });
   if (rows.length) console.log(`[recon] цикл: обработано ${rows.length}`);
 }
 
@@ -1510,13 +1614,13 @@ async function discoverAll() {
            or exists (select 1 from competitors k where k.user_id = u.id and k.network = 'tg')`,
     )
   ).rows;
-  for (const u of users) {
+  await mapConcurrent(users, RECON_CONCURRENCY, async (u) => {
     try {
       await discoverForUser(u.id);
     } catch (err) {
       console.error(`[поиск] user ${u.id} упал:`, err?.message);
     }
-  }
+  });
 }
 
 // ============================================================================
@@ -1569,7 +1673,7 @@ async function collectTrendSources() {
           and (collected_at is null or collected_at < now() - interval '2 hours')`,
     )
   ).rows;
-  for (const s of rows) {
+  await mapConcurrent(rows, RECON_CONCURRENCY, async (s) => {
     try {
       await collectTrendSource(s);
     } catch (err) {
@@ -1581,7 +1685,7 @@ async function collectTrendSources() {
         ])
         .catch(() => {});
     }
-  }
+  });
   if (rows.length) console.log(`[насмотренность] цикл: обработано ${rows.length}`);
 }
 
@@ -1666,32 +1770,51 @@ function postSystem(samples, brief, support = []) {
   return s;
 }
 
-// Ссылки [1] нужны нам, а не читателю: в готовом посте их быть не должно.
-const stripCites = (t) => String(t || "").replace(/\s*\[\d+\]/g, "").replace(/[ \t]{2,}/g, " ").trim();
-
-/**
- * Доля утверждений с опорой: сколько предложений помечены ссылкой на факт.
- * Мера грубая, но честная и проверяемая — ловит ровно то, что нужно: пост, где модель
- * ушла от фактов в свободный пересказ. Короткие фразы («Да.», заголовок) не считаем.
- */
-function citedShare(text) {
-  const sents = String(text || "")
-    .split(/(?<=[.!?…])\s+/)
-    .map((x) => x.trim())
-    .filter((x) => x.length > 25);
-  if (!sents.length) return 0;
-  return sents.filter((x) => /\[\d+\]/.test(x)).length / sents.length;
-}
-
 /**
  * Конкретные темы недели. Раньше здесь были заглушки вида «Полезный совет по твоей
  * теме» — их и уносило в ИИ как тему, поэтому посты выходили ни о чём. Теперь темы
  * придумывает ИИ ПОД НИШУ из брифа; залёты конкурентов (Д.7) идут первыми.
  * Возвращает [{ topic, rubric }]. Пусто = движок молчит, врать не будем.
  */
-async function planTopics(brief, need, hitTopics, mood) {
+async function planTopics(brief, need, hitTopics, mood, channelId = null) {
   const out = hitTopics.slice(0, need).map((t) => ({ topic: t, rubric: null }));
   if (out.length >= need) return out;
+
+  // ТЕМЫ ИЗ БАЗЫ ЗНАНИЙ. Здесь был корень вранья, и он не в посте, а в теме: ниже стоит
+  // задание «придумай конкретную предметную тему» без единого факта — ИИ и придумывал.
+  // Так в план попали «Юрист, предприниматель и крестовский остров — что же это было?» и
+  // «Человек с кредитной историей -3, но купил квартиру через МФО». Выдуманная тема дальше
+  // ЗАСТАВЛЯЕТ выдумать текст под себя: пост обязан рассказать то, чего не было.
+  // Поэтому тему теперь даёт факт из базы, а не фантазия.
+  if (out.length < need && channelId) {
+    const seeds = (
+      await pool.query(
+        `select id, text from knowledge_chunks
+          where channel_id = $1 and kind in ('fact', 'law', 'case', 'qa', 'service')
+            and (valid_until is null or valid_until >= current_date)
+          order by used_count asc, id
+          limit $2`,
+        [channelId, need - out.length],
+      )
+    ).rows;
+    const titleSystem = [
+      "Ты — редактор Telegram-канала. Из факта делаешь заголовок будущего поста.",
+      "Заголовок 3–9 слов, без кавычек и точки в конце.",
+      "Брать можно ТОЛЬКО то, что есть в факте: не добавляй цифр, дат и случаев.",
+      "Выдай ровно один заголовок и больше ничего.",
+    ].join("\n");
+    for (const seed of seeds) {
+      if (out.length >= need) break;
+      const raw = await askAI(titleSystem, `Факт: ${seed.text}`, 40, mood);
+      const topic = String(raw || "")
+        .split("\n")[0]
+        .replace(/^\s*[-–—•*\d.)\s]+/, "")
+        .replace(/^["«]+|["».]+$/g, "")
+        .trim();
+      if (topic.length >= 8 && topic.length <= 120) out.push({ topic, rubric: null, seed: seed.id });
+    }
+    if (out.length >= need) return out;
+  }
 
   const want = need - out.length;
   const list = brief.rubrics.length ? brief.rubrics : RUBRICS_W;
@@ -1704,7 +1827,12 @@ async function planTopics(brief, need, hitTopics, mood) {
     "— тема конкретная и предметная, по нише канала;",
     "— из заголовка сразу понятно, о чём пост: не «полезный совет», а какой именно;",
     "— 3–9 слов, без нумерации, без кавычек, без точки в конце;",
-    "— темы не повторяют друг друга.",
+    "— темы не повторяют друг друга;",
+    // Прямое лекарство от «крестовского острова» и «кредитной истории -3». Под выдуманную
+    // тему проверенных материалов нет по определению — значит пост придётся сочинить.
+    "— НЕ выдумывай случаи, дела, проекты, названия и цифры: тема должна быть о том, что",
+    "  верно и без ссылки на источник, а не о придуманной истории;",
+    "— никаких номеров дел, статей, дат и сумм в теме.",
     "",
     `Формат каждой строки строго такой: Рубрика :: Тема`,
     `Рубрику бери только из списка: ${list.join(", ")}.`,
@@ -1739,41 +1867,6 @@ async function planTopics(brief, need, hitTopics, mood) {
 // воркер на часы и лишить остальных публикации. Хочешь больше — надо распараллелить askAI,
 // это отдельная работа.
 const MAX_WEEKLY_POSTS = 30;
-
-/**
- * Раскладка N постов по НЕДЕЛЕ (7 дней), а не по N дням.
- * Раньше пост i вставал на день i+1: пять постов — пять дней, семь — семь. Поэтому и стоял
- * потолок 7 — он прятал то, что при 14 план разъезжался на две недели вместо «14 за неделю».
- * Теперь: дни делим поровну, а внутри дня разносим по часам, чтобы посты не падали в одну минуту.
- * Возвращает массив ISO-строк длиной N.
- */
-function weekSlots(n, bestHour) {
-  const perDay = Math.ceil(n / 7);
-  const out = [];
-  for (let i = 0; i < n; i++) {
-    const day = Math.floor(i / perDay) + 1;
-    const slot = i % perDay;
-    let hour;
-    if (perDay === 1) {
-      hour = bestHour; // один пост в день — ставим в лучший час по аналитике
-    } else {
-      // Несколько постов в день — разносим равномерно по дневному окну 9:00–21:00.
-      // Впритык друг к другу их ставить нельзя: подписчик получит пачку уведомлений.
-      const from = 9;
-      const to = 21;
-      hour = Math.round(from + (slot * (to - from)) / (perDay - 1));
-    }
-    out.push(`${mskDatePlus(day)}T${String(hour).padStart(2, "0")}:00:00+03:00`);
-  }
-  return out;
-}
-
-// МСК-дата через K дней в формате YYYY-MM-DD.
-function mskDatePlus(days) {
-  return new Date(Date.now() + days * 86_400_000).toLocaleDateString("en-CA", {
-    timeZone: "Europe/Moscow",
-  });
-}
 
 // План собирается ДЛЯ КАНАЛА. Раньше здесь стоял `limit 1` без order by: у кого два канала,
 // тот получал посты по брифу одного канала в (случайно выбранный) другой, а второй канал молчал.
@@ -1893,38 +1986,110 @@ async function buildAutopilotPlan(userId, channelId) {
   const slots = weekSlots(N, bestHour);
 
   // Сначала конкретные темы под нишу, только потом тексты.
-  const topics = await planTopics(brief, N, ideaTopics, planMood);
+  const topics = await planTopics(brief, N, ideaTopics, planMood, channelId);
   if (!topics.length) {
     console.log(`[auto] user ${userId}: ИИ не дал тем — план не собрать`);
     return { error: "ai_unavailable" };
   }
   rule += ` Темы — под твою нишу: ${brief.niche}.`;
 
-  const items = [];
-  for (let i = 0; i < topics.length; i++) {
-    const { topic, rubric } = topics[i];
-    const aiDraft = await askAI(
-      postSystem(samples, brief) + "\n" + moodPromptW(planMood),
+  const facts = (
+    await pool.query(
+      `select count(*)::int as n from knowledge_chunks where channel_id = $1 and kind <> 'voice'`,
+      [channelId],
+    )
+  ).rows[0].n;
+  rule += facts
+    ? ` Факты — из твоей базы знаний (${facts} ${plural(facts, "кусок", "куска", "кусков")}).`
+    : ` База знаний пуста, поэтому пишу без конкретики — ни дат, ни сумм, ни номеров дел выдумывать не стану. Добавь материалы, и посты станут предметными.`;
+
+  // Генерация постов — узкое место плана: каждый пост это findSupport + askAI (~90с) + возможный
+  // ретрай. Последовательно 30 постов собирались до 45 минут и всё это время держали крон-очередь
+  // (concurrency: 1), простаивая разведку и аналитику. Параллелим через mapConcurrent — порядок
+  // элементов сохраняется по индексу, поэтому slots[i] и нумерация карточек не разъезжаются.
+  const items = await mapConcurrent(topics, AUTOPILOT_CONCURRENCY, async (t, i) => {
+    const { topic, rubric } = t;
+    // Опора под КАЖДУЮ тему. Пусто — не сбой: пишем без конкретики, а не выдумываем её.
+    const support = await findSupport(channelId, topic);
+    const raw = await askAI(
+      postSystem(samples, brief, support) + "\n" + moodPromptW(planMood),
       rubric
         ? `Напиши пост в рубрику «${rubric}» на тему: ${topic}.`
         : `Напиши пост на тему: ${topic}.`,
       350,
       planMood,
     );
+    // Доля утверждений со ссылкой — проверяемый след того, что ИИ держался фактов.
+    // Ссылки нужны нам, а не читателю: из готового поста убираем.
+    const cited = support.length ? citedShare(raw) : null;
+    let aiDraft = raw ? stripCites(raw) : null;
+
+    // Страж фактов. База снижает враньё в разы, но не убирает: у коммерческих юридических
+    // RAG-систем 17–33% выдумок даже на выверенном корпусе. Одна попытка переписать — и,
+    // если конкретика всё равно выдумана, пост НЕ уходит в канал сам (см. ниже).
+    let invented = aiDraft ? findInvented(aiDraft, support) : [];
+    if (invented.length) {
+      console.log(`[auto]   «${topic.slice(0, 40)}»: ${invented.join(", ")} — переписываю`);
+      const retry = await askAI(
+        postSystem(samples, brief, support) +
+          "\n\nПРЕДЫДУЩАЯ ПОПЫТКА ОТКЛОНЕНА: ты выдумал " +
+          invented.join(", ") +
+          ". Этих сведений нет в фактах. Перепиши БЕЗ них — лучше общая формулировка, чем выдуманная цифра.",
+        rubric ? `Напиши пост в рубрику «${rubric}» на тему: ${topic}.` : `Напиши пост на тему: ${topic}.`,
+        350,
+        planMood,
+      );
+      const second = retry ? stripCites(retry) : null;
+      const secondBad = second ? findInvented(second, support) : ["пусто"];
+      if (second && !secondBad.length) {
+        aiDraft = second;
+        invented = [];
+        console.log(`[auto]   «${topic.slice(0, 40)}»: со второй попытки чисто`);
+      } else {
+        invented = secondBad.length ? secondBad : invented;
+      }
+    }
+
     const draft = aiDraft || `Черновик на тему «${topic}» — ИИ допишет, когда движок будет доступен.`;
     let scheduledAt = slots[i];
-    const item = { i, scheduledAt, topic, rubric, draft, status: "pending", aiReady: !!aiDraft };
+    const item = {
+      i,
+      scheduledAt,
+      topic,
+      rubric,
+      draft,
+      status: "pending",
+      aiReady: !!aiDraft,
+      // Чем пост подкреплён — покажем человеку в карточке: это и есть доказательство,
+      // что цифры не выдуманы, а взяты из его же материалов.
+      sources: support.map((c) => ({ id: c.id, text: c.text.slice(0, 120) })),
+      cited,
+      // Непустое — в посте осталась непроверенная конкретика. Человек увидит предупреждение,
+      // а автопубликация для такого поста закрыта.
+      invented: invented.length ? invented : undefined,
+    };
+    if (support.length) {
+      await pool
+        .query(`update knowledge_chunks set used_count = used_count + 1 where id = any($1)`, [
+          support.map((c) => c.id),
+        ])
+        .catch(() => {});
+    }
     // Полный режим публикует БЕЗ подтверждения — но ТОЛЬКО настоящий ИИ-текст. Заглушку
     // (ИИ недоступен) в живой канал автоматически не отправляем: оставляем на подтверждение (честность).
-    if (full && aiDraft) {
+    //
+    // И НИКОГДА не публикуем сами пост с невыверенной конкретикой. Выдуманный номер статьи
+    // в канале юриста — это профессиональный риск, а не «неточность»: пусть человек решит
+    // сам. Автопилот тут молчит именно потому, что цена ошибки высокая.
+    if (full && aiDraft && !invented.length) {
       const t = new Date(scheduledAt).getTime();
       if (t < Date.now() + 60_000) scheduledAt = new Date(Date.now() + 120_000).toISOString();
       item.scheduledAt = scheduledAt;
       item.postId = await enqueuePost(userId, ch.id, draft, scheduledAt);
       item.status = "approved";
     }
-    items.push(item);
-  }
+    return item;
+  });
 
   const anyPending = items.some((it) => it.status === "pending");
   const planStatus = full && !anyPending ? "approved" : "pending";
@@ -1967,7 +2132,8 @@ async function buildAutopilotPlan(userId, channelId) {
     planStatus === "pending"
       ? [[{ text: `Одобрить всё (${N})`, data: `plan:approve:${ins.rows[0].id}` }]]
       : undefined;
-  if (!(await notifyUser(userId, planText, planBtns))) await notifyOwner(planText);
+  // Нет привязанного чата — выбор пользователя, владельцу чужой план не шлём (была утечка).
+  await notifyUser(userId, planText, planBtns);
   console.log(`[auto] user ${userId}/${channelId}: план на ${N} постов собран (${planStatus})`);
   return { id: ins.rows[0].id, count: N };
 }
@@ -2437,6 +2603,57 @@ const statsWorker = new Worker(
 );
 statsWorker.on("error", (err) => console.error("[stats] ошибка:", err));
 
+// ----------------------------------------------------------------------------
+// Крон на BullMQ-планировщиках (заменил setInterval). Таймеры в памяти процесса не
+// переживали рестарт: при деплоях чаще раза в неделю недельный план (шаг 7 дней от старта)
+// не срабатывал НИКОГДА. Планировщики BullMQ хранятся в Redis, идемпотентны (upsert) и
+// стреляют по расписанию независимо от времени запуска процесса.
+//
+// Очередь отдельная (не publish/stats), concurrency: 1 — плановые проходы НЕ накладываются
+// друг на друга: долгая разведка не запустит вторую копию себя по следующему тику.
+// Чистка протухших данных: завершившиеся сессии и использованные/просроченные bot_links.
+// Без этого таблицы бесконечно растут мёртвыми строками. Идемпотентные delete — безопасно.
+async function cleanupExpired() {
+  const sessions = await pool.query(`delete from sessions where expires_at < now()`);
+  const links = await pool.query(
+    `delete from bot_links where used_at is not null or expires_at < now()`,
+  );
+  console.log(
+    `[cleanup] удалено: сессий — ${sessions.rowCount}, bot_links — ${links.rowCount}`,
+  );
+}
+
+const cronQueue = new Queue("cron", { connection });
+
+// Расписания в московском времени. trend сдвинут на 15 мин относительно recon, чтобы не
+// долбить t.me обеими задачами в одну секунду.
+const CRON_SCHEDULES = [
+  { name: "stats",    pattern: "0 1 * * *" },    // суточный снимок аналитики, 01:00 МСК
+  { name: "recon",    pattern: "0 */2 * * *" },  // разведка конкурентов, каждые 2ч
+  { name: "trend",    pattern: "15 */2 * * *" }, // насмотренность, каждые 2ч (сдвиг 15мин от recon)
+  { name: "discover", pattern: "0 4 * * *" },    // поиск соседей по нише, 04:00 МСК
+  { name: "weekly",   pattern: "0 21 * * 0" },   // недельные планы, вс 21:00 МСК
+  { name: "cleanup",  pattern: "0 3 * * *" },    // чистка протухших sessions/bot_links, 03:00 МСК
+];
+
+const cronWorker = new Worker(
+  "cron",
+  async (job) => {
+    switch (job.name) {
+      case "stats":    await collectStats(); return collectVkStats();
+      case "recon":    return collectCompetitors();
+      case "trend":    return collectTrendSources();
+      case "discover": return discoverAll();
+      case "weekly":   return weeklyPlans();
+      case "cleanup":  return cleanupExpired();
+      default:         console.warn(`[cron] неизвестная задача: ${job.name}`);
+    }
+  },
+  { connection, concurrency: 1 },
+);
+cronWorker.on("failed", (job, err) => console.error(`[cron] ${job?.name} упала:`, err?.message));
+cronWorker.on("error", (err) => console.error("[cron] ошибка:", err));
+
 // Восстановление после падения/деплоя (ревью, критично): пост, застрявший в 'publishing'
 // (процесс убили во время отправки), иначе теряется навсегда. Но он МОГ уже выйти в канал —
 // из потерянного ответа Telegram не узнать. Авто-переотправка рискует ДУБЛЕМ, поэтому НЕ
@@ -2465,6 +2682,8 @@ async function shutdown(sig) {
   try {
     await worker.close();
     await statsWorker.close();
+    await cronWorker.close();
+    await cronQueue.close();
   } catch {
     /* всё равно выходим */
   }
@@ -2473,25 +2692,24 @@ async function shutdown(sig) {
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
 
-// Собираем статистику при старте и раз в сутки; разведку — при старте и каждые 2 часа;
-// недельные планы автопилота — раз в неделю.
-reclaimStuckPosts().catch((e) => console.error("[worker] восстановление постов:", e));
-collectStats().catch((e) => console.error("[stats] стартовый сбор:", e));
-setInterval(() => collectStats().catch((e) => console.error("[stats] суточный сбор:", e)), 86_400_000);
-collectCompetitors().catch((e) => console.error("[recon] стартовый сбор:", e));
-setInterval(() => collectCompetitors().catch((e) => console.error("[recon] цикл:", e)), 2 * 60 * 60 * 1000);
-// Общие источники ниши: тоже при старте и раз в 2 часа. Список один на всю платформу,
-// поэтому нагрузка не растёт с числом пользователей.
-collectTrendSources().catch((e) => console.error("[насмотренность] стартовый сбор:", e));
-setInterval(() => collectTrendSources().catch((e) => console.error("[насмотренность] цикл:", e)), 2 * 60 * 60 * 1000);
+// Регистрация плановых задач (идемпотентно: upsert не плодит дубли при повторном запуске).
+// Расписание живёт в Redis и стреляет независимо от того, когда стартовал процесс.
+for (const s of CRON_SCHEDULES) {
+  await cronQueue.upsertJobScheduler(s.name, { pattern: s.pattern, tz: "Europe/Moscow" }, { name: s.name });
+}
+console.log("[cron] планировщики зарегистрированы:", CRON_SCHEDULES.map((s) => s.name).join(", "));
 
-// Поиск соседей по нише: при старте и раз в сутки. Реже, чем разведка, — граф меняется
-// медленно, а проход стоит десятков запросов к t.me.
-discoverAll().catch((e) => console.error("[поиск] стартовый проход:", e));
-setInterval(() => discoverAll().catch((e) => console.error("[поиск] суточный проход:", e)), 86_400_000);
+// Стартовая свежесть: разовые задачи сразу после запуска, чтобы не ждать первого тика.
+// Идут через ту же очередь (concurrency: 1) — не долбят t.me все разом при старте.
+// weekly НЕ запускаем: планы не должны перестраиваться при каждом рестарте (лечит баг «плана нет»).
+for (const name of ["stats", "recon", "trend", "discover"]) {
+  await cronQueue.add(name, {}, { jobId: `startup-${name}`, removeOnComplete: true }).catch(() => {});
+}
+
+// Восстановление постов, застрявших в 'publishing' (разовая проверка при старте, не цикл).
+reclaimStuckPosts().catch((e) => console.error("[worker] восстановление постов:", e));
 
 // Приём команд и кнопок. Бесконечный цикл — не ждём его, он живёт сам по себе.
 pollUpdates().catch((e) => console.error("[bot] поллинг умер:", e));
-setInterval(() => weeklyPlans().catch((e) => console.error("[auto] недельные планы:", e)), 7 * 86_400_000);
 
-console.log("[worker] запущен, жду задачи публикации и сбор статистики…");
+console.log("[worker] запущен: публикация, крон-планировщики и бот слушаются…");
