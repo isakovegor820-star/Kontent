@@ -2,8 +2,9 @@
 
 // Нишевой радар: полнотекстовый поиск по постам конкурентов/трендов + алерты по ключевым словам.
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
-import { Bell, Plus, Search, Trash2 } from "lucide-react";
+import { Bell, Link2, Plus, Radar, RefreshCw, Search, Trash2 } from "lucide-react";
 
 import { AppShell } from "@/components/app/shell";
 import { Button } from "@/components/ui/button";
@@ -45,9 +46,11 @@ function RadarInner() {
   const [results, setResults] = useState<SearchResult[]>([]);
   const [searching, setSearching] = useState(false);
   const [searched, setSearched] = useState(false);
+  const [loadError, setLoadError] = useState(false);
 
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [channels, setChannels] = useState<Channel[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const [newKeyword, setNewKeyword] = useState("");
   const [alertChannelId, setAlertChannelId] = useState<number | null>(null);
   const [savingAlert, setSavingAlert] = useState(false);
@@ -58,8 +61,11 @@ function RadarInner() {
       if (r.ok) {
         const d = await r.json();
         setAlerts(d.alerts ?? []);
+        setLoadError(false);
+      } else {
+        setLoadError(true);
       }
-    } catch { /* ignore */ }
+    } catch { setLoadError(true); }
   }, []);
 
   const loadChannels = useCallback(async () => {
@@ -70,15 +76,23 @@ function RadarInner() {
         const chs: Channel[] = (d.channels ?? []).map((c: { id: number; title: string }) => ({ id: c.id, title: c.title }));
         setChannels(chs);
         if (chs.length) setAlertChannelId(chs[0].id);
+        setLoadError(false);
+      } else {
+        setLoadError(true);
       }
-    } catch { /* ignore */ }
+    } catch { setLoadError(true); }
   }, []);
+
+  const reload = useCallback(() => {
+    setLoadError(false);
+    setLoaded(false);
+    Promise.all([loadAlerts(), loadChannels()]).finally(() => setLoaded(true));
+  }, [loadAlerts, loadChannels]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    loadAlerts();
-    loadChannels();
-  }, [loadAlerts, loadChannels]);
+    reload();
+  }, [reload]);
 
   const doSearch = async () => {
     const query = q.trim();
@@ -90,8 +104,12 @@ function RadarInner() {
       if (r.ok) {
         const d = await r.json();
         setResults(d.results ?? []);
+      } else {
+        s.toast({ kind: "danger", title: "Ошибка поиска" });
       }
-    } catch { /* ignore */ }
+    } catch {
+      s.toast({ kind: "danger", title: "Сетевая ошибка" });
+    }
     setSearching(false);
   };
 
@@ -109,8 +127,12 @@ function RadarInner() {
         setNewKeyword("");
         await loadAlerts();
         s.toast({ kind: "success", title: `Алерт «${keyword}» создан` });
+      } else {
+        s.toast({ kind: "danger", title: "Не удалось создать алерт" });
       }
-    } catch { /* ignore */ }
+    } catch {
+      s.toast({ kind: "danger", title: "Сетевая ошибка" });
+    }
     setSavingAlert(false);
   };
 
@@ -126,6 +148,38 @@ function RadarInner() {
 
   return (
     <div className="mx-auto w-full max-w-3xl">
+      {/* Ошибка загрузки */}
+      {loadError && (
+        <Card className="mt-5 p-4">
+          <div className="flex items-center justify-between">
+            <p className="text-[14px] text-text">Не удалось загрузить данные</p>
+            <Button variant="soft" size="sm" onClick={reload}>
+              <RefreshCw className="h-4 w-4" />
+              Повторить
+            </Button>
+          </div>
+        </Card>
+      )}
+
+      {/* Guard: без конкурентов радар пуст — поиск ищет по их постам */}
+      {loaded && !loadError && channels.length === 0 ? (
+        <Card className="mt-5">
+          <EmptyState
+            icon={<Radar className="h-6 w-6" />}
+            title="Сначала добавь конкурентов"
+            body="Радар ищет по постам каналов-конкурентов. Добавь хотя бы один — и поиск заработает."
+            action={
+              <Link href="/app/competitors">
+                <Button variant="solid" size="sm">
+                  <Link2 className="h-4 w-4" />
+                  Добавить конкурентов
+                </Button>
+              </Link>
+            }
+          />
+        </Card>
+      ) : (
+        <>
       {/* Поиск */}
       <Card className="mt-5 p-4">
         <div className="flex gap-2">
@@ -238,6 +292,8 @@ function RadarInner() {
           ))}
         </div>
       </div>
+        </>
+      )}
     </div>
   );
 }

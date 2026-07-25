@@ -5,7 +5,7 @@
 
 import { Suspense, useCallback, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Bookmark, Copy, Hash, Plus, Search, Trash2 } from "lucide-react";
+import { Bookmark, Copy, Hash, Plus, RefreshCw, Search, Trash2 } from "lucide-react";
 
 import { AppShell } from "@/components/app/shell";
 import { Button } from "@/components/ui/button";
@@ -31,6 +31,7 @@ function LibraryInner() {
   const [posts, setPosts] = useState<SavedPost[]>([]);
   const [sets, setSets] = useState<HashtagSet[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [q, setQ] = useState("");
 
   // Форма нового поста
@@ -50,8 +51,11 @@ function LibraryInner() {
       if (r.ok) {
         const d = await r.json();
         setPosts(d.posts ?? []);
+        setLoadError(false);
+      } else {
+        setLoadError(true);
       }
-    } catch { /* ignore */ }
+    } catch { setLoadError(true); }
   }, []);
 
   const loadSets = useCallback(async () => {
@@ -60,14 +64,23 @@ function LibraryInner() {
       if (r.ok) {
         const d = await r.json();
         setSets(d.sets ?? []);
+        setLoadError(false);
+      } else {
+        setLoadError(true);
       }
-    } catch { /* ignore */ }
+    } catch { setLoadError(true); }
   }, []);
+
+  const reload = useCallback(() => {
+    setLoadError(false);
+    setLoading(true);
+    Promise.all([loadPosts(), loadSets()]).finally(() => setLoading(false));
+  }, [loadPosts, loadSets]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    Promise.all([loadPosts(), loadSets()]).finally(() => setLoading(false));
-  }, [loadPosts, loadSets]);
+    reload();
+  }, [reload]);
 
   // Поиск (debounce)
   useEffect(() => {
@@ -142,6 +155,18 @@ function LibraryInner() {
 
   return (
     <div className="mx-auto w-full max-w-3xl">
+      {/* Ошибка загрузки */}
+      {loadError && (
+        <Card className="mt-5 p-4">
+          <div className="flex items-center justify-between">
+            <p className="text-[14px] text-text">Не удалось загрузить данные</p>
+            <Button variant="soft" size="sm" onClick={reload}>
+              <RefreshCw className="h-4 w-4" />
+              Повторить
+            </Button>
+          </div>
+        </Card>
+      )}
 
       {/* Табы */}
       <div className="mt-5 inline-flex rounded-sm border border-line bg-surface p-1">

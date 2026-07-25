@@ -4,7 +4,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
-import { AtSign, ExternalLink, Link2, Plus, Trash2 } from "lucide-react";
+import { AtSign, ExternalLink, Link2, Plus, RefreshCw, Trash2 } from "lucide-react";
 
 import { AppShell } from "@/components/app/shell";
 import { Button } from "@/components/ui/button";
@@ -47,6 +47,7 @@ function MentionsInner() {
   const [queries, setQueries] = useState<MentionQuery[]>([]);
   const [channels, setChannels] = useState<Channel[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
 
   // Форма
   const [keyword, setKeyword] = useState("");
@@ -60,8 +61,11 @@ function MentionsInner() {
         const d = await r.json();
         setMentions(d.mentions ?? []);
         setQueries(d.queries ?? []);
+        setLoadError(false);
+      } else {
+        setLoadError(true);
       }
-    } catch { /* ignore */ }
+    } catch { setLoadError(true); }
   }, []);
 
   const loadChannels = useCallback(async () => {
@@ -72,8 +76,11 @@ function MentionsInner() {
         const chs: Channel[] = (d.channels ?? []).map((c: { id: number; title: string }) => ({ id: c.id, title: c.title }));
         setChannels(chs);
         if (chs.length) setChannelId(chs[0].id);
+        setLoadError(false);
+      } else {
+        setLoadError(true);
       }
-    } catch { /* ignore */ }
+    } catch { setLoadError(true); }
   }, []);
 
   useEffect(() => {
@@ -83,7 +90,7 @@ function MentionsInner() {
 
   const addQuery = async () => {
     const kw = keyword.trim();
-    if (!kw || !channelId) return;
+    if (!kw || kw.length < 3 || !channelId) return;
     setSaving(true);
     try {
       const r = await fetch("/api/mentions", {
@@ -95,8 +102,12 @@ function MentionsInner() {
         setKeyword("");
         await load();
         s.toast({ kind: "success", title: `Мониторинг «${kw}» запущен` });
+      } else {
+        s.toast({ kind: "danger", title: "Не удалось добавить запрос" });
       }
-    } catch { /* ignore */ }
+    } catch {
+      s.toast({ kind: "danger", title: "Сетевая ошибка" });
+    }
     setSaving(false);
   };
 
@@ -113,6 +124,19 @@ function MentionsInner() {
 
   return (
     <div className="mx-auto w-full max-w-3xl">
+      {/* Ошибка загрузки */}
+      {loadError && (
+        <Card className="mt-5 p-4">
+          <div className="flex items-center justify-between">
+            <p className="text-[14px] text-text">Не удалось загрузить данные</p>
+            <Button variant="soft" size="sm" onClick={() => { setLoadError(false); setLoading(true); Promise.all([load(), loadChannels()]).finally(() => setLoading(false)); }}>
+              <RefreshCw className="h-4 w-4" />
+              Повторить
+            </Button>
+          </div>
+        </Card>
+      )}
+
       {/* Guard: без канала мониторинг бесполезен — не к чему привязать запросы */}
       {!loading && channels.length === 0 ? (
         <Card className="mt-5">
@@ -152,13 +176,13 @@ function MentionsInner() {
               <option key={c.id} value={c.id}>{c.title}</option>
             ))}
           </select>
-          <Button variant="solid" size="sm" onClick={addQuery} loading={saving} disabled={!keyword.trim()}>
+          <Button variant="solid" size="sm" onClick={addQuery} loading={saving} disabled={!keyword.trim() || keyword.trim().length < 3}>
             <Plus className="h-4 w-4" />
             Добавить
           </Button>
         </div>
         <p className="mt-2 text-[12px] text-text-3">
-          Поиск в TG (каналы конкурентов) и VK (newsfeed.search). Проверка каждый час.
+          Минимум 3 символа. Поиск в TG (каналы конкурентов) и VK (newsfeed.search). Проверка каждый час.
         </p>
       </Card>
 

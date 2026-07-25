@@ -1130,6 +1130,15 @@ function StudioPageInner() {
                   </button>
                 ))}
               </div>
+              <p className="text-[11px] text-text-3">
+                {role === "copywriter"
+                  ? "Пишет посты: хук, структура, CTA"
+                  : role === "strategist"
+                    ? "Планирует: рубрики, контент-план, идеи"
+                    : role === "critic"
+                      ? "Разбирает текст: слабые места, улучшения"
+                      : "Универсальный режим — подходит для большинства задач"}
+              </p>
 
               {/* Быстрые команды — всегда на виду. На телефоне лента прокручивается вбок */}
               <div className="flex gap-2 overflow-x-auto pb-1 sm:flex-wrap sm:overflow-x-visible sm:pb-0">

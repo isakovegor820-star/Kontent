@@ -6,6 +6,7 @@
 // Главное — человеческий вывод, а не голые графики (ТЗ 7.5).
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { motion, useReducedMotion } from "motion/react";
 import {
   BarChart3,
@@ -205,6 +206,13 @@ function Content({
           icon={<BarChart3 className="h-6 w-6" aria-hidden />}
           title="Пока нечего показывать"
           body="Подключи канал и опубликуй пост — тогда здесь появятся настоящие просмотры, реакции и рост подписчиков. Ничего зашитого."
+          action={
+            <Link href="/app/settings">
+              <Button variant="solid" size="sm">
+                Подключить канал
+              </Button>
+            </Link>
+          }
         />
       </Card>
     );

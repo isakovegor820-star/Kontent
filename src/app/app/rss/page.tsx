@@ -4,7 +4,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
-import { Link2, Pause, Play, Plus, Rss, Trash2 } from "lucide-react";
+import { Link2, Pause, Play, Plus, RefreshCw, Rss, Trash2 } from "lucide-react";
 
 import { AppShell } from "@/components/app/shell";
 import { Button } from "@/components/ui/button";
@@ -35,6 +35,7 @@ function RssInner() {
   const [feeds, setFeeds] = useState<Feed[]>([]);
   const [channels, setChannels] = useState<Channel[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
 
   // Форма добавления
   const [url, setUrl] = useState("");
@@ -49,8 +50,11 @@ function RssInner() {
       if (r.ok) {
         const d = await r.json();
         setFeeds(d.feeds ?? []);
+        setLoadError(false);
+      } else {
+        setLoadError(true);
       }
-    } catch { /* ignore */ }
+    } catch { setLoadError(true); }
   }, []);
 
   const loadChannels = useCallback(async () => {
@@ -61,8 +65,11 @@ function RssInner() {
         const chs: Channel[] = (d.channels ?? []).map((c: { id: number; title: string }) => ({ id: c.id, title: c.title }));
         setChannels(chs);
         if (chs.length && !channelId) setChannelId(chs[0].id);
+        setLoadError(false);
+      } else {
+        setLoadError(true);
       }
-    } catch { /* ignore */ }
+    } catch { setLoadError(true); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -119,6 +126,19 @@ function RssInner() {
 
   return (
     <div className="mx-auto w-full max-w-3xl">
+      {/* Ошибка загрузки */}
+      {loadError && (
+        <Card className="mt-5 p-4">
+          <div className="flex items-center justify-between">
+            <p className="text-[14px] text-text">Не удалось загрузить данные</p>
+            <Button variant="soft" size="sm" onClick={() => { setLoadError(false); setLoading(true); Promise.all([load(), loadChannels()]).finally(() => setLoading(false)); }}>
+              <RefreshCw className="h-4 w-4" />
+              Повторить
+            </Button>
+          </div>
+        </Card>
+      )}
+
       {/* Guard: без канала RSS бесполезен — посты некуда публиковать */}
       {!loading && channels.length === 0 ? (
         <Card className="mt-5">
@@ -184,6 +204,9 @@ function RssInner() {
             Добавить
           </Button>
         </div>
+        <p className="mt-2 text-[12px] text-text-3">
+          Посты появятся автоматически — проверка каждые 30 минут.
+        </p>
       </Card>
 
       {/* Список фидов */}

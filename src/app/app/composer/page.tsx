@@ -25,6 +25,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
   ArrowRight,
+  Bookmark,
   CalendarClock,
   CircleStop,
   Clapperboard,
@@ -1072,6 +1073,31 @@ function ComposerInner() {
           <div className="flex flex-wrap gap-2">
             <Button variant="outline" onClick={c.saveDraft}>
               Сохранить как черновик
+            </Button>
+            <Button
+              variant="outline"
+              onClick={async () => {
+                const text = c.text.trim();
+                if (!text) return;
+                try {
+                  const r = await fetch("/api/library/posts", {
+                    method: "POST",
+                    headers: { "content-type": "application/json" },
+                    body: JSON.stringify({ text }),
+                  });
+                  if (r.ok) {
+                    s.toast({ kind: "success", title: "Сохранено в библиотеку" });
+                  } else {
+                    s.toast({ kind: "danger", title: "Не удалось сохранить" });
+                  }
+                } catch {
+                  s.toast({ kind: "danger", title: "Сетевая ошибка" });
+                }
+              }}
+              disabled={!c.text.trim()}
+            >
+              <Bookmark className="h-[18px] w-[18px]" aria-hidden />
+              В библиотеку
             </Button>
             {c.editingId && (
               <Button variant="danger" onClick={() => c.setConfirmDelete(true)}>

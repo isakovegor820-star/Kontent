@@ -21,6 +21,7 @@ import {
   BookText,
   Bookmark,
   Calendar,
+  ChevronDown,
   Flame,
   LogOut,
   Menu,
@@ -210,6 +211,16 @@ function SidebarInner({
   onClose?: () => void;
   closeRef?: React.RefObject<HTMLButtonElement | null>;
 }) {
+  // Сворачиваемые группы навигации: по умолчанию все открыты,
+  // группа с активным пунктом не сворачивается.
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const toggleGroup = useCallback((title: string) => {
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(title)) next.delete(title); else next.add(title);
+      return next;
+    });
+  }, []);
   return (
     <div className="flex h-full flex-col">
       <div className="flex h-16 shrink-0 items-center justify-between gap-2 px-4">
@@ -237,13 +248,29 @@ function SidebarInner({
 
       <nav
         aria-label="Разделы платформы"
-        className="flex-1 space-y-6 overflow-y-auto px-3 pt-2 pb-4"
+        className="flex-1 space-y-4 overflow-y-auto px-3 pt-2 pb-4"
       >
-        {NAV_GROUPS.map((group) => (
+        {NAV_GROUPS.map((group) => {
+          const hasActive = group.items.some((item) => isActive(pathname, item));
+          const isCollapsed = collapsedGroups.has(group.title) && !hasActive;
+          return (
           <div key={group.title}>
-            <p className="px-3 pb-1.5 text-[13px] font-bold tracking-wider text-text-3 uppercase">
+            <button
+              type="button"
+              onClick={() => toggleGroup(group.title)}
+              aria-expanded={!isCollapsed}
+              className="flex w-full items-center justify-between px-3 pb-1.5 text-[13px] font-bold tracking-wider text-text-3 uppercase hover:text-text-2 transition-colors"
+            >
               {group.title}
-            </p>
+              <ChevronDown
+                className={cn(
+                  "h-3.5 w-3.5 transition-transform duration-200",
+                  isCollapsed && "-rotate-90",
+                )}
+                aria-hidden
+              />
+            </button>
+            {!isCollapsed && (
             <ul className="space-y-0.5">
               {group.items.map((item) => {
                 const active = isActive(pathname, item);
@@ -285,8 +312,10 @@ function SidebarInner({
                 );
               })}
             </ul>
+            )}
           </div>
-        ))}
+          );
+        })}
       </nav>
 
       <div className="shrink-0 space-y-3 border-t border-line p-3">

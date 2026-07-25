@@ -57,6 +57,7 @@ export async function POST(req: NextRequest) {
 
   const keyword = String(body.keyword ?? "").trim().slice(0, 100);
   if (!keyword) return NextResponse.json({ ok: false, error: "no_keyword" }, { status: 422 });
+  if (keyword.length < 3) return NextResponse.json({ ok: false, error: "too_short" }, { status: 422 });
 
   const channelId = Number(body.channelId) || null;
   if (!channelId) return NextResponse.json({ ok: false, error: "no_channel" }, { status: 422 });
