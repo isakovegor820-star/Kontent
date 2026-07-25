@@ -300,7 +300,7 @@ create table if not exists content_brief (
   cta        text,                    -- куда ведём читателя
   taboo      text,                    -- о чём не писать никогда
   ready      boolean     not null default false,
-  source     text        check (source in ('ai', 'manual')),
+  source     text        check (source in ('ai', 'manual', 'quiz')),
   updated_at timestamptz not null default now()
 );
 
@@ -640,3 +640,120 @@ create index if not exists knowledge_chunks_tsv_idx on knowledge_chunks using gi
 
 -- Самый частый фильтр — куски канала по виду (findSupport, счётчики фактов/голоса, сиды плана).
 create index if not exists knowledge_chunks_channel_kind_idx on knowledge_chunks (channel_id, kind);
+
+
+-- ==================================================== Wave 2: Библиотеки
+-- Сохранённые посты (шаблоны, лучшие тексты) и наборы хэштегов.
+-- Юзер сохраняет удачный пост из композера или добавляет вручную — потом вставляет повторно.
+create table if not exists saved_posts (
+  id         bigint generated always as identity primary key,
+  user_id    bigint      not null references users (id) on delete cascade,
+  text       text        not null,
+  note       text,
+  tags       text[]      not null default '{}',
+  created_at timestamptz not null default now()
+);
+create index if not exists saved_posts_user_idx on saved_posts (user_id, created_at desc);
+
+-- Наборы хэштегов: «Для постов про кофе», «Для юридических разборов» и т.д.
+create table if not exists hashtag_sets (
+  id         bigint generated always as identity primary key,
+  user_id    bigint      not null references users (id) on delete cascade,
+  name       text        not null,
+  tags       text[]      not null,
+  created_at timestamptz not null default now(),
+  unique (user_id, name)
+);
+
+
+-- ==================================================== Wave 2: RSS-репостер
+-- Юзер добавляет RSS/Atom-ленту → воркер по cron парсит → ИИ суммаризирует → пост в очередь.
+create table if not exists rss_feeds (
+  id              bigint generated always as identity primary key,
+  user_id         bigint      not null references users (id) on delete cascade,
+  channel_id      bigint      not null references channels (id) on delete cascade,
+  url             text        not null,
+  title           text,
+  is_active       boolean     not null default true,
+  ai_summarize    boolean     not null default true,
+  max_per_day     int         not null default 3,
+  last_fetched_at timestamptz,
+  created_at      timestamptz not null default now(),
+  unique (user_id, url)
+);
+create index if not exists rss_feeds_user_idx on rss_feeds (user_id);
+
+create table if not exists rss_items (
+  id           bigint generated always as identity primary key,
+  feed_id      bigint      not null references rss_feeds (id) on delete cascade,
+  guid         text        not null,
+  title        text,
+  link         text,
+  summary      text,
+  published_at timestamptz,
+  post_id      bigint      references posts (id) on delete set null,
+  status       text        not null default 'new' check (status in ('new', 'posted', 'skipped')),
+  fetched_at   timestamptz not null default now(),
+  unique (feed_id, guid)
+);
+create index if not exists rss_items_feed_idx on rss_items (feed_id, fetched_at desc);
+
+-- ── Нишевой радар (Track 5) ─────────────────────────────────────────────────────
+-- Полнотекстовый поиск по постам конкурентов
+alter table competitor_posts
+  add column if not exists tsv tsvector
+  generated always as (to_tsvector('russian', coalesce(text, ''))) stored;
+create index if not exists competitor_posts_tsv_idx
+  on competitor_posts using gin (tsv);
+
+-- Алерты по ключевым словам
+create table if not exists niche_alerts (
+  id         bigint generated always as identity primary key,
+  user_id    bigint not null references users (id) on delete cascade,
+  channel_id bigint not null references channels (id) on delete cascade,
+  keyword    text   not null,
+  is_active  boolean not null default true,
+  last_notified_at timestamptz,
+  created_at timestamptz not null default now(),
+  unique (channel_id, keyword)
+);
+
+-- Найденные совпадения
+create table if not exists niche_matches (
+  id                 bigint generated always as identity primary key,
+  alert_id           bigint not null references niche_alerts (id) on delete cascade,
+  competitor_post_id bigint not null references competitor_posts (id) on delete cascade,
+  notified           boolean not null default false,
+  found_at           timestamptz not null default now(),
+  unique (alert_id, competitor_post_id)
+);
+create index if not exists niche_matches_alert_idx on niche_matches (alert_id, found_at desc);
+
+-- ── Мониторинг упоминаний MVP (Track 6) ────────────────────────────────────────
+create table if not exists mention_queries (
+  id              bigint generated always as identity primary key,
+  user_id         bigint not null references users (id) on delete cascade,
+  channel_id      bigint not null references channels (id) on delete cascade,
+  keyword         text   not null,
+  networks        text[] not null default '{tg,vk}',
+  is_active       boolean not null default true,
+  last_checked_at timestamptz,
+  created_at      timestamptz not null default now(),
+  unique (channel_id, keyword)
+);
+
+create table if not exists mentions (
+  id            bigint generated always as identity primary key,
+  query_id      bigint not null references mention_queries (id) on delete cascade,
+  network       text   not null check (network in ('tg', 'vk')),
+  source_handle text,
+  source_title  text,
+  post_url      text,
+  text          text,
+  author        text,
+  posted_at     timestamptz,
+  notified      boolean not null default false,
+  found_at      timestamptz not null default now(),
+  unique (query_id, network, post_url)
+);
+create index if not exists mentions_query_idx on mentions (query_id, found_at desc);

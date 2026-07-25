@@ -30,7 +30,9 @@ export function engineInfo(): { engine: AiEngine; model: string; label: string }
   return { engine: "local", model: OLLAMA_MODEL, label: `Локально (${OLLAMA_MODEL})` };
 }
 
-export type AiKind = "write" | "rewrite" | "shorten" | "plan" | "script" | "image";
+export type AiKind = "write" | "rewrite" | "shorten" | "plan" | "script" | "image" | "poll" | "longread";
+
+export type AiRole = "copywriter" | "strategist" | "critic";
 
 export interface GenerateParams {
   kind: AiKind;
@@ -40,6 +42,7 @@ export interface GenerateParams {
   niche?: string;
   tone?: string;
   mood?: string; // настроение агента (ключ из moods.ts) — задаёт персону + температуру
+  role?: AiRole; // роль ИИ: копирайтер / стратег / критик
 }
 
 /** Жив ли движок. Облако — считаем доступным при наличии ключа (реальную ошибку поймает
@@ -69,6 +72,16 @@ function systemPrompt(p: GenerateParams): string {
     "— не добавляй хэштеги и подпись, если об этом не просят;",
     "— выдай ТОЛЬКО текст поста, без пояснений и заголовков вроде «Пост:».",
   ];
+
+  // Роль ИИ: модифицирует поведение модели.
+  if (p.role === "copywriter") {
+    lines.push("", "Роль: копирайтер. Пиши цепляющие тексты с сильным хуком в первой строке и чётким CTA в конце. Фокус на вовлечение.");
+  } else if (p.role === "strategist") {
+    lines.push("", "Роль: стратег. Давай структуру контент-стратегии: темы, форматы, частота, воронка. Мысли системно, а не одним постом.");
+  } else if (p.role === "critic") {
+    lines.push("", "Роль: злой читатель-критик. Разбери текст честно и жёстко: найди слабые места, скажи что бесит, где потерял внимание. Предложи конкретные правки.");
+  }
+
   if (p.niche) lines.push("", `Ниша канала: ${p.niche}.`);
   if (p.tone) lines.push(`Тон автора: ${p.tone}.`);
   if (p.mood) lines.push(moodPrompt(p.mood)); // настроение агента (радостный/дерзкий/…)
@@ -95,6 +108,10 @@ function userPrompt(p: GenerateParams): string {
       return `Составь план публикаций на неделю: 5 постов, для каждого — день, время и короткая тема.${ctx}`;
     case "script":
       return `Придумай сценарий короткого видео на тему: ${p.task}. Структура: хук, 2–3 сцены, финал с вопросом зрителю.${ctx}`;
+    case "poll":
+      return `Придумай опрос для канала на тему: ${p.task}. Формат: вопрос + 4 варианта ответа (короткие, до 30 символов каждый). Добавь подводку в 1–2 предложения перед опросом.${ctx}`;
+    case "longread":
+      return `Напиши лонгрид (1500–2000 знаков) на тему: ${p.task}. Структура: цепляющее начало, 3–4 подзаголовка, конкретные примеры, вывод с CTA.${ctx}`;
     default:
       return p.task;
   }

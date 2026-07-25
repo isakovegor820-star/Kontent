@@ -5,19 +5,20 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
-import { generateText, type AiKind, type GenerateParams } from "@/lib/ai-provider";
+import { generateText, type AiKind, type AiRole, type GenerateParams } from "@/lib/ai-provider";
 import { AI_DAILY_LIMIT, aiUsedToday, recordAiUsage, styleSamplesFor } from "@/lib/ai-usage";
 import { getEngine } from "@/lib/engines";
 
 export const runtime = "nodejs";
 
-const KINDS: AiKind[] = ["write", "rewrite", "shorten", "plan", "script", "image"];
+const KINDS: AiKind[] = ["write", "rewrite", "shorten", "plan", "script", "image", "poll", "longread"];
+const ROLES: AiRole[] = ["copywriter", "strategist", "critic"];
 
 export async function POST(req: NextRequest) {
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
-  let body: { command?: unknown; input?: unknown; context?: unknown; niche?: unknown; tone?: unknown };
+  let body: { command?: unknown; input?: unknown; context?: unknown; niche?: unknown; tone?: unknown; role?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -29,6 +30,7 @@ export async function POST(req: NextRequest) {
   const context = body.context ? String(body.context).slice(0, 600) : undefined;
   const niche = body.niche ? String(body.niche).slice(0, 120) : undefined;
   const tone = body.tone ? String(body.tone).slice(0, 120) : undefined;
+  const role: AiRole | undefined = ROLES.includes(body.role as AiRole) ? (body.role as AiRole) : undefined;
 
   // Картинки этот движок не умеет — честно, без выдумки (ТЗ Д.8: для картинок нужен
   // отдельный сервис IMAGE_API_KEY). Лимит на это не тратим.
@@ -83,6 +85,7 @@ export async function POST(req: NextRequest) {
     niche,
     tone,
     mood: mood ?? undefined,
+    role,
     styleSamples: await styleSamplesFor(user.id),
   };
 

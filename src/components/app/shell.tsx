@@ -16,14 +16,18 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { AnimatePresence, MotionConfig, motion } from "motion/react";
 import {
+  AtSign,
   BarChart3,
   BookText,
+  Bookmark,
   Calendar,
   Flame,
   LogOut,
   Menu,
   Radar,
   Rocket,
+  Rss,
+  ScanSearch,
   Settings,
   Sparkles,
   X,
@@ -57,6 +61,8 @@ const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
       { href: "/app/autopilot", label: "Автопилот", icon: Rocket },
       // База знаний — рядом с автопилотом: это то, ОТКУДА он берёт факты для постов.
       { href: "/app/knowledge", label: "База знаний", icon: BookText },
+      { href: "/app/library", label: "Библиотека", icon: Bookmark },
+      { href: "/app/rss", label: "RSS-ленты", icon: Rss },
     ],
   },
   {
@@ -64,6 +70,8 @@ const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
     items: [
       { href: "/app/competitors", label: "Конкуренты", icon: Radar },
       { href: "/app/trends", label: "Тренды", icon: Flame },
+      { href: "/app/radar", label: "Радар", icon: ScanSearch },
+      { href: "/app/mentions", label: "Упоминания", icon: AtSign },
     ],
   },
   {

@@ -39,11 +39,12 @@ import {
 import { useStore } from "@/lib/store";
 import type { Channel, Network, RealChannel } from "@/lib/types";
 import { cn, initials, weekdayShort } from "@/lib/utils";
+import { RUBRICS } from "@/lib/brief";
 
 const EASE = [0.22, 1, 0.36, 1] as const;
-const TOTAL = 3;
+const TOTAL = 4;
 
-type StepNo = 1 | 2 | 3;
+type StepNo = 1 | 2 | 3 | 4;
 type IconType = React.ComponentType<{ className?: string; strokeWidth?: number }>;
 
 /* --------------------------------------------------------------------- ТОНЫ */
@@ -189,7 +190,128 @@ function StepFooter({
   );
 }
 
-/* ------------------------------------------- ШАГ 1: НАГЛЯДНАЯ МЕХАНИКА (5.2) */
+/* --------------------------------------------------- ШАГ 1: КВИЗ (30 секунд) */
+// Быстрые вопросы: ниша, цель, аудитория, форматы. Ответы уходят в content_brief
+// (source='quiz') после подключения канала — автопилот сразу знает, о чём писать.
+
+export interface QuizAnswers {
+  niche: string;
+  goal: string;
+  audience: string;
+  rubrics: string[];
+}
+
+function StepQuiz({
+  answers,
+  onChange,
+  onNext,
+}: {
+  answers: QuizAnswers;
+  onChange: (a: QuizAnswers) => void;
+  onNext: () => void;
+}) {
+  const uid = useId();
+  const canNext = answers.niche.trim().length >= 3 && answers.audience.trim().length >= 3;
+
+  function toggleRubric(label: string) {
+    const has = answers.rubrics.includes(label);
+    onChange({
+      ...answers,
+      rubrics: has
+        ? answers.rubrics.filter((r) => r !== label)
+        : [...answers.rubrics, label].slice(0, 6),
+    });
+  }
+
+  return (
+    <>
+      <StepHead time="30 секунд" title="Расскажи о канале">
+        Три вопроса — и ИИ сразу настроится под тебя. Без этого он пишет наугад.
+      </StepHead>
+
+      <div className="mt-7 space-y-5">
+        <Field
+          label="Твоя ниша"
+          htmlFor={`${uid}-niche`}
+          hint="О чём канал? Чем конкретнее — тем точнее ИИ."
+        >
+          <Input
+            id={`${uid}-niche`}
+            value={answers.niche}
+            onChange={(e) => onChange({ ...answers, niche: e.target.value })}
+            placeholder="Например: юридические новости для бизнеса"
+            autoComplete="off"
+          />
+        </Field>
+
+        <Field
+          label="Кто твой читатель"
+          htmlFor={`${uid}-aud`}
+          hint="Для кого пишешь? Возраст, роль, боль."
+        >
+          <Input
+            id={`${uid}-aud`}
+            value={answers.audience}
+            onChange={(e) => onChange({ ...answers, audience: e.target.value })}
+            placeholder="Например: предприниматели 30–45, боятся штрафов"
+            autoComplete="off"
+          />
+        </Field>
+
+        <Field
+          label="Зачем тебе канал"
+          htmlFor={`${uid}-goal`}
+          hint="Продажи, экспертность, комьюнити — что угодно."
+        >
+          <Input
+            id={`${uid}-goal`}
+            value={answers.goal}
+            onChange={(e) => onChange({ ...answers, goal: e.target.value })}
+            placeholder="Например: привлекать клиентов на консультации"
+            autoComplete="off"
+          />
+        </Field>
+
+        <div>
+          <p className="text-[13px] font-semibold text-text-2">
+            Какие форматы нравятся{" "}
+            <span className="font-normal text-text-3">(до 6)</span>
+          </p>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {RUBRICS.map((r) => {
+              const active = answers.rubrics.includes(r.label);
+              return (
+                <button
+                  key={r.key}
+                  type="button"
+                  onClick={() => toggleRubric(r.label)}
+                  aria-pressed={active}
+                  className={cn(
+                    "rounded-full border px-3 py-1.5 text-[13px] font-semibold transition-colors",
+                    active
+                      ? "border-brand bg-info-soft text-info-text"
+                      : "border-line bg-surface text-text-3 hover:border-line-strong hover:text-text",
+                  )}
+                >
+                  {r.emoji} {r.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      <StepFooter hint="Минимум: ниша и читатель. Остальное можно заполнить потом.">
+        <Button variant="brand" size="lg" onClick={onNext} disabled={!canNext}>
+          Дальше
+          <ArrowRight className="h-4 w-4" strokeWidth={2.5} aria-hidden />
+        </Button>
+      </StepFooter>
+    </>
+  );
+}
+
+/* ------------------------------------------- ШАГ 2: НАГЛЯДНАЯ МЕХАНИКА (5.2) */
 // Три блока со стрелками — дословно обещание ТЗ: «вот твой канал → сюда встанет
 // пост → вот так он уйдёт сам». Появляются по очереди, третий тихо пульсирует:
 // именно там происходит то, ради чего человек пришёл.
@@ -410,6 +532,16 @@ function StepConnect({ onNext }: { onNext: () => void }) {
       });
       setHandle("");
       setVkToken("");
+
+      // Автозаполнение базы знаний: читаем публичные посты канала как образец стиля.
+      // Fire-and-forget — не блокируем онбординг, индексация идёт в воркере.
+      if (network === "tg") {
+        fetch("/api/knowledge/read-channel", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({}),
+        }).catch(() => {});
+      }
     } else {
       setError(network === "vk" ? connectVkError(res.error) : connectError(res.error));
     }
@@ -551,7 +683,7 @@ function StepConnect({ onNext }: { onNext: () => void }) {
   );
 }
 
-/* ------------------------------------------------ ШАГ 2: КОНКУРЕНТЫ (5.4) */
+/* ------------------------------------------------ ШАГ 3: КОНКУРЕНТЫ (5.4) */
 
 function StepCompetitors({
   onBack,
@@ -705,7 +837,7 @@ function StepCompetitors({
   );
 }
 
-/* ------------------------------------------------------ ШАГ 3: ТОН И НИША */
+/* ------------------------------------------------------ ШАГ 4: ТОН И НИША */
 
 function StepTone({
   niche,
@@ -840,6 +972,30 @@ function Wizard() {
   // Стор уже гидрирован (мастер рендерится только при s.ready) — читаем настройки сразу
   const [niche, setNiche] = useState(() => s.settings.niche);
   const [tone, setTone] = useState<ToneId>(() => matchTone(s.settings.tone));
+  const [quiz, setQuiz] = useState<QuizAnswers>({ niche: "", goal: "", audience: "", rubrics: [] });
+
+  // Сохраняем бриф (source='quiz') после подключения канала.
+  const saveBrief = async () => {
+    const ch = s.realChannels[0];
+    if (!ch) return;
+    try {
+      await fetch("/api/autopilot/brief", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          channelId: ch.id,
+          niche: quiz.niche.trim(),
+          audience: quiz.audience.trim(),
+          goal: quiz.goal.trim(),
+          rubrics: quiz.rubrics,
+          ready: true,
+          source: "quiz",
+        }),
+      });
+    } catch {
+      /* не критично — заполнят потом в настройках автопилота */
+    }
+  };
 
   return (
     <>
@@ -852,7 +1008,7 @@ function Wizard() {
         aria-valuetext={`Шаг ${step} из ${TOTAL}`}
         className="mt-8 flex gap-2"
       >
-        {[1, 2, 3].map((n) => (
+        {[1, 2, 3, 4].map((n) => (
           <div key={n} className="h-1.5 flex-1 overflow-hidden rounded-full bg-surface-inset">
             <motion.div
               className="h-full w-full rounded-full bg-brand-gradient"
@@ -882,21 +1038,31 @@ function Wizard() {
             transition={{ duration: 0.3, ease: EASE }}
             className="flex flex-1 flex-col"
           >
-            {step === 1 && <StepConnect onNext={() => setStep(2)} />}
+            {step === 1 && (
+              <StepQuiz answers={quiz} onChange={setQuiz} onNext={() => setStep(2)} />
+            )}
             {step === 2 && (
-              <StepCompetitors
-                onBack={() => setStep(1)}
-                onNext={() => setStep(3)}
-                onSkip={() => setStep(3)}
+              <StepConnect
+                onNext={() => {
+                  saveBrief();
+                  setStep(3);
+                }}
               />
             )}
             {step === 3 && (
+              <StepCompetitors
+                onBack={() => setStep(2)}
+                onNext={() => setStep(4)}
+                onSkip={() => setStep(4)}
+              />
+            )}
+            {step === 4 && (
               <StepTone
                 niche={niche}
                 onNiche={setNiche}
                 tone={tone}
                 onTone={setTone}
-                onBack={() => setStep(2)}
+                onBack={() => setStep(3)}
               />
             )}
           </motion.div>
@@ -912,7 +1078,7 @@ function WizardSkeleton() {
   return (
     <div aria-busy="true">
       <div className="mt-8 flex gap-2" aria-hidden>
-        {[0, 1, 2].map((i) => (
+        {[0, 1, 2, 3].map((i) => (
           <div key={i} className="skeleton h-1.5 flex-1" />
         ))}
       </div>

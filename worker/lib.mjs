@@ -257,3 +257,75 @@ export function mskDatePlus(days) {
     timeZone: "Europe/Moscow",
   });
 }
+
+// ── Парсинг RSS/Atom без зависимостей ────────────────────────────────────────
+// Простой regex-парсер: достаёт title, link, description/summary, guid, pubDate
+// из RSS 2.0 и Atom. Не претендует на полноту — достаточно для новостных лент.
+
+/** Убирает CDATA и HTML-теги из текста. */
+function stripXml(text) {
+  return String(text || "")
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, " ")
+    .trim();
+}
+
+/** Достаёт содержимое тега (первое вхождение). */
+function tagContent(xml, tag) {
+  const re = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, "i");
+  const m = xml.match(re);
+  return m ? stripXml(m[1]) : "";
+}
+
+/**
+ * Парсит XML RSS 2.0 или Atom. Возвращает массив элементов:
+ * [{ guid, title, link, summary, publishedAt }]
+ */
+export function parseRss(xml) {
+  const items = [];
+  // Определяем формат: Atom использует <entry>, RSS использует <item>
+  const isAtom = /<feed[\s>]/i.test(xml);
+  const itemTag = isAtom ? "entry" : "item";
+  const itemRe = new RegExp(`<${itemTag}[\\s>]([\\s\\S]*?)<\\/${itemTag}>`, "gi");
+
+  let match;
+  while ((match = itemRe.exec(xml)) !== null) {
+    const block = match[1];
+
+    let title, link, summary, guid, pubDate;
+
+    if (isAtom) {
+      title = tagContent(block, "title");
+      // Atom link: <link href="..."/> или <link>...</link>
+      const linkMatch = block.match(/<link[^>]*href=["']([^"']+)["']/i);
+      link = linkMatch ? linkMatch[1] : tagContent(block, "link");
+      summary = tagContent(block, "summary") || tagContent(block, "content");
+      guid = tagContent(block, "id") || link || title;
+      pubDate = tagContent(block, "published") || tagContent(block, "updated");
+    } else {
+      title = tagContent(block, "title");
+      link = tagContent(block, "link");
+      summary = tagContent(block, "description") || tagContent(block, "content:encoded");
+      guid = tagContent(block, "guid") || link || title;
+      pubDate = tagContent(block, "pubDate") || tagContent(block, "dc:date");
+    }
+
+    if (!title && !summary) continue; // пустой элемент — пропускаем
+
+    items.push({
+      guid: guid || `${title}-${link}`,
+      title: title.slice(0, 300),
+      link: link.slice(0, 500),
+      summary: summary.slice(0, 2000),
+      publishedAt: pubDate ? new Date(pubDate).toISOString() : null,
+    });
+  }
+
+  return items;
+}

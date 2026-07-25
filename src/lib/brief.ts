@@ -28,7 +28,7 @@ export interface Brief {
   cta: string; // куда ведём читателя
   taboo: string; // о чём не писать никогда
   ready: boolean; // подтверждён пользователем глазами
-  source: "ai" | "manual" | null; // честно: чем заполнен
+  source: "ai" | "manual" | "quiz" | null; // честно: чем заполнен
 }
 
 export const EMPTY_BRIEF: Brief = {
@@ -75,7 +75,7 @@ export function normalizeBrief(raw: unknown): Brief {
     cta: clean(r.cta, LIMITS.cta),
     taboo: clean(r.taboo, LIMITS.taboo),
     ready: r.ready === true,
-    source: r.source === "ai" || r.source === "manual" ? r.source : null,
+    source: r.source === "ai" || r.source === "manual" || r.source === "quiz" ? r.source : null,
   };
 }
 

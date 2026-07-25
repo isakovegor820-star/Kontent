@@ -24,6 +24,7 @@ import {
   stripCites,
   citedShare,
   mapConcurrent,
+  parseRss,
 } from "./worker/lib.mjs";
 // Шифрование токенов сообществ (VK). Крипто НЕ дублируем — один модуль на роуты и воркер.
 import { decryptToken } from "./src/lib/token-crypto.mjs";
@@ -2613,6 +2614,267 @@ statsWorker.on("error", (err) => console.error("[stats] ошибка:", err));
 // друг на друга: долгая разведка не запустит вторую копию себя по следующему тику.
 // Чистка протухших данных: завершившиеся сессии и использованные/просроченные bot_links.
 // Без этого таблицы бесконечно растут мёртвыми строками. Идемпотентные delete — безопасно.
+
+// ── Нишевой радар: алерты по ключевым словам ────────────────────────────────────
+// После сбора конкурентов проверяем: есть ли новые посты, попадающие под активные алерты?
+// Используем полнотекст (tsv) по competitor_posts. Совпадения пишем в niche_matches,
+// уведомляем юзера в бота (один раз на алерт за цикл).
+async function checkNicheAlerts() {
+  const alerts = (
+    await pool.query(
+      `select a.id, a.user_id, a.channel_id, a.keyword
+         from niche_alerts a where a.is_active = true`,
+    )
+  ).rows;
+  if (!alerts.length) return;
+
+  let total = 0;
+  for (const alert of alerts) {
+    try {
+      // Ищем посты конкурентов юзера, совпадающие с keyword (полнотекст)
+      const matches = await pool.query(
+        `insert into niche_matches (alert_id, competitor_post_id)
+         select $1, cp.id
+           from competitor_posts cp
+           join competitors c on c.id = cp.competitor_id and c.user_id = $2
+          where cp.tsv @@ plainto_tsquery('russian', $3)
+            and cp.collected_at > now() - interval '3 hours'
+            and not exists (
+              select 1 from niche_matches nm
+               where nm.alert_id = $1 and nm.competitor_post_id = cp.id
+            )
+         on conflict do nothing
+         returning competitor_post_id`,
+        [alert.id, alert.user_id, alert.keyword],
+      );
+      if (!matches.rowCount) continue;
+      total += matches.rowCount;
+
+      // Уведомляем юзера (один пуш на алерт за цикл)
+      const sample = await pool.query(
+        `select cp.text, c.title, c.handle
+           from competitor_posts cp
+           join competitors c on c.id = cp.competitor_id
+          where cp.id = $1`,
+        [matches.rows[0].competitor_post_id],
+      );
+      const post = sample.rows[0];
+      const snippet = (post?.text || "").slice(0, 150);
+      await notifyUser(
+        alert.user_id,
+        `🔔 <b>Радар: «${alert.keyword}»</b>\n\n${post?.title || "@" + post?.handle}: ${snippet}…\n\nНайдено совпадений: ${matches.rowCount}`,
+      );
+      await pool.query(
+        `update niche_alerts set last_notified_at = now() where id = $1`,
+        [alert.id],
+      );
+      await pool.query(
+        `update niche_matches set notified = true where alert_id = $1 and notified = false`,
+        [alert.id],
+      );
+    } catch (err) {
+      console.error(`[radar] алерт ${alert.id} (${alert.keyword}):`, err?.message);
+    }
+  }
+  if (total) console.log(`[radar] совпадений по алертам: ${total}`);
+}
+
+// ── Мониторинг упоминаний MVP ────────────────────────────────────────────────
+// Для каждого активного query: VK newsfeed.search + TG t.me/s/ конкурентов.
+// Новые упоминания пишем в mentions, пушим в бота.
+async function collectMentions() {
+  const queries = (
+    await pool.query(
+      `select mq.id, mq.user_id, mq.channel_id, mq.keyword, mq.networks
+         from mention_queries mq where mq.is_active = true`,
+    )
+  ).rows;
+  if (!queries.length) return;
+
+  let total = 0;
+  for (const mq of queries) {
+    try {
+      const networks = mq.networks || ["tg", "vk"];
+
+      // ── VK: newsfeed.search ──
+      if (networks.includes("vk")) {
+        const ch = (
+          await pool.query(
+            `select vk_token, user_id from channels where id = $1 and vk_token is not null`,
+            [mq.channel_id],
+          )
+        ).rows[0];
+        if (ch?.vk_token) {
+          try {
+            const token = decryptToken(ch.vk_token, { userId: ch.user_id, provider: "vk" });
+            const res = await vkApi("newsfeed.search", { q: mq.keyword, count: 20 }, token);
+            const items = res?.response?.items ?? [];
+            for (const item of items) {
+              const postId = item.id;
+              const ownerId = item.owner_id;
+              const postUrl = ownerId < 0
+                ? `https://vk.com/wall-${Math.abs(ownerId)}_${postId}`
+                : `https://vk.com/wall${ownerId}_${postId}`;
+              const ins = await pool.query(
+                `insert into mentions (query_id, network, source_handle, post_url, text, posted_at)
+                 values ($1, 'vk', $2, $3, $4, to_timestamp($5))
+                 on conflict (query_id, network, post_url) do nothing
+                 returning id`,
+                [mq.id, String(ownerId), postUrl, (item.text || "").slice(0, 2000), item.date],
+              );
+              if (ins.rowCount) total++;
+            }
+          } catch { /* VK недоступен — пропускаем */ }
+        }
+      }
+
+      // ── TG: парсим t.me/s/ конкурентов юзера на вхождение keyword ──
+      if (networks.includes("tg")) {
+        const comps = (
+          await pool.query(
+            `select handle, title from competitors where user_id = $1 and network = 'tg' and status = 'ready' limit 30`,
+            [mq.user_id],
+          )
+        ).rows;
+        const kw = mq.keyword.toLowerCase();
+        for (const comp of comps) {
+          try {
+            const page = await fetchCompetitorPage(comp.handle);
+            if (!page.ok) continue;
+            for (const p of page.posts) {
+              if (!(p.text || "").toLowerCase().includes(kw)) continue;
+              const postUrl = `https://t.me/${comp.handle}/${p.msgId}`;
+              const ins = await pool.query(
+                `insert into mentions (query_id, network, source_handle, source_title, post_url, text, posted_at)
+                 values ($1, 'tg', $2, $3, $4, $5, $6)
+                 on conflict (query_id, network, post_url) do nothing
+                 returning id`,
+                [mq.id, comp.handle, comp.title || comp.handle, postUrl, (p.text || "").slice(0, 2000), p.postedAt],
+              );
+              if (ins.rowCount) total++;
+            }
+          } catch { /* канал недоступен */ }
+        }
+      }
+
+      await pool.query(`update mention_queries set last_checked_at = now() where id = $1`, [mq.id]);
+    } catch (err) {
+      console.error(`[mentions] query ${mq.id} (${mq.keyword}):`, err?.message);
+    }
+  }
+
+  // Пушим новые упоминания в бота
+  if (total) {
+    const unnotified = (
+      await pool.query(
+        `select m.id, m.query_id, m.network, m.source_handle, m.source_title, m.text, m.post_url,
+                mq.user_id, mq.keyword
+           from mentions m
+           join mention_queries mq on mq.id = m.query_id
+          where m.notified = false
+          order by m.found_at desc limit 20`,
+      )
+    ).rows;
+    for (const mention of unnotified) {
+      const src = mention.source_title || mention.source_handle || mention.network;
+      const snippet = (mention.text || "").slice(0, 120);
+      await notifyUser(
+        mention.user_id,
+        `💬 <b>Упоминание: «${mention.keyword}»</b>\n\n${src}: ${snippet}…\n\n${mention.post_url || ""}`,
+      ).catch(() => {});
+      await pool.query(`update mentions set notified = true where id = $1`, [mention.id]);
+    }
+    console.log(`[mentions] найдено упоминаний: ${total}`);
+  }
+}
+
+// ── RSS-репостер ────────────────────────────────────────────────────────────────
+// Для каждого активного фида: fetch XML → parseRss → новые записи в rss_items →
+// если ai_summarize → ИИ-суммаризация → создать пост (scheduled) → обновить статус.
+async function collectRss() {
+  const feeds = (
+    await pool.query(
+      `select f.id, f.url, f.title, f.channel_id, f.user_id, f.ai_summarize, f.max_per_day,
+              (select count(*)::int from rss_items i where i.feed_id = f.id and i.fetched_at > now() - interval '24 hours' and i.status = 'posted') as posted_today
+         from rss_feeds f where f.is_active = true`,
+    )
+  ).rows;
+  if (!feeds.length) return;
+
+  let total = 0;
+  for (const feed of feeds) {
+    try {
+      const res = await fetch(feed.url, {
+        signal: AbortSignal.timeout(15_000),
+        headers: { "user-agent": "Aurora-RSS/1.0" },
+      });
+      if (!res.ok) continue;
+      const xml = await res.text();
+      const items = parseRss(xml).slice(0, 20); // не больше 20 за раз
+
+      for (const item of items) {
+        // Пропускаем, если уже есть
+        const exists = await pool.query(
+          `select 1 from rss_items where feed_id = $1 and guid = $2`,
+          [feed.id, item.guid],
+        );
+        if (exists.rowCount) continue;
+
+        // Вставляем новую запись
+        const ins = await pool.query(
+          `insert into rss_items (feed_id, guid, title, link, summary, published_at)
+           values ($1, $2, $3, $4, $5, $6)
+           on conflict (feed_id, guid) do nothing
+           returning id`,
+          [feed.id, item.guid, item.title, item.link, item.summary, item.publishedAt],
+        );
+        if (!ins.rowCount) continue;
+        const itemId = ins.rows[0].id;
+
+        // Лимит постов в день
+        if (feed.posted_today + total >= feed.max_per_day) {
+          await pool.query(`update rss_items set status = 'skipped' where id = $1`, [itemId]);
+          continue;
+        }
+
+        // Суммаризация ИИ (если включена)
+        let postText = `${item.title}\n\n${item.summary}`.trim();
+        if (feed.ai_summarize) {
+          try {
+            const summarized = await askAI(
+              "Ты — редактор канала. Суммаризируй новость в короткий пост (3–5 предложений). Живо, на русском, без хэштегов.",
+              `Заголовок: ${item.title}\n\nТекст: ${item.summary.slice(0, 1500)}`,
+              300,
+            );
+            if (summarized) postText = summarized;
+          } catch { /* ИИ недоступен — постим как есть */ }
+        }
+        if (item.link) postText += `\n\n${item.link}`;
+
+        // Создаём пост в очередь (scheduled через 5 минут)
+        const scheduledAt = new Date(Date.now() + 5 * 60_000).toISOString();
+        const post = await pool.query(
+          `insert into posts (user_id, channel_id, text, scheduled_at, status)
+           values ($1, $2, $3, $4, 'scheduled') returning id`,
+          [feed.user_id, feed.channel_id, postText.slice(0, 16384), scheduledAt],
+        );
+        const postId = post.rows[0]?.id;
+
+        await pool.query(
+          `update rss_items set status = 'posted', post_id = $1 where id = $2`,
+          [postId, itemId],
+        );
+        total++;
+      }
+
+      // Обновляем время последнего fetch
+      await pool.query(`update rss_feeds set last_fetched_at = now() where id = $1`, [feed.id]);
+    } catch (err) {
+      console.error(`[rss] фид ${feed.id} (${feed.url}):`, err?.message);
+    }
+  }
+  if (total) console.log(`[rss] создано постов из лент: ${total}`);
+}
 async function cleanupExpired() {
   const sessions = await pool.query(`delete from sessions where expires_at < now()`);
   const links = await pool.query(
@@ -2634,6 +2896,8 @@ const CRON_SCHEDULES = [
   { name: "discover", pattern: "0 4 * * *" },    // поиск соседей по нише, 04:00 МСК
   { name: "weekly",   pattern: "0 21 * * 0" },   // недельные планы, вс 21:00 МСК
   { name: "cleanup",  pattern: "0 3 * * *" },    // чистка протухших sessions/bot_links, 03:00 МСК
+  { name: "rss",      pattern: "*/30 * * * *" }, // RSS-ленты, каждые 30 мин
+  { name: "mentions", pattern: "30 */1 * * *" }, // упоминания, каждый час в :30
 ];
 
 const cronWorker = new Worker(
@@ -2641,11 +2905,13 @@ const cronWorker = new Worker(
   async (job) => {
     switch (job.name) {
       case "stats":    await collectStats(); return collectVkStats();
-      case "recon":    return collectCompetitors();
+      case "recon":    await collectCompetitors(); return checkNicheAlerts();
       case "trend":    return collectTrendSources();
       case "discover": return discoverAll();
       case "weekly":   return weeklyPlans();
       case "cleanup":  return cleanupExpired();
+      case "rss":      return collectRss();
+      case "mentions": return collectMentions();
       default:         console.warn(`[cron] неизвестная задача: ${job.name}`);
     }
   },

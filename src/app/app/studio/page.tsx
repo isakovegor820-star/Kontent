@@ -18,8 +18,10 @@ import {
   Clapperboard,
   Copy,
   Cpu,
+  FileText,
   Flame,
   ImageIcon,
+  ListChecks,
   Pencil,
   Radar,
   RefreshCw,
@@ -33,6 +35,7 @@ import { Logo } from "@/components/brand";
 import { Button } from "@/components/ui/button";
 import { Badge, Card, EmptyState, Input, Textarea } from "@/components/ui/primitives";
 import { type AiCommand } from "@/lib/ai";
+import type { AiRole } from "@/lib/ai-provider";
 import { useStore } from "@/lib/store";
 import { cn, fmtCompact, plural, uid } from "@/lib/utils";
 
@@ -86,6 +89,18 @@ const QUICK: Quick[] = [
     draft: "Придумай сценарий видео про ",
   },
   {
+    id: "poll",
+    label: "Опрос",
+    icon: <ListChecks className={ICON} strokeWidth={2} aria-hidden />,
+    draft: "Придумай опрос на тему: ",
+  },
+  {
+    id: "longread",
+    label: "Лонгрид",
+    icon: <FileText className={ICON} strokeWidth={2} aria-hidden />,
+    draft: "Напиши лонгрид про ",
+  },
+  {
     id: "image",
     label: "Картинка",
     icon: <ImageIcon className={ICON} strokeWidth={2} aria-hidden />,
@@ -106,6 +121,8 @@ function pickCommand(text: string): AiCommand {
   if (t.includes("сократ")) return "shorten";
   if (t.includes("перепиш")) return "rewrite";
   if (t.includes("картинк")) return "image";
+  if (t.includes("опрос") || t.includes("голосован")) return "poll";
+  if (t.includes("лонгрид") || t.includes("длинн")) return "longread";
   return "write";
 }
 
@@ -596,6 +613,8 @@ function StudioPageInner() {
     { id: "m_hello", role: "ai", text: GREETING },
   ]);
   const [draft, setDraft] = useState("");
+  // Роль ИИ: модифицирует системный промпт (копирайтер / стратег / критик).
+  const [role, setRole] = useState<AiRole | null>(null);
   // Настоящая разведка из базы — и для правой колонки, и как контекст в промпт.
   const [recon, setRecon] = useState<ReconData | null>(null);
   // Готовая строка контекста в ref: startStream живёт вне рендера и не должен пересоздаваться.
@@ -798,6 +817,7 @@ function StudioPageInner() {
           input: gen.input,
           niche: s.settings.niche,
           tone: s.settings.tone,
+          role: role ?? undefined,
           // Разведка едет в промпт по-настоящему. Раньше правая колонка обещала «ИИ смотрит
           // на конкурентов», а в запрос не уходило ни байта об этом — обещание было пустым.
           context: reconRef.current,
@@ -1088,6 +1108,27 @@ function StudioPageInner() {
                 <span className="nums ml-auto text-[12px] text-text-3">
                   {left} из {limit} на сегодня
                 </span>
+              </div>
+
+              {/* Роль ИИ — переключает поведение модели */}
+              <div className="flex items-center gap-1.5">
+                <span className="text-[12px] font-semibold text-text-3">Роль:</span>
+                {([null, "copywriter", "strategist", "critic"] as const).map((r) => (
+                  <button
+                    key={r ?? "default"}
+                    type="button"
+                    onClick={() => setRole(r)}
+                    aria-pressed={role === r}
+                    className={cn(
+                      "rounded-full border px-2.5 py-1 text-[12px] font-semibold transition-colors",
+                      role === r
+                        ? "border-brand bg-info-soft text-info-text"
+                        : "border-line text-text-3 hover:border-line-strong hover:text-text",
+                    )}
+                  >
+                    {r === null ? "По умолчанию" : r === "copywriter" ? "Копирайтер" : r === "strategist" ? "Стратег" : "Критик"}
+                  </button>
+                ))}
               </div>
 
               {/* Быстрые команды — всегда на виду. На телефоне лента прокручивается вбок */}
