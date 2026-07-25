@@ -2,8 +2,9 @@
 
 // RSS-ленты: добавление фидов, статус, пауза/возобновление, удаление.
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
-import { Pause, Play, Plus, Rss, Trash2 } from "lucide-react";
+import { Link2, Pause, Play, Plus, Rss, Trash2 } from "lucide-react";
 
 import { AppShell } from "@/components/app/shell";
 import { Button } from "@/components/ui/button";
@@ -118,6 +119,25 @@ function RssInner() {
 
   return (
     <div className="mx-auto w-full max-w-3xl">
+      {/* Guard: без канала RSS бесполезен — посты некуда публиковать */}
+      {!loading && channels.length === 0 ? (
+        <Card className="mt-5">
+          <EmptyState
+            icon={<Link2 className="h-6 w-6" />}
+            title="Сначала подключи канал"
+            body="RSS-репостер публикует посты в твой канал. Подключи Telegram или VK — и возвращайся сюда."
+            action={
+              <Link href="/app/settings">
+                <Button variant="solid" size="sm">
+                  <Link2 className="h-4 w-4" />
+                  Подключить канал
+                </Button>
+              </Link>
+            }
+          />
+        </Card>
+      ) : (
+        <>
       {/* Форма добавления */}
       <Card className="mt-5 p-4">
         <p className="mb-3 text-[13px] font-semibold text-text-2">Добавить RSS/Atom-ленту</p>
@@ -211,6 +231,8 @@ function RssInner() {
           ))
         )}
       </div>
+        </>
+      )}
     </div>
   );
 }

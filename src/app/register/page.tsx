@@ -130,7 +130,7 @@ export default function RegisterPage() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ email: email.trim(), password }),
       });
-      const data = (await res.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
+      const data = (await res.json().catch(() => null)) as { ok?: boolean; error?: string; retryAfter?: number } | null;
 
       if (res.ok && data?.ok) {
         await s.refreshAuth();
@@ -143,7 +143,10 @@ export default function RegisterPage() {
         return;
       }
 
-      if (res.status === 409 && data?.error === "email_taken") {
+      if (res.status === 429 && data?.error === "rate_limited") {
+        const mins = Math.max(1, Math.ceil((data.retryAfter ?? 900) / 60));
+        setFormErr(`Слишком много попыток. Подожди ${mins} мин — это защита от подбора пароля.`);
+      } else if (res.status === 409 && data?.error === "email_taken") {
         setFormErr("Эта почта уже занята. Похоже, у тебя есть аккаунт — войди.");
         setMode("login");
         setPwErr(undefined);

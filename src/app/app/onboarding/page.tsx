@@ -964,15 +964,42 @@ function StepTone({
 
 /* -------------------------------------------------------------- МАСТЕР */
 
+// Ключ localStorage для сохранения прогресса quiz между визитами.
+const QUIZ_LS_KEY = "aurora-onboarding-quiz";
+
+function loadQuizFromLS(): { quiz: QuizAnswers; step: StepNo } | null {
+  try {
+    const raw = localStorage.getItem(QUIZ_LS_KEY);
+    if (!raw) return null;
+    const d = JSON.parse(raw) as { quiz?: QuizAnswers; step?: number };
+    if (!d.quiz || typeof d.step !== "number") return null;
+    return { quiz: d.quiz, step: Math.min(Math.max(d.step, 1), 4) as StepNo };
+  } catch { return null; }
+}
+
+function saveQuizToLS(quiz: QuizAnswers, step: StepNo) {
+  try { localStorage.setItem(QUIZ_LS_KEY, JSON.stringify({ quiz, step })); } catch { /* full */ }
+}
+
+function clearQuizLS() {
+  try { localStorage.removeItem(QUIZ_LS_KEY); } catch { /* ok */ }
+}
+
 function Wizard() {
   const s = useStore();
   const reduced = useReducedMotion();
 
-  const [step, setStep] = useState<StepNo>(1);
-  // Стор уже гидрирован (мастер рендерится только при s.ready) — читаем настройки сразу
+  // Восстанавливаем прогресс из localStorage: если юзер закрыл вкладку между шагами,
+  // ответы не потеряются.
+  const [restored] = useState(() => loadQuizFromLS());
+  const [step, setStepRaw] = useState<StepNo>(() => restored?.step ?? 1);
   const [niche, setNiche] = useState(() => s.settings.niche);
   const [tone, setTone] = useState<ToneId>(() => matchTone(s.settings.tone));
-  const [quiz, setQuiz] = useState<QuizAnswers>({ niche: "", goal: "", audience: "", rubrics: [] });
+  const [quiz, setQuizRaw] = useState<QuizAnswers>(() => restored?.quiz ?? { niche: "", goal: "", audience: "", rubrics: [] });
+
+  // Обёртки: сохраняем в localStorage при каждом изменении.
+  const setStep = (v: StepNo) => { setStepRaw(v); saveQuizToLS(quiz, v); };
+  const setQuiz = (v: QuizAnswers) => { setQuizRaw(v); saveQuizToLS(v, step); };
 
   // Сохраняем бриф (source='quiz') после подключения канала.
   const saveBrief = async () => {
@@ -992,6 +1019,8 @@ function Wizard() {
           source: "quiz",
         }),
       });
+      // Бриф сохранён — чистим localStorage, quiz больше не нужен.
+      clearQuizLS();
     } catch {
       /* не критично — заполнят потом в настройках автопилота */
     }
