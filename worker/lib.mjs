@@ -64,6 +64,98 @@ export function toTelegramHtml(text) {
     .replace(/\*\*([\s\S]+?)\*\*/g, "<b>$1</b>");
 }
 
+// ── Гарант структуры поста ───────────────────────────────────────────────────
+// Промпт просит ИИ разбивать текст на абзацы, но модель может «забыть». Форматтер
+// дожимает программно: режет «простыни» по границам предложений (абзац — не длиннее
+// PARAGRAPH_MAX знаков и не больше SENTENCES_PER_PARAGRAPH предложений), отрывает
+// хэштеги в отдельные блоки, списки сохраняет столбиком. Консервативен: слова не
+// меняет, только добавляет переносы. Применяется перед самой публикацией.
+const PARAGRAPH_MAX = 300; // знаков без переноса — дальше «простыня», режем
+const SENTENCES_PER_PARAGRAPH = 3; // предложений в абзаце — как в промпте («1–3»)
+
+/** Граница предложения: точка/!/…/… + пробел + заглавная буква или кавычка. */
+const SENTENCE_BREAK = /(?<=[.!?…])\s+(?=[А-ЯЁA-Z«„"])/;
+const TAG_RE = /^#[\wа-яА-ЯёЁ]+(\s+#[\wа-яА-ЯёЁ]+)*$/;
+const LIST_RE = /^\s*([—–-]|[•*]|[0-9]+[.)])\s+/;
+
+/** Режет одну длинную строку на абзацы по границам предложений.
+ * Абзац «хороший», если он короткий И в нём не больше SENTENCES_PER_PARAGRAPH
+ * предложений — иначе режем, даже если по знакам лимит не превышен. */
+function splitLongParagraph(block) {
+  const sentences = block.split(SENTENCE_BREAK);
+  if (sentences.length <= 1) return [block]; // одно предложение — некуда резать
+  if (sentences.length <= SENTENCES_PER_PARAGRAPH && block.length <= PARAGRAPH_MAX) return [block];
+
+  const out = [];
+  let cur = "";
+  let count = 0;
+  for (const s of sentences) {
+    if (cur && (count >= SENTENCES_PER_PARAGRAPH || (cur + " " + s).length > PARAGRAPH_MAX)) {
+      out.push(cur);
+      cur = s;
+      count = 1;
+    } else {
+      cur = cur ? cur + " " + s : s;
+      count++;
+    }
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+
+/**
+ * Доводит текст поста до читаемой структуры: воздух между абзацами, без «простыней».
+ * Гарантии:
+ *  — абзац не длиннее PARAGRAPH_MAX и не больше SENTENCES_PER_PARAGRAPH предложений;
+ *  — хэштеги — всегда отдельным блоком (включая «прилипшие» к концу предложения);
+ *  — списки («— пункт» / «• пункт») остаются столбиком, не склеиваются с текстом;
+ *  — не более одной пустой строки между блоками.
+ */
+export function formatPost(text) {
+  if (!text) return text;
+  let t = String(text).replace(/\r\n/g, "\n").trim();
+  if (!t) return t;
+
+  // 1. Схлопываем 3+ переноса до одной пустой строки.
+  t = t.replace(/\n{3,}/g, "\n\n");
+
+  // 2. Хэштеги, «прилипшие» к концу предложения, отрываем на отдельную строку.
+  t = t.replace(/^(.+?[.!?…»")])\s+(#[\wа-яА-ЯёЁ]+(?:[ \t]+#[\wа-яА-ЯёЁ]+)*)[ \t]*$/gm, "$1\n$2");
+
+  // 3. Собираем итоговые абзацы. Каждая длинная строка режется по предложениям,
+  //    соседние строки-списки группируются в один блок, теги — в свой блок.
+  const paragraphs = [];
+  let listBuf = [];
+  const flushList = () => {
+    if (listBuf.length) {
+      paragraphs.push(listBuf.join("\n"));
+      listBuf = [];
+    }
+  };
+
+  for (const line of t.split("\n")) {
+    const s = line.trim();
+    if (!s) {
+      flushList(); // пустая строка — граница блока
+      continue;
+    }
+    if (TAG_RE.test(s)) {
+      flushList();
+      paragraphs.push(s);
+      continue;
+    }
+    if (LIST_RE.test(s)) {
+      listBuf.push(s);
+      continue;
+    }
+    flushList();
+    paragraphs.push(...splitLongParagraph(s));
+  }
+  flushList();
+
+  return paragraphs.join("\n\n").trim();
+}
+
 /** buttons — массив рядов: [[{ text, data }|{ text, url }]]. */
 export function keyboard(buttons) {
   if (!buttons?.length) return undefined;

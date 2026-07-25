@@ -25,6 +25,7 @@ import {
   citedShare,
   mapConcurrent,
   parseRss,
+  formatPost,
 } from "./worker/lib.mjs";
 // Шифрование токенов сообществ (VK). Крипто НЕ дублируем — один модуль на роуты и воркер.
 import { decryptToken } from "./src/lib/token-crypto.mjs";
@@ -378,11 +379,12 @@ async function vkPostStats(token, groupId, postId) {
 // Паблишинг по сетям с НОРМАЛИЗОВАННЫМ результатом, чтобы успех/сбой/повторы были общими:
 //   { ok: true, externalId, postUrl } | { ok: false, reason }
 
-/** Telegram: текущий путь tgSend, без изменений логики. */
+/** Telegram: текущий путь tgSend, без изменений логики. Текст прогоняем через
+ * форматтер-гарант: даже если ИИ или человек дал «простыню», в канал уйдёт структура. */
 async function publishTg(channel, text) {
   let res;
   try {
-    res = await tgSend(channel.tg_chat_id, text);
+    res = await tgSend(channel.tg_chat_id, formatPost(text));
   } catch (err) {
     res = { ok: false, description: String(err?.message || err) };
   }
@@ -402,7 +404,7 @@ async function publishVk(channel, text) {
     return { ok: false, reason: "не удалось расшифровать токен VK — переподключи сообщество" };
   }
   try {
-    const res = await vkWallPost(token, channel.vk_group_id, text);
+    const res = await vkWallPost(token, channel.vk_group_id, formatPost(text));
     if (!res.ok) return { ok: false, reason: res.errorMsg };
     return { ok: true, externalId: res.postId, postUrl: vkPostUrl(channel.vk_group_id, res.postId) };
   } catch (err) {
@@ -1739,9 +1741,24 @@ function briefContextW(b) {
   return lines.join("\n");
 }
 
+// Единые требования к структуре поста. Одинаковы в промпте (ИИ старается) и в
+// форматтере-гаранте (дожимаем программно). Цель — пост не «простыня», а воздух:
+// короткие абзацы, пустые строки между блоками, списки столбиком.
+const FORMAT_RULES_W = [
+  "ФОРМАТ ПОСТА (обязательно):",
+  "— первая строка — короткий хук (до 60 символов), сразу цепляет;",
+  "— абзацы по 1–3 предложения, между абзацами — ПУСТАЯ строка;",
+  "— никаких «простыней»: сплошной текст длиннее 3 строк без переноса запрещён;",
+  "— перечисления — столбиком, каждый пункт с новой строки через «—» или «•»;",
+  "— ключевую мысль выдели **жирным** (одну, максимум две);",
+  "— финальный абзац — вывод или вопрос читателю, отдельным блоком;",
+  "— никаких мета-меток: не пиши «Хук:», «Абзац:», «CTA:» — только сам текст.",
+].join("\n");
+
 function postSystem(samples, brief, support = []) {
   let s =
-    "Ты — редактор Telegram-канала. Пиши живым грамотным русским, обращайся к читателю на «ты», коротко, без приветствий и подписей. Выдай ТОЛЬКО текст поста.";
+    "Ты — редактор Telegram-канала. Пиши живым грамотным русским, обращайся к читателю на «ты», коротко, без приветствий и подписей. Выдай ТОЛЬКО текст поста.\n\n" +
+    FORMAT_RULES_W;
   if (brief) s += "\n\n" + briefContextW(brief);
 
   // Факты из базы знаний канала. Замерено на hermes3: без фактов модель заполняет пустоту
@@ -2842,7 +2859,8 @@ async function collectRss() {
         if (feed.ai_summarize) {
           try {
             const summarized = await askAI(
-              "Ты — редактор канала. Суммаризируй новость в короткий пост (3–5 предложений). Живо, на русском, без хэштегов.",
+              "Ты — редактор канала. Суммаризируй новость в короткий пост. Живо, на русском, без хэштегов.\n" +
+              "Формат: хук одной строкой, затем 2–3 коротких абзаца по 1–2 предложения, между абзацами пустая строка. В конце — вывод или вопрос читателю.",
               `Заголовок: ${item.title}\n\nТекст: ${item.summary.slice(0, 1500)}`,
               300,
             );
