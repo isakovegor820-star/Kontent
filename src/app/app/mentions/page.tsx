@@ -158,13 +158,16 @@ function MentionsInner() {
         <>
       {/* Форма добавления */}
       <Card className="mt-5 p-4">
-        <p className="mb-3 text-[13px] font-semibold text-text-2">Отслеживать упоминания</p>
+        <p className="mb-1 text-[13px] font-semibold text-text-2">Что отслеживать?</p>
+        <p className="mb-3 text-[12px] text-text-3">
+          Добавь то, что хочешь держать на контроле: название бренда, своё имя, продукт или конкурента.
+        </p>
         <div className="flex flex-col gap-2 sm:flex-row">
           <Input
             value={keyword}
             onChange={(e) => setKeyword(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && addQuery()}
-            placeholder="Ключевое слово или название бренда"
+            placeholder="Например: «Аврора», «Иван Петров», «доставка цветов»"
             className="flex-1"
           />
           <select
@@ -178,13 +181,43 @@ function MentionsInner() {
           </select>
           <Button variant="solid" size="sm" onClick={addQuery} loading={saving} disabled={!keyword.trim() || keyword.trim().length < 3}>
             <Plus className="h-4 w-4" />
-            Добавить
+            Отслеживать
           </Button>
         </div>
         <p className="mt-2 text-[12px] text-text-3">
-          Минимум 3 символа. Поиск в TG (каналы конкурентов) и VK (newsfeed.search). Проверка каждый час.
+          Ищем каждый час в Telegram и VK. Как только найдём упоминание — пришлём его тебе в бота со ссылкой на пост.
         </p>
       </Card>
+
+      {/* Первый визит: объясняем ценность и механику простыми словами */}
+      {queries.length === 0 && !loading && (
+        <Card className="mt-4 p-4">
+          <p className="text-[13px] font-semibold text-text-2">Как это работает</p>
+          <ol className="mt-3 space-y-3">
+            <li className="flex gap-3">
+              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-info-soft text-[12px] font-bold text-info-text">1</span>
+              <p className="text-[13px] leading-relaxed text-text">
+                <span className="font-semibold">Добавь ключевые слова</span> — то, что важно не пропустить: бренд, имя, продукт, тему.
+              </p>
+            </li>
+            <li className="flex gap-3">
+              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-info-soft text-[12px] font-bold text-info-text">2</span>
+              <p className="text-[13px] leading-relaxed text-text">
+                <span className="font-semibold">Аврора ищет каждый час</span> — сканирует посты в Telegram и по всему VK на эти слова.
+              </p>
+            </li>
+            <li className="flex gap-3">
+              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-info-soft text-[12px] font-bold text-info-text">3</span>
+              <p className="text-[13px] leading-relaxed text-text">
+                <span className="font-semibold">Получай упоминания</span> — кто-то написал о тебе? Придёт уведомление в бота и появится здесь. Отвечай, пока горячо.
+              </p>
+            </li>
+          </ol>
+          <p className="mt-3 border-t border-line pt-3 text-[12px] leading-relaxed text-text-3">
+            Зачем: следить за репутацией, находить клиентов, которые обсуждают твою тему, и вовремя реагировать на конкурентов.
+          </p>
+        </Card>
+      )}
 
       {/* Активные запросы */}
       {queries.length > 0 && (
@@ -220,8 +253,10 @@ function MentionsInner() {
           ) : mentions.length === 0 ? (
             <EmptyState
               icon={<AtSign className="h-5 w-5" />}
-              title="Упоминаний пока нет"
-              body="Добавь ключевое слово — воркер будет искать упоминания в TG и VK каждый час."
+              title="Пока тихо"
+              body={queries.length === 0
+                ? "Добавь ключевое слово выше — и мы начнём искать упоминания в Telegram и VK каждый час."
+                : "Ищем по твоим запросам. Как только кто-то упомянет ключевое слово — упоминание появится здесь и придёт в бота."}
             />
           ) : (
             mentions.map((m) => (
@@ -263,7 +298,7 @@ function MentionsInner() {
 
 export default function MentionsPage() {
   return (
-    <AppShell title="Упоминания" subtitle="Мониторинг упоминаний бренда в Telegram и VK.">
+    <AppShell title="Упоминания" subtitle="Узнавай первым, когда твой бренд или тему обсуждают — и превращай упоминания в клиентов.">
       <MentionsInner />
     </AppShell>
   );
