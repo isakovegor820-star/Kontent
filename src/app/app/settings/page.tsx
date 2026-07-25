@@ -594,11 +594,19 @@ function AutopilotSection({ index }: { index: number }) {
         )}
       </AnimatePresence>
 
-      <div className="mt-5">
+      <div className="mt-5 flex flex-wrap items-center gap-x-5 gap-y-2">
         <Link href="/app/autopilot" className="inline-block rounded-xs">
           <Button variant="outline" size="sm" tabIndex={-1}>
             Посмотреть план на неделю
           </Button>
+        </Link>
+        {/* База знаний наполняется сама (профиль из постов + ответы в боте), но посмотреть
+            и поправить её руками можно здесь — прямая ссылка для продвинутых. */}
+        <Link
+          href="/app/knowledge"
+          className="rounded-xs text-[13px] font-semibold text-text-3 underline-offset-4 transition-colors hover:text-text hover:underline"
+        >
+          Что ИИ знает о канале →
         </Link>
       </div>
     </Section>

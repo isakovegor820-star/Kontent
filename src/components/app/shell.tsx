@@ -18,7 +18,6 @@ import { AnimatePresence, MotionConfig, motion } from "motion/react";
 import {
   AtSign,
   BarChart3,
-  BookText,
   Bookmark,
   Calendar,
   ChevronDown,
@@ -60,8 +59,8 @@ const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
       { href: "/app/calendar", label: "Календарь", icon: Calendar, also: ["/app/composer"] },
       { href: "/app/studio", label: "ИИ-студия", icon: Sparkles },
       { href: "/app/autopilot", label: "Автопилот", icon: Rocket },
-      // База знаний — рядом с автопилотом: это то, ОТКУДА он берёт факты для постов.
-      { href: "/app/knowledge", label: "База знаний", icon: BookText },
+      // Базы знаний в меню нет нарочно: она стала невидимой — наполняется сама из постов
+      // канала и ответов в боте. Страница живёт по прямой ссылке из настроек (для гиков).
       { href: "/app/library", label: "Библиотека", icon: Bookmark },
       { href: "/app/rss", label: "RSS-ленты", icon: Rss },
     ],

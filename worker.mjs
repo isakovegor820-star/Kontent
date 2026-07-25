@@ -29,6 +29,13 @@ import {
 } from "./worker/lib.mjs";
 // Шифрование токенов сообществ (VK). Крипто НЕ дублируем — один модуль на роуты и воркер.
 import { decryptToken } from "./src/lib/token-crypto.mjs";
+// Профиль канала (невидимая база знаний): промпт извлечения, парсер ответа модели и
+// сборка текста источника — общий чистый модуль с Next-роутами, без дублирования.
+import {
+  buildExtractionMessages,
+  parseProfile,
+  profileToSourceText,
+} from "./src/lib/channel-profile.mjs";
 
 const REDIS_URL = process.env.REDIS_URL || "redis://127.0.0.1:6379";
 const DATABASE_URL = process.env.DATABASE_URL;
@@ -508,6 +515,82 @@ async function notifyUser(userId, text, buttons) {
     console.error(`[bot] ошибка отправки user ${userId}:`, err?.message);
     return false;
   }
+}
+
+// ── Gap-доспрос: ИИ спрашивает человека, когда упрёлся в пробел знаний ─────────────
+// Антивранье работает в обе стороны: база знаний отвечает на вопрос «что писать»,
+// а когда факта НЕТ (цифру пришлось убрать из поста, база пуста) — ИИ не выдумывает,
+// а спрашивает у человека в боте. Ответ уходит в knowledge_sources kind='form'.
+//
+// Антиспам жёсткий: та же тема не переспрашивается 14 дней (даже если проигнорил),
+// и одновременно висит не больше одного вопроса — ИИ не превращается в интервьюера.
+async function maybeAskGap(userId, channelId, topic, question) {
+  try {
+    const dup = await pool.query(
+      `select 1 from gap_questions where user_id = $1 and topic = $2
+         and created_at > now() - interval '14 days' limit 1`,
+      [userId, topic],
+    );
+    if (dup.rowCount) return false;
+    const pending = await pool.query(
+      `select 1 from gap_questions where user_id = $1 and status = 'pending' limit 1`,
+      [userId],
+    );
+    if (pending.rowCount) return false;
+
+    const ins = await pool.query(
+      `insert into gap_questions (user_id, channel_id, topic, question) values ($1, $2, $3, $4)
+       returning id`,
+      [userId, channelId, topic, question],
+    );
+    const id = Number(ins.rows[0].id);
+    const sent = await notifyUser(userId, `🧠 ${question}`, [
+      [{ text: "Отвечу позже", data: `gap:skip:${id}` }],
+    ]);
+    if (!sent) {
+      // Бот не привязан — вопрос не должен висеть pending вечно (блокировал бы следующие).
+      await pool.query(`update gap_questions set status = 'skipped' where id = $1`, [id]);
+      return false;
+    }
+    console.log(`[gap] user ${userId}: спросил «${topic}»`);
+    return true;
+  } catch (err) {
+    console.error(`[gap] user ${userId}:`, err?.message);
+    return false;
+  }
+}
+
+/** Самый старый висящий gap-вопрос человека. Их не бывает больше одного — см. maybeAskGap. */
+async function pendingGap(userId) {
+  return (
+    (
+      await pool.query(
+        `select id, channel_id, topic, question from gap_questions
+          where user_id = $1 and status = 'pending'
+          order by created_at asc limit 1`,
+        [userId],
+      )
+    ).rows[0] || null
+  );
+}
+
+/**
+ * Ответ человека на gap-вопрос → источник базы знаний. Кладём kind='form': индексатор
+ * пометит куски как 'service', и страж фактов разрешит ИИ на них опираться.
+ * Индексируем сразу, минуя очередь: человек ждёт, что следующий пост уже учтёт ответ.
+ */
+async function saveGapAnswer(userId, q, text) {
+  const ins = await pool.query(
+    `insert into knowledge_sources (user_id, channel_id, kind, title, raw_text)
+     values ($1, $2, 'form', $3, $4) returning id`,
+    [userId, q.channel_id, `Ответ в боте: ${q.topic}`, `Вопрос: ${q.question}\n\nОтвет: ${text}`],
+  );
+  await indexSource(Number(ins.rows[0].id));
+  await pool.query(
+    `update gap_questions set status = 'answered', answer = $2, answered_at = now() where id = $1`,
+    [q.id, text.slice(0, 4000)],
+  );
+  console.log(`[gap] user ${userId}: ответ на «${q.topic}» ушёл в базу`);
 }
 
 const worker = new Worker(
@@ -1433,12 +1516,13 @@ function thinData(views) {
 
 // Генерация идей/планов в воркере без стрима. Выбирает движок (облако/локально) сам.
 // null, если движок недоступен — тогда идея/план сохраняются без ИИ-текста (честно).
-async function askAI(system, user, numPredict = 500, mood = null) {
+async function askAI(system, user, numPredict = 500, mood = null, tempOverride = null) {
   const messages = [
     { role: "system", content: system },
     { role: "user", content: user },
   ];
-  const temp = moodTempW(mood);
+  // Точным задачам (JSON-извлечение профиля) настроение мешает — перекрываем температуру.
+  const temp = tempOverride ?? moodTempW(mood);
   try {
     if (CLOUD_KEY) {
       const r = await fetch(`${CLOUD_URL}/chat/completions`, {
@@ -2152,6 +2236,33 @@ async function buildAutopilotPlan(userId, channelId) {
       : undefined;
   // Нет привязанного чата — выбор пользователя, владельцу чужой план не шлём (была утечка).
   await notifyUser(userId, planText, planBtns);
+
+  // ── Gap-доспрос: план собран, и теперь видно, чего ИИ не хватило ──
+  // 1) База фактов пуста совсем — спрашиваем про услуги и цены одним вопросом.
+  // 2) Из постов пришлось убрать непроверенную конкретику — спрашиваем точные цифры.
+  // Оба вопроса дедупятся (та же тема — раз в 14 дней) и не накладываются (maybeAskGap).
+  if (!facts) {
+    await maybeAskGap(
+      userId,
+      channelId,
+      "empty-base",
+      "Собрал план на неделю, но о твоём бизнесе знаю пока мало — поэтому пишу без цен и сроков, чтобы не наврать. Расскажи одним сообщением: что предлагаешь и сколько это стоит? Запомню и буду использовать в постах.",
+    );
+  } else {
+    const missing = items
+      .filter((it) => it.invented?.length)
+      .flatMap((it) => it.invented)
+      .slice(0, 3);
+    if (missing.length) {
+      await maybeAskGap(
+        userId,
+        channelId,
+        "plan-facts",
+        `Писал посты и убрал из них конкретику, которой нет в твоих материалах: ${missing.map((m) => `«${m}»`).join(", ")}. Как будет верно? Одним сообщением — запомню и больше не уберу.`,
+      );
+    }
+  }
+
   console.log(`[auto] user ${userId}/${channelId}: план на ${N} постов собран (${planStatus})`);
   return { id: ins.rows[0].id, count: N };
 }
@@ -2497,6 +2608,23 @@ async function handleUpdate(u) {
             "Сам напишу, когда пост выйдет, упадёт или у конкурента что-то залетит.",
         ));
       }
+      // Свободный текст без команды — скорее всего ответ на gap-вопрос (ИИ спросил
+      // о пробеле в знаниях). Короткое «ок» фактом не считаем: пользы с двух букв нет.
+      const gap = text.startsWith("/") ? null : await pendingGap(userId);
+      if (gap) {
+        if (text.length < 10) {
+          return void (await tgSend(
+            chatId,
+            "Чуть подробнее, пожалуйста — одним сообщением, от 10 символов. " +
+              "Или нажми «Отвечу позже» под моим вопросом.",
+          ));
+        }
+        await saveGapAnswer(userId, gap, text);
+        return void (await tgSend(
+          chatId,
+          "Записал и запомнил 🧠 Теперь буду использовать это в постах — без выдумок.",
+        ));
+      }
       await tgSend(chatId, "Не понял. Жми «/» — там список команд.");
       return;
     }
@@ -2513,6 +2641,14 @@ async function handleUpdate(u) {
       if (kind === "retry") return void (await answerCb(cb.id, await botRetry(userId, Number(action))));
       if (kind === "plan" && action === "approve") {
         return void (await answerCb(cb.id, await botApprovePlan(userId, Number(id))));
+      }
+      if (kind === "gap" && action === "skip") {
+        const r = await pool.query(
+          `update gap_questions set status = 'skipped'
+            where id = $1 and user_id = $2 and status = 'pending'`,
+          [Number(id), userId],
+        );
+        return void (await answerCb(cb.id, r.rowCount ? "Хорошо, спрошу позже" : "Вопрос уже закрыт"));
       }
       if (kind === "idea") {
         await answerCb(cb.id, "Пишу…");
@@ -2893,6 +3029,56 @@ async function collectRss() {
   }
   if (total) console.log(`[rss] создано постов из лент: ${total}`);
 }
+
+// ── Еженедельное переизвлечение профиля (невидимая база знаний) ──────────────────
+// Канал живёт: услуги, цены и темы меняются. Раз в неделю перечитываем ленту и
+// обновляем АВТО-профиль (kind='profile'). Профиль, который человек подтвердил или
+// правил руками (kind='profile_edit'), обходим стороной — его слова важнее выжимки.
+async function refreshProfiles() {
+  const channels = (
+    await pool.query(
+      `select c.id, c.user_id, c.handle, c.title
+         from channels c
+        where c.network = 'tg' and c.handle is not null and c.is_active
+          and exists (select 1 from knowledge_sources ks
+                       where ks.channel_id = c.id and ks.kind = 'profile')
+          and not exists (select 1 from knowledge_sources ks
+                           where ks.channel_id = c.id and ks.kind = 'profile_edit')`,
+    )
+  ).rows;
+  if (!channels.length) return;
+
+  let updated = 0;
+  await mapConcurrent(channels, 2, async (ch) => {
+    try {
+      const page = await fetchCompetitorPage(ch.handle);
+      const posts = (page.posts || [])
+        .map((p) => (p.text || "").trim())
+        .filter((t) => t.length >= 40);
+      // Лента закрылась или обмельчала — старый профиль честнее пустоты.
+      if (posts.length < 3) return;
+
+      const { system, user } = buildExtractionMessages(ch.title || ch.handle, posts);
+      const raw = await askAI(system, user, 700, null, 0.2);
+      const profile = raw && parseProfile(raw);
+      // Движок лёг или вернул мусор — тоже оставляем старый профиль.
+      if (!profile) return;
+
+      await pool.query(`delete from knowledge_sources where channel_id = $1 and kind = 'profile'`, [ch.id]);
+      const ins = await pool.query(
+        `insert into knowledge_sources (user_id, channel_id, kind, title, raw_text)
+         values ($1, $2, 'profile', $3, $4) returning id`,
+        [ch.user_id, ch.id, `Профиль канала «${ch.title || ch.handle}»`, profileToSourceText(profile)],
+      );
+      await indexSource(Number(ins.rows[0].id));
+      updated++;
+    } catch (err) {
+      console.error(`[profile] канал ${ch.id}:`, err?.message);
+    }
+  });
+  console.log(`[profile] переизвлечено профилей: ${updated}/${channels.length}`);
+}
+
 async function cleanupExpired() {
   const sessions = await pool.query(`delete from sessions where expires_at < now()`);
   const links = await pool.query(
@@ -2916,6 +3102,7 @@ const CRON_SCHEDULES = [
   { name: "cleanup",  pattern: "0 3 * * *" },    // чистка протухших sessions/bot_links, 03:00 МСК
   { name: "rss",      pattern: "*/30 * * * *" }, // RSS-ленты, каждые 30 мин
   { name: "mentions", pattern: "30 */1 * * *" }, // упоминания, каждый час в :30
+  { name: "profile",  pattern: "0 5 * * 1" },   // переизвлечение профилей каналов, пн 05:00 МСК
 ];
 
 const cronWorker = new Worker(
@@ -2930,6 +3117,7 @@ const cronWorker = new Worker(
       case "cleanup":  return cleanupExpired();
       case "rss":      return collectRss();
       case "mentions": return collectMentions();
+      case "profile":  return refreshProfiles();
       default:         console.warn(`[cron] неизвестная задача: ${job.name}`);
     }
   },

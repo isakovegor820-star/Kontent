@@ -7,7 +7,7 @@
 // вот так он уйдёт сам»).
 // Тон — ТЗ 7.5: просто и дружелюбно, на «ты».
 
-import { Fragment, useId, useState } from "react";
+import { Fragment, useEffect, useId, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
@@ -38,13 +38,19 @@ import {
 } from "@/components/ui/primitives";
 import { useStore } from "@/lib/store";
 import type { Channel, Network, RealChannel } from "@/lib/types";
+import {
+  isMeaningfulProfile,
+  normalizeProfile,
+  PROFILE_FIELDS,
+  type ChannelProfile,
+} from "@/lib/channel-profile.mjs";
 import { cn, initials, weekdayShort } from "@/lib/utils";
 import { RUBRICS } from "@/lib/brief";
 
 const EASE = [0.22, 1, 0.36, 1] as const;
-const TOTAL = 4;
+const TOTAL = 5;
 
-type StepNo = 1 | 2 | 3 | 4;
+type StepNo = 1 | 2 | 3 | 4 | 5;
 type IconType = React.ComponentType<{ className?: string; strokeWidth?: number }>;
 
 /* --------------------------------------------------------------------- ТОНЫ */
@@ -683,7 +689,293 @@ function StepConnect({ onNext }: { onNext: () => void }) {
   );
 }
 
-/* ------------------------------------------------ ШАГ 3: КОНКУРЕНТЫ (5.4) */
+/* ------------------------------------------- ШАГ 3: ПРОФИЛЬ КАНАЛА (невидимая база) */
+// ИИ сам читает посты подключённого канала и собирает профиль бизнеса: нишу, темы,
+// услуги, цены, тон и табу. Человек только ПРОВЕРЯЕТ — это и есть наполнение базы
+// знаний без единой формы «заполни базу» (лид не должен её видеть вообще).
+// Канал не прочитался (приватный, постов мало) — короткое интервью из 6 вопросов:
+// иначе ИИ вынужден выдумывать факты в постах, а этого мы не допускаем.
+
+// Все поля — строки (topics — через запятую), на сохранении нормализуем в профиль.
+type ProfileEdit = Record<(typeof PROFILE_FIELDS)[number]["key"], string>;
+
+const GOAL_CHIPS = ["Продажи", "Личный бренд", "Трафик на сайт", "Комьюнити"];
+
+function StepProfile({
+  quiz,
+  onBack,
+  onNext,
+}: {
+  quiz: QuizAnswers;
+  onBack: () => void;
+  onNext: () => void;
+}) {
+  const s = useStore();
+  const uid = useId();
+  const channelId = s.realChannels[0]?.id ?? null;
+
+  const [phase, setPhase] = useState<"loading" | "confirm" | "interview">("loading");
+  const [edit, setEdit] = useState<ProfileEdit>({
+    niche: "",
+    topics: "",
+    services: "",
+    prices: "",
+    audience: "",
+    tone: "",
+    taboos: "",
+    goal: "",
+  });
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    void (async () => {
+      if (!channelId) {
+        setPhase("interview");
+        return;
+      }
+      try {
+        const r = await fetch("/api/knowledge/extract-profile", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ channelId }),
+        });
+        const d = (await r.json().catch(() => null)) as
+          | { ok?: boolean; profile?: ChannelProfile }
+          | null;
+        if (!alive) return;
+        if (r.ok && d?.ok && d.profile) {
+          const p = d.profile;
+          // Пустые поля дозаполняем из квиза (шаг 1): человек уже отвечал — не спрашиваем дважды.
+          setEdit({
+            niche: p.niche || quiz.niche,
+            topics: (p.topics ?? []).join(", "),
+            services: p.services,
+            prices: p.prices,
+            audience: p.audience || quiz.audience,
+            tone: p.tone,
+            taboos: p.taboos,
+            goal: p.goal || quiz.goal,
+          });
+          setPhase("confirm");
+        } else {
+          // Не прочитался (no_posts/no_handle/ai) — честно говорим и спрашиваем сами.
+          setEdit((v) => ({ ...v, niche: quiz.niche, audience: quiz.audience, goal: quiz.goal }));
+          setPhase("interview");
+        }
+      } catch {
+        if (alive) setPhase("interview");
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+    // Ответы квиза зафиксированы на шаге 1 и здесь уже не меняются.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [channelId]);
+
+  const set =
+    (k: keyof ProfileEdit) =>
+    (e: React.ChangeEvent<HTMLInputElement>) =>
+      setEdit((v) => ({ ...v, [k]: e.target.value }));
+
+  // Подтверждение или интервью — в обоих случаях сохраняем как «профиль, проверенный
+  // человеком» (profile_edit): его еженедельное авто-обновление уже не перезапишет.
+  const save = async () => {
+    if (saving) return;
+    setSaving(true);
+    const profile = normalizeProfile(edit);
+    if (channelId && isMeaningfulProfile(profile)) {
+      try {
+        await fetch("/api/knowledge/extract-profile", {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ channelId, profile }),
+        });
+      } catch {
+        /* не блокируем онбординг — профиль можно пополнить позже в боте */
+      }
+    }
+    setSaving(false);
+    onNext();
+  };
+
+  if (phase === "loading") {
+    return (
+      <>
+        <StepHead time="20 секунд" title="Читаю твой канал…">
+          Смотрю последние посты и собираю профиль: нишу, темы, услуги и цены. Из этого
+          буду писать — и не выдумывать факты.
+        </StepHead>
+        <div className="mt-8 space-y-4" aria-busy="true" aria-label="Читаю канал">
+          <div className="skeleton h-12 rounded-lg" />
+          <div className="skeleton h-12 rounded-lg" />
+          <div className="skeleton h-12 w-2/3 rounded-lg" />
+        </div>
+      </>
+    );
+  }
+
+  if (phase === "interview") {
+    const goalChips =
+      edit.goal && !GOAL_CHIPS.some((g) => g.toLowerCase() === edit.goal.toLowerCase())
+        ? [...GOAL_CHIPS, edit.goal]
+        : GOAL_CHIPS;
+    return (
+      <>
+        <StepHead time="2 минуты" title="Расскажи о канале сам">
+          Не смог прочитать посты — канал приватный или в нём пока мало текста. Ответь на
+          шесть вопросов: без этого мне придётся писать без конкретики, потому что цены и
+          факты я не выдумываю.
+        </StepHead>
+
+        <div className="mt-7 space-y-5">
+          <Field label="О чём канал и для кого" htmlFor={`${uid}-about`} hint="Ниша плюс твой читатель.">
+            <Input
+              id={`${uid}-about`}
+              value={edit.niche}
+              onChange={set("niche")}
+              placeholder="Например: кофейня в центре — для тех, кто разбирается в зёрнах"
+              autoComplete="off"
+            />
+          </Field>
+          <Field label="Что предлагаешь" htmlFor={`${uid}-services`} hint="Услуги, продукты, форматы работы.">
+            <Input
+              id={`${uid}-services`}
+              value={edit.services}
+              onChange={set("services")}
+              placeholder="Например: консультации, курс по обжарке, зёрна под заказ"
+              autoComplete="off"
+            />
+          </Field>
+          <Field label="Цены и сроки" htmlFor={`${uid}-prices`} hint="С цифрами — без них посты будут общими.">
+            <Input
+              id={`${uid}-prices`}
+              value={edit.prices}
+              onChange={set("prices")}
+              placeholder="Например: консультация 3 000 ₽/час, курс — 2 недели"
+              autoComplete="off"
+            />
+          </Field>
+          <Field
+            label="Чего не обещаешь и о чём не пишешь"
+            htmlFor={`${uid}-taboos`}
+            hint="Я никогда не выйду за эту границу."
+          >
+            <Input
+              id={`${uid}-taboos`}
+              value={edit.taboos}
+              onChange={set("taboos")}
+              placeholder="Например: не даю скидок, не пишу про политику"
+              autoComplete="off"
+            />
+          </Field>
+
+          <div>
+            <p className="text-[13px] font-semibold text-text-2">Зачем тебе канал</p>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {goalChips.map((g) => {
+                const active = edit.goal.toLowerCase() === g.toLowerCase();
+                return (
+                  <button
+                    key={g}
+                    type="button"
+                    onClick={() => setEdit((v) => ({ ...v, goal: active ? "" : g }))}
+                    aria-pressed={active}
+                    className={cn(
+                      "rounded-full border px-3 py-1.5 text-[13px] font-semibold transition-colors",
+                      active
+                        ? "border-brand bg-info-soft text-info-text"
+                        : "border-line bg-surface text-text-3 hover:border-line-strong hover:text-text",
+                    )}
+                  >
+                    {g}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div>
+            <p className="text-[13px] font-semibold text-text-2">Как звучать</p>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {TONES.map((t) => {
+                const active = edit.tone === t.label;
+                return (
+                  <button
+                    key={t.id}
+                    type="button"
+                    onClick={() => setEdit((v) => ({ ...v, tone: active ? "" : t.label }))}
+                    aria-pressed={active}
+                    className={cn(
+                      "rounded-full border px-3 py-1.5 text-[13px] font-semibold transition-colors",
+                      active
+                        ? "border-brand bg-info-soft text-info-text"
+                        : "border-line bg-surface text-text-3 hover:border-line-strong hover:text-text",
+                    )}
+                  >
+                    {t.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+
+        <StepFooter
+          onBack={onBack}
+          hint="Когда канал наполнится — я сам подтяну стиль и факты из постов."
+        >
+          <Button variant="ghost" onClick={onNext}>
+            Заполню позже
+          </Button>
+          <Button
+            variant="brand"
+            size="lg"
+            onClick={save}
+            loading={saving}
+            disabled={!edit.niche.trim() && !edit.services.trim()}
+          >
+            Готово
+            <ArrowRight className="h-4 w-4" strokeWidth={2.5} aria-hidden />
+          </Button>
+        </StepFooter>
+      </>
+    );
+  }
+
+  // confirm — профиль извлечён из постов, человек проверяет и правит.
+  return (
+    <>
+      <StepHead time="30 секунд" title="Вот что я понял о твоём канале">
+        Прочитал последние посты. Проверь и поправь — из этого я пишу посты и не
+        выдумываю факты.
+      </StepHead>
+
+      <div className="mt-7 space-y-4">
+        {PROFILE_FIELDS.map((f) => (
+          <Field key={f.key} label={f.label} htmlFor={`${uid}-${f.key}`} hint={f.hint}>
+            <Input
+              id={`${uid}-${f.key}`}
+              value={edit[f.key]}
+              onChange={set(f.key)}
+              autoComplete="off"
+            />
+          </Field>
+        ))}
+      </div>
+
+      <StepFooter onBack={onBack} hint="Пустое поле — честное «не знаю»: писать буду без него, а не придумаю.">
+        <Button variant="brand" size="lg" onClick={save} loading={saving}>
+          <Check className="h-4 w-4" strokeWidth={2.5} aria-hidden />
+          Верно, дальше
+        </Button>
+      </StepFooter>
+    </>
+  );
+}
+
+/* ------------------------------------------------ ШАГ 4: КОНКУРЕНТЫ (5.4) */
 
 function StepCompetitors({
   onBack,
@@ -837,7 +1129,7 @@ function StepCompetitors({
   );
 }
 
-/* ------------------------------------------------------ ШАГ 4: ТОН И НИША */
+/* ------------------------------------------------------ ШАГ 5: ТОН И НИША */
 
 function StepTone({
   niche,
@@ -965,7 +1257,7 @@ function StepTone({
 /* -------------------------------------------------------------- МАСТЕР */
 
 // Ключ localStorage для сохранения прогресса quiz между визитами.
-const QUIZ_LS_KEY = "aurora-onboarding-quiz";
+const QUIZ_LS_KEY = "aurora-onboarding-quiz-v2";
 
 function loadQuizFromLS(): { quiz: QuizAnswers; step: StepNo } | null {
   try {
@@ -973,7 +1265,7 @@ function loadQuizFromLS(): { quiz: QuizAnswers; step: StepNo } | null {
     if (!raw) return null;
     const d = JSON.parse(raw) as { quiz?: QuizAnswers; step?: number };
     if (!d.quiz || typeof d.step !== "number") return null;
-    return { quiz: d.quiz, step: Math.min(Math.max(d.step, 1), 4) as StepNo };
+    return { quiz: d.quiz, step: Math.min(Math.max(d.step, 1), 5) as StepNo };
   } catch { return null; }
 }
 
@@ -1037,7 +1329,7 @@ function Wizard() {
         aria-valuetext={`Шаг ${step} из ${TOTAL}`}
         className="mt-8 flex gap-2"
       >
-        {[1, 2, 3, 4].map((n) => (
+        {[1, 2, 3, 4, 5].map((n) => (
           <div key={n} className="h-1.5 flex-1 overflow-hidden rounded-full bg-surface-inset">
             <motion.div
               className="h-full w-full rounded-full bg-brand-gradient"
@@ -1079,19 +1371,22 @@ function Wizard() {
               />
             )}
             {step === 3 && (
-              <StepCompetitors
-                onBack={() => setStep(2)}
-                onNext={() => setStep(4)}
-                onSkip={() => setStep(4)}
-              />
+              <StepProfile quiz={quiz} onBack={() => setStep(2)} onNext={() => setStep(4)} />
             )}
             {step === 4 && (
+              <StepCompetitors
+                onBack={() => setStep(3)}
+                onNext={() => setStep(5)}
+                onSkip={() => setStep(5)}
+              />
+            )}
+            {step === 5 && (
               <StepTone
                 niche={niche}
                 onNiche={setNiche}
                 tone={tone}
                 onTone={setTone}
-                onBack={() => setStep(3)}
+                onBack={() => setStep(4)}
               />
             )}
           </motion.div>

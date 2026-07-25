@@ -138,6 +138,9 @@ create table if not exists posts (
 );
 create index if not exists posts_channel_sched_idx on posts (channel_id, scheduled_at);
 create index if not exists posts_status_idx on posts (status);
+-- VK-колонка добавлена позже создания таблицы (Wave 1). Для существующих БД нужен
+-- отдельный ALTER: create table if not exists уже созданную таблицу не меняет.
+alter table posts add column if not exists vk_post_id bigint;
 
 
 -- ------------------------------------------------- Д.5: аналитика (снимки)
@@ -584,9 +587,12 @@ create table if not exists knowledge_sources (
   user_id     bigint      not null references users (id) on delete cascade,
   channel_id  bigint      not null references channels (id) on delete cascade,
 
-  -- 'form' | 'paste' | 'channel'. 'channel' = срез стиля (голос): перечитал канал —
-  -- прежний срез сносим, свежие посты вернее старых (см. knowledge/read-channel).
-  kind        text        not null check (kind in ('form', 'paste', 'channel')),
+  -- 'form' | 'paste' | 'channel' | 'profile' | 'profile_edit'.
+  -- 'channel' = срез стиля (голос): перечитал канал — прежний срез сносим.
+  -- 'profile' = авто-профиль канала (ИИ-экстракция из постов): еженедельный крон
+  -- перезаписывает свежим. 'profile_edit' = профиль после правок человека или из
+  -- интервью: слова владельца, крон их НЕ трогает (api/knowledge/extract-profile).
+  kind        text        not null check (kind in ('form', 'paste', 'channel', 'profile', 'profile_edit')),
   title       text        not null,
   raw_text    text        not null,
 
@@ -757,3 +763,22 @@ create table if not exists mentions (
   unique (query_id, network, post_url)
 );
 create index if not exists mentions_query_idx on mentions (query_id, found_at desc);
+
+-- ── Gap-доспрос (невидимая база знаний) ─────────────────────────────────────
+-- ИИ упёрся в пробел знаний (убрал из поста цифру, которой нет в базе; база пуста) —
+-- вместо выдумки спрашивает человека в боте. Ответ уходит в knowledge_sources kind='form'.
+-- Антиспам: та же topic не спрашивается 14 дней, pending одновременно не больше одного.
+create table if not exists gap_questions (
+  id          bigint generated always as identity primary key,
+  user_id     bigint not null references users (id) on delete cascade,
+  channel_id  bigint references channels (id) on delete cascade,
+  topic       text   not null,              -- ключ дедупликации («empty-base», «plan-facts»)
+  question    text   not null,
+  status      text   not null default 'pending'
+                     check (status in ('pending', 'answered', 'skipped')),
+  answer      text,
+  created_at  timestamptz not null default now(),
+  answered_at timestamptz
+);
+create index if not exists gap_questions_user_pending_idx
+  on gap_questions (user_id, status, created_at desc);
