@@ -1,22 +1,61 @@
 "use client";
 
-// Библиотека: сохранённые посты + наборы хэштегов.
-// Юзер сохраняет удачные тексты и теги, потом вставляет повторно в композер.
+// Библиотека: три раздела.
+// 1. «Хиты ниши» — залетевшие посты конкурентов (собирает разведка): на что ориентироваться.
+// 2. «Мои посты» — сохранённые тексты для повторного использования.
+// 3. «Хэштеги» — именованные наборы тегов, вставляются одним нажатием.
 
 import { Suspense, useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Bookmark, Copy, Hash, Plus, RefreshCw, Search, Trash2 } from "lucide-react";
+import {
+  Bookmark,
+  Copy,
+  ExternalLink,
+  Eye,
+  Flame,
+  Hash,
+  Heart,
+  Link2,
+  Plus,
+  RefreshCw,
+  Search,
+  Trash2,
+} from "lucide-react";
 
 import { AppShell } from "@/components/app/shell";
 import { Button } from "@/components/ui/button";
 import { Badge, Card, EmptyState, Input } from "@/components/ui/primitives";
 import { useStore } from "@/lib/store";
-import { cn } from "@/lib/utils";
+import { cn, fmtAgo, fmtNum } from "@/lib/utils";
 
 /* ------------------------------------------------------------------ ТИПЫ */
 
 type SavedPost = { id: number; text: string; note: string | null; tags: string[]; created_at: string };
 type HashtagSet = { id: number; name: string; tags: string[]; created_at: string };
+type Hit = {
+  id: number;
+  text: string;
+  views: number | null;
+  reactions: number | null;
+  hit_ratio: string | number | null;
+  posted_at: string;
+  media: string | null;
+  tg_msg_id: number | null;
+  source_title: string | null;
+  handle: string | null;
+};
+type Tab = "hits" | "posts" | "tags";
+
+const TABS: { key: Tab; label: string; icon: typeof Flame }[] = [
+  { key: "hits", label: "Хиты ниши", icon: Flame },
+  { key: "posts", label: "Мои посты", icon: Bookmark },
+  { key: "tags", label: "Хэштеги", icon: Hash },
+];
+
+// Карточки страницы поднимаются при наведении — единый жест рабочих экранов.
+const HOVER =
+  "transition-[box-shadow,border-color] duration-200 hover:border-line-strong hover:shadow-soft";
 
 /* ----------------------------------------------------------------- ЭКРАН */
 
@@ -25,9 +64,17 @@ function LibraryInner() {
   const searchParams = useSearchParams();
   const s = useStore();
 
-  const [tab, setTab] = useState<"posts" | "tags">(
-    searchParams.get("tab") === "tags" ? "tags" : "posts",
+  const tabParam = searchParams.get("tab");
+  const [tab, setTab] = useState<Tab>(
+    tabParam === "posts" || tabParam === "tags" ? tabParam : "hits",
   );
+
+  // Хиты ниши
+  const [hits, setHits] = useState<Hit[]>([]);
+  const [hitsLoading, setHitsLoading] = useState(true);
+  const [hitsError, setHitsError] = useState<"no_channel" | "server" | null>(null);
+
+  // Мои посты и наборы
   const [posts, setPosts] = useState<SavedPost[]>([]);
   const [sets, setSets] = useState<HashtagSet[]>([]);
   const [loading, setLoading] = useState(true);
@@ -43,6 +90,23 @@ function LibraryInner() {
   const [setName, setSetName] = useState("");
   const [setTags, setSetTags] = useState("");
   const [savingSet, setSavingSet] = useState(false);
+
+  const loadHits = useCallback(async () => {
+    try {
+      const r = await fetch("/api/library/hits", { cache: "no-store" });
+      if (r.ok) {
+        const d = await r.json();
+        setHits(d.hits ?? []);
+        setHitsError(null);
+      } else if (r.status === 422) {
+        setHitsError("no_channel");
+      } else {
+        setHitsError("server");
+      }
+    } catch {
+      setHitsError("server");
+    }
+  }, []);
 
   const loadPosts = useCallback(async (query?: string) => {
     try {
@@ -74,15 +138,19 @@ function LibraryInner() {
   const reload = useCallback(() => {
     setLoadError(false);
     setLoading(true);
-    Promise.all([loadPosts(), loadSets()]).finally(() => setLoading(false));
-  }, [loadPosts, loadSets]);
+    setHitsLoading(true);
+    Promise.all([loadHits(), loadPosts(), loadSets()]).finally(() => {
+      setLoading(false);
+      setHitsLoading(false);
+    });
+  }, [loadHits, loadPosts, loadSets]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     reload();
   }, [reload]);
 
-  // Поиск (debounce)
+  // Поиск по своим постам (debounce)
   useEffect(() => {
     if (tab !== "posts") return;
     const t = setTimeout(() => loadPosts(q.trim() || undefined), 300);
@@ -153,9 +221,14 @@ function LibraryInner() {
     } catch { /* ignore */ }
   };
 
+  const hitRatio = (h: Hit) => {
+    const n = Number(h.hit_ratio);
+    return Number.isFinite(n) && n > 0 ? n.toFixed(1) : null;
+  };
+
   return (
-    <div className="mx-auto w-full max-w-3xl">
-      {/* Ошибка загрузки */}
+    <div className="mx-auto w-full">
+      {/* Ошибка загрузки своих данных */}
       {loadError && (
         <Card className="mt-5 p-4">
           <div className="flex items-center justify-between">
@@ -170,23 +243,139 @@ function LibraryInner() {
 
       {/* Табы */}
       <div className="mt-5 inline-flex rounded-sm border border-line bg-surface p-1">
-        {(["posts", "tags"] as const).map((t) => (
-          <button
-            key={t}
-            type="button"
-            onClick={() => setTab(t)}
-            className={cn(
-              "flex items-center gap-1.5 rounded-[3px] px-4 py-1.5 text-[13px] font-semibold transition-colors",
-              tab === t ? "bg-info-soft text-info-text" : "text-text-3 hover:text-text",
-            )}
-          >
-            {t === "posts" ? <Bookmark className="h-3.5 w-3.5" /> : <Hash className="h-3.5 w-3.5" />}
-            {t === "posts" ? "Посты" : "Хэштеги"}
-          </button>
-        ))}
+        {TABS.map((t) => {
+          const Icon = t.icon;
+          return (
+            <button
+              key={t.key}
+              type="button"
+              onClick={() => setTab(t.key)}
+              className={cn(
+                "flex items-center gap-1.5 rounded-[3px] px-4 py-1.5 text-[13px] font-semibold transition-colors",
+                tab === t.key ? "bg-info-soft text-info-text" : "text-text-3 hover:text-text",
+              )}
+            >
+              <Icon className="h-3.5 w-3.5" />
+              {t.label}
+            </button>
+          );
+        })}
       </div>
 
-      {tab === "posts" ? (
+      {/* ============================ ХИТЫ НИШИ ============================ */}
+      {tab === "hits" && (
+        <div className="mt-5">
+          {hitsLoading ? (
+            <div className="grid gap-3 lg:grid-cols-2">
+              {[0, 1, 2, 3].map((i) => <div key={i} className="skeleton h-40" />)}
+            </div>
+          ) : hitsError === "no_channel" ? (
+            <Card>
+              <EmptyState
+                icon={<Link2 className="h-6 w-6" />}
+                title="Сначала подключи канал"
+                body="Хиты ниши собираются по твоему каналу: разведка следит за конкурентами и находит посты, которые залетели сильнее их нормы."
+                action={
+                  <Link href="/app/settings">
+                    <Button variant="solid" size="sm">
+                      <Link2 className="h-4 w-4" />
+                      Подключить канал
+                    </Button>
+                  </Link>
+                }
+              />
+            </Card>
+          ) : hitsError ? (
+            <Card className="p-4">
+              <div className="flex items-center justify-between">
+                <p className="text-[14px] text-text">Не удалось загрузить хиты</p>
+                <Button
+                  variant="soft"
+                  size="sm"
+                  onClick={() => { setHitsError(null); setHitsLoading(true); loadHits().finally(() => setHitsLoading(false)); }}
+                >
+                  <RefreshCw className="h-4 w-4" />
+                  Повторить
+                </Button>
+              </div>
+            </Card>
+          ) : hits.length === 0 ? (
+            <Card>
+              <EmptyState
+                icon={<Flame className="h-6 w-6" />}
+                title="Пока не на чём учиться"
+                body="Добавь конкурентов в разведке — и я найду их посты, которые залетели сильнее обычного. Сюда они придут с цифрами: смотри, что работает, и снимай своё."
+                action={
+                  <Link href="/app/competitors">
+                    <Button variant="solid" size="sm">
+                      <Plus className="h-4 w-4" />
+                      Добавить конкурентов
+                    </Button>
+                  </Link>
+                }
+              />
+            </Card>
+          ) : (
+            <div className="grid gap-3 lg:grid-cols-2">
+              {hits.map((h) => {
+                const ratio = hitRatio(h);
+                const originalUrl = h.handle && h.tg_msg_id ? `https://t.me/${h.handle}/${h.tg_msg_id}` : null;
+                return (
+                  <Card key={h.id} className={cn("flex flex-col p-4", HOVER)}>
+                    <div className="flex items-center gap-2 text-[12px]">
+                      <p className="min-w-0 truncate font-semibold text-text">
+                        {h.source_title || (h.handle ? `@${h.handle}` : "Конкурент")}
+                      </p>
+                      <span className="shrink-0 text-text-3">{fmtAgo(h.posted_at)}</span>
+                      {originalUrl && (
+                        <a
+                          href={originalUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          title="Открыть оригинал"
+                          className="ml-auto shrink-0 rounded-xs p-1 text-text-3 transition-colors hover:bg-surface-inset hover:text-text"
+                        >
+                          <ExternalLink className="h-3.5 w-3.5" />
+                        </a>
+                      )}
+                    </div>
+                    <p className="mt-2 line-clamp-4 flex-1 text-[14px] leading-relaxed whitespace-pre-wrap text-text">
+                      {h.text}
+                    </p>
+                    <div className="mt-3 flex items-center gap-3 text-[12px] text-text-3">
+                      {h.views != null && (
+                        <span className="flex items-center gap-1">
+                          <Eye className="h-3.5 w-3.5" />
+                          {fmtNum(h.views)}
+                        </span>
+                      )}
+                      {h.reactions != null && h.reactions > 0 && (
+                        <span className="flex items-center gap-1">
+                          <Heart className="h-3.5 w-3.5" />
+                          {fmtNum(h.reactions)}
+                        </span>
+                      )}
+                      {ratio && <Badge tone="fire">×{ratio} выше нормы</Badge>}
+                      {h.media && h.media.includes("video") && <Badge tone="neutral">видео</Badge>}
+                    </div>
+                    <div className="mt-3 flex items-center gap-1.5 border-t border-line pt-3">
+                      <Button variant="soft" size="sm" onClick={() => openInComposer(h.text)}>
+                        В композер
+                      </Button>
+                      <Button variant="ghost" size="sm" onClick={() => copyText(h.text)} title="Скопировать">
+                        <Copy className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  </Card>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ============================ МОИ ПОСТЫ ============================ */}
+      {tab === "posts" && (
         <div className="mt-5 space-y-4">
           {/* Поиск */}
           <div className="relative">
@@ -224,20 +413,22 @@ function LibraryInner() {
 
           {/* Список */}
           {loading ? (
-            <div className="space-y-2">
-              {[0, 1, 2].map((i) => <div key={i} className="skeleton h-24" />)}
+            <div className="grid gap-3 lg:grid-cols-2">
+              {[0, 1].map((i) => <div key={i} className="skeleton h-24" />)}
             </div>
           ) : posts.length === 0 ? (
-            <EmptyState
-              icon={<Bookmark className="h-5 w-5" />}
-              title="Пока пусто"
-              body="Сохрани удачный пост — он будет здесь для повторного использования."
-            />
+            <Card>
+              <EmptyState
+                icon={<Bookmark className="h-5 w-5" />}
+                title="Пока пусто"
+                body="Сохрани удачный пост — он будет здесь для повторного использования."
+              />
+            </Card>
           ) : (
-            <div className="space-y-3">
+            <div className="grid gap-3 lg:grid-cols-2">
               {posts.map((p) => (
-                <Card key={p.id} className="p-4">
-                  <p className="line-clamp-4 text-[14px] leading-relaxed whitespace-pre-wrap text-text">
+                <Card key={p.id} className={cn("flex flex-col p-4", HOVER)}>
+                  <p className="line-clamp-4 flex-1 text-[14px] leading-relaxed whitespace-pre-wrap text-text">
                     {p.text}
                   </p>
                   {p.tags.length > 0 && (
@@ -247,14 +438,15 @@ function LibraryInner() {
                       ))}
                     </div>
                   )}
-                  <div className="mt-3 flex items-center gap-1.5">
+                  <div className="mt-3 flex items-center gap-1.5 border-t border-line pt-3">
                     <Button variant="soft" size="sm" onClick={() => openInComposer(p.text)}>
                       В композер
                     </Button>
-                    <Button variant="ghost" size="sm" onClick={() => copyText(p.text)}>
+                    <Button variant="ghost" size="sm" onClick={() => copyText(p.text)} title="Скопировать">
                       <Copy className="h-3.5 w-3.5" />
                     </Button>
-                    <Button variant="ghost" size="sm" onClick={() => deletePost(p.id)} className="ml-auto text-danger-text">
+                    <span className="ml-auto text-[12px] text-text-3">{fmtAgo(p.created_at)}</span>
+                    <Button variant="ghost" size="sm" onClick={() => deletePost(p.id)} className="text-danger-text" title="Удалить">
                       <Trash2 className="h-3.5 w-3.5" />
                     </Button>
                   </div>
@@ -263,7 +455,10 @@ function LibraryInner() {
             </div>
           )}
         </div>
-      ) : (
+      )}
+
+      {/* ============================= ХЭШТЕГИ ============================= */}
+      {tab === "tags" && (
         <div className="mt-5 space-y-4">
           {/* Форма нового набора */}
           <Card className="p-4">
@@ -289,22 +484,24 @@ function LibraryInner() {
 
           {/* Список наборов */}
           {loading ? (
-            <div className="space-y-2">
+            <div className="grid gap-3 lg:grid-cols-2">
               {[0, 1].map((i) => <div key={i} className="skeleton h-20" />)}
             </div>
           ) : sets.length === 0 ? (
-            <EmptyState
-              icon={<Hash className="h-5 w-5" />}
-              title="Наборов пока нет"
-              body="Создай набор хэштегов — вставляй в пост одним нажатием."
-            />
+            <Card>
+              <EmptyState
+                icon={<Hash className="h-5 w-5" />}
+                title="Наборов пока нет"
+                body="Создай набор хэштегов — вставляй в пост одним нажатием."
+              />
+            </Card>
           ) : (
-            <div className="space-y-3">
+            <div className="grid gap-3 lg:grid-cols-2">
               {sets.map((st) => (
-                <Card key={st.id} className="p-4">
+                <Card key={st.id} className={cn("p-4", HOVER)}>
                   <div className="flex items-center gap-2">
                     <p className="text-[15px] font-bold text-text">{st.name}</p>
-                    <Button variant="ghost" size="sm" onClick={() => deleteSet(st.id)} className="ml-auto text-danger-text">
+                    <Button variant="ghost" size="sm" onClick={() => deleteSet(st.id)} className="ml-auto text-danger-text" title="Удалить">
                       <Trash2 className="h-3.5 w-3.5" />
                     </Button>
                   </div>
@@ -331,7 +528,7 @@ function LibraryInner() {
 
 export default function LibraryPage() {
   return (
-    <AppShell title="Библиотека" subtitle="Сохранённые посты и наборы хэштегов.">
+    <AppShell title="Библиотека" subtitle="Залетевшие посты ниши для ориентира + твои заготовки.">
       <Suspense fallback={<div className="skeleton h-64" />}>
         <LibraryInner />
       </Suspense>

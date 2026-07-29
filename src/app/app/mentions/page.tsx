@@ -4,12 +4,14 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
-import { AtSign, ExternalLink, Link2, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { motion } from "motion/react";
+import { AtSign, ExternalLink, Link2, Plus, RefreshCw, X } from "lucide-react";
 
 import { AppShell } from "@/components/app/shell";
 import { Button } from "@/components/ui/button";
-import { Badge, Card, EmptyState, Input } from "@/components/ui/primitives";
+import { Badge, Card, EmptyState, Input, TelegramIcon, VkIcon } from "@/components/ui/primitives";
 import { useStore } from "@/lib/store";
+import { cn, fmtAgo } from "@/lib/utils";
 
 /* ------------------------------------------------------------------ ТИПЫ */
 
@@ -39,9 +41,38 @@ type MentionQuery = {
 
 type Channel = { id: number; title: string };
 
+/** Подсветка ключевого слова прямо в тексте — глаз цепляется за сигнал мгновенно. */
+function Highlight({ text, keyword }: { text: string; keyword: string }) {
+  const k = keyword.trim().toLowerCase();
+  if (!k) return <>{text}</>;
+  const lower = text.toLowerCase();
+  const out: React.ReactNode[] = [];
+  let i = 0;
+  let n = 0;
+  for (;;) {
+    const idx = lower.indexOf(k, i);
+    if (idx < 0) {
+      out.push(text.slice(i));
+      break;
+    }
+    if (idx > i) out.push(text.slice(i, idx));
+    out.push(
+      <mark key={n++} className="rounded-xs bg-info-soft px-0.5 text-info-text">
+        {text.slice(idx, idx + k.length)}
+      </mark>,
+    );
+    i = idx + k.length;
+  }
+  return <>{out}</>;
+}
+
 /* ----------------------------------------------------------------- ЭКРАН */
 
-function MentionsInner() {
+export function MentionsInner({
+  onStats,
+}: {
+  onStats?: (s: { mentions: Mention[]; queries: MentionQuery[] }) => void;
+}) {
   const s = useStore();
   const [mentions, setMentions] = useState<Mention[]>([]);
   const [queries, setQueries] = useState<MentionQuery[]>([]);
@@ -59,14 +90,17 @@ function MentionsInner() {
       const r = await fetch("/api/mentions", { cache: "no-store" });
       if (r.ok) {
         const d = await r.json();
-        setMentions(d.mentions ?? []);
-        setQueries(d.queries ?? []);
+        const ms: Mention[] = d.mentions ?? [];
+        const qs: MentionQuery[] = d.queries ?? [];
+        setMentions(ms);
+        setQueries(qs);
+        onStats?.({ mentions: ms, queries: qs });
         setLoadError(false);
       } else {
         setLoadError(true);
       }
     } catch { setLoadError(true); }
-  }, []);
+  }, [onStats]);
 
   const loadChannels = useCallback(async () => {
     try {
@@ -113,17 +147,14 @@ function MentionsInner() {
 
   const deleteQuery = async (id: number) => {
     await fetch(`/api/mentions/${id}`, { method: "DELETE" });
-    setQueries((prev) => prev.filter((q) => q.id !== id));
+    const next = queries.filter((q) => q.id !== id);
+    setQueries(next);
+    onStats?.({ mentions, queries: next });
     s.toast({ kind: "info", title: "Запрос удалён" });
   };
 
-  const fmtDate = (iso: string | null) => {
-    if (!iso) return "";
-    return new Date(iso).toLocaleString("ru-RU", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
-  };
-
   return (
-    <div className="mx-auto w-full max-w-3xl">
+    <div className="mx-auto w-full">
       {/* Ошибка загрузки */}
       {loadError && (
         <Card className="mt-5 p-4">
@@ -219,27 +250,41 @@ function MentionsInner() {
         </Card>
       )}
 
-      {/* Активные запросы */}
+      {/* Активные запросы — чипы со счётчиком пойманных упоминаний */}
       {queries.length > 0 && (
         <div className="mt-4">
           <p className="mb-2 text-[13px] font-semibold text-text-2">Активные запросы</p>
           <div className="flex flex-wrap gap-2">
-            {queries.map((q) => (
-              <span
-                key={q.id}
-                className="inline-flex items-center gap-1.5 rounded-sm border border-line bg-surface px-2.5 py-1 text-[13px] text-text"
-              >
-                <Badge tone={q.is_active ? "success" : "neutral"}>{q.keyword}</Badge>
-                <span className="text-[11px] text-text-3">{(q.networks || []).join(", ")}</span>
-                <button
-                  type="button"
-                  onClick={() => deleteQuery(q.id)}
-                  className="ml-1 text-text-3 hover:text-danger-text"
+            {queries.map((q) => {
+              const cnt = mentions.filter((m) => m.query_id === q.id).length;
+              return (
+                <span
+                  key={q.id}
+                  className={cn(
+                    "inline-flex items-center gap-2 rounded-full border border-line bg-surface py-1 pl-3 pr-1.5 text-[13px]",
+                    !q.is_active && "opacity-55",
+                  )}
                 >
-                  <Trash2 className="h-3 w-3" />
-                </button>
-              </span>
-            ))}
+                  <span className="font-semibold text-text">{q.keyword}</span>
+                  <span className="text-[11px] uppercase tracking-wide text-text-3">
+                    {(q.networks || []).join("·")}
+                  </span>
+                  {cnt > 0 && (
+                    <span className="rounded-full bg-surface-inset px-1.5 py-0.5 text-[11px] font-semibold text-text-2">
+                      {cnt}
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => deleteQuery(q.id)}
+                    aria-label={`Удалить запрос «${q.keyword}»`}
+                    className="flex h-5 w-5 items-center justify-center rounded-full text-text-3 transition-colors duration-200 hover:bg-danger-soft hover:text-danger-text"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </span>
+              );
+            })}
           </div>
         </div>
       )}
@@ -247,45 +292,69 @@ function MentionsInner() {
       {/* Лента упоминаний */}
       <div className="mt-6">
         <h2 className="text-[15px] font-bold text-text">Лента упоминаний</h2>
-        <div className="mt-3 space-y-3">
+        <div className="mt-3 grid gap-3 lg:grid-cols-2">
           {loading ? (
             [0, 1, 2].map((i) => <div key={i} className="skeleton h-24" />)
           ) : mentions.length === 0 ? (
-            <EmptyState
-              icon={<AtSign className="h-5 w-5" />}
-              title="Пока тихо"
-              body={queries.length === 0
-                ? "Добавь ключевое слово выше — и мы начнём искать упоминания в Telegram и VK каждый час."
-                : "Ищем по твоим запросам. Как только кто-то упомянет ключевое слово — упоминание появится здесь и придёт в бота."}
-            />
+            <div className="lg:col-span-2">
+              <EmptyState
+                icon={<AtSign className="h-5 w-5" />}
+                title="Пока тихо"
+                body={queries.length === 0
+                  ? "Добавь ключевое слово выше — и мы начнём искать упоминания в Telegram и VK каждый час."
+                  : "Ищем по твоим запросам. Как только кто-то упомянет ключевое слово — упоминание появится здесь и придёт в бота."}
+              />
+            </div>
           ) : (
-            mentions.map((m) => (
-              <Card key={m.id} className="p-4">
-                <div className="flex items-center gap-2 text-[12px] text-text-3">
-                  <Badge tone={m.network === "tg" ? "brand" : "fire"}>
-                    {m.network === "tg" ? "Telegram" : "VK"}
-                  </Badge>
-                  <span className="font-medium text-text-2">
-                    {m.source_title || m.source_handle || "—"}
-                  </span>
-                  <span>· «{m.keyword}»</span>
-                  <span>· {fmtDate(m.found_at)}</span>
-                </div>
-                <p className="mt-2 line-clamp-4 text-[14px] leading-relaxed whitespace-pre-wrap text-text">
-                  {m.text || "(без текста)"}
-                </p>
-                {m.post_url && (
-                  <a
-                    href={m.post_url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="mt-2 inline-flex items-center gap-1 text-[12px] text-info-text hover:underline"
-                  >
-                    <ExternalLink className="h-3 w-3" />
-                    Открыть пост
-                  </a>
-                )}
-              </Card>
+            mentions.map((m, i) => (
+              <motion.div
+                key={m.id}
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ type: "spring", bounce: 0.15, duration: 0.4, delay: Math.min(i, 6) * 0.06 }}
+              >
+                <Card className="p-4 transition-all duration-200 hover:border-line-strong hover:shadow-soft">
+                  <div className="flex items-start gap-3">
+                    {/* Плитка сети — официальный глиф в тоне источника */}
+                    <div
+                      className={cn(
+                        "flex h-9 w-9 shrink-0 items-center justify-center rounded-sm",
+                        m.network === "tg" ? "bg-info-soft text-info-text" : "bg-fire-soft text-fire-text",
+                      )}
+                    >
+                      {m.network === "tg" ? (
+                        <TelegramIcon className="h-4 w-4" />
+                      ) : (
+                        <VkIcon className="h-4 w-4" />
+                      )}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-text-3">
+                        <span className="font-semibold text-text-2">
+                          {m.source_title || m.source_handle || "—"}
+                        </span>
+                        <Badge tone="neutral">«{m.keyword}»</Badge>
+                        <span>{fmtAgo(m.found_at)}</span>
+                      </div>
+                      <p className="mt-1.5 line-clamp-4 text-[14px] leading-relaxed whitespace-pre-wrap text-text">
+                        {m.text ? <Highlight text={m.text} keyword={m.keyword} /> : "(без текста)"}
+                      </p>
+                    </div>
+                    {m.post_url && (
+                      <a
+                        href={m.post_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        aria-label="Открыть пост"
+                        title="Открыть пост"
+                        className="-mr-1 shrink-0 rounded-xs p-1 text-text-3 transition-colors duration-200 hover:bg-info-soft hover:text-info-text"
+                      >
+                        <ExternalLink className="h-4 w-4" />
+                      </a>
+                    )}
+                  </div>
+                </Card>
+              </motion.div>
             ))
           )}
         </div>

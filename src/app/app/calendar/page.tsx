@@ -312,7 +312,7 @@ function PostCard({
               className="pointer-events-auto mt-0.5 w-full"
             >
               <RotateCw className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />
-              Отправить снова
+              Ещё раз
             </Button>
           </>
         )}

@@ -1,6 +1,6 @@
 // Доменная модель платформы. Соответствует ТЗ v2.0 (разделы 5, Приложение А).
 
-export type Network = "tg" | "vk";
+export type Network = "tg" | "vk" | "youtube" | "instagram" | "x" | "tiktok" | "linkedin";
 
 export type PostStatus =
   | "draft" // черновик

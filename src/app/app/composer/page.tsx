@@ -75,10 +75,12 @@ import {
 
 /* ------------------------------------------------------------------ ХЕЛПЕРЫ */
 
-/** Лимиты сетей на текст сообщения. Предпросмотр TG честно режет до своего. */
+/** Лимиты сетей на текст сообщения. Предпросмотр TG честно режет до своего.
+ * Композитор пока умеет только в текстовые сети (tg/vk); у медиа-сетей (youtube/instagram/...)
+ * лимит другой, поэтому здесь Partial — не требуем ключи всех сетей. */
 const TG_LIMIT = 4096;
 const VK_LIMIT = 16384;
-const NETWORK_LIMIT: Record<Network, number> = { tg: TG_LIMIT, vk: VK_LIMIT };
+const NETWORK_LIMIT: Partial<Record<Network, number>> = { tg: TG_LIMIT, vk: VK_LIMIT };
 
 const NETWORK_ORDER: Network[] = ["tg", "vk"];
 
@@ -680,7 +682,9 @@ function ComposerInner() {
   const len = text.length;
   // Лимит считаем по выбранной сети: TG режет на 4096, VK терпит до 16384.
   // Если включены обе — ориентиром служит более строгий telegram-лимит.
-  const effLimit = c.networks.includes("tg") ? NETWORK_LIMIT.tg : NETWORK_LIMIT.vk;
+  const effLimit = c.networks.includes("tg")
+    ? NETWORK_LIMIT.tg ?? TG_LIMIT
+    : NETWORK_LIMIT.vk ?? VK_LIMIT;
   const over = len > effLimit;
   const tgOn = c.networks.includes("tg");
   const vkOn = c.networks.includes("vk");

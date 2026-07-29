@@ -126,7 +126,15 @@ export function atTime(day: Date, time: string) {
   return r;
 }
 
-export const NETWORK_LABEL: Record<string, string> = { tg: "Telegram", vk: "VK" };
+export const NETWORK_LABEL: Record<string, string> = {
+  tg: "Telegram",
+  vk: "VK",
+  youtube: "YouTube",
+  instagram: "Instagram",
+  x: "X (Twitter)",
+  tiktok: "TikTok",
+  linkedin: "LinkedIn",
+};
 
 /**
  * «ТехнологИИ Права» → «ТП». Односимвольные слова («и», «в») пропускаем — иначе

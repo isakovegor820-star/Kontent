@@ -1,15 +1,28 @@
 "use client";
 
-// RSS-ленты: добавление фидов, статус, пауза/возобновление, удаление.
+// RSS-ленты: добавление фидов, статус, пауза/возобновление, удаление + ЖУРНАЛ записей.
+// Журнал отвечает на вопрос «работает ли оно вообще?»: видно каждую запись из ленты
+// и её судьбу — пост создан (ссылка в календарь), пропущена по лимиту или в работе.
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
-import { Link2, Pause, Play, Plus, RefreshCw, Rss, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  ExternalLink,
+  Link2,
+  Newspaper,
+  Pause,
+  Play,
+  Plus,
+  RefreshCw,
+  Rss,
+  Trash2,
+} from "lucide-react";
 
 import { AppShell } from "@/components/app/shell";
 import { Button } from "@/components/ui/button";
 import { Badge, Card, EmptyState, Input } from "@/components/ui/primitives";
 import { useStore } from "@/lib/store";
+import { cn, fmtAgo } from "@/lib/utils";
 
 /* ------------------------------------------------------------------ ТИПЫ */
 
@@ -28,14 +41,32 @@ type Feed = {
 
 type Channel = { id: number; title: string };
 
+type RssItem = {
+  id: number;
+  title: string | null;
+  link: string | null;
+  published_at: string | null;
+  status: "new" | "posted" | "skipped";
+  post_id: number | null;
+  fetched_at: string;
+  feed_title: string | null;
+};
+
+// Карточки поднимаются при наведении — единый жест рабочих экранов.
+const HOVER =
+  "transition-[box-shadow,border-color] duration-200 hover:border-line-strong hover:shadow-soft";
+
 /* ----------------------------------------------------------------- ЭКРАН */
 
 function RssInner() {
   const s = useStore();
   const [feeds, setFeeds] = useState<Feed[]>([]);
   const [channels, setChannels] = useState<Channel[]>([]);
+  const [items, setItems] = useState<RssItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Форма добавления
   const [url, setUrl] = useState("");
@@ -57,6 +88,16 @@ function RssInner() {
     } catch { setLoadError(true); }
   }, []);
 
+  const loadItems = useCallback(async () => {
+    try {
+      const r = await fetch("/api/rss/items", { cache: "no-store" });
+      if (r.ok) {
+        const d = await r.json();
+        setItems(d.items ?? []);
+      }
+    } catch { /* журнал не критичен — молча оставляем старое */ }
+  }, []);
+
   const loadChannels = useCallback(async () => {
     try {
       const r = await fetch("/api/channels", { cache: "no-store" });
@@ -73,10 +114,23 @@ function RssInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const reload = useCallback(() => {
+    setLoadError(false);
+    setLoading(true);
+    Promise.all([load(), loadChannels(), loadItems()]).finally(() => setLoading(false));
+  }, [load, loadChannels, loadItems]);
+
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    Promise.all([load(), loadChannels()]).finally(() => setLoading(false));
-  }, [load, loadChannels]);
+    reload();
+  }, [reload]);
+
+  // Таймер отложенного обновления журнала чистим при размонтировании.
+  useEffect(() => {
+    return () => {
+      if (refreshTimer.current) clearTimeout(refreshTimer.current);
+    };
+  }, []);
 
   const addFeed = async () => {
     const trimmed = url.trim();
@@ -118,20 +172,38 @@ function RssInner() {
     s.toast({ kind: "info", title: "Лента удалена" });
   };
 
-  const fmtDate = (iso: string | null) => {
-    if (!iso) return "ещё не загружалась";
-    const d = new Date(iso);
-    return d.toLocaleString("ru-RU", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+  // «Проверить сейчас»: воркер собирает ленты вне очереди крона. Сбор занимает
+  // секунды — журнал перечитываем с задержкой, а не сразу.
+  const refreshNow = async () => {
+    setRefreshing(true);
+    try {
+      const r = await fetch("/api/rss/refresh", { method: "POST" });
+      if (r.ok) {
+        s.toast({ kind: "info", title: "Проверяю ленты — записи появятся через минуту" });
+        refreshTimer.current = setTimeout(() => loadItems(), 20_000);
+      } else {
+        s.toast({ kind: "danger", title: "Не удалось запустить проверку" });
+      }
+    } catch {
+      s.toast({ kind: "danger", title: "Сетевая ошибка" });
+    }
+    setRefreshing(false);
+  };
+
+  const statusBadge = (it: RssItem) => {
+    if (it.status === "posted") return <Badge tone="success">Пост создан</Badge>;
+    if (it.status === "skipped") return <Badge tone="neutral">Пропущено: лимит</Badge>;
+    return <Badge tone="brand">В работе</Badge>;
   };
 
   return (
-    <div className="mx-auto w-full max-w-3xl">
+    <div className="mx-auto w-full">
       {/* Ошибка загрузки */}
       {loadError && (
         <Card className="mt-5 p-4">
           <div className="flex items-center justify-between">
             <p className="text-[14px] text-text">Не удалось загрузить данные</p>
-            <Button variant="soft" size="sm" onClick={() => { setLoadError(false); setLoading(true); Promise.all([load(), loadChannels()]).finally(() => setLoading(false)); }}>
+            <Button variant="soft" size="sm" onClick={reload}>
               <RefreshCw className="h-4 w-4" />
               Повторить
             </Button>
@@ -204,24 +276,32 @@ function RssInner() {
             Добавить
           </Button>
         </div>
-        <p className="mt-2 text-[12px] text-text-3">
-          Посты появятся автоматически — проверка каждые 30 минут.
-        </p>
+        <div className="mt-3 flex flex-wrap items-center gap-3 border-t border-line pt-3">
+          <p className="text-[12px] text-text-3">
+            Посты появятся автоматически — проверка каждые 30 минут.
+          </p>
+          <Button variant="soft" size="sm" onClick={refreshNow} loading={refreshing} className="ml-auto">
+            <RefreshCw className="h-3.5 w-3.5" />
+            Проверить сейчас
+          </Button>
+        </div>
       </Card>
 
       {/* Список фидов */}
-      <div className="mt-5 space-y-3">
+      <div className="mt-5 grid gap-3 lg:grid-cols-2">
         {loading ? (
           [0, 1].map((i) => <div key={i} className="skeleton h-24" />)
         ) : feeds.length === 0 ? (
-          <EmptyState
-            icon={<Rss className="h-5 w-5" />}
-            title="Лент пока нет"
-            body="Добавь RSS или Atom-ленту — воркер будет парсить новые записи и создавать посты."
-          />
+          <Card className="lg:col-span-2">
+            <EmptyState
+              icon={<Rss className="h-5 w-5" />}
+              title="Лент пока нет"
+              body="Добавь RSS или Atom-ленту — воркер будет парсить новые записи и создавать посты."
+            />
+          </Card>
         ) : (
           feeds.map((f) => (
-            <Card key={f.id} className="p-4">
+            <Card key={f.id} className={cn("p-4", HOVER)}>
               <div className="flex items-start gap-3">
                 <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-sm bg-info-soft">
                   <Rss className="h-4 w-4 text-info-text" />
@@ -238,7 +318,7 @@ function RssInner() {
                     {f.channel_title && <Badge tone="neutral">→ {f.channel_title}</Badge>}
                     {f.ai_summarize && <Badge tone="brand">ИИ</Badge>}
                     <span>макс {f.max_per_day}/день</span>
-                    <span>· {fmtDate(f.last_fetched_at)}</span>
+                    <span>· {f.last_fetched_at ? fmtAgo(f.last_fetched_at) : "ещё не загружалась"}</span>
                   </div>
                 </div>
                 <div className="flex items-center gap-1">
@@ -249,6 +329,80 @@ function RssInner() {
                     <Trash2 className="h-3.5 w-3.5" />
                   </Button>
                 </div>
+              </div>
+            </Card>
+          ))
+        )}
+      </div>
+
+      {/* Журнал записей: что пришло из лент и что с этим стало */}
+      <div className="mt-8 flex items-center gap-2.5">
+        <div className="flex h-8 w-8 items-center justify-center rounded-sm bg-info-soft">
+          <Newspaper className="h-4 w-4 text-info-text" />
+        </div>
+        <div>
+          <h2 className="text-[15px] font-bold text-text">Журнал</h2>
+          <p className="text-[13px] text-text-3">Что пришло из лент и что с этим стало.</p>
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-3 lg:grid-cols-2">
+        {loading ? (
+          [0, 1].map((i) => <div key={i} className="skeleton h-20" />)
+        ) : items.length === 0 ? (
+          <Card className="lg:col-span-2">
+            <EmptyState
+              icon={<Newspaper className="h-5 w-5" />}
+              title="Пока ничего не приходило"
+              body="Как только в лентах появятся новые записи, они будут здесь — со статусом и ссылкой на созданный пост."
+            />
+          </Card>
+        ) : (
+          items.map((it) => (
+            <Card key={it.id} className={cn("flex flex-col p-4", HOVER)}>
+              <div className="flex items-start gap-2">
+                <div className="min-w-0 flex-1">
+                  {it.link ? (
+                    <a
+                      href={it.link}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="line-clamp-2 text-[14px] font-semibold text-text underline-offset-4 hover:underline"
+                    >
+                      {it.title || it.link}
+                    </a>
+                  ) : (
+                    <p className="line-clamp-2 text-[14px] font-semibold text-text">
+                      {it.title || "Без заголовка"}
+                    </p>
+                  )}
+                  <p className="mt-1 text-[12px] text-text-3">
+                    {it.feed_title && <span className="font-semibold text-text-2">{it.feed_title} · </span>}
+                    {fmtAgo(it.published_at ?? it.fetched_at)}
+                  </p>
+                </div>
+                {it.link && (
+                  <a
+                    href={it.link}
+                    target="_blank"
+                    rel="noreferrer"
+                    title="Открыть запись"
+                    className="shrink-0 rounded-xs p-1 text-text-3 transition-colors hover:bg-surface-inset hover:text-text"
+                  >
+                    <ExternalLink className="h-3.5 w-3.5" />
+                  </a>
+                )}
+              </div>
+              <div className="mt-3 flex items-center gap-2 border-t border-line pt-3">
+                {statusBadge(it)}
+                {it.status === "posted" && it.post_id && (
+                  <Link
+                    href="/app/calendar"
+                    className="rounded-xs text-[12px] font-semibold text-text-3 underline-offset-4 transition-colors hover:text-text hover:underline"
+                  >
+                    В календарь →
+                  </Link>
+                )}
               </div>
             </Card>
           ))

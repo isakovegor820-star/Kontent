@@ -11,6 +11,7 @@ import { Eye, Loader2, Plus, Radar, Sparkles, Trash2, TriangleAlert, Users } fro
 
 import { AppShell } from "@/components/app/shell";
 import { ChannelPicker, useChannelChoice } from "@/components/app/channel-picker";
+import { ReconTabs } from "@/components/app/recon-tabs";
 import { Button } from "@/components/ui/button";
 import { Badge, Card, EmptyState, Field, GlassCard, Input, TelegramIcon } from "@/components/ui/primitives";
 import { useStore } from "@/lib/store";
@@ -465,6 +466,9 @@ export default function CompetitorsPage() {
         </Button>
       }
     >
+      {/* Единый таб-бар «Разведки»: Сигналы / Конкуренты / Тренды */}
+      <ReconTabs />
+
       {/* У каждого канала свои соседи: селектор говорит, про чью нишу сейчас речь */}
       <ChannelPicker
         channels={tgChannels}

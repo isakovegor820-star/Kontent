@@ -17,7 +17,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
   Bot,
@@ -45,13 +45,18 @@ import {
   EmptyState,
   Field,
   Input,
+  InstagramIcon,
+  LinkedInIcon,
   TelegramIcon,
   Textarea,
+  TikTokIcon,
   Toggle,
   VkIcon,
+  XIcon,
+  YouTubeIcon,
 } from "@/components/ui/primitives";
 import { useStore } from "@/lib/store";
-import type { Channel, Settings as SettingsData } from "@/lib/types";
+import type { Channel, Network, Settings as SettingsData } from "@/lib/types";
 import { NETWORK_LABEL, cn, fmtCompact, fmtNum, plural } from "@/lib/utils";
 
 const EASE = [0.22, 1, 0.36, 1] as const;
@@ -284,6 +289,9 @@ function ChannelsSection({ index }: { index: number }) {
       {/* Настоящее подключение VK-сообщества (аналог TG bot-link): ключ доступа сообщества. */}
       <VkConnect />
 
+      {/* Зарубежные сети (YouTube, Instagram, ...) — подключение в один клик через OAuth. */}
+      <OAuthNetworks />
+
       {/* ТЗ 9: токены — только зашифрованными; никаких публикаций без ведома пользователя */}
       <p className="mt-5 flex items-start gap-2 text-[13px] leading-relaxed text-text-3">
         <Lock className="mt-0.5 h-4 w-4 shrink-0" strokeWidth={1.75} aria-hidden />
@@ -400,6 +408,111 @@ function VkConnect() {
           {error}
         </p>
       )}
+    </div>
+  );
+}
+
+/* -------------------------------------------- 1в. ЗАРУБЕЖНЫЕ СЕТИ (OAuth) */
+
+/** Человекочитаемая причина сбоя подключения (пришли из колбэка в ?oauth=...). */
+function oauthMessage(code: string, label: string): string {
+  switch (code) {
+    case "denied":
+      return `Ты отменил вход на экране согласия ${label}. Попробуй ещё раз.`;
+    case "not_configured":
+      return `${label} пока не настроен на сервере. Напиши в поддержку.`;
+    case "no_account":
+      return `Не нашли подходящий аккаунт ${label}. Проверь, что входишь в нужный аккаунт.`;
+    case "taken":
+      return `Этот канал ${label} уже подключён к другому аккаунту Авроры.`;
+    case "expired":
+    case "state_mismatch":
+      return "Сессия подключения истекла. Нажми «Подключить» ещё раз.";
+    case "unauthorized":
+      return "Сессия истекла — зайди заново.";
+    default:
+      return "Что-то пошло не так. Попробуй ещё раз.";
+  }
+}
+
+
+/**
+ * Подключение YouTube / Instagram / ... в один клик. В отличие от VK (ручной ключ),
+ * здесь человек жмёт «Подключить» → экран согласия провайдера (Google/Meta) → редирект
+ * обратно → канал уже в списке. «Перешёл по ссылке и всё работает»: никаких токенов руками.
+ *
+ * Сети со статусом «soon» (X/TikTok/LinkedIn) — заглушки: X на бесплатном тарифе публиковать
+ * нельзя (с февр. 2026 бесплатный тариф закрыт), TikTok/LinkedIn — волна 2.
+ */
+
+const OAUTH_NETWORKS: {
+  id: Network;
+  label: string;
+  hint: string;
+  status: "oauth" | "soon";
+  Glyph: (p: { className?: string }) => React.JSX.Element;
+}[] = [
+  { id: "youtube", label: "YouTube", hint: "Видео и Shorts", status: "oauth", Glyph: YouTubeIcon },
+  { id: "instagram", label: "Instagram", hint: "Посты и Reels", status: "oauth", Glyph: InstagramIcon },
+  { id: "x", label: "X (Twitter)", hint: "Скоро", status: "soon", Glyph: XIcon },
+  { id: "tiktok", label: "TikTok", hint: "Скоро", status: "soon", Glyph: TikTokIcon },
+  { id: "linkedin", label: "LinkedIn", hint: "Скоро", status: "soon", Glyph: LinkedInIcon },
+];
+
+function OAuthNetworks() {
+  const s = useStore();
+  // Уже подключённые OAuth-сети берём из реальных каналов (не из демо-стора).
+  const connected = new Set(
+    s.realChannels.filter((c) => c.is_active).map((c) => c.network),
+  );
+
+  return (
+    <div className="mt-4 rounded-md bg-surface-inset p-4">
+      <p className="text-[15px] font-semibold text-text">Зарубежные сети</p>
+      <p className="mt-1.5 text-[14px] leading-relaxed text-text-2">
+        Подключение в один клик — жми «Подключить», входи в свой аккаунт, и канал уже здесь.
+      </p>
+      <ul className="mt-3 grid gap-2 sm:grid-cols-2">
+        {OAUTH_NETWORKS.map(({ id, label, hint, status, Glyph }) => {
+          const isConnected = connected.has(id);
+          return (
+            <li
+              key={id}
+              className="flex items-center gap-3 rounded-sm border border-line bg-surface px-3 py-2.5"
+            >
+              <span
+                aria-hidden
+                className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-surface-inset text-brand"
+              >
+                <Glyph className="h-[18px] w-[18px]" />
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-[14px] font-semibold text-text">{label}</p>
+                <p className="truncate text-[12px] text-text-3">{hint}</p>
+              </div>
+              {status === "soon" ? (
+                <Badge tone="neutral">Скоро</Badge>
+              ) : isConnected ? (
+                <Badge tone="success">
+                  <Check className="h-3.5 w-3.5" strokeWidth={3} aria-hidden />
+                  Подключено
+                </Badge>
+              ) : (
+                // Полная навигация (не SPA): уходим на экран согласия провайдера и обратно.
+                <a
+                  href={`/api/channels/oauth/start?network=${id}`}
+                  className={cn(
+                    "inline-flex shrink-0 items-center rounded-sm border border-line-strong",
+                    "px-3 py-1.5 text-[13px] font-semibold text-text transition-colors hover:bg-surface-2",
+                  )}
+                >
+                  Подключить
+                </a>
+              )}
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }
@@ -938,7 +1051,6 @@ function DangerSection({ index }: { index: number }) {
       icon={TriangleAlert}
       index={index}
       danger
-      className="mt-12"
       title="Опасная зона"
       description="Два действия, которые нельзя отменить кнопкой «назад»."
     >
@@ -1009,22 +1121,26 @@ function DangerSection({ index }: { index: number }) {
 // Пока состояние поднимается из localStorage — форма экрана, а не пустота (ТЗ 7.4)
 
 function SettingsSkeleton() {
-  return (
-    <div className="mx-auto max-w-3xl space-y-8" role="status" aria-busy="true">
-      <span className="sr-only">Открываем настройки</span>
-      {[0, 1, 2, 3].map((i) => (
-        <div key={i} className="card-plain rounded-md p-6" aria-hidden>
-          <div className="flex gap-3.5">
-            <div className="skeleton h-10 w-10 rounded-sm" />
-            <div className="flex-1 space-y-2">
-              <div className="skeleton h-5 w-44" />
-              <div className="skeleton h-4 w-3/4" />
-            </div>
-          </div>
-          <div className="skeleton mt-7 h-12 w-full rounded-sm" />
-          <div className="skeleton mt-3 h-12 w-full rounded-sm" />
+  // Повторяет боевую раскладку (две колонки), чтобы при гидрации не было скачка.
+  const card = (key: number) => (
+    <div key={key} className="card-plain rounded-md p-6" aria-hidden>
+      <div className="flex gap-3.5">
+        <div className="skeleton h-10 w-10 rounded-sm" />
+        <div className="flex-1 space-y-2">
+          <div className="skeleton h-5 w-44" />
+          <div className="skeleton h-4 w-3/4" />
         </div>
-      ))}
+      </div>
+      <div className="skeleton mt-7 h-12 w-full rounded-sm" />
+      <div className="skeleton mt-3 h-12 w-full rounded-sm" />
+    </div>
+  );
+
+  return (
+    <div className="grid items-start gap-5 lg:grid-cols-2" role="status" aria-busy="true">
+      <span className="sr-only">Открываем настройки</span>
+      <div className="flex flex-col gap-5">{[0, 1, 2].map(card)}</div>
+      <div className="flex flex-col gap-5">{[3, 4, 5].map(card)}</div>
     </div>
   );
 }
@@ -1033,6 +1149,38 @@ function SettingsSkeleton() {
 
 export default function SettingsPage() {
   const s = useStore();
+  // Стабильные ссылки из стора: toast/refreshReal — useCallback([]), ready — примитив.
+  // В зависимость эффекта берём ИХ, а не весь объект s: идентичность s меняется на
+  // каждый тост (стор мемоизирован с toasts), и эффект с s в deps уходил в бесконечный
+  // цикл «тост → новый s → эффект → тост» (Maximum update depth exceeded).
+  const { ready, toast, refreshReal } = s;
+  const router = useRouter();
+  const searchParams = useSearchParams();
+
+  // Возврат из OAuth-редиректа: показываем итог подключения и чистим URL.
+  useEffect(() => {
+    if (!ready) return;
+    const connected = searchParams.get("connected");
+    const oauthErr = searchParams.get("oauth");
+    if (!connected && !oauthErr) return;
+
+    if (connected) {
+      refreshReal();
+      toast({
+        kind: "success",
+        title: `${NETWORK_LABEL[connected ?? ""] ?? connected} подключён`,
+        body: "Канал в списке — теперь сюда можно публиковать.",
+      });
+    } else {
+      const network = searchParams.get("network") || "";
+      const label = NETWORK_LABEL[network] ?? network;
+      const msg = oauthMessage(oauthErr ?? "", label);
+      toast({ kind: "danger", title: "Не получилось подключить", body: msg });
+    }
+    // URL без параметров, чтобы тост не всплыл повторно при обновлении страницы.
+    // После очистки searchParams эффект перезапустится и молча выйдет (нет параметров).
+    router.replace("/app/settings", { scroll: false });
+  }, [searchParams, ready, toast, refreshReal, router]);
 
   return (
     <AppShell
@@ -1042,16 +1190,28 @@ export default function SettingsPage() {
       {!s.ready ? (
         <SettingsSkeleton />
       ) : (
-        <div className="mx-auto max-w-3xl space-y-8">
-          <ChannelsSection index={0} />
-          <BotSection index={1} />
-          <AutopilotSection index={2} />
-          <QuietSection index={3} />
-          <ModeSection index={4} />
-          <AiSection index={5} />
-          <DangerSection index={6} />
+        <div className="grid items-start gap-5 lg:grid-cols-2">
+          {/* Левая колонка — аккаунт и подключения. Подборка сбалансирована по высоте
+              с правой, чтобы под колонками не зияли пустые дыры. */}
+          <div className="flex flex-col gap-5">
+            <ChannelsSection index={0} />
+            <BotSection index={1} />
+            <ModeSection index={2} />
+          </div>
 
-          <p className="pt-2 pb-2 text-center text-[13px] text-text-3">
+          {/* Правая колонка — как работает автоматизация и каким голосом пишет ИИ. */}
+          <div className="flex flex-col gap-5">
+            <AutopilotSection index={3} />
+            <QuietSection index={4} />
+            <AiSection index={5} />
+          </div>
+
+          {/* Опасная зона — осознанно отдельно и во всю ширину. */}
+          <div className="lg:col-span-2">
+            <DangerSection index={6} />
+          </div>
+
+          <p className="pt-2 pb-2 text-center text-[13px] text-text-3 lg:col-span-2">
             Изменения сохраняются сразу — отдельной кнопки «Сохранить» здесь нет.
           </p>
         </div>

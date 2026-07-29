@@ -26,6 +26,7 @@ import {
 } from "lucide-react";
 import { AppShell } from "@/components/app/shell";
 import { ChannelPicker, useChannelChoice } from "@/components/app/channel-picker";
+import { ReconTabs } from "@/components/app/recon-tabs";
 import { Button } from "@/components/ui/button";
 import { Badge, Card, EmptyState, Tabs } from "@/components/ui/primitives";
 import { useStore } from "@/lib/store";
@@ -570,6 +571,11 @@ export default function TrendsPage() {
           : "Что зашло у конкурентов сильнее их нормы — и как снять это себе."
       }
     >
+      {/* Единый таб-бар «Разведки»: Сигналы / Конкуренты / Тренды */}
+      <div className="mb-5">
+        <ReconTabs />
+      </div>
+
       <Tabs
         items={[
           { value: "niche", label: "Моя ниша" },

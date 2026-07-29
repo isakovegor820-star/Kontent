@@ -44,6 +44,8 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
       ref={ref}
       disabled={disabled || loading}
       aria-busy={loading || undefined}
+      // Хук для скоуп-скинов (app-v3 перекрашивает варианты, не трогая лендинг)
+      data-variant={variant}
       className={cn(
         "relative inline-flex cursor-pointer items-center justify-center font-semibold whitespace-nowrap",
         "transition-[transform,filter,background-color,box-shadow,opacity] duration-200 ease-[var(--ease-soft)]",

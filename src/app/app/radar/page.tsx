@@ -4,13 +4,14 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
-import { Bell, Link2, Plus, Radar, RefreshCw, Search, Trash2 } from "lucide-react";
+import { motion } from "motion/react";
+import { Bell, Eye, Heart, Link2, Plus, Radar, RefreshCw, Search, X } from "lucide-react";
 
 import { AppShell } from "@/components/app/shell";
 import { Button } from "@/components/ui/button";
 import { Badge, Card, EmptyState, Input } from "@/components/ui/primitives";
 import { useStore } from "@/lib/store";
-import { fmtNum } from "@/lib/utils";
+import { cn, fmtAgo, fmtNum } from "@/lib/utils";
 
 /* ------------------------------------------------------------------ ТИПЫ */
 
@@ -40,7 +41,11 @@ type Channel = { id: number; title: string };
 
 /* ----------------------------------------------------------------- ЭКРАН */
 
-function RadarInner() {
+export function RadarInner({
+  onStats,
+}: {
+  onStats?: (s: { alerts: Alert[] }) => void;
+}) {
   const s = useStore();
   const [q, setQ] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
@@ -60,13 +65,15 @@ function RadarInner() {
       const r = await fetch("/api/radar/alerts", { cache: "no-store" });
       if (r.ok) {
         const d = await r.json();
-        setAlerts(d.alerts ?? []);
+        const as: Alert[] = d.alerts ?? [];
+        setAlerts(as);
+        onStats?.({ alerts: as });
         setLoadError(false);
       } else {
         setLoadError(true);
       }
     } catch { setLoadError(true); }
-  }, []);
+  }, [onStats]);
 
   const loadChannels = useCallback(async () => {
     try {
@@ -138,16 +145,13 @@ function RadarInner() {
 
   const deleteAlert = async (id: number) => {
     await fetch(`/api/radar/alerts?id=${id}`, { method: "DELETE" });
-    setAlerts((prev) => prev.filter((a) => a.id !== id));
-  };
-
-  const fmtDate = (iso: string | null) => {
-    if (!iso) return "";
-    return new Date(iso).toLocaleDateString("ru-RU", { day: "numeric", month: "short" });
+    const next = alerts.filter((a) => a.id !== id);
+    setAlerts(next);
+    onStats?.({ alerts: next });
   };
 
   return (
-    <div className="mx-auto w-full max-w-3xl">
+    <div className="mx-auto w-full">
       {/* Ошибка загрузки */}
       {loadError && (
         <Card className="mt-5 p-4">
@@ -201,37 +205,56 @@ function RadarInner() {
 
       {/* Результаты поиска */}
       {searched && (
-        <div className="mt-4 space-y-3">
+        <div className="mt-4 grid gap-3 lg:grid-cols-2">
           {searching ? (
             [0, 1, 2].map((i) => <div key={i} className="skeleton h-24" />)
           ) : results.length === 0 ? (
-            <EmptyState
-              icon={<Search className="h-5 w-5" />}
-              title="Ничего не найдено"
-              body="Попробуй другой запрос — поиск полнотекстовый, по русскому языку."
-            />
+            <div className="lg:col-span-2">
+              <EmptyState
+                icon={<Search className="h-5 w-5" />}
+                title="Ничего не найдено"
+                body="Попробуй другой запрос — поиск полнотекстовый, по русскому языку."
+              />
+            </div>
           ) : (
-            results.map((r) => (
-              <Card key={`${r.origin}-${r.id}`} className="p-4">
-                <div className="flex items-center gap-2 text-[12px] text-text-3">
-                  <Badge tone={r.origin === "competitor" ? "brand" : "fire"}>
-                    {r.origin === "competitor" ? "Конкурент" : "Тренд"}
-                  </Badge>
-                  <span className="font-medium text-text-2">
-                    {r.source_title || (r.source_handle ? `@${r.source_handle}` : "—")}
-                  </span>
-                  {r.posted_at && <span>· {fmtDate(r.posted_at)}</span>}
-                </div>
-                <p className="mt-2 line-clamp-4 text-[14px] leading-relaxed whitespace-pre-wrap text-text">
-                  {r.text || "(без текста)"}
-                </p>
-                {(r.views != null || r.reactions != null) && (
-                  <div className="mt-2 flex gap-3 text-[12px] text-text-3">
-                    {r.views != null && <span>👁 {fmtNum(r.views)}</span>}
-                    {r.reactions != null && <span>❤️ {fmtNum(r.reactions)}</span>}
+            results.map((r, i) => (
+              <motion.div
+                key={`${r.origin}-${r.id}`}
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ type: "spring", bounce: 0.15, duration: 0.4, delay: Math.min(i, 6) * 0.06 }}
+              >
+                <Card className="p-4 transition-all duration-200 hover:border-line-strong hover:shadow-soft">
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-text-3">
+                    <Badge tone={r.origin === "competitor" ? "brand" : "fire"}>
+                      {r.origin === "competitor" ? "Конкурент" : "Тренд"}
+                    </Badge>
+                    <span className="font-semibold text-text-2">
+                      {r.source_title || (r.source_handle ? `@${r.source_handle}` : "—")}
+                    </span>
+                    {r.posted_at && <span>{fmtAgo(r.posted_at)}</span>}
                   </div>
-                )}
-              </Card>
+                  <p className="mt-1.5 line-clamp-4 text-[14px] leading-relaxed whitespace-pre-wrap text-text">
+                    {r.text || "(без текста)"}
+                  </p>
+                  {(r.views != null || r.reactions != null) && (
+                    <div className="mt-2 flex items-center gap-3 text-[12px] text-text-3">
+                      {r.views != null && (
+                        <span className="inline-flex items-center gap-1">
+                          <Eye className="h-3.5 w-3.5" aria-hidden />
+                          {fmtNum(r.views)}
+                        </span>
+                      )}
+                      {r.reactions != null && (
+                        <span className="inline-flex items-center gap-1">
+                          <Heart className="h-3.5 w-3.5" aria-hidden />
+                          {fmtNum(r.reactions)}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </Card>
+              </motion.div>
             ))
           )}
         </div>
@@ -272,23 +295,31 @@ function RadarInner() {
           </div>
         </Card>
 
-        <div className="mt-3 space-y-2">
+        <div className="mt-3 flex flex-wrap gap-2">
           {alerts.map((a) => (
-            <Card key={a.id} className="flex items-center gap-3 p-3">
-              <div className="min-w-0 flex-1">
-                <p className="text-[14px] font-semibold text-text">{a.keyword}</p>
-                <p className="text-[12px] text-text-3">
-                  {a.channel_title ?? "—"} · совпадений: {a.matches_count}
-                  {a.last_notified_at && ` · посл. ${fmtDate(a.last_notified_at)}`}
-                </p>
-              </div>
-              <Badge tone={a.is_active ? "success" : "neutral"}>
-                {a.is_active ? "Активен" : "Выкл"}
-              </Badge>
-              <Button variant="ghost" size="sm" onClick={() => deleteAlert(a.id)} className="text-danger-text">
-                <Trash2 className="h-3.5 w-3.5" />
-              </Button>
-            </Card>
+            <span
+              key={a.id}
+              className={cn(
+                "inline-flex items-center gap-2 rounded-full border border-line bg-surface py-1 pl-3 pr-1.5 text-[13px]",
+                !a.is_active && "opacity-55",
+              )}
+            >
+              <span className="font-semibold text-text">{a.keyword}</span>
+              <span className="text-[11px] text-text-3">{a.channel_title ?? "—"}</span>
+              {a.matches_count > 0 && (
+                <span className="rounded-full bg-surface-inset px-1.5 py-0.5 text-[11px] font-semibold text-text-2">
+                  {a.matches_count}
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={() => deleteAlert(a.id)}
+                aria-label={`Удалить алерт «${a.keyword}»`}
+                className="flex h-5 w-5 items-center justify-center rounded-full text-text-3 transition-colors duration-200 hover:bg-danger-soft hover:text-danger-text"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </span>
           ))}
         </div>
       </div>

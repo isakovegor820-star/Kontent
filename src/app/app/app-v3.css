@@ -1,0 +1,330 @@
+/* ==========================================================================
+   APP-V3 — НЕОБРУТАЛИЗМ ВНУТРИ ПЛАТФОРМЫ
+   Тот же мир, что у лендинга /v3: кремовая бумага, чернильные рамки,
+   жёсткие тени без размытия, один сигнальный жёлтый. Никакого фиолета,
+   стекла, градиентов и космической тьмы.
+
+   Работает двумя слоями:
+   1) «мост» — переопределяет семантические токены Aurora Glass под .app-v3,
+      поэтому все Tailwind-классы рабочих экранов перекрашиваются сами;
+   2) точечные перезаписи shared-примитивов (карточки, кнопки, поля, свитчи)
+      — непослойные правила, поэтому выигрывают у layered-утилит Tailwind.
+
+   Старый лендинг живёт вне скоупа и не затрагивается.
+   ========================================================================== */
+
+.app-v3 {
+  /* --- примитивы мира v3: их читают классы .v3-* из v3.css --- */
+  --paper: #f4f0ea;
+  --sheet: #fffdf6;
+  --ink: #0a0a0a;
+  --ink-2: #55524b;
+  --acc: #ffd021;
+  --acc-deep: #f0be00;
+  --red: #e0451f;
+  --red-soft: #fbdfd4;
+  --green: #2e7d4f;
+  --green-soft: #d9ebdd;
+
+  /* --- мост токенов Aurora Glass --- */
+  --bg: var(--paper);
+  --bg-section: #ede8dc;
+  --surface: var(--sheet);
+  --surface-2: #f6f1e6;
+  --surface-inset: #eae3d2;
+
+  --text: var(--ink);
+  --text-2: #45413a;
+  --text-3: #6f6959;
+
+  --border: var(--ink);
+  --border-strong: var(--ink);
+
+  /* «бренд» больше не индиго: акцент = чернила, действие = жёлтый */
+  --brand-1: var(--ink);
+  --brand-2: var(--ink);
+  --brand-3: var(--ink-2);
+  /* bg-brand-gradient теперь просто плоский жёлтый — для клавиш и прогресса */
+  --gradient-brand: linear-gradient(135deg, #ffd021 0%, #ffd021 100%);
+
+  --success: #2e7d4f;
+  --success-soft: #d9ebdd;
+  --success-text: #1f5c39;
+  --danger: #e0451f;
+  --danger-soft: #fbdfd4;
+  --danger-text: #a8320f;
+  /* залёт — тёплый янтарь на бумаге, не кричащий оранжевый */
+  --fire: #b25e09;
+  --fire-soft: #fceac9;
+  --fire-text: #8a4a06;
+  /* info-пара — «фирменные» чипы и активные состояния: жёлтый лист */
+  --info: var(--ink);
+  --info-soft: #ffd021;
+  --info-text: var(--ink);
+
+  /* жёсткие отступные тени вместо мягких */
+  --shadow-xs: 1px 1px 0 var(--ink);
+  --shadow-sm: 2px 2px 0 var(--ink);
+  --shadow-md: 4px 4px 0 var(--ink);
+  --shadow-lg: 6px 6px 0 var(--ink);
+  --shadow-brand: 4px 4px 0 var(--ink);
+  --shadow-brand-lg: 6px 6px 0 var(--ink);
+
+  /* прямее углы — наследие пульта */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 10px;
+  --radius-2xl: 12px;
+
+  --grid-line: rgb(10 10 10 / 0.07);
+
+  background: var(--paper);
+  color: var(--ink);
+}
+
+.app-v3 ::selection {
+  background: var(--acc);
+  color: var(--ink);
+}
+
+/* Фокус жёсткий и видимый — как на лендинге */
+.app-v3 :focus-visible {
+  outline: 3px solid var(--ink);
+  outline-offset: 2px;
+}
+
+/* ---------- shared-поверхности → листы с чернильной рамкой ---------- */
+
+/* Карточка — статичный лист: рамка есть, тени нет (тень = нажимаемое) */
+.app-v3 .card-plain {
+  background: var(--sheet);
+  border: 2px solid var(--ink);
+  box-shadow: none;
+}
+
+/* «Стекло» (всплывающие слои, тосты, панели) → лист с жёсткой тенью */
+.app-v3 .glass,
+.app-v3 .glass-strong {
+  background: var(--sheet);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  border: 2px solid var(--ink);
+  box-shadow: 6px 6px 0 var(--ink);
+}
+
+/* Градиентный текст больше не существует — только чернила */
+.app-v3 .text-gradient {
+  background-image: none;
+  color: var(--ink);
+  -webkit-text-fill-color: var(--ink);
+}
+
+.app-v3 .skeleton {
+  background: var(--surface-inset);
+  border: 1.5px solid rgb(10 10 10 / 0.14);
+  border-radius: 4px;
+}
+
+/* ---------- кнопки-клавиши (shared Button читает data-variant) ---------- */
+
+.app-v3 button[data-variant]:not([data-variant="ghost"]) {
+  border: 2px solid var(--ink);
+  box-shadow: 3px 3px 0 var(--ink);
+  transition:
+    transform 0.15s ease,
+    box-shadow 0.15s ease,
+    background-color 0.15s ease,
+    filter 0.15s ease;
+}
+.app-v3 button[data-variant]:not([data-variant="ghost"]):hover:not(:disabled) {
+  transform: translate(1px, 1px);
+  box-shadow: 2px 2px 0 var(--ink);
+}
+.app-v3 button[data-variant]:not([data-variant="ghost"]):active:not(:disabled) {
+  scale: 1;
+  transform: translate(3px, 3px);
+  box-shadow: 0 0 0 var(--ink);
+}
+
+/* Главное действие — жёлтая клавиша с чернильной надписью */
+.app-v3 button[data-variant="brand"] {
+  color: var(--ink);
+}
+.app-v3 button[data-variant="brand"]:hover:not(:disabled) {
+  filter: none;
+  background-image: linear-gradient(135deg, #f0be00 0%, #f0be00 100%);
+}
+
+/* Вторичные — бумажные клавиши */
+.app-v3 button[data-variant="soft"] {
+  background-color: var(--sheet);
+}
+.app-v3 button[data-variant="soft"]:hover:not(:disabled) {
+  background-color: #ffffff;
+}
+.app-v3 button[data-variant="outline"] {
+  background-color: var(--sheet);
+}
+.app-v3 button[data-variant="outline"]:hover:not(:disabled) {
+  background-color: #ffffff;
+}
+
+/* ---------- бейджи-чипы: рамка-штамп ---------- */
+
+.app-v3 span[data-tone] {
+  border: 1.5px solid var(--ink);
+}
+
+/* ---------- поля ввода: клавиши с вдавливанием на фокусе ---------- */
+
+.app-v3 input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="hidden"]):not([type="color"]),
+.app-v3 textarea,
+.app-v3 select {
+  border-width: 2px;
+  border-color: var(--ink);
+  border-radius: 4px;
+  box-shadow: 3px 3px 0 var(--ink);
+  transition:
+    transform 0.15s ease,
+    box-shadow 0.15s ease;
+}
+.app-v3 input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="hidden"]):not([type="color"]):focus,
+.app-v3 textarea:focus,
+.app-v3 select:focus {
+  outline: none;
+  transform: translate(2px, 2px);
+  box-shadow: 1px 1px 0 var(--ink);
+}
+
+/* ---------- переключатели: жёлтая дорожка, бумажный кружок ---------- */
+
+.app-v3 button[role="switch"] {
+  border: 2px solid var(--ink);
+  background-color: var(--surface-inset);
+  background-image: none;
+  box-shadow: none;
+}
+.app-v3 button[role="switch"][aria-checked="true"] {
+  background-image: none;
+  background-color: var(--acc);
+}
+/* Кружок 14px + рамка 2px: ход остаётся ровно 22px — геометрия не ломается */
+.app-v3 button[role="switch"] > span {
+  height: 14px;
+  width: 14px;
+  background: var(--sheet);
+  border: 2px solid var(--ink);
+  box-shadow: none;
+}
+
+/* ---------- чекбокс: жёлтая заливка, чернильная галка ---------- */
+
+.app-v3 button[role="checkbox"] > span:first-child {
+  border: 2px solid var(--ink);
+  background: var(--sheet);
+  background-image: none;
+  border-radius: 4px;
+  box-shadow: none;
+  color: var(--ink);
+}
+.app-v3 button[role="checkbox"][aria-checked="true"] > span:first-child {
+  background-image: none;
+  background-color: var(--acc);
+  color: var(--ink);
+}
+
+/* ---------- табы: выбранный — жёлтая вдавленная клавиша ---------- */
+
+.app-v3 div[role="tablist"] {
+  border: 2px solid var(--ink);
+  background: var(--surface-inset);
+  border-radius: 6px;
+}
+.app-v3 button[role="tab"] {
+  border: 2px solid transparent;
+  border-radius: 4px;
+}
+.app-v3 button[role="tab"][aria-selected="true"] {
+  background: var(--acc);
+  color: var(--ink);
+  border-color: var(--ink);
+  box-shadow: 2px 2px 0 var(--ink);
+}
+
+/* ---------- тосты (класс вешает Toaster на маршрутах приложения) ---------- */
+
+.v3-toast {
+  background: #fffdf6;
+  border: 2px solid #0a0a0a;
+  border-radius: 6px;
+  box-shadow: 5px 5px 0 #0a0a0a;
+}
+
+/* Тревожное действие — красная клавиша */
+.app-v3 button[data-variant="danger"] {
+  background: var(--red);
+  color: #fff;
+}
+.app-v3 button[data-variant="danger"]:hover:not(:disabled) {
+  background: #c93a18;
+}
+
+/* Плоский жёлтый «градиент» — только с чернильным текстом, белый на жёлтом запрещён */
+.app-v3 .bg-brand-gradient {
+  color: var(--ink);
+}
+
+/* ---------- clay → чернильные листы (живёт только в ИИ-студии) ---------- */
+
+/* Большая панель (чат) — статичный лист: рамка есть, тени нет */
+.app-v3 .clay {
+  background: var(--sheet);
+  border: 2px solid var(--ink);
+  border-radius: var(--radius-lg);
+  box-shadow: none;
+}
+
+/* Кликабельный лист (подсказки в студии) — тень есть, нажатие вдавливает */
+.app-v3 button.clay {
+  box-shadow: 3px 3px 0 var(--ink);
+}
+.app-v3 button.clay:hover:not(:disabled) {
+  translate: 1px 1px;
+  box-shadow: 2px 2px 0 var(--ink);
+}
+.app-v3 button.clay:active:not(:disabled) {
+  translate: 3px 3px;
+  box-shadow: 0 0 0 var(--ink);
+}
+
+/* Мелкие клавиши-пилюли (чип модели, стиля, быстрые команды) */
+.app-v3 .clay-sm {
+  background: var(--sheet);
+  border: 2px solid var(--ink);
+  border-radius: 999px;
+  box-shadow: 2px 2px 0 var(--ink);
+}
+
+/* Вдавленное состояние (открытый поповер, active) */
+.app-v3 .clay-press {
+  box-shadow: 0 0 0 var(--ink);
+  translate: 2px 2px;
+}
+
+.app-v3 .clay-in {
+  background: var(--surface-inset);
+  box-shadow: none;
+}
+
+/* ---------- reduced motion: физика клавиш гаснет ---------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .app-v3 button[data-variant],
+  .app-v3 input,
+  .app-v3 textarea,
+  .app-v3 select {
+    transition: none;
+  }
+}

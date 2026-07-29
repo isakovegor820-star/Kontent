@@ -31,7 +31,6 @@ import {
 } from "lucide-react";
 
 import { AppShell } from "@/components/app/shell";
-import { Logo } from "@/components/brand";
 import { Button } from "@/components/ui/button";
 import { Badge, Card, EmptyState, Input, Textarea } from "@/components/ui/primitives";
 import { type AiCommand } from "@/lib/ai";
@@ -162,8 +161,8 @@ function MessageRow({
   if (msg.role === "user") {
     return (
       <motion.div {...appear} className="flex w-full shrink-0 justify-end">
-        <div className="w-fit max-w-[min(88%,34rem)] rounded-2xl rounded-br-sm bg-brand-gradient px-4 py-3 shadow-soft">
-          <p className="text-[15px] leading-relaxed whitespace-pre-wrap text-white">{msg.text}</p>
+        <div className="w-fit max-w-[min(88%,34rem)] rounded-2xl rounded-br-sm border-2 border-line bg-brand-gradient px-4 py-3 shadow-soft">
+          <p className="text-[15px] leading-relaxed whitespace-pre-wrap text-text">{msg.text}</p>
         </div>
       </motion.div>
     );
@@ -174,8 +173,11 @@ function MessageRow({
   // ИИ — слева, спокойная карточка с логотипом-аватаром
   return (
     <motion.div {...appear} className="flex w-full shrink-0 gap-3">
-      <span className="mt-1 shrink-0" aria-hidden>
-        <Logo size={28} />
+      <span
+        aria-hidden
+        className="mt-1 grid h-7 w-7 shrink-0 place-items-center rounded-[4px] border-2 border-line bg-[var(--acc)] font-[family-name:var(--v3-display)] text-[13px] font-black text-text shadow-[2px_2px_0_var(--ink)]"
+      >
+        А
       </span>
 
       <div className="min-w-0 flex-1">
@@ -1111,7 +1113,7 @@ function StudioPageInner() {
               </div>
 
               {/* Роль ИИ — переключает поведение модели */}
-              <div className="flex items-center gap-1.5">
+              <div className="flex flex-wrap items-center gap-1.5">
                 <span className="text-[12px] font-semibold text-text-3">Роль:</span>
                 {([null, "copywriter", "strategist", "critic"] as const).map((r) => (
                   <button

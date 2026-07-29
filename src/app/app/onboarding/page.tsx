@@ -24,8 +24,6 @@ import {
   Timer,
   Zap,
 } from "lucide-react";
-import { AuroraBackground } from "@/components/aurora-background";
-import { Wordmark } from "@/components/brand";
 import { Button } from "@/components/ui/button";
 import {
   Badge,
@@ -1445,13 +1443,22 @@ export default function OnboardingPage() {
   return (
     <main
       id="main"
-      className="relative isolate flex min-h-dvh flex-col items-center justify-center overflow-hidden bg-bg-section px-5 py-10 sm:py-14"
+      className="v3-paper relative isolate flex min-h-dvh flex-col items-center justify-center overflow-hidden px-5 py-10 sm:py-14"
     >
-      <AuroraBackground intensity="section" grid grain />
-
       <div className="relative flex w-full max-w-2xl flex-col">
         <div className="flex justify-center">
-          <Wordmark />
+          {/* Штамп как на лендинге v3 */}
+          <span className="flex items-center gap-2.5">
+            <span
+              aria-hidden
+              className="flex h-9 w-9 items-center justify-center border-2 border-line bg-[var(--acc)] font-[family-name:var(--v3-display)] text-[17px] font-black shadow-[3px_3px_0_var(--ink)]"
+            >
+              А
+            </span>
+            <span className="font-[family-name:var(--v3-display)] text-[16px] font-bold tracking-[0.08em] uppercase">
+              Аврора
+            </span>
+          </span>
         </div>
 
         {s.ready ? <Wizard /> : <WizardSkeleton />}

@@ -3,12 +3,11 @@
 /**
  * КАРКАС РАБОЧИХ ЭКРАНОВ ПЛАТФОРМЫ (Приложение А: экраны А4–А12).
  *
- * ТЗ 7.1: «Рабочие экраны — спокойные, чистые, много воздуха».
- * Поэтому здесь аврора почти погашена (intensity="app", без сетки и зерна),
- * стекло — только у липких панелей, а градиент — только у трёх мелочей:
- * индикатор активного пункта, аватар и полоса лимита ИИ.
- * Главный «магнит» экрана (Button variant="brand") живёт в слоте `action`,
- * который передаёт страница — в каркасе градиентных кнопок нет (ТЗ 7.2).
+ * Визуальный мир — небрутализм v3 («как на лендинге»): кремовая бумага
+ * с видимой сеткой, чернильные рамки 2px, жёсткие тени без размытия,
+ * жёлтый — только действие и активные состояния. Цвета приезжают через
+ * токен-мост app-v3.css; здесь — структура: штамп-лого, сайдбар-пульт,
+ * липкая шапка страницы и нижняя навигация на телефоне.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -16,15 +15,12 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { AnimatePresence, MotionConfig, motion } from "motion/react";
 import {
-  AtSign,
   BarChart3,
   Bookmark,
   Calendar,
   ChevronDown,
-  Flame,
   LogOut,
   Menu,
-  Radar,
   Rocket,
   Rss,
   ScanSearch,
@@ -33,8 +29,6 @@ import {
   X,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { AuroraBackground } from "@/components/aurora-background";
-import { ThemeToggle, Wordmark } from "@/components/brand";
 import { Button } from "@/components/ui/button";
 import { useStore } from "@/lib/store";
 import type { User } from "@/lib/types";
@@ -66,12 +60,11 @@ const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
     ],
   },
   {
-    title: "Разведка",
+    title: "Рынок",
     items: [
-      { href: "/app/competitors", label: "Конкуренты", icon: Radar },
-      { href: "/app/trends", label: "Тренды", icon: Flame },
-      { href: "/app/radar", label: "Радар", icon: ScanSearch },
-      { href: "/app/mentions", label: "Упоминания", icon: AtSign },
+      // Вся разведка — один экран-хаб с вкладками Сигналы / Конкуренты / Тренды.
+      // Раньше тут было четыре пункта-близнеца, лид в них путался.
+      { href: "/app/recon", label: "Разведка", icon: ScanSearch },
     ],
   },
   {
@@ -84,20 +77,41 @@ const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
 ];
 
 // Нижняя панель телефона — не больше пяти пунктов, иначе цели становятся тесными.
+// Разведка — один пункт-хаб (как в сайдбаре): на всех её вкладках он остаётся активным.
 const BOTTOM_NAV: NavItem[] = [
   { href: "/app/calendar", label: "Календарь", icon: Calendar, also: ["/app/composer"] },
   { href: "/app/studio", label: "Студия", icon: Sparkles },
-  { href: "/app/trends", label: "Тренды", icon: Flame },
-  { href: "/app/competitors", label: "Конкуренты", icon: Radar },
+  {
+    href: "/app/recon",
+    label: "Разведка",
+    icon: ScanSearch,
+    also: ["/app/trends", "/app/competitors", "/app/radar", "/app/mentions"],
+  },
   { href: "/app/analytics", label: "Аналитика", icon: BarChart3 },
 ];
-
-// Пружина индикатора: живо, но укладывается в потолок 600 мс (ТЗ 7.4)
-const SPRING = { type: "spring", stiffness: 420, damping: 36, mass: 0.7 } as const;
 
 function isActive(pathname: string, item: NavItem) {
   return [item.href, ...(item.also ?? [])].some(
     (p) => pathname === p || pathname.startsWith(`${p}/`),
+  );
+}
+
+/* ------------------------------------------------------------ ШТАМП-ЛОГО */
+// Тот же штамп, что на лендинге v3: жёлтый квадрат в чернильной рамке.
+
+function AppBrand() {
+  return (
+    <span className="flex items-center gap-2.5">
+      <span
+        aria-hidden
+        className="flex h-8 w-8 items-center justify-center border-2 border-line bg-[var(--acc)] font-[family-name:var(--v3-display)] text-[15px] font-black shadow-[3px_3px_0_var(--ink)]"
+      >
+        А
+      </span>
+      <span className="font-[family-name:var(--v3-display)] text-[15px] font-bold tracking-[0.08em] uppercase">
+        Аврора
+      </span>
+    </span>
   );
 }
 
@@ -114,8 +128,8 @@ function AiLimitCard() {
   return (
     <div
       className={cn(
-        "rounded-sm border p-3",
-        hot ? "border-fire/30 bg-fire-soft" : "border-line bg-surface-2",
+        "rounded-[6px] border-2 p-3",
+        hot ? "border-line bg-fire-soft" : "border-line bg-surface",
       )}
     >
       <div className="flex items-center gap-2">
@@ -133,12 +147,12 @@ function AiLimitCard() {
         aria-valuemin={0}
         aria-valuemax={limit}
         aria-valuenow={used}
-        className="mt-2.5 h-1.5 w-full overflow-hidden rounded-full bg-surface-inset"
+        className="mt-2.5 h-3 w-full overflow-hidden rounded-[3px] border-2 border-line bg-surface"
       >
         {/* Только transform — ширину не анимируем никогда (ТЗ 7.4) */}
         <motion.div
           className={cn(
-            "h-full w-full origin-left rounded-full",
+            "h-full w-full origin-left",
             hot ? "bg-fire" : "bg-brand-gradient",
           )}
           initial={{ scaleX: 0 }}
@@ -147,7 +161,7 @@ function AiLimitCard() {
         />
       </div>
 
-      <p className="nums mt-2 text-[13px] font-semibold text-text-2">
+      <p className="nums v3-mono mt-2 text-[12px] font-semibold text-text-2">
         {fmtNum(used)} из {fmtNum(limit)}{" "}
         {plural(limit, "генерации", "генераций", "генераций")}
       </p>
@@ -167,7 +181,7 @@ function UserRow({ user, onSignOut }: { user: User; onSignOut: () => void }) {
     <div className="flex items-center gap-2">
       <span
         aria-hidden
-        className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-brand-gradient text-[15px] font-bold text-white"
+        className="grid h-9 w-9 shrink-0 place-items-center rounded-[4px] border-2 border-line bg-[var(--acc)] text-[15px] font-black text-text shadow-[2px_2px_0_var(--ink)]"
       >
         {initial}
       </span>
@@ -175,7 +189,6 @@ function UserRow({ user, onSignOut }: { user: User; onSignOut: () => void }) {
         <p className="truncate text-[14px] font-semibold text-text">{user.name}</p>
         <p className="truncate text-[13px] text-text-3">{user.email}</p>
       </div>
-      <ThemeToggle />
       <Button
         type="button"
         variant="ghost"
@@ -192,18 +205,15 @@ function UserRow({ user, onSignOut }: { user: User; onSignOut: () => void }) {
 
 /* --------------------------------------------------------- НАЧИНКА САЙДБАРА */
 // Один и тот же состав на десктопе и в выезжающей панели телефона.
-// `scope` разводит layoutId: два одинаковых id в дереве заставили бы
-// индикатор «летать» между невидимым десктопным сайдбаром и панелью.
+// Активный пункт — жёлтый лист с рамкой и жёсткой тенью, без летящих индикаторов.
 
 function SidebarInner({
-  scope,
   pathname,
   user,
   onSignOut,
   onClose,
   closeRef,
 }: {
-  scope: "desktop" | "mobile";
   pathname: string;
   user: User;
   onSignOut: () => void;
@@ -227,9 +237,9 @@ function SidebarInner({
           href="/app/calendar"
           onClick={onClose}
           aria-label="Аврора — на главный экран"
-          className="rounded-xs transition-opacity duration-200 hover:opacity-80"
+          className="transition-transform duration-150 hover:-translate-y-0.5"
         >
-          <Wordmark />
+          <AppBrand />
         </Link>
         {onClose && (
           <Button
@@ -258,7 +268,7 @@ function SidebarInner({
               type="button"
               onClick={() => toggleGroup(group.title)}
               aria-expanded={!isCollapsed}
-              className="flex w-full items-center justify-between px-3 pb-1.5 text-[13px] font-bold tracking-wider text-text-3 uppercase hover:text-text-2 transition-colors"
+              className="v3-mono flex w-full items-center justify-between px-3 pb-1.5 text-[11px] font-semibold tracking-[0.16em] text-text-3 uppercase transition-colors hover:text-text"
             >
               {group.title}
               <ChevronDown
@@ -281,26 +291,17 @@ function SidebarInner({
                       onClick={onClose}
                       aria-current={active ? "page" : undefined}
                       className={cn(
-                        "group relative flex h-11 items-center gap-3 rounded-xs pr-3 pl-3.5",
-                        "text-[15px] font-semibold transition-colors duration-200 ease-[var(--ease-soft)]",
+                        "group relative flex h-11 items-center gap-3 rounded-[4px] border-2 pr-3 pl-3",
+                        "text-[15px] font-semibold transition-all duration-150",
                         active
-                          ? "bg-info-soft text-brand"
-                          : "text-text-2 hover:bg-surface-inset hover:text-text",
+                          ? "border-line bg-[var(--acc)] text-text shadow-[3px_3px_0_var(--ink)]"
+                          : "border-transparent text-text-2 hover:border-line hover:bg-surface hover:text-text",
                       )}
                     >
-                      {active && (
-                        // Полоска-индикатор плавно перелетает между пунктами
-                        <motion.span
-                          layoutId={`navIndicator-${scope}`}
-                          aria-hidden
-                          transition={SPRING}
-                          className="absolute top-3 bottom-3 left-0 w-[3px] rounded-full bg-brand-gradient"
-                        />
-                      )}
                       <Icon
                         className={cn(
-                          "h-[18px] w-[18px] shrink-0 transition-colors duration-200",
-                          active ? "text-brand" : "text-text-3 group-hover:text-text-2",
+                          "h-[18px] w-[18px] shrink-0 transition-colors duration-150",
+                          active ? "text-text" : "text-text-3 group-hover:text-text-2",
                         )}
                         strokeWidth={active ? 2 : 1.75}
                         aria-hidden
@@ -317,7 +318,7 @@ function SidebarInner({
         })}
       </nav>
 
-      <div className="shrink-0 space-y-3 border-t border-line p-3">
+      <div className="shrink-0 space-y-3 border-t-2 border-line p-3">
         <AiLimitCard />
         <UserRow user={user} onSignOut={onSignOut} />
       </div>
@@ -333,14 +334,10 @@ function SidebarInner({
 
 function ShellSkeleton({ title, subtitle }: { title: string; subtitle?: string }) {
   return (
-    <div className="relative isolate min-h-dvh bg-bg" role="status" aria-busy="true">
+    <div className="v3-paper relative isolate min-h-dvh" role="status" aria-busy="true">
       <span className="sr-only">Открываем платформу</span>
 
-      <div className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
-        <AuroraBackground intensity="app" grid={false} grain={false} />
-      </div>
-
-      <div className="fixed inset-y-0 left-0 z-30 hidden w-[260px] flex-col border-r border-line bg-surface/80 backdrop-blur-xl lg:flex">
+      <div className="fixed inset-y-0 left-0 z-30 hidden w-[260px] flex-col border-r-2 border-line bg-surface lg:flex">
         <div className="flex h-16 shrink-0 items-center gap-2.5 px-4">
           <div className="skeleton h-8 w-8 rounded-xs" />
           <div className="skeleton h-4 w-24" />
@@ -362,16 +359,16 @@ function ShellSkeleton({ title, subtitle }: { title: string; subtitle?: string }
       </div>
 
       <div className="lg:pl-[260px]">
-        <div className="sticky top-0 z-30 flex h-14 items-center justify-between border-b border-line bg-surface/80 px-3 backdrop-blur-xl lg:hidden">
+        <div className="sticky top-0 z-30 flex h-14 items-center justify-between border-b-2 border-line bg-surface px-3 lg:hidden">
           <div className="skeleton h-9 w-9 rounded-xs" />
           <div className="skeleton h-5 w-28" />
           <div className="skeleton h-9 w-9 rounded-xs" />
         </div>
 
-        <header className="sticky top-14 z-20 border-b border-line bg-surface/70 backdrop-blur-xl lg:top-0">
+        <header className="sticky top-14 z-20 border-b-2 border-line bg-surface lg:top-0">
           <div className="mx-auto flex max-w-[1400px] flex-wrap items-end justify-between gap-x-6 gap-y-3 px-4 py-4 sm:px-6 sm:py-5 lg:px-8">
             <div className="min-w-0">
-              <h1 className="text-2xl font-extrabold tracking-tight text-text sm:text-3xl">
+              <h1 className="v3-display text-[22px] font-bold text-text sm:text-[26px]">
                 {title}
               </h1>
               {subtitle && (
@@ -394,7 +391,7 @@ function ShellSkeleton({ title, subtitle }: { title: string; subtitle?: string }
         </main>
       </div>
 
-      <div className="fixed inset-x-0 bottom-0 z-30 border-t border-line bg-surface/85 backdrop-blur-2xl backdrop-saturate-150 pb-[env(safe-area-inset-bottom)] lg:hidden">
+      <div className="fixed inset-x-0 bottom-0 z-30 border-t-2 border-line bg-surface pb-[env(safe-area-inset-bottom)] lg:hidden">
         <div className="mx-auto flex h-14 max-w-lg items-center justify-around px-2">
           {BOTTOM_NAV.map((item) => (
             <div key={item.href} className="skeleton h-9 w-12 rounded-xs" />
@@ -491,16 +488,10 @@ export function AppShell({
   return (
     // reducedMotion="user": системная настройка гасит движение, оставляя прозрачность (ТЗ 7.4)
     <MotionConfig reducedMotion="user">
-      <div className="relative isolate min-h-dvh bg-bg">
-        {/* Фон живой, но почти неслышный — рабочий экран остаётся спокойным (ТЗ 7.1) */}
-        <div className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
-          <AuroraBackground intensity="app" grid={false} grain={false} />
-        </div>
-
+      <div className="v3-paper relative isolate min-h-dvh">
         {/* САЙДБАР — десктоп */}
-        <aside className="fixed inset-y-0 left-0 z-30 hidden w-[260px] flex-col border-r border-line bg-surface/80 backdrop-blur-xl lg:flex">
+        <aside className="fixed inset-y-0 left-0 z-30 hidden w-[260px] flex-col border-r-2 border-line bg-surface lg:flex">
           <SidebarInner
-            scope="desktop"
             pathname={pathname}
             user={user}
             onSignOut={handleSignOut}
@@ -518,7 +509,7 @@ export function AppShell({
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
-              className="fixed inset-0 z-40 bg-text/40 backdrop-blur-sm lg:hidden dark:bg-bg/70"
+              className="fixed inset-0 z-40 bg-text/50 lg:hidden"
             />
           )}
         </AnimatePresence>
@@ -535,10 +526,9 @@ export function AppShell({
               animate={{ x: 0 }}
               exit={{ x: -280 }}
               transition={{ type: "spring", stiffness: 380, damping: 40, mass: 0.9 }}
-              className="fixed inset-y-0 left-0 z-50 flex w-[280px] flex-col border-r border-line bg-surface shadow-float lg:hidden"
+              className="fixed inset-y-0 left-0 z-50 flex w-[280px] flex-col border-r-2 border-line bg-surface shadow-float lg:hidden"
             >
               <SidebarInner
-                scope="mobile"
                 pathname={pathname}
                 user={user}
                     onSignOut={handleSignOut}
@@ -552,7 +542,7 @@ export function AppShell({
         {/* ПРАВАЯ КОЛОНКА */}
         <div className="lg:pl-[260px]">
           {/* Верхняя панель — только телефон */}
-          <div className="sticky top-0 z-30 grid h-14 grid-cols-[44px_1fr_44px] items-center border-b border-line bg-surface/80 px-2 backdrop-blur-xl lg:hidden">
+          <div className="sticky top-0 z-30 grid h-14 grid-cols-[44px_1fr_44px] items-center border-b-2 border-line bg-surface px-2 lg:hidden">
             <Button
               ref={burgerRef}
               type="button"
@@ -568,23 +558,18 @@ export function AppShell({
             <Link
               href="/app/calendar"
               aria-label="Аврора — на главный экран"
-              className="justify-self-center rounded-xs"
+              className="justify-self-center"
             >
-              <Wordmark />
+              <AppBrand />
             </Link>
-            {/* key: переключатель темы читает тему при монтировании. Пересобираем его
-                вместе с меню, чтобы иконка не разошлась с той, что нажали в панели. */}
-            <ThemeToggle
-              key={menuOpen ? "menu-open" : "menu-closed"}
-              className="justify-self-end"
-            />
+            <span aria-hidden className="justify-self-end" />
           </div>
 
           {/* ШАПКА КОНТЕНТА: заголовок, подзаголовок и главное действие страницы */}
-          <header className="sticky top-14 z-20 border-b border-line bg-surface/70 backdrop-blur-xl lg:top-0">
+          <header className="sticky top-14 z-20 border-b-2 border-line bg-surface lg:top-0">
             <div className="mx-auto flex max-w-[1400px] flex-wrap items-end justify-between gap-x-6 gap-y-3 px-4 py-4 sm:px-6 sm:py-5 lg:px-8">
               <div className="min-w-0">
-                <h1 className="text-2xl font-extrabold tracking-tight text-text sm:text-3xl">
+                <h1 className="v3-display text-[22px] font-bold text-text sm:text-[26px]">
                   {title}
                 </h1>
                 {subtitle && (
@@ -610,13 +595,11 @@ export function AppShell({
           </main>
         </div>
 
-        {/* НИЖНЯЯ НАВИГАЦИЯ — телефон, пять пунктов, безопасная зона снизу.
-            Стекло собрано из токенов, а не утилитой glass-strong: та задаёт border
-            сокращением на все четыре стороны и съела бы верхнюю границу-волосок.
-            Тот же рецепт, что у сайдбара и шапки — панели выглядят одинаково. */}
+        {/* НИЖНЯЯ НАВИГАЦИЯ — телефон, четыре пункта, безопасная зона снизу.
+            Та же бумажная панель, что сайдбар и шапка, — система выглядит едино. */}
         <nav
           aria-label="Основные разделы"
-          className="fixed inset-x-0 bottom-0 z-30 border-t border-line bg-surface/85 backdrop-blur-2xl backdrop-saturate-150 pb-[env(safe-area-inset-bottom)] lg:hidden"
+          className="fixed inset-x-0 bottom-0 z-30 border-t-2 border-line bg-surface pb-[env(safe-area-inset-bottom)] lg:hidden"
         >
           <ul className="mx-auto flex max-w-lg items-stretch">
             {BOTTOM_NAV.map((item) => {
@@ -629,23 +612,22 @@ export function AppShell({
                     aria-current={active ? "page" : undefined}
                     className={cn(
                       "relative flex h-14 flex-col items-center justify-center gap-1 px-1",
-                      "transition-colors duration-200",
-                      active ? "text-brand" : "text-text-2",
+                      "transition-colors duration-150",
+                      active ? "text-text" : "text-text-2",
                     )}
                   >
-                    {active && (
-                      <motion.span
-                        layoutId="navIndicator-bottom"
+                    <span
+                      className={cn(
+                        "flex items-center justify-center rounded-[4px] px-2.5 py-1",
+                        active && "border-2 border-line bg-[var(--acc)] shadow-[2px_2px_0_var(--ink)]",
+                      )}
+                    >
+                      <Icon
+                        className="h-5 w-5 shrink-0"
+                        strokeWidth={active ? 2 : 1.75}
                         aria-hidden
-                        transition={SPRING}
-                        className="absolute inset-x-3 top-0 h-[2px] rounded-full bg-brand-gradient"
                       />
-                    )}
-                    <Icon
-                      className="h-5 w-5 shrink-0"
-                      strokeWidth={active ? 2 : 1.75}
-                      aria-hidden
-                    />
+                    </span>
                     <span className="w-full truncate text-center text-[13px] leading-none font-semibold">
                       {item.label}
                     </span>
