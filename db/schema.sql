@@ -782,3 +782,74 @@ create table if not exists gap_questions (
 );
 create index if not exists gap_questions_user_pending_idx
   on gap_questions (user_id, status, created_at desc);
+
+-- ============================================================================
+-- Волна 2: зарубежные соцсети (YouTube первым, затем Instagram, X, TikTok, LinkedIn).
+-- Бесплатно = нативный OAuth 2.0: пользователь жмёт «Подключить YouTube» → экран
+-- согласия Google → редирект обратно → канал подключён. Никаких ручных токенов.
+--
+-- Основа строится один раз и переиспользуется для всех сетей:
+--   1) расширяем набор сетей в channels + внешние id-колонки на сеть;
+--   2) универсальная таблица oauth_tokens (access/refresh в AES-GCM конвертах);
+--   3) channels.oauth_token_id — один источник правды для токена OAuth-сети;
+--   4) posts.external_post_id — универсальный id вышедшей записи для OAuth-сетей.
+-- ============================================================================
+
+-- 1) Расширяем допустимые сети. Старое ограничение check (network in ('tg','vk'))
+--    «дописать» нельзя — снимаем его и ставим новое (idempotent: drop if exists).
+alter table channels drop constraint if exists channels_network_check;
+alter table channels add constraint channels_network_check
+  check (network in ('tg', 'vk', 'youtube', 'instagram', 'x', 'tiktok', 'linkedin'));
+
+-- Внешние id аккаунта/канала у провайдера (по колонке на сеть, как tg_chat_id/vk_group_id).
+alter table channels add column if not exists youtube_channel_id   text;
+alter table channels add column if not exists instagram_account_id text;
+alter table channels add column if not exists x_account_id         text;
+alter table channels add column if not exists tiktok_account_id    text;
+alter table channels add column if not exists linkedin_account_id  text;
+
+-- 2) Универсальные OAuth-токены. Одна строка = связка (пользователь, провайдер, аккаунт).
+--    access_token/refresh_token — ТОЛЬКО в виде AES-GCM конверта (src/lib/token-crypto.mjs,
+--    AAD = user_id:provider), никогда не plaintext. expires_at — когда истечёт access_token
+--    (для YouTube refresh_token бессрочный при offline-доступе; у Instagram access_token на 60 дней).
+create table if not exists oauth_tokens (
+  id            bigint generated always as identity primary key,
+  user_id       bigint      not null references users (id) on delete cascade,
+  provider      text        not null,   -- 'youtube' | 'instagram' | 'x' | 'tiktok' | 'linkedin'
+  external_id   text,                   -- id аккаунта/канала у провайдера (например, YouTube channel id)
+  access_token  text        not null,   -- AES-GCM конверт
+  refresh_token text,                   -- AES-GCM конверт (может быть null)
+  scopes        text,                   -- выданные скоупы через пробел (для диагностики)
+  expires_at    timestamptz,            -- когда истечёт access_token (null = бессрочный)
+  meta          jsonb,                  -- название канала, аватар, handle и т.п. (для UI без лишнего API-вызова)
+  is_active     boolean     not null default true,
+  created_at    timestamptz not null default now(),
+  updated_at    timestamptz not null default now()
+);
+create index if not exists oauth_tokens_user_idx on oauth_tokens (user_id, provider);
+-- Активный токен одного провайдера и аккаунта — один на пользователя (повторное подключение
+-- обновляет существующую строку, а не плодит дубли). external_id может быть null до резолва.
+create unique index if not exists oauth_tokens_active_uniq
+  on oauth_tokens (user_id, provider, external_id)
+  where is_active and external_id is not null;
+
+-- 3) Канал OAuth-сети ссылается на свой токен. Один источник правды: публикация и
+--    обновление токена идут через oauth_tokens, а channels хранит только витринные данные.
+alter table channels add column if not exists oauth_token_id bigint references oauth_tokens (id) on delete set null;
+
+-- Правило владения для новых сетей (по образцу tg/vk): один аккаунт платформы — один
+-- активный канал на всей платформе. Частичный индекс по is_active — отключил → освободил.
+create unique index if not exists channels_youtube_active_uniq
+  on channels (youtube_channel_id)   where youtube_channel_id   is not null and is_active;
+create unique index if not exists channels_instagram_active_uniq
+  on channels (instagram_account_id) where instagram_account_id is not null and is_active;
+create unique index if not exists channels_x_active_uniq
+  on channels (x_account_id)         where x_account_id         is not null and is_active;
+create unique index if not exists channels_tiktok_active_uniq
+  on channels (tiktok_account_id)    where tiktok_account_id    is not null and is_active;
+create unique index if not exists channels_linkedin_active_uniq
+  on channels (linkedin_account_id)  where linkedin_account_id  is not null and is_active;
+
+-- 4) Универсальный id вышедшей записи для OAuth-сетей (video id у YouTube, media id у
+--    Instagram, tweet id у X). tg_message_id/vk_post_id остаются под свои сети.
+alter table posts add column if not exists external_post_id text;

@@ -27,8 +27,13 @@ import {
   parseRss,
   formatPost,
 } from "./worker/lib.mjs";
-// Шифрование токенов сообществ (VK). Крипто НЕ дублируем — один модуль на роуты и воркер.
-import { decryptToken } from "./src/lib/token-crypto.mjs";
+// Шифрование токенов сообществ (VK) и OAuth-сетей (YouTube/Instagram). Крипто НЕ дублируем —
+// один модуль на роуты и воркер. encryptToken нужен для сохранения обновлённого access_token.
+import { decryptToken, encryptToken } from "./src/lib/token-crypto.mjs";
+// Реестр провайдеров соцсетей (адаптеры публикации + OAuth-конфиги для рефреша токенов).
+// Тот же модуль, что используют роуты подключения — ноль дублирования OAuth-логики.
+import { getAdapter, getOAuthConfig } from "./src/lib/social-providers.mjs";
+import { refreshAccessToken } from "./src/lib/oauth.mjs";
 // Профиль канала (невидимая база знаний): промпт извлечения, парсер ответа модели и
 // сборка текста источника — общий чистый модуль с Next-роутами, без дублирования.
 import {
@@ -419,6 +424,92 @@ async function publishVk(channel, text) {
   }
 }
 
+// ----------------------------------------------------------------------------
+// OAuth-сети (YouTube, Instagram, ...). Токен лежит в oauth_tokens (AES-GCM), а не в
+// channels. access_token короткий — при истечении/401 обновляем по refresh_token и
+// сохраняем обратно, чтобы следующая публикация не споткнулась. Адаптер публикации
+// берём из реестра social-providers.mjs — воркер провайдеров не знает.
+
+/** Читает и расшифровывает активный OAuth-токен канала. null — токена нет/не расшифровался. */
+async function loadOAuthToken(channel) {
+  if (!channel.oauth_token_id) return null;
+  const row = (await pool.query(
+    `select access_token, refresh_token, expires_at, external_id
+       from oauth_tokens where id = $1 and is_active`,
+    [channel.oauth_token_id],
+  )).rows[0];
+  if (!row) return null;
+  const ctx = { userId: channel.user_id, provider: channel.network };
+  try {
+    return {
+      tokenId: channel.oauth_token_id,
+      externalId: row.external_id,
+      accessToken: decryptToken(row.access_token, ctx),
+      refreshToken: row.refresh_token ? decryptToken(row.refresh_token, ctx) : null,
+      expiresAt: row.expires_at ? new Date(row.expires_at) : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Обновляет access_token по refresh_token и сохраняет новый конверт в oauth_tokens. */
+async function refreshOAuthToken(channel, tok) {
+  const cfg = getOAuthConfig(channel.network);
+  if (!cfg || !tok.refreshToken) return null;
+  try {
+    const fresh = await refreshAccessToken(cfg, tok.refreshToken);
+    if (!fresh.accessToken) return null;
+    const ctx = { userId: channel.user_id, provider: channel.network };
+    const accessEnc = encryptToken(fresh.accessToken, ctx);
+    const refreshEnc = fresh.refreshToken
+      ? encryptToken(fresh.refreshToken, ctx)
+      : tok.refreshToken
+        ? encryptToken(tok.refreshToken, ctx)
+        : null;
+    const expiresAt = fresh.expiresIn ? new Date(Date.now() + fresh.expiresIn * 1000) : null;
+    await pool.query(
+      `update oauth_tokens set access_token = $2, refresh_token = $3, expires_at = $4, updated_at = now()
+        where id = $1`,
+      [tok.tokenId, accessEnc, refreshEnc, expiresAt],
+    );
+    return { ...tok, accessToken: fresh.accessToken, expiresAt };
+  } catch (err) {
+    console.warn(`[worker] не удалось обновить токен ${channel.network}:`, err?.message || err);
+    return null;
+  }
+}
+
+/**
+ * Публикация в OAuth-сеть через адаптер реестра. Нормализованный результат — как у TG/VK:
+ *   { ok: true, externalId, postUrl } | { ok: false, reason }
+ * payload: { text, media, title, privacyStatus }.
+ */
+async function publishOAuth(channel, payload) {
+  const adapter = getAdapter(channel.network);
+  if (!adapter) return { ok: false, reason: `сеть ${channel.network} не поддерживается` };
+
+  let tok = await loadOAuthToken(channel);
+  if (!tok) return { ok: false, reason: "нет токена — переподключи канал" };
+
+  // Токен на исходе (<5 мин) — обновляем заранее, чтобы не получить 401 на публикации.
+  if (tok.expiresAt && tok.expiresAt.getTime() - Date.now() < 5 * 60 * 1000) {
+    tok = (await refreshOAuthToken(channel, tok)) || tok;
+  }
+
+  let res = await adapter.publish(tok.accessToken, payload, tok.externalId);
+
+  // 401/протухший токен — один раз обновляем и повторяем.
+  if (!res.ok && /401|invalid.*(token|grant)|expired/i.test(res.reason || "")) {
+    const fresh = await refreshOAuthToken(channel, tok);
+    if (fresh) {
+      tok = fresh;
+      res = await adapter.publish(tok.accessToken, payload, tok.externalId);
+    }
+  }
+  return res;
+}
+
 const RECON_CONCURRENCY = 6; // скромно, чтобы самим не провоцировать 429 у t.me
 // Генерация поста — тяжёлый ИИ-вызов (~90с), а не лёгкий HTML-запрос. Провайдер/локальная Ollama
 // не бесконечны, поэтому лимит ниже разведочного: режем 45-минутную сборку плана примерно втрое,
@@ -603,7 +694,7 @@ const worker = new Worker(
     const claim = await pool.query(
       `update posts set status = 'publishing'
        where id = $1 and status = 'scheduled'
-       returning id, user_id, channel_id, text, attempts`,
+       returning id, user_id, channel_id, text, media, attempts`,
       [postId],
     );
     if (claim.rowCount === 0) {
@@ -613,17 +704,22 @@ const worker = new Worker(
     const post = claim.rows[0];
 
     const ch = await pool.query(
-      `select user_id, network, tg_chat_id, vk_group_id, vk_token, title, handle
+      `select user_id, network, tg_chat_id, vk_group_id, vk_token, oauth_token_id,
+              instagram_account_id, title, handle
          from channels where id = $1`,
       [post.channel_id],
     );
     const channel = ch.rows[0];
 
     // Канал подключён? Для каждой сети свой обязательный набор полей.
+    // OAuth-сети (youtube/instagram/...) публикуют через oauth_tokens — нужен oauth_token_id.
+    const OAUTH_NETWORKS = ["youtube", "instagram", "x", "tiktok", "linkedin"];
     const connected =
       channel?.network === "vk"
         ? !!(channel.vk_group_id && channel.vk_token)
-        : !!channel?.tg_chat_id;
+        : OAUTH_NETWORKS.includes(channel?.network)
+          ? !!channel?.oauth_token_id
+          : !!channel?.tg_chat_id;
     if (!connected) {
       await pool.query(`update posts set status = 'failed', last_error = $2 where id = $1`, [
         postId,
@@ -632,16 +728,34 @@ const worker = new Worker(
       return;
     }
 
-    // Публикуем по сети; результат нормализован (publishTg/publishVk).
-    const out =
-      channel.network === "vk"
-        ? await publishVk(channel, post.text)
-        : await publishTg(channel, post.text);
+    // Публикуем по сети; результат нормализован (publishTg/publishVk/publishOAuth).
+    let out;
+    if (channel.network === "vk") {
+      out = await publishVk(channel, post.text);
+    } else if (OAUTH_NETWORKS.includes(channel.network)) {
+      // media — jsonb: объект или null. Для видео (YouTube/Reels) нужен источник файла.
+      const media = post.media && typeof post.media === "object" ? post.media : null;
+      const firstLine = String(post.text || "").split("\n")[0].trim();
+      out = await publishOAuth(channel, {
+        text: post.text,
+        media,
+        title: media?.title || firstLine.slice(0, 100) || "Видео из Авроры",
+        privacyStatus: media?.privacyStatus || "private",
+      });
+    } else {
+      out = await publishTg(channel, post.text);
+    }
 
     // --- Успех ---
     if (out.ok) {
-      // id вышедшей записи кладём в колонку своей сети (tg_message_id / vk_post_id).
-      const idCol = channel.network === "vk" ? "vk_post_id" : "tg_message_id";
+      // id вышедшей записи кладём в колонку своей сети: tg_message_id / vk_post_id /
+      // external_post_id (универсальная для OAuth-сетей).
+      const idCol =
+        channel.network === "vk"
+          ? "vk_post_id"
+          : OAUTH_NETWORKS.includes(channel.network)
+            ? "external_post_id"
+            : "tg_message_id";
       await pool.query(
         `update posts set status = 'published', ${idCol} = $2, published_at = now(),
                           attempts = attempts + 1, last_error = null
@@ -659,7 +773,13 @@ const worker = new Worker(
 
     // --- Сбой: до 3 автоповторов ---
     const attempts = post.attempts + 1;
-    const reason = out.reason || (channel.network === "vk" ? "VK не ответил" : "Telegram не ответил");
+    const reason =
+      out.reason ||
+      (channel.network === "vk"
+        ? "VK не ответил"
+        : OAUTH_NETWORKS.includes(channel.network)
+          ? `${channel.network} не ответил`
+          : "Telegram не ответил");
 
     if (attempts < MAX_ATTEMPTS) {
       await pool.query(
@@ -2723,6 +2843,10 @@ const statsWorker = new Worker(
         await pool.query(`select id, user_id, handle, title from competitors where id = $1`, [job.data.id])
       ).rows[0];
       if (c) await collectCompetitor(c);
+    } else if (job.name === "rss-now") {
+      // Кнопка «Проверить сейчас» на экране RSS: человек не ждёт получасового крона —
+      // собираем все его активные ленты немедленно (collectRss сама соблюдает лимиты).
+      await collectRss();
     } else if (job.name === "knowledge-index") {
       // Человек добавил материал в базу знаний — считаем векторы сейчас, а не суточным
       // циклом: он вернётся на экран через минуту и должен увидеть «готово».
