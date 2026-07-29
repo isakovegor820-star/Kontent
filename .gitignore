@@ -39,3 +39,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# QA-скриншоты (вывод playwright-проверок)
+.app-v3-shots/
+.v3-shots/
