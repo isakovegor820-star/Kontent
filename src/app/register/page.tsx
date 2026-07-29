@@ -18,8 +18,6 @@ import {
   Sparkles,
   type LucideIcon,
 } from "lucide-react";
-import { AuroraBackground } from "@/components/aurora-background";
-import { Wordmark } from "@/components/brand";
 import { Button } from "@/components/ui/button";
 import { Badge, Divider, Field, GlassCard, Input, TelegramIcon, VkIcon } from "@/components/ui/primitives";
 import { useStore } from "@/lib/store";
@@ -175,9 +173,7 @@ export default function RegisterPage() {
   const isReg = mode === "register";
 
   return (
-    <main id="main" className="relative flex min-h-dvh items-center overflow-hidden py-12 sm:py-16">
-      <AuroraBackground intensity="hero" grid grain />
-
+    <main id="main" className="v3-paper relative flex min-h-dvh items-center overflow-hidden py-12 sm:py-16">
       <div className="relative mx-auto grid w-full max-w-6xl grid-cols-1 items-center gap-16 px-5 sm:px-8 lg:grid-cols-2 lg:gap-16 xl:gap-20">
         {/* ══════════════════════════════════════════════════ ЛЕВО: вход */}
         <div className="mx-auto w-full max-w-md">
@@ -196,10 +192,21 @@ export default function RegisterPage() {
           </motion.div>
 
           <motion.div {...rise(0.06)} className="mt-8">
-            <Wordmark />
+            {/* Штамп как на лендинге v3: жёлтый квадрат, чернильная рамка */}
+            <span className="flex items-center gap-2.5">
+              <span
+                aria-hidden
+                className="flex h-9 w-9 items-center justify-center border-2 border-line bg-[var(--acc)] font-[family-name:var(--v3-display)] text-[17px] font-black shadow-[3px_3px_0_var(--ink)]"
+              >
+                А
+              </span>
+              <span className="font-[family-name:var(--v3-display)] text-[16px] font-bold tracking-[0.08em] uppercase">
+                Аврора
+              </span>
+            </span>
           </motion.div>
 
-          <motion.h1 {...rise(0.12)} className="display mt-6 text-4xl text-text">
+          <motion.h1 {...rise(0.12)} className="v3-display mt-6 text-3xl font-bold text-text sm:text-4xl">
             {isReg ? "Создай аккаунт" : "С возвращением"}
           </motion.h1>
 
@@ -418,7 +425,7 @@ export default function RegisterPage() {
               {VALUE.map(({ icon: Icon, tint, text }) => (
                 <motion.li key={text} variants={reduce ? still : item} className="flex items-start gap-4">
                   <span
-                    className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-surface-inset ${tint}`}
+                    className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-[4px] border-2 border-line bg-surface ${tint}`}
                   >
                     <Icon className="h-5 w-5" strokeWidth={1.75} aria-hidden />
                   </span>

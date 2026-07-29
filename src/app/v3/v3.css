@@ -1,0 +1,533 @@
+/* ==========================================================================
+   V3 — НЕОБРУТАЛИЗМ
+   Кремовая бумага, чёрные рамки 2–3px, жёсткие тени без размытия,
+   один сигнальный жёлтый. Никаких градиентов, стекла, блобов и glow.
+   Всё scoped под .v3 — боевой лендинг не затрагивается.
+   ========================================================================== */
+
+.v3 {
+  /* Бумага и листы */
+  --paper: #f4f0ea;
+  --sheet: #fffdf6;
+
+  /* Чернила */
+  --ink: #0a0a0a;
+  --ink-2: #55524b;
+
+  /* Сигнальные: жёлтый — только CTA и ключевые метки,
+     красный — только боли, зелёный — только успех */
+  --acc: #ffd021;
+  --acc-deep: #f0be00;
+  --red: #e0451f;
+  --red-soft: #fbdfd4;
+  --green: #2e7d4f;
+  --green-soft: #d9ebdd;
+
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-golos), system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.v3 ::selection {
+  background: var(--acc);
+  color: var(--ink);
+}
+
+/* Якорные секции: липкая шапка (64px + 2px рамка) не должна перекрывать заголовки */
+.v3 section[id] {
+  scroll-margin-top: 88px;
+}
+
+/* ---------- Фактура: видимая сетка 76px + зерно ---------- */
+
+.v3-paper {
+  background-color: var(--paper);
+  background-image:
+    linear-gradient(to right, color-mix(in srgb, var(--ink) 7%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in srgb, var(--ink) 7%, transparent) 1px, transparent 1px);
+  background-size: 76px 76px;
+}
+
+.v3-grain {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  pointer-events: none;
+  opacity: 0.05;
+  mix-blend-mode: multiply;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='0.6'/%3E%3C/svg%3E");
+}
+
+/* ---------- Раскладка: fluid full-bleed ----------
+   2026-07-28 (вечер): владельцу не нравятся мёртвые поля на широких
+   мониторах. Решение — НЕ декор полей (откачен в тот же день), а сама
+   геометрия: колонка растворена, контент занимает всю ширину экрана
+   с аккуратными резиновыми полями. На телефоне — те же 20px, на 2K —
+   112px, и ни одной мёртвой зоны между ними. Читаемость текстов
+   держат внутренние мерки (max-w-xl/64ch) внутри секций. */
+
+.v3-wrap {
+  margin-inline: auto;
+  width: 100%;
+  max-width: none;
+  padding-inline: clamp(20px, 4vw, 112px);
+}
+
+/* ---------- Hover-физика листов (только указатели с hover) ----------
+   Лист чуть приподнимается и отбрасывает тень глубже — тот же язык,
+   что у клавиш, без свечения и размытия. */
+
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  .v3-lift {
+    transition:
+      translate 0.18s ease,
+      box-shadow 0.18s ease;
+  }
+  .v3-lift:hover {
+    translate: -2px -2px;
+    box-shadow: 7px 7px 0 var(--ink);
+  }
+}
+
+/* ---------- Сверхширокие экраны (≥2000px) ----------
+   Афишный заголовок hero растёт вместе с листом — иначе на 2K он
+   выглядит визиткой на билборде. */
+
+@media (min-width: 2000px) {
+  .v3-hero-title {
+    font-size: clamp(5.4rem, 4.6vw, 7.2rem);
+  }
+}
+
+/* ---------- Типографика ---------- */
+
+.v3-display {
+  font-family: var(--v3-display), system-ui, sans-serif;
+  hanging-punctuation: first last;
+  text-wrap: pretty;
+}
+
+.v3-mono {
+  font-family: var(--v3-mono), ui-monospace, monospace;
+}
+
+.v3-body {
+  line-height: 1.6;
+  color: var(--ink-2);
+  text-wrap: pretty;
+}
+
+.v3-body strong {
+  color: var(--ink);
+}
+
+/* Кикер с линейками по бокам: «— АВТОПИЛОТ ———————— » */
+.v3-kicker {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-family: var(--v3-mono), ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+
+.v3-kicker::before {
+  content: "";
+  width: 34px;
+  height: 2px;
+  flex: none;
+  background: var(--ink);
+}
+
+.v3-kicker--center::after {
+  content: "";
+  flex: 1;
+  height: 2px;
+  background: var(--ink);
+}
+
+/* Маркер-выделение: жёлтый «фломастер» под чернилами */
+.v3-marker {
+  background: var(--acc);
+  padding: 0.02em 0.14em;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+/* ---------- Кнопки-клавиши: физика вдавливания ---------- */
+
+.v3-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  font-family: var(--v3-mono), ui-monospace, monospace;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink);
+  background: var(--acc);
+  border: 2px solid var(--ink);
+  border-radius: 0;
+  padding: 16px 24px;
+  box-shadow: 6px 6px 0 var(--ink);
+  transition:
+    transform 0.15s ease,
+    box-shadow 0.15s ease,
+    background 0.15s ease;
+  cursor: pointer;
+  user-select: none;
+}
+
+.v3-btn:hover {
+  transform: translate(2px, 2px);
+  box-shadow: 4px 4px 0 var(--ink);
+  background: var(--acc-deep);
+}
+
+.v3-btn:active {
+  transform: translate(6px, 6px);
+  box-shadow: 0 0 0 var(--ink);
+}
+
+.v3-btn--ghost {
+  background: var(--sheet);
+}
+
+.v3-btn--ghost:hover {
+  background: #ffffff;
+}
+
+.v3-btn--ink {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+.v3-btn--ink:hover {
+  background: #26241f;
+}
+
+.v3-btn--lg {
+  padding: 19px 30px;
+  font-size: 14px;
+}
+
+.v3-btn--sm {
+  padding: 10px 16px;
+  font-size: 11px;
+  box-shadow: 4px 4px 0 var(--ink);
+}
+
+.v3-btn--sm:hover {
+  box-shadow: 3px 3px 0 var(--ink);
+}
+
+.v3-btn--sm:active {
+  transform: translate(4px, 4px);
+}
+
+.v3-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+  transform: none;
+  box-shadow: 6px 6px 0 var(--ink);
+}
+
+/* ---------- Панели, карточки, чипы, штампы ---------- */
+
+.v3-panel {
+  background: var(--sheet);
+  border: 3px solid var(--ink);
+  box-shadow: 8px 8px 0 var(--ink);
+}
+
+.v3-card {
+  background: var(--sheet);
+  border: 2px solid var(--ink);
+  box-shadow: 5px 5px 0 var(--ink);
+}
+
+.v3-card--flat {
+  box-shadow: none;
+}
+
+.v3-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--v3-mono), ui-monospace, monospace;
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink);
+  background: var(--sheet);
+  border: 1.5px solid var(--ink);
+  padding: 5px 12px;
+  white-space: nowrap;
+}
+
+.v3-chip--acc {
+  background: var(--acc);
+  font-weight: 600;
+}
+
+.v3-chip--ink {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+/* Штамп — наклеенный ярлык с лёгким поворотом */
+.v3-stamp {
+  display: inline-block;
+  font-family: var(--v3-mono), ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink);
+  background: var(--sheet);
+  border: 2px solid var(--ink);
+  padding: 7px 11px;
+  box-shadow: 3px 3px 0 var(--ink);
+  transform: rotate(-3deg);
+}
+
+.v3-stamp--green {
+  background: var(--green);
+  color: #fff;
+}
+
+.v3-stamp--red {
+  background: var(--red);
+  color: #fff;
+}
+
+.v3-stamp--acc {
+  background: var(--acc);
+}
+
+/* ---------- Каретка печати и «живая» точка ---------- */
+
+.v3-caret::after {
+  content: "";
+  display: inline-block;
+  width: 9px;
+  height: 1.05em;
+  margin-left: 2px;
+  vertical-align: -0.15em;
+  background: var(--ink);
+  animation: v3-blink 1s steps(1) infinite;
+}
+
+@keyframes v3-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+.v3-live-dot {
+  position: relative;
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 999px;
+  background: var(--green);
+}
+
+.v3-live-dot::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border-radius: 999px;
+  border: 2px solid var(--green);
+  animation: v3-ping 1.8s ease-out infinite;
+}
+
+@keyframes v3-ping {
+  0% {
+    transform: scale(0.4);
+    opacity: 0.9;
+  }
+  80%,
+  100% {
+    transform: scale(1);
+    opacity: 0;
+  }
+}
+
+/* ---------- Тикер-лента ---------- */
+
+.v3-ticker {
+  overflow: hidden;
+  background: var(--ink);
+  border-top: 2px solid var(--ink);
+  border-bottom: 2px solid var(--ink);
+}
+
+.v3-ticker-track {
+  display: flex;
+  width: max-content;
+  animation: v3-marquee 24s linear infinite;
+}
+
+.v3-ticker-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 28px;
+  padding: 13px 14px 13px 28px;
+  font-family: var(--v3-mono), ui-monospace, monospace;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--acc);
+  white-space: nowrap;
+}
+
+@keyframes v3-marquee {
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+/* ---------- Табы-клавиши ---------- */
+
+.v3-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--v3-mono), ui-monospace, monospace;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink);
+  background: var(--sheet);
+  border: 2px solid var(--ink);
+  border-radius: 0;
+  padding: 12px 16px;
+  box-shadow: 4px 4px 0 var(--ink);
+  transition:
+    transform 0.12s ease,
+    box-shadow 0.12s ease,
+    background 0.12s ease;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.v3-tab:hover {
+  transform: translate(1px, 1px);
+  box-shadow: 3px 3px 0 var(--ink);
+}
+
+/* Выбранный таб «вдавлен» в пульт — радио-метафора пульта */
+.v3-tab[aria-selected="true"] {
+  background: var(--acc);
+  font-weight: 600;
+  transform: translate(4px, 4px);
+  box-shadow: 0 0 0 var(--ink);
+}
+
+/* ---------- Поля формы ---------- */
+
+.v3-input {
+  width: 100%;
+  font-family: var(--font-golos), system-ui, sans-serif;
+  font-size: 16px;
+  color: var(--ink);
+  background: var(--sheet);
+  border: 2px solid var(--ink);
+  border-radius: 0;
+  padding: 15px 16px;
+  box-shadow: 4px 4px 0 var(--ink);
+  outline: none;
+  transition:
+    transform 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.v3-input::placeholder {
+  color: var(--ink-2);
+}
+
+.v3-input:focus {
+  transform: translate(2px, 2px);
+  box-shadow: 2px 2px 0 var(--ink);
+}
+
+/* ---------- Таблица сравнения ---------- */
+
+.v3-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--sheet);
+}
+
+.v3-table th,
+.v3-table td {
+  border: 1.5px solid var(--ink);
+  padding: 14px 12px;
+  vertical-align: middle;
+}
+
+.v3-table thead th {
+  background: var(--ink);
+  color: var(--paper);
+  font-family: var(--v3-mono), ui-monospace, monospace;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 16px 12px;
+}
+
+/* Колонка «Аврора» — единственная жёлтая заливка на таблицу */
+.v3-table .v3-col-us {
+  background: color-mix(in srgb, var(--acc) 32%, var(--sheet));
+}
+
+.v3-table thead th.v3-col-us {
+  background: var(--acc);
+  color: var(--ink);
+}
+
+/* ---------- Фокус: видимый и жёсткий ---------- */
+
+.v3 :focus-visible {
+  outline: 3px solid var(--ink);
+  outline-offset: 2px;
+}
+
+/* ---------- Печать: зерно и тикер на бумаге не нужны ---------- */
+
+@media print {
+  .v3-grain,
+  .v3-ticker {
+    display: none;
+  }
+}
+
+/* ---------- Reduced motion: всё движение — мгновенное ---------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .v3 *,
+  .v3 *::before,
+  .v3 *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .v3-ticker-track {
+    animation: none;
+    flex-wrap: wrap;
+    width: auto;
+  }
+}

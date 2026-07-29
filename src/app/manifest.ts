@@ -5,14 +5,15 @@ import type { MetadataRoute } from "next";
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "Аврора — соцсети, которые ведут себя сами",
+    name: "Аврора — канал ведётся сам",
     short_name: "Аврора",
     description:
       "Разведка конкурентов, залетающие темы, ИИ-контент в твоём стиле и автопостинг в Telegram и VK.",
     start_url: "/app/calendar",
     display: "standalone",
-    background_color: "#ffffff",
-    theme_color: "#6366f1",
+    // Кремовая бумага необрутализма v3 — с 2026-07-28 основной мир продукта
+    background_color: "#f4f0ea",
+    theme_color: "#f4f0ea",
     lang: "ru",
     orientation: "portrait-primary",
     icons: [

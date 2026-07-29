@@ -10,7 +10,7 @@ import Link from "next/link";
 import { AnimatePresence, motion, useReducedMotion, type Variants } from "motion/react";
 import { ArrowRight, Send, Sparkles } from "lucide-react";
 import { AuroraBackground } from "@/components/aurora-background";
-import { ThemeToggle, Wordmark } from "@/components/brand";
+import { Wordmark } from "@/components/brand";
 import { Button } from "@/components/ui/button";
 import { Badge, Divider, Field, GlassCard, Input } from "@/components/ui/primitives";
 import { useStore } from "@/lib/store";
@@ -469,7 +469,6 @@ export function Footer() {
               Платформа в разработке. Данные в демо-режиме — вымышленные.
             </p>
           </div>
-          <ThemeToggle className="-mr-2.5" />
         </div>
       </div>
     </footer>

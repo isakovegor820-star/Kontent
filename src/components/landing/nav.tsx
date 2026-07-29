@@ -8,7 +8,7 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 import Link from "next/link";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { CircleHelp, Menu, RefreshCw, Route, Scale, X } from "lucide-react";
-import { ThemeToggle, Wordmark } from "@/components/brand";
+import { Wordmark } from "@/components/brand";
 import { Button } from "@/components/ui/button";
 import { Divider, GlassCard } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
@@ -240,10 +240,8 @@ export function LandingNav() {
             })}
           </ul>
 
-          {/* --------------------------- СПРАВА: тема, главное действие, бургер */}
+          {/* ------------------------ СПРАВА: главное действие, бургер */}
           <div className="ml-auto flex items-center gap-1 sm:gap-2">
-            <ThemeToggle />
-
             {/* Единственный градиент в навигации (ТЗ 7.2).
                 На узком экране он живёт в выпадающем меню — чтобы магнит на странице
                 всегда оставался ровно один. */}
