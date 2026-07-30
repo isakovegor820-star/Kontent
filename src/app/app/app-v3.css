@@ -198,6 +198,20 @@
   box-shadow: 1px 1px 0 var(--ink);
 }
 
+/* Composer чата — единственное поле, которое не выглядит как тяжёлая клавиша.
+   Страница сама является диалогом, поэтому внутри плавающей панели не нужна вторая рамка. */
+.app-v3 textarea[data-chat-composer] {
+  border: 0;
+  border-radius: 24px 24px 0 0;
+  box-shadow: none;
+  transform: none;
+}
+.app-v3 textarea[data-chat-composer]:focus {
+  border: 0;
+  box-shadow: none;
+  transform: none;
+}
+
 /* ---------- переключатели: жёлтая дорожка, бумажный кружок ---------- */
 
 .app-v3 button[role="switch"] {
