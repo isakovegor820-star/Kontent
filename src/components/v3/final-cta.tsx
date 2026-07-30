@@ -11,12 +11,13 @@ import { ERR_SHAPE, validateContact } from "@/lib/leads";
 import { V3Reveal } from "./reveal";
 
 const EASE = [0.22, 1, 0.36, 1] as const;
-const HEADLINE = ["Бесплатно.", "Без карты.", "Из России."] as const;
+const HEADLINE = ["Пусть канал", "работает,", "пока ты живёшь."] as const;
+const LEGACY_HEADLINE = ["Бесплатно.", "Без карты.", "Из России."] as const;
 
 // Запасной путь, если сервер не ответил — ведёт к нашему боту
 const SUPPORT_TG = "https://t.me/kontenfkv_bot";
 
-export function V3FinalCta() {
+export function V3FinalCta({ legacyPricing = false }: { legacyPricing?: boolean }) {
   const reduce = useReducedMotion();
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -85,7 +86,7 @@ export function V3FinalCta() {
               id="v3-cta-title"
               className="v3-display text-[clamp(2.2rem,6vw,4.4rem)] leading-[1.02] font-black uppercase"
             >
-              {HEADLINE.map((line) => (
+              {(legacyPricing ? LEGACY_HEADLINE : HEADLINE).map((line) => (
                 <span key={line} className="block">
                   {line}
                 </span>
@@ -178,7 +179,7 @@ export function V3FinalCta() {
 
 /* ---------------------------------------------------------------- ФУТЕР */
 
-export function V3Footer() {
+export function V3Footer({ legacyPricing = false }: { legacyPricing?: boolean }) {
   return (
     <footer className="border-t-2 border-[var(--ink)] bg-[var(--ink)] text-[var(--paper)]">
       <div className="v3-wrap flex flex-col gap-8 py-12 md:flex-row md:items-start md:justify-between">
@@ -203,11 +204,11 @@ export function V3Footer() {
           <a href="#how" className="opacity-80 transition-opacity hover:opacity-100 hover:underline hover:decoration-2 hover:underline-offset-4">
             Как это работает
           </a>
-          <a href="#compare" className="opacity-80 transition-opacity hover:opacity-100 hover:underline hover:decoration-2 hover:underline-offset-4">
-            Сравнение
+          <a href="#quality" className="opacity-80 transition-opacity hover:opacity-100 hover:underline hover:decoration-2 hover:underline-offset-4">
+            Контроль
           </a>
-          <a href="#pricing" className="opacity-80 transition-opacity hover:opacity-100 hover:underline hover:decoration-2 hover:underline-offset-4">
-            Тарифы
+          <a href={legacyPricing ? "#pricing" : "#memory"} className="opacity-80 transition-opacity hover:opacity-100 hover:underline hover:decoration-2 hover:underline-offset-4">
+            {legacyPricing ? "Тарифы" : "Память"}
           </a>
           <a href="#faq" className="opacity-80 transition-opacity hover:opacity-100 hover:underline hover:decoration-2 hover:underline-offset-4">
             Вопросы

@@ -27,7 +27,7 @@ const PHASE_LABEL: Record<Phase, string> = {
 
 /* ----------------------------------------------------------- ПУЛЬТ-ДЕМО */
 
-function DemoPanel() {
+export function V3DemoPanel() {
   const reduce = useReducedMotion();
   const [phase, setPhase] = useState<Phase>("idle");
   const [typed, setTyped] = useState(0);
@@ -242,7 +242,7 @@ export function V3Hero() {
 
         {/* ---------------------------------------------- ПРАВО: пульт-демо */}
         <motion.div {...rise(0.22)} className="relative w-full lg:max-w-[940px] lg:flex-[0.95_1_0%]">
-          <DemoPanel />
+          <V3DemoPanel />
         </motion.div>
       </div>
     </section>

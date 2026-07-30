@@ -1,13 +1,21 @@
 "use client";
 
-// ЦЕНТРАЛЬНЫЙ БЛОК v3 — вкладочный пульт «Как это работает».
-// Сливает бывшие секции Cycle и HowTo в один пульт: 5 вкладок-клавиш,
-// каждая = пункты (въезжают каскадом) + живое мини-демо.
-// Выбранный таб «вдавлен» в пульт (радио-метафора). Клавиатура: ← → Home End.
+// ЦЕНТРАЛЬНЫЙ БЛОК v3 — интерактивный редакционный конвейер.
+// Все четыре этапа видны одной линией; выбранный этап раскрывает рабочий лист,
+// решение системы и живое мини-демо. Клавиатура: ← → Home End.
 import { useRef, useState } from "react";
 import Link from "next/link";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { ArrowRight, Check, RefreshCw } from "lucide-react";
+import {
+  ArrowRight,
+  BarChart3,
+  Check,
+  FileText,
+  RefreshCw,
+  Search,
+  Send,
+  type LucideIcon,
+} from "lucide-react";
 import { V3Reveal } from "./reveal";
 
 const EASE = [0.22, 1, 0.36, 1] as const;
@@ -161,100 +169,97 @@ function ReactionsDemo() {
   );
 }
 
-const START_STEPS = [
-  { num: "1", time: "2 минуты", title: "Подключи канал", note: "Бот получает ровно одно право — публиковать." },
-  { num: "2", time: "1 минута", title: "Добавь конкурентов", note: "2–3 ссылки — через час досье готово." },
-  { num: "3", time: "15 мин в неделю", title: "Подтверждай готовое", note: "Одна кнопка — дальше сервер сам." },
-] as const;
-
-function StartDemo() {
-  return (
-    <div className="flex flex-col gap-3" role="img" aria-label="Три шага старта: подключи канал, добавь конкурентов, подтверждай готовые посты">
-      {START_STEPS.map((s) => (
-        <div key={s.num} className="v3-card flex items-center gap-3.5 p-3.5">
-          <span className="v3-display flex h-9 w-9 shrink-0 items-center justify-center border-2 border-[var(--ink)] bg-[var(--acc)] text-[15px] font-black">
-            {s.num}
-          </span>
-          <div className="min-w-0 flex-1">
-            <p className="truncate text-[14.5px] font-bold">{s.title}</p>
-            <p className="truncate text-[13px] text-[var(--ink-2)]">{s.note}</p>
-          </div>
-          <span className="v3-chip shrink-0">{s.time}</span>
-        </div>
-      ))}
-      <Link href="/register" className="v3-btn mt-1 w-full">
-        Забрать ранний доступ
-        <ArrowRight className="h-4 w-4" strokeWidth={2.5} aria-hidden />
-      </Link>
-    </div>
-  );
-}
+const START_STEPS = ["Подключи канал", "Добавь конкурентов", "Подтверди направление"] as const;
 
 /* ------------------------------------------------------------ ДАННЫЕ */
 
 type Tab = {
   id: string;
+  num: string;
   label: string;
+  action: string;
+  metric: string;
+  metricLabel: string;
+  stamp: string;
   lead: string;
   bullets: string[];
+  decision: string;
+  Icon: LucideIcon;
   Demo: () => React.JSX.Element;
 };
 
 const TABS: Tab[] = [
   {
     id: "recon",
-    label: "Разведка",
+    num: "01",
+    label: "Сигнал",
+    action: "Находит сигнал",
+    metric: "×7,8",
+    metricLabel: "выше медианы",
+    stamp: "Найдено",
     lead: "Платформа смотрит за конкурентами, пока ты занимаешься делом.",
     bullets: [
       "Конкуренты под наблюдением каждые 2–3 часа",
       "Ловим залёты — в 7–8 раз выше их медианы",
       "Досье человеческим языком: что забрать себе",
     ],
+    decision: "Сигнал передан редактору: забрать механику хука, не копируя материал.",
+    Icon: Search,
     Demo: ReconDemo,
   },
   {
     id: "ai",
-    label: "ИИ-контент",
+    num: "02",
+    label: "Материал",
+    action: "Собирает материал",
+    metric: "40 сек",
+    metricLabel: "готовый сценарий",
+    stamp: "Готово",
     lead: "Не текст ради текста, а пост с опорой на то, что уже работает.",
     bullets: [
       "Пишет твоим голосом — учится на твоих постах",
       "Опора на то, что уже зашло у тебя и у конкурентов",
       "Карточка «Сними это»: хук, сценарий, формат",
     ],
+    decision: "Материал собран в голосе канала и готов к подтверждению.",
+    Icon: FileText,
     Demo: AiDemo,
   },
   {
     id: "publish",
-    label: "Автопостинг",
+    num: "03",
+    label: "Публикация",
+    action: "Выпускает пост",
+    metric: "12:00",
+    metricLabel: "точно по плану",
+    stamp: "Опубликовано",
     lead: "Ноутбук можно закрыть — публикует сервер.",
     bullets: [
       "План недели одной кнопкой в Telegram-боте",
       "Посты выходят сами, по расписанию",
       "Сбой? Три попытки и честное письмо в бот",
     ],
+    decision: "Пост опубликован. Теперь система ждёт реальные реакции аудитории.",
+    Icon: Send,
     Demo: PublishDemo,
   },
   {
     id: "reactions",
-    label: "Реакции",
+    num: "04",
+    label: "Реакция",
+    action: "Считывает реакцию",
+    metric: "+34%",
+    metricLabel: "рост охвата",
+    stamp: "Усилить",
     lead: "Круг замыкается: итоги идут в следующую разведку.",
     bullets: [
       "Видно, что зашло: охват, прирост, сохранения",
       "Удачные темы усиливаются, слабые уходят",
       "Каждый следующий пост умнее предыдущего",
     ],
+    decision: "Рабочая механика сохранена — следующий цикл начнётся уже с этим знанием.",
+    Icon: BarChart3,
     Demo: ReactionsDemo,
-  },
-  {
-    id: "start",
-    label: "Старт за 5 минут",
-    lead: "От регистрации до первого запланированного поста.",
-    bullets: [
-      "Подключи канал — бот получает право только публиковать",
-      "Добавь 2–3 конкурента обычными ссылками",
-      "Подтверждай готовые посты — 15 минут в неделю",
-    ],
-    Demo: StartDemo,
   },
 ];
 
@@ -280,121 +285,202 @@ export function V3Tabs() {
   }
 
   const tab = TABS[active];
+  const ActiveIcon = tab.Icon;
 
   return (
-    <section id="how" aria-labelledby="v3-how-title" className="border-y-2 border-[var(--ink)] bg-[var(--sheet)] py-20 sm:py-28">
+    <section
+      id="how"
+      aria-labelledby="v3-how-title"
+      className="v3-cycle-section border-y-2 border-[var(--ink)] bg-[var(--sheet)] py-20 sm:py-28"
+    >
       <div className="v3-wrap">
-        <V3Reveal className="mx-auto max-w-2xl text-center">
-          <p className="v3-kicker v3-kicker--center justify-center">Формула продукта</p>
-          <h2
-            id="v3-how-title"
-            className="v3-display mt-6 text-[clamp(1.9rem,4.4vw,3.2rem)] leading-[1.04] font-black uppercase"
-          >
-            Замкнутый круг, которого нет ни у кого
-          </h2>
-          <p className="v3-body mx-auto mt-5 max-w-xl text-[16px]">
-            Разведка → ИИ-контент → автопостинг → реакции → снова разведка, уже умнее.
-          </p>
-        </V3Reveal>
-
-        <V3Reveal delay={0.08} className="mt-12">
-          <div className="v3-panel">
-            {/* Полоса вкладок: на мобиле — скролл-ряд клавиш */}
-            <div
-              role="tablist"
-              aria-label="Как работает платформа"
-              onKeyDown={onKeyDown}
-              className="flex gap-3 overflow-x-auto border-b-2 border-[var(--ink)] bg-[var(--paper)] p-4"
+        <V3Reveal className="v3-cycle-intro">
+          <div>
+            <p className="v3-kicker">Редакционный конвейер</p>
+            <h2
+              id="v3-how-title"
+              className="v3-display mt-6 text-[clamp(2.15rem,4.7vw,4.35rem)] leading-[0.98] font-black uppercase"
             >
-              {TABS.map((t, i) => (
-                <button
-                  key={t.id}
-                  ref={(el) => {
-                    tabRefs.current[i] = el;
-                  }}
-                  role="tab"
-                  id={`v3-tab-${t.id}`}
-                  aria-selected={active === i}
-                  aria-controls={`v3-panel-${t.id}`}
-                  tabIndex={active === i ? 0 : -1}
-                  onClick={() => setActive(i)}
-                  className="v3-tab"
-                >
-                  <span className="v3-mono text-[10px] opacity-60">0{i + 1}</span>
-                  {t.label}
-                </button>
-              ))}
-            </div>
-
-            {/* Контент вкладки: смена — резкий сдвиг, пункты каскадом */}
-            <AnimatePresence mode="wait" initial={false}>
-              <motion.div
-                key={tab.id}
-                role="tabpanel"
-                id={`v3-panel-${tab.id}`}
-                aria-labelledby={`v3-tab-${tab.id}`}
-                initial={reduce ? false : { opacity: 0, x: 24 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={reduce ? undefined : { opacity: 0, x: -24 }}
-                transition={{ duration: 0.18, ease: EASE }}
-                className="grid items-center gap-8 p-6 sm:p-9 lg:grid-cols-[minmax(0,1fr)_minmax(0,0.92fr)] 2xl:grid-cols-[minmax(0,0.72fr)_minmax(0,1.28fr)] 2xl:gap-14 2xl:p-12"
-              >
-                <div>
-                  <p className="v3-display text-[clamp(1.15rem,2.2vw,1.5rem)] leading-snug font-bold">
-                    {tab.lead}
-                  </p>
-                  <motion.ul
-                    className="mt-6 space-y-3"
-                    initial="hidden"
-                    animate="show"
-                    variants={{
-                      hidden: {},
-                      show: { transition: { staggerChildren: reduce ? 0 : 0.05 } },
-                    }}
-                  >
-                    {tab.bullets.map((b) => (
-                      <motion.li
-                        key={b}
-                        variants={{
-                          hidden: reduce ? {} : { opacity: 0, x: 18 },
-                          show: { opacity: 1, x: 0 },
-                        }}
-                        transition={{ duration: 0.25, ease: EASE }}
-                        className="flex items-start gap-3 text-[15.5px] leading-relaxed"
-                      >
-                        <span
-                          aria-hidden
-                          className="mt-[7px] h-2.5 w-2.5 shrink-0 border border-[var(--ink)] bg-[var(--acc)]"
-                        />
-                        {b}
-                      </motion.li>
-                    ))}
-                  </motion.ul>
-                </div>
-
-                <motion.div
-                  initial={reduce ? false : { opacity: 0, y: 12 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.3, delay: reduce ? 0 : 0.12, ease: EASE }}
-                >
-                  <tab.Demo />
-                </motion.div>
-              </motion.div>
-            </AnimatePresence>
+              От сигнала — до сильного поста
+            </h2>
+          </div>
+          <div className="v3-cycle-intro__copy">
+            <span className="v3-cycle-intro__index">03 / Как это работает</span>
+            <p className="v3-body text-[16px] sm:text-[17px]">
+              Четыре этапа работают как одна редакция: находят сигнал, собирают материал,
+              публикуют и возвращают реакцию в следующий выпуск.
+            </p>
           </div>
         </V3Reveal>
 
-        {/* Замыкание круга + честный аргумент из разведки рынка */}
-        <V3Reveal delay={0.1} className="mt-10 flex flex-col items-center gap-5 text-center">
-          <p className="v3-chip v3-chip--ink">
-            <RefreshCw className="h-3.5 w-3.5" strokeWidth={2.5} aria-hidden />
-            и снова разведка, уже умнее
-          </p>
-          <p className="v3-body max-w-xl text-[15.5px]">
-            Мы протестировали 8 сервисов. У кого-то есть постинг, у кого-то разведка — но круг не
-            замыкает никто. Поэтому их ИИ пишет вслепую, а наш —{" "}
-            <strong>с опорой на то, что уже сработало у тебя</strong>.
-          </p>
+        <V3Reveal delay={0.08} className="mt-12 sm:mt-16">
+          <div className="v3-cycle-machine">
+            <div className="v3-cycle-statusbar">
+              <span className="v3-cycle-statusbar__live">
+                <span aria-hidden />
+                Конвейер работает
+              </span>
+              <span>Выпуск №0048</span>
+              <span>Сигнал → материал → канал → реакция</span>
+              <span className="v3-cycle-statusbar__last">Редакция онлайн</span>
+            </div>
+
+            <div className="v3-conveyor-workspace">
+              <div
+                role="tablist"
+                aria-label="Редакционный конвейер Авроры"
+                onKeyDown={onKeyDown}
+                className="v3-conveyor-track"
+              >
+                <motion.span
+                  className="v3-conveyor-marker"
+                  animate={{ x: `${active * 100}%` }}
+                  transition={reduce ? { duration: 0 } : { duration: 0.22, ease: EASE }}
+                  aria-hidden
+                >
+                  <span />
+                </motion.span>
+
+                {TABS.map((t, i) => {
+                  const Icon = t.Icon;
+                  return (
+                    <button
+                      key={t.id}
+                      ref={(el) => {
+                        tabRefs.current[i] = el;
+                      }}
+                      type="button"
+                      role="tab"
+                      id={`v3-tab-${t.id}`}
+                      aria-selected={active === i}
+                      aria-controls={`v3-panel-${t.id}`}
+                      tabIndex={active === i ? 0 : -1}
+                      onClick={() => setActive(i)}
+                      className="v3-conveyor-step"
+                    >
+                      <span className="v3-conveyor-step__topline">
+                        <span>Этап {t.num}</span>
+                        <Icon className="h-4 w-4" strokeWidth={2.6} aria-hidden />
+                      </span>
+                      <strong className="v3-conveyor-step__number">{t.num}</strong>
+                      <span className="v3-conveyor-step__label">{t.label}</span>
+                      <small>{t.action}</small>
+                      <span className="v3-conveyor-step__metric">
+                        <b>{t.metric}</b>
+                        {t.metricLabel}
+                      </span>
+                    </button>
+                  );
+                })}
+
+              </div>
+
+              <AnimatePresence mode="wait" initial={false}>
+                <motion.aside
+                  key={tab.id}
+                  role="tabpanel"
+                  id={`v3-panel-${tab.id}`}
+                  aria-labelledby={`v3-tab-${tab.id}`}
+                  initial={reduce ? false : { x: 72 }}
+                  animate={{ x: 0 }}
+                  exit={reduce ? undefined : { x: -72 }}
+                  transition={{ duration: 0.18, ease: EASE }}
+                  className="v3-conveyor-sheet"
+                >
+                  <div className="v3-conveyor-sheet__head">
+                    <span className="v3-conveyor-sheet__folio">Лист {tab.num} / 04</span>
+                    <span className="v3-conveyor-sheet__title">
+                      <ActiveIcon className="h-5 w-5" strokeWidth={2.7} aria-hidden />
+                      Сейчас в работе: {tab.label}
+                    </span>
+                    <span className={`v3-conveyor-stamp v3-conveyor-stamp--${tab.id}`}>
+                      {tab.stamp}
+                    </span>
+                  </div>
+
+                  <div className="v3-conveyor-sheet__body">
+                    <div className="v3-conveyor-sheet__copy">
+                      <div className="v3-conveyor-sheet__metric">
+                        <strong>{tab.metric}</strong>
+                        <span>{tab.metricLabel}</span>
+                      </div>
+                      <p>{tab.lead}</p>
+                      <motion.ul
+                        initial="hidden"
+                        animate="show"
+                        variants={{
+                          hidden: {},
+                          show: { transition: { staggerChildren: reduce ? 0 : 0.05 } },
+                        }}
+                      >
+                        {tab.bullets.map((bullet) => (
+                          <motion.li
+                            key={bullet}
+                            variants={{
+                              hidden: reduce ? {} : { opacity: 0, x: 16 },
+                              show: { opacity: 1, x: 0 },
+                            }}
+                            transition={{ duration: 0.24, ease: EASE }}
+                          >
+                            <span aria-hidden />
+                            {bullet}
+                          </motion.li>
+                        ))}
+                      </motion.ul>
+                    </div>
+
+                    <motion.div
+                      initial={reduce ? false : { x: 34 }}
+                      animate={{ x: 0 }}
+                      transition={{ duration: 0.28, delay: reduce ? 0 : 0.1, ease: EASE }}
+                    >
+                      <tab.Demo />
+                    </motion.div>
+                  </div>
+
+                  <div className="v3-conveyor-sheet__decision">
+                    <RefreshCw className="h-4 w-4" strokeWidth={2.7} aria-hidden />
+                    <span>
+                      <small>Решение системы</small>
+                      {tab.decision}
+                    </span>
+                  </div>
+                </motion.aside>
+              </AnimatePresence>
+            </div>
+
+            <div className="v3-conveyor-return">
+              <span className="v3-conveyor-return__corner" aria-hidden>↑</span>
+              <span className="v3-conveyor-return__line" aria-hidden />
+              <span className="v3-conveyor-return__text">
+                <RefreshCw className="h-4 w-4" strokeWidth={2.8} aria-hidden />
+                Следующий материал становится точнее
+              </span>
+              <span className="v3-conveyor-return__line" aria-hidden />
+              <span className="v3-conveyor-return__corner" aria-hidden>┘</span>
+            </div>
+          </div>
+        </V3Reveal>
+
+        <V3Reveal delay={0.1} className="mt-6">
+          <div className="v3-cycle-start">
+            <div className="v3-cycle-start__title">
+              <span>05 / Запуск</span>
+              <strong>Первый цикл — за 5 минут</strong>
+            </div>
+            <ol>
+              {START_STEPS.map((step, index) => (
+                <li key={step}>
+                  <span>0{index + 1}</span>
+                  {step}
+                </li>
+              ))}
+            </ol>
+            <Link href="/register" className="v3-btn v3-btn--ink">
+              Запустить первый цикл бесплатно
+              <ArrowRight className="h-4 w-4" strokeWidth={2.6} aria-hidden />
+            </Link>
+          </div>
         </V3Reveal>
       </div>
     </section>

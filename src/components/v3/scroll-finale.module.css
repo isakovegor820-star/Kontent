@@ -1,0 +1,1336 @@
+.finale {
+  position: relative;
+  min-height: 250svh;
+  border-block: 3px solid var(--ink);
+  background: var(--paper);
+}
+
+.stickyScene {
+  position: sticky;
+  top: 64px;
+  display: grid;
+  min-height: calc(100svh - 64px);
+  grid-template-rows: auto 1fr auto;
+  overflow: hidden;
+}
+
+.sceneTopline,
+.sceneFooter {
+  position: relative;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  min-height: 54px;
+  padding: 12px clamp(18px, 3vw, 54px);
+  border-bottom: 2px solid currentColor;
+  font-family: var(--v3-mono), ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.sceneFooter {
+  border-top: 2px solid currentColor;
+  border-bottom: 0;
+}
+
+.sceneFooter a,
+.manifestoAction a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  min-height: 48px;
+  padding: 12px 20px;
+  border: 2px solid currentColor;
+  box-shadow: 5px 5px 0 currentColor;
+  font-family: var(--v3-mono), ui-monospace, monospace;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  transition: translate 160ms ease, box-shadow 160ms ease;
+}
+
+.sceneFooter a:hover,
+.manifestoAction a:hover {
+  translate: 3px 3px;
+  box-shadow: 2px 2px 0 currentColor;
+}
+
+.sceneFooter svg,
+.manifestoAction svg {
+  width: 18px;
+  height: 18px;
+}
+
+.kicker {
+  font-family: var(--v3-mono), ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+/* ------------------------------------------------------------------ 01 */
+
+.control {
+  color: var(--paper);
+  background: var(--ink);
+}
+
+.controlGrid {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.8fr) minmax(230px, 0.58fr) minmax(360px, 1.25fr);
+  gap: clamp(24px, 3vw, 56px);
+  align-items: center;
+  padding: clamp(28px, 4vw, 70px) clamp(18px, 3vw, 54px);
+}
+
+.controlIntro h2,
+.contractGrid h2 {
+  margin-top: 16px;
+  font-family: var(--v3-display), system-ui, sans-serif;
+  font-size: clamp(3.2rem, 5.8vw, 7rem);
+  font-weight: 950;
+  letter-spacing: -0.045em;
+  line-height: 0.86;
+  text-transform: uppercase;
+}
+
+.controlIntro h2 mark,
+.contractGrid h2 mark {
+  display: block;
+  width: fit-content;
+  margin-top: 8px;
+  padding: 0.03em 0.12em 0.08em;
+  color: var(--ink);
+  background: var(--acc);
+}
+
+.controlIntro > p:last-child {
+  max-width: 42ch;
+  margin-top: 26px;
+  color: color-mix(in srgb, var(--paper) 68%, transparent);
+  font-size: clamp(15px, 1.25vw, 20px);
+  line-height: 1.55;
+}
+
+.stepRail {
+  border: 2px solid var(--paper);
+}
+
+.stepRail li {
+  display: grid;
+  grid-template-columns: 34px 1fr 14px;
+  gap: 12px;
+  align-items: center;
+  min-height: 64px;
+  padding: 13px 16px;
+  border-bottom: 1px solid color-mix(in srgb, var(--paper) 36%, transparent);
+  font-family: var(--v3-mono), ui-monospace, monospace;
+  text-transform: uppercase;
+  transition: color 180ms ease, background 180ms ease;
+}
+
+.stepRail li:last-child {
+  border-bottom: 0;
+}
+
+.stepRail li > span {
+  opacity: 0.54;
+  font-size: 10px;
+}
+
+.stepRail li strong {
+  font-size: 12px;
+  letter-spacing: 0.1em;
+}
+
+.stepRail li i {
+  width: 10px;
+  height: 10px;
+  border: 2px solid currentColor;
+}
+
+.stepRail li[data-active="true"] {
+  color: var(--ink);
+  background: var(--acc);
+}
+
+.stepRail li[data-active="true"] i {
+  background: var(--ink);
+}
+
+.console {
+  position: relative;
+  min-height: min(62vh, 610px);
+  overflow: hidden;
+  border: 3px solid var(--paper);
+  color: var(--ink);
+  background: var(--sheet);
+  box-shadow: 12px 12px 0 var(--acc);
+}
+
+.consoleProgress {
+  position: absolute;
+  inset: 0 auto 0 0;
+  z-index: 2;
+  width: 8px;
+  transform-origin: 50% 0;
+  background: var(--acc);
+}
+
+.consoleHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 54px;
+  padding: 12px 18px 12px 26px;
+  border-bottom: 2px solid var(--ink);
+  font-family: var(--v3-mono), ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+
+.liveDot {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--green);
+}
+
+.liveDot::before {
+  width: 8px;
+  height: 8px;
+  background: currentColor;
+  content: "";
+  animation: finale-blink 900ms steps(2, end) infinite;
+}
+
+.consoleBody {
+  display: flex;
+  min-height: calc(min(62vh, 610px) - 54px);
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  padding: clamp(28px, 4vw, 64px);
+}
+
+.consoleBody > svg {
+  width: 58px;
+  height: 58px;
+  padding: 12px;
+  border: 3px solid var(--ink);
+  background: var(--acc);
+  box-shadow: 6px 6px 0 var(--ink);
+}
+
+.consoleBody > p:first-of-type {
+  margin-top: 34px;
+  font-family: var(--v3-mono), ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+
+.consoleBody h3 {
+  margin-top: 5px;
+  font-family: var(--v3-display), system-ui, sans-serif;
+  font-size: clamp(3rem, 5vw, 6.2rem);
+  font-weight: 950;
+  line-height: 0.9;
+  text-transform: uppercase;
+}
+
+.consoleRule {
+  width: 100%;
+  height: 3px;
+  margin-block: 26px 20px;
+  background: var(--ink);
+}
+
+.consoleText {
+  max-width: 56ch;
+  color: var(--ink-2);
+  font-size: clamp(14px, 1.1vw, 18px);
+  line-height: 1.55;
+}
+
+.consoleStamp {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  margin-top: 28px;
+  padding: 9px 12px;
+  border: 2px solid var(--ink);
+  background: var(--green-soft);
+  font-family: var(--v3-mono), ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  rotate: -1.5deg;
+}
+
+.consoleStamp svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* ------------------------------------------------------------------ 02 */
+
+.manifesto {
+  min-height: 360svh;
+  color: var(--ink);
+  background: var(--acc);
+}
+
+.manifesto .stickyScene {
+  isolation: isolate;
+  background:
+    linear-gradient(to right, color-mix(in srgb, var(--ink) 11%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in srgb, var(--ink) 11%, transparent) 1px, transparent 1px),
+    var(--acc);
+  background-size: 64px 64px, 64px 64px, auto;
+}
+
+.manifestoGhost {
+  position: absolute;
+  top: 45%;
+  left: 0;
+  z-index: 0;
+  width: max-content;
+  color: transparent;
+  opacity: 0.07;
+  font-family: var(--font-golos), system-ui, sans-serif;
+  font-size: clamp(9rem, 22vw, 25rem);
+  font-weight: 950;
+  letter-spacing: -0.045em;
+  line-height: 0.75;
+  pointer-events: none;
+  white-space: nowrap;
+  -webkit-text-stroke: 2px var(--ink);
+  transform: translateY(-50%);
+}
+
+.manifestoCopy {
+  position: relative;
+  z-index: 3;
+  display: grid;
+  width: 100%;
+  row-gap: clamp(12px, 1.8vh, 28px);
+  align-self: center;
+  padding: 0 3vw 22vh;
+  font-family: var(--v3-kinetic), var(--v3-display), system-ui, sans-serif;
+  font-size: clamp(4.4rem, 8.6vw, 12rem);
+  font-weight: 400;
+  letter-spacing: -0.035em;
+  line-height: 0.94;
+  text-align: center;
+  text-transform: uppercase;
+  white-space: nowrap;
+  transform-origin: 50% 50%;
+}
+
+.manifestoLine {
+  position: relative;
+  width: 100%;
+}
+
+.manifestoLine:nth-child(1) {
+  text-align: center;
+}
+
+.manifestoLine:nth-child(2) {
+  text-align: center;
+}
+
+.manifestoLine:nth-child(3) {
+  text-align: center;
+}
+
+.manifestoLine > p {
+  display: inline-block;
+  transform-origin: 50% 50%;
+}
+
+.manifestoPair {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  gap: clamp(12px, 1.8vw, 34px);
+}
+
+.manifestoOutline {
+  color: transparent;
+  font-size: 0.96em;
+  letter-spacing: -0.06em;
+  line-height: 0.88;
+  -webkit-text-stroke: clamp(2px, 0.18vw, 4px) var(--ink);
+  filter: drop-shadow(7px 7px 0 color-mix(in srgb, var(--ink) 16%, transparent));
+  transition: color 240ms ease, filter 240ms ease;
+}
+
+.manifestoCopy[data-phase="2"] .manifestoOutline {
+  color: var(--ink);
+  filter: none;
+}
+
+.manifestoStamp,
+.manifestoRibbon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 3px solid var(--ink);
+  font-family: var(--v3-mono), ui-monospace, monospace;
+  font-weight: 600;
+  letter-spacing: 0.13em;
+  line-height: 1;
+}
+
+.manifestoStamp {
+  padding: 0.55em 0.72em 0.62em;
+  color: var(--ink);
+  background: var(--sheet);
+  box-shadow: 7px 7px 0 var(--ink);
+  font-size: 0.2em;
+  rotate: -2deg;
+}
+
+.manifestoAnchor {
+  font-size: 0.78em;
+  letter-spacing: -0.055em;
+  line-height: 0.9;
+}
+
+.manifestoRibbon {
+  padding: 0.55em 0.72em 0.62em;
+  color: var(--acc);
+  background: var(--ink);
+  font-size: 0.2em;
+  rotate: 1.5deg;
+}
+
+.manifestoCopy mark {
+  display: inline-block;
+  padding: 0.06em 0.16em 0.1em;
+  color: var(--paper);
+  background: var(--ink);
+  rotate: -0.35deg;
+  box-shadow: 8px 8px 0 color-mix(in srgb, var(--ink) 24%, transparent);
+}
+
+.manifestoFacts {
+  position: absolute;
+  z-index: 6;
+  inset: auto clamp(18px, 3vw, 54px) 82px;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  border: 3px solid var(--ink);
+  background: var(--sheet);
+  box-shadow: 9px 9px 0 var(--ink);
+}
+
+.manifestoFacts article {
+  position: relative;
+  display: grid;
+  gap: 7px;
+  align-content: center;
+  min-height: 92px;
+  padding: 18px 24px;
+  border-right: 2px solid var(--ink);
+  transition: color 180ms ease, background 180ms ease;
+}
+
+.manifestoFacts article:hover {
+  color: var(--paper);
+  background: var(--ink);
+}
+
+.manifestoFacts article:hover p {
+  color: color-mix(in srgb, var(--paper) 72%, transparent);
+}
+
+.manifestoFacts article:last-child {
+  border-right: 0;
+}
+
+.manifestoFacts strong {
+  font-family: var(--v3-mono), ui-monospace, monospace;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.manifestoFacts p {
+  color: var(--ink-2);
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.manifestoAction {
+  position: absolute;
+  inset: auto clamp(18px, 3vw, 54px) 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  font-family: var(--v3-mono), ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.manifestoAction a {
+  color: var(--paper);
+  background: var(--ink);
+  box-shadow: 5px 5px 0 color-mix(in srgb, var(--ink) 35%, transparent);
+}
+
+.manifestoTakeover {
+  position: absolute;
+  inset: 54px 0 0;
+  z-index: 12;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  padding: clamp(28px, 5vw, 86px);
+  color: var(--paper);
+  background:
+    repeating-linear-gradient(135deg, transparent 0 28px, color-mix(in srgb, var(--paper) 4%, transparent) 28px 29px),
+    var(--ink);
+  text-align: center;
+}
+
+.manifestoTakeoverRail {
+  position: absolute;
+  inset: 0 0 auto;
+  overflow: hidden;
+  padding: 12px 0;
+  border-bottom: 2px solid var(--paper);
+  color: var(--ink);
+  background: var(--acc);
+  font-family: var(--v3-mono), ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  animation: finale-manifesto-rail 8s linear infinite;
+}
+
+.manifestoTakeover > p:first-of-type {
+  font-family: var(--v3-mono), ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 850;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.manifestoTakeover h3 {
+  margin-top: 18px;
+  font-family: var(--v3-display), system-ui, sans-serif;
+  font-size: clamp(4rem, 8.7vw, 11rem);
+  font-weight: 950;
+  letter-spacing: -0.055em;
+  line-height: 0.78;
+  text-transform: uppercase;
+}
+
+.manifestoTakeover h3 mark {
+  display: block;
+  width: fit-content;
+  margin: 14px auto 0;
+  padding: 0.04em 0.12em 0.1em;
+  color: var(--ink);
+  background: var(--acc);
+  box-shadow: 10px 10px 0 var(--paper);
+  rotate: -1deg;
+}
+
+.manifestoTakeover > p:last-of-type {
+  max-width: 58ch;
+  margin-top: 28px;
+  color: color-mix(in srgb, var(--paper) 70%, transparent);
+  font-size: clamp(14px, 1.2vw, 18px);
+  line-height: 1.5;
+}
+
+.manifestoTakeover > a {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 32px;
+  padding: 16px 22px;
+  border: 2px solid var(--paper);
+  color: var(--ink);
+  background: var(--acc);
+  box-shadow: 7px 7px 0 var(--paper);
+  font-family: var(--v3-mono), ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 850;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  transition: translate 160ms ease, box-shadow 160ms ease;
+}
+
+.manifestoTakeover > a:hover {
+  translate: 4px 4px;
+  box-shadow: 3px 3px 0 var(--paper);
+}
+
+.manifestoTakeover > a svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* ------------------------------------------------------------------ 03 */
+
+.contract {
+  min-height: 320svh;
+  color: var(--ink);
+  background: var(--sheet);
+}
+
+.contract .stickyScene {
+  background:
+    linear-gradient(90deg, transparent 49.8%, color-mix(in srgb, var(--ink) 10%, transparent) 50%, transparent 50.2%),
+    repeating-linear-gradient(135deg, transparent 0 22px, color-mix(in srgb, var(--ink) 2.5%, transparent) 22px 23px),
+    var(--sheet);
+}
+
+.contractGhost {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 0;
+  color: transparent;
+  opacity: 0.045;
+  font-family: var(--v3-display), system-ui, sans-serif;
+  font-size: clamp(8rem, 19vw, 22rem);
+  font-weight: 950;
+  letter-spacing: -0.07em;
+  line-height: 0.8;
+  pointer-events: none;
+  transform: translate(-50%, -50%) rotate(-4deg);
+  white-space: nowrap;
+  -webkit-text-stroke: 3px var(--ink);
+}
+
+.scanLine {
+  position: absolute;
+  inset-inline: 0;
+  z-index: 8;
+  height: 5px;
+  pointer-events: none;
+  background: var(--acc);
+  border-block: 1px solid var(--ink);
+  box-shadow:
+    0 9px 0 color-mix(in srgb, var(--acc) 22%, transparent),
+    0 18px 0 color-mix(in srgb, var(--acc) 8%, transparent);
+}
+
+.scanLine span {
+  position: absolute;
+  top: 50%;
+  right: clamp(18px, 3vw, 54px);
+  padding: 6px 9px;
+  border: 2px solid var(--ink);
+  color: var(--ink);
+  background: var(--acc);
+  font-family: var(--v3-mono), ui-monospace, monospace;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  transform: translateY(-50%);
+}
+
+.contractGrid {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  grid-template-columns: minmax(260px, 0.72fr) minmax(320px, 0.9fr) minmax(360px, 1.12fr);
+  gap: clamp(22px, 2.5vw, 44px);
+  align-items: center;
+  padding: clamp(30px, 4vw, 72px) clamp(18px, 3vw, 54px);
+}
+
+.shieldDevice {
+  position: relative;
+  display: grid;
+  width: 68px;
+  height: 68px;
+  margin-bottom: 24px;
+  place-items: center;
+  border: 3px solid var(--ink);
+  background: var(--acc);
+  box-shadow: 7px 7px 0 var(--ink);
+}
+
+.shieldDevice svg {
+  position: relative;
+  z-index: 2;
+  width: 34px;
+  height: 34px;
+}
+
+.shieldDevice i {
+  position: absolute;
+  inset: -13px;
+  border: 2px solid var(--ink);
+  opacity: 0.28;
+  animation: finale-shield-pulse 1.8s steps(2, end) infinite;
+}
+
+.shieldDevice i:nth-child(2) {
+  inset: -23px;
+  animation-delay: 0.45s;
+}
+
+.contractGrid h2 {
+  font-size: clamp(2.9rem, 4.3vw, 5.8rem);
+}
+
+.contractLead {
+  max-width: 40ch;
+  margin-top: 24px;
+  color: var(--ink-2);
+  font-size: clamp(14px, 1.05vw, 17px);
+  line-height: 1.55;
+}
+
+.contractList {
+  position: relative;
+  border: 3px solid var(--ink);
+  background: var(--paper);
+  box-shadow: 9px 9px 0 var(--ink);
+}
+
+.contractList li {
+  display: grid;
+  grid-template-columns: 40px 1fr auto;
+  gap: 12px;
+  align-items: center;
+  min-height: 74px;
+  padding: 14px 16px;
+  border-bottom: 2px solid var(--ink);
+  transition:
+    color 220ms ease,
+    background 220ms ease,
+    translate 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.contractList li:last-child {
+  border-bottom: 0;
+}
+
+.contractList li[data-verified="true"] {
+  background: var(--green-soft);
+}
+
+.contractList li[data-active="true"] {
+  background: var(--acc);
+  translate: -9px 0;
+}
+
+.contractList span,
+.contractList strong {
+  font-family: var(--v3-mono), ui-monospace, monospace;
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.contractList p {
+  font-size: 14px;
+  font-weight: 750;
+}
+
+.contractList strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 7px;
+  border: 1.5px solid var(--ink);
+  background: var(--sheet);
+}
+
+.contractList strong svg {
+  width: 12px;
+  height: 12px;
+}
+
+.verdictPanel {
+  position: relative;
+  display: flex;
+  min-height: min(61vh, 600px);
+  flex-direction: column;
+  justify-content: center;
+  padding: clamp(28px, 4vw, 60px);
+  overflow: hidden;
+  border: 3px solid var(--ink);
+  color: var(--paper);
+  background: var(--ink);
+  box-shadow: 12px 12px 0 var(--acc);
+}
+
+.verdictGrid {
+  position: absolute;
+  inset: 0;
+  opacity: 0.16;
+  background-image:
+    linear-gradient(to right, var(--paper) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--paper) 1px, transparent 1px);
+  background-size: 42px 42px;
+  mask-image: linear-gradient(to bottom, black, transparent 75%);
+}
+
+.verdictCode {
+  position: absolute;
+  top: 14px;
+  right: 20px;
+  color: transparent;
+  opacity: 0.22;
+  font-family: var(--v3-display), system-ui, sans-serif;
+  font-size: clamp(6.5rem, 10vw, 12rem);
+  font-weight: 950;
+  line-height: 0.8;
+  -webkit-text-stroke: 2px var(--acc);
+}
+
+.verdictIcon {
+  position: absolute;
+  top: 22px;
+  left: 22px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--acc);
+  font-family: var(--v3-mono), ui-monospace, monospace;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.verdictIcon svg {
+  width: 28px;
+  height: 28px;
+}
+
+.verdictCopy {
+  position: relative;
+  z-index: 2;
+}
+
+.verdictCopy > span {
+  font-family: var(--v3-mono), ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  opacity: 0.65;
+}
+
+.verdictPanel h3 {
+  max-width: 8ch;
+  margin-top: 12px;
+  font-family: var(--v3-display), system-ui, sans-serif;
+  font-size: clamp(3.3rem, 5.4vw, 7rem);
+  font-weight: 950;
+  letter-spacing: -0.04em;
+  line-height: 0.84;
+  text-transform: uppercase;
+}
+
+.verdictPanel p {
+  max-width: 44ch;
+  margin-top: 24px;
+  color: color-mix(in srgb, var(--paper) 68%, transparent);
+  line-height: 1.55;
+}
+
+.approvedStamp {
+  position: relative;
+  z-index: 2;
+  width: fit-content;
+  margin-top: 32px;
+  padding: 9px 12px;
+  border: 2px solid var(--acc);
+  color: var(--acc);
+  font-family: var(--v3-mono), ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  rotate: -2deg;
+}
+
+.finalTakeover {
+  position: absolute;
+  inset: 54px 0 57px;
+  z-index: 12;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: clamp(28px, 5vw, 84px);
+  color: var(--paper);
+  background:
+    repeating-linear-gradient(135deg, transparent 0 28px, color-mix(in srgb, var(--paper) 4%, transparent) 28px 29px),
+    var(--ink);
+  text-align: center;
+}
+
+.finalTakeover::before,
+.finalTakeover::after {
+  position: absolute;
+  width: 18vw;
+  height: 18vw;
+  max-width: 260px;
+  max-height: 260px;
+  border: 3px solid var(--acc);
+  content: "";
+}
+
+.finalTakeover::before {
+  top: 6%;
+  left: 4%;
+  border-right: 0;
+  border-bottom: 0;
+}
+
+.finalTakeover::after {
+  right: 4%;
+  bottom: 6%;
+  border-top: 0;
+  border-left: 0;
+}
+
+.finalCheck {
+  display: grid;
+  width: 78px;
+  height: 78px;
+  margin-bottom: 30px;
+  place-items: center;
+  border: 3px solid var(--paper);
+  color: var(--ink);
+  background: var(--acc);
+  box-shadow: 9px 9px 0 var(--paper);
+}
+
+.finalCheck svg {
+  width: 44px;
+  height: 44px;
+}
+
+.finalTakeover > p:first-of-type {
+  font-family: var(--v3-mono), ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 850;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.finalTakeover h3 {
+  max-width: 13ch;
+  margin-top: 18px;
+  font-family: var(--v3-display), system-ui, sans-serif;
+  font-size: clamp(4rem, 8.5vw, 11rem);
+  font-weight: 950;
+  letter-spacing: -0.055em;
+  line-height: 0.8;
+  text-transform: uppercase;
+}
+
+.finalTakeover h3 mark {
+  display: block;
+  width: fit-content;
+  margin: 12px auto 0;
+  padding: 0.03em 0.12em 0.1em;
+  color: var(--ink);
+  background: var(--acc);
+  rotate: -1deg;
+}
+
+.finalTakeover > p:last-of-type {
+  max-width: 56ch;
+  margin-top: 26px;
+  color: color-mix(in srgb, var(--paper) 70%, transparent);
+  font-size: clamp(14px, 1.2vw, 18px);
+  line-height: 1.5;
+}
+
+.finalTakeover > a {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 32px;
+  padding: 16px 22px;
+  border: 2px solid var(--paper);
+  color: var(--ink);
+  background: var(--acc);
+  box-shadow: 7px 7px 0 var(--paper);
+  font-family: var(--v3-mono), ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 850;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  transition: translate 160ms ease, box-shadow 160ms ease;
+}
+
+.finalTakeover > a:hover {
+  translate: 4px 4px;
+  box-shadow: 3px 3px 0 var(--paper);
+}
+
+.finalTakeover > a svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* --------------------------------------------------------- switcher */
+
+.switcher {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  border: 2px solid var(--ink);
+  background: var(--sheet);
+  box-shadow: 6px 6px 0 var(--ink);
+  font-family: var(--v3-mono), ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.switcher > span,
+.switcher a {
+  display: grid;
+  min-height: 42px;
+  place-items: center;
+  padding-inline: 13px;
+  border-right: 2px solid var(--ink);
+}
+
+.switcher a:last-child {
+  border-right: 0;
+}
+
+.switcher a:hover,
+.switcher a[aria-current="page"] {
+  color: var(--ink);
+  background: var(--acc);
+}
+
+@keyframes finale-blink {
+  50% { opacity: 0.25; }
+}
+
+@keyframes finale-shield-pulse {
+  50% {
+    opacity: 0.05;
+    scale: 1.12;
+  }
+}
+
+@keyframes finale-manifesto-rail {
+  50% {
+    text-indent: -18%;
+  }
+}
+
+@media (max-width: 1050px) {
+  .stickyScene {
+    top: 58px;
+    min-height: calc(100svh - 58px);
+  }
+
+  .controlGrid,
+  .contractGrid {
+    grid-template-columns: minmax(220px, 0.8fr) minmax(340px, 1.2fr);
+  }
+
+  .stepRail,
+  .contractList {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    order: 3;
+  }
+
+  .stepRail li,
+  .contractList li {
+    min-height: 62px;
+    border-right: 1px solid var(--ink);
+    border-bottom: 0;
+  }
+
+  .stepRail li:last-child,
+  .contractList li:last-child {
+    border-right: 0;
+  }
+
+  .contractList li {
+    grid-template-columns: 28px 1fr;
+  }
+
+  .contractList strong {
+    display: none;
+  }
+}
+
+@media (max-width: 720px) {
+  .finale,
+  .manifesto {
+    min-height: 300svh;
+  }
+
+  .manifesto {
+    min-height: 380svh;
+  }
+
+  .stickyScene {
+    top: 0;
+    min-height: 100svh;
+  }
+
+  .sceneTopline span:last-child,
+  .sceneFooter > span,
+  .switcher > span {
+    display: none;
+  }
+
+  .controlGrid,
+  .contractGrid {
+    grid-template-columns: 1fr;
+    gap: 20px;
+    align-content: center;
+    padding-block: 20px;
+  }
+
+  .controlIntro > p:last-child,
+  .shieldDevice,
+  .contractLead {
+    display: none;
+  }
+
+  .controlIntro h2,
+  .contractGrid h2 {
+    font-size: clamp(2.5rem, 12vw, 4.2rem);
+  }
+
+  .stepRail,
+  .contractList {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    order: 0;
+  }
+
+  .stepRail li,
+  .contractList li {
+    display: grid;
+    min-height: 42px;
+    grid-template-columns: 1fr;
+    place-items: center;
+    padding: 8px 4px;
+    border-right: 1px solid var(--ink);
+  }
+
+  .stepRail li > span,
+  .stepRail li i,
+  .contractList p {
+    display: none;
+  }
+
+  .stepRail li strong {
+    font-size: 8px;
+    text-align: center;
+  }
+
+  .console {
+    min-height: 46svh;
+    box-shadow: 7px 7px 0 var(--acc);
+  }
+
+  .consoleBody {
+    min-height: calc(46svh - 48px);
+    padding: 24px;
+  }
+
+  .consoleHead {
+    min-height: 48px;
+  }
+
+  .consoleBody > svg {
+    width: 44px;
+    height: 44px;
+    padding: 9px;
+  }
+
+  .consoleBody > p:first-of-type {
+    margin-top: 20px;
+  }
+
+  .consoleBody h3 {
+    font-size: 2.8rem;
+  }
+
+  .consoleRule {
+    margin-block: 16px 14px;
+  }
+
+  .consoleStamp {
+    margin-top: 16px;
+    font-size: 8px;
+  }
+
+  .manifestoCopy {
+    row-gap: 10px;
+    padding: 0 16px 31vh;
+    font-size: clamp(2.35rem, 11vw, 4.8rem);
+    line-height: 0.94;
+  }
+
+  .manifestoGhost {
+    font-size: 42vw;
+    opacity: 0.065;
+  }
+
+  .manifestoFacts {
+    inset-inline: 16px;
+    bottom: 80px;
+    grid-template-columns: 1fr;
+  }
+
+  .manifestoFacts article {
+    padding: 11px 14px;
+    border-right: 0;
+    border-bottom: 1px solid var(--ink);
+  }
+
+  .manifestoFacts article:last-child {
+    border-bottom: 0;
+  }
+
+  .manifestoAction {
+    inset-inline: 16px;
+  }
+
+  .manifestoAction > p {
+    display: none;
+  }
+
+  .manifestoAction a,
+  .sceneFooter a {
+    width: 100%;
+  }
+
+  .manifestoTakeover {
+    inset: 54px 0 0;
+    padding-inline: 18px;
+  }
+
+  .manifestoTakeover h3 {
+    font-size: clamp(3.2rem, 15vw, 6rem);
+  }
+
+  .manifestoTakeover h3 mark {
+    box-shadow: 7px 7px 0 var(--paper);
+  }
+
+  .manifestoTakeover > p:last-of-type {
+    max-width: 34ch;
+    margin-top: 20px;
+  }
+
+  .manifestoTakeover > a {
+    margin-top: 22px;
+  }
+
+  .verdictPanel {
+    min-height: 48svh;
+    padding: 28px;
+    box-shadow: 7px 7px 0 var(--acc);
+  }
+
+  .verdictPanel h3 {
+    font-size: clamp(3rem, 16vw, 5.4rem);
+  }
+
+  .verdictCode {
+    font-size: 6rem;
+  }
+
+  .finalTakeover {
+    inset: 54px 0 58px;
+    padding-inline: 20px;
+  }
+
+  .finalCheck {
+    width: 60px;
+    height: 60px;
+    margin-bottom: 22px;
+  }
+
+  .finalCheck svg {
+    width: 34px;
+    height: 34px;
+  }
+
+  .finalTakeover h3 {
+    font-size: clamp(3.3rem, 16vw, 6rem);
+  }
+
+  .finalTakeover > p:last-of-type {
+    max-width: 34ch;
+    margin-top: 18px;
+  }
+
+  .finalTakeover > a {
+    margin-top: 22px;
+  }
+
+  .switcher {
+    right: 12px;
+    bottom: 12px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .finale {
+    min-height: auto;
+  }
+
+  .stickyScene {
+    position: relative;
+    top: auto;
+    min-height: 900px;
+  }
+
+  .liveDot::before {
+    animation: none;
+  }
+
+  .manifestoTakeoverRail {
+    animation: none;
+  }
+}

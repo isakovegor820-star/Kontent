@@ -1,5 +1,4 @@
-// Layout алиаса /v3: только метаданные. Страница (src/app/page.tsx) сама несёт
-// .v3-скоуп, шрифты (v3Display/v3Mono) и v3.css — обёртка здесь больше не нужна.
+// Метаданные архивной необруталистичной версии от 28 июля.
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {

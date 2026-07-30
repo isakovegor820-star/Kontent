@@ -1,0 +1,846 @@
+.footer {
+  position: relative;
+  overflow: hidden;
+  border-top: 3px solid var(--ink);
+  font-family: var(--v3-mono), ui-monospace, monospace;
+}
+
+.switcher {
+  position: fixed;
+  z-index: 100;
+  top: 86px;
+  right: 18px;
+  display: flex;
+  align-items: stretch;
+  border: 2px solid var(--ink);
+  background: var(--sheet);
+  box-shadow: 4px 4px 0 var(--ink);
+  font-family: var(--v3-mono), ui-monospace, monospace;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.switcher > span,
+.switcher a {
+  display: grid;
+  min-height: 35px;
+  place-items: center;
+  padding-inline: 11px;
+}
+
+.switcher > span {
+  color: var(--paper);
+  background: var(--ink);
+}
+
+.switcher a + a {
+  border-left: 2px solid var(--ink);
+}
+
+.switcher a:hover,
+.switcher a[aria-current="page"] {
+  background: var(--acc);
+}
+
+.switcher .backLink {
+  color: var(--paper);
+  background: var(--ink);
+}
+
+.topbar {
+  position: relative;
+  z-index: 20;
+  display: flex;
+  min-height: 58px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding-inline: clamp(18px, 4vw, 64px);
+  border-bottom: 3px solid var(--ink);
+  color: var(--paper);
+  background: var(--ink);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.topbar > span {
+  color: var(--acc);
+}
+
+.topbar strong {
+  font-size: 9px;
+}
+
+.meta {
+  position: relative;
+  z-index: 30;
+  display: grid;
+  align-items: center;
+  gap: 22px;
+  padding: 25px clamp(18px, 4vw, 64px);
+  border-top: 3px solid var(--ink);
+  color: var(--ink);
+  background: var(--sheet);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.meta > p {
+  font-family: var(--v3-display), system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+}
+
+.meta nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px 18px;
+}
+
+.meta nav a,
+.telegram {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 4px;
+}
+
+.telegram {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  width: fit-content;
+}
+
+.telegram svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 2.5;
+}
+
+/* --------------------------------------------------------- 01 / WAKE */
+
+.wake {
+  color: var(--ink);
+  background: var(--acc);
+  transition: color 280ms ease, background 280ms ease;
+}
+
+.wakeHint {
+  position: relative;
+  z-index: 5;
+  display: flex;
+  min-height: 58px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding-inline: clamp(18px, 4vw, 64px);
+  border-bottom: 3px solid var(--ink);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.wakeHint > div {
+  display: flex;
+  gap: 7px;
+}
+
+.wakeHint i {
+  width: 11px;
+  height: 11px;
+  border: 2px solid var(--ink);
+  background: var(--sheet);
+  transition: background 120ms ease, transform 120ms ease;
+}
+
+.wakeHint .dotActive {
+  background: var(--ink);
+  transform: rotate(45deg);
+}
+
+.wakeGrid {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  min-height: clamp(360px, 47vw, 710px);
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  border-bottom: 3px solid var(--ink);
+}
+
+.wakeCell {
+  position: relative;
+  min-width: 0;
+  overflow: visible;
+}
+
+.wakeCell + .wakeCell {
+  border-left: 3px solid var(--ink);
+}
+
+.wakeCell button {
+  position: relative;
+  display: grid;
+  width: 100%;
+  height: 100%;
+  min-height: inherit;
+  place-items: center;
+  overflow: hidden;
+  color: var(--ink);
+  background: transparent;
+  cursor: pointer;
+  transition: color 150ms ease, background 150ms ease, transform 100ms ease;
+}
+
+.wakeCell button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--paper) 30%, transparent);
+}
+
+.wakeCell button:active:not(:disabled) {
+  transform: translateY(12px);
+}
+
+.wakeCell button > span {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.wakeCell strong {
+  position: relative;
+  z-index: 2;
+  font-family: var(--v3-display), system-ui, sans-serif;
+  font-size: clamp(3.8rem, 14vw, 13rem);
+  font-weight: 900;
+  letter-spacing: -0.08em;
+  line-height: 0.78;
+  transition: transform 240ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.wakeCell button > i {
+  position: absolute;
+  width: 24px;
+  height: 24px;
+  border: 3px solid var(--ink);
+  border-radius: 50%;
+  opacity: 0;
+}
+
+.charged button {
+  color: var(--acc);
+  background: var(--ink);
+}
+
+.charged button > i {
+  animation: shockwave 560ms ease-out both;
+}
+
+@keyframes shockwave {
+  from { opacity: 1; transform: scale(0.5); }
+  to { opacity: 0; transform: scale(12); }
+}
+
+.charged strong {
+  animation: chargedPulse 1.7s ease-in-out infinite alternate;
+  animation-delay: calc(var(--letter-index) * -130ms);
+}
+
+@keyframes chargedPulse {
+  from { transform: translateY(-6%) rotate(-2deg); }
+  to { transform: translateY(6%) rotate(2deg); }
+}
+
+.wakeCell[data-effect="0"].charged { animation: impact 380ms ease-out; }
+.wakeCell[data-effect="1"].charged strong { animation-name: widen; }
+.wakeCell[data-effect="2"].charged::after {
+  position: absolute;
+  z-index: 4;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 10px;
+  background: var(--acc);
+  content: "";
+  animation: scanCell 1.4s linear infinite;
+}
+.wakeCell[data-effect="3"].charged strong { animation-name: orbit; }
+.wakeCell[data-effect="4"].charged strong { animation-name: slice; }
+.wakeCell[data-effect="5"].charged strong { animation-name: launch; }
+
+@keyframes impact {
+  20% { transform: translateY(13px); }
+  45% { transform: translateY(-8px); }
+}
+
+@keyframes widen {
+  from { transform: scaleX(0.78); }
+  to { transform: scaleX(1.14); }
+}
+
+@keyframes scanCell {
+  to { transform: translateX(13vw); }
+}
+
+@keyframes orbit {
+  from { transform: rotate(-8deg) translateY(-5%); }
+  to { transform: rotate(8deg) translateY(5%); }
+}
+
+@keyframes slice {
+  0%, 100% { text-shadow: 0 0 0 var(--acc); }
+  50% { text-shadow: -12px 8px 0 var(--paper), 12px -8px 0 var(--acc); }
+}
+
+@keyframes launch {
+  from { transform: translateY(10%); }
+  to { transform: translateY(-12%); }
+}
+
+.wakeFinale {
+  color: var(--acc);
+  background: var(--ink);
+}
+
+.wakeFinale .wakeHint,
+.wakeFinale .wakeGrid,
+.wakeFinale .wakeCell + .wakeCell {
+  border-color: var(--acc);
+}
+
+.wakeFinale .wakeHint i {
+  border-color: var(--acc);
+  background: var(--acc);
+}
+
+.wakeFinale .wakeCell button {
+  color: var(--acc);
+}
+
+.wakeFinale .wakeCell strong {
+  animation: finaleWord 900ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation-delay: calc(var(--letter-index) * 70ms);
+}
+
+@keyframes finaleWord {
+  0% { transform: translateY(90%) rotate(18deg); opacity: 0; }
+  70% { transform: translateY(-7%) rotate(-2deg); opacity: 1; }
+  100% { transform: translateY(0); opacity: 1; }
+}
+
+.awakeMessage {
+  position: absolute;
+  z-index: 25;
+  right: clamp(20px, 5vw, 80px);
+  bottom: 118px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 13px 15px;
+  border: 3px solid var(--ink);
+  color: var(--ink);
+  background: var(--sheet);
+  box-shadow: 7px 7px 0 var(--acc);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.awakeMessage > svg {
+  width: 17px;
+  height: 17px;
+}
+
+.awakeMessage button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 10px;
+  padding-left: 12px;
+  border-left: 2px solid var(--ink);
+  cursor: pointer;
+}
+
+.awakeMessage button svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* ------------------------------------------------------ 02 / PHYSICS */
+
+.physics {
+  color: var(--ink);
+  background: var(--paper);
+}
+
+.physicsTools {
+  position: relative;
+  z-index: 4;
+  display: flex;
+  min-height: 58px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding-inline: clamp(18px, 4vw, 64px);
+  border-bottom: 3px solid var(--ink);
+  background: var(--acc);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.physicsTools button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 2px solid var(--ink);
+  background: var(--sheet);
+  box-shadow: 3px 3px 0 var(--ink);
+  cursor: pointer;
+}
+
+.physicsTools button svg {
+  width: 14px;
+  height: 14px;
+}
+
+.physicsStage {
+  position: relative;
+  display: flex;
+  min-height: clamp(430px, 53vw, 760px);
+  align-items: center;
+  justify-content: center;
+  gap: clamp(0px, 0.4vw, 8px);
+  padding: 60px 18px 100px;
+  overflow: hidden;
+  touch-action: none;
+}
+
+.physicsGrid {
+  position: absolute;
+  inset: 0;
+  opacity: 0.75;
+  background-image:
+    linear-gradient(to right, color-mix(in srgb, var(--ink) 8%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in srgb, var(--ink) 8%, transparent) 1px, transparent 1px);
+  background-size: 46px 46px;
+}
+
+.physicsLetter {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  width: clamp(52px, 14vw, 210px);
+  height: clamp(150px, 28vw, 430px);
+  place-items: center;
+  border: 3px solid var(--ink);
+  color: var(--ink);
+  background: var(--acc);
+  box-shadow: 8px 8px 0 var(--ink);
+  cursor: grab;
+}
+
+.physicsLetter:active {
+  cursor: grabbing;
+}
+
+.physicsLetter:nth-of-type(even) {
+  color: var(--paper);
+  background: var(--ink);
+  box-shadow: 8px 8px 0 var(--acc);
+}
+
+.physicsLetter > span {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  font-size: 8px;
+  font-weight: 700;
+}
+
+.physicsLetter strong {
+  font-family: var(--v3-display), system-ui, sans-serif;
+  font-size: clamp(3.6rem, 13vw, 12rem);
+  font-weight: 900;
+  letter-spacing: -0.08em;
+  line-height: 0.78;
+  pointer-events: none;
+}
+
+.physicsMoved::after {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  width: 11px;
+  height: 11px;
+  border: 2px solid currentColor;
+  border-radius: 50%;
+  content: "";
+}
+
+.physicsCaption {
+  position: absolute;
+  right: clamp(18px, 4vw, 60px);
+  bottom: 28px;
+  padding: 8px 10px;
+  border: 2px solid var(--ink);
+  background: var(--sheet);
+  box-shadow: 4px 4px 0 var(--ink);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  transform: rotate(-1.2deg);
+}
+
+/* ---------------------------------------------------- 03 / SEQUENCER */
+
+.sequence {
+  color: var(--ink);
+  background: var(--acc);
+  transition: color 220ms ease, background 220ms ease;
+}
+
+.sequenceTicker {
+  position: relative;
+  z-index: 10;
+  overflow: hidden;
+  border-bottom: 3px solid var(--ink);
+  color: var(--paper);
+  background: var(--ink);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.sequenceTicker > div {
+  display: flex;
+  width: max-content;
+  opacity: 0.38;
+  animation: sequenceTicker 11s linear infinite paused;
+}
+
+.sequenceTicker span {
+  padding-block: 14px;
+}
+
+.tickerOn .sequenceTicker > div {
+  opacity: 1;
+  animation-play-state: running;
+}
+
+@keyframes sequenceTicker {
+  to { transform: translateX(-25%); }
+}
+
+.sequenceStage {
+  position: relative;
+  min-height: clamp(420px, 52vw, 760px);
+  overflow: hidden;
+}
+
+.sequenceGrid {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  background-image:
+    linear-gradient(to right, color-mix(in srgb, var(--ink) 19%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in srgb, var(--ink) 19%, transparent) 1px, transparent 1px);
+  background-size: 42px 42px;
+}
+
+.gridOn .sequenceGrid {
+  opacity: 1;
+  animation: gridFlicker 900ms steps(2) infinite;
+}
+
+@keyframes gridFlicker {
+  50% { opacity: 0.42; }
+}
+
+.sequenceRings {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+
+.sequenceRings i {
+  position: absolute;
+  width: 140px;
+  height: 140px;
+  border: 4px solid var(--ink);
+  border-radius: 50%;
+  opacity: 0;
+}
+
+.ringsOn .sequenceRings i {
+  animation: ringExpand 2.4s ease-out infinite;
+}
+
+.ringsOn .sequenceRings i:nth-child(2) { animation-delay: 0.8s; }
+.ringsOn .sequenceRings i:nth-child(3) { animation-delay: 1.6s; }
+
+@keyframes ringExpand {
+  0% { opacity: 0.6; transform: scale(0.4); }
+  100% { opacity: 0; transform: scale(6); }
+}
+
+.sequenceBeam {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  bottom: 0;
+  left: -12%;
+  width: 10%;
+  background: color-mix(in srgb, var(--paper) 65%, transparent);
+  opacity: 0;
+  transform: skewX(-12deg);
+}
+
+.gridOn .sequenceBeam {
+  opacity: 0.45;
+  animation: beamMove 2.2s ease-in-out infinite;
+}
+
+@keyframes beamMove {
+  to { transform: translateX(1250%) skewX(-12deg); }
+}
+
+.sequenceLetters {
+  position: relative;
+  z-index: 5;
+  display: grid;
+  min-height: inherit;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.sequenceLetters button {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  place-items: center;
+  overflow: hidden;
+  color: var(--ink);
+  background: transparent;
+  cursor: pointer;
+  transition: color 150ms ease, background 150ms ease;
+}
+
+.sequenceLetters button + button {
+  border-left: 3px solid var(--ink);
+}
+
+.sequenceLetters button > span {
+  position: absolute;
+  top: 13px;
+  left: 50%;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  transform: translateX(-50%);
+  writing-mode: vertical-rl;
+}
+
+.sequenceLetters strong {
+  font-family: var(--v3-display), system-ui, sans-serif;
+  font-size: clamp(3.7rem, 14vw, 13rem);
+  font-weight: 900;
+  letter-spacing: -0.08em;
+  line-height: 0.78;
+}
+
+.sequenceLetters button > i {
+  position: absolute;
+  bottom: 13px;
+  padding: 4px 6px;
+  border: 2px solid currentColor;
+  font-size: 8px;
+  font-style: normal;
+  font-weight: 700;
+}
+
+.sequenceLetters .layerActive {
+  color: var(--acc);
+  background: var(--ink);
+}
+
+.pulseOn .sequenceLetters strong {
+  animation: sequencePulse 780ms ease-in-out infinite alternate;
+  animation-delay: calc(var(--letter-index) * -90ms);
+}
+
+@keyframes sequencePulse {
+  from { transform: translateY(-9%); }
+  to { transform: translateY(9%); }
+}
+
+.glitchOn .sequenceLetters strong {
+  animation: glitch 360ms steps(2) infinite;
+}
+
+@keyframes glitch {
+  0% { transform: translate(0); text-shadow: -6px 0 0 var(--paper); }
+  33% { transform: translate(5px, -4px); text-shadow: 7px 0 0 var(--green); }
+  66% { transform: translate(-5px, 3px); text-shadow: -7px 0 0 var(--paper); }
+}
+
+.invertOn {
+  color: var(--acc);
+  background: var(--ink);
+}
+
+.invertOn .sequenceLetters button {
+  color: var(--acc);
+}
+
+.invertOn .sequenceLetters button + button,
+.invertOn .sequenceTicker,
+.invertOn .topbar {
+  border-color: var(--acc);
+}
+
+.invertOn .sequenceLetters .layerActive {
+  color: var(--ink);
+  background: var(--acc);
+}
+
+.sequenceLive .sequenceLetters {
+  animation: liveImpact 1.2s cubic-bezier(0.22, 1, 0.36, 1) infinite alternate;
+}
+
+@keyframes liveImpact {
+  from { transform: scale(0.96); }
+  to { transform: scale(1); }
+}
+
+.liveStamp {
+  position: absolute;
+  z-index: 20;
+  right: clamp(18px, 4vw, 70px);
+  bottom: 28px;
+  padding: 12px 14px;
+  border: 3px solid var(--ink);
+  color: var(--ink);
+  background: var(--sheet);
+  box-shadow: 6px 6px 0 var(--acc);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+@media (min-width: 900px) {
+  .meta {
+    grid-template-columns: minmax(220px, 1fr) auto auto auto;
+  }
+}
+
+@media (max-width: 899px) {
+  .meta {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 620px) {
+  .switcher {
+    top: auto;
+    right: 12px;
+    bottom: 14px;
+  }
+
+  .switcher .backLink,
+  .switcher > span {
+    display: none;
+  }
+
+  .wakeGrid,
+  .sequenceLetters {
+    min-height: 320px;
+  }
+
+  .wakeCell + .wakeCell,
+  .sequenceLetters button + button {
+    border-left-width: 2px;
+  }
+
+  .wakeCell strong,
+  .sequenceLetters strong {
+    font-size: clamp(3.1rem, 17vw, 5.8rem);
+  }
+
+  .wakeCell button > span,
+  .sequenceLetters button > span {
+    display: none;
+  }
+
+  .awakeMessage {
+    right: 16px;
+    bottom: 205px;
+    left: 16px;
+    justify-content: center;
+  }
+
+  .physicsTools {
+    align-items: flex-start;
+    flex-direction: column;
+    padding-block: 14px;
+  }
+
+  .physicsStage {
+    min-height: 440px;
+    gap: 0;
+    padding-inline: 10px;
+  }
+
+  .physicsLetter {
+    width: 16vw;
+    height: 230px;
+    border-width: 2px;
+    box-shadow: 4px 4px 0 var(--ink);
+  }
+
+  .physicsLetter strong {
+    font-size: clamp(3rem, 16vw, 5.2rem);
+  }
+
+  .sequenceLetters button > i {
+    padding: 3px;
+    border-width: 1px;
+    font-size: 6px;
+  }
+
+  .meta {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .charged strong,
+  .charged button > i,
+  .wakeCell,
+  .wakeFinale .wakeCell strong,
+  .sequenceTicker > div,
+  .sequenceGrid,
+  .sequenceRings i,
+  .sequenceBeam,
+  .sequenceLetters strong,
+  .sequenceLive .sequenceLetters {
+    animation: none;
+  }
+}

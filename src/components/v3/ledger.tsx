@@ -2,33 +2,7 @@
 // сколько нужно, и зачёркнута красным штампом. Решение — зелёная ячейка рядом.
 import { ArrowRight } from "lucide-react";
 import { V3Reveal } from "./reveal";
-
-const ROWS = [
-  {
-    pain: "Нет времени постить",
-    painNote: "Открываешь редактор — и закрываешь. Каждый день.",
-    feature: "Автопилот",
-    solutionTitle: "Неделя за 15 минут",
-    solution:
-      "Автопилот собирает план на неделю. Ты жмёшь одну кнопку — 7 постов уходят сами.",
-  },
-  {
-    pain: "Не знаю, что снимать",
-    painNote: "Идей нет, а лента ждёт.",
-    feature: "Тренды",
-    solutionTitle: "Идеи приходят сами",
-    solution:
-      "Лента «Сними это»: готовые карточки-идеи со сценарием и хуком. Один клик — черновик.",
-  },
-  {
-    pain: "Конкуренты растут — непонятно почему",
-    painNote: "Видишь цифры, но не видишь причину.",
-    feature: "Разведка",
-    solutionTitle: "Видно, что у них работает",
-    solution:
-      "Полное досье на каждого: какие темы и форматы дают результат — человеческим языком.",
-  },
-] as const;
+import { REASON_ROWS } from "./reasons-data";
 
 export function V3Ledger() {
   return (
@@ -48,7 +22,7 @@ export function V3Ledger() {
         </V3Reveal>
 
         <ul className="mt-14 space-y-6">
-          {ROWS.map((row, i) => (
+          {REASON_ROWS.map((row, i) => (
             <V3Reveal key={row.pain} delay={i * 0.06}>
               <li className="grid items-stretch gap-4 lg:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] lg:gap-6">
                 {/* БЫЛО — красная ячейка, текст вычеркнут */}

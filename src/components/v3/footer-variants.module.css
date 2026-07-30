@@ -1,0 +1,616 @@
+.footer {
+  position: relative;
+  overflow: hidden;
+  border-top: 3px solid var(--ink);
+  font-family: var(--v3-mono), ui-monospace, monospace;
+}
+
+.switcher {
+  position: fixed;
+  z-index: 90;
+  top: 86px;
+  right: 18px;
+  display: flex;
+  align-items: stretch;
+  border: 2px solid var(--ink);
+  background: var(--sheet);
+  box-shadow: 4px 4px 0 var(--ink);
+  font-family: var(--v3-mono), ui-monospace, monospace;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.switcher > span,
+.switcher a {
+  display: grid;
+  min-width: 36px;
+  min-height: 34px;
+  place-items: center;
+  padding-inline: 9px;
+}
+
+.switcher > span {
+  color: var(--paper);
+  background: var(--ink);
+}
+
+.switcher a + a {
+  border-left: 2px solid var(--ink);
+}
+
+.switcher a:hover,
+.switcher a[aria-current="page"] {
+  color: var(--ink);
+  background: var(--acc);
+}
+
+.meta {
+  position: relative;
+  z-index: 5;
+  display: grid;
+  align-items: center;
+  gap: 24px;
+  padding: 26px clamp(20px, 4vw, 64px);
+  border-top: 3px solid var(--ink);
+  color: var(--ink);
+  background: var(--sheet);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.metaInverse {
+  border-color: var(--paper);
+  color: var(--paper);
+  background: var(--ink);
+}
+
+.metaClaim {
+  max-width: 28ch;
+  font-family: var(--v3-display), system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  line-height: 1.25;
+}
+
+.metaNav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px 18px;
+}
+
+.metaNav a,
+.telegram {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 4px;
+  transition: opacity 120ms ease;
+}
+
+.metaNav a:hover,
+.telegram:hover {
+  opacity: 0.55;
+}
+
+.telegram {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+}
+
+.telegram svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 2.5;
+}
+
+.copyright {
+  opacity: 0.58;
+}
+
+/* ------------------------------------------------------------ 01 / PRESS */
+
+.press {
+  background: var(--paper);
+}
+
+.pressTop {
+  display: flex;
+  min-height: 58px;
+  align-items: center;
+  gap: 22px;
+  padding-inline: clamp(20px, 4vw, 64px);
+  border-bottom: 3px solid var(--ink);
+  color: var(--paper);
+  background: var(--ink);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.pressTop > span {
+  color: var(--acc);
+}
+
+.pressTop p {
+  margin-left: auto;
+}
+
+.pressTop svg {
+  width: 17px;
+  height: 17px;
+  stroke-width: 2.5;
+}
+
+.pressStage {
+  position: relative;
+  min-height: clamp(360px, 43vw, 670px);
+  padding: clamp(48px, 7vw, 110px) clamp(14px, 3vw, 52px) 44px;
+  overflow: hidden;
+  background-color: var(--paper);
+  background-image:
+    linear-gradient(to right, color-mix(in srgb, var(--ink) 7%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in srgb, var(--ink) 7%, transparent) 1px, transparent 1px);
+  background-size: 48px 48px;
+}
+
+.pressCarriage {
+  position: absolute;
+  z-index: 0;
+  top: 22%;
+  bottom: 17%;
+  left: -16%;
+  width: 25%;
+  border: 3px solid var(--ink);
+  background: var(--acc);
+  box-shadow: 9px 9px 0 var(--ink);
+  animation: carriage 5.8s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+}
+
+@keyframes carriage {
+  0%, 8% { transform: translateX(0); }
+  48%, 58% { transform: translateX(465%); }
+  100% { transform: translateX(0); }
+}
+
+.pressWord {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  perspective: 900px;
+  isolation: isolate;
+}
+
+.pressWord span {
+  display: block;
+  color: var(--ink);
+  font-family: var(--v3-display), system-ui, sans-serif;
+  font-size: clamp(3.7rem, 15vw, 14rem);
+  font-weight: 900;
+  letter-spacing: -0.105em;
+  line-height: 0.78;
+  text-transform: uppercase;
+  transform-origin: center top;
+  animation: stamp 3.6s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+  animation-delay: calc(var(--letter-index) * 90ms);
+}
+
+@keyframes stamp {
+  0%, 17% { transform: translateY(-0.42em) rotateX(-72deg); opacity: 0; }
+  27%, 72% { transform: translateY(0) rotateX(0); opacity: 1; }
+  82%, 100% { transform: translateY(0.18em) rotateX(42deg); opacity: 0; }
+}
+
+.pressCaption {
+  position: absolute;
+  right: clamp(20px, 5vw, 78px);
+  bottom: 30px;
+  width: fit-content;
+  max-width: 34ch;
+  padding: 8px 10px;
+  border: 2px solid var(--ink);
+  background: var(--sheet);
+  box-shadow: 4px 4px 0 var(--ink);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  line-height: 1.45;
+  text-transform: uppercase;
+  transform: rotate(-1.5deg);
+}
+
+/* ----------------------------------------------------------- 02 / SIGNAL */
+
+.signal {
+  min-height: 720px;
+  color: var(--paper);
+  background: var(--ink);
+}
+
+.signalGrid {
+  position: absolute;
+  inset: 0;
+  opacity: 0.26;
+  background-image:
+    linear-gradient(to right, color-mix(in srgb, var(--paper) 12%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in srgb, var(--paper) 12%, transparent) 1px, transparent 1px);
+  background-size: 54px 54px;
+  mask-image: linear-gradient(to bottom, black, transparent 82%);
+}
+
+.signalTop {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  min-height: 58px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 22px;
+  padding-inline: clamp(20px, 4vw, 64px);
+  border-bottom: 1px solid color-mix(in srgb, var(--paper) 32%, transparent);
+  color: var(--acc);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.signalStatus {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--paper);
+}
+
+.signalStatus i {
+  width: 9px;
+  height: 9px;
+  background: var(--green);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--green) 30%, transparent);
+  animation: livePulse 1.4s ease-in-out infinite;
+}
+
+@keyframes livePulse {
+  50% { box-shadow: 0 0 0 9px transparent; }
+}
+
+.signalStage {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  min-height: clamp(470px, 55vw, 760px);
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  padding: 70px 18px;
+  text-align: center;
+}
+
+.signalEyebrow,
+.signalCaption {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.13em;
+  line-height: 1.5;
+  text-transform: uppercase;
+}
+
+.signalEyebrow {
+  color: var(--acc);
+}
+
+.signalWord {
+  position: relative;
+  margin-top: 28px;
+  color: transparent;
+  background-image: linear-gradient(
+    100deg,
+    var(--paper) 0%,
+    var(--paper) 32%,
+    var(--acc) 45%,
+    var(--acc) 56%,
+    var(--paper) 69%,
+    var(--paper) 100%
+  );
+  background-position: 120% 50%;
+  background-size: 260% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  font-family: var(--v3-display), system-ui, sans-serif;
+  font-size: clamp(3.7rem, 17vw, 15rem);
+  font-weight: 900;
+  letter-spacing: -0.105em;
+  line-height: 0.78;
+  -webkit-text-stroke: 2px color-mix(in srgb, var(--paper) 65%, transparent);
+  animation: signalSweep 4.5s linear infinite;
+}
+
+.signalWord::after {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  color: transparent;
+  content: attr(data-text);
+  opacity: 0.2;
+  transform: translate(0.045em, 0.06em);
+  -webkit-text-stroke: 2px var(--acc);
+}
+
+@keyframes signalSweep {
+  to { background-position: -140% 50%; }
+}
+
+.signalLine {
+  position: relative;
+  width: min(880px, 76vw);
+  height: 30px;
+  margin-top: 34px;
+  overflow: hidden;
+  border-block: 1px solid color-mix(in srgb, var(--paper) 35%, transparent);
+}
+
+.signalLine::before {
+  position: absolute;
+  top: 14px;
+  right: 0;
+  left: 0;
+  height: 1px;
+  background: color-mix(in srgb, var(--paper) 45%, transparent);
+  content: "";
+}
+
+.signalLine span {
+  position: absolute;
+  top: 6px;
+  left: -80px;
+  width: 80px;
+  height: 17px;
+  background: var(--acc);
+  clip-path: polygon(0 44%, 22% 44%, 28% 0, 35% 100%, 42% 44%, 100% 44%, 100% 56%, 0 56%);
+  animation: signalTrack 3.2s linear infinite;
+}
+
+@keyframes signalTrack {
+  to { transform: translateX(calc(min(880px, 76vw) + 160px)); }
+}
+
+.signalCaption {
+  max-width: 48ch;
+  margin-top: 27px;
+  color: color-mix(in srgb, var(--paper) 68%, transparent);
+}
+
+/* ---------------------------------------------------------- 03 / KINETIC */
+
+.kinetic {
+  background: var(--acc);
+}
+
+.ticker {
+  position: relative;
+  z-index: 3;
+  overflow: hidden;
+  border-bottom: 3px solid var(--ink);
+  color: var(--paper);
+  background: var(--ink);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.ticker > div {
+  display: flex;
+  width: max-content;
+  animation: ticker 13s linear infinite;
+}
+
+.ticker span {
+  display: block;
+  padding: 15px 0;
+}
+
+@keyframes ticker {
+  to { transform: translateX(-25%); }
+}
+
+.kineticWord {
+  display: grid;
+  min-height: clamp(340px, 44vw, 660px);
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  border-bottom: 3px solid var(--ink);
+  background: var(--acc);
+}
+
+.kineticWord > div {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  place-items: center;
+  overflow: hidden;
+  transition: color 160ms ease, background 160ms ease;
+}
+
+.kineticWord > div + div {
+  border-left: 3px solid var(--ink);
+}
+
+.kineticWord > div:hover {
+  color: var(--acc);
+  background: var(--ink);
+}
+
+.kineticWord > div > span {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.kineticWord strong {
+  display: block;
+  font-family: var(--v3-display), system-ui, sans-serif;
+  font-size: clamp(3.7rem, 14vw, 13rem);
+  font-weight: 900;
+  letter-spacing: -0.08em;
+  line-height: 0.78;
+  animation: kineticLetter 3.4s ease-in-out infinite alternate;
+  animation-delay: calc(var(--letter-index) * -430ms);
+}
+
+@keyframes kineticLetter {
+  0% { transform: translateY(-13%) rotate(-2deg); }
+  100% { transform: translateY(13%) rotate(2deg); }
+}
+
+.kineticWord i {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  width: 11px;
+  height: 11px;
+  border: 2px solid currentColor;
+  border-radius: 50%;
+}
+
+.kineticStatement {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 22px;
+  padding: 24px clamp(20px, 4vw, 64px);
+  border-bottom: 3px solid var(--ink);
+  font-family: var(--v3-display), system-ui, sans-serif;
+  text-transform: uppercase;
+}
+
+.kineticStatement p {
+  font-size: clamp(15px, 2vw, 25px);
+  font-weight: 700;
+}
+
+.kineticStatement strong {
+  font-size: clamp(18px, 3vw, 40px);
+  font-weight: 900;
+  text-align: right;
+}
+
+@media (min-width: 900px) {
+  .meta {
+    grid-template-columns: minmax(220px, 1fr) auto auto auto;
+  }
+}
+
+@media (max-width: 899px) {
+  .meta {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .copyright {
+    text-align: right;
+  }
+}
+
+@media (max-width: 620px) {
+  .switcher {
+    top: auto;
+    right: 12px;
+    bottom: 14px;
+  }
+
+  .pressTop p,
+  .pressTop svg {
+    display: none;
+  }
+
+  .pressStage {
+    min-height: 330px;
+    padding-top: 95px;
+  }
+
+  .pressCarriage {
+    top: 29%;
+    bottom: 28%;
+  }
+
+  .pressCaption {
+    right: 18px;
+    bottom: 25px;
+    left: 18px;
+  }
+
+  .signal {
+    min-height: 0;
+  }
+
+  .signalWord {
+    font-size: clamp(3.3rem, 19vw, 6rem);
+    -webkit-text-stroke-width: 1px;
+  }
+
+  .signalStage {
+    min-height: 440px;
+  }
+
+  .kineticWord {
+    min-height: 300px;
+  }
+
+  .kineticWord > div + div {
+    border-left-width: 2px;
+  }
+
+  .kineticWord strong {
+    font-size: clamp(3.2rem, 17vw, 5.7rem);
+  }
+
+  .kineticWord > div > span,
+  .kineticWord i {
+    display: none;
+  }
+
+  .kineticStatement {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .kineticStatement strong {
+    text-align: left;
+  }
+
+  .meta {
+    grid-template-columns: 1fr;
+  }
+
+  .copyright {
+    text-align: left;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pressCarriage,
+  .pressWord span,
+  .signalStatus i,
+  .signalWord,
+  .signalLine span,
+  .ticker > div,
+  .kineticWord strong {
+    animation: none;
+  }
+
+  .pressWord span {
+    opacity: 1;
+    transform: none;
+  }
+}

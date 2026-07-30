@@ -4,7 +4,7 @@ import Link from "next/link";
 
 const LINKS = [
   { href: "#how", label: "Как это работает" },
-  { href: "#compare", label: "Сравнение" },
+  { href: "#quality", label: "Контроль качества" },
   { href: "#pricing", label: "Тарифы" },
   { href: "#faq", label: "Вопросы" },
 ] as const;

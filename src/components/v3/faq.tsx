@@ -1,7 +1,6 @@
 "use client";
 
-// FAQ v3: те же честные ответы, что и в боевом лендинге, но без вранья про VK:
-// «VK — следующая волна», «работает — с Telegram». Первым открыт вопрос про деньги.
+// FAQ v3: честные ответы без обещаний того, чего в продукте пока нет.
 import { useId, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion, type Transition } from "motion/react";
 import { Plus } from "lucide-react";
@@ -9,11 +8,12 @@ import { V3Reveal } from "./reveal";
 
 const EASE = [0.22, 1, 0.36, 1] as const;
 
+const LEGACY_PRICING_ITEM = {
+  q: "Правда бесплатно? В чём подвох?",
+  a: "Подвоха нет: на старте платформа полностью бесплатна, без карты и пейволов. Мы сначала растим живую аудиторию, монетизацию придумаем потом — и скажем об этом заранее. Единственное ограничение — честный дневной лимит ИИ-генераций, потому что ИИ стоит денег. Лимит виден в интерфейсе, а не спрятан в справке.",
+} as const;
+
 const ITEMS = [
-  {
-    q: "Правда бесплатно? В чём подвох?",
-    a: "Подвоха нет: на старте платформа полностью бесплатна, без карты и пейволов. Мы сначала растим живую аудиторию, монетизацию придумаем потом — и скажем об этом заранее. Единственное ограничение — честный дневной лимит ИИ-генераций, потому что ИИ стоит денег. Лимит виден в интерфейсе, а не спрятан в справке.",
-  },
   {
     q: "Это законно — следить за конкурентами?",
     a: "Мы собираем только открытые данные — то, что видит любой подписчик. Ничего закрытого, никаких персональных данных, никакого парсинга в обход правил. Это то же, что ты можешь посмотреть руками, — просто платформа делает это за тебя и подводит итог.",
@@ -44,11 +44,11 @@ const ITEMS = [
   },
 ] as const;
 
-export function V3Faq() {
-  // Первым открыт вопрос про деньги: главный ответ читается без единого клика
+export function V3Faq({ legacyPricing = false }: { legacyPricing?: boolean }) {
   const [openIdx, setOpenIdx] = useState(0);
   const reduced = useReducedMotion();
   const uid = useId();
+  const items = legacyPricing ? [LEGACY_PRICING_ITEM, ...ITEMS] : ITEMS;
   const panelTransition: Transition = { duration: reduced ? 0 : 0.24, ease: EASE };
 
   return (
@@ -84,7 +84,7 @@ export function V3Faq() {
         <V3Reveal delay={0.08}>
           <div className="v3-panel">
             <ul>
-              {ITEMS.map((item, i) => {
+              {items.map((item, i) => {
                 const open = openIdx === i;
                 const btnId = `${uid}-q-${i}`;
                 const panelId = `${uid}-a-${i}`;
