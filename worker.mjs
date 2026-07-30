@@ -281,17 +281,38 @@ async function indexSource(sourceId) {
 // Настроения агента — компактная копия src/lib/moods.ts (воркер не может импортировать TS).
 // ВАЖНО: держать в синхроне с moods.ts (ключи, тексты, температуры).
 const MOODS_W = {
-  friendly: { p: "Настроение — дружелюбное и тёплое: пиши как хорошему знакомому, просто и по-доброму.", t: 0.7 },
-  cheerful: { p: "Настроение — радостное и энергичное: восклицания, лёгкие уместные эмодзи, позитив. Заряжай хорошим настроением.", t: 0.85 },
-  expert: { p: "Настроение — экспертное: уверенно, по делу, с конкретикой и пользой, без воды и лишних эмоций.", t: 0.5 },
-  bold: { p: "Настроение — дерзкое и уверенное: с характером, цепляй с первой фразы, не бойся острых формулировок (но без грубости).", t: 0.85 },
-  inspiring: { p: "Настроение — вдохновляющее: мотивируй, показывай возможности, мягко зови к действию.", t: 0.8 },
-  ironic: { p: "Настроение — ироничное: лёгкий юмор и самоирония, подмечай смешное, но по-доброму, без сарказма в адрес читателя.", t: 0.85 },
-  calm: { p: "Настроение — спокойное и размеренное: без надрыва и восклицаний, ровный уверенный тон.", t: 0.5 },
+  friendly: { p: "Тёплый профиль: понятно, бережно и без дистанции; без сюсюканья, фамильярности и искусственной заботы.", t: 0.58 },
+  cheerful: { p: "Энергичный профиль: активные глаголы и быстрый ритм; без капслока, каскада восклицаний и неуместного восторга.", t: 0.66 },
+  expert: { p: "Экспертный профиль: ясный тезис, логика и практическая польза; без канцелярита и неподтверждённой уверенности.", t: 0.42 },
+  bold: { p: "Дерзкий профиль: ясная позиция и точный контраст; без хамства, мата, кликбейта и провокации ради провокации.", t: 0.7 },
+  inspiring: { p: "Вдохновляющий профиль: реалистичная возможность и конкретный первый шаг; без пустых лозунгов и обещаний лёгкого успеха.", t: 0.62 },
+  ironic: { p: "Ироничный профиль: одно-два точных наблюдения, которые усиливают мысль; не шутить над читателем или чужой болью.", t: 0.68 },
+  calm: { p: "Спокойный профиль: последовательный и уверенный тон; без давления на страх, надрыва и ложной срочности.", t: 0.4 },
 };
-const DEFAULT_MOOD_W = "friendly";
-const moodPromptW = (k) => (MOODS_W[k] || MOODS_W[DEFAULT_MOOD_W]).p;
-const moodTempW = (k) => (MOODS_W[k] || MOODS_W[DEFAULT_MOOD_W]).t;
+const DEFAULT_MOOD_W = "expert";
+const moodKeysW = (value) => {
+  let raw = [value];
+  if (typeof value === "string" && value.trim().startsWith("[")) {
+    try {
+      const parsed = JSON.parse(value);
+      raw = Array.isArray(parsed) ? parsed : [];
+    } catch {
+      raw = [];
+    }
+  }
+  const unique = [...new Set(raw.filter((key) => typeof key === "string" && MOODS_W[key]))].slice(0, 3);
+  return unique.length ? unique : [DEFAULT_MOOD_W];
+};
+const moodPromptW = (value) => {
+  const keys = moodKeysW(value);
+  const profiles = keys.map((key) => MOODS_W[key]);
+  const mix = keys.length > 1 ? `Связка из ${keys.length} профилей — сочетай их одновременно. ` : "";
+  return mix + profiles.map((profile) => profile.p).join(" ");
+};
+const moodTempW = (value) => {
+  const profiles = moodKeysW(value).map((key) => MOODS_W[key]);
+  return profiles.reduce((sum, profile) => sum + profile.t, 0) / profiles.length;
+};
 async function userMood(userId) {
   try {
     return (await pool.query("select ai_mood from users where id = $1", [userId])).rows[0]?.ai_mood || null;

@@ -60,7 +60,7 @@ create table if not exists users (
   password_hash text,                   -- вход по паролю: scrypt-хеш (saltHex:hashHex), может быть null
   name          text,
   avatar        text,
-  ai_mood       text,                   -- настроение агента для генерации (ключ из src/lib/moods.ts)
+  ai_mood       text,                   -- JSON-связка из 1–3 ключей src/lib/moods.ts; legacy-ключ тоже читается
   created_at    timestamptz not null default now()
 );
 -- Для старых баз, где таблица уже создана без этих колонок.
