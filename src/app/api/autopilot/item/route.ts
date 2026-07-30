@@ -6,6 +6,7 @@ import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
 import { resolveChannel, schedulePost } from "@/lib/autopilot";
 import { getPublishQueue, jobIdForPost } from "@/lib/queue";
+import { normalizePostQuality, validatePostQuality, type QualityResult } from "@/lib/post-quality.mjs";
 
 export const runtime = "nodejs";
 
@@ -16,6 +17,12 @@ interface PlanItem {
   draft: string;
   status: string;
   postId?: number;
+  sources?: { id: number; text: string }[];
+  invented?: string[];
+  cited?: number | null;
+  qualityBlocked?: boolean;
+  quality?: QualityResult;
+  qualityOrigin?: "automatic" | "manual_review";
 }
 
 export async function PATCH(req: NextRequest) {
@@ -73,6 +80,24 @@ export async function PATCH(req: NextRequest) {
       if (next && next !== it.draft) {
         it.draft = next;
         edited = true;
+        const row = (
+          await pool.query<{ quality: unknown }>(
+            `select quality from content_brief where user_id = $1 and channel_id = $2`,
+            [user.id, plan.channel_id],
+          )
+        ).rows[0];
+        const quality = normalizePostQuality(row?.quality);
+        const result = validatePostQuality(next, quality, {
+          topic: it.topic,
+          supportCount: it.sources?.length ?? 0,
+          citedShare: it.cited ?? null,
+        });
+        it.quality = result;
+        it.qualityBlocked = !result.passed;
+        it.qualityOrigin = "manual_review";
+        // После ручной правки старый список «выдумано» уже не описывает новый текст.
+        // Источники и остальные программные рамки при этом всё равно проверяются выше.
+        it.invented = undefined;
         // Если пост уже одобрен и стоит в очереди — правим и сам запланированный пост,
         // иначе воркер опубликует старый текст (ревью Д.9).
         if (it.postId) {
@@ -83,6 +108,12 @@ export async function PATCH(req: NextRequest) {
         }
       }
     } else if (action === "approve") {
+      if (it.qualityBlocked) {
+        return NextResponse.json(
+          { ok: false, error: "quality_blocked", blockers: it.quality?.blockers ?? [] },
+          { status: 422 },
+        );
+      }
       if (it.status === "pending" && !it.postId) {
         // Канал берём ИЗ ПЛАНА, а не отдельным запросом: пост уходит ровно в тот канал,
         // по брифу которого он написан. Отдельный select мог выбрать соседний канал.

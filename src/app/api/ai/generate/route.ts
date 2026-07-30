@@ -5,9 +5,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
-import { generateText, type AiKind, type AiRole, type GenerateParams } from "@/lib/ai-provider";
+import {
+  generateText,
+  resolveEngineRuntime,
+  type AiKind,
+  type AiRole,
+  type GenerateParams,
+} from "@/lib/ai-provider";
 import { AI_DAILY_LIMIT, aiUsedToday, recordAiUsage, styleSamplesFor } from "@/lib/ai-usage";
-import { getEngine } from "@/lib/engines";
+import { DEFAULT_ENGINE, getEngine, isEngineId } from "@/lib/engines";
 
 export const runtime = "nodejs";
 
@@ -18,7 +24,15 @@ export async function POST(req: NextRequest) {
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
-  let body: { command?: unknown; input?: unknown; context?: unknown; niche?: unknown; tone?: unknown; role?: unknown };
+  let body: {
+    command?: unknown;
+    input?: unknown;
+    context?: unknown;
+    niche?: unknown;
+    tone?: unknown;
+    role?: unknown;
+    surface?: unknown;
+  };
   try {
     body = await req.json();
   } catch {
@@ -27,7 +41,8 @@ export async function POST(req: NextRequest) {
 
   const kind: AiKind = KINDS.includes(body.command as AiKind) ? (body.command as AiKind) : "write";
   const task = String(body.input ?? "").trim();
-  const context = body.context ? String(body.context).slice(0, 600) : undefined;
+  const studioOnly = body.surface === "studio";
+  const context = !studioOnly && body.context ? String(body.context).slice(0, 600) : undefined;
   const niche = body.niche ? String(body.niche).slice(0, 120) : undefined;
   const tone = body.tone ? String(body.tone).slice(0, 120) : undefined;
   const role: AiRole | undefined = ROLES.includes(body.role as AiRole) ? (body.role as AiRole) : undefined;
@@ -64,8 +79,21 @@ export async function POST(req: NextRequest) {
   // Человек выбрал облачный движок, а ключа нет — честно отказываем. Писать тайком локальной
   // моделью и выдавать это за выбранную — ровно тот обман, которого продукт не допускает.
   // Выбор при этом сохранён: появится ключ — заработает без правок.
-  const chosen = me?.ai_engine;
-  if (chosen && chosen !== "local" && !process.env.AI_API_KEY) {
+  const chosen = isEngineId(me?.ai_engine) ? me.ai_engine : DEFAULT_ENGINE;
+  const runtime = resolveEngineRuntime(chosen);
+  if (!runtime.supported) {
+    const e = getEngine(chosen);
+    return NextResponse.json(
+      {
+        error: "engine_unsupported",
+        engine: e.id,
+        label: `${e.label} (${e.vendor})`,
+        needs: e.needs,
+      },
+      { status: 503 },
+    );
+  }
+  if (!runtime.configured) {
     const e = getEngine(chosen);
     return NextResponse.json(
       {
@@ -86,12 +114,13 @@ export async function POST(req: NextRequest) {
     tone,
     mood: mood ?? undefined,
     role,
+    grounding: studioOnly ? "platform" : undefined,
     styleSamples: await styleSamplesFor(user.id),
   };
 
   // Тянем первый кусок ДО стрима — чтобы поймать «движок недоступен» и вернуть честный 503,
   // а не оборванный поток (при 200 статус уже не поменять).
-  const gen = generateText(params, req.signal);
+  const gen = generateText(params, chosen, req.signal);
   let first: IteratorResult<string>;
   try {
     first = await gen.next();

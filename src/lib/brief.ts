@@ -17,8 +17,14 @@ export const MAX_WEEKLY_POSTS = 30;
 // совет по твоей теме», и модель выдумывала что попало. Теперь ниша, аудитория,
 // цель и стоп-темы едут в каждый запрос — и в темы недели, и в текст поста.
 //
-// Этот файл знают и приложение, и воркер (у воркера — своя компактная копия
-// briefContext, как с настроениями: он отдельный процесс и TS не импортирует).
+// Этот файл знают и приложение, и воркер. Стандарт качества лежит в чистом .mjs-модуле,
+// поэтому обе стороны используют один и тот же контракт без расходящихся копий.
+
+import {
+  DEFAULT_POST_QUALITY,
+  normalizePostQuality,
+  type PostQuality,
+} from "./post-quality.mjs";
 
 export interface Brief {
   niche: string; // о чём канал
@@ -27,6 +33,7 @@ export interface Brief {
   goal: string; // зачем канал автору
   cta: string; // куда ведём читателя
   taboo: string; // о чём не писать никогда
+  quality: PostQuality; // как именно писать и что программно блокировать
   ready: boolean; // подтверждён пользователем глазами
   source: "ai" | "manual" | "quiz" | null; // честно: чем заполнен
 }
@@ -38,6 +45,7 @@ export const EMPTY_BRIEF: Brief = {
   goal: "",
   cta: "",
   taboo: "",
+  quality: { ...DEFAULT_POST_QUALITY },
   ready: false,
   source: null,
 };
@@ -74,6 +82,7 @@ export function normalizeBrief(raw: unknown): Brief {
     goal: clean(r.goal, LIMITS.goal),
     cta: clean(r.cta, LIMITS.cta),
     taboo: clean(r.taboo, LIMITS.taboo),
+    quality: normalizePostQuality(r.quality),
     ready: r.ready === true,
     source: r.source === "ai" || r.source === "manual" || r.source === "quiz" ? r.source : null,
   };

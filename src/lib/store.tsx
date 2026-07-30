@@ -61,6 +61,7 @@ interface StoreValue extends AppState {
     channelId: number;
     text: string;
     scheduledAt: string | null;
+    media?: Post["media"];
   }) => Promise<{ ok: boolean; error?: string; postId?: number }>;
   retryRealPost: (id: number) => Promise<{ ok: boolean }>;
 
@@ -231,12 +232,12 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   );
 
   const createRealPost = useCallback<StoreValue["createRealPost"]>(
-    async ({ channelId, text, scheduledAt }) => {
+    async ({ channelId, text, scheduledAt, media }) => {
       try {
         const res = await fetch("/api/posts/create", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ channelId, text, scheduledAt }),
+          body: JSON.stringify({ channelId, text, scheduledAt, media }),
         });
         const data = (await res.json().catch(() => null)) as
           | { ok: boolean; error?: string; postId?: number }

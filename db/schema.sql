@@ -187,6 +187,51 @@ create table if not exists ai_usage (
 );
 create index if not exists ai_usage_user_date_idx on ai_usage (user_id, usage_date);
 
+-- ------------------------------------------- Д.8.1: изображения и видео
+-- NavyAI отдаёт временную ссылку. Worker немедленно копирует файл в PostgreSQL, чтобы
+-- результат не исчез после истечения provider job. Для первого production-MVP ставим
+-- жёсткий лимит размера; object storage можно подключить позже без смены API для клиента.
+create table if not exists media_assets (
+  id               bigint generated always as identity primary key,
+  user_id          bigint      not null references users (id) on delete cascade,
+  kind             text        not null check (kind in ('image','video')),
+  file_name        text        not null,
+  mime_type        text        not null,
+  bytes            int         not null,
+  data             bytea       not null,
+  sha256           text        not null,
+  duration_seconds int,
+  created_at       timestamptz not null default now()
+);
+create index if not exists media_assets_user_idx on media_assets (user_id, created_at desc);
+
+create table if not exists media_generations (
+  id               bigint generated always as identity primary key,
+  user_id          bigint      not null references users (id) on delete cascade,
+  kind             text        not null check (kind in ('image','video')),
+  status           text        not null default 'queued'
+                               check (status in ('queued','submitting','generating','saving','ready','failed')),
+  prompt           text        not null,
+  negative_prompt  text,
+  model            text        not null,
+  aspect_ratio     text        not null,
+  quality          text,
+  seconds          int,
+  style            text        not null default 'natural',
+  niche            text,
+  tone             text,
+  provider_job_id  text,
+  output_asset_id  bigint references media_assets (id) on delete set null,
+  error_code       text,
+  error_message    text,
+  created_at       timestamptz not null default now(),
+  updated_at       timestamptz not null default now(),
+  completed_at     timestamptz
+);
+create index if not exists media_generations_user_idx on media_generations (user_id, created_at desc);
+create index if not exists media_generations_active_idx on media_generations (status, updated_at)
+  where status in ('queued','submitting','generating','saving');
+
 
 -- ------------------------------------------ Д.6: разведка конкурентов (Telegram)
 -- ТОЛЬКО открытые данные: публичный канал → getChat (название), getChatMemberCount
@@ -302,6 +347,7 @@ create table if not exists content_brief (
   goal       text,                    -- зачем канал автору
   cta        text,                    -- куда ведём читателя
   taboo      text,                    -- о чём не писать никогда
+  quality    jsonb        not null default '{}'::jsonb, -- поканальный редакционный стандарт
   ready      boolean     not null default false,
   source     text        check (source in ('ai', 'manual', 'quiz')),
   updated_at timestamptz not null default now()
@@ -311,6 +357,11 @@ create table if not exists content_brief (
 -- текст, фото или видео). Реакции с t.me/s/ почти не отдаются (1 пост из 70), поэтому
 -- на них ничего не строим — см. честный available в досье.
 alter table competitor_posts add column if not exists media text;   -- 'photo' | 'video' | 'text'
+
+-- Жёсткие правила качества — свойство канала. JSONB позволяет развивать контракт без
+-- новой миграции на каждый переключатель, а нормализатор в приложении безопасно дополняет
+-- старые профили новыми полями.
+alter table content_brief add column if not exists quality jsonb not null default '{}'::jsonb;
 
 
 -- ============================================================ Д.7+: «Насмотренность»

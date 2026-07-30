@@ -7,6 +7,7 @@ import { getSessionUser } from "@/lib/session";
 import { getStatsQueue } from "@/lib/queue";
 import { ensureSettings, loadBrief, resolveChannel } from "@/lib/autopilot";
 import { briefComplete } from "@/lib/brief";
+import { isAutopilotBuildStale } from "@/lib/autopilot-build";
 
 export const runtime = "nodejs";
 
@@ -28,25 +29,68 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "no_brief" }, { status: 422 });
     }
 
-    await ensureSettings(user.id, channelId);
+    const settings = await ensureSettings(user.id, channelId);
+    const statsQueue = getStatsQueue();
+
+    // Next.js only enqueues this work; worker.mjs executes it. Previously we returned `ok`
+    // even when no worker existed, creating a perfectly valid job that nobody would ever take.
+    if ((await statsQueue.getWorkersCount()) === 0) {
+      return NextResponse.json(
+        { ok: false, error: "worker_unavailable" },
+        { status: 503 },
+      );
+    }
+
     // Плейсхолдер «собираю» — интерфейс покажет процесс; воркер заменит его готовым планом.
     // Чистим только этот канал: у соседнего канала свой план, и он тут ни при чём.
     // Одной транзакцией: снести старый план и не вставить новый — значит оставить человека
     // ни с чем. Порознь эти два запроса ровно это и позволяют.
     const tx = await pool.connect();
+    let planId: string | null = null;
+    let alreadyBuilding = false;
     try {
       await tx.query("begin");
+      // Serialise clicks for one channel. The old code accepted every click after the HTTP
+      // response and four identical jobs accumulated for this incident.
       await tx.query(
-        `delete from autopilot_plan
-          where user_id = $1 and channel_id = $2 and status in ('building', 'pending')`,
+        `select 1 from autopilot_settings
+          where user_id = $1 and channel_id = $2 for update`,
         [user.id, channelId],
       );
-      await tx.query(
-        `insert into autopilot_plan (user_id, channel_id, week_start, status)
-         values ($1, $2, current_date, 'building')`,
-        [user.id, channelId],
-      );
-      await tx.query("commit");
+      const current = (
+        await tx.query(
+          `select id, created_at from autopilot_plan
+            where user_id = $1 and channel_id = $2 and status = 'building'
+            order by created_at desc limit 1`,
+          [user.id, channelId],
+        )
+      ).rows[0];
+
+      if (current && !isAutopilotBuildStale(current.created_at, settings.post_frequency)) {
+        planId = String(current.id);
+        alreadyBuilding = true;
+        await tx.query("commit");
+      } else {
+        if (current) {
+          await tx.query(
+            `update autopilot_plan set status = 'error'
+              where id = $1 and status = 'building'`,
+            [current.id],
+          );
+        }
+        await tx.query(
+          `delete from autopilot_plan
+            where user_id = $1 and channel_id = $2 and status in ('building', 'pending')`,
+          [user.id, channelId],
+        );
+        const inserted = await tx.query(
+          `insert into autopilot_plan (user_id, channel_id, week_start, status)
+             values ($1, $2, current_date, 'building') returning id`,
+          [user.id, channelId],
+        );
+        planId = String(inserted.rows[0].id);
+        await tx.query("commit");
+      }
     } catch (err) {
       await tx.query("rollback").catch(() => {});
       throw err;
@@ -54,12 +98,34 @@ export async function POST(req: NextRequest) {
       tx.release();
     }
 
-    await getStatsQueue().add(
-      "autopilot-plan",
-      { userId: user.id, channelId },
-      { removeOnComplete: true, attempts: 2, backoff: { type: "fixed", delay: 20000 } },
-    );
-    return NextResponse.json({ ok: true });
+    if (alreadyBuilding) return NextResponse.json({ ok: true, building: true, planId });
+    if (!planId) throw new Error("autopilot placeholder was not created");
+
+    try {
+      await statsQueue.add(
+        "autopilot-plan",
+        { userId: user.id, channelId, planId },
+        {
+          jobId: `autopilot-plan-${planId}`,
+          removeOnComplete: true,
+          attempts: 2,
+          backoff: { type: "fixed", delay: 20000 },
+        },
+      );
+    } catch (err) {
+      // DB and Redis cannot share a transaction. Compensate explicitly so a Redis outage
+      // becomes a retryable error card instead of another eternal spinner.
+      await pool
+        .query(
+          `update autopilot_plan set status = 'error'
+            where id = $1 and user_id = $2 and channel_id = $3 and status = 'building'`,
+          [planId, user.id, channelId],
+        )
+        .catch(() => {});
+      console.error("[/api/autopilot/generate] enqueue", err);
+      return NextResponse.json({ ok: false, error: "queue_unavailable" }, { status: 503 });
+    }
+    return NextResponse.json({ ok: true, planId });
   } catch (err) {
     console.error("[/api/autopilot/generate]", err);
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });

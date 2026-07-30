@@ -15,8 +15,14 @@ export async function POST(req: NextRequest) {
   try {
     await getStatsQueue().add(
       "rss-now",
-      {},
-      { jobId: `rss-now-${user.id}`, removeOnComplete: true, attempts: 2, backoff: { type: "fixed", delay: 15000 } },
+      { userId: user.id },
+      {
+        jobId: `rss-now-${user.id}`,
+        removeOnComplete: true,
+        removeOnFail: true,
+        attempts: 2,
+        backoff: { type: "fixed", delay: 15000 },
+      },
     );
     return NextResponse.json({ ok: true });
   } catch (err) {

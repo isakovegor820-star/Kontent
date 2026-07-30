@@ -38,6 +38,7 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
+  viewportFit: "cover",
   // Продукт однотонный — кремовая бумага; тёмной темы больше нет
   themeColor: "#f4f0ea",
 };

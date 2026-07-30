@@ -260,8 +260,24 @@ export function findInvented(draft, support) {
 
   // Всё, на что пост ИМЕЕТ право ссылаться: числа из фактов + числа словами.
   const allowed = new Set((facts.match(/\d+/g) || []));
+  // Сумма «2 300 000» в факте раньше раскалывалась на 2/300/000, а в посте проверялась
+  // как 2300000 и объявлялась выдумкой. Храним и нормализованный вариант группы цифр.
+  for (const m of facts.match(/\d[\d\s ]{2,}/g) || []) allowed.add(m.replace(/[\s ]/g, ""));
   const WORD_NUM = /(шесть|шести|семь|семи|восемь|восьми|пять|пяти|три|тр[её]х|десять|сто|тысяч\S*|миллион\S*|полгода)/gi;
-  const allowedWords = new Set((facts.toLowerCase().match(WORD_NUM) || []));
+  // Падеж не меняет число: факт «шесть месяцев» разрешает тексту сказать «в течение
+  // шести месяцев». Сравнение исходных слов объявляло такую грамматику выдумкой.
+  const numberWordKey = (word) => {
+    const w = word.toLowerCase();
+    if (/^шест/.test(w)) return "6";
+    if (/^сем/.test(w)) return "7";
+    if (/^(?:восем|восьм)/.test(w)) return "8";
+    if (/^пят/.test(w)) return "5";
+    if (/^(?:три|тр[её]х)/.test(w)) return "3";
+    if (/^десят/.test(w)) return "10";
+    if (/^полгода/.test(w)) return "half-year";
+    return w;
+  };
+  const allowedWords = new Set((facts.toLowerCase().match(WORD_NUM) || []).map(numberWordKey));
 
   const bad = [];
   const add = (what) => {
@@ -291,7 +307,7 @@ export function findInvented(draft, support) {
   // 5. Сроки словами: «три месяца» вместо «шести» — подмена факта, а не выдумка с нуля,
   //    но для читателя это одинаково неверно.
   for (const m of text.match(/(шесть|шести|семь|семи|восемь|восьми|пять|пяти|три|тр[её]х|десять|полгода)\s*(?:месяц\S*|год\S*|лет|недел\S*)/gi) || []) {
-    const w = m.split(/\s+/)[0].toLowerCase();
+    const w = numberWordKey(m.split(/\s+/)[0]);
     if (!allowedWords.has(w)) add(`срок «${m.trim()}»`);
   }
   return bad;

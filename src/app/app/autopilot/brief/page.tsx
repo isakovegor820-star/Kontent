@@ -11,12 +11,17 @@ import { Suspense, useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, Check, Loader2, Sparkles, Wand2 } from "lucide-react";
+import { ArrowLeft, Check, Loader2, ShieldCheck, SlidersHorizontal, Sparkles, Wand2 } from "lucide-react";
 import { AppShell } from "@/components/app/shell";
 import { Button } from "@/components/ui/button";
-import { Card, Field, Input, Textarea } from "@/components/ui/primitives";
+import { Badge, Card, Field, Input, Textarea, Toggle } from "@/components/ui/primitives";
 import { useStore } from "@/lib/store";
 import { EMPTY_BRIEF, briefComplete, type Brief } from "@/lib/brief";
+import {
+  QUALITY_PRESETS,
+  presetQuality,
+  type PostQuality,
+} from "@/lib/post-quality.mjs";
 import { cn, plural } from "@/lib/utils";
 
 interface Rubric {
@@ -61,6 +66,15 @@ function BriefInner() {
   }, [load]);
 
   const set = <K extends keyof Brief>(k: K, v: Brief[K]) => setBrief((b) => ({ ...b, [k]: v }));
+  const setQuality = <K extends keyof PostQuality>(k: K, v: PostQuality[K]) =>
+    setBrief((b) => ({ ...b, quality: { ...b.quality, preset: "custom", [k]: v } }));
+  const setQualityLines = (k: "forbiddenPhrases" | "forbiddenTopics", value: string) =>
+    setQuality(
+      k,
+      [...new Set(value.split("\n").map((x) => x.trim()).filter(Boolean))] as PostQuality[typeof k],
+    );
+  const applyQualityPreset = (id: string) =>
+    setBrief((b) => ({ ...b, quality: presetQuality(id) }));
 
   const toggleRubric = (label: string) =>
     setBrief((b) => ({
@@ -86,7 +100,9 @@ function BriefInner() {
 
       if (d?.ok && d.brief) {
         const n = d.readPosts ?? 0;
-        setBrief((b) => ({ ...d.brief!, ready: b.ready }));
+        // ИИ предлагает содержание канала, но не имеет права молча перезаписать выбранные
+        // человеком редакционные границы.
+        setBrief((b) => ({ ...d.brief!, quality: b.quality, ready: b.ready }));
         setFromAi(true);
         setThin(n < 3); // мало постов — догадка слабая, честно скажем
         s.toast({
@@ -306,6 +322,289 @@ function BriefInner() {
           />
         </Section>
 
+        {/* 5. Жёсткий редакционный стандарт: это и промпт, и программный quality gate. */}
+        <Section
+          n={5}
+          title="Стандарт качества"
+          required
+          hint="Эти правила модель не просто увидит в задании: пост с нарушением нельзя будет одобрить или опубликовать."
+        >
+          <div className="rounded-sm bg-info-soft p-4">
+            <div className="flex items-start gap-3">
+              <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-brand" aria-hidden />
+              <div>
+                <p className="text-[14px] font-semibold text-text">Порог выпуска: {brief.quality.qualityThreshold}/100</p>
+                <p className="mt-1 text-[13px] leading-relaxed text-text-2">
+                  Ноль критических нарушений. Длина, обращение, источники, стоп-слова,
+                  дисклеймер и структура проверяются автоматически после каждой генерации.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <Field label="Готовая основа" hint="Выбери ближайший вариант, затем при желании уточни правила ниже.">
+            <div className="grid gap-2 sm:grid-cols-2">
+              {Object.values(QUALITY_PRESETS).map((p) => {
+                const on = brief.quality.preset === p.id;
+                return (
+                  <button
+                    key={p.id}
+                    type="button"
+                    aria-pressed={on}
+                    onClick={() => applyQualityPreset(p.id)}
+                    className={cn(
+                      "rounded-sm border p-3 text-left transition-colors focus-visible:ring-4 focus-visible:ring-brand/15",
+                      on ? "border-brand bg-info-soft" : "border-line bg-surface hover:border-brand/40",
+                    )}
+                  >
+                    <span className="flex items-center justify-between gap-2 text-[14px] font-semibold text-text">
+                      {p.label}
+                      {on && <Check className="h-4 w-4 text-brand" strokeWidth={2.5} aria-hidden />}
+                    </span>
+                    <span className="mt-1 block text-[12px] leading-relaxed text-text-3">{p.description}</span>
+                  </button>
+                );
+              })}
+            </div>
+            {brief.quality.preset === "custom" && <Badge tone="brand">Настроено вручную</Badge>}
+          </Field>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Тон" htmlFor="quality-tone">
+              <Input
+                id="quality-tone"
+                value={brief.quality.tone}
+                onChange={(e) => setQuality("tone", e.target.value)}
+                placeholder="Спокойный, уверенный, экспертный"
+              />
+            </Field>
+            <Field label="Роль автора" htmlFor="quality-persona">
+              <Input
+                id="quality-persona"
+                value={brief.quality.persona}
+                onChange={(e) => setQuality("persona", e.target.value)}
+                placeholder="Практикующий эксперт"
+              />
+            </Field>
+            <Field label="Обращение" htmlFor="quality-address">
+              <select
+                id="quality-address"
+                value={brief.quality.address}
+                onChange={(e) => setQuality("address", e.target.value as PostQuality["address"])}
+                className={selectClass}
+              >
+                <option value="вы">Только на «вы»</option>
+                <option value="ты">Только на «ты»</option>
+                <option value="neutral">Без прямого обращения</option>
+              </select>
+            </Field>
+            <Field label="Факты и источники" htmlFor="quality-facts">
+              <select
+                id="quality-facts"
+                value={brief.quality.factsPolicy}
+                onChange={(e) => setQuality("factsPolicy", e.target.value as PostQuality["factsPolicy"])}
+                className={selectClass}
+              >
+                <option value="source_required">Источник обязателен</option>
+                <option value="no_unverified_specifics">Без неподтверждённой конкретики</option>
+                <option value="open">Свободный режим</option>
+              </select>
+            </Field>
+            <Field label="Минимум знаков" htmlFor="quality-min">
+              <Input
+                id="quality-min"
+                type="number"
+                min={300}
+                max={3500}
+                value={brief.quality.minChars}
+                onChange={(e) => setQuality("minChars", Number(e.target.value))}
+              />
+            </Field>
+            <Field label="Максимум знаков" htmlFor="quality-max">
+              <Input
+                id="quality-max"
+                type="number"
+                min={500}
+                max={4000}
+                value={brief.quality.maxChars}
+                onChange={(e) => setQuality("maxChars", Number(e.target.value))}
+              />
+            </Field>
+          </div>
+
+          <div className="space-y-4 border-t border-line pt-4">
+            <Toggle
+              id="quality-disclaimer"
+              checked={brief.quality.disclaimerRequired}
+              onChange={(v) => setQuality("disclaimerRequired", v)}
+              label="Обязательный дисклеймер"
+              description="Если точной фразы нет в финале, пост блокируется."
+            />
+            {brief.quality.disclaimerRequired && (
+              <Textarea
+                rows={2}
+                value={brief.quality.disclaimerText}
+                onChange={(e) => setQuality("disclaimerText", e.target.value)}
+                placeholder="Точная фраза в конце каждого поста"
+                aria-label="Текст обязательного дисклеймера"
+              />
+            )}
+          </div>
+
+          <details className="group border-t border-line pt-4">
+            <summary className="flex cursor-pointer list-none items-center justify-between gap-3 rounded-sm py-1 text-[14px] font-semibold text-text focus-visible:ring-4 focus-visible:ring-brand/15">
+              <span className="flex items-center gap-2">
+                <SlidersHorizontal className="h-4 w-4 text-brand" aria-hidden />
+                Тонкая настройка правил
+              </span>
+              <span className="text-[12px] font-medium text-text-3 group-open:hidden">Показать</span>
+              <span className="hidden text-[12px] font-medium text-text-3 group-open:inline">Скрыть</span>
+            </summary>
+
+            <div className="mt-4 space-y-5">
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field label="Энергия текста" htmlFor="quality-energy">
+                  <Input
+                    id="quality-energy"
+                    value={brief.quality.energy}
+                    onChange={(e) => setQuality("energy", e.target.value)}
+                  />
+                </Field>
+                <Field label="Уровень языка" htmlFor="quality-language">
+                  <Input
+                    id="quality-language"
+                    value={brief.quality.languageLevel}
+                    onChange={(e) => setQuality("languageLevel", e.target.value)}
+                  />
+                </Field>
+                <Field label="Юмор" htmlFor="quality-humor">
+                  <select
+                    id="quality-humor"
+                    value={brief.quality.humor}
+                    onChange={(e) => setQuality("humor", e.target.value as PostQuality["humor"])}
+                    className={selectClass}
+                  >
+                    <option value="none">Без юмора</option>
+                    <option value="light">Только лёгкий и уместный</option>
+                    <option value="free">Можно свободно</option>
+                  </select>
+                </Field>
+                <Field label="Призыв к действию" htmlFor="quality-cta">
+                  <select
+                    id="quality-cta"
+                    value={brief.quality.ctaStyle}
+                    onChange={(e) => setQuality("ctaStyle", e.target.value as PostQuality["ctaStyle"])}
+                    className={selectClass}
+                  >
+                    <option value="none">Без CTA</option>
+                    <option value="soft">Мягкий</option>
+                    <option value="direct">Прямой</option>
+                  </select>
+                </Field>
+                <Field label="CTA — не чаще каждого N-го поста" htmlFor="quality-cta-every">
+                  <Input
+                    id="quality-cta-every"
+                    type="number"
+                    min={1}
+                    max={20}
+                    value={brief.quality.ctaEveryPosts}
+                    onChange={(e) => setQuality("ctaEveryPosts", Number(e.target.value))}
+                  />
+                </Field>
+                <Field label="Продажи — максимум % текста" htmlFor="quality-sales">
+                  <Input
+                    id="quality-sales"
+                    type="number"
+                    min={0}
+                    max={100}
+                    value={brief.quality.salesMaxPercent}
+                    onChange={(e) => setQuality("salesMaxPercent", Number(e.target.value))}
+                  />
+                </Field>
+                <Field label="Максимум эмодзи" htmlFor="quality-emoji">
+                  <Input
+                    id="quality-emoji"
+                    type="number"
+                    min={0}
+                    max={20}
+                    value={brief.quality.maxEmojis}
+                    onChange={(e) => setQuality("maxEmojis", Number(e.target.value))}
+                  />
+                </Field>
+                <Field label="Максимум хэштегов" htmlFor="quality-hashtags">
+                  <Input
+                    id="quality-hashtags"
+                    type="number"
+                    min={0}
+                    max={10}
+                    value={brief.quality.maxHashtags}
+                    onChange={(e) => setQuality("maxHashtags", Number(e.target.value))}
+                  />
+                </Field>
+              </div>
+
+              <div className="space-y-4 border-t border-line pt-4">
+                <Toggle
+                  id="quality-hook"
+                  checked={brief.quality.hookRequired}
+                  onChange={(v) => setQuality("hookRequired", v)}
+                  label="Обязательный хук"
+                  description={`Первая строка — до ${brief.quality.hookMaxChars} знаков.`}
+                />
+                <Toggle
+                  id="quality-conclusion"
+                  checked={brief.quality.requireConclusion}
+                  onChange={(v) => setQuality("requireConclusion", v)}
+                  label="Отдельный вывод"
+                  description="Пост не должен обрываться без законченной мысли."
+                />
+                <Toggle
+                  id="quality-competitors"
+                  checked={brief.quality.competitorTopics}
+                  onChange={(v) => setQuality("competitorTopics", v)}
+                  label="Разрешить темы конкурентов"
+                  description="Выключено по умолчанию: случайный залёт конкурента не должен увести канал в сторону."
+                />
+              </div>
+
+              <Field
+                label="Запрещённые фразы"
+                hint="Одна фраза на строку. Любое совпадение блокирует пост."
+              >
+                <Textarea
+                  rows={6}
+                  value={brief.quality.forbiddenPhrases.join("\n")}
+                  onChange={(e) => setQualityLines("forbiddenPhrases", e.target.value)}
+                  placeholder={"гарантируем результат\nуспейте прямо сейчас"}
+                />
+              </Field>
+              <Field label="Дополнительные стоп-темы" hint="Одна тема или ключевая фраза на строку.">
+                <Textarea
+                  rows={4}
+                  value={brief.quality.forbiddenTopics.join("\n")}
+                  onChange={(e) => setQualityLines("forbiddenTopics", e.target.value)}
+                />
+              </Field>
+              <Field
+                label="Эталонные посты"
+                hint="Только проверенные тобой примеры. Разделяй посты строкой ---. Опубликованные посты автоматически не используются."
+              >
+                <Textarea
+                  rows={8}
+                  value={brief.quality.styleExamples.join("\n---\n")}
+                  onChange={(e) =>
+                    setQuality(
+                      "styleExamples",
+                      e.target.value.split(/\n\s*---\s*\n/).map((x) => x.trim()).filter(Boolean),
+                    )
+                  }
+                  placeholder="Вставь сюда лучший пост канала"
+                />
+              </Field>
+            </div>
+          </details>
+        </Section>
+
         {/* Сохранение */}
         <Card className="flex flex-wrap items-center justify-between gap-3 p-4">
           <p className="text-[13px] text-text-3">
@@ -326,6 +625,9 @@ function BriefInner() {
     </AppShell>
   );
 }
+
+const selectClass =
+  "h-12 w-full rounded-xs border border-line bg-surface px-4 text-[15px] text-text transition-colors hover:border-line-strong focus:border-brand focus:outline-none focus-visible:ring-4 focus-visible:ring-brand/15";
 
 function Section({
   n,

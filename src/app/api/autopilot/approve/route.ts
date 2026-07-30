@@ -15,6 +15,7 @@ interface PlanItem {
   draft: string;
   status: string;
   postId?: number;
+  qualityBlocked?: boolean;
 }
 
 export async function POST(req: NextRequest) {
@@ -48,6 +49,7 @@ export async function POST(req: NextRequest) {
     let scheduled = 0;
     for (const it of items) {
       if (it.status !== "pending" || it.postId) continue; // уже запланирован — не дублируем
+      if (it.qualityBlocked) continue; // quality gate нельзя обойти массовой кнопкой
       const t = new Date(it.scheduledAt).getTime();
       const at = t < Date.now() + 60_000 ? new Date(Date.now() + 120_000).toISOString() : it.scheduledAt;
       it.postId = await schedulePost(user.id, plan.channel_id, it.draft, at);
@@ -56,9 +58,12 @@ export async function POST(req: NextRequest) {
       scheduled++;
     }
 
-    await pool.query(`update autopilot_plan set items = $2, status = 'approved' where id = $1`, [
+    const blocked = items.filter((it) => it.status === "pending" && it.qualityBlocked).length;
+    const nextStatus = blocked > 0 ? "pending" : "approved";
+    await pool.query(`update autopilot_plan set items = $2, status = $3 where id = $1`, [
       plan.id,
       JSON.stringify(items),
+      nextStatus,
     ]);
     // Честный streak: неделя засчитывается, только если реально что-то запланировано И план
     // не редактировали. С правками — сбрасываем (ревью Д.9).
@@ -69,10 +74,10 @@ export async function POST(req: NextRequest) {
           set approvals_streak = case when $3 and not $4 then approvals_streak + 1 else 0 end,
               updated_at = now()
         where user_id = $1 and channel_id = $2`,
-      [user.id, plan.channel_id, scheduled > 0, plan.edited],
+      [user.id, plan.channel_id, scheduled > 0 && blocked === 0, plan.edited],
     );
 
-    return NextResponse.json({ ok: true, scheduled });
+    return NextResponse.json({ ok: true, scheduled, blocked });
   } catch (err) {
     console.error("[/api/autopilot/approve]", err);
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });

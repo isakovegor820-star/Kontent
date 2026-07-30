@@ -56,7 +56,21 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "no_channel" }, { status: 422 });
     }
 
-    const media = body.media ? JSON.stringify(body.media) : null;
+    let media: string | null = null;
+    if (body.media && typeof body.media === "object") {
+      const candidate = body.media as { assetId?: unknown; kind?: unknown };
+      const assetId = Number(candidate.assetId);
+      if (Number.isInteger(assetId) && assetId > 0) {
+        const owned = await pool.query<{ id: number; kind: "image" | "video" }>(
+          `select id, kind from media_assets where id = $1 and user_id = $2`,
+          [assetId, user.id],
+        );
+        if (owned.rowCount === 0) {
+          return NextResponse.json({ ok: false, error: "bad_media" }, { status: 422 });
+        }
+        media = JSON.stringify({ assetId, kind: owned.rows[0].kind });
+      }
+    }
     const ins = await pool.query<{ id: number }>(
       `insert into posts (user_id, channel_id, text, media, scheduled_at, status)
        values ($1, $2, $3, $4, $5, 'scheduled') returning id`,

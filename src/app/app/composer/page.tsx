@@ -112,6 +112,7 @@ interface HydrateInput {
   post: Post | null;
   date: string | null;
   time: string | null;
+  media?: Post["media"];
 }
 
 interface ComposerValue {
@@ -206,7 +207,7 @@ export default function ComposerPage() {
   );
 
   /** Первичное заполнение формы: пост из ?id= либо чистый лист на ?date=/?time= */
-  const hydrate = useCallback(({ post, date: d, time: t }: HydrateInput) => {
+  const hydrate = useCallback(({ post, date: d, time: t, media: generatedMedia }: HydrateInput) => {
     const fallback = new Date(Date.now() + 3600_000);
     fallback.setMinutes(0, 0, 0); // ровный час — по нему легче попадать глазом
     const when = post?.scheduledAt ? new Date(post.scheduledAt) : fallback;
@@ -214,7 +215,7 @@ export default function ComposerPage() {
     setEditingId(post?.id ?? null);
     setText(post?.text ?? "");
     setNetworks(post?.networks?.length ? post.networks : ["tg", "vk"]);
-    setMedia(post?.media ?? null);
+    setMedia(generatedMedia ?? post?.media ?? null);
     setSourceRef(post?.sourceRef);
     setOrigin(post?.origin ?? "manual");
     setDate(d ?? toDateValue(when));
@@ -428,7 +429,7 @@ export default function ComposerPage() {
 
       setSaving(true);
       const results = await Promise.all(
-        targets.map((t) => s.createRealPost({ channelId: t.channelId, text, scheduledAt })),
+        targets.map((t) => s.createRealPost({ channelId: t.channelId, text, scheduledAt, media })),
       );
       setSaving(false);
 
@@ -644,6 +645,7 @@ function ComposerInner() {
   const dateParam = params.get("date");
   const timeParam = params.get("time");
   const textParam = params.get("text"); // готовый черновик из «Сними это» (Д.7)
+  const fromMedia = params.get("fromMedia") === "1";
 
   const { hydrate, hydrated, text, typing } = c;
   const taRef = useRef<HTMLTextAreaElement>(null);
@@ -663,10 +665,19 @@ function ComposerInner() {
         body: "Похоже, его уже удалили. Открыл чистый лист — можно писать заново.",
       });
     }
-    hydrate({ post, date: dateParam, time: timeParam });
+    let generatedMedia: Post["media"] = null;
+    if (fromMedia) {
+      try {
+        generatedMedia = JSON.parse(sessionStorage.getItem("aurora:generated-media") || "null") as Post["media"];
+      } catch {
+        generatedMedia = null;
+      }
+      sessionStorage.removeItem("aurora:generated-media");
+    }
+    hydrate({ post, date: dateParam, time: timeParam, media: generatedMedia });
     // Пришли из идеи «Сними это» с готовым текстом — подставляем в редактор.
     if (!idParam && textParam) c.setText(textParam);
-  }, [dateParam, hydrate, idParam, s, timeParam, textParam, c]);
+  }, [dateParam, fromMedia, hydrate, idParam, s, timeParam, textParam, c]);
 
   // ИИ печатает — держим видимым хвост текста
   useEffect(() => {
@@ -901,7 +912,7 @@ function ComposerInner() {
           </AnimatePresence>
 
           <p className="text-[13px] text-text-3">
-            В демо медиа — заглушка. В платформе картинка сама подгонится под размеры каждой сети.
+            Готовые изображения и видео из ИИ-студии сохраняются вместе с постом.
           </p>
         </div>
 
@@ -1252,9 +1263,16 @@ function MediaBlock({ media, className }: { media: NonNullable<Post["media"]>; c
   return (
     <div
       className={cn("relative overflow-hidden rounded-sm", className)}
-      style={mediaStyle(media.hue)}
+      style={media.url ? undefined : mediaStyle(media.hue)}
       aria-hidden
     >
+      {media.url && media.kind === "image" && (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={media.url} alt="" className="h-full w-full object-cover" />
+      )}
+      {media.url && media.kind === "video" && (
+        <video src={media.url} muted playsInline preload="metadata" className="h-full w-full object-cover" />
+      )}
       <div className="absolute inset-x-0 bottom-0 flex items-center gap-1.5 bg-black/25 px-3 py-1.5 text-[13px] font-semibold text-white backdrop-blur-[2px]">
         {media.kind === "video" ? (
           <Video className="h-4 w-4" strokeWidth={2} />

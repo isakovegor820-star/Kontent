@@ -27,6 +27,7 @@ import { Button } from "@/components/ui/button";
 import { Badge, Card, EmptyState, Switch, Textarea } from "@/components/ui/primitives";
 import { useStore } from "@/lib/store";
 import { MAX_WEEKLY_POSTS, RUBRICS, type Brief } from "@/lib/brief";
+import type { QualityResult } from "@/lib/post-quality.mjs";
 import { cn, plural } from "@/lib/utils";
 import { ChannelPicker, useChannelChoice } from "@/components/app/channel-picker";
 
@@ -43,6 +44,9 @@ interface PlanItem {
   // Конкретика, которой нет в базе: ИИ её выдумал, и вторая попытка не помогла. Такой пост
   // автопилот НИКОГДА не публикует сам — решает человек.
   invented?: string[];
+  qualityBlocked?: boolean;
+  quality?: QualityResult;
+  qualityOrigin?: "automatic" | "manual_review";
 }
 interface Settings {
   enabled: boolean;
@@ -52,7 +56,13 @@ interface Settings {
 }
 interface State {
   settings: Settings | null;
-  plan: { id: number; items: PlanItem[]; rules: string | null; status: string } | null;
+  plan: {
+    id: number;
+    items: PlanItem[];
+    rules: string | null;
+    status: string;
+    errorReason?: "timeout";
+  } | null;
   hasChannel: boolean;
   brief: Brief | null;
   briefReady: boolean;
@@ -180,6 +190,8 @@ export default function AutopilotPage() {
         const why: Record<string, string> = {
           no_channel: "Сначала подключи Telegram-канал.",
           no_brief: "Сначала настрой автопилот — без этого он не знает, о чём твой канал.",
+          worker_unavailable: "Фоновый обработчик не запущен. Перезапусти приложение и повтори.",
+          queue_unavailable: "Очередь генерации сейчас недоступна. Попробуй ещё раз через минуту.",
         };
         s.toast({
           kind: "danger",
@@ -202,12 +214,18 @@ export default function AutopilotPage() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ channelId: chId }),
       });
-      const d = (await r.json().catch(() => null)) as { ok?: boolean; scheduled?: number } | null;
+      const d = (await r.json().catch(() => null)) as
+        | { ok?: boolean; scheduled?: number; blocked?: number }
+        | null;
       if (d?.ok) {
         s.toast({
-          kind: "success",
-          title: `Одобрено — ${d.scheduled} в очереди 🚀`,
-          body: "Посты выйдут по расписанию сами. Компьютер держать включённым не нужно.",
+          kind: d.blocked ? "info" : "success",
+          title: d.blocked
+            ? `${d.scheduled} в очереди, ${d.blocked} не прошли контроль`
+            : `Одобрено — ${d.scheduled} в очереди 🚀`,
+          body: d.blocked
+            ? "Слабые посты не выпущены. Исправь правила или базу знаний и пересобери план."
+            : "Посты выйдут по расписанию сами. Компьютер держать включённым не нужно.",
         });
       }
       await load();
@@ -217,11 +235,21 @@ export default function AutopilotPage() {
   };
 
   const itemAction = async (index: number, action: string, draft?: string) => {
-    await fetch("/api/autopilot/item", {
+    const r = await fetch("/api/autopilot/item", {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ index, action, draft, channelId: chId }),
-    }).catch(() => {});
+    }).catch(() => null);
+    const result = (await r?.json().catch(() => null)) as
+      | { ok?: boolean; error?: string; blockers?: string[] }
+      | null;
+    if (result?.error === "quality_blocked") {
+      s.toast({
+        kind: "danger",
+        title: "Пост не прошёл контроль качества",
+        body: result.blockers?.[0] ?? "Исправь замечания или пересобери план.",
+      });
+    }
     setEditing(null);
     await load();
   };
@@ -300,6 +328,8 @@ export default function AutopilotPage() {
   const plan = data.plan;
   const items = plan?.items ?? [];
   const pending = items.filter((it) => it.status === "pending");
+  const blocked = pending.filter((it) => it.qualityBlocked);
+  const readyPending = pending.filter((it) => !it.qualityBlocked);
   const approved = items.filter((it) => it.status === "approved" || it.status === "published");
   const canOfferFull = st.approvals_streak >= 2 && st.mode !== "full";
 
@@ -318,9 +348,9 @@ export default function AutopilotPage() {
       title="Автопилот"
       subtitle="ИИ собирает план недели по твоей аналитике и залётам конкурентов. Ты одобряешь — посты выходят сами."
       action={
-        <Button variant="brand" onClick={generate} loading={busy && !plan} disabled={busy}>
+        <Button variant="brand" onClick={generate} loading={busy} disabled={busy || building}>
           <Sparkles className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
-          {plan ? "Пересобрать план" : "Собрать план недели"}
+          {building ? "План собирается" : plan ? "Пересобрать план" : "Собрать план недели"}
         </Button>
       }
     >
@@ -422,7 +452,9 @@ export default function AutopilotPage() {
         <Card className="p-8 text-center">
           <p className="text-[15px] font-semibold text-text">Не получилось собрать план</p>
           <p className="mx-auto mt-1 max-w-md text-[14px] text-text-3">
-            Проверь, что канал подключён и ИИ-движок доступен, и попробуй ещё раз.
+            {plan.errorReason === "timeout"
+              ? "Сборка не была обработана вовремя. Перезапусти приложение и попробуй ещё раз."
+              : "Проверь, что канал подключён и ИИ-движок доступен, и попробуй ещё раз."}
           </p>
           <div className="mt-4">
             <Button variant="solid" onClick={generate} loading={busy} disabled={busy}>
@@ -458,11 +490,18 @@ export default function AutopilotPage() {
                   )}
                 </p>
               </div>
-              {pending.length > 0 ? (
+              {readyPending.length > 0 ? (
                 <Button variant="brand" onClick={approveAll} loading={busy} disabled={busy}>
                   <Check className="h-[18px] w-[18px]" strokeWidth={2.5} aria-hidden />
-                  Одобрить всё
+                  {blocked.length ? `Одобрить готовые (${readyPending.length})` : "Одобрить всё"}
                 </Button>
+              ) : blocked.length > 0 ? (
+                <Link href={`/app/autopilot/brief${chId ? `?channel=${chId}` : ""}`}>
+                  <Button variant="outline" size="sm">
+                    <Settings2 className="h-4 w-4" aria-hidden />
+                    Исправить настройки
+                  </Button>
+                </Link>
               ) : allApproved ? (
                 <Link href="/app/calendar">
                   <Button variant="soft" size="sm">
@@ -503,7 +542,7 @@ export default function AutopilotPage() {
                     <span
                       className={cn(
                         "mt-0.5 h-1.5 w-1.5 rounded-full",
-                        done ? "bg-success" : "bg-brand",
+                        done ? "bg-success" : it.qualityBlocked ? "bg-danger" : "bg-brand",
                       )}
                       aria-hidden
                     />
@@ -521,6 +560,11 @@ export default function AutopilotPage() {
               <span className="inline-flex items-center gap-1.5">
                 <span className="h-1.5 w-1.5 rounded-full bg-success" aria-hidden />в очереди
               </span>
+              {blocked.length > 0 && (
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="h-1.5 w-1.5 rounded-full bg-danger" aria-hidden />не прошёл контроль
+                </span>
+              )}
             </div>
           </Card>
 
@@ -574,8 +618,16 @@ export default function AutopilotPage() {
                         <Badge tone="success">
                           <Check className="h-3 w-3" strokeWidth={2.5} aria-hidden />в очереди
                         </Badge>
+                      ) : it.qualityBlocked ? (
+                        <Badge tone="danger">
+                          <AlertTriangle className="h-3 w-3" aria-hidden />
+                          {it.quality?.score ?? 0}/100
+                        </Badge>
                       ) : (
-                        <Badge tone="neutral">ждёт тебя</Badge>
+                        <Badge tone="success">
+                          {it.qualityOrigin === "manual_review" ? "проверено вручную" : "качество"}{" "}
+                          {it.quality?.score ?? 100}/100
+                        </Badge>
                       )}
                       <ChevronDown
                         className={cn(
@@ -637,6 +689,20 @@ export default function AutopilotPage() {
                         </div>
                       )}
 
+                      {editing !== it.i && it.qualityBlocked && it.quality && (
+                        <div className="mt-3 rounded-sm bg-danger-soft p-3">
+                          <p className="flex items-center gap-2 text-[13px] font-semibold text-danger-text">
+                            <AlertTriangle className="h-4 w-4" aria-hidden />
+                            Пост заблокирован · {it.quality.score}/{it.quality.threshold}
+                          </p>
+                          <ul className="mt-1.5 space-y-1 text-[13px] leading-snug text-danger-text">
+                            {it.quality.violations.slice(0, 4).map((v) => (
+                              <li key={`${v.code}-${v.message}`}>— {v.message}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+
                       {/* На чём основан пост — только в раскрытой карточке. Это доказательство,
                           что конкретика взята из базы знаний, а не выдумана. */}
                       {isOpen && editing !== it.i && it.sources && it.sources.length > 0 && (
@@ -657,7 +723,12 @@ export default function AutopilotPage() {
 
                       {it.status === "pending" && editing !== it.i && (
                         <div className="mt-3 flex flex-wrap gap-2">
-                          <Button size="sm" variant="soft" onClick={() => itemAction(it.i, "approve")}>
+                          <Button
+                            size="sm"
+                            variant="soft"
+                            disabled={it.qualityBlocked}
+                            onClick={() => itemAction(it.i, "approve")}
+                          >
                             <Check className="h-4 w-4" aria-hidden />
                             Одобрить
                           </Button>

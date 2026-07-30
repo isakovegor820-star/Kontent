@@ -6,8 +6,13 @@ import { Queue, type ConnectionOptions } from "bullmq";
 
 export const PUBLISH_QUEUE = "publish";
 export const STATS_QUEUE = "stats";
+export const MEDIA_QUEUE = "media-generation";
 
-const globalForQueue = globalThis as unknown as { auroraQueue?: Queue; auroraStatsQueue?: Queue };
+const globalForQueue = globalThis as unknown as {
+  auroraQueue?: Queue;
+  auroraStatsQueue?: Queue;
+  auroraMediaQueue?: Queue;
+};
 
 // Параметры Redis из URL. Передаём объектом (а не экземпляром ioredis), чтобы BullMQ
 // сам создал соединение — так не конфликтуют версии ioredis.
@@ -34,6 +39,13 @@ export function getStatsQueue(): Queue {
   if (globalForQueue.auroraStatsQueue) return globalForQueue.auroraStatsQueue;
   const q = new Queue(STATS_QUEUE, { connection: connection() });
   globalForQueue.auroraStatsQueue = q;
+  return q;
+}
+
+export function getMediaQueue(): Queue {
+  if (globalForQueue.auroraMediaQueue) return globalForQueue.auroraMediaQueue;
+  const q = new Queue(MEDIA_QUEUE, { connection: connection() });
+  globalForQueue.auroraMediaQueue = q;
   return q;
 }
 

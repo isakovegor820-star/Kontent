@@ -15,7 +15,7 @@
  * только на важном (режим, ниша, тон, доверие автопилоту) — не на каждый щелчок.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
@@ -1147,7 +1147,7 @@ function SettingsSkeleton() {
 
 /* ----------------------------------------------------------------- ЭКРАН */
 
-export default function SettingsPage() {
+function SettingsContent() {
   const s = useStore();
   // Стабильные ссылки из стора: toast/refreshReal — useCallback([]), ready — примитив.
   // В зависимость эффекта берём ИХ, а не весь объект s: идентичность s меняется на
@@ -1217,5 +1217,22 @@ export default function SettingsPage() {
         </div>
       )}
     </AppShell>
+  );
+}
+
+export default function SettingsPage() {
+  return (
+    <Suspense
+      fallback={
+        <AppShell
+          title="Настройки"
+          subtitle="Всё важное — на одном экране. Ничего не спрятано в подменю."
+        >
+          <SettingsSkeleton />
+        </AppShell>
+      }
+    >
+      <SettingsContent />
+    </Suspense>
   );
 }

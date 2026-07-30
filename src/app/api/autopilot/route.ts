@@ -9,6 +9,7 @@ import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
 import { ensureSettings, loadBrief, resolveChannel } from "@/lib/autopilot";
 import { briefComplete } from "@/lib/brief";
+import { isAutopilotBuildStale } from "@/lib/autopilot-build";
 
 export const runtime = "nodejs";
 
@@ -37,7 +38,7 @@ export async function GET(req: NextRequest) {
     if (!channelId) return NextResponse.json({ ...empty, channels }, { status: wanted ? 404 : 200 });
 
     const settings = await ensureSettings(user.id, channelId);
-    const plan =
+    let plan =
       (
         await pool.query(
           `select id, week_start, items, rules, status, created_at
@@ -46,6 +47,22 @@ export async function GET(req: NextRequest) {
           [user.id, channelId],
         )
       ).rows[0] ?? null;
+
+    // A queue job can survive while its worker is stopped. Without a deadline that left the
+    // page polling `building` forever (the real incident lasted two days). Mark only the exact
+    // placeholder we loaded, so a concurrent retry for the same channel cannot be touched.
+    if (
+      plan?.status === "building" &&
+      isAutopilotBuildStale(plan.created_at, settings.post_frequency)
+    ) {
+      const expired = await pool.query(
+        `update autopilot_plan set status = 'error'
+          where id = $1 and user_id = $2 and channel_id = $3 and status = 'building'
+          returning id`,
+        [plan.id, user.id, channelId],
+      );
+      if (expired.rowCount) plan = { ...plan, status: "error", errorReason: "timeout" };
+    }
     const brief = await loadBrief(user.id, channelId);
 
     return NextResponse.json({

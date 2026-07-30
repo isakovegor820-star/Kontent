@@ -8,6 +8,7 @@
 import { Worker, Queue } from "bullmq";
 import IORedis from "ioredis";
 import pg from "pg";
+import { createHash } from "node:crypto";
 // Чистые функции (парсинг, страж фактов, раскладка, разметка) вынесены в отдельный модуль
 // без сайд-эффектов — так их можно тестировать, не поднимая пул/Redis/BullMQ.
 import {
@@ -24,9 +25,16 @@ import {
   stripCites,
   citedShare,
   mapConcurrent,
-  parseRss,
   formatPost,
 } from "./worker/lib.mjs";
+import { collectRssPipeline } from "./worker/rss-pipeline.mjs";
+import { buildWeeklyReport } from "./worker/weekly-report.mjs";
+import {
+  MEDIA_QUEUE,
+  assertSafeMediaUrl,
+  buildNavyMediaPayload,
+  detectMediaMime,
+} from "./src/lib/media-generation.mjs";
 // Шифрование токенов сообществ (VK) и OAuth-сетей (YouTube/Instagram). Крипто НЕ дублируем —
 // один модуль на роуты и воркер. encryptToken нужен для сохранения обновлённого access_token.
 import { decryptToken, encryptToken } from "./src/lib/token-crypto.mjs";
@@ -41,11 +49,24 @@ import {
   parseProfile,
   profileToSourceText,
 } from "./src/lib/channel-profile.mjs";
+import {
+  buildQualityPrompt,
+  buildRewritePrompt,
+  fallbackTopicFromSeed,
+  normalizePostQuality,
+  validatePostQuality,
+  validateTopicQuality,
+} from "./src/lib/post-quality.mjs";
 
 const REDIS_URL = process.env.REDIS_URL || "redis://127.0.0.1:6379";
 const DATABASE_URL = process.env.DATABASE_URL;
 const TOKEN = process.env.TG_BOT_TOKEN;
 const OWNER_CHAT = process.env.TG_CHAT_ID;
+// Repair mode for local incidents: process manual/background jobs without starting the
+// publication queue, cron or Telegram polling. It lets us recover Autopilot without an
+// overdue scheduled post suddenly going live. Normal `npm run worker` remains full mode.
+const AUTOPILOT_ONLY = process.env.AURORA_WORKER_MODE === "autopilot";
+const MEDIA_ONLY = process.env.AURORA_WORKER_MODE === "media";
 
 // ИИ-движок для генерации идей (Д.7) и планов (Д.9). Тот же выбор, что в переходнике
 // ai-provider.ts: облако, если задан AI_API_KEY; иначе локальный Ollama (hermes3).
@@ -302,6 +323,212 @@ pool.on("error", (err) =>
 const connection = new IORedis(REDIS_URL, { maxRetriesPerRequest: null });
 const queue = new Queue("publish", { connection }); // для повторных задач
 
+// ── Медиагенерация NavyAI ───────────────────────────────────────────────────
+// Видео нельзя держать внутри HTTP-запроса Next: Veo работает до 10 минут. Отдельная
+// durable-очередь переживает закрытую вкладку и рестарт веб-процесса.
+const NAVYAI_KEY = process.env.NAVYAI_API_KEY || "";
+const NAVYAI_URL = (process.env.NAVYAI_API_URL || "https://api.navy/v1").replace(/\/+$/, "");
+const MEDIA_IMAGE_MAX_BYTES = Number(process.env.MEDIA_IMAGE_MAX_BYTES || 25 * 1024 * 1024);
+const MEDIA_VIDEO_MAX_BYTES = Number(process.env.MEDIA_VIDEO_MAX_BYTES || 180 * 1024 * 1024);
+
+class MediaGenerationError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.code = code;
+  }
+}
+
+async function mediaJson(url, options, timeoutMs) {
+  const res = await fetch(url, {
+    ...options,
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${NAVYAI_KEY}`,
+      ...(options?.headers || {}),
+    },
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  const data = await res.json().catch(() => null);
+  return { res, data };
+}
+
+function navyError(data, fallback) {
+  const raw = String(data?.error?.message || data?.message || fallback || "NavyAI не ответил");
+  return raw.replace(/sk-[a-z0-9_-]+/gi, "[ключ скрыт]").slice(0, 300);
+}
+
+async function downloadMedia(urlValue, kind) {
+  const url = assertSafeMediaUrl(urlValue);
+  const maxBytes = kind === "video" ? MEDIA_VIDEO_MAX_BYTES : MEDIA_IMAGE_MAX_BYTES;
+  const res = await fetch(url, { signal: AbortSignal.timeout(180_000), redirect: "follow" });
+  if (!res.ok || !res.body) throw new MediaGenerationError("download_failed", "Не удалось сохранить готовый файл.");
+  assertSafeMediaUrl(res.url);
+  const announced = Number(res.headers.get("content-length") || 0);
+  if (announced > maxBytes) throw new MediaGenerationError("file_too_large", "Готовый файл превышает лимит платформы.");
+
+  const reader = res.body.getReader();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => {});
+      throw new MediaGenerationError("file_too_large", "Готовый файл превышает лимит платформы.");
+    }
+    chunks.push(Buffer.from(value));
+  }
+  const buffer = Buffer.concat(chunks, total);
+  const mime = detectMediaMime(buffer, res.headers.get("content-type"), kind);
+  return { buffer, mime };
+}
+
+async function persistMediaResult(generation, outputUrl) {
+  await pool.query(`update media_generations set status = 'saving', updated_at = now() where id = $1`, [generation.id]);
+  const { buffer, mime } = await downloadMedia(outputUrl, generation.kind);
+  const ext = mime === "video/mp4" ? "mp4" : mime === "image/png" ? "png" : mime === "image/webp" ? "webp" : "jpg";
+  const sha256 = createHash("sha256").update(buffer).digest("hex");
+  const tx = await pool.connect();
+  try {
+    await tx.query("begin");
+    const locked = (
+      await tx.query(`select output_asset_id, status from media_generations where id = $1 for update`, [generation.id])
+    ).rows[0];
+    if (!locked || locked.output_asset_id || locked.status === "ready") {
+      await tx.query("rollback");
+      return;
+    }
+    const asset = await tx.query(
+      `insert into media_assets
+        (user_id, kind, file_name, mime_type, bytes, data, sha256, duration_seconds)
+       values ($1,$2,$3,$4,$5,$6,$7,$8) returning id`,
+      [
+        generation.user_id,
+        generation.kind,
+        `aurora-${generation.kind}-${generation.id}.${ext}`,
+        mime,
+        buffer.byteLength,
+        buffer,
+        sha256,
+        generation.kind === "video" ? generation.seconds : null,
+      ],
+    );
+    await tx.query(
+      `update media_generations
+          set status = 'ready', output_asset_id = $2, error_code = null, error_message = null,
+              updated_at = now(), completed_at = now()
+        where id = $1`,
+      [generation.id, asset.rows[0].id],
+    );
+    await tx.query("commit");
+  } catch (error) {
+    await tx.query("rollback").catch(() => {});
+    throw error;
+  } finally {
+    tx.release();
+  }
+}
+
+async function runMediaGeneration(generationId) {
+  if (!NAVYAI_KEY) throw new MediaGenerationError("not_configured", "NavyAI не подключён на сервере.");
+  const generation = (
+    await pool.query(
+      `select id, user_id, kind, status, prompt, negative_prompt, model, aspect_ratio,
+              quality, seconds, style, niche, tone, provider_job_id, output_asset_id
+         from media_generations where id = $1`,
+      [generationId],
+    )
+  ).rows[0];
+  if (!generation || generation.status === "ready" || generation.output_asset_id) return;
+
+  await pool.query(
+    `update media_generations set status = 'submitting', error_code = null,
+            error_message = null, updated_at = now() where id = $1`,
+    [generation.id],
+  );
+  const payload = buildNavyMediaPayload(generation);
+  const created = await mediaJson(
+    `${NAVYAI_URL}/images/generations`,
+    { method: "POST", body: JSON.stringify(payload) },
+    180_000,
+  );
+  if (!created.res.ok) {
+    throw new MediaGenerationError(
+      created.res.status === 429 ? "rate_limited" : "provider_error",
+      created.res.status === 429
+        ? "NavyAI временно ограничил генерации. Попробуй позже."
+        : navyError(created.data, `NavyAI вернул ${created.res.status}`),
+    );
+  }
+
+  const inlineUrl = created.data?.data?.[0]?.url || created.data?.result?.data?.[0]?.url;
+  if (inlineUrl) return persistMediaResult(generation, inlineUrl);
+
+  const providerJobId = String(created.data?.id || "");
+  if (!providerJobId) throw new MediaGenerationError("bad_provider_response", "NavyAI не вернул идентификатор генерации.");
+  await pool.query(
+    `update media_generations set status = 'generating', provider_job_id = $2, updated_at = now() where id = $1`,
+    [generation.id, providerJobId],
+  );
+
+  const deadline = Date.now() + 9 * 60_000;
+  while (Date.now() < deadline) {
+    await sleep(4_000);
+    let polled;
+    try {
+      polled = await mediaJson(
+        `${NAVYAI_URL}/images/generations/${encodeURIComponent(providerJobId)}`,
+        { method: "GET" },
+        30_000,
+      );
+    } catch (error) {
+      if (Date.now() + 5_000 < deadline) continue;
+      throw error;
+    }
+    if (polled.res.status === 429 || polled.res.status >= 500) continue;
+    if (!polled.res.ok) {
+      throw new MediaGenerationError("poll_failed", navyError(polled.data, "Не удалось получить результат NavyAI."));
+    }
+    const status = polled.data?.status;
+    if (status === "failed") {
+      throw new MediaGenerationError("provider_failed", navyError(polled.data, "Модель не смогла создать файл."));
+    }
+    if (status === "completed") {
+      const outputUrl = polled.data?.result?.data?.[0]?.url || polled.data?.data?.[0]?.url;
+      if (!outputUrl) throw new MediaGenerationError("empty_result", "Генерация завершилась без файла.");
+      return persistMediaResult(generation, outputUrl);
+    }
+  }
+  throw new MediaGenerationError("timed_out", "Генерация заняла слишком много времени. Попробуй ещё раз позже.");
+}
+
+const mediaWorker = AUTOPILOT_ONLY ? null : new Worker(
+  MEDIA_QUEUE,
+  async (job) => {
+    const generationId = Number(job.data.generationId);
+    if (!Number.isInteger(generationId) || generationId <= 0) throw new Error("media: bad generation id");
+    try {
+      await runMediaGeneration(generationId);
+    } catch (error) {
+      const code = error?.code || "worker_failed";
+      const message = String(error?.message || "Не удалось создать медиафайл.").slice(0, 300);
+      await pool.query(
+        `update media_generations set status = 'failed', error_code = $2, error_message = $3,
+                updated_at = now(), completed_at = now()
+          where id = $1 and status <> 'ready'`,
+        [generationId, code, message],
+      );
+      throw error;
+    }
+  },
+  { connection, concurrency: 1 },
+);
+mediaWorker?.on("ready", () => console.log("[media] очередь изображений и видео слушается"));
+mediaWorker?.on("failed", (job, error) =>
+  console.error(`[media] генерация ${job?.data?.generationId || job?.id} упала:`, error?.message),
+);
+
 // Задержки между попытками. По умолчанию 1 / 5 / 15 минут (ТЗ 5.3).
 // Для локального теста можно ускорить: RETRY_DELAYS_MS=4000,8000,12000
 const RETRY_DELAYS_MS = (process.env.RETRY_DELAYS_MS || "60000,300000,900000")
@@ -328,6 +555,31 @@ async function tgSend(chatId, text, buttons) {
     disable_web_page_preview: true,
     reply_markup: keyboard(buttons),
   }); // { ok, result: { message_id }, description }
+}
+
+async function tgSendAsset(chatId, asset, text) {
+  const isVideo = asset.kind === "video";
+  const method = isVideo ? "sendVideo" : "sendPhoto";
+  const field = isVideo ? "video" : "photo";
+  const form = new FormData();
+  form.set("chat_id", String(chatId));
+  form.set(field, new Blob([asset.data], { type: asset.mime_type }), asset.file_name);
+  const formatted = formatPost(text);
+  const captionFits = formatted.length <= 900;
+  if (captionFits) {
+    form.set("caption", toTelegramHtml(formatted));
+    form.set("parse_mode", "HTML");
+  }
+  const response = await fetch(`https://api.telegram.org/bot${TOKEN}/${method}`, {
+    method: "POST",
+    body: form,
+    signal: AbortSignal.timeout(isVideo ? 120_000 : 60_000),
+  });
+  const uploaded = await response.json().catch(() => ({ ok: false, description: "Telegram не принял файл" }));
+  if (!uploaded.ok || captionFits) return uploaded;
+  // У Telegram подпись ограничена 1024 символами. Длинный текст отправляем следом,
+  // но только после успешной загрузки медиа.
+  return tgSend(chatId, formatted);
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -393,10 +645,21 @@ async function vkPostStats(token, groupId, postId) {
 
 /** Telegram: текущий путь tgSend, без изменений логики. Текст прогоняем через
  * форматтер-гарант: даже если ИИ или человек дал «простыню», в канал уйдёт структура. */
-async function publishTg(channel, text) {
+async function publishTg(channel, text, media) {
   let res;
   try {
-    res = await tgSend(channel.tg_chat_id, formatPost(text));
+    const assetId = Number(media?.assetId);
+    const asset = Number.isInteger(assetId) && assetId > 0
+      ? (
+          await pool.query(
+            `select kind, file_name, mime_type, data from media_assets where id = $1 and user_id = $2`,
+            [assetId, channel.user_id],
+          )
+        ).rows[0]
+      : null;
+    res = asset
+      ? await tgSendAsset(channel.tg_chat_id, asset, text)
+      : await tgSend(channel.tg_chat_id, formatPost(text));
   } catch (err) {
     res = { ok: false, description: String(err?.message || err) };
   }
@@ -514,7 +777,10 @@ const RECON_CONCURRENCY = 6; // скромно, чтобы самим не пр�
 // Генерация поста — тяжёлый ИИ-вызов (~90с), а не лёгкий HTML-запрос. Провайдер/локальная Ollama
 // не бесконечны, поэтому лимит ниже разведочного: режем 45-минутную сборку плана примерно втрое,
 // не долбя движок десятком одновременных запросов.
-const AUTOPILOT_CONCURRENCY = 3;
+// Облачный API выдерживает параллельные вызовы; локальный Ollama с одной 8B-моделью — нет.
+// Три одновременных запроса ставили друг друга в очередь и ловили 90-секундные таймауты,
+// после чего в плане появлялись пустые карточки. Локально пишем последовательно.
+const AUTOPILOT_CONCURRENCY = CLOUD_KEY ? 3 : 1;
 
 // t.me/s/ — единственный источник данных разведки, и он легко отдаёт 429, если долбить часто.
 // Раньше 429 молча ронял сбор (r.ok = false → пустой результат, данные пропадали до след. цикла).
@@ -684,7 +950,7 @@ async function saveGapAnswer(userId, q, text) {
   console.log(`[gap] user ${userId}: ответ на «${q.topic}» ушёл в базу`);
 }
 
-const worker = new Worker(
+const worker = AUTOPILOT_ONLY || MEDIA_ONLY ? null : new Worker(
   "publish",
   async (job) => {
     const postId = job.data.postId;
@@ -743,7 +1009,7 @@ const worker = new Worker(
         privacyStatus: media?.privacyStatus || "private",
       });
     } else {
-      out = await publishTg(channel, post.text);
+      out = await publishTg(channel, post.text, post.media);
     }
 
     // --- Успех ---
@@ -825,9 +1091,9 @@ const worker = new Worker(
   { connection },
 );
 
-worker.on("ready", () => console.log("[worker] очередь публикации слушается"));
-worker.on("error", (err) => console.error("[worker] ошибка:", err));
-worker.on("failed", (job, err) =>
+worker?.on("ready", () => console.log("[worker] очередь публикации слушается"));
+worker?.on("error", (err) => console.error("[worker] ошибка:", err));
+worker?.on("failed", (job, err) =>
   console.error(`[worker] задача ${job?.id} упала:`, err?.message),
 );
 
@@ -842,7 +1108,7 @@ worker.on("failed", (job, err) =>
 // сам отключится, и приём переедет на webhook без переписывания обработчиков.
 // ============================================================================
 
-const BOT_POLL = !process.env.TG_WEBHOOK_URL;
+const BOT_POLL = !AUTOPILOT_ONLY && !MEDIA_ONLY && !process.env.TG_WEBHOOK_URL;
 
 /** Что бот умеет — показывается в меню Telegram по кнопке «/». */
 const BOT_COMMANDS = [
@@ -1094,56 +1360,6 @@ async function collectVkStats() {
     }
   });
   if (chans.length) console.log(`[stats] снимок VK собран за ${today} (сообществ: ${chans.length})`);
-}
-
-// Недельный отчёт одной страницей — в бот владельцу (ТЗ 5.7, Приложение В).
-async function buildWeeklyReport() {
-  const week = (
-    await pool.query(
-      `select count(*)::int as posts,
-              coalesce(sum(ps.views), 0)::int as views,
-              coalesce(round(avg(ps.views)), 0)::int as avg_views
-       from posts p
-       join lateral (
-         select views from post_stats where post_id = p.id order by snapshot_date desc limit 1
-       ) ps on true
-       where p.status = 'published' and p.published_at > now() - interval '7 days'`,
-    )
-  ).rows[0];
-
-  const best = (
-    await pool.query(
-      `select p.text, ps.views from posts p
-       join lateral (select views from post_stats where post_id = p.id order by snapshot_date desc limit 1) ps on true
-       where p.status = 'published' and ps.views is not null
-       order by ps.views desc limit 1`,
-    )
-  ).rows[0];
-
-  const growth = (
-    await pool.query(
-      `select coalesce(sum(subscribers_delta), 0)::int as g
-       from channel_stats where snapshot_date > (current_date - 7)`,
-    )
-  ).rows[0];
-
-  if (!week || week.posts === 0) {
-    return `📊 Твоя неделя: постов пока не было. Как выйдет первый — пришлю цифры и совет.`;
-  }
-  const vw = (n) => plural(n, "просмотр", "просмотра", "просмотров");
-  const lines = [
-    `📊 Твоя неделя: ${week.posts} ${plural(week.posts, "пост", "поста", "постов")}, ` +
-      `суммарно ${week.views} ${vw(week.views)} (в среднем ${week.avg_views} ${vw(week.avg_views)} на пост).`,
-  ];
-  if (Number(growth.g) !== 0) {
-    lines.push(`Подписчиков за неделю: ${growth.g > 0 ? "+" : ""}${growth.g}.`);
-  }
-  if (best) {
-    const snippet = best.text.replace(/\s+/g, " ").slice(0, 60);
-    lines.push(`Лучший пост — «${snippet}…» (${best.views} ${vw(best.views)}).`);
-    lines.push(`Совет: повтори этот формат — у тебя он заходит лучше остальных.`);
-  }
-  return lines.join("\n");
 }
 
 // ============================================================================
@@ -1901,8 +2117,8 @@ async function collectTrendSources() {
 // залёты (Д.7), в стиле пользователя. Пользователь одобряет → посты в очередь (Д.3).
 // ============================================================================
 
-// Бриф контента (Д.9). Компактная копия src/lib/brief.ts — воркер отдельный процесс
-// и TS не импортирует (та же схема, что с настроениями MOODS_W).
+// Бриф контента (Д.9). Сам контракт качества общий с Next.js — post-quality.mjs чистый,
+// поэтому промпт и программный шлагбаум не могут разъехаться между приложением и worker.
 const RUBRICS_W = [
   "Полезный совет",
   "Личная история",
@@ -1919,7 +2135,7 @@ const RUBRICS_W = [
 async function loadBriefW(userId, channelId) {
   const b = (
     await pool.query(
-      `select niche, audience, rubrics, goal, cta, taboo, ready
+      `select niche, audience, rubrics, goal, cta, taboo, quality, ready
          from content_brief where user_id = $1 and channel_id = $2`,
       [userId, channelId],
     )
@@ -1928,7 +2144,13 @@ async function loadBriefW(userId, channelId) {
   const niche = String(b.niche || "").trim();
   const audience = String(b.audience || "").trim();
   if (niche.length < 3 || audience.length < 3) return null;
-  return { ...b, niche, audience, rubrics: b.rubrics || [] };
+  return {
+    ...b,
+    niche,
+    audience,
+    rubrics: b.rubrics || [],
+    quality: normalizePostQuality(b.quality),
+  };
 }
 
 function briefContextW(b) {
@@ -1959,10 +2181,12 @@ const FORMAT_RULES_W = [
   "— никаких мета-меток: не пиши «Хук:», «Абзац:», «CTA:» — только сам текст.",
 ].join("\n");
 
-function postSystem(samples, brief, support = []) {
+function postSystem(samples, brief, support = [], quality, postIndex = 0) {
   let s =
-    "Ты — редактор Telegram-канала. Пиши живым грамотным русским, обращайся к читателю на «ты», коротко, без приветствий и подписей. Выдай ТОЛЬКО текст поста.\n\n" +
-    FORMAT_RULES_W;
+    "Ты — строгий выпускающий редактор Telegram-канала. Выдай ТОЛЬКО готовый текст поста, без пояснений, приветствий и подписи.\n\n" +
+    FORMAT_RULES_W +
+    "\n\n" +
+    buildQualityPrompt(quality, { postIndex });
   if (brief) s += "\n\n" + briefContextW(brief);
 
   // Факты из базы знаний канала. Замерено на hermes3: без фактов модель заполняет пустоту
@@ -2027,13 +2251,22 @@ async function planTopics(brief, need, hitTopics, mood, channelId = null) {
     ].join("\n");
     for (const seed of seeds) {
       if (out.length >= need) break;
-      const raw = await askAI(titleSystem, `Факт: ${seed.text}`, 40, mood);
-      const topic = String(raw || "")
-        .split("\n")[0]
-        .replace(/^\s*[-–—•*\d.)\s]+/, "")
-        .replace(/^["«]+|["».]+$/g, "")
-        .trim();
-      if (topic.length >= 8 && topic.length <= 120) out.push({ topic, rubric: null, seed: seed.id });
+      const safe = fallbackTopicFromSeed(seed.text);
+      let topic = safe;
+      // Для знакомых конструкций детерминированный заголовок точнее и быстрее слабой
+      // локальной модели. На неизвестной нише даём модели шанс, но принимаем ответ только
+      // после отдельной проверки темы; иначе остаётся нейтральный безопасный fallback.
+      if (safe.startsWith("Практический разбор:")) {
+        const raw = await askAI(titleSystem, `Факт: ${seed.text}`, 60, mood, 0.25);
+        const candidate = String(raw || "")
+          .split("\n")[0]
+          .replace(/^\s*[-–—•*\d.)\s]+/, "")
+          .replace(/^["«]+|["».]+$/g, "")
+          .trim();
+        if (validateTopicQuality(candidate, seed.text).passed) topic = candidate;
+      }
+      const checked = validateTopicQuality(topic, seed.text);
+      if (checked.passed) out.push({ topic: checked.value, rubric: null, seed: seed.id });
     }
     if (out.length >= need) return out;
   }
@@ -2092,7 +2325,22 @@ const MAX_WEEKLY_POSTS = 30;
 
 // План собирается ДЛЯ КАНАЛА. Раньше здесь стоял `limit 1` без order by: у кого два канала,
 // тот получал посты по брифу одного канала в (случайно выбранный) другой, а второй канал молчал.
-async function buildAutopilotPlan(userId, channelId) {
+async function buildAutopilotPlan(userId, channelId, expectedPlanId = null) {
+  // A manual build is tied to the placeholder created by the API. Old duplicate jobs used
+  // to rebuild the same channel one after another and could overwrite a newer retry. A job
+  // whose placeholder is gone or no longer `building` is obsolete and must do no work.
+  if (expectedPlanId != null) {
+    const expected = await pool.query(
+      `select 1 from autopilot_plan
+        where id = $1 and user_id = $2 and channel_id = $3 and status = 'building'`,
+      [expectedPlanId, userId, channelId],
+    );
+    if (!expected.rowCount) {
+      console.log(`[auto] plan ${expectedPlanId}: задача устарела — пропускаю`);
+      return { superseded: true };
+    }
+  }
+
   const ch = (
     await pool.query(
       `select id, title from channels
@@ -2174,29 +2422,27 @@ async function buildAutopilotPlan(userId, channelId) {
       `Развожу их по дню с 9:00 до 21:00 МСК, чтобы подписчик не получал пачку подряд.`;
   }
 
-  // Темы: сначала залёты Д.7, потом форматные заготовки.
-  const ideaTopics = (
-    await pool.query(
-      `select ci.topic from content_ideas ci
-         join competitors c on c.id = ci.competitor_id
-        where ci.user_id = $1 and c.channel_id = $2 and ci.status = 'new' and ci.topic is not null
-        order by ci.hit_ratio desc nulls last limit $3`,
-      [userId, channelId, N],
-    )
-  ).rows.map((r) => r.topic);
+  const quality = brief.quality;
+
+  // Залёт конкурента — только сигнал, а не редакционное задание. По умолчанию темы
+  // конкурентов выключены: раньше нерелевантный хит молча уводил весь план в сторону.
+  const ideaTopics = quality.competitorTopics
+    ? (
+        await pool.query(
+          `select ci.topic from content_ideas ci
+             join competitors c on c.id = ci.competitor_id
+            where ci.user_id = $1 and c.channel_id = $2 and ci.status = 'new' and ci.topic is not null
+            order by ci.hit_ratio desc nulls last limit $3`,
+          [userId, channelId, N],
+        )
+      ).rows.map((r) => r.topic)
+    : [];
   if (ideaTopics.length)
     rule += ` Взял ${ideaTopics.length} ${plural(ideaTopics.length, "тему", "темы", "тем")} из залётов конкурентов.`;
 
-  // Образцы стиля — только из ЭТОГО канала. Иначе ИИ учится голосу соседнего канала:
-  // посты про банкротство начинают звучать как канал про ИИ в праве.
-  const samples = (
-    await pool.query(
-      `select text from posts
-        where user_id = $1 and channel_id = $2 and status = 'published' and length(trim(text)) > 0
-        order by published_at desc limit 10`,
-      [userId, channelId],
-    )
-  ).rows.map((r) => r.text);
+  // Стиль берём только из примеров, которые человек явно положил в настройку. История
+  // published загрязнялась тестами и случайными постами, а worker затем тиражировал их голос.
+  const samples = quality.styleExamples;
 
   // Пересборка не должна плодить дубли: снимаем ещё не вышедшие посты прошлого плана (ревью Д.9).
   await cancelPreviousPlan(userId, channelId);
@@ -2224,6 +2470,7 @@ async function buildAutopilotPlan(userId, channelId) {
   rule += facts
     ? ` Факты — из твоей базы знаний (${facts} ${plural(facts, "кусок", "куска", "кусков")}).`
     : ` База знаний пуста, поэтому пишу без конкретики — ни дат, ни сумм, ни номеров дел выдумывать не стану. Добавь материалы, и посты станут предметными.`;
+  rule += ` Каждый текст проходит редакционный порог ${quality.qualityThreshold}/100; нарушение жёстких правил блокирует выпуск.`;
 
   // Генерация постов — узкое место плана: каждый пост это findSupport + askAI (~90с) + возможный
   // ретрай. Последовательно 30 постов собирались до 45 минут и всё это время держали крон-очередь
@@ -2231,45 +2478,51 @@ async function buildAutopilotPlan(userId, channelId) {
   // элементов сохраняется по индексу, поэтому slots[i] и нумерация карточек не разъезжаются.
   const items = await mapConcurrent(topics, AUTOPILOT_CONCURRENCY, async (t, i) => {
     const { topic, rubric } = t;
-    // Опора под КАЖДУЮ тему. Пусто — не сбой: пишем без конкретики, а не выдумываем её.
+    // Опора под КАЖДУЮ тему. В строгом профиле пустая опора — блокер, а не разрешение
+    // модели заполнить пробел убедительно звучащей выдумкой.
     const support = await findSupport(channelId, topic);
-    const raw = await askAI(
-      postSystem(samples, brief, support) + "\n" + moodPromptW(planMood),
-      rubric
-        ? `Напиши пост в рубрику «${rubric}» на тему: ${topic}.`
-        : `Напиши пост на тему: ${topic}.`,
-      350,
-      planMood,
-    );
-    // Доля утверждений со ссылкой — проверяемый след того, что ИИ держался фактов.
-    // Ссылки нужны нам, а не читателю: из готового поста убираем.
-    const cited = support.length ? citedShare(raw) : null;
-    let aiDraft = raw ? stripCites(raw) : null;
-
-    // Страж фактов. База снижает враньё в разы, но не убирает: у коммерческих юридических
-    // RAG-систем 17–33% выдумок даже на выверенном корпусе. Одна попытка переписать — и,
-    // если конкретика всё равно выдумана, пост НЕ уходит в канал сам (см. ниже).
+    const system = postSystem(samples, brief, support, quality, i);
+    const task = rubric
+      ? `Напиши пост в рубрику «${rubric}» на тему: ${topic}.`
+      : `Напиши пост на тему: ${topic}.`;
+    const outputTokens = Math.min(900, Math.max(400, Math.ceil(quality.maxChars / 2)));
+    let candidateRaw = await askAI(system, task, outputTokens, null, 0.45);
+    let aiDraft = candidateRaw ? stripCites(candidateRaw) : null;
+    let cited = support.length && candidateRaw ? citedShare(candidateRaw) : null;
     let invented = aiDraft ? findInvented(aiDraft, support) : [];
-    if (invented.length) {
-      console.log(`[auto]   «${topic.slice(0, 40)}»: ${invented.join(", ")} — переписываю`);
-      const retry = await askAI(
-        postSystem(samples, brief, support) +
-          "\n\nПРЕДЫДУЩАЯ ПОПЫТКА ОТКЛОНЕНА: ты выдумал " +
-          invented.join(", ") +
-          ". Этих сведений нет в фактах. Перепиши БЕЗ них — лучше общая формулировка, чем выдуманная цифра.",
-        rubric ? `Напиши пост в рубрику «${rubric}» на тему: ${topic}.` : `Напиши пост на тему: ${topic}.`,
-        350,
-        planMood,
+    let qualityResult = validatePostQuality(aiDraft || "", quality, {
+      topic,
+      postIndex: i,
+      supportCount: support.length,
+      citedShare: cited,
+      invented,
+    });
+
+    // Модель получает замечания выпускающего редактора и переписывает весь текст. После
+    // каждой попытки работает тот же программный валидатор. Retry не является обходом:
+    // если правила так и не выполнены, карточка остаётся заблокированной.
+    for (let attempt = 0; attempt < quality.retryLimit && !qualityResult.passed; attempt++) {
+      if (qualityResult.violations.some((v) => v.code === "no_sources")) break;
+      console.log(
+        `[auto]   «${topic.slice(0, 40)}»: ${qualityResult.score}/100 — редактура ${attempt + 1}/${quality.retryLimit}`,
       );
-      const second = retry ? stripCites(retry) : null;
-      const secondBad = second ? findInvented(second, support) : ["пусто"];
-      if (second && !secondBad.length) {
-        aiDraft = second;
-        invented = [];
-        console.log(`[auto]   «${topic.slice(0, 40)}»: со второй попытки чисто`);
-      } else {
-        invented = secondBad.length ? secondBad : invented;
-      }
+      candidateRaw = await askAI(
+        system,
+        candidateRaw ? buildRewritePrompt(candidateRaw, qualityResult) : task,
+        outputTokens,
+        null,
+        0.35,
+      );
+      aiDraft = candidateRaw ? stripCites(candidateRaw) : null;
+      cited = support.length && candidateRaw ? citedShare(candidateRaw) : null;
+      invented = aiDraft ? findInvented(aiDraft, support) : [];
+      qualityResult = validatePostQuality(aiDraft || "", quality, {
+        topic,
+        postIndex: i,
+        supportCount: support.length,
+        citedShare: cited,
+        invented,
+      });
     }
 
     const draft = aiDraft || `Черновик на тему «${topic}» — ИИ допишет, когда движок будет доступен.`;
@@ -2289,6 +2542,9 @@ async function buildAutopilotPlan(userId, channelId) {
       // Непустое — в посте осталась непроверенная конкретика. Человек увидит предупреждение,
       // а автопубликация для такого поста закрыта.
       invented: invented.length ? invented : undefined,
+      qualityBlocked: !aiDraft || !qualityResult.passed,
+      quality: qualityResult,
+      qualityOrigin: "automatic",
     };
     if (support.length) {
       await pool
@@ -2303,7 +2559,7 @@ async function buildAutopilotPlan(userId, channelId) {
     // И НИКОГДА не публикуем сами пост с невыверенной конкретикой. Выдуманный номер статьи
     // в канале юриста — это профессиональный риск, а не «неточность»: пусть человек решит
     // сам. Автопилот тут молчит именно потому, что цена ошибки высокая.
-    if (full && aiDraft && !invented.length) {
+    if (full && aiDraft && qualityResult.passed) {
       const t = new Date(scheduledAt).getTime();
       if (t < Date.now() + 60_000) scheduledAt = new Date(Date.now() + 120_000).toISOString();
       item.scheduledAt = scheduledAt;
@@ -2324,6 +2580,33 @@ async function buildAutopilotPlan(userId, channelId) {
   let ins;
   try {
     await tx.query("begin");
+    // The settings row is the per-channel mutex also used by POST /api/autopilot/generate.
+    // It closes the race where an old worker finishes just as the user starts a new build.
+    await tx.query(
+      `select 1 from autopilot_settings
+        where user_id = $1 and channel_id = $2 for update`,
+      [userId, channelId],
+    );
+    const building = (
+      await tx.query(
+        `select id from autopilot_plan
+          where user_id = $1 and channel_id = $2 and status = 'building'
+          order by created_at desc limit 1`,
+        [userId, channelId],
+      )
+    ).rows[0];
+    if (
+      (expectedPlanId != null && String(building?.id) !== String(expectedPlanId)) ||
+      (expectedPlanId == null && building)
+    ) {
+      await tx.query("rollback");
+      console.log(
+        expectedPlanId != null
+          ? `[auto] plan ${expectedPlanId}: появился более новый запуск — результат отброшен`
+          : `[auto] user ${userId}/${channelId}: ручная сборка уже идёт — недельный запуск пропущен`,
+      );
+      return { superseded: true };
+    }
     await tx.query(`delete from autopilot_plan where user_id = $1 and channel_id = $2`, [
       userId,
       channelId,
@@ -2344,15 +2627,19 @@ async function buildAutopilotPlan(userId, channelId) {
   // «Одобрение недельного плана одной кнопкой» — это обещание ТЗ. Серверная часть была
   // готова давно (атомарная заявка от гонок), не хватало ровно кнопки.
   const who = ch.title ? ` — ${ch.title}` : "";
+  const blockedCount = items.filter((it) => it.qualityBlocked).length;
+  const readyCount = items.filter((it) => it.status === "pending" && !it.qualityBlocked).length;
   const planText =
     planStatus === "approved"
       ? `🚀 Автопилот (полный режим)${who}: ${N} ${plural(N, "пост", "поста", "постов")} на неделю уже в очереди.\n${rule}`
       : full && anyPending
         ? `🗓 План собран${who}, но ИИ был недоступен для части постов — их надо подтвердить вручную.`
-        : `🗓 План на неделю готов${who}: ${N} ${plural(N, "пост", "поста", "постов")}.\n${rule}`;
+        : blockedCount
+          ? `🗓 План собран${who}: ${readyCount} готовы, ${blockedCount} ${plural(blockedCount, "пост заблокирован", "поста заблокированы", "постов заблокированы")} редакционным контролем.`
+          : `🗓 План на неделю готов${who}: ${N} ${plural(N, "пост", "поста", "постов")}.\n${rule}`;
   const planBtns =
-    planStatus === "pending"
-      ? [[{ text: `Одобрить всё (${N})`, data: `plan:approve:${ins.rows[0].id}` }]]
+    planStatus === "pending" && readyCount > 0
+      ? [[{ text: `Одобрить готовые (${readyCount})`, data: `plan:approve:${ins.rows[0].id}` }]]
       : undefined;
   // Нет привязанного чата — выбор пользователя, владельцу чужой план не шлём (была утечка).
   await notifyUser(userId, planText, planBtns);
@@ -2418,11 +2705,17 @@ async function enqueuePost(userId, channelId, text, scheduledAt) {
   );
   const postId = ins.rows[0].id;
   const delay = Math.max(0, new Date(scheduledAt).getTime() - Date.now());
-  await queue.add(
-    "publish",
-    { postId },
-    { delay, jobId: `post-${postId}`, removeOnComplete: true, removeOnFail: false },
-  );
+  try {
+    await queue.add(
+      "publish",
+      { postId },
+      { delay, jobId: `post-${postId}`, removeOnComplete: true, removeOnFail: false },
+    );
+  } catch (err) {
+    // Не оставляем в БД scheduled-пост без BullMQ job: вызывающий сможет безопасно повторить.
+    await pool.query(`delete from posts where id = $1 and status = 'scheduled'`, [postId]).catch(() => {});
+    throw err;
+  }
   return postId;
 }
 
@@ -2632,6 +2925,7 @@ async function botApprovePlan(userId, planId) {
   try {
     for (const it of items) {
       if (it.status !== "pending" || it.postId) continue;
+      if (it.qualityBlocked) continue;
       const t = new Date(it.scheduledAt).getTime();
       const at = t < Date.now() + 60_000 ? new Date(Date.now() + 120_000).toISOString() : it.scheduledAt;
       it.postId = await enqueuePost(userId, ch.id, it.draft, at);
@@ -2649,9 +2943,11 @@ async function botApprovePlan(userId, planId) {
     return "Что-то пошло не так — часть постов уже в очереди. Открой Аврору и проверь план.";
   }
 
-  await pool.query(`update autopilot_plan set items = $2, status = 'approved' where id = $1`, [
+  const blocked = items.filter((it) => it.status === "pending" && it.qualityBlocked).length;
+  await pool.query(`update autopilot_plan set items = $2, status = $3 where id = $1`, [
     planId,
     JSON.stringify(items),
+    blocked ? "pending" : "approved",
   ]);
   // Одобрение без правок — заслуга ЭТОГО канала: полный режим открывается на нём, а не разом
   // на всех. То же правило, что и в кабинете (/api/autopilot/approve).
@@ -2659,10 +2955,12 @@ async function botApprovePlan(userId, planId) {
     `update autopilot_settings
         set approvals_streak = case when $3 then approvals_streak + 1 else 0 end, updated_at = now()
       where user_id = $1 and channel_id = $2`,
-    [userId, plan.channel_id, n > 0],
+    [userId, plan.channel_id, n > 0 && blocked === 0],
   );
   const who = ch.title ? ` — «${ch.title}»` : "";
-  return `Готово${who} — ${n} ${plural(n, "пост", "поста", "постов")} в очереди.`;
+  return blocked
+    ? `Готово${who}: ${n} в очереди, ${blocked} ${plural(blocked, "пост заблокирован", "поста заблокированы", "постов заблокированы")} проверкой качества.`
+    : `Готово${who} — ${n} ${plural(n, "пост", "поста", "постов")} в очереди.`;
 }
 
 /** Кнопка «Сними это»: ИИ пишет пост по залёту конкурента прямо в чат. */
@@ -2824,17 +3122,19 @@ async function pollUpdates() {
 }
 
 // Отдельная очередь ручных задач аналитики (кнопка «обновить», недельный отчёт) и разведки.
-const statsWorker = new Worker(
+const statsWorker = MEDIA_ONLY ? null : new Worker(
   "stats",
   async (job) => {
     if (job.name === "collect") {
       await collectStats();
     } else if (job.name === "report") {
-      const delivered = await notifyOwner(await buildWeeklyReport());
+      const userId = Number(job.data.userId);
+      if (!Number.isInteger(userId) || userId <= 0) throw new Error("report: bad userId");
+      const delivered = await notifyUser(userId, await buildWeeklyReport(pool, userId));
       console.log(
         delivered
-          ? "[stats] недельный отчёт отправлен владельцу"
-          : "[stats] недельный отчёт НЕ доставлен — см. ошибку выше",
+          ? `[stats] недельный отчёт отправлен user ${userId}`
+          : `[stats] недельный отчёт НЕ доставлен user ${userId} — бот не привязан или недоступен`,
       );
       if (!delivered) throw new Error("недельный отчёт не доставлен"); // пусть очередь повторит
     } else if (job.name === "competitor") {
@@ -2846,7 +3146,9 @@ const statsWorker = new Worker(
     } else if (job.name === "rss-now") {
       // Кнопка «Проверить сейчас» на экране RSS: человек не ждёт получасового крона —
       // собираем все его активные ленты немедленно (collectRss сама соблюдает лимиты).
-      await collectRss();
+      const userId = Number(job.data.userId);
+      if (!Number.isInteger(userId) || userId <= 0) throw new Error("rss-now: bad userId");
+      await collectRss(userId);
     } else if (job.name === "knowledge-index") {
       // Человек добавил материал в базу знаний — считаем векторы сейчас, а не суточным
       // циклом: он вернётся на экран через минуту и должен увидеть «готово».
@@ -2861,16 +3163,33 @@ const statsWorker = new Worker(
       // Пользователь нажал «Собрать план» — строим сейчас (Д.9). При любом сбое переводим
       // застрявший 'building'-план в 'error', чтобы интерфейс не крутил спиннер вечно (ревью).
       const { userId, channelId } = job.data;
+      // Jobs created before planId was introduced are still safe: bind the first processed item
+      // to the current placeholder. Once it succeeds, the remaining duplicates find nothing
+      // and become no-ops instead of rebuilding the channel again.
+      let planId = Number(job.data.planId);
+      if (!Number.isInteger(planId) || planId <= 0) {
+        const current = (
+          await pool.query(
+            `select id from autopilot_plan
+              where user_id = $1 and channel_id = $2 and status = 'building'
+              order by created_at desc limit 1`,
+            [userId, channelId],
+          )
+        ).rows[0];
+        planId = Number(current?.id);
+        if (!Number.isInteger(planId) || planId <= 0) return;
+      }
       try {
-        const r = await buildAutopilotPlan(userId, channelId);
+        const r = await buildAutopilotPlan(userId, channelId, planId);
         if (r?.error) throw new Error(r.error);
       } catch (err) {
-        // Только план ЭТОГО канала: у соседнего может честно собираться свой.
+        // Only the placeholder owned by this job. An older failed job must never turn a newer
+        // retry for the same channel into `error`.
         await pool
           .query(
             `update autopilot_plan set status = 'error'
-              where user_id = $1 and channel_id = $2 and status = 'building'`,
-            [userId, channelId],
+              where id = $1 and user_id = $2 and channel_id = $3 and status = 'building'`,
+            [planId, userId, channelId],
           )
           .catch(() => {});
         throw err;
@@ -2879,7 +3198,7 @@ const statsWorker = new Worker(
   },
   { connection },
 );
-statsWorker.on("error", (err) => console.error("[stats] ошибка:", err));
+statsWorker?.on("error", (err) => console.error("[stats] ошибка:", err));
 
 // ----------------------------------------------------------------------------
 // Крон на BullMQ-планировщиках (заменил setInterval). Таймеры в памяти процесса не
@@ -3068,90 +3387,19 @@ async function collectMentions() {
 // ── RSS-репостер ────────────────────────────────────────────────────────────────
 // Для каждого активного фида: fetch XML → parseRss → новые записи в rss_items →
 // если ai_summarize → ИИ-суммаризация → создать пост (scheduled) → обновить статус.
-async function collectRss() {
-  const feeds = (
-    await pool.query(
-      `select f.id, f.url, f.title, f.channel_id, f.user_id, f.ai_summarize, f.max_per_day,
-              (select count(*)::int from rss_items i where i.feed_id = f.id and i.fetched_at > now() - interval '24 hours' and i.status = 'posted') as posted_today
-         from rss_feeds f where f.is_active = true`,
-    )
-  ).rows;
-  if (!feeds.length) return;
-
-  let total = 0;
-  for (const feed of feeds) {
-    try {
-      const res = await fetch(feed.url, {
-        signal: AbortSignal.timeout(15_000),
-        headers: { "user-agent": "Aurora-RSS/1.0" },
-      });
-      if (!res.ok) continue;
-      const xml = await res.text();
-      const items = parseRss(xml).slice(0, 20); // не больше 20 за раз
-
-      for (const item of items) {
-        // Пропускаем, если уже есть
-        const exists = await pool.query(
-          `select 1 from rss_items where feed_id = $1 and guid = $2`,
-          [feed.id, item.guid],
-        );
-        if (exists.rowCount) continue;
-
-        // Вставляем новую запись
-        const ins = await pool.query(
-          `insert into rss_items (feed_id, guid, title, link, summary, published_at)
-           values ($1, $2, $3, $4, $5, $6)
-           on conflict (feed_id, guid) do nothing
-           returning id`,
-          [feed.id, item.guid, item.title, item.link, item.summary, item.publishedAt],
-        );
-        if (!ins.rowCount) continue;
-        const itemId = ins.rows[0].id;
-
-        // Лимит постов в день
-        if (feed.posted_today + total >= feed.max_per_day) {
-          await pool.query(`update rss_items set status = 'skipped' where id = $1`, [itemId]);
-          continue;
-        }
-
-        // Суммаризация ИИ (если включена)
-        let postText = `${item.title}\n\n${item.summary}`.trim();
-        if (feed.ai_summarize) {
-          try {
-            const summarized = await askAI(
-              "Ты — редактор канала. Суммаризируй новость в короткий пост. Живо, на русском, без хэштегов.\n" +
-              "Формат: хук одной строкой, затем 2–3 коротких абзаца по 1–2 предложения, между абзацами пустая строка. В конце — вывод или вопрос читателю.",
-              `Заголовок: ${item.title}\n\nТекст: ${item.summary.slice(0, 1500)}`,
-              300,
-            );
-            if (summarized) postText = summarized;
-          } catch { /* ИИ недоступен — постим как есть */ }
-        }
-        if (item.link) postText += `\n\n${item.link}`;
-
-        // Создаём пост в очередь (scheduled через 5 минут)
-        const scheduledAt = new Date(Date.now() + 5 * 60_000).toISOString();
-        const post = await pool.query(
-          `insert into posts (user_id, channel_id, text, scheduled_at, status)
-           values ($1, $2, $3, $4, 'scheduled') returning id`,
-          [feed.user_id, feed.channel_id, postText.slice(0, 16384), scheduledAt],
-        );
-        const postId = post.rows[0]?.id;
-
-        await pool.query(
-          `update rss_items set status = 'posted', post_id = $1 where id = $2`,
-          [postId, itemId],
-        );
-        total++;
-      }
-
-      // Обновляем время последнего fetch
-      await pool.query(`update rss_feeds set last_fetched_at = now() where id = $1`, [feed.id]);
-    } catch (err) {
-      console.error(`[rss] фид ${feed.id} (${feed.url}):`, err?.message);
-    }
-  }
-  if (total) console.log(`[rss] создано постов из лент: ${total}`);
+async function collectRss(userId = null) {
+  return collectRssPipeline({
+    pool,
+    userId,
+    enqueuePost,
+    summarize: (item) =>
+      askAI(
+        "Ты — редактор канала. Суммаризируй новость в короткий пост. Живо, на русском, без хэштегов.\n" +
+          "Формат: хук одной строкой, затем 2–3 коротких абзаца по 1–2 предложения, между абзацами пустая строка. В конце — вывод или вопрос читателю.",
+        `Заголовок: ${item.title}\n\nТекст: ${item.summary.slice(0, 1500)}`,
+        300,
+      ),
+  });
 }
 
 // ── Еженедельное переизвлечение профиля (невидимая база знаний) ──────────────────
@@ -3213,7 +3461,7 @@ async function cleanupExpired() {
   );
 }
 
-const cronQueue = new Queue("cron", { connection });
+const cronQueue = AUTOPILOT_ONLY || MEDIA_ONLY ? null : new Queue("cron", { connection });
 
 // Расписания в московском времени. trend сдвинут на 15 мин относительно recon, чтобы не
 // долбить t.me обеими задачами в одну секунду.
@@ -3229,7 +3477,7 @@ const CRON_SCHEDULES = [
   { name: "profile",  pattern: "0 5 * * 1" },   // переизвлечение профилей каналов, пн 05:00 МСК
 ];
 
-const cronWorker = new Worker(
+const cronWorker = AUTOPILOT_ONLY || MEDIA_ONLY ? null : new Worker(
   "cron",
   async (job) => {
     switch (job.name) {
@@ -3247,8 +3495,8 @@ const cronWorker = new Worker(
   },
   { connection, concurrency: 1 },
 );
-cronWorker.on("failed", (job, err) => console.error(`[cron] ${job?.name} упала:`, err?.message));
-cronWorker.on("error", (err) => console.error("[cron] ошибка:", err));
+cronWorker?.on("failed", (job, err) => console.error(`[cron] ${job?.name} упала:`, err?.message));
+cronWorker?.on("error", (err) => console.error("[cron] ошибка:", err));
 
 // Восстановление после падения/деплоя (ревью, критично): пост, застрявший в 'publishing'
 // (процесс убили во время отправки), иначе теряется навсегда. Но он МОГ уже выйти в канал —
@@ -3276,10 +3524,11 @@ async function reclaimStuckPosts() {
 async function shutdown(sig) {
   console.log(`[worker] ${sig} — завершаюсь аккуратно…`);
   try {
-    await worker.close();
-    await statsWorker.close();
-    await cronWorker.close();
-    await cronQueue.close();
+    await worker?.close();
+    await mediaWorker?.close();
+    await statsWorker?.close();
+    await cronWorker?.close();
+    await cronQueue?.close();
   } catch {
     /* всё равно выходим */
   }
@@ -3290,22 +3539,32 @@ process.on("SIGINT", () => shutdown("SIGINT"));
 
 // Регистрация плановых задач (идемпотентно: upsert не плодит дубли при повторном запуске).
 // Расписание живёт в Redis и стреляет независимо от того, когда стартовал процесс.
-for (const s of CRON_SCHEDULES) {
+for (const s of AUTOPILOT_ONLY || MEDIA_ONLY ? [] : CRON_SCHEDULES) {
   await cronQueue.upsertJobScheduler(s.name, { pattern: s.pattern, tz: "Europe/Moscow" }, { name: s.name });
 }
-console.log("[cron] планировщики зарегистрированы:", CRON_SCHEDULES.map((s) => s.name).join(", "));
+if (!AUTOPILOT_ONLY && !MEDIA_ONLY) {
+  console.log("[cron] планировщики зарегистрированы:", CRON_SCHEDULES.map((s) => s.name).join(", "));
+}
 
 // Стартовая свежесть: разовые задачи сразу после запуска, чтобы не ждать первого тика.
 // Идут через ту же очередь (concurrency: 1) — не долбят t.me все разом при старте.
 // weekly НЕ запускаем: планы не должны перестраиваться при каждом рестарте (лечит баг «плана нет»).
-for (const name of ["stats", "recon", "trend", "discover"]) {
+for (const name of AUTOPILOT_ONLY || MEDIA_ONLY ? [] : ["stats", "recon", "trend", "discover"]) {
   await cronQueue.add(name, {}, { jobId: `startup-${name}`, removeOnComplete: true }).catch(() => {});
 }
 
 // Восстановление постов, застрявших в 'publishing' (разовая проверка при старте, не цикл).
-reclaimStuckPosts().catch((e) => console.error("[worker] восстановление постов:", e));
+if (!AUTOPILOT_ONLY && !MEDIA_ONLY) {
+  reclaimStuckPosts().catch((e) => console.error("[worker] восстановление постов:", e));
+}
 
 // Приём команд и кнопок. Бесконечный цикл — не ждём его, он живёт сам по себе.
-pollUpdates().catch((e) => console.error("[bot] поллинг умер:", e));
+if (!AUTOPILOT_ONLY && !MEDIA_ONLY) pollUpdates().catch((e) => console.error("[bot] поллинг умер:", e));
 
-console.log("[worker] запущен: публикация, крон-планировщики и бот слушаются…");
+console.log(
+  MEDIA_ONLY
+    ? "[worker] запущен media-only режим (без публикации, аналитики, крона и бота)"
+    : AUTOPILOT_ONLY
+      ? "[worker] запущен безопасный режим автопилота (без публикации, крона и бота)"
+      : "[worker] запущен: публикация, крон-планировщики и бот слушаются…",
+);

@@ -1,16 +1,15 @@
 "use client";
 
 // А9. ИИ-студия (ТЗ 5.6, Приложение А).
-// Диалог + быстрые команды. ИИ помнит стиль пользователя и опирается на разведку.
+// Диалог + быстрые команды. ИИ помнит стиль пользователя и следует настройкам платформы.
 // Главное действие — сгенерировать и отправить в календарь.
 
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
-import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { motion, useReducedMotion } from "motion/react";
 import {
-  ArrowRight,
   ArrowUp,
+  BookOpenText,
   Brain,
   CalendarPlus,
   CalendarRange,
@@ -19,24 +18,30 @@ import {
   Copy,
   Cpu,
   FileText,
-  Flame,
   ImageIcon,
   ListChecks,
   Pencil,
-  Radar,
   RefreshCw,
+  Settings2,
+  ShieldCheck,
   Sparkles,
   Square,
+  Video,
   Zap,
 } from "lucide-react";
 
 import { AppShell } from "@/components/app/shell";
 import { Button } from "@/components/ui/button";
-import { Badge, Card, EmptyState, Input, Textarea } from "@/components/ui/primitives";
+import { Card, Input, Textarea } from "@/components/ui/primitives";
+import {
+  MediaGenerator,
+  type MediaGeneration,
+  type MediaKind,
+} from "@/components/studio/media-generator";
 import { type AiCommand } from "@/lib/ai";
 import type { AiRole } from "@/lib/ai-provider";
 import { useStore } from "@/lib/store";
-import { cn, fmtCompact, plural, uid } from "@/lib/utils";
+import { cn, plural, uid } from "@/lib/utils";
 
 /* --------------------------------------------------------------- ОСНОВЫ */
 
@@ -54,7 +59,7 @@ type Gen = { cmd: AiCommand; input: string; variant: number };
 const EASE_SOFT: [number, number, number, number] = [0.22, 1, 0.36, 1];
 
 const GREETING =
-  "Привет. Могу написать пост, собрать план на неделю, придумать сценарий видео или подобрать картинку. Скажи, что нужно — или жми быструю команду ниже.";
+  "Привет. Пишу по твоим постам и настройкам Авроры: могу подготовить пост, план на неделю, сценарий или опрос. Скажи, что нужно — или жми быструю команду ниже.";
 
 const ICON = "h-4 w-4";
 
@@ -66,6 +71,8 @@ type Quick = {
   draft?: string;
   /** выполнить сразу, дописывать нечего */
   instant?: string;
+  /** открыть настоящий генератор медиа, а не текстовый промпт */
+  mediaKind?: MediaKind;
 };
 
 const QUICK: Quick[] = [
@@ -103,7 +110,13 @@ const QUICK: Quick[] = [
     id: "image",
     label: "Картинка",
     icon: <ImageIcon className={ICON} strokeWidth={2} aria-hidden />,
-    draft: "Подбери картинку к посту про ",
+    mediaKind: "image",
+  },
+  {
+    id: "video",
+    label: "Создать рилс",
+    icon: <Video className={ICON} strokeWidth={2} aria-hidden />,
+    mediaKind: "video",
   },
   {
     id: "rewrite-last",
@@ -357,8 +370,7 @@ function StudioSkeleton() {
 }
 
 /* ------------------------------------------------------------ ДВИЖОК ИИ */
-// Выбор модели-агента. Облачные движки пока ждут ключа — и мы говорим это прямо, а не
-// красим кнопку в активный вид. Выбор сохраняется даже без ключа: появится ключ — заработает.
+// Выбор модели-агента. Облачные движки ждут свой ключ, а roadmap-адаптеры отключены.
 // Если выбран движок без ключа, генерация честно откажет (см. /api/ai/generate) — тайком
 // подменять модель мы не станем, иначе «выбор модели» превращается в декорацию.
 
@@ -369,25 +381,10 @@ interface EngineInfo {
   note: string;
   needs: string | null;
   ruFriendly: boolean;
+  supported: boolean;
+  recommended: boolean;
   status: "ready" | "no_key" | "offline";
   reason: string | null;
-}
-
-/** Настоящая разведка из /api/trends — то, на что ИИ реально может опереться. */
-interface ReconItem {
-  id: number;
-  competitorTitle: string | null;
-  handle: string;
-  text: string | null;
-  ratio: number;
-  median: number;
-  views: number;
-  postedAt: string;
-  link: string;
-}
-interface ReconData {
-  status: { competitors: number; posts: number };
-  items: ReconItem[];
 }
 
 const engineDot = (st: EngineInfo["status"]) =>
@@ -484,8 +481,9 @@ function EngineChip({
               <button
                 type="button"
                 role="option"
+                disabled={!e.supported}
                 aria-selected={e.id === current}
-                aria-label={`${e.label}, ${e.vendor}. ${e.status === "ready" ? "Работает сейчас" : e.status === "no_key" ? `Нужен ключ ${e.needs}` : "Не отвечает"}`}
+                aria-label={`${e.label}, ${e.vendor}. ${!e.supported ? "Интеграция пока не готова" : e.status === "ready" ? "Работает сейчас" : e.status === "no_key" ? `Нужен ключ ${e.needs}` : "Не отвечает"}`}
                 onClick={() => {
                   onPick(e);
                   setOpen(false);
@@ -493,6 +491,7 @@ function EngineChip({
                 className={cn(
                   "flex w-full cursor-pointer items-start gap-2.5 rounded-sm px-2.5 py-2 text-left transition-colors",
                   e.id === current ? "bg-info-soft" : "hover:bg-surface-inset",
+                  !e.supported && "cursor-not-allowed opacity-55 hover:bg-transparent",
                 )}
               >
                 <span className={cn("mt-1.5 h-2 w-2 shrink-0 rounded-full", engineDot(e.status))} aria-hidden />
@@ -500,6 +499,11 @@ function EngineChip({
                   <span className="flex items-center gap-1.5">
                     <span className="truncate text-[13px] font-semibold text-text">{e.label}</span>
                     <span className="shrink-0 text-[11px] text-text-3">{e.vendor}</span>
+                    {e.recommended && (
+                      <span className="shrink-0 rounded-full bg-[var(--acc)] px-1.5 text-[10px] font-bold text-text">
+                        основная
+                      </span>
+                    )}
                     {e.ruFriendly && (
                       <span className="shrink-0 rounded-full bg-surface-inset px-1.5 text-[10px] font-bold text-text-3">
                         РФ
@@ -507,7 +511,9 @@ function EngineChip({
                     )}
                   </span>
                   <span className="mt-0.5 block text-[11px] leading-snug text-text-3">
-                    {e.status === "ready"
+                    {!e.supported
+                      ? "интеграция пока не готова"
+                      : e.status === "ready"
                       ? "работает сейчас"
                       : e.status === "no_key"
                         ? `нужен ключ ${e.needs}`
@@ -519,8 +525,8 @@ function EngineChip({
           ))}
         </ul>
         <p className="mt-1.5 border-t border-line px-2.5 pt-2 text-[11px] leading-relaxed text-text-3">
-          Выбор сохранится и без ключа. Подменять модель втихую не будем: нет движка — генерация
-          честно откажет.
+          В ИИ-студии любая выбранная модель получает только твои посты и настройки Авроры.
+          Внешние источники и разведка сюда не подмешиваются.
         </p>
       </Popover>
     </div>
@@ -615,34 +621,9 @@ function StudioPageInner() {
     { id: "m_hello", role: "ai", text: GREETING },
   ]);
   const [draft, setDraft] = useState("");
+  const [mediaKind, setMediaKind] = useState<MediaKind | null>(null);
   // Роль ИИ: модифицирует системный промпт (копирайтер / стратег / критик).
   const [role, setRole] = useState<AiRole | null>(null);
-  // Настоящая разведка из базы — и для правой колонки, и как контекст в промпт.
-  const [recon, setRecon] = useState<ReconData | null>(null);
-  // Готовая строка контекста в ref: startStream живёт вне рендера и не должен пересоздаваться.
-  const reconRef = useRef<string | undefined>(undefined);
-  useEffect(() => {
-    fetch("/api/trends?scope=niche", { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d: ReconData | null) => {
-        if (!d) return;
-        setRecon(d);
-        // Берём три верхних поста: что реально обогнало норму своего канала. Сервер обрежет
-        // до 600 символов, поэтому сразу отдаём коротко и по делу.
-        const top = d.items.slice(0, 3).filter((i) => i.text);
-        reconRef.current = top.length
-          ? "у соседей по нише сейчас лучше нормы заходит вот это — " +
-            top
-              .map(
-                (i) =>
-                  `«${i.text!.replace(/\s+/g, " ").slice(0, 110)}» (${i.competitorTitle || i.handle}, ×${i.ratio.toFixed(1)} к норме)`,
-              )
-              .join("; ")
-          : undefined;
-      })
-      .catch(() => {});
-  }, []);
-
   // Настроение агента (одно на аккаунт, из БД) — влияет на всю генерацию.
   const [mood, setMood] = useState<string>("friendly");
   const [moods, setMoods] = useState<{ key: string; label: string; emoji: string }[]>([]);
@@ -755,12 +736,17 @@ function StudioPageInner() {
   }, []);
 
   const pickEngine = async (e: EngineInfo) => {
-    setEngine(e.id);
-    fetch("/api/ai/engines", {
+    if (!e.supported) return;
+    const response = await fetch("/api/ai/engines", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ engine: e.id }),
-    }).catch(() => {});
+    }).catch(() => null);
+    if (!response?.ok) {
+      s.toast({ kind: "danger", title: "Не удалось сменить движок", body: "Попробуй ещё раз." });
+      return;
+    }
+    setEngine(e.id);
     if (e.status === "ready") {
       s.toast({ kind: "success", title: `Пишу через ${e.label}`, body: e.note });
     } else {
@@ -820,9 +806,9 @@ function StudioPageInner() {
           niche: s.settings.niche,
           tone: s.settings.tone,
           role: role ?? undefined,
-          // Разведка едет в промпт по-настоящему. Раньше правая колонка обещала «ИИ смотрит
-          // на конкурентов», а в запрос не уходило ни байта об этом — обещание было пустым.
-          context: reconRef.current,
+          // Сервер включает строгий режим: текущая задача + настройки + опубликованные посты.
+          // Контент конкурентов и внешние сведения в ИИ-студию не попадают.
+          surface: "studio",
         }),
       });
 
@@ -844,7 +830,10 @@ function StudioPageInner() {
           | null;
         setMsg({
           text:
-            info?.error === "engine_not_connected"
+            info?.error === "engine_unsupported"
+              ? `Ты выбрал ${info.label}, но интеграция с этим движком пока не готова. ` +
+                `Выбери в «Движке» Ollama, OpenAI, Claude или Gemini.`
+              : info?.error === "engine_not_connected"
               ? `Ты выбрал ${info.label} — он ещё не подключён, поэтому писать через него я не могу. ` +
                 `Нужен ключ в ${info.needs}. Подменять модель втихую не буду: выбери в «Движке» тот, что работает, или подключи ключ.`
               : "ИИ-движок сейчас недоступен. Проверь, что запущен Ollama с моделью hermes3, и попробуй снова.",
@@ -962,6 +951,12 @@ function StudioPageInner() {
   const onQuick = (q: Quick) => {
     if (busy) return;
 
+    if (q.mediaKind) {
+      setMediaKind(q.mediaKind);
+      requestAnimationFrame(() => feedRef.current?.scrollTo({ top: feedRef.current.scrollHeight, behavior: "smooth" }));
+      return;
+    }
+
     if (q.id === "rewrite-last") {
       const last = [...messages]
         .reverse()
@@ -997,6 +992,22 @@ function StudioPageInner() {
     }
   };
 
+  const useGeneratedMedia = (generation: MediaGeneration) => {
+    if (!generation.assetId || !generation.assetUrl) return;
+    sessionStorage.setItem(
+      "aurora:generated-media",
+      JSON.stringify({
+        kind: generation.kind,
+        label: generation.kind === "video" ? `Рилс ${generation.seconds ?? 6} сек.` : `Изображение ${generation.aspectRatio}`,
+        hue: generation.kind === "video" ? 42 : 48,
+        assetId: generation.assetId,
+        url: generation.assetUrl,
+        mimeType: generation.mimeType,
+      }),
+    );
+    router.push("/app/composer?fromMedia=1");
+  };
+
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key !== "Enter" || e.shiftKey || e.nativeEvent.isComposing) return;
     e.preventDefault();
@@ -1005,17 +1016,16 @@ function StudioPageInner() {
 
   /* -------------------------------------------------------- ПРАВАЯ КОЛОНКА */
 
-  // Разведка — ТОЛЬКО из базы (/api/trends). Раньше здесь стоял s.competitors/s.trends из
-  // стора, а он засеян моком: панель показывала демо-канал про кофе с залётами ×7,8 и ×9,2 —
-  // числа, которых в Telegram не бывает (потолок к медиане ×2–4, проверено на живых каналах).
-  const nCmp = recon?.status.competitors ?? 0;
-  const flares = recon?.items.length ?? 0;
-  const latest = recon?.items.slice(0, 2) ?? [];
+  const publishedSamples = Math.min(
+    10,
+    s.realPosts.filter((post) => post.status === "published" && post.text.trim().length > 0).length,
+  );
+  const activeMood = moods.find((item) => item.key === mood)?.label ?? "По умолчанию";
 
   return (
     <AppShell
       title="ИИ-студия"
-      subtitle="Пиши как в чате. ИИ помнит твой стиль и опирается на разведку."
+      subtitle="Пиши как в чате. Модель использует только твои посты и настройки Авроры."
     >
       {!s.ready ? (
         <StudioSkeleton />
@@ -1075,6 +1085,17 @@ function StudioPageInner() {
                     ))}
                   </div>
                 </div>
+              )}
+
+              {mediaKind && (
+                <MediaGenerator
+                  key={mediaKind}
+                  initialKind={mediaKind}
+                  niche={s.settings.niche}
+                  tone={s.settings.tone}
+                  onClose={() => setMediaKind(null)}
+                  onUse={useGeneratedMedia}
+                />
               )}
 
               <div ref={endRef} className="h-px shrink-0" aria-hidden />
@@ -1205,60 +1226,37 @@ function StudioPageInner() {
           {/* Колонка тянется на ту же высоту и прокручивается сама — страница не удлиняется */}
           <aside className="hidden w-[300px] shrink-0 xl:block xl:h-full xl:overflow-y-auto">
             <div className="flex flex-col gap-4">
-              {/* 2. ОПОРА НА РАЗВЕДКУ */}
+              {/* Прозрачно показываем фактический контекст модели — без скрытых источников. */}
               <Card as="section" className="p-4">
                 <header className="flex items-center gap-2">
-                  <Radar className="h-[18px] w-[18px] text-brand" strokeWidth={2} aria-hidden />
+                  <ShieldCheck className="h-[18px] w-[18px] text-success-text" strokeWidth={2} aria-hidden />
                   <h2 className="text-[15px] font-extrabold tracking-tight text-text">
-                    Опора на разведку
+                    Контекст модели
                   </h2>
                 </header>
 
                 <p className="mt-1.5 text-[13px] leading-relaxed text-text-2">
-                  {nCmp > 0
-                    ? `ИИ смотрит на ${nCmp} ${plural(nCmp, "конкурента", "конкурентов", "конкурентов")} и ${flares} ${plural(flares, "свежий залёт", "свежих залёта", "свежих залётов")}, когда пишет.`
-                    : "Конкурентов пока нет — ИИ опирается только на твой стиль. Добавь пару каналов, и он начнёт подсматривать, что у них работает."}
+                  Никаких скрытых источников: ответ строится только на текущей задаче и данных внутри Авроры.
                 </p>
 
-                {latest.length === 0 ? (
-                  <EmptyState
-                    icon={<Radar className="h-5 w-5" strokeWidth={1.5} aria-hidden />}
-                    title="Разведки пока нет"
-                    body="Добавь конкурентов — и лучшее из их постов появится здесь, а ИИ будет на это опираться."
-                  />
-                ) : (
-                  <ul className="mt-3 flex flex-col gap-2">
-                    {latest.map((t) => (
-                      <li key={t.id} className="rounded-sm bg-surface-2 p-3 ring-1 ring-line">
-                        <div className="flex items-start justify-between gap-2">
-                          <p className="line-2 text-[14px] leading-snug font-semibold text-text">
-                            {(t.text || "Пост без текста — только медиа").replace(/\s+/g, " ").slice(0, 80)}
-                          </p>
-                          <Badge tone={t.ratio >= 2 ? "fire" : "neutral"} className="shrink-0">
-                            {t.ratio >= 2 && <Flame className="h-3 w-3" strokeWidth={2.5} aria-hidden />}
-                            ×{t.ratio.toFixed(1).replace(".", ",")}
-                          </Badge>
-                        </div>
-                        {/* Проверяемые числа, а не «доверься»: норма канала против этого поста */}
-                        <p className="mt-1.5 text-[12px] text-text-3">
-                          у «{t.competitorTitle || t.handle}» · норма {fmtCompact(t.median)} · этот{" "}
-                          {fmtCompact(t.views)}
-                        </p>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-
-                <Link
-                  href="/app/trends"
-                  className={cn(
-                    "mt-2 inline-flex min-h-11 items-center gap-1.5 text-[14px] font-semibold text-brand",
-                    "transition-opacity duration-200 hover:opacity-75",
-                  )}
-                >
-                  Все залёты и тренды
-                  <ArrowRight className="h-4 w-4" strokeWidth={2} aria-hidden />
-                </Link>
+                <ul className="mt-3 flex flex-col gap-2 text-[13px] text-text-2">
+                  <li className="flex items-start gap-2 rounded-sm bg-surface-2 p-3">
+                    <BookOpenText className="mt-0.5 h-4 w-4 shrink-0 text-brand" strokeWidth={2} aria-hidden />
+                    <span>
+                      <strong className="font-semibold text-text">{publishedSamples} из 10 постов</strong>
+                      <span className="block text-[12px] leading-snug text-text-3">только как образец голоса, не как источник фактов</span>
+                    </span>
+                  </li>
+                  <li className="flex items-start gap-2 rounded-sm bg-surface-2 p-3">
+                    <Settings2 className="mt-0.5 h-4 w-4 shrink-0 text-brand" strokeWidth={2} aria-hidden />
+                    <span className="min-w-0">
+                      <strong className="font-semibold text-text">Настройки Авроры</strong>
+                      <span className="block truncate text-[12px] leading-snug text-text-3">
+                        {s.settings.niche || "Ниша не указана"} · {s.settings.tone || "тон не указан"} · {activeMood}
+                      </span>
+                    </span>
+                  </li>
+                </ul>
               </Card>
 
               {/* 3. ЛИМИТ ИИ — честно (ТЗ 12) */}
@@ -1320,7 +1318,7 @@ export default function StudioPage() {
       fallback={
         <AppShell
           title="ИИ-студия"
-          subtitle="Пиши как в чате. ИИ помнит твой стиль и опирается на разведку."
+          subtitle="Пиши как в чате. Модель использует только твои посты и настройки Авроры."
         >
           <StudioSkeleton />
         </AppShell>

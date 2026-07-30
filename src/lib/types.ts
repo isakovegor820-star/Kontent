@@ -38,8 +38,15 @@ export interface Post {
   channelId?: number;
   /** Ссылка на вышедший пост в сети (t.me/… или vk.com/wall-…). Для демо-постов пусто. */
   postUrl?: string;
-  /** Эмодзи-обложка/медиа-заглушка (медиа мы не грузим — это демо) */
-  media?: { kind: "image" | "video"; label: string; hue: number } | null;
+  /** Медиа поста. assetId/url появляются у реального результата ИИ-студии. */
+  media?: {
+    kind: "image" | "video";
+    label: string;
+    hue: number;
+    assetId?: string;
+    url?: string;
+    mimeType?: string | null;
+  } | null;
   metrics?: PostMetrics;
   /** Попытки публикации — сбой → 3 автоповтора (ТЗ 5.3) */
   attempts?: number;

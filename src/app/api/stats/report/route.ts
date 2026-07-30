@@ -14,8 +14,14 @@ export async function POST(req: NextRequest) {
     // отчёт через паузу — уведомление не теряется молча.
     await getStatsQueue().add(
       "report",
-      {},
-      { removeOnComplete: true, attempts: 3, backoff: { type: "fixed", delay: 30000 } },
+      { userId: user.id },
+      {
+        jobId: `report-${user.id}`,
+        removeOnComplete: true,
+        removeOnFail: true,
+        attempts: 3,
+        backoff: { type: "fixed", delay: 30000 },
+      },
     );
     return NextResponse.json({ ok: true });
   } catch (err) {
