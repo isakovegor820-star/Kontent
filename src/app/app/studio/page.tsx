@@ -10,7 +10,6 @@ import { motion, useReducedMotion } from "motion/react";
 import {
   ArrowUp,
   Brain,
-  CalendarPlus,
   CalendarRange,
   Check,
   Clapperboard,
@@ -210,11 +209,11 @@ function MessageRow({
           </div>
         )}
 
-        {/* Готовый текст → главное действие экрана: отправить в календарь */}
+        {/* Готовый текст → открыть как пост и выбрать публикацию сразу или по расписанию */}
         {ready && msg.postable && (
           <div className="mt-2 flex flex-wrap items-center gap-1.5">
-            <Button variant="ghost" size="sm" className="h-8 px-2.5 text-[12px]" onClick={onSchedule}>
-              <CalendarPlus className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />В календарь
+            <Button variant="soft" size="sm" className="h-8 px-2.5 text-[12px]" onClick={onSchedule}>
+              <FileText className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />В пост
             </Button>
             <Button variant="ghost" size="sm" className="h-8 px-2.5 text-[12px]" onClick={onCopy}>
               <Copy className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />
