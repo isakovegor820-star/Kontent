@@ -8,9 +8,9 @@ import "./variants/variants.css";
 import "./reasons/reasons.css";
 
 export const metadata: Metadata = {
-  title: { absolute: "Аврора — ты задаёшь тон, Аврора ведёт канал" },
+  title: { absolute: "Аврора — Telegram-канал ведётся, даже когда ты занят" },
   description:
-    "Аврора находит сильные темы, готовит материалы твоим голосом и публикует их в Telegram. Факты — из базы знаний, подача — из твоего канала.",
+    "Аврора находит сильные темы, пишет посты в голосе канала, проверяет и публикует их в Telegram по расписанию.",
 };
 
 export default function LandingPage() {
@@ -20,13 +20,12 @@ export default function LandingPage() {
         <VariantLanding
           variant={4}
           showSwitcher={false}
-          reasonsVariant={2}
-          showReasonsSwitcher={false}
           footerVariant={3}
           footerInteractionVariant={3}
           enableScrollMotion
           finaleVariant={2}
           showFinaleSwitcher={false}
+          production
         />
       </div>
     </div>

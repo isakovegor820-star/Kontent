@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { ArrowRight, Check, LogIn } from "lucide-react";
 import { V3Faq } from "@/components/v3/faq";
+import { V3KineticHow } from "@/components/v3/how-variants/how-variants";
 import {
   V3AnimatedFooter,
   type FooterInteractionVariant,
@@ -9,16 +10,17 @@ import {
 import { V3FinalCta, V3Footer } from "@/components/v3/final-cta";
 import { V3DemoPanel } from "@/components/v3/hero";
 import { V3Ledger } from "@/components/v3/ledger";
-import { V3MemoryArchive } from "@/components/v3/memory-archive";
+import { V3GravityMemoryManifest } from "@/components/v3/memory-variants/memory-variants";
 import { V3PostProof } from "@/components/v3/post-proof";
-import { V3QualityScanner } from "@/components/v3/quality-scanner";
+import { V3ProductionFooter } from "@/components/v3/production-footer";
+import { V3ProductionStory } from "@/components/v3/production-story";
+import { V3QualityVerdict } from "@/components/v3/quality-verdict";
 import {
   V3ScrollFinale,
   type ScrollFinaleVariant,
 } from "@/components/v3/scroll-finale";
 import { V3ScrollMotion } from "@/components/v3/scroll-motion";
 import { V3StickyCta } from "@/components/v3/sticky-cta";
-import { V3Tabs } from "@/components/v3/tabs";
 import { V3Ticker } from "@/components/v3/ticker";
 import { ReasonsSwitcher } from "@/components/v3/reasons-switcher";
 import {
@@ -32,8 +34,8 @@ type Variant = 1 | 2 | 3 | 4;
 
 const NAV_LINKS = [
   { href: "#how", label: "Как это работает" },
+  { href: "#memory", label: "Голос и факты" },
   { href: "#quality", label: "Контроль качества" },
-  { href: "#memory", label: "Память" },
   { href: "#faq", label: "Вопросы" },
 ] as const;
 
@@ -49,6 +51,25 @@ const FACTS = [
   { value: "2–3 ч", caption: "цикл разведки конкурентов" },
   { value: "15 мин", caption: "в неделю занимает контроль" },
   { value: "3", caption: "способа наполнить память" },
+] as const;
+
+const AURORA_ASSURANCES = [
+  {
+    value: "Работает",
+    caption: "Telegram-контур доступен уже сейчас",
+  },
+  {
+    value: "С сервера",
+    caption: "публикация не зависит от ноутбука",
+  },
+  {
+    value: "До выпуска",
+    caption: "проверяются факты, тон и правила",
+  },
+  {
+    value: "У тебя",
+    caption: "пауза, правки и последнее слово",
+  },
 ] as const;
 
 function Brand() {
@@ -176,7 +197,7 @@ function VariantFourNav() {
           ))}
         </nav>
         <Link href="/register" className="v3-btn v3-btn--sm av4-nav__cta">
-          Запустить канал
+          Запустить Аврору
           <ArrowRight className="h-4 w-4" strokeWidth={2.5} aria-hidden />
         </Link>
       </div>
@@ -302,30 +323,49 @@ function VariantFourHero() {
     <section className="av4-hero" aria-labelledby="av4-title">
       <div className="av-container">
         <div className="av4-headline">
-          <p>Ты задаёшь тон.</p>
+          <p>Автопилот для экспертов и Telegram-авторов</p>
           <h1 id="av4-title">
-            <mark>Аврора</mark>
-            <span>ведёт канал.</span>
+            <span>Канал ведётся,</span>
+            <span>даже когда</span>
+            <mark>ты занят.</mark>
           </h1>
         </div>
 
         <div className="av4-stage">
           <div className="av4-copy">
             <p className="av4-lead">
-              Аврора находит сильные темы, превращает их в материалы твоим голосом и публикует в
-              Telegram. Стабильно. Без рутины.
+              Аврора находит сильные темы, пишет посты в твоём голосе, проверяет и публикует по
+              расписанию. Правила и последнее слово остаются за тобой.
             </p>
-            <Link href="/register" className="v3-btn v3-btn--lg av4-primary-cta">
-              Запустить свой канал
-              <ArrowRight className="h-4 w-4" strokeWidth={2.5} aria-hidden />
-            </Link>
-            <p className="av4-proof">Ранний доступ открыт · Telegram уже работает</p>
+            <div className="av4-actions">
+              <Link href="/register" className="v3-btn v3-btn--lg av4-primary-cta">
+                Запустить первый цикл
+                <ArrowRight className="h-4 w-4" strokeWidth={2.5} aria-hidden />
+              </Link>
+              <a href="#how" className="av4-secondary-link">
+                Посмотреть полный цикл
+                <ArrowRight className="h-4 w-4" strokeWidth={2.5} aria-hidden />
+              </a>
+            </div>
+            <p className="av4-next-step">Почта и пароль. Канал подключишь следующим шагом.</p>
+            <p className="av4-proof">
+              <span>Продукт работает сейчас</span>
+              <span>Подтверждение можно оставить</span>
+              <span>Пауза в любой момент</span>
+            </p>
           </div>
 
           <EditorialConveyor />
         </div>
 
-        <MetricRail className="av4-metrics" />
+        <dl className="av4-assurances">
+          {AURORA_ASSURANCES.map((item) => (
+            <div key={item.value}>
+              <dt>{item.value}</dt>
+              <dd>{item.caption}</dd>
+            </div>
+          ))}
+        </dl>
       </div>
     </section>
   );
@@ -363,6 +403,7 @@ export function VariantLanding({
   enableScrollMotion = false,
   finaleVariant,
   showFinaleSwitcher = false,
+  production = false,
 }: {
   variant: Variant;
   showSwitcher?: boolean;
@@ -375,6 +416,7 @@ export function VariantLanding({
   enableScrollMotion?: boolean;
   finaleVariant?: ScrollFinaleVariant;
   showFinaleSwitcher?: boolean;
+  production?: boolean;
 }) {
   return (
     <div className={`aurora-variants aurora-variant-${variant}`}>
@@ -387,12 +429,18 @@ export function VariantLanding({
       <VariantNav variant={variant} />
       <main id="main">
         <VariantHero variant={variant} />
-        <V3Ticker />
-        {reasonsVariant ? <ReasonsVariants variant={reasonsVariant} /> : <V3Ledger />}
-        <V3Tabs />
-        <V3PostProof />
-        <V3QualityScanner />
-        <V3MemoryArchive />
+        {production ? (
+          <V3ProductionStory />
+        ) : (
+          <>
+            <V3Ticker />
+            {reasonsVariant ? <ReasonsVariants variant={reasonsVariant} /> : <V3Ledger />}
+          </>
+        )}
+        <V3KineticHow production />
+        {!production && <V3PostProof />}
+        <V3GravityMemoryManifest />
+        <V3QualityVerdict />
         <V3Faq />
         {finaleVariant ? (
           <V3ScrollFinale variant={finaleVariant} showSwitcher={showFinaleSwitcher} />
@@ -407,6 +455,8 @@ export function VariantLanding({
           interactionVariant={footerInteractionVariant}
           showInteractionSwitcher={showFooterInteractionSwitcher}
         />
+      ) : production ? (
+        <V3ProductionFooter />
       ) : (
         <V3Footer />
       )}

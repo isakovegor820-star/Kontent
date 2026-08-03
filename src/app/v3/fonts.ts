@@ -1,23 +1,5 @@
-// Шрифты необрутализма v3 — с 2026-07-28 это главный лендинг (/), алиас /v3.
-// Их же подключают /register и /app (app-v3). Пара: гротескный дисплей (Unbounded,
-// кириллица) + моно (Plex) для пульта, промптов и служебных подписей.
-// Текст — платформенный Golos из корневого layout.
-import { Dela_Gothic_One, Unbounded, IBM_Plex_Mono } from "next/font/google";
-
-export const v3Display = Unbounded({
-  subsets: ["latin", "cyrillic"],
-  weight: ["500", "700", "900"],
-  variable: "--v3-display",
-});
-
-export const v3Mono = IBM_Plex_Mono({
-  subsets: ["latin", "cyrillic"],
-  weight: ["400", "500", "600"],
-  variable: "--v3-mono",
-});
-
-export const v3Kinetic = Dela_Gothic_One({
-  subsets: ["latin", "cyrillic"],
-  weight: "400",
-  variable: "--v3-kinetic",
-});
+// Production builds must not depend on a third-party font host. These stable class names
+// install the Cyrillic-capable system stacks declared in the root stylesheet.
+export const v3Display = { variable: "aurora-v3-display" } as const;
+export const v3Mono = { variable: "aurora-v3-mono" } as const;
+export const v3Kinetic = { variable: "aurora-v3-kinetic" } as const;

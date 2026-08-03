@@ -507,8 +507,8 @@
 /* ---------------------------------------------------- 03 / SEQUENCER */
 
 .sequence {
-  color: var(--ink);
-  background: var(--acc);
+  color: var(--paper);
+  background: var(--ink);
   transition: color 220ms ease, background 220ms ease;
 }
 
@@ -557,8 +557,8 @@
   inset: 0;
   opacity: 0;
   background-image:
-    linear-gradient(to right, color-mix(in srgb, var(--ink) 19%, transparent) 1px, transparent 1px),
-    linear-gradient(to bottom, color-mix(in srgb, var(--ink) 19%, transparent) 1px, transparent 1px);
+    linear-gradient(to right, color-mix(in srgb, var(--paper) 13%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in srgb, var(--paper) 13%, transparent) 1px, transparent 1px);
   background-size: 42px 42px;
 }
 
@@ -583,7 +583,7 @@
   position: absolute;
   width: 140px;
   height: 140px;
-  border: 4px solid var(--ink);
+  border: 4px solid var(--paper);
   border-radius: 50%;
   opacity: 0;
 }
@@ -635,14 +635,14 @@
   min-width: 0;
   place-items: center;
   overflow: hidden;
-  color: var(--ink);
+  color: var(--paper);
   background: transparent;
   cursor: pointer;
   transition: color 150ms ease, background 150ms ease;
 }
 
 .sequenceLetters button + button {
-  border-left: 3px solid var(--ink);
+  border-left: 3px solid color-mix(in srgb, var(--paper) 42%, transparent);
 }
 
 .sequenceLetters button > span {
@@ -676,8 +676,8 @@
 }
 
 .sequenceLetters .layerActive {
-  color: var(--acc);
-  background: var(--ink);
+  color: var(--ink);
+  background: var(--acc);
 }
 
 .pulseOn .sequenceLetters strong {
@@ -701,18 +701,18 @@
 }
 
 .invertOn {
-  color: var(--acc);
-  background: var(--ink);
+  color: var(--ink);
+  background: var(--paper);
 }
 
 .invertOn .sequenceLetters button {
-  color: var(--acc);
+  color: var(--ink);
 }
 
 .invertOn .sequenceLetters button + button,
 .invertOn .sequenceTicker,
 .invertOn .topbar {
-  border-color: var(--acc);
+  border-color: var(--ink);
 }
 
 .invertOn .sequenceLetters .layerActive {

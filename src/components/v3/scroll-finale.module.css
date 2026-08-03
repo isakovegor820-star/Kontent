@@ -287,18 +287,18 @@
 /* ------------------------------------------------------------------ 02 */
 
 .manifesto {
-  min-height: 360svh;
+  min-height: 180svh;
   color: var(--ink);
-  background: var(--acc);
+  background-color: var(--paper);
+  background-image: var(--editorial-grid);
+  background-size: var(--editorial-grid-size);
 }
 
 .manifesto .stickyScene {
   isolation: isolate;
-  background:
-    linear-gradient(to right, color-mix(in srgb, var(--ink) 11%, transparent) 1px, transparent 1px),
-    linear-gradient(to bottom, color-mix(in srgb, var(--ink) 11%, transparent) 1px, transparent 1px),
-    var(--acc);
-  background-size: 64px 64px, 64px 64px, auto;
+  background-color: var(--paper);
+  background-image: var(--editorial-grid);
+  background-size: var(--editorial-grid-size);
 }
 
 .manifestoGhost {
@@ -311,7 +311,7 @@
   opacity: 0.07;
   font-family: var(--font-golos), system-ui, sans-serif;
   font-size: clamp(9rem, 22vw, 25rem);
-  font-weight: 950;
+  font-weight: 900;
   letter-spacing: -0.045em;
   line-height: 0.75;
   pointer-events: none;
@@ -327,7 +327,7 @@
   width: 100%;
   row-gap: clamp(12px, 1.8vh, 28px);
   align-self: center;
-  padding: 0 3vw 22vh;
+  padding: 0 3vw 20vh;
   font-family: var(--v3-kinetic), var(--v3-display), system-ui, sans-serif;
   font-size: clamp(4.4rem, 8.6vw, 12rem);
   font-weight: 400;
@@ -484,7 +484,7 @@
   gap: 24px;
   font-family: var(--v3-mono), ui-monospace, monospace;
   font-size: 11px;
-  font-weight: 800;
+  font-weight: 700;
   letter-spacing: 0.1em;
   text-transform: uppercase;
 }
@@ -522,7 +522,7 @@
   background: var(--acc);
   font-family: var(--v3-mono), ui-monospace, monospace;
   font-size: 10px;
-  font-weight: 850;
+  font-weight: 700;
   letter-spacing: 0.15em;
   text-transform: uppercase;
   white-space: nowrap;
@@ -532,7 +532,7 @@
 .manifestoTakeover > p:first-of-type {
   font-family: var(--v3-mono), ui-monospace, monospace;
   font-size: 11px;
-  font-weight: 850;
+  font-weight: 700;
   letter-spacing: 0.16em;
   text-transform: uppercase;
 }
@@ -541,7 +541,7 @@
   margin-top: 18px;
   font-family: var(--v3-display), system-ui, sans-serif;
   font-size: clamp(4rem, 8.7vw, 11rem);
-  font-weight: 950;
+  font-weight: 900;
   letter-spacing: -0.055em;
   line-height: 0.78;
   text-transform: uppercase;
@@ -578,7 +578,7 @@
   box-shadow: 7px 7px 0 var(--paper);
   font-family: var(--v3-mono), ui-monospace, monospace;
   font-size: 11px;
-  font-weight: 850;
+  font-weight: 700;
   letter-spacing: 0.1em;
   text-transform: uppercase;
   transition: translate 160ms ease, box-shadow 160ms ease;
@@ -1099,13 +1099,12 @@
 }
 
 @media (max-width: 720px) {
-  .finale,
-  .manifesto {
+  .finale {
     min-height: 300svh;
   }
 
-  .manifesto {
-    min-height: 380svh;
+  .finale.manifesto {
+    min-height: 150svh;
   }
 
   .stickyScene {
@@ -1205,9 +1204,10 @@
 
   .manifestoCopy {
     row-gap: 10px;
-    padding: 0 16px 31vh;
+    padding: 0 16px 22vh;
     font-size: clamp(2.35rem, 11vw, 4.8rem);
     line-height: 0.94;
+    white-space: normal;
   }
 
   .manifestoGhost {
@@ -1218,17 +1218,27 @@
   .manifestoFacts {
     inset-inline: 16px;
     bottom: 80px;
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .manifestoFacts article {
-    padding: 11px 14px;
-    border-right: 0;
-    border-bottom: 1px solid var(--ink);
+    min-height: 104px;
+    padding: 10px;
+    border-right: 1px solid var(--ink);
+    border-bottom: 0;
   }
 
   .manifestoFacts article:last-child {
-    border-bottom: 0;
+    border-right: 0;
+  }
+
+  .manifestoFacts strong {
+    font-size: 11px;
+  }
+
+  .manifestoFacts p {
+    font-size: 12px;
+    line-height: 1.3;
   }
 
   .manifestoAction {

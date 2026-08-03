@@ -212,26 +212,26 @@ function ManifestoFinale() {
     target: sectionRef,
     offset: ["start start", "end end"],
   });
-  const lineOneX = useTransform(scrollYProgress, [0, 0.38], ["-42vw", "0vw"]);
-  const lineOneY = useTransform(scrollYProgress, [0, 0.38], [90, 0]);
-  const lineOneRotate = useTransform(scrollYProgress, [0, 0.38], [-5, 0]);
-  const lineTwoX = useTransform(scrollYProgress, [0.08, 0.5], ["46vw", "0vw"]);
-  const lineTwoY = useTransform(scrollYProgress, [0.08, 0.5], [-80, 0]);
-  const lineTwoRotate = useTransform(scrollYProgress, [0.08, 0.5], [5, 0]);
-  const lineThreeX = useTransform(scrollYProgress, [0.22, 0.64], ["-48vw", "0vw"]);
-  const lineThreeScale = useTransform(scrollYProgress, [0.22, 0.64], [1.55, 1]);
-  const lineThreeRotate = useTransform(scrollYProgress, [0.22, 0.64], [-7, -1]);
-  const copyScale = useTransform(scrollYProgress, [0.68, 0.91], [1, 0.82]);
-  const copyOpacity = useTransform(scrollYProgress, [0.76, 0.91], [1, 0.13]);
-  const ghostX = useTransform(scrollYProgress, [0, 1], ["18vw", "-54vw"]);
-  const factsOpacity = useTransform(scrollYProgress, [0.58, 0.75, 0.89], [0, 1, 1]);
-  const factsY = useTransform(scrollYProgress, [0.58, 0.75], [58, 0]);
+  const lineOneX = useTransform(scrollYProgress, [0, 0.28], ["-16vw", "0vw"]);
+  const lineOneY = useTransform(scrollYProgress, [0, 0.28], [42, 0]);
+  const lineOneRotate = useTransform(scrollYProgress, [0, 0.28], [-2, 0]);
+  const lineTwoX = useTransform(scrollYProgress, [0.05, 0.36], ["16vw", "0vw"]);
+  const lineTwoY = useTransform(scrollYProgress, [0.05, 0.36], [-36, 0]);
+  const lineTwoRotate = useTransform(scrollYProgress, [0.05, 0.36], [2, 0]);
+  const lineThreeX = useTransform(scrollYProgress, [0.12, 0.46], ["-18vw", "0vw"]);
+  const lineThreeScale = useTransform(scrollYProgress, [0.12, 0.46], [1.15, 1]);
+  const lineThreeRotate = useTransform(scrollYProgress, [0.12, 0.46], [-2, -0.35]);
+  const copyScale = useTransform(scrollYProgress, [0.72, 0.86], [1, 0.92]);
+  const copyOpacity = useTransform(scrollYProgress, [0.76, 0.86], [1, 0.68]);
+  const ghostX = useTransform(scrollYProgress, [0, 1], ["12vw", "-34vw"]);
+  const factsOpacity = useTransform(scrollYProgress, [0.42, 0.56, 0.84], [0, 1, 1]);
+  const factsY = useTransform(scrollYProgress, [0.42, 0.56], [34, 0]);
 
   useMotionValueEvent(scrollYProgress, "change", (latest) => {
-    const nextPhase = latest < 0.28 ? 0 : latest < 0.62 ? 1 : 2;
+    const nextPhase = latest < 0.24 ? 0 : latest < 0.5 ? 1 : 2;
     setPhase((current) => (current === nextPhase ? current : nextPhase));
     setComplete((current) => {
-      const next = latest > 0.92;
+      const next = latest > 0.86;
       return current === next ? current : next;
     });
   });
@@ -326,7 +326,7 @@ function ManifestoFinale() {
         >
           <p>Ты живёшь. Канал не замолкает.</p>
           <Link href="/register">
-            Запустить Аврору <ArrowRight aria-hidden />
+            Запустить первый цикл <ArrowRight aria-hidden />
           </Link>
         </motion.div>
 
@@ -352,7 +352,7 @@ function ManifestoFinale() {
                 занимаешься своей жизнью.
               </p>
               <Link href="/register">
-                Запустить постоянный ритм <ArrowRight aria-hidden />
+                Запустить первый цикл <ArrowRight aria-hidden />
               </Link>
             </motion.div>
           )}

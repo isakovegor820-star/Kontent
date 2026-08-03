@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ArrowRight, Eye, RefreshCw, Send, Zap } from "lucide-react";
+import { ArrowRight, Check, RefreshCw, Send, Zap } from "lucide-react";
 import { useReducedMotion } from "motion/react";
 
 type ConveyorPhase = "signal" | "draft" | "published";
@@ -66,7 +66,7 @@ export function EditorialConveyor() {
             <Zap className="h-6 w-6" fill="currentColor" strokeWidth={2.4} />
           </div>
           <strong>@svaril_sam</strong>
-          <span>тема растёт ×7,8</span>
+          <span>тема растёт быстрее обычного</span>
         </article>
 
         <ArrowRight
@@ -95,8 +95,8 @@ export function EditorialConveyor() {
               <Send className="h-5 w-5" fill="currentColor" strokeWidth={2.2} />
             </span>
             <span>
-              <strong>Кофе и код</strong>
-              <small>12 431 подписчик</small>
+              <strong>Кофе и код · демо</strong>
+              <small>тестовый Telegram-канал</small>
             </span>
             <span className="av4-post__status">Опубликовано</span>
           </header>
@@ -112,8 +112,8 @@ export function EditorialConveyor() {
           <footer className="av4-post__footer">
             <span>Сегодня · 12:00</span>
             <span>
-              <Eye className="h-4 w-4" strokeWidth={2.2} aria-hidden />
-              12,4K
+              <Check className="h-4 w-4" strokeWidth={2.8} aria-hidden />
+              отправлено сервером
             </span>
           </footer>
         </article>
