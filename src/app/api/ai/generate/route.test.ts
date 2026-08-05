@@ -43,7 +43,7 @@ describe("generation deadlines", () => {
     expect(generationDeadlines("balanced", {})).toEqual({
       firstTokenMs: 30_000,
       attemptOverallMs: 75_000,
-      pipelineOverallMs: 150_000,
+      pipelineOverallMs: 240_000,
     });
   });
 

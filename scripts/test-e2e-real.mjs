@@ -672,10 +672,11 @@ try {
   assert(await originalLink.getAttribute("target") === "_blank", "original action does not stay external");
 
   await page.getByRole("button", { name: "Создать публикацию", exact: true }).click();
-  await page.waitForURL((url) => url.pathname === "/app/studio" && /^\d+$/u.test(url.searchParams.get("draft") || ""));
-  await page.waitForURL((url) => url.pathname === "/app/studio" && !url.searchParams.has("intent"));
+  await page.waitForURL((url) => url.pathname === "/app/studio"
+    && /^\d+$/u.test(url.searchParams.get("draft") || "")
+    && url.searchParams.get("intent") === "create");
   const createStudioUrl = new URL(page.url());
-  assert([...createStudioUrl.searchParams.keys()].join(",") === "draft", "Library leaked text or channel through Studio URL");
+  assert([...createStudioUrl.searchParams.keys()].join(",") === "draft,intent", "Library leaked text or channel through Studio URL");
   const libraryReferenceDraftId = Number(createStudioUrl.searchParams.get("draft"));
   const referenceDraft = (await pool.query(
     `select d.text, d.origin, d.source_ref, destination.channel_id
@@ -688,10 +689,9 @@ try {
   assert(referenceDraft?.origin === "competitor", "Studio reference draft lost provenance");
   assert(Number(referenceDraft?.channel_id) === channels[0], "Studio reference draft lost selected channel id");
   assert(String(referenceDraft?.source_ref?.id) === String(competitorIds[0]), "Studio reference draft lost source id");
-  await page.getByText("Безопасный тестовый текст.", { exact: true }).waitFor({ timeout: 20_000 });
-  const createPostButton = page.getByRole("button", { name: "В пост", exact: true });
-  await createPostButton.waitFor({ timeout: 20_000 });
-  await createPostButton.click();
+  // A reload while the provider is running must replay the same paid operation. The
+  // create intent remains until the terminal result has been persisted as a server draft.
+  await page.reload();
   await page.waitForURL((url) => url.pathname === "/app/composer" && /^\d+$/u.test(url.searchParams.get("draft") || ""));
   const composerDraftUrl = new URL(page.url());
   assert([...composerDraftUrl.searchParams.keys()].join(",") === "draft", "Studio leaked reference content through Composer URL");
@@ -710,6 +710,7 @@ try {
 
   await page.goBack();
   await page.waitForURL((url) => url.pathname === "/app/studio" && url.searchParams.get("draft") === String(libraryReferenceDraftId));
+  assert(!new URL(page.url()).searchParams.has("intent"), "browser Back restarted the completed paid generation");
   assert((await desktopSidebar.locator('a[aria-current="page"]').textContent())?.includes("Студия"), "browser Back lost active Studio item");
   await page.goBack();
   await page.waitForURL((url) => url.pathname === "/app/library" && url.searchParams.get("channel") === String(channels[0]));

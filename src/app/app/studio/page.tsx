@@ -53,6 +53,7 @@ import {
 } from "@/lib/draft-client";
 import type { ServerDraft } from "@/lib/draft-types";
 import { buildLibraryAdaptation } from "@/lib/library";
+import { studioReferenceGenerationIdentity } from "@/lib/studio-reference-generation";
 import {
   DEFAULT_POST_SETTINGS,
   buildPostSettingsSummary,
@@ -86,11 +87,28 @@ import { cn, uid } from "@/lib/utils";
 type Msg = StudioChatMessage;
 
 /** Что ИИ должен «помнить» для перегенерации ответа */
-type Gen = StudioChatGeneration;
-type AskOptions = { cmd?: AiCommand; input?: string; skipBrief?: boolean; requestKey?: string };
+type Gen = StudioChatGeneration & {
+  autoOpenComposer?: boolean;
+  referenceDraftId?: number;
+  resultClientKey?: string;
+};
+type AskOptions = {
+  cmd?: AiCommand;
+  input?: string;
+  skipBrief?: boolean;
+  requestKey?: string;
+  autoOpenComposer?: boolean;
+  referenceDraftId?: number;
+  resultClientKey?: string;
+};
 type PendingBrief = { text: string; opts?: Omit<AskOptions, "skipBrief"> };
 type PendingLibraryReference = { text: string; source?: string };
-type PendingReferenceGeneration = { draftId: number; prompt: string; requestKey: string };
+type PendingReferenceGeneration = {
+  draftId: number;
+  prompt: string;
+  requestKey: string;
+  resultClientKey: string;
+};
 
 type WorkspaceMode = "chat" | "studio";
 
@@ -903,12 +921,13 @@ function StudioPageInner() {
             text: serverDraft.text,
             source: serverDraft.source_ref.label,
           });
+          const identity = studioReferenceGenerationIdentity(serverDraft.id, serverDraft.version);
           setWorkspaceMode("chat");
           setDraft(adaptation.prompt);
           setPendingReferenceGeneration({
             draftId: serverDraft.id,
             prompt: adaptation.prompt,
-            requestKey: `studio_reference_${serverDraft.id}_v${serverDraft.version}`,
+            ...identity,
           });
         }
       })
@@ -1343,6 +1362,13 @@ function StudioPageInner() {
             fallbackUsed,
             replayed,
           });
+          if (gen.autoOpenComposer) {
+            openAsPost(id, completion.text, {
+              aiValidation: terminalValidation ?? null,
+              channelId: generationChannelId,
+              clientKey: gen.resultClientKey,
+            });
+          }
         }
         clearCancel();
         void s.refreshAiUsage();
@@ -1439,6 +1465,9 @@ function StudioPageInner() {
       sourceRef: contextDraft?.source_ref ?? undefined,
       channelId,
       postSettings,
+      autoOpenComposer: opts?.autoOpenComposer,
+      referenceDraftId: opts?.referenceDraftId,
+      resultClientKey: opts?.resultClientKey,
     };
     const aiId = uid("m");
 
@@ -1461,9 +1490,9 @@ function StudioPageInner() {
     void startStream(aiId, gen);
   };
 
-  // «Создать публикацию» — это явное согласие на одну генерацию. После загрузки
-  // server-owned reference запускаем её ровно один раз и сразу убираем intent из URL:
-  // reload не создаст новый платный запрос, а retry использует сохранённый requestKey.
+  // «Создать публикацию» — это явное согласие на одну генерацию. Intent остаётся в URL
+  // до серверного сохранения результата: refresh повторит тот же idempotency key,
+  // восстановит staged result и не оставит пользователя с пустым экраном.
   useEffect(() => {
     const pending = pendingReferenceGeneration;
     if (
@@ -1477,12 +1506,14 @@ function StudioPageInner() {
 
     startedReferenceDraftsRef.current.add(pending.draftId);
     setPendingReferenceGeneration(null);
-    window.history.replaceState(null, "", `/app/studio?draft=${pending.draftId}`);
     ask(pending.prompt, {
       cmd: "write",
       input: pending.prompt,
       skipBrief: true,
       requestKey: pending.requestKey,
+      autoOpenComposer: true,
+      referenceDraftId: pending.draftId,
+      resultClientKey: pending.resultClientKey,
     });
     // `ask` intentionally consumes the reference/context captured by this render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1572,9 +1603,14 @@ function StudioPageInner() {
 
   // Готовый ответ сразу становится серверным черновиком. Публикация остаётся явным
   // действием в редакторе: там можно отправить сейчас, выбрать дату или подтвердить факты.
-  const openAsPost = (messageId: string, text: string) => {
+  function openAsPost(messageId: string, text: string, options?: {
+    aiValidation?: Msg["aiValidation"] | null;
+    channelId?: number | null;
+    clientKey?: string;
+  }) {
     if (postDraftRef.current.promise) return;
-    if (!channelId) {
+    const destinationChannelId = options?.channelId ?? channelId;
+    if (!destinationChannelId) {
       s.toast({
         kind: "danger",
         title: "Некуда отправлять пост",
@@ -1583,7 +1619,9 @@ function StudioPageInner() {
       return;
     }
 
-    const clientKey = postDraftRef.current.keys.get(messageId) ?? createDraftClientKey();
+    const clientKey = options?.clientKey
+      ?? postDraftRef.current.keys.get(messageId)
+      ?? createDraftClientKey();
     const generation = genRef.current.get(messageId);
     const generatedMessage = messages.find((message) => message.id === messageId);
     postDraftRef.current.keys.set(messageId, clientKey);
@@ -1596,9 +1634,9 @@ function StudioPageInner() {
           scheduledAt: null,
           origin: "ai",
           sourceRef: generation?.sourceRef ?? null,
-          channelIds: [channelId],
+          channelIds: [destinationChannelId],
           // Если семантическая проверка недоступна, Composer потребует ручное подтверждение.
-          aiValidation: generatedMessage?.aiValidation ?? null,
+          aiValidation: options?.aiValidation ?? generatedMessage?.aiValidation ?? null,
           clientKey,
         });
         s.toast({
@@ -1606,6 +1644,11 @@ function StudioPageInner() {
           title: "Пост создан",
           body: "Открываем редактор — можно опубликовать сразу или запланировать.",
         });
+        if (generation?.autoOpenComposer && generation.referenceDraftId) {
+          // Only now is it safe to consume the one-shot intent: the generated text already
+          // has a durable, idempotent draft. Back returns to Studio without starting again.
+          window.history.replaceState(null, "", `/app/studio?draft=${generation.referenceDraftId}`);
+        }
         router.push(`/app/composer?draft=${result.draft.id}`);
       } catch (error) {
         s.toast({
@@ -1622,7 +1665,7 @@ function StudioPageInner() {
       }
     })();
     postDraftRef.current.promise = request;
-  };
+  }
 
   const copy = async (text: string) => {
     try {

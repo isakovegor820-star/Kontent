@@ -22,7 +22,7 @@ export function generationDeadlines(
     return {
       firstTokenMs: configuredMs("AI_MAX_FIRST_TOKEN_MS", 15_000, env),
       attemptOverallMs: configuredMs("AI_MAX_ATTEMPT_MS", 90_000, env),
-      pipelineOverallMs: configuredMs("AI_MAX_PIPELINE_MS", 180_000, env),
+      pipelineOverallMs: configuredMs("AI_MAX_PIPELINE_MS", 300_000, env),
     };
   }
   return {
@@ -30,6 +30,9 @@ export function generationDeadlines(
     // Keep the selected engine and wait for a realistic TTFT instead of false-failing.
     firstTokenMs: configuredMs("AI_BALANCED_FIRST_TOKEN_MS", 30_000, env),
     attemptOverallMs: configuredMs("AI_BALANCED_ATTEMPT_MS", 75_000, env),
-    pipelineOverallMs: configuredMs("AI_BALANCED_PIPELINE_MS", 150_000, env),
+    // Draft, verification and editorial passes are a single paid operation. NavyAI may
+    // legitimately need more than 150 seconds for all passes even though every attempt
+    // remains healthy, so the pipeline must not cut off a nearly finished post.
+    pipelineOverallMs: configuredMs("AI_BALANCED_PIPELINE_MS", 240_000, env),
   };
 }
