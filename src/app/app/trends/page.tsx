@@ -431,7 +431,7 @@ function ItemCard({
           </p>
           <p className="mt-1.5 text-[12px] leading-relaxed text-text-2">
             Сверь факты, цифры и формулировки с источником. Отметка будет сохранена на сервере
-            для этой версии текста; после редактирования Composer запросит проверку снова.
+            для этой версии текста; после редактирования редактор запросит проверку снова.
           </p>
           <div className="mt-3">
             <Checkbox
@@ -790,7 +790,7 @@ export default function TrendsPage() {
       });
       const responseRequestId = r.headers.get("x-ai-request-id") ?? undefined;
       const correlated = (message: string, requestId = responseRequestId) =>
-        `${message}${requestId ? ` ID запроса: ${requestId}` : ""}`;
+        `${message}${requestId ? ` Номер запроса: ${requestId}` : ""}`;
 
       if (r.status === 429) {
         const message = "Генерации обновятся завтра. Пост можно написать руками — открой «Студию».";
@@ -812,7 +812,7 @@ export default function TrendsPage() {
           : info?.error === "post_settings_conflict"
             ? "Некоторые настройки поста противоречат друг другу. Исправь их в настройках Авроры и повтори."
             : info?.error === "request_result_unavailable"
-              ? "Запрос был завершён раньше, но сохранённый результат недоступен. Не создавай новый ключ; передай ID запроса в поддержку."
+              ? "Запрос был завершён раньше, но сохранённый результат недоступен. Не создавай новый ключ; передай номер запроса в поддержку."
               : "Генерация сейчас недоступна. Проверь подключение модели и повтори тот же запрос.";
         const recovery = correlated(message, info?.requestId);
         store.toast({

@@ -114,7 +114,7 @@
 
 /* 01 — three laws */
 .laws { overflow: hidden; background: var(--yellow); }
-.laws::before { position: absolute; z-index: -1; right: -2vw; top: 15%; color: rgb(9 9 9 / .06); content: "MEMORY"; font: 900 24vw/.7 var(--v3-display), sans-serif; letter-spacing: -.08em; }
+.laws::before { position: absolute; z-index: -1; right: -2vw; top: 15%; color: rgb(9 9 9 / .06); content: "ПАМЯТЬ"; font: 900 24vw/.7 var(--v3-display), sans-serif; letter-spacing: -.08em; }
 .lawsHeader { display: flex; align-items: end; justify-content: space-between; gap: 40px; }
 .lawsHeader p { max-width: 300px; font-size: clamp(18px, 1.45vw, 24px); font-weight: 700; line-height: 1.35; }
 .lawsHeader h1 { color: rgb(9 9 9 / .16); font-size: clamp(92px, 15vw, 250px); line-height: .63; letter-spacing: -.085em; text-transform: uppercase; }

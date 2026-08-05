@@ -334,7 +334,7 @@ describe("редакторский профиль", () => {
       grounding: "platform",
     });
 
-    expect(prompt).toContain("Прямые требования пользователя");
+    expect(prompt).toContain("1. Явная команда пользователя");
     expect(prompt).toContain("не называй серьёзную проблему прекрасной или радостной");
     expect(prompt).toContain("не выдумывай цифры, источники, цитаты, законы, кейсы");
     expect(prompt).toContain("обращаться на вы, без эмодзи");
@@ -367,6 +367,31 @@ describe("редакторский профиль", () => {
     expect(prompt).toContain("мысленно придумай три разных смысловых угла");
   });
 
+  it("добавляет единый поканальный стандарт в генерацию Студии", () => {
+    const prompt = buildSystemPrompt({
+      kind: "write",
+      task: "Напиши пост о запуске услуги",
+      channelQuality: {
+        preset: "custom",
+        tone: "Тёплый профессиональный голос без канцелярита",
+        address: "вы",
+        minChars: 1100,
+        maxChars: 1500,
+        maxEmojis: 1,
+        forbiddenPhrases: ["уникальная возможность"],
+        disclaimerRequired: true,
+        disclaimerText: "Материал носит информационный характер.",
+      } as never,
+    });
+
+    expect(prompt).toContain("РЕДАКЦИОННЫЙ СТАНДАРТ КАНАЛА");
+    expect(prompt).toContain("Тёплый профессиональный голос без канцелярита");
+    expect(prompt).toContain("1100–1500 знаков");
+    expect(prompt).toContain("не больше 1 эмодзи");
+    expect(prompt).toContain("уникальная возможность");
+    expect(prompt).toContain("Материал носит информационный характер.");
+  });
+
   it("передаёт библиотечный референс только как недоверенный образец механики", () => {
     const prompt = buildSystemPrompt({
       kind: "write",
@@ -382,6 +407,35 @@ describe("редакторский профиль", () => {
     expect(prompt).toContain("<mechanic_reference>");
     expect(prompt).toContain("15 сентября откроется реестр из 136 источников.");
     expect(prompt).toContain("не переноси из него цифры, даты, имена, ссылки, юридические реквизиты");
+  });
+
+  it("разделяет semantic intent, factual evidence и mechanics для серверной адаптации", () => {
+    const prompt = buildSystemPrompt({
+      kind: "write",
+      task: "Создай пост строго по теме: Ошибки в договоре поставки",
+      knownFacts: ["Подтверждённый факт канала"],
+      referenceAdaptation: {
+        draftId: 81,
+        version: 2,
+        kind: "idea",
+        sourceLabel: "Идея Авроры",
+        sourceText: "15 сентября Иван Петров назвал 136 ошибок в договоре поставки.",
+        topic: "Ошибки в договоре поставки",
+        readerProblem: "Не замечает рискованных условий",
+        semanticGoal: "Помочь проверить договор",
+        mechanics: { hook: "Вопрос", structure: "Проблема → решение" },
+        mode: "same_topic_original_post",
+      },
+      grounding: "platform",
+    });
+
+    expect(prompt).toContain("2. Обязательная тема, проблема читателя и semantic intent");
+    expect(prompt).toContain("Тема: Ошибки в договоре поставки");
+    expect(prompt).toContain("Semantic intent описывает предмет разговора, а не разрешённые факты");
+    expect(prompt).toContain("Подтверждённый факт канала");
+    expect(prompt).toContain("<reference_mechanics>");
+    expect(prompt).toContain("15 сентября Иван Петров назвал 136 ошибок");
+    expect(prompt).toContain("не является подтверждённым источником фактов");
   });
 
   it("переключается в режим выпускающего редактора для второго прохода", () => {

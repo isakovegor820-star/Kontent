@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import {
   AiProviderError,
   generateText,
@@ -83,6 +85,22 @@ function abortReason(signal: AbortSignal | undefined, fallback: Error): Error {
 
 function timeoutError(engine: EngineId, code: "first_token_timeout" | "overall_timeout"): AiProviderError {
   return new AiProviderError(engine, 504, code);
+}
+
+function paramsForEngineAttempt(params: GenerateParams, engine: EngineId): GenerateParams {
+  const rawKey = String(params.providerRequestKey ?? "").trim();
+  if (!rawKey) return params;
+  return {
+    ...params,
+    // One logical generation may reach several models. Keep retries of each model
+    // idempotent without reusing one provider key for two different model payloads.
+    providerRequestKey: createHash("sha256")
+      .update("aurora-ai-provider-engine-v1\0")
+      .update(rawKey)
+      .update("\0")
+      .update(engine)
+      .digest("hex"),
+  };
 }
 
 function normalizedError(
@@ -240,7 +258,7 @@ export async function* orchestrateText(
       let ttftMs: number | undefined;
 
       try {
-        stream = streamFactory(params, engine, attemptSignal);
+        stream = streamFactory(paramsForEngineAttempt(params, engine), engine, attemptSignal);
         let first = await stream.next();
         while (!first.done && !first.value) first = await stream.next();
         if (firstTimer) clearTimeout(firstTimer);

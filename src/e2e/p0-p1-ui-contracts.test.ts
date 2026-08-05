@@ -286,6 +286,8 @@ describe("P1 profile reload and unsaved-change contract", () => {
         rubrics: ["Практика", "Разборы"],
         formats: ["Текст", "Видео"],
         authorRole: "Управляющий партнёр",
+        cta: "Записаться на консультацию",
+        taboo: "Не обещать гарантированный результат",
       },
     });
     expect(parsed.ok).toBe(true);
@@ -306,6 +308,8 @@ describe("P1 profile reload and unsaved-change contract", () => {
         rubrics: ["Практика", "Разборы"],
         formats: ["Текст", "Видео"],
         authorRole: "Управляющий партнёр",
+        cta: "Записаться на консультацию",
+        taboo: "Не обещать гарантированный результат",
         ready: true,
         source: "manual",
       },
@@ -322,6 +326,6 @@ describe("P1 profile reload and unsaved-change contract", () => {
     expect(viewSource).toContain('window.addEventListener("beforeunload", beforeUnload)');
     expect(viewSource).toContain("Есть несохранённые изменения");
     expect(viewSource).toContain("Сохранить профиль");
-    expect(viewSource).toContain("Email изменится только после подтверждения");
+    expect(viewSource).toContain("Адрес изменится только после подтверждения");
   });
 });

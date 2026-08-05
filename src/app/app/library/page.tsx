@@ -316,7 +316,7 @@ function LibraryInner() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ channelId, kind: "reference", sourcePostId: hit.id }),
       });
-      if (!response.ok) throw new Error("save failed");
+      if (!response.ok) throw new Error("Не удалось сохранить");
       await loadPosts();
       s.toast({ kind: "success", title: "Референс сохранён", body: `Он появился в коллекции «${selectedChannelName}».` });
     } catch {
@@ -730,7 +730,7 @@ function LibraryInner() {
               <Input
                 value={newTags}
                 onChange={(e) => setNewTags(e.target.value)}
-                placeholder="Метки: кейс, продажа, FAQ…"
+                        placeholder="Метки: пример, продажа, частые вопросы…"
               />
             </div>
             <div className="mt-3 flex justify-end">

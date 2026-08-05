@@ -19,7 +19,7 @@ export type ProfileUpdate = {
   channelId: number;
   name: string;
   avatar: string;
-  brief: Pick<Brief, "niche" | "audience" | "goal" | "rubrics" | "formats" | "authorRole">;
+  brief: Pick<Brief, "niche" | "audience" | "goal" | "rubrics" | "formats" | "authorRole" | "cta" | "taboo">;
 };
 
 export type ProfileInputResult =
@@ -40,6 +40,7 @@ export function validProfileRequestKey(value: unknown): value is string {
 export function normalizeAvatar(value: unknown): string | null {
   const avatar = clean(value, PROFILE_AVATAR_MAX);
   if (!avatar) return "";
+  if (/^\/api\/media\/assets\/[1-9][0-9]*$/u.test(avatar)) return avatar;
   try {
     const parsed = new URL(avatar);
     return parsed.protocol === "https:" ? parsed.toString().slice(0, PROFILE_AVATAR_MAX) : null;
@@ -87,6 +88,8 @@ export function parseProfileUpdate(raw: unknown, headerRequestKey?: string | nul
         rubrics: brief.rubrics,
         formats: brief.formats,
         authorRole: brief.authorRole,
+        cta: brief.cta,
+        taboo: brief.taboo,
       },
     },
   };

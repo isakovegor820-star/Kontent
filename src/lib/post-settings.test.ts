@@ -179,7 +179,7 @@ describe("программная поствалидация", () => {
       expect.stringContaining("14 сентября"),
       expect.stringContaining("AI Product"),
       expect.stringContaining("https://example.com"),
-      expect.stringContaining("CTA"),
+      expect.stringContaining("призыва"),
     ]));
   });
 

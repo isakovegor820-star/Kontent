@@ -20,6 +20,7 @@ export const WORKER_AI_SURFACES = Object.freeze({
   "autopilot-plan": Object.freeze({ billing: "user", purpose: "visible_content_plan" }),
   "bot-idea": Object.freeze({ billing: "user", purpose: "visible_draft" }),
   "media-generation": Object.freeze({ billing: "user", purpose: "visible_media_asset" }),
+  "site-analysis-interview": Object.freeze({ billing: "user", purpose: "visible_osint_report" }),
 });
 
 function positiveReservationId(value) {

@@ -73,6 +73,31 @@ describe("draft input boundary", () => {
       new DraftValidationError("bad_version"),
     );
   });
+
+  it("accepts an idea origin with semantic metadata and separate provenance", () => {
+    const parsed = parseDraftCreateInput({
+      ...input,
+      origin: "idea",
+      sourceRef: {
+        kind: "idea",
+        id: "81",
+        label: "Идея Авроры",
+        topic: "Ошибки в договоре поставки",
+        hook: "Вопрос читателю",
+        structure: "Проблема → решение",
+        provenance: { kind: "content_idea", id: "9", label: "Открытый источник" },
+      },
+    });
+
+    expect(parsed).toMatchObject({
+      origin: "idea",
+      sourceRef: {
+        kind: "idea",
+        topic: "Ошибки в договоре поставки",
+        provenance: { kind: "content_idea", id: "9" },
+      },
+    });
+  });
 });
 
 describe("server draft transactions", () => {

@@ -50,13 +50,13 @@ export async function POST(req: NextRequest) {
 
   try {
     await getPool().query(
-      `insert into content_brief (user_id, channel_id, niche, audience, rubrics, formats, author_role, goal, cta, taboo, quality, ready, source, updated_at)
-            values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, now())
+      `insert into content_brief (user_id, channel_id, niche, audience, rubrics, formats, author_role, goal, cta, taboo, profile_answers, quality, ready, source, updated_at)
+            values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, now())
        on conflict (user_id, channel_id) do update
             set niche = excluded.niche, audience = excluded.audience, rubrics = excluded.rubrics,
                 formats = excluded.formats, author_role = excluded.author_role,
                 goal = excluded.goal, cta = excluded.cta, taboo = excluded.taboo,
-                quality = excluded.quality, ready = excluded.ready,
+                profile_answers = excluded.profile_answers, quality = excluded.quality, ready = excluded.ready,
                 source = excluded.source, updated_at = now()`,
       [
         user.id,
@@ -69,6 +69,7 @@ export async function POST(req: NextRequest) {
         b.goal,
         b.cta,
         b.taboo,
+        JSON.stringify(b.profileAnswers),
         JSON.stringify(b.quality),
         b.ready,
         b.source,

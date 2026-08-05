@@ -56,6 +56,8 @@ describe("media generation contract", () => {
     }, {
       platform: "tg",
       brandProfile: "Ниша канала: юридические технологии\nТон: спокойный\nЦвет: #334455",
+      visualDirection: "Лаконичная юридическая инфографика с одним акцентным цветом",
+      visualDetail: 82,
     });
     const payload = buildNavyMediaPayload({
       kind: "image",
@@ -68,7 +70,7 @@ describe("media generation contract", () => {
       negative_prompt: "водяные знаки",
     });
 
-    expect(payload.prompt).toContain("[aurora-media-prompt v2]");
+    expect(payload.prompt).toContain("[aurora-media-prompt v3]");
     expect(payload.prompt).toContain("Telegram; формат 9:16");
     expect(payload.prompt).toContain("БЕЗОПАСНЫЕ ЗОНЫ");
     expect(payload.prompt).toContain("РАЗМЕЩЕНИЕ ОБЪЕКТА");
@@ -78,6 +80,8 @@ describe("media generation contract", () => {
     expect(payload.prompt).toContain("СВЕТ");
     expect(payload.prompt).toContain("ПАЛИТРА БРЕНДА");
     expect(payload.prompt).toContain("#334455");
+    expect(payload.prompt).toContain("Лаконичная юридическая инфографика с одним акцентным цветом");
+    expect(payload.prompt).toContain("высокая полезная детализация");
     expect(payload.prompt).toContain("«Проверь договор»");
     expect(payload.prompt).toContain("не придумывай логотипы, названия, имена, числа");
     expect(payload.prompt).not.toContain("кофейня из браузера");

@@ -15,9 +15,13 @@ const APPROVED_REPLACED_CONSTRAINTS = new Set([
   "posts_verification_state_check",
   "posts_publication_origin_check",
   "posts_schedule_revision_check",
+  "drafts_origin_check",
   "autopilot_plan_revision_check",
   "content_brief_source_check",
   "rss_items_skip_reason_check",
+  "site_analysis_jobs_status_check",
+  "site_analysis_jobs_stage_check",
+  "media_generations_prompt_policy_version_check",
 ]);
 
 function withoutSqlComments(sql) {

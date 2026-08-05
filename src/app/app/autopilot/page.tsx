@@ -211,7 +211,7 @@ export default function AutopilotPage() {
 
       const preview = previewBody.preview;
       if (!preview.token) {
-        throw new Error("approval preview token missing");
+        throw new Error("Не получено подтверждение предварительного просмотра");
       }
       const channelName = preview.channel.title ||
         (preview.channel.handle ? `@${preview.channel.handle}` : `канал #${preview.channel.id}`);

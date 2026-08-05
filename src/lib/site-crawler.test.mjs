@@ -8,6 +8,7 @@ import {
   normalizeSiteTarget,
   parseRobotsTxt,
   robotsAllows,
+  stratifySitemapUrls,
 } from "./site-crawler.mjs";
 
 function response(url, body, status = 200, contentType = "text/html; charset=utf-8") {
@@ -58,6 +59,26 @@ describe("site crawler security and extraction", () => {
     expect(urls).toEqual(["https://example.com/a"]);
     expect(extractSitemapDocument("<sitemapindex><sitemap><loc>/child.xml</loc></sitemap></sitemapindex>", "https://example.com/"))
       .toEqual({ kind: "index", urls: ["https://example.com/child.xml"] });
+  });
+
+  it("stratifies sitemap URLs so news cannot crowd out team, offers and partners", () => {
+    const urls = [
+      ...Array.from({ length: 20 }, (_, index) => `https://example.com/news/${index}`),
+      "https://example.com/team",
+      "https://example.com/services/audit",
+      "https://example.com/partners",
+      "https://example.com/about",
+      "https://example.com/contact",
+    ];
+    const selected = stratifySitemapUrls(urls, 8);
+    expect(selected).toEqual(expect.arrayContaining([
+      "https://example.com/team",
+      "https://example.com/services/audit",
+      "https://example.com/partners",
+      "https://example.com/about",
+      "https://example.com/contact",
+    ]));
+    expect(selected.filter((url) => url.includes("/news/")).length).toBeLessThanOrEqual(3);
   });
 
   it("extracts observable page evidence without hidden comments", () => {

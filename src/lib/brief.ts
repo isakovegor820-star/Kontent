@@ -25,6 +25,24 @@ import {
   normalizePostQuality,
   type PostQuality,
 } from "./post-quality.mjs";
+import {
+  AUTHOR_PROFILE_QUESTION_COUNT,
+  AUTHOR_PROFILE_SECTIONS,
+  authorProfileContext,
+  normalizeAuthorProfileAnswers,
+} from "./author-profile.mjs";
+
+export {
+  AUTHOR_PROFILE_QUESTION_COUNT,
+  AUTHOR_PROFILE_SECTIONS,
+};
+
+export type AuthorProfileQuestionId =
+  | "q1" | "q2" | "q3" | "q4" | "q5" | "q6" | "q7" | "q8" | "q9" | "q10"
+  | "q11" | "q12" | "q13" | "q14" | "q15" | "q16" | "q17" | "q18" | "q19" | "q20"
+  | "q21" | "q22" | "q23" | "q24" | "q25" | "q26";
+
+export type AuthorProfileAnswers = Partial<Record<AuthorProfileQuestionId, string>>;
 
 export interface Brief {
   niche: string; // о чём канал
@@ -35,6 +53,7 @@ export interface Brief {
   goal: string; // зачем канал автору
   cta: string; // куда ведём читателя
   taboo: string; // о чём не писать никогда
+  profileAnswers: AuthorProfileAnswers; // подробная анкета автора и канала: 26 ответов
   quality: PostQuality; // как именно писать и что программно блокировать
   ready: boolean; // подтверждён пользователем глазами
   source: "ai" | "manual" | "quiz" | null; // честно: чем заполнен
@@ -49,6 +68,7 @@ export const EMPTY_BRIEF: Brief = {
   goal: "",
   cta: "",
   taboo: "",
+  profileAnswers: {},
   quality: { ...DEFAULT_POST_QUALITY },
   ready: false,
   source: null,
@@ -100,6 +120,7 @@ export function normalizeBrief(raw: unknown): Brief {
     goal: clean(r.goal, LIMITS.goal),
     cta: clean(r.cta, LIMITS.cta),
     taboo: clean(r.taboo, LIMITS.taboo),
+    profileAnswers: normalizeAuthorProfileAnswers(r.profileAnswers ?? r.profile_answers) as AuthorProfileAnswers,
     quality: normalizePostQuality(r.quality),
     ready: r.ready === true,
     source: r.source === "ai" || r.source === "manual" || r.source === "quiz" ? r.source : null,
@@ -124,6 +145,8 @@ export function briefContext(b: Brief): string {
   if (b.rubrics.length) lines.push(`— рубрики канала: ${b.rubrics.join(", ")}`);
   if (b.formats.length) lines.push(`— форматы публикаций: ${b.formats.join(", ")}`);
   if (b.taboo) lines.push("", `Категорически не пиши про: ${b.taboo}`);
+  const detailedProfile = authorProfileContext(b.profileAnswers);
+  if (detailedProfile) lines.push("", detailedProfile);
   lines.push(
     "",
     "Пиши предметно и по этой теме. Никаких общих слов про «твою тему» — только конкретика ниши.",

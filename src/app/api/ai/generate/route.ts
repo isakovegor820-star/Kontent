@@ -56,6 +56,16 @@ import {
   validatePostSettingsConflicts,
   validatePostSettingsResult,
 } from "@/lib/post-settings";
+import { validatePostQuality } from "@/lib/post-quality.mjs";
+import { getDraftForUser } from "@/lib/server-drafts";
+import {
+  buildReferenceAdaptationTask,
+  buildTopicRepairInstructions,
+  referenceAdaptationContextFromDraft,
+  validateTopicAlignment,
+  type ReferenceAdaptationContext,
+  type TopicAlignmentResult,
+} from "@/lib/reference-adaptation";
 
 export const runtime = "nodejs";
 
@@ -63,11 +73,12 @@ const KINDS: AiKind[] = ["write", "rewrite", "shorten", "plan", "script", "image
 const ROLES: AiRole[] = ["copywriter", "strategist", "critic"];
 const EDITORIAL_KINDS: AiKind[] = ["write", "rewrite", "shorten", "script", "poll", "longread"];
 const VALIDATED_POST_KINDS: AiKind[] = ["write", "rewrite", "shorten", "script", "poll", "longread"];
+const CHANNEL_QUALITY_KINDS: AiKind[] = ["write", "rewrite", "longread"];
 
 class PostSettingsValidationError extends Error {
   constructor(
     public readonly issues: string[],
-    public readonly errorCode: "post_validation_failed" | "factual_validation_failed" = "post_validation_failed",
+    public readonly errorCode: "post_validation_failed" | "factual_validation_failed" | "topic_alignment_failed" = "post_validation_failed",
   ) {
     super("post settings validation failed");
     this.name = "PostSettingsValidationError";
@@ -90,6 +101,7 @@ type SafeAiLogCode =
   | "usage_finalization_unavailable"
   | "post_validation_failed"
   | "factual_validation_failed"
+  | "topic_alignment_failed"
   | "usage_release_failed"
   | "forbidden_origin"
   | "request_replayed"
@@ -265,12 +277,14 @@ function paramsForProviderPhase(params: GenerateParams, phase: string): Generate
 
 interface CombinedValidation {
   post: ReturnType<typeof validatePostSettingsResult> | null;
+  channelQuality: ReturnType<typeof validatePostQuality> | null;
   factual: FactualValidationResult | null;
+  topic: TopicAlignmentResult | null;
   passed: boolean;
   blocked: boolean;
   requiresReview: boolean;
   issues: string[];
-  errorCode: "post_validation_failed" | "factual_validation_failed";
+  errorCode: "post_validation_failed" | "factual_validation_failed" | "topic_alignment_failed";
 }
 
 async function runOrchestratedText(
@@ -290,8 +304,8 @@ async function runOrchestratedText(
   };
   for await (const event of orchestrateText(params, engineId, {
     signal,
-    // Model choice belongs to the user. A runtime failure is returned with one ready
-    // suggestion; the request is never silently sent to a different provider/model.
+    // Model choice belongs to the user. Runtime failures preserve the selected model
+    // and return one ready suggestion that requires explicit confirmation in the UI.
     fallbackEngines: [],
     firstTokenMs: deadlines.firstTokenMs,
     overallMs: deadlines.attemptOverallMs,
@@ -358,6 +372,9 @@ function replayResponse(requestId: string, result: AiUsageStoredResult, used: nu
           requiresReview: result.validation.requiresReview,
           provenance: result.validation.provenance as unknown as FactualValidationProvenance,
           blockerCodes: result.validation.blockerCodes,
+          ...(result.validation.topicAlignment
+            ? { topicAlignment: result.validation.topicAlignment }
+            : {}),
         }]
       : []),
     {
@@ -443,6 +460,11 @@ function studioStreamResponse(
         && VALIDATED_POST_KINDS.includes(params.kind)
         && params.role !== "critic",
       );
+      const shouldValidateChannelQuality = Boolean(
+        params.channelQuality
+        && CHANNEL_QUALITY_KINDS.includes(params.kind)
+        && params.role !== "critic",
+      );
       const validateResult = async (text: string): Promise<CombinedValidation> => {
         const post = shouldValidatePostSettings
           ? validatePostSettingsResult(text, params.postSettings, {
@@ -457,20 +479,44 @@ function studioStreamResponse(
           signal: pipelineSignal,
           adapter: semanticAdapter,
         });
+        const supportCount = factLedger.evidence.filter((item) => item.countsForCapacity !== false).length;
+        const channelQuality = shouldValidateChannelQuality
+          ? validatePostQuality(text, params.channelQuality, {
+              supportCount,
+              // Семантический ledger ниже остаётся источником правды о фактах. Здесь единица
+              // означает лишь наличие серверных источников, чтобы второй валидатор не требовал
+              // от публичного поста внутренних ссылок вида [1].
+              citedShare: supportCount > 0 && factual.status !== "blocked" ? 1 : null,
+              trigger: params.draft ? "rewrite" : "generation",
+            })
+          : null;
         const factualIssues = buildFactualRepairInstructions(factual);
         const postIssues = post ? buildPostRepairInstructions(post) : [];
+        const channelIssues = channelQuality?.violations.map((item) => item.message) ?? [];
+        const topic = params.referenceAdaptation
+          ? validateTopicAlignment(text, params.referenceAdaptation)
+          : null;
+        const topicIssues = topic ? buildTopicRepairInstructions(topic) : [];
         const postPassed = post?.passed ?? true;
-        const blocked = !postPassed || factual.status === "blocked";
+        const channelPassed = channelQuality?.passed ?? true;
+        const topicPassed = topic?.status !== "failed";
+        const blocked = !postPassed || !channelPassed || factual.status === "blocked" || !topicPassed;
         return {
           post,
+          channelQuality,
           factual,
-          passed: postPassed && factual.status === "passed",
+          topic,
+          passed: postPassed && channelPassed && factual.status === "passed" && topicPassed,
           blocked,
           // A generation may be a useful draft even when it is not publishable yet.
           // Publication remains fail-closed; the stream itself can still finish durably.
           requiresReview: factual.requiresReview || blocked,
-          issues: [...factualIssues, ...postIssues].slice(0, 12),
-          errorCode: factual.status === "blocked" ? "factual_validation_failed" : "post_validation_failed",
+          issues: [...topicIssues, ...factualIssues, ...channelIssues, ...postIssues].slice(0, 16),
+          errorCode: !topicPassed
+            ? "topic_alignment_failed"
+            : factual.status === "blocked"
+              ? "factual_validation_failed"
+              : "post_validation_failed",
         };
       };
       const sendValidation = (validation: CombinedValidation) => {
@@ -478,6 +524,9 @@ function studioStreamResponse(
         const postBlockerCodes = validation.post?.violations
           .filter((item) => item.blocker)
           .map((item) => `post:${item.code}`) ?? [];
+        const channelBlockerCodes = validation.channelQuality?.violations
+          .filter((item) => item.blocker)
+          .map((item) => `channel:${item.code}`) ?? [];
         return send({
           type: "validation",
           requestId,
@@ -486,8 +535,17 @@ function studioStreamResponse(
           provenance: validation.factual.provenance,
           blockerCodes: [
             ...validation.factual.violations.map((item) => item.code),
+            ...channelBlockerCodes,
             ...postBlockerCodes,
+            ...(validation.topic?.status === "failed" ? ["topic:off_topic"] : []),
           ],
+          ...(validation.topic
+            ? { topicAlignment: {
+                status: validation.topic.status,
+                score: validation.topic.score,
+                topic: validation.topic.topic,
+              } }
+            : {}),
         });
       };
       const storedValidation = (validation: CombinedValidation): NonNullable<AiUsageStoredResult["validation"]> | undefined => {
@@ -495,14 +553,26 @@ function studioStreamResponse(
         const postBlockerCodes = validation.post?.violations
           .filter((item) => item.blocker)
           .map((item) => `post:${item.code}`) ?? [];
+        const channelBlockerCodes = validation.channelQuality?.violations
+          .filter((item) => item.blocker)
+          .map((item) => `channel:${item.code}`) ?? [];
         return {
           status: validation.blocked ? "blocked" : validation.factual.status,
           requiresReview: validation.requiresReview,
           provenance: validation.factual.provenance as unknown as Record<string, unknown>,
           blockerCodes: [
             ...validation.factual.violations.map((item) => item.code),
+            ...channelBlockerCodes,
             ...postBlockerCodes,
+            ...(validation.topic?.status === "failed" ? ["topic:off_topic"] : []),
           ],
+          ...(validation.topic
+            ? { topicAlignment: {
+                status: validation.topic.status,
+                score: validation.topic.score,
+                topic: validation.topic.topic,
+              } }
+            : {}),
         };
       };
       const stageReservation = async (result: AiUsageStoredResult) => {
@@ -543,27 +613,46 @@ function studioStreamResponse(
           );
           finalEngine = generated.engine;
           anyFallback ||= generated.fallbackUsed;
-          const validation = await validateResult(generated.text);
+          let finalText = generated.text;
+          let finalPipeline: "single" | "editorial" = "single";
+          let validation = await validateResult(finalText);
+          if (validation.topic?.status === "failed") {
+            if (!send({ type: "phase", requestId, phase: "editing" })) return;
+            if (!send({ type: "replace", requestId, text: "", pipeline: "editorial" })) return;
+            const repaired = await runOrchestratedText({
+              ...paramsForProviderPhase(params, "topic-repair-1"),
+              draft: finalText.slice(0, 12_000),
+              validationIssues: buildTopicRepairInstructions(validation.topic),
+            }, finalEngine, pipelineSignal, requestId, deadlines, send, true);
+            finalText = repaired.text;
+            finalEngine = repaired.engine;
+            anyFallback ||= repaired.fallbackUsed;
+            finalPipeline = "editorial";
+            validation = await validateResult(finalText);
+          }
           if (!sendValidation(validation)) return;
+          if (validation.topic?.status === "failed" && !allowReviewableBlockedDraft) {
+            throw new PostSettingsValidationError(validation.issues, "topic_alignment_failed");
+          }
           // Фактологические blockers всегда fail-closed. Форматные — как и раньше,
           // только если включено скрытие критичного результата.
           if (validation.factual?.status === "blocked" && !allowReviewableBlockedDraft) {
             throw new PostSettingsValidationError(validation.issues, "factual_validation_failed");
           }
           if (
-            validation.post
-            && !validation.post.passed
+            ((validation.post && !validation.post.passed)
+              || (validation.channelQuality && !validation.channelQuality.passed))
             && settings.hideCriticalResult
             && !allowReviewableBlockedDraft
           ) {
             throw new PostSettingsValidationError(validation.issues);
           }
-          if (!send({ type: "replace", requestId, text: generated.text, pipeline: "single" })) return;
+          if (!send({ type: "replace", requestId, text: finalText, pipeline: finalPipeline })) return;
           await stageAndSendTerminal(
             {
               protocol: "ndjson",
-              text: generated.text,
-              pipeline: "single",
+              text: finalText,
+              pipeline: finalPipeline,
               requestedEngine: engineId,
               engine: finalEngine,
               fallbackUsed: anyFallback,
@@ -571,7 +660,7 @@ function studioStreamResponse(
             },
             {
               type: "done",
-              pipeline: "single",
+              pipeline: finalPipeline,
               requestId,
               engine: finalEngine,
               requestedEngine: engineId,
@@ -597,6 +686,7 @@ function studioStreamResponse(
         finalEngine = generatedDraft.engine;
         anyFallback ||= generatedDraft.fallbackUsed;
         const draftValidation = await validateResult(draft);
+        let topicRepairAttempted = draftValidation.topic?.status === "failed";
 
         if (!send({ type: "phase", requestId, phase: "editing" })) return;
         // Клиент уже умеет replace: очищаем provisional draft и стримим редакторский текст
@@ -607,20 +697,35 @@ function studioStreamResponse(
           ...paramsForProviderPhase(params, "editorial-edit-1"),
           draft: draft.slice(0, 12_000),
           validationIssues: draftValidation.issues,
-        }, engineId, pipelineSignal, requestId, deadlines, send, true);
+        }, finalEngine, pipelineSignal, requestId, deadlines, send, true);
         finalText = edited.text;
         finalEngine = edited.engine;
         anyFallback ||= edited.fallbackUsed;
         let validation = await validateResult(finalText);
 
-        if (validation.blocked && settings.autoImprove) {
+        if (validation.blocked && validation.topic?.status !== "failed" && settings.autoImprove) {
           if (!send({ type: "phase", requestId, phase: "editing" })) return;
           if (!send({ type: "replace", requestId, text: "", pipeline: "editorial" })) return;
           edited = await runOrchestratedText({
             ...paramsForProviderPhase(params, "editorial-edit-2"),
             draft: finalText.slice(0, 12_000),
             validationIssues: validation.issues,
-          }, engineId, pipelineSignal, requestId, deadlines, send, true);
+          }, finalEngine, pipelineSignal, requestId, deadlines, send, true);
+          finalText = edited.text;
+          finalEngine = edited.engine;
+          anyFallback ||= edited.fallbackUsed;
+          validation = await validateResult(finalText);
+        }
+
+        if (validation.topic?.status === "failed" && !topicRepairAttempted) {
+          topicRepairAttempted = true;
+          if (!send({ type: "phase", requestId, phase: "editing" })) return;
+          if (!send({ type: "replace", requestId, text: "", pipeline: "editorial" })) return;
+          edited = await runOrchestratedText({
+            ...paramsForProviderPhase(params, "topic-repair-1"),
+            draft: finalText.slice(0, 12_000),
+            validationIssues: buildTopicRepairInstructions(validation.topic),
+          }, finalEngine, pipelineSignal, requestId, deadlines, send, true);
           finalText = edited.text;
           finalEngine = edited.engine;
           anyFallback ||= edited.fallbackUsed;
@@ -628,6 +733,9 @@ function studioStreamResponse(
         }
 
         if (!sendValidation(validation)) return;
+        if (validation.topic?.status === "failed" && !allowReviewableBlockedDraft) {
+          throw new PostSettingsValidationError(validation.issues, "topic_alignment_failed");
+        }
         if (validation.blocked && !allowReviewableBlockedDraft) {
           throw new PostSettingsValidationError(validation.issues, validation.errorCode);
         }
@@ -716,6 +824,9 @@ export async function POST(req: NextRequest) {
     postSettings?: unknown;
     referenceText?: unknown;
     referenceSource?: unknown;
+    referenceDraftId?: unknown;
+    referenceDraftVersion?: unknown;
+    referenceIntent?: unknown;
   };
   try {
     body = await req.json();
@@ -727,8 +838,59 @@ export async function POST(req: NextRequest) {
   if (!/^[A-Za-z0-9:_-]{8,96}$/u.test(requestKey)) {
     return aiJson(requestId, { error: "idempotency_key_required", retryable: false }, { status: 400 });
   }
+  const requestedChannelId = Number(body.channelId);
+  let channelId = Number.isSafeInteger(requestedChannelId) && requestedChannelId > 0
+    ? requestedChannelId
+    : null;
+  const rawReferenceDraftId = body.referenceDraftId;
+  const rawReferenceDraftVersion = body.referenceDraftVersion;
+  const hasReferenceDraft = rawReferenceDraftId != null || rawReferenceDraftVersion != null;
+  const referenceDraftId = Number(rawReferenceDraftId);
+  const referenceDraftVersion = Number(rawReferenceDraftVersion);
+  const referenceIntent = body.referenceIntent === "create" ? "create" : "discuss";
+  if (hasReferenceDraft && (
+    !Number.isSafeInteger(referenceDraftId)
+    || referenceDraftId <= 0
+    || !Number.isSafeInteger(referenceDraftVersion)
+    || referenceDraftVersion <= 0
+  )) {
+    return aiJson(requestId, { error: "bad_reference_draft", retryable: false }, { status: 400 });
+  }
+
+  let referenceContext: ReferenceAdaptationContext | null = null;
+  let referenceDestinationTitle: string | null = null;
+  if (hasReferenceDraft) {
+    let referenceDraft: Awaited<ReturnType<typeof getDraftForUser>>;
+    try {
+      referenceDraft = await getDraftForUser(user.id, referenceDraftId);
+    } catch (error) {
+      return prerequisiteUnavailable(requestId, error, "context");
+    }
+    if (!referenceDraft) {
+      // Same response for a missing and a foreign draft: ownership is not disclosed.
+      return aiJson(requestId, { error: "reference_draft_forbidden", retryable: false }, { status: 403 });
+    }
+    if (referenceDraft.version !== referenceDraftVersion) {
+      return aiJson(requestId, { error: "reference_draft_version_conflict", retryable: false }, { status: 409 });
+    }
+    const activeDestinations = referenceDraft.destinations.filter((destination) => destination.is_active);
+    const destination = channelId == null
+      ? activeDestinations[0]
+      : activeDestinations.find((candidate) => candidate.channel_id === channelId);
+    if (!destination) {
+      return aiJson(requestId, { error: "reference_draft_forbidden", retryable: false }, { status: 403 });
+    }
+    channelId = destination.channel_id;
+    referenceDestinationTitle = destination.title;
+    referenceContext = referenceAdaptationContextFromDraft(referenceDraft);
+    if (!referenceContext) {
+      return aiJson(requestId, { error: "bad_reference_context", retryable: false }, { status: 422 });
+    }
+  }
   const usageKey = `web:${requestKey}`;
-  const requestFingerprint = aiRequestFingerprint(body);
+  const requestFingerprint = aiRequestFingerprint(hasReferenceDraft
+    ? { ...body, referenceText: undefined, referenceSource: undefined }
+    : body);
   try {
     const existing = await lookupAiUsageRequest(user.id, usageKey, requestFingerprint);
     if ((existing.state === "replay" || existing.state === "terminal_pending_ack") && existing.result) {
@@ -776,11 +938,7 @@ export async function POST(req: NextRequest) {
   const niche = body.niche ? String(body.niche).slice(0, 120) : undefined;
   const tone = body.tone ? String(body.tone).slice(0, 120) : undefined;
   const role: AiRole | undefined = ROLES.includes(body.role as AiRole) ? (body.role as AiRole) : undefined;
-  const requestedChannelId = Number(body.channelId);
-  const channelId = Number.isSafeInteger(requestedChannelId) && requestedChannelId > 0
-    ? requestedChannelId
-    : null;
-  const conversation = cleanHistory(body.history);
+  const conversation = referenceContext && referenceIntent === "create" ? [] : cleanHistory(body.history);
   if (
     body.postSettings !== undefined
     && (!body.postSettings || typeof body.postSettings !== "object" || Array.isArray(body.postSettings))
@@ -819,11 +977,16 @@ export async function POST(req: NextRequest) {
   }
   const mood = me?.ai_mood;
   const postSettings = normalizePostSettings(body.postSettings ?? me?.ai_post_settings);
-  const task = requestedTask || postSettings.mainIdea;
+  const effectivePostSettings = referenceContext && referenceIntent === "create"
+    ? { ...postSettings, mainIdea: "" }
+    : postSettings;
+  const task = referenceContext && referenceIntent === "create"
+    ? buildReferenceAdaptationTask(referenceContext, referenceDestinationTitle || "выбранного канала")
+    : requestedTask || effectivePostSettings.mainIdea;
   if (!task && kind !== "plan") {
     return aiJson(requestId, { error: "empty", retryable: false }, { status: 422 });
   }
-  const settingsConflicts = validatePostSettingsConflicts(postSettings);
+  const settingsConflicts = validatePostSettingsConflicts(effectivePostSettings);
   const blockingConflicts = settingsConflicts.filter((item) => item.severity === "error");
   if (blockingConflicts.length) {
     return aiJson(
@@ -885,8 +1048,7 @@ export async function POST(req: NextRequest) {
       { status: 503, headers: { "retry-after": "15" } },
     );
   }
-
-  const styleLimit = postSettings.originalityDepth === "all" ? 200 : Number(postSettings.originalityDepth);
+  const styleLimit = effectivePostSettings.originalityDepth === "all" ? 200 : Number(effectivePostSettings.originalityDepth);
   let channel: Awaited<ReturnType<typeof channelAiContextFor>>;
   try {
     channel = await channelAiContextFor(user.id, channelId, styleLimit);
@@ -909,7 +1071,10 @@ export async function POST(req: NextRequest) {
       model: runtime.model,
     }),
     providerRequestId: requestId,
-    mechanicReference: referenceText
+    referenceAdaptation: referenceContext && referenceIntent === "create" ? referenceContext : undefined,
+    mechanicReference: referenceContext && referenceIntent === "discuss"
+      ? { text: referenceContext.sourceText, source: referenceContext.sourceLabel }
+      : referenceText
       ? { text: referenceText, source: referenceSource || undefined }
       : undefined,
     context,
@@ -923,16 +1088,18 @@ export async function POST(req: NextRequest) {
     channelTitle: channel?.title,
     network: channel?.network,
     channelProfile: channel?.profile,
+    channelQuality: channel?.quality,
+    channelPostIndex: channel?.postIndex,
     knownFacts: channel?.facts,
     conversation,
-    postSettings,
+    postSettings: effectivePostSettings,
     grounding: interactiveStream ? "platform" : undefined,
     styleSamples: channel?.styleSamples ?? (await styleSamplesFor(user.id, null, styleLimit)),
   };
 
   const factLedger = buildFactLedger({
     task,
-    postSettings,
+    postSettings: effectivePostSettings,
     knownFacts: channel?.facts,
     profile: channel?.profile,
   });
@@ -991,7 +1158,7 @@ export async function POST(req: NextRequest) {
   }
 
   const editorial = interactiveStream
-    && postSettings.qualityMode !== "fast"
+    && effectivePostSettings.qualityMode !== "fast"
     && EDITORIAL_KINDS.includes(kind)
     && role !== "critic";
   return studioStreamResponse(

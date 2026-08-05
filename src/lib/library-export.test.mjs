@@ -78,8 +78,8 @@ describe("library snapshot exports", () => {
     const lines = libraryPdfItemLines(snapshot.items[0]).join("\n");
     for (const label of [
       "Источник данных:", "Дата публикации:", "Просмотры:", "Реакции:",
-      "Lift:", "ER Bayes:", "Velocity:", "VelocityZ:", "Freshness:",
-      "Score 0–100:", "Оценка 1–5:", "Качество данных:",
+      "Прирост:", "Скорректированная вовлечённость:", "Скорость:", "Отклонение скорости:", "Свежесть:",
+      "Оценка 0–100:", "Оценка 1–5:", "Качество данных:",
       "Зрелость данных:", "Версия формулы:", "Оригинал:",
     ]) expect(lines).toContain(label);
   });

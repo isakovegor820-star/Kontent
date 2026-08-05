@@ -276,16 +276,16 @@ export const POST_TARGET_RULES: Record<Exclude<PostTarget, "auto">, PlatformRule
     guidance: [
       "Подпись дополняет визуал, а не пересказывает его.",
       "Смысл первой строки понятен до раскрытия подписи.",
-      "Сырой URL не делай главным CTA: в подписи он обычно не является удобным переходом.",
+      "Не делай необработанную ссылку главным призывом: в подписи по ней обычно неудобно переходить.",
     ],
     source: "https://www.postman.com/meta/instagram/documentation/6yqw8pt/instagram-api",
   },
   instagram_reel: {
     id: "instagram_reel",
     platform: "instagram",
-    format: "подпись к Reels",
-    label: "Instagram · Reels",
-    shortLabel: "Instagram Reels",
+    format: "подпись к короткому видео",
+    label: "Instagram · короткое видео",
+    shortLabel: "Instagram · видео",
     defaultRange: [250, 800],
     shortRange: [120, 350],
     mediumRange: [350, 900],
@@ -299,8 +299,8 @@ export const POST_TARGET_RULES: Record<Exclude<PostTarget, "auto">, PlatformRule
     platformMentionMax: 20,
     guidance: [
       "Первая строка продолжает обещание ролика и даёт контекст без пересказа кадров.",
-      "Короткие абзацы подходят мобильному просмотру; CTA связан с просмотренным роликом.",
-      "Сырой URL не делай главным CTA.",
+      "Короткие абзацы подходят мобильному просмотру; призыв связан с просмотренным роликом.",
+      "Не делай необработанную ссылку главным призывом.",
     ],
     source: "https://www.postman.com/meta/instagram/documentation/6yqw8pt/instagram-api",
   },
@@ -370,7 +370,7 @@ export const POST_TARGET_RULES: Record<Exclude<PostTarget, "auto">, PlatformRule
     platformHashtagMax: 0,
     platformMentionMax: null,
     guidance: [
-      "Верни одну строку без кавычек, пояснений, CTA и финальной точки.",
+      "Верни одну строку без кавычек, пояснений, призыва и финальной точки.",
       "Главная тема и обещание понятны без кликбейта; важные слова стоят ближе к началу.",
       "Символы < и > запрещены технически.",
     ],
@@ -403,9 +403,9 @@ export const POST_TARGET_RULES: Record<Exclude<PostTarget, "auto">, PlatformRule
   youtube_community: {
     id: "youtube_community",
     platform: "youtube",
-    format: "публикация Community",
-    label: "YouTube · Community",
-    shortLabel: "YouTube Community",
+    format: "публикация сообщества",
+    label: "YouTube · сообщество",
+    shortLabel: "YouTube · сообщество",
     defaultRange: [300, 900],
     shortRange: [120, 350],
     mediumRange: [350, 900],
@@ -419,7 +419,7 @@ export const POST_TARGET_RULES: Record<Exclude<PostTarget, "auto">, PlatformRule
     platformMentionMax: null,
     guidance: [
       "Пост рассчитан на диалог со зрителями канала, а не выглядит как описание видео.",
-      "Вопрос, опрос или CTA должны быть естественным продолжением конкретной мысли.",
+      "Вопрос, опрос или призыв должны быть естественным продолжением конкретной мысли.",
     ],
     source: "https://support.google.com/youtube/answer/9409631",
   },
@@ -887,7 +887,7 @@ const LABELS = {
   structure: { auto: "выбери по материалу", free: "свободная", explainer: "тезис → объяснение → вывод", problem_solution: "проблема → решение → действие", story: "сцена → развитие → вывод", list: "короткое введение → список → вывод", news: "событие → значение → последствия", announcement: "что → для кого → когда → действие" },
   paragraphs: { auto: "нативно площадке", short: "1–2 предложения", medium: "2–4 предложения" },
   lists: { auto: "только когда полезно", avoid: "не использовать", prefer: "предпочитать для шагов", required: "обязателен один список" },
-  cta: { auto: "только если нужен цели", none: "без CTA", comment: "оставить комментарий", save: "сохранить", share: "поделиться", subscribe: "подписаться", click: "перейти по ссылке", buy: "купить или оставить заявку", reply: "написать автору", register: "зарегистрироваться", download: "скачать материал" },
+  cta: { auto: "только если нужен цели", none: "без призыва", comment: "оставить комментарий", save: "сохранить", share: "поделиться", subscribe: "подписаться", click: "перейти по ссылке", buy: "купить или оставить заявку", reply: "написать автору", register: "зарегистрироваться", download: "скачать материал" },
   strength: { soft: "мягкая", neutral: "ясная", direct: "прямая без давления" },
   placement: { natural: "в естественном месте", end: "в конце" },
   creativity: { low: "низкая: точность важнее необычности", balanced: "сбалансированная", high: "высокая: небанальный угол без выдумки" },
@@ -900,7 +900,7 @@ const BRIEF_LABELS = {
   trust: { auto: "определи по контексту", cold: "холодная", familiar: "знакомая", warm: "тёплая", customer: "действующий клиент" },
   promotion: { auto: "определи по предложению", product: "продукт", service: "услуга", event: "мероприятие", personal_brand: "личный бренд", lead_magnet: "бесплатный материал" },
   salesIntensity: { native: "нативная", soft: "мягкая", confident: "уверенная", direct: "прямая" },
-  productReveal: { immediately: "сразу", after_problem: "после проблемы", near_end: "ближе к концу", cta_only: "только в CTA" },
+  productReveal: { immediately: "сразу", after_problem: "после проблемы", near_end: "ближе к концу", cta_only: "только в призыве" },
   strictness: { verified: "только подтверждённые факты", verified_inference: "факты и осторожные выводы", general: "допустимы общие рассуждения", creative_no_new_facts: "свободные формулировки без новых фактов" },
   missing: { ask: "задать уточняющий вопрос", omit: "не использовать утверждение", neutral: "сформулировать нейтрально", placeholder: "пометить место для ручного заполнения" },
   quality: { fast: "быстро: один проход и минимальная проверка", balanced: "сбалансированно: черновик, проверка и редактура", maximum: "максимальное качество: три концепции, выбор лучшей и финальная редактура" },
@@ -908,20 +908,20 @@ const BRIEF_LABELS = {
 
 const OUTPUT_LABELS: Record<OutputPart, string> = {
   main: "основной текст",
-  hooks: "5 вариантов хука",
+  hooks: "5 вариантов начала",
   titles: "3 варианта заголовка",
   cover: "текст на обложку",
   first_comment: "первый комментарий",
   pinned_comment: "закреплённый комментарий",
   hashtags: "хэштеги",
-  alt: "alt-текст",
-  visual_brief: "визуальный бриф",
+  alt: "описание изображения",
+  visual_brief: "задание для изображения",
   image_idea: "идея изображения",
   short_version: "короткая версия",
-  stories: "версия для Stories",
+  stories: "версия для историй",
   cross_platform: "версия для другой площадки",
   comment_replies: "ответы на вероятные комментарии",
-  utm: "UTM-ссылка",
+  utm: "ссылка с меткой",
   discussion_question: "вопрос для обсуждения",
 };
 
@@ -1084,7 +1084,7 @@ export function validatePostSettingsConflicts(raw: unknown): PostSettingsConflic
     if (missing.length) add("incomplete_offer", `Оффер заполнен не полностью (${missing.join(", ")}). Пост получится скорее информационным, чем продающим.`, "warning", ["promotionName", "offer", "mainBenefit", "cta"]);
   }
   if (settings.cta === "none" && ["leads", "sales", "clicks"].includes(settings.primaryMetric)) {
-    add("cta_metric", "Метрика требует действия, но CTA отключён.", "error", ["cta", "primaryMetric"]);
+    add("cta_metric", "Выбранный показатель требует действия, но призыв отключён.", "error", ["cta", "primaryMetric"]);
   }
   if (settings.creativity === "high" && settings.factStrictness === "verified") {
     add("creative_facts", "Высокая креативность применяется только к формулировкам; факты остаются строго подтверждёнными.", "info", ["creativity", "factStrictness"]);
@@ -1229,12 +1229,12 @@ export function validatePostSettingsResult(
   for (const link of settings.links) {
     if (!value.includes(link)) add("link", `Нет обязательной ссылки: «${link}»`);
   }
-  if (settings.ctaWording && !containsPhrase(value, settings.ctaWording)) add("cta_wording", `Нет заданной формулировки CTA: «${settings.ctaWording}»`);
+  if (settings.ctaWording && !containsPhrase(value, settings.ctaWording)) add("cta_wording", `Нет заданной формулировки призыва: «${settings.ctaWording}»`);
   if (settings.ctaCodeword && !containsPhrase(value, settings.ctaCodeword)) add("cta_codeword", `Нет кодового слова: «${settings.ctaCodeword}»`);
-  if (settings.ctaDestination && /^https?:\/\//iu.test(settings.ctaDestination) && !value.includes(settings.ctaDestination)) add("cta_destination", `Нет ссылки CTA: «${settings.ctaDestination}»`);
-  if (!ctaPresent(value, settings.cta)) add("cta", `Нет выбранного CTA: ${LABELS.cta[settings.cta]}`);
+  if (settings.ctaDestination && /^https?:\/\//iu.test(settings.ctaDestination) && !value.includes(settings.ctaDestination)) add("cta_destination", `Нет ссылки для призыва: «${settings.ctaDestination}»`);
+  if (!ctaPresent(value, settings.cta)) add("cta", `Нет выбранного призыва: ${LABELS.cta[settings.cta]}`);
   if (settings.cta === "none" && /(?:подпиш\p{L}*|переход\p{L}*\s+по\s+ссылке|остав\p{L}*\s+заявк|куп\p{L}*\s+сейчас)/iu.test(value)) {
-    add("unexpected_cta", "CTA отключён, но текст всё равно призывает к действию");
+    add("unexpected_cta", "Призыв отключён, но текст всё равно призывает к действию");
   }
   if (/\p{Extended_Pictographic}{3,}/u.test(value)) add("emoji_chain", "Убери цепочку из трёх и более эмодзи");
   if (/(?:^|[^\p{L}])(?:хук|основная часть|вывод|cta|призыв к действию)\s*:/iu.test(value)) add("meta_labels", "В публикацию попали служебные метки промпта");

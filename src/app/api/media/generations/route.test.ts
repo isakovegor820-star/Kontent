@@ -23,7 +23,7 @@ vi.mock("@/lib/request-origin", () => ({ hasTrustedMutationOrigin: mocks.hasTrus
 vi.mock("@/lib/media-generation.mjs", () => ({
   validateMediaInput: mocks.validateMediaInput,
   buildMediaPromptContext: mocks.buildMediaPromptContext,
-  MEDIA_PROMPT_POLICY: { version: 2 },
+  MEDIA_PROMPT_POLICY: { version: 3 },
 }));
 vi.mock("@/lib/navy-media.mjs", () => ({ navyMediaCapabilities: mocks.navyMediaCapabilities }));
 vi.mock("@/lib/media-generation-reconciliation", () => ({
@@ -128,6 +128,10 @@ describe("POST /api/media/generations", () => {
         niche: { value: "Правовые технологии" },
         tone: { value: "Деловой" },
       },
+      quality: {
+        visualDirection: "Лаконичная юридическая инфографика",
+        visualDetail: 88,
+      },
     });
     mocks.releaseAiUsage.mockResolvedValue(true);
   });
@@ -202,6 +206,13 @@ describe("POST /api/media/generations", () => {
     });
     const response = await POST(request("media_context_1234"));
     expect(response.status).toBe(202);
+    expect(mocks.buildMediaPromptContext).toHaveBeenCalledWith(
+      input,
+      expect.objectContaining({
+        visualDirection: "Лаконичная юридическая инфографика",
+        visualDetail: 88,
+      }),
+    );
     const insertion = mocks.txQuery.mock.calls.find(([sql]) => String(sql).includes("insert into media_generations"));
     expect(insertion?.[1]).toEqual(expect.arrayContaining(["Правовые технологии", "Деловой"]));
     expect(insertion?.[1]).not.toContain("кофе");

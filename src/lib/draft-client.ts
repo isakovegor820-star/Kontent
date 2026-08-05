@@ -165,7 +165,26 @@ function sameMedia(left: Post["media"], right: Post["media"]): boolean {
 
 function sameSource(left: Post["sourceRef"] | null, right: Post["sourceRef"] | null): boolean {
   if (left == null || right == null) return left == null && right == null;
-  return left.kind === right.kind && left.id === right.id.trim() && left.label === right.label.trim();
+  const comparable = (source: NonNullable<Post["sourceRef"]>) => ({
+    kind: source.kind,
+    id: source.id.trim(),
+    label: source.label.trim(),
+    topic: source.topic ?? null,
+    readerProblem: source.readerProblem ?? null,
+    semanticGoal: source.semanticGoal ?? null,
+    hook: source.hook ?? null,
+    structure: source.structure ?? null,
+    whyItWorked: source.whyItWorked ?? null,
+    provenance: source.provenance
+      ? {
+          kind: source.provenance.kind,
+          id: source.provenance.id ?? null,
+          label: source.provenance.label ?? null,
+          url: source.provenance.url ?? null,
+        }
+      : null,
+  });
+  return JSON.stringify(comparable(left)) === JSON.stringify(comparable(right));
 }
 
 function sameAiValidation(

@@ -39,6 +39,7 @@ const ORIGINS = new Set<Post["origin"]>([
   "manual",
   "ai",
   "trend",
+  "idea",
   "competitor",
   "autopilot",
 ]);
@@ -143,14 +144,52 @@ function nullableMedia(value: unknown): Post["media"] {
 
 function nullableSourceRef(value: unknown): Post["sourceRef"] | null {
   if (value == null) return null;
-  if (!isRecord(value) || (value.kind !== "trend" && value.kind !== "competitor")) {
+  if (
+    !isRecord(value)
+    || !["trend", "idea", "reference", "competitor"].includes(String(value.kind))
+  ) {
     throw new DraftValidationError("bad_source_ref");
   }
-  return {
-    kind: value.kind,
+  const optionalString = (candidate: unknown, max: number) => {
+    if (candidate == null || candidate === "") return undefined;
+    return requiredString(candidate, "bad_source_ref", max);
+  };
+  let provenance: NonNullable<Post["sourceRef"]>["provenance"];
+  if (value.provenance != null) {
+    if (!isRecord(value.provenance) || ![
+      "content_idea",
+      "competitor_post",
+      "trend",
+      "saved_reference",
+    ].includes(String(value.provenance.kind))) {
+      throw new DraftValidationError("bad_source_ref");
+    }
+    provenance = {
+      kind: value.provenance.kind as NonNullable<typeof provenance>["kind"],
+      ...(optionalString(value.provenance.id, 200) ? { id: optionalString(value.provenance.id, 200) } : {}),
+      ...(optionalString(value.provenance.label, 400) ? { label: optionalString(value.provenance.label, 400) } : {}),
+      ...(optionalString(value.provenance.url, 2_048) ? { url: optionalString(value.provenance.url, 2_048) } : {}),
+    };
+  }
+  const sourceRef: NonNullable<Post["sourceRef"]> = {
+    kind: value.kind as NonNullable<Post["sourceRef"]>["kind"],
     id: requiredString(value.id, "bad_source_ref", 200),
     label: requiredString(value.label, "bad_source_ref", 400),
   };
+  const topic = optionalString(value.topic, 500);
+  const readerProblem = optionalString(value.readerProblem, 800);
+  const semanticGoal = optionalString(value.semanticGoal, 800);
+  const hook = optionalString(value.hook, 1_000);
+  const structure = optionalString(value.structure, 2_000);
+  const whyItWorked = optionalString(value.whyItWorked, 1_200);
+  if (topic) sourceRef.topic = topic;
+  if (readerProblem) sourceRef.readerProblem = readerProblem;
+  if (semanticGoal) sourceRef.semanticGoal = semanticGoal;
+  if (hook) sourceRef.hook = hook;
+  if (structure) sourceRef.structure = structure;
+  if (whyItWorked) sourceRef.whyItWorked = whyItWorked;
+  if (provenance) sourceRef.provenance = provenance;
+  return sourceRef;
 }
 
 function channelIds(value: unknown): number[] {

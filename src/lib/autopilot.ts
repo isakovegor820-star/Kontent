@@ -43,7 +43,7 @@ export async function resolveChannel(userId: number, wanted?: number | null): Pr
 /** Бриф контента КАНАЛА. Нет строки — пустой бриф (значит, автопилот запускать нельзя). */
 export async function loadBrief(userId: number, channelId: number): Promise<Brief> {
   const r = await getPool().query(
-    `select niche, audience, rubrics, formats, author_role, goal, cta, taboo, quality, ready, source
+    `select niche, audience, rubrics, formats, author_role, goal, cta, taboo, profile_answers, quality, ready, source
        from content_brief where user_id = $1 and channel_id = $2`,
     [userId, channelId],
   );

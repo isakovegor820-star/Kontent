@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
+  ChevronDown,
   ChevronRight,
   Clock3,
   ExternalLink,
@@ -28,6 +29,7 @@ import {
   type StableSiteAnalysisKey,
 } from "@/lib/site-analysis-client-key";
 import { cn } from "@/lib/utils";
+import { SITE_INTERVIEW_CATEGORIES, SITE_INTERVIEW_QUESTIONS } from "@/lib/site-analysis/questions";
 
 type Evidence = { url: string; label: string };
 type Finding = {
@@ -81,6 +83,68 @@ type SiteReport = {
     measurement?: Array<{ kpi: string; sourceNeeded: string; confidence: string }>;
   };
   limitations?: string[];
+  osint?: OsintReport;
+  snapshot?: EvidenceSnapshot;
+};
+type OsintStatus = "answered" | "hypothesis" | "conflicting" | "insufficient_data";
+type OsintConfidence = "high" | "medium" | "low" | "none";
+type OsintAnswer = {
+  questionId: string;
+  status: OsintStatus;
+  shortAnswer: string;
+  explanation: string;
+  facts: Array<{ statement: string; evidenceIds: string[] }>;
+  evidenceIds: string[];
+  confidence: OsintConfidence;
+  contradictions: Array<{ description: string; evidenceIds: string[] }>;
+  gaps: string[];
+  requiredIntegrations: string[];
+  recommendationHooks: Array<{ kind: string; rationale: string; entityIds: string[]; evidenceIds: string[] }>;
+};
+type OsintReport = {
+  reportStatus: "complete";
+  promptVersion?: string;
+  questionCatalogVersion?: string;
+  snapshotHash?: string;
+  coverage?: { mode?: string; limitations?: string[] };
+  answers: OsintAnswer[];
+  summary: { answered: number; hypothesis: number; conflicting: number; insufficientData: number; total: number };
+  recommendations?: Array<{ key: string; questionId: string; kind: string; rationale: string; confidence: OsintConfidence; entityIds: string[]; evidenceIds: string[] }>;
+  marketingPlan?: {
+    publicationBacklog?: Array<{ key: string; questionId: string; kind: string; rationale: string; confidence: OsintConfidence; evidenceIds: string[]; priority: string; order: number }>;
+    measurement?: Array<{ kpi: string; requiredIntegration: string; confidence: string }>;
+  };
+};
+type SnapshotSource = {
+  id: string;
+  kind: string;
+  url: string;
+  title: string;
+  pageType?: string;
+  checkedAt?: string;
+  publishedAt?: string | null;
+  modifiedAt?: string | null;
+  quality?: string;
+};
+type SnapshotEvidence = {
+  id: string;
+  sourceId: string;
+  type: string;
+  value: unknown;
+  factType?: string;
+  quality?: string;
+  currentness?: string;
+  checkedAt?: string;
+  publishedAt?: string | null;
+};
+type EvidenceSnapshot = {
+  version?: string;
+  snapshotHash?: string;
+  coverage?: { mode?: string; limitations?: string[] };
+  sources?: SnapshotSource[];
+  evidence?: SnapshotEvidence[];
+  entities?: Array<{ id: string; type: string; name: string; confidence?: string }>;
+  relations?: Array<Record<string, unknown>>;
 };
 type Analysis = {
   id: number;
@@ -97,11 +161,26 @@ type Analysis = {
   createdAt: string | null;
   updatedAt: string | null;
   completedAt: string | null;
+  promptVersion?: string | null;
+  questionCatalogVersion?: string | null;
+  snapshotHash?: string | null;
+  coverageMode?: string;
+  answeredCount?: number;
+  questionCount?: number;
   result?: SiteReport | null;
+};
+type RunComparison = {
+  currentRevision: number;
+  previousRevision: number | null;
+  new: string[];
+  changed: string[];
+  disappeared: string[];
+  unchanged: number;
 };
 
 const TERMINAL = new Set<SiteAnalysisStatus>(["ready", "failed"]);
 const CREATE_KEY_SLOT = "aurora:site-analysis:create-key";
+const SELECTED_ANALYSIS_SLOT = "aurora:site-analysis:selected";
 const retryKeySlot = (analysisId: number) => `aurora:site-analysis:retry-key:${analysisId}`;
 
 function availableSessionStorage(): Storage | null {
@@ -113,14 +192,42 @@ function availableSessionStorage(): Storage | null {
 }
 const STAGE_LABELS: Record<string, string> = {
   queued: "В очереди",
-  robots: "Проверка robots.txt",
-  sitemap: "Чтение sitemap.xml",
+  robots: "Проверка правил доступа",
+  sitemap: "Чтение карты сайта",
   crawling: "Обход страниц",
-  analyzing: "SEO/GEO-аудит",
+  analyzing: "Поисковый аудит",
+  extracting: "Извлечение доказательств",
+  resolving_entities: "Связи и сущности",
+  researching_external: "Внешние источники",
+  answering: "OSINT-интервью",
+  validating: "Проверка ответов",
   planning: "Маркетинговый план",
+  saving: "Сохранение результата",
   ready: "Готово",
   failed: "Остановлено",
 };
+
+function confidenceLabel(value?: string) {
+  if (value === "high") return "высокая";
+  if (value === "medium") return "средняя";
+  if (value === "low") return "предварительная";
+  if (value === "none") return "нет подтверждения";
+  return "не указана";
+}
+
+function priorityLabel(value?: string) {
+  if (value === "P0") return "критичный приоритет";
+  if (value === "P1") return "высокий приоритет";
+  if (value === "P2") return "обычный приоритет";
+  if (value === "high") return "высокий приоритет";
+  if (value === "medium") return "средний приоритет";
+  if (value === "low") return "низкий приоритет";
+  return value || "";
+}
+
+function analysisVersionLabel(value?: string) {
+  return value?.match(/\d+(?:\.\d+)*/u)?.[0] || "текущая";
+}
 
 function normalizedInputUrl(value: string): string {
   const trimmed = value.trim();
@@ -181,7 +288,7 @@ function FindingList({ title, items, empty }: { title: string; items?: Finding[]
                 <Badge tone={item.severity === "high" ? "danger" : item.severity === "medium" ? "fire" : "neutral"}>
                   {item.severity === "high" ? "Высокий" : item.severity === "medium" ? "Средний" : "Низкий"}
                 </Badge>
-                {item.confidence && <span className="text-[11px] text-text-3">confidence: {item.confidence}</span>}
+                {item.confidence && <span className="text-[11px] text-text-3">Точность: {confidenceLabel(item.confidence)}</span>}
               </div>
               {item.description && <p className="mt-1.5 text-[13px] leading-relaxed text-text-2">{item.description}</p>}
               <EvidenceLinks items={item.evidence} />
@@ -193,7 +300,315 @@ function FindingList({ title, items, empty }: { title: string; items?: Finding[]
   );
 }
 
-function ReportView({ report }: { report: SiteReport }) {
+const ANSWER_STATUS_COPY: Record<OsintStatus, { label: string; tone: "success" | "fire" | "danger" | "neutral" }> = {
+  answered: { label: "Подтверждено", tone: "success" },
+  hypothesis: { label: "Гипотеза", tone: "fire" },
+  conflicting: { label: "Есть противоречия", tone: "danger" },
+  insufficient_data: { label: "Недостаточно данных", tone: "neutral" },
+};
+
+function formattedEvidenceValue(value: unknown) {
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return "Структурированное значение";
+  }
+}
+
+function evidenceDate(value?: string | null) {
+  if (!value) return "дата публикации не указана";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? "дата публикации не указана"
+    : new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "short", year: "numeric" }).format(date);
+}
+
+function InterviewEvidence({
+  ids,
+  evidenceById,
+  sourceById,
+}: {
+  ids: string[];
+  evidenceById: Map<string, SnapshotEvidence>;
+  sourceById: Map<string, SnapshotSource>;
+}) {
+  const items = ids.map((id) => evidenceById.get(id)).filter((item): item is SnapshotEvidence => Boolean(item));
+  if (!items.length) return null;
+  return (
+    <ul className="mt-3 space-y-2" aria-label="Доказательства ответа">
+      {items.map((item) => {
+        const source = sourceById.get(item.sourceId);
+        return (
+          <li key={item.id} className="rounded-sm border border-line bg-surface-inset p-3">
+            <p className="text-[12px] leading-relaxed text-text-2">{formattedEvidenceValue(item.value)}</p>
+            <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-text-3">
+              <span>{source?.title || "Публичный источник"}</span>
+              <span>{evidenceDate(item.publishedAt || source?.publishedAt)}</span>
+              <span>проверено {evidenceDate(item.checkedAt || source?.checkedAt)}</span>
+              {source?.url && (
+                <a
+                  href={source.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex min-h-6 items-center gap-1 font-semibold text-brand underline-offset-2 hover:underline"
+                >
+                  Открыть источник <ExternalLink className="h-3 w-3" aria-hidden />
+                  <span className="sr-only"> в новой вкладке</span>
+                </a>
+              )}
+            </div>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+type InterviewFilter = "gaps" | "low" | "conflicts" | "experts" | "partners" | "external";
+
+function OsintInterview({ report, snapshot }: { report: OsintReport; snapshot?: EvidenceSnapshot }) {
+  const [category, setCategory] = useState("all");
+  const [filters, setFilters] = useState<Set<InterviewFilter>>(() => new Set());
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  const questions = useMemo(() => new Map(SITE_INTERVIEW_QUESTIONS.map((question) => [question.id, question])), []);
+  const evidenceById = useMemo(() => new Map((snapshot?.evidence || []).map((item) => [item.id, item])), [snapshot?.evidence]);
+  const sourceById = useMemo(() => new Map((snapshot?.sources || []).map((item) => [item.id, item])), [snapshot?.sources]);
+  const visible = useMemo(() => report.answers.filter((answer) => {
+    const question = questions.get(answer.questionId);
+    if (category !== "all" && question?.category !== category) return false;
+    for (const filter of filters) {
+      if (filter === "gaps" && !answer.gaps.length && !answer.requiredIntegrations.length) return false;
+      if (filter === "low" && !["low", "none"].includes(answer.confidence)) return false;
+      if (filter === "conflicts" && answer.status !== "conflicting") return false;
+      if (filter === "experts" && !["experts", "expert_activity"].includes(question?.category || "")) return false;
+      if (filter === "partners" && question?.category !== "partners") return false;
+      if (filter === "external") {
+        const hasExternal = answer.evidenceIds.some((id) => {
+          const evidence = evidenceById.get(id);
+          const source = evidence ? sourceById.get(evidence.sourceId) : null;
+          return Boolean(source && !["owned_page", "owned_document", "structured_data"].includes(source.kind));
+        });
+        if (!hasExternal) return false;
+      }
+    }
+    return true;
+  }), [category, evidenceById, filters, questions, report.answers, sourceById]);
+
+  const toggleFilter = (value: InterviewFilter) => {
+    setFilters((current) => {
+      const next = new Set(current);
+      if (next.has(value)) next.delete(value);
+      else next.add(value);
+      return next;
+    });
+  };
+  const toggleAnswer = (questionId: string) => {
+    setExpanded((current) => {
+      const next = new Set(current);
+      if (next.has(questionId)) next.delete(questionId);
+      else next.add(questionId);
+      return next;
+    });
+  };
+
+  const stats = [
+    ["Подтверждено", report.summary.answered, "text-success-text"],
+    ["Гипотезы", report.summary.hypothesis, "text-fire-text"],
+    ["Противоречия", report.summary.conflicting, "text-danger-text"],
+    ["Недостаточно данных", report.summary.insufficientData, "text-text-2"],
+  ] as const;
+  const filterOptions: Array<[InterviewFilter, string]> = [
+    ["gaps", "Только пробелы"],
+    ["low", "Низкая уверенность"],
+    ["conflicts", "Противоречия"],
+    ["experts", "Эксперты"],
+    ["partners", "Партнёры"],
+    ["external", "Внешние источники"],
+  ];
+
+  return (
+    <section aria-labelledby="osint-interview-title" className="space-y-5">
+      <div className="rounded-sm border border-brand/20 bg-info-soft p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="text-[11px] font-bold uppercase tracking-wide text-brand">Доказательное OSINT-интервью</p>
+            <h3 id="osint-interview-title" className="mt-1 text-[19px] font-black text-text">Ответы по всей модели организации</h3>
+            <p className="mt-1 max-w-3xl text-[13px] leading-relaxed text-text-2">
+              Каждый вопрос имеет terminal-статус. Отсутствие сведений показано как пробел, а не как отрицательный факт.
+            </p>
+          </div>
+          <Badge tone="brand">{report.summary.total} вопросов</Badge>
+        </div>
+        <dl className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+          {stats.map(([label, value, color]) => (
+            <div key={label} className="rounded-sm bg-surface/80 p-3">
+              <dt className="text-[11px] text-text-3">{label}</dt>
+              <dd className={cn("nums mt-1 text-xl font-black", color)}>{value}</dd>
+            </div>
+          ))}
+        </dl>
+        <p className="mt-3 text-[11px] text-text-3">
+          Покрытие: {report.coverage?.mode === "external" ? "сайт и разрешённые внешние источники" : "только подтверждённый домен"}
+          {report.snapshotHash ? ` · ${report.snapshotHash.slice(0, 20)}…` : ""}
+        </p>
+      </div>
+
+      <div className="rounded-sm border border-line bg-surface-2 p-4">
+        <label htmlFor="interview-category" className="block text-[12px] font-bold text-text">Раздел интервью</label>
+        <select
+          id="interview-category"
+          value={category}
+          onChange={(event) => setCategory(event.target.value)}
+          className="mt-1.5 min-h-11 w-full rounded-sm border border-line bg-surface px-3 text-[13px] text-text sm:max-w-xl"
+        >
+          <option value="all">Все разделы</option>
+          {SITE_INTERVIEW_CATEGORIES.map((item) => <option key={item.id} value={item.id}>{item.order}. {item.title}</option>)}
+        </select>
+        <div className="mt-3 flex flex-wrap gap-2" aria-label="Фильтры ответов">
+          {filterOptions.map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              aria-pressed={filters.has(value)}
+              onClick={() => toggleFilter(value)}
+              className={cn(
+                "min-h-10 rounded-full border px-3 py-2 text-[12px] font-semibold",
+                "motion-safe:transition-colors",
+                filters.has(value) ? "border-brand bg-info-soft text-brand" : "border-line bg-surface text-text-2 hover:border-brand/35",
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <p role="status" className="mt-3 text-[12px] text-text-3">Показано ответов: {visible.length} из {report.answers.length}</p>
+      </div>
+
+      {visible.length ? (
+        <div className="space-y-3">
+          {visible.map((answer) => {
+            const question = questions.get(answer.questionId);
+            const isExpanded = expanded.has(answer.questionId);
+            const detailsId = `osint-answer-${answer.questionId.replace(/[^a-z0-9_-]/giu, "-")}`;
+            const status = ANSWER_STATUS_COPY[answer.status];
+            return (
+              <article key={answer.questionId} className="rounded-sm border border-line bg-surface-2 p-4 sm:p-5">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[11px] font-bold uppercase tracking-wide text-text-3">{question?.title || answer.questionId}</p>
+                    <h4 className="mt-1 text-[15px] font-extrabold leading-snug text-text">{question?.question || answer.questionId}</h4>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge tone={status.tone}>{status.label}</Badge>
+                    <span className="text-[11px] text-text-3">Точность: {confidenceLabel(answer.confidence)}</span>
+                  </div>
+                </div>
+                <p className="mt-3 text-[14px] font-semibold leading-relaxed text-text">{answer.shortAnswer}</p>
+                <p className={cn("mt-2 text-[13px] leading-relaxed text-text-2", !isExpanded && "line-clamp-3")}>{answer.explanation}</p>
+                <button
+                  type="button"
+                  aria-expanded={isExpanded}
+                  aria-controls={detailsId}
+                  onClick={() => toggleAnswer(answer.questionId)}
+                  className="mt-3 inline-flex min-h-10 items-center gap-1.5 rounded-sm px-2 text-[12px] font-bold text-brand hover:bg-info-soft"
+                >
+                  <ChevronDown className={cn("h-4 w-4 motion-safe:transition-transform", isExpanded && "rotate-180")} aria-hidden />
+                  {isExpanded ? "Свернуть доказательства" : "Развернуть доказательства"}
+                </button>
+                {isExpanded && (
+                  <div id={detailsId} className="mt-3 space-y-4 border-t border-line pt-4">
+                    {answer.facts.length > 0 && (
+                      <section>
+                        <h5 className="text-[12px] font-extrabold text-text">Подтверждённые факты</h5>
+                        <ul className="mt-2 space-y-3">
+                          {answer.facts.map((fact, index) => (
+                            <li key={`${answer.questionId}-fact-${index}`} className="text-[13px] leading-relaxed text-text-2">
+                              {fact.statement}
+                              <InterviewEvidence ids={fact.evidenceIds} evidenceById={evidenceById} sourceById={sourceById} />
+                            </li>
+                          ))}
+                        </ul>
+                      </section>
+                    )}
+                    {answer.evidenceIds.length > 0 && answer.facts.length === 0 && (
+                      <InterviewEvidence ids={answer.evidenceIds} evidenceById={evidenceById} sourceById={sourceById} />
+                    )}
+                    {answer.contradictions.length > 0 && (
+                      <section className="rounded-sm border border-danger/25 bg-danger-soft p-3">
+                        <h5 className="text-[12px] font-extrabold text-danger-text">Противоречия</h5>
+                        {answer.contradictions.map((item, index) => (
+                          <div key={`${answer.questionId}-conflict-${index}`} className="mt-2 text-[13px] text-text-2">
+                            <p>{item.description}</p>
+                            <InterviewEvidence ids={item.evidenceIds} evidenceById={evidenceById} sourceById={sourceById} />
+                          </div>
+                        ))}
+                      </section>
+                    )}
+                    {(answer.gaps.length > 0 || answer.requiredIntegrations.length > 0) && (
+                      <section className="rounded-sm bg-surface-inset p-3">
+                        <h5 className="text-[12px] font-extrabold text-text">Чего не хватает</h5>
+                        <ul className="mt-2 list-disc space-y-1 pl-5 text-[13px] text-text-2">
+                          {answer.gaps.map((gap) => <li key={gap}>{gap}</li>)}
+                          {answer.requiredIntegrations.map((integration) => <li key={integration}>Интеграция: {integration}</li>)}
+                        </ul>
+                      </section>
+                    )}
+                    {answer.recommendationHooks.length > 0 && (
+                      <section>
+                        <h5 className="text-[12px] font-extrabold text-text">Влияние на продвижение</h5>
+                        <ul className="mt-2 space-y-2 text-[13px] text-text-2">
+                          {answer.recommendationHooks.map((hook, index) => <li key={`${hook.kind}-${index}`}><b className="text-text">{hook.kind}:</b> {hook.rationale}</li>)}
+                        </ul>
+                      </section>
+                    )}
+                  </div>
+                )}
+              </article>
+            );
+          })}
+        </div>
+      ) : (
+        <p className="rounded-sm border border-dashed border-line p-6 text-center text-[13px] text-text-3">По выбранным фильтрам ответов нет.</p>
+      )}
+
+      <section aria-labelledby="evidence-plan-title" className="rounded-sm border border-line bg-surface-2 p-4 sm:p-5">
+        <div className="flex flex-wrap items-end justify-between gap-2">
+          <div>
+            <h4 id="evidence-plan-title" className="text-[16px] font-extrabold text-text">План, выведенный из интервью</h4>
+            <p className="mt-1 text-[12px] text-text-3">В план попадают только hooks из валидных ответов с существующими доказательствами.</p>
+          </div>
+          <Badge tone="brand">{report.marketingPlan?.publicationBacklog?.length || 0} действий</Badge>
+        </div>
+        {report.marketingPlan?.publicationBacklog?.length ? (
+          <ol className="mt-3 grid gap-3 lg:grid-cols-2">
+            {report.marketingPlan.publicationBacklog.map((item) => (
+              <li key={item.key} className="rounded-sm bg-surface-inset p-3">
+                <div className="flex items-center gap-2">
+                  <Badge tone={item.priority === "P0" ? "success" : item.priority === "P1" ? "brand" : "neutral"}>{item.priority}</Badge>
+                  <span className="text-[11px] text-text-3">Точность: {confidenceLabel(item.confidence)}</span>
+                </div>
+                <p className="mt-2 text-[12px] font-bold text-text">{item.kind}</p>
+                <p className="mt-1 text-[13px] leading-relaxed text-text-2">{item.rationale}</p>
+                <InterviewEvidence ids={item.evidenceIds} evidenceById={evidenceById} sourceById={sourceById} />
+              </li>
+            ))}
+          </ol>
+        ) : (
+          <p className="mt-3 rounded-sm bg-surface-inset p-3 text-[13px] text-text-3">Подтверждённых действий пока нет: сначала нужно закрыть показанные пробелы в данных.</p>
+        )}
+        <h5 className="mt-5 text-[12px] font-extrabold text-text">Показатели, требующие интеграций</h5>
+        <ul className="mt-2 grid gap-2 text-[12px] text-text-2 sm:grid-cols-2">
+          {(report.marketingPlan?.measurement || []).map((item) => (
+            <li key={item.kpi} className="rounded-sm border border-line p-3"><b className="text-text">{item.kpi}:</b> {item.requiredIntegration}</li>
+          ))}
+        </ul>
+      </section>
+    </section>
+  );
+}
+
+function ReportView({ report, analysisId }: { report: SiteReport; analysisId: number }) {
   const tasks = [
     ...(report.marketingPlan?.seoTasks || []),
     ...(report.marketingPlan?.geoTasks || []),
@@ -201,9 +616,10 @@ function ReportView({ report }: { report: SiteReport }) {
   ];
   return (
     <div className="space-y-6">
+      {report.osint && <OsintInterview report={report.osint} snapshot={report.snapshot} />}
       <div className="grid gap-3 sm:grid-cols-3">
         <div className="rounded-sm bg-surface-inset p-4">
-          <p className="text-[12px] text-text-3">Страниц в snapshot</p>
+          <p className="text-[12px] text-text-3">Страниц в срезе</p>
           <p className="nums mt-1 text-2xl font-black text-text">{report.inventory?.length || 0}</p>
         </div>
         <div className="rounded-sm bg-surface-inset p-4">
@@ -212,13 +628,13 @@ function ReportView({ report }: { report: SiteReport }) {
         </div>
         <div className="rounded-sm bg-surface-inset p-4">
           <p className="text-[12px] text-text-3">Версия анализа</p>
-          <p className="mt-1 truncate text-[13px] font-bold text-text">{report.policyVersion || "—"}</p>
+          <p className="mt-1 truncate text-[13px] font-bold text-text">{analysisVersionLabel(report.policyVersion)}</p>
         </div>
       </div>
 
       <div className="grid gap-6 xl:grid-cols-2">
-        <FindingList title="Технический SEO-аудит" items={report.seoAudit} empty="Критичных SEO-сигналов в проверенном snapshot не найдено." />
-        <FindingList title="GEO-аудит для AI-поиска" items={report.geoAudit} empty="Критичных GEO-сигналов в проверенном snapshot не найдено." />
+        <FindingList title="Технический поисковый аудит" items={report.seoAudit} empty="Критичных поисковых проблем в проверенном срезе не найдено." />
+        <FindingList title="Аудит для поиска с ИИ" items={report.geoAudit} empty="Критичных проблем для поиска с ИИ в проверенном срезе не найдено." />
       </div>
 
       <section>
@@ -244,17 +660,17 @@ function ReportView({ report }: { report: SiteReport }) {
             <article key={`${goal.title}-${index}`} className="rounded-sm border border-line bg-surface-2 p-4">
               <p className="text-[11px] font-bold uppercase tracking-wide text-brand">Цель</p>
               <p className="mt-1 font-bold text-text">{goal.title}</p>
-              {goal.kpi && <p className="mt-1 text-[13px] text-text-2">KPI: {goal.kpi}</p>}
+              {goal.kpi && <p className="mt-1 text-[13px] text-text-2">Показатель: {goal.kpi}</p>}
               {goal.target && <p className="mt-1 text-[13px] text-text-2">Ориентир: {goal.target}</p>}
-              <p className="mt-2 text-[11px] text-text-3">confidence: {goal.confidence || "medium"}</p>
+              <p className="mt-2 text-[11px] text-text-3">Точность: {confidenceLabel(goal.confidence)}</p>
               <EvidenceLinks items={goal.sources} />
             </article>
           ))}
           {report.marketingPlan?.icp && (
             <article className="rounded-sm border border-line bg-surface-2 p-4">
-              <p className="text-[11px] font-bold uppercase tracking-wide text-brand">ICP-гипотеза</p>
+              <p className="text-[11px] font-bold uppercase tracking-wide text-brand">Гипотеза о целевой аудитории</p>
               <p className="mt-1 text-[13px] leading-relaxed text-text-2">{report.marketingPlan.icp.description}</p>
-              <p className="mt-2 text-[11px] text-text-3">confidence: {report.marketingPlan.icp.confidence || "low"}</p>
+              <p className="mt-2 text-[11px] text-text-3">Точность: {confidenceLabel(report.marketingPlan.icp.confidence)}</p>
               <EvidenceLinks items={report.marketingPlan.icp.sources} />
             </article>
           )}
@@ -262,7 +678,7 @@ function ReportView({ report }: { report: SiteReport }) {
             <article className="rounded-sm border border-line bg-surface-2 p-4">
               <p className="text-[11px] font-bold uppercase tracking-wide text-brand">Позиционирование</p>
               <p className="mt-1 text-[13px] leading-relaxed text-text-2">{report.marketingPlan.positioning.statement}</p>
-              <p className="mt-2 text-[11px] text-text-3">confidence: {report.marketingPlan.positioning.confidence || "low"}</p>
+              <p className="mt-2 text-[11px] text-text-3">Точность: {confidenceLabel(report.marketingPlan.positioning.confidence)}</p>
               <EvidenceLinks items={report.marketingPlan.positioning.sources} />
             </article>
           )}
@@ -276,7 +692,7 @@ function ReportView({ report }: { report: SiteReport }) {
             <article key={`${step.stage}-${index}`} className="rounded-sm border border-line bg-surface-2 p-4">
               <p className="font-bold text-text">{step.stage}</p>
               <p className="mt-1 text-[13px] leading-relaxed text-text-2">{step.action}</p>
-              <p className="mt-2 text-[11px] text-text-3">confidence: {step.confidence || "medium"}</p>
+              <p className="mt-2 text-[11px] text-text-3">Точность: {confidenceLabel(step.confidence)}</p>
               <EvidenceLinks items={step.sources} />
             </article>
           ))}
@@ -284,7 +700,7 @@ function ReportView({ report }: { report: SiteReport }) {
             <article key={`${channel.channel}-${index}`} className="rounded-sm border border-line bg-surface-2 p-4">
               <p className="font-bold text-text">{channel.channel}</p>
               <p className="mt-1 text-[13px] leading-relaxed text-text-2">{channel.reason}</p>
-              <p className="mt-2 text-[11px] text-text-3">confidence: {channel.confidence || "medium"}</p>
+              <p className="mt-2 text-[11px] text-text-3">Точность: {confidenceLabel(channel.confidence)}</p>
               <EvidenceLinks items={channel.sources} />
             </article>
           ))}
@@ -294,7 +710,7 @@ function ReportView({ report }: { report: SiteReport }) {
       <section>
         <div className="flex flex-wrap items-end justify-between gap-2">
           <div>
-            <h3 className="text-[16px] font-extrabold text-text">Приоритетный backlog</h3>
+            <h3 className="text-[16px] font-extrabold text-text">Приоритетные задачи</h3>
             <p className="mt-1 text-[13px] text-text-3">Каждый пункт содержит источник и уровень уверенности.</p>
           </div>
           <Badge tone="brand">{tasks.length} задач</Badge>
@@ -308,7 +724,7 @@ function ReportView({ report }: { report: SiteReport }) {
                   <p className="font-bold text-text">{task.title || task.action}</p>
                   {task.rationale && <p className="mt-1 text-[13px] leading-relaxed text-text-2">{task.rationale}</p>}
                   <p className="mt-2 text-[11px] text-text-3">
-                    {task.priority ? `${task.priority} · ` : ""}{task.dueDays ? `до ${task.dueDays} дней · ` : ""}confidence: {task.confidence || "medium"}
+                    {task.priority ? `${priorityLabel(task.priority)} · ` : ""}{task.dueDays ? `до ${task.dueDays} дней · ` : ""}точность: {confidenceLabel(task.confidence)}
                   </p>
                   <EvidenceLinks items={task.sources} />
                 </div>
@@ -319,7 +735,7 @@ function ReportView({ report }: { report: SiteReport }) {
       </section>
 
       <section className="rounded-sm border border-line bg-surface-inset p-4">
-        <h3 className="text-[14px] font-extrabold text-text">Какие данные нужны для реальных KPI</h3>
+        <h3 className="text-[14px] font-extrabold text-text">Какие данные нужны для реальных показателей</h3>
         <ul className="mt-2 space-y-2 text-[13px] text-text-2">
           {(report.marketingPlan?.measurement || []).map((row) => (
             <li key={row.kpi}><b className="text-text">{row.kpi}:</b> {row.sourceNeeded}</li>
@@ -329,12 +745,34 @@ function ReportView({ report }: { report: SiteReport }) {
 
       <section className="rounded-sm border border-fire/25 bg-fire-soft p-4">
         <h3 className="flex items-center gap-2 text-[14px] font-extrabold text-text">
-          <AlertTriangle className="h-4 w-4" aria-hidden /> Ограничения публичного crawl
+          <AlertTriangle className="h-4 w-4" aria-hidden /> Ограничения анализа открытых страниц
         </h3>
         <ul className="mt-2 list-disc space-y-1 pl-5 text-[13px] leading-relaxed text-text-2">
           {(report.limitations || []).map((item) => <li key={item}>{item}</li>)}
         </ul>
       </section>
+
+      {report.osint && (
+        <section className="rounded-sm border border-line bg-surface-2 p-4">
+          <h3 className="text-[14px] font-extrabold text-text">Экспорт неизменяемого среза</h3>
+          <p className="mt-1 text-[12px] text-text-3">Все форматы строятся из одного сохранённого snapshot с версиями, ответами, доказательствами и ссылками.</p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {[
+              ["csv", "CSV"], ["xlsx", "XLSX"], ["json", "JSON"],
+              ["pdf", "PDF"], ["html", "HTML"], ["markdown", "Markdown"],
+            ].map(([format, label]) => (
+              <a
+                key={format}
+                href={`/api/site-analysis/${analysisId}/export?format=${format}`}
+                download
+                className="inline-flex min-h-10 items-center rounded-sm border border-line px-3 py-2 text-[12px] font-bold text-brand hover:border-brand/35 hover:bg-info-soft"
+              >
+                {label}
+              </a>
+            ))}
+          </div>
+        </section>
+      )}
     </div>
   );
 }
@@ -349,6 +787,7 @@ export default function SiteAnalysisPage() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [pageError, setPageError] = useState<{ message: string; requestId?: string } | null>(null);
+  const [comparison, setComparison] = useState<RunComparison | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const requestSequence = useRef(0);
   const createKeyRef = useRef<StableSiteAnalysisKey | null>(null);
@@ -374,7 +813,9 @@ export default function SiteAnalysisPage() {
       const body = await response.json() as { analysis?: Analysis; requestId?: string; error?: string };
       if (!response.ok || !body.analysis) throw Object.assign(new Error(body.error || "poll_failed"), { requestId: body.requestId });
       if (sequence !== requestSequence.current) return null;
+      setComparison(null);
       setCurrent(body.analysis);
+      availableSessionStorage()?.setItem(SELECTED_ANALYSIS_SLOT, String(body.analysis.id));
       setAnalyses((items) => [body.analysis!, ...items.filter((item) => item.id !== body.analysis!.id)]);
       if (TERMINAL.has(body.analysis.status)) {
         const storage = availableSessionStorage();
@@ -397,6 +838,26 @@ export default function SiteAnalysisPage() {
   useEffect(() => { void loadList(); }, [loadList]);
 
   useEffect(() => {
+    if (loading || current || !analyses.length) return;
+    const selected = Number(availableSessionStorage()?.getItem(SELECTED_ANALYSIS_SLOT));
+    const initial = analyses.find((analysis) => analysis.id === selected) || analyses[0];
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- loadOne updates only after the detail request settles
+    void loadOne(initial.id);
+  }, [analyses, current, loadOne, loading]);
+
+  useEffect(() => {
+    if (!current || current.status !== "ready") return;
+    let cancelled = false;
+    void fetch(`/api/site-analysis/${current.id}/compare`, { cache: "no-store" })
+      .then(async (response) => {
+        const body = await response.json() as { comparison?: RunComparison };
+        if (!cancelled && response.ok) setComparison(body.comparison || null);
+      })
+      .catch(() => { if (!cancelled) setComparison(null); });
+    return () => { cancelled = true; };
+  }, [current]);
+
+  useEffect(() => {
     if (!current || TERMINAL.has(current.status)) return;
     const timer = window.setInterval(() => void loadOne(current.id), 2_000);
     return () => window.clearInterval(timer);
@@ -413,6 +874,9 @@ export default function SiteAnalysisPage() {
     () => elapsedLabel(current?.createdAt || null, current?.completedAt || null, now),
     [current?.createdAt, current?.completedAt, now],
   );
+  const liveStatus = current
+    ? `${STAGE_LABELS[current.stage] || current.stage}. ${current.progress} процентов. ${current.detail || ""}`
+    : loading ? "Загружаем историю анализов" : "";
 
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -514,8 +978,9 @@ export default function SiteAnalysisPage() {
   return (
     <AppShell
       title="Анализ сайта"
-      subtitle="Безопасный публичный crawl, технический SEO/GEO-аудит и доказательный маркетинговый план."
+      subtitle="Безопасный анализ открытых страниц, технический поисковый аудит и доказательный маркетинговый план."
     >
+      <div role="status" className="sr-only">{liveStatus}</div>
       <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_320px]">
         <div className="space-y-6">
           <Card className="overflow-hidden">
@@ -527,14 +992,14 @@ export default function SiteAnalysisPage() {
                 <div>
                   <h2 className="text-[18px] font-black text-text">Новый анализ</h2>
                   <p className="mt-1 text-[13px] leading-relaxed text-text-2">
-                    Проверяем только публичные страницы подтверждённого домена, соблюдаем robots.txt и не входим в закрытые кабинеты.
+                    Проверяем только открытые страницы подтверждённого домена, соблюдаем правила доступа сайта и не входим в закрытые кабинеты.
                   </p>
                 </div>
               </div>
             </div>
             <form onSubmit={submit} className="space-y-4 px-5 py-5 sm:px-7 sm:py-6">
               <label className="block">
-                <span className="mb-1.5 block text-[13px] font-bold text-text">URL сайта</span>
+                <span className="mb-1.5 block text-[13px] font-bold text-text">Адрес сайта</span>
                 <Input
                   type="url"
                   inputMode="url"
@@ -559,20 +1024,21 @@ export default function SiteAnalysisPage() {
                   onChange={(event) => { setDomain(event.target.value); setDomainEdited(true); }}
                   required
                 />
-                <span className="mt-1.5 block text-[12px] text-text-3">Должен точно совпадать с доменом URL.</span>
+                <span className="mt-1.5 block text-[12px] text-text-3">Должен точно совпадать с доменом указанного адреса.</span>
               </label>
               <label className="flex cursor-pointer items-start gap-3 rounded-sm border border-line bg-surface-2 p-4">
                 <input
                   type="checkbox"
                   checked={consent}
                   onChange={(event) => setConsent(event.target.checked)}
+                  required
                   className="mt-0.5 h-5 w-5 shrink-0 accent-[var(--brand)]"
                 />
                 <span className="text-[13px] leading-relaxed text-text-2">
                   Я подтверждаю право анализировать публичные страницы этого домена. Аврора не будет обходить авторизацию, подписку или ограничения сайта.
                 </span>
               </label>
-              <Button type="submit" loading={submitting} disabled={!canSubmit}>
+              <Button type="submit" loading={submitting} disabled={submitting}>
                 <FileSearch className="h-4 w-4" aria-hidden />
                 Запустить фоновый анализ
               </Button>
@@ -582,23 +1048,23 @@ export default function SiteAnalysisPage() {
           {pageError && (
             <div role="alert" className="rounded-sm border border-danger/30 bg-danger-soft p-4 text-[13px] text-text">
               <p className="font-bold">{pageError.message}</p>
-              {pageError.requestId && <p className="nums mt-1 text-[12px] text-text-3">Request ID: {pageError.requestId}</p>}
+              {pageError.requestId && <p className="nums mt-1 text-[12px] text-text-3">Номер запроса: {pageError.requestId}</p>}
             </div>
           )}
 
           {current && (
-            <Card className="overflow-hidden">
+            <Card className="overflow-hidden" aria-busy={!TERMINAL.has(current.status)}>
               <div className="border-b border-line px-5 py-5 sm:px-7">
                 <div className="flex flex-wrap items-start justify-between gap-4">
                   <div className="min-w-0">
                     <p className="truncate text-[15px] font-extrabold text-text">{current.targetUrl}</p>
-                    <p className="nums mt-1 text-[11px] text-text-3">Request ID: {current.requestId}</p>
+                    <p className="nums mt-1 text-[11px] text-text-3">Номер запроса: {current.requestId}</p>
                   </div>
                   <Badge tone={current.status === "ready" ? "success" : current.status === "failed" ? "danger" : "brand"}>
                     {STAGE_LABELS[current.stage] || current.stage}
                   </Badge>
                 </div>
-                <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 text-[12px] text-text-3" aria-live="polite" aria-atomic="true">
+                <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 text-[12px] text-text-3">
                   <span className="flex items-center gap-1.5"><Clock3 className="h-3.5 w-3.5" aria-hidden /> {elapsed}</span>
                   <span>{current.progress}%</span>
                   <span>{current.detail || STAGE_LABELS[current.stage]}</span>
@@ -628,7 +1094,20 @@ export default function SiteAnalysisPage() {
               </div>
               <div className="px-5 py-6 sm:px-7">
                 {current.status === "ready" && current.result ? (
-                  <ReportView report={current.result} />
+                  <div className="space-y-5">
+                    {comparison?.previousRevision && (
+                      <section className="rounded-sm border border-line bg-surface-inset p-4" aria-labelledby="run-comparison-title">
+                        <h3 id="run-comparison-title" className="text-[14px] font-extrabold text-text">Изменения относительно ревизии {comparison.previousRevision}</h3>
+                        <dl className="mt-3 grid grid-cols-2 gap-2 text-[12px] sm:grid-cols-4">
+                          <div><dt className="text-text-3">Новые</dt><dd className="nums mt-0.5 font-black text-text">{comparison.new.length}</dd></div>
+                          <div><dt className="text-text-3">Изменились</dt><dd className="nums mt-0.5 font-black text-text">{comparison.changed.length}</dd></div>
+                          <div><dt className="text-text-3">Исчезли</dt><dd className="nums mt-0.5 font-black text-text">{comparison.disappeared.length}</dd></div>
+                          <div><dt className="text-text-3">Без изменений</dt><dd className="nums mt-0.5 font-black text-text">{comparison.unchanged}</dd></div>
+                        </dl>
+                      </section>
+                    )}
+                    <ReportView report={current.result} analysisId={current.id} />
+                  </div>
                 ) : current.status !== "failed" ? (
                   <div className="grid gap-3 sm:grid-cols-2" aria-hidden>
                     {[0, 1, 2, 3].map((item) => <div key={item} className="skeleton h-28 rounded-sm motion-reduce:animate-none" />)}
@@ -645,9 +1124,9 @@ export default function SiteAnalysisPage() {
               <ShieldCheck className="h-5 w-5 text-success-text" aria-hidden /> Границы анализа
             </h2>
             <ul className="mt-3 space-y-2 text-[12px] leading-relaxed text-text-2">
-              <li>До 20 HTML-страниц и 6 МБ на один запуск.</li>
-              <li>Только стандартные HTTP/HTTPS-порты и публичные IP.</li>
-              <li>DNS закрепляется на соединение; каждый redirect проверяется заново.</li>
+              <li>До 20 страниц сайта и 6 МБ на один запуск.</li>
+              <li>Только стандартные веб-порты и публичные сетевые адреса.</li>
+              <li>Адрес домена закрепляется на соединение; каждое перенаправление проверяется заново.</li>
               <li>Трафик и конверсии появятся только после отдельной интеграции аналитики.</li>
             </ul>
           </Card>
@@ -667,6 +1146,7 @@ export default function SiteAnalysisPage() {
                     <button
                       type="button"
                       onClick={() => void loadOne(analysis.id)}
+                      aria-current={current?.id === analysis.id ? "true" : undefined}
                       className="flex min-h-16 w-full items-center gap-3 px-4 py-3 text-left hover:bg-surface-2"
                     >
                       {analysis.status === "ready" ? <CheckCircle2 className="h-4 w-4 shrink-0 text-success-text" aria-hidden /> : analysis.status === "failed" ? <AlertTriangle className="h-4 w-4 shrink-0 text-danger-text" aria-hidden /> : <Sparkles className="h-4 w-4 shrink-0 text-brand" aria-hidden />}

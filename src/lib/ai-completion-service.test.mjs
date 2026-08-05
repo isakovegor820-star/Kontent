@@ -35,6 +35,33 @@ describe("shared direct/background AI completion service", () => {
     );
   });
 
+  it("passes a stable provider idempotency key and correlation ID", async () => {
+    const env = { NAVYAI_API_KEY: "secret", NAVYAI_API_URL: "https://navy.example/v1" };
+    const fetchImpl = vi.fn(async () => Response.json({
+      choices: [{ message: { content: "DONE" }, finish_reason: "stop" }],
+    }));
+    await completeAiText({
+      ...request,
+      providerRequestKey: "a".repeat(64),
+      providerRequestId: "req-site-analysis-41",
+    }, { env, fetchImpl, allowFallback: false });
+    const headers = new Headers(fetchImpl.mock.calls[0][1].headers);
+    expect(headers.get("idempotency-key")).toBe("a".repeat(64));
+    expect(headers.get("x-request-id")).toBe("req-site-analysis-41");
+  });
+
+  it("can disable provider fallback for one evidence-sensitive request", async () => {
+    const env = {
+      NAVYAI_API_KEY: "secret",
+      NAVYAI_API_URL: "https://navy.example/v1",
+      AI_FALLBACK_ENGINES: "navy-deepseek-flash",
+    };
+    const fetchImpl = vi.fn(async () => new Response("unavailable", { status: 503 }));
+    await expect(completeAiText(request, { env, fetchImpl, allowFallback: false }))
+      .rejects.toMatchObject({ code: "provider_error", status: 503 });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it("uses the same explicit fallback policy and does not splice a partial response", async () => {
     const env = {
       NAVYAI_API_KEY: "secret",

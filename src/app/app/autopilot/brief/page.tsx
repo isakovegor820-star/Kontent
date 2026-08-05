@@ -496,12 +496,12 @@ function BriefInner() {
                     onChange={(e) => setQuality("ctaStyle", e.target.value as PostQuality["ctaStyle"])}
                     className={selectClass}
                   >
-                    <option value="none">Без CTA</option>
+                    <option value="none">Без призыва</option>
                     <option value="soft">Мягкий</option>
                     <option value="direct">Прямой</option>
                   </select>
                 </Field>
-                <Field label="CTA — не чаще каждого N-го поста" htmlFor="quality-cta-every">
+                <Field label="Призыв — не чаще каждого N-го поста" htmlFor="quality-cta-every">
                   <Input
                     id="quality-cta-every"
                     type="number"

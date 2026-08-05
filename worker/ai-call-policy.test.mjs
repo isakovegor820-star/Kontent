@@ -12,6 +12,7 @@ describe("worker AI call policy", () => {
       "competitor-idea",
       "media-generation",
       "rss-summary",
+      "site-analysis-interview",
     ]);
     expect(assertWorkerAiCallPolicy("rss-summary", 91)).toMatchObject({
       billing: "user",

@@ -32,9 +32,28 @@ export interface Post {
   scheduledAt: string | null;
   status: PostStatus;
   /** Источник: откуда пост появился — важно для «связки разведка → контент» */
-  origin: "manual" | "ai" | "trend" | "competitor" | "autopilot";
+  origin: "manual" | "ai" | "trend" | "idea" | "competitor" | "autopilot";
   /** Если пост родился из карточки тренда или залёта конкурента */
-  sourceRef?: { kind: "trend" | "competitor"; id: string; label: string };
+  sourceRef?: {
+    kind: "trend" | "idea" | "reference" | "competitor";
+    id: string;
+    label: string;
+    /** Semantic intent is not factual evidence. */
+    topic?: string;
+    readerProblem?: string;
+    semanticGoal?: string;
+    /** Optional observed mechanics, especially for content_ideas. */
+    hook?: string;
+    structure?: string;
+    whyItWorked?: string;
+    /** Where an idea/reference came from; provenance does not authorize its claims. */
+    provenance?: {
+      kind: "content_idea" | "competitor_post" | "trend" | "saved_reference";
+      id?: string;
+      label?: string;
+      url?: string;
+    };
+  };
   /**
    * В какой канал уходит пост. Нужен при нескольких подключённых каналах: без него
    * календарь показывает вперемешку посты разных каналов и выглядит как каша.

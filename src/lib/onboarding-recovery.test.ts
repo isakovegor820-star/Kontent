@@ -14,7 +14,17 @@ describe("account-scoped onboarding recovery", () => {
 
   it("round-trips the locked channel together with quiz and step", () => {
     const value = {
-      quiz: { niche: "Право", goal: "Лиды", audience: "Предприниматели", rubrics: ["Кейс"] },
+      quiz: {
+        niche: "Право",
+        goal: "Лиды",
+        audience: "Предприниматели",
+        rubrics: ["Кейс"],
+        formats: ["Текст"],
+        authorRole: "Юрист-практик",
+        cta: "Записаться на консультацию",
+        taboo: "Не обещать результат",
+        tone: "Экспертный и спокойный",
+      },
       step: 3,
       channelId: 42,
     };
@@ -29,7 +39,17 @@ describe("account-scoped onboarding recovery", () => {
       step: 99,
       channelId: "42",
     }))).toEqual({
-      quiz: { niche: "A", goal: "", audience: "B", rubrics: [] },
+      quiz: {
+        niche: "A",
+        goal: "",
+        audience: "B",
+        rubrics: [],
+        formats: [],
+        authorRole: "",
+        cta: "",
+        taboo: "",
+        tone: "",
+      },
       step: 5,
       channelId: null,
     });

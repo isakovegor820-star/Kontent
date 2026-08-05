@@ -21,6 +21,8 @@ describe("profile input", () => {
         rubrics: ["Практика", "Практика"],
         formats: ["Видео", "Текст"],
         authorRole: "Партнёр юридической фирмы",
+        cta: "Записаться на консультацию",
+        taboo: "Не обещать результат",
       },
     });
 
@@ -34,6 +36,8 @@ describe("profile input", () => {
           rubrics: ["Практика"],
           formats: ["Видео", "Текст"],
           authorRole: "Партнёр юридической фирмы",
+          cta: "Записаться на консультацию",
+          taboo: "Не обещать результат",
         }),
       }),
     });
@@ -41,6 +45,8 @@ describe("profile input", () => {
 
   it("rejects non-HTTPS avatars, incomplete briefs and mismatched idempotency keys", () => {
     expect(normalizeAvatar("http://example.test/a.png")).toBeNull();
+    expect(normalizeAvatar("/api/media/assets/42")).toBe("/api/media/assets/42");
+    expect(normalizeAvatar("/api/media/assets/0")).toBeNull();
     expect(parseProfileUpdate({ requestKey: "profile:a", channelId: 1, name: "А", brief: {} })).toMatchObject({ ok: false });
     expect(parseProfileUpdate({
       requestKey: "profile:one",
@@ -55,7 +61,16 @@ describe("profile input", () => {
       channelId: 1,
       name: "Анна",
       avatar: "",
-      brief: { niche: "Право", audience: "Бизнес", goal: "", rubrics: [], formats: [], authorRole: "" },
+      brief: {
+        niche: "Право",
+        audience: "Бизнес",
+        goal: "",
+        rubrics: [],
+        formats: [],
+        authorRole: "",
+        cta: "",
+        taboo: "",
+      },
     };
     expect(profileUpdateFingerprint(input)).toBe(profileUpdateFingerprint(structuredClone(input)));
     expect(profileReauthMethod({ password_hash: "hash", tg_id: 1, vk_id: null })).toBe("password");

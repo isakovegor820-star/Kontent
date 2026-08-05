@@ -101,26 +101,40 @@ const DEFAULT_FILTERS: Filters = {
 
 const FORMAT_LABELS: Record<LibraryFormat, string> = { text: "Текст", photo: "Фото", video: "Видео" };
 const SORT_LABELS: Record<LibrarySort, string> = {
-  score: "Score",
+  score: "Оценка",
   freshness: "Свежесть",
   views: "Просмотры",
   reactions: "Реакции",
-  lift: "Lift",
-  engagement_rate: "Engagement rate",
-  velocity: "Velocity",
+  lift: "Прирост",
+  engagement_rate: "Доля вовлечения",
+  velocity: "Скорость",
 };
 const EXPORT_LABELS: Record<ExportLink["format"], string> = {
-  csv: "CSV UTF-8",
-  xlsx: "XLSX",
-  json: "JSON",
-  pdf: "PDF",
-  html: "HTML",
-  markdown: "Markdown",
+  csv: "Таблица CSV",
+  xlsx: "Таблица Excel",
+  json: "Данные JSON",
+  pdf: "Документ PDF",
+  html: "Веб-страница",
+  markdown: "Текстовый файл",
+};
+const QUALITY_LABELS: Record<string, string> = {
+  low: "низкое качество",
+  medium: "среднее качество",
+  high: "высокое качество",
+};
+const MATURITY_LABELS: Record<string, string> = {
+  collecting: "данные накапливаются",
+  mature: "данных достаточно",
 };
 
 function finite(value: string) {
   const number = Number(value);
   return value.trim() && Number.isFinite(number) ? number : undefined;
+}
+
+function versionLabel(value: string | null | undefined) {
+  const version = value?.match(/\d+(?:\.\d+)*/u)?.[0];
+  return version || "текущая";
 }
 
 export function libraryFilterPayload(channelId: number, filters: Filters) {
@@ -327,11 +341,29 @@ export function LibraryRegistryView({ channelId, channelName }: { channelId: num
     draftKeys.current.set(key, clientKey);
     setDraftBusy(key);
     try {
+      const identity = itemIdentity(item);
+      const material = identity.id && (item.kind === "idea" || item.kind === "reference")
+        ? {
+            kind: item.kind,
+            id: identity.id,
+            sourceLabel: item.kind === "idea" ? "Идея Авроры" : item.sourceTitle,
+            provenanceLabel: item.sourceTitle,
+            sourceId: item.sourceId,
+            sourceUrl: item.sourceUrl,
+            topic: item.idea?.topic,
+            hook: item.idea?.hook,
+            structure: item.idea?.structure,
+            whyItWorked: item.idea?.whyItWorked,
+          }
+        : null;
       const result = await createServerDraft(buildLibraryDraftContext({
         text: item.text,
         channelId,
         clientKey,
-        reference: item.sourceId ? { competitorId: item.sourceId, sourceLabel: item.sourceTitle } : null,
+        material,
+        reference: !material && item.sourceId
+          ? { competitorId: item.sourceId, sourceLabel: item.sourceTitle }
+          : null,
       }));
       router.push(appDraftActionHref(action, result.draft.id));
     } catch (error) {
@@ -383,7 +415,7 @@ export function LibraryRegistryView({ channelId, channelName }: { channelId: num
         <div>
           <h2 className="text-[18px] font-extrabold text-text">Аналитический реестр</h2>
           <p className="mt-1 max-w-3xl text-[13px] leading-relaxed text-text-3">
-            Сравнение идёт только внутри одного источника, формата и временного окна. Ваша оценка 1–5 не влияет на объективный Score 0–100.
+            Сравнение идёт только внутри одного источника, формата и временного окна. Ваша оценка 1–5 не влияет на аналитическую оценку 0–100.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -456,8 +488,8 @@ export function LibraryRegistryView({ channelId, channelName }: { channelId: num
             <NumberRange label="Ваша оценка 1–5" min={filters.ratingMin} max={filters.ratingMax} onMin={(value) => update("ratingMin", value)} onMax={(value) => update("ratingMax", value)} />
             <NumberRange label="Просмотры" min={filters.viewsMin} max={filters.viewsMax} onMin={(value) => update("viewsMin", value)} onMax={(value) => update("viewsMax", value)} />
             <NumberRange label="Реакции" min={filters.reactionsMin} max={filters.reactionsMax} onMin={(value) => update("reactionsMin", value)} onMax={(value) => update("reactionsMax", value)} />
-            <NumberRange label="Lift" min={filters.liftMin} max={filters.liftMax} onMin={(value) => update("liftMin", value)} onMax={(value) => update("liftMax", value)} />
-            <NumberRange label="Аналитический Score 0–100" min={filters.scoreMin} max={filters.scoreMax} onMin={(value) => update("scoreMin", value)} onMax={(value) => update("scoreMax", value)} />
+            <NumberRange label="Прирост" min={filters.liftMin} max={filters.liftMax} onMin={(value) => update("liftMin", value)} onMax={(value) => update("liftMax", value)} />
+            <NumberRange label="Аналитическая оценка 0–100" min={filters.scoreMin} max={filters.scoreMax} onMin={(value) => update("scoreMin", value)} onMax={(value) => update("scoreMax", value)} />
             <fieldset>
               <legend className="mb-1.5 text-[12px] font-bold text-text-2">Качество данных</legend>
               <div className="flex min-h-12 flex-wrap items-center gap-2 rounded-xs border border-line px-2">
@@ -482,7 +514,7 @@ export function LibraryRegistryView({ channelId, channelName }: { channelId: num
             </fieldset>
             <label className="flex min-h-12 cursor-pointer items-center gap-2 rounded-xs border border-line px-3 text-[13px] font-semibold text-text-2">
               <input type="checkbox" checked={filters.hitOnly} onChange={(event) => update("hitOnly", event.target.checked)} />
-              Только хиты: top 10% автора и Lift ≥ 5
+              Только хиты: лучшие 10% автора и прирост ≥ 5
             </label>
             <label className="flex min-h-12 cursor-pointer items-center gap-2 rounded-xs border border-line px-3 text-[13px] font-semibold text-text-2">
               <input type="checkbox" checked={filters.direction === "asc"} onChange={(event) => update("direction", event.target.checked ? "asc" : "desc")} />
@@ -494,12 +526,12 @@ export function LibraryRegistryView({ channelId, channelName }: { channelId: num
               <X className="h-4 w-4" aria-hidden /> Сбросить фильтры
             </Button>
             <Button type="button" variant="outline" size="sm" onClick={() => void createExport()} loading={exportBusy}>
-              <Download className="h-4 w-4" aria-hidden /> Экспорт текущего snapshot
+              <Download className="h-4 w-4" aria-hidden /> Экспорт текущего среза
             </Button>
           </div>
           {exportLinks.length > 0 && (
             <div className="border-t border-line bg-success-soft px-4 py-4 sm:px-5" role="status">
-              <p className="text-[12px] font-bold text-success-text">Один snapshot · {exportCount} записей · 6 форматов</p>
+              <p className="text-[12px] font-bold text-success-text">Один срез данных · {exportCount} записей · 6 форматов</p>
               <div className="mt-2 flex flex-wrap gap-2">
                 {exportLinks.map((link) => (
                   <a key={link.format} href={link.href} download className="inline-flex min-h-9 items-center gap-1.5 rounded-sm border border-success/25 bg-surface px-3 py-2 text-[12px] font-bold text-success-text hover:border-success/50">
@@ -542,7 +574,7 @@ export function LibraryRegistryView({ channelId, channelName }: { channelId: num
                   <span className="min-w-0 flex-1 truncate font-bold text-text-2">{item.sourceTitle}</span>
                   <span className="text-text-3">{fmtAgo(item.postedAt)}</span>
                   {!item.viewedAt && <Badge tone="brand">Новое</Badge>}
-                  {item.isHit && <Badge tone="fire">Хит top 10% · Lift ≥ 5</Badge>}
+                  {item.isHit && <Badge tone="fire">Лучшие 10% · прирост ≥ 5</Badge>}
                 </div>
 
                 <LibraryCardText
@@ -554,27 +586,27 @@ export function LibraryRegistryView({ channelId, channelName }: { channelId: num
                 />
 
                 <div className="mt-3 grid grid-cols-3 gap-2 sm:grid-cols-4">
-                  <div className="rounded-xs bg-surface-inset p-2.5"><p className="text-[10px] text-text-3">Score 0–100</p><p className="nums mt-0.5 text-[15px] font-black text-text">{metric(item.analyticsScore, 1)}</p></div>
-                  <div className="rounded-xs bg-surface-inset p-2.5"><p className="text-[10px] text-text-3">Lift</p><p className="nums mt-0.5 text-[15px] font-black text-text">{item.lift == null ? "—" : `×${metric(item.lift, 2)}`}</p></div>
-                  <div className="rounded-xs bg-surface-inset p-2.5"><p className="text-[10px] text-text-3">Velocity</p><p className="nums mt-0.5 text-[15px] font-black text-text">{metric(item.velocity, 1)}</p></div>
-                  <div className="rounded-xs bg-surface-inset p-2.5"><p className="text-[10px] text-text-3">ER Bayes</p><p className="nums mt-0.5 text-[15px] font-black text-text">{item.erBayes == null ? "—" : `${(item.erBayes * 100).toFixed(2)}%`}</p></div>
+                  <div className="rounded-xs bg-surface-inset p-2.5"><p className="text-[10px] text-text-3">Оценка 0–100</p><p className="nums mt-0.5 text-[15px] font-black text-text">{metric(item.analyticsScore, 1)}</p></div>
+                  <div className="rounded-xs bg-surface-inset p-2.5"><p className="text-[10px] text-text-3">Прирост</p><p className="nums mt-0.5 text-[15px] font-black text-text">{item.lift == null ? "—" : `×${metric(item.lift, 2)}`}</p></div>
+                  <div className="rounded-xs bg-surface-inset p-2.5"><p className="text-[10px] text-text-3">Скорость</p><p className="nums mt-0.5 text-[15px] font-black text-text">{metric(item.velocity, 1)}</p></div>
+                  <div className="rounded-xs bg-surface-inset p-2.5"><p className="text-[10px] text-text-3">Вовлечённость</p><p className="nums mt-0.5 text-[15px] font-black text-text">{item.erBayes == null ? "—" : `${(item.erBayes * 100).toFixed(2)}%`}</p></div>
                 </div>
                 <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] text-text-3">
                   {item.views != null && <span className="flex items-center gap-1"><Eye className="h-3.5 w-3.5" aria-hidden /> {fmtNum(item.views)}</span>}
                   {item.reactions != null && <span className="flex items-center gap-1"><Heart className="h-3.5 w-3.5" aria-hidden /> {fmtNum(item.reactions)}</span>}
-                  <span className="flex items-center gap-1"><Gauge className="h-3.5 w-3.5" aria-hidden /> Z {metric(item.velocityZ, 2)}</span>
-                  <span>{item.dataQuality || "нет качества"} · {item.dataMaturity || "нет зрелости"}</span>
+                  <span className="flex items-center gap-1"><Gauge className="h-3.5 w-3.5" aria-hidden /> Отклонение {metric(item.velocityZ, 2)}</span>
+                  <span>{QUALITY_LABELS[item.dataQuality || ""] || "качество не определено"} · {MATURITY_LABELS[item.dataMaturity || ""] || "зрелость не определена"}</span>
                   <span>{FORMAT_LABELS[item.format]}</span>
                 </div>
 
                 <details className="mt-3 rounded-xs border border-line bg-surface-2 px-3 py-2">
-                  <summary className="cursor-pointer text-[11px] font-bold text-text-2">Как рассчитан Score</summary>
+                  <summary className="cursor-pointer text-[11px] font-bold text-text-2">Как рассчитана оценка</summary>
                   <p className="mt-2 text-[11px] leading-relaxed text-text-3">{item.explanation || "Недостаточно сопоставимых данных."}</p>
-                  <p className="mt-1 text-[10px] text-text-3">Версия формулы: {item.formulaVersion || formulaVersion || "—"}</p>
+                  <p className="mt-1 text-[10px] text-text-3">Версия формулы: {versionLabel(item.formulaVersion || formulaVersion)}</p>
                 </details>
 
                 <fieldset className="mt-3">
-                  <legend className="text-[11px] font-bold text-text-2">Ваша оценка, отдельно от Score</legend>
+                  <legend className="text-[11px] font-bold text-text-2">Ваша оценка, отдельно от аналитической</legend>
                   <div className="mt-1 flex items-center gap-1" aria-label="Оценка от 1 до 5">
                     {[1, 2, 3, 4, 5].map((rating) => (
                       <button

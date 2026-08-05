@@ -9,6 +9,8 @@ import IORedis from "ioredis";
 import pg from "pg";
 import { chromium } from "playwright-core";
 
+import { MEDIA_PROMPT_POLICY } from "../src/lib/media-generation.mjs";
+import { SITE_INTERVIEW_QUESTIONS } from "../src/lib/site-analysis/questions.data.mjs";
 import { migrate } from "./migrate.mjs";
 
 const databaseUrl = String(process.env.E2E_DATABASE_URL || "").trim();
@@ -178,7 +180,7 @@ function fakeProvider() {
       fakeState.media.promptPolicyOk = fakeState.media.promptPolicyOk
         && /^aurora-media-[0-9a-f-]{36}$/iu.test(requestKey)
         && requestKey === `aurora-media-${requestId}`
-        && prompt.includes("[aurora-media-prompt v2]")
+        && prompt.includes(`[${MEDIA_PROMPT_POLICY.id} v${MEDIA_PROMPT_POLICY.version}]`)
         && prompt.includes("ТЕКСТ В КАДРЕ: не добавляй")
         && prompt.includes("не придумывай логотипы")
         && typeof body?.negative_prompt === "string"
@@ -633,8 +635,8 @@ try {
   await page.waitForTimeout(450);
   await libraryText.waitFor();
   await page.locator("summary").filter({ hasText: "Все фильтры" }).click();
-  await page.getByRole("button", { name: "Экспорт текущего snapshot", exact: true }).click();
-  await page.getByText(/Один snapshot · 1 запис/u).waitFor({ timeout: 10_000 });
+  await page.getByRole("button", { name: "Экспорт текущего среза", exact: true }).click();
+  await page.getByText(/Один срез данных · 1 запис/u).waitFor({ timeout: 10_000 });
   const exportLinks = page.locator('a[download][href^="/api/library/exports/"]');
   assert(await exportLinks.count() === 6, "filtered Library export did not expose six formats");
   const exportHrefs = await exportLinks.evaluateAll((links) => links.map((link) => link.getAttribute("href")));
@@ -786,6 +788,188 @@ try {
   await page.getByLabel("Цель", { exact: true }).fill(savedGoal);
   await page.getByText("Есть несохранённые изменения", { exact: true }).waitFor({ state: "detached" });
   assert((await desktopSidebar.locator('a[aria-current="page"]').textContent())?.includes("Настройка Авроры"), "desktop Settings item is not active");
+
+  const siteEvidenceId = "evidence:e2e-owned-about";
+  const siteSourceId = "source:e2e-owned-about";
+  const siteAnswers = SITE_INTERVIEW_QUESTIONS.map((question, index) => {
+    if (index === 0) {
+      return {
+        questionId: question.id,
+        status: "answered",
+        shortAnswer: "Организация публично называет себя Aurora QA.",
+        explanation: "Название подтверждено собственной страницей организации.",
+        facts: [{ statement: "Публичное название — Aurora QA.", evidenceIds: [siteEvidenceId] }],
+        evidenceIds: [siteEvidenceId],
+        confidence: "high",
+        contradictions: [],
+        gaps: [],
+        requiredIntegrations: [],
+        recommendationHooks: [{
+          kind: "organization-profile",
+          rationale: "Использовать подтверждённое название в профилях социальных каналов.",
+          entityIds: ["entity:e2e-organization"],
+          evidenceIds: [siteEvidenceId],
+        }],
+      };
+    }
+    if (index === 1) {
+      return {
+        questionId: question.id,
+        status: "hypothesis",
+        shortAnswer: "Есть косвенный сигнал о фокусе на правовых технологиях.",
+        explanation: "Сигнал требует подтверждения дополнительными страницами.",
+        facts: [],
+        evidenceIds: [siteEvidenceId],
+        confidence: "low",
+        contradictions: [],
+        gaps: ["Нужна отдельная страница позиционирования."],
+        requiredIntegrations: [],
+        recommendationHooks: [],
+      };
+    }
+    if (index === 2) {
+      return {
+        questionId: question.id,
+        status: "conflicting",
+        shortAnswer: "Описание направлений расходится между разделами.",
+        explanation: "Сохранены обе версии без выбора удобной трактовки.",
+        facts: [],
+        evidenceIds: [siteEvidenceId],
+        confidence: "low",
+        contradictions: [{ description: "Главная и раздел «О нас» задают разные акценты.", evidenceIds: [siteEvidenceId] }],
+        gaps: ["Нужна актуальная редакционная позиция организации."],
+        requiredIntegrations: [],
+        recommendationHooks: [],
+      };
+    }
+    return {
+      questionId: question.id,
+      status: "insufficient_data",
+      shortAnswer: "Недостаточно проверяемых публичных данных.",
+      explanation: "Отсутствие данных не трактуется как отсутствие факта.",
+      facts: [],
+      evidenceIds: [],
+      confidence: "none",
+      contradictions: [],
+      gaps: ["Нужен дополнительный публичный источник."],
+      requiredIntegrations: index % 7 === 0 ? ["Google Search Console"] : [],
+      recommendationHooks: [],
+    };
+  });
+  const siteSnapshotHash = `sha256:${"b".repeat(64)}`;
+  const siteReport = {
+    policyVersion: "site-crawler-v1",
+    inventory: [{ url: "https://example.com/about", status: 200, title: "О компании", words: 120, schemaTypes: ["Organization"] }],
+    limitations: ["Проверены только публичные страницы подтверждённого домена."],
+    marketingPlan: { measurement: [{ kpi: "Органические переходы", sourceNeeded: "Google Search Console", confidence: "none" }] },
+    snapshot: {
+      version: "site-osint-snapshot-v1",
+      snapshotHash: siteSnapshotHash,
+      coverage: { mode: "site_only", limitations: ["external_osint_not_enabled"] },
+      sources: [{
+        id: siteSourceId,
+        kind: "owned_page",
+        url: "https://example.com/about",
+        title: "О компании",
+        pageType: "about",
+        checkedAt: "2026-08-05T12:00:00.000Z",
+        publishedAt: "2026-07-01T00:00:00.000Z",
+        quality: "high",
+      }],
+      evidence: [{
+        id: siteEvidenceId,
+        sourceId: siteSourceId,
+        type: "text_excerpt",
+        value: "Aurora QA развивает решения для правовых технологий.",
+        factType: "organization",
+        quality: "high",
+        currentness: "current",
+        checkedAt: "2026-08-05T12:00:00.000Z",
+        publishedAt: "2026-07-01T00:00:00.000Z",
+      }],
+      entities: [{ id: "entity:e2e-organization", type: "organization", name: "Aurora QA", confidence: "high" }],
+      relations: [],
+    },
+    osint: {
+      reportStatus: "complete",
+      promptVersion: "site-osint-interview-v1",
+      questionCatalogVersion: "site-osint-questions-v1",
+      snapshotHash: siteSnapshotHash,
+      coverage: { mode: "site_only", limitations: ["external_osint_not_enabled"] },
+      answers: siteAnswers,
+      summary: {
+        answered: 1,
+        hypothesis: 1,
+        conflicting: 1,
+        insufficientData: SITE_INTERVIEW_QUESTIONS.length - 3,
+        total: SITE_INTERVIEW_QUESTIONS.length,
+      },
+      recommendations: [{
+        key: "recommendation:e2e-organization-profile",
+        questionId: SITE_INTERVIEW_QUESTIONS[0].id,
+        kind: "organization-profile",
+        rationale: "Использовать подтверждённое название в социальных каналах.",
+        confidence: "high",
+        entityIds: ["entity:e2e-organization"],
+        evidenceIds: [siteEvidenceId],
+      }],
+      marketingPlan: {
+        publicationBacklog: [{
+          key: "backlog:e2e-organization-profile",
+          questionId: SITE_INTERVIEW_QUESTIONS[0].id,
+          kind: "organization-profile",
+          rationale: "Синхронизировать подтверждённое название и описание.",
+          confidence: "high",
+          evidenceIds: [siteEvidenceId],
+          priority: "P0",
+          order: 1,
+        }],
+        measurement: [{ kpi: "Органические переходы", requiredIntegration: "Google Search Console", confidence: "none" }],
+      },
+    },
+  };
+  const siteAnalysisId = Number((await pool.query(
+    `insert into site_analysis_jobs
+       (user_id, request_id, idempotency_key, request_fingerprint, target_url,
+        confirmed_domain, consented_at, status, stage, progress, progress_detail,
+        result, run_revision, queue_confirmed_at, completed_at, prompt_version,
+        question_catalog_version, snapshot_hash, coverage_mode, answered_count, question_count)
+     values ($1, '11111111-1111-4111-8111-111111111111', 'e2e-site-analysis-ready', $2,
+             'https://example.com/', 'example.com', now(), 'ready', 'ready', 100,
+             'OSINT-интервью и маркетинговый план готовы', $3::jsonb, 1, now(), now(),
+             'site-osint-interview-v1', 'site-osint-questions-v1', $4, 'site_only', $5, $5)
+     returning id`,
+    [userId, "c".repeat(64), JSON.stringify(siteReport), siteSnapshotHash, SITE_INTERVIEW_QUESTIONS.length],
+  )).rows[0].id);
+
+  await page.goto("/app/site-analysis");
+  await page.getByText(`${SITE_INTERVIEW_QUESTIONS.length} вопросов`, { exact: true }).waitFor({ timeout: 10_000 });
+  await page.getByText(`Показано ответов: ${SITE_INTERVIEW_QUESTIONS.length} из ${SITE_INTERVIEW_QUESTIONS.length}`, { exact: true }).waitFor();
+  const firstEvidenceDisclosure = page.getByRole("button", { name: /доказательства/u }).first();
+  assert(await firstEvidenceDisclosure.getAttribute("aria-expanded") === "false", "site answer starts expanded without user action");
+  await firstEvidenceDisclosure.click();
+  await waitFor(
+    async () => await firstEvidenceDisclosure.getAttribute("aria-expanded") === "true",
+    "site evidence disclosure did not expand independently",
+    5_000,
+  );
+  const siteEvidenceLink = page.getByRole("link", { name: /Открыть источник/u }).first();
+  assert((await siteEvidenceLink.getAttribute("href")) === "https://example.com/about", "site evidence lost its source URL");
+  assert(await siteEvidenceLink.getAttribute("target") === "_blank", "site evidence link is not safely external");
+  await page.getByRole("button", { name: "Противоречия", exact: true }).click();
+  await page.getByText(`Показано ответов: 1 из ${SITE_INTERVIEW_QUESTIONS.length}`, { exact: true }).waitFor();
+  await page.getByRole("button", { name: "Противоречия", exact: true }).click();
+  const siteExportLinks = page.locator(`a[download][href^="/api/site-analysis/${siteAnalysisId}/export"]`);
+  assert(await siteExportLinks.count() === 6, "site analysis did not expose six immutable export formats");
+  for (const href of await siteExportLinks.evaluateAll((links) => links.map((link) => link.getAttribute("href")))) {
+    const downloaded = await context.request.get(href);
+    assert(downloaded.status() === 200, `site analysis export failed: ${href}`);
+  }
+  await page.reload();
+  await page.getByText(`${SITE_INTERVIEW_QUESTIONS.length} вопросов`, { exact: true }).waitFor({ timeout: 10_000 });
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 2), "site analysis has mobile horizontal overflow");
+  await page.setViewportSize({ width: 1280, height: 900 });
 
   const nowPostId = Number((await pool.query(
     `insert into posts (user_id, channel_id, text, status, scheduled_at, published_at,
@@ -1000,6 +1184,13 @@ try {
       exportFormats: [...exportFormats].sort(),
     },
     profileReloaded: true,
+    siteAnalysis: {
+      analysisId: siteAnalysisId,
+      questions: SITE_INTERVIEW_QUESTIONS.length,
+      evidenceExpanded: true,
+      desktopAndMobile: true,
+      exportFormats: ["csv", "html", "json", "markdown", "pdf", "xlsx"],
+    },
     chat: {
       truncatedReleased: true,
       terminalDone: true,

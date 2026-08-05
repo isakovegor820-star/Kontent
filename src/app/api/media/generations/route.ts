@@ -105,12 +105,17 @@ function mediaLog(
   event: string,
   context: { requestId: string; generationId?: number | null; code?: string; error?: unknown },
 ) {
+  const technicalError = context.error && typeof context.error === "object"
+    ? context.error as { code?: unknown; constraint?: unknown }
+    : null;
   console.error("[media-api]", {
     event,
     requestId: context.requestId,
     generationId: context.generationId ?? null,
     code: context.code ?? null,
     errorName: context.error instanceof Error ? context.error.name : context.error ? "Error" : null,
+    technicalCode: typeof technicalError?.code === "string" ? technicalError.code.slice(0, 64) : null,
+    constraint: typeof technicalError?.constraint === "string" ? technicalError.constraint.slice(0, 128) : null,
   });
 }
 
@@ -208,6 +213,8 @@ export async function POST(req: NextRequest) {
   const promptContext = buildMediaPromptContext(input, {
     platform: channelContext?.network || "generic",
     brandProfile: channelContext?.profile || "",
+    visualDirection: channelContext?.quality?.visualDirection || "",
+    visualDetail: channelContext?.quality?.visualDetail || 0,
   });
   const providerRequestKey = `aurora-media-${requestId}`;
   const requestFingerprint = createHash("sha256")

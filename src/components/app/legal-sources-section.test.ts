@@ -12,8 +12,8 @@ describe("LegalSourcesSection", () => {
     expect(html).toContain('id="legal-sources-title"');
     expect(html).toContain("Юридические источники");
     expect(html).toContain("Публичные RSS");
-    expect(html).toContain("не собирает пароль, cookies браузера и данные сессии");
-    expect(html).toContain("не скрейпит закрытый кабинет");
+    expect(html).toContain("не собирает пароль и данные браузерной сессии");
+    expect(html).toContain("не считывает закрытый кабинет");
     expect(html).toContain('aria-live="polite"');
     expect(html).toContain('role="status"');
   });

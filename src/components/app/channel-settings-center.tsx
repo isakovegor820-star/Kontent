@@ -20,8 +20,17 @@ import { ChannelPicker, channelName, useChannelChoice } from "@/components/app/c
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Badge, Card, Field, Input, Textarea, Toggle } from "@/components/ui/primitives";
-import { MAX_WEEKLY_POSTS, RUBRICS, type Brief } from "@/lib/brief";
+import {
+  AUTHOR_PROFILE_QUESTION_COUNT,
+  AUTHOR_PROFILE_SECTIONS,
+  MAX_WEEKLY_POSTS,
+  RUBRICS,
+  type AuthorProfileAnswers,
+  type AuthorProfileQuestionId,
+  type Brief,
+} from "@/lib/brief";
 import { QUALITY_PRESETS, presetQuality, type PostQuality } from "@/lib/post-quality.mjs";
+import { PROFILE_FORMAT_OPTIONS } from "@/lib/profile";
 import { analyzeStyleSamples, type StyleTrainingResult } from "@/lib/style-training";
 import { useStore } from "@/lib/store";
 import type { AutopilotSettings } from "@/lib/autopilot";
@@ -188,6 +197,123 @@ function SettingsGroup({
         <ChevronDown className="mt-2 h-4 w-4 shrink-0 text-text-3 transition-transform group-open:rotate-180" aria-hidden />
       </summary>
       <div className="space-y-5 px-5 pb-6 sm:px-6">{children}</div>
+    </details>
+  );
+}
+
+function AuthorProfileQuestionnaire({
+  answers,
+  onChange,
+}: {
+  answers: AuthorProfileAnswers;
+  onChange: (answers: AuthorProfileAnswers) => void;
+}) {
+  const filled = Object.values(answers).filter((answer) => answer?.trim()).length;
+  const progress = Math.round((filled / AUTHOR_PROFILE_QUESTION_COUNT) * 100);
+
+  const updateAnswer = (id: AuthorProfileQuestionId, value: string) => {
+    const next = { ...answers };
+    if (value.trim()) next[id] = value;
+    else delete next[id];
+    onChange(next);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-sm bg-info-soft p-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-[14px] font-bold text-text">Заполните профиль один раз</p>
+            <p className="mt-1 max-w-2xl text-[12px] leading-relaxed text-text-2">
+              Аврора будет учитывать ответы во всех следующих постах этого канала. Можно заполнять постепенно и оставлять неподходящие вопросы пустыми.
+            </p>
+          </div>
+          <span className="nums shrink-0 text-[13px] font-extrabold text-brand">
+            {filled} из {AUTHOR_PROFILE_QUESTION_COUNT}
+          </span>
+        </div>
+        <div
+          className="mt-3 h-1.5 overflow-hidden rounded-full bg-surface"
+          role="progressbar"
+          aria-label="Заполнение профиля автора"
+          aria-valuemin={0}
+          aria-valuemax={AUTHOR_PROFILE_QUESTION_COUNT}
+          aria-valuenow={filled}
+        >
+          <div className="h-full rounded-full bg-brand" style={{ width: `${progress}%` }} />
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        {AUTHOR_PROFILE_SECTIONS.map((section, sectionIndex) => (
+          <AuthorProfileSection
+            key={section.id}
+            section={section}
+            sectionIndex={sectionIndex}
+            answers={answers}
+            onAnswer={updateAnswer}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AuthorProfileSection({
+  section,
+  sectionIndex,
+  answers,
+  onAnswer,
+}: {
+  section: (typeof AUTHOR_PROFILE_SECTIONS)[number];
+  sectionIndex: number;
+  answers: AuthorProfileAnswers;
+  onAnswer: (id: AuthorProfileQuestionId, value: string) => void;
+}) {
+  const [open, setOpen] = useState(sectionIndex === 0);
+  const sectionFilled = section.questions.filter((question) => answers[question.id as AuthorProfileQuestionId]?.trim()).length;
+
+  return (
+    <details
+      open={open}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+      className="group rounded-md border border-line bg-surface/75"
+    >
+      <summary className="flex min-h-14 cursor-pointer list-none items-center gap-3 px-4 py-3 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand marker:content-none">
+        <span className="grid h-8 w-8 shrink-0 place-items-center rounded-sm bg-surface-inset text-[12px] font-extrabold text-brand">
+          {sectionIndex + 1}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-[13px] font-extrabold text-text">{section.title}</span>
+          <span className="mt-0.5 block text-[11px] leading-relaxed text-text-3">{section.description}</span>
+        </span>
+        <span className="nums shrink-0 text-[11px] font-bold text-text-3">
+          {sectionFilled}/{section.questions.length}
+        </span>
+        <ChevronDown className="h-4 w-4 shrink-0 text-text-3 transition-transform group-open:rotate-180" aria-hidden />
+      </summary>
+      <div className="grid gap-5 px-4 pb-5 pt-2 lg:grid-cols-2">
+        {section.questions.map((question) => {
+          const id = `author-profile-${question.id}`;
+          return (
+            <Field
+              key={question.id}
+              label={`${question.number}. ${question.label}`}
+              htmlFor={id}
+              hint={question.hint}
+            >
+              <Textarea
+                id={id}
+                rows={3}
+                maxLength={1600}
+                value={answers[question.id as AuthorProfileQuestionId] ?? ""}
+                onChange={(event) => onAnswer(question.id as AuthorProfileQuestionId, event.target.value)}
+                placeholder="Напишите ответ…"
+              />
+            </Field>
+          );
+        })}
+      </div>
     </details>
   );
 }
@@ -507,26 +633,32 @@ export function ChannelSettingsCenter() {
 
             <SettingsGroup
               title="О канале"
-              description="Тема, аудитория, цель и форматы — основа каждого нового поста."
+              description="Контекст, цель, роль автора и границы — основа каждого нового поста."
               icon={<FileText className="h-4 w-4" aria-hidden />}
               defaultOpen
             >
-              <div className="grid gap-4 sm:grid-cols-2">
-                <Field label="О чём канал" required htmlFor="channel-niche">
-                  <Input id="channel-niche" value={draft.brief.niche} onChange={(event) => setBrief("niche", event.target.value)} placeholder="Например: кофе и домашнее заваривание" />
+              <div className="grid gap-5 sm:grid-cols-2">
+                <Field label="Тема и ниша" required htmlFor="channel-niche" hint="Предметная область и конкретный фокус канала.">
+                  <Textarea id="channel-niche" rows={3} value={draft.brief.niche} onChange={(event) => setBrief("niche", event.target.value)} placeholder="Например: кофе и домашнее заваривание для небольших кухонь" />
                 </Field>
-                <Field label="Для кого" required htmlFor="channel-audience">
-                  <Input id="channel-audience" value={draft.brief.audience} onChange={(event) => setBrief("audience", event.target.value)} placeholder="Например: новички, которые хотят варить вкуснее" />
+                <Field label="Аудитория и её задача" required htmlFor="channel-audience" hint="Кто читает, что уже знает и какую проблему решает.">
+                  <Textarea id="channel-audience" rows={3} value={draft.brief.audience} onChange={(event) => setBrief("audience", event.target.value)} placeholder="Например: новички, которым нужна стабильная чашка без дорогого оборудования" />
                 </Field>
-                <Field label="Цель канала" htmlFor="channel-goal">
-                  <Input id="channel-goal" value={draft.brief.goal} onChange={(event) => setBrief("goal", event.target.value)} placeholder="Например: растить доверие и продавать консультации" />
+                <Field label="Цель канала" htmlFor="channel-goal" hint="Результат, который должен поддерживать контент.">
+                  <Textarea id="channel-goal" rows={3} value={draft.brief.goal} onChange={(event) => setBrief("goal", event.target.value)} placeholder="Например: растить доверие и продавать консультации" />
                 </Field>
-                <Field label="Куда вести читателя" htmlFor="channel-cta">
-                  <Input id="channel-cta" value={draft.brief.cta} onChange={(event) => setBrief("cta", event.target.value)} placeholder="Например: в бот или на консультацию" />
+                <Field label="Роль и экспертиза автора" htmlFor="channel-author-role" hint="От чьего лица и на каком основании звучат рекомендации.">
+                  <Textarea id="channel-author-role" rows={3} value={draft.brief.authorRole} onChange={(event) => setBrief("authorRole", event.target.value)} placeholder="Например: обжарщик и Q-грейдер с 10-летним опытом" />
+                </Field>
+                <Field label="Следующий шаг читателя" htmlFor="channel-cta" hint="Действие, ссылка, продукт или точка контакта.">
+                  <Textarea id="channel-cta" rows={3} value={draft.brief.cta} onChange={(event) => setBrief("cta", event.target.value)} placeholder="Например: перейти в бот и записаться на консультацию" />
+                </Field>
+                <Field label="Запретные темы и обещания" htmlFor="channel-taboo" hint="Что нельзя утверждать, обещать или обсуждать.">
+                  <Textarea id="channel-taboo" rows={3} value={draft.brief.taboo} onChange={(event) => setBrief("taboo", event.target.value)} placeholder="Например: не обещать гарантированный результат, не обсуждать политику" />
                 </Field>
               </div>
               <div>
-                <p className="mb-2 text-[13px] font-semibold text-text-2">Какие форматы чередовать</p>
+                <p className="mb-2 text-[13px] font-semibold text-text-2">Смысловые рубрики</p>
                 <div className="flex flex-wrap gap-2">
                   {RUBRICS.map((rubric) => {
                     const active = draft.brief.rubrics.includes(rubric.label);
@@ -542,7 +674,7 @@ export function ChannelSettingsCenter() {
                             : [...draft.brief.rubrics, rubric.label],
                         )}
                         className={cn(
-                          "min-h-11 rounded-full border px-3 py-2 text-[13px] font-semibold transition-colors",
+                          "min-h-11 rounded-full border px-3 py-2 text-[13px] font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand",
                           active ? "border-brand bg-info-soft text-info-text" : "border-line bg-surface text-text-2 hover:border-brand/35",
                         )}
                       >
@@ -552,6 +684,45 @@ export function ChannelSettingsCenter() {
                   })}
                 </div>
               </div>
+              <div>
+                <p className="mb-2 text-[13px] font-semibold text-text-2">Форматы публикаций</p>
+                <div className="flex flex-wrap gap-2">
+                  {PROFILE_FORMAT_OPTIONS.map((format) => {
+                    const active = draft.brief.formats.includes(format);
+                    return (
+                      <button
+                        key={format}
+                        type="button"
+                        aria-pressed={active}
+                        onClick={() => setBrief(
+                          "formats",
+                          active
+                            ? draft.brief.formats.filter((item) => item !== format)
+                            : [...draft.brief.formats, format].slice(0, 10),
+                        )}
+                        className={cn(
+                          "min-h-11 rounded-full border px-3 py-2 text-[13px] font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand",
+                          active ? "border-brand bg-info-soft text-info-text" : "border-line bg-surface text-text-2 hover:border-brand/35",
+                        )}
+                      >
+                        {active && <Check className="mr-1 inline h-3.5 w-3.5" aria-hidden />}
+                        {format}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </SettingsGroup>
+
+            <SettingsGroup
+              title={`Профиль автора · ${Object.values(draft.brief.profileAnswers).filter((answer) => answer?.trim()).length}/${AUTHOR_PROFILE_QUESTION_COUNT}`}
+              description="26 вопросов об аудитории, темах, голосе, фактах, актуальности и биографии автора."
+              icon={<Sparkles className="h-4 w-4" aria-hidden />}
+            >
+              <AuthorProfileQuestionnaire
+                answers={draft.brief.profileAnswers}
+                onChange={(profileAnswers) => setBrief("profileAnswers", profileAnswers)}
+              />
             </SettingsGroup>
 
             <SettingsGroup
@@ -1046,11 +1217,11 @@ export function ChannelSettingsCenter() {
                 />
                 <RangeSetting
                   id="channel-cta-intensity"
-                  label="Интенсивность CTA"
+                  label="Интенсивность призыва"
                   min={0}
                   max={100}
                   value={draft.brief.quality.ctaIntensity}
-                  valueLabel={scaleLabel(draft.brief.quality.ctaIntensity, ["без призыва", "очень мягко", "мягко", "уверенно", "жёсткий CTA"])}
+                  valueLabel={scaleLabel(draft.brief.quality.ctaIntensity, ["без призыва", "очень мягко", "мягко", "уверенно", "жёсткий призыв"])}
                   startLabel="без давления"
                   endLabel="прямо"
                   onChange={(value) => setQualityPatch({ ctaIntensity: value, ctaStyle: value === 0 ? "none" : value < 70 ? "soft" : "direct" })}

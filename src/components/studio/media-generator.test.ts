@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   buildAutomaticVisualBrief,
+  mediaGenerationErrorText,
   MediaGenerator,
   startActiveMediaPolling,
 } from "./media-generator";
@@ -38,6 +39,12 @@ describe("MediaGenerator", () => {
     expect(buildAutomaticVisualBrief("Сюжет", "video")).toContain("одно ясное действие: Сюжет");
     expect(buildAutomaticVisualBrief("x".repeat(2_000), "image").length).toBeLessThan(1_400);
     expect(buildAutomaticVisualBrief("   ", "image")).toBe("");
+  });
+
+  it("не показывает пользователю английские коды ошибок", () => {
+    expect(mediaGenerationErrorText("unsafe_media_url")).toContain("безопасно сохранить");
+    expect(mediaGenerationErrorText("UNKNOWN_PROVIDER_FAILURE")).toBe("Не удалось создать файл. Измени описание и попробуй ещё раз.");
+    expect(mediaGenerationErrorText("Сервис перегружен")).toBe("Сервис перегружен");
   });
 
   it("polls two active generations serially and does not let one terminal result stop the other", async () => {

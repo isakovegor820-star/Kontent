@@ -73,6 +73,12 @@ async function oneCompletion(request, runtime, { fetchImpl, signal, timeoutMs })
   const temperature = Number.isFinite(Number(request.temperature)) ? Number(request.temperature) : 0.4;
   const maxTokens = bounded(request.maxTokens, 700, 1, 12_000);
   const requestSignal = combinedSignal(signal, timeoutMs);
+  const providerRequestKey = String(request.providerRequestKey || "").trim().slice(0, 256);
+  const providerRequestId = String(request.providerRequestId || "").trim().slice(0, 128);
+  const correlationHeaders = {
+    ...(providerRequestKey ? { "idempotency-key": providerRequestKey } : {}),
+    ...(providerRequestId ? { "x-request-id": providerRequestId } : {}),
+  };
   let response;
   try {
     if (runtime.protocol === "anthropic") {
@@ -82,6 +88,7 @@ async function oneCompletion(request, runtime, { fetchImpl, signal, timeoutMs })
           "content-type": "application/json",
           "x-api-key": runtime.key,
           "anthropic-version": "2023-06-01",
+          ...correlationHeaders,
         },
         signal: requestSignal,
         body: JSON.stringify({
@@ -95,14 +102,14 @@ async function oneCompletion(request, runtime, { fetchImpl, signal, timeoutMs })
     } else if (runtime.protocol === "openai") {
       response = await fetchImpl(`${runtime.baseUrl}/chat/completions`, {
         method: "POST",
-        headers: { "content-type": "application/json", authorization: `Bearer ${runtime.key}` },
+        headers: { "content-type": "application/json", authorization: `Bearer ${runtime.key}`, ...correlationHeaders },
         signal: requestSignal,
         body: JSON.stringify({ model: runtime.model, temperature, max_tokens: maxTokens, messages }),
       });
     } else {
       response = await fetchImpl(`${runtime.baseUrl}/api/chat`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", ...correlationHeaders },
         signal: requestSignal,
         body: JSON.stringify({
           model: runtime.model,
@@ -148,7 +155,9 @@ async function oneCompletion(request, runtime, { fetchImpl, signal, timeoutMs })
 export async function completeAiText(request, options = {}) {
   const env = options.env || process.env;
   const primary = configuredServiceEngine(request.engine, env);
-  const candidates = [primary, ...configuredAiFallbacks(primary, env)];
+  const candidates = options.allowFallback === false
+    ? [primary]
+    : [primary, ...configuredAiFallbacks(primary, env)];
   const fetchImpl = options.fetchImpl || fetch;
   const timeoutMs = bounded(options.timeoutMs, 60_000, 100, 300_000);
   const localTimeoutMs = bounded(options.localTimeoutMs, timeoutMs, 100, 300_000);

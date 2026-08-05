@@ -72,6 +72,7 @@ import {
   normalizePostQuality,
   validateTopicQuality,
 } from "./src/lib/post-quality.mjs";
+import { authorProfileContext } from "./src/lib/author-profile.mjs";
 import {
   assessAutopilotDraft,
   padDraftToMinimum,
@@ -2937,7 +2938,7 @@ const RUBRICS_W = [
 async function loadBriefW(userId, channelId) {
   const b = (
     await pool.query(
-      `select niche, audience, rubrics, formats, author_role, goal, cta, taboo, quality, ready
+      `select niche, audience, rubrics, formats, author_role, goal, cta, taboo, profile_answers, quality, ready
          from content_brief where user_id = $1 and channel_id = $2`,
       [userId, channelId],
     )
@@ -2953,6 +2954,7 @@ async function loadBriefW(userId, channelId) {
     rubrics: b.rubrics || [],
     formats: b.formats || [],
     author_role: String(b.author_role || "").trim(),
+    profile_answers: b.profile_answers || {},
     quality: normalizePostQuality(b.quality),
   };
 }
@@ -2966,6 +2968,8 @@ function briefContextW(b) {
   if (b.rubrics.length) lines.push(`— рубрики канала: ${b.rubrics.join(", ")}`);
   if (b.formats.length) lines.push(`— форматы публикаций: ${b.formats.join(", ")}`);
   if (b.taboo) lines.push("", `Категорически не пиши про: ${b.taboo}`);
+  const detailedProfile = authorProfileContext(b.profile_answers);
+  if (detailedProfile) lines.push("", detailedProfile);
   lines.push(
     "",
     "Пиши предметно и по этой теме. Никаких общих слов про «твою тему» — только конкретика ниши.",

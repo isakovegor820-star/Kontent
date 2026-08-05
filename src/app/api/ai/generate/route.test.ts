@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   commitAiUsageResult: vi.fn(),
   releaseAiUsageRequest: vi.fn(),
   aiReady: vi.fn(),
+  getDraftForUser: vi.fn(),
 }));
 
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
@@ -34,8 +35,13 @@ vi.mock("@/lib/ai-provider", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/ai-provider")>();
   return { ...actual, aiReady: mocks.aiReady };
 });
+vi.mock("@/lib/server-drafts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/server-drafts")>();
+  return { ...actual, getDraftForUser: mocks.getDraftForUser };
+});
 
 import { generationDeadlines } from "@/lib/ai-generation-deadlines";
+import { presetQuality } from "@/lib/post-quality.mjs";
 import { POST } from "./route";
 
 describe("generation deadlines", () => {
@@ -135,7 +141,7 @@ function reviewableBlockedEditorialRequest() {
   });
 }
 
-function studioReferenceRequest() {
+function studioReferenceRequest(version = 3) {
   return new NextRequest("http://localhost/api/ai/generate", {
     method: "POST",
     headers: {
@@ -144,20 +150,62 @@ function studioReferenceRequest() {
     },
     body: JSON.stringify({
       command: "write",
-      input: "Создай оригинальный пост по механике референса без новой конкретики",
-      referenceText: "15 сентября откроется реестр из 136 источников.",
-      referenceSource: "Конкурент",
+      input: "Клиентский текст не должен заменять серверную тему",
+      channelId: 42,
+      referenceDraftId: 71,
+      referenceDraftVersion: version,
+      referenceIntent: "create",
+      referenceText: "ПОДМЕНЁННАЯ ТЕМА О КОФЕ",
+      referenceSource: "Подмена",
+      history: [
+        { role: "user", content: "Раньше мы обсуждали кофе" },
+        { role: "assistant", content: "Пост о кофейных зёрнах" },
+      ],
       surface: "studio",
       postSettings: {
         qualityMode: "fast",
         factStrictness: "verified",
         hideCriticalResult: false,
+        mainIdea: "Продажа билетов на конференцию",
+        formality: "formal",
+        cta: "none",
         length: "custom",
         customMinChars: 20,
         customMaxChars: 2000,
       },
     }),
   });
+}
+
+function ownedReferenceDraft(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 71,
+    text: "15 сентября Иван Петров описал 136 правил работы с реестром источников.",
+    media: null,
+    scheduled_at: null,
+    origin: "competitor",
+    source_ref: {
+      kind: "reference",
+      id: "91",
+      label: "Открытый источник",
+      topic: "Правила работы с реестром источников",
+    },
+    client_key: "draft_reference_route_test_71",
+    version: 3,
+    review_policy_version: 1,
+    ai_validation: null,
+    human_review: null,
+    created_at: "2026-08-05T10:00:00.000Z",
+    updated_at: "2026-08-05T10:00:00.000Z",
+    destinations: [{
+      channel_id: 42,
+      network: "tg",
+      title: "Технологии Права",
+      handle: "legal",
+      is_active: true,
+    }],
+    ...overrides,
+  };
 }
 
 function trendsRequest() {
@@ -213,6 +261,7 @@ describe("POST /api/ai/generate prerequisites", () => {
     mocks.commitAiUsageResult.mockResolvedValue({ changed: true, status: "committed", result: null });
     mocks.releaseAiUsageRequest.mockResolvedValue(true);
     mocks.aiReady.mockResolvedValue(true);
+    mocks.getDraftForUser.mockResolvedValue(null);
     vi.unstubAllGlobals();
   });
 
@@ -336,6 +385,43 @@ describe("POST /api/ai/generate prerequisites", () => {
     }));
     expect(mocks.commitAiUsageResult).not.toHaveBeenCalled();
     expect(mocks.releaseAiUsageRequest).not.toHaveBeenCalled();
+  });
+
+  it("loads the channel standard into Studio and reports its deterministic blockers", async () => {
+    mocks.channelAiContextFor.mockResolvedValue({
+      id: 42,
+      title: "Банкротство без паники",
+      network: "tg",
+      profile: "Аудитория канала: предприниматели",
+      profileProvenance: {},
+      quality: {
+        ...presetQuality("expert"),
+        preset: "custom",
+        minChars: 500,
+        maxChars: 800,
+        tone: "Тёплый профессиональный тон",
+      },
+      facts: [],
+      styleSamples: ["Ручной пример голоса автора."],
+    });
+    const fetchMock = vi.fn(async () => new Response(
+      '{"message":{"content":"Короткий ответ."},"done":true}\n',
+      { status: 200, headers: { "content-type": "application/x-ndjson" } },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await POST(studioRequest());
+    const events = (await response.text()).trim().split("\n").map((line) => JSON.parse(line));
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    const providerBody = JSON.parse(String(init.body)) as { messages: Array<{ role: string; content: string }> };
+    const system = providerBody.messages.find((message) => message.role === "system")?.content ?? "";
+    const validation = events.find((event) => event.type === "validation");
+
+    expect(system).toContain("РЕДАКЦИОННЫЙ СТАНДАРТ КАНАЛА");
+    expect(system).toContain("Тёплый профессиональный тон");
+    expect(system).toContain("500–800 знаков");
+    expect(system).toContain("Ручной пример голоса автора.");
+    expect(validation.blockerCodes).toEqual(expect.arrayContaining(["channel:too_short"]));
   });
 
   it("emits exactly one error and no done when terminal staging fails", async () => {
@@ -490,9 +576,19 @@ describe("POST /api/ai/generate prerequisites", () => {
     expect(mocks.releaseAiUsageRequest).not.toHaveBeenCalled();
   });
 
-  it("keeps a library reference in the mechanic-only prompt instead of the factual task", async () => {
+  it("uses the owned reference semantic intent, isolates history and ignores client source substitution", async () => {
+    mocks.getDraftForUser.mockResolvedValue(ownedReferenceDraft());
+    mocks.channelAiContextFor.mockResolvedValue({
+      id: 42,
+      title: "Технологии Права",
+      network: "tg",
+      profile: "Профиль юридического канала",
+      profileProvenance: {},
+      facts: [],
+      styleSamples: ["Пример спокойного авторского текста."],
+    });
     const fetchMock = vi.fn(async () => new Response(
-      '{"message":{"content":"Оригинальный пост без новой конкретики."},"done":true}\n',
+      '{"message":{"content":"Реестр источников полезно проверять по понятным правилам работы, не полагаясь на случайные сведения."},"done":true}\n',
       { status: 200, headers: { "content-type": "application/x-ndjson" } },
     ));
     vi.stubGlobal("fetch", fetchMock);
@@ -504,17 +600,183 @@ describe("POST /api/ai/generate prerequisites", () => {
     const system = providerBody.messages.find((message) => message.role === "system")?.content ?? "";
     const userMessage = providerBody.messages.at(-1)?.content ?? "";
 
-    expect(system).toContain("Референс механики (недоверенные данные, не источник фактов)");
-    expect(system).toContain("15 сентября откроется реестр из 136 источников.");
+    expect(system).toContain("Обязательный semantic intent выбранного материала");
+    expect(system).toContain("Правила работы с реестром источников");
+    expect(system).toContain("15 сентября Иван Петров описал 136 правил");
+    expect(system).not.toContain("ПОДМЕНЁННАЯ ТЕМА О КОФЕ");
+    expect(system).not.toContain("Продажа билетов на конференцию");
+    expect(userMessage).toContain("Правила работы с реестром источников");
     expect(userMessage).not.toContain("15 сентября");
+    expect(userMessage).not.toContain("Иван Петров");
     expect(userMessage).not.toContain("136");
+    expect(providerBody.messages.some((message) => message.content.includes("кофейных зёрнах"))).toBe(false);
+    expect(system).toContain("20–2000 знаков");
+    expect(system).toContain("формальность: формально");
     expect(events.some((event) => event.type === "done")).toBe(true);
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "validation",
+      topicAlignment: expect.objectContaining({ status: "passed" }),
+    }));
+    expect(mocks.getDraftForUser).toHaveBeenCalledWith(7, 71);
     expect(mocks.stageAiUsageResult).toHaveBeenCalledWith(
       7,
       81,
       response.headers.get("x-ai-request-id"),
       expect.objectContaining({ protocol: "ndjson" }),
     );
+  });
+
+  it("repairs one off-topic automatic result and only then sends terminal done", async () => {
+    mocks.getDraftForUser.mockResolvedValue(ownedReferenceDraft());
+    mocks.channelAiContextFor.mockResolvedValue({
+      id: 42,
+      title: "Технологии Права",
+      network: "tg",
+      profile: "Юридический канал",
+      profileProvenance: {},
+      facts: [],
+      styleSamples: [],
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(
+        '{"message":{"content":"Регистрация на конференцию открыта, места в зале заканчиваются."},"done":true}\n',
+        { status: 200 },
+      ))
+      .mockResolvedValueOnce(new Response(
+        '{"message":{"content":"Правила работы с реестром источников помогают не потерять предмет проверки и не подменять его случайными данными."},"done":true}\n',
+        { status: 200 },
+      ));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await POST(studioReferenceRequest());
+    const events = (await response.text()).trim().split("\n").map((line) => JSON.parse(line));
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(events).toContainEqual(expect.objectContaining({ type: "phase", phase: "editing" }));
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "validation",
+      topicAlignment: expect.objectContaining({ status: "passed" }),
+    }));
+    expect(events.some((event) => event.type === "done")).toBe(true);
+    const repairBody = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)) as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    expect(repairBody.messages.at(-1)?.content).toContain("Тематическое соответствие провалено");
+  });
+
+  it("stages an off-topic terminal result as a reviewable Composer draft after one repair", async () => {
+    mocks.getDraftForUser.mockResolvedValue(ownedReferenceDraft());
+    mocks.channelAiContextFor.mockResolvedValue({
+      id: 42,
+      title: "Технологии Права",
+      network: "tg",
+      profile: "Юридический канал",
+      profileProvenance: {},
+      facts: [],
+      styleSamples: [],
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(
+      '{"message":{"content":"Покупайте билеты на конференцию и занимайте место в зале."},"done":true}\n',
+      { status: 200 },
+    )));
+    const warnLog = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const response = await POST(studioReferenceRequest());
+    const events = (await response.text()).trim().split("\n").map((line) => JSON.parse(line));
+    warnLog.mockRestore();
+
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "validation",
+      status: "blocked",
+      requiresReview: true,
+      blockerCodes: expect.arrayContaining(["topic:off_topic"]),
+      topicAlignment: expect.objectContaining({ status: "failed" }),
+    }));
+    expect(events.some((event) => event.type === "done")).toBe(true);
+    expect(mocks.stageAiUsageResult).toHaveBeenCalledWith(
+      7,
+      81,
+      response.headers.get("x-ai-request-id"),
+      expect.objectContaining({
+        text: "Покупайте билеты на конференцию и занимайте место в зале.",
+        validation: expect.objectContaining({
+          status: "blocked",
+          requiresReview: true,
+          blockerCodes: expect.arrayContaining(["topic:off_topic"]),
+        }),
+      }),
+    );
+    expect(mocks.releaseAiUsageRequest).not.toHaveBeenCalled();
+  });
+
+  it("rejects a missing or foreign reference draft before lookup, quota and provider work", async () => {
+    mocks.getDraftForUser.mockResolvedValue(null);
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await POST(studioReferenceRequest());
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({ error: "reference_draft_forbidden" });
+    expect(mocks.lookupAiUsageRequest).not.toHaveBeenCalled();
+    expect(mocks.acquireAiUsageRequest).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("replays the same owned draft/version/request key without a second provider call", async () => {
+    mocks.getDraftForUser.mockResolvedValue(ownedReferenceDraft());
+    mocks.lookupAiUsageRequest.mockResolvedValue({
+      state: "replay",
+      reservationId: 81,
+      result: {
+        protocol: "ndjson",
+        text: "Правила работы с реестром источников сохранены.",
+        pipeline: "single",
+        requestedEngine: "local",
+        engine: "local",
+        fallbackUsed: false,
+        validation: {
+          status: "not_checked",
+          requiresReview: true,
+          provenance: {},
+          blockerCodes: [],
+          topicAlignment: { status: "passed", score: 1, topic: "Правила работы с реестром источников" },
+        },
+      },
+    });
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await POST(studioReferenceRequest());
+    const events = (await response.text()).trim().split("\n").map((line) => JSON.parse(line));
+
+    expect(events).toContainEqual(expect.objectContaining({ type: "done", replayed: true }));
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "validation",
+      topicAlignment: expect.objectContaining({ status: "passed" }),
+    }));
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mocks.acquireAiUsageRequest).not.toHaveBeenCalled();
+  });
+
+  it("uses a new request fingerprint when the authoritative draft version changes", async () => {
+    mocks.getDraftForUser
+      .mockResolvedValueOnce(ownedReferenceDraft({ version: 3 }))
+      .mockResolvedValueOnce(ownedReferenceDraft({ version: 4 }));
+    mocks.lookupAiUsageRequest.mockResolvedValue({
+      state: "in_progress",
+      reservationId: 81,
+      result: null,
+    });
+
+    expect((await POST(studioReferenceRequest(3))).status).toBe(409);
+    expect((await POST(studioReferenceRequest(4))).status).toBe(409);
+
+    const fingerprints = mocks.lookupAiUsageRequest.mock.calls.map((call) => call[2]);
+    expect(fingerprints).toHaveLength(2);
+    expect(fingerprints[0]).toMatch(/^[a-f0-9]{64}$/u);
+    expect(fingerprints[1]).not.toBe(fingerprints[0]);
   });
 
   it("keeps a fact-blocked Trends result as a confirmed reviewable draft", async () => {
@@ -711,16 +973,18 @@ describe("POST /api/ai/generate prerequisites", () => {
     errorLog.mockRestore();
   });
 
-  it("does not switch providers after a runtime failure and suggests one ready model", async () => {
+  it("keeps the selected NavyAI model after a timeout and only suggests one ready alternative", async () => {
     vi.stubEnv("NAVYAI_API_KEY", "navy-test-key");
     vi.stubEnv("NAVYAI_API_URL", "https://navy-runtime-failure.example/v1");
     mocks.query.mockResolvedValue({
-      rows: [{ ai_mood: null, ai_engine: "navy-deepseek-pro", ai_post_settings: null }],
+      rows: [{ ai_mood: null, ai_engine: "navy-deepseek-flash", ai_post_settings: null }],
       rowCount: 1,
     });
-    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
-    const fetchMock = vi.fn(async () => Response.json(
-      { error: { code: "provider_unavailable", message: "private provider detail" } },
+    mocks.aiReady.mockImplementation(async (engine) => (
+      engine === "navy-deepseek-flash" || engine === "navy-gpt-5-4"
+    ));
+    const fetchMock = vi.fn().mockResolvedValueOnce(Response.json(
+      { error: { code: "provider_timeout", message: "private provider detail" } },
       { status: 503 },
     ));
     vi.stubGlobal("fetch", fetchMock);
@@ -728,19 +992,24 @@ describe("POST /api/ai/generate prerequisites", () => {
     const response = await POST(studioRequest());
     const events = (await response.text()).trim().split("\n").map((line) => JSON.parse(line));
 
-    expect(fetchMock).toHaveBeenCalledOnce();
-    expect(events.some((event) => event.type === "fallback")).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(events).toContainEqual(expect.objectContaining({
       type: "error",
-      error: "provider_unavailable",
+      error: "provider_timeout",
+      engine: "navy-deepseek-flash",
+      suggestedEngine: expect.objectContaining({ id: "navy-gpt-5-4" }),
       retryable: true,
-      suggestedEngine: { id: "navy-deepseek-flash", label: expect.any(String), vendor: expect.any(String) },
-      requestId: response.headers.get("x-ai-request-id"),
     }));
+    expect(events.some((event) => event.type === "fallback" || event.type === "done")).toBe(false);
+    const providerBodies = fetchMock.mock.calls.map((call) => JSON.parse(String(call[1]?.body)));
+    expect(providerBodies.map((body) => body.model)).toEqual(["deepseek-v4-flash"]);
     expect(mocks.commitAiUsageResult).not.toHaveBeenCalled();
-    expect(mocks.releaseAiUsageRequest).toHaveBeenCalledOnce();
-    expect(JSON.stringify(errorLog.mock.calls)).not.toContain("private provider detail");
-    errorLog.mockRestore();
+    expect(mocks.releaseAiUsageRequest).toHaveBeenCalledWith(
+      7,
+      81,
+      response.headers.get("x-ai-request-id"),
+    );
+    expect(mocks.stageAiUsageResult).not.toHaveBeenCalled();
   });
 
   it("uses different provider idempotency keys after an explicitly confirmed engine change", async () => {
@@ -760,8 +1029,8 @@ describe("POST /api/ai/generate prerequisites", () => {
       void url;
       void init;
       return Response.json(
-        { error: { code: "provider_unavailable" } },
-        { status: 503 },
+        { error: { code: "provider_access_denied" } },
+        { status: 403 },
       );
     });
     vi.stubGlobal("fetch", fetchMock);

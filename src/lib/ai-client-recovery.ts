@@ -20,7 +20,7 @@ export function aiFailureRecoveryRu(info: AiFailureInfo | null, status?: number)
     return "Ключ запроса уже относится к другому тексту. Создай новый вариант, чтобы отправить этот бриф отдельно.";
   }
   if (info?.error === "request_result_unavailable") {
-    return "Запрос был списан раньше, но его сохранённый результат недоступен. Не повторяй его с новым ключом; передай ID запроса в поддержку.";
+    return "Запрос был списан раньше, но его сохранённый результат недоступен. Не повторяй его с новым ключом; передай номер запроса в поддержку.";
   }
   if (info?.error === "engine_unsupported") {
     return `Модель ${info.label ?? "выбранная модель"} пока не поддерживается. Выбор сохранён; подтвердить переход на доступную модель можно ниже.`;
@@ -48,6 +48,9 @@ export function aiFailureRecoveryRu(info: AiFailureInfo | null, status?: number)
   }
   if (info?.error === "factual_validation_failed") {
     return "Проверка нашла неподтверждённые факты или искажённые реквизиты. Уточни бриф или добавь проверенные источники и повтори запрос.";
+  }
+  if (info?.error === "topic_alignment_failed") {
+    return "Аврора дважды ушла от темы выбранного материала. Результат заблокирован и не открыт в редакторе; исходный контекст сохранён, можно безопасно повторить запрос.";
   }
   if (info?.error === "provider_authentication_failed" || info?.error === "provider_access_denied") {
     return `${info.label ?? "Провайдер"} отклонил доступ. Проверь ключ, тариф и права модели, затем повтори запрос.`;

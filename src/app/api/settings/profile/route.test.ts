@@ -33,6 +33,8 @@ const validBody = {
     rubrics: ["Практика"],
     formats: ["Текст", "Видео"],
     authorRole: "Юрист и автор",
+    cta: "Записаться на консультацию",
+    taboo: "Не гарантировать результат",
   },
 };
 
@@ -47,7 +49,7 @@ describe("settings profile route", () => {
     mocks.query
       .mockResolvedValueOnce({ rows: [{ name: "Анна", avatar: null, email: "a@example.test", password_hash: "hash", tg_id: null, vk_id: null }] })
       .mockResolvedValueOnce({ rows: [{ id: "42" }] })
-      .mockResolvedValueOnce({ rows: [{ niche: "Право", audience: "Бизнес", rubrics: ["Практика"], formats: ["Видео"], author_role: "Юрист", ready: true, source: "manual" }] })
+      .mockResolvedValueOnce({ rows: [{ niche: "Право", audience: "Бизнес", rubrics: ["Практика"], formats: ["Видео"], author_role: "Юрист", cta: "В бот", taboo: "Без обещаний", ready: true, source: "manual" }] })
       .mockResolvedValueOnce({ rows: [{ target_email: "new@example.test", expires_at: "2026-08-05T14:00:00Z" }] });
 
     const response = await GET(request());
@@ -57,7 +59,7 @@ describe("settings profile route", () => {
       account: { reauthMethod: "password" },
       pendingEmail: { email: "new@example.test" },
       channelId: 42,
-      brief: { formats: ["Видео"], authorRole: "Юрист" },
+      brief: { formats: ["Видео"], authorRole: "Юрист", cta: "В бот", taboo: "Без обещаний" },
     });
   });
 
@@ -75,6 +77,7 @@ describe("settings profile route", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ ok: true, channelId: 42 });
     expect(mocks.query.mock.calls.some(([sql]) => String(sql).includes("formats = excluded.formats"))).toBe(true);
+    expect(mocks.query.mock.calls.some(([sql]) => String(sql).includes("taboo = excluded.taboo"))).toBe(true);
     expect(mocks.query.mock.calls.some(([sql]) => String(sql).includes("profile_update_operations"))).toBe(true);
     expect(mocks.release).toHaveBeenCalled();
   });

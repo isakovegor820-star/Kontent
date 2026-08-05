@@ -67,7 +67,7 @@ function providerContext(providerId: string) {
 
 function connectionErrorMessage(code: string) {
   switch (code) {
-    case "provider_credentials_rejected": return "Провайдер отклонил API-токен.";
+    case "provider_credentials_rejected": return "Сервис отклонил токен доступа.";
     case "subscription_inactive": return "Подписка провайдера неактивна.";
     case "provider_rate_limited": return "Провайдер временно ограничил частоту запросов.";
     case "provider_timeout": return "Провайдер не ответил вовремя.";

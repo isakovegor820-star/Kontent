@@ -105,6 +105,7 @@ export function Field({
   error,
   htmlFor,
   required,
+  messageId,
   children,
 }: {
   label: string;
@@ -112,6 +113,7 @@ export function Field({
   error?: string;
   htmlFor?: string;
   required?: boolean;
+  messageId?: string;
   children: React.ReactNode;
 }) {
   return (
@@ -124,11 +126,11 @@ export function Field({
       {children}
       {/* Ошибка — рядом с полем, с ролью alert */}
       {error ? (
-        <p role="alert" className="text-[13px] font-medium text-danger-text">
+        <p id={messageId} role="alert" className="text-[13px] font-medium text-danger-text">
           {error}
         </p>
       ) : hint ? (
-        <p className="text-[13px] text-text-3">{hint}</p>
+        <p id={messageId} className="text-[13px] text-text-3">{hint}</p>
       ) : null}
     </div>
   );

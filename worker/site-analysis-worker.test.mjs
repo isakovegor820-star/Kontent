@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { SiteCrawlerError } from "../src/lib/site-crawler.mjs";
+import { SITE_INTERVIEW_QUESTIONS } from "../src/lib/site-analysis/questions.data.mjs";
 import { processSiteAnalysisJob } from "./site-analysis-worker.mjs";
 
 function analysisRow() {
@@ -12,6 +13,48 @@ function analysisRow() {
     confirmed_domain: "example.com",
     limits: { maxPages: 5 },
     run_revision: 2,
+    created_at: "2026-08-05T12:00:00Z",
+  };
+}
+
+const testSnapshot = Object.freeze({
+  version: "site-osint-snapshot-v1",
+  snapshotHash: `sha256:${"a".repeat(64)}`,
+  coverage: { mode: "site_only", confirmedDomain: "example.com" },
+  sources: [],
+  evidence: [],
+  entities: [],
+  relations: [],
+});
+
+function interviewAnswer(question) {
+  return {
+    questionId: question.id,
+    status: "insufficient_data",
+    shortAnswer: "Недостаточно данных.",
+    explanation: "Нет подтверждений.",
+    facts: [],
+    evidenceIds: [],
+    confidence: "none",
+    contradictions: [],
+    gaps: ["Нужен источник."],
+    requiredIntegrations: [],
+    recommendationHooks: [],
+  };
+}
+
+function interviewResult(release = vi.fn(async () => true)) {
+  return {
+    report: {
+      reportStatus: "complete",
+      answers: SITE_INTERVIEW_QUESTIONS.map(interviewAnswer),
+      recommendations: [],
+      summary: { insufficientData: SITE_INTERVIEW_QUESTIONS.length, total: SITE_INTERVIEW_QUESTIONS.length },
+    },
+    reservationId: 91,
+    userId: 7,
+    quotaState: "acquired",
+    release,
   };
 }
 
@@ -40,12 +83,20 @@ describe("site analysis BullMQ worker core", () => {
         report: { policyVersion: "v1", inventory: [{ url: "https://example.com/" }] },
       };
     });
+    const finalizeUsage = vi.fn(async () => ({ changed: true, status: "committed" }));
 
-    await expect(processSiteAnalysisJob(pool, { analysisId: 41, runRevision: 2 }, { crawl, leaseToken: "lease-1" })).resolves.toMatchObject({ ok: true, pages: 1 });
+    await expect(processSiteAnalysisJob(pool, { analysisId: 41, runRevision: 2 }, {
+      crawl,
+      leaseToken: "lease-1",
+      buildSnapshot: vi.fn(() => testSnapshot),
+      runInterview: vi.fn(async () => interviewResult()),
+      finalizeUsage,
+    })).resolves.toMatchObject({ ok: true, pages: 1, questions: SITE_INTERVIEW_QUESTIONS.length });
     expect(crawl).toHaveBeenCalledWith(expect.objectContaining({ confirmedDomain: "example.com", consent: true }), expect.any(Object));
     expect(txQuery).toHaveBeenCalledWith(expect.stringContaining("insert into site_analysis_pages"), expect.arrayContaining([41, "https://example.com/", 200]));
     expect(txQuery.mock.calls.filter(([sql]) => String(sql).includes("insert into site_analysis_pages"))).toHaveLength(1);
     expect(txQuery).toHaveBeenCalledWith(expect.stringContaining("status = 'ready'"), expect.arrayContaining([41, 2]));
+    expect(finalizeUsage).toHaveBeenCalledWith(expect.any(Object), 7, 91, "committed");
     expect(release).toHaveBeenCalled();
   });
 
@@ -115,6 +166,9 @@ describe("site analysis BullMQ worker core", () => {
     await expect(processSiteAnalysisJob(pool, { analysisId: 41, runRevision: 2 }, {
       crawl,
       leaseToken: "lease-race",
+      buildSnapshot: vi.fn(() => testSnapshot),
+      runInterview: vi.fn(async () => interviewResult()),
+      finalizeUsage: vi.fn(async () => ({ changed: true, status: "committed" })),
     })).resolves.toMatchObject({ ok: true, pages: 0 });
     expect(crawl).toHaveBeenCalledOnce();
   });
@@ -133,6 +187,40 @@ describe("site analysis BullMQ worker core", () => {
     const update = pool.query.mock.calls[1];
     expect(update[0]).toContain("status = 'queued'");
     expect(JSON.stringify(update)).not.toContain("token=secret");
+  });
+
+  it("rolls back ready and releases quota when atomic quota commit cannot be confirmed", async () => {
+    const releaseQuota = vi.fn(async () => true);
+    const txQuery = vi.fn(async (sql) => {
+      const source = String(sql);
+      if (source.includes("select status, run_revision")) {
+        return { rows: [{ status: "saving", run_revision: 2, worker_lease_token: "lease-quota" }] };
+      }
+      if (source.includes("status = 'ready'") && source.includes("returning id")) return { rows: [{ id: 41 }] };
+      return { rows: [] };
+    });
+    const pool = {
+      query: vi.fn()
+        .mockResolvedValueOnce({ rows: [analysisRow()] })
+        .mockResolvedValue({ rows: [] }),
+      connect: vi.fn(async () => ({ query: txQuery, release: vi.fn() })),
+    };
+    const error = await processSiteAnalysisJob(pool, { analysisId: 41, runRevision: 2 }, {
+      finalAttempt: true,
+      leaseToken: "lease-quota",
+      crawl: vi.fn(async () => ({ pages: [], report: { inventory: [] } })),
+      buildSnapshot: vi.fn(() => testSnapshot),
+      runInterview: vi.fn(async () => interviewResult(releaseQuota)),
+      finalizeUsage: vi.fn(async () => ({ changed: false, status: "expired" })),
+    }).catch((value) => value);
+
+    expect(error).toMatchObject({ code: "quota_commit_failed" });
+    expect(txQuery).toHaveBeenCalledWith("rollback");
+    expect(releaseQuota).toHaveBeenCalledOnce();
+    const readyIndex = txQuery.mock.calls.findIndex(([sql]) => String(sql).includes("status = 'ready'"));
+    const rollbackIndex = txQuery.mock.calls.findIndex(([sql]) => String(sql) === "rollback");
+    expect(readyIndex).toBeGreaterThan(-1);
+    expect(rollbackIndex).toBeGreaterThan(readyIndex);
   });
 
   it("terminalizes a permanent crawler denial with a safe public message", async () => {

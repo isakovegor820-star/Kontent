@@ -11,6 +11,8 @@ import {
   type EffectiveProfile,
   type ProfileCandidate,
 } from "./effective-ai-context";
+import { authorProfileContext } from "./author-profile.mjs";
+import { normalizePostQuality, type PostQuality } from "./post-quality.mjs";
 
 export const AI_DAILY_LIMIT = Number(process.env.AI_DAILY_LIMIT || 30);
 const configuredReservationTtl = Number(process.env.AI_RESERVATION_TTL_MS || 10 * 60_000);
@@ -45,6 +47,11 @@ export interface AiUsageStoredResult {
     requiresReview: boolean;
     provenance: Record<string, unknown>;
     blockerCodes: string[];
+    topicAlignment?: {
+      status: "passed" | "failed";
+      score: number;
+      topic: string;
+    };
   };
 }
 
@@ -803,6 +810,10 @@ export interface ChannelAiContext {
   network: string;
   profile: string;
   profileProvenance: EffectiveProfile;
+  /** Единый поканальный редакционный стандарт для Студии, редактора и Автопилота. */
+  quality: PostQuality;
+  /** Индекс следующей публикации нужен для честной частоты CTA «каждый N-й пост». */
+  postIndex: number;
   facts: string[];
   styleSamples: string[];
 }
@@ -863,11 +874,15 @@ export async function channelAiContextFor(
       formats: string[] | null;
       author_role: string | null;
       goal: string | null;
+      cta: string | null;
       taboo: string | null;
+      profile_answers: unknown;
+      quality: unknown;
       ready: boolean;
       updated_at: Date | string;
     }>(
-      `select niche, audience, rubrics, formats, author_role, goal, taboo, ready, updated_at
+      `select niche, audience, rubrics, formats, author_role, goal, cta, taboo,
+              profile_answers, quality, ready, updated_at
          from content_brief
         where user_id = $1 and channel_id = $2`,
       [userId, channelId],
@@ -916,7 +931,11 @@ export async function channelAiContextFor(
     .filter((line) => !line.endsWith(": undefined"));
   if (brief?.formats?.length) profileLines.push(`Форматы публикаций: ${brief.formats.join(", ")}`);
   if (brief?.author_role?.trim()) profileLines.push(`Роль автора: ${brief.author_role.trim()}`);
+  if (brief?.cta?.trim()) profileLines.push(`Следующий шаг читателя: ${brief.cta.trim()}`);
+  const detailedProfile = authorProfileContext(brief?.profile_answers);
+  if (detailedProfile) profileLines.push(detailedProfile);
   const profile = profileLines.join("\n\n");
+  const quality = normalizePostQuality(brief?.quality);
   const facts = (
     await pool.query<{ raw_text: string }>(
       `select raw_text
@@ -928,13 +947,25 @@ export async function channelAiContextFor(
     )
   ).rows.map((row) => row.raw_text.trim()).filter(Boolean);
 
+  const liveStyleSamples = await styleSamplesFor(userId, channelId, styleLimit, pool);
+  const styleSamples = [...new Set([...quality.styleExamples, ...liveStyleSamples])].slice(0, styleLimit);
+  const publishedCount = Number((
+    await pool.query<{ count: string }>(
+      `select count(*)::text as count from posts
+        where user_id = $1 and channel_id = $2 and status = 'published'`,
+      [userId, channelId],
+    )
+  ).rows[0]?.count ?? 0);
+
   return {
     id: channelId,
     title: channel.title || channel.handle || `Канал ${channelId}`,
     network: channel.network,
-    profile: profile.trim().slice(0, 5000),
+    profile: profile.trim().slice(0, 24_000),
     profileProvenance: effectiveProfile,
+    quality,
+    postIndex: Number.isSafeInteger(publishedCount) && publishedCount >= 0 ? publishedCount : 0,
     facts: facts.map((fact) => fact.slice(0, 3000)),
-    styleSamples: await styleSamplesFor(userId, channelId, styleLimit, pool),
+    styleSamples,
   };
 }

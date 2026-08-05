@@ -48,6 +48,33 @@ describe("AI provider orchestration", () => {
     ]);
   });
 
+  it("uses a stable model-scoped provider key for every fallback attempt", async () => {
+    const keys: string[] = [];
+    const factory: AiStreamFactory = async function* (input, engine) {
+      keys.push(String(input.providerRequestKey));
+      if (engine === "navy-deepseek-pro") throw new AiProviderError(engine, 503, "http_error");
+      yield "готово";
+    };
+
+    const run = () => collect(orchestrateText(
+      { ...params, providerRequestKey: "stable-provider-operation" },
+      "navy-deepseek-pro",
+      {
+        fallbackEngines: ["navy-gpt-5-4"],
+        streamFactory: factory,
+        circuitBreaker: null,
+      },
+    ));
+
+    await run();
+    await run();
+
+    expect(keys).toHaveLength(4);
+    expect(keys.every((key) => /^[a-f0-9]{64}$/u.test(key))).toBe(true);
+    expect(keys[0]).not.toBe(keys[1]);
+    expect(keys.slice(0, 2)).toEqual(keys.slice(2));
+  });
+
   it("не склеивает второй движок после уже показанного delta", async () => {
     const calls: string[] = [];
     const factory: AiStreamFactory = async function* (_input, engine) {

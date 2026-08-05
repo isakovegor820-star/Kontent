@@ -54,14 +54,14 @@ export default function ConfirmEmailPage() {
   }, []);
 
   const copy: Record<ConfirmState, { title: string; body: string }> = {
-    loading: { title: "Подтверждаем email", body: "Проверяем одноразовую ссылку…" },
-    confirmed: { title: "Email подтверждён", body: "Новый адрес сохранён в профиле. Теперь его можно использовать для входа." },
-    already_confirmed: { title: "Email уже подтверждён", body: "Эта ссылка уже сработала. Дополнительных действий не требуется." },
-    invalid: { title: "Ссылка недействительна", body: "Открой ссылку из последнего письма или запроси изменение email заново." },
-    expired: { title: "Ссылка истекла", body: "Запроси изменение email ещё раз — новая ссылка будет действовать один час." },
+    loading: { title: "Подтверждаем почту", body: "Проверяем одноразовую ссылку…" },
+    confirmed: { title: "Почта подтверждена", body: "Новый адрес сохранён в профиле. Теперь его можно использовать для входа." },
+    already_confirmed: { title: "Почта уже подтверждена", body: "Эта ссылка уже сработала. Дополнительных действий не требуется." },
+    invalid: { title: "Ссылка недействительна", body: "Открой ссылку из последнего письма или запроси изменение почты заново." },
+    expired: { title: "Ссылка истекла", body: "Запроси изменение почты ещё раз — новая ссылка будет действовать один час." },
     used: { title: "Ссылка больше не действует", body: "Был создан более новый запрос. Используй ссылку из последнего письма." },
-    email_taken: { title: "Email уже занят", body: "Этот адрес успели привязать к другому аккаунту. Укажи другой email в настройках." },
-    unavailable: { title: "Не удалось подтвердить email", body: "Проверь соединение и снова открой ссылку из письма." },
+    email_taken: { title: "Адрес уже занят", body: "Этот адрес успели привязать к другому аккаунту. Укажи другую почту в настройках." },
+    unavailable: { title: "Не удалось подтвердить почту", body: "Проверь соединение и снова открой ссылку из письма." },
   };
 
   return (
@@ -75,7 +75,7 @@ export default function ConfirmEmailPage() {
           <p className="mt-3 text-[14px] leading-relaxed text-text-2">{copy[state].body}</p>
         </div>
         {requestId && state !== "confirmed" && state !== "already_confirmed" && (
-          <p className="mt-3 font-mono text-[12px] text-text-3">ID запроса: {requestId}</p>
+          <p className="mt-3 font-mono text-[12px] text-text-3">Номер запроса: {requestId}</p>
         )}
         {state !== "loading" && (
           <Link href="/app/settings?section=general">

@@ -234,7 +234,7 @@ function SequencerFooter({ footerId }: { footerId: string }) {
 
   return (
     <footer id={footerId} className={`${styles.footer} ${sceneClass}`}>
-      <LabTop number="03" title="Визуальный секвенсор" status={live ? "Aurora live" : `${count} / 6 слоёв`} />
+      <LabTop number="03" title="Визуальная последовательность" status={live ? "Аврора работает" : `${count} / 6 слоёв`} />
 
       <div className={styles.sequenceTicker} aria-hidden>
         <div>
@@ -262,7 +262,7 @@ function SequencerFooter({ footerId }: { footerId: string }) {
             >
               <span>{LAYERS[index]}</span>
               <strong aria-hidden>{letter}</strong>
-              <i aria-hidden>{layers[index] ? "ON" : "OFF"}</i>
+              <i aria-hidden>{layers[index] ? "ВКЛ" : "ВЫКЛ"}</i>
             </button>
           ))}
         </div>

@@ -59,6 +59,24 @@ export function normalizeDraftAiValidation(value: unknown): DraftAiValidation | 
   const sourceIds = boundedStrings(provenance.sourceIds, 200, 200);
   const blockerCodes = boundedStrings(value.blockerCodes, 100, 100);
   if (!rulesRun || !sourceIds || !blockerCodes) return null;
+  let topicAlignment: DraftAiValidation["topicAlignment"];
+  if (value.topicAlignment != null) {
+    if (
+      !record(value.topicAlignment)
+      || (value.topicAlignment.status !== "passed" && value.topicAlignment.status !== "failed")
+      || !Number.isFinite(value.topicAlignment.score)
+      || Number(value.topicAlignment.score) < 0
+      || Number(value.topicAlignment.score) > 1
+      || typeof value.topicAlignment.topic !== "string"
+      || !value.topicAlignment.topic.trim()
+      || value.topicAlignment.topic.length > 500
+    ) return null;
+    topicAlignment = {
+      status: value.topicAlignment.status,
+      score: Number(value.topicAlignment.score),
+      topic: value.topicAlignment.topic,
+    };
+  }
   if (provenance.semanticAdapter != null) {
     if (
       typeof provenance.semanticAdapter !== "string" ||
@@ -88,6 +106,7 @@ export function normalizeDraftAiValidation(value: unknown): DraftAiValidation | 
     status,
     requiresReview: value.requiresReview,
     blockerCodes,
+    ...(topicAlignment ? { topicAlignment } : {}),
     provenance: {
       validatorVersion: "fact-ledger-v1",
       ledgerHash: provenance.ledgerHash,

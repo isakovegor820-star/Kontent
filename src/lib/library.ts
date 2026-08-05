@@ -1,4 +1,5 @@
 import type { DraftCreateInput } from "./draft-types";
+import { topicFromSourceText } from "./reference-adaptation";
 
 export type LibraryHitAnalysisInput = {
   text: string;
@@ -26,6 +27,18 @@ export type LibraryDraftContextInput = {
     competitorId: number | string;
     sourceLabel: string;
   } | null;
+  material?: {
+    kind: "idea" | "reference";
+    id: number | string;
+    sourceLabel: string;
+    provenanceLabel?: string | null;
+    sourceId?: number | string | null;
+    sourceUrl?: string | null;
+    topic?: string | null;
+    hook?: string | null;
+    structure?: string | null;
+    whyItWorked?: string | null;
+  } | null;
 };
 
 /**
@@ -42,15 +55,36 @@ export function buildLibraryDraftContext(input: LibraryDraftContextInput): Draft
     throw new RangeError("reference competitorId is required");
   }
   const sourceLabel = input.reference?.sourceLabel.trim().slice(0, 400) || "Конкурент";
+  const materialId = input.material ? String(input.material.id).trim() : "";
+  if (input.material && !materialId) throw new RangeError("material id is required");
+  const materialLabel = input.material?.sourceLabel.trim().slice(0, 400) || "Материал библиотеки";
+  const provenanceLabel = input.material?.provenanceLabel?.trim().slice(0, 400) || materialLabel;
+  const materialSourceRef: DraftCreateInput["sourceRef"] = input.material
+    ? {
+        kind: input.material.kind,
+        id: materialId.slice(0, 200),
+        label: materialLabel,
+        ...(input.material.topic?.trim() ? { topic: input.material.topic.trim().slice(0, 500) } : {}),
+        ...(input.material.hook?.trim() ? { hook: input.material.hook.trim().slice(0, 1_000) } : {}),
+        ...(input.material.structure?.trim() ? { structure: input.material.structure.trim().slice(0, 2_000) } : {}),
+        ...(input.material.whyItWorked?.trim() ? { whyItWorked: input.material.whyItWorked.trim().slice(0, 1_200) } : {}),
+        provenance: {
+          kind: input.material.kind === "idea" ? "content_idea" : "competitor_post",
+          ...(input.material.sourceId != null ? { id: String(input.material.sourceId).slice(0, 200) } : {}),
+          label: provenanceLabel,
+          ...(input.material.sourceUrl?.trim() ? { url: input.material.sourceUrl.trim().slice(0, 2_048) } : {}),
+        },
+      }
+    : null;
 
   return {
     text: input.text,
     media: null,
     scheduledAt: null,
-    origin: input.reference ? "competitor" : "manual",
-    sourceRef: input.reference
+    origin: input.material?.kind === "idea" ? "idea" : input.material || input.reference ? "competitor" : "manual",
+    sourceRef: materialSourceRef ?? (input.reference
       ? { kind: "competitor", id: referenceId.slice(0, 200), label: sourceLabel }
-      : null,
+      : null),
     channelIds: [input.channelId],
     aiValidation: null,
     clientKey: input.clientKey,
@@ -66,17 +100,20 @@ export function buildLibraryAdaptation(input: {
   channelName: string;
   text: string;
   source: string;
+  topic?: string;
 }): LibraryAdaptation {
   const channelName = input.channelName.trim().slice(0, 160) || "выбранного канала";
   const referenceSource = input.source.trim().slice(0, 160) || "из библиотеки";
   // Ограничение относится к AI-контексту, а не к URL: переход передаёт только id
   // серверного черновика, полный исходник остаётся в authenticated storage.
   const referenceText = input.text.trim().slice(0, 1400);
+  const topic = input.topic?.trim().slice(0, 320) || topicFromSourceText(referenceText);
   return {
     prompt: [
-      `Создай оригинальный пост для канала «${channelName}» по механике выбранного референса.`,
-      "Сохрани тему и читательскую задачу, но возьми из референса только хук, структуру, ритм и способ удержания внимания.",
+      `Создай оригинальный пост для канала «${channelName}» строго по теме: «${topic}».`,
+      "Сохрани предметную тему и читательскую задачу. Из референса также можно взять хук, структуру, ритм и способ удержания внимания.",
       "Формулировки, цифры, даты, имена, ссылки и выводы референса не переноси. Факты бери только из паспорта и подтверждённых данных моего канала; если их мало, пиши без новой конкретики.",
+      "Не заменяй эту тему другой темой из профиля канала, настроек или предыдущего диалога.",
     ].join("\n\n"),
     referenceText,
     referenceSource,

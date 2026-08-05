@@ -3,6 +3,11 @@ export interface OnboardingQuizAnswers {
   goal: string;
   audience: string;
   rubrics: string[];
+  formats: string[];
+  authorRole: string;
+  cta: string;
+  taboo: string;
+  tone: string;
 }
 
 export interface OnboardingRecovery {
@@ -28,6 +33,11 @@ export function parseOnboardingRecovery(raw: string | null): OnboardingRecovery 
       typeof quiz.audience !== "string" ||
       !Array.isArray(quiz.rubrics) ||
       quiz.rubrics.some((rubric) => typeof rubric !== "string") ||
+      (quiz.formats != null && (!Array.isArray(quiz.formats) || quiz.formats.some((format) => typeof format !== "string"))) ||
+      (quiz.authorRole != null && typeof quiz.authorRole !== "string") ||
+      (quiz.cta != null && typeof quiz.cta !== "string") ||
+      (quiz.taboo != null && typeof quiz.taboo !== "string") ||
+      (quiz.tone != null && typeof quiz.tone !== "string") ||
       !Number.isFinite(value?.step)
     ) {
       return null;
@@ -38,6 +48,11 @@ export function parseOnboardingRecovery(raw: string | null): OnboardingRecovery 
         goal: quiz.goal,
         audience: quiz.audience,
         rubrics: quiz.rubrics,
+        formats: quiz.formats ?? [],
+        authorRole: quiz.authorRole ?? "",
+        cta: quiz.cta ?? "",
+        taboo: quiz.taboo ?? "",
+        tone: quiz.tone ?? "",
       },
       step: Math.min(5, Math.max(1, Math.round(Number(value?.step)))),
       channelId:

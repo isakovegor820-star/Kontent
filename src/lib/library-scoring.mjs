@@ -253,14 +253,14 @@ export function scoreLibraryCohorts(rows, options = {}) {
 
 export function explainLibraryScore(item) {
   if (!item || item.score == null) {
-    return "Недостаточно сопоставимых данных для аналитического Score.";
+    return "Недостаточно сопоставимых данных для аналитической оценки.";
   }
   const missing = Array.isArray(item.missingMetrics) && item.missingMetrics.length
-    ? ` Недоступные метрики не учитывались: ${item.missingMetrics.join(", ")}.`
+    ? " Часть показателей недоступна и не учитывалась."
     : "";
   return [
-    `Score ${Math.round(item.score)} из 100 рассчитан внутри сопоставимого cohort: один источник, формат ${item.format} и временное окно.`,
-    `Lift ${item.lift?.toFixed?.(2) ?? "—"}; ER Bayes ${item.erBayes?.toFixed?.(4) ?? "—"}; velocity ${item.velocity?.toFixed?.(2) ?? "—"}; freshness ${item.freshness?.toFixed?.(3) ?? "—"}.`,
+    `Оценка ${Math.round(item.score)} из 100 рассчитана внутри сопоставимой группы: один источник, формат ${item.format} и временное окно.`,
+    `Прирост ${item.lift?.toFixed?.(2) ?? "—"}; скорректированная вовлечённость ${item.erBayes?.toFixed?.(4) ?? "—"}; скорость ${item.velocity?.toFixed?.(2) ?? "—"}; свежесть ${item.freshness?.toFixed?.(3) ?? "—"}.`,
     `Формула ${item.formulaVersion}.${missing}`,
   ].join(" ");
 }

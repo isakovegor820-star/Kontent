@@ -21,12 +21,12 @@ const COLUMNS = Object.freeze([
   ["postedAt", "Дата публикации"],
   ["views", "Просмотры"],
   ["reactions", "Реакции"],
-  ["lift", "Lift"],
-  ["erBayes", "ER Bayes"],
-  ["velocity", "Velocity"],
-  ["velocityZ", "VelocityZ"],
-  ["freshness", "Freshness"],
-  ["analyticsScore", "Score 0–100"],
+  ["lift", "Прирост"],
+  ["erBayes", "Скорректированная вовлечённость"],
+  ["velocity", "Скорость"],
+  ["velocityZ", "Отклонение скорости"],
+  ["freshness", "Свежесть"],
+  ["analyticsScore", "Оценка 0–100"],
   ["userRating", "Оценка 1–5"],
   ["dataQuality", "Качество данных"],
   ["dataMaturity", "Зрелость данных"],
@@ -229,12 +229,8 @@ function zip(files) {
   ]);
 }
 
-export function renderLibraryXlsx(snapshot) {
-  const rows = [
-    ...metadataRows(snapshot),
-    [],
-    ...tableRows(snapshot),
-  ];
+export function renderTabularXlsx(rows, sheetName = "Экспорт") {
+  const safeSheetName = String(sheetName || "Экспорт").replace(/[\\/*?:\[\]]/gu, " ").slice(0, 31) || "Экспорт";
   const sheetRows = rows.map((row, rowIndex) =>
     `<row r="${rowIndex + 1}">${row.map((value, columnIndex) => xlsxCell(value, rowIndex, columnIndex)).join("")}</row>`,
   ).join("");
@@ -242,10 +238,18 @@ export function renderLibraryXlsx(snapshot) {
   return zip([
     ["[Content_Types].xml", `<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>`],
     ["_rels/.rels", `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`],
-    ["xl/workbook.xml", `<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Идеи и примеры" sheetId="1" r:id="rId1"/></sheets></workbook>`],
+    ["xl/workbook.xml", `<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="${xmlText(safeSheetName)}" sheetId="1" r:id="rId1"/></sheets></workbook>`],
     ["xl/_rels/workbook.xml.rels", `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>`],
     ["xl/worksheets/sheet1.xml", sheet],
   ]);
+}
+
+export function renderLibraryXlsx(snapshot) {
+  return renderTabularXlsx([
+    ...metadataRows(snapshot),
+    [],
+    ...tableRows(snapshot),
+  ], "Идеи и примеры");
 }
 
 export function libraryPdfItemLines(item) {

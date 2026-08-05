@@ -63,9 +63,9 @@ type LegalSourcesResponse = {
 type LegalAction = "validate" | "sync" | "health" | "disconnect";
 
 const KIND_LABEL: Record<Provider["kind"], string> = {
-  official_api: "Официальный API",
+  official_api: "Официальное подключение",
   licensed_integration: "Лицензионная интеграция",
-  vendor_export: "Разрешённый export",
+  vendor_export: "Разрешённая выгрузка",
   user_file: "Файлы пользователя",
 };
 
@@ -99,14 +99,14 @@ function formatDate(value: string | null) {
 function errorText(code?: string) {
   switch (code) {
     case "not_configured": return "Официальная интеграция пока не настроена на сервере.";
-    case "provider_credentials_rejected": return "Провайдер отклонил API-токен. Создай новый токен в официальном кабинете провайдера.";
+    case "provider_credentials_rejected": return "Сервис отклонил токен доступа. Создай новый токен в официальном кабинете сервиса.";
     case "subscription_inactive": return "Подписка провайдера неактивна. Проверь её в официальном кабинете.";
     case "provider_rate_limited": return "Провайдер временно ограничил запросы. Повтори позже — тот же запрос не создаст дубль.";
     case "provider_timeout": return "Провайдер не ответил вовремя. Повтори запрос с тем же ID.";
     case "operation_in_progress": return "Этот запрос уже выполняется. Обнови статус через несколько секунд.";
-    case "forbidden_credential_field": return "Пароли, cookies и данные браузерной сессии принимать нельзя. Используй только официальный API-токен.";
+    case "forbidden_credential_field": return "Пароли и данные браузерной сессии принимать нельзя. Используй только официальный токен доступа.";
     case "credential_unavailable": return "Зашифрованный токен недоступен. Подключи источник заново.";
-    case "idempotency_conflict": return "ID запроса уже использован с другими данными. Обнови страницу и повтори действие.";
+    case "idempotency_conflict": return "Номер запроса уже использован с другими данными. Обнови страницу и повтори действие.";
     default: return "Не удалось выполнить действие. Проверь соединение и повтори попытку.";
   }
 }
@@ -250,7 +250,7 @@ export function LegalSourcesSection({ className }: { className?: string }) {
               Юридические источники
             </h2>
             <p className="mt-1 text-[14px] leading-relaxed text-text-2">
-              Публичные RSS доступны без входа. Платные базы подключаются только через официальный API, разрешённый export, пользовательские файлы или лицензионную интеграцию.
+              Публичные ленты доступны без входа. Платные базы подключаются только через официальное подключение, разрешённую выгрузку, пользовательские файлы или лицензионную интеграцию.
             </p>
           </div>
         </div>
@@ -260,7 +260,7 @@ export function LegalSourcesSection({ className }: { className?: string }) {
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h3 className="text-[15px] font-bold text-text">Публичные RSS</h3>
-                <p className="mt-1 text-[13px] text-text-3">Без паролей, cookies и доступа к закрытому кабинету.</p>
+                <p className="mt-1 text-[13px] text-text-3">Без паролей, данных браузерной сессии и доступа к закрытому кабинету.</p>
               </div>
               <Badge tone="success"><Rss className="h-3.5 w-3.5" aria-hidden />Публичный доступ</Badge>
             </div>
@@ -309,14 +309,14 @@ export function LegalSourcesSection({ className }: { className?: string }) {
               <div>
                 <h3 className="text-[15px] font-bold text-text">Лицензионные подключения</h3>
                 <p className="mt-1 text-[13px] leading-relaxed text-text-3">
-                  Аврора не собирает пароль, cookies браузера и данные сессии, не обходит подписку и не скрейпит закрытый кабинет.
+                  Аврора не собирает пароль и данные браузерной сессии, не обходит подписку и не считывает закрытый кабинет.
                 </p>
               </div>
             </div>
 
             {!loading && state?.paidIntegrationsStatus === "not_configured" && (
               <div className="rounded-sm bg-surface-inset p-4 text-[13px] leading-relaxed text-text-2">
-                Официальные vendor endpoints не настроены. Подключение останется недоступным, пока администратор не добавит подтверждённую лицензионную конфигурацию на сервере.
+                Официальные адреса сервисов не настроены. Подключение останется недоступным, пока администратор не добавит подтверждённую лицензионную конфигурацию на сервере.
               </div>
             )}
 
@@ -341,9 +341,9 @@ export function LegalSourcesSection({ className }: { className?: string }) {
                     </select>
                   </Field>
                   <Field
-                    label="Официальный API-токен"
+                    label="Официальный токен доступа"
                     htmlFor="legal-api-token"
-                    hint="Создай токен в официальном кабинете провайдера. Не вставляй пароль или cookies."
+                    hint="Создай токен доступа в официальном кабинете сервиса. Не вставляй пароль или данные браузерной сессии."
                   >
                     <Input
                       id="legal-api-token"
@@ -361,7 +361,7 @@ export function LegalSourcesSection({ className }: { className?: string }) {
                 </div>
                 <Button type="submit" variant="outline" loading={busy === "connect"}>
                   <KeyRound className="h-4 w-4" aria-hidden />
-                  Подключить официальный API
+                  Подключить официальный сервис
                 </Button>
               </form>
             )}
@@ -461,7 +461,7 @@ export function LegalSourcesSection({ className }: { className?: string }) {
             {message && <p role="status" className="font-medium text-success-text">{message}</p>}
             {error && (
               <p role="alert" className="font-medium text-danger-text">
-                {error} {requestId && <>ID запроса: <span className="font-mono">{requestId}</span>.</>}
+                {error} {requestId && <>Номер запроса: <span className="font-mono">{requestId}</span>.</>}
               </p>
             )}
           </div>

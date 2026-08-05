@@ -89,7 +89,6 @@ type Msg = StudioChatMessage;
 /** Что ИИ должен «помнить» для перегенерации ответа */
 type Gen = StudioChatGeneration & {
   autoOpenComposer?: boolean;
-  referenceDraftId?: number;
   resultClientKey?: string;
 };
 type AskOptions = {
@@ -99,12 +98,14 @@ type AskOptions = {
   requestKey?: string;
   autoOpenComposer?: boolean;
   referenceDraftId?: number;
+  referenceDraftVersion?: number;
   resultClientKey?: string;
 };
 type PendingBrief = { text: string; opts?: Omit<AskOptions, "skipBrief"> };
-type PendingLibraryReference = { text: string; source?: string };
+type PendingLibraryReference = { text: string; source?: string; topic?: string };
 type PendingReferenceGeneration = {
   draftId: number;
+  version: number;
   prompt: string;
   requestKey: string;
   resultClientKey: string;
@@ -270,12 +271,12 @@ function MessageRow({
         {msg.errorMessage && (
           <div role="alert" className="mt-3 max-w-[72ch] rounded-sm border border-danger-text/25 bg-danger-soft px-3 py-2 text-[12px] leading-relaxed text-danger-text">
             <p>{msg.errorMessage}</p>
-            {msg.requestId && <p className="mt-1 font-mono text-[10px] opacity-80">ID запроса: {msg.requestId}</p>}
+            {msg.requestId && <p className="mt-1 font-mono text-[10px] opacity-80">Номер запроса: {msg.requestId}</p>}
           </div>
         )}
 
         {!msg.errorMessage && msg.requestId && (
-          <p className="mt-2 font-mono text-[10px] text-text-3">ID запроса: {msg.requestId}</p>
+          <p className="mt-2 font-mono text-[10px] text-text-3">Номер запроса: {msg.requestId}</p>
         )}
 
         {!msg.streaming && msg.fallbackUsed && msg.requestedEngine && msg.effectiveEngine && (
@@ -905,7 +906,7 @@ function StudioPageInner() {
     void getServerDraft(requestedDraftId, controller.signal)
       .then((serverDraft) => {
         if (
-          (serverDraft.origin !== "competitor" && serverDraft.origin !== "trend")
+          (serverDraft.origin !== "competitor" && serverDraft.origin !== "trend" && serverDraft.origin !== "idea")
           || !serverDraft.source_ref
         ) return;
         const destination = serverDraft.destinations.find((item) => item.is_active);
@@ -920,12 +921,14 @@ function StudioPageInner() {
             channelName: destination?.title || "выбранного канала",
             text: serverDraft.text,
             source: serverDraft.source_ref.label,
+            topic: serverDraft.source_ref.topic,
           });
           const identity = studioReferenceGenerationIdentity(serverDraft.id, serverDraft.version);
           setWorkspaceMode("chat");
           setDraft(adaptation.prompt);
           setPendingReferenceGeneration({
             draftId: serverDraft.id,
+            version: serverDraft.version,
             prompt: adaptation.prompt,
             ...identity,
           });
@@ -1020,7 +1023,7 @@ function StudioPageInner() {
       .then(({ response, data: d }) => {
         if (!response.ok || !d) {
           setEngineStatusError(
-            `Не удалось проверить модели.${d?.requestId ? ` ID запроса: ${d.requestId}` : " Проверь соединение и обнови страницу."}`,
+            `Не удалось проверить модели.${d?.requestId ? ` Номер запроса: ${d.requestId}` : " Проверь соединение и обнови страницу."}`,
           );
           return;
         }
@@ -1050,7 +1053,7 @@ function StudioPageInner() {
       s.toast({
         kind: "danger",
         title: "Не удалось сменить модель",
-        body: `${info?.error === "engine_offline" ? "Модель сейчас не отвечает." : "Проверь подключение и попробуй ещё раз."}${info?.requestId ? ` ID запроса: ${info.requestId}` : ""}`,
+        body: `${info?.error === "engine_offline" ? "Модель сейчас не отвечает." : "Проверь подключение и попробуй ещё раз."}${info?.requestId ? ` Номер запроса: ${info.requestId}` : ""}`,
       });
       return;
     }
@@ -1129,8 +1132,12 @@ function StudioPageInner() {
           postSettings: generationSettings,
           referenceText: gen.referenceText,
           referenceSource: gen.referenceSource,
-          // Сервер включает строгий режим: текущая задача + настройки + опубликованные посты.
-          // Референс конкурента передаётся отдельно и остаётся только образцом механики.
+          referenceDraftId: gen.referenceDraftId,
+          referenceDraftVersion: gen.referenceDraftVersion,
+          referenceIntent: gen.referenceIntent,
+          // Для draft-backed adaptation сервер сам загружает тему, provenance и недоверенный
+          // источник; клиент передаёт только draft id/version. Старый inline reference остаётся
+          // лишь для обратной совместимости discuss-flow.
           surface: "studio",
         }),
       });
@@ -1179,7 +1186,7 @@ function StudioPageInner() {
         if (!ownsStream()) return;
         setMsg({
           text: previousText,
-          errorMessage: `Не удалось получить ответ (HTTP ${res.status}). Повтори тот же запрос.`,
+          errorMessage: `Не удалось получить ответ от сервера (код ${res.status}). Повтори тот же запрос.`,
           requestId: responseRequestId,
           streaming: false,
           progressLabel: undefined,
@@ -1253,6 +1260,7 @@ function StudioPageInner() {
               requiresReview: event.requiresReview,
               provenance: event.provenance,
               blockerCodes: event.blockerCodes,
+              ...(event.topicAlignment ? { topicAlignment: event.topicAlignment } : {}),
             };
           } else if (event.type === "done") {
             projection = projectAiDraftEvent(projection, event);
@@ -1431,7 +1439,7 @@ function StudioPageInner() {
       return;
     }
 
-    const history: ConversationTurn[] = messages
+    const history: ConversationTurn[] = opts?.autoOpenComposer ? [] : messages
       .filter((message) => message.text.trim() && !message.streaming)
       .map((message) => ({
         role: message.role === "ai" ? ("assistant" as const) : ("user" as const),
@@ -1460,13 +1468,15 @@ function StudioPageInner() {
       variant: 0,
       history,
       requestKey: opts?.requestKey ?? crypto.randomUUID(),
-      referenceText: pendingLibraryReference?.text,
-      referenceSource: pendingLibraryReference?.source,
+      referenceText: contextDraft ? undefined : pendingLibraryReference?.text,
+      referenceSource: contextDraft ? undefined : pendingLibraryReference?.source,
       sourceRef: contextDraft?.source_ref ?? undefined,
+      referenceDraftId: opts?.referenceDraftId ?? contextDraft?.id,
+      referenceDraftVersion: opts?.referenceDraftVersion ?? contextDraft?.version,
+      referenceIntent: opts?.autoOpenComposer ? "create" : contextDraft ? "discuss" : undefined,
       channelId,
       postSettings,
       autoOpenComposer: opts?.autoOpenComposer,
-      referenceDraftId: opts?.referenceDraftId,
       resultClientKey: opts?.resultClientKey,
     };
     const aiId = uid("m");
@@ -1513,6 +1523,7 @@ function StudioPageInner() {
       requestKey: pending.requestKey,
       autoOpenComposer: true,
       referenceDraftId: pending.draftId,
+      referenceDraftVersion: pending.version,
       resultClientKey: pending.resultClientKey,
     });
     // `ask` intentionally consumes the reference/context captured by this render.

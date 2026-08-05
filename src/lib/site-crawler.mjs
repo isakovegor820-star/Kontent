@@ -83,7 +83,7 @@ function assertStandardPort(url) {
   if (!url.port) return;
   const standard = (url.protocol === "https:" && url.port === "443")
     || (url.protocol === "http:" && url.port === "80");
-  if (!standard) throw new SiteCrawlerError("port_forbidden", "Для анализа разрешены только стандартные HTTP/HTTPS-порты");
+  if (!standard) throw new SiteCrawlerError("port_forbidden", "Для анализа разрешены только стандартные веб-порты");
 }
 
 export function normalizeSiteTarget(value, confirmedDomain, consent) {
@@ -95,10 +95,10 @@ export function normalizeSiteTarget(value, confirmedDomain, consent) {
   const expected = normalizedDomain(confirmedDomain);
   const actual = url.hostname.toLowerCase().replace(/\.$/, "");
   if (actual !== expected) {
-    throw new SiteCrawlerError("domain_mismatch", "URL и подтверждённый домен не совпадают");
+    throw new SiteCrawlerError("domain_mismatch", "Адрес сайта и подтверждённый домен не совпадают");
   }
   const sanitized = sanitizeStoredUrl(url, { dropCredentials: false });
-  if (!sanitized) throw new SiteCrawlerError("bad_url", "Некорректный URL");
+  if (!sanitized) throw new SiteCrawlerError("bad_url", "Некорректный адрес сайта");
   if (!sanitized.pathname) sanitized.pathname = "/";
   return sanitized;
 }
@@ -240,6 +240,17 @@ function metaContent(html, matcher) {
   return "";
 }
 
+function metaContents(html, matcher) {
+  const values = [];
+  for (const match of String(html).matchAll(/<meta\b([^>]*)>/gi)) {
+    const attrs = attributes(match[1]);
+    if (!matcher(attrs)) continue;
+    const content = String(attrs.content || "").trim();
+    if (content && !values.includes(content)) values.push(content);
+  }
+  return values;
+}
+
 function allTagText(html, tag) {
   return [...String(html).matchAll(new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)<\\/${tag}>`, "gi"))]
     .map((match) => stripMarkup(match[1]))
@@ -263,6 +274,11 @@ function canonicalUrl(html, baseUrl) {
 function jsonLdSignals(html) {
   const types = new Set();
   const publicComments = [];
+  const entities = [];
+  const seenEntities = new Set();
+  let publishedAt = null;
+  let modifiedAt = null;
+  const authors = new Set();
   const visit = (value) => {
     if (!value || typeof value !== "object") return;
     if (Array.isArray(value)) {
@@ -271,6 +287,29 @@ function jsonLdSignals(html) {
     }
     const rawTypes = Array.isArray(value["@type"]) ? value["@type"] : [value["@type"]];
     for (const type of rawTypes) if (typeof type === "string") types.add(type);
+    const normalizedTypes = rawTypes.filter((type) => typeof type === "string").slice(0, 10);
+    const name = stripMarkup(value.name || value.headline || "").slice(0, 300);
+    if (name && normalizedTypes.some((type) => ["Organization", "Corporation", "LocalBusiness", "Person", "Product", "Service", "Event", "Article", "NewsArticle"].includes(type))) {
+      const key = `${normalizedTypes.join(",")}\0${name.toLocaleLowerCase("ru-RU")}`;
+      if (!seenEntities.has(key)) {
+        seenEntities.add(key);
+        entities.push({
+          name,
+          types: normalizedTypes,
+          url: typeof value.url === "string" ? value.url : null,
+          sameAs: (Array.isArray(value.sameAs) ? value.sameAs : [value.sameAs]).filter((item) => typeof item === "string").slice(0, 20),
+          jobTitle: stripMarkup(value.jobTitle || "").slice(0, 240) || null,
+        });
+      }
+    }
+    const datePublished = String(value.datePublished || "").trim();
+    const dateModified = String(value.dateModified || "").trim();
+    if (!publishedAt && datePublished) publishedAt = datePublished.slice(0, 100);
+    if (!modifiedAt && dateModified) modifiedAt = dateModified.slice(0, 100);
+    for (const author of Array.isArray(value.author) ? value.author : [value.author]) {
+      const authorName = stripMarkup(typeof author === "string" ? author : author?.name || "").slice(0, 240);
+      if (authorName) authors.add(authorName);
+    }
     if (rawTypes.some((type) => type === "Comment" || type === "Review")) {
       const body = stripMarkup(value.text || value.reviewBody || value.description || "");
       if (body) publicComments.push(body.slice(0, 500));
@@ -286,7 +325,14 @@ function jsonLdSignals(html) {
       // Invalid structured data becomes an audit signal through an empty schema list.
     }
   }
-  return { schemaTypes: [...types].slice(0, 50), publicComments };
+  return {
+    schemaTypes: [...types].slice(0, 50),
+    publicComments,
+    entities: entities.slice(0, 100),
+    publishedAt,
+    modifiedAt,
+    authors: [...authors].slice(0, 30),
+  };
 }
 
 function visibleHtml(html) {
@@ -391,7 +437,7 @@ function meaningfulWords(text) {
 export function extractSitePage(html, value, status = 200) {
   const parsedUrl = value instanceof URL ? value : new URL(String(value));
   const url = sanitizeStoredUrl(parsedUrl);
-  if (!url) throw new SiteCrawlerError("credentials", "URL с логином или паролем запрещён");
+  if (!url) throw new SiteCrawlerError("credentials", "Адрес с логином или паролем запрещён");
   const source = String(html || "");
   const title = firstTag(source, "title");
   const description = metaContent(source, (attrs) => String(attrs.name || "").toLowerCase() === "description");
@@ -408,6 +454,23 @@ export function extractSitePage(html, value, status = 200) {
   const canonical = canonicalUrl(source, url);
   const viewport = Boolean(metaContent(source, (attrs) => String(attrs.name || "").toLowerCase() === "viewport"));
   const wordCount = mainContent ? mainContent.split(/\s+/).length : 0;
+  const metaAuthors = metaContents(source, (attrs) => String(attrs.name || "").toLowerCase() === "author");
+  const publishedAt = metaContent(source, (attrs) => ["article:published_time", "og:published_time"].includes(String(attrs.property || "").toLowerCase())) || structured.publishedAt;
+  const modifiedAt = metaContent(source, (attrs) => ["article:modified_time", "og:updated_time"].includes(String(attrs.property || "").toLowerCase())) || structured.modifiedAt;
+  const openGraph = {
+    title: metaContent(source, (attrs) => String(attrs.property || "").toLowerCase() === "og:title").slice(0, 400) || null,
+    description: metaContent(source, (attrs) => String(attrs.property || "").toLowerCase() === "og:description").slice(0, 800) || null,
+    type: metaContent(source, (attrs) => String(attrs.property || "").toLowerCase() === "og:type").slice(0, 100) || null,
+    image: (() => {
+      const raw = metaContent(source, (attrs) => String(attrs.property || "").toLowerCase() === "og:image");
+      if (!raw) return null;
+      try {
+        return sanitizeStoredUrl(new URL(raw, url))?.toString() || null;
+      } catch {
+        return null;
+      }
+    })(),
+  };
 
   return Object.freeze({
     url: url.toString(),
@@ -421,6 +484,13 @@ export function extractSitePage(html, value, status = 200) {
     ctas: pageCtas(source),
     forms: pageForms(source, url),
     publicComments: comments,
+    metadata: Object.freeze({
+      authors: [...new Set([...structured.authors, ...metaAuthors])].slice(0, 30),
+      publishedAt: publishedAt || null,
+      modifiedAt: modifiedAt || null,
+      openGraph: Object.freeze(openGraph),
+      structuredEntities: structured.entities,
+    }),
     technical: Object.freeze({
       https: url.protocol === "https:",
       canonical,
@@ -461,6 +531,48 @@ export function extractSitemapDocument(xml, baseUrl, maxUrls = DEFAULT_SITE_CRAW
   });
 }
 
+const SITEMAP_BUCKETS = Object.freeze([
+  ["about", /(?:^|\/)(?:about|company|o-nas|o-kompanii|ob-organizac)/iu],
+  ["offer", /(?:^|\/)(?:product|products|service|services|practice|pricing|tarif|uslug|resheni)/iu],
+  ["team", /(?:^|\/)(?:team|people|experts|authors|leadership|komand|ekspert|specialist)/iu],
+  ["case", /(?:^|\/)(?:case|cases|portfolio|projects|kejs|istorii-uspeha)/iu],
+  ["partner", /(?:^|\/)(?:partner|partners|clients|klient|partn)/iu],
+  ["event", /(?:^|\/)(?:event|events|webinar|conference|meropriyati|sobyt)/iu],
+  ["contact", /(?:^|\/)(?:contact|contacts|kontact|kontakty)/iu],
+  ["document", /(?:^|\/)(?:document|documents|legal|licenses|policy|rekvizit|licenz)/iu],
+  ["content", /(?:^|\/)(?:blog|news|article|articles|press|publication|novost|stati)/iu],
+]);
+
+/** Keeps a small crawl from being filled exclusively by chronological news URLs. */
+export function stratifySitemapUrls(values, maxUrls = DEFAULT_SITE_CRAWL_LIMITS.maxSitemapUrls) {
+  const buckets = new Map(SITEMAP_BUCKETS.map(([name]) => [name, []]));
+  buckets.set("other", []);
+  const seen = new Set();
+  for (const value of Array.isArray(values) ? values : []) {
+    let url;
+    try {
+      url = new URL(String(value));
+    } catch {
+      continue;
+    }
+    const key = url.toString();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const bucket = SITEMAP_BUCKETS.find(([, pattern]) => pattern.test(url.pathname))?.[0] || "other";
+    buckets.get(bucket).push(key);
+  }
+  const result = [];
+  const order = [...SITEMAP_BUCKETS.map(([name]) => name), "other"];
+  while (result.length < maxUrls && order.some((name) => buckets.get(name).length)) {
+    for (const name of order) {
+      const next = buckets.get(name).shift();
+      if (next) result.push(next);
+      if (result.length >= maxUrls) break;
+    }
+  }
+  return result;
+}
+
 function evidence(url, label) {
   return [{ url, label }];
 }
@@ -475,13 +587,13 @@ export function buildSiteAnalysisReport(targetUrl, pages, limits = DEFAULT_SITE_
   const seo = [];
   const geo = [];
   for (const page of goodPages) {
-    if (!page.title) seo.push(finding("missing_title", "high", "Нет title", "Добавь уникальный заголовок страницы.", page.url));
-    if (!page.description) seo.push(finding("missing_description", "medium", "Нет description", "Добавь краткое описание содержания страницы.", page.url));
-    if (page.technical.h1Count !== 1) seo.push(finding("h1_count", "medium", "Нарушена структура H1", `Найдено H1: ${page.technical.h1Count}.`, page.url));
-    if (!page.technical.https) seo.push(finding("http_page", "high", "Страница открыта по HTTP", "Переведи страницу и внутренние ссылки на HTTPS.", page.url));
-    if (!page.technical.viewport) seo.push(finding("missing_viewport", "medium", "Не найден viewport", "Проверь адаптивную конфигурацию viewport.", page.url));
-    if (!page.technical.canonical) seo.push(finding("missing_canonical", "low", "Не найден canonical", "Укажи канонический URL, если страница имеет дубли.", page.url, "medium"));
-    if (!page.schemaTypes.length) geo.push(finding("missing_schema", "medium", "Нет schema.org", "Добавь подходящую структурированную разметку и проверяемые сущности.", page.url));
+    if (!page.title) seo.push(finding("missing_title", "high", "Нет заголовка страницы", "Добавь уникальный заголовок страницы.", page.url));
+    if (!page.description) seo.push(finding("missing_description", "medium", "Нет описания страницы", "Добавь краткое описание содержания страницы.", page.url));
+    if (page.technical.h1Count !== 1) seo.push(finding("h1_count", "medium", "Нарушена структура главного заголовка", `Найдено главных заголовков: ${page.technical.h1Count}.`, page.url));
+    if (!page.technical.https) seo.push(finding("http_page", "high", "Страница открыта без защищённого соединения", "Включи защищённое соединение для страницы и внутренних ссылок.", page.url));
+    if (!page.technical.viewport) seo.push(finding("missing_viewport", "medium", "Не настроено отображение на телефонах", "Проверь адаптивное отображение страницы.", page.url));
+    if (!page.technical.canonical) seo.push(finding("missing_canonical", "low", "Не указан основной адрес страницы", "Укажи основной адрес, если у страницы есть дубли.", page.url, "medium"));
+    if (!page.schemaTypes.length) geo.push(finding("missing_schema", "medium", "Нет структурированных данных", "Добавь подходящую структурированную разметку и проверяемые сущности.", page.url));
     if (page.technical.wordCount < 120) geo.push(finding("thin_content", "medium", "Мало объясняющего контента", "Добавь самостоятельное объяснение темы, определения и ответы на вопросы.", page.url, "medium"));
     if (!page.headings.some((heading) => heading.level === 2)) geo.push(finding("weak_answer_structure", "low", "Нет подзаголовков ответа", "Разбей материал на ясные вопросы и смысловые блоки.", page.url, "medium"));
   }
@@ -499,9 +611,9 @@ export function buildSiteAnalysisReport(targetUrl, pages, limits = DEFAULT_SITE_
       seo.push({
         code: "duplicate_title",
         severity: "medium",
-        title: "Повторяется title",
-        description: `Одинаковый title найден на ${urls.length} страницах: ${title.slice(0, 120)}.`,
-        evidence: urls.map((url) => ({ url, label: "Страница с повторяющимся title" })),
+        title: "Повторяется заголовок страницы",
+        description: `Одинаковый заголовок найден на ${urls.length} страницах: ${title.slice(0, 120)}.`,
+        evidence: urls.map((url) => ({ url, label: "Страница с повторяющимся заголовком" })),
         confidence: "high",
       });
     }
@@ -546,8 +658,8 @@ export function buildSiteAnalysisReport(targetUrl, pages, limits = DEFAULT_SITE_
       confidence: themes.length ? "medium" : "low",
     },
     {
-      title: "FAQ по ключевым возражениям",
-      rationale: "Закрыть информационные вопросы и сделать ответы пригодными для обычного и AI-поиска.",
+      title: "Ответы на частые вопросы и возражения",
+      rationale: "Закрыть информационные вопросы и сделать ответы пригодными для обычного поиска и поиска с ИИ.",
       sources: evidence(source, "Структура текущей страницы"),
       confidence: "medium",
     },
@@ -592,27 +704,27 @@ export function buildSiteAnalysisReport(targetUrl, pages, limits = DEFAULT_SITE_
       totalLinks: internalLinks.length,
       orphanCandidates: orphanCandidates.map((page) => ({
         url: page.url,
-        evidence: evidence(page.url, "Нет входящей ссылки в пределах проверенного snapshot"),
+        evidence: evidence(page.url, "Нет входящей ссылки в пределах проверенного среза"),
         confidence: "medium",
       })),
     },
     marketingPlan: {
       goals: [
-        { title: "Повысить полноту и проверяемость контента", kpi: "Доля индексируемых страниц без P0 SEO-ошибок", target: "Базовая линия + динамика после внедрения", sources: evidence(source, "Текущий crawl snapshot"), confidence: "medium" },
+        { title: "Повысить полноту и проверяемость контента", kpi: "Доля индексируемых страниц без критичных поисковых ошибок", target: "Базовая линия + динамика после внедрения", sources: evidence(source, "Текущий срез анализа"), confidence: "medium" },
       ],
       icp: { description: `Аудитория, которая ищет материалы по теме «${primaryTheme}»`, sources: evidence(source, "Темы основного контента"), confidence: "low" },
       funnel: [
         { stage: "Узнавание", action: "Публиковать доказательные обзоры и ответы на вопросы", sources: contentGaps[0].sources, confidence: "medium" },
-        { stage: "Рассмотрение", action: "Добавить сравнения, кейсы и критерии выбора", sources: evidence(source, "Текущие интенты и CTA"), confidence: "low" },
-        { stage: "Действие", action: "Связать CTA с измеримым событием без обещаний результата", sources: evidence(source, "Публичные CTA и формы"), confidence: "medium" },
+        { stage: "Рассмотрение", action: "Добавить сравнения, примеры и критерии выбора", sources: evidence(source, "Текущие намерения посетителей и призывы"), confidence: "low" },
+        { stage: "Действие", action: "Связать призыв с измеримым событием без обещаний результата", sources: evidence(source, "Открытые призывы и формы"), confidence: "medium" },
       ],
       positioning: { statement: `Практичный и проверяемый источник по теме «${primaryTheme}»`, sources: evidence(source, "Повторяющиеся темы сайта"), confidence: "low" },
       contentGaps,
       seoTasks,
       geoTasks,
       promotionChannels: [
-        { channel: "Органический поиск", reason: "Есть собственные индексируемые страницы и технический backlog.", sources: evidence(source, "Контент-инвентаризация"), confidence: "medium" },
-        { channel: "Экспертные соцсети", reason: "Материалы можно раскладывать на короткие ответы и вести к первоисточнику.", sources: evidence(source, "Темы и headings сайта"), confidence: "low" },
+        { channel: "Органический поиск", reason: "Есть собственные индексируемые страницы и технический список задач.", sources: evidence(source, "Перечень контента"), confidence: "medium" },
+        { channel: "Экспертные соцсети", reason: "Материалы можно раскладывать на короткие ответы и вести к первоисточнику.", sources: evidence(source, "Темы и заголовки сайта"), confidence: "low" },
       ],
       publicationBacklog: contentGaps.map((gap, index) => ({ ...gap, priority: index === 0 ? "P1" : "P2", dueDays: 14 + index * 7 })),
       measurement: [
@@ -622,10 +734,10 @@ export function buildSiteAnalysisReport(targetUrl, pages, limits = DEFAULT_SITE_
       ],
     },
     limitations: [
-      "Публичный crawl не показывает посещаемость, позиции, конверсии или выручку.",
-      "Комментарии учитываются только если они публично присутствуют в полученном HTML или schema.org.",
+      "Анализ открытых страниц не показывает посещаемость, позиции, конверсии или выручку.",
+      "Комментарии учитываются только тогда, когда они публично присутствуют в коде страницы или структурированных данных.",
       "Динамический контент, закрытые кабинеты и данные за авторизацией не открываются.",
-      "MVP декодирует страницы как UTF-8; сайты в legacy-кодировках могут потребовать отдельный повторный анализ.",
+      "Текущая версия читает страницы в современной кодировке; сайты в старых кодировках могут потребовать повторного анализа.",
       "Выводы о целевой аудитории и позиционировании являются гипотезами до проверки аналитикой и интервью.",
     ],
   });
@@ -667,7 +779,7 @@ async function fetchCrawlerResource(fetchText, url, limits, maxBytes, robotsPoli
     validateRedirect: (next, current) => {
       if (!sameSiteRedirect(next, current, url.hostname)) return false;
       if (robotsPolicy && !robotsAllows(robotsPolicy, next)) {
-        throw new SiteCrawlerError("robots_denied", "robots.txt запрещает redirect на эту страницу");
+        throw new SiteCrawlerError("robots_denied", "Правила сайта запрещают перенаправление на эту страницу");
       }
       return true;
     },
@@ -710,7 +822,7 @@ export async function crawlSite(input, dependencies = {}) {
     }
   };
 
-  await emit("robots", 5, "Проверяем правила robots.txt");
+  await emit("robots", 5, "Проверяем правила доступа сайта");
   const robotsUrl = new URL("/robots.txt", target);
   let robots = parseRobotsTxt("");
   let robotsResponse;
@@ -742,7 +854,7 @@ export async function crawlSite(input, dependencies = {}) {
     throw new SiteCrawlerError("robots_denied", "robots.txt запрещает анализ указанной страницы");
   }
 
-  await emit("sitemap", 12, "Читаем sitemap.xml");
+  await emit("sitemap", 12, "Читаем карту сайта");
   const defaultSitemap = new URL("/sitemap.xml", target).toString();
   const sitemapPending = [...new Set([
     ...robots.sitemaps.slice(0, Math.max(0, limits.maxSitemaps - 1)),
@@ -813,7 +925,7 @@ export async function crawlSite(input, dependencies = {}) {
     pending.push(url);
   };
   enqueue(target);
-  sitemapUrls.forEach(enqueue);
+  stratifySitemapUrls(sitemapUrls, limits.maxSitemapUrls).forEach(enqueue);
 
   const pages = [];
   const finalUrls = new Set();
@@ -852,7 +964,7 @@ export async function crawlSite(input, dependencies = {}) {
     if (!finalUrl) throw new SiteCrawlerError("redirect_forbidden", "Страница перенаправила анализ на другой домен");
     if (!robotsAllows(robots, finalUrl)) {
       if (url.toString() === target.toString()) {
-        throw new SiteCrawlerError("robots_denied", "robots.txt запрещает redirect на эту страницу");
+        throw new SiteCrawlerError("robots_denied", "Правила сайта запрещают перенаправление на эту страницу");
       }
       continue;
     }
@@ -875,9 +987,9 @@ export async function crawlSite(input, dependencies = {}) {
   }
 
   if (!pages.some((page) => page.status >= 200 && page.status < 400)) {
-    throw new SiteCrawlerError("no_pages", "Не удалось получить ни одной публичной HTML-страницы");
+    throw new SiteCrawlerError("no_pages", "Не удалось получить ни одной открытой страницы сайта");
   }
-  await emit("analyzing", 78, "Собираем SEO/GEO-аудит и доказательства");
+  await emit("analyzing", 78, "Собираем поисковый аудит и доказательства");
   const report = buildSiteAnalysisReport(target, pages, limits);
   await emit("planning", 92, "Формируем маркетинговый план");
   await emit("ready", 100, "Анализ готов");

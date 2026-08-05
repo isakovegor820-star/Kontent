@@ -38,6 +38,9 @@ export type StudioChatGeneration = {
   referenceText?: string;
   referenceSource?: string;
   sourceRef?: Post["sourceRef"];
+  referenceDraftId?: number;
+  referenceDraftVersion?: number;
+  referenceIntent?: "create" | "discuss";
   channelId?: number | null;
   postSettings?: PostSettings;
 };
@@ -158,6 +161,42 @@ function safeTurn(value: unknown): ConversationTurn | null {
   return { role: value.role, content: value.content.slice(0, MAX_MESSAGE_LENGTH) };
 }
 
+function safeSourceRef(value: unknown): Post["sourceRef"] | undefined {
+  if (
+    !isRecord(value)
+    || !["competitor", "trend", "idea", "reference"].includes(String(value.kind))
+    || typeof value.id !== "string"
+    || typeof value.label !== "string"
+  ) return undefined;
+  const optional = (candidate: unknown, max: number) => (
+    typeof candidate === "string" && candidate.trim() ? candidate.slice(0, max) : undefined
+  );
+  let provenance: NonNullable<Post["sourceRef"]>["provenance"];
+  if (
+    isRecord(value.provenance)
+    && ["content_idea", "competitor_post", "trend", "saved_reference"].includes(String(value.provenance.kind))
+  ) {
+    provenance = {
+      kind: value.provenance.kind as NonNullable<typeof provenance>["kind"],
+      ...(optional(value.provenance.id, 200) ? { id: optional(value.provenance.id, 200) } : {}),
+      ...(optional(value.provenance.label, 400) ? { label: optional(value.provenance.label, 400) } : {}),
+      ...(optional(value.provenance.url, 2_048) ? { url: optional(value.provenance.url, 2_048) } : {}),
+    };
+  }
+  return {
+    kind: value.kind as NonNullable<Post["sourceRef"]>["kind"],
+    id: value.id.slice(0, 200),
+    label: value.label.slice(0, 400),
+    ...(optional(value.topic, 500) ? { topic: optional(value.topic, 500) } : {}),
+    ...(optional(value.readerProblem, 800) ? { readerProblem: optional(value.readerProblem, 800) } : {}),
+    ...(optional(value.semanticGoal, 800) ? { semanticGoal: optional(value.semanticGoal, 800) } : {}),
+    ...(optional(value.hook, 1_000) ? { hook: optional(value.hook, 1_000) } : {}),
+    ...(optional(value.structure, 2_000) ? { structure: optional(value.structure, 2_000) } : {}),
+    ...(optional(value.whyItWorked, 1_200) ? { whyItWorked: optional(value.whyItWorked, 1_200) } : {}),
+    ...(provenance ? { provenance } : {}),
+  };
+}
+
 function safeGeneration(value: unknown): StudioChatGeneration | null {
   if (!isRecord(value) || typeof value.cmd !== "string" || !COMMANDS.has(value.cmd as AiCommand)) return null;
   if (typeof value.input !== "string" || !Number.isInteger(value.variant) || !Array.isArray(value.history)) return null;
@@ -176,15 +215,15 @@ function safeGeneration(value: unknown): StudioChatGeneration | null {
     referenceSource: typeof value.referenceSource === "string"
       ? value.referenceSource.slice(0, 160)
       : undefined,
-    sourceRef: isRecord(value.sourceRef)
-      && (value.sourceRef.kind === "competitor" || value.sourceRef.kind === "trend")
-      && typeof value.sourceRef.id === "string"
-      && typeof value.sourceRef.label === "string"
-      ? {
-          kind: value.sourceRef.kind,
-          id: value.sourceRef.id.slice(0, 160),
-          label: value.sourceRef.label.slice(0, 300),
-        }
+    sourceRef: safeSourceRef(value.sourceRef),
+    referenceDraftId: Number.isSafeInteger(value.referenceDraftId) && Number(value.referenceDraftId) > 0
+      ? Number(value.referenceDraftId)
+      : undefined,
+    referenceDraftVersion: Number.isSafeInteger(value.referenceDraftVersion) && Number(value.referenceDraftVersion) > 0
+      ? Number(value.referenceDraftVersion)
+      : undefined,
+    referenceIntent: value.referenceIntent === "create" || value.referenceIntent === "discuss"
+      ? value.referenceIntent
       : undefined,
     channelId: value.channelId === null
       ? null

@@ -476,8 +476,8 @@ export function validateFactualOutput(
     add({ code: "question_reason", message: "Нужен один содержательный вопрос с просьбой объяснить причину", blocker: true });
   }
   const hasCta = CTA.test(value) || (constraints.ctaPhrases ?? []).some((phrase) => normalizedMatch(value, phrase));
-  if (constraints.cta === "forbidden" && hasCta) add({ code: "unexpected_cta", message: "CTA запрещён брифом", blocker: true });
-  if (constraints.cta === "required" && !hasCta) add({ code: "missing_cta", message: "Не найден обязательный CTA", blocker: true });
+  if (constraints.cta === "forbidden" && hasCta) add({ code: "unexpected_cta", message: "Призыв запрещён заданием", blocker: true });
+  if (constraints.cta === "required" && !hasCta) add({ code: "missing_cta", message: "Не найден обязательный призыв", blocker: true });
 
   for (const group of constraints.choiceGroups ?? []) {
     const selected = group.choices.filter((choice) => choice.variants.some((variant) => normalizedMatch(value, variant)));

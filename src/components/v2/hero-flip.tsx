@@ -201,7 +201,7 @@ export function HeroFlip() {
                     style={{ color: "var(--ink-2)", letterSpacing: "0.14em" }}
                   >
                     <span className="v2-live-dot" aria-hidden />
-                    Без карты · Без пейволов · TG и VK уже публикуют
+                    Без карты · Без платных ограничений · Telegram и VK уже публикуют
                   </p>
 
                   <div

@@ -32,6 +32,11 @@ type AiStreamEventPayload =
       requiresReview: boolean;
       provenance: FactualValidationProvenance;
       blockerCodes: string[];
+      topicAlignment?: {
+        status: "passed" | "failed";
+        score: number;
+        topic: string;
+      };
     }
   | {
       type: "error";

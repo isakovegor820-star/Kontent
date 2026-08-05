@@ -2,12 +2,16 @@
 
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { AtSign, Check, Image as ImageIcon, Save, ShieldCheck, UserRound } from "lucide-react";
+import { AtSign, Check, Save, ShieldCheck, Trash2, Upload, UserRound } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Badge, Card, Field, Input, Textarea } from "@/components/ui/primitives";
 import { RUBRICS, type Brief } from "@/lib/brief";
+import {
+  PROFILE_AVATAR_ACCEPTED_TYPES,
+  PROFILE_AVATAR_UPLOAD_MAX_BYTES,
+} from "@/lib/profile-avatar-contract";
 import { PROFILE_FORMAT_OPTIONS } from "@/lib/profile";
 import { useStore } from "@/lib/store";
 import { NETWORK_LABEL, cn } from "@/lib/utils";
@@ -23,6 +27,8 @@ type ProfileDraft = {
   rubrics: string;
   formats: string;
   authorRole: string;
+  cta: string;
+  taboo: string;
 };
 
 type ProfileResponse = {
@@ -63,13 +69,15 @@ function draftFrom(account: NonNullable<ProfileResponse["account"]>, brief: Brie
     rubrics: textFromList(brief.rubrics),
     formats: textFromList(brief.formats),
     authorRole: brief.authorRole,
+    cta: brief.cta,
+    taboo: brief.taboo,
   };
 }
 
 function requestError(code?: string): string {
   switch (code) {
     case "bad_name": return "Укажи имя или рабочее название профиля.";
-    case "bad_avatar": return "Используй ссылку на аватар с защищённым адресом https://.";
+    case "bad_avatar": return "Выбери фотографию с устройства или укажи защищённую HTTPS-ссылку.";
     case "incomplete_brief": return "Заполни нишу и аудиторию — минимум по три символа.";
     case "channel_not_found": return "Канал отключён или больше недоступен. Выбери другой канал.";
     case "idempotency_conflict": return "Этот запрос уже использован для других данных. Обнови страницу и повтори сохранение.";
@@ -77,12 +85,22 @@ function requestError(code?: string): string {
   }
 }
 
+function avatarUploadError(code?: string): string {
+  switch (code) {
+    case "unsupported_type": return "Выбери фотографию в формате JPEG, PNG или WebP.";
+    case "too_large": return "Выбери фотографию размером не больше 5 МБ.";
+    case "invalid_image": return "Файл не удалось прочитать как фотографию. Выбери другое изображение.";
+    case "missing_file": return "Выбери фотографию и повтори загрузку.";
+    default: return "Не удалось загрузить фотографию. Проверь соединение и попробуй ещё раз.";
+  }
+}
+
 function emailError(code?: string, provider?: string): string {
   switch (code) {
     case "reauth_failed": return "Текущий пароль не подошёл. Проверь его и повтори попытку.";
-    case "reauth_required": return `Сначала повторно войди через ${provider === "telegram" ? "Telegram" : provider === "vk" ? "VK" : "провайдера"}, затем запроси смену email.`;
-    case "email_taken": return "Этот email уже привязан к другому аккаунту.";
-    case "email_delivery_unavailable": return "Отправка подтверждений временно недоступна. Текущий email не изменён.";
+    case "reauth_required": return `Сначала повторно войди через ${provider === "telegram" ? "Telegram" : provider === "vk" ? "VK" : "провайдера"}, затем запроси смену почты.`;
+    case "email_taken": return "Эта почта уже привязана к другому аккаунту.";
+    case "email_delivery_unavailable": return "Отправка подтверждений временно недоступна. Текущая почта не изменена.";
     case "idempotency_conflict": return "Адрес изменился после отправки запроса. Повтори действие.";
     default: return "Не удалось отправить письмо. Проверь соединение и повтори попытку.";
   }
@@ -113,12 +131,20 @@ export function ProfileBriefSection() {
   const [emailErrorText, setEmailErrorText] = useState("");
   const [pendingNavigation, setPendingNavigation] = useState<PendingNavigation>(null);
   const [avatarBroken, setAvatarBroken] = useState(false);
+  const [avatarUploading, setAvatarUploading] = useState(false);
+  const [avatarPreview, setAvatarPreview] = useState("");
+  const [avatarErrorText, setAvatarErrorText] = useState("");
   const profileKey = useRef("");
   const emailKey = useRef("");
+  const avatarPreviewRef = useRef("");
 
   const profileDirty = Boolean(saved && draft && JSON.stringify(saved) !== JSON.stringify(draft));
   const emailDirty = emailDraft.trim().toLowerCase() !== email.trim().toLowerCase();
   const dirty = profileDirty || emailDirty;
+
+  useEffect(() => () => {
+    if (avatarPreviewRef.current) URL.revokeObjectURL(avatarPreviewRef.current);
+  }, []);
 
   /* eslint-disable react-hooks/set-state-in-effect -- select the first available persisted channel */
   useEffect(() => {
@@ -159,7 +185,7 @@ export function ProfileBriefSection() {
       })
       .catch((loadError) => {
         if ((loadError as Error).name !== "AbortError") {
-          setError(`Не удалось загрузить профиль. ID запроса: ${(loadError as Error).message}`);
+          setError(`Не удалось загрузить профиль. Номер запроса: ${(loadError as Error).message}`);
         }
       })
       .finally(() => {
@@ -193,7 +219,63 @@ export function ProfileBriefSection() {
     setDraft((current) => current ? { ...current, [key]: value } : current);
     setMessage("");
     setError("");
-    if (key === "avatar") setAvatarBroken(false);
+    if (key === "avatar") {
+      setAvatarBroken(false);
+      setAvatarErrorText("");
+    }
+  };
+
+  const clearAvatarPreview = () => {
+    if (avatarPreviewRef.current) URL.revokeObjectURL(avatarPreviewRef.current);
+    avatarPreviewRef.current = "";
+    setAvatarPreview("");
+  };
+
+  const uploadAvatar = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const input = event.currentTarget;
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file || avatarUploading) return;
+    if (!PROFILE_AVATAR_ACCEPTED_TYPES.includes(file.type)) {
+      setAvatarErrorText(avatarUploadError("unsupported_type"));
+      return;
+    }
+    if (file.size > PROFILE_AVATAR_UPLOAD_MAX_BYTES) {
+      setAvatarErrorText(avatarUploadError("too_large"));
+      return;
+    }
+
+    clearAvatarPreview();
+    const preview = URL.createObjectURL(file);
+    avatarPreviewRef.current = preview;
+    setAvatarPreview(preview);
+    setAvatarBroken(false);
+    setAvatarErrorText("");
+    setAvatarUploading(true);
+    try {
+      const form = new FormData();
+      form.set("avatar", file);
+      const response = await fetch("/api/settings/profile/avatar", { method: "POST", body: form });
+      const body = (await response.json().catch(() => null)) as
+        | { ok?: boolean; avatar?: string; error?: string; requestId?: string }
+        | null;
+      if (!response.ok || !body?.ok || !body.avatar) {
+        throw new Error(`${avatarUploadError(body?.error)}${body?.requestId ? ` Номер запроса: ${body.requestId}` : ""}`);
+      }
+      update("avatar", body.avatar);
+      setMessage("Фотография готова. Сохрани профиль, чтобы применить её.");
+    } catch (uploadError) {
+      setAvatarErrorText(uploadError instanceof Error ? uploadError.message : avatarUploadError());
+    } finally {
+      setAvatarUploading(false);
+      clearAvatarPreview();
+    }
+  };
+
+  const removeAvatar = () => {
+    clearAvatarPreview();
+    update("avatar", "");
+    setMessage("Фотография будет удалена после сохранения профиля.");
   };
 
   const toggleListValue = (key: "rubrics" | "formats", value: string) => {
@@ -206,6 +288,10 @@ export function ProfileBriefSection() {
   const save = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!draft || !channelId || saving) return;
+    if (avatarUploading) {
+      setAvatarErrorText("Дождись окончания загрузки фотографии, затем сохрани профиль.");
+      return;
+    }
     if (!profileDirty) {
       setMessage("Изменений для сохранения нет.");
       return;
@@ -235,12 +321,14 @@ export function ProfileBriefSection() {
             rubrics: listFromText(draft.rubrics),
             formats: listFromText(draft.formats),
             authorRole: draft.authorRole,
+            cta: draft.cta,
+            taboo: draft.taboo,
           },
         }),
       });
       const body = (await response.json().catch(() => null)) as ProfileResponse | null;
       if (!response.ok || !body?.ok) {
-        throw new Error(`${requestError(body?.error)}${body?.requestId ? ` ID запроса: ${body.requestId}` : ""}`);
+        throw new Error(`${requestError(body?.error)}${body?.requestId ? ` Номер запроса: ${body.requestId}` : ""}`);
       }
       setSaved(draft);
       profileKey.current = newRequestKey("profile-save");
@@ -260,7 +348,7 @@ export function ProfileBriefSection() {
       return;
     }
     if (!emailPassword) {
-      setEmailErrorText("Введи текущий пароль, чтобы подтвердить изменение email.");
+      setEmailErrorText("Введи текущий пароль, чтобы подтвердить изменение адреса.");
       return;
     }
     setEmailSaving(true);
@@ -278,14 +366,14 @@ export function ProfileBriefSection() {
         | { ok?: boolean; error?: string; reauthProvider?: string; requestId?: string; expiresAt?: string; email?: string }
         | null;
       if (!response.ok || !body?.ok) {
-        throw new Error(`${emailError(body?.error, body?.reauthProvider)}${body?.requestId ? ` ID запроса: ${body.requestId}` : ""}`);
+        throw new Error(`${emailError(body?.error, body?.reauthProvider)}${body?.requestId ? ` Номер запроса: ${body.requestId}` : ""}`);
       }
       const target = body.email ?? emailDraft.trim().toLowerCase();
       setPendingEmail({ email: target, expiresAt: body.expiresAt ?? new Date(Date.now() + 3_600_000).toISOString() });
       setEmailDraft(email);
       setEmailPassword("");
       emailKey.current = newRequestKey("email-change");
-      setEmailMessage(`Письмо отправлено на ${target}. Email изменится только после подтверждения.`);
+      setEmailMessage(`Письмо отправлено на ${target}. Адрес изменится только после подтверждения.`);
     } catch (requestErrorValue) {
       setEmailErrorText(requestErrorValue instanceof Error ? requestErrorValue.message : emailError());
     } finally {
@@ -309,10 +397,11 @@ export function ProfileBriefSection() {
 
   const activeFormats = draft ? listFromText(draft.formats) : [];
   const activeRubrics = draft ? listFromText(draft.rubrics) : [];
+  const avatarSrc = avatarPreview || draft?.avatar || "";
 
   return (
     <>
-      <Card as="section" className="mb-5 overflow-hidden" aria-busy={loading || saving || emailSaving || undefined}>
+      <Card as="section" className="mb-5 overflow-hidden" aria-busy={loading || saving || emailSaving || avatarUploading || undefined}>
         <div className="flex items-start gap-3.5 border-b border-line px-5 py-5 sm:px-7">
           <span aria-hidden className="grid h-10 w-10 shrink-0 place-items-center rounded-sm bg-info-soft text-brand">
             <UserRound className="h-5 w-5" strokeWidth={1.75} />
@@ -341,42 +430,99 @@ export function ProfileBriefSection() {
           </div>
         ) : draft ? (
           <form onSubmit={save} className="space-y-8 px-5 py-6 sm:px-7 sm:py-7">
-            <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(16rem,0.72fr)]">
-              <div className="space-y-5">
-                <div>
-                  <h3 className="text-[15px] font-extrabold text-text">Аккаунт</h3>
-                  <p className="mt-1 text-[12px] leading-relaxed text-text-3">Имя и аватар видны во всех каналах.</p>
-                </div>
-                <Field label="Имя" htmlFor={`${uid}-name`} required>
-                  <Input id={`${uid}-name`} name="name" autoComplete="name" value={draft.name} onChange={(event) => update("name", event.target.value)} />
-                </Field>
-                <Field label="Ссылка на аватар" htmlFor={`${uid}-avatar`} hint="Только защищённая ссылка https://. Оставь поле пустым, чтобы убрать аватар.">
-                  <Input id={`${uid}-avatar`} name="avatar" type="url" inputMode="url" autoComplete="photo" placeholder="https://example.com/avatar.jpg" value={draft.avatar} onChange={(event) => update("avatar", event.target.value)} />
-                </Field>
+            <div className="space-y-5">
+              <div>
+                <h3 className="text-[15px] font-extrabold text-text">Аккаунт</h3>
+                <p className="mt-1 text-[12px] leading-relaxed text-text-3">Имя и фотография видны во всех каналах.</p>
               </div>
 
-              <div className="rounded-md bg-surface-inset p-4 sm:p-5">
-                <div className="flex items-center gap-2 text-[13px] font-bold text-text-2">
-                  <ImageIcon className="h-4 w-4" aria-hidden />
-                  Предпросмотр аватара
-                </div>
-                <div className="mt-4 flex items-center gap-4">
-                  {draft.avatar && !avatarBroken ? (
-                    // eslint-disable-next-line @next/next/no-img-element -- user-controlled remote avatar is not proxied server-side
-                    <img
-                      src={draft.avatar}
-                      alt="Предпросмотр аватара профиля"
-                      className="h-20 w-20 shrink-0 rounded-full object-cover outline outline-1 outline-black/10"
-                      onError={() => setAvatarBroken(true)}
-                    />
-                  ) : (
-                    <span aria-hidden className="grid h-20 w-20 shrink-0 place-items-center rounded-full bg-surface text-text-3 shadow-soft">
-                      <UserRound className="h-8 w-8" strokeWidth={1.5} />
-                    </span>
-                  )}
-                  <p className="min-w-0 text-[13px] leading-relaxed text-text-3">
-                    {avatarBroken ? "Изображение не загрузилось. Проверь ссылку." : draft.avatar ? "Так аватар будет выглядеть в профиле." : "Можно сохранить профиль без аватара."}
-                  </p>
+              <div className="max-w-5xl rounded-md bg-surface-inset p-4 sm:p-5">
+                <div className="grid gap-5 sm:grid-cols-[7rem_minmax(0,1fr)] sm:items-center sm:gap-6">
+                  <div className="mx-auto sm:mx-0">
+                    {avatarSrc && !avatarBroken ? (
+                      // eslint-disable-next-line @next/next/no-img-element -- user-controlled remote avatar is not proxied server-side
+                      <img
+                        src={avatarSrc}
+                        alt="Фотография профиля"
+                        className="h-28 w-28 rounded-full object-cover shadow-soft outline outline-1 outline-black/10 ring-4 ring-surface dark:outline-white/10"
+                        onError={() => setAvatarBroken(true)}
+                      />
+                    ) : (
+                      <span aria-hidden className="grid h-28 w-28 place-items-center rounded-full bg-surface text-text-3 shadow-soft ring-4 ring-surface">
+                        <UserRound className="h-10 w-10" strokeWidth={1.5} />
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="min-w-0 space-y-4">
+                    <Field label="Имя" htmlFor={`${uid}-name`} required>
+                      <Input id={`${uid}-name`} name="name" autoComplete="name" value={draft.name} onChange={(event) => update("name", event.target.value)} />
+                    </Field>
+
+                    <div>
+                      <p id={`${uid}-avatar-label`} className="text-[13px] font-semibold text-text-2">Фотография профиля</p>
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <label className="inline-flex min-h-11 cursor-pointer items-center gap-2 rounded-xs border border-line-strong bg-surface px-4 text-[14px] font-semibold text-text transition-[transform,border-color,color] duration-200 hover:border-brand/35 hover:text-brand active:scale-[0.96] focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-brand">
+                          <Upload className="h-4 w-4" aria-hidden />
+                          {avatarUploading ? "Загружаем фотографию…" : avatarSrc ? "Заменить фотографию" : "Выбрать фотографию"}
+                          <input
+                            type="file"
+                            accept={PROFILE_AVATAR_ACCEPTED_TYPES.join(",")}
+                            className="sr-only"
+                            aria-labelledby={`${uid}-avatar-label`}
+                            aria-describedby={`${uid}-avatar-hint${avatarErrorText ? ` ${uid}-avatar-error` : ""}`}
+                            disabled={avatarUploading}
+                            onChange={(event) => void uploadAvatar(event)}
+                          />
+                        </label>
+                        {avatarSrc && (
+                          <Button type="button" variant="ghost" size="sm" onClick={removeAvatar} disabled={avatarUploading}>
+                            <Trash2 className="h-4 w-4" aria-hidden />
+                            Удалить
+                          </Button>
+                        )}
+                      </div>
+                      <p id={`${uid}-avatar-hint`} className="mt-2 max-w-2xl text-[13px] leading-relaxed text-text-3">
+                        JPEG, PNG или WebP до 5 МБ. Фото автоматически обрежется до квадрата.
+                      </p>
+                      <div className="mt-2 min-h-5" aria-live="polite">
+                        {avatarErrorText ? (
+                          <p id={`${uid}-avatar-error`} role="alert" className="text-[13px] font-medium text-danger-text">{avatarErrorText}</p>
+                        ) : (
+                          <p className="text-[13px] leading-relaxed text-text-3">
+                            {avatarUploading
+                              ? "Подготавливаем фотографию…"
+                              : avatarBroken
+                                ? "Фотография не загрузилась. Выбери другой файл или проверь ссылку."
+                                : avatarSrc
+                                  ? "Это фото будет отображаться в профиле."
+                                  : "Можно оставить профиль без фотографии."}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+
+                    <details>
+                      <summary className="min-h-11 cursor-pointer py-3 text-[13px] font-semibold text-text-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
+                        Указать фотографию по ссылке
+                      </summary>
+                      <Field label="HTTPS-ссылка" htmlFor={`${uid}-avatar-url`} hint="Подойдёт прямая защищённая ссылка на изображение.">
+                        <Input
+                          id={`${uid}-avatar-url`}
+                          name="avatar"
+                          type="url"
+                          inputMode="url"
+                          autoComplete="photo"
+                          placeholder="https://example.com/avatar.jpg"
+                          value={draft.avatar.startsWith("/api/media/assets/") ? "" : draft.avatar}
+                          onChange={(event) => {
+                            clearAvatarPreview();
+                            update("avatar", event.target.value);
+                          }}
+                        />
+                      </Field>
+                    </details>
+                  </div>
                 </div>
               </div>
             </div>
@@ -385,7 +531,7 @@ export function ProfileBriefSection() {
               <div className="flex flex-wrap items-end justify-between gap-3">
                 <div>
                   <h3 className="text-[15px] font-extrabold text-text">Исходный бриф канала</h3>
-                  <p className="mt-1 text-[12px] leading-relaxed text-text-3">Аврора использует эти ответы в генерации и планировании.</p>
+                  <p className="mt-1 text-[12px] leading-relaxed text-text-3">Аврора использует каждый заполненный ответ в генерации и планировании.</p>
                 </div>
                 <label className="min-w-0 sm:min-w-72">
                   <span className="mb-2 block text-[12px] font-semibold text-text-2">Канал</span>
@@ -416,6 +562,12 @@ export function ProfileBriefSection() {
                 <Field label="Роль автора" htmlFor={`${uid}-author-role`} hint="От чьего лица и с какой экспертизой пишет автор.">
                   <Textarea id={`${uid}-author-role`} rows={3} value={draft.authorRole} onChange={(event) => update("authorRole", event.target.value)} placeholder="Например: управляющий партнёр юридической фирмы" />
                 </Field>
+                <Field label="Следующий шаг читателя" htmlFor={`${uid}-cta`} hint="Куда вести читателя после полезной части поста.">
+                  <Textarea id={`${uid}-cta`} rows={3} value={draft.cta} onChange={(event) => update("cta", event.target.value)} placeholder="Например: записаться в боте на первичную консультацию" />
+                </Field>
+                <Field label="Запретные темы и обещания" htmlFor={`${uid}-taboo`} hint="Что Аврора не должна утверждать, обещать или обсуждать.">
+                  <Textarea id={`${uid}-taboo`} rows={3} value={draft.taboo} onChange={(event) => update("taboo", event.target.value)} placeholder="Например: не гарантировать победу в суде, не писать о политике" />
+                </Field>
               </div>
 
               <Field label="Рубрики" htmlFor={`${uid}-rubrics`} hint="Разделяй названия запятыми. Можно выбрать готовые варианты и добавить свои.">
@@ -431,7 +583,7 @@ export function ProfileBriefSection() {
                       aria-pressed={active}
                       onClick={() => toggleListValue("rubrics", rubric.label)}
                       className={cn(
-                        "min-h-11 rounded-full border px-3 py-2 text-[13px] font-semibold transition-[border-color,background-color,color]",
+                        "min-h-11 rounded-full border px-3 py-2 text-[13px] font-semibold transition-[border-color,background-color,color] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand",
                         active ? "border-brand bg-info-soft text-info-text" : "border-line bg-surface text-text-2 hover:border-brand/35",
                       )}
                     >
@@ -454,7 +606,7 @@ export function ProfileBriefSection() {
                       aria-pressed={active}
                       onClick={() => toggleListValue("formats", format)}
                       className={cn(
-                        "min-h-11 rounded-full border px-3 py-2 text-[13px] font-semibold transition-[border-color,background-color,color]",
+                        "min-h-11 rounded-full border px-3 py-2 text-[13px] font-semibold transition-[border-color,background-color,color] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand",
                         active ? "border-brand bg-info-soft text-info-text" : "border-line bg-surface text-text-2 hover:border-brand/35",
                       )}
                     >
@@ -470,12 +622,12 @@ export function ProfileBriefSection() {
               <div className="flex items-start gap-3">
                 <AtSign className="mt-0.5 h-5 w-5 shrink-0 text-brand" aria-hidden />
                 <div className="min-w-0 flex-1">
-                  <h3 className="text-[15px] font-extrabold text-text">Email</h3>
+                  <h3 className="text-[15px] font-extrabold text-text">Электронная почта</h3>
                   <p className="mt-1 text-[12px] leading-relaxed text-text-3">Новый адрес сохранится только после повторной проверки личности и перехода по одноразовой ссылке.</p>
                 </div>
               </div>
               <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                <Field label="Email" htmlFor={`${uid}-email`}>
+                <Field label="Эл. почта" htmlFor={`${uid}-email`}>
                   <Input
                     id={`${uid}-email`}
                     name="email"
@@ -499,7 +651,7 @@ export function ProfileBriefSection() {
               </div>
               {emailDirty && reauthMethod !== "password" && (
                 <p className="mt-3 rounded-sm bg-fire-soft p-3 text-[13px] leading-relaxed text-fire-text">
-                  Для смены email нужна свежая повторная авторизация через {reauthMethod === "telegram" ? "Telegram" : reauthMethod === "vk" ? "VK" : "провайдера"}. Текущий сеанс не считается таким подтверждением.
+                  Для смены почты нужна свежая повторная авторизация через {reauthMethod === "telegram" ? "Telegram" : reauthMethod === "vk" ? "VK" : "провайдера"}. Текущий сеанс не считается таким подтверждением.
                 </p>
               )}
               {pendingEmail && (

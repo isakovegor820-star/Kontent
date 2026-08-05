@@ -167,7 +167,7 @@ function CommandPalette() {
   const source = SOURCES[active];
   return (
     <section className={`${styles.scene} ${styles.command}`} aria-labelledby="v1-title">
-      <div className={styles.sceneLabel}><span>01</span> Memory OS</div>
+      <div className={styles.sceneLabel}><span>01</span> Система памяти</div>
       <header className={styles.commandIntro}>
         <p>Память — это не папка с файлами.</p>
         <h1 id="v1-title">Спроси канал.<br />Получишь опору.</h1>
@@ -282,7 +282,7 @@ function EvidenceReceipt() {
       <div className={styles.receiptLayout}>
         <SourceTabs active={active} onChange={setActive} className={styles.receiptTabs} />
         <Swap id={source.id} className={styles.paperReceipt}>
-          <header><strong>АВРОРА / MEMORY</strong><span>№ 000{active + 1}</span></header>
+          <header><strong>АВРОРА / ПАМЯТЬ</strong><span>№ 000{active + 1}</span></header>
           <div className={styles.receiptRule} />
           <dl><div><dt>ИСТОЧНИК</dt><dd>{source.kind}</dd></div><div><dt>ИЗВЛЕЧЕНО</dt><dd>{source.amount}</dd></div><div><dt>СТАТУС</dt><dd>ПОДТВЕРЖДЕНО</dd></div></dl>
           <blockquote>{source.fact}</blockquote>
@@ -358,7 +358,7 @@ function LayerMixer() {
       <div className={styles.sceneLabel}><span>08</span> Редакционный микшер</div>
       <header className={styles.mixerIntro}><p>Ты решаешь, что Аврора должна помнить.</p><h1 id="v8-title">Собери голос.<br />Не потеряй правду.</h1></header>
       <div className={styles.mixerConsole}>
-        <div className={styles.channels}>{MIXERS.map((item, index) => <button key={item.label} type="button" aria-pressed={levels[index]} onClick={() => toggle(index)}><item.Icon aria-hidden /><span>{item.label}<small>{item.sub}</small></span><i><b style={{ height: levels[index] ? `${82 - index * 13}%` : "8%" }} /></i><strong>{levels[index] ? "ON" : "OFF"}</strong></button>)}</div>
+        <div className={styles.channels}>{MIXERS.map((item, index) => <button key={item.label} type="button" aria-pressed={levels[index]} onClick={() => toggle(index)}><item.Icon aria-hidden /><span>{item.label}<small>{item.sub}</small></span><i><b style={{ height: levels[index] ? `${82 - index * 13}%` : "8%" }} /></i><strong>{levels[index] ? "ВКЛ" : "ВЫКЛ"}</strong></button>)}</div>
         <div className={styles.mixedOutput}><span><Gauge aria-hidden /> Материал на выходе</span><Swap id={levels.join("")}><blockquote>{text}</blockquote></Swap><footer><i className={levels.every(Boolean) ? styles.good : ""} />{levels.filter(Boolean).length} из 3 слоёв памяти активны</footer></div>
       </div>
       <div className={styles.mixerBottom}><span>Источники можно обновить в любой момент.</span><Cta inverse /></div>

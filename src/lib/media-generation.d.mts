@@ -9,18 +9,20 @@ export type MediaGenerationStatus =
 
 export interface MediaPromptContext {
   policy: "aurora-media-prompt";
-  version: 2;
+  version: 3;
   sourcePost: string;
   visualBrief: string;
   exactText: string;
   platform: "tg" | "telegram" | "vk" | "instagram" | "youtube" | "generic";
   brandProfile: string;
   brandPalette: string[];
+  visualDirection: string;
+  visualDetail: number;
 }
 
 export const MEDIA_QUEUE: "media-generation";
 export const MEDIA_GENERATION_STATUSES: readonly MediaGenerationStatus[];
-export const MEDIA_PROMPT_POLICY: Readonly<{ id: "aurora-media-prompt"; version: 2 }>;
+export const MEDIA_PROMPT_POLICY: Readonly<{ id: "aurora-media-prompt"; version: 3 }>;
 export const MEDIA_MODELS: Readonly<Record<MediaKind, Readonly<Record<string, Readonly<Record<string, unknown>>>>>>;
 export const MEDIA_STYLES: Readonly<Record<string, string>>;
 
@@ -53,7 +55,13 @@ export function validateMediaInput(raw: unknown):
 export function extractExplicitBrandPalette(profile: unknown): string[];
 export function buildMediaPromptContext(
   input: Record<string, unknown>,
-  server?: { platform?: unknown; brandProfile?: unknown; brandPalette?: unknown },
+  server?: {
+    platform?: unknown;
+    brandProfile?: unknown;
+    brandPalette?: unknown;
+    visualDirection?: unknown;
+    visualDetail?: unknown;
+  },
 ): MediaPromptContext;
 export function buildNavyMediaPayload(generation: Record<string, unknown>): Record<string, unknown>;
 export function assertSafeMediaUrl(value: unknown): URL;

@@ -7,7 +7,7 @@
 // вот так он уйдёт сам»).
 // Тон — ТЗ 7.5: просто и дружелюбно, на «ты».
 
-import { Fragment, useEffect, useId, useState } from "react";
+import { Fragment, useEffect, useId, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
@@ -30,6 +30,7 @@ import {
   GlassCard,
   Input,
   TelegramIcon,
+  Textarea,
   VkIcon,
 } from "@/components/ui/primitives";
 import { useStore } from "@/lib/store";
@@ -42,6 +43,7 @@ import {
 } from "@/lib/channel-profile.mjs";
 import { cn, initials, weekdayShort } from "@/lib/utils";
 import { RUBRICS } from "@/lib/brief";
+import { PROFILE_FORMAT_OPTIONS } from "@/lib/profile";
 import {
   onboardingRecoveryKey,
   parseOnboardingRecovery,
@@ -157,9 +159,10 @@ function StepFooter({
   );
 }
 
-/* --------------------------------------------------- ШАГ 1: КВИЗ (30 секунд) */
-// Быстрые вопросы: ниша, цель, аудитория, форматы. Ответы уходят в content_brief
-// (source='quiz') после подключения канала — автопилот сразу знает, о чём писать.
+/* ----------------------------------------------------- ШАГ 1: БРИФ (2 минуты) */
+// Здесь только данные, которые реально участвуют в генерации: тема, аудитория, роль,
+// цель, маршрут читателя, редакционные границы, голос, рубрики и форматы. После
+// подключения канала ответы целиком уходят в content_brief (source='quiz').
 
 export type QuizAnswers = OnboardingQuizAnswers;
 
@@ -173,83 +176,178 @@ function StepQuiz({
   onNext: () => void;
 }) {
   const uid = useId();
-  const canNext = answers.niche.trim().length >= 3 && answers.audience.trim().length >= 3;
+  const nicheRef = useRef<HTMLTextAreaElement>(null);
+  const audienceRef = useRef<HTMLTextAreaElement>(null);
+  const [attempted, setAttempted] = useState(false);
+  const nicheError = attempted && answers.niche.trim().length < 3
+    ? "Опиши тему канала хотя бы тремя символами."
+    : undefined;
+  const audienceError = attempted && answers.audience.trim().length < 3
+    ? "Опиши, для кого ты пишешь, хотя бы тремя символами."
+    : undefined;
 
-  function toggleRubric(label: string) {
-    const has = answers.rubrics.includes(label);
+  function toggleList(key: "rubrics" | "formats", label: string, limit: number) {
+    const has = answers[key].includes(label);
     onChange({
       ...answers,
-      rubrics: has
-        ? answers.rubrics.filter((r) => r !== label)
-        : [...answers.rubrics, label].slice(0, 6),
+      [key]: has
+        ? answers[key].filter((item) => item !== label)
+        : [...answers[key], label].slice(0, limit),
     });
+  }
+
+  function continueQuiz() {
+    setAttempted(true);
+    if (answers.niche.trim().length < 3) {
+      nicheRef.current?.focus();
+      return;
+    }
+    if (answers.audience.trim().length < 3) {
+      audienceRef.current?.focus();
+      return;
+    }
+    onNext();
   }
 
   return (
     <>
-      <StepHead time="30 секунд" title="Расскажи о канале">
-        Три вопроса — и ИИ сразу настроится под тебя. Без этого он пишет наугад.
+      <StepHead time="2 минуты" title="Дай Авроре контекст">
+        Чем точнее ответы, тем меньше общих фраз и выдумок. Обязательны только тема и
+        аудитория — остальные поля заметно улучшают голос, пользу и конверсию постов.
       </StepHead>
 
-      <div className="mt-7 space-y-5">
-        <Field
-          label="Твоя ниша"
-          htmlFor={`${uid}-niche`}
-          hint="О чём канал? Чем конкретнее — тем точнее ИИ."
-        >
-          <Input
-            id={`${uid}-niche`}
-            value={answers.niche}
-            onChange={(e) => onChange({ ...answers, niche: e.target.value })}
-            placeholder="Например: юридические новости для бизнеса"
-            autoComplete="off"
-          />
-        </Field>
+      <div className="mt-7 space-y-8">
+        <section aria-labelledby={`${uid}-foundation`}>
+          <div>
+            <h2 id={`${uid}-foundation`} className="text-[15px] font-extrabold text-text">Основа канала</h2>
+            <p className="mt-1 text-[13px] leading-relaxed text-text-3">О чём писать, для кого и с какой позиции.</p>
+          </div>
+          <div className="mt-4 grid gap-5 sm:grid-cols-2">
+            <Field label="Тема и ниша" htmlFor={`${uid}-niche`} required error={nicheError} messageId={`${uid}-niche-message`}>
+              <Textarea
+                ref={nicheRef}
+                id={`${uid}-niche`}
+                rows={3}
+                value={answers.niche}
+                aria-invalid={nicheError ? true : undefined}
+                aria-describedby={nicheError ? `${uid}-niche-message` : undefined}
+                onChange={(e) => onChange({ ...answers, niche: e.target.value })}
+                placeholder="Например: юридическая безопасность малого бизнеса"
+                autoComplete="off"
+              />
+            </Field>
 
-        <Field
-          label="Кто твой читатель"
-          htmlFor={`${uid}-aud`}
-          hint="Для кого пишешь? Возраст, роль, боль."
-        >
-          <Input
-            id={`${uid}-aud`}
-            value={answers.audience}
-            onChange={(e) => onChange({ ...answers, audience: e.target.value })}
-            placeholder="Например: предприниматели 30–45, боятся штрафов"
-            autoComplete="off"
-          />
-        </Field>
+            <Field label="Аудитория и её задача" htmlFor={`${uid}-aud`} required error={audienceError} messageId={`${uid}-aud-message`}>
+              <Textarea
+                ref={audienceRef}
+                id={`${uid}-aud`}
+                rows={3}
+                value={answers.audience}
+                aria-invalid={audienceError ? true : undefined}
+                aria-describedby={audienceError ? `${uid}-aud-message` : undefined}
+                onChange={(e) => onChange({ ...answers, audience: e.target.value })}
+                placeholder="Например: владельцы компаний без штатного юриста, которым важно снизить риски"
+                autoComplete="off"
+              />
+            </Field>
 
-        <Field
-          label="Зачем тебе канал"
-          htmlFor={`${uid}-goal`}
-          hint="Продажи, экспертность, комьюнити — что угодно."
-        >
-          <Input
-            id={`${uid}-goal`}
-            value={answers.goal}
-            onChange={(e) => onChange({ ...answers, goal: e.target.value })}
-            placeholder="Например: привлекать клиентов на консультации"
-            autoComplete="off"
-          />
-        </Field>
+            <Field label="Цель канала" htmlFor={`${uid}-goal`} hint="Какой результат должен поддерживать контент.">
+              <Textarea
+                id={`${uid}-goal`}
+                rows={3}
+                value={answers.goal}
+                onChange={(e) => onChange({ ...answers, goal: e.target.value })}
+                placeholder="Например: приводить заявки на первичную консультацию"
+                autoComplete="off"
+              />
+            </Field>
 
-        <div>
-          <p className="text-[13px] font-semibold text-text-2">
-            Какие форматы нравятся{" "}
-            <span className="font-normal text-text-3">(до 6)</span>
-          </p>
-          <div className="mt-2 flex flex-wrap gap-1.5">
+            <Field label="Роль и экспертиза автора" htmlFor={`${uid}-author-role`} hint="От чьего лица и на каком основании ты говоришь.">
+              <Textarea
+                id={`${uid}-author-role`}
+                rows={3}
+                value={answers.authorRole}
+                onChange={(e) => onChange({ ...answers, authorRole: e.target.value })}
+                placeholder="Например: управляющий партнёр, 12 лет в корпоративном праве"
+                autoComplete="off"
+              />
+            </Field>
+          </div>
+        </section>
+
+        <section aria-labelledby={`${uid}-conversion`}>
+          <div>
+            <h2 id={`${uid}-conversion`} className="text-[15px] font-extrabold text-text">Конверсия и границы</h2>
+            <p className="mt-1 text-[13px] leading-relaxed text-text-3">Куда вести читателя и чего Аврора не должна писать.</p>
+          </div>
+          <div className="mt-4 grid gap-5 sm:grid-cols-2">
+            <Field label="Следующий шаг читателя" htmlFor={`${uid}-cta`} hint="Действие, ссылка, продукт или точка контакта.">
+              <Textarea
+                id={`${uid}-cta`}
+                rows={3}
+                value={answers.cta}
+                onChange={(e) => onChange({ ...answers, cta: e.target.value })}
+                placeholder="Например: записаться в боте на разбор договора"
+                autoComplete="off"
+              />
+            </Field>
+            <Field label="Запретные темы и обещания" htmlFor={`${uid}-taboo`} hint="Факты, темы и формулировки, которые нельзя использовать.">
+              <Textarea
+                id={`${uid}-taboo`}
+                rows={3}
+                value={answers.taboo}
+                onChange={(e) => onChange({ ...answers, taboo: e.target.value })}
+                placeholder="Например: не обещать победу в суде, не писать о политике"
+                autoComplete="off"
+              />
+            </Field>
+          </div>
+        </section>
+
+        <section aria-labelledby={`${uid}-delivery`}>
+          <div>
+            <h2 id={`${uid}-delivery`} className="text-[15px] font-extrabold text-text">Подача</h2>
+            <p className="mt-1 text-[13px] leading-relaxed text-text-3">Выбери голос, рубрики и типы публикаций. Позже всё можно изменить.</p>
+          </div>
+
+          <div className="mt-4">
+            <p className="text-[13px] font-semibold text-text-2">Как должны звучать посты</p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {TONES.map((tone) => {
+                const active = answers.tone === tone.label;
+                return (
+                  <button
+                    key={tone.id}
+                    type="button"
+                    onClick={() => onChange({ ...answers, tone: active ? "" : tone.label })}
+                    aria-pressed={active}
+                    className={cn(
+                      "min-h-11 rounded-full border px-3 py-2 text-[13px] font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand",
+                      active ? "border-brand bg-info-soft text-info-text" : "border-line bg-surface text-text-3 hover:border-line-strong hover:text-text",
+                    )}
+                  >
+                    {tone.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="mt-5">
+            <p className="text-[13px] font-semibold text-text-2">
+              Смысловые рубрики <span className="font-normal text-text-3">(до 6)</span>
+            </p>
+            <div className="mt-2 flex flex-wrap gap-2">
             {RUBRICS.map((r) => {
               const active = answers.rubrics.includes(r.label);
               return (
                 <button
                   key={r.key}
                   type="button"
-                  onClick={() => toggleRubric(r.label)}
+                  onClick={() => toggleList("rubrics", r.label, 6)}
                   aria-pressed={active}
                   className={cn(
-                    "rounded-full border px-3 py-1.5 text-[13px] font-semibold transition-colors",
+                    "min-h-11 rounded-full border px-3 py-2 text-[13px] font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand",
                     active
                       ? "border-brand bg-info-soft text-info-text"
                       : "border-line bg-surface text-text-3 hover:border-line-strong hover:text-text",
@@ -259,13 +357,39 @@ function StepQuiz({
                 </button>
               );
             })}
+            </div>
           </div>
-        </div>
+
+          <div className="mt-5">
+            <p className="text-[13px] font-semibold text-text-2">
+              Форматы публикаций <span className="font-normal text-text-3">(до 5)</span>
+            </p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {PROFILE_FORMAT_OPTIONS.map((format) => {
+                const active = answers.formats.includes(format);
+                return (
+                  <button
+                    key={format}
+                    type="button"
+                    onClick={() => toggleList("formats", format, 5)}
+                    aria-pressed={active}
+                    className={cn(
+                      "min-h-11 rounded-full border px-3 py-2 text-[13px] font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand",
+                      active ? "border-brand bg-info-soft text-info-text" : "border-line bg-surface text-text-3 hover:border-line-strong hover:text-text",
+                    )}
+                  >
+                    {format}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </section>
       </div>
 
-      <StepFooter hint="Минимум: ниша и читатель. Остальное можно заполнить потом.">
-        <Button variant="brand" size="lg" onClick={onNext} disabled={!canNext}>
-          Дальше
+      <StepFooter hint="Ответы сохраняются для выбранного канала и используются при генерации каждого поста.">
+        <Button variant="brand" size="lg" onClick={continueQuiz}>
+          Сохранить и продолжить
           <ArrowRight className="h-4 w-4" strokeWidth={2.5} aria-hidden />
         </Button>
       </StepFooter>
@@ -704,25 +828,43 @@ function StepProfile({
         if (!alive) return;
         if (r.ok && d?.ok && d.profile) {
           const p = d.profile;
-          // Пустые поля дозаполняем из квиза (шаг 1): человек уже отвечал — не спрашиваем дважды.
+          // Явные ответы человека из брифа важнее авто-разбора; извлечённый профиль
+          // дозаполняет только то, чего человек не указал сам.
           setEdit({
-            niche: p.niche || quiz.niche,
+            niche: quiz.niche || p.niche,
             topics: (p.topics ?? []).join(", "),
             services: p.services,
             prices: p.prices,
-            audience: p.audience || quiz.audience,
-            tone: p.tone,
-            taboos: p.taboos,
-            goal: p.goal || quiz.goal,
+            audience: quiz.audience || p.audience,
+            tone: quiz.tone || p.tone,
+            taboos: quiz.taboo || p.taboos,
+            goal: quiz.goal || p.goal,
           });
           setPhase("confirm");
         } else {
           // Не прочитался (no_posts/no_handle/ai) — честно говорим и спрашиваем сами.
-          setEdit((v) => ({ ...v, niche: quiz.niche, audience: quiz.audience, goal: quiz.goal }));
+          setEdit((v) => ({
+            ...v,
+            niche: quiz.niche,
+            audience: quiz.audience,
+            goal: quiz.goal,
+            tone: quiz.tone,
+            taboos: quiz.taboo,
+          }));
           setPhase("interview");
         }
       } catch {
-        if (alive) setPhase("interview");
+        if (alive) {
+          setEdit((v) => ({
+            ...v,
+            niche: quiz.niche,
+            audience: quiz.audience,
+            goal: quiz.goal,
+            tone: quiz.tone,
+            taboos: quiz.taboo,
+          }));
+          setPhase("interview");
+        }
       }
     })();
     return () => {
@@ -856,7 +998,7 @@ function StepProfile({
                     onClick={() => setEdit((v) => ({ ...v, goal: active ? "" : g }))}
                     aria-pressed={active}
                     className={cn(
-                      "rounded-full border px-3 py-1.5 text-[13px] font-semibold transition-colors",
+                      "min-h-11 rounded-full border px-3 py-2 text-[13px] font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand",
                       active
                         ? "border-brand bg-info-soft text-info-text"
                         : "border-line bg-surface text-text-3 hover:border-line-strong hover:text-text",
@@ -881,7 +1023,7 @@ function StepProfile({
                     onClick={() => setEdit((v) => ({ ...v, tone: active ? "" : t.label }))}
                     aria-pressed={active}
                     className={cn(
-                      "rounded-full border px-3 py-1.5 text-[13px] font-semibold transition-colors",
+                      "min-h-11 rounded-full border px-3 py-2 text-[13px] font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand",
                       active
                         ? "border-brand bg-info-soft text-info-text"
                         : "border-line bg-surface text-text-3 hover:border-line-strong hover:text-text",
@@ -1149,6 +1291,8 @@ function StepFinish({
         <p><span className="font-semibold text-text">Ниша:</span> <span className="text-text-2">{quiz.niche || "не указана"}</span></p>
         <p><span className="font-semibold text-text">Аудитория:</span> <span className="text-text-2">{quiz.audience || "не указана"}</span></p>
         <p><span className="font-semibold text-text">Цель:</span> <span className="text-text-2">{quiz.goal || "не указана"}</span></p>
+        {quiz.authorRole && <p><span className="font-semibold text-text">Автор:</span> <span className="text-text-2">{quiz.authorRole}</span></p>}
+        {quiz.tone && <p><span className="font-semibold text-text">Голос:</span> <span className="text-text-2">{quiz.tone}</span></p>}
       </div>
 
       <StepFooter onBack={onBack}>
@@ -1212,7 +1356,17 @@ function Wizard({ userId }: { userId: number }) {
   const { tgChannels, channelId } = useChannelChoice(s.realChannels, pickedChannelId);
   const effectiveChannelId = lockedChannelId ?? channelId;
   const [step, setStepRaw] = useState<StepNo>(() => restored?.step ?? 1);
-  const [quiz, setQuizRaw] = useState<QuizAnswers>(() => restored?.quiz ?? { niche: "", goal: "", audience: "", rubrics: [] });
+  const [quiz, setQuizRaw] = useState<QuizAnswers>(() => restored?.quiz ?? {
+    niche: "",
+    goal: "",
+    audience: "",
+    rubrics: [],
+    formats: [],
+    authorRole: "",
+    cta: "",
+    taboo: "",
+    tone: "",
+  });
 
   const lockedChannelExists =
     lockedChannelId == null || tgChannels.some((channel) => channel.id === lockedChannelId);
@@ -1254,6 +1408,11 @@ function Wizard({ userId }: { userId: number }) {
           audience: quiz.audience.trim(),
           goal: quiz.goal.trim(),
           rubrics: quiz.rubrics,
+          formats: quiz.formats,
+          authorRole: quiz.authorRole.trim(),
+          cta: quiz.cta.trim(),
+          taboo: quiz.taboo.trim(),
+          quality: quiz.tone ? { preset: "custom", tone: quiz.tone } : undefined,
           ready: true,
           source: "quiz",
         }),

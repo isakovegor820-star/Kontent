@@ -92,7 +92,7 @@ export async function POST(req: NextRequest) {
 
   let tx: PoolClient | null = null;
   let txOpen = false;
-  let publicationOrigin: "manual" | "ai" | "trend" | "competitor" | "autopilot" = "manual";
+  let publicationOrigin: "manual" | "ai" | "trend" | "idea" | "competitor" | "autopilot" = "manual";
   try {
     const pool = getPool();
     if (draftId != null) {
@@ -124,7 +124,7 @@ export async function POST(req: NextRequest) {
         id: number;
         text: string;
         scheduled_at: Date | string | null;
-        origin: "manual" | "ai" | "trend" | "competitor" | "autopilot";
+        origin: "manual" | "ai" | "trend" | "idea" | "competitor" | "autopilot";
         version: number | string;
         review_policy_version: number | string;
         ai_validation: unknown;

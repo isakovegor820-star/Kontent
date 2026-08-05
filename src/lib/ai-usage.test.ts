@@ -446,7 +446,16 @@ describe("channelAiContextFor", () => {
               formats: ["Видео", "Текст"],
               author_role: "Основатель legal-tech продукта",
               goal: "Новая культура юридического бизнеса",
+              cta: "Записаться на разбор договора",
               taboo: "Непроверенные обещания",
+              profile_answers: {
+                q1: "Канал объясняет, как технологии меняют юридическую практику.",
+              },
+              quality: {
+                tone: "Спокойно и предметно",
+                minChars: 1200,
+                styleExamples: ["Ручной пример голоса автора для выбранного канала."],
+              },
               ready: true,
               updated_at: "2026-07-30T10:00:00.000Z",
             }],
@@ -454,6 +463,7 @@ describe("channelAiContextFor", () => {
         }
         if (sql.includes("kind in ('form', 'paste')")) return { rows: [] };
         if (sql.includes("select text from posts")) return { rows: [{ text: "Проверенный голос канала" }] };
+        if (sql.includes("select count(*)::text as count from posts")) return { rows: [{ count: "7" }] };
         throw new Error(`unexpected query: ${sql}`);
       }),
     };
@@ -463,6 +473,8 @@ describe("channelAiContextFor", () => {
     expect(context?.profile).toContain("Услуги и продукты: Анализ договоров для юридических команд");
     expect(context?.profile).toContain("Форматы публикаций: Видео, Текст");
     expect(context?.profile).toContain("Роль автора: Основатель legal-tech продукта");
+    expect(context?.profile).toContain("Следующий шаг читателя: Записаться на разбор договора");
+    expect(context?.profile).toContain("Канал объясняет, как технологии меняют юридическую практику.");
     expect(context?.profile).not.toContain("аоао");
     expect(context?.profileProvenance.niche).toMatchObject({
       sourceId: "content-brief",
@@ -473,6 +485,11 @@ describe("channelAiContextFor", () => {
       sourceKind: "profile_edit",
       verified: true,
     });
-    expect(context?.styleSamples).toEqual(["Проверенный голос канала"]);
+    expect(context?.quality.minChars).toBe(1200);
+    expect(context?.postIndex).toBe(7);
+    expect(context?.styleSamples).toEqual([
+      "Ручной пример голоса автора для выбранного канала.",
+      "Проверенный голос канала",
+    ]);
   });
 });

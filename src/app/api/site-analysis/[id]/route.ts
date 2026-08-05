@@ -20,7 +20,9 @@ export async function GET(req: NextRequest, context: { params: Promise<{ id: str
     const result = await getPool().query<SiteAnalysisRow>(
       `select id, request_id, target_url, confirmed_domain, status, stage, progress,
               progress_detail, limits, result, error_code, error_message, attempts,
-              run_revision, queue_confirmed_at, created_at, updated_at, completed_at
+              run_revision, queue_confirmed_at, created_at, updated_at, completed_at,
+              prompt_version, question_catalog_version, snapshot_hash, coverage_mode,
+              answered_count, question_count
          from site_analysis_jobs
         where id = $1 and user_id = $2`,
       [id, user.id],

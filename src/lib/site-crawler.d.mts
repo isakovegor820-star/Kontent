@@ -24,6 +24,7 @@ export function parseRobotsTxt(text: unknown, userAgent?: string): Readonly<{ us
 export function robotsAllows(policy: { rules?: Array<{ type: string; pattern: string }> }, value: URL | string): boolean;
 export function extractSitemapUrls(xml: unknown, baseUrl: URL | string, maxUrls?: number): string[];
 export function extractSitemapDocument(xml: unknown, baseUrl: URL | string, maxUrls?: number): Readonly<{ kind: "index" | "urlset"; urls: string[] }>;
+export function stratifySitemapUrls(values: string[], maxUrls?: number): string[];
 export function extractSitePage(html: unknown, value: URL | string, status?: number): Record<string, unknown>;
 export function buildSiteAnalysisReport(targetUrl: URL | string, pages: Array<Record<string, unknown>>, limits?: SiteCrawlLimits): Record<string, unknown>;
 export function crawlSite(

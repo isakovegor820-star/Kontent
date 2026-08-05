@@ -67,6 +67,12 @@ export type LibraryRegistryItem = {
   dataMaturity: LibraryMaturity | null;
   isHit: boolean;
   explanation?: string;
+  idea?: {
+    topic: string;
+    hook?: string;
+    structure?: string;
+    whyItWorked?: string;
+  };
 };
 
 type QueryLike = URLSearchParams | Record<string, unknown>;

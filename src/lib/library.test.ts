@@ -45,7 +45,8 @@ describe("library helpers", () => {
       text: "15 сентября откроется реестр из 136 источников.",
     });
 
-    expect(adaptation.prompt).toContain("по механике выбранного референса");
+    expect(adaptation.prompt).toContain("строго по теме");
+    expect(adaptation.prompt).toContain("откроется реестр из источников");
     expect(adaptation.prompt).not.toContain("15 сентября");
     expect(adaptation.prompt).not.toContain("136");
     expect(adaptation.referenceText).toBe("15 сентября откроется реестр из 136 источников.");
@@ -70,5 +71,37 @@ describe("library helpers", () => {
       aiValidation: null,
       clientKey: "draft_library-reference-1234567890",
     });
+  });
+
+  it("сохраняет карточку idea как idea, а источник — только как provenance", () => {
+    const input = buildLibraryDraftContext({
+      text: "Ошибки в договоре поставки\n\nХук\n\nСтруктура",
+      channelId: 17,
+      clientKey: "draft_library-idea-1234567890",
+      material: {
+        kind: "idea",
+        id: 81,
+        sourceLabel: "Идея Авроры",
+        provenanceLabel: "Открытый источник",
+        sourceId: 9,
+        sourceUrl: "https://t.me/source/15",
+        topic: "Ошибки в договоре поставки",
+        hook: "Хук",
+        structure: "Структура",
+        whyItWorked: "Понятная проблема",
+      },
+    });
+
+    expect(input.origin).toBe("idea");
+    expect(input.sourceRef).toMatchObject({
+      kind: "idea",
+      id: "81",
+      topic: "Ошибки в договоре поставки",
+      hook: "Хук",
+      structure: "Структура",
+      whyItWorked: "Понятная проблема",
+      provenance: { kind: "content_idea", id: "9", label: "Открытый источник" },
+    });
+    expect(input.sourceRef?.kind).not.toBe("competitor");
   });
 });

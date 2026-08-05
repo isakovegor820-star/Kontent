@@ -22,6 +22,9 @@ const session: StudioChatSession = {
     referenceText: "Чужой пост используется только как форма",
     referenceSource: "Конкурент",
     sourceRef: { kind: "competitor", id: "competitor:71", label: "Конкурент" },
+    referenceDraftId: 71,
+    referenceDraftVersion: 3,
+    referenceIntent: "create",
     channelId: 42,
   }]],
 };
@@ -75,6 +78,9 @@ describe("studio chat session", () => {
       requestKey: "studio-request-123",
       channelId: 42,
       sourceRef: { kind: "competitor", id: "competitor:71" },
+      referenceDraftId: 71,
+      referenceDraftVersion: 3,
+      referenceIntent: "create",
     });
   });
 

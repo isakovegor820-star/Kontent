@@ -74,7 +74,7 @@ export async function GET(req: NextRequest) {
     const briefRow = channelId
       ? (
           await pool.query(
-            `select niche, audience, rubrics, formats, author_role, goal, cta, taboo,
+            `select niche, audience, rubrics, formats, author_role, goal, cta, taboo, profile_answers,
                     quality, ready, source
                from content_brief
               where user_id = $1 and channel_id = $2`,
@@ -175,8 +175,8 @@ export async function POST(req: NextRequest) {
     await client.query(
       `insert into content_brief
          (user_id, channel_id, niche, audience, rubrics, formats, author_role,
-          goal, ready, source, updated_at)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, true, 'manual', now())
+          goal, cta, taboo, ready, source, updated_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true, 'manual', now())
        on conflict (user_id, channel_id) do update
          set niche = excluded.niche,
              audience = excluded.audience,
@@ -184,6 +184,8 @@ export async function POST(req: NextRequest) {
              formats = excluded.formats,
              author_role = excluded.author_role,
              goal = excluded.goal,
+             cta = excluded.cta,
+             taboo = excluded.taboo,
              ready = true,
              source = 'manual',
              updated_at = now()`,
@@ -196,6 +198,8 @@ export async function POST(req: NextRequest) {
         input.brief.formats,
         input.brief.authorRole,
         input.brief.goal,
+        input.brief.cta,
+        input.brief.taboo,
       ],
     );
 

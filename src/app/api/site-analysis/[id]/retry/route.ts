@@ -13,7 +13,9 @@ export const runtime = "nodejs";
 
 const FIELDS = `id, request_id, target_url, confirmed_domain, status, stage, progress,
   progress_detail, limits, result, error_code, error_message, attempts, run_revision,
-  queue_confirmed_at, created_at, updated_at, completed_at, last_retry_key`;
+  queue_confirmed_at, created_at, updated_at, completed_at, last_retry_key,
+  prompt_version, question_catalog_version, snapshot_hash, coverage_mode,
+  answered_count, question_count`;
 
 function reply(body: Record<string, unknown>, status: number, requestId: string) {
   return NextResponse.json({ ...body, requestId }, { status, headers: { "x-request-id": requestId, "cache-control": "no-store" } });
@@ -72,7 +74,9 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
                 progress_detail = 'Повторный анализ поставлен в очередь', result = null,
                 error_code = null, error_message = null, completed_at = null,
                 queue_confirmed_at = null, worker_lease_token = null,
-                worker_heartbeat_at = null, run_revision = run_revision + 1,
+                worker_heartbeat_at = null, snapshot_hash = null,
+                answered_count = 0, question_count = 0,
+                ai_usage_reservation_id = null, run_revision = run_revision + 1,
                 last_retry_key = $3, updated_at = now()
           where id = $1 and user_id = $2
           returning ${FIELDS}`,

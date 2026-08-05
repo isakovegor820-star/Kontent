@@ -9,7 +9,7 @@ const FREE_POINTS = [
   "Разведка конкурентов с досье",
   "ИИ-посты твоим голосом — честный дневной лимит",
   "Автопостинг по расписанию, с сервера",
-  "Без карты и скрытых пейволов",
+  "Без карты и скрытых платных ограничений",
 ] as const;
 
 export function V3Pricing() {
@@ -64,7 +64,7 @@ export function V3Pricing() {
             <div className="v3-lift relative flex h-full flex-col border-3 border-dashed border-[var(--ink)] bg-[var(--sheet)] p-7 sm:p-9">
               <span className="v3-stamp absolute -top-3.5 right-5">Скажем заранее</span>
               <p className="v3-mono text-[11px] font-semibold tracking-[0.14em] text-[var(--ink-2)] uppercase">
-                Pro · позже
+                Расширенный · позже
               </p>
               <p className="v3-display mt-3 text-[clamp(2.6rem,5vw,3.6rem)] leading-none font-black text-[var(--ink-2)]">
                 ?

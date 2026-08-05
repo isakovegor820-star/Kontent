@@ -94,7 +94,7 @@ function scoredFields(score: LibraryScoredItem | undefined) {
     dataQuality: score?.dataQuality ?? null,
     dataMaturity: score?.dataMaturity ?? null,
     isHit: score?.isHit ?? false,
-    explanation: score ? explainLibraryScore(score) : "Недостаточно сопоставимых данных для аналитического Score.",
+    explanation: score ? explainLibraryScore(score) : "Недостаточно сопоставимых данных для аналитической оценки.",
   } satisfies Partial<LibraryRegistryItem>;
 }
 
@@ -207,6 +207,12 @@ export async function buildLibraryRegistrySnapshot(
       sourceUrl: telegramUrl(row.handle, row.tg_msg_id),
       sourceData: "aurora_idea_from_public_source",
       text: ideaText(row),
+      idea: {
+        topic: row.topic?.trim() || "Идея Авроры",
+        ...(row.hook?.trim() ? { hook: row.hook.trim() } : {}),
+        ...(row.structure?.trim() ? { structure: row.structure.trim() } : {}),
+        ...(row.why_it_worked?.trim() ? { whyItWorked: row.why_it_worked.trim() } : {}),
+      },
       postedAt: iso(row.created_at),
       format: score?.format ?? "text",
       saved: false,

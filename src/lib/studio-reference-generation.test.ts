@@ -22,4 +22,9 @@ describe("studio reference generation identity", () => {
     expect(() => studioReferenceGenerationIdentity(0, 1)).toThrow(RangeError);
     expect(() => studioReferenceGenerationIdentity(1, Number.NaN)).toThrow(RangeError);
   });
+
+  it("changes the paid-operation fingerprint when the owned draft version changes", () => {
+    expect(studioReferenceGenerationIdentity(7, 4).requestKey)
+      .not.toBe(studioReferenceGenerationIdentity(7, 3).requestKey);
+  });
 });

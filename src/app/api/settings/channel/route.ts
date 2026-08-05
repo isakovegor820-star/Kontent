@@ -133,8 +133,8 @@ export async function POST(req: NextRequest) {
 
     await client.query(
       `insert into content_brief
-         (user_id, channel_id, niche, audience, rubrics, formats, author_role, goal, cta, taboo, quality, ready, source, updated_at)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, true, $12, now())
+         (user_id, channel_id, niche, audience, rubrics, formats, author_role, goal, cta, taboo, profile_answers, quality, ready, source, updated_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, true, $13, now())
        on conflict (user_id, channel_id) do update
          set niche = excluded.niche,
              audience = excluded.audience,
@@ -144,6 +144,7 @@ export async function POST(req: NextRequest) {
              goal = excluded.goal,
              cta = excluded.cta,
              taboo = excluded.taboo,
+             profile_answers = excluded.profile_answers,
              quality = excluded.quality,
              ready = true,
              source = excluded.source,
@@ -159,6 +160,7 @@ export async function POST(req: NextRequest) {
         brief.goal,
         brief.cta,
         brief.taboo,
+        JSON.stringify(brief.profileAnswers),
         JSON.stringify(brief.quality),
         brief.source ?? "manual",
       ],

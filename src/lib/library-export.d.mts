@@ -7,6 +7,7 @@ export type LibraryExportSnapshot = {
 export const LIBRARY_EXPORT_FORMATS: readonly ["csv", "xlsx", "json", "pdf", "html", "markdown"];
 export function renderLibraryCsv(snapshot: LibraryExportSnapshot): Buffer;
 export function renderLibraryXlsx(snapshot: LibraryExportSnapshot): Buffer;
+export function renderTabularXlsx(rows: unknown[][], sheetName?: string): Buffer;
 export function renderLibraryJson(snapshot: LibraryExportSnapshot): Buffer;
 export function libraryPdfItemLines(item: Record<string, unknown>): string[];
 export function resolveLibraryPdfFontPath(options?: {

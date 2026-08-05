@@ -587,8 +587,8 @@ export default function ComposerPage() {
             kind: "danger",
             title: "ИИ не закончил текст",
             body: event.retryable
-              ? `Связь с моделью прервалась. Исходный текст и ключ запроса сохранены — можно повторить.${requestId ? ` ID запроса: ${requestId}` : ""}`
-              : `Результат не прошёл проверку. Уточни бриф или открой ИИ-студию.${requestId ? ` ID запроса: ${requestId}` : ""}`,
+              ? `Связь с моделью прервалась. Исходный текст и ключ запроса сохранены — можно повторить.${requestId ? ` Номер запроса: ${requestId}` : ""}`
+              : `Результат не прошёл проверку. Уточни задание или открой ИИ-студию.${requestId ? ` Номер запроса: ${requestId}` : ""}`,
           });
         } else if (event.type === "done") {
           projection = projectAiDraftEvent(projection, event);
@@ -627,7 +627,7 @@ export default function ComposerPage() {
           s.toast({
             kind: "danger",
             title: "Не получилось",
-            body: `${message}${requestId ? ` ID запроса: ${requestId}` : ""}`,
+            body: `${message}${requestId ? ` Номер запроса: ${requestId}` : ""}`,
           });
           return;
         }
@@ -651,7 +651,7 @@ export default function ComposerPage() {
             s.toast({
               kind: "danger",
               title: "Ответ ИИ не подтверждён",
-              body: `Поток завершился без финального результата или проверки. Исходный текст и ключ запроса сохранены.${requestId ? ` ID запроса: ${requestId}` : ""}`,
+              body: `Поток завершился без финального результата или проверки. Исходный текст и ключ запроса сохранены.${requestId ? ` Номер запроса: ${requestId}` : ""}`,
             });
           }
           return;
@@ -669,7 +669,7 @@ export default function ComposerPage() {
           s.toast({
             kind: "danger",
             title: "Ответ ещё не подтверждён",
-            body: `Текст сохранён на сервере, но подтверждение списания не завершилось. Повтори тот же запрос — модель не будет вызвана заново.${requestId ? ` ID запроса: ${requestId}` : ""}`,
+            body: `Текст сохранён на сервере, но подтверждение списания не завершилось. Повтори тот же запрос — модель не будет вызвана заново.${requestId ? ` Номер запроса: ${requestId}` : ""}`,
           });
           return;
         }
@@ -697,7 +697,7 @@ export default function ComposerPage() {
           s.toast({
             kind: "danger",
             title: "Связь с ИИ прервалась",
-            body: `Исходный текст и ключ запроса сохранены. Попробуй ещё раз.${requestId ? ` ID запроса: ${requestId}` : ""}`,
+            body: `Исходный текст и ключ запроса сохранены. Попробуй ещё раз.${requestId ? ` Номер запроса: ${requestId}` : ""}`,
           });
         }
       } finally {
@@ -769,10 +769,10 @@ export default function ComposerPage() {
       if (!text.trim()) next.text = "Пост пустой. Напиши что-нибудь или попроси ИИ.";
       if (!networks.length) next.networks = "Выбери хотя бы одну сеть — иначе посту некуда идти.";
       if (needWhen && aiReview === "required") {
-        next.text = "Проверь факты в AI-тексте и подтверди ручную проверку перед планированием.";
+        next.text = "Проверь факты в тексте ИИ и подтверди ручную проверку перед планированием.";
       }
       if (needWhen && aiReview === "blocked") {
-        next.text = "AI-текст содержит фактический blocker. Исправь текст и проверь его вручную.";
+        next.text = "В тексте ИИ найдена критичная фактическая ошибка. Исправь текст и проверь его вручную.";
       }
 
       if (needWhen && !noDate) {
@@ -1781,7 +1781,7 @@ function ComposerInner() {
                     </p>
                   </div>
                   {c.aiPreview.requestId && (
-                    <span className="nums text-[11px] text-text-3">ID: {c.aiPreview.requestId}</span>
+                    <span className="nums text-[11px] text-text-3">Номер: {c.aiPreview.requestId}</span>
                   )}
                 </div>
                 <div className="max-h-56 overflow-y-auto whitespace-pre-wrap rounded-xs bg-surface px-3 py-2 text-[14px] leading-relaxed text-text">
@@ -2267,7 +2267,11 @@ function ComposerInner() {
 /* ------------------------------------------------------- ПЛАШКА «ИЗ РАЗВЕДКИ» */
 
 function SourcePlate({ source }: { source: NonNullable<Post["sourceRef"]> }) {
-  const href = source.kind === "competitor" ? `/app/competitors/${source.id}` : "/app/trends";
+  const href = source.kind === "competitor"
+    ? `/app/competitors/${source.id}`
+    : source.kind === "trend"
+      ? "/app/trends"
+      : "/app/library";
 
   return (
     <div className="flex items-center gap-3 rounded-sm bg-fire-soft px-4 py-2.5">

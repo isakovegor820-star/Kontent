@@ -227,7 +227,7 @@ create table if not exists media_generations (
   provider_request_key varchar(128) not null,
   prompt_policy_version smallint not null default 1
                                constraint media_generations_prompt_policy_version_check
-                               check (prompt_policy_version = 1),
+                               check (prompt_policy_version between 1 and 3),
   prompt_context   jsonb       not null default '{}'::jsonb
                                constraint media_generations_prompt_context_check
                                check (jsonb_typeof(prompt_context) = 'object'),
@@ -396,6 +396,7 @@ alter table competitor_posts add column if not exists media text;   -- 'photo' |
 -- новой миграции на каждый переключатель, а нормализатор в приложении безопасно дополняет
 -- старые профили новыми полями.
 alter table content_brief add column if not exists quality jsonb not null default '{}'::jsonb;
+alter table content_brief add column if not exists profile_answers jsonb not null default '{}'::jsonb;
 
 
 -- ============================================================ Д.7+: «Насмотренность»
@@ -1197,7 +1198,7 @@ create table if not exists drafts (
   media         jsonb,
   scheduled_at  timestamptz,
   origin        text        not null default 'manual'
-                            check (origin in ('manual','ai','trend','competitor','autopilot')),
+                            check (origin in ('manual','ai','trend','idea','competitor','autopilot')),
   source_ref    jsonb,
   client_key    text        not null,
   version       bigint      not null default 1 check (version > 0),
@@ -1239,7 +1240,7 @@ alter table posts add column if not exists schedule_revision bigint not null def
 
 alter table posts drop constraint if exists posts_publication_origin_check;
 alter table posts add constraint posts_publication_origin_check check (
-  publication_origin in ('manual', 'ai', 'trend', 'competitor', 'autopilot', 'rss', 'retry', 'legacy')
+  publication_origin in ('manual', 'ai', 'trend', 'idea', 'competitor', 'autopilot', 'rss', 'retry', 'legacy')
 );
 alter table posts drop constraint if exists posts_schedule_revision_check;
 alter table posts add constraint posts_schedule_revision_check check (schedule_revision > 0);
@@ -1495,6 +1496,13 @@ create table if not exists site_analysis_jobs (
   progress_detail     text,
   limits              jsonb not null default '{}'::jsonb,
   result              jsonb,
+  prompt_version      text not null default 'site-osint-interview-v1',
+  question_catalog_version text not null default 'site-osint-questions-v1',
+  snapshot_hash       text,
+  coverage_mode       text not null default 'site_only',
+  answered_count      integer not null default 0,
+  question_count      integer not null default 0,
+  ai_usage_reservation_id bigint references ai_usage (id) on delete set null,
   error_code          text,
   error_message       text,
   attempts            integer not null default 0,
@@ -1507,14 +1515,17 @@ create table if not exists site_analysis_jobs (
   updated_at          timestamptz not null default now(),
   completed_at        timestamptz,
   constraint site_analysis_jobs_status_check
-    check (status in ('queued', 'crawling', 'analyzing', 'planning', 'ready', 'failed')),
+    check (status in ('queued', 'crawling', 'analyzing', 'planning', 'saving', 'ready', 'failed')),
   constraint site_analysis_jobs_stage_check
-    check (stage in ('queued', 'robots', 'sitemap', 'crawling', 'analyzing', 'planning', 'ready', 'failed')),
+    check (stage in ('queued', 'robots', 'sitemap', 'crawling', 'extracting', 'resolving_entities', 'researching_external', 'answering', 'validating', 'planning', 'saving', 'ready', 'failed')),
   constraint site_analysis_jobs_progress_check check (progress between 0 and 100),
   constraint site_analysis_jobs_attempts_check check (attempts >= 0),
   constraint site_analysis_jobs_run_revision_check check (run_revision > 0),
   constraint site_analysis_jobs_limits_check check (jsonb_typeof(limits) = 'object'),
   constraint site_analysis_jobs_result_check check (result is null or jsonb_typeof(result) = 'object'),
+  constraint site_analysis_jobs_snapshot_hash_check check (snapshot_hash is null or snapshot_hash ~ '^sha256:[a-f0-9]{64}$'),
+  constraint site_analysis_jobs_coverage_mode_check check (coverage_mode in ('site_only', 'external')),
+  constraint site_analysis_jobs_answer_counts_check check (answered_count >= 0 and question_count >= 0 and answered_count <= question_count),
   constraint site_analysis_jobs_user_idempotency_key_key unique (user_id, idempotency_key)
 );
 create index if not exists site_analysis_jobs_user_created_idx
@@ -1549,6 +1560,143 @@ create table if not exists site_analysis_pages (
 );
 create index if not exists site_analysis_pages_analysis_idx
   on site_analysis_pages (analysis_id, id);
+
+create table if not exists site_analysis_sources (
+  id bigint generated always as identity primary key,
+  analysis_id bigint not null references site_analysis_jobs (id) on delete cascade,
+  run_revision integer not null,
+  source_key text not null,
+  source_kind text not null check (source_kind in ('owned_page','owned_document','structured_data','external_editorial','partner_page','event_page','official_social','public_registry','user_file')),
+  url text not null,
+  title text not null,
+  page_type text not null,
+  is_primary boolean not null default false,
+  published_at timestamptz,
+  modified_at timestamptz,
+  checked_at timestamptz not null,
+  quality text not null check (quality in ('high','medium','low','unavailable')),
+  content_hash text not null,
+  metadata jsonb not null default '{}'::jsonb check (jsonb_typeof(metadata) = 'object'),
+  created_at timestamptz not null default now(),
+  constraint site_analysis_sources_run_source_key unique (analysis_id, run_revision, source_key),
+  constraint site_analysis_sources_run_url_key unique (analysis_id, run_revision, url)
+);
+create index if not exists site_analysis_sources_analysis_run_idx on site_analysis_sources (analysis_id, run_revision, id);
+
+create table if not exists site_analysis_evidence (
+  id bigint generated always as identity primary key,
+  analysis_id bigint not null references site_analysis_jobs (id) on delete cascade,
+  run_revision integer not null,
+  source_id bigint not null references site_analysis_sources (id) on delete cascade,
+  evidence_key text not null,
+  evidence_hash text not null,
+  evidence_type text not null,
+  fact_type text not null,
+  value jsonb not null check (jsonb_typeof(value) in ('string','number','boolean','object','array')),
+  extracted_by text not null,
+  quality text not null check (quality in ('high','medium','low','unavailable')),
+  currentness text not null,
+  checked_at timestamptz not null,
+  published_at timestamptz,
+  injection_signal boolean not null default false,
+  created_at timestamptz not null default now(),
+  constraint site_analysis_evidence_run_key unique (analysis_id, run_revision, evidence_key),
+  constraint site_analysis_evidence_run_hash unique (analysis_id, run_revision, evidence_hash)
+);
+create index if not exists site_analysis_evidence_analysis_run_idx on site_analysis_evidence (analysis_id, run_revision, source_id, id);
+
+create table if not exists site_analysis_entities (
+  id bigint generated always as identity primary key,
+  analysis_id bigint not null references site_analysis_jobs (id) on delete cascade,
+  run_revision integer not null,
+  entity_key text not null,
+  entity_type text not null check (entity_type in ('organization','person','product','partner','event','topic','channel','document')),
+  canonical_key text not null,
+  name text not null,
+  attributes jsonb not null default '{}'::jsonb check (jsonb_typeof(attributes) = 'object'),
+  evidence_keys jsonb not null default '[]'::jsonb check (jsonb_typeof(evidence_keys) = 'array'),
+  confidence text not null check (confidence in ('high','medium','low','none')),
+  created_at timestamptz not null default now(),
+  constraint site_analysis_entities_run_key unique (analysis_id, run_revision, entity_key),
+  constraint site_analysis_entities_run_canonical unique (analysis_id, run_revision, entity_type, canonical_key)
+);
+create index if not exists site_analysis_entities_analysis_run_idx on site_analysis_entities (analysis_id, run_revision, entity_type, id);
+
+create table if not exists site_analysis_relations (
+  id bigint generated always as identity primary key,
+  analysis_id bigint not null references site_analysis_jobs (id) on delete cascade,
+  run_revision integer not null,
+  relation_key text not null,
+  from_entity_key text not null,
+  to_entity_key text not null,
+  relation_type text not null,
+  relation_status text not null check (relation_status in ('observed','claimed','confirmed','historical','conflicting')),
+  valid_from timestamptz,
+  valid_to timestamptz,
+  evidence_keys jsonb not null default '[]'::jsonb check (jsonb_typeof(evidence_keys) = 'array'),
+  confidence text not null check (confidence in ('high','medium','low','none')),
+  created_at timestamptz not null default now(),
+  constraint site_analysis_relations_run_key unique (analysis_id, run_revision, relation_key)
+);
+create index if not exists site_analysis_relations_analysis_run_idx on site_analysis_relations (analysis_id, run_revision, relation_type, id);
+
+create table if not exists site_analysis_ai_batches (
+  id bigint generated always as identity primary key,
+  analysis_id bigint not null references site_analysis_jobs (id) on delete cascade,
+  run_revision integer not null,
+  batch_id text not null,
+  semantic_key text not null,
+  provider_request_key text not null unique,
+  request_fingerprint text not null,
+  status text not null default 'queued' check (status in ('queued','generating','ready','failed')),
+  engine text,
+  response_payload jsonb check (response_payload is null or jsonb_typeof(response_payload) = 'object'),
+  error_code text,
+  attempts integer not null default 0 check (attempts >= 0),
+  started_at timestamptz,
+  completed_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint site_analysis_ai_batches_run_batch_key unique (analysis_id, run_revision, batch_id)
+);
+create index if not exists site_analysis_ai_batches_dispatch_idx on site_analysis_ai_batches (status, updated_at) where status in ('queued','generating');
+
+create table if not exists site_analysis_answers (
+  id bigint generated always as identity primary key,
+  analysis_id bigint not null references site_analysis_jobs (id) on delete cascade,
+  run_revision integer not null,
+  question_id text not null,
+  question_version integer not null,
+  status text not null check (status in ('answered','hypothesis','conflicting','insufficient_data')),
+  short_answer text not null,
+  explanation text not null,
+  facts jsonb not null default '[]'::jsonb check (jsonb_typeof(facts) = 'array'),
+  evidence_keys jsonb not null default '[]'::jsonb check (jsonb_typeof(evidence_keys) = 'array'),
+  confidence text not null check (confidence in ('high','medium','low','none')),
+  contradictions jsonb not null default '[]'::jsonb check (jsonb_typeof(contradictions) = 'array'),
+  gaps jsonb not null default '[]'::jsonb check (jsonb_typeof(gaps) = 'array'),
+  required_integrations jsonb not null default '[]'::jsonb check (jsonb_typeof(required_integrations) = 'array'),
+  recommendation_hooks jsonb not null default '[]'::jsonb check (jsonb_typeof(recommendation_hooks) = 'array'),
+  created_at timestamptz not null default now(),
+  constraint site_analysis_answers_run_question_key unique (analysis_id, run_revision, question_id)
+);
+create index if not exists site_analysis_answers_analysis_run_idx on site_analysis_answers (analysis_id, run_revision, status, id);
+
+create table if not exists site_analysis_recommendations (
+  id bigint generated always as identity primary key,
+  analysis_id bigint not null references site_analysis_jobs (id) on delete cascade,
+  run_revision integer not null,
+  recommendation_key text not null,
+  question_id text not null,
+  kind text not null,
+  rationale text not null,
+  confidence text not null check (confidence in ('high','medium','low')),
+  entity_keys jsonb not null default '[]'::jsonb check (jsonb_typeof(entity_keys) = 'array'),
+  evidence_keys jsonb not null default '[]'::jsonb check (jsonb_typeof(evidence_keys) = 'array'),
+  created_at timestamptz not null default now(),
+  constraint site_analysis_recommendations_run_key unique (analysis_id, run_revision, recommendation_key)
+);
+create index if not exists site_analysis_recommendations_analysis_run_idx on site_analysis_recommendations (analysis_id, run_revision, id);
 
 -- Licensed legal-source adapters. Public ConsultantPlus/GARANT RSS entries remain in
 -- the versioned RSS catalog; only encrypted official API credentials are persisted here.

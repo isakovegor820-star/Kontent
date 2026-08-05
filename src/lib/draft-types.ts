@@ -7,6 +7,11 @@ export interface DraftAiValidation {
   requiresReview: boolean;
   provenance: FactualValidationProvenance;
   blockerCodes: string[];
+  topicAlignment?: {
+    status: "passed" | "failed";
+    score: number;
+    topic: string;
+  };
 }
 
 export interface DraftHumanReview {

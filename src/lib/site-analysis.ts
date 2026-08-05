@@ -36,6 +36,12 @@ export type SiteAnalysisRow = {
   progress_detail: string | null;
   limits: Record<string, unknown>;
   result?: Record<string, unknown> | null;
+  prompt_version?: string | null;
+  question_catalog_version?: string | null;
+  snapshot_hash?: string | null;
+  coverage_mode?: string | null;
+  answered_count?: string | number | null;
+  question_count?: string | number | null;
   error_code: string | null;
   error_message: string | null;
   attempts: string | number;
@@ -72,6 +78,12 @@ export function serializeSiteAnalysis(row: SiteAnalysisRow, includeResult = fals
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
     completedAt: iso(row.completed_at),
+    promptVersion: row.prompt_version ?? null,
+    questionCatalogVersion: row.question_catalog_version ?? null,
+    snapshotHash: row.snapshot_hash ?? null,
+    coverageMode: row.coverage_mode ?? "site_only",
+    answeredCount: Number(row.answered_count ?? 0),
+    questionCount: Number(row.question_count ?? 0),
     ...(includeResult ? { result: row.result ?? null } : {}),
   };
 }

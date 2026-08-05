@@ -153,7 +153,7 @@ export async function POST(req: NextRequest) {
       text: string;
       media: unknown;
       scheduled_at: Date | string | null;
-      origin: "manual" | "ai" | "trend" | "competitor" | "autopilot";
+      origin: "manual" | "ai" | "trend" | "idea" | "competitor" | "autopilot";
       review_policy_version: string;
       ai_validation: unknown;
       human_reviewed_version: string | null;
