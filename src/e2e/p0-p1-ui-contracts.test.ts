@@ -123,15 +123,17 @@ describe("P0 desktop/mobile navigation and Library action contract", () => {
     const create = new URL(appDraftActionHref("create", 901), "https://aurora.test");
     const discuss = new URL(appDraftActionHref("discuss", 901), "https://aurora.test");
     expect(editor.pathname).toBe("/app/composer");
-    expect(create.pathname).toBe("/app/composer");
+    expect(create.pathname).toBe("/app/studio");
     expect(discuss.pathname).toBe("/app/studio");
     for (const target of [editor, create, discuss]) {
-      expect([...target.searchParams.keys()]).toEqual(["draft"]);
       expect(target.searchParams.get("draft")).toBe("901");
       expect(target.href).not.toContain(encodeURIComponent(longReference.slice(0, 80)));
       expect(target.searchParams.has("channel")).toBe(false);
       expect(target.searchParams.has("content")).toBe(false);
     }
+    expect([...editor.searchParams.keys()]).toEqual(["draft"]);
+    expect(create.searchParams.get("intent")).toBe("create");
+    expect(discuss.searchParams.get("intent")).toBe("discuss");
     expect(APP_ACTIONS.original).toEqual({ destination: "external", routeId: null });
 
     // push (not replace) leaves the Library history entry intact for browser Back.

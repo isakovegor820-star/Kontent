@@ -35,7 +35,23 @@ vi.mock("@/lib/ai-provider", async (importOriginal) => {
   return { ...actual, aiReady: mocks.aiReady };
 });
 
+import { generationDeadlines } from "@/lib/ai-generation-deadlines";
 import { POST } from "./route";
+
+describe("generation deadlines", () => {
+  it("does not false-fail balanced Navy startup at the old 12-second boundary", () => {
+    expect(generationDeadlines("balanced", {})).toEqual({
+      firstTokenMs: 30_000,
+      attemptOverallMs: 75_000,
+      pipelineOverallMs: 150_000,
+    });
+  });
+
+  it("keeps an explicit operator timeout bounded", () => {
+    expect(generationDeadlines("balanced", { AI_BALANCED_FIRST_TOKEN_MS: "45000" }).firstTokenMs)
+      .toBe(45_000);
+  });
+});
 
 function request(channelId = 42) {
   return new NextRequest("http://localhost/api/ai/generate", {

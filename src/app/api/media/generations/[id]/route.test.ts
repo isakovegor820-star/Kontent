@@ -32,7 +32,7 @@ describe("GET /api/media/generations/[id]", () => {
         negative_prompt: null,
         source_text: "post",
         exact_text: "",
-        model: "flux",
+        model: "nano-banana-2",
         aspect_ratio: "1:1",
         quality: "medium",
         seconds: null,

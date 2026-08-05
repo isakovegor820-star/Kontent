@@ -20,7 +20,7 @@ describe("media generation contract", () => {
       style: "unknown",
     });
     expect(parsed.ok).toBe(true);
-    expect(parsed.value).toMatchObject({ model: "flux", aspectRatio: "1:1", quality: "medium", style: "natural" });
+    expect(parsed.value).toMatchObject({ model: "nano-banana-2", aspectRatio: "1:1", quality: "medium", style: "natural" });
   });
 
   it("normalizes the selected server channel and does not require client profile text", () => {
@@ -59,7 +59,7 @@ describe("media generation contract", () => {
     });
     const payload = buildNavyMediaPayload({
       kind: "image",
-      model: "flux",
+      model: "nano-banana-2",
       prompt: "legacy prompt",
       prompt_context: context,
       aspect_ratio: "9:16",
@@ -68,11 +68,13 @@ describe("media generation contract", () => {
       negative_prompt: "водяные знаки",
     });
 
-    expect(payload.prompt).toContain("[aurora-media-prompt v1]");
+    expect(payload.prompt).toContain("[aurora-media-prompt v2]");
     expect(payload.prompt).toContain("Telegram; формат 9:16");
     expect(payload.prompt).toContain("БЕЗОПАСНЫЕ ЗОНЫ");
     expect(payload.prompt).toContain("РАЗМЕЩЕНИЕ ОБЪЕКТА");
     expect(payload.prompt).toContain("КОМПОЗИЦИЯ");
+    expect(payload.prompt).toContain("единая сцена от края до края");
+    expect(payload.prompt).toContain("Не помещай его внутрь рамки");
     expect(payload.prompt).toContain("СВЕТ");
     expect(payload.prompt).toContain("ПАЛИТРА БРЕНДА");
     expect(payload.prompt).toContain("#334455");
@@ -81,12 +83,14 @@ describe("media generation contract", () => {
     expect(payload.prompt).not.toContain("кофейня из браузера");
     expect(payload.prompt).not.toContain("агрессивный из браузера");
     expect(payload.negative_prompt).toContain("invented logos");
+    expect(payload.negative_prompt).toContain("black borders");
+    expect(payload.negative_prompt).toContain("letterbox");
   });
 
   it("forbids all text when exact text was not explicitly requested", () => {
     const payload = buildNavyMediaPayload({
       kind: "image",
-      model: "flux",
+      model: "nano-banana-2",
       prompt: "Обложка без текста",
       prompt_context: buildMediaPromptContext({ prompt: "Обложка без текста" }),
       aspect_ratio: "1:1",

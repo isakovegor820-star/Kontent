@@ -41,8 +41,8 @@ describe("app route registry", () => {
 describe("app action registry", () => {
   it("splits editor/create, discuss, and original destinations exactly", () => {
     expect(APP_ACTIONS.editor).toMatchObject({ destination: "composer", routeId: "composer" });
-    expect(APP_ACTIONS.create).toMatchObject({ destination: "composer", routeId: "composer" });
-    expect(APP_ACTIONS.discuss).toMatchObject({ destination: "studio", routeId: "studio" });
+    expect(APP_ACTIONS.create).toMatchObject({ destination: "studio", routeId: "studio", intent: "create" });
+    expect(APP_ACTIONS.discuss).toMatchObject({ destination: "studio", routeId: "studio", intent: "discuss" });
     expect(APP_ACTIONS.original).toEqual({ destination: "external", routeId: null });
   });
 
@@ -52,7 +52,11 @@ describe("app action registry", () => {
     for (const action of ["editor", "create", "discuss"] as const) {
       const href = appDraftActionHref(action, 41);
       const url = new URL(href, "https://aurora.test");
-      expect([...url.searchParams.entries()]).toEqual([["draft", "41"]]);
+      expect(url.searchParams.get("draft")).toBe("41");
+      expect([...url.searchParams.keys()].sort()).toEqual(
+        action === "editor" ? ["draft"] : ["draft", "intent"],
+      );
+      if (action !== "editor") expect(url.searchParams.get("intent")).toBe(action);
       expect(href).not.toContain(encodeURIComponent(sensitive));
       expect(href).not.toContain("text=");
       expect(href).not.toContain("prompt=");

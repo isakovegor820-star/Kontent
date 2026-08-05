@@ -23,7 +23,7 @@ vi.mock("@/lib/request-origin", () => ({ hasTrustedMutationOrigin: mocks.hasTrus
 vi.mock("@/lib/media-generation.mjs", () => ({
   validateMediaInput: mocks.validateMediaInput,
   buildMediaPromptContext: mocks.buildMediaPromptContext,
-  MEDIA_PROMPT_POLICY: { version: 1 },
+  MEDIA_PROMPT_POLICY: { version: 2 },
 }));
 vi.mock("@/lib/navy-media.mjs", () => ({ navyMediaCapabilities: mocks.navyMediaCapabilities }));
 vi.mock("@/lib/media-generation-reconciliation", () => ({
@@ -52,7 +52,7 @@ const input = {
   kind: "image",
   prompt: "Редакционная иллюстрация",
   negativePrompt: "",
-  model: "flux",
+  model: "nano-banana-2",
   aspectRatio: "1:1",
   quality: "medium",
   seconds: null,
@@ -71,7 +71,7 @@ const generation = {
   negative_prompt: "без водяных знаков",
   source_text: "Исходный пост",
   exact_text: "Точный текст",
-  model: "flux",
+  model: "nano-banana-2",
   aspect_ratio: "1:1",
   quality: "medium",
   seconds: null,

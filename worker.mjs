@@ -43,6 +43,7 @@ import {
   parseMediaDataUrl,
 } from "./src/lib/media-generation.mjs";
 import { createNavyMediaClient } from "./src/lib/navy-media.mjs";
+import { cleanGeneratedImage } from "./src/lib/media-image-cleanup.mjs";
 import { fetchPublicBuffer } from "./src/lib/safe-http.mjs";
 import {
   executeMediaGenerationJob,
@@ -554,7 +555,26 @@ async function persistMediaResult(generation, outputUrl, lease) {
     );
   }
   await lease.assertActive();
-  const { buffer, mime } = await downloadMedia(outputUrl, generation.kind);
+  let { buffer, mime } = await downloadMedia(outputUrl, generation.kind);
+  if (generation.kind === "image") {
+    try {
+      const cleaned = await cleanGeneratedImage(buffer, mime, generation.aspect_ratio);
+      buffer = cleaned.buffer;
+      mime = cleaned.mime;
+      if (cleaned.cleaned) {
+        console.log("[media] изображение очищено: рамки убраны, формат выровнен", {
+          generationId: generation.id,
+        });
+      }
+    } catch (error) {
+      // Cleanup must never discard a successfully generated image. The strict full-bleed
+      // prompt still protects the normal path; an unsupported codec falls back to the source.
+      console.warn("[media] очистка изображения пропущена", {
+        generationId: generation.id,
+        errorName: error?.name || "Error",
+      });
+    }
+  }
   await lease.assertActive();
   const ext = mime === "video/mp4" ? "mp4" : mime === "image/png" ? "png" : mime === "image/webp" ? "webp" : "jpg";
   const sha256 = createHash("sha256").update(buffer).digest("hex");

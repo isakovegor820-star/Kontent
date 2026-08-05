@@ -22,7 +22,7 @@ describe("Navy media client", () => {
     });
 
     await expect(client.create({
-      payload: { model: "flux", prompt: "do not log this" },
+      payload: { model: "nano-banana-2", prompt: "do not log this" },
       requestKey: "aurora-media-11111111-1111-4111-8111-111111111111",
       requestId: "11111111-1111-4111-8111-111111111111",
     })).resolves.toMatchObject({ state: "pending", providerJobId: "navy-41" });

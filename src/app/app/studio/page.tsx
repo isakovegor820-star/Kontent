@@ -52,6 +52,7 @@ import {
   getServerDraft,
 } from "@/lib/draft-client";
 import type { ServerDraft } from "@/lib/draft-types";
+import { buildLibraryAdaptation } from "@/lib/library";
 import {
   DEFAULT_POST_SETTINGS,
   buildPostSettingsSummary,
@@ -86,9 +87,10 @@ type Msg = StudioChatMessage;
 
 /** Что ИИ должен «помнить» для перегенерации ответа */
 type Gen = StudioChatGeneration;
-type AskOptions = { cmd?: AiCommand; input?: string; skipBrief?: boolean };
+type AskOptions = { cmd?: AiCommand; input?: string; skipBrief?: boolean; requestKey?: string };
 type PendingBrief = { text: string; opts?: Omit<AskOptions, "skipBrief"> };
 type PendingLibraryReference = { text: string; source?: string };
+type PendingReferenceGeneration = { draftId: number; prompt: string; requestKey: string };
 
 type WorkspaceMode = "chat" | "studio";
 
@@ -331,7 +333,7 @@ function MessageRow({
             </summary>
             <div className="border-t border-line px-3 py-2.5">
               {msg.quality.violations.length === 0 ? (
-                <p className="text-[11px] leading-relaxed text-success-text">Длина, площадка, обязательные факты, CTA и технические ограничения соблюдены.</p>
+                <p className="text-[11px] leading-relaxed text-success-text">Длина, площадка, обязательные факты, призыв и технические ограничения соблюдены.</p>
               ) : (
                 <div className="grid gap-2">
                   {msg.quality.violations.map((issue) => (
@@ -769,6 +771,8 @@ function StudioPageInner() {
   const [pendingBrief, setPendingBrief] = useState<PendingBrief | null>(null);
   const [pendingLibraryReference, setPendingLibraryReference] = useState<PendingLibraryReference | null>(null);
   const [contextDraft, setContextDraft] = useState<ServerDraft | null>(null);
+  const [pendingReferenceGeneration, setPendingReferenceGeneration] = useState<PendingReferenceGeneration | null>(null);
+  const [postSettingsReady, setPostSettingsReady] = useState(false);
   const [pendingEngineSuggestion, setPendingEngineSuggestion] = useState<EngineInfo | null>(null);
 
   const feedRef = useRef<HTMLDivElement>(null);
@@ -783,6 +787,7 @@ function StudioPageInner() {
     promise: null,
     keys: new Map(),
   });
+  const startedReferenceDraftsRef = useRef<Set<number>>(new Set());
 
   const sessionOwner = s.user?.id ?? null;
 
@@ -892,6 +897,20 @@ function StudioPageInner() {
           source: serverDraft.source_ref.label.trim().slice(0, 160) || undefined,
         });
         if (destination) setPickedChannelId(destination.channel_id);
+        if (searchParams.get("intent") === "create") {
+          const adaptation = buildLibraryAdaptation({
+            channelName: destination?.title || "выбранного канала",
+            text: serverDraft.text,
+            source: serverDraft.source_ref.label,
+          });
+          setWorkspaceMode("chat");
+          setDraft(adaptation.prompt);
+          setPendingReferenceGeneration({
+            draftId: serverDraft.id,
+            prompt: adaptation.prompt,
+            requestKey: `studio_reference_${serverDraft.id}_v${serverDraft.version}`,
+          });
+        }
       })
       .catch((error) => {
         if ((error as Error)?.name === "AbortError") return;
@@ -909,7 +928,8 @@ function StudioPageInner() {
       .then((d) => {
         setPostSettings(normalizePostSettings(d.postSettings));
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setPostSettingsReady(true));
   }, []);
 
   // Чат должен быть ФИКСИРОВАННОЙ коробки: сообщения ездят внутри, поле ввода не двигается.
@@ -1413,7 +1433,7 @@ function StudioPageInner() {
       input: opts?.input ?? text,
       variant: 0,
       history,
-      requestKey: crypto.randomUUID(),
+      requestKey: opts?.requestKey ?? crypto.randomUUID(),
       referenceText: pendingLibraryReference?.text,
       referenceSource: pendingLibraryReference?.source,
       sourceRef: contextDraft?.source_ref ?? undefined,
@@ -1440,6 +1460,33 @@ function StudioPageInner() {
     setContextDraft(null);
     void startStream(aiId, gen);
   };
+
+  // «Создать публикацию» — это явное согласие на одну генерацию. После загрузки
+  // server-owned reference запускаем её ровно один раз и сразу убираем intent из URL:
+  // reload не создаст новый платный запрос, а retry использует сохранённый requestKey.
+  useEffect(() => {
+    const pending = pendingReferenceGeneration;
+    if (
+      !pending
+      || !postSettingsReady
+      || enginesLoading
+      || contextDraft?.id !== pending.draftId
+      || !pendingLibraryReference
+      || startedReferenceDraftsRef.current.has(pending.draftId)
+    ) return;
+
+    startedReferenceDraftsRef.current.add(pending.draftId);
+    setPendingReferenceGeneration(null);
+    window.history.replaceState(null, "", `/app/studio?draft=${pending.draftId}`);
+    ask(pending.prompt, {
+      cmd: "write",
+      input: pending.prompt,
+      skipBrief: true,
+      requestKey: pending.requestKey,
+    });
+    // `ask` intentionally consumes the reference/context captured by this render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [contextDraft, enginesLoading, pendingLibraryReference, pendingReferenceGeneration, postSettingsReady]);
 
   const stop = () => {
     const stopped = abortStudioStream(streamRef.current);

@@ -128,7 +128,7 @@ function fakeProvider() {
     if (req.url === "/v1/models") {
       res.setHeader("content-type", "application/json");
       res.end(JSON.stringify({ data: [
-        { id: "flux", endpoint: "/v1/images/generations", premium: false },
+        { id: "nano-banana-2", endpoint: "/v1/images/generations", premium: false },
         { id: "gpt-4o-mini" },
       ] }));
       return;
@@ -178,7 +178,7 @@ function fakeProvider() {
       fakeState.media.promptPolicyOk = fakeState.media.promptPolicyOk
         && /^aurora-media-[0-9a-f-]{36}$/iu.test(requestKey)
         && requestKey === `aurora-media-${requestId}`
-        && prompt.includes("[aurora-media-prompt v1]")
+        && prompt.includes("[aurora-media-prompt v2]")
         && prompt.includes("ТЕКСТ В КАДРЕ: не добавляй")
         && prompt.includes("не придумывай логотипы")
         && typeof body?.negative_prompt === "string"
@@ -421,7 +421,7 @@ try {
     body: JSON.stringify({
       kind: "image",
       prompt: "Этот запрос не должен дойти до провайдера",
-      model: "flux",
+      model: "nano-banana-2",
       aspectRatio: "1:1",
       quality: "medium",
       style: "editorial",
@@ -441,7 +441,7 @@ try {
         sourceText: "Проверяемое изменение в праве и его практическое значение для бизнеса.",
         exactText: "",
         negativePrompt: "без водяных знаков",
-        model: "flux",
+        model: "nano-banana-2",
         aspectRatio: "1:1",
         quality: "medium",
         style: "editorial",
@@ -542,7 +542,7 @@ try {
     data: {
       kind: "image",
       prompt: "Изменённый клиентский текст не должен создать второй платный запрос",
-      model: "flux",
+      model: "nano-banana-2",
       aspectRatio: "16:9",
       quality: "low",
       style: "minimal",
@@ -672,59 +672,45 @@ try {
   assert(await originalLink.getAttribute("target") === "_blank", "original action does not stay external");
 
   await page.getByRole("button", { name: "Создать публикацию", exact: true }).click();
-  await page.waitForURL((url) => url.pathname === "/app/composer" && /^\d+$/u.test(url.searchParams.get("draft") || ""));
-  const composerDraftUrl = new URL(page.url());
-  assert([...composerDraftUrl.searchParams.keys()].join(",") === "draft", "Library leaked text or channel through Composer URL");
-  const libraryComposerDraftId = Number(composerDraftUrl.searchParams.get("draft"));
-  const composerDraft = (await pool.query(
+  await page.waitForURL((url) => url.pathname === "/app/studio" && /^\d+$/u.test(url.searchParams.get("draft") || ""));
+  await page.waitForURL((url) => url.pathname === "/app/studio" && !url.searchParams.has("intent"));
+  const createStudioUrl = new URL(page.url());
+  assert([...createStudioUrl.searchParams.keys()].join(",") === "draft", "Library leaked text or channel through Studio URL");
+  const libraryReferenceDraftId = Number(createStudioUrl.searchParams.get("draft"));
+  const referenceDraft = (await pool.query(
     `select d.text, d.origin, d.source_ref, destination.channel_id
        from drafts d
        join draft_destinations destination on destination.draft_id = d.id
       where d.id = $1 and d.user_id = $2`,
-    [libraryComposerDraftId, userId],
+    [libraryReferenceDraftId, userId],
   )).rows[0];
-  assert(composerDraft?.text === libraryReferenceText, "Composer draft lost the full Library reference");
-  assert(composerDraft?.origin === "competitor", "Composer draft lost reference provenance");
-  assert(Number(composerDraft?.channel_id) === channels[0], "Composer draft lost selected channel id");
-  assert(String(composerDraft?.source_ref?.id) === String(competitorIds[0]), "Composer draft lost source id");
+  assert(referenceDraft?.text === libraryReferenceText, "Studio reference draft lost the full Library text");
+  assert(referenceDraft?.origin === "competitor", "Studio reference draft lost provenance");
+  assert(Number(referenceDraft?.channel_id) === channels[0], "Studio reference draft lost selected channel id");
+  assert(String(referenceDraft?.source_ref?.id) === String(competitorIds[0]), "Studio reference draft lost source id");
+  await page.getByText("Безопасный тестовый текст.", { exact: true }).waitFor({ timeout: 20_000 });
+  const createPostButton = page.getByRole("button", { name: "В пост", exact: true });
+  await createPostButton.waitFor({ timeout: 20_000 });
+  await createPostButton.click();
+  await page.waitForURL((url) => url.pathname === "/app/composer" && /^\d+$/u.test(url.searchParams.get("draft") || ""));
+  const composerDraftUrl = new URL(page.url());
+  assert([...composerDraftUrl.searchParams.keys()].join(",") === "draft", "Studio leaked reference content through Composer URL");
+  const libraryComposerDraftId = Number(composerDraftUrl.searchParams.get("draft"));
   const libraryComposerText = page.locator("#composer-text");
   await libraryComposerText.waitFor();
-  assert(await libraryComposerText.inputValue() === libraryReferenceText, "Composer did not hydrate the Library text");
-  await page.evaluate(() => {
-    const samples = [];
-    const timer = setInterval(() => {
-      samples.push(document.querySelector("#composer-text")?.value ?? "__missing__");
-    }, 10);
-    globalThis.__auroraComposerSamples = samples;
-    globalThis.__auroraComposerSampleTimer = timer;
-  });
-  await page.getByRole("button", { name: "Перепиши", exact: true }).click();
-  await page.getByText("Новый вариант", { exact: true }).waitFor({ timeout: 10_000 });
-  assert(
-    await libraryComposerText.inputValue() === libraryReferenceText,
-    "Composer replaced the saved post with a provisional AI pass",
-  );
-  await waitFor(
-    async () => (await libraryComposerText.inputValue()) === "Безопасный тестовый текст.",
-    "Composer did not apply the terminal AI result",
-    20_000,
-  );
-  const composerSamples = await page.evaluate(() => {
-    clearInterval(globalThis.__auroraComposerSampleTimer);
-    return globalThis.__auroraComposerSamples;
-  });
-  assert(
-    composerSamples.length > 0
-      && composerSamples.every((value) => value === libraryReferenceText || value === "Безопасный тестовый текст."),
-    "Composer textarea disappeared or exposed a provisional editorial pass",
-  );
-  await waitFor(async () => {
-    const row = (await pool.query("select text, origin from drafts where id = $1 and user_id = $2", [libraryComposerDraftId, userId])).rows[0];
-    return row?.text === "Безопасный тестовый текст." && row?.origin === "ai";
-  }, "terminal Composer result was not autosaved as the durable draft", 20_000);
+  assert(await libraryComposerText.inputValue() === "Безопасный тестовый текст.", "Composer did not hydrate the terminal Studio result");
+  const generatedDraft = (await pool.query(
+    "select text, origin, source_ref from drafts where id = $1 and user_id = $2",
+    [libraryComposerDraftId, userId],
+  )).rows[0];
+  assert(generatedDraft?.text === "Безопасный тестовый текст." && generatedDraft?.origin === "ai", "Studio result was not persisted as an AI draft");
+  assert(String(generatedDraft?.source_ref?.id) === String(competitorIds[0]), "generated post lost reference provenance");
   const composerActive = desktopSidebar.locator('a[aria-current="page"]');
   assert((await composerActive.textContent())?.includes("Календарь"), "Composer alias did not activate desktop Calendar");
 
+  await page.goBack();
+  await page.waitForURL((url) => url.pathname === "/app/studio" && url.searchParams.get("draft") === String(libraryReferenceDraftId));
+  assert((await desktopSidebar.locator('a[aria-current="page"]').textContent())?.includes("Студия"), "browser Back lost active Studio item");
   await page.goBack();
   await page.waitForURL((url) => url.pathname === "/app/library" && url.searchParams.get("channel") === String(channels[0]));
   await page.getByRole("button", { name: "Обсудить с Авророй", exact: true }).waitFor();
@@ -732,7 +718,8 @@ try {
   await page.getByRole("button", { name: "Обсудить с Авророй", exact: true }).click();
   await page.waitForURL((url) => url.pathname === "/app/studio" && /^\d+$/u.test(url.searchParams.get("draft") || ""));
   const studioDraftUrl = new URL(page.url());
-  assert([...studioDraftUrl.searchParams.keys()].join(",") === "draft", "Library leaked content through Studio URL");
+  assert([...studioDraftUrl.searchParams.keys()].join(",") === "draft,intent", "Library leaked content through Studio URL");
+  assert(studioDraftUrl.searchParams.get("intent") === "discuss", "Discuss action lost its Studio intent");
   const studioDraftId = Number(studioDraftUrl.searchParams.get("draft"));
   const studioDestination = (await pool.query(
     `select destination.channel_id

@@ -45,7 +45,7 @@ function harness(overrides = {}) {
       start: vi.fn(async () => leaseSession),
       ...overrides.lease,
     },
-    buildPayload: vi.fn(() => ({ model: "flux", prompt: "hidden" })),
+    buildPayload: vi.fn(() => ({ model: "nano-banana-2", prompt: "hidden" })),
     now: () => clock,
     wait: vi.fn(async (ms) => { clock += ms; }),
   };

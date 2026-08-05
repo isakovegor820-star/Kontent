@@ -49,6 +49,7 @@ import {
   type SemanticEntailmentAdapter,
 } from "@/lib/semantic-entailment";
 import { createConfiguredSemanticAdapter } from "@/lib/ai-semantic-adapter.mjs";
+import { generationDeadlines } from "@/lib/ai-generation-deadlines";
 import {
   buildPostRepairInstructions,
   normalizePostSettings,
@@ -143,33 +144,6 @@ function prerequisiteUnavailable(
       },
     },
   );
-}
-
-function configuredMs(name: string, fallback: number): number {
-  const value = Number(process.env[name]);
-  return Number.isFinite(value) ? Math.min(300_000, Math.max(100, Math.round(value))) : fallback;
-}
-
-function generationDeadlines(mode: "fast" | "balanced" | "maximum") {
-  if (mode === "fast") {
-    return {
-      firstTokenMs: configuredMs("AI_FAST_FIRST_TOKEN_MS", 10_000),
-      attemptOverallMs: configuredMs("AI_FAST_OVERALL_MS", 60_000),
-      pipelineOverallMs: configuredMs("AI_FAST_PIPELINE_MS", 60_000),
-    };
-  }
-  if (mode === "maximum") {
-    return {
-      firstTokenMs: configuredMs("AI_MAX_FIRST_TOKEN_MS", 15_000),
-      attemptOverallMs: configuredMs("AI_MAX_ATTEMPT_MS", 90_000),
-      pipelineOverallMs: configuredMs("AI_MAX_PIPELINE_MS", 180_000),
-    };
-  }
-  return {
-    firstTokenMs: configuredMs("AI_BALANCED_FIRST_TOKEN_MS", 12_000),
-    attemptOverallMs: configuredMs("AI_BALANCED_ATTEMPT_MS", 75_000),
-    pipelineOverallMs: configuredMs("AI_BALANCED_PIPELINE_MS", 150_000),
-  };
 }
 
 function cleanHistory(value: unknown): ConversationTurn[] {

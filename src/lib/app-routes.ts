@@ -148,12 +148,13 @@ export function getActiveReconTabRouteId(pathname: string): ReconTabRouteId {
 type InternalActionDefinition = Readonly<{
   destination: "composer" | "studio";
   routeId: "composer" | "studio";
+  intent?: "create" | "discuss";
 }>;
 
 export const APP_ACTIONS = {
   editor: { destination: "composer", routeId: "composer" },
-  create: { destination: "composer", routeId: "composer" },
-  discuss: { destination: "studio", routeId: "studio" },
+  create: { destination: "studio", routeId: "studio", intent: "create" },
+  discuss: { destination: "studio", routeId: "studio", intent: "discuss" },
   original: { destination: "external", routeId: null },
 } as const satisfies Record<
   "editor" | "create" | "discuss",
@@ -166,8 +167,12 @@ export function appDraftActionHref(action: DraftBackedAppAction, draftId: number
   if (!Number.isSafeInteger(draftId) || draftId <= 0) {
     throw new RangeError("draftId must be a positive safe integer");
   }
-  const route = APP_ROUTES[APP_ACTIONS[action].routeId];
-  return `${route.href}?draft=${draftId}`;
+  const definition = APP_ACTIONS[action];
+  const route = APP_ROUTES[definition.routeId];
+  const params = new URLSearchParams({ draft: String(draftId) });
+  const intent = "intent" in definition ? definition.intent : undefined;
+  if (intent) params.set("intent", intent);
+  return `${route.href}?${params.toString()}`;
 }
 
 export function composerHydrationIdentity(input: {

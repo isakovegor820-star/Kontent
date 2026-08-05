@@ -149,6 +149,23 @@ export function buildAutomaticVisualBrief(sourceText: string | undefined, kind: 
     : `Визуал без надписей к публикации. Передай её главный смысл через одну ясную сцену: ${source}`;
 }
 
+export function mediaGenerationErrorText(value: string | null | undefined) {
+  const raw = value?.trim();
+  if (!raw) return "Измени описание и попробуй ещё раз.";
+  const code = raw.toLowerCase();
+  const known: Record<string, string> = {
+    unsafe_media_url: "Не удалось безопасно сохранить созданный файл. Попробуй ещё раз.",
+    provider_unavailable: "Сервис создания файлов временно недоступен. Попробуй чуть позже.",
+    worker_unavailable: "Создание временно недоступно. Попробуй чуть позже.",
+    queue_unavailable: "Не удалось запустить создание. Попробуй ещё раз.",
+    model_unavailable: "Выбранная модель сейчас недоступна. Выбери другую.",
+    generation_failed: "Не удалось создать файл. Измени описание и попробуй ещё раз.",
+  };
+  if (known[code]) return known[code];
+  if (/[а-яё]/iu.test(raw)) return raw;
+  return "Не удалось создать файл. Измени описание и попробуй ещё раз.";
+}
+
 function statusCopy(generation: MediaGeneration) {
   switch (generation.status) {
     case "queued":
@@ -166,7 +183,7 @@ function statusCopy(generation: MediaGeneration) {
     case "ready":
       return { title: "Готово", body: "Файл сохранён и не исчезнет после обновления страницы.", icon: CheckCircle2 };
     default:
-      return { title: "Не получилось", body: generation.errorMessage || "Измени описание и попробуй ещё раз.", icon: AlertTriangle };
+      return { title: "Не получилось", body: mediaGenerationErrorText(generation.errorMessage || generation.errorCode), icon: AlertTriangle };
   }
 }
 
@@ -379,7 +396,7 @@ export function MediaGenerator({
                     : data?.error === "provider_unavailable" || data?.error === "usage_unavailable"
                       ? creationFailed
                   : data?.error === "request_in_progress"
-                    ? "Запрос уже принят. Повтори через несколько секунд — второй AI-вызов не запустится."
+                    ? "Запрос уже принят. Повтори через несколько секунд — второе обращение к ИИ не запустится."
                   : "Не удалось поставить задачу в очередь. Попробуй ещё раз.";
         setError({
           message,
@@ -560,7 +577,8 @@ export function MediaGenerator({
                     {generation.status === "ready" && generation.assetUrl && (
                       <div
                         className={cn(
-                          "mt-4 overflow-hidden rounded-[18px] bg-black outline -outline-offset-1 outline-black/10",
+                          "mt-4 overflow-hidden rounded-[18px] outline -outline-offset-1 outline-black/10",
+                          generation.kind === "video" ? "bg-black" : "bg-surface",
                           vertical ? "max-w-[420px]" : "max-w-[680px]",
                         )}
                       >
@@ -576,7 +594,7 @@ export function MediaGenerator({
                           <img
                             src={generation.assetUrl}
                             alt={`Результат по запросу: ${generation.prompt}`}
-                            className="max-h-[640px] w-full object-contain"
+                            className="block h-auto w-full"
                           />
                         )}
                       </div>

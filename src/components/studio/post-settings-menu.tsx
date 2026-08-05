@@ -40,7 +40,7 @@ const GOALS = [
 ] as const;
 
 const LENGTHS = [
-  ["auto", "Auto — нативно формату"],
+  ["auto", "Авто — по формату"],
   ["short", "Короткая"],
   ["medium", "Средняя"],
   ["long", "Длинная"],
@@ -48,7 +48,7 @@ const LENGTHS = [
 ] as const;
 
 const CTAS = [
-  ["auto", "Auto — только если нужен"],
+  ["auto", "Авто — только при необходимости"],
   ["none", "Без призыва"],
   ["comment", "Комментарий"],
   ["save", "Сохранить"],
@@ -261,11 +261,11 @@ export function PostSettingsMenu({
   const removeProof = (id: string) => update({ proofs: settings.proofs.filter((proof) => proof.id !== id) });
 
   const targetOptions: readonly (readonly [string, string])[] = [
-    ["auto", `Auto · ${rule.shortLabel}`],
+    ["auto", `Авто · ${rule.shortLabel}`],
     ...POST_TARGET_OPTIONS.map((item): [string, string] => [item.id, item.label]),
   ];
   const presetOptions: readonly (readonly [string, string])[] = [
-    ["auto", "Auto — подобрать по задаче"],
+    ["auto", "Авто — подобрать по задаче"],
     ...POST_PRESETS.map((item): [string, string] => [item.id, item.label]),
     ["custom", "Настроено вручную"],
   ];
@@ -295,7 +295,7 @@ export function PostSettingsMenu({
         )}
       >
         <SlidersHorizontal className="h-4 w-4 shrink-0" strokeWidth={2} aria-hidden />
-        <span className="truncate">{rule.shortLabel} · {settings.goal === "auto" ? "Auto" : GOALS.find(([id]) => id === settings.goal)?.[1]}</span>
+        <span className="truncate">{rule.shortLabel} · {settings.goal === "auto" ? "Авто" : GOALS.find(([id]) => id === settings.goal)?.[1]}</span>
         {saving ? <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-brand" aria-label="Сохраняю" /> : null}
       </button>
 
@@ -430,11 +430,11 @@ export function PostSettingsMenu({
                   <TextField label="Главная мысль" value={settings.mainIdea} onChange={(next) => update({ mainIdea: next })} />
                   <TextField label="Что читатель должен понять" value={settings.readerUnderstanding} onChange={(next) => update({ readerUnderstanding: next })} />
                   <SelectField label="Что должен почувствовать" value={settings.desiredFeeling} onChange={(next) => update({ desiredFeeling: next as PostSettings["desiredFeeling"] })} options={[
-                    ["auto", "Auto"], ["interest", "Интерес"], ["trust", "Доверие"], ["desire", "Желание"], ["urgency", "Срочность"], ["relief", "Облегчение"], ["inspiration", "Вдохновение"],
+                    ["auto", "Авто"], ["interest", "Интерес"], ["trust", "Доверие"], ["desire", "Желание"], ["urgency", "Срочность"], ["relief", "Облегчение"], ["inspiration", "Вдохновение"],
                   ]} />
                   <TextField label="Что должен сделать" value={settings.readerAction} onChange={(next) => update({ readerAction: next })} />
                   <SelectField label="Главная метрика" value={settings.primaryMetric} onChange={(next) => update({ primaryMetric: next as PostSettings["primaryMetric"] })} options={[
-                    ["auto", "Auto"], ["readthrough", "Дочитывания"], ["saves", "Сохранения"], ["comments", "Комментарии"], ["clicks", "Переходы"], ["leads", "Заявки"], ["sales", "Продажи"],
+                    ["auto", "Авто"], ["readthrough", "Дочитывания"], ["saves", "Сохранения"], ["comments", "Комментарии"], ["clicks", "Переходы"], ["leads", "Заявки"], ["sales", "Продажи"],
                   ]} />
                   <SelectField label="Количество смыслов" value={settings.messageCount} onChange={(next) => update({ messageCount: next as PostSettings["messageCount"] })} options={[
                     ["one", "Один основной"], ["one_plus", "Основной + дополнительный"], ["several", "Несколько"],
@@ -444,7 +444,7 @@ export function PostSettingsMenu({
 
                 <Section title="Продукт и оффер">
                   <SelectField label="Тип предложения" value={settings.promotionType} onChange={(next) => update({ promotionType: next as PostSettings["promotionType"] })} options={[
-                    ["auto", "Auto"], ["product", "Продукт"], ["service", "Услуга"], ["event", "Мероприятие"], ["personal_brand", "Личный бренд"], ["lead_magnet", "Бесплатный материал"],
+                    ["auto", "Авто"], ["product", "Продукт"], ["service", "Услуга"], ["event", "Мероприятие"], ["personal_brand", "Личный бренд"], ["lead_magnet", "Бесплатный материал"],
                   ]} />
                   <TextField label="Что продвигаем" value={settings.promotionName} onChange={(next) => update({ promotionName: next })} />
                   <TextField label="Конкретное предложение" value={settings.offer} onChange={(next) => update({ offer: next })} />
@@ -456,7 +456,7 @@ export function PostSettingsMenu({
                     ["native", "Нативная"], ["soft", "Мягкая"], ["confident", "Уверенная"], ["direct", "Прямая"],
                   ]} />
                   <SelectField label="Когда показать продукт" value={settings.productReveal} onChange={(next) => update({ productReveal: next as PostSettings["productReveal"] })} options={[
-                    ["immediately", "Сразу"], ["after_problem", "После проблемы"], ["near_end", "Ближе к концу"], ["cta_only", "Только в CTA"],
+                    ["immediately", "Сразу"], ["after_problem", "После проблемы"], ["near_end", "Ближе к концу"], ["cta_only", "Только в призыве"],
                   ]} />
                 </Section>
 
@@ -474,7 +474,7 @@ export function PostSettingsMenu({
                   <TextField label="Триггер покупки" value={settings.purchaseTrigger} onChange={(next) => update({ purchaseTrigger: next })} />
                   <TextField label="Критерий выбора" value={settings.choiceCriterion} onChange={(next) => update({ choiceCriterion: next })} />
                   <SelectField label="Уровень доверия" value={settings.trustLevel} onChange={(next) => update({ trustLevel: next as PostSettings["trustLevel"] })} options={[
-                    ["auto", "Auto"], ["cold", "Холодная"], ["familiar", "Знакомая"], ["warm", "Тёплая"], ["customer", "Клиент"],
+                    ["auto", "Авто"], ["cold", "Холодная"], ["familiar", "Знакомая"], ["warm", "Тёплая"], ["customer", "Клиент"],
                   ]} />
                   <TextField label="Язык аудитории" value={settings.audienceLanguage} onChange={(next) => update({ audienceLanguage: next })} />
                   <TextField label="Не наша аудитория" value={settings.excludedAudience} onChange={(next) => update({ excludedAudience: next })} />
@@ -511,13 +511,13 @@ export function PostSettingsMenu({
 
                 <Section title="Механика продажи">
                   <SelectField label="Угол подачи" value={settings.salesAngle} onChange={(next) => update({ salesAngle: next as PostSettings["salesAngle"] })} options={[
-                    ["auto", "Auto"], ["problem", "Через проблему"], ["desired_result", "Через желаемый результат"], ["mistake", "Через ошибку"], ["lost_opportunity", "Через потерянную возможность"], ["saving", "Через экономию"], ["speed", "Через скорость"], ["simplicity", "Через простоту"], ["safety", "Через безопасность"], ["status", "Через статус"], ["novelty", "Через новизну"], ["comparison", "Через сравнение"], ["case", "Через кейс"], ["objection", "Через возражение"], ["demo", "Через демонстрацию"], ["personal_story", "Через личную историю"],
+                    ["auto", "Авто"], ["problem", "Через проблему"], ["desired_result", "Через желаемый результат"], ["mistake", "Через ошибку"], ["lost_opportunity", "Через потерянную возможность"], ["saving", "Через экономию"], ["speed", "Через скорость"], ["simplicity", "Через простоту"], ["safety", "Через безопасность"], ["status", "Через статус"], ["novelty", "Через новизну"], ["comparison", "Через сравнение"], ["case", "Через кейс"], ["objection", "Через возражение"], ["demo", "Через демонстрацию"], ["personal_story", "Через личную историю"],
                   ]} />
                   <SelectField label="Формула убеждения" value={settings.persuasionFormula} onChange={(next) => update({ persuasionFormula: next as PostSettings["persuasionFormula"] })} options={[
-                    ["auto", "Auto"], ["aida", "AIDA"], ["pas", "PAS"], ["problem_consequence_solution", "Проблема → последствия → решение"], ["before_after_bridge", "До → после → мост"], ["story_insight_offer", "История → инсайт → предложение"], ["objection_proof_offer", "Возражение → доказательство → оффер"], ["mistake_approach_product", "Ошибка → подход → продукт"], ["result_mechanism_cta", "Результат → механизм → CTA"], ["alternatives", "Сравнение альтернатив"], ["demo_benefit_action", "Демонстрация → выгода → действие"],
+                    ["auto", "Авто"], ["aida", "Внимание → интерес → желание → действие"], ["pas", "Проблема → усиление → решение"], ["problem_consequence_solution", "Проблема → последствия → решение"], ["before_after_bridge", "До → после → мост"], ["story_insight_offer", "История → вывод → предложение"], ["objection_proof_offer", "Возражение → доказательство → предложение"], ["mistake_approach_product", "Ошибка → подход → продукт"], ["result_mechanism_cta", "Результат → механизм → призыв"], ["alternatives", "Сравнение альтернатив"], ["demo_benefit_action", "Демонстрация → выгода → действие"],
                   ]} />
                   <TextField label="Какое возражение закрыть" value={settings.objectionToHandle} onChange={(next) => update({ objectionToHandle: next })} />
-                  <SelectField label="Сколько доказательств" value={settings.proofCount} onChange={(next) => update({ proofCount: next as PostSettings["proofCount"] })} options={[["auto", "Auto"], ["0", "0"], ["1", "1"], ["2", "2"], ["3_plus", "3 и более"]]} />
+                  <SelectField label="Сколько доказательств" value={settings.proofCount} onChange={(next) => update({ proofCount: next as PostSettings["proofCount"] })} options={[["auto", "Авто"], ["0", "0"], ["1", "1"], ["2", "2"], ["3_plus", "3 и более"]]} />
                   <SelectField label="Указывать цену" value={settings.priceMode} onChange={(next) => update({ priceMode: next as PostSettings["priceMode"] })} options={[["auto", "Если уместно"], ["required", "Обязательно"], ["never", "Не указывать"]]} />
                   <SelectField label="Уровень давления" value={settings.salesPressure} onChange={(next) => update({ salesPressure: next as PostSettings["salesPressure"] })} options={[["soft", "Без давления"], ["neutral", "Уверенный"], ["direct", "Прямой"]]} />
                   <SelectField label="Дефицит" value={settings.scarcity} onChange={(next) => update({ scarcity: next as PostSettings["scarcity"] })} options={[["none", "Не использовать"], ["real_quantity", "Реальное ограничение количества"]]} />
@@ -526,25 +526,25 @@ export function PostSettingsMenu({
                   <SelectField label="Снижение риска" value={settings.riskReducer} onChange={(next) => update({ riskReducer: next as PostSettings["riskReducer"] })} options={[["none", "Не использовать"], ["guarantee", "Гарантия"], ["trial", "Пробный период"], ["consultation", "Бесплатная консультация"], ["refund", "Возврат"], ["demo", "Демонстрация"]]} />
                 </Section>
 
-                <Section title="CTA">
+                <Section title="Призыв к действию">
                   <SelectField label="Основное действие" value={settings.cta} onChange={(next) => update({ cta: next as PostSettings["cta"] })} options={CTAS} />
                   <TextField label="Конкретная формулировка" value={settings.ctaWording} onChange={(next) => update({ ctaWording: next })} />
                   <TextField label="Куда ведём" value={settings.ctaDestination} onChange={(next) => update({ ctaDestination: next })} />
                   <TextField label="Что будет после действия" value={settings.ctaOutcome} onChange={(next) => update({ ctaOutcome: next })} />
                   <TextField label="Кодовое слово" value={settings.ctaCodeword} onChange={(next) => update({ ctaCodeword: next })} />
-                  <SelectField label="Второй CTA" value={settings.secondaryCta} onChange={(next) => update({ secondaryCta: next as PostSettings["secondaryCta"] })} options={CTAS} />
-                  <SelectField label="Сила CTA" value={settings.ctaStrength} onChange={(next) => update({ ctaStrength: next as PostSettings["ctaStrength"] })} options={[["soft", "Мягкая"], ["neutral", "Ясная"], ["direct", "Прямая"]]} />
-                  <SelectField label="Позиция CTA" value={settings.ctaPlacement} onChange={(next) => update({ ctaPlacement: next as PostSettings["ctaPlacement"] })} options={[["natural", "По смыслу"], ["end", "В конце"]]} />
-                  <SelectField label="Повторять CTA" value={String(settings.ctaRepeats)} onChange={(next) => update({ ctaRepeats: Number(next) as 1 | 2 })} options={[["1", "Один раз"], ["2", "Два раза"]]} />
+                  <SelectField label="Второй призыв" value={settings.secondaryCta} onChange={(next) => update({ secondaryCta: next as PostSettings["secondaryCta"] })} options={CTAS} />
+                  <SelectField label="Сила призыва" value={settings.ctaStrength} onChange={(next) => update({ ctaStrength: next as PostSettings["ctaStrength"] })} options={[["soft", "Мягкая"], ["neutral", "Ясная"], ["direct", "Прямая"]]} />
+                  <SelectField label="Позиция призыва" value={settings.ctaPlacement} onChange={(next) => update({ ctaPlacement: next as PostSettings["ctaPlacement"] })} options={[["natural", "По смыслу"], ["end", "В конце"]]} />
+                  <SelectField label="Повторять призыв" value={String(settings.ctaRepeats)} onChange={(next) => update({ ctaRepeats: Number(next) as 1 | 2 })} options={[["1", "Один раз"], ["2", "Два раза"]]} />
                   <ToggleField label="Добавлять причину действовать" checked={settings.ctaAddReason} onChange={(next) => update({ ctaAddReason: next })} />
                   <ToggleField label="Указывать следующий шаг" checked={settings.ctaNextStep} onChange={(next) => update({ ctaNextStep: next })} />
                 </Section>
 
                 <Section title="Контекст публикации">
-                  <SelectField label="Тип трафика" value={settings.trafficType} onChange={(next) => update({ trafficType: next as PostSettings["trafficType"] })} options={[["auto", "Auto"], ["organic", "Органический"], ["paid", "Рекламный"]]} />
-                  <SelectField label="Температура аудитории" value={settings.audienceTemperature} onChange={(next) => update({ audienceTemperature: next as PostSettings["audienceTemperature"] })} options={[["auto", "Auto"], ["cold", "Холодная"], ["warm", "Тёплая"], ["hot", "Горячая"]]} />
-                  <SelectField label="Этап воронки" value={settings.funnelStage} onChange={(next) => update({ funnelStage: next as PostSettings["funnelStage"] })} options={[["auto", "Auto"], ["awareness", "Знакомство"], ["problem", "Проблема"], ["solution", "Решение"], ["trust", "Доверие"], ["objection", "Возражение"], ["offer", "Оффер"], ["close", "Закрытие"]]} />
-                  <SelectField label="Тип касания" value={settings.touchType} onChange={(next) => update({ touchType: next as PostSettings["touchType"] })} options={[["auto", "Auto"], ["first", "Первое"], ["repeat", "Повторное"], ["final", "Финальное"]]} />
+                  <SelectField label="Тип трафика" value={settings.trafficType} onChange={(next) => update({ trafficType: next as PostSettings["trafficType"] })} options={[["auto", "Авто"], ["organic", "Органический"], ["paid", "Рекламный"]]} />
+                  <SelectField label="Температура аудитории" value={settings.audienceTemperature} onChange={(next) => update({ audienceTemperature: next as PostSettings["audienceTemperature"] })} options={[["auto", "Авто"], ["cold", "Холодная"], ["warm", "Тёплая"], ["hot", "Горячая"]]} />
+                  <SelectField label="Этап воронки" value={settings.funnelStage} onChange={(next) => update({ funnelStage: next as PostSettings["funnelStage"] })} options={[["auto", "Авто"], ["awareness", "Знакомство"], ["problem", "Проблема"], ["solution", "Решение"], ["trust", "Доверие"], ["objection", "Возражение"], ["offer", "Предложение"], ["close", "Завершение"]]} />
+                  <SelectField label="Тип касания" value={settings.touchType} onChange={(next) => update({ touchType: next as PostSettings["touchType"] })} options={[["auto", "Авто"], ["first", "Первое"], ["repeat", "Повторное"], ["final", "Финальное"]]} />
                   <TextField label="Кампания" value={settings.campaign} onChange={(next) => update({ campaign: next })} />
                   <SelectField label="Серия постов" value={settings.seriesStage} onChange={(next) => update({ seriesStage: next as PostSettings["seriesStage"] })} options={[["none", "Нет"], ["start", "Начало"], ["middle", "Середина"], ["finish", "Завершение"]]} />
                   <TextField label="Что было до этого" value={settings.previousPost} onChange={(next) => update({ previousPost: next })} />
@@ -558,16 +558,16 @@ export function PostSettingsMenu({
                 <Section title="Оригинальность">
                   <SelectField label="Глубина сравнения" value={settings.originalityDepth} onChange={(next) => update({ originalityDepth: next as PostSettings["originalityDepth"] })} options={[["10", "Последние 10"], ["30", "Последние 30"], ["100", "Последние 100"], ["all", "Все доступные"]]} />
                   <SelectField label="Максимальная похожесть" value={settings.similarityLevel} onChange={(next) => update({ similarityLevel: next as PostSettings["similarityLevel"] })} options={[["strict", "Строгая"], ["moderate", "Умеренная"], ["allow", "Повторы допустимы"]]} />
-                  <ToggleField label="Запрещать AI-клише" checked={settings.blockAiCliches} onChange={(next) => update({ blockAiCliches: next })} />
+                  <ToggleField label="Запрещать шаблонные фразы ИИ" checked={settings.blockAiCliches} onChange={(next) => update({ blockAiCliches: next })} />
                   <ToggleField label="Запрещать общие фразы" checked={settings.blockGenericPhrases} onChange={(next) => update({ blockGenericPhrases: next })} />
                   <ToggleField label="Требовать конкретный пример" checked={settings.requireConcreteExample} onChange={(next) => update({ requireConcreteExample: next })} />
                   <ToggleField label="Требовать новый угол" checked={settings.requireNewAngle} onChange={(next) => update({ requireNewAngle: next })} />
-                  <ToggleField label="Показывать похожие посты" checked={settings.showSimilarPosts} onChange={(next) => update({ showSimilarPosts: next })} hint="сейчас влияет на анализ; отдельный список появится в следующем UI-слое" />
+                  <ToggleField label="Показывать похожие посты" checked={settings.showSimilarPosts} onChange={(next) => update({ showSimilarPosts: next })} hint="Сейчас влияет на анализ; отдельный список появится в следующей версии интерфейса." />
                   <div className="sm:col-span-2">
                     <p className="mb-2 text-[12px] font-bold text-text">Не повторять</p>
                     <div className="grid gap-2 sm:grid-cols-2">
                       {([[
-                        "hooks", "Хуки"], ["cta", "CTA"], ["stories", "Истории"], ["examples", "Примеры"], ["structure", "Структуру"], ["phrases", "Ключевые формулировки"],
+                        "hooks", "Начала постов"], ["cta", "Призывы"], ["stories", "Истории"], ["examples", "Примеры"], ["structure", "Структуру"], ["phrases", "Ключевые формулировки"],
                       ] as const).map(([id, label]) => <ToggleField key={id} label={label} checked={settings.avoidRepetitions.includes(id)} onChange={(checked) => update({ avoidRepetitions: checked ? [...settings.avoidRepetitions, id] : settings.avoidRepetitions.filter((item) => item !== id) })} />)}
                     </div>
                   </div>
@@ -578,7 +578,7 @@ export function PostSettingsMenu({
                   <ListField label="Никогда не пиши так" value={settings.badVoiceExamples} onChange={(next) => update({ badVoiceExamples: next })} />
                   <ListField label="Фирменные выражения" value={settings.signatureExpressions} onChange={(next) => update({ signatureExpressions: next })} />
                   <ListField label="Запрещённые выражения" value={settings.bannedExpressions} onChange={(next) => update({ bannedExpressions: next })} />
-                  <SelectField label="Длина предложений" value={settings.sentenceLength} onChange={(next) => update({ sentenceLength: next as PostSettings["sentenceLength"] })} options={[["auto", "Auto"], ["short", "Короткие"], ["mixed", "Разный ритм"], ["long", "Развёрнутые"]]} />
+                  <SelectField label="Длина предложений" value={settings.sentenceLength} onChange={(next) => update({ sentenceLength: next as PostSettings["sentenceLength"] })} options={[["auto", "Авто"], ["short", "Короткие"], ["mixed", "Разный ритм"], ["long", "Развёрнутые"]]} />
                   <SelectField label="Степень копирования" value={settings.styleMatch} onChange={(next) => update({ styleMatch: next as PostSettings["styleMatch"] })} options={[["light", "Лёгкое сходство"], ["recognizable", "Узнаваемый голос"], ["maximum", "Максимально близко"]]} />
                   <SelectField label="Уровень сленга" value={settings.slangLevel} onChange={(next) => update({ slangLevel: next as PostSettings["slangLevel"] })} options={[["none", "Не использовать"], ["low", "Низкий"], ["medium", "Средний"], ["high", "Высокий"]]} />
                   <SelectField label="Уровень метафор" value={settings.metaphorLevel} onChange={(next) => update({ metaphorLevel: next as PostSettings["metaphorLevel"] })} options={[["none", "Не использовать"], ["low", "Низкий"], ["medium", "Средний"], ["high", "Высокий"]]} />
@@ -596,12 +596,12 @@ export function PostSettingsMenu({
                   <SelectField label="Минимальная оценка" value={String(settings.qualityThreshold)} onChange={(next) => update({ qualityThreshold: Number(next) as PostSettings["qualityThreshold"] })} options={[["7", "7/10"], ["8", "8/10"], ["9", "9/10"]]} />
                   <ToggleField label="Автоматически исправлять" checked={settings.autoImprove} onChange={(next) => update({ autoImprove: next })} />
                   <ToggleField label="Скрывать критически ошибочный результат" checked={settings.hideCriticalResult} onChange={(next) => update({ hideCriticalResult: next })} />
-                  <SelectField label="Для «Ещё вариант»" value={settings.variantChange} onChange={(next) => update({ variantChange: next as PostSettings["variantChange"] })} options={[["full", "Полностью другая концепция"], ["hook", "Новый хук"], ["sales_angle", "Новый угол продажи"], ["structure", "Новая структура"], ["emotional", "Более эмоциональный"], ["expert", "Более экспертный"], ["native", "Более нативный"]]} />
+                  <SelectField label="Для «Ещё вариант»" value={settings.variantChange} onChange={(next) => update({ variantChange: next as PostSettings["variantChange"] })} options={[["full", "Полностью другая концепция"], ["hook", "Новое начало"], ["sales_angle", "Новый угол продажи"], ["structure", "Новая структура"], ["emotional", "Более эмоциональный"], ["expert", "Более экспертный"], ["native", "Более естественный"]]} />
                   <div className="sm:col-span-2">
                     <p className="mb-2 text-[12px] font-bold text-text">Что получить вместе с постом</p>
                     <div className="grid gap-2 sm:grid-cols-2">
                       {([
-                        ["hooks", "5 вариантов хука"], ["titles", "3 заголовка"], ["cover", "Текст на обложку"], ["first_comment", "Первый комментарий"], ["pinned_comment", "Закреплённый комментарий"], ["hashtags", "Хэштеги"], ["alt", "Alt-текст"], ["visual_brief", "Визуальный бриф"], ["image_idea", "Идея изображения"], ["short_version", "Короткая версия"], ["stories", "Версия Stories"], ["cross_platform", "Другая площадка"], ["comment_replies", "Ответы на комментарии"], ["utm", "UTM-ссылка"], ["discussion_question", "Вопрос для обсуждения"],
+                        ["hooks", "5 вариантов начала"], ["titles", "3 заголовка"], ["cover", "Текст на обложку"], ["first_comment", "Первый комментарий"], ["pinned_comment", "Закреплённый комментарий"], ["hashtags", "Хэштеги"], ["alt", "Описание изображения"], ["visual_brief", "Задание для изображения"], ["image_idea", "Идея изображения"], ["short_version", "Короткая версия"], ["stories", "Версия для историй"], ["cross_platform", "Другая площадка"], ["comment_replies", "Ответы на комментарии"], ["utm", "Ссылка с меткой"], ["discussion_question", "Вопрос для обсуждения"],
                       ] as const).map(([id, label]) => <ToggleField key={id} label={label} checked={settings.outputParts.includes(id)} onChange={(checked) => update({ outputParts: checked ? [...settings.outputParts, id] : settings.outputParts.filter((item) => item !== id) })} />)}
                     </div>
                   </div>
@@ -609,25 +609,25 @@ export function PostSettingsMenu({
 
                 <Section title="Аудитория и голос">
                   <SelectField label="Осведомлённость" value={settings.awareness} onChange={(next) => update({ awareness: next as PostSettings["awareness"] })} options={[
-                    ["auto", "Auto — по контексту"], ["unaware", "Не знает о проблеме"], ["problem_aware", "Понимает проблему"], ["solution_aware", "Ищет решение"], ["product_aware", "Знает продукт"], ["ready", "Готова действовать"],
+                    ["auto", "Авто — по контексту"], ["unaware", "Не знает о проблеме"], ["problem_aware", "Понимает проблему"], ["solution_aware", "Ищет решение"], ["product_aware", "Знает продукт"], ["ready", "Готова действовать"],
                   ]} />
-                  <SelectField label="Язык" value={settings.language} onChange={(next) => update({ language: next as PostSettings["language"] })} options={[["auto", "Auto — язык задачи"], ["ru", "Русский"], ["en", "English"]]} />
+                  <SelectField label="Язык" value={settings.language} onChange={(next) => update({ language: next as PostSettings["language"] })} options={[["auto", "Авто — язык задачи"], ["ru", "Русский"], ["en", "Английский"]]} />
                   <SelectField label="Формальность" value={settings.formality} onChange={(next) => update({ formality: next as PostSettings["formality"] })} options={[["auto", "Из голоса бренда"], ["casual", "Разговорно"], ["neutral", "Нейтрально"], ["formal", "Формально"]]} />
                   <SelectField label="Обращение" value={settings.address} onChange={(next) => update({ address: next as PostSettings["address"] })} options={[["auto", "Из голоса бренда"], ["ты", "На «ты»"], ["вы", "На «вы»"], ["neutral", "Без обращения"]]} />
-                  <SelectField label="Энергия" value={settings.energy} onChange={(next) => update({ energy: next as PostSettings["energy"] })} options={[["auto", "Auto — по теме"], ["calm", "Спокойная"], ["balanced", "Сбалансированная"], ["high", "Высокая"]]} />
+                  <SelectField label="Энергия" value={settings.energy} onChange={(next) => update({ energy: next as PostSettings["energy"] })} options={[["auto", "Авто — по теме"], ["calm", "Спокойная"], ["balanced", "Сбалансированная"], ["high", "Высокая"]]} />
                   <SelectField label="Юмор" value={settings.humor} onChange={(next) => update({ humor: next as PostSettings["humor"] })} options={[["auto", "Только если уместно"], ["none", "Без юмора"], ["light", "Лёгкий"], ["bold", "Смелый без грубости"]]} />
                 </Section>
 
                 <Section title="Начало и структура">
-                  <SelectField label="Тип хука" value={settings.hook} onChange={(next) => update({ hook: next as PostSettings["hook"] })} options={[["auto", "Auto — содержательный"], ["insight", "Инсайт"], ["benefit", "Польза"], ["problem", "Проблема"], ["story", "Сцена"], ["fact", "Факт"], ["question", "Вопрос"], ["contrast", "Контраст"], ["none", "Без отдельного хука"]]} />
-                  <SelectField label="Структура" value={settings.structure} onChange={(next) => update({ structure: next as PostSettings["structure"] })} options={[["auto", "Auto — по материалу"], ["free", "Свободная"], ["explainer", "Объяснение"], ["problem_solution", "Проблема → решение"], ["story", "История"], ["list", "Список"], ["news", "Новость"], ["announcement", "Анонс"]]} />
+                  <SelectField label="Тип начала" value={settings.hook} onChange={(next) => update({ hook: next as PostSettings["hook"] })} options={[["auto", "Авто — по содержанию"], ["insight", "Вывод"], ["benefit", "Польза"], ["problem", "Проблема"], ["story", "Сцена"], ["fact", "Факт"], ["question", "Вопрос"], ["contrast", "Контраст"], ["none", "Без отдельного начала"]]} />
+                  <SelectField label="Структура" value={settings.structure} onChange={(next) => update({ structure: next as PostSettings["structure"] })} options={[["auto", "Авто — по материалу"], ["free", "Свободная"], ["explainer", "Объяснение"], ["problem_solution", "Проблема → решение"], ["story", "История"], ["list", "Список"], ["news", "Новость"], ["announcement", "Анонс"]]} />
                   <SelectField label="Абзацы" value={settings.paragraphs} onChange={(next) => update({ paragraphs: next as PostSettings["paragraphs"] })} options={[["auto", "Нативно площадке"], ["short", "1–2 предложения"], ["medium", "2–4 предложения"]]} />
                   <SelectField label="Списки" value={settings.lists} onChange={(next) => update({ lists: next as PostSettings["lists"] })} options={[["auto", "Только когда полезно"], ["avoid", "Не использовать"], ["prefer", "Предпочитать для шагов"], ["required", "Один список обязателен"]]} />
                 </Section>
 
                 <Section title="Оформление и хэштеги">
                   <SelectField label="Позиция эмодзи" value={settings.emojiPlacement} onChange={(next) => update({ emojiPlacement: next as PostSettings["emojiPlacement"] })} options={[["auto", "Нативно"], ["inline", "Внутри строк"], ["line_end", "В конце строк"], ["bullets", "Маркеры списка"]]} />
-                  <SelectField label="Хэштеги" value={settings.hashtags} onChange={(next) => update({ hashtags: next as PostSettings["hashtags"] })} options={[["auto", "Auto — нативно"], ["none", "Без хэштегов"], ["custom", "Точное количество"]]} />
+                  <SelectField label="Хэштеги" value={settings.hashtags} onChange={(next) => update({ hashtags: next as PostSettings["hashtags"] })} options={[["auto", "Авто — по формату"], ["none", "Без хэштегов"], ["custom", "Точное количество"]]} />
                   {settings.hashtags === "custom" && <TextField label="Количество хэштегов" value={String(settings.hashtagCount ?? 3)} onChange={(next) => update({ hashtagCount: Number(next) })} />}
                   <SelectField label="Креативность" value={settings.creativity} onChange={(next) => update({ creativity: next as PostSettings["creativity"] })} options={[["low", "Низкая — точность"], ["balanced", "Сбалансированная"], ["high", "Высокая без выдумки"]]} />
                   <ListField label="Разрешённые эмодзи" hint="по одному на строку" value={settings.allowedEmojis} placeholder="✅\n💡" onChange={(next) => update({ allowedEmojis: next })} />

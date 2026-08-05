@@ -29,18 +29,20 @@ import { ChannelPicker, useChannelChoice } from "@/components/app/channel-picker
 import { ReconTabs } from "@/components/app/recon-tabs";
 import { Button } from "@/components/ui/button";
 import { Badge, Card, Checkbox, EmptyState, Tabs } from "@/components/ui/primitives";
+import { appDraftActionHref } from "@/lib/app-routes";
 import { finalizeAiClientStream, parseAiStreamBuffer, type AiStreamEvent } from "@/lib/ai-stream";
 import {
   acknowledgeAiTerminal,
   stableAiClientRequest,
   type AiClientRequestIdentity,
 } from "@/lib/ai-client-idempotency";
-import { createDraftClientKey, DraftRequestError } from "@/lib/draft-client";
+import { createDraftClientKey, createServerDraft, DraftRequestError } from "@/lib/draft-client";
 import { useStore } from "@/lib/store";
 import {
   createReviewedTrendDraft,
   TrendDraftReviewError,
 } from "@/lib/trend-draft-review";
+import { buildTrendReferenceDraft } from "@/lib/trend-reference";
 import { TREND_PERIODS, type TrendPeriod } from "@/lib/trend-period";
 import { cn, fmtAgo, fmtCompact, plural } from "@/lib/utils";
 
@@ -684,6 +686,55 @@ export default function TrendsPage() {
   // Создание публикации: готовую идею воркера сначала показываем в карточке для ручной
   // проверки. Если идеи нет — пишем тем же движком (Д.8), потоком прямо в карточку.
   const snap = async (item: Item) => {
+    // Новый основной путь: сначала сохраняем принадлежавший пользователю reference-draft,
+    // затем передаём в URL только его ID. Студия запускает адаптацию по механике источника.
+    // Старый inline-flow остаётся временным операторским rollback и включается только
+    // явным NEXT_PUBLIC_TREND_REFERENCE_STUDIO=disabled.
+    if (process.env.NEXT_PUBLIC_TREND_REFERENCE_STUDIO !== "disabled") {
+      if (generationInFlightRef.current !== null) return;
+      const destinationChannelId = Number(channelId);
+      if (!Number.isSafeInteger(destinationChannelId) || destinationChannelId <= 0) {
+        store.toast({
+          kind: "danger",
+          title: "Некуда сохранить публикацию",
+          body: "Сначала подключи или выбери канал — исходный тренд останется на месте.",
+        });
+        return;
+      }
+
+      generationInFlightRef.current = item.id;
+      setGenerating(item.id);
+      const key = `${destinationChannelId}:${item.id}:studio-reference`;
+      const clientKey = (draftClientKeysRef.current[key] ??= createDraftClientKey());
+      try {
+        const result = await createServerDraft(buildTrendReferenceDraft({
+          trendId: item.id,
+          channelId: destinationChannelId,
+          clientKey,
+          sourceLabel: item.competitorTitle || `@${item.handle}`,
+          text: item.text,
+          idea: item.idea,
+        }));
+        router.push(appDraftActionHref("create", result.draft.id));
+      } catch (error) {
+        const emptyReference = error instanceof RangeError
+          && error.message === "trend reference text is required";
+        store.toast({
+          kind: emptyReference ? "info" : "danger",
+          title: emptyReference ? "Не вижу тему публикации" : "Контекст не сохранён",
+          body: emptyReference
+            ? "В карточке нет текста или идеи для адаптации. Открой оригинал либо выбери другой тренд."
+            : error instanceof DraftRequestError && error.kind === "offline"
+              ? "Нет связи с сервером. Карточка осталась на месте — повтори после восстановления сети."
+              : "Карточка осталась на месте. Повтор использует тот же ключ и не создаст второй черновик.",
+        });
+      } finally {
+        if (generationInFlightRef.current === item.id) generationInFlightRef.current = null;
+        setGenerating(null);
+      }
+      return;
+    }
+
     if (item.idea) {
       const text = [item.idea.hook, item.idea.structure].filter(Boolean).join("\n\n");
       setDrafts((drafts) => ({ ...drafts, [item.id]: text }));
