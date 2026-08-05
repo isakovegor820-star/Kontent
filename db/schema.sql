@@ -66,6 +66,11 @@ create table if not exists users (
 -- Для старых баз, где таблица уже создана без этих колонок.
 alter table users add column if not exists password_hash text;
 alter table users add column if not exists ai_mood text;
+-- Последние настройки конкретной публикации. Храним только отличия от Auto (jsonb),
+-- а паспорт бренда/канала остаётся отдельно в knowledge_sources и content_brief.
+-- Старые аккаунты получают пустой объект и автоматически нормализуются в безопасные
+-- значения src/lib/post-settings.ts — миграция не переписывает пользовательские данные.
+alter table users add column if not exists ai_post_settings jsonb not null default '{}'::jsonb;
 
 -- Активные сессии. Выход = удаление строки (не только cookie).
 -- Токен — случайная строка в cookie sid; срок 30 дней, продлевается при активности.
@@ -78,11 +83,9 @@ create table if not exists sessions (
 );
 create index if not exists sessions_user_idx on sessions (user_id);
 
--- Одноразовые коды входа по почте (email_codes): таблица была заложена под вход по кодам,
--- но дизайн заменили на пароль (scrypt) и вход через Telegram/VK ID — кодом таблицу не
--- использовал НИ ОДИН. Мёртвая схема путает при чтении, поэтому убираем: на новых базах
--- она просто не создаётся, а на уже живых — сносим её при повторном накате файла.
-drop table if exists email_codes;
+-- Legacy email_codes intentionally is not created on a fresh database. If an older
+-- installation still has it, this bootstrap snapshot leaves the table and its data
+-- untouched; retention/deletion must be a separately approved migration.
 
 
 -- --------------------------------------------- Д.3: публикация в Telegram
@@ -220,8 +223,20 @@ create table if not exists media_generations (
   style            text        not null default 'natural',
   niche            text,
   tone             text,
+  request_id       uuid        not null default gen_random_uuid(),
+  provider_request_key varchar(128) not null,
+  prompt_policy_version smallint not null default 1
+                               constraint media_generations_prompt_policy_version_check
+                               check (prompt_policy_version = 1),
+  prompt_context   jsonb       not null default '{}'::jsonb
+                               constraint media_generations_prompt_context_check
+                               check (jsonb_typeof(prompt_context) = 'object'),
+  queue_confirmed_at timestamptz,
+  provider_started_at timestamptz,
   provider_job_id  text,
   output_asset_id  bigint references media_assets (id) on delete set null,
+  request_key      varchar(96),
+  ai_usage_reservation_id bigint references ai_usage (id) on delete set null,
   error_code       text,
   error_message    text,
   created_at       timestamptz not null default now(),
@@ -231,6 +246,13 @@ create table if not exists media_generations (
 create index if not exists media_generations_user_idx on media_generations (user_id, created_at desc);
 create index if not exists media_generations_active_idx on media_generations (status, updated_at)
   where status in ('queued','submitting','generating','saving');
+create unique index if not exists media_generations_user_request_key_uniq
+  on media_generations (user_id, request_key)
+  where request_key is not null;
+create unique index if not exists media_generations_request_id_uniq
+  on media_generations (request_id);
+create unique index if not exists media_generations_provider_request_key_uniq
+  on media_generations (provider_request_key);
 
 
 -- ------------------------------------------ Д.6: разведка конкурентов (Telegram)
@@ -281,6 +303,18 @@ create index if not exists competitor_stats_comp_idx on competitor_stats (compet
 -- Флаги залёта на постах конкурентов (Д.7): пост набрал в 5+ раз выше медианы автора.
 alter table competitor_posts add column if not exists is_hit boolean not null default false;
 alter table competitor_posts add column if not exists hit_ratio numeric;
+-- Прозрачные метрики библиотеки. Их обновляет тот же worker, который собирает
+-- сопоставимый cohort; formula_version позволяет объяснить исторический расчёт.
+alter table competitor_posts add column if not exists analytics_lift numeric;
+alter table competitor_posts add column if not exists analytics_er_bayes numeric;
+alter table competitor_posts add column if not exists analytics_velocity numeric;
+alter table competitor_posts add column if not exists analytics_velocity_z numeric;
+alter table competitor_posts add column if not exists analytics_freshness numeric;
+alter table competitor_posts add column if not exists analytics_score numeric;
+alter table competitor_posts add column if not exists analytics_formula_version text;
+alter table competitor_posts add column if not exists analytics_quality text;
+alter table competitor_posts add column if not exists analytics_maturity text;
+alter table competitor_posts add column if not exists analytics_computed_at timestamptz;
 
 
 -- ------------------------------------------ Д.7: тренды и «Сними это» (идеи)
@@ -336,14 +370,14 @@ create table if not exists autopilot_plan (
 create index if not exists autopilot_plan_user_idx on autopilot_plan (user_id, created_at desc);
 
 -- Бриф контента (ТЗ Д.9). Без него автопилот не запускается: иначе ИИ не знает, о чём
--- канал, и пишет наугад. Один бриф на аккаунт — как и настроение агента.
--- source: чем заполнен — 'ai' (платформа прочитала канал и предложила) или 'manual'.
+-- канал, и пишет наугад. После channel-scoped migration один бриф принадлежит одному каналу.
+-- source: чем заполнен — 'ai' (платформа прочитала канал), 'manual' или 'quiz' (онбординг).
 -- Честность: ready ставит только сам пользователь, подтвердив бриф глазами.
 create table if not exists content_brief (
   user_id    bigint      primary key references users (id) on delete cascade,
   niche      text,                    -- о чём канал (обязательно)
   audience   text,                    -- для кого (обязательно)
-  rubrics    text[]      not null default '{}',  -- рубрики/форматы, которые чередуем
+  rubrics    text[]      not null default '{}',  -- смысловые рубрики, которые чередуем
   goal       text,                    -- зачем канал автору
   cta        text,                    -- куда ведём читателя
   taboo      text,                    -- о чём не писать никогда
@@ -520,43 +554,6 @@ create index if not exists competitor_suggestions_user_idx
 alter table competitor_suggestions add column if not exists on_topic boolean;
 
 
--- =================================== Д.9+: автопилот и бриф — НА КАНАЛ, а не на юзера
--- Было: autopilot_settings.user_id и content_brief.user_id — PRIMARY KEY, то есть одни
--- настройки и один бриф на человека. А в autopilot_plan канала не было вообще. Семь мест
--- в коде брали канал запросом «...is_active limit 1» БЕЗ order by — то есть при двух
--- каналах автопилот молча выбирал один (какой — Postgres не гарантирует) и писал туда
--- посты по брифу другого. У первого же пользователя с двумя каналами второй не получал
--- ничего. Теперь ключ — пара (пользователь, канал): у каждого канала свои настройки,
--- свой бриф и свой план.
-
-alter table autopilot_settings add column if not exists channel_id bigint references channels (id) on delete cascade;
-alter table content_brief      add column if not exists channel_id bigint references channels (id) on delete cascade;
-alter table autopilot_plan     add column if not exists channel_id bigint references channels (id) on delete cascade;
-
--- Переносим существующие строки на первый канал владельца: это то, чем автопилот и так
--- пользовался де-факто (limit 1 → минимальный id), только теперь это записано явно.
-update autopilot_settings s set channel_id = (select min(c.id) from channels c where c.user_id = s.user_id and c.network = 'tg') where s.channel_id is null;
-update content_brief      b set channel_id = (select min(c.id) from channels c where c.user_id = b.user_id and c.network = 'tg') where b.channel_id is null;
-update autopilot_plan     p set channel_id = (select min(c.id) from channels c where c.user_id = p.user_id and c.network = 'tg') where p.channel_id is null;
-
--- Строки без канала осмысленны быть не могут: настройки автопилота для несуществующего
--- канала — мусор, который сломает новый ключ.
-delete from autopilot_settings where channel_id is null;
-delete from content_brief      where channel_id is null;
-delete from autopilot_plan     where channel_id is null;
-
-alter table autopilot_settings alter column channel_id set not null;
-alter table content_brief      alter column channel_id set not null;
-alter table autopilot_plan     alter column channel_id set not null;
-
-alter table autopilot_settings drop constraint if exists autopilot_settings_pkey;
-alter table content_brief      drop constraint if exists content_brief_pkey;
-alter table autopilot_settings add primary key (user_id, channel_id);
-alter table content_brief      add primary key (user_id, channel_id);
-
--- План ищут по каналу и свежести — индекс под это.
-create index if not exists autopilot_plan_channel_idx on autopilot_plan (channel_id, created_at desc);
-
 -- ───────────────────────────────────────────────────────────────────────────────
 -- Автопилот и соседи — НА КАНАЛ, а не на аккаунт.
 --
@@ -579,22 +576,49 @@ update autopilot_plan         p set channel_id = (select min(c.id) from channels
 update competitors            k set channel_id = (select min(c.id) from channels c where c.user_id = k.user_id and c.network = 'tg') where k.channel_id is null;
 update competitor_suggestions g set channel_id = (select min(c.id) from channels c where c.user_id = g.user_id and c.network = 'tg') where g.channel_id is null;
 
-delete from autopilot_settings     where channel_id is null;
-delete from content_brief          where channel_id is null;
-delete from autopilot_plan         where channel_id is null;
-delete from competitors            where channel_id is null;
-delete from competitor_suggestions where channel_id is null;
+-- Не удаляем legacy-строки без канала. На чистой базе и на корректно обновлённой базе
+-- nullable-остатков нет — тогда безопасно ужесточаем ключи. Если сироты существуют,
+-- снимок оставляет их на месте и сообщает оператору: привязка требует отдельного решения.
+do $$
+begin
+  if not exists (select 1 from autopilot_settings where channel_id is null)
+     and not exists (select 1 from content_brief where channel_id is null) then
+    alter table autopilot_settings alter column channel_id set not null;
+    alter table content_brief alter column channel_id set not null;
 
-alter table autopilot_settings     alter column channel_id set not null;
-alter table content_brief          alter column channel_id set not null;
-alter table autopilot_plan         alter column channel_id set not null;
-alter table competitors            alter column channel_id set not null;
-alter table competitor_suggestions alter column channel_id set not null;
+    if not exists (
+      select 1 from pg_constraint
+       where conrelid = 'autopilot_settings'::regclass
+         and contype = 'p'
+         and pg_get_constraintdef(oid) = 'PRIMARY KEY (user_id, channel_id)'
+    ) then
+      alter table autopilot_settings drop constraint if exists autopilot_settings_pkey;
+      alter table autopilot_settings add primary key (user_id, channel_id);
+    end if;
 
-alter table autopilot_settings drop constraint if exists autopilot_settings_pkey;
-alter table content_brief      drop constraint if exists content_brief_pkey;
-alter table autopilot_settings add primary key (user_id, channel_id);
-alter table content_brief      add primary key (user_id, channel_id);
+    if not exists (
+      select 1 from pg_constraint
+       where conrelid = 'content_brief'::regclass
+         and contype = 'p'
+         and pg_get_constraintdef(oid) = 'PRIMARY KEY (user_id, channel_id)'
+    ) then
+      alter table content_brief drop constraint if exists content_brief_pkey;
+      alter table content_brief add primary key (user_id, channel_id);
+    end if;
+  else
+    raise notice 'Legacy Autopilot rows without a channel were preserved; channel keys were not tightened.';
+  end if;
+
+  if not exists (select 1 from autopilot_plan where channel_id is null) then
+    alter table autopilot_plan alter column channel_id set not null;
+  end if;
+  if not exists (select 1 from competitors where channel_id is null) then
+    alter table competitors alter column channel_id set not null;
+  end if;
+  if not exists (select 1 from competitor_suggestions where channel_id is null) then
+    alter table competitor_suggestions alter column channel_id set not null;
+  end if;
+end $$;
 
 -- Один и тот же канал может быть соседом двух моих каналов — это два разных суждения.
 alter table competitors            drop constraint if exists competitors_user_id_network_handle_key;
@@ -722,6 +746,70 @@ create table if not exists hashtag_sets (
   unique (user_id, name)
 );
 
+-- Библиотека — память конкретного канала, а не общий мешок аккаунта.
+-- Nullable оставлен только для совместимости с аккаунтами, где канал ещё не подключён.
+alter table saved_posts
+  add column if not exists channel_id bigint references channels (id) on delete cascade;
+alter table hashtag_sets
+  add column if not exists channel_id bigint references channels (id) on delete cascade;
+
+create index if not exists saved_posts_channel_idx
+  on saved_posts (user_id, channel_id, created_at desc);
+alter table hashtag_sets drop constraint if exists hashtag_sets_user_id_name_key;
+create unique index if not exists hashtag_sets_channel_name_uniq
+  on hashtag_sets (user_id, channel_id, name);
+create unique index if not exists hashtag_sets_unassigned_name_uniq
+  on hashtag_sets (user_id, name) where channel_id is null;
+
+-- Сохранённый элемент может быть своим текстом или референсом из разведки.
+-- Текст и источник копируем в коллекцию: запись остаётся полезной, даже если конкурент
+-- позже удалён из разведки, а source_post_id при этом безопасно станет null.
+alter table saved_posts add column if not exists kind text not null default 'own';
+alter table saved_posts add column if not exists source_post_id bigint references competitor_posts (id) on delete set null;
+alter table saved_posts add column if not exists source_title text;
+alter table saved_posts add column if not exists source_url text;
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'saved_posts_kind_check') then
+    alter table saved_posts
+      add constraint saved_posts_kind_check check (kind in ('own', 'reference'));
+  end if;
+end $$;
+create unique index if not exists saved_posts_reference_uniq
+  on saved_posts (user_id, channel_id, source_post_id)
+  where source_post_id is not null;
+
+-- Оценка 1–5 и факт просмотра — пользовательские сигналы и намеренно хранятся
+-- отдельно от объективного аналитического Score 0–100.
+create table if not exists library_item_states (
+  user_id     bigint      not null references users (id) on delete cascade,
+  channel_id  bigint      not null references channels (id) on delete cascade,
+  item_type   text        not null check (item_type in ('reference', 'idea', 'saved')),
+  item_id     bigint      not null,
+  rating      smallint    check (rating between 1 and 5),
+  viewed_at   timestamptz,
+  updated_at  timestamptz not null default now(),
+  primary key (user_id, channel_id, item_type, item_id)
+);
+create index if not exists library_item_states_channel_idx
+  on library_item_states (user_id, channel_id, item_type, updated_at desc);
+
+-- Все шесть файлов строятся из одного immutable JSON snapshot, поэтому повторная
+-- загрузка другого формата не меняет состав реестра посреди экспорта.
+create table if not exists library_export_snapshots (
+  id              bigint generated always as identity primary key,
+  user_id         bigint      not null references users (id) on delete cascade,
+  channel_id      bigint      not null references channels (id) on delete cascade,
+  request_key     varchar(96) not null,
+  formula_version text        not null,
+  snapshot        jsonb       not null check (jsonb_typeof(snapshot) = 'object'),
+  created_at      timestamptz not null default now(),
+  expires_at      timestamptz not null default (now() + interval '7 days'),
+  unique (user_id, request_key)
+);
+create index if not exists library_export_snapshots_expiry_idx
+  on library_export_snapshots (expires_at);
+
 
 -- ==================================================== Wave 2: RSS-репостер
 -- Юзер добавляет RSS/Atom-ленту → воркер по cron парсит → ИИ суммаризирует → пост в очередь.
@@ -731,14 +819,17 @@ create table if not exists rss_feeds (
   channel_id      bigint      not null references channels (id) on delete cascade,
   url             text        not null,
   title           text,
-  is_active       boolean     not null default true,
+  -- Подключение источника не запускает публикацию без отдельного подтверждения.
+  is_active       boolean     not null default false,
   ai_summarize    boolean     not null default true,
+  publish_existing boolean    not null default false,
   max_per_day     int         not null default 3,
   last_fetched_at timestamptz,
   created_at      timestamptz not null default now(),
   unique (user_id, url)
 );
 create index if not exists rss_feeds_user_idx on rss_feeds (user_id);
+alter table rss_feeds add column if not exists publish_existing boolean not null default false;
 
 create table if not exists rss_items (
   id           bigint generated always as identity primary key,
@@ -750,10 +841,24 @@ create table if not exists rss_items (
   published_at timestamptz,
   post_id      bigint      references posts (id) on delete set null,
   status       text        not null default 'new' check (status in ('new', 'posted', 'skipped')),
+  skip_reason  text        check (skip_reason in ('limit', 'irrelevant', 'baseline', 'paused')),
   fetched_at   timestamptz not null default now(),
   unique (feed_id, guid)
 );
 create index if not exists rss_items_feed_idx on rss_items (feed_id, fetched_at desc);
+alter table rss_feeds alter column is_active set default false;
+alter table rss_items add column if not exists skip_reason text;
+alter table rss_items drop constraint if exists rss_items_skip_reason_check;
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'rss_items_skip_reason_check'
+  ) then
+    alter table rss_items
+      add constraint rss_items_skip_reason_check
+      check (skip_reason in ('limit', 'irrelevant', 'baseline', 'paused'));
+  end if;
+end $$;
 
 -- ── Нишевой радар (Track 5) ─────────────────────────────────────────────────────
 -- Полнотекстовый поиск по постам конкурентов
@@ -785,35 +890,6 @@ create table if not exists niche_matches (
   unique (alert_id, competitor_post_id)
 );
 create index if not exists niche_matches_alert_idx on niche_matches (alert_id, found_at desc);
-
--- ── Мониторинг упоминаний MVP (Track 6) ────────────────────────────────────────
-create table if not exists mention_queries (
-  id              bigint generated always as identity primary key,
-  user_id         bigint not null references users (id) on delete cascade,
-  channel_id      bigint not null references channels (id) on delete cascade,
-  keyword         text   not null,
-  networks        text[] not null default '{tg,vk}',
-  is_active       boolean not null default true,
-  last_checked_at timestamptz,
-  created_at      timestamptz not null default now(),
-  unique (channel_id, keyword)
-);
-
-create table if not exists mentions (
-  id            bigint generated always as identity primary key,
-  query_id      bigint not null references mention_queries (id) on delete cascade,
-  network       text   not null check (network in ('tg', 'vk')),
-  source_handle text,
-  source_title  text,
-  post_url      text,
-  text          text,
-  author        text,
-  posted_at     timestamptz,
-  notified      boolean not null default false,
-  found_at      timestamptz not null default now(),
-  unique (query_id, network, post_url)
-);
-create index if not exists mentions_query_idx on mentions (query_id, found_at desc);
 
 -- ── Gap-доспрос (невидимая база знаний) ─────────────────────────────────────
 -- ИИ упёрся в пробел знаний (убрал из поста цифру, которой нет в базе; база пуста) —
@@ -904,3 +980,676 @@ create unique index if not exists channels_linkedin_active_uniq
 -- 4) Универсальный id вышедшей записи для OAuth-сетей (video id у YouTube, media id у
 --    Instagram, tweet id у X). tg_message_id/vk_post_id остаются под свои сети.
 alter table posts add column if not exists external_post_id text;
+
+
+-- ============================================================================
+-- Production launch safety additions (2026-08-01).
+-- This file is the bootstrap snapshot for a NEW database. Existing databases are
+-- upgraded only by `npm run db:migrate`; the migration runner records checksums and
+-- never treats this snapshot as an in-place upgrade script.
+-- ============================================================================
+
+-- Account-scoped onboarding completion. Browser storage is only a recovery cache.
+alter table users add column if not exists onboarding_completed_at timestamptz;
+
+-- Password recovery stores only a SHA-256 token hash and consumes a token once.
+create table if not exists password_reset_tokens (
+  id              bigint generated always as identity primary key,
+  user_id         bigint      not null references users (id) on delete cascade,
+  token_hash      text        not null unique,
+  request_ip_hash text,
+  expires_at      timestamptz not null,
+  used_at         timestamptz,
+  created_at      timestamptz not null default now(),
+  check (length(token_hash) = 64)
+);
+create index if not exists password_reset_tokens_user_active_idx
+  on password_reset_tokens (user_id, expires_at desc)
+  where used_at is null;
+
+-- AI quota lifecycle: reserve before a paid call, then commit or release explicitly.
+alter table ai_usage add column if not exists status text not null default 'committed';
+alter table ai_usage add column if not exists reservation_key varchar(128);
+alter table ai_usage add column if not exists reserved_at timestamptz;
+alter table ai_usage add column if not exists expires_at timestamptz;
+alter table ai_usage add column if not exists finalized_at timestamptz;
+alter table ai_usage add column if not exists operation_id uuid;
+alter table ai_usage add column if not exists request_fingerprint varchar(64);
+alter table ai_usage add column if not exists result_payload jsonb;
+alter table ai_usage add column if not exists result_content_type varchar(80);
+update ai_usage
+   set finalized_at = coalesce(finalized_at, created_at)
+ where status = 'committed' and finalized_at is null;
+alter table ai_usage drop constraint if exists ai_usage_status_check;
+alter table ai_usage add constraint ai_usage_status_check
+  check (status in ('reserved', 'committed', 'released', 'expired'));
+alter table ai_usage drop constraint if exists ai_usage_reservation_fields_check;
+alter table ai_usage add constraint ai_usage_reservation_fields_check check (
+  status <> 'reserved'
+  or (reservation_key is not null and reserved_at is not null and expires_at is not null)
+);
+do $$ begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'ai_usage_request_fingerprint_check'
+  ) then
+    alter table ai_usage add constraint ai_usage_request_fingerprint_check
+      check (request_fingerprint is null or request_fingerprint ~ '^[a-f0-9]{64}$');
+  end if;
+end $$;
+create unique index if not exists ai_usage_user_reservation_key_uniq
+  on ai_usage (user_id, reservation_key)
+  where reservation_key is not null;
+create index if not exists ai_usage_active_user_date_idx
+  on ai_usage (user_id, usage_date, status);
+create index if not exists ai_usage_reserved_expiry_idx
+  on ai_usage (expires_at, id)
+  where status = 'reserved';
+create unique index if not exists ai_usage_operation_id_uniq
+  on ai_usage (operation_id)
+  where operation_id is not null;
+
+-- Every Autopilot approval is idempotent and auditable without duplicating post text.
+create table if not exists autopilot_approval_operations (
+  id                bigserial primary key,
+  user_id           bigint       not null references users (id) on delete cascade,
+  channel_id        bigint       not null references channels (id) on delete cascade,
+  plan_id           bigint,
+  idempotency_key   varchar(128) not null,
+  actor_type        text         not null check (actor_type in ('web', 'bot', 'system')),
+  status            text         not null check (status in ('processing', 'completed', 'partial', 'failed')),
+  request_snapshot  jsonb        not null default '{}'::jsonb,
+  result            jsonb,
+  http_status       integer      not null default 200,
+  created_at        timestamptz  not null default now(),
+  completed_at      timestamptz,
+  unique (user_id, idempotency_key)
+);
+create index if not exists autopilot_approval_operations_plan_idx
+  on autopilot_approval_operations (plan_id, created_at desc);
+create index if not exists autopilot_approval_operations_channel_idx
+  on autopilot_approval_operations (channel_id, created_at desc);
+
+-- Reclaimable/fenced Autopilot approval lease plus a transactional per-item outbox.
+alter table autopilot_plan add column if not exists approval_operation_id bigint
+  references autopilot_approval_operations (id) on delete set null;
+alter table autopilot_plan add column if not exists approval_started_at timestamptz;
+alter table autopilot_plan add column if not exists approval_heartbeat_at timestamptz;
+create table if not exists autopilot_schedule_outbox (
+  id            bigint generated always as identity primary key,
+  plan_id       bigint      not null references autopilot_plan (id) on delete cascade,
+  item_index    integer     not null check (item_index >= 0),
+  user_id       bigint      not null references users (id) on delete cascade,
+  channel_id    bigint      not null references channels (id) on delete cascade,
+  operation_id  bigint      references autopilot_approval_operations (id) on delete set null,
+  post_id       bigint      not null unique references posts (id) on delete cascade,
+  scheduled_at  timestamptz not null,
+  status        text        not null default 'pending'
+                             check (status in ('pending', 'enqueued', 'cancelled')),
+  attempts      integer     not null default 0 check (attempts >= 0),
+  last_error    text,
+  created_at    timestamptz not null default now(),
+  updated_at    timestamptz not null default now(),
+  enqueued_at   timestamptz,
+  unique (plan_id, item_index)
+);
+create index if not exists autopilot_schedule_outbox_pending_idx
+  on autopilot_schedule_outbox (updated_at, id) where status = 'pending';
+create index if not exists autopilot_schedule_outbox_operation_idx
+  on autopilot_schedule_outbox (operation_id, id);
+
+-- Publication truth and replay safety. A local send result is not treated as current
+-- external truth until reconciliation has verified the external object.
+alter table posts add column if not exists external_message_id text;
+alter table posts add column if not exists publish_started_at timestamptz;
+alter table posts add column if not exists publish_lease_token text;
+alter table posts add column if not exists last_verification_attempt_at timestamptz;
+alter table posts add column if not exists last_verified_at timestamptz;
+alter table posts add column if not exists verification_state text not null default 'unverified';
+alter table posts add column if not exists verification_result jsonb not null default '{}'::jsonb;
+alter table posts add column if not exists verification_error_code text;
+alter table posts add column if not exists verification_error_reason text;
+alter table posts add column if not exists consecutive_missing_checks integer not null default 0;
+alter table posts add column if not exists idempotency_key text;
+alter table posts add column if not exists request_fingerprint text;
+alter table posts add column if not exists last_retry_key text;
+alter table posts add column if not exists retry_requested_at timestamptz;
+alter table posts drop constraint if exists posts_status_check;
+alter table posts add constraint posts_status_check check (
+  status in (
+    'draft', 'scheduled', 'publishing', 'published_unverified', 'published',
+    'missing', 'deleted_external', 'failed'
+  )
+);
+alter table posts drop constraint if exists posts_verification_state_check;
+alter table posts add constraint posts_verification_state_check check (
+  verification_state in ('unverified', 'verified', 'missing', 'unverifiable')
+);
+update posts
+   set external_message_id = coalesce(
+     external_message_id,
+     tg_message_id::text,
+     vk_post_id::text,
+     external_post_id
+   )
+ where external_message_id is null;
+update posts
+   set status = 'published_unverified',
+       verification_state = 'unverifiable',
+       verification_result = jsonb_build_object(
+         'result', 'legacy_missing_signal',
+         'source', 'legacy_stats_state'
+       )
+ where status = 'published' and stats_state = 'gone';
+update posts p
+   set verification_state = 'verified',
+       last_verified_at = coalesce(
+         (select max(s.collected_at) from post_stats s where s.post_id = p.id),
+         p.published_at
+       ),
+       verification_result = jsonb_build_object('result', 'seen', 'source', 'legacy_stats')
+ where p.status = 'published'
+   and p.stats_state = 'ok'
+   and p.external_message_id is not null;
+update posts
+   set status = 'published_unverified',
+       verification_result = case
+         when verification_result = '{}'::jsonb
+           then jsonb_build_object('result', 'unverified_legacy')
+         else verification_result
+       end
+ where status = 'published' and verification_state <> 'verified';
+with ranked_external_ids as (
+  select id,
+         row_number() over (
+           partition by channel_id, external_message_id
+           order by (stats_state = 'ok') desc nulls last, published_at desc nulls last, id desc
+         ) as external_rank
+    from posts
+   where external_message_id is not null
+)
+update posts p
+   set external_message_id = null,
+       status = case when p.status = 'published' then 'published_unverified' else p.status end,
+       verification_state = 'unverifiable',
+       verification_result = coalesce(p.verification_result, '{}'::jsonb)
+         || jsonb_build_object('result', 'duplicate_legacy_external_id')
+  from ranked_external_ids ranked
+ where p.id = ranked.id and ranked.external_rank > 1;
+create unique index if not exists posts_channel_external_message_uniq
+  on posts (channel_id, external_message_id)
+  where external_message_id is not null;
+create unique index if not exists posts_user_idempotency_key_uniq
+  on posts (user_id, idempotency_key)
+  where idempotency_key is not null;
+create unique index if not exists posts_user_request_fingerprint_uniq
+  on posts (user_id, request_fingerprint)
+  where request_fingerprint is not null;
+create index if not exists posts_verified_published_idx
+  on posts (channel_id, published_at desc)
+  where status = 'published' and verification_state = 'verified';
+
+-- Server-owned editor drafts. `posts` remains the execution queue: one row per
+-- destination; a draft is one editable composition with optimistic concurrency.
+create table if not exists drafts (
+  id            bigint generated always as identity primary key,
+  user_id       bigint      not null references users (id) on delete cascade,
+  text          text        not null default '',
+  media         jsonb,
+  scheduled_at  timestamptz,
+  origin        text        not null default 'manual'
+                            check (origin in ('manual','ai','trend','competitor','autopilot')),
+  source_ref    jsonb,
+  client_key    text        not null,
+  version       bigint      not null default 1 check (version > 0),
+  review_policy_version integer not null default 1 check (review_policy_version = 1),
+  ai_validation jsonb,
+  human_reviewed_version bigint,
+  human_reviewed_at timestamptz,
+  created_at    timestamptz not null default now(),
+  updated_at    timestamptz not null default now(),
+  unique (user_id, client_key)
+);
+create table if not exists draft_destinations (
+  draft_id   bigint not null references drafts (id) on delete cascade,
+  channel_id bigint not null references channels (id) on delete cascade,
+  primary key (draft_id, channel_id)
+);
+create index if not exists drafts_user_updated_idx
+  on drafts (user_id, updated_at desc, id desc);
+create index if not exists drafts_user_scheduled_idx
+  on drafts (user_id, scheduled_at)
+  where scheduled_at is not null;
+create index if not exists draft_destinations_channel_idx
+  on draft_destinations (channel_id, draft_id);
+
+-- Ledger is owned by the migration runner. It is included here so schema inspection
+-- and fresh-database snapshots describe the same operational schema.
+create table if not exists schema_migrations (
+  name       text primary key,
+  checksum   char(64) not null,
+  applied_at timestamptz not null default now()
+);
+
+-- Release safety: an old scheduled timestamp is not perpetual consent to publish.
+alter table posts add column if not exists publication_origin text not null default 'legacy';
+alter table posts add column if not exists next_attempt_at timestamptz;
+alter table posts add column if not exists quarantined_at timestamptz;
+alter table posts add column if not exists quarantine_reason text;
+alter table posts add column if not exists schedule_revision bigint not null default 1;
+
+alter table posts drop constraint if exists posts_publication_origin_check;
+alter table posts add constraint posts_publication_origin_check check (
+  publication_origin in ('manual', 'ai', 'trend', 'competitor', 'autopilot', 'rss', 'retry', 'legacy')
+);
+alter table posts drop constraint if exists posts_schedule_revision_check;
+alter table posts add constraint posts_schedule_revision_check check (schedule_revision > 0);
+
+-- One Composer action is one immutable revision across every destination.
+create table if not exists publication_operations (
+  id               bigint generated always as identity primary key,
+  user_id          bigint not null references users (id) on delete cascade,
+  draft_id         bigint references drafts (id) on delete set null,
+  draft_version    bigint not null check (draft_version > 0),
+  idempotency_key  varchar(128) not null,
+  fingerprint      varchar(64) not null,
+  text             text not null,
+  media            jsonb,
+  scheduled_at     timestamptz not null,
+  timezone         varchar(80) not null default 'UTC',
+  destination_ids  jsonb not null,
+  options           jsonb not null default '{}'::jsonb,
+  status            text not null default 'pending'
+                    check (status in ('pending','partial','queued','published','failed')),
+  created_at        timestamptz not null default now(),
+  updated_at        timestamptz not null default now(),
+  unique (user_id, idempotency_key)
+);
+create unique index if not exists publication_operations_draft_revision_uniq
+  on publication_operations (user_id, draft_id, draft_version) where draft_id is not null;
+create unique index if not exists publication_operations_fingerprint_uniq
+  on publication_operations (user_id, fingerprint);
+alter table posts add column if not exists publication_operation_id bigint
+  references publication_operations (id) on delete set null;
+alter table posts add column if not exists publication_draft_version bigint;
+create unique index if not exists posts_publication_operation_destination_uniq
+  on posts (publication_operation_id, channel_id) where publication_operation_id is not null;
+create table if not exists publication_outbox (
+  id               bigint generated always as identity primary key,
+  operation_id     bigint not null references publication_operations (id) on delete cascade,
+  post_id           bigint not null references posts (id) on delete cascade,
+  status            text not null default 'pending'
+                    check (status in ('pending','dispatching','enqueued','failed')),
+  attempts          integer not null default 0 check (attempts >= 0),
+  next_attempt_at   timestamptz not null default now(),
+  last_error_code   text,
+  lease_token       text,
+  lease_expires_at  timestamptz,
+  enqueued_at       timestamptz,
+  created_at        timestamptz not null default now(),
+  updated_at        timestamptz not null default now(),
+  unique (post_id)
+);
+create index if not exists publication_outbox_due_idx
+  on publication_outbox (next_attempt_at, id) where status in ('pending','failed');
+
+-- Password changes fence concurrent login and reset generations; delivery is async.
+alter table users add column if not exists credential_epoch bigint not null default 1;
+alter table users add column if not exists password_reset_generation bigint not null default 0;
+alter table users drop constraint if exists users_credential_epoch_check;
+alter table users add constraint users_credential_epoch_check check (credential_epoch > 0);
+alter table users drop constraint if exists users_password_reset_generation_check;
+alter table users add constraint users_password_reset_generation_check check (password_reset_generation >= 0);
+alter table sessions add column if not exists credential_epoch bigint;
+update sessions s set credential_epoch = u.credential_epoch
+  from users u where u.id = s.user_id and s.credential_epoch is null;
+alter table sessions alter column credential_epoch set not null;
+create index if not exists sessions_user_epoch_idx on sessions (user_id, credential_epoch);
+alter table password_reset_tokens add column if not exists generation bigint;
+update password_reset_tokens t set generation = greatest(1, u.password_reset_generation)
+  from users u where u.id = t.user_id and t.generation is null;
+alter table password_reset_tokens alter column generation set not null;
+alter table password_reset_tokens drop constraint if exists password_reset_tokens_generation_check;
+alter table password_reset_tokens add constraint password_reset_tokens_generation_check check (generation > 0);
+create unique index if not exists password_reset_tokens_user_generation_uniq
+  on password_reset_tokens (user_id, generation);
+create table if not exists password_reset_outbox (
+  id                bigint generated always as identity primary key,
+  user_id           bigint not null references users (id) on delete cascade,
+  token_id          bigint not null unique references password_reset_tokens (id) on delete cascade,
+  generation        bigint not null,
+  recipient         text not null,
+  token_envelope    text not null,
+  status            text not null default 'pending'
+                    check (status in ('pending','sending','sent','failed','cancelled')),
+  attempts          integer not null default 0 check (attempts >= 0),
+  next_attempt_at   timestamptz not null default now(),
+  lease_token       text,
+  lease_expires_at  timestamptz,
+  last_error_code   text,
+  sent_at           timestamptz,
+  created_at        timestamptz not null default now(),
+  updated_at        timestamptz not null default now()
+);
+create index if not exists password_reset_outbox_due_idx
+  on password_reset_outbox (next_attempt_at, id) where status in ('pending','failed');
+
+create table if not exists publication_parts (
+  id                    bigint generated always as identity primary key,
+  post_id               bigint not null references posts (id) on delete cascade,
+  part_index            integer not null check (part_index >= 0),
+  part_type             text not null check (part_type in ('text','media','media_caption')),
+  external_message_id   text,
+  send_status           text not null default 'pending'
+                        check (send_status in ('pending','sending','sent','failed','unknown')),
+  verification_state    text not null default 'unverified'
+                        check (verification_state in ('unverified','verified','missing','unverifiable')),
+  attempts              integer not null default 0 check (attempts >= 0),
+  last_error_code       text,
+  last_verified_at      timestamptz,
+  created_at            timestamptz not null default now(),
+  updated_at            timestamptz not null default now(),
+  unique (post_id, part_index)
+);
+create index if not exists publication_parts_external_idx
+  on publication_parts (post_id, external_message_id) where external_message_id is not null;
+
+create table if not exists trend_refresh_operations (
+  id               bigint generated always as identity primary key,
+  user_id          bigint not null references users (id) on delete cascade,
+  idempotency_key  varchar(128) not null,
+  fingerprint      varchar(160) not null,
+  status           text not null default 'dispatching'
+                   check (status in ('dispatching','accepted','failed')),
+  queued_count     integer not null default 0 check (queued_count >= 0),
+  last_error_code  text,
+  created_at       timestamptz not null default now(),
+  updated_at       timestamptz not null default now(),
+  unique (user_id, idempotency_key)
+);
+create unique index if not exists trend_refresh_operations_active_fingerprint_uniq
+  on trend_refresh_operations (user_id, fingerprint) where status = 'dispatching';
+alter table posts drop constraint if exists posts_status_check;
+alter table posts add constraint posts_status_check check (
+  status in (
+    'draft', 'scheduled', 'publishing', 'published_unverified', 'published',
+    'missing', 'deleted_external', 'failed_retry', 'quarantined', 'failed'
+  )
+);
+create index if not exists posts_reconciliation_due_idx
+  on posts (status, scheduled_at, next_attempt_at, id)
+  where status in ('scheduled', 'failed_retry');
+create index if not exists posts_quarantined_user_idx
+  on posts (user_id, quarantined_at desc, id desc)
+  where status = 'quarantined';
+
+-- A bulk approval is bound to the exact revision/hash shown to the user.
+alter table autopilot_plan add column if not exists revision bigint not null default 1;
+alter table autopilot_plan drop constraint if exists autopilot_plan_revision_check;
+alter table autopilot_plan add constraint autopilot_plan_revision_check check (revision > 0);
+alter table autopilot_approval_operations add column if not exists plan_revision bigint;
+alter table autopilot_approval_operations add column if not exists preview_hash char(64);
+create table if not exists autopilot_approval_previews (
+  token_hash     char(64) primary key,
+  user_id        bigint not null references users (id) on delete cascade,
+  channel_id     bigint not null references channels (id) on delete cascade,
+  plan_id        bigint not null references autopilot_plan (id) on delete cascade,
+  plan_revision  bigint not null check (plan_revision > 0),
+  preview_hash   char(64) not null,
+  snapshot       jsonb not null,
+  expires_at     timestamptz not null,
+  consumed_at    timestamptz,
+  operation_id   bigint references autopilot_approval_operations (id) on delete set null,
+  created_at     timestamptz not null default now()
+);
+create index if not exists autopilot_approval_previews_expiry_idx
+  on autopilot_approval_previews (expires_at, token_hash)
+  where consumed_at is null;
+create index if not exists autopilot_approval_previews_plan_idx
+  on autopilot_approval_previews (plan_id, plan_revision, created_at desc);
+
+-- Profile editor extends the existing channel-owned content_brief; it does not create
+-- a parallel questionnaire. Email changes require password/provider reauthentication,
+-- a durable one-time token and idempotent outbox delivery.
+alter table content_brief add column if not exists formats text[] not null default '{}';
+alter table content_brief add column if not exists author_role text not null default '';
+
+create table if not exists profile_update_operations (
+  id                  bigint generated always as identity primary key,
+  user_id             bigint not null references users (id) on delete cascade,
+  request_key         varchar(128) not null,
+  request_fingerprint varchar(64) not null,
+  result_payload      jsonb not null,
+  created_at          timestamptz not null default now(),
+  unique (user_id, request_key),
+  check (length(request_fingerprint) = 64),
+  check (jsonb_typeof(result_payload) = 'object')
+);
+
+alter table users add column if not exists email_change_generation bigint not null default 0;
+do $$ begin
+  if not exists (select 1 from pg_constraint where conname = 'users_email_change_generation_check') then
+    alter table users add constraint users_email_change_generation_check
+      check (email_change_generation >= 0);
+  end if;
+end $$;
+
+create table if not exists email_change_requests (
+  id                  bigint generated always as identity primary key,
+  user_id             bigint not null references users (id) on delete cascade,
+  request_key         varchar(128) not null,
+  request_fingerprint varchar(64) not null,
+  target_email        text not null,
+  token_hash          varchar(64) not null unique,
+  generation          bigint not null check (generation > 0),
+  expires_at          timestamptz not null,
+  confirmed_at        timestamptz,
+  cancelled_at        timestamptz,
+  created_at          timestamptz not null default now(),
+  updated_at          timestamptz not null default now(),
+  unique (user_id, request_key),
+  unique (user_id, generation),
+  check (length(request_fingerprint) = 64),
+  check (target_email = lower(target_email)),
+  check (confirmed_at is null or cancelled_at is null)
+);
+create index if not exists email_change_requests_user_active_idx
+  on email_change_requests (user_id, expires_at desc)
+  where confirmed_at is null and cancelled_at is null;
+
+create table if not exists email_change_outbox (
+  id                bigint generated always as identity primary key,
+  user_id           bigint not null references users (id) on delete cascade,
+  request_id        bigint not null unique references email_change_requests (id) on delete cascade,
+  generation        bigint not null,
+  recipient         text not null,
+  token_envelope    text not null,
+  status            text not null default 'pending'
+                    check (status in ('pending','sending','sent','failed','cancelled')),
+  attempts          integer not null default 0 check (attempts >= 0),
+  next_attempt_at   timestamptz not null default now(),
+  lease_token       text,
+  lease_expires_at  timestamptz,
+  last_error_code   text,
+  sent_at           timestamptz,
+  created_at        timestamptz not null default now(),
+  updated_at        timestamptz not null default now()
+);
+create index if not exists email_change_outbox_due_idx
+  on email_change_outbox (next_attempt_at, id)
+  where status in ('pending','failed');
+
+-- Safe, background website analysis. The confirmed domain and immutable request identity
+-- are stored before BullMQ dispatch; a run revision makes late/replayed jobs inert.
+create table if not exists site_analysis_jobs (
+  id                  bigint generated always as identity primary key,
+  user_id             bigint not null references users (id) on delete cascade,
+  request_id          text not null unique,
+  idempotency_key     text not null,
+  request_fingerprint text not null,
+  target_url          text not null,
+  confirmed_domain    text not null,
+  consented_at        timestamptz not null,
+  status              text not null default 'queued',
+  stage               text not null default 'queued',
+  progress            integer not null default 0,
+  progress_detail     text,
+  limits              jsonb not null default '{}'::jsonb,
+  result              jsonb,
+  error_code          text,
+  error_message       text,
+  attempts            integer not null default 0,
+  run_revision        integer not null default 1,
+  last_retry_key      text,
+  queue_confirmed_at  timestamptz,
+  worker_lease_token  text,
+  worker_heartbeat_at timestamptz,
+  created_at          timestamptz not null default now(),
+  updated_at          timestamptz not null default now(),
+  completed_at        timestamptz,
+  constraint site_analysis_jobs_status_check
+    check (status in ('queued', 'crawling', 'analyzing', 'planning', 'ready', 'failed')),
+  constraint site_analysis_jobs_stage_check
+    check (stage in ('queued', 'robots', 'sitemap', 'crawling', 'analyzing', 'planning', 'ready', 'failed')),
+  constraint site_analysis_jobs_progress_check check (progress between 0 and 100),
+  constraint site_analysis_jobs_attempts_check check (attempts >= 0),
+  constraint site_analysis_jobs_run_revision_check check (run_revision > 0),
+  constraint site_analysis_jobs_limits_check check (jsonb_typeof(limits) = 'object'),
+  constraint site_analysis_jobs_result_check check (result is null or jsonb_typeof(result) = 'object'),
+  constraint site_analysis_jobs_user_idempotency_key_key unique (user_id, idempotency_key)
+);
+create index if not exists site_analysis_jobs_user_created_idx
+  on site_analysis_jobs (user_id, created_at desc);
+create index if not exists site_analysis_jobs_queued_idx
+  on site_analysis_jobs (status, updated_at)
+  where status in ('queued', 'crawling', 'analyzing', 'planning');
+
+create table if not exists site_analysis_pages (
+  id               bigint generated always as identity primary key,
+  analysis_id      bigint not null references site_analysis_jobs (id) on delete cascade,
+  url              text not null,
+  http_status      integer not null,
+  title            text,
+  description      text,
+  headings         jsonb not null default '[]'::jsonb,
+  main_content     text,
+  schema_types     text[] not null default '{}',
+  links            jsonb not null default '[]'::jsonb,
+  ctas             jsonb not null default '[]'::jsonb,
+  forms            jsonb not null default '[]'::jsonb,
+  public_comments  jsonb not null default '[]'::jsonb,
+  technical        jsonb not null default '{}'::jsonb,
+  created_at       timestamptz not null default now(),
+  constraint site_analysis_pages_headings_check check (jsonb_typeof(headings) = 'array'),
+  constraint site_analysis_pages_links_check check (jsonb_typeof(links) = 'array'),
+  constraint site_analysis_pages_ctas_check check (jsonb_typeof(ctas) = 'array'),
+  constraint site_analysis_pages_forms_check check (jsonb_typeof(forms) = 'array'),
+  constraint site_analysis_pages_public_comments_check check (jsonb_typeof(public_comments) = 'array'),
+  constraint site_analysis_pages_technical_check check (jsonb_typeof(technical) = 'object'),
+  constraint site_analysis_pages_analysis_id_url_key unique (analysis_id, url)
+);
+create index if not exists site_analysis_pages_analysis_idx
+  on site_analysis_pages (analysis_id, id);
+
+-- Licensed legal-source adapters. Public ConsultantPlus/GARANT RSS entries remain in
+-- the versioned RSS catalog; only encrypted official API credentials are persisted here.
+create table if not exists legal_source_connections (
+  id                     bigint generated always as identity primary key,
+  user_id                bigint not null references users (id) on delete cascade,
+  provider_id            varchar(64) not null,
+  provider_label         varchar(120) not null,
+  integration_kind       varchar(32) not null,
+  token_envelope         text,
+  status                 varchar(24) not null default 'connected',
+  subscription_status    varchar(24) not null default 'unknown',
+  external_account_label varchar(300),
+  token_expires_at       timestamptz,
+  sync_cursor            text,
+  last_sync_at           timestamptz,
+  last_health_at         timestamptz,
+  last_error_code        varchar(80),
+  last_error_message     varchar(500),
+  disconnected_at        timestamptz,
+  created_at             timestamptz not null default now(),
+  updated_at             timestamptz not null default now(),
+  constraint legal_source_connections_user_provider_key unique (user_id, provider_id),
+  constraint legal_source_connections_provider_id_check
+    check (provider_id ~ '^[a-z0-9][a-z0-9_-]{1,62}$'),
+  constraint legal_source_connections_kind_check
+    check (integration_kind in ('official_api','vendor_export','user_file','licensed_integration')),
+  constraint legal_source_connections_status_check
+    check (status in ('connected','invalid','expired','disconnected')),
+  constraint legal_source_connections_subscription_check
+    check (subscription_status in ('active','trial','expired','inactive','unknown')),
+  constraint legal_source_connections_token_check
+    check (
+      status = 'disconnected'
+      or integration_kind in ('vendor_export','user_file')
+      or token_envelope is not null
+    )
+);
+create index if not exists legal_source_connections_user_idx
+  on legal_source_connections (user_id, updated_at desc);
+
+create table if not exists legal_source_operations (
+  id                  bigint generated always as identity primary key,
+  user_id             bigint not null references users (id) on delete cascade,
+  connection_id       bigint references legal_source_connections (id) on delete set null,
+  provider_id         varchar(64) not null,
+  operation           varchar(24) not null,
+  request_key         varchar(128) not null,
+  request_fingerprint char(64) not null,
+  status              varchar(24) not null default 'dispatching',
+  lease_token         uuid,
+  lease_expires_at    timestamptz,
+  result_payload      jsonb,
+  http_status         smallint,
+  last_error_code     varchar(80),
+  created_at          timestamptz not null default now(),
+  updated_at          timestamptz not null default now(),
+  constraint legal_source_operations_user_request_key unique (user_id, request_key),
+  constraint legal_source_operations_operation_check
+    check (operation in ('connect','validate','sync','health','disconnect')),
+  constraint legal_source_operations_status_check
+    check (status in ('dispatching','succeeded','failed')),
+  constraint legal_source_operations_fingerprint_check
+    check (request_fingerprint ~ '^[a-f0-9]{64}$'),
+  constraint legal_source_operations_result_check
+    check (
+      (status = 'dispatching' and result_payload is null and http_status is null)
+      or (status <> 'dispatching' and jsonb_typeof(result_payload) = 'object' and http_status between 200 and 599)
+    )
+);
+create index if not exists legal_source_operations_dispatch_idx
+  on legal_source_operations (lease_expires_at, id) where status = 'dispatching';
+
+create table if not exists legal_source_fragments (
+  id                    bigint generated always as identity primary key,
+  user_id               bigint not null references users (id) on delete cascade,
+  connection_id         bigint references legal_source_connections (id) on delete cascade,
+  provider_id           varchar(64) not null,
+  external_id           varchar(300) not null,
+  fragment_index        integer not null,
+  legal_type            varchar(24) not null,
+  title                 varchar(1000) not null,
+  content               text not null,
+  source_name           varchar(300) not null,
+  source_date           timestamptz not null,
+  currentness           varchar(24) not null,
+  source_url            text not null,
+  relevant_at           timestamptz,
+  metadata              jsonb not null default '{}'::jsonb,
+  synced_at             timestamptz not null default now(),
+  constraint legal_source_fragments_identity_key
+    unique (user_id, provider_id, external_id, fragment_index),
+  constraint legal_source_fragments_index_check check (fragment_index >= 0),
+  constraint legal_source_fragments_type_check
+    check (legal_type in ('law','case','commentary','document')),
+  constraint legal_source_fragments_currentness_check
+    check (currentness in ('current','superseded','unknown')),
+  constraint legal_source_fragments_content_check check (length(btrim(content)) > 0),
+  constraint legal_source_fragments_source_url_check check (source_url ~ '^https://')
+);
+create index if not exists legal_source_fragments_lookup_idx
+  on legal_source_fragments (user_id, legal_type, source_date desc, id desc);
+create index if not exists legal_source_fragments_connection_idx
+  on legal_source_fragments (connection_id, synced_at desc);

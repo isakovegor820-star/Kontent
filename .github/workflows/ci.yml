@@ -12,16 +12,44 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: aurora_migration_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d aurora_migration_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6380:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     # Заглушки для сборки. Значения заведомо фейковые — на сборке живые сервисы
     # не поднимаются (getPool/getRedis вызываются только внутри запросов).
     env:
       DATABASE_URL: "postgres://user:pass@localhost:5432/db"
-      REDIS_URL: "redis://127.0.0.1:6379"
+      REDIS_URL: "redis://127.0.0.1:6380"
       TG_BOT_TOKEN: "0000000000:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
       TG_BOT_USERNAME: "aurora_test_bot"
       TG_CHAT_ID: "-1000000000000"
       AI_API_KEY: "test-key"
       AI_DAILY_LIMIT: "30"
+      MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_migration_test"
+      E2E_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_e2e_real"
+      E2E_REDIS_URL: "redis://127.0.0.1:6380/15"
+      MIGRATION_TEST_REDIS_URL: "redis://127.0.0.1:6380/14"
       # Мастер-ключ шифрования токенов сообществ (VK). В CI — заглушка: тесты
       # token-crypto выставляют своё значение, а на сборке шифрование не вызывается.
       TOKENS_MASTER_KEY: "ci-test-master-key-not-for-prod"
@@ -42,11 +70,96 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Create disposable integration databases
+        run: |
+          for database in \
+            aurora_e2e_real \
+            aurora_schema_gate_test \
+            aurora_publication_gate_test \
+            aurora_autopilot_cas_test \
+            aurora_semantic_gate_test \
+            aurora_ai_gate_test \
+            aurora_password_gate_test
+          do
+            createdb -h localhost -U postgres "$database"
+          done
+        env:
+          PGPASSWORD: postgres
+
       - name: Lint
         run: npm run lint
 
-      - name: Build
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Reject focused or skipped tests
+        run: npm run test:focus
+
+      - name: Check additive migrations
+        run: npm run test:migrations
+
+      - name: Test migrations on legacy PostgreSQL fixtures
+        run: npm run test:migrations:integration
+
+      - name: Test schema readiness and pre-consumer worker gate
+        run: npm run test:schema-readiness:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_schema_gate_test"
+
+      - name: Test overdue publication quarantine
+        run: npm run test:publication-quarantine:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_publication_gate_test"
+
+      - name: Test Autopilot revision-bound confirmation
+        run: npm run test:autopilot-confirmation:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_autopilot_cas_test"
+
+      - name: Test semantic publication gate
+        run: npm run test:semantic-publication:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_semantic_gate_test"
+
+      - name: Test common AI orchestration and accounting
+        run: npm run test:ai-orchestration:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_ai_gate_test"
+
+      - name: Test immutable publication operations and outbox
+        run: npm run test:publication-operation:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_publication_gate_test"
+
+      - name: Test password recovery races and delivery outbox
+        run: npm run test:password-recovery:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_password_gate_test"
+
+      - name: Production build 1
         run: npm run build
+
+      - name: Production build 2
+        run: npm run build
+
+      - name: Check worker syntax
+        run: |
+          node --check worker.mjs
+          find worker -name '*.mjs' -print0 | xargs -0 -n1 node --check
 
       - name: Test
         run: npm test
+
+      - name: Install deterministic browser
+        run: npx playwright-core install --with-deps chromium
+
+      - name: Real critical E2E
+        run: npm run test:e2e:real
+
+      - name: Upload real-E2E failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-real-failure
+          path: test-results/e2e-real
+          if-no-files-found: ignore

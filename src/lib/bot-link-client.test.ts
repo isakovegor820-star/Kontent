@@ -1,0 +1,32 @@
+import { describe, expect, it } from "vitest";
+import { parseBotLinkStatusResponse, requireBotUnlinkSuccess } from "./bot-link-client";
+
+describe("bot link client responses", () => {
+  it("accepts only a successful, explicit link status", async () => {
+    await expect(
+      parseBotLinkStatusResponse(
+        Response.json({ linked: true, bot: "aurora_bot" }, { status: 200 }),
+      ),
+    ).resolves.toEqual({ linked: true, bot: "aurora_bot" });
+
+    await expect(
+      parseBotLinkStatusResponse(Response.json({ error: "server" }, { status: 500 })),
+    ).rejects.toThrow("bot_link_status_unavailable");
+    await expect(
+      parseBotLinkStatusResponse(Response.json({ linked: false }, { status: 500 })),
+    ).rejects.toThrow("bot_link_status_unavailable");
+    await expect(
+      parseBotLinkStatusResponse(Response.json({ linked: "false" }, { status: 200 })),
+    ).rejects.toThrow("bot_link_status_unavailable");
+  });
+
+  it("confirms unlinking only from an HTTP success with ok true", async () => {
+    await expect(requireBotUnlinkSuccess(Response.json({ ok: true }))).resolves.toBeUndefined();
+    await expect(
+      requireBotUnlinkSuccess(Response.json({ ok: false, error: "server" }, { status: 500 })),
+    ).rejects.toThrow("bot_unlink_failed");
+    await expect(
+      requireBotUnlinkSuccess(Response.json({ ok: false }, { status: 200 })),
+    ).rejects.toThrow("bot_unlink_failed");
+  });
+});

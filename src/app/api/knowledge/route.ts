@@ -12,6 +12,8 @@ import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
 import { getStatsQueue } from "@/lib/queue";
 import { resolveChannel } from "@/lib/autopilot";
+import { hasTrustedMutationOrigin } from "@/lib/request-origin";
+import { channelAiContextFor } from "@/lib/ai-usage";
 
 export const runtime = "nodejs";
 
@@ -30,13 +32,23 @@ interface SourceRow {
 }
 
 export async function GET(req: NextRequest) {
-  const user = await getSessionUser(req);
-  if (!user) return NextResponse.json({ sources: [], chunks: 0 });
-
   try {
+    const user = await getSessionUser(req);
+    if (!user) {
+      return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
+    }
     const pool = getPool();
     const channelId = await resolveChannel(user.id, Number(req.nextUrl.searchParams.get("channel")) || null);
-    if (!channelId) return NextResponse.json({ sources: [], chunks: 0, facts: 0 });
+    if (!channelId) {
+      return NextResponse.json({
+        ok: true,
+        sources: [],
+        facts: 0,
+        voice: 0,
+        channelId: null,
+        effectiveProfile: {},
+      });
+    }
 
     const sources = (
       await pool.query<SourceRow>(
@@ -60,20 +72,28 @@ export async function GET(req: NextRequest) {
         [channelId],
       )
     ).rows[0];
+    const context = await channelAiContextFor(user.id, channelId, 10, pool);
 
     return NextResponse.json({
+      ok: true,
       sources: sources.map((s) => ({ ...s, id: Number(s.id) })),
       facts: counts.facts,
       voice: counts.voice,
       channelId,
+      effectiveProfile: context?.profileProvenance ?? {},
     });
   } catch (err) {
-    console.error("[/api/knowledge] GET", err);
-    return NextResponse.json({ sources: [], facts: 0, voice: 0 });
+    console.error("[/api/knowledge] GET", {
+      errorName: err instanceof Error ? err.name : "Error",
+    });
+    return NextResponse.json({ ok: false, error: "unavailable" }, { status: 503 });
   }
 }
 
 export async function POST(req: NextRequest) {
+  if (!hasTrustedMutationOrigin(req)) {
+    return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
+  }
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
 
@@ -129,6 +149,9 @@ export async function POST(req: NextRequest) {
 
 /** Убрать источник целиком — куски уедут каскадом. */
 export async function DELETE(req: NextRequest) {
+  if (!hasTrustedMutationOrigin(req)) {
+    return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
+  }
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
 

@@ -10,6 +10,7 @@ import { getSessionUser } from "@/lib/session";
 import { getStatsQueue } from "@/lib/queue";
 import { resolveChannel } from "@/lib/autopilot";
 import { MAX_COMPETITORS } from "@/lib/competitors";
+import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 
 export const runtime = "nodejs";
 
@@ -81,6 +82,9 @@ export async function GET(req: NextRequest) {
 
 /** Запустить поиск сейчас. Сам поиск делает воркер — он ходит наружу, не роут. */
 export async function POST(req: NextRequest) {
+  if (!hasTrustedMutationOrigin(req)) {
+    return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
+  }
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
 
@@ -107,6 +111,9 @@ export async function POST(req: NextRequest) {
 
 /** Принять находку (добавить в конкуренты) или отклонить. */
 export async function PATCH(req: NextRequest) {
+  if (!hasTrustedMutationOrigin(req)) {
+    return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
+  }
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
 

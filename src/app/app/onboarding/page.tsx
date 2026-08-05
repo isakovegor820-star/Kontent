@@ -13,17 +13,15 @@ import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
   ArrowLeft,
   ArrowRight,
-  BookOpen,
   Check,
   Clock,
-  Laugh,
   Plus,
   Radar,
-  Smile,
-  Sparkles,
   Timer,
-  Zap,
+  TriangleAlert,
 } from "lucide-react";
+import { ChannelPicker, useChannelChoice } from "@/components/app/channel-picker";
+import { Wordmark } from "@/components/brand";
 import { Button } from "@/components/ui/button";
 import {
   Badge,
@@ -35,7 +33,7 @@ import {
   VkIcon,
 } from "@/components/ui/primitives";
 import { useStore } from "@/lib/store";
-import type { Channel, Network, RealChannel } from "@/lib/types";
+import type { Network, RealChannel } from "@/lib/types";
 import {
   isMeaningfulProfile,
   normalizeProfile,
@@ -44,58 +42,23 @@ import {
 } from "@/lib/channel-profile.mjs";
 import { cn, initials, weekdayShort } from "@/lib/utils";
 import { RUBRICS } from "@/lib/brief";
+import {
+  onboardingRecoveryKey,
+  parseOnboardingRecovery,
+  serializeOnboardingRecovery,
+  type OnboardingQuizAnswers,
+} from "@/lib/onboarding-recovery";
 
 const EASE = [0.22, 1, 0.36, 1] as const;
 const TOTAL = 5;
 
 type StepNo = 1 | 2 | 3 | 4 | 5;
-type IconType = React.ComponentType<{ className?: string; strokeWidth?: number }>;
-
-/* --------------------------------------------------------------------- ТОНЫ */
-// Пользователь выбирает не абстракцию, а конкретный текст, который увидит в канале:
-// под каждым тоном — живой пример. Это и есть «наглядно» из ТЗ.
-
-type ToneId = "friendly" | "expert" | "humor" | "short";
-
-const TONES: { id: ToneId; label: string; match: string; Icon: IconType; preview: string }[] = [
-  {
-    id: "friendly",
-    label: "Дружелюбный, на «ты»",
-    match: "дружелюб",
-    Icon: Smile,
-    preview:
-      "Если кофе горчит — дело почти всегда в помоле, а не в зёрнах. Возьми на деление крупнее и завари ещё раз: разница слышна с первого глотка. Расскажешь потом, получилось?",
-  },
-  {
-    id: "expert",
-    label: "Экспертный и спокойный",
-    match: "эксперт",
-    Icon: BookOpen,
-    preview:
-      "Горечь в чашке — почти всегда переэкстракция: помол слишком мелкий, вода забирает лишнее. Решение простое: одно деление крупнее и пролив короче на двадцать секунд. Проверено на трёх сортах.",
-  },
-  {
-    id: "humor",
-    label: "С юмором и самоиронией",
-    match: "юмор",
-    Icon: Laugh,
-    preview:
-      "Полгода я винил зёрна, воду, бариста и фазу луны. Виноват был помол. Одно деление крупнее — и кофе перестал горчить, а я перестал считать себя экспертом.",
-  },
-  {
-    id: "short",
-    label: "Короткий и по делу",
-    match: "коротк",
-    Icon: Zap,
-    preview:
-      "Кофе горчит — помол слишком мелкий.\nСделай на деление крупнее.\nЗавари снова: горечи не будет.",
-  },
-];
-
-function matchTone(saved: string): ToneId {
-  const low = saved.toLowerCase();
-  return TONES.find((t) => low.includes(t.match))?.id ?? "friendly";
-}
+const TONES = [
+  { id: "friendly", label: "Дружелюбный, на «ты»" },
+  { id: "expert", label: "Экспертный и спокойный" },
+  { id: "humor", label: "С юмором и самоиронией" },
+  { id: "short", label: "Короткий и по делу" },
+] as const;
 
 /* ---------------------------------------------------------------- ССЫЛКИ */
 
@@ -198,12 +161,7 @@ function StepFooter({
 // Быстрые вопросы: ниша, цель, аудитория, форматы. Ответы уходят в content_brief
 // (source='quiz') после подключения канала — автопилот сразу знает, о чём писать.
 
-export interface QuizAnswers {
-  niche: string;
-  goal: string;
-  audience: string;
-  rubrics: string[];
-}
+export type QuizAnswers = OnboardingQuizAnswers;
 
 function StepQuiz({
   answers,
@@ -320,10 +278,10 @@ function StepQuiz({
 // пост → вот так он уйдёт сам». Появляются по очереди, третий тихо пульсирует:
 // именно там происходит то, ради чего человек пришёл.
 
-function Flow({ channel }: { channel?: Channel }) {
+function Flow({ channel }: { channel?: RealChannel }) {
   const reduced = useReducedMotion();
 
-  const name = channel?.name ?? "Твой канал";
+  const name = channel?.title ?? channel?.handle ?? "Твой канал";
   const handle = channel?.handle ?? "@твой_канал";
 
   const blocks: { caption: string; done?: boolean; body: React.ReactNode }[] = [
@@ -506,15 +464,24 @@ function RealChannelRow({ channel }: { channel: RealChannel }) {
   );
 }
 
-function StepConnect({ onNext }: { onNext: () => void }) {
+function StepConnect({ onNext }: { onNext: () => void | Promise<void> }) {
   const s = useStore();
   const [network, setNetwork] = useState<Network>("tg");
   const [handle, setHandle] = useState("");
   const [vkToken, setVkToken] = useState("");
   const [connecting, setConnecting] = useState(false);
+  const [advancing, setAdvancing] = useState(false);
   const [error, setError] = useState<string>();
 
-  const channels = s.realChannels;
+  const channels = s.realChannels.filter((channel) => channel.is_active);
+  const hasTelegram = channels.some((channel) => channel.network === "tg");
+
+  async function continueOnboarding() {
+    if (advancing || !hasTelegram) return;
+    setAdvancing(true);
+    await onNext();
+    setAdvancing(false);
+  }
 
   async function connect(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -537,15 +504,8 @@ function StepConnect({ onNext }: { onNext: () => void }) {
       setHandle("");
       setVkToken("");
 
-      // Автозаполнение базы знаний: читаем публичные посты канала как образец стиля.
-      // Fire-and-forget — не блокируем онбординг, индексация идёт в воркере.
-      if (network === "tg") {
-        fetch("/api/knowledge/read-channel", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({}),
-        }).catch(() => {});
-      }
+      // Профиль будет извлечён на следующем шаге с явным channelId. Не запускаем
+      // неадресную индексацию: при нескольких каналах она могла выбрать чужой канал.
     } else {
       setError(network === "vk" ? connectVkError(res.error) : connectError(res.error));
     }
@@ -566,7 +526,7 @@ function StepConnect({ onNext }: { onNext: () => void }) {
       <div className="mt-7">
         <SubHead>Как это работает</SubHead>
         <div className="mt-3">
-          <Flow channel={s.channels[0]} />
+          <Flow channel={channels[0]} />
         </div>
       </div>
 
@@ -673,14 +633,14 @@ function StepConnect({ onNext }: { onNext: () => void }) {
       </form>
 
       <StepFooter>
-        <Button variant="brand" size="lg" onClick={onNext} disabled={channels.length === 0}>
+        <Button variant="brand" size="lg" onClick={() => void continueOnboarding()} loading={advancing} disabled={!hasTelegram}>
           Дальше
           <ArrowRight className="h-4 w-4" strokeWidth={2.5} aria-hidden />
         </Button>
       </StepFooter>
-      {channels.length === 0 && (
+      {!hasTelegram && (
         <p className="mt-3 text-center text-[13px] text-text-3">
-          Подключи хотя бы один канал — без него постить некуда.
+          Для профиля и безопасного автопилота подключи Telegram-канал.
         </p>
       )}
     </>
@@ -701,17 +661,17 @@ const GOAL_CHIPS = ["Продажи", "Личный бренд", "Трафик �
 
 function StepProfile({
   quiz,
+  channelId,
   onBack,
   onNext,
 }: {
   quiz: QuizAnswers;
+  channelId: number | null;
   onBack: () => void;
   onNext: () => void;
 }) {
   const s = useStore();
   const uid = useId();
-  const channelId = s.realChannels[0]?.id ?? null;
-
   const [phase, setPhase] = useState<"loading" | "confirm" | "interview">("loading");
   const [edit, setEdit] = useState<ProfileEdit>({
     niche: "",
@@ -783,16 +743,31 @@ function StepProfile({
     if (saving) return;
     setSaving(true);
     const profile = normalizeProfile(edit);
-    if (channelId && isMeaningfulProfile(profile)) {
-      try {
-        await fetch("/api/knowledge/extract-profile", {
-          method: "PUT",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ channelId, profile }),
-        });
-      } catch {
-        /* не блокируем онбординг — профиль можно пополнить позже в боте */
-      }
+    if (!channelId || !isMeaningfulProfile(profile)) {
+      s.toast({
+        kind: "danger",
+        title: "Профиль не сохранён",
+        body: channelId ? "Добавь хотя бы нишу или тему канала." : "Выбери активный Telegram-канал.",
+      });
+      setSaving(false);
+      return;
+    }
+    try {
+      const response = await fetch("/api/knowledge/extract-profile", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ channelId, profile }),
+      });
+      const body = (await response.json().catch(() => null)) as { ok?: boolean } | null;
+      if (!response.ok || !body?.ok) throw new Error("profile_save_failed");
+    } catch {
+      s.toast({
+        kind: "danger",
+        title: "Профиль не сохранён",
+        body: "Сервер не подтвердил сохранение. Ответы остались на экране — повтори.",
+      });
+      setSaving(false);
+      return;
     }
     setSaving(false);
     onNext();
@@ -1127,32 +1102,35 @@ function StepCompetitors({
   );
 }
 
-/* ------------------------------------------------------ ШАГ 5: ТОН И НИША */
+/* ------------------------------------------------------ ШАГ 5: ЗАВЕРШЕНИЕ */
 
-function StepTone({
-  niche,
-  onNiche,
-  tone,
-  onTone,
+function StepFinish({
+  quiz,
+  userId,
   onBack,
 }: {
-  niche: string;
-  onNiche: (v: string) => void;
-  tone: ToneId;
-  onTone: (v: ToneId) => void;
+  quiz: QuizAnswers;
+  userId: number;
   onBack: () => void;
 }) {
   const s = useStore();
   const router = useRouter();
-  const uid = useId();
-  const nicheId = `${uid}-niche`;
-  const toneId = `${uid}-tone`;
+  const [saving, setSaving] = useState(false);
 
-  const active = TONES.find((t) => t.id === tone) ?? TONES[0];
-
-  const finish = () => {
-    // Пустое поле не затираем — пусть ИИ работает с тем, что уже знает
-    s.finishOnboarding({ niche: niche.trim() || s.settings.niche, tone: active.label });
+  const finish = async () => {
+    if (saving) return;
+    setSaving(true);
+    const completed = await s.finishOnboarding();
+    if (!completed) {
+      setSaving(false);
+      s.toast({
+        kind: "danger",
+        title: "Онбординг не завершён",
+        body: "Сервер не подтвердил результат. Ответы сохранены в этой учётной записи браузера — повтори.",
+      });
+      return;
+    }
+    clearQuizLS(userId);
     s.toast({
       kind: "success",
       title: "Всё готово",
@@ -1163,87 +1141,18 @@ function StepTone({
 
   return (
     <>
-      <StepHead time="меньше минуты" title="О чём твой контент">
-        Это нужно ИИ, чтобы писать твоим голосом, а не как робот.
+      <StepHead time="готово" title="Профиль канала сохранён">
+        Проверь короткое резюме. Аврора завершит настройку только после подтверждения сервера.
       </StepHead>
 
-      <div className="mt-7">
-        <Field
-          label="Твоя ниша"
-          htmlFor={nicheId}
-          hint="Одной строкой: о чём канал и для кого. Чем конкретнее — тем точнее ИИ."
-        >
-          <Input
-            id={nicheId}
-            value={niche}
-            onChange={(e) => onNiche(e.target.value)}
-            placeholder="Например: кофе, обжарка, домашнее заваривание"
-            autoComplete="off"
-          />
-        </Field>
-      </div>
-
-      <div className="mt-6">
-        <p id={toneId} className="text-[13px] font-semibold text-text-2">
-          Каким тоном писать
-        </p>
-        <div
-          role="radiogroup"
-          aria-labelledby={toneId}
-          className="mt-3 grid gap-2 sm:grid-cols-2"
-        >
-          {TONES.map((t) => {
-            const selected = t.id === tone;
-            return (
-              <button
-                key={t.id}
-                type="button"
-                role="radio"
-                aria-checked={selected}
-                onClick={() => onTone(t.id)}
-                className={cn(
-                  "flex min-h-[52px] cursor-pointer items-center gap-2.5 rounded-sm border px-4 py-3",
-                  "text-left text-[15px] font-semibold transition-colors duration-200 ease-[var(--ease-soft)]",
-                  selected
-                    ? "border-brand bg-info-soft text-text"
-                    : "border-line bg-surface text-text-2 hover:border-line-strong hover:text-text",
-                )}
-              >
-                <t.Icon
-                  className={cn("h-[18px] w-[18px] shrink-0", selected ? "text-brand" : "text-text-3")}
-                  strokeWidth={1.75}
-                />
-                <span className="min-w-0">{t.label}</span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Момент ценности: человек сразу видит СВОЙ будущий пост, а не обещание */}
-      <div className="mt-6 rounded-md border border-line bg-surface-inset p-4">
-        <p className="flex items-center gap-2 text-[13px] font-semibold text-text-2">
-          <Sparkles className="h-4 w-4 text-brand" strokeWidth={2} aria-hidden />
-          Так ИИ напишет твой первый пост
-        </p>
-        <div className="mt-3 min-h-[84px]">
-          <AnimatePresence mode="wait" initial={false}>
-            <motion.p
-              key={active.id}
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.22, ease: EASE }}
-              className="text-[15px] leading-relaxed whitespace-pre-line text-text"
-            >
-              {active.preview}
-            </motion.p>
-          </AnimatePresence>
-        </div>
+      <div className="mt-7 grid gap-3 rounded-md border border-line bg-surface-inset p-5 text-[14px] leading-relaxed">
+        <p><span className="font-semibold text-text">Ниша:</span> <span className="text-text-2">{quiz.niche || "не указана"}</span></p>
+        <p><span className="font-semibold text-text">Аудитория:</span> <span className="text-text-2">{quiz.audience || "не указана"}</span></p>
+        <p><span className="font-semibold text-text">Цель:</span> <span className="text-text-2">{quiz.goal || "не указана"}</span></p>
       </div>
 
       <StepFooter onBack={onBack}>
-        <Button variant="brand" size="lg" onClick={finish}>
+        <Button variant="brand" size="lg" onClick={() => void finish()} loading={saving}>
           Готово — в календарь
           <ArrowRight className="h-4 w-4" strokeWidth={2.5} aria-hidden />
         </Button>
@@ -1255,52 +1164,92 @@ function StepTone({
 /* -------------------------------------------------------------- МАСТЕР */
 
 // Ключ localStorage для сохранения прогресса quiz между визитами.
-const QUIZ_LS_KEY = "aurora-onboarding-quiz-v2";
-
-function loadQuizFromLS(): { quiz: QuizAnswers; step: StepNo } | null {
+function loadQuizFromLS(
+  userId: number,
+): { quiz: QuizAnswers; step: StepNo; channelId: number | null } | null {
   try {
-    const raw = localStorage.getItem(QUIZ_LS_KEY);
-    if (!raw) return null;
-    const d = JSON.parse(raw) as { quiz?: QuizAnswers; step?: number };
-    if (!d.quiz || typeof d.step !== "number") return null;
-    return { quiz: d.quiz, step: Math.min(Math.max(d.step, 1), 5) as StepNo };
+    const recovered = parseOnboardingRecovery(localStorage.getItem(onboardingRecoveryKey(userId)));
+    if (!recovered) return null;
+    return {
+      quiz: recovered.quiz,
+      step: recovered.step as StepNo,
+      channelId: recovered.channelId,
+    };
   } catch { return null; }
 }
 
-function saveQuizToLS(quiz: QuizAnswers, step: StepNo) {
-  try { localStorage.setItem(QUIZ_LS_KEY, JSON.stringify({ quiz, step })); } catch { /* full */ }
+function saveQuizToLS(
+  userId: number,
+  quiz: QuizAnswers,
+  step: StepNo,
+  channelId: number | null,
+) {
+  try {
+    localStorage.setItem(
+      onboardingRecoveryKey(userId),
+      serializeOnboardingRecovery({ quiz, step, channelId }),
+    );
+  } catch { /* full */ }
 }
 
-function clearQuizLS() {
-  try { localStorage.removeItem(QUIZ_LS_KEY); } catch { /* ok */ }
+function clearQuizLS(userId: number) {
+  try { localStorage.removeItem(onboardingRecoveryKey(userId)); } catch { /* ok */ }
 }
 
-function Wizard() {
+function Wizard({ userId }: { userId: number }) {
   const s = useStore();
   const reduced = useReducedMotion();
 
   // Восстанавливаем прогресс из localStorage: если юзер закрыл вкладку между шагами,
   // ответы не потеряются.
-  const [restored] = useState(() => loadQuizFromLS());
+  const [restored] = useState(() => loadQuizFromLS(userId));
+  const [pickedChannelId, setPickedChannelId] = useState<number | null>(
+    () => restored?.channelId ?? null,
+  );
+  const [lockedChannelId, setLockedChannelId] = useState<number | null>(
+    () => (restored && restored.step >= 3 ? restored.channelId : null),
+  );
+  const { tgChannels, channelId } = useChannelChoice(s.realChannels, pickedChannelId);
+  const effectiveChannelId = lockedChannelId ?? channelId;
   const [step, setStepRaw] = useState<StepNo>(() => restored?.step ?? 1);
-  const [niche, setNiche] = useState(() => s.settings.niche);
-  const [tone, setTone] = useState<ToneId>(() => matchTone(s.settings.tone));
   const [quiz, setQuizRaw] = useState<QuizAnswers>(() => restored?.quiz ?? { niche: "", goal: "", audience: "", rubrics: [] });
 
+  const lockedChannelExists =
+    lockedChannelId == null || tgChannels.some((channel) => channel.id === lockedChannelId);
+  useEffect(() => {
+    if (!s.realReady || s.realError || lockedChannelExists || step < 3) return;
+    // Канал из recovery-кэша отключён или больше не принадлежит аккаунту. Возвращаемся
+    // к явному выбору и не переносим старый бриф/профиль на первый попавшийся канал.
+    const reset = window.setTimeout(() => {
+      setLockedChannelId(null);
+      setStepRaw(2);
+      saveQuizToLS(userId, quiz, 2, channelId);
+    }, 0);
+    return () => window.clearTimeout(reset);
+  }, [channelId, lockedChannelExists, quiz, s.realError, s.realReady, step, userId]);
+
   // Обёртки: сохраняем в localStorage при каждом изменении.
-  const setStep = (v: StepNo) => { setStepRaw(v); saveQuizToLS(quiz, v); };
-  const setQuiz = (v: QuizAnswers) => { setQuizRaw(v); saveQuizToLS(v, step); };
+  const setStep = (v: StepNo) => {
+    setStepRaw(v);
+    saveQuizToLS(userId, quiz, v, effectiveChannelId);
+  };
+  const setQuiz = (v: QuizAnswers) => {
+    setQuizRaw(v);
+    saveQuizToLS(userId, v, step, effectiveChannelId);
+  };
 
   // Сохраняем бриф (source='quiz') после подключения канала.
   const saveBrief = async () => {
-    const ch = s.realChannels[0];
-    if (!ch) return;
+    if (!effectiveChannelId) {
+      s.toast({ kind: "danger", title: "Канал не выбран", body: "Выбери активный Telegram-канал." });
+      return false;
+    }
     try {
-      await fetch("/api/autopilot/brief", {
+      const response = await fetch("/api/autopilot/brief", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          channelId: ch.id,
+          channelId: effectiveChannelId,
           niche: quiz.niche.trim(),
           audience: quiz.audience.trim(),
           goal: quiz.goal.trim(),
@@ -1309,10 +1258,16 @@ function Wizard() {
           source: "quiz",
         }),
       });
-      // Бриф сохранён — чистим localStorage, quiz больше не нужен.
-      clearQuizLS();
+      const body = (await response.json().catch(() => null)) as { ok?: boolean } | null;
+      if (!response.ok || !body?.ok) throw new Error("brief_save_failed");
+      return true;
     } catch {
-      /* не критично — заполнят потом в настройках автопилота */
+      s.toast({
+        kind: "danger",
+        title: "Бриф не сохранён",
+        body: "Сервер не подтвердил данные. Ответы остались на этом шаге — повтори.",
+      });
+      return false;
     }
   };
 
@@ -1344,6 +1299,19 @@ function Wizard() {
         Шаг {step} из {TOTAL}
       </p>
 
+      {step === 2 && (
+        <ChannelPicker
+          channels={tgChannels}
+          value={effectiveChannelId}
+          onChange={(nextChannelId) => {
+            setPickedChannelId(nextChannelId);
+            saveQuizToLS(userId, quiz, step, nextChannelId);
+          }}
+          label="Канал для профиля и автопилота"
+          className="mt-5 rounded-md border border-line bg-surface p-4"
+        />
+      )}
+
       <GlassCard
         strong
         className="mt-6 flex min-h-[520px] w-full flex-col overflow-hidden rounded-xl p-6 sm:p-8"
@@ -1362,14 +1330,24 @@ function Wizard() {
             )}
             {step === 2 && (
               <StepConnect
-                onNext={() => {
-                  saveBrief();
-                  setStep(3);
+                onNext={async () => {
+                  if (await saveBrief()) {
+                    setLockedChannelId(effectiveChannelId);
+                    setStep(3);
+                  }
                 }}
               />
             )}
             {step === 3 && (
-              <StepProfile quiz={quiz} onBack={() => setStep(2)} onNext={() => setStep(4)} />
+              <StepProfile
+                quiz={quiz}
+                channelId={effectiveChannelId}
+                onBack={() => {
+                  setLockedChannelId(null);
+                  setStep(2);
+                }}
+                onNext={() => setStep(4)}
+              />
             )}
             {step === 4 && (
               <StepCompetitors
@@ -1379,11 +1357,9 @@ function Wizard() {
               />
             )}
             {step === 5 && (
-              <StepTone
-                niche={niche}
-                onNiche={setNiche}
-                tone={tone}
-                onTone={setTone}
+              <StepFinish
+                quiz={quiz}
+                userId={userId}
                 onBack={() => setStep(4)}
               />
             )}
@@ -1439,6 +1415,17 @@ function WizardSkeleton() {
 
 export default function OnboardingPage() {
   const s = useStore();
+  const router = useRouter();
+
+  useEffect(() => {
+    if (!s.authReady) return;
+    if (s.authError) return;
+    if (!s.user) router.replace("/register");
+    else if (s.user.onboarded) router.replace("/app/calendar");
+  }, [router, s.authReady, s.authError, s.user]);
+
+  const user = s.user;
+  const canStart = s.ready && s.authReady && !s.authError && user && !user.onboarded;
 
   return (
     <main
@@ -1447,21 +1434,25 @@ export default function OnboardingPage() {
     >
       <div className="relative flex w-full max-w-2xl flex-col">
         <div className="flex justify-center">
-          {/* Штамп как на лендинге v3 */}
-          <span className="flex items-center gap-2.5">
-            <span
-              aria-hidden
-              className="flex h-9 w-9 items-center justify-center border-2 border-line bg-[var(--acc)] font-[family-name:var(--v3-display)] text-[17px] font-black shadow-[3px_3px_0_var(--ink)]"
-            >
-              А
-            </span>
-            <span className="font-[family-name:var(--v3-display)] text-[16px] font-bold tracking-[0.08em] uppercase">
-              Аврора
-            </span>
-          </span>
+          <Wordmark />
         </div>
 
-        {s.ready ? <Wizard /> : <WizardSkeleton />}
+        {s.ready && s.authReady && s.authError && !user ? (
+          <div role="alert" className="mt-8 rounded-md border-2 border-line bg-surface p-6 shadow-card">
+            <TriangleAlert className="h-6 w-6 text-fire" aria-hidden />
+            <h1 className="display mt-4 text-[26px] text-text">Не удалось проверить вход</h1>
+            <p className="mt-2 text-[15px] leading-relaxed text-text-2">
+              Сервер сессий временно недоступен. Прогресс мастера не потерян.
+            </p>
+            <Button className="mt-5" variant="brand" onClick={() => void s.refreshAuth()}>
+              Повторить проверку
+            </Button>
+          </div>
+        ) : canStart && user ? (
+          <Wizard userId={user.id} />
+        ) : (
+          <WizardSkeleton />
+        )}
 
         {/* Обещание из ТЗ 5.1 держим на виду весь мастер */}
         <p className="mt-6 flex items-center justify-center gap-1.5 text-[13px] text-text-3">

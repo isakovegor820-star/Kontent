@@ -26,6 +26,11 @@ import type {
   User,
 } from "./types";
 import { seedState } from "./mock";
+import {
+  parseAiUsageResponse,
+  startAiUsagePolling,
+  type AiUsageStatus,
+} from "./ai-usage-sync";
 import { uid } from "./utils";
 
 const KEY = "aurora.state.v1";
@@ -40,6 +45,7 @@ type Toast = {
 interface StoreValue extends AppState {
   ready: boolean; // localStorage поднят (демо-данные)
   authReady: boolean; // /api/auth/me ответил — можно решать лендинг/платформа
+  authError: boolean;
   toasts: Toast[];
   toast: (t: Omit<Toast, "id">) => void;
   dismissToast: (id: string) => void;
@@ -47,27 +53,46 @@ interface StoreValue extends AppState {
   /** Перечитать, кто вошёл, с сервера. Зовём после входа и при загрузке. */
   refreshAuth: () => Promise<void>;
   signOut: () => void;
-  finishOnboarding: (patch?: { niche?: string; tone?: string }) => void;
+  finishOnboarding: () => Promise<boolean>;
 
   /* --- Настоящий постинг (Д.3): каналы и посты из базы --- */
   realChannels: RealChannel[];
   realPosts: RealPost[];
   realReady: boolean;
+  realError: boolean;
   refreshReal: () => Promise<void>;
   connectChannel: (handle: string) => Promise<{ ok: boolean; error?: string; title?: string }>;
   /** Подключить VK-сообщество по ключу доступа сообщества (право «Стена»). */
   connectVkChannel: (token: string) => Promise<{ ok: boolean; error?: string; title?: string }>;
   createRealPost: (input: {
     channelId: number;
+    draftId: number;
+    draftVersion: number;
     text: string;
     scheduledAt: string | null;
     media?: Post["media"];
   }) => Promise<{ ok: boolean; error?: string; postId?: number }>;
+  createPublicationOperation: (input: {
+    draftId: number;
+    draftVersion: number;
+    idempotencyKey: string;
+    operationFingerprint?: string | null;
+    timezone: string;
+  }) => Promise<{
+    ok: boolean;
+    error?: string;
+    operationId?: number;
+    operationStatus?: string;
+    fingerprint?: string;
+    scheduledAt?: string;
+    destinations?: Array<{ postId: number; channelId: number; queueStatus: string }>;
+  }>;
   retryRealPost: (id: number) => Promise<{ ok: boolean }>;
 
   /* --- ИИ-студия (Д.8): настоящий дневной лимит генераций --- */
   aiUsed: number;
   aiLimit: number;
+  aiUsageStatus: AiUsageStatus;
   refreshAiUsage: () => Promise<void>;
 
   addPost: (p: Partial<Post> & { text: string }) => Post;
@@ -87,7 +112,6 @@ interface StoreValue extends AppState {
   scheduleApproved: () => number;
 
   updateSettings: (patch: Partial<Settings>) => void;
-  spendAi: (n?: number) => boolean;
 
   joinWaitlist: (contact: string) => void;
   reset: () => void;
@@ -124,15 +148,17 @@ type ServerUser = {
   email: string | null;
   name: string | null;
   avatar: string | null;
+  onboarding_completed_at: string | null;
 };
 
-function mapUser(su: ServerUser, onboarded: boolean): User {
+function mapUser(su: ServerUser): User {
   const provider: User["provider"] = su.tg_id ? "telegram" : su.vk_id ? "vk" : "email";
   return {
+    id: su.id,
     name: su.name || su.email?.split("@")[0] || "Ты",
     email: su.email || (su.tg_id ? `Telegram` : su.vk_id ? `VK` : ""),
     provider,
-    onboarded,
+    onboarded: Boolean(su.onboarding_completed_at),
   };
 }
 
@@ -140,6 +166,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<AppState>(() => seedState());
   const [ready, setReady] = useState(false);
   const [authReady, setAuthReady] = useState(false);
+  const [authError, setAuthError] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const timers = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
 
@@ -148,9 +175,15 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     try {
       const res = await fetch("/api/auth/me", { cache: "no-store" });
       const data = (await res.json().catch(() => null)) as { user: ServerUser | null } | null;
-      setState((s) => ({ ...s, user: data?.user ? mapUser(data.user, s.onboarded) : null }));
+      if (!res.ok) throw new Error("auth_unavailable");
+      setAuthError(false);
+      setState((s) => ({
+        ...s,
+        onboarded: Boolean(data?.user?.onboarding_completed_at),
+        user: data?.user ? mapUser(data.user) : null,
+      }));
     } catch {
-      setState((s) => ({ ...s, user: null }));
+      setAuthError(true);
     } finally {
       setAuthReady(true);
     }
@@ -167,6 +200,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   const [realChannels, setRealChannels] = useState<RealChannel[]>([]);
   const [realPosts, setRealPosts] = useState<RealPost[]>([]);
   const [realReady, setRealReady] = useState(false);
+  const [realError, setRealError] = useState(false);
 
   const refreshReal = useCallback(async () => {
     try {
@@ -174,12 +208,15 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         fetch("/api/channels", { cache: "no-store" }),
         fetch("/api/posts", { cache: "no-store" }),
       ]);
+      if (!chRes.ok || !poRes.ok) throw new Error("real_data_unavailable");
       const ch = (await chRes.json().catch(() => null)) as { channels?: RealChannel[] } | null;
       const po = (await poRes.json().catch(() => null)) as { posts?: RealPost[] } | null;
       setRealChannels(ch?.channels ?? []);
       setRealPosts(po?.posts ?? []);
+      setRealError(false);
     } catch {
       /* сеть пропала — оставляем что было */
+      setRealError(true);
     } finally {
       setRealReady(true);
     }
@@ -232,12 +269,24 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   );
 
   const createRealPost = useCallback<StoreValue["createRealPost"]>(
-    async ({ channelId, text, scheduledAt, media }) => {
+    async ({ channelId, draftId, draftVersion, text, scheduledAt, media }) => {
       try {
+        const idempotencyKey = globalThis.crypto.randomUUID();
         const res = await fetch("/api/posts/create", {
           method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ channelId, text, scheduledAt, media }),
+          headers: {
+            "content-type": "application/json",
+            "idempotency-key": idempotencyKey,
+          },
+          body: JSON.stringify({
+            channelId,
+            draftId,
+            draftVersion,
+            text,
+            scheduledAt,
+            media,
+            idempotencyKey,
+          }),
         });
         const data = (await res.json().catch(() => null)) as
           | { ok: boolean; error?: string; postId?: number }
@@ -254,10 +303,47 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     [refreshReal],
   );
 
+  const createPublicationOperation = useCallback<StoreValue["createPublicationOperation"]>(
+    async ({ draftId, draftVersion, idempotencyKey, operationFingerprint, timezone }) => {
+      try {
+        const response = await fetch("/api/publication-operations", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "idempotency-key": idempotencyKey,
+          },
+          body: JSON.stringify({ draftId, draftVersion, operationFingerprint, timezone }),
+        });
+        const data = (await response.json().catch(() => null)) as
+          | {
+              ok?: boolean;
+              error?: string;
+              operationId?: number;
+              operationStatus?: string;
+              fingerprint?: string;
+              scheduledAt?: string;
+              destinations?: Array<{ postId: number; channelId: number; queueStatus: string }>;
+            }
+          | null;
+        if (response.ok && data) {
+          await refreshReal();
+          return { ...data, ok: data.ok === true };
+        }
+        return { ok: false, error: data?.error };
+      } catch {
+        return { ok: false, error: "network" };
+      }
+    },
+    [refreshReal],
+  );
+
   const retryRealPost = useCallback<StoreValue["retryRealPost"]>(
     async (id) => {
       try {
-        const res = await fetch(`/api/posts/${id}/retry`, { method: "POST" });
+        const res = await fetch(`/api/posts/${id}/retry`, {
+          method: "POST",
+          headers: { "idempotency-key": globalThis.crypto.randomUUID() },
+        });
         await refreshReal();
         return { ok: res.ok };
       } catch {
@@ -271,37 +357,53 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
   const [aiUsed, setAiUsed] = useState(0);
   const [aiLimit, setAiLimit] = useState(30);
+  const [aiUsageStatus, setAiUsageStatus] = useState<AiUsageStatus>("loading");
+  const aiUsageRequestSequence = useRef(0);
 
   const refreshAiUsage = useCallback(async () => {
+    const requestSequence = ++aiUsageRequestSequence.current;
     try {
       const r = await fetch("/api/ai/usage", { cache: "no-store" });
-      const d = (await r.json().catch(() => null)) as { used?: number; limit?: number } | null;
-      if (d) {
-        setAiUsed(d.used ?? 0);
-        setAiLimit(d.limit ?? 30);
+      const parsed = parseAiUsageResponse(r.ok, await r.json().catch(() => null));
+      if (requestSequence !== aiUsageRequestSequence.current) return;
+      if (parsed.status === "ok") {
+        setAiUsed(parsed.used);
+        setAiLimit(parsed.limit);
       }
+      setAiUsageStatus(parsed.status);
     } catch {
-      /* сеть пропала — оставляем что было */
+      if (requestSequence !== aiUsageRequestSequence.current) return;
+      // Keep the last confirmed number internally, but do not present it as current fact.
+      setAiUsageStatus("unknown");
     }
   }, []);
 
   // Как только знаем пользователя — тянем его каналы и посты и держим их свежими
   // (пока открыта платформа): статусы двигаются на сервере, интерфейс это показывает.
-  const hasUser = !!state.user;
+  const activeUserId = state.user?.id ?? null;
+  const hasUser = activeUserId != null;
   /* eslint-disable react-hooks/set-state-in-effect -- синхронизация реальных данных со входом */
   useEffect(() => {
+    // Ignore a response that was started for a previous session/account.
+    aiUsageRequestSequence.current += 1;
     if (!hasUser) {
       setRealChannels([]);
       setRealPosts([]);
       setRealReady(false);
       setAiUsed(0);
+      setAiUsageStatus("loading");
       return;
     }
+    setAiUsageStatus("loading");
     refreshReal();
     refreshAiUsage();
     const t = setInterval(refreshReal, 8000);
-    return () => clearInterval(t);
-  }, [hasUser, refreshReal, refreshAiUsage]);
+    const stopAiUsagePolling = startAiUsagePolling(refreshAiUsage);
+    return () => {
+      clearInterval(t);
+      stopAiUsagePolling();
+    };
+  }, [activeUserId, hasUser, refreshReal, refreshAiUsage]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   // Гидрация из localStorage — только на клиенте, после монтирования.
@@ -310,7 +412,14 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   // экраны показывают скелетоны, а не чужие данные.
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- гидрация из localStorage возможна только после монтирования
-    setState(load());
+    setState((current) => {
+      const loaded = load();
+      return {
+        ...loaded,
+        onboarded: current.user?.onboarded ?? false,
+        user: current.user,
+      };
+    });
     setReady(true);
   }, []);
 
@@ -358,13 +467,21 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const finishOnboarding = useCallback<StoreValue["finishOnboarding"]>(
-    (p) =>
-      patch((s) => ({
-        ...s,
-        onboarded: true,
-        user: s.user ? { ...s.user, onboarded: true } : s.user,
-        settings: { ...s.settings, ...(p ?? {}) },
-      })),
+    async () => {
+      try {
+        const response = await fetch("/api/onboarding/complete", { method: "POST" });
+        const body = (await response.json().catch(() => null)) as { ok?: boolean } | null;
+        if (!response.ok || !body?.ok) return false;
+        patch((s) => ({
+          ...s,
+          onboarded: true,
+          user: s.user ? { ...s.user, onboarded: true } : s.user,
+        }));
+        return true;
+      } catch {
+        return false;
+      }
+    },
     [patch],
   );
 
@@ -374,6 +491,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     (p) => {
       const post: Post = {
         id: uid("post"),
+        legacyOwnerUserId: state.user?.id,
         text: p.text,
         networks: p.networks ?? ["tg", "vk"],
         scheduledAt: p.scheduledAt ?? null,
@@ -387,7 +505,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       patch((s) => ({ ...s, posts: [post, ...s.posts] }));
       return post;
     },
-    [patch],
+    [patch, state.user?.id],
   );
 
   const updatePost = useCallback<StoreValue["updatePost"]>(
@@ -610,6 +728,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           count += 1;
           return {
             id: uid("post"),
+            legacyOwnerUserId: s.user?.id,
             text: x.text,
             networks: x.networks,
             scheduledAt: at.toISOString(),
@@ -640,22 +759,6 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     [patch],
   );
 
-  // Честный дневной лимит ИИ (ТЗ, раздел 12: риск стоимости ИИ)
-  const spendAi = useCallback<StoreValue["spendAi"]>(
-    (n = 1) => {
-      let ok = true;
-      setState((s) => {
-        if (s.settings.aiUsedToday + n > s.settings.aiDailyLimit) {
-          ok = false;
-          return s;
-        }
-        return { ...s, settings: { ...s.settings, aiUsedToday: s.settings.aiUsedToday + n } };
-      });
-      return ok;
-    },
-    [],
-  );
-
   const joinWaitlist = useCallback<StoreValue["joinWaitlist"]>(
     (contact) =>
       patch((s) => ({
@@ -679,6 +782,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       ...state,
       ready,
       authReady,
+      authError,
       toasts,
       toast,
       dismissToast,
@@ -688,13 +792,16 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       realChannels,
       realPosts,
       realReady,
+      realError,
       refreshReal,
       connectChannel,
       connectVkChannel,
       createRealPost,
+      createPublicationOperation,
       retryRealPost,
       aiUsed,
       aiLimit,
+      aiUsageStatus,
       refreshAiUsage,
       addPost,
       updatePost,
@@ -709,7 +816,6 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       editSlot,
       scheduleApproved,
       updateSettings,
-      spendAi,
       joinWaitlist,
       reset,
     }),
@@ -717,6 +823,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       state,
       ready,
       authReady,
+      authError,
       toasts,
       toast,
       dismissToast,
@@ -726,13 +833,16 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       realChannels,
       realPosts,
       realReady,
+      realError,
       refreshReal,
       connectChannel,
       connectVkChannel,
       createRealPost,
+      createPublicationOperation,
       retryRealPost,
       aiUsed,
       aiLimit,
+      aiUsageStatus,
       refreshAiUsage,
       addPost,
       updatePost,
@@ -747,7 +857,6 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       editSlot,
       scheduleApproved,
       updateSettings,
-      spendAi,
       joinWaitlist,
       reset,
     ],

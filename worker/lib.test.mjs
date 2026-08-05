@@ -14,6 +14,8 @@ import {
   stripCites,
   citedShare,
   mapConcurrent,
+  autopilotBuildComplete,
+  autopilotJobAttemptsExhausted,
   formatPost,
 } from "./lib.mjs";
 
@@ -165,6 +167,35 @@ describe("mapConcurrent", () => {
     });
     // Последовательно было бы ~120мс; параллельно — порядка 30мс.
     expect(Date.now() - start).toBeLessThan(110);
+  });
+});
+
+describe("autopilotBuildComplete", () => {
+  const topics = [{ topic: "Один" }, { topic: "Два" }];
+  const items = [
+    { aiReady: true, draft: "Готовый первый пост" },
+    { aiReady: true, draft: "Готовый второй пост" },
+  ];
+
+  it("принимает только план точного размера с готовыми ИИ-текстами", () => {
+    expect(autopilotBuildComplete(2, topics)).toBe(true);
+    expect(autopilotBuildComplete(2, topics, items)).toBe(true);
+  });
+
+  it("не принимает неполный список тем", () => {
+    expect(autopilotBuildComplete(3, topics)).toBe(false);
+  });
+
+  it("не принимает пустой ИИ-черновик", () => {
+    expect(autopilotBuildComplete(2, topics, [items[0], { aiReady: false, draft: "" }])).toBe(false);
+  });
+});
+
+describe("autopilotJobAttemptsExhausted", () => {
+  it("only terminalizes an Autopilot placeholder after the final BullMQ attempt", () => {
+    expect(autopilotJobAttemptsExhausted(1, 2)).toBe(false);
+    expect(autopilotJobAttemptsExhausted(2, 2)).toBe(true);
+    expect(autopilotJobAttemptsExhausted(3, 2)).toBe(true);
   });
 });
 

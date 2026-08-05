@@ -93,6 +93,36 @@
   --grain-opacity: 0.038;
 }
 
+/* Build-safe typography. `next/font/google` downloads font metadata during every
+   production build, which made deploys depend on an external host and left Turbopack
+   waiting indefinitely when DNS/network access was unavailable. These stacks need no
+   network request, preserve Cyrillic coverage, and keep the existing CSS variable API. */
+:root,
+.aurora-system-fonts {
+  --font-golos: "Avenir Next", "Segoe UI", Arial, system-ui, sans-serif;
+  --font-jetbrains: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+.aurora-v2-display {
+  --v2-display: Georgia, "Times New Roman", serif;
+}
+
+.aurora-v2-mono {
+  --v2-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+.aurora-v3-display {
+  --v3-display: "Arial Black", "Arial Narrow", Arial, system-ui, sans-serif;
+}
+
+.aurora-v3-mono {
+  --v3-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+.aurora-v3-kinetic {
+  --v3-kinetic: "Arial Black", "Arial Narrow", Arial, system-ui, sans-serif;
+}
+
 /* --------------------------------------- МОСТ ТОКЕН → TAILWIND-УТИЛИТЫ */
 @theme inline {
   --font-sans: var(--font-golos), system-ui, -apple-system, sans-serif;

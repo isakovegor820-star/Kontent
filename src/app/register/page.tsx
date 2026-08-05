@@ -1,8 +1,8 @@
 "use client";
 
 // ЭКРАН А2 — ВХОД (Д.2). Регистрация и вход по почте и своему паролю. Пароль храним
-// только хешем на сервере, сессия — 30 дней в cookie. Telegram/VK-виджетам нужен настоящий
-// адрес сайта — заработают на деплое; сейчас честно ведём к входу по почте (ТЗ 6: честность).
+// только хешем на сервере, сессия — 30 дней в cookie. Ненастроенные Telegram/VK login
+// не показываем: единственный CTA ведёт в реально работающий email/password flow.
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
@@ -19,7 +19,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Badge, Divider, Field, GlassCard, Input, TelegramIcon, VkIcon } from "@/components/ui/primitives";
+import { Badge, Divider, Field, GlassCard, Input } from "@/components/ui/primitives";
 import { useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
@@ -66,6 +66,10 @@ export default function RegisterPage() {
   const reduce = useReducedMotion();
   const emailRef = useRef<HTMLInputElement>(null);
   const pwRef = useRef<HTMLInputElement>(null);
+  const modeRefs = useRef<Record<Mode, HTMLButtonElement | null>>({
+    register: null,
+    login: null,
+  });
 
   const [mode, setMode] = useState<Mode>("register");
   const [email, setEmail] = useState("");
@@ -87,16 +91,6 @@ export default function RegisterPage() {
     setMode(next);
     setFormErr(undefined);
     setPwErr(undefined);
-  }
-
-  // Telegram/VK: виджеты требуют настоящий адрес сайта — честно ведём к почте.
-  function deferredLogin(which: "Telegram" | "VK") {
-    s.toast({
-      kind: "info",
-      title: `Вход через ${which} — на боевом сайте`,
-      body: "Виджету нужен настоящий адрес. Сейчас заходи по почте — это по-настоящему.",
-    });
-    emailRef.current?.focus();
   }
 
   async function submit(e: React.FormEvent<HTMLFormElement>) {
@@ -222,16 +216,28 @@ export default function RegisterPage() {
             className="mt-8 grid grid-cols-2 gap-1 rounded-sm bg-surface-inset p-1"
             role="tablist"
             aria-label="Регистрация или вход"
+            onKeyDown={(event) => {
+              if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+              event.preventDefault();
+              const next: Mode =
+                event.key === "ArrowLeft" || event.key === "Home" ? "register" : "login";
+              switchMode(next);
+              modeRefs.current[next]?.focus();
+            }}
           >
             {(["register", "login"] as Mode[]).map((m) => (
               <button
                 key={m}
+                ref={(element) => {
+                  modeRefs.current[m] = element;
+                }}
                 type="button"
                 role="tab"
                 aria-selected={mode === m}
+                tabIndex={mode === m ? 0 : -1}
                 onClick={() => switchMode(m)}
                 className={cn(
-                  "h-10 cursor-pointer rounded-xs text-[14px] font-semibold transition-colors duration-200",
+                  "min-h-11 cursor-pointer rounded-xs text-[14px] font-semibold transition-colors duration-200",
                   mode === m ? "bg-surface text-text shadow-sm" : "text-text-3 hover:text-text-2",
                 )}
               >
@@ -241,7 +247,13 @@ export default function RegisterPage() {
           </motion.div>
 
           {/* Форма: почта + пароль */}
-          <motion.form {...rise(0.3)} onSubmit={submit} noValidate className="mt-5">
+          <motion.form
+            {...rise(0.3)}
+            method="post"
+            onSubmit={submit}
+            noValidate
+            className="mt-5"
+          >
             <Field label="Почта" htmlFor="email" error={emailErr}>
               <Input
                 ref={emailRef}
@@ -295,7 +307,6 @@ export default function RegisterPage() {
                     onClick={() => setShowPw((v) => !v)}
                     className="absolute inset-y-0 right-0 flex w-11 cursor-pointer items-center justify-center text-text-3 transition-colors hover:text-text-2"
                     aria-label={showPw ? "Скрыть пароль" : "Показать пароль"}
-                    tabIndex={-1}
                   >
                     {showPw ? (
                       <EyeOff className="h-[18px] w-[18px]" strokeWidth={1.75} aria-hidden />
@@ -334,40 +345,17 @@ export default function RegisterPage() {
             >
               {isReg ? "Создать аккаунт" : "Войти"}
             </Button>
+            {!isReg && (
+              <p className="mt-3 text-center text-[13px]">
+                <Link
+                  href="/forgot-password"
+                  className="font-semibold text-brand hover:underline"
+                >
+                  Не помню пароль
+                </Link>
+              </p>
+            )}
           </motion.form>
-
-          {/* Telegram/VK — заработают на боевом сайте */}
-          <motion.div {...rise(0.36)}>
-            <div className="my-6 flex items-center gap-3">
-              <Divider className="flex-1" />
-              <span className="text-[13px] text-text-3">или</span>
-              <Divider className="flex-1" />
-            </div>
-            <div className="flex flex-col gap-3">
-              <Button
-                type="button"
-                variant="outline"
-                size="lg"
-                className="w-full"
-                disabled={busy}
-                onClick={() => deferredLogin("Telegram")}
-              >
-                <TelegramIcon className="h-5 w-5" />
-                Продолжить с Telegram
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="lg"
-                className="w-full"
-                disabled={busy}
-                onClick={() => deferredLogin("VK")}
-              >
-                <VkIcon className="h-5 w-5" />
-                Продолжить с VK ID
-              </Button>
-            </div>
-          </motion.div>
 
           <motion.p {...rise(0.42)} className="mt-6 text-[13px] leading-relaxed text-text-3">
             {isReg ? (
@@ -376,7 +364,7 @@ export default function RegisterPage() {
                 <button
                   type="button"
                   onClick={() => switchMode("login")}
-                  className="cursor-pointer font-semibold text-brand hover:underline"
+                  className="inline-flex min-h-11 min-w-11 cursor-pointer items-center justify-center font-semibold text-brand hover:underline"
                 >
                   Войти
                 </button>
@@ -387,7 +375,7 @@ export default function RegisterPage() {
                 <button
                   type="button"
                   onClick={() => switchMode("register")}
-                  className="cursor-pointer font-semibold text-brand hover:underline"
+                  className="inline-flex min-h-11 min-w-11 cursor-pointer items-center justify-center font-semibold text-brand hover:underline"
                 >
                   Зарегистрироваться
                 </button>

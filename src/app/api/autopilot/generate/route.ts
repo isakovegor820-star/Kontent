@@ -8,10 +8,14 @@ import { getStatsQueue } from "@/lib/queue";
 import { ensureSettings, loadBrief, resolveChannel } from "@/lib/autopilot";
 import { briefComplete } from "@/lib/brief";
 import { isAutopilotBuildStale } from "@/lib/autopilot-build";
+import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 
 export const runtime = "nodejs";
 
 export async function POST(req: NextRequest) {
+  if (!hasTrustedMutationOrigin(req)) {
+    return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
+  }
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
 
@@ -73,14 +77,17 @@ export async function POST(req: NextRequest) {
       } else {
         if (current) {
           await tx.query(
-            `update autopilot_plan set status = 'error'
+            `update autopilot_plan set status = 'error', revision = revision + 1
               where id = $1 and status = 'building'`,
             [current.id],
           );
         }
+        // Готовый pending-план пока сохраняем. Если новый ИИ-запуск упадёт, человек не
+        // потеряет старую неделю; если завершится — worker заменит старый план атомарно и
+        // отменит только связанные с ним scheduled-посты. Удаляем лишь старый placeholder.
         await tx.query(
           `delete from autopilot_plan
-            where user_id = $1 and channel_id = $2 and status in ('building', 'pending')`,
+            where user_id = $1 and channel_id = $2 and status = 'building'`,
           [user.id, channelId],
         );
         const inserted = await tx.query(
@@ -117,7 +124,7 @@ export async function POST(req: NextRequest) {
       // becomes a retryable error card instead of another eternal spinner.
       await pool
         .query(
-          `update autopilot_plan set status = 'error'
+          `update autopilot_plan set status = 'error', revision = revision + 1
             where id = $1 and user_id = $2 and channel_id = $3 and status = 'building'`,
           [planId, user.id, channelId],
         )

@@ -1,344 +1,460 @@
 /* ==========================================================================
-   APP-V3 — НЕОБРУТАЛИЗМ ВНУТРИ ПЛАТФОРМЫ
-   Тот же мир, что у лендинга /v3: кремовая бумага, чернильные рамки,
-   жёсткие тени без размытия, один сигнальный жёлтый. Никакого фиолета,
-   стекла, градиентов и космической тьмы.
+   AURORA GLASS — ЕДИНЫЙ ВИЗУАЛЬНЫЙ СЛОЙ ПЛАТФОРМЫ
 
-   Работает двумя слоями:
-   1) «мост» — переопределяет семантические токены Aurora Glass под .app-v3,
-      поэтому все Tailwind-классы рабочих экранов перекрашиваются сами;
-   2) точечные перезаписи shared-примитивов (карточки, кнопки, поля, свитчи)
-      — непослойные правила, поэтому выигрывают у layered-утилит Tailwind.
-
-   Старый лендинг живёт вне скоупа и не затрагивается.
+   Платформа и публичный лендинг теперь живут в одном мире:
+   светлая основа, индиго-фиолетовый градиент, прозрачные панели,
+   мягкие тени и спокойная типографика. Все правила скоупированы под
+   .app-v3: функции и публичные страницы они не затрагивают.
    ========================================================================== */
 
 .app-v3 {
-  /* --- примитивы мира v3: их читают классы .v3-* из v3.css --- */
-  --paper: #f4f0ea;
-  --sheet: #fffdf6;
-  --ink: #0a0a0a;
-  --ink-2: #55524b;
-  --acc: #ffd021;
-  --acc-deep: #f0be00;
-  --red: #e0451f;
-  --red-soft: #fbdfd4;
-  --green: #2e7d4f;
-  --green-soft: #d9ebdd;
+  /* Алиасы для старых декоративных классов: теперь они говорят на языке Glass. */
+  --paper: #f8fafc;
+  --sheet: #ffffff;
+  --ink: #0f172a;
+  --ink-2: #475569;
+  --acc: #eef2ff;
+  --acc-deep: #e0e7ff;
+  --red: #ef4444;
+  --red-soft: #fef2f2;
+  --green: #10b981;
+  --green-soft: #ecfdf5;
 
-  /* --- мост токенов Aurora Glass --- */
-  --bg: var(--paper);
-  --bg-section: #ede8dc;
-  --surface: var(--sheet);
-  --surface-2: #f6f1e6;
-  --surface-inset: #eae3d2;
+  /* Тот же семантический мост, что на лендинге. */
+  --brand-1: #4f46e5;
+  --brand-2: #7c3aed;
+  --brand-3: #a78bfa;
+  --gradient-brand: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
 
-  --text: var(--ink);
-  --text-2: #45413a;
-  --text-3: #6f6959;
+  --bg: #f8fafc;
+  --bg-section: #f1f5f9;
+  --surface: #ffffff;
+  --surface-2: #f8fafc;
+  --surface-inset: #eef2f7;
 
-  --border: var(--ink);
-  --border-strong: var(--ink);
+  --glass-bg: rgb(255 255 255 / 0.68);
+  --glass-bg-strong: rgb(255 255 255 / 0.9);
+  --glass-border: rgb(255 255 255 / 0.78);
+  --glass-highlight: rgb(255 255 255 / 0.7);
 
-  /* «бренд» больше не индиго: акцент = чернила, действие = жёлтый */
-  --brand-1: var(--ink);
-  --brand-2: var(--ink);
-  --brand-3: var(--ink-2);
-  /* bg-brand-gradient теперь просто плоский жёлтый — для клавиш и прогресса */
-  --gradient-brand: linear-gradient(135deg, #ffd021 0%, #ffd021 100%);
+  --text: #0f172a;
+  --text-2: #475569;
+  --text-3: #64748b;
 
-  --success: #2e7d4f;
-  --success-soft: #d9ebdd;
-  --success-text: #1f5c39;
-  --danger: #e0451f;
-  --danger-soft: #fbdfd4;
-  --danger-text: #a8320f;
-  /* залёт — тёплый янтарь на бумаге, не кричащий оранжевый */
-  --fire: #b25e09;
-  --fire-soft: #fceac9;
-  --fire-text: #8a4a06;
-  /* info-пара — «фирменные» чипы и активные состояния: жёлтый лист */
-  --info: var(--ink);
-  --info-soft: #ffd021;
-  --info-text: var(--ink);
+  --border: rgb(15 23 42 / 0.09);
+  --border-strong: rgb(15 23 42 / 0.16);
 
-  /* жёсткие отступные тени вместо мягких */
-  --shadow-xs: 1px 1px 0 var(--ink);
-  --shadow-sm: 2px 2px 0 var(--ink);
-  --shadow-md: 4px 4px 0 var(--ink);
-  --shadow-lg: 6px 6px 0 var(--ink);
-  --shadow-brand: 4px 4px 0 var(--ink);
-  --shadow-brand-lg: 6px 6px 0 var(--ink);
+  --success: #10b981;
+  --success-soft: #ecfdf5;
+  --success-text: #047857;
+  --danger: #ef4444;
+  --danger-soft: #fef2f2;
+  --danger-text: #b91c1c;
+  --fire: #f59e0b;
+  --fire-soft: #fffbeb;
+  --fire-text: #b45309;
+  --info: #4f46e5;
+  --info-soft: #eef2ff;
+  --info-text: #4338ca;
 
-  /* прямее углы — наследие пульта */
-  --radius-xs: 4px;
-  --radius-sm: 6px;
-  --radius-md: 6px;
-  --radius-lg: 8px;
-  --radius-xl: 10px;
-  --radius-2xl: 12px;
+  --shadow-xs: 0 1px 2px rgb(15 23 42 / 0.04);
+  --shadow-sm: 0 4px 14px -6px rgb(15 23 42 / 0.16), 0 1px 3px rgb(15 23 42 / 0.05);
+  --shadow-md: 0 14px 34px -16px rgb(15 23 42 / 0.22), 0 4px 10px -6px rgb(15 23 42 / 0.09);
+  --shadow-lg: 0 28px 70px -28px rgb(15 23 42 / 0.28), 0 10px 24px -14px rgb(79 70 229 / 0.15);
+  --shadow-brand: 0 12px 32px -10px rgb(79 70 229 / 0.42);
+  --shadow-brand-lg: 0 22px 54px -16px rgb(79 70 229 / 0.5);
 
-  --grid-line: rgb(10 10 10 / 0.07);
+  --radius-xs: 10px;
+  --radius-sm: 12px;
+  --radius-md: 16px;
+  --radius-lg: 20px;
+  --radius-xl: 28px;
+  --radius-2xl: 36px;
 
-  background: var(--paper);
-  color: var(--ink);
+  min-height: 100dvh;
+  color: var(--text);
+  background-color: var(--bg);
+  background-image:
+    radial-gradient(circle at 4% 0%, rgb(99 102 241 / 0.13), transparent 32rem),
+    radial-gradient(circle at 96% 10%, rgb(139 92 246 / 0.11), transparent 34rem),
+    linear-gradient(to right, rgb(15 23 42 / 0.025) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(15 23 42 / 0.025) 1px, transparent 1px);
+  background-size: auto, auto, 72px 72px, 72px 72px;
+  background-attachment: fixed;
+  font-family: var(--font-golos), system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
 }
 
 .app-v3 ::selection {
-  background: var(--acc);
-  color: var(--ink);
+  color: var(--text);
+  background: rgb(99 102 241 / 0.22);
 }
 
-/* Фокус жёсткий и видимый — как на лендинге */
 .app-v3 :focus-visible {
-  outline: 3px solid var(--ink);
+  outline: 2px solid var(--brand-1);
   outline-offset: 2px;
 }
 
-/* ---------- shared-поверхности → листы с чернильной рамкой ---------- */
+/* ---------- Мост от прежних v3-имён к типографике лендинга ---------- */
 
-/* Карточка — статичный лист: рамка есть, тени нет (тень = нажимаемое) */
-.app-v3 .card-plain {
-  background: var(--sheet);
-  border: 2px solid var(--ink);
-  box-shadow: none;
+.app-v3 .v3-paper {
+  background: transparent;
 }
 
-/* «Стекло» (всплывающие слои, тосты, панели) → лист с жёсткой тенью */
+.app-v3 .v3-display {
+  font-family: var(--font-golos), system-ui, sans-serif;
+  font-weight: 800;
+  letter-spacing: -0.035em;
+  text-wrap: pretty;
+}
+
+.app-v3 .v3-mono {
+  font-family: var(--font-jetbrains), ui-monospace, monospace;
+}
+
+.app-v3 [class*="font-[family-name:var(--v3-display)]"] {
+  font-family: var(--font-golos), system-ui, sans-serif !important;
+}
+
+/* ---------- Поверхности ---------- */
+
+.app-v3 .card-plain {
+  background: rgb(255 255 255 / 0.88);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-sm), inset 0 1px 0 rgb(255 255 255 / 0.8);
+  -webkit-backdrop-filter: blur(18px) saturate(145%);
+  backdrop-filter: blur(18px) saturate(145%);
+}
+
 .app-v3 .glass,
 .app-v3 .glass-strong {
-  background: var(--sheet);
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
-  border: 2px solid var(--ink);
-  box-shadow: 6px 6px 0 var(--ink);
+  border: 1px solid var(--glass-border);
+  -webkit-backdrop-filter: blur(24px) saturate(165%);
+  backdrop-filter: blur(24px) saturate(165%);
+  box-shadow: var(--shadow-md), inset 0 1px 0 var(--glass-highlight);
 }
 
-/* Градиентный текст больше не существует — только чернила */
-.app-v3 .text-gradient {
-  background-image: none;
-  color: var(--ink);
-  -webkit-text-fill-color: var(--ink);
+.app-v3 .glass {
+  background: var(--glass-bg);
+}
+
+.app-v3 .glass-strong {
+  background: var(--glass-bg-strong);
 }
 
 .app-v3 .skeleton {
-  background: var(--surface-inset);
-  border: 1.5px solid rgb(10 10 10 / 0.14);
-  border-radius: 4px;
+  border: 0;
+  background: linear-gradient(
+    110deg,
+    var(--surface-inset) 8%,
+    rgb(255 255 255 / 0.85) 18%,
+    var(--surface-inset) 33%
+  );
+  background-size: 220% 100%;
+  animation: shimmer 1.8s linear infinite;
 }
 
-/* ---------- кнопки-клавиши (shared Button читает data-variant) ---------- */
-
-.app-v3 button[data-variant]:not([data-variant="ghost"]) {
-  border: 2px solid var(--ink);
-  box-shadow: 3px 3px 0 var(--ink);
-  transition:
-    transform 0.15s ease,
-    box-shadow 0.15s ease,
-    background-color 0.15s ease,
-    filter 0.15s ease;
-}
-.app-v3 button[data-variant]:not([data-variant="ghost"]):hover:not(:disabled) {
-  transform: translate(1px, 1px);
-  box-shadow: 2px 2px 0 var(--ink);
-}
-.app-v3 button[data-variant]:not([data-variant="ghost"]):active:not(:disabled) {
-  scale: 1;
-  transform: translate(3px, 3px);
-  box-shadow: 0 0 0 var(--ink);
+/* Прежние жёсткие utility-классы остались в разметке экранов.
+   Нормализуем их центрально, не трогая JSX и поведение. */
+.app-v3 .border-2 {
+  border-width: 1px;
 }
 
-/* Главное действие — жёлтая клавиша с чернильной надписью */
+.app-v3 .border-t-2 {
+  border-top-width: 1px;
+}
+
+.app-v3 .border-r-2 {
+  border-right-width: 1px;
+}
+
+.app-v3 .border-b-2 {
+  border-bottom-width: 1px;
+}
+
+.app-v3 .border-l-2 {
+  border-left-width: 1px;
+}
+
+.app-v3 .border-text {
+  border-color: var(--border-strong);
+}
+
+.app-v3 [class*="shadow-"][class*="var(--ink)"] {
+  box-shadow: var(--shadow-sm) !important;
+}
+
+.app-v3 [class*="bg-[var(--acc)]"] {
+  color: var(--info-text) !important;
+  background: var(--info-soft) !important;
+}
+
+.app-v3 [class*="rounded-[3px]"],
+.app-v3 [class*="rounded-[4px]"],
+.app-v3 [class*="rounded-[5px]"],
+.app-v3 [class*="rounded-[6px]"] {
+  border-radius: var(--radius-xs) !important;
+}
+
+/* ---------- Кнопки, поля и переключатели ---------- */
+
+.app-v3 button[data-variant] {
+  box-shadow: none;
+}
+
 .app-v3 button[data-variant="brand"] {
-  color: var(--ink);
+  color: #fff;
+  border-color: rgb(255 255 255 / 0.16);
+  box-shadow: var(--shadow-brand);
 }
+
 .app-v3 button[data-variant="brand"]:hover:not(:disabled) {
-  filter: none;
-  background-image: linear-gradient(135deg, #f0be00 0%, #f0be00 100%);
+  filter: brightness(1.08);
 }
 
-/* Вторичные — бумажные клавиши */
-.app-v3 button[data-variant="soft"] {
-  background-color: var(--sheet);
-}
-.app-v3 button[data-variant="soft"]:hover:not(:disabled) {
-  background-color: #ffffff;
-}
 .app-v3 button[data-variant="outline"] {
-  background-color: var(--sheet);
-}
-.app-v3 button[data-variant="outline"]:hover:not(:disabled) {
-  background-color: #ffffff;
+  background: rgb(255 255 255 / 0.82);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
 }
 
-/* ---------- бейджи-чипы: рамка-штамп ---------- */
+.app-v3 button[data-variant="danger"] {
+  color: var(--danger-text);
+  background: var(--danger-soft);
+}
 
 .app-v3 span[data-tone] {
-  border: 1.5px solid var(--ink);
+  border: 0;
+  box-shadow: none;
 }
-
-/* ---------- поля ввода: клавиши с вдавливанием на фокусе ---------- */
 
 .app-v3 input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="hidden"]):not([type="color"]),
 .app-v3 textarea,
 .app-v3 select {
-  border-width: 2px;
-  border-color: var(--ink);
-  border-radius: 4px;
-  box-shadow: 3px 3px 0 var(--ink);
-  transition:
-    transform 0.15s ease,
-    box-shadow 0.15s ease;
+  border-width: 1px;
+  border-color: var(--border);
+  border-radius: var(--radius-xs);
+  background-color: rgb(255 255 255 / 0.9);
+  box-shadow: inset 0 1px 2px rgb(15 23 42 / 0.025);
 }
+
 .app-v3 input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="hidden"]):not([type="color"]):focus,
 .app-v3 textarea:focus,
 .app-v3 select:focus {
+  border-color: var(--brand-1);
   outline: none;
-  transform: translate(2px, 2px);
-  box-shadow: 1px 1px 0 var(--ink);
+  box-shadow: 0 0 0 4px rgb(79 70 229 / 0.12);
 }
 
-/* Composer чата — единственное поле, которое не выглядит как тяжёлая клавиша.
-   Страница сама является диалогом, поэтому внутри плавающей панели не нужна вторая рамка. */
-.app-v3 textarea[data-chat-composer] {
+.app-v3 textarea[data-chat-composer],
+.app-v3 textarea[data-chat-composer]:focus {
   border: 0;
   border-radius: 24px 24px 0 0;
   box-shadow: none;
-  transform: none;
-}
-.app-v3 textarea[data-chat-composer]:focus {
-  border: 0;
-  box-shadow: none;
-  transform: none;
 }
 
-/* ---------- переключатели: жёлтая дорожка, бумажный кружок ---------- */
+.app-v3 input[type="range"] {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.app-v3 input[type="range"]::-webkit-slider-runnable-track {
+  height: 8px;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    var(--brand-1) 0%,
+    #7c3aed var(--aurora-range-progress, 50%),
+    rgb(99 102 241 / 0.16) var(--aurora-range-progress, 50%),
+    rgb(124 58 237 / 0.12) 100%
+  );
+  box-shadow: inset 0 1px 2px rgb(15 23 42 / 0.08);
+}
+
+.app-v3 input[type="range"]::-webkit-slider-thumb {
+  appearance: none;
+  width: 24px;
+  height: 24px;
+  margin-top: -8px;
+  border: 4px solid #fff;
+  border-radius: 999px;
+  background: var(--gradient-brand);
+  box-shadow: 0 4px 14px rgb(79 70 229 / 0.42), 0 0 0 1px rgb(79 70 229 / 0.12);
+  transition: transform 160ms ease, box-shadow 160ms ease;
+}
+
+.app-v3 input[type="range"]:hover::-webkit-slider-thumb {
+  transform: scale(1.08);
+  box-shadow: 0 6px 18px rgb(79 70 229 / 0.46), 0 0 0 5px rgb(99 102 241 / 0.1);
+}
+
+.app-v3 input[type="range"]:focus-visible {
+  outline: none;
+}
+
+.app-v3 input[type="range"]:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 4px 14px rgb(79 70 229 / 0.42), 0 0 0 6px rgb(99 102 241 / 0.16);
+}
+
+.app-v3 input[type="range"]::-moz-range-track {
+  height: 8px;
+  border-radius: 999px;
+  background: rgb(99 102 241 / 0.18);
+  box-shadow: inset 0 1px 2px rgb(15 23 42 / 0.08);
+}
+
+.app-v3 input[type="range"]::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border: 4px solid #fff;
+  border-radius: 999px;
+  background: var(--brand-1);
+  box-shadow: 0 3px 10px rgb(79 70 229 / 0.35);
+}
+
+.app-v3 input[type="range"]::-moz-range-progress {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--gradient-brand);
+}
+
+.app-v3 .aurora-range {
+  touch-action: pan-y;
+}
 
 .app-v3 button[role="switch"] {
-  border: 2px solid var(--ink);
-  background-color: var(--surface-inset);
-  background-image: none;
+  border: 0;
+  background: transparent;
   box-shadow: none;
 }
-.app-v3 button[role="switch"][aria-checked="true"] {
-  background-image: none;
-  background-color: var(--acc);
-}
-/* Кружок 14px + рамка 2px: ход остаётся ровно 22px — геометрия не ломается */
-.app-v3 button[role="switch"] > span {
-  height: 14px;
-  width: 14px;
-  background: var(--sheet);
-  border: 2px solid var(--ink);
-  box-shadow: none;
-}
-
-/* ---------- чекбокс: жёлтая заливка, чернильная галка ---------- */
 
 .app-v3 button[role="checkbox"] > span:first-child {
-  border: 2px solid var(--ink);
-  background: var(--sheet);
-  background-image: none;
-  border-radius: 4px;
+  border-width: 1px;
+  border-color: var(--border-strong);
+  background: var(--surface);
+  color: #fff;
   box-shadow: none;
-  color: var(--ink);
-}
-.app-v3 button[role="checkbox"][aria-checked="true"] > span:first-child {
-  background-image: none;
-  background-color: var(--acc);
-  color: var(--ink);
 }
 
-/* ---------- табы: выбранный — жёлтая вдавленная клавиша ---------- */
+.app-v3 button[role="checkbox"][aria-checked="true"] > span:first-child {
+  border-color: transparent;
+  background: var(--gradient-brand);
+}
+
+/* ---------- Вкладки и локальные акценты ---------- */
 
 .app-v3 div[role="tablist"] {
-  border: 2px solid var(--ink);
-  background: var(--surface-inset);
-  border-radius: 6px;
+  border-width: 1px;
+  border-color: var(--border);
+  border-radius: var(--radius-sm);
+  background: rgb(241 245 249 / 0.86);
+  box-shadow: inset 0 1px 2px rgb(15 23 42 / 0.035);
 }
+
 .app-v3 button[role="tab"] {
-  border: 2px solid transparent;
-  border-radius: 4px;
+  border: 0;
+  border-radius: 9px;
+  box-shadow: none;
 }
+
 .app-v3 button[role="tab"][aria-selected="true"] {
-  background: var(--acc);
-  color: var(--ink);
-  border-color: var(--ink);
-  box-shadow: 2px 2px 0 var(--ink);
+  color: var(--info-text);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
 }
 
-/* ---------- тосты (класс вешает Toaster на маршрутах приложения) ---------- */
-
-.v3-toast {
-  background: #fffdf6;
-  border: 2px solid #0a0a0a;
-  border-radius: 6px;
-  box-shadow: 5px 5px 0 #0a0a0a;
+.app-v3 .bg-brand {
+  color: var(--info-text);
+  background-color: var(--info-soft);
 }
 
-/* Тревожное действие — красная клавиша */
-.app-v3 button[data-variant="danger"] {
-  background: var(--red);
+.app-v3 .bg-brand-gradient {
   color: #fff;
 }
-.app-v3 button[data-variant="danger"]:hover:not(:disabled) {
-  background: #c93a18;
+
+.app-v3 .text-gradient {
+  background-image: linear-gradient(115deg, var(--brand-1), var(--brand-2));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
 }
 
-/* Плоский жёлтый «градиент» — только с чернильным текстом, белый на жёлтом запрещён */
-.app-v3 .bg-brand-gradient {
-  color: var(--ink);
-}
+/* ---------- ИИ-студия: clay теперь тоже стекло ---------- */
 
-/* ---------- clay → чернильные листы (живёт только в ИИ-студии) ---------- */
-
-/* Большая панель (чат) — статичный лист: рамка есть, тени нет */
 .app-v3 .clay {
-  background: var(--sheet);
-  border: 2px solid var(--ink);
+  border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  box-shadow: none;
+  background: rgb(255 255 255 / 0.88);
+  box-shadow: var(--shadow-md), inset 0 1px 0 rgb(255 255 255 / 0.8);
+  -webkit-backdrop-filter: blur(22px) saturate(150%);
+  backdrop-filter: blur(22px) saturate(150%);
 }
 
-/* Кликабельный лист (подсказки в студии) — тень есть, нажатие вдавливает */
 .app-v3 button.clay {
-  box-shadow: 3px 3px 0 var(--ink);
+  transition:
+    transform 0.2s var(--ease-soft),
+    box-shadow 0.2s var(--ease-soft);
 }
+
 .app-v3 button.clay:hover:not(:disabled) {
-  translate: 1px 1px;
-  box-shadow: 2px 2px 0 var(--ink);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-lg);
 }
+
 .app-v3 button.clay:active:not(:disabled) {
-  translate: 3px 3px;
-  box-shadow: 0 0 0 var(--ink);
+  transform: translateY(0) scale(0.98);
+  box-shadow: var(--shadow-sm);
 }
 
-/* Мелкие клавиши-пилюли (чип модели, стиля, быстрые команды) */
 .app-v3 .clay-sm {
-  background: var(--sheet);
-  border: 2px solid var(--ink);
+  border: 1px solid var(--border);
   border-radius: 999px;
-  box-shadow: 2px 2px 0 var(--ink);
+  background: rgb(255 255 255 / 0.9);
+  box-shadow: var(--shadow-xs);
 }
 
-/* Вдавленное состояние (открытый поповер, active) */
+.app-v3 .clay-in,
 .app-v3 .clay-press {
-  box-shadow: 0 0 0 var(--ink);
-  translate: 2px 2px;
-}
-
-.app-v3 .clay-in {
   background: var(--surface-inset);
-  box-shadow: none;
+  box-shadow: inset 0 1px 3px rgb(15 23 42 / 0.08);
 }
 
-/* ---------- reduced motion: физика клавиш гаснет ---------- */
+/* Тост рендерится выше app-layout, поэтому класс не скоупирован. */
+.v3-toast {
+  color: #0f172a;
+  background: rgb(255 255 255 / 0.94);
+  border: 1px solid rgb(15 23 42 / 0.1);
+  border-radius: 16px;
+  box-shadow: 0 24px 60px -24px rgb(15 23 42 / 0.32);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+  backdrop-filter: blur(24px) saturate(160%);
+}
+
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  .app-v3 .card-plain {
+    transition:
+      transform 0.22s var(--ease-soft),
+      border-color 0.22s ease,
+      box-shadow 0.22s var(--ease-soft);
+  }
+
+  .app-v3 .card-plain:hover {
+    border-color: rgb(79 70 229 / 0.16);
+    box-shadow: var(--shadow-md), inset 0 1px 0 rgb(255 255 255 / 0.9);
+  }
+}
 
 @media (prefers-reduced-motion: reduce) {
-  .app-v3 button[data-variant],
-  .app-v3 input,
-  .app-v3 textarea,
-  .app-v3 select {
-    transition: none;
+  .app-v3 *,
+  .app-v3 *::before,
+  .app-v3 *::after {
+    scroll-behavior: auto !important;
+  }
+
+  .app-v3 .skeleton {
+    animation: none;
   }
 }

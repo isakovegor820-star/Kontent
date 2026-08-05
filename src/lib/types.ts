@@ -7,7 +7,12 @@ export type PostStatus =
   | "queued" // в очереди без даты
   | "scheduled" // запланирован на дату/время
   | "publishing" // сервер публикует прямо сейчас
-  | "published" // вышел
+  | "published_unverified" // внешняя доставка не подтверждена
+  | "published" // внешний id подтверждён
+  | "missing" // Telegram подтвердил отсутствие сообщения
+  | "deleted_external" // удалён во внешней сети
+  | "failed_retry" // временный сбой, ждём server-side next_attempt_at
+  | "quarantined" // дата истекла; нужна новая пользовательская revision
   | "failed"; // сбой (после 3 автоповторов)
 
 export interface PostMetrics {
@@ -19,6 +24,8 @@ export interface PostMetrics {
 
 export interface Post {
   id: string;
+  /** Владелец старой browser-only recovery-копии; отсутствие означает unowned legacy. */
+  legacyOwnerUserId?: number;
   text: string;
   networks: Network[];
   /** ISO-строка. null — очередь без даты (ТЗ 5.3) */
@@ -38,6 +45,8 @@ export interface Post {
   channelId?: number;
   /** Ссылка на вышедший пост в сети (t.me/… или vk.com/wall-…). Для демо-постов пусто. */
   postUrl?: string;
+  /** Внешняя проверка: ссылка/метрики допустимы только для verified. */
+  verificationState?: "unverified" | "verified" | "missing" | "unverifiable";
   /** Медиа поста. assetId/url появляются у реального результата ИИ-студии. */
   media?: {
     kind: "image" | "video";
@@ -99,7 +108,7 @@ export interface Trend {
   title: string;
   /** Почему залетело — человеческим языком */
   why: string;
-  /** Готовый сценарий (ТЗ 5.5 «Сними это») */
+  /** Готовый сценарий для новой публикации */
   script: string[];
   scope: "niche" | "global";
   format: "video" | "post" | "carousel";
@@ -152,6 +161,7 @@ export interface Settings {
 }
 
 export interface User {
+  id: number;
   name: string;
   email: string;
   provider: "email" | "google" | "vk" | "telegram";
@@ -175,11 +185,22 @@ export interface RealPost {
   scheduled_at: string | null;
   status: PostStatus;
   tg_message_id: number | null;
+  external_message_id: string | null;
   /** id вышедшей записи VK (для ссылки «Открыть пост») */
   vk_post_id: number | null;
   attempts: number;
   last_error: string | null;
   published_at: string | null;
+  verification_state: "unverified" | "verified" | "missing" | "unverifiable";
+  last_verification_attempt_at: string | null;
+  last_verified_at: string | null;
+  verification_error_code: string | null;
+  verification_error_reason: string | null;
+  publication_origin: Post["origin"] | "rss" | "retry" | "legacy";
+  next_attempt_at: string | null;
+  quarantined_at: string | null;
+  quarantine_reason: string | null;
+  schedule_revision: number;
   created_at: string;
   network: Network;
   channel_title: string | null;
@@ -188,6 +209,14 @@ export interface RealPost {
   handle: string | null;
   /** id VK-сообщества (для ссылки vk.com/wall-<gid>_<pid>) */
   vk_group_id: number | null;
+  publication_parts: Array<{
+    partIndex: number;
+    type: "text" | "media" | "media_caption";
+    externalMessageId: string | null;
+    sendStatus: "pending" | "sending" | "sent" | "failed" | "unknown";
+    verificationState: "unverified" | "verified" | "missing" | "unverifiable";
+    lastErrorCode: string | null;
+  }>;
 }
 
 export interface AppState {

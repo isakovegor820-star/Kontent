@@ -1,26 +1,43 @@
 import { NextRequest, NextResponse } from "next/server";
+import { randomUUID } from "node:crypto";
 
 import { getPool } from "@/lib/db";
+import type { MediaGenerationStatus } from "@/lib/media-generation.mjs";
+import { reconcileStaleMediaGeneration } from "@/lib/media-generation-reconciliation";
 import { getSessionUser } from "@/lib/session";
 
 export const runtime = "nodejs";
 
+function response(requestId: string, body: Record<string, unknown>, status = 200) {
+  return NextResponse.json(
+    { ...body, requestId },
+    { status, headers: { "x-request-id": requestId, "cache-control": "no-store" } },
+  );
+}
+
 export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+  let requestId: string = randomUUID();
   const user = await getSessionUser(req);
-  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  if (!user) return response(requestId, { error: "unauthorized" }, 401);
   const { id } = await ctx.params;
   const generationId = Number(id);
   if (!Number.isInteger(generationId) || generationId <= 0) {
-    return NextResponse.json({ error: "bad_id" }, { status: 400 });
+    return response(requestId, { error: "bad_id" }, 400);
   }
 
   try {
+    const pool = getPool();
+    await reconcileStaleMediaGeneration(pool, { userId: user.id, generationId });
     const row = (
-      await getPool().query<{
+      await pool.query<{
         id: number;
+        request_id: string;
         kind: "image" | "video";
-        status: string;
+        status: MediaGenerationStatus;
         prompt: string;
+        negative_prompt: string | null;
+        source_text: string | null;
+        exact_text: string | null;
         model: string;
         aspect_ratio: string;
         quality: string | null;
@@ -35,7 +52,10 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
         updated_at: Date;
         completed_at: Date | null;
       }>(
-        `select g.id, g.kind, g.status, g.prompt, g.model, g.aspect_ratio, g.quality,
+        `select g.id, g.request_id, g.kind, g.status, g.prompt, g.negative_prompt,
+                coalesce(g.prompt_context->>'sourcePost', '') as source_text,
+                coalesce(g.prompt_context->>'exactText', '') as exact_text,
+                g.model, g.aspect_ratio, g.quality,
                 g.seconds, g.style, g.output_asset_id, g.error_code, g.error_message,
                 g.created_at, g.updated_at, g.completed_at, a.mime_type, a.bytes
            from media_generations g
@@ -44,14 +64,19 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
         [generationId, user.id],
       )
     ).rows[0];
-    if (!row) return NextResponse.json({ error: "not_found" }, { status: 404 });
+    if (!row) return response(requestId, { error: "not_found" }, 404);
+    requestId = row.request_id;
     const assetId = row.output_asset_id ? String(row.output_asset_id) : null;
-    return NextResponse.json({
+    return response(requestId, {
       generation: {
         id: String(row.id),
+        requestId: row.request_id,
         kind: row.kind,
         status: row.status,
         prompt: row.prompt,
+        negativePrompt: row.negative_prompt ?? "",
+        sourceText: row.source_text ?? "",
+        exactText: row.exact_text ?? "",
         model: row.model,
         aspectRatio: row.aspect_ratio,
         quality: row.quality,
@@ -70,8 +95,13 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
       },
     });
   } catch (error) {
-    console.error("[/api/media/generations/:id]", error);
-    return NextResponse.json({ error: "server" }, { status: 500 });
+    console.error("[media-api]", {
+      event: "poll_failed",
+      requestId,
+      generationId,
+      code: "server",
+      errorName: error instanceof Error ? error.name : "Error",
+    });
+    return response(requestId, { error: "server", retryable: true }, 500);
   }
 }
-

@@ -112,4 +112,9 @@ describe("parseRss — edge cases", () => {
     const [item] = parseRss(xml);
     expect(item.title.length).toBeLessThanOrEqual(300);
   });
+
+  it("не роняет всю ленту из-за некорректной даты записи", () => {
+    const xml = `<rss><channel><item><title>Новость</title><description>Текст</description><pubDate>не дата</pubDate></item></channel></rss>`;
+    expect(parseRss(xml)[0].publishedAt).toBeNull();
+  });
 });

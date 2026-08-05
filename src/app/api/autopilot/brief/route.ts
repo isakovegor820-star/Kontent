@@ -7,6 +7,7 @@ import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
 import { RUBRICS, briefComplete, normalizeBrief } from "@/lib/brief";
 import { loadBrief, resolveChannel } from "@/lib/autopilot";
+import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 
 export const runtime = "nodejs";
 
@@ -24,6 +25,9 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  if (!hasTrustedMutationOrigin(req)) {
+    return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
+  }
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
 
@@ -46,10 +50,11 @@ export async function POST(req: NextRequest) {
 
   try {
     await getPool().query(
-      `insert into content_brief (user_id, channel_id, niche, audience, rubrics, goal, cta, taboo, quality, ready, source, updated_at)
-            values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now())
+      `insert into content_brief (user_id, channel_id, niche, audience, rubrics, formats, author_role, goal, cta, taboo, quality, ready, source, updated_at)
+            values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, now())
        on conflict (user_id, channel_id) do update
             set niche = excluded.niche, audience = excluded.audience, rubrics = excluded.rubrics,
+                formats = excluded.formats, author_role = excluded.author_role,
                 goal = excluded.goal, cta = excluded.cta, taboo = excluded.taboo,
                 quality = excluded.quality, ready = excluded.ready,
                 source = excluded.source, updated_at = now()`,
@@ -59,6 +64,8 @@ export async function POST(req: NextRequest) {
         b.niche,
         b.audience,
         b.rubrics,
+        b.formats,
+        b.authorRole,
         b.goal,
         b.cta,
         b.taboo,

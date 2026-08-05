@@ -47,6 +47,9 @@ export async function GET(req: NextRequest) {
           [user.id, channelId],
         )
       ).rows[0] ?? null;
+    if (plan?.status === "error" && plan.rules === "ai_usage_limit") {
+      plan = { ...plan, errorReason: "quota" };
+    }
 
     // A queue job can survive while its worker is stopped. Without a deadline that left the
     // page polling `building` forever (the real incident lasted two days). Mark only the exact
@@ -56,7 +59,7 @@ export async function GET(req: NextRequest) {
       isAutopilotBuildStale(plan.created_at, settings.post_frequency)
     ) {
       const expired = await pool.query(
-        `update autopilot_plan set status = 'error'
+        `update autopilot_plan set status = 'error', revision = revision + 1
           where id = $1 and user_id = $2 and channel_id = $3 and status = 'building'
           returning id`,
         [plan.id, user.id, channelId],

@@ -12,7 +12,10 @@ import { getSessionUser } from "@/lib/session";
 import { getStatsQueue } from "@/lib/queue";
 import { resolveChannel } from "@/lib/autopilot";
 import { fetchPublicPosts } from "@/lib/tg-public";
-import { completeText } from "@/lib/ai-provider";
+import { completeAiText } from "@/lib/ai-completion-service.mjs";
+import { isEngineId } from "@/lib/engines";
+import { finalizeAiUsage, releaseAiUsage, reserveAiUsage } from "@/lib/ai-usage";
+import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import {
   buildExtractionMessages,
   isMeaningfulProfile,
@@ -36,22 +39,47 @@ async function saveProfileSource(
   title: string,
   profile: ChannelProfile,
   kind: "profile" | "profile_edit",
+  usageReservationId: number | null = null,
 ) {
   const pool = getPool();
   const wipe = kind === "profile_edit" ? ["profile", "profile_edit"] : [kind];
-  await pool.query(`delete from knowledge_sources where channel_id = $1 and kind = any($2)`, [
-    channelId,
-    wipe,
-  ]);
-  const ins = await pool.query<{ id: number }>(
-    `insert into knowledge_sources (user_id, channel_id, kind, title, raw_text)
-     values ($1, $2, $3, $4, $5) returning id`,
-    [userId, channelId, kind, title, profileToSourceText(profile)],
-  );
+  const tx = await pool.connect();
+  let sourceId: number;
+  try {
+    await tx.query("begin");
+    await tx.query(
+      `delete from knowledge_sources
+        where user_id = $1 and channel_id = $2 and kind = any($3)`,
+      [userId, channelId, wipe],
+    );
+    const ins = await tx.query<{ id: number }>(
+      `insert into knowledge_sources (user_id, channel_id, kind, title, raw_text)
+       values ($1, $2, $3, $4, $5) returning id`,
+      [userId, channelId, kind, title, profileToSourceText(profile)],
+    );
+    sourceId = Number(ins.rows[0].id);
+    if (usageReservationId !== null) {
+      // Профиль и списание — одна транзакция: ни сохранённого бесплатного результата,
+      // ни списания за откатившееся сохранение.
+      const finalized = await finalizeAiUsage(
+        userId,
+        usageReservationId,
+        "committed",
+        tx,
+      );
+      if (!finalized.changed) throw new Error("ai usage reservation expired or already finalized");
+    }
+    await tx.query("commit");
+  } catch (err) {
+    await tx.query("rollback").catch(() => {});
+    throw err;
+  } finally {
+    tx.release();
+  }
   await getStatsQueue()
     .add(
       "knowledge-index",
-      { sourceId: Number(ins.rows[0].id) },
+      { sourceId },
       { removeOnComplete: true, attempts: 3, backoff: { type: "fixed", delay: 20000 } },
     )
     .catch(() => {
@@ -60,20 +88,27 @@ async function saveProfileSource(
 }
 
 export async function POST(req: NextRequest) {
+  if (!hasTrustedMutationOrigin(req)) {
+    return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
+  }
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
 
   const body = (await req.json().catch(() => ({}))) as { channelId?: number };
 
+  let reservationId: number | null = null;
+  let committed = false;
   try {
     const pool = getPool();
     const channelId = await resolveChannel(user.id, body.channelId ?? null);
     if (!channelId) return NextResponse.json({ ok: false, error: "no_channel" }, { status: 422 });
 
     const ch = (
-      await pool.query<{ handle: string | null; title: string | null }>(
-        `select handle, title from channels where id = $1`,
-        [channelId],
+      await pool.query<{ handle: string | null; title: string | null; ai_engine: string | null }>(
+        `select c.handle, c.title, u.ai_engine
+           from channels c join users u on u.id = c.user_id
+          where c.id = $1 and c.user_id = $2`,
+        [channelId, user.id],
       )
     ).rows[0];
     if (!ch?.handle) return NextResponse.json({ ok: false, error: "no_handle" }, { status: 422 });
@@ -85,27 +120,60 @@ export async function POST(req: NextRequest) {
     }
 
     const { system, user: prompt } = buildExtractionMessages(ch.title ?? ch.handle, posts);
+    const reservation = await reserveAiUsage(user.id, "profile");
+    if (!reservation.allowed) {
+      return NextResponse.json(
+        { ok: false, error: "limit", used: reservation.used, limit: reservation.limit },
+        { status: 429 },
+      );
+    }
+    reservationId = reservation.reservationId;
     let profile: ChannelProfile | null = null;
     try {
-      const raw = await completeText(system, prompt, { temperature: 0.2, maxTokens: 700 });
-      profile = parseProfile(raw);
+      const completed = await completeAiText({
+        system,
+        user: prompt,
+        engine: isEngineId(ch.ai_engine) ? ch.ai_engine : null,
+        temperature: 0.2,
+        maxTokens: 700,
+      }, { signal: req.signal });
+      profile = parseProfile(completed.text);
     } catch (err) {
-      console.error("[/api/knowledge/extract-profile] движок:", err);
+      console.error("[/api/knowledge/extract-profile] generation failed", {
+        errorName: (err as Error)?.name || "Error",
+      });
       return NextResponse.json({ ok: false, error: "ai_unavailable" }, { status: 503 });
     }
     if (!profile) {
       return NextResponse.json({ ok: false, error: "extract_failed" }, { status: 422 });
     }
 
-    await saveProfileSource(user.id, channelId, `Профиль канала «${ch.title || ch.handle}»`, profile, "profile");
+    await saveProfileSource(
+      user.id,
+      channelId,
+      `Профиль канала «${ch.title || ch.handle}»`,
+      profile,
+      "profile",
+      reservationId,
+    );
+    committed = true;
     return NextResponse.json({ ok: true, profile, posts: posts.length });
   } catch (err) {
-    console.error("[/api/knowledge/extract-profile] POST", err);
+    console.error("[/api/knowledge/extract-profile] POST", {
+      errorName: (err as Error)?.name || "Error",
+    });
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
+  } finally {
+    if (reservationId !== null && !committed) {
+      await releaseAiUsage(user.id, reservationId).catch(() => {});
+    }
   }
 }
 
 export async function PUT(req: NextRequest) {
+  if (!hasTrustedMutationOrigin(req)) {
+    return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
+  }
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
 

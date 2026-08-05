@@ -3,11 +3,9 @@
 /**
  * КАРКАС РАБОЧИХ ЭКРАНОВ ПЛАТФОРМЫ (Приложение А: экраны А4–А12).
  *
- * Визуальный мир — небрутализм v3 («как на лендинге»): кремовая бумага
- * с видимой сеткой, чернильные рамки 2px, жёсткие тени без размытия,
- * жёлтый — только действие и активные состояния. Цвета приезжают через
- * токен-мост app-v3.css; здесь — структура: штамп-лого, сайдбар-пульт,
- * липкая шапка страницы и нижняя навигация на телефоне.
+ * Визуальный мир — Aurora Glass с публичного лендинга: светлая основа,
+ * фиолетовые акценты, прозрачные панели, мягкие тени и много воздуха.
+ * Здесь остаётся только структура оболочки; цвета и физика приезжают из app-v3.css.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -21,15 +19,32 @@ import {
   ChevronDown,
   LogOut,
   Menu,
+  SearchCode,
   Rocket,
   Rss,
   ScanSearch,
   Settings,
   Sparkles,
+  TriangleAlert,
   X,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import { AuroraBackground } from "@/components/aurora-background";
+import { Wordmark } from "@/components/brand";
 import { Button } from "@/components/ui/button";
+import { getAiUsageMetrics } from "@/lib/ai-usage-sync";
+import {
+  APP_BOTTOM_NAV_ROUTE_IDS,
+  APP_NAV_GROUPS,
+  APP_ROUTES,
+  appRouteLabel,
+  isAppRouteActive,
+  type AppNavRouteId,
+} from "@/lib/app-routes";
+import {
+  readinessRequestFailure,
+  type ServiceReadiness,
+} from "@/lib/readiness";
 import { useStore } from "@/lib/store";
 import type { User } from "@/lib/types";
 import { cn, fmtNum, plural } from "@/lib/utils";
@@ -37,99 +52,102 @@ import { cn, fmtNum, plural } from "@/lib/utils";
 /* ------------------------------------------------------------- НАВИГАЦИЯ */
 
 type NavItem = {
-  href: string;
-  label: string;
+  routeId: AppNavRouteId;
   icon: LucideIcon;
-  /** Дочерние маршруты, на которых пункт остаётся подсвеченным */
-  also?: string[];
+  children?: readonly { href: string; label: string }[];
+};
+
+const NAV_ICONS: Record<AppNavRouteId, LucideIcon> = {
+  calendar: Calendar,
+  studio: Sparkles,
+  autopilot: Rocket,
+  library: Bookmark,
+  rss: Rss,
+  recon: ScanSearch,
+  siteAnalysis: SearchCode,
+  analytics: BarChart3,
+  settings: Settings,
+};
+
+const NAV_CHILDREN: Partial<Record<AppNavRouteId, readonly { href: string; label: string }[]>> = {
+  settings: [
+    { href: "/app/settings?section=posts", label: "Настройки постов" },
+    { href: "/app/settings?section=general", label: "Общие настройки" },
+  ],
 };
 
 // Три группы — ровно порядок формулы продукта: работа → разведка → итоги.
-const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
-  {
-    title: "Работа",
-    items: [
-      // Редактор поста — часть календаря, поэтому пункт остаётся активным и там
-      { href: "/app/calendar", label: "Календарь", icon: Calendar, also: ["/app/composer"] },
-      { href: "/app/studio", label: "ИИ-студия", icon: Sparkles },
-      { href: "/app/autopilot", label: "Автопилот", icon: Rocket },
-      // Базы знаний в меню нет нарочно: она стала невидимой — наполняется сама из постов
-      // канала и ответов в боте. Страница живёт по прямой ссылке из настроек (для гиков).
-      { href: "/app/library", label: "Библиотека", icon: Bookmark },
-      { href: "/app/rss", label: "RSS-ленты", icon: Rss },
-    ],
-  },
-  {
-    title: "Рынок",
-    items: [
-      // Вся разведка — один экран-хаб с вкладками Сигналы / Конкуренты / Тренды.
-      // Раньше тут было четыре пункта-близнеца, лид в них путался.
-      { href: "/app/recon", label: "Разведка", icon: ScanSearch },
-    ],
-  },
-  {
-    title: "Итоги",
-    items: [
-      { href: "/app/analytics", label: "Аналитика", icon: BarChart3 },
-      { href: "/app/settings", label: "Настройки", icon: Settings },
-    ],
-  },
-];
+// Состав, подписи, адреса и aliases общие с мобильной панелью и вкладками разведки.
+const NAV_GROUPS: { title: string; items: NavItem[] }[] = APP_NAV_GROUPS.map((group) => ({
+  title: group.title,
+  items: group.routeIds.map((routeId) => ({
+    routeId,
+    icon: NAV_ICONS[routeId],
+    children: NAV_CHILDREN[routeId],
+  })),
+}));
 
 // Нижняя панель телефона — не больше пяти пунктов, иначе цели становятся тесными.
 // Разведка — один пункт-хаб (как в сайдбаре): на всех её вкладках он остаётся активным.
-const BOTTOM_NAV: NavItem[] = [
-  { href: "/app/calendar", label: "Календарь", icon: Calendar, also: ["/app/composer"] },
-  { href: "/app/studio", label: "Студия", icon: Sparkles },
-  {
-    href: "/app/recon",
-    label: "Разведка",
-    icon: ScanSearch,
-    also: ["/app/trends", "/app/competitors", "/app/radar", "/app/mentions"],
-  },
-  { href: "/app/analytics", label: "Аналитика", icon: BarChart3 },
-];
+const BOTTOM_NAV: NavItem[] = APP_BOTTOM_NAV_ROUTE_IDS.map((routeId) => ({
+  routeId,
+  icon: NAV_ICONS[routeId],
+}));
 
 function isActive(pathname: string, item: NavItem) {
-  return [item.href, ...(item.also ?? [])].some(
-    (p) => pathname === p || pathname.startsWith(`${p}/`),
-  );
+  return isAppRouteActive(pathname, item.routeId);
 }
 
-/* ------------------------------------------------------------ ШТАМП-ЛОГО */
-// Тот же штамп, что на лендинге v3: жёлтый квадрат в чернильной рамке.
+/* --------------------------------------------------------------- БРЕНД */
 
 function AppBrand() {
-  return (
-    <span className="flex items-center gap-2.5">
-      <span
-        aria-hidden
-        className="flex h-8 w-8 items-center justify-center border-2 border-line bg-[var(--acc)] font-[family-name:var(--v3-display)] text-[15px] font-black shadow-[3px_3px_0_var(--ink)]"
-      >
-        А
-      </span>
-      <span className="font-[family-name:var(--v3-display)] text-[15px] font-bold tracking-[0.08em] uppercase">
-        Аврора
-      </span>
-    </span>
-  );
+  return <Wordmark />;
 }
 
 /* ------------------------------------------------------- ЛИМИТ ИИ НА ДЕНЬ */
 // Честность лимитов — требование ТЗ (раздел 6 и риск 12: стоимость ИИ).
-// Цифры видны всегда, а не всплывают в момент отказа.
+// Цифры видны только после серверного подтверждения, а не выдумываются из начального нуля.
 
 function AiLimitCard() {
   // Настоящий счётчик генераций за сегодня (Д.8), а не демо-число.
-  const { aiUsed: used, aiLimit: limit } = useStore();
-  const ratio = limit > 0 ? Math.min(1, used / limit) : 1;
-  const hot = ratio >= 0.9;
+  const { aiUsed, aiLimit, aiUsageStatus } = useStore();
+  const usage = getAiUsageMetrics(aiUsageStatus, aiUsed, aiLimit);
+
+  if (!usage) {
+    const loading = aiUsageStatus === "loading";
+    return (
+      <div
+        role="status"
+        aria-live="polite"
+        className="rounded-sm border border-line bg-surface/80 p-3 shadow-soft backdrop-blur-xl"
+      >
+        <div className="flex items-center gap-2">
+          <Sparkles
+            className={cn("h-4 w-4 shrink-0", loading ? "text-brand" : "text-fire")}
+            strokeWidth={2}
+            aria-hidden
+          />
+          <p className="text-[13px] font-bold text-text">Лимит ИИ на сегодня</p>
+        </div>
+        <p className="mt-2 text-[13px] leading-snug text-text-2">
+          {loading ? "Проверяем доступный лимит…" : "Счётчик временно недоступен."}
+        </p>
+        {!loading && (
+          <p className="mt-0.5 text-[12px] leading-snug text-text-3">
+            Не показываем остаток, пока сервер не подтвердит данные.
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  const { used, limit, ratio, hot } = usage;
 
   return (
     <div
       className={cn(
-        "rounded-[6px] border-2 p-3",
-        hot ? "border-line bg-fire-soft" : "border-line bg-surface",
+        "rounded-sm border p-3 shadow-soft backdrop-blur-xl",
+        hot ? "border-fire/25 bg-fire-soft" : "border-line bg-surface/80",
       )}
     >
       <div className="flex items-center gap-2">
@@ -147,7 +165,7 @@ function AiLimitCard() {
         aria-valuemin={0}
         aria-valuemax={limit}
         aria-valuenow={used}
-        className="mt-2.5 h-3 w-full overflow-hidden rounded-[3px] border-2 border-line bg-surface"
+        className="mt-2.5 h-1.5 w-full overflow-hidden rounded-full bg-surface-inset"
       >
         {/* Только transform — ширину не анимируем никогда (ТЗ 7.4) */}
         <motion.div
@@ -161,13 +179,64 @@ function AiLimitCard() {
         />
       </div>
 
-      <p className="nums v3-mono mt-2 text-[12px] font-semibold text-text-2">
+      <p className="nums mt-2 text-[12px] font-semibold text-text-2">
         {fmtNum(used)} из {fmtNum(limit)}{" "}
         {plural(limit, "генерации", "генераций", "генераций")}
       </p>
       <p className="mt-0.5 text-[13px] leading-snug text-text-3">
         {hot ? "Почти всё. Счётчик обнулится в полночь." : "Счётчик обнуляется в полночь."}
       </p>
+    </div>
+  );
+}
+
+function ServiceHealthBanner() {
+  const [report, setReport] = useState<ServiceReadiness | null>(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      const response = await fetch("/api/readiness", { cache: "no-store" });
+      const body = (await response.json().catch(() => null)) as ServiceReadiness | null;
+      setReport(
+        body && typeof body.webReady === "boolean" ? body : readinessRequestFailure(),
+      );
+    } catch {
+      setReport(readinessRequestFailure());
+    }
+  }, []);
+
+  useEffect(() => {
+    const kickoff = window.setTimeout(() => void refresh(), 0);
+    const timer = window.setInterval(refresh, 30_000);
+    return () => {
+      window.clearTimeout(kickoff);
+      window.clearInterval(timer);
+    };
+  }, [refresh]);
+
+  // Состояние конкретных AI-моделей показывается рядом с их выбором в Студии.
+  // Глобальная плашка остаётся только для сбоев, затрагивающих всю платформу.
+  if (!report || (report.webReady && report.publicationReady)) {
+    return null;
+  }
+
+  const messages = [
+    !report.webReady ? "Серверные данные сейчас недоступны." : null,
+    !report.publicationReady
+      ? "Фоновая публикация временно не готова: черновики можно сохранить, но отправку лучше отложить."
+      : null,
+  ].filter(Boolean);
+
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="border-b border-fire/20 bg-fire-soft/90 px-4 py-3 text-text backdrop-blur-xl sm:px-6 lg:px-8"
+    >
+      <div className="mx-auto flex max-w-[1400px] items-start gap-2.5 text-[13px] leading-relaxed font-semibold">
+        <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+        <span>{messages.join(" ")}</span>
+      </div>
     </div>
   );
 }
@@ -181,7 +250,7 @@ function UserRow({ user, onSignOut }: { user: User; onSignOut: () => void }) {
     <div className="flex items-center gap-2">
       <span
         aria-hidden
-        className="grid h-9 w-9 shrink-0 place-items-center rounded-[4px] border-2 border-line bg-[var(--acc)] text-[15px] font-black text-text shadow-[2px_2px_0_var(--ink)]"
+        className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-brand-gradient text-[15px] font-bold text-white shadow-glow"
       >
         {initial}
       </span>
@@ -268,7 +337,7 @@ function SidebarInner({
               type="button"
               onClick={() => toggleGroup(group.title)}
               aria-expanded={!isCollapsed}
-              className="v3-mono flex w-full items-center justify-between px-3 pb-1.5 text-[11px] font-semibold tracking-[0.16em] text-text-3 uppercase transition-colors hover:text-text"
+              className="flex w-full items-center justify-between px-3 pb-1.5 text-[12px] font-bold tracking-[0.08em] text-text-3 uppercase transition-colors hover:text-text"
             >
               {group.title}
               <ChevronDown
@@ -284,30 +353,52 @@ function SidebarInner({
               {group.items.map((item) => {
                 const active = isActive(pathname, item);
                 const Icon = item.icon;
+                const route = APP_ROUTES[item.routeId];
                 return (
-                  <li key={item.href}>
+                  <li key={item.routeId}>
                     <Link
-                      href={item.href}
+                      href={route.href}
                       onClick={onClose}
                       aria-current={active ? "page" : undefined}
                       className={cn(
-                        "group relative flex h-11 items-center gap-3 rounded-[4px] border-2 pr-3 pl-3",
-                        "text-[15px] font-semibold transition-all duration-150",
+                        "group relative flex h-11 items-center gap-3 rounded-xs pr-3 pl-3.5",
+                        "text-[15px] font-semibold transition-colors duration-200",
                         active
-                          ? "border-line bg-[var(--acc)] text-text shadow-[3px_3px_0_var(--ink)]"
-                          : "border-transparent text-text-2 hover:border-line hover:bg-surface hover:text-text",
+                          ? "bg-info-soft text-brand"
+                          : "text-text-2 hover:bg-surface-inset hover:text-text",
                       )}
                     >
+                      {active && (
+                        <span
+                          aria-hidden
+                          className="absolute top-3 bottom-3 left-0 w-[3px] rounded-full bg-brand-gradient"
+                        />
+                      )}
                       <Icon
                         className={cn(
                           "h-[18px] w-[18px] shrink-0 transition-colors duration-150",
-                          active ? "text-text" : "text-text-3 group-hover:text-text-2",
+                          active ? "text-brand" : "text-text-3 group-hover:text-text-2",
                         )}
                         strokeWidth={active ? 2 : 1.75}
                         aria-hidden
                       />
-                      <span className="truncate">{item.label}</span>
+                      <span className="truncate">{route.label}</span>
                     </Link>
+                    {active && item.children && (
+                      <ul className="mt-1 ml-6 space-y-0.5 border-l border-brand/15 pl-3">
+                        {item.children.map((child) => (
+                          <li key={child.href}>
+                            <Link
+                              href={child.href}
+                              onClick={onClose}
+                              className="flex min-h-9 items-center rounded-xs px-3 text-[13px] font-semibold text-text-3 transition-colors hover:bg-surface-inset hover:text-brand"
+                            >
+                              {child.label}
+                            </Link>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
                   </li>
                 );
               })}
@@ -318,7 +409,7 @@ function SidebarInner({
         })}
       </nav>
 
-      <div className="shrink-0 space-y-3 border-t-2 border-line p-3">
+      <div className="shrink-0 space-y-3 border-t border-line p-3">
         <AiLimitCard />
         <UserRow user={user} onSignOut={onSignOut} />
       </div>
@@ -334,10 +425,14 @@ function SidebarInner({
 
 function ShellSkeleton({ title, subtitle }: { title: string; subtitle?: string }) {
   return (
-    <div className="v3-paper relative isolate min-h-dvh" role="status" aria-busy="true">
+    <div className="relative isolate min-h-dvh bg-bg" role="status" aria-busy="true">
       <span className="sr-only">Открываем платформу</span>
 
-      <div className="fixed inset-y-0 left-0 z-30 hidden w-[260px] flex-col border-r-2 border-line bg-surface lg:flex">
+      <div className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
+        <AuroraBackground intensity="app" grid={false} grain={false} />
+      </div>
+
+      <div className="fixed inset-y-0 left-0 z-30 hidden w-[260px] flex-col border-r border-line bg-surface/80 backdrop-blur-xl lg:flex">
         <div className="flex h-16 shrink-0 items-center gap-2.5 px-4">
           <div className="skeleton h-8 w-8 rounded-xs" />
           <div className="skeleton h-4 w-24" />
@@ -347,7 +442,7 @@ function ShellSkeleton({ title, subtitle }: { title: string; subtitle?: string }
             <div key={group.title} className="space-y-1">
               <div className="skeleton mx-3 mb-2 h-3 w-16" />
               {group.items.map((item) => (
-                <div key={item.href} className="skeleton h-11 w-full rounded-xs" />
+                <div key={item.routeId} className="skeleton h-11 w-full rounded-xs" />
               ))}
             </div>
           ))}
@@ -359,16 +454,16 @@ function ShellSkeleton({ title, subtitle }: { title: string; subtitle?: string }
       </div>
 
       <div className="lg:pl-[260px]">
-        <div className="sticky top-0 z-30 flex h-14 items-center justify-between border-b-2 border-line bg-surface px-3 lg:hidden">
+        <div className="sticky top-0 z-30 flex h-14 items-center justify-between border-b border-line bg-surface/80 px-3 backdrop-blur-xl lg:hidden">
           <div className="skeleton h-9 w-9 rounded-xs" />
           <div className="skeleton h-5 w-28" />
           <div className="skeleton h-9 w-9 rounded-xs" />
         </div>
 
-        <header className="sticky top-14 z-20 border-b-2 border-line bg-surface lg:top-0">
+        <header className="sticky top-14 z-20 border-b border-line bg-surface/70 backdrop-blur-xl lg:top-0">
           <div className="mx-auto flex max-w-[1400px] flex-wrap items-end justify-between gap-x-6 gap-y-3 px-4 py-4 sm:px-6 sm:py-5 lg:px-8">
             <div className="min-w-0">
-              <h1 className="v3-display text-[22px] font-bold text-text sm:text-[26px]">
+              <h1 className="text-2xl font-extrabold tracking-tight text-text sm:text-3xl">
                 {title}
               </h1>
               {subtitle && (
@@ -391,10 +486,10 @@ function ShellSkeleton({ title, subtitle }: { title: string; subtitle?: string }
         </main>
       </div>
 
-      <div className="fixed inset-x-0 bottom-0 z-30 border-t-2 border-line bg-surface pb-[env(safe-area-inset-bottom)] lg:hidden">
+      <div className="fixed inset-x-0 bottom-0 z-30 border-t border-line bg-surface/85 pb-[env(safe-area-inset-bottom)] backdrop-blur-2xl backdrop-saturate-150 lg:hidden">
         <div className="mx-auto flex h-14 max-w-lg items-center justify-around px-2">
           {BOTTOM_NAV.map((item) => (
-            <div key={item.href} className="skeleton h-9 w-12 rounded-xs" />
+            <div key={item.routeId} className="skeleton h-9 w-12 rounded-xs" />
           ))}
         </div>
       </div>
@@ -415,20 +510,21 @@ export function AppShell({
   subtitle?: string;
   action?: React.ReactNode;
 }) {
-  const { ready, authReady, user, signOut } = useStore();
+  const { ready, authReady, authError, user, signOut, refreshAuth } = useStore();
   const router = useRouter();
   const pathname = usePathname();
   const [menuOpen, setMenuOpen] = useState(false);
 
   const burgerRef = useRef<HTMLButtonElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
+  const drawerRef = useRef<HTMLElement>(null);
   // Выход уводит на лендинг — защита не должна перехватить и увести на /register
   const leavingRef = useRef(false);
 
   /* ЗАЩИТА: без входа — на регистрацию, без мастера — в мастер.
      Ждём ответа сервера о сессии (authReady), иначе выкинем вошедшего по ошибке. */
   useEffect(() => {
-    if (!ready || !authReady || leavingRef.current) return;
+    if (!ready || !authReady || authError || leavingRef.current) return;
     if (!user) {
       router.replace("/register");
       return;
@@ -436,7 +532,7 @@ export function AppShell({
     if (!user.onboarded && pathname !== "/app/onboarding") {
       router.replace("/app/onboarding");
     }
-  }, [ready, authReady, user, pathname, router]);
+  }, [ready, authReady, authError, user, pathname, router]);
 
   /* На широком экране меню не существует — гасим, если экран вырос */
   useEffect(() => {
@@ -457,7 +553,31 @@ export function AppShell({
 
     const close = () => setMenuOpen(false);
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") close();
+      if (e.key === "Escape") {
+        e.preventDefault();
+        close();
+        return;
+      }
+      if (e.key !== "Tab") return;
+      const focusable = Array.from(
+        drawerRef.current?.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ) ?? [],
+      ).filter((element) => !element.hasAttribute("hidden") && element.getClientRects().length > 0);
+      if (focusable.length === 0) {
+        e.preventDefault();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement;
+      if (e.shiftKey && (active === first || !drawerRef.current?.contains(active))) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && (active === last || !drawerRef.current?.contains(active))) {
+        e.preventDefault();
+        first.focus();
+      }
     };
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
@@ -480,6 +600,29 @@ export function AppShell({
     router.push("/");
   }, [signOut, router]);
 
+  // Ошибка проверки сессии не равна «гость»: не выкидываем человека на регистрацию
+  // и не показываем бесконечный скелетон, а даём явный повтор запроса.
+  if (ready && authReady && authError && !user) {
+    return (
+      <main className="grid min-h-dvh place-items-center bg-bg px-5 py-10">
+        <div
+          role="alert"
+          className="w-full max-w-lg rounded-md border border-line bg-surface/90 p-6 shadow-card backdrop-blur-xl"
+        >
+          <TriangleAlert className="h-7 w-7 text-fire" aria-hidden />
+          <h1 className="display mt-4 text-[26px] text-text">Не удалось проверить вход</h1>
+          <p className="mt-3 text-[15px] leading-relaxed text-text-2">
+            Сервер сессий временно недоступен. Мы не считаем тебя вышедшим и ничего не
+            удаляем — попробуй ещё раз.
+          </p>
+          <Button className="mt-5" variant="brand" onClick={() => void refreshAuth()}>
+            Повторить проверку
+          </Button>
+        </div>
+      </main>
+    );
+  }
+
   // Данных ещё нет, сессия не проверена или пользователю здесь не место — каркас, а не пустота
   if (!ready || !authReady || !user || (!user.onboarded && pathname !== "/app/onboarding")) {
     return <ShellSkeleton title={title} subtitle={subtitle} />;
@@ -488,9 +631,13 @@ export function AppShell({
   return (
     // reducedMotion="user": системная настройка гасит движение, оставляя прозрачность (ТЗ 7.4)
     <MotionConfig reducedMotion="user">
-      <div className="v3-paper relative isolate min-h-dvh">
+      <div className="relative isolate min-h-dvh bg-bg">
+        <div className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
+          <AuroraBackground intensity="app" grid={false} grain={false} />
+        </div>
+
         {/* САЙДБАР — десктоп */}
-        <aside className="fixed inset-y-0 left-0 z-30 hidden w-[260px] flex-col border-r-2 border-line bg-surface lg:flex">
+        <aside className="fixed inset-y-0 left-0 z-30 hidden w-[260px] flex-col border-r border-line bg-surface/80 backdrop-blur-xl lg:flex">
           <SidebarInner
             pathname={pathname}
             user={user}
@@ -509,7 +656,7 @@ export function AppShell({
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
-              className="fixed inset-0 z-40 bg-text/50 lg:hidden"
+              className="fixed inset-0 z-40 bg-text/40 backdrop-blur-sm lg:hidden"
             />
           )}
         </AnimatePresence>
@@ -517,6 +664,7 @@ export function AppShell({
         <AnimatePresence>
           {menuOpen && (
             <motion.aside
+              ref={drawerRef}
               key="drawer"
               id="app-drawer"
               role="dialog"
@@ -526,12 +674,12 @@ export function AppShell({
               animate={{ x: 0 }}
               exit={{ x: -280 }}
               transition={{ type: "spring", stiffness: 380, damping: 40, mass: 0.9 }}
-              className="fixed inset-y-0 left-0 z-50 flex w-[280px] flex-col border-r-2 border-line bg-surface shadow-float lg:hidden"
+              className="fixed inset-y-0 left-0 z-50 flex w-[280px] flex-col border-r border-line bg-surface/95 shadow-float backdrop-blur-2xl lg:hidden"
             >
               <SidebarInner
                 pathname={pathname}
                 user={user}
-                    onSignOut={handleSignOut}
+                onSignOut={handleSignOut}
                 onClose={closeMenu}
                 closeRef={closeRef}
               />
@@ -542,7 +690,7 @@ export function AppShell({
         {/* ПРАВАЯ КОЛОНКА */}
         <div className="lg:pl-[260px]">
           {/* Верхняя панель — только телефон */}
-          <div className="sticky top-0 z-30 grid h-14 grid-cols-[44px_1fr_44px] items-center border-b-2 border-line bg-surface px-2 lg:hidden">
+          <div className="sticky top-0 z-30 grid h-14 grid-cols-[44px_1fr_44px] items-center border-b border-line bg-surface/80 px-2 backdrop-blur-xl lg:hidden">
             <Button
               ref={burgerRef}
               type="button"
@@ -566,10 +714,10 @@ export function AppShell({
           </div>
 
           {/* ШАПКА КОНТЕНТА: заголовок, подзаголовок и главное действие страницы */}
-          <header className="sticky top-14 z-20 border-b-2 border-line bg-surface lg:top-0">
+          <header className="sticky top-14 z-20 border-b border-line bg-surface/70 backdrop-blur-xl lg:top-0">
             <div className="mx-auto flex max-w-[1400px] flex-wrap items-end justify-between gap-x-6 gap-y-3 px-4 py-4 sm:px-6 sm:py-5 lg:px-8">
               <div className="min-w-0">
-                <h1 className="v3-display text-[22px] font-bold text-text sm:text-[26px]">
+                <h1 className="text-2xl font-extrabold tracking-tight text-text sm:text-3xl">
                   {title}
                 </h1>
                 {subtitle && (
@@ -581,6 +729,8 @@ export function AppShell({
               {action && <div className="shrink-0">{action}</div>}
             </div>
           </header>
+
+          <ServiceHealthBanner />
 
           {/* КОНТЕНТ: страница въезжает снизу — понятно, что сменился экран, а не сайт */}
           <main id="main" className="mx-auto max-w-[1400px] px-4 pt-6 pb-24 sm:px-6 lg:px-8 lg:pb-10">
@@ -599,16 +749,17 @@ export function AppShell({
             Та же бумажная панель, что сайдбар и шапка, — система выглядит едино. */}
         <nav
           aria-label="Основные разделы"
-          className="fixed inset-x-0 bottom-0 z-30 border-t-2 border-line bg-surface pb-[env(safe-area-inset-bottom)] lg:hidden"
+          className="fixed inset-x-0 bottom-0 z-30 border-t border-line bg-surface/85 pb-[env(safe-area-inset-bottom)] backdrop-blur-2xl backdrop-saturate-150 lg:hidden"
         >
           <ul className="mx-auto flex max-w-lg items-stretch">
             {BOTTOM_NAV.map((item) => {
               const active = isActive(pathname, item);
               const Icon = item.icon;
+              const route = APP_ROUTES[item.routeId];
               return (
-                <li key={item.href} className="min-w-0 flex-1">
+                <li key={item.routeId} className="min-w-0 flex-1">
                   <Link
-                    href={item.href}
+                    href={route.href}
                     aria-current={active ? "page" : undefined}
                     className={cn(
                       "relative flex h-14 flex-col items-center justify-center gap-1 px-1",
@@ -618,8 +769,8 @@ export function AppShell({
                   >
                     <span
                       className={cn(
-                        "flex items-center justify-center rounded-[4px] px-2.5 py-1",
-                        active && "border-2 border-line bg-[var(--acc)] shadow-[2px_2px_0_var(--ink)]",
+                        "flex items-center justify-center rounded-full px-2.5 py-1",
+                        active && "bg-info-soft text-brand",
                       )}
                     >
                       <Icon
@@ -629,7 +780,7 @@ export function AppShell({
                       />
                     </span>
                     <span className="w-full truncate text-center text-[13px] leading-none font-semibold">
-                      {item.label}
+                      {appRouteLabel(item.routeId, "mobile")}
                     </span>
                   </Link>
                 </li>

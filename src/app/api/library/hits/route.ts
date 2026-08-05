@@ -4,8 +4,8 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
+import { resolveLibraryChannel } from "@/lib/library-server";
 import { getSessionUser } from "@/lib/session";
-import { resolveChannel } from "@/lib/autopilot";
 
 export const runtime = "nodejs";
 
@@ -14,11 +14,14 @@ export async function GET(req: NextRequest) {
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
   try {
-    const channelId = await resolveChannel(user.id, null);
+    const channelId = await resolveLibraryChannel(
+      user.id,
+      Number(req.nextUrl.searchParams.get("channel")) || null,
+    );
     if (!channelId) return NextResponse.json({ error: "no_channel" }, { status: 422 });
 
     const r = await getPool().query(
-      `select p.id, p.text, p.views, p.reactions, p.hit_ratio, p.posted_at, p.media, p.tg_msg_id,
+      `select p.id, p.competitor_id, p.text, p.views, p.reactions, p.hit_ratio, p.posted_at, p.media, p.tg_msg_id,
               c.title as source_title, c.handle
          from competitor_posts p
          join competitors c on c.id = p.competitor_id
@@ -27,7 +30,7 @@ export async function GET(req: NextRequest) {
         limit 30`,
       [channelId],
     );
-    return NextResponse.json({ hits: r.rows });
+    return NextResponse.json({ channelId, hits: r.rows });
   } catch (err) {
     console.error("[/api/library/hits] GET", err);
     return NextResponse.json({ error: "server" }, { status: 500 });

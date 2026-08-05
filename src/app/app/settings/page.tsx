@@ -4,21 +4,18 @@
  * А12 — НАСТРОЙКИ (Приложение А).
  *
  * Всё, чем платформа распоряжается от твоего имени, собрано на одном экране:
- * сети (ТЗ 5.2), бот (5.9), автопилот (5.6), тихие часы, режим соло/команда (5.10)
- * и честный лимит ИИ (раздел 6 «честность лимитов», риск 12 «стоимость ИИ»).
+ * поканальный профиль контента, сети (ТЗ 5.2), бот (5.9), автопилот (5.6),
+ * тихие часы, режим соло/команда (5.10) и честный лимит ИИ.
  *
- * Экран спокойный (ТЗ 7.1): ни одной градиентной кнопки-магнита — у настроек нет
- * главного действия, и выдумывать его не нужно. Каждая секция — карточка с
- * заголовком, объяснением и большим полем воздуха вокруг.
- *
- * Сохранение мгновенное: стор сам пишет в localStorage. Тост «Сохранили» показываем
- * только на важном (режим, ниша, тон, доверие автопилоту) — не на каждый щелчок.
+ * Поканальный профиль редактируется как черновик и применяется одной явной кнопкой.
+ * Технические подключения остаются независимыми атомарными действиями, чтобы не
+ * менять уже работающую механику интеграций и аккаунта.
  */
 
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import { motion, useReducedMotion } from "motion/react";
 import {
   Bot,
   Check,
@@ -28,44 +25,41 @@ import {
   LogOut,
   Moon,
   Plus,
-  Rocket,
-  RotateCcw,
   Sparkles,
   TriangleAlert,
-  User,
   Users,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { AppShell } from "@/components/app/shell";
+import { ChannelSettingsCenter } from "@/components/app/channel-settings-center";
+import { LegalSourcesSection } from "@/components/app/legal-sources-section";
+import { ProfileBriefSection } from "@/components/app/profile-brief-section";
 import { Button } from "@/components/ui/button";
 import {
   Badge,
   Card,
   Divider,
   EmptyState,
-  Field,
   Input,
   InstagramIcon,
   LinkedInIcon,
   TelegramIcon,
-  Textarea,
   TikTokIcon,
-  Toggle,
   VkIcon,
   XIcon,
   YouTubeIcon,
 } from "@/components/ui/primitives";
 import { useStore } from "@/lib/store";
-import type { Channel, Network, Settings as SettingsData } from "@/lib/types";
-import { NETWORK_LABEL, cn, fmtCompact, fmtNum, plural } from "@/lib/utils";
+import { getAiUsageMetrics } from "@/lib/ai-usage-sync";
+import type { Network } from "@/lib/types";
+import { NETWORK_LABEL, cn, fmtNum, plural } from "@/lib/utils";
+import { parseBotLinkStatusResponse, requireBotUnlinkSuccess } from "@/lib/bot-link-client";
+import {
+  hasComposerPayloadSupport,
+  type OAuthProviderCapability,
+} from "@/lib/oauth-capabilities";
 
 const EASE = [0.22, 1, 0.36, 1] as const;
-
-/** Короткий отклик на важное изменение. Стор уже сохранил — просто подтверждаем. */
-function useSaved() {
-  const { toast } = useStore();
-  return () => toast({ kind: "info", title: "Сохранили" });
-}
 
 /* --------------------------------------------------------------- СЕКЦИЯ */
 // Единая рамка для всех блоков: иконка, заголовок, объяснение — и тело.
@@ -137,45 +131,36 @@ function Section({
 
 function ChannelsSection({ index }: { index: number }) {
   const s = useStore();
-  // Отключение живёт в этом сеансе: в демо мы не трогаем сам список каналов,
-  // но кнопка обязана работать по-настоящему — и работает.
-  const [offline, setOffline] = useState<string[]>([]);
-  const [asking, setAsking] = useState<string | null>(null);
-
-  const disconnect = (ch: Channel) => {
-    setOffline((prev) => (prev.includes(ch.id) ? prev : [...prev, ch.id]));
-    setAsking(null);
-    s.toast({
-      kind: "info",
-      title: "Сеть отключена",
-      body: `«${ch.name}» в ${NETWORK_LABEL[ch.network]} больше не публикует. Подключить обратно можно здесь же.`,
-    });
-  };
-
-  const reconnect = (ch: Channel) => {
-    setOffline((prev) => prev.filter((id) => id !== ch.id));
-    s.toast({
-      kind: "success",
-      title: "Сеть снова на связи",
-      body: `«${ch.name}» в ${NETWORK_LABEL[ch.network]} снова публикует по расписанию.`,
-    });
-  };
-
-  const addMore = () =>
-    s.toast({
-      kind: "info",
-      title: "Подключи канал или сообщество",
-      body: "Telegram-канал — через бота-администратора в мастере первого запуска. VK-сообщество — по ключу доступа в блоке ниже.",
-    });
+  const router = useRouter();
+  const channels = s.realChannels.filter((channel) => channel.is_active);
+  const addMore = () => router.push("/app/onboarding");
 
   return (
     <Section
       icon={Link2}
       index={index}
       title="Подключённые сети"
-      description="Отсюда посты уходят сами — компьютер держать включённым не нужно."
+      description="Telegram и VK публикуют с сервера. Для остальных сетей здесь явно указан текущий статус поддержки."
     >
-      {s.channels.length === 0 ? (
+      {s.realError && (
+        <div
+          role="alert"
+          className="mb-4 flex flex-wrap items-center gap-3 rounded-sm border border-danger/30 bg-danger-soft p-4 text-[14px] text-text"
+        >
+          <TriangleAlert className="h-5 w-5 shrink-0 text-danger-text" aria-hidden />
+          <span className="min-w-0 flex-1">
+            Не удалось обновить подключения. Сохранённые данные оставлены без изменений.
+          </span>
+          <Button variant="outline" size="sm" onClick={() => void s.refreshReal()}>
+            Повторить
+          </Button>
+        </div>
+      )}
+      {!s.realReady ? (
+        <p role="status" className="text-[14px] text-text-2">
+          Проверяем подключения…
+        </p>
+      ) : s.realError && channels.length === 0 ? null : channels.length === 0 ? (
         <EmptyState
           icon={<Link2 className="h-6 w-6" strokeWidth={1.75} />}
           title="Ни одной сети"
@@ -189,100 +174,58 @@ function ChannelsSection({ index }: { index: number }) {
         />
       ) : (
         <ul className="space-y-3">
-          {s.channels.map((ch) => {
-            const live = ch.connected && !offline.includes(ch.id);
-            const Glyph = ch.network === "tg" ? TelegramIcon : VkIcon;
-
+          {channels.map((ch) => {
+            const Glyph = ch.network === "tg" ? TelegramIcon : ch.network === "vk" ? VkIcon : Link2;
+            const label = ch.title ?? ch.handle ?? `Канал #${ch.id}`;
+            const publishSupported = hasComposerPayloadSupport(ch.network);
             return (
               <li key={ch.id} className="rounded-sm border border-line bg-surface-2 p-4">
                 <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
                   <span
                     aria-hidden
-                    className={cn(
-                      "grid h-11 w-11 shrink-0 place-items-center rounded-full transition-colors duration-200",
-                      live ? "bg-info-soft text-brand" : "bg-surface-inset text-text-3",
-                    )}
+                    className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-info-soft text-brand"
                   >
                     <Glyph className="h-5 w-5" />
                   </span>
 
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                      <p className="truncate text-[15px] font-bold text-text">{ch.name}</p>
+                      <p className="truncate text-[15px] font-bold text-text">{label}</p>
                       <Badge tone="neutral">{NETWORK_LABEL[ch.network]}</Badge>
                     </div>
-                    <div className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-1">
-                      <span className="truncate font-mono text-[13px] text-text-3">{ch.handle}</span>
-                      <span aria-hidden className="h-1 w-1 rounded-full bg-line-strong" />
-                      <span className="nums text-[13px] text-text-2">
-                        {fmtCompact(ch.subscribers)}{" "}
-                        {plural(ch.subscribers, "подписчик", "подписчика", "подписчиков")}
-                      </span>
-                    </div>
+                    {ch.handle && ch.handle !== ch.title && (
+                      <p className="mt-1 truncate font-mono text-[13px] text-text-3">{ch.handle}</p>
+                    )}
                   </div>
 
-                  {live ? (
-                    <div className="flex items-center gap-2">
-                      <Badge tone="success">
-                        <Check className="h-3.5 w-3.5" strokeWidth={3} aria-hidden />
-                        Подключён
-                      </Badge>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => setAsking(ch.id)}
-                        aria-expanded={asking === ch.id}
-                      >
-                        Отключить
-                      </Button>
-                    </div>
+                  {publishSupported ? (
+                    <Badge tone="success">
+                      <Check className="h-3.5 w-3.5" strokeWidth={3} aria-hidden />
+                      Активен
+                    </Badge>
                   ) : (
-                    <div className="flex items-center gap-2">
-                      <Badge tone="neutral">Отключён</Badge>
-                      <Button variant="outline" size="sm" onClick={() => reconnect(ch)}>
-                        Подключить снова
-                      </Button>
-                    </div>
+                    <Badge tone="neutral">Публикация недоступна</Badge>
                   )}
                 </div>
-
-                {/* Подтверждение строкой — без модалок: видно, что именно отключаем */}
-                <AnimatePresence initial={false}>
-                  {asking === ch.id && live && (
-                    <motion.div
-                      key="ask"
-                      initial={{ opacity: 0, y: -6 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: -6 }}
-                      transition={{ duration: 0.22, ease: EASE }}
-                      className="mt-4 rounded-sm border border-danger/30 bg-danger-soft p-4"
-                    >
-                      <p className="text-[15px] leading-relaxed font-bold text-danger-text">
-                        Отключить «{ch.name}»? Запланированные посты в эту сеть не выйдут.
-                      </p>
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        <Button variant="danger" size="sm" onClick={() => disconnect(ch)}>
-                          Отключить
-                        </Button>
-                        <Button variant="ghost" size="sm" onClick={() => setAsking(null)}>
-                          Отмена
-                        </Button>
-                      </div>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
+                {!publishSupported && (
+                  <p className="mt-2 text-[13px] leading-relaxed text-text-3">
+                    Подключение сохранено, но выбрать эту сеть в Композиторе пока нельзя.
+                  </p>
+                )}
               </li>
             );
           })}
         </ul>
       )}
 
-      <div className="mt-5 flex flex-wrap items-center gap-3">
-        <Button variant="outline" onClick={addMore}>
-          <Plus className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
-          Подключить ещё
-        </Button>
-      </div>
+      {channels.length > 0 && (
+        <div className="mt-5 flex flex-wrap items-center gap-3">
+          <Button variant="outline" onClick={addMore}>
+            <Plus className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
+            Подключить ещё
+          </Button>
+        </div>
+      )}
 
       <Divider className="my-6" />
 
@@ -430,6 +373,8 @@ function oauthMessage(code: string, label: string): string {
       return "Сессия подключения истекла. Нажми «Подключить» ещё раз.";
     case "unauthorized":
       return "Сессия истекла — зайди заново.";
+    case "unsupported":
+      return `Подключение ${label} закрыто, пока Композитор не умеет создавать и публиковать подходящий контент.`;
     default:
       return "Что-то пошло не так. Попробуй ещё раз.";
   }
@@ -437,12 +382,9 @@ function oauthMessage(code: string, label: string): string {
 
 
 /**
- * Подключение YouTube / Instagram / ... в один клик. В отличие от VK (ручной ключ),
- * здесь человек жмёт «Подключить» → экран согласия провайдера (Google/Meta) → редирект
- * обратно → канал уже в списке. «Перешёл по ссылке и всё работает»: никаких токенов руками.
- *
- * Сети со статусом «soon» (X/TikTok/LinkedIn) — заглушки: X на бесплатном тарифе публиковать
- * нельзя (с февр. 2026 бесплатный тариф закрыт), TikTok/LinkedIn — волна 2.
+ * Карта будущих OAuth-сетей. Кнопка входа появляется только после серверного подтверждения,
+ * что Композитор умеет собрать полноценный payload публикации; одних credentials недостаточно.
+ * Сети со статусом `soon` остаются явно неоперационными roadmap-карточками.
  */
 
 const OAUTH_NETWORKS: {
@@ -452,8 +394,20 @@ const OAUTH_NETWORKS: {
   status: "oauth" | "soon";
   Glyph: (p: { className?: string }) => React.JSX.Element;
 }[] = [
-  { id: "youtube", label: "YouTube", hint: "Видео и Shorts", status: "oauth", Glyph: YouTubeIcon },
-  { id: "instagram", label: "Instagram", hint: "Посты и Reels", status: "oauth", Glyph: InstagramIcon },
+  {
+    id: "youtube",
+    label: "YouTube",
+    hint: "Публикация из Композитора пока недоступна",
+    status: "oauth",
+    Glyph: YouTubeIcon,
+  },
+  {
+    id: "instagram",
+    label: "Instagram",
+    hint: "Публикация из Композитора пока недоступна",
+    status: "oauth",
+    Glyph: InstagramIcon,
+  },
   { id: "x", label: "X (Twitter)", hint: "Скоро", status: "soon", Glyph: XIcon },
   { id: "tiktok", label: "TikTok", hint: "Скоро", status: "soon", Glyph: TikTokIcon },
   { id: "linkedin", label: "LinkedIn", hint: "Скоро", status: "soon", Glyph: LinkedInIcon },
@@ -461,20 +415,53 @@ const OAUTH_NETWORKS: {
 
 function OAuthNetworks() {
   const s = useStore();
+  const [capabilities, setCapabilities] = useState<
+    Partial<Record<Network, OAuthProviderCapability>> | null
+  >(null);
+  const [providerError, setProviderError] = useState(false);
   // Уже подключённые OAuth-сети берём из реальных каналов (не из демо-стора).
   const connected = new Set(
     s.realChannels.filter((c) => c.is_active).map((c) => c.network),
   );
 
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch("/api/channels/oauth/providers", { cache: "no-store", signal: controller.signal })
+      .then((response) => {
+        if (!response.ok) throw new Error("providers_unavailable");
+        return response.json();
+      })
+      .then((body: { providers?: Partial<Record<Network, OAuthProviderCapability>> } | null) => {
+        if (!body?.providers) throw new Error("providers_invalid");
+        setCapabilities(body.providers);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setProviderError(true);
+      });
+    return () => controller.abort();
+  }, []);
+
   return (
     <div className="mt-4 rounded-md bg-surface-inset p-4">
       <p className="text-[15px] font-semibold text-text">Зарубежные сети</p>
       <p className="mt-1.5 text-[14px] leading-relaxed text-text-2">
-        Подключение в один клик — жми «Подключить», входи в свой аккаунт, и канал уже здесь.
+        Подключение откроется только вместе с полноценной публикацией из Композитора. Сейчас
+        YouTube и Instagram показаны как будущие возможности — вход в них закрыт.
       </p>
+      {providerError && (
+        <p role="alert" className="mt-2 text-[13px] text-danger-text">
+          Не удалось проверить доступность подключений. Обнови страницу и попробуй ещё раз.
+        </p>
+      )}
       <ul className="mt-3 grid gap-2 sm:grid-cols-2">
         {OAUTH_NETWORKS.map(({ id, label, hint, status, Glyph }) => {
           const isConnected = connected.has(id);
+          const capability = capabilities?.[id];
+          const unsupported = capability?.status === "unsupported";
+          const providerHint =
+            isConnected && unsupported
+              ? `Аккаунт подключён ранее, но публикация в ${label} пока недоступна в Композиторе.`
+              : capability?.message ?? hint;
           return (
             <li
               key={id}
@@ -488,15 +475,25 @@ function OAuthNetworks() {
               </span>
               <div className="min-w-0 flex-1">
                 <p className="truncate text-[14px] font-semibold text-text">{label}</p>
-                <p className="truncate text-[12px] text-text-3">{hint}</p>
+                <p className="text-[12px] leading-snug text-text-3">{providerHint}</p>
               </div>
               {status === "soon" ? (
                 <Badge tone="neutral">Скоро</Badge>
-              ) : isConnected ? (
+              ) : providerError ? (
+                <Badge tone="neutral">Недоступно</Badge>
+              ) : capabilities === null ? (
+                <Badge tone="neutral">Проверяем…</Badge>
+              ) : unsupported ? (
+                <Badge tone="neutral">Нет публикации</Badge>
+              ) : capability?.status === "not_configured" ? (
+                <Badge tone="neutral">Не настроено</Badge>
+              ) : isConnected && capability?.available ? (
                 <Badge tone="success">
                   <Check className="h-3.5 w-3.5" strokeWidth={3} aria-hidden />
                   Подключено
                 </Badge>
+              ) : !capability?.available ? (
+                <Badge tone="neutral">Недоступно</Badge>
               ) : (
                 // Полная навигация (не SPA): уходим на экран согласия провайдера и обратно.
                 <a
@@ -527,47 +524,87 @@ function OAuthNetworks() {
  */
 function BotLink() {
   const s = useStore();
-  const [linked, setLinked] = useState<boolean | null>(null);
+  const [phase, setPhase] = useState<"loading" | "ready" | "error">("loading");
+  const [linked, setLinked] = useState(false);
   const [bot, setBot] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const pollTimers = useRef<number[]>([]);
+  const requestSeq = useRef(0);
 
-  const load = useCallback(() => {
-    fetch("/api/bot/link", { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d: { linked?: boolean; bot?: string | null } | null) => {
-        if (!d) return;
-        setLinked(!!d.linked);
-        setBot(d.bot ?? null);
-      })
-      .catch(() => setLinked(false));
+  const load = useCallback(async () => {
+    const seq = ++requestSeq.current;
+    try {
+      const response = await fetch("/api/bot/link", { cache: "no-store" });
+      const status = await parseBotLinkStatusResponse(response);
+      if (seq !== requestSeq.current) return;
+      setLinked(status.linked);
+      setBot(status.bot);
+      setActionError(null);
+      setPhase("ready");
+    } catch {
+      if (seq !== requestSeq.current) return;
+      setPhase("error");
+    }
   }, []);
-  useEffect(load, [load]);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- load updates state only after the request settles
+    void load();
+    return () => {
+      requestSeq.current += 1;
+      for (const timer of pollTimers.current) window.clearTimeout(timer);
+    };
+  }, [load]);
+
+  const retryLoad = () => {
+    setPhase("loading");
+    setActionError(null);
+    void load();
+  };
 
   const connect = async () => {
+    if (busy) return;
+    requestSeq.current += 1;
+    setActionError(null);
     setBusy(true);
     try {
       const r = await fetch("/api/bot/link", { method: "POST" });
-      const d = (await r.json()) as { ok?: boolean; url?: string; error?: string; needs?: string };
-      if (d.error === "bot_not_configured") {
+      const d = (await r.json().catch(() => null)) as {
+        ok?: boolean;
+        url?: string;
+        error?: string;
+        needs?: string;
+      } | null;
+      if (d?.error === "bot_not_configured") {
+        const message = `Нужно имя бота в ${d.needs ?? "TG_BOT_USERNAME"} — без него ссылку не собрать.`;
+        setBot(null);
+        setActionError(message);
         s.toast({
           kind: "info",
           title: "Бот ещё не настроен",
-          body: `Нужно имя бота в ${d.needs} — без него ссылку не собрать.`,
+          body: message,
         });
         return;
       }
-      if (d.ok && d.url) {
-        window.open(d.url, "_blank", "noopener");
-        s.toast({
-          kind: "info",
-          title: "Открыл Telegram",
-          body: "Нажми «Начать» в чате с ботом — и вернись сюда, я подхвачу.",
-        });
-        // Ссылка одноразовая: человек жмёт /start в Telegram, а мы ждём и проверяем.
-        setTimeout(load, 6000);
-        setTimeout(load, 15000);
+      if (!r.ok || !d?.ok || !d.url) {
+        throw new Error(d?.error || "bot_link_failed");
       }
+
+      window.open(d.url, "_blank", "noopener");
+      s.toast({
+        kind: "info",
+        title: "Открыл Telegram",
+        body: "Нажми «Начать» в чате с ботом — и вернись сюда, я подхвачу.",
+      });
+      // Ссылка одноразовая: человек жмёт /start в Telegram, а мы ждём и проверяем.
+      for (const timer of pollTimers.current) window.clearTimeout(timer);
+      pollTimers.current = [
+        window.setTimeout(() => void load(), 6000),
+        window.setTimeout(() => void load(), 15000),
+      ];
     } catch {
+      setActionError("Не удалось создать ссылку на бота. Статус подключения не изменён.");
       s.toast({ kind: "danger", title: "Не получилось", body: "Проверь соединение." });
     } finally {
       setBusy(false);
@@ -575,12 +612,51 @@ function BotLink() {
   };
 
   const disconnect = async () => {
-    await fetch("/api/bot/link", { method: "DELETE" }).catch(() => {});
-    setLinked(false);
-    s.toast({ kind: "info", title: "Бот отвязан", body: "Посты продолжат выходить, но писать я перестану." });
+    if (busy) return;
+    requestSeq.current += 1;
+    for (const timer of pollTimers.current) window.clearTimeout(timer);
+    pollTimers.current = [];
+    setActionError(null);
+    setBusy(true);
+    try {
+      const response = await fetch("/api/bot/link", { method: "DELETE" });
+      await requireBotUnlinkSuccess(response);
+      setLinked(false);
+      s.toast({
+        kind: "info",
+        title: "Бот отвязан",
+        body: "Посты продолжат выходить, но писать я перестану.",
+      });
+    } catch {
+      const message = "Не удалось подтвердить отвязку. Статус подключения нужно проверить заново.";
+      setPhase("error");
+      s.toast({ kind: "danger", title: "Статус бота неизвестен", body: message });
+    } finally {
+      setBusy(false);
+    }
   };
 
-  if (linked === null) return <div className="skeleton h-24 rounded-md" />;
+  if (phase === "loading") return <div className="skeleton h-24 rounded-md" />;
+
+  if (phase === "error") {
+    return (
+      <div
+        role="alert"
+        className="rounded-md border border-danger/30 bg-danger-soft p-4 text-[14px] text-text"
+      >
+        <p className="flex items-center gap-2 font-semibold text-danger-text">
+          <TriangleAlert className="h-5 w-5 shrink-0" aria-hidden />
+          Не удалось проверить связь с ботом
+        </p>
+        <p className="mt-1.5 leading-relaxed text-text-2">
+          Не показываем статус подключения, пока сервер не подтвердит его.
+        </p>
+        <Button size="sm" variant="outline" onClick={retryLoad} className="mt-3">
+          Повторить
+        </Button>
+      </div>
+    );
+  }
 
   return linked ? (
     <div className="rounded-md bg-surface-inset p-4">
@@ -592,7 +668,12 @@ function BotLink() {
         Пишет, когда пост вышел или упал, когда у конкурента залетело и когда готов план недели —
         с кнопками, чтобы не открывать сайт. Команды: /stats, /plan, /trends.
       </p>
-      <Button size="sm" variant="ghost" onClick={disconnect} className="mt-3">
+      {actionError && (
+        <p role="alert" className="mt-3 text-[13px] leading-relaxed font-medium text-danger-text">
+          {actionError}
+        </p>
+      )}
+      <Button size="sm" variant="ghost" onClick={disconnect} loading={busy} className="mt-3">
         Отвязать
       </Button>
     </div>
@@ -604,6 +685,11 @@ function BotLink() {
           ? "Посты выходят по расписанию и без него, но о сбоях и залётах ты узнаешь только здесь, на сайте."
           : "Бот ещё не настроен на сервере — подключить пока нечего."}
       </p>
+      {actionError && (
+        <p role="alert" className="mt-3 text-[13px] leading-relaxed font-medium text-danger-text">
+          {actionError}
+        </p>
+      )}
       {bot && (
         <Button size="sm" variant="brand" onClick={connect} loading={busy} className="mt-3">
           <Bot className="h-4 w-4" aria-hidden />
@@ -615,9 +701,6 @@ function BotLink() {
 }
 
 function BotSection({ index }: { index: number }) {
-  const s = useStore();
-  const { botLinked, weeklyReport } = s.settings;
-
   return (
     <Section
       icon={Bot}
@@ -626,102 +709,6 @@ function BotSection({ index }: { index: number }) {
       description="Короткая связь с платформой: бот пишет первым, когда есть о чём."
     >
       <BotLink />
-
-      <Divider className="my-6" />
-
-      <Toggle
-        id="weekly-report"
-        checked={weeklyReport}
-        onChange={(v) => s.updateSettings({ weeklyReport: v })}
-        label="Недельный отчёт"
-        description="Каждое воскресенье: что вышло, что сработало и один совет на следующую неделю."
-      />
-
-      {weeklyReport && !botLinked && (
-        <p className="mt-3 text-[13px] leading-relaxed text-text-3">
-          Отчёт приходит в бот — пока он отвязан, отчёт не дойдёт.
-        </p>
-      )}
-    </Section>
-  );
-}
-
-/* ------------------------------------------------- 3. АВТОПИЛОТ (ТЗ 5.6) */
-
-function AutopilotSection({ index }: { index: number }) {
-  const s = useStore();
-  const confirm = s.settings.autopilotConfirm;
-
-  const change = (v: boolean) => {
-    s.updateSettings({ autopilotConfirm: v });
-    if (v) {
-      s.toast({
-        kind: "success",
-        title: "Подтверждение вернули",
-        body: "Теперь ничего не выйдет без твоего одобрения.",
-      });
-    } else {
-      s.toast({
-        kind: "info",
-        title: "Полное доверие включено",
-        body: "Платформа будет публиковать план сама. Выключить можно в любой момент.",
-      });
-    }
-  };
-
-  return (
-    <Section
-      icon={Rocket}
-      index={index}
-      title="Автопилот"
-      description="Платформа собирает план на неделю. Ты решаешь, спрашивать ли разрешение перед публикацией."
-    >
-      <Toggle
-        id="autopilot-confirm"
-        checked={confirm}
-        onChange={change}
-        label="Спрашивать подтверждение плана"
-        description="Пока включено — платформа не опубликует ничего, что ты не одобрил. Полное доверие можно включить после 2 недель одобрений без правок."
-      />
-
-      <AnimatePresence initial={false}>
-        {!confirm && (
-          <motion.div
-            key="trust"
-            initial={{ opacity: 0, y: -6 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -6 }}
-            transition={{ duration: 0.22, ease: EASE }}
-            className="mt-5 flex items-start gap-3 rounded-sm bg-fire-soft p-4"
-          >
-            <TriangleAlert
-              className="mt-0.5 h-5 w-5 shrink-0 text-fire"
-              strokeWidth={2}
-              aria-hidden
-            />
-            <p className="text-[14px] leading-relaxed text-fire-text">
-              Полное доверие включено. Платформа будет публиковать план сама, без твоего
-              подтверждения. Выключить можно в любой момент.
-            </p>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      <div className="mt-5 flex flex-wrap items-center gap-x-5 gap-y-2">
-        <Link href="/app/autopilot" className="inline-block rounded-xs">
-          <Button variant="outline" size="sm" tabIndex={-1}>
-            Посмотреть план на неделю
-          </Button>
-        </Link>
-        {/* База знаний наполняется сама (профиль из постов + ответы в боте), но посмотреть
-            и поправить её руками можно здесь — прямая ссылка для продвинутых. */}
-        <Link
-          href="/app/knowledge"
-          className="rounded-xs text-[13px] font-semibold text-text-3 underline-offset-4 transition-colors hover:text-text hover:underline"
-        >
-          Что ИИ знает о канале →
-        </Link>
-      </div>
     </Section>
   );
 }
@@ -729,168 +716,41 @@ function AutopilotSection({ index }: { index: number }) {
 /* ------------------------------------------------------- 4. ТИХИЕ ЧАСЫ */
 
 function QuietSection({ index }: { index: number }) {
-  const s = useStore();
-  const q = s.settings.quietHours;
-
-  const setQuiet = (patch: Partial<SettingsData["quietHours"]>) =>
-    s.updateSettings({ quietHours: { ...q, ...patch } });
-
   return (
     <Section
       icon={Moon}
       index={index}
       title="Тихие часы"
-      description="Промежуток, в который платформа молчит — и в сетях, и в боте."
+      description="Ограничение ночных публикаций пока не включено на сервере."
     >
-      <Toggle
-        id="quiet-hours"
-        checked={q.enabled}
-        onChange={(v) => setQuiet({ enabled: v })}
-        label="Тихие часы"
-        description="В это время платформа не публикует и не пишет в бот."
-      />
-
-      <AnimatePresence initial={false}>
-        {q.enabled && (
-          <motion.div
-            key="range"
-            initial={{ opacity: 0, y: -6 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -6 }}
-            transition={{ duration: 0.22, ease: EASE }}
-            className="mt-6"
-          >
-            <div className="grid max-w-md grid-cols-2 gap-4">
-              <Field label="С" htmlFor="quiet-from">
-                <Input
-                  id="quiet-from"
-                  type="time"
-                  className="nums"
-                  value={q.from}
-                  onChange={(e) => setQuiet({ from: e.target.value })}
-                />
-              </Field>
-              <Field label="До" htmlFor="quiet-to">
-                <Input
-                  id="quiet-to"
-                  type="time"
-                  className="nums"
-                  value={q.to}
-                  onChange={(e) => setQuiet({ to: e.target.value })}
-                />
-              </Field>
-            </div>
-
-            <p className="mt-4 flex items-start gap-2 text-[13px] leading-relaxed text-text-3">
-              <Clock className="mt-0.5 h-4 w-4 shrink-0" strokeWidth={1.75} aria-hidden />
-              <span>
-                Тихо с <span className="nums font-semibold text-text-2">{q.from}</span> до{" "}
-                <span className="nums font-semibold text-text-2">{q.to}</span>. Пост, попавший в
-                этот промежуток, не потеряется — он выйдет в ближайшее разрешённое время.
-              </span>
-            </p>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      <div className="flex items-start gap-3 rounded-sm bg-surface-inset p-4" role="status">
+        <Clock className="mt-0.5 h-5 w-5 shrink-0 text-text-3" strokeWidth={1.75} aria-hidden />
+        <p className="text-[14px] leading-relaxed text-text-2">
+          Сейчас каждый пост выходит строго в выбранное в календаре время. Настройка появится
+          здесь только вместе с серверным переносом расписания и проверкой воркера.
+        </p>
+      </div>
     </Section>
   );
 }
 
 /* ------------------------------------------------ 5. РЕЖИМ РАБОТЫ (ТЗ 5.10) */
 
-const MODES: { value: SettingsData["mode"]; label: string; body: string; Icon: LucideIcon }[] = [
-  { value: "solo", label: "Соло", body: "Ничего лишнего. Только ты и твои каналы.", Icon: User },
-  {
-    value: "team",
-    label: "Команда",
-    body: "Роли, согласования, комментарии. Для агентств и нескольких клиентов.",
-    Icon: Users,
-  },
-];
-
 function ModeSection({ index }: { index: number }) {
-  const s = useStore();
-  const saved = useSaved();
-  const mode = s.settings.mode;
-
-  const pick = (next: SettingsData["mode"]) => {
-    if (next === mode) return;
-    s.updateSettings({ mode: next });
-    saved();
-  };
-
   return (
     <Section
       icon={Users}
       index={index}
       title="Режим работы"
-      description="По умолчанию — соло: интерфейс не показывает того, что тебе не нужно."
+      description="Текущая версия рассчитана на одного владельца аккаунта."
     >
-      <div role="radiogroup" aria-label="Режим работы" className="grid gap-4 sm:grid-cols-2">
-        {MODES.map(({ value, label, body, Icon }) => {
-          const active = mode === value;
-          return (
-            <button
-              key={value}
-              type="button"
-              role="radio"
-              aria-checked={active}
-              onClick={() => pick(value)}
-              className={cn(
-                "relative flex cursor-pointer flex-col items-start gap-3 rounded-md border p-5 text-left",
-                "transition-[transform,border-color,background-color,box-shadow] duration-200 ease-[var(--ease-soft)]",
-                "active:scale-[0.99]",
-                active
-                  ? "border-brand bg-info-soft shadow-soft"
-                  : "border-line bg-surface hover:border-line-strong hover:bg-surface-2",
-              )}
-            >
-              {active && (
-                <motion.span
-                  layoutId="modeCheck"
-                  aria-hidden
-                  transition={{ type: "spring", stiffness: 420, damping: 34, mass: 0.7 }}
-                  className="absolute top-4 right-4 grid h-6 w-6 place-items-center rounded-full bg-brand-gradient text-white"
-                >
-                  <Check className="h-3.5 w-3.5" strokeWidth={3} />
-                </motion.span>
-              )}
-
-              <span
-                aria-hidden
-                className={cn(
-                  "grid h-10 w-10 place-items-center rounded-sm transition-colors duration-200",
-                  active ? "bg-surface text-brand" : "bg-surface-inset text-text-2",
-                )}
-              >
-                <Icon className="h-5 w-5" strokeWidth={1.75} />
-              </span>
-
-              <span className="text-[15px] font-bold text-text">{label}</span>
-              <span className="text-[14px] leading-relaxed text-text-2">{body}</span>
-            </button>
-          );
-        })}
+      <div className="flex items-start gap-3 rounded-sm bg-surface-inset p-4" role="status">
+        <Users className="mt-0.5 h-5 w-5 shrink-0 text-text-3" strokeWidth={1.75} aria-hidden />
+        <p className="text-[14px] leading-relaxed text-text-2">
+          Командные роли, согласования и комментарии ещё не реализованы. Переключатель появится,
+          когда выбранный режим будет храниться на сервере и реально менять права доступа.
+        </p>
       </div>
-
-      <AnimatePresence initial={false}>
-        {mode === "team" && (
-          <motion.div
-            key="team"
-            initial={{ opacity: 0, y: -6 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -6 }}
-            transition={{ duration: 0.22, ease: EASE }}
-            className="mt-5 flex items-start gap-3 rounded-sm bg-info-soft p-4"
-          >
-            <Users className="mt-0.5 h-5 w-5 shrink-0 text-info-text" strokeWidth={1.75} aria-hidden />
-            <p className="text-[14px] leading-relaxed text-info-text">
-              Командные функции появятся в интерфейсе: колонка согласований в календаре и
-              комментарии к постам.
-            </p>
-          </motion.div>
-        )}
-      </AnimatePresence>
     </Section>
   );
 }
@@ -899,36 +759,9 @@ function ModeSection({ index }: { index: number }) {
 
 function AiSection({ index }: { index: number }) {
   const s = useStore();
-  const saved = useSaved();
   const reduce = useReducedMotion();
 
-  const { aiUsedToday: used, aiDailyLimit: limit } = s.settings;
-  const ratio = limit > 0 ? Math.min(1, used / limit) : 1;
-  const hot = ratio >= 0.9;
-  const left = Math.max(0, limit - used);
-
-  // Поля правим локально, а в стор кладём по уходу из поля — иначе тост
-  // «Сохранили» дёргался бы на каждой букве.
-  // Секция монтируется уже после гидрации (каркас держит скелетон, пока !ready),
-  // поэтому начальные значения сразу настоящие — до-синхронизация не нужна.
-  const [niche, setNiche] = useState(s.settings.niche);
-  const [tone, setTone] = useState(s.settings.tone);
-
-  const commitNiche = () => {
-    const v = niche.trim();
-    setNiche(v);
-    if (v === s.settings.niche) return;
-    s.updateSettings({ niche: v });
-    saved();
-  };
-
-  const commitTone = () => {
-    const v = tone.trim();
-    setTone(v);
-    if (v === s.settings.tone) return;
-    s.updateSettings({ tone: v });
-    saved();
-  };
+  const usage = getAiUsageMetrics(s.aiUsageStatus, s.aiUsed, s.aiLimit);
 
   return (
     <Section
@@ -938,75 +771,70 @@ function AiSection({ index }: { index: number }) {
       description="Сколько генераций осталось на сегодня и каким голосом ИИ пишет за тебя."
     >
       <div className="rounded-sm border border-line bg-surface-2 p-5">
-        <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-          <p className="nums text-[15px] font-bold text-text">
-            {fmtNum(used)} из {fmtNum(limit)}{" "}
-            {plural(limit, "генерации", "генераций", "генераций")} сегодня
-          </p>
-          {hot ? (
-            <Badge tone="fire">Почти всё</Badge>
-          ) : (
-            <p className="nums text-[13px] font-semibold text-text-2">Осталось {fmtNum(left)}</p>
-          )}
-        </div>
+        {usage ? (
+          <>
+            <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+              <p className="nums text-[15px] font-bold text-text">
+                {fmtNum(usage.used)} из {fmtNum(usage.limit)}{" "}
+                {plural(usage.limit, "генерации", "генераций", "генераций")} сегодня
+              </p>
+              {usage.hot ? (
+                <Badge tone="fire">Почти всё</Badge>
+              ) : (
+                <p className="nums text-[13px] font-semibold text-text-2">
+                  Осталось {fmtNum(usage.left)}
+                </p>
+              )}
+            </div>
 
-        <div
-          role="progressbar"
-          aria-label="Генерации ИИ за сегодня"
-          aria-valuemin={0}
-          aria-valuemax={limit}
-          aria-valuenow={used}
-          className="mt-3 h-2 w-full overflow-hidden rounded-full bg-surface-inset"
-        >
-          {/* Только transform: ширину не анимируем никогда (ТЗ 7.4) */}
-          <motion.div
-            className={cn(
-              "h-full w-full origin-left rounded-full",
-              hot ? "bg-fire" : "bg-brand-gradient",
-            )}
-            initial={{ scaleX: 0 }}
-            animate={{ scaleX: ratio }}
-            transition={reduce ? { duration: 0 } : { duration: 0.5, ease: EASE }}
-          />
-        </div>
+            <div
+              role="progressbar"
+              aria-label="Генерации ИИ за сегодня"
+              aria-valuemin={0}
+              aria-valuemax={usage.limit}
+              aria-valuenow={usage.used}
+              className="mt-3 h-2 w-full overflow-hidden rounded-full bg-surface-inset"
+            >
+              {/* Только transform: ширину не анимируем никогда (ТЗ 7.4) */}
+              <motion.div
+                className={cn(
+                  "h-full w-full origin-left rounded-full",
+                  usage.hot ? "bg-fire" : "bg-brand-gradient",
+                )}
+                initial={{ scaleX: 0 }}
+                animate={{ scaleX: usage.ratio }}
+                transition={reduce ? { duration: 0 } : { duration: 0.5, ease: EASE }}
+              />
+            </div>
 
-        <p className="mt-4 text-[13px] leading-relaxed text-text-3">
-          Лимит честный и виден всегда. ИИ стоит денег, поэтому мы не обещаем безлимит и не прячем
-          ограничение в справке. Обновляется каждый день в полночь.
-        </p>
+            <p className="mt-4 text-[13px] leading-relaxed text-text-3">
+              Лимит подтверждает сервер. ИИ стоит денег, поэтому мы не обещаем безлимит и не
+              прячем ограничение в справке. Счётчик обновляется каждый день в полночь.
+            </p>
+          </>
+        ) : (
+          <div role="status" aria-live="polite">
+            <p className="text-[15px] font-bold text-text">
+              {s.aiUsageStatus === "loading"
+                ? "Проверяем лимит генераций…"
+                : "Счётчик генераций временно недоступен"}
+            </p>
+            <p className="mt-2 text-[13px] leading-relaxed text-text-3">
+              {s.aiUsageStatus === "loading"
+                ? "Покажем остаток, когда сервер подтвердит данные."
+                : "Не показываем прогресс и остаток как факт, пока связь со счётчиком не восстановится."}
+            </p>
+          </div>
+        )}
       </div>
 
-      <Divider className="my-6" />
-
-      <div className="space-y-5">
-        <Field
-          label="Твоя ниша"
-          htmlFor="niche"
-          hint="По ней мы ищем залёты и подбираем, кого держать в конкурентах."
+      <div className="mt-5 flex flex-wrap gap-2">
+        <Link
+          href="/app/knowledge"
+          className="inline-flex min-h-10 items-center rounded-xs border border-line px-3.5 text-[13px] font-semibold text-text-2 transition-colors hover:border-line-strong hover:text-text"
         >
-          <Input
-            id="niche"
-            value={niche}
-            onChange={(e) => setNiche(e.target.value)}
-            onBlur={commitNiche}
-            placeholder="Например: кофе, обжарка, домашнее заваривание"
-          />
-        </Field>
-
-        <Field
-          label="Тон текстов"
-          htmlFor="tone"
-          hint="Этим голосом ИИ пишет посты. Чем конкретнее опишешь — тем меньше придётся править."
-        >
-          <Textarea
-            id="tone"
-            rows={2}
-            value={tone}
-            onChange={(e) => setTone(e.target.value)}
-            onBlur={commitTone}
-            placeholder="Например: дружелюбный, на «ты», с личными историями и без пафоса"
-          />
-        </Field>
+          Проверить профиль и источники голоса
+        </Link>
       </div>
     </Section>
   );
@@ -1017,31 +845,18 @@ function AiSection({ index }: { index: number }) {
 function DangerSection({ index }: { index: number }) {
   const s = useStore();
   const router = useRouter();
-  const [asking, setAsking] = useState(false);
 
-  // Сначала уходим с экрана, и только потом чистим стор.
-  // Если обнулить пользователя, пока экран жив, защита каркаса увидит пустой вход
-  // и уведёт на /register вместо лендинга. Поэтому мутация ждёт размонтирования.
+  // Сначала уходим с экрана, и только потом завершаем серверную сессию: AppShell
+  // не успевает показать промежуточный экран входа поверх текущей страницы.
   const onLeave = useRef<(() => void) | null>(null);
   useEffect(() => () => onLeave.current?.(), []);
-
-  const resetDemo = () => {
-    onLeave.current = s.reset;
-    setAsking(false);
-    s.toast({
-      kind: "info",
-      title: "Демо сброшено",
-      body: "Посты, конкуренты и настройки вернулись в исходное состояние.",
-    });
-    router.push("/");
-  };
 
   const leave = () => {
     onLeave.current = s.signOut;
     s.toast({
       kind: "info",
       title: "Вышли из аккаунта",
-      body: "Демо осталось в этом браузере — вернёшься и продолжишь с того же места.",
+      body: "Серверные данные останутся на месте — войдёшь снова и продолжишь.",
     });
     router.push("/");
   };
@@ -1050,68 +865,20 @@ function DangerSection({ index }: { index: number }) {
     <Section
       icon={TriangleAlert}
       index={index}
-      danger
-      title="Опасная зона"
-      description="Два действия, которые нельзя отменить кнопкой «назад»."
+      title="Сессия"
+      description="Завершить работу на этом устройстве. Посты и настройки аккаунта не удаляются."
     >
-      <div className="space-y-6">
-        <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
-          <div className="min-w-0 max-w-md">
-            <p className="text-[15px] font-semibold text-text">Сбросить демо-данные</p>
-            <p className="mt-1 text-[13px] leading-relaxed text-text-2">
-              Вернёт демо в исходное состояние. Все твои посты, конкуренты и настройки в этом
-              браузере пропадут.
-            </p>
-          </div>
-          <Button variant="danger" onClick={() => setAsking(true)} aria-expanded={asking}>
-            <RotateCcw className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
-            Сбросить демо-данные
-          </Button>
+      <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
+        <div className="min-w-0 max-w-md">
+          <p className="text-[15px] font-semibold text-text">Выйти</p>
+          <p className="mt-1 text-[13px] leading-relaxed text-text-2">
+            Серверные данные останутся на месте. Локальные старые черновики не удаляются.
+          </p>
         </div>
-
-        <AnimatePresence initial={false}>
-          {asking && (
-            <motion.div
-              key="ask-reset"
-              initial={{ opacity: 0, y: -6 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -6 }}
-              transition={{ duration: 0.22, ease: EASE }}
-              className="rounded-sm border border-danger/30 bg-danger-soft p-4"
-            >
-              <p className="text-[15px] font-bold text-danger-text">
-                Сбросить демо-данные? Это нельзя отменить.
-              </p>
-              <p className="mt-1 text-[14px] leading-relaxed text-danger-text/80">
-                Посты, конкуренты и настройки в этом браузере пропадут, и мы вернём тебя на главную.
-              </p>
-              <div className="mt-3 flex flex-wrap gap-2">
-                <Button variant="danger" onClick={resetDemo}>
-                  <RotateCcw className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
-                  Да, сбросить
-                </Button>
-                <Button variant="ghost" onClick={() => setAsking(false)}>
-                  Отмена
-                </Button>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        <Divider />
-
-        <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
-          <div className="min-w-0 max-w-md">
-            <p className="text-[15px] font-semibold text-text">Выйти</p>
-            <p className="mt-1 text-[13px] leading-relaxed text-text-2">
-              Данные останутся на месте — войдёшь снова и продолжишь с того же места.
-            </p>
-          </div>
-          <Button variant="outline" onClick={leave}>
-            <LogOut className="h-[18px] w-[18px]" strokeWidth={1.75} aria-hidden />
-            Выйти
-          </Button>
-        </div>
+        <Button variant="outline" onClick={leave}>
+          <LogOut className="h-[18px] w-[18px]" strokeWidth={1.75} aria-hidden />
+          Выйти
+        </Button>
       </div>
     </Section>
   );
@@ -1156,6 +923,16 @@ function SettingsContent() {
   const { ready, toast, refreshReal } = s;
   const router = useRouter();
   const searchParams = useSearchParams();
+  const activeSection = searchParams.get("section") === "general" ? "general" : "posts";
+
+  const selectSection = (section: "posts" | "general") => {
+    const params = new URLSearchParams(searchParams.toString());
+    params.set("section", section);
+    params.delete("connected");
+    params.delete("oauth");
+    params.delete("network");
+    router.replace(`/app/settings?${params.toString()}`, { scroll: false });
+  };
 
   // Возврат из OAuth-редиректа: показываем итог подключения и чистим URL.
   useEffect(() => {
@@ -1166,54 +943,145 @@ function SettingsContent() {
 
     if (connected) {
       refreshReal();
+      const publishSupported = hasComposerPayloadSupport(connected);
       toast({
-        kind: "success",
+        kind: publishSupported ? "success" : "info",
         title: `${NETWORK_LABEL[connected ?? ""] ?? connected} подключён`,
-        body: "Канал в списке — теперь сюда можно публиковать.",
+        body: publishSupported
+          ? "Канал в списке — теперь сюда можно публиковать."
+          : "Подключение сохранено, но публикация в эту сеть пока недоступна в Композиторе.",
       });
     } else {
       const network = searchParams.get("network") || "";
       const label = NETWORK_LABEL[network] ?? network;
       const msg = oauthMessage(oauthErr ?? "", label);
-      toast({ kind: "danger", title: "Не получилось подключить", body: msg });
+      const unsupported = oauthErr === "unsupported";
+      toast({
+        kind: unsupported ? "info" : "danger",
+        title: unsupported ? "Подключение пока недоступно" : "Не получилось подключить",
+        body: msg,
+      });
     }
     // URL без параметров, чтобы тост не всплыл повторно при обновлении страницы.
     // После очистки searchParams эффект перезапустится и молча выйдет (нет параметров).
-    router.replace("/app/settings", { scroll: false });
+    router.replace("/app/settings?section=general", { scroll: false });
   }, [searchParams, ready, toast, refreshReal, router]);
 
   return (
     <AppShell
-      title="Настройки"
-      subtitle="Всё важное — на одном экране. Ничего не спрятано в подменю."
+      title="Настройка Авроры"
+      subtitle="Укажи, как Аврора должна писать, планировать и публиковать для каждого канала."
     >
       {!s.ready ? (
         <SettingsSkeleton />
       ) : (
-        <div className="grid items-start gap-5 lg:grid-cols-2">
-          {/* Левая колонка — аккаунт и подключения. Подборка сбалансирована по высоте
-              с правой, чтобы под колонками не зияли пустые дыры. */}
-          <div className="flex flex-col gap-5">
-            <ChannelsSection index={0} />
-            <BotSection index={1} />
-            <ModeSection index={2} />
-          </div>
+        <div className="space-y-6">
+          <nav
+            className="grid gap-3 rounded-md border border-line bg-surface/82 p-2 shadow-soft backdrop-blur-xl sm:grid-cols-2"
+            role="tablist"
+            aria-label="Разделы настройки Авроры"
+          >
+            <button
+              type="button"
+              role="tab"
+              id="settings-posts-tab"
+              aria-selected={activeSection === "posts"}
+              aria-controls="settings-posts-panel"
+              onClick={() => selectSection("posts")}
+              className={cn(
+                "flex min-h-20 items-start gap-3 rounded-sm border px-4 py-4 text-left transition-[border-color,background-color,box-shadow,transform] duration-200",
+                activeSection === "posts"
+                  ? "border-brand/35 bg-info-soft text-info-text shadow-[0_10px_30px_rgba(79,70,229,.10)]"
+                  : "border-transparent bg-transparent text-text-2 hover:border-line hover:bg-surface",
+              )}
+            >
+              <span className={cn(
+                "grid h-10 w-10 shrink-0 place-items-center rounded-sm",
+                activeSection === "posts" ? "bg-surface text-brand" : "bg-surface-inset text-text-2",
+              )}>
+                <Sparkles className="h-5 w-5" aria-hidden />
+              </span>
+              <span>
+                <span className="block text-[15px] font-extrabold text-text">Настройки постов</span>
+                <span className="mt-1 block text-[12px] leading-relaxed text-text-3">
+                  Голос, стиль, структура, автопилот и правила публикаций.
+                </span>
+              </span>
+            </button>
 
-          {/* Правая колонка — как работает автоматизация и каким голосом пишет ИИ. */}
-          <div className="flex flex-col gap-5">
-            <AutopilotSection index={3} />
-            <QuietSection index={4} />
-            <AiSection index={5} />
-          </div>
+            <button
+              type="button"
+              role="tab"
+              id="settings-general-tab"
+              aria-selected={activeSection === "general"}
+              aria-controls="settings-general-panel"
+              onClick={() => selectSection("general")}
+              className={cn(
+                "flex min-h-20 items-start gap-3 rounded-sm border px-4 py-4 text-left transition-[border-color,background-color,box-shadow,transform] duration-200",
+                activeSection === "general"
+                  ? "border-brand/35 bg-info-soft text-info-text shadow-[0_10px_30px_rgba(79,70,229,.10)]"
+                  : "border-transparent bg-transparent text-text-2 hover:border-line hover:bg-surface",
+              )}
+            >
+              <span className={cn(
+                "grid h-10 w-10 shrink-0 place-items-center rounded-sm",
+                activeSection === "general" ? "bg-surface text-brand" : "bg-surface-inset text-text-2",
+              )}>
+                <Link2 className="h-5 w-5" aria-hidden />
+              </span>
+              <span>
+                <span className="block text-[15px] font-extrabold text-text">Общие настройки</span>
+                <span className="mt-1 block text-[12px] leading-relaxed text-text-3">
+                  Подключения, бот, лимиты, режим работы и аккаунт.
+                </span>
+              </span>
+            </button>
+          </nav>
 
-          {/* Опасная зона — осознанно отдельно и во всю ширину. */}
-          <div className="lg:col-span-2">
-            <DangerSection index={6} />
-          </div>
+          <section
+            id="settings-posts-panel"
+            role="tabpanel"
+            aria-labelledby="settings-posts-tab"
+            hidden={activeSection !== "posts"}
+          >
+            <ChannelSettingsCenter />
+          </section>
 
-          <p className="pt-2 pb-2 text-center text-[13px] text-text-3 lg:col-span-2">
-            Изменения сохраняются сразу — отдельной кнопки «Сохранить» здесь нет.
-          </p>
+          <section
+            id="settings-general-panel"
+            role="tabpanel"
+            aria-labelledby="settings-general-tab"
+            hidden={activeSection !== "general"}
+          >
+            <ProfileBriefSection />
+            <LegalSourcesSection className="mb-5" />
+            <div className="mb-4">
+              <h2 className="text-[18px] font-extrabold tracking-tight text-text">Общие настройки</h2>
+              <p className="mt-1 text-[13px] leading-relaxed text-text-3">
+                Технические подключения и аккаунт сохраняются отдельно и сразу.
+              </p>
+            </div>
+            <div className="columns-1 gap-5 lg:columns-2">
+              <div className="mb-5 break-inside-avoid">
+                <ChannelsSection index={0} />
+              </div>
+              <div className="mb-5 break-inside-avoid">
+                <BotSection index={1} />
+              </div>
+              <div className="mb-5 break-inside-avoid">
+                <ModeSection index={2} />
+              </div>
+              <div className="mb-5 break-inside-avoid">
+                <QuietSection index={3} />
+              </div>
+              <div className="mb-5 break-inside-avoid">
+                <AiSection index={4} />
+              </div>
+              <div className="mb-5 break-inside-avoid">
+                <DangerSection index={5} />
+              </div>
+            </div>
+          </section>
         </div>
       )}
     </AppShell>
@@ -1225,8 +1093,8 @@ export default function SettingsPage() {
     <Suspense
       fallback={
         <AppShell
-          title="Настройки"
-          subtitle="Всё важное — на одном экране. Ничего не спрятано в подменю."
+          title="Настройка Авроры"
+          subtitle="Укажи, как Аврора должна писать, планировать и публиковать для каждого канала."
         >
           <SettingsSkeleton />
         </AppShell>

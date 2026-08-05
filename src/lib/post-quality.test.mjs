@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   buildQualityPrompt,
   fallbackTopicFromSeed,
+  fallbackTopicVariantFromSeed,
+  hasHumanQualityAttestation,
+  hasVerifiedQualityMetadata,
   normalizePostQuality,
   presetQuality,
   validatePostQuality,
@@ -38,9 +41,55 @@ describe("post quality contract", () => {
     const text = goodLegalPost();
     expect(text.length).toBeGreaterThanOrEqual(legal.minChars);
     expect(text.length).toBeLessThanOrEqual(legal.maxChars);
-    const result = validatePostQuality(text, legal, { supportCount: 2, citedShare: 0.9 });
+    const result = validatePostQuality(text, legal, {
+      supportCount: 2,
+      citedShare: 0.9,
+      checkedAt: "2026-08-02T09:30:00.000Z",
+      trigger: "edit_recheck",
+    });
     expect(result.passed).toBe(true);
     expect(result.score).toBe(100);
+    expect(result.metadata).toEqual({
+      checkedAt: "2026-08-02T09:30:00.000Z",
+      rules: { id: "aurora-post-quality", version: 1, profileVersion: 1 },
+      provenance: {
+        kind: "deterministic",
+        validator: "validatePostQuality",
+        trigger: "edit_recheck",
+        humanAttestation: null,
+      },
+    });
+    expect(hasVerifiedQualityMetadata(result)).toBe(true);
+    expect(hasHumanQualityAttestation(result)).toBe(false);
+
+    const staleRules = structuredClone(result);
+    staleRules.metadata.rules.version = 2;
+    expect(hasVerifiedQualityMetadata(staleRules)).toBe(false);
+    const missingProvenance = structuredClone(result);
+    delete missingProvenance.metadata.provenance.validator;
+    expect(hasVerifiedQualityMetadata(missingProvenance)).toBe(false);
+  });
+
+  it("requires an explicit actor and timestamp before treating a check as human-attested", () => {
+    const result = validatePostQuality(goodLegalPost(), legal, {
+      supportCount: 2,
+      citedShare: 0.9,
+      checkedAt: "2026-08-02T09:30:00.000Z",
+    });
+    const attested = structuredClone(result);
+    attested.metadata.provenance.humanAttestation = {
+      kind: "human_review",
+      userId: 7,
+      attestedAt: "2026-08-02T09:35:00.000Z",
+    };
+
+    expect(hasHumanQualityAttestation(attested)).toBe(true);
+    expect(
+      hasHumanQualityAttestation({
+        ...result,
+        qualityOrigin: "manual_review",
+      }),
+    ).toBe(false);
   });
 
   it("blocks informal address, missing sources and a missing disclaimer", () => {
@@ -60,6 +109,31 @@ describe("post quality contract", () => {
     expect(buildQualityPrompt(legal, { postIndex: 4 })).toContain("сегодня нужен мягкий призыв");
   });
 
+  it("normalizes extended Aurora controls and turns them into real generation rules", () => {
+    const quality = normalizePostQuality({
+      ...legal,
+      warmth: 140,
+      formality: -20,
+      authorVoice: 2,
+      formatStyle: 5,
+      hookStyle: 0,
+      profanityLevel: 52,
+      allowedEmoji: "",
+      visualDirection: "Тёмная юридическая инфографика",
+    });
+    const prompt = buildQualityPrompt(quality, { postIndex: 0 });
+
+    expect(quality.warmth).toBe(100);
+    expect(quality.formality).toBe(0);
+    expect(quality.profanity).toBe("allow");
+    expect(quality.allowedEmoji).toBe("");
+    expect(prompt).toContain("голос от первого лица «я»");
+    expect(prompt).toContain("теплота 100/100");
+    expect(prompt).toContain("основной формат: авторское мнение");
+    expect(prompt).toContain("мат допустим только со звёздочками");
+    expect(prompt).toContain("Тёмная юридическая инфографика");
+  });
+
   it("rejects clickbait and builds a safe useful topic from a fact", () => {
     const source =
       "Внесудебное банкротство через МФЦ доступно при долге от 25 тысяч до 1 миллиона рублей и занимает шесть месяцев.";
@@ -67,5 +141,8 @@ describe("post quality contract", () => {
     const fallback = fallbackTopicFromSeed(source);
     expect(fallback).toBe("Кому доступно внесудебное банкротство через МФЦ");
     expect(validateTopicQuality(fallback, source).passed).toBe(true);
+    const variant = fallbackTopicVariantFromSeed(source);
+    expect(variant).not.toBe(fallback);
+    expect(validateTopicQuality(variant, source).passed).toBe(true);
   });
 });

@@ -49,7 +49,24 @@ interface StatsData {
   growth7d?: number;
   subscriberSeries?: SubPoint[];
   posts?: PostStat[];
-  totals?: { published: number; totalViews: number; avgViews: number | null };
+  totals?: {
+    published: number;
+    withMetrics: number;
+    missing: number;
+    unverified: number;
+    totalViews: number;
+    avgViews: number | null;
+  };
+  cohort?: {
+    label: string;
+    verifiedPosts: number;
+    withMetrics: number;
+    missing: number;
+    unverified: number;
+    averageFormula: string | null;
+    confidence: "insufficient" | "low" | "medium" | "high";
+  };
+  period?: { days: number; timeZone: string; label: string };
   bestPost?: { text: string; views: number } | null;
   insight?: string | null;
   available?: { views: boolean; reactions: boolean; reach: boolean; comments: boolean };
@@ -175,11 +192,15 @@ function Tile({
 function Content({
   data,
   loading,
+  loadError,
+  onRetryLoad,
   onReport,
   sending,
 }: {
   data: StatsData | null;
   loading: boolean;
+  loadError: boolean;
+  onRetryLoad: () => void;
   onReport: () => void;
   sending: boolean;
 }) {
@@ -196,6 +217,23 @@ function Content({
         </div>
         <div className="skeleton h-56 w-full rounded-md" />
       </div>
+    );
+  }
+
+  if (loadError && !data) {
+    return (
+      <Card>
+        <EmptyState
+          icon={<BarChart3 className="h-6 w-6" aria-hidden />}
+          title="Не удалось загрузить аналитику"
+          body="Серверные данные сейчас недоступны. Ничего не обнуляю и не выдаю сбой за отсутствие канала."
+          action={
+            <Button variant="solid" size="sm" onClick={onRetryLoad}>
+              Попробовать снова
+            </Button>
+          }
+        />
+      </Card>
     );
   }
 
@@ -242,6 +280,15 @@ function Content({
                 {data.insight ??
                   "Собираю первые цифры. Как только пост наберёт просмотры — покажу, что у тебя работает лучше всего."}
               </p>
+              <p className="mt-2 text-[12px] font-semibold text-text-3">
+                Выборка: {data.cohort?.withMetrics ?? 0} · уверенность: {data.cohort?.confidence === "high"
+                  ? "высокая"
+                  : data.cohort?.confidence === "medium"
+                    ? "средняя"
+                    : data.cohort?.confidence === "low"
+                      ? "низкая"
+                      : "недостаточно данных"}
+              </p>
             </div>
           </div>
           <div className="mt-4">
@@ -278,18 +325,20 @@ function Content({
         />
         <Tile
           icon={<BarChart3 className="h-4 w-4" aria-hidden />}
-          label="Постов вышло"
+          label="Подтверждённых постов"
           value={fmtNum(data.totals?.published ?? 0)}
         />
         <Tile
           icon={<Eye className="h-4 w-4" aria-hidden />}
           label="Просмотров всего"
           value={fmtNum(data.totals?.totalViews ?? 0)}
+          sub={data.period?.label}
         />
         <Tile
           icon={<Eye className="h-4 w-4" aria-hidden />}
           label="Просмотров на пост"
           value={data.totals?.avgViews != null ? fmtNum(data.totals.avgViews) : "—"}
+          sub={data.cohort?.label}
         />
       </div>
 
@@ -306,7 +355,12 @@ function Content({
 
       {/* ТВОИ ПОСТЫ — настоящие просмотры и реакции */}
       <Card className="p-5">
-        <h2 className="text-[15px] font-bold text-text">Твои посты</h2>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-[15px] font-bold text-text">Твои подтверждённые посты</h2>
+          {data.cohort?.averageFormula && (
+            <Badge tone="neutral">Среднее: {data.cohort.averageFormula}</Badge>
+          )}
+        </div>
         {posts.length === 0 ? (
           <p className="mt-3 text-[14px] text-text-2">
             Опубликованных постов пока нет — как выйдет первый, здесь появятся его цифры.
@@ -360,6 +414,12 @@ function Content({
           <b className="font-semibold text-text">реакции</b> (с публичной страницы канала) и{" "}
           <b className="font-semibold text-text">подписчиков</b>. Охват и комментарии Telegram по
           каналу не отдаёт — поэтому мы честно пишем «недоступно», а не рисуем ноль или выдумку.
+          {data.cohort && (data.cohort.missing > 0 || data.cohort.unverified > 0) && (
+            <>
+              {" "}Из расчёта исключены: отсутствующие — {data.cohort.missing}, без подтверждения —{" "}
+              {data.cohort.unverified}.
+            </>
+          )}
           {data.collectedAt && (
             <>
               {" "}
@@ -379,6 +439,7 @@ export default function AnalyticsPage() {
   const s = useStore();
   const [data, setData] = useState<StatsData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [sending, setSending] = useState(false);
   const [picked, setPicked] = useState<number | null>(null);
@@ -388,12 +449,22 @@ export default function AnalyticsPage() {
   const { tgChannels, channelId } = useChannelChoice(s.realChannels, picked);
 
   const load = useCallback(async () => {
-    if (!channelId) return;
+    if (!channelId) {
+      setData(null);
+      setLoadError(false);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    setLoadError(false);
+    setData(null);
     try {
       const r = await fetch(`/api/stats?channel=${channelId}`, { cache: "no-store" });
-      setData((await r.json()) as StatsData);
+      const next = (await r.json().catch(() => null)) as StatsData | null;
+      if (!r.ok || !next) throw new Error("stats_unavailable");
+      setData(next);
     } catch {
-      /* оставим как было */
+      setLoadError(true);
     } finally {
       setLoading(false);
     }
@@ -409,19 +480,39 @@ export default function AnalyticsPage() {
     if (refreshing) return;
     setRefreshing(true);
     try {
-      await fetch("/api/stats/collect", { method: "POST" });
-      // сбор делает воркер — даём ему пару секунд, потом перечитываем
-      await new Promise((r) => setTimeout(r, 2800));
-      await load();
+      const queued = await fetch("/api/stats/collect", { method: "POST" });
+      if (!queued.ok) throw new Error("stats_queue_unavailable");
+      const before = data?.collectedAt ?? null;
+      for (let attempt = 0; attempt < 8; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+        const response = await fetch(`/api/stats?channel=${channelId}`, { cache: "no-store" });
+        if (!response.ok) continue;
+        const next = (await response.json()) as StatsData;
+        setData(next);
+        if (next.collectedAt && next.collectedAt !== before) {
+          s.toast({
+            kind: "success",
+            title: "Цифры подтверждены",
+            body: "Получены свежие данные из внешней сети.",
+          });
+          return;
+        }
+      }
       s.toast({
-        kind: "success",
-        title: "Цифры обновлены",
-        body: "Собрал свежую статистику из Telegram.",
+        kind: "info",
+        title: "Сбор ещё идёт",
+        body: "Не показываю успех заранее. Обнови страницу позже — данные появятся после ответа сети.",
+      });
+    } catch {
+      s.toast({
+        kind: "danger",
+        title: "Не удалось запустить сбор",
+        body: "Очередь статистики недоступна. Попробуй позже.",
       });
     } finally {
       setRefreshing(false);
     }
-  }, [refreshing, load, s]);
+  }, [refreshing, data, channelId, s]);
 
   const sendReport = useCallback(async () => {
     if (sending) return;
@@ -442,8 +533,8 @@ export default function AnalyticsPage() {
 
   return (
     <AppShell
-      title="Аналитика"
-      subtitle="Настоящие цифры твоих постов — и что с ними делать. За минуту, без объяснений."
+      title="Результаты"
+      subtitle="Узнай, какие публикации работают, почему они сработали и что стоит повторить."
       action={
         <Button variant="brand" size="md" onClick={refresh} loading={refreshing}>
           <RefreshCw className="h-4 w-4" aria-hidden />
@@ -457,11 +548,18 @@ export default function AnalyticsPage() {
         channels={tgChannels}
         value={channelId}
         onChange={setPicked}
-        label="Аналитика канала"
+        label="Результаты канала"
         className="mb-6"
       />
 
-      <Content data={data} loading={loading} onReport={sendReport} sending={sending} />
+      <Content
+        data={data}
+        loading={loading}
+        loadError={loadError}
+        onRetryLoad={() => void load()}
+        onReport={sendReport}
+        sending={sending}
+      />
     </AppShell>
   );
 }

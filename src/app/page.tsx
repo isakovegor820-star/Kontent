@@ -1,11 +1,14 @@
-// ГЛАВНЫЙ ЛЕНДИНГ (2026-07-29): утверждён вариант 4.
-// Старый необруталистичный hero сохранён на /v3, экспериментальные версии — на /variants/*.
 import type { Metadata } from "next";
-import { VariantLanding } from "@/components/v3/variants/landing";
-import { v3Display, v3Kinetic, v3Mono } from "./v3/fonts";
-import "./v3/v3.css";
-import "./variants/variants.css";
-import "./reasons/reasons.css";
+import { LandingNav } from "@/components/landing/nav";
+import { Hero } from "@/components/landing/hero";
+import { Pains } from "@/components/landing/pains";
+import { Cycle } from "@/components/landing/cycle";
+import { HowTo } from "@/components/landing/howto";
+import { ChannelMemory, QualityControl } from "@/components/landing/capabilities";
+import { Compare } from "@/components/landing/compare";
+import { Faq } from "@/components/landing/faq";
+import { FinalCta, Footer } from "@/components/landing/final-cta";
+import { StickyCta } from "@/components/landing/sticky-cta";
 
 export const metadata: Metadata = {
   title: { absolute: "Аврора — Telegram-канал ведётся, даже когда ты занят" },
@@ -15,19 +18,21 @@ export const metadata: Metadata = {
 
 export default function LandingPage() {
   return (
-    <div className={`v3 ${v3Display.variable} ${v3Mono.variable} ${v3Kinetic.variable}`}>
-      <div className="v3-paper min-h-dvh">
-        <VariantLanding
-          variant={4}
-          showSwitcher={false}
-          footerVariant={3}
-          footerInteractionVariant={3}
-          enableScrollMotion
-          finaleVariant={2}
-          showFinaleSwitcher={false}
-          production
-        />
-      </div>
-    </div>
+    <>
+      <LandingNav />
+      <main id="main">
+        <Hero />
+        <Pains />
+        <Cycle />
+        <HowTo />
+        <ChannelMemory />
+        <QualityControl />
+        <Compare />
+        <Faq />
+        <FinalCta />
+      </main>
+      <Footer />
+      <StickyCta />
+    </>
   );
 }

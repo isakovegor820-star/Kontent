@@ -2,7 +2,7 @@
 // очередь публикации, что и ручные посты (Д.3) — те же надёжность, повторы, уведомления.
 
 import { getPool } from "./db";
-import { getPublishQueue, jobIdForPost } from "./queue";
+import { getPublishQueue, jobIdForPostRevision } from "./queue";
 import { EMPTY_BRIEF, normalizeBrief, type Brief } from "./brief";
 
 export interface AutopilotSettings {
@@ -43,7 +43,7 @@ export async function resolveChannel(userId: number, wanted?: number | null): Pr
 /** Бриф контента КАНАЛА. Нет строки — пустой бриф (значит, автопилот запускать нельзя). */
 export async function loadBrief(userId: number, channelId: number): Promise<Brief> {
   const r = await getPool().query(
-    `select niche, audience, rubrics, goal, cta, taboo, quality, ready, source
+    `select niche, audience, rubrics, formats, author_role, goal, cta, taboo, quality, ready, source
        from content_brief where user_id = $1 and channel_id = $2`,
     [userId, channelId],
   );
@@ -66,7 +66,21 @@ export async function ensureSettings(userId: number, channelId: number): Promise
   return r.rows[0];
 }
 
-/** Создаёт scheduled-пост и кладёт отложенную задачу в очередь публикации. Возвращает postId. */
+/** Повторяемая доставка уже сохранённого post; `post-{id}` не допускает две BullMQ job. */
+export async function enqueueAutopilotPost(
+  postId: number,
+  scheduledAt: string,
+  scheduleRevision = 1,
+): Promise<void> {
+  const delay = Math.max(0, new Date(scheduledAt).getTime() - Date.now());
+  await getPublishQueue().add(
+    "publish",
+    { postId, scheduleRevision },
+    { delay, jobId: jobIdForPostRevision(postId, scheduleRevision), removeOnComplete: true, removeOnFail: false },
+  );
+}
+
+/** Legacy helper for non-checkpointed callers. Approval routes use the transactional outbox. */
 export async function schedulePost(
   userId: number,
   channelId: number,
@@ -74,17 +88,17 @@ export async function schedulePost(
   scheduledAt: string,
 ): Promise<number> {
   const pool = getPool();
-  const ins = await pool.query<{ id: number }>(
-    `insert into posts (user_id, channel_id, text, scheduled_at, status)
-     values ($1, $2, $3, $4, 'scheduled') returning id`,
+  const ins = await pool.query<{ id: number; schedule_revision: number | string }>(
+    `insert into posts (user_id, channel_id, text, scheduled_at, status, publication_origin)
+     values ($1, $2, $3, $4, 'scheduled', 'autopilot') returning id, schedule_revision`,
     [userId, channelId, text, scheduledAt],
   );
   const postId = ins.rows[0].id;
-  const delay = Math.max(0, new Date(scheduledAt).getTime() - Date.now());
-  await getPublishQueue().add(
-    "publish",
-    { postId },
-    { delay, jobId: jobIdForPost(postId), removeOnComplete: true, removeOnFail: false },
-  );
+  try {
+    await enqueueAutopilotPost(postId, scheduledAt, Number(ins.rows[0].schedule_revision || 1));
+  } catch (error) {
+    await pool.query(`delete from posts where id = $1 and status = 'scheduled'`, [postId]).catch(() => {});
+    throw error;
+  }
   return postId;
 }

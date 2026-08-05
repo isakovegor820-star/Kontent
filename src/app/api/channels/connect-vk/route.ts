@@ -12,10 +12,14 @@ import { getSessionUser } from "@/lib/session";
 import { checkRateLimit, clientIp, rateLimitResponse } from "@/lib/rate-limit";
 import { resolveGroupByToken } from "@/lib/vk";
 import { encryptToken } from "@/lib/token-crypto.mjs";
+import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 
 export const runtime = "nodejs";
 
 export async function POST(req: NextRequest) {
+  if (!hasTrustedMutationOrigin(req)) {
+    return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
+  }
   const user = await getSessionUser(req);
   if (!user) {
     return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });

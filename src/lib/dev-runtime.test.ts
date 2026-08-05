@@ -1,0 +1,35 @@
+import { readFileSync } from "node:fs";
+import { describe, expect, it } from "vitest";
+
+const packageJson = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
+const devScript = readFileSync(new URL("../../scripts/dev.mjs", import.meta.url), "utf8");
+const devBootstrap = readFileSync(new URL("../../scripts/dev-bootstrap.mjs", import.meta.url), "utf8");
+const nextConfig = readFileSync(new URL("../../next.config.ts", import.meta.url), "utf8");
+const registerPage = readFileSync(new URL("../app/register/page.tsx", import.meta.url), "utf8");
+
+describe("local development runtime", () => {
+  it("routes normal dev commands through the web + worker orchestrator", () => {
+    expect(packageJson.scripts.dev).toBe("node scripts/dev.mjs");
+    expect(packageJson.scripts["dev:web"]).toBe("node scripts/dev.mjs");
+    expect(packageJson.scripts["dev:web-only"]).toBe("next dev");
+  });
+
+  it("forces the full worker even when the parent environment is restricted", () => {
+    expect(devScript).toContain('AURORA_WORKER_MODE: "full"');
+    expect(devScript).toContain('start("worker"');
+    expect(devScript).toContain('start("web"');
+  });
+
+  it("prepares local services, schema, and migrations before opening the app", () => {
+    expect(devScript).toContain("prepareDevelopmentRuntime");
+    expect(devBootstrap).toContain('["services", "start", formula]');
+    expect(devBootstrap).toContain("bootstrapEmptyLocalDatabase");
+    expect(devBootstrap).toContain("await migrate({ env, logger })");
+    expect(devBootstrap).toContain("await assertRuntimeSchemaReady({ env })");
+  });
+
+  it("allows both loopback hostnames and keeps credentials out of a native GET fallback", () => {
+    expect(nextConfig).toContain('allowedDevOrigins: ["127.0.0.1", "localhost"]');
+    expect(registerPage).toMatch(/<motion\.form[\s\S]*?method="post"[\s\S]*?onSubmit=\{submit\}/);
+  });
+});

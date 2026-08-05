@@ -6,10 +6,14 @@ import { getPool } from "@/lib/db";
 import { createSession } from "@/lib/session";
 import { verifyPassword } from "@/lib/password";
 import { checkRateLimit, clientIp, rateLimitResponse } from "@/lib/rate-limit";
+import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 
 export const runtime = "nodejs";
 
 export async function POST(req: NextRequest) {
+  if (!hasTrustedMutationOrigin(req)) {
+    return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
+  }
   let body: unknown;
   try {
     body = await req.json();
@@ -40,8 +44,8 @@ export async function POST(req: NextRequest) {
   try {
     const pool = getPool();
     const row = (
-      await pool.query<{ id: number; password_hash: string | null }>(
-        `select id, password_hash from users where email = $1`,
+      await pool.query<{ id: number; password_hash: string | null; credential_epoch: number | string }>(
+        `select id, password_hash, credential_epoch from users where email = $1`,
         [email],
       )
     ).rows[0];
@@ -52,7 +56,16 @@ export async function POST(req: NextRequest) {
     }
 
     const res = NextResponse.json({ ok: true });
-    await createSession(res, row.id, req.headers.get("user-agent"));
+    const created = await createSession(
+      res,
+      row.id,
+      req.headers.get("user-agent"),
+      Number(row.credential_epoch),
+    );
+    if (!created) {
+      // Password changed after verification. Do not mint a session for the stale hash.
+      return NextResponse.json({ ok: false, error: "invalid" }, { status: 401 });
+    }
     return res;
   } catch (err) {
     console.error("[/api/auth/login]", err);

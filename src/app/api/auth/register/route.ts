@@ -8,10 +8,14 @@ import { findOrCreateUser } from "@/lib/users";
 import { createSession } from "@/lib/session";
 import { hashPassword, validatePassword } from "@/lib/password";
 import { checkRateLimit, clientIp, rateLimitResponse } from "@/lib/rate-limit";
+import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 
 export const runtime = "nodejs";
 
 export async function POST(req: NextRequest) {
+  if (!hasTrustedMutationOrigin(req)) {
+    return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
+  }
   let body: unknown;
   try {
     body = await req.json();

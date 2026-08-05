@@ -15,7 +15,7 @@ export function getPool(): Pool {
   if (!connectionString) throw new Error("DATABASE_URL не задан");
 
   // Локальная база идёт без SSL; удалённая (Neon/свой сервер) — с SSL.
-  const isLocal = /@(localhost|127\.0\.0\.1)/.test(connectionString);
+  const isLocal = /\/\/(?:[^@/]+@)?(?:localhost|127\.0\.0\.1)(?::|\/)/.test(connectionString);
 
   // По умолчанию проверяем сертификат хоста (защита от MITM). Аварийный выход —
   // PGSSL_REJECT_UNAUTHORIZED=false, если cert-chain хоста не доверен Node. Neon использует

@@ -418,7 +418,7 @@
   --paper: #f4f0ea;
   --yellow: #ffd021;
   width: 100%;
-  min-height: 100svh;
+  min-height: auto;
 }
 .manifest .sceneLabel { grid-column: 1 / -1; }
 .wordAnimationNav {
@@ -466,10 +466,10 @@
 .flapCell b { color: var(--ink); transform: rotateX(180deg); }
 .auroraGravity { touch-action: none; }
 .manifestWords { display: flex; min-width: 0; grid-column: 1; flex-direction: column; align-items: flex-start; margin-top: 58px; }
-.manifestWords button { padding: 0; border: 0; color: rgb(9 9 9 / .22); background: transparent; font: 900 clamp(76px, 11.3vw, 205px)/.75 var(--v3-kinetic), var(--v3-display), sans-serif; letter-spacing: -.07em; text-transform: uppercase; cursor: pointer; transition: color .18s ease, transform .18s ease; }
+.manifestWords button { padding: 0; border: 0; color: rgb(9 9 9 / .22); background: transparent; font: 900 clamp(76px, 11.3vw, 205px)/.75 var(--v3-kinetic), var(--v3-display), sans-serif; letter-spacing: -.07em; text-transform: uppercase; cursor: pointer; transition: color .18s ease, text-shadow .18s ease, transform .18s ease; }
 .manifestWords button[aria-pressed="true"] {
   color: var(--ink);
-  background-image: linear-gradient(transparent 63%, var(--yellow) 63% 88%, transparent 88%);
+  text-shadow: .035em .045em 0 var(--yellow);
   transform: translateX(4vw);
 }
 .manifestProof {

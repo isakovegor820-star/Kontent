@@ -7,10 +7,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
 import { resolveChannel } from "@/lib/autopilot";
-import { completeText } from "@/lib/ai-provider";
-import { AI_DAILY_LIMIT, aiUsedToday, recordAiUsage } from "@/lib/ai-usage";
+import { completeAiText } from "@/lib/ai-completion-service.mjs";
+import { isEngineId } from "@/lib/engines";
+import { commitAiUsage, releaseAiUsage, reserveAiUsage } from "@/lib/ai-usage";
 import { RUBRIC_LABELS, normalizeBrief } from "@/lib/brief";
 import { fetchPublicPosts } from "@/lib/tg-public";
+import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 
 export const runtime = "nodejs";
 
@@ -47,6 +49,9 @@ function parseJsonLoose(raw: string): unknown {
 }
 
 export async function POST(req: NextRequest) {
+  if (!hasTrustedMutationOrigin(req)) {
+    return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
+  }
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
 
@@ -57,19 +62,16 @@ export async function POST(req: NextRequest) {
   if (!channelId) return NextResponse.json({ ok: false, error: "no_channel" }, { status: 422 });
 
   const ch = (
-    await getPool().query<{ handle: string | null }>(`select handle from channels where id = $1`, [
-      channelId,
-    ])
+    await getPool().query<{ handle: string | null; ai_engine: string | null }>(
+      `select c.handle, u.ai_engine
+         from channels c join users u on u.id = c.user_id
+        where c.id = $1 and c.user_id = $2`,
+      [channelId, user.id],
+    )
   ).rows[0];
 
   if (!ch?.handle) {
     return NextResponse.json({ ok: false, error: "no_channel" }, { status: 422 });
-  }
-
-  // Читать канал — это генерация ИИ, поэтому честно тратим лимит.
-  const used = await aiUsedToday(user.id);
-  if (used >= AI_DAILY_LIMIT) {
-    return NextResponse.json({ ok: false, error: "limit", used, limit: AI_DAILY_LIMIT }, { status: 429 });
   }
 
   const page = await fetchPublicPosts(ch.handle, 15);
@@ -85,30 +87,52 @@ export async function POST(req: NextRequest) {
 
   const sample = posts.slice(0, 12).map((t, i) => `Пост ${i + 1}:\n${t.slice(0, 700)}`).join("\n\n---\n\n");
 
-  let raw: string;
+  // Квоту занимаем атомарно только когда канал действительно прочитан и сейчас пойдёт
+  // платный запрос. Параллельные клики больше не обходят дневной лимит.
+  const reservation = await reserveAiUsage(user.id, "brief");
+  if (!reservation.allowed) {
+    return NextResponse.json(
+      { ok: false, error: "limit", used: reservation.used, limit: reservation.limit },
+      { status: 429 },
+    );
+  }
+
+  let committed = false;
   try {
-    raw = await completeText(SYSTEM, `Посты канала «${page.title ?? ch.handle}»:\n\n${sample}`, {
+    const completed = await completeAiText({
+      system: SYSTEM,
+      user: `Посты канала «${page.title ?? ch.handle}»:\n\n${sample}`,
+      engine: isEngineId(ch.ai_engine) ? ch.ai_engine : null,
       temperature: 0.3,
       maxTokens: 700,
-      signal: req.signal,
+    }, { signal: req.signal });
+    const raw = completed.text;
+    const parsed = parseJsonLoose(raw);
+    if (!parsed) {
+      return NextResponse.json({ ok: false, error: "unparsable" }, { status: 502 });
+    }
+
+    const brief = normalizeBrief({ ...(parsed as object), source: "ai", ready: false });
+    // Рубрики принимаем только из нашего списка — модель любит придумать своё.
+    brief.rubrics = brief.rubrics.filter((r) => RUBRIC_LABELS.includes(r));
+    if (!await commitAiUsage(user.id, reservation.reservationId)) {
+      return NextResponse.json({ ok: false, error: "usage_finalize_failed" }, { status: 503 });
+    }
+    committed = true;
+
+    return NextResponse.json({
+      ok: true,
+      brief,
+      readPosts: posts.length,
+      channelTitle: page.title,
+      handle: ch.handle,
     });
-  } catch {
+  } catch (error) {
+    console.error("[/api/autopilot/brief/suggest] generation failed", {
+      errorName: (error as Error)?.name || "Error",
+    });
     return NextResponse.json({ ok: false, error: "unavailable" }, { status: 503 });
+  } finally {
+    if (!committed) await releaseAiUsage(user.id, reservation.reservationId).catch(() => {});
   }
-  await recordAiUsage(user.id, "brief").catch(() => {});
-
-  const parsed = parseJsonLoose(raw);
-  if (!parsed) return NextResponse.json({ ok: false, error: "unparsable" }, { status: 502 });
-
-  const brief = normalizeBrief({ ...(parsed as object), source: "ai", ready: false });
-  // Рубрики принимаем только из нашего списка — модель любит придумать своё.
-  brief.rubrics = brief.rubrics.filter((r) => RUBRIC_LABELS.includes(r));
-
-  return NextResponse.json({
-    ok: true,
-    brief,
-    readPosts: posts.length,
-    channelTitle: page.title,
-    handle: ch.handle,
-  });
 }

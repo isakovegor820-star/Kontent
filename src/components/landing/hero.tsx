@@ -27,7 +27,7 @@ const EASE = [0.22, 1, 0.36, 1] as const;
 
 // Заголовок разбит на слова: каждое выезжает из-под маски со сдвигом в 60 мс.
 // Последнее слово забирает градиент — на нём весь смысл обещания.
-const TITLE_WORDS = ["Соцсети,", "которые", "ведут", "себя", "сами"] as const;
+const TITLE_WORDS = ["Канал", "ведётся,", "даже", "когда", "ты", "занят"] as const;
 
 // Мягкий, чуть «тяжёлый» отклик — панель не дёргается за курсором, а плывёт.
 const TILT_SPRING = { stiffness: 90, damping: 18, mass: 0.6 } as const;
@@ -67,8 +67,7 @@ function CountUp({ to, delay = 0 }: { to: number; delay?: number }) {
 }
 
 /* ----------------------------------------------------------- МИНИ-ФАКТЫ */
-// Только проверенные цифры из ТЗ: 8 протестированных сервисов, 104 агента OSINT-разведки,
-// бесплатно без пейволов. Никакого маркетингового тумана — это правда, её можно проверить.
+// Три коротких опоры из текущего продуктового сценария: время контроля, память и серверная публикация.
 
 function Fact({ value, caption }: { value: React.ReactNode; caption: string }) {
   return (
@@ -142,7 +141,7 @@ export function Hero() {
               <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-70" />
               <span className="relative inline-flex h-2 w-2 rounded-full bg-success" />
             </span>
-            Ранний доступ открыт · Бесплатно · Из России
+            Продукт работает · Ручной контроль · Публикация с сервера
           </motion.p>
 
           {/* Заголовок — слова выезжают из-под маски, stagger 60 мс */}
@@ -174,8 +173,8 @@ export function Hero() {
             {...rise(0.44)}
             className="mt-6 max-w-xl text-lg leading-relaxed text-text-2 sm:text-xl"
           >
-            Платформа сама следит за конкурентами, находит залетающие темы, пишет посты твоим
-            голосом и публикует их в Telegram — по расписанию, с сервера.
+            Аврора находит сильные темы, пишет посты в твоём голосе, проверяет факты
+            и публикует по расписанию. Правила и последнее слово остаются за тобой.
           </motion.p>
 
           {/* Действия. Градиент ровно один — это и есть «магнит» (ТЗ 7.2) */}
@@ -185,7 +184,7 @@ export function Hero() {
           >
             <Link href="/register" className="w-full sm:w-auto">
               <Button variant="brand" size="xl" className="glow-pulse group w-full">
-                Забрать ранний доступ
+                Запустить первый цикл
                 <ArrowRight
                   className="h-5 w-5 transition-transform duration-200 ease-[var(--ease-soft)] group-hover:translate-x-0.5"
                   strokeWidth={2}
@@ -201,20 +200,18 @@ export function Hero() {
             </Link>
           </motion.div>
 
-          {/* Честная строка (ТЗ 6: честность лимитов и сроков — всегда).
-              Обе сети публикуют по-настоящему: Telegram — через бота, VK — через ключ
-              доступа сообщества. Никаких «скоро» рядом с кнопкой раннего доступа. */}
+          {/* Честно объясняем следующий шаг и возможность остановить автопилот. */}
           <motion.p {...rise(0.58)} className="mt-4 text-[13px] leading-relaxed text-text-2">
-            Без карты. Без пейволов. Telegram и VK уже публикуют.
+            Почта и пароль. Канал подключишь следующим шагом. Пауза — в любой момент.
           </motion.p>
 
           {/* Три цифры, за которыми стоят живые тесты и разведка, а не обещания */}
           <motion.div {...rise(0.64)} className="mt-9 flex items-center gap-5 sm:gap-7">
-            <Fact value={<CountUp to={8} delay={0.82} />} caption="сервисов протестировали" />
+            <Fact value={<CountUp to={15} delay={0.82} />} caption="минут контроля в неделю" />
             <FactDivider />
-            <Fact value={<CountUp to={104} delay={0.92} />} caption="агента разведки" />
+            <Fact value={<CountUp to={3} delay={0.92} />} caption="источника памяти" />
             <FactDivider />
-            <Fact value="0 ₽" caption="навсегда" />
+            <Fact value="24/7" caption="публикация с сервера" />
           </motion.div>
         </div>
 

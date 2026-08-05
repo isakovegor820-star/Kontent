@@ -10,8 +10,7 @@ export async function GET(req: NextRequest) {
     const user = await getSessionUser(req);
     return NextResponse.json({ user: user ?? null });
   } catch (err) {
-    console.error("[/api/auth/me]", err);
-    // База недоступна — считаем, что не вошёл (покажем лендинг), но не роняем страницу.
-    return NextResponse.json({ user: null });
+    console.error("[/api/auth/me]", { errorName: err instanceof Error ? err.name : "Error" });
+    return NextResponse.json({ user: null, error: "unavailable" }, { status: 503 });
   }
 }

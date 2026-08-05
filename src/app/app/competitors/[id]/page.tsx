@@ -546,13 +546,13 @@ export default function DossierPage() {
           </div>
         </div>
 
-        {/* Словесный разбор ИИ живёт в «Трендах» (Д.7 «Сними это») */}
+        {/* Словесный разбор ИИ живёт в «Трендах» (Д.7: идея публикации) */}
         {d.aiInsight === null && !dead && (
           <div className="flex items-start gap-3 rounded-lg bg-info-soft p-4">
             <Radar className="mt-0.5 h-5 w-5 shrink-0 text-brand" aria-hidden />
             <p className="text-[13px] leading-relaxed text-text-2">
               <span className="font-semibold text-text">Разбор залётов с ИИ — в «Трендах». </span>
-              Там платформа объясняет, почему пост зашёл, и даёт кнопку «Сними это» — тема уедет в
+              Там платформа объясняет, почему пост зашёл, и даёт кнопку «Создать публикацию» — тема уедет в
               автопилот.
               <Link href="/app/trends" className="ml-1 font-semibold text-brand hover:underline">
                 Открыть тренды →

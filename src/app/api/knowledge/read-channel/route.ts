@@ -10,10 +10,14 @@ import { getSessionUser } from "@/lib/session";
 import { getStatsQueue } from "@/lib/queue";
 import { resolveChannel } from "@/lib/autopilot";
 import { fetchPublicPosts } from "@/lib/tg-public";
+import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 
 export const runtime = "nodejs";
 
 export async function POST(req: NextRequest) {
+  if (!hasTrustedMutationOrigin(req)) {
+    return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
+  }
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
 
@@ -41,21 +45,35 @@ export async function POST(req: NextRequest) {
 
     // Один источник на всё чтение. Перечитал канал — заменяем прежний срез стиля,
     // а не копим дубли: свежие посты вернее старых.
-    await pool.query(`delete from knowledge_sources where channel_id = $1 and kind = 'channel'`, [
-      channelId,
-    ]);
-    const ins = await pool.query<{ id: number }>(
-      `insert into knowledge_sources (user_id, channel_id, kind, title, raw_text)
-       values ($1, $2, 'channel', $3, $4) returning id`,
-      // Пустая строка между постами — граница куска: индексатор режет ровно по ней,
-      // и каждый пост становится отдельным образцом стиля.
-      [user.id, channelId, `Стиль канала «${ch.title || ch.handle}»`, posts.join("\n\n")],
-    );
+    const tx = await pool.connect();
+    let sourceId: number;
+    try {
+      await tx.query("begin");
+      await tx.query(
+        `delete from knowledge_sources
+          where user_id = $1 and channel_id = $2 and kind = 'channel'`,
+        [user.id, channelId],
+      );
+      const ins = await tx.query<{ id: number }>(
+        `insert into knowledge_sources (user_id, channel_id, kind, title, raw_text)
+         values ($1, $2, 'channel', $3, $4) returning id`,
+        // Пустая строка между постами — граница куска: индексатор режет ровно по ней,
+        // и каждый пост становится отдельным образцом стиля.
+        [user.id, channelId, `Стиль канала «${ch.title || ch.handle}»`, posts.join("\n\n")],
+      );
+      sourceId = Number(ins.rows[0].id);
+      await tx.query("commit");
+    } catch (err) {
+      await tx.query("rollback").catch(() => {});
+      throw err;
+    } finally {
+      tx.release();
+    }
 
     await getStatsQueue()
       .add(
         "knowledge-index",
-        { sourceId: Number(ins.rows[0].id) },
+        { sourceId },
         { removeOnComplete: true, attempts: 3, backoff: { type: "fixed", delay: 20000 } },
       )
       .catch(() => {});

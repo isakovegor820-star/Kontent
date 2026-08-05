@@ -128,7 +128,7 @@ export function V3MemoryArchive() {
             </h2>
           </div>
           <div className={styles.introCopy}>
-            <span>05 / База знаний</span>
+            <span>Факты отдельно от голоса</span>
             <p className="v3-body">
               У каждого канала своя опора: факты отдельно, голос отдельно. Аврора знает, где можно
               быть конкретной — и где лучше ничего не выдумывать.
@@ -141,7 +141,7 @@ export function V3MemoryArchive() {
             <header className={styles.topbar}>
               <span className={styles.systemName}>
                 <i aria-hidden />
-                Aurora memory / live
+                Память канала активна
               </span>
               <span>Канал: «Юрист без канцелярита»</span>
               <span className={styles.topbarStatus}>30 фактов · 46 примеров голоса</span>

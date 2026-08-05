@@ -183,6 +183,25 @@ export async function mapConcurrent(items, limit, fn) {
   return out;
 }
 
+// План нельзя объявлять готовым, если модель вернула меньше тем, чем попросил человек,
+// или хотя бы один пост остался заглушкой. В таком случае BullMQ повторит всю сборку, а
+// предыдущий готовый план останется в базе до полноценного результата.
+export function autopilotBuildComplete(expected, topics, items = null) {
+  const count = Number(expected);
+  if (!Number.isInteger(count) || count < 1) return false;
+  if (!Array.isArray(topics) || topics.length !== count) return false;
+  if (items == null) return true;
+  return Array.isArray(items) &&
+    items.length === count &&
+    items.every((item) => item?.aiReady === true && String(item?.draft || "").trim().length > 0);
+}
+
+export function autopilotJobAttemptsExhausted(attemptsMade, configuredAttempts) {
+  const made = Math.max(0, Number(attemptsMade) || 0);
+  const allowed = Math.max(1, Number(configuredAttempts) || 1);
+  return made >= allowed;
+}
+
 // ── Разбор публичной страницы t.me/s/ ────────────────────────────────────────
 // "1.2K"/"50" → число
 export function parseCount(s) {
@@ -391,6 +410,12 @@ function tagContent(xml, tag) {
   return m ? stripXml(m[1]) : "";
 }
 
+function rssDate(value) {
+  if (!value) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+}
+
 /**
  * Парсит XML RSS 2.0 или Atom. Возвращает массив элементов:
  * [{ guid, title, link, summary, publishedAt }]
@@ -431,7 +456,7 @@ export function parseRss(xml) {
       title: title.slice(0, 300),
       link: link.slice(0, 500),
       summary: summary.slice(0, 2000),
-      publishedAt: pubDate ? new Date(pubDate).toISOString() : null,
+      publishedAt: rssDate(pubDate),
     });
   }
 

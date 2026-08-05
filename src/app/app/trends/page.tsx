@@ -1,7 +1,6 @@
 "use client";
 
-// А8 — «Сними это» (ТЗ 5.5, Д.7). Панель разведки контента: что у конкурентов зашло
-// сильнее их собственной нормы — и как снять это себе.
+// Свежая лента выбранных Telegram-источников + отдельный рейтинг проверенных постов.
 //
 // Почему это лента-рейтинг, а не «детектор залётов»: в Telegram нет алгоритмической ленты,
 // подписчик видит каждый пост канала, поэтому просмотры почти не гуляют. На живых каналах
@@ -14,6 +13,7 @@ import { useRouter } from "next/navigation";
 import { motion, useReducedMotion } from "motion/react";
 import {
   AlertTriangle,
+  Clock,
   ExternalLink,
   Eye,
   FileText,
@@ -28,8 +28,20 @@ import { AppShell } from "@/components/app/shell";
 import { ChannelPicker, useChannelChoice } from "@/components/app/channel-picker";
 import { ReconTabs } from "@/components/app/recon-tabs";
 import { Button } from "@/components/ui/button";
-import { Badge, Card, EmptyState, Tabs } from "@/components/ui/primitives";
+import { Badge, Card, Checkbox, EmptyState, Tabs } from "@/components/ui/primitives";
+import { finalizeAiClientStream, parseAiStreamBuffer, type AiStreamEvent } from "@/lib/ai-stream";
+import {
+  acknowledgeAiTerminal,
+  stableAiClientRequest,
+  type AiClientRequestIdentity,
+} from "@/lib/ai-client-idempotency";
+import { createDraftClientKey, DraftRequestError } from "@/lib/draft-client";
 import { useStore } from "@/lib/store";
+import {
+  createReviewedTrendDraft,
+  TrendDraftReviewError,
+} from "@/lib/trend-draft-review";
+import { TREND_PERIODS, type TrendPeriod } from "@/lib/trend-period";
 import { cn, fmtAgo, fmtCompact, plural } from "@/lib/utils";
 
 const EASE = [0.22, 1, 0.36, 1] as const;
@@ -55,8 +67,9 @@ interface Item {
   photoUrl: string | null;
   media: string | null;
   postedAt: string;
-  median: number;
-  ratio: number;
+  median: number | null;
+  ratio: number | null;
+  isMature: boolean;
   link: string;
   idea: Idea | null;
 }
@@ -82,7 +95,10 @@ interface Data {
     pending: number;
     error: number;
     posts: number;
+    periodPosts: number;
     lastCollectedAt: string | null;
+    latestPostAt: string | null;
+    refreshEveryHours: number;
     matureHours: number;
     minMature: number;
     /** Находок по теме канала, ждущих подтверждения */
@@ -92,6 +108,8 @@ interface Data {
   };
   competitors: Competitor[];
   items: Item[];
+  period: TrendPeriod;
+  meta: (typeof TREND_PERIODS)[TrendPeriod];
 }
 
 // Пороги — то, что раньше было env-переменной HIT_RATIO=5 и молча решало за пользователя.
@@ -105,21 +123,47 @@ type ThresholdValue = (typeof THRESHOLDS)[number]["value"];
 
 const fmtRatio = (r: number) => `×${r.toFixed(1).replace(".", ",")}`;
 
+const postDateFormatter = new Intl.DateTimeFormat("ru-RU", {
+  day: "numeric",
+  month: "short",
+  year: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+  timeZone: "Europe/Moscow",
+});
+
+const fmtPostDate = (iso: string) => postDateFormatter.format(new Date(iso));
+
 /* ------------------------------------------------------------ СТРОКА СОСТОЯНИЯ */
 // Отвечает на «что вообще происходит»: за кем слежу, сколько собрано, когда проверяли.
 
-function StatusStrip({ status, onCheck, checking }: { status: Data["status"]; onCheck: () => void; checking: boolean }) {
+function StatusStrip({
+  status,
+  period,
+  onCheck,
+  checking,
+}: {
+  status: Data["status"];
+  period: TrendPeriod;
+  onCheck: () => void;
+  checking: boolean;
+}) {
+  const periodLabel =
+    period === "today" ? "сегодня" : period === "week" ? "за 7 дней" : "проверенных за 30 дней";
   return (
     <Card className="flex flex-wrap items-center gap-x-5 gap-y-2 px-4 py-3">
       <span className="inline-flex items-center gap-2 text-[14px] font-semibold text-text">
         <Radar className="h-4 w-4 text-brand" aria-hidden />
         Слежу за {status.competitors} {plural(status.competitors, "каналом", "каналами", "каналами")}
       </span>
-      <span className="text-[13px] text-text-2">
-        {fmtCompact(status.posts)} {plural(status.posts, "пост", "поста", "постов")} собрано
+      <span className="text-[13px] font-semibold text-text-2">
+        {status.periodPosts} {plural(status.periodPosts, "пост", "поста", "постов")} {periodLabel}
       </span>
+      {status.latestPostAt && (
+        <span className="text-[13px] text-text-3">последняя публикация {fmtAgo(status.latestPostAt)}</span>
+      )}
       {status.lastCollectedAt && (
-        <span className="text-[13px] text-text-3">проверено {fmtAgo(status.lastCollectedAt)}</span>
+        <span className="text-[13px] text-text-3">все источники проверены {fmtAgo(status.lastCollectedAt)}</span>
       )}
       {status.pending > 0 && (
         <span className="inline-flex items-center gap-1.5 text-[13px] font-semibold text-brand">
@@ -259,19 +303,37 @@ function PostPhoto({ src, link }: { src: string; link: string }) {
 
 function ItemCard({
   item,
+  period,
   draft,
   generating,
+  generationError,
+  generationLocked,
+  requiresReview,
+  reviewAcknowledged,
+  transferring,
   onSnap,
+  onReviewAcknowledged,
   onToComposer,
 }: {
   item: Item;
+  period: TrendPeriod;
   draft: string | undefined;
   generating: boolean;
+  generationError: string | undefined;
+  generationLocked: boolean;
+  requiresReview: boolean;
+  reviewAcknowledged: boolean;
+  transferring: boolean;
   onSnap: () => void;
+  onReviewAcknowledged: (checked: boolean) => void;
   onToComposer: () => void;
 }) {
-  const hot = item.ratio >= 2;
+  const ratio = item.ratio;
+  const median = item.median;
+  const evaluated = item.isMature && ratio != null && median != null;
+  const hot = ratio != null && evaluated && ratio >= 2;
   const snippet = (item.text || "").replace(/\s+/g, " ").trim();
+  const hasGenerationTopic = Boolean(item.idea || snippet);
 
   return (
     <Card className="flex flex-col overflow-hidden">
@@ -279,23 +341,37 @@ function ItemCard({
 
       <div className="flex flex-1 flex-col p-5">
       <div className="flex flex-wrap items-center gap-2">
-        <Badge tone={hot ? "fire" : "neutral"}>
-          {hot && <Flame className="h-3 w-3" strokeWidth={2.5} aria-hidden />}
-          {fmtRatio(item.ratio)} к норме
-        </Badge>
+        {evaluated ? (
+          <Badge tone={hot ? "fire" : "neutral"}>
+            {hot && <Flame className="h-3 w-3" strokeWidth={2.5} aria-hidden />}
+            {fmtRatio(ratio!)} к норме
+          </Badge>
+        ) : item.isMature ? (
+          <Badge tone="neutral">Проверенный пост</Badge>
+        ) : (
+          <Badge tone="brand">
+            <Clock className="h-3 w-3" aria-hidden />
+            Набирает просмотры
+          </Badge>
+        )}
         {item.media && item.media !== "text" && (
           <Badge tone="neutral">{item.media === "video" ? "Видео" : "Фото"}</Badge>
         )}
         <span className="truncate text-[13px] text-text-3">
           у «{item.competitorTitle || item.handle}»
         </span>
-        <span className="ml-auto text-[12px] text-text-3">{fmtAgo(item.postedAt)}</span>
+        <time dateTime={item.postedAt} className="ml-auto text-[12px] text-text-3">
+          {fmtPostDate(item.postedAt)}
+        </time>
       </div>
 
-      {/* Почему карточка здесь — числа, которые можно проверить руками */}
       <p className="mt-2.5 text-[12px] text-text-3">
-        норма канала {fmtCompact(item.median)} · этот пост {fmtCompact(item.views)}
-        {item.reactions != null && ` · ${fmtCompact(item.reactions)} реакций`}
+        {evaluated
+          ? `норма канала ${fmtCompact(median!)} · этот пост ${fmtCompact(item.views)}`
+          : item.isMature
+            ? `${fmtCompact(item.views)} ${plural(item.views, "просмотр", "просмотра", "просмотров")} · пока мало сопоставимой истории для нормы`
+            : `${fmtCompact(item.views)} ${plural(item.views, "просмотр", "просмотра", "просмотров")} сейчас · результат оценим через 48 часов`}
+        {item.reactions != null && ` · ${fmtCompact(item.reactions)} ${plural(item.reactions, "реакция", "реакции", "реакций")}`}
       </p>
 
       {snippet ? (
@@ -335,15 +411,63 @@ function ItemCard({
         </div>
       )}
 
+      {generationError && !draft && !generating && (
+        <div role="alert" className="mt-3 rounded-md border border-danger/30 bg-danger-soft p-3.5">
+          <p className="flex items-center gap-1.5 text-[13px] font-semibold text-danger-text">
+            <AlertTriangle className="h-4 w-4" aria-hidden />
+            Публикация не была завершена
+          </p>
+          <p className="mt-1.5 text-[12px] leading-relaxed text-text-2">{generationError}</p>
+        </div>
+      )}
+
+      {draft && !generating && requiresReview && (
+        <div className="mt-3 rounded-md border border-info-text/20 bg-info-soft p-3.5">
+          <p className="flex items-center gap-1.5 text-[13px] font-semibold text-info-text">
+            <AlertTriangle className="h-4 w-4" aria-hidden />
+            Автоматическая смысловая проверка не выполнена
+          </p>
+          <p className="mt-1.5 text-[12px] leading-relaxed text-text-2">
+            Сверь факты, цифры и формулировки с источником. Отметка будет сохранена на сервере
+            для этой версии текста; после редактирования Composer запросит проверку снова.
+          </p>
+          <div className="mt-3">
+            <Checkbox
+              id={`trend-review-${item.id}`}
+              checked={reviewAcknowledged}
+              onChange={onReviewAcknowledged}
+              label="Я сверил факты и смысл этого текста"
+            />
+          </div>
+        </div>
+      )}
+
       <div className="mt-4 flex flex-wrap items-center gap-2 pt-1">
         {draft && !generating ? (
-          <Button size="sm" variant="brand" onClick={onToComposer}>
-            <FileText className="h-4 w-4" aria-hidden />В черновик
+          <Button
+            size="sm"
+            variant="brand"
+            onClick={onToComposer}
+            disabled={requiresReview && !reviewAcknowledged}
+            loading={transferring}
+          >
+            {!transferring && <FileText className="h-4 w-4" aria-hidden />}
+            {requiresReview ? "Подтвердить и открыть черновик" : "В черновик"}
           </Button>
         ) : (
-          <Button size="sm" variant={hot ? "brand" : "soft"} onClick={onSnap} loading={generating}>
+          <Button
+            size="sm"
+            variant={hot || period !== "hits" ? "brand" : "soft"}
+            onClick={onSnap}
+            loading={generating}
+            disabled={generationLocked || !hasGenerationTopic}
+          >
             <Sparkles className="h-4 w-4" aria-hidden />
-            Сними это
+            {!hasGenerationTopic
+              ? "Нет текста для темы"
+              : generationError
+                ? "Повторить создание"
+                : "Создать публикацию"}
           </Button>
         )}
         <a
@@ -374,42 +498,70 @@ export default function TrendsPage() {
 
   const [data, setData] = useState<Data | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [scope, setScope] = useState<"niche" | "global">("niche");
+  const [period, setPeriod] = useState<TrendPeriod>("today");
   const [threshold, setThreshold] = useState<ThresholdValue>("all");
   const [checking, setChecking] = useState(false);
   const [drafts, setDrafts] = useState<Record<number, string>>({});
+  const [draftFailures, setDraftFailures] = useState<Record<number, string>>({});
+  const [draftReviews, setDraftReviews] = useState<Record<number, boolean>>({});
+  const [draftAcknowledgements, setDraftAcknowledgements] = useState<Record<number, boolean>>({});
   const [generating, setGenerating] = useState<number | null>(null);
+  const [transferring, setTransferring] = useState<number | null>(null);
+  const draftClientKeysRef = useRef<Record<string, string>>({});
+  const generationInFlightRef = useRef<number | null>(null);
+  const generationRequestRef = useRef<Record<number, AiClientRequestIdentity>>({});
+  const transferInFlightRef = useRef<Set<number>>(new Set());
+  const refreshRequestRef = useRef<{ fingerprint: string; key: string } | null>(null);
 
-  const [picked, setPicked] = useState<number | null>(null);
+  const [picked, setPicked] = useState<number | null>(() => {
+    if (typeof window === "undefined") return null;
+    const value = Number(new URLSearchParams(window.location.search).get("channel"));
+    return Number.isInteger(value) && value > 0 ? value : null;
+  });
 
   // «Твоя ниша» — это ниша КАНАЛА: у кофейного и юридического каналов разные соседи и
   // разные нормы. Сервер это уже умеет, страница просто не спрашивала.
   const { tgChannels, channelId } = useChannelChoice(store.realChannels, picked);
 
+  const scopeRef = useRef(scope);
+  const periodRef = useRef(period);
+  const channelRef = useRef(channelId);
+  const requestRef = useRef<AbortController | null>(null);
+  channelRef.current = channelId;
+
   const load = useCallback(async () => {
+    requestRef.current?.abort();
+    const controller = new AbortController();
+    requestRef.current = controller;
     try {
       const ch = channelRef.current;
       const r = await fetch(
-        `/api/trends?scope=${scopeRef.current}${ch ? `&channel=${ch}` : ""}`,
-        { cache: "no-store" },
+        `/api/trends?scope=${scopeRef.current}&period=${periodRef.current}${ch ? `&channel=${ch}` : ""}`,
+        { cache: "no-store", signal: controller.signal },
       );
-      if (r.ok) setData((await r.json()) as Data);
-    } catch {
-      /* сеть — оставляем прошлые данные */
+      if (!r.ok) throw new Error(`trends: ${r.status}`);
+      const next = (await r.json()) as Data;
+      if (!controller.signal.aborted) {
+        setData(next);
+        setLoadError(false);
+      }
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        console.error("[trends] load", error);
+        setLoadError(true);
+      }
     } finally {
-      setLoading(false);
+      if (requestRef.current === controller) setLoading(false);
     }
   }, []);
-
-  // Вкладка живёт в ref: load() не должен пересоздаваться при переключении, иначе
-  // интервалы опроса перезапускались бы на каждый клик. Канал — по той же причине.
-  const scopeRef = useRef(scope);
-  const channelRef = useRef(channelId);
-  channelRef.current = channelId;
 
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => () => requestRef.current?.abort(), []);
 
   // Каналы приезжают асинхронно, и первый load уходит раньше них — без ?channel=.
   // Сервер в этом случае молча подставляет первый канал: сейчас это совпадает с тем, что
@@ -419,6 +571,7 @@ export default function TrendsPage() {
   useEffect(() => {
     if (!channelId || bootRef.current) return;
     bootRef.current = true;
+    channelRef.current = channelId;
     load();
   }, [channelId, load]);
 
@@ -428,8 +581,27 @@ export default function TrendsPage() {
     scopeRef.current = v;
     setScope(v);
     setLoading(true);
+    setLoadError(false);
     setData(null);
     setDrafts({});
+    setDraftFailures({});
+    setDraftReviews({});
+    setDraftAcknowledgements({});
+    load();
+  };
+
+  const switchPeriod = (value: TrendPeriod) => {
+    if (value === periodRef.current) return;
+    periodRef.current = value;
+    setPeriod(value);
+    setThreshold("all");
+    setLoading(true);
+    setLoadError(false);
+    setData(null);
+    setDrafts({});
+    setDraftFailures({});
+    setDraftReviews({});
+    setDraftAcknowledgements({});
     load();
   };
 
@@ -439,9 +611,16 @@ export default function TrendsPage() {
     if (id === channelRef.current) return;
     channelRef.current = id;
     setPicked(id);
+    const url = new URL(window.location.href);
+    url.searchParams.set("channel", String(id));
+    window.history.replaceState(window.history.state, "", url);
     setLoading(true);
+    setLoadError(false);
     setData(null);
     setDrafts({});
+    setDraftFailures({});
+    setDraftReviews({});
+    setDraftAcknowledgements({});
     load();
   };
 
@@ -454,28 +633,46 @@ export default function TrendsPage() {
   }, [pending, load]);
 
   const check = async () => {
+    if (checking) return;
     setChecking(true);
     try {
       // Канал обязателен и здесь: «Проверить сейчас» на канале Б иначе обновило бы
       // соседей канала А (сервер молча взял бы самый ранний).
+      const fingerprint = `${scopeRef.current}:${channelId ?? "global"}`;
+      if (!refreshRequestRef.current || refreshRequestRef.current.fingerprint !== fingerprint) {
+        refreshRequestRef.current = { fingerprint, key: crypto.randomUUID() };
+      }
       const r = await fetch(
         `/api/trends?scope=${scopeRef.current}${channelId ? `&channel=${channelId}` : ""}`,
-        { method: "POST" },
+        {
+          method: "POST",
+          headers: { "idempotency-key": refreshRequestRef.current.key },
+        },
       );
-      const d = (await r.json()) as { ok?: boolean; error?: string; queued?: number };
+      const d = (await r.json().catch(() => null)) as { ok?: boolean; error?: string; queued?: number } | null;
+      if (r.status === 202 && d?.error === "request_in_progress") {
+        store.toast({ kind: "info", title: "Проверка уже запускается", body: "Второй сбор не создан." });
+        return;
+      }
+      if (!r.ok || !d) {
+        if (d?.error !== "request_in_progress") refreshRequestRef.current = null;
+        throw new Error(d?.error || `trends_refresh_${r.status}`);
+      }
       if (d.error === "no_competitors") {
+        refreshRequestRef.current = null;
         store.toast({
           kind: "info",
           title: "Пока не за кем следить",
           body: "Добавь хотя бы один канал конкурента в «Разведке» — дальше я сам.",
         });
       } else if (d.ok) {
+        refreshRequestRef.current = null;
         store.toast({
           kind: "success",
           title: "Проверяю каналы",
-          body: `Обновляю ${d.queued} ${plural(d.queued ?? 0, "канал", "канала", "каналов")}. Свежие цифры появятся здесь через минуту.`,
+          body: `Поставил в сбор ${d.queued} ${plural(d.queued ?? 0, "канал", "канала", "каналов")}. Экран обновится сам, когда проверка закончится.`,
         });
-        setTimeout(load, 3000);
+        await load();
       }
     } catch {
       store.toast({ kind: "danger", title: "Не получилось", body: "Проверь соединение и попробуй ещё раз." });
@@ -484,74 +681,254 @@ export default function TrendsPage() {
     }
   };
 
-  // «Сними это»: если воркер уже написал идею — сразу в композер. Если нет — пишем сейчас,
-  // тем же движком (Д.8), потоком прямо в карточку. Движка нет — честно скажем.
+  // Создание публикации: готовую идею воркера сначала показываем в карточке для ручной
+  // проверки. Если идеи нет — пишем тем же движком (Д.8), потоком прямо в карточку.
   const snap = async (item: Item) => {
     if (item.idea) {
       const text = [item.idea.hook, item.idea.structure].filter(Boolean).join("\n\n");
-      router.push(`/app/composer?text=${encodeURIComponent(text)}`);
+      setDrafts((drafts) => ({ ...drafts, [item.id]: text }));
+      setDraftFailures((failures) => ({ ...failures, [item.id]: "" }));
+      // Worker ideas are AI-authored too. They do not carry semantic provenance, so the
+      // same human-review boundary applies instead of silently importing them as manual.
+      setDraftReviews((reviews) => ({ ...reviews, [item.id]: true }));
+      setDraftAcknowledgements((reviews) => ({ ...reviews, [item.id]: false }));
       return;
     }
 
+    if (!item.text?.trim()) {
+      const message = "В исходной публикации есть только медиа и нет текста, по которому можно определить тему. Открой оригинал или выбери текстовую карточку — лимит не списан.";
+      setDraftFailures((failures) => ({ ...failures, [item.id]: message }));
+      store.toast({ kind: "info", title: "Не вижу тему публикации", body: message });
+      return;
+    }
+    const sourceText = item.text.replace(/\s+/g, " ").trim();
+
+    // Only one paid generation may be started from this page at a time. The ref closes the
+    // tiny gap before React renders the disabled state after a rapid second click.
+    if (generationInFlightRef.current !== null) return;
+    generationInFlightRef.current = item.id;
     setGenerating(item.id);
     setDrafts((d) => ({ ...d, [item.id]: "" }));
+    setDraftFailures((failures) => ({ ...failures, [item.id]: "" }));
+    setDraftReviews((reviews) => ({ ...reviews, [item.id]: true }));
+    setDraftAcknowledgements((reviews) => ({ ...reviews, [item.id]: false }));
     try {
+      const generationBody = {
+        command: "write",
+        input: sourceText.slice(0, 1800),
+        surface: "trends",
+        channelId,
+        context:
+          `У конкурента «${item.competitorTitle || item.handle}» вышел пост на эту тему` +
+          (item.ratio != null ? ` и собрал ${fmtRatio(item.ratio)} к его норме.` : ".") +
+          " Используй его только как сигнал темы. Напиши МОЙ самостоятельный пост: не копируй формулировки, выбери свой угол и не добавляй факты, которых нет в исходном материале или подтверждённых данных моего канала.",
+      };
+      const requestFingerprint = JSON.stringify(generationBody);
+      const generationRequest = stableAiClientRequest(
+        generationRequestRef.current[item.id],
+        requestFingerprint,
+      );
+      generationRequestRef.current[item.id] = generationRequest;
       const r = await fetch("/api/ai/generate", {
         method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          command: "write",
-          input: (item.text || "").replace(/\s+/g, " ").slice(0, 140) || "тема залетевшего поста конкурента",
-          context:
-            `у конкурента «${item.competitorTitle || item.handle}» пост на эту тему собрал ` +
-            `${fmtRatio(item.ratio)} к его норме. Напиши МОЙ пост на эту тему — не копию, свой угол.`,
-        }),
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": generationRequest.key,
+        },
+        body: requestFingerprint,
       });
+      const responseRequestId = r.headers.get("x-ai-request-id") ?? undefined;
+      const correlated = (message: string, requestId = responseRequestId) =>
+        `${message}${requestId ? ` ID запроса: ${requestId}` : ""}`;
 
       if (r.status === 429) {
+        const message = "Генерации обновятся завтра. Пост можно написать руками — открой «Студию».";
+        const recovery = correlated(message);
         store.toast({
           kind: "info",
           title: "Лимит на сегодня исчерпан",
-          body: "Генерации обновятся завтра. Пост можно написать руками — открой «Студию».",
+          body: recovery,
         });
+        setDraftFailures((failures) => ({ ...failures, [item.id]: recovery }));
         setDrafts((d) => ({ ...d, [item.id]: "" }));
         return;
       }
       if (!r.ok || !r.body) {
+        const info = (await r.json().catch(() => null)) as
+          { error?: string; retryable?: boolean; requestId?: string } | null;
+        const message = info?.error === "brief_insufficient_facts"
+          ? "Для заданных настроек не хватает подтверждённых фактов. Уточни тему или добавь факты в настройках Авроры."
+          : info?.error === "post_settings_conflict"
+            ? "Некоторые настройки поста противоречат друг другу. Исправь их в настройках Авроры и повтори."
+            : info?.error === "request_result_unavailable"
+              ? "Запрос был завершён раньше, но сохранённый результат недоступен. Не создавай новый ключ; передай ID запроса в поддержку."
+              : "Генерация сейчас недоступна. Проверь подключение модели и повтори тот же запрос.";
+        const recovery = correlated(message, info?.requestId);
         store.toast({
           kind: "info",
           title: "ИИ пока не подключён",
-          body: "Движок недоступен, поэтому сценарий не написать. Открой оригинал — идею можно снять с него самому.",
+          body: recovery,
         });
+        setDraftFailures((failures) => ({ ...failures, [item.id]: recovery }));
         setDrafts((d) => ({ ...d, [item.id]: "" }));
         return;
       }
-
+      if (!r.headers.get("content-type")?.includes("application/x-ndjson")) {
+        throw new Error("unconfirmed_ai_stream");
+      }
       const reader = r.body.getReader();
       const decoder = new TextDecoder();
-      let acc = "";
+      let buffer = "";
+      let finalText = "";
+      let failed = false;
+      let failureCode = "";
+      let failureRetryable = false;
+      let validationReceived = false;
+      let validationBlocked = false;
+      let validationRequiresReview = true;
+      let doneReceived = false;
+      let terminalRequestId = responseRequestId;
+      const applyEvent = (event: AiStreamEvent) => {
+        terminalRequestId = event.requestId;
+        if (event.type === "delta") {
+          finalText += event.text;
+          setDrafts((drafts) => ({ ...drafts, [item.id]: finalText }));
+        } else if (event.type === "replace") {
+          finalText = event.text;
+          setDrafts((drafts) => ({ ...drafts, [item.id]: finalText }));
+        } else if (event.type === "validation") {
+          validationReceived = true;
+          validationBlocked = event.status !== "passed";
+          validationRequiresReview = event.requiresReview;
+        } else if (event.type === "error") {
+          failed = true;
+          failureCode = event.code || event.error;
+          failureRetryable = event.retryable === true;
+        } else if (event.type === "done") {
+          doneReceived = true;
+        }
+      };
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
-        acc += decoder.decode(value, { stream: true });
-        setDrafts((d) => ({ ...d, [item.id]: acc }));
+        buffer += decoder.decode(value, { stream: true });
+        const parsed = parseAiStreamBuffer(buffer);
+        buffer = parsed.rest;
+        parsed.events.forEach(applyEvent);
       }
+      buffer += decoder.decode();
+      if (buffer.trim()) {
+        parseAiStreamBuffer(`${buffer}\n`).events.forEach(applyEvent);
+      }
+
+      const completion = finalizeAiClientStream({
+        text: finalText,
+        failed,
+        validationReceived,
+        doneReceived,
+        validationBlocked,
+        validationRequiresReview,
+      });
+      if (completion.status !== "complete") {
+        const rejected = failureCode === "factual_validation_failed" || failureCode === "post_validation_failed";
+        const message = rejected
+          ? "Черновик остановлен на проверке качества. Уточни тему или настройки и повтори тот же запрос: ключ сохранён."
+          : failureRetryable
+            ? "Связь прервалась до подтверждения результата. Состояние списания не угадываем: повтор с сохранённым ключом вернёт готовый результат или безопасно продолжит запрос."
+            : "Сервер не подтвердил готовую публикацию. Повтори с сохранённым ключом, чтобы не запускать отдельное списание.";
+        const recovery = correlated(message, terminalRequestId);
+        setDrafts((drafts) => ({ ...drafts, [item.id]: "" }));
+        setDraftFailures((failures) => ({ ...failures, [item.id]: recovery }));
+        store.toast({ kind: "danger", title: "Публикация не создана", body: recovery });
+        return;
+      }
+
+      try {
+        await acknowledgeAiTerminal(generationRequest.key);
+      } catch {
+        const recovery = correlated(
+          "Результат сохранён, но подтверждение списания не завершилось. Повтори тот же запрос — модель не будет вызвана заново.",
+          terminalRequestId,
+        );
+        setDrafts((drafts) => ({ ...drafts, [item.id]: "" }));
+        setDraftFailures((failures) => ({ ...failures, [item.id]: recovery }));
+        store.toast({ kind: "danger", title: "Результат ещё не подтверждён", body: recovery });
+        return;
+      }
+
+      setDrafts((drafts) => ({ ...drafts, [item.id]: completion.text }));
+      setDraftFailures((failures) => ({ ...failures, [item.id]: "" }));
+      delete generationRequestRef.current[item.id];
+      // A competitor trend is never treated as an authoritative fact source. Even a
+      // technically passed result stays behind the explicit human-review checkpoint.
+      setDraftReviews((reviews) => ({ ...reviews, [item.id]: true }));
     } catch {
-      store.toast({ kind: "danger", title: "Не получилось", body: "Проверь соединение и попробуй ещё раз." });
+      const message = "Связь оборвалась до подтверждения результата. Состояние списания не угадываем; повтор использует сохранённый ключ и не создаёт отдельную генерацию.";
+      store.toast({ kind: "danger", title: "Не получилось", body: message });
       setDrafts((d) => ({ ...d, [item.id]: "" }));
+      setDraftFailures((failures) => ({ ...failures, [item.id]: message }));
     } finally {
+      if (generationInFlightRef.current === item.id) generationInFlightRef.current = null;
       setGenerating(null);
+      void store.refreshAiUsage();
+    }
+  };
+
+  const toComposer = async (item: Item) => {
+    if (transferInFlightRef.current.has(item.id)) return;
+    const text = drafts[item.id]?.trim() ?? "";
+    const acknowledged = draftAcknowledgements[item.id] === true;
+    if (!text || !acknowledged) return;
+
+    transferInFlightRef.current.add(item.id);
+    setTransferring(item.id);
+    try {
+      const transferKey = `${channelId ?? "none"}:${item.id}`;
+      const clientKey = (draftClientKeysRef.current[transferKey] ??= createDraftClientKey());
+      const draft = await createReviewedTrendDraft({
+        text,
+        trendId: item.id,
+        sourceLabel: item.competitorTitle || `@${item.handle}`,
+        channelId,
+        clientKey,
+        humanAcknowledged: acknowledged,
+      });
+      router.push(`/app/composer?draft=${draft.id}`);
+    } catch (error) {
+      const noDestination = error instanceof TrendDraftReviewError
+        && error.code === "destination_required";
+      const conflict = error instanceof TrendDraftReviewError
+        && error.code === "draft_conflict";
+      const offline = error instanceof DraftRequestError && error.kind === "offline";
+      store.toast({
+        kind: "danger",
+        title: noDestination
+          ? "Некуда сохранить черновик"
+          : conflict
+            ? "Черновик уже изменён"
+            : "Проверка не сохранилась",
+        body: noDestination
+          ? "Подключи активный Telegram-канал и повтори. Текст остаётся на этой странице."
+          : conflict
+            ? "Серверная версия отличается. Текст не перезаписан и публикация не разрешена."
+            : offline
+              ? "Нет связи с сервером. Текст и отметка остались здесь — повтори после восстановления сети."
+              : "Сервер не подтвердил отметку для этой версии. Публикация остаётся заблокированной.",
+      });
+    } finally {
+      transferInFlightRef.current.delete(item.id);
+      setTransferring((current) => (current === item.id ? null : current));
     }
   };
 
   const items = useMemo(() => data?.items ?? [], [data]);
   const counts = useMemo(
-    () => THRESHOLDS.map((t) => items.filter((i) => i.ratio >= t.min).length),
+    () => THRESHOLDS.map((t) => items.filter((i) => (i.ratio ?? 0) >= t.min).length),
     [items],
   );
   const minRatio = THRESHOLDS.find((t) => t.value === threshold)?.min ?? 0;
-  const shown = items.filter((i) => i.ratio >= minRatio);
-  const best = items[0]?.ratio;
+  const shown = period === "hits" ? items.filter((i) => (i.ratio ?? 0) >= minRatio) : items;
+  const best = items.find((item) => item.ratio != null)?.ratio ?? null;
 
   const st = data?.status;
   const global = scope === "global";
@@ -560,18 +937,18 @@ export default function TrendsPage() {
   // канала нет, и находок для них не бывает.
   const waiting = global ? 0 : (st?.waiting ?? 0);
   const niche = st?.niche ?? null;
-  const noMatureData = !!st && st.competitors > 0 && items.length === 0;
+  const noPeriodData = !!st && st.competitors > 0 && items.length === 0;
 
   return (
     <AppShell
-      title="Сними это"
+      title="Тренды"
       subtitle={
         global
-          ? "Что зашло в каналах твоей ниши сильнее их нормы — и как снять это себе."
-          : "Что зашло у конкурентов сильнее их нормы — и как снять это себе."
+          ? "Свежие публикации из редакционной подборки открытых Telegram-каналов."
+          : "Свежие публикации выбранных конкурентов — без старого архива вперемешку."
       }
     >
-      {/* Единый таб-бар «Разведки»: Сигналы / Конкуренты / Тренды */}
+      {/* Единый таб-бар «Разведки»: Поиск / Конкуренты / Тренды */}
       <div className="mb-5">
         <ReconTabs />
       </div>
@@ -579,11 +956,17 @@ export default function TrendsPage() {
       <Tabs
         items={[
           { value: "niche", label: "Моя ниша" },
-          { value: "global", label: "Насмотренность" },
+          { value: "global", label: "Подборка платформы" },
         ]}
         value={scope}
         onChange={switchScope}
       />
+
+      {global && (
+        <p className="mt-3 max-w-2xl text-[13px] leading-relaxed text-text-3">
+          Сейчас это общая редакционная подборка про право и ИИ. Она одинакова для всех каналов и не зависит от выбора ниши.
+        </p>
+      )}
 
       {/* Только на «Моей нише»: «Насмотренность» — это глобальные источники, у них
           канала нет по определению, и селектор там был бы бессмыслицей. */}
@@ -597,6 +980,20 @@ export default function TrendsPage() {
         />
       )}
 
+      <div className="mt-5 flex flex-wrap items-center gap-x-4 gap-y-2">
+        <Tabs
+          items={(Object.keys(TREND_PERIODS) as TrendPeriod[]).map((value) => ({
+            value,
+            label: TREND_PERIODS[value].label,
+          }))}
+          value={period}
+          onChange={switchPeriod}
+        />
+        <p className="max-w-2xl text-[13px] leading-relaxed text-text-3">
+          {TREND_PERIODS[period].description} Источники обновляются каждые 2 часа.
+        </p>
+      </div>
+
       {loading ? (
         <div className="mt-5 grid gap-5">
           <div className="skeleton h-14 rounded-md" />
@@ -606,13 +1003,34 @@ export default function TrendsPage() {
             ))}
           </div>
         </div>
+      ) : loadError && !data ? (
+        <Card className="mt-5 py-4">
+          <EmptyState
+            icon={<AlertTriangle className="h-6 w-6" strokeWidth={1.75} aria-hidden />}
+            title="Не получилось загрузить публикации"
+            body="Данные не пропали. Проверь соединение и попробуй загрузить экран ещё раз."
+            action={
+              <Button
+                variant="soft"
+                onClick={() => {
+                  setLoading(true);
+                  setLoadError(false);
+                  load();
+                }}
+              >
+                <RefreshCw className="h-4 w-4" aria-hidden />
+                Повторить
+              </Button>
+            }
+          />
+        </Card>
       ) : (
         <div className="mt-5 grid gap-5">
-          {st && <StatusStrip status={st} onCheck={check} checking={checking} />}
+          {st && <StatusStrip status={st} period={period} onCheck={check} checking={checking} />}
 
           {data && data.competitors.length > 0 && <WatchList competitors={data.competitors} />}
 
-          {items.length > 0 && (
+          {period === "hits" && items.length > 0 && (
             <div className="flex flex-wrap items-center gap-3">
               <span className="text-[13px] font-semibold text-text-2">Что считать залётом:</span>
               <Tabs
@@ -635,14 +1053,14 @@ export default function TrendsPage() {
                 icon={<Radar className="h-6 w-6" strokeWidth={1.75} aria-hidden />}
                 title={
                   global
-                    ? "Источники ещё не собраны"
+                    ? "Редакционная подборка ещё не собрана"
                     : waiting > 0
                       ? `Нашёл ${waiting} ${plural(waiting, "канал", "канала", "каналов")} по теме — подтверди`
                       : "Пока не за кем следить"
                 }
                 body={
                   global
-                    ? "Список каналов ниши уже заведён — воркер соберёт их в ближайшем цикле. Если он не запущен, запусти: npm run worker."
+                    ? "Мы уже подготовили список открытых каналов про право и ИИ. Нажми «Проверить сейчас» — публикации появятся после сбора."
                     : waiting > 0
                       ? `Разведка уже прошла по теме${niche ? ` «${niche}»` : ""} и отобрала кандидатов. Оставь тех, кто правда твой сосед, — дальше я сам посчитаю их норму и поймаю посты, которые её обошли.`
                       : "Добавь каналы конкурентов — и я начну считать их норму и ловить посты, которые её обошли. Данные беру только открытые: посты, просмотры, реакции."
@@ -657,12 +1075,31 @@ export default function TrendsPage() {
                 }
               />
             </Card>
-          ) : noMatureData ? (
+          ) : noPeriodData ? (
             <Card className="py-4">
               <EmptyState
-                icon={<Loader2 className="h-6 w-6 animate-spin" strokeWidth={1.75} aria-hidden />}
-                title="Считаю норму каналов"
-                body={`Собрано ${st?.posts ?? 0} ${plural(st?.posts ?? 0, "пост", "поста", "постов")}. Чтобы честно сказать «этот пост выше нормы», нужно минимум ${st?.minMature ?? 5} постов старше ${st?.matureHours ?? 48} часов на канал — свежий пост ещё набирает просмотры, сравнивать его не с чем. Как наберётся — здесь появится рейтинг.`}
+                icon={period === "hits" ? <Flame className="h-6 w-6" strokeWidth={1.75} aria-hidden /> : <Clock className="h-6 w-6" strokeWidth={1.75} aria-hidden />}
+                title={
+                  period === "today"
+                    ? "Сегодня новых публикаций пока нет"
+                    : period === "week"
+                      ? "За последние 7 дней публикаций нет"
+                      : "За 30 дней подтверждённых залётов нет"
+                }
+                body={
+                  period === "hits"
+                    ? `Залётом считаем только пост, который обновлялся спустя ${st?.matureHours ?? 48} часов и сравним минимум с ${st?.minMature ?? 5} постами своего канала. Посмотри свежую ленту или добавь больше источников.`
+                    : st?.latestPostAt
+                      ? `Последняя публикация у отслеживаемых каналов вышла ${fmtPostDate(st.latestPostAt)}. Проверим их снова автоматически или по кнопке выше.`
+                      : "У этих источников ещё нет собранных публикаций. Запусти проверку или добавь больше каналов-конкурентов."
+                }
+                action={
+                  period === "hits" ? (
+                    <Button variant="soft" onClick={() => switchPeriod("today")}>Показать свежие</Button>
+                  ) : global ? undefined : (
+                    <Button variant="soft" onClick={() => router.push("/app/competitors")}>Добавить источники</Button>
+                  )
+                }
               />
             </Card>
           ) : shown.length === 0 ? (
@@ -698,12 +1135,22 @@ export default function TrendsPage() {
                 >
                   <ItemCard
                     item={item}
+                    period={period}
                     draft={drafts[item.id]}
                     generating={generating === item.id}
+                    generationError={draftFailures[item.id]}
+                    generationLocked={generating !== null}
+                    requiresReview={draftReviews[item.id] === true}
+                    reviewAcknowledged={draftAcknowledgements[item.id] === true}
+                    transferring={transferring === item.id}
                     onSnap={() => snap(item)}
-                    onToComposer={() =>
-                      router.push(`/app/composer?text=${encodeURIComponent(drafts[item.id] ?? "")}`)
+                    onReviewAcknowledged={(checked) =>
+                      setDraftAcknowledgements((reviews) => ({
+                        ...reviews,
+                        [item.id]: checked,
+                      }))
                     }
+                    onToComposer={() => void toComposer(item)}
                   />
                 </motion.li>
               ))}

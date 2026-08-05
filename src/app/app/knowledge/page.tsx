@@ -10,14 +10,15 @@
 // Замерено на живой базе: как только под тему находится опора, hermes3 держится за неё и
 // не сочиняет ни дат, ни сумм, ни номеров дел. Нет опоры — пишем общо, но честно, а не врём.
 
-import { useCallback, useEffect, useState } from "react";
-import { BookText, FileText, Loader2, Radio, Trash2, User } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { BookText, FileText, Loader2, Radio, Trash2, TriangleAlert, User } from "lucide-react";
 import { AppShell } from "@/components/app/shell";
 import { Button } from "@/components/ui/button";
 import { Badge, Card, EmptyState, Field, Input, Tabs, Textarea } from "@/components/ui/primitives";
 import { ChannelPicker, useChannelChoice } from "@/components/app/channel-picker";
 import { useStore } from "@/lib/store";
 import { fmtAgo, plural } from "@/lib/utils";
+import type { EffectiveProfile, ProfileField, ProfileSourceKind } from "@/lib/effective-ai-context";
 
 interface Source {
   id: number;
@@ -30,10 +31,12 @@ interface Source {
   chunks: number;
 }
 interface State {
+  ok: true;
   sources: Source[];
   facts: number;
   voice: number;
   channelId: number | null;
+  effectiveProfile: EffectiveProfile;
 }
 
 type Mode = "paste" | "form" | "channel";
@@ -54,6 +57,24 @@ const KIND_LABEL: Record<string, string> = {
   file: "Файл",
 };
 
+const PROFILE_FIELD_LABEL: Record<ProfileField, string> = {
+  niche: "Ниша",
+  topics: "Темы",
+  services: "Услуги и продукты",
+  prices: "Цены и сроки",
+  audience: "Аудитория",
+  tone: "Тон",
+  taboos: "Табу",
+  goal: "Цель",
+};
+
+const PROFILE_SOURCE_LABEL: Record<ProfileSourceKind, string> = {
+  verified_brief: "Подтверждённый бриф",
+  profile_edit: "Подтверждено вручную",
+  profile: "Авто-профиль",
+  settings: "Настройки",
+};
+
 export default function KnowledgePage() {
   const store = useStore();
   const [picked, setPicked] = useState<number | null>(null);
@@ -61,34 +82,49 @@ export default function KnowledgePage() {
 
   const [data, setData] = useState<State | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [mode, setMode] = useState<Mode>("paste");
+  const loadSeq = useRef(0);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (showLoading = false) => {
+    const seq = ++loadSeq.current;
+    if (showLoading) {
+      setLoading(true);
+      setData(null);
+    }
     if (!channelId) {
       setData(null);
+      setLoadError(false);
       setLoading(false);
       return;
     }
     try {
       const r = await fetch(`/api/knowledge?channel=${channelId}`, { cache: "no-store" });
-      setData((await r.json()) as State);
+      const next = (await r.json().catch(() => null)) as State | null;
+      if (!r.ok || !next?.ok || next.channelId !== channelId) throw new Error("knowledge_unavailable");
+      if (seq !== loadSeq.current) return;
+      setData(next);
+      setLoadError(false);
     } catch {
-      /* сеть */
+      if (seq === loadSeq.current) setLoadError(true);
     } finally {
-      setLoading(false);
+      if (seq === loadSeq.current) setLoading(false);
     }
   }, [channelId]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- загрузка при монтировании/смене канала
-    load();
+    void load(true);
+    return () => {
+      loadSeq.current += 1;
+    };
   }, [load]);
 
   // Пока хоть один источник считается — опрашиваем: «готово» должно появиться само.
   const indexing = data?.sources.some((s) => s.status === "pending") ?? false;
   useEffect(() => {
     if (!indexing) return;
-    const t = setInterval(load, 3000);
+    const t = setInterval(() => void load(false), 3000);
     return () => clearInterval(t);
   }, [indexing, load]);
 
@@ -103,6 +139,23 @@ export default function KnowledgePage() {
     );
   }
 
+  if (store.realError && !tgChannels.length) {
+    return (
+      <AppShell title="База знаний" subtitle="Факты, профиль и источники выбранного канала.">
+        <Card className="p-6" role="alert">
+          <TriangleAlert className="h-6 w-6 text-danger-text" aria-hidden />
+          <h2 className="mt-3 text-[18px] font-extrabold text-text">Каналы не загрузились</h2>
+          <p className="mt-2 text-[14px] leading-relaxed text-text-2">
+            Не выдаём ошибку сервера за отсутствие каналов. Сохранённые данные не менялись.
+          </p>
+          <Button className="mt-4" variant="outline" onClick={() => void store.refreshReal()}>
+            Повторить
+          </Button>
+        </Card>
+      </AppShell>
+    );
+  }
+
   if (!tgChannels.length) {
     return (
       <AppShell title="База знаний" subtitle="Факты, из которых автопилот пишет посты.">
@@ -112,6 +165,23 @@ export default function KnowledgePage() {
             title="Сначала подключи канал"
             body="База знаний живёт на канале — у каждого своя. Подключи канал, и сможешь наполнить её фактами."
           />
+        </Card>
+      </AppShell>
+    );
+  }
+
+  if (loadError && !data) {
+    return (
+      <AppShell title="База знаний" subtitle="Факты, профиль и источники выбранного канала.">
+        <Card className="p-6" role="alert">
+          <TriangleAlert className="h-6 w-6 text-danger-text" aria-hidden />
+          <h2 className="mt-3 text-[18px] font-extrabold text-text">Не удалось загрузить базу</h2>
+          <p className="mt-2 text-[14px] leading-relaxed text-text-2">
+            Не показываем пустую базу вместо ошибки. Данные на сервере не менялись.
+          </p>
+          <Button className="mt-4" variant="outline" onClick={() => void load(true)}>
+            Повторить
+          </Button>
         </Card>
       </AppShell>
     );
@@ -131,6 +201,48 @@ export default function KnowledgePage() {
         label="База какого канала"
         className="mb-5"
       />
+
+      {loadError && data && (
+        <p role="alert" className="mb-5 rounded-sm bg-danger-soft p-3 text-[13px] text-danger-text">
+          Последнее обновление не удалось. Ниже оставлены ранее подтверждённые данные этого канала.
+        </p>
+      )}
+
+      <Card className="mb-5 p-4 sm:p-5" as="section">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-[16px] font-extrabold text-text">Эффективный профиль ИИ</h2>
+            <p className="mt-1 text-[13px] leading-relaxed text-text-3">
+              Именно эти значения попадут в следующую генерацию. Источник показан у каждого поля.
+            </p>
+          </div>
+          <Badge tone="neutral">канал #{channelId}</Badge>
+        </div>
+        {Object.entries(data?.effectiveProfile ?? {}).length > 0 ? (
+          <dl className="mt-4 grid gap-3 sm:grid-cols-2">
+            {Object.entries(data?.effectiveProfile ?? {}).map(([field, selected]) =>
+              selected ? (
+                <div key={field} className="rounded-sm border border-line bg-surface-2 p-3">
+                  <dt className="text-[12px] font-bold text-text-3">
+                    {PROFILE_FIELD_LABEL[field as ProfileField]}
+                  </dt>
+                  <dd className="mt-1 text-[14px] leading-relaxed text-text">{selected.value}</dd>
+                  <dd className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-text-3">
+                    <Badge tone={selected.verified ? "success" : "neutral"}>
+                      {PROFILE_SOURCE_LABEL[selected.sourceKind]}
+                    </Badge>
+                    {selected.verified ? "подтверждено" : "нужно проверить"}
+                  </dd>
+                </div>
+              ) : null,
+            )}
+          </dl>
+        ) : (
+          <p className="mt-4 rounded-sm bg-fire-soft p-3 text-[13px] text-fire-text">
+            Профиль пока не собран. ИИ не будет подставлять выдуманную нишу или тон.
+          </p>
+        )}
+      </Card>
 
       {/* Честный счётчик: считаем ОПОРУ (факты), а не всё подряд. Голос — образец стиля,
           фактом он быть не может, поэтому в этом числе его нет. */}
@@ -364,10 +476,25 @@ function SourceList({
   onDelete: () => void;
   store: ReturnType<typeof useStore>;
 }) {
+  const [deletingId, setDeletingId] = useState<number | null>(null);
   const del = async (id: number, title: string) => {
-    await fetch(`/api/knowledge?id=${id}`, { method: "DELETE" }).catch(() => {});
-    store.toast({ kind: "info", title: `Убрал «${title}»` });
-    onDelete();
+    if (deletingId != null) return;
+    setDeletingId(id);
+    try {
+      const response = await fetch(`/api/knowledge?id=${id}`, { method: "DELETE" });
+      const body = (await response.json().catch(() => null)) as { ok?: boolean } | null;
+      if (!response.ok || !body?.ok) throw new Error("delete_not_confirmed");
+      store.toast({ kind: "info", title: `Убрал «${title}»` });
+      onDelete();
+    } catch {
+      store.toast({
+        kind: "danger",
+        title: "Источник не удалён",
+        body: "Сервер не подтвердил изменение. Он остаётся в базе.",
+      });
+    } finally {
+      setDeletingId(null);
+    }
   };
 
   if (!sources.length) {
@@ -413,7 +540,9 @@ function SourceList({
             </p>
           </div>
           <button
-            onClick={() => del(s.id, s.title)}
+            type="button"
+            disabled={deletingId != null}
+            onClick={() => void del(s.id, s.title)}
             className="shrink-0 rounded-xs p-2 text-text-3 transition-colors hover:bg-danger-soft hover:text-danger-text"
             aria-label={`Убрать «${s.title}»`}
           >

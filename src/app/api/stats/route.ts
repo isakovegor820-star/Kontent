@@ -6,6 +6,8 @@ import { resolveChannel } from "@/lib/autopilot";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
 import { plural } from "@/lib/utils";
+import { analyticsConfidence, summarizeAnalyticsCohort } from "@/lib/analytics-cohort";
+import { summarizeBestPublishingTime } from "@/lib/best-publishing-time";
 
 export const runtime = "nodejs";
 
@@ -13,6 +15,8 @@ interface PostRow {
   id: number;
   text: string;
   published_at: string;
+  status: string;
+  verification_state: string | null;
   /** Почему статистики нет: 'ok' | 'gone' (удалён) | 'private' (канал без публичной страницы) */
   stats_state: string | null;
   views: number | null;
@@ -20,13 +24,29 @@ interface PostRow {
 }
 
 export async function GET(req: NextRequest) {
-  const user = await getSessionUser(req);
-  if (!user) return NextResponse.json({ hasChannel: false });
+  let user;
+  try {
+    user = await getSessionUser(req);
+  } catch (err) {
+    console.error("[/api/stats] session unavailable", {
+      errorName: err instanceof Error ? err.name : "Error",
+    });
+    return NextResponse.json(
+      { hasChannel: false, error: "stats_unavailable" },
+      { status: 503, headers: { "Cache-Control": "no-store" } },
+    );
+  }
+  if (!user) {
+    return NextResponse.json(
+      { hasChannel: false, error: "unauthorized" },
+      { status: 401, headers: { "Cache-Control": "no-store" } },
+    );
+  }
 
   try {
     const pool = getPool();
     const channels = (
-      await pool.query<{ id: number; title: string | null }>(
+      await pool.query<{ id: string; title: string | null }>(
         `select id, title from channels where user_id = $1 and network = 'tg' and is_active = true`,
         [user.id],
       )
@@ -66,13 +86,18 @@ export async function GET(req: NextRequest) {
     // Опубликованные посты + последние известные просмотры/реакции.
     const posts = (
       await pool.query<PostRow>(
-        `select p.id, p.text, p.published_at, p.stats_state, ps.views, ps.reactions
+        `select p.id, p.text, p.published_at, p.status, p.verification_state,
+                p.stats_state, ps.views, ps.reactions
            from posts p
            left join lateral (
              select views, reactions from post_stats where post_id = p.id
              order by snapshot_date desc limit 1
            ) ps on true
-          where p.channel_id = any($1) and p.status = 'published'
+          where p.channel_id = any($1)
+            and p.status in ('published', 'published_unverified', 'missing', 'deleted_external')
+            and p.published_at >= (
+              date_trunc('day', now() at time zone 'Europe/Moscow') - interval '6 days'
+            ) at time zone 'Europe/Moscow'
           order by p.published_at desc`,
         [chIds],
       )
@@ -80,15 +105,24 @@ export async function GET(req: NextRequest) {
 
     const collectedAt = (
       await pool.query<{ t: string | null }>(
-        `select max(collected_at) as t from channel_stats where channel_id = any($1)`,
+        `select greatest(
+                  (select max(collected_at) from channel_stats where channel_id = any($1)),
+                  (select max(s.collected_at)
+                     from post_stats s join posts p on p.id = s.post_id
+                    where p.channel_id = any($1))
+                ) as t`,
         [chIds],
       )
     ).rows[0].t;
 
     // --- Человеческий вывод из реальных данных (не зашит) ---
-    const withViews = posts.filter((p) => p.views != null) as (PostRow & { views: number })[];
-    const totalViews = withViews.reduce((s, p) => s + p.views, 0);
-    const avgViews = withViews.length ? Math.round(totalViews / withViews.length) : null;
+    const cohort = summarizeAnalyticsCohort(posts);
+    const verifiedPosts = cohort.verifiedPosts;
+    const withViews = cohort.withMetrics;
+    const totalViews = cohort.totalViews;
+    const avgViews = cohort.avgViews;
+    const confidence = analyticsConfidence(withViews.length);
+    const bestTime = summarizeBestPublishingTime(withViews);
 
     const vw = (n: number) => plural(n, "просмотр", "просмотра", "просмотров");
 
@@ -105,32 +139,18 @@ export async function GET(req: NextRequest) {
     } else if (withViews.length > 1) {
       const best = withViews.reduce((a, b) => (b.views > a.views ? b : a));
       bestPost = { text: best.text, views: best.views };
-      insight.push(`Лучший пост собрал ${best.views} ${vw(best.views)} — повтори этот формат.`);
+      insight.push(
+        confidence === "low"
+          ? `Пока лидирует пост с ${best.views} ${vw(best.views)}, но выборка из ${withViews.length} постов ещё слишком мала для рекомендации.`
+          : `Лучший пост недели собрал ${best.views} ${vw(best.views)}; это наблюдение стоит проверить следующими публикациями.`,
+      );
       if (avgViews != null) insight.push(`В среднем ${avgViews} ${vw(avgViews)} на пост.`);
 
-      // Лучшее время — час с наибольшим средним числом просмотров (нужно ≥3 поста).
-      if (withViews.length >= 3) {
-        const byHour = new Map<number, number[]>();
-        for (const p of withViews) {
-          const h = Number(
-            new Date(p.published_at).toLocaleString("ru-RU", {
-              timeZone: "Europe/Moscow",
-              hour: "2-digit",
-              hour12: false,
-            }),
-          );
-          (byHour.get(h) ?? byHour.set(h, []).get(h)!).push(p.views);
-        }
-        let bestHour = -1;
-        let bestAvg = -1;
-        for (const [h, vs] of byHour) {
-          const a = vs.reduce((s, v) => s + v, 0) / vs.length;
-          if (a > bestAvg) {
-            bestAvg = a;
-            bestHour = h;
-          }
-        }
-        if (bestHour >= 0) insight.push(`Лучшее время — около ${bestHour}:00 МСК.`);
+      if (bestTime && bestTime.sampleSize >= 3) {
+        insight.push(
+          `Лучшее время — около ${bestTime.hour}:00 МСК; ` +
+          `оценка по ${bestTime.sampleSize} ${plural(bestTime.sampleSize, "посту", "постам", "постам")} в этом часовом окне.`,
+        );
       }
     }
     if (growth7d !== 0) {
@@ -139,20 +159,41 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({
       hasChannel: true,
-      channelTitle: channels[0].title,
+      channelTitle: channels.find((channel) => Number(channel.id) === channelId)?.title ?? null,
       latestSubs,
       growth7d,
       subscriberSeries: subSeries,
-      posts,
-      totals: { published: posts.length, totalViews, avgViews },
+      posts: verifiedPosts,
+      totals: {
+        published: verifiedPosts.length,
+        withMetrics: withViews.length,
+        missing: cohort.missing,
+        unverified: cohort.unverified,
+        totalViews,
+        avgViews,
+      },
+      cohort: {
+        label: `${withViews.length} подтверждённых ${plural(withViews.length, "пост", "поста", "постов")} с метриками за 7 дней`,
+        verifiedPosts: verifiedPosts.length,
+        withMetrics: withViews.length,
+        missing: cohort.missing,
+        unverified: cohort.unverified,
+        averageFormula: withViews.length ? `${totalViews} / ${withViews.length}` : null,
+        confidence,
+      },
+      period: { days: 7, timeZone: "Europe/Moscow", label: "7 календарных дней" },
       bestPost,
+      bestTime,
       insight: insight.length ? insight.join(" ") : null,
       // Честность: что Telegram отдаёт, а что нет.
       available: { views: true, reactions: true, reach: false, comments: false },
       collectedAt,
     });
   } catch (err) {
-    console.error("[/api/stats]", err);
-    return NextResponse.json({ hasChannel: false });
+    console.error("[/api/stats]", { errorName: err instanceof Error ? err.name : "Error" });
+    return NextResponse.json(
+      { hasChannel: false, error: "stats_unavailable" },
+      { status: 503, headers: { "Cache-Control": "no-store" } },
+    );
   }
 }

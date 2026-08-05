@@ -11,18 +11,43 @@ import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
 import { aiReady, resolveEngineRuntime } from "@/lib/ai-provider";
 import { DEFAULT_ENGINE, ENGINES, getEngine, isEngineId } from "@/lib/engines";
+import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 
 export const runtime = "nodejs";
 
-export async function GET(req: NextRequest) {
-  const user = await getSessionUser(req);
-  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+function engineJson(requestId: string, payload: Record<string, unknown>, status = 200) {
+  return NextResponse.json(
+    { ...payload, requestId },
+    { status, headers: { "cache-control": "no-store", "x-ai-request-id": requestId } },
+  );
+}
 
-  const chosen = (
-    await getPool().query<{ ai_engine: string | null }>(`select ai_engine from users where id = $1`, [
-      user.id,
-    ])
-  ).rows[0]?.ai_engine;
+function logEngineRequest(requestId: string, code: string, status: number) {
+  console.error("[/api/ai/engines]", { requestId, code, status });
+}
+
+export async function GET(req: NextRequest) {
+  const requestId = crypto.randomUUID();
+  let user: Awaited<ReturnType<typeof getSessionUser>>;
+  try {
+    user = await getSessionUser(req);
+  } catch {
+    logEngineRequest(requestId, "session_unavailable", 503);
+    return engineJson(requestId, { error: "session_unavailable", retryable: true }, 503);
+  }
+  if (!user) return engineJson(requestId, { error: "unauthorized", retryable: false }, 401);
+
+  let chosen: string | null | undefined;
+  try {
+    chosen = (
+      await getPool().query<{ ai_engine: string | null }>(`select ai_engine from users where id = $1`, [
+        user.id,
+      ])
+    ).rows[0]?.ai_engine;
+  } catch {
+    logEngineRequest(requestId, "settings_unavailable", 503);
+    return engineJson(requestId, { error: "settings_unavailable", retryable: true }, 503);
+  }
 
   const current = isEngineId(chosen) ? chosen : DEFAULT_ENGINE;
 
@@ -50,36 +75,65 @@ export async function GET(req: NextRequest) {
             ? "Ollama не отвечает. Запусти её и скачай модель: ollama pull hermes3"
             : status === "no_key"
               ? `Нужен ключ в ${e.needs}.`
-              : null,
+              : status === "offline"
+                ? `${e.vendor} не подтвердил доступность модели ${e.model}. Проверь ключ, тариф и статус провайдера.`
+                : null,
     };
   }));
 
-  return NextResponse.json({ engines, current });
+  const currentState = engines.find((engine) => engine.id === current);
+  const suggestedEngine = currentState?.status === "ready"
+    ? null
+    : engines.find((engine) => engine.id !== current && engine.supported && engine.status === "ready") ?? null;
+  return engineJson(requestId, { engines, current, suggestedEngine });
 }
 
-/** Сохраняем поддерживаемый движок; ключ можно подключить позже. */
+/** Сохраняем только явно выбранный движок, который подтвердил готовность прямо сейчас. */
 export async function POST(req: NextRequest) {
-  const user = await getSessionUser(req);
-  if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
+  const requestId = crypto.randomUUID();
+  if (!hasTrustedMutationOrigin(req)) {
+    return engineJson(requestId, { ok: false, error: "forbidden_origin", retryable: false }, 403);
+  }
+  let user: Awaited<ReturnType<typeof getSessionUser>>;
+  try {
+    user = await getSessionUser(req);
+  } catch {
+    logEngineRequest(requestId, "session_unavailable", 503);
+    return engineJson(requestId, { ok: false, error: "session_unavailable", retryable: true }, 503);
+  }
+  if (!user) return engineJson(requestId, { ok: false, error: "unauthorized", retryable: false }, 401);
 
   let body: { engine?: unknown };
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json({ ok: false, error: "bad_request" }, { status: 400 });
+    return engineJson(requestId, { ok: false, error: "bad_request", retryable: false }, 400);
   }
   if (!isEngineId(body.engine)) {
-    return NextResponse.json({ ok: false, error: "bad_engine" }, { status: 422 });
+    return engineJson(requestId, { ok: false, error: "bad_engine", retryable: false }, 422);
   }
   if (getEngine(body.engine).protocol === null) {
-    return NextResponse.json({ ok: false, error: "engine_unsupported" }, { status: 422 });
+    return engineJson(requestId, { ok: false, error: "engine_unsupported", retryable: false }, 422);
+  }
+  const runtime = resolveEngineRuntime(body.engine);
+  if (!runtime.configured || !await aiReady(body.engine)) {
+    return engineJson(
+      requestId,
+      {
+        ok: false,
+        error: runtime.configured ? "engine_offline" : "engine_not_connected",
+        engine: body.engine,
+        retryable: runtime.configured,
+      },
+      409,
+    );
   }
 
   try {
     await getPool().query(`update users set ai_engine = $2 where id = $1`, [user.id, body.engine]);
-    return NextResponse.json({ ok: true, engine: body.engine });
-  } catch (err) {
-    console.error("[/api/ai/engines] POST", err);
-    return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
+    return engineJson(requestId, { ok: true, engine: body.engine });
+  } catch {
+    logEngineRequest(requestId, "settings_write_failed", 500);
+    return engineJson(requestId, { ok: false, error: "server", retryable: true }, 500);
   }
 }

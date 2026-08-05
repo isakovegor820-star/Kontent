@@ -3,7 +3,7 @@
 // А4. Календарь — ГЛАВНЫЙ экран платформы (ТЗ 5.3, Приложение А).
 // Одно главное действие: создать пост кликом в день. Публикует сервер.
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { motion, useReducedMotion } from "motion/react";
 import {
@@ -27,6 +27,7 @@ import {
 
 import { AppShell } from "@/components/app/shell";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
   Badge,
   Card,
@@ -35,11 +36,19 @@ import {
   TelegramIcon,
   VkIcon,
 } from "@/components/ui/primitives";
+import {
+  claimUnownedLegacyDraft,
+  deleteDraftAfterAck,
+  DraftRequestError,
+  isRecoverableLegacyDraft,
+  isUnownedLegacyDraftCandidate,
+  listServerDrafts,
+} from "@/lib/draft-client";
+import type { ServerDraft } from "@/lib/draft-types";
 import { useStore } from "@/lib/store";
-import type { Network, Post, RealPost, Trend } from "@/lib/types";
+import type { Network, Post, RealPost, Trend, User } from "@/lib/types";
 import {
   addDays,
-  atTime,
   channelHue,
   cn,
   fmtCompact,
@@ -59,21 +68,45 @@ import {
 
 type View = "week" | "month";
 
-/** Пост с датой — только такие живут в сетке */
-type DatedPost = Post & { scheduledAt: string };
+type DraftDeleteTarget = {
+  id: number;
+  version: number;
+};
 
-/** draft и queued в сетку не попадают — они в очереди справа (ТЗ 5.3) */
-const GRID_STATUSES: Post["status"][] = ["scheduled", "publishing", "published", "failed"];
+type CalendarPost = Post & {
+  serverDraftId?: number;
+  draftVersion?: number;
+  destinationIds?: number[];
+  publicationParts?: RealPost["publication_parts"];
+};
+
+/** Пост с датой — только такие живут в сетке */
+type DatedPost = CalendarPost & { scheduledAt: string };
+
+/** Черновик с датой обязан быть виден в сетке, а не исчезать между разделами. */
+const GRID_STATUSES: Post["status"][] = [
+  "draft",
+  "scheduled",
+  "publishing",
+  "published_unverified",
+  "published",
+  "missing",
+  "deleted_external",
+  "failed_retry",
+  "quarantined",
+  "failed",
+];
 
 const DEFAULT_TIME = "10:00";
 const EASE_SOFT: [number, number, number, number] = [0.22, 1, 0.36, 1];
 
-const isOnGrid = (p: Post): p is DatedPost =>
+const isOnGrid = (p: CalendarPost): p is DatedPost =>
   typeof p.scheduledAt === "string" && GRID_STATUSES.includes(p.status);
 
 // Ссылка на вышедший пост по сети: TG — t.me/<handle>/<id>, VK — vk.com/wall-<gid>_<pid>.
 // Без handle (TG) или id записи ссылку не построить — тогда null, карточка живёт без неё.
 function postUrlFor(rp: RealPost): string | undefined {
+  if (rp.status !== "published" || rp.verification_state !== "verified") return undefined;
   if (rp.network === "vk") {
     return rp.vk_group_id != null && rp.vk_post_id != null
       ? `https://vk.com/wall-${rp.vk_group_id}_${rp.vk_post_id}`
@@ -86,14 +119,16 @@ function postUrlFor(rp: RealPost): string | undefined {
 
 // Настоящий пост из базы → форма Post для карточек календаря (Д.3).
 // id с префиксом real-, чтобы отличать от демо и доставать числовой id для повтора.
-function realToPost(rp: RealPost): Post {
+function realToPost(rp: RealPost): CalendarPost {
   return {
     id: `real-${rp.id}`,
     text: rp.text,
     networks: [rp.network],
     scheduledAt: rp.scheduled_at,
     status: rp.status,
-    origin: "manual",
+    origin: rp.publication_origin === "rss" || rp.publication_origin === "retry" || rp.publication_origin === "legacy"
+      ? "manual"
+      : rp.publication_origin,
     media: null,
     attempts: rp.attempts,
     failReason: rp.last_error ?? undefined,
@@ -101,6 +136,31 @@ function realToPost(rp: RealPost): Post {
     channelTitle: rp.channel_title ?? undefined,
     channelId: rp.channel_id ?? undefined,
     postUrl: postUrlFor(rp),
+    verificationState: rp.verification_state,
+    publicationParts: rp.publication_parts,
+  };
+}
+
+function serverDraftToPost(draft: ServerDraft): CalendarPost {
+  const networks = [...new Set(draft.destinations.map((destination) => destination.network))];
+  return {
+    id: `draft-${draft.id}`,
+    text: draft.text,
+    networks,
+    scheduledAt: draft.scheduled_at,
+    status: "draft",
+    origin: draft.origin,
+    sourceRef: draft.source_ref ?? undefined,
+    media: draft.media,
+    createdAt: draft.created_at,
+    serverDraftId: draft.id,
+    draftVersion: draft.version,
+    destinationIds: draft.destinations.map((destination) => destination.channel_id),
+    channelId: draft.destinations.length === 1 ? draft.destinations[0].channel_id : undefined,
+    channelTitle:
+      draft.destinations.length === 1
+        ? (draft.destinations[0].title ?? draft.destinations[0].handle ?? undefined)
+        : undefined,
   };
 }
 
@@ -111,8 +171,8 @@ const dayKey = (d: Date) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
 
 /** Новый пост на конкретный день: сразу отдаём редактору дату и время */
 const composerForDay = (day: Date) => {
-  const at = atTime(day, DEFAULT_TIME);
-  return `/app/composer?date=${encodeURIComponent(at.toISOString())}&time=${DEFAULT_TIME}`;
+  const localDate = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
+  return `/app/composer?date=${localDate}&time=${DEFAULT_TIME}`;
 };
 
 /** «14–20 июля», а на стыке месяцев — «29 июня – 5 июля» */
@@ -224,7 +284,12 @@ function PostCard({
   }
 
   const failed = post.status === "failed";
+  const retrying = post.status === "failed_retry";
+  const quarantined = post.status === "quarantined";
   const published = post.status === "published";
+  const draft = post.status === "draft";
+  const missing = post.status === "missing" || post.status === "deleted_external";
+  const unverified = post.status === "published_unverified";
 
   return (
     <article
@@ -232,10 +297,12 @@ function PostCard({
         "relative rounded-sm border-l-2 shadow-soft ring-1 ring-line",
         "transition-[transform,box-shadow] duration-200 ease-[var(--ease-soft)]",
         "hover:-translate-y-0.5 hover:shadow-card",
-        failed
+        failed || missing || quarantined
           ? "border-danger bg-danger-soft"
           : published
             ? "border-success bg-surface"
+            : unverified
+              ? "border-fire bg-fire-soft"
             : "border-brand bg-surface",
       )}
     >
@@ -260,7 +327,26 @@ function PostCard({
                 aria-hidden
               />
             )}
+            {quarantined && (
+              <AlertTriangle
+                className="h-3.5 w-3.5 shrink-0 text-danger"
+                strokeWidth={2}
+                aria-hidden
+              />
+            )}
+            {missing && (
+              <AlertTriangle
+                className="h-3.5 w-3.5 shrink-0 text-danger"
+                strokeWidth={2}
+                aria-hidden
+              />
+            )}
             <span className="nums text-[13px] font-bold text-text">{fmtTime(post.scheduledAt)}</span>
+            {draft && (
+              <span className="rounded-full bg-info-soft px-1.5 py-0.5 text-[11px] font-bold text-info-text">
+                Черновик
+              </span>
+            )}
           </span>
           <NetworkChips networks={post.networks} />
         </div>
@@ -274,6 +360,37 @@ function PostCard({
         )}
 
         <p className="line-2 text-[13px] leading-snug text-text-2">{post.text}</p>
+
+        {unverified && (
+          <span className="text-[13px] font-semibold text-fire-text">
+            Отправлено, подтверждение внешней сети ещё не получено
+          </span>
+        )}
+
+        {post.publicationParts && post.publicationParts.length > 1 && (
+          <span className="text-[13px] font-medium text-text-3">
+            Telegram: {post.publicationParts.filter((part) => part.sendStatus === "sent").length}
+            /{post.publicationParts.length} частей подтверждено
+          </span>
+        )}
+
+        {missing && (
+          <span className="text-[13px] font-semibold text-danger-text">
+            Сообщение не найдено во внешнем канале и исключено из аналитики
+          </span>
+        )}
+
+        {retrying && (
+          <span className="text-[13px] font-semibold text-fire-text">
+            Временный сбой: сервер повторит отправку по своему таймеру
+          </span>
+        )}
+
+        {quarantined && (
+          <span className="text-[13px] font-semibold text-danger-text">
+            Дата истекла. Пост не будет отправлен без нового подтверждения.
+          </span>
+        )}
 
         {post.sourceRef && <SourceBadge label={post.sourceRef.label} />}
 
@@ -315,6 +432,17 @@ function PostCard({
               Ещё раз
             </Button>
           </>
+        )}
+        {quarantined && (
+          <Button
+            variant="danger"
+            size="sm"
+            onClick={onRetry}
+            className="pointer-events-auto mt-0.5 w-full"
+          >
+            <CalendarPlus className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />
+            Перенести на 2 минуты
+          </Button>
         )}
       </div>
     </article>
@@ -430,10 +558,12 @@ function MonthCell({
   const rest = posts.length - shown.length;
 
   const dot = (p: DatedPost) =>
-    p.status === "failed"
+    p.status === "failed" || p.status === "missing" || p.status === "deleted_external"
       ? "bg-danger"
       : p.status === "published"
         ? "bg-success"
+        : p.status === "published_unverified"
+          ? "bg-fire"
         : "bg-brand";
 
   return (
@@ -537,6 +667,49 @@ export default function CalendarPage() {
   const [view, setView] = useState<View>("week");
   const [dir, setDir] = useState(0);
   const [anchor, setAnchor] = useState<Date>(() => new Date());
+  const [serverDrafts, setServerDrafts] = useState<ServerDraft[]>([]);
+  const [draftOwner, setDraftOwner] = useState<User | null>(null);
+  const [draftsReady, setDraftsReady] = useState(false);
+  const [draftsError, setDraftsError] = useState(false);
+  const [deletingDraftId, setDeletingDraftId] = useState<number | null>(null);
+  const [draftDeleteTarget, setDraftDeleteTarget] = useState<DraftDeleteTarget | null>(null);
+  const [showLocalRecovery, setShowLocalRecovery] = useState(false);
+  const [showUnownedRecovery, setShowUnownedRecovery] = useState(false);
+  const draftQueueHeadingRef = useRef<HTMLHeadingElement>(null);
+
+  const hasUser = Boolean(s.user);
+  const refreshDrafts = useCallback(async (owner: User, signal?: AbortSignal) => {
+    try {
+      const drafts = await listServerDrafts(signal);
+      if (signal?.aborted) return;
+      setServerDrafts(drafts);
+      setDraftOwner(owner);
+      setDraftsError(false);
+    } catch (error) {
+      if (signal?.aborted) return;
+      setServerDrafts([]);
+      setDraftOwner(owner);
+      setDraftsError(true);
+      if (!(error instanceof DraftRequestError && error.kind === "offline")) {
+        console.error("[/app/calendar drafts]", error);
+      }
+    } finally {
+      if (!signal?.aborted) setDraftsReady(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!s.authReady || !s.user) return;
+    const controller = new AbortController();
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- первичная синхронизация с серверным API
+    void refreshDrafts(s.user, controller.signal);
+    const onFocus = () => void refreshDrafts(s.user as User);
+    window.addEventListener("focus", onFocus);
+    return () => {
+      controller.abort();
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [hasUser, refreshDrafts, s.authReady, s.user]);
 
   // Полночь сегодняшнего дня. Считается на клиенте — до s.ready ничего датозависимого не рисуем
   const today = useMemo(() => {
@@ -583,16 +756,23 @@ export default function CalendarPage() {
     });
   }, []);
 
-  // Посты для сетки: настоящие из базы + локальные демо-посты (напр. VK-only, черновики).
-  // Иначе демо-посты «исчезают» с экрана, хотя тост обещал «запланировано» (ревью).
-  // id настоящих постов с префиксом "real-", демо — "post_", коллизий нет.
+  const draftsReadyForUser = draftsReady && draftOwner === s.user;
+  const serverDraftPosts = useMemo(
+    () => (draftOwner === s.user ? serverDrafts.map(serverDraftToPost) : []),
+    [draftOwner, s.user, serverDrafts],
+  );
+
+  // В авторизованном календаре основной источник только серверный. Демо/localStorage
+  // не смешиваются с публикациями и черновиками аккаунта.
   const gridPosts = useMemo(() => {
-    const all = [...s.realPosts.map(realToPost), ...s.posts];
+    const all: CalendarPost[] = [...s.realPosts.map(realToPost), ...serverDraftPosts];
     if (!hidden.size) return all;
-    // Демо-посты (без channelId) не прячем: они не принадлежат ни одному каналу,
-    // и спрятать их фильтром каналов значило бы потерять их молча.
-    return all.filter((p) => p.channelId == null || !hidden.has(p.channelId));
-  }, [s.realPosts, s.posts, hidden]);
+    return all.filter((p) =>
+      p.destinationIds?.length
+        ? p.destinationIds.some((id) => !hidden.has(id))
+        : p.channelId == null || !hidden.has(p.channelId),
+    );
+  }, [s.realPosts, serverDraftPosts, hidden]);
 
   // Посты по дням — один проход вместо фильтра на каждую ячейку
   const postsByDay = useMemo(() => {
@@ -612,12 +792,19 @@ export default function CalendarPage() {
 
   const dayPosts = (d: Date) => postsByDay.get(dayKey(d)) ?? [];
 
-  // Очередь без дат — черновики и очередь без времени (живут в локальном сторе). Настоящие
-  // посты сюда не попадают (у них всегда есть дата). Раньше фильтровали realPosts → всегда
-  // пусто, и созданные черновики были не видны, хотя тост обещал «в очереди» (ревью).
+  // Основная очередь теперь только серверная. Старый глобальный localStorage ниже показан
+  // отдельно как recovery-копии: он не привязан к пользователю и потому не импортируется сам.
   const queue = useMemo(
-    () => s.posts.filter((p) => !p.scheduledAt && (p.status === "draft" || p.status === "queued")),
-    [s.posts],
+    () => serverDraftPosts.filter((post) => !post.scheduledAt),
+    [serverDraftPosts],
+  );
+  const localRecovery = useMemo(
+    () => (s.user ? s.posts.filter((post) => isRecoverableLegacyDraft(post, s.user!.id)) : []),
+    [s.posts, s.user],
+  );
+  const unownedLocalRecovery = useMemo(
+    () => (s.user ? s.posts.filter(isUnownedLegacyDraftCandidate) : []),
+    [s.posts, s.user],
   );
 
   const visibleDays = view === "week" ? weekDays : monthCells;
@@ -645,11 +832,26 @@ export default function CalendarPage() {
     setAnchor(new Date());
   };
 
-  // Настоящие посты пока только для просмотра — правка/отмена появятся позже.
-  const openPost = (post: Post) => {
+  const openPost = (post: CalendarPost) => {
+    if (post.serverDraftId != null) {
+      router.push(`/app/composer?draft=${post.serverDraftId}`);
+      return;
+    }
+    if ((post.status === "draft" || post.status === "queued") && !post.id.startsWith("real-")) {
+      router.push(`/app/composer?legacy=${encodeURIComponent(post.id)}`);
+      return;
+    }
     const title =
       post.status === "published"
         ? "Пост вышел"
+        : post.status === "published_unverified"
+          ? "Доставка ещё не подтверждена"
+          : post.status === "missing" || post.status === "deleted_external"
+            ? "Пост не найден во внешнем канале"
+        : post.status === "quarantined"
+          ? "Дата истекла — публикация остановлена"
+          : post.status === "failed_retry"
+            ? "Сервер ждёт безопасного времени повтора"
         : post.status === "failed"
           ? "Пост не вышел"
           : post.status === "publishing"
@@ -668,9 +870,58 @@ export default function CalendarPage() {
   };
   const addPostOn = (day: Date) => router.push(composerForDay(day));
 
-  const removeDraft = (post: Post) => {
+  const removeDraft = async () => {
+    const target = draftDeleteTarget;
+    if (!target || deletingDraftId != null) return;
+    setDeletingDraftId(target.id);
+    try {
+      await deleteDraftAfterAck(target.id, target.version, (acknowledgedId) => {
+        setServerDrafts((drafts) => drafts.filter((draft) => draft.id !== acknowledgedId));
+      });
+      s.toast({ kind: "success", title: "Черновик удалён" });
+      setDraftDeleteTarget(null);
+      requestAnimationFrame(() => draftQueueHeadingRef.current?.focus());
+    } catch (error) {
+      s.toast({
+        kind: "danger",
+        title: "Черновик не удалён",
+        body:
+          error instanceof DraftRequestError && error.kind === "conflict"
+            ? "Его уже изменили в другой вкладке. Обновили список — проверь актуальную версию."
+            : "Сервер не подтвердил удаление. Попробуй ещё раз.",
+      });
+      if (s.user) await refreshDrafts(s.user);
+      setDraftDeleteTarget(null);
+    } finally {
+      setDeletingDraftId(null);
+    }
+  };
+
+  const removeLocalRecovery = (post: Post) => {
     s.removePost(post.id);
-    s.toast({ kind: "info", title: "Черновик удалён", body: "Если это ошибка — напиши его заново, это быстро." });
+    s.toast({ kind: "info", title: "Локальная копия удалена из этого браузера" });
+  };
+
+  const claimLocalRecovery = (post: Post) => {
+    if (!s.user) return;
+    const claimed = claimUnownedLegacyDraft(post, s.user.id);
+    if (!claimed) {
+      s.toast({
+        kind: "danger",
+        title: "Копию не открыли",
+        body: "Она уже привязана к другому аккаунту или больше недоступна.",
+      });
+      return;
+    }
+    // Это только локальная привязка после явного клика. На сервер черновик попадёт
+    // позднее и тоже только по отдельной кнопке «Сохранить» в Composer.
+    s.updatePost(post.id, { legacyOwnerUserId: claimed.legacyOwnerUserId });
+    setShowLocalRecovery(true);
+    s.toast({
+      kind: "info",
+      title: "Локальная копия привязана",
+      body: "Теперь она показана среди копий этого аккаунта. Открой её отдельной кнопкой после проверки.",
+    });
   };
 
   const makeDraft = (trend: Trend) => {
@@ -687,7 +938,8 @@ export default function CalendarPage() {
       ? `w${weekStart.getTime()}`
       : `m${anchor.getFullYear()}-${anchor.getMonth()}`;
 
-  const suggestions = s.trends.slice(0, 3);
+  // `s.trends` — демонстрационный seed. В авторизованный календарь его не подмешиваем.
+  const suggestions = s.user ? [] : s.trends.slice(0, 3);
 
   return (
     <AppShell
@@ -891,7 +1143,11 @@ export default function CalendarPage() {
               {/* Очередь без дат */}
               <Card as="section" className="p-4">
                 <header className="flex items-center justify-between gap-2">
-                  <h2 className="flex items-center gap-2 text-[15px] font-extrabold tracking-tight text-text">
+                  <h2
+                    ref={draftQueueHeadingRef}
+                    tabIndex={-1}
+                    className="flex items-center gap-2 text-[15px] font-extrabold tracking-tight text-text focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+                  >
                     <Inbox className="h-[18px] w-[18px] text-text-2" strokeWidth={2} aria-hidden />
                     Очередь без дат
                   </h2>
@@ -900,7 +1156,27 @@ export default function CalendarPage() {
                   </span>
                 </header>
 
-                {queue.length === 0 ? (
+                {!draftsReadyForUser ? (
+                  <div className="mt-3 space-y-2" aria-label="Загружаем серверные черновики">
+                    <div className="skeleton h-20 w-full" />
+                    <div className="skeleton h-20 w-full" />
+                  </div>
+                ) : draftsError ? (
+                  <div className="mt-3 rounded-sm bg-danger-soft p-3">
+                    <p className="text-[13px] leading-relaxed font-medium text-danger-text">
+                      Серверные черновики не загрузились. Локальные копии ниже не менялись.
+                    </p>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="mt-2"
+                      onClick={() => s.user && void refreshDrafts(s.user)}
+                    >
+                      <RotateCw className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />
+                      Повторить
+                    </Button>
+                  </div>
+                ) : queue.length === 0 ? (
                   <EmptyState
                     icon={<Inbox className="h-5 w-5" strokeWidth={1.5} aria-hidden />}
                     title="Очередь пуста"
@@ -930,15 +1206,133 @@ export default function CalendarPage() {
                               size="sm"
                               className="w-9 px-0"
                               aria-label="Удалить черновик"
-                              onClick={() => removeDraft(p)}
+                              aria-haspopup="dialog"
+                              loading={deletingDraftId === p.serverDraftId}
+                              onClick={() => {
+                                if (p.serverDraftId == null || p.draftVersion == null) return;
+                                setDraftDeleteTarget({
+                                  id: p.serverDraftId,
+                                  version: p.draftVersion,
+                                });
+                              }}
                             >
-                              <X className="h-4 w-4" strokeWidth={2} aria-hidden />
+                              {deletingDraftId !== p.serverDraftId && (
+                                <X className="h-4 w-4" strokeWidth={2} aria-hidden />
+                              )}
                             </Button>
                           </div>
                         </div>
                       </li>
                     ))}
                   </ul>
+                )}
+
+                {(localRecovery.length > 0 || unownedLocalRecovery.length > 0) && (
+                  <div className="mt-4 border-t border-line pt-4">
+                    <h3 className="text-[14px] font-extrabold text-text">Локальные копии этого браузера</h3>
+                    {localRecovery.length > 0 && (
+                      <>
+                        <p className="mt-1 text-[13px] leading-relaxed text-text-2">
+                          Эти копии были записаны для текущего аккаунта и не смешиваются с другими.
+                        </p>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="mt-2"
+                          aria-expanded={showLocalRecovery}
+                          onClick={() => setShowLocalRecovery((visible) => !visible)}
+                        >
+                          {showLocalRecovery ? "Скрыть локальные копии" : `Показать локальные копии (${localRecovery.length})`}
+                        </Button>
+                        {showLocalRecovery && (
+                          <ul className="mt-3 flex flex-col gap-2">
+                            {localRecovery.map((post) => (
+                              <li key={post.id} className="rounded-sm bg-surface-inset p-3 ring-1 ring-line">
+                                <p className="line-2 text-[13px] leading-snug text-text">{post.text}</p>
+                                {post.scheduledAt && (
+                                  <p className="mt-1 text-[12px] text-text-3">
+                                    Локальная дата: {fmtDateTime(post.scheduledAt)}
+                                  </p>
+                                )}
+                                <div className="mt-2 flex items-center justify-end gap-1">
+                                  <Button variant="soft" size="sm" onClick={() => openPost(post)}>
+                                    Открыть копию
+                                  </Button>
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className="w-9 px-0"
+                                    aria-label="Удалить локальную копию из этого браузера"
+                                    onClick={() => removeLocalRecovery(post)}
+                                  >
+                                    <X className="h-4 w-4" strokeWidth={2} aria-hidden />
+                                  </Button>
+                                </div>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </>
+                    )}
+
+                    {unownedLocalRecovery.length > 0 && (
+                      <div className={localRecovery.length ? "mt-4 border-t border-line pt-4" : "mt-2"}>
+                        <div className="flex items-start gap-2 rounded-sm bg-fire-soft p-3 text-[13px] text-fire-text ring-1 ring-line">
+                          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-fire" strokeWidth={2} aria-hidden />
+                          <p className="leading-relaxed">
+                            Найдены старые копии без отметки аккаунта. Они могут принадлежать другому
+                            человеку, который входил в этом браузере, поэтому мы не показываем текст и
+                            не импортируем их автоматически.
+                          </p>
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="mt-2"
+                          aria-expanded={showUnownedRecovery}
+                          onClick={() => setShowUnownedRecovery((visible) => !visible)}
+                        >
+                          {showUnownedRecovery
+                            ? "Скрыть старые копии"
+                            : `Проверить старые копии (${unownedLocalRecovery.length})`}
+                        </Button>
+                        {showUnownedRecovery && (
+                          <div className="mt-3">
+                            <p className="text-[12px] leading-relaxed text-text-3">
+                              Привязывай копию только на личном устройстве. Её текст откроется после
+                              подтверждения, а на сервер попадёт только после отдельного сохранения.
+                            </p>
+                            <ul className="mt-2 flex flex-col gap-2">
+                              {unownedLocalRecovery.map((post, index) => (
+                                <li key={post.id} className="rounded-sm bg-surface-inset p-3 ring-1 ring-line">
+                                  <p className="text-[13px] font-semibold text-text">
+                                    Старая локальная копия {index + 1}
+                                  </p>
+                                  <p className="mt-1 text-[12px] text-text-3">
+                                    Сохранена в браузере {fmtDateTime(post.createdAt)}. Содержимое скрыто.
+                                  </p>
+                                  <div className="mt-2 flex items-center justify-end gap-1">
+                                    <Button variant="soft" size="sm" onClick={() => claimLocalRecovery(post)}>
+                                      Это моя копия — привязать
+                                    </Button>
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      className="w-9 px-0"
+                                      aria-label="Удалить непривязанную локальную копию из этого браузера"
+                                      onClick={() => removeLocalRecovery(post)}
+                                    >
+                                      <X className="h-4 w-4" strokeWidth={2} aria-hidden />
+                                    </Button>
+                                  </div>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 )}
               </Card>
 
@@ -993,6 +1387,19 @@ export default function CalendarPage() {
           )}
         </aside>
       </div>
+
+      <ConfirmDialog
+        open={draftDeleteTarget != null}
+        title="Удалить черновик?"
+        description="Черновик исчезнет из календаря и очереди только после подтверждения сервера. Восстановить удалённую версию автоматически нельзя."
+        confirmLabel="Удалить черновик"
+        cancelLabel="Оставить"
+        busy={deletingDraftId != null}
+        onCancel={() => {
+          if (deletingDraftId == null) setDraftDeleteTarget(null);
+        }}
+        onConfirm={() => void removeDraft()}
+      />
     </AppShell>
   );
 }

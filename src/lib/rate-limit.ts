@@ -8,8 +8,9 @@
 // Считаем атомарно одним Lua-скриптом (INCR + условный EXPIRE + TTL): без скрипта между
 // INCR и EXPIRE есть гонка, и ключ мог бы остаться без срока жизни навсегда.
 //
-// Redis лёг — НЕ блокируем пользователя (fail-open): лимит вторичен, доступность входа
-// важнее. Атака при упавшем Redis всё равно упирается в scrypt и honeypot.
+// По умолчанию Redis outage остаётся fail-open ради доступности обычного входа. Для flows,
+// которые сами создают внешний side effect (например reset-email), caller выбирает
+// fail-closed: отсутствие limiter не должно превращаться в неограниченную рассылку.
 
 import Redis from "ioredis";
 import { NextResponse } from "next/server";
@@ -25,7 +26,12 @@ function getRedis(): Redis {
     maxRetriesPerRequest: 1, // не копим команды при обрыве — лимит не критичен
     connectTimeout: 3000,
   });
-  client.on("error", (err) => console.error("[rate-limit] redis:", err.message));
+  client.on("error", (err) => {
+    console.error("[rate-limit] redis unavailable", {
+      name: err.name,
+      code: "code" in err ? String(err.code) : undefined,
+    });
+  });
   globalForRedis.auroraRateRedis = client;
   return client;
 }
@@ -45,6 +51,29 @@ export interface RateLimitResult {
   limit: number;
   remaining: number;
   retryAfter: number; // секунд до сброса окна (0, если лимит не исчерпан)
+  unavailable?: boolean;
+}
+
+export interface RateLimitOptions {
+  failureMode?: "open" | "closed";
+}
+
+/** Pure fallback policy, exported so the security-critical branch is regression-testable. */
+export function unavailableRateLimitResult(
+  limit: number,
+  windowSeconds: number,
+  failureMode: "open" | "closed" = "open",
+): RateLimitResult {
+  if (failureMode === "closed") {
+    return {
+      allowed: false,
+      limit,
+      remaining: 0,
+      retryAfter: Math.max(1, Math.min(30, windowSeconds)),
+      unavailable: true,
+    };
+  }
+  return { allowed: true, limit, remaining: limit, retryAfter: 0 };
 }
 
 /**
@@ -55,6 +84,7 @@ export async function checkRateLimit(
   key: string,
   limit: number,
   windowSeconds: number,
+  options: RateLimitOptions = {},
 ): Promise<RateLimitResult> {
   try {
     const [count, ttl] = (await getRedis().eval(
@@ -73,9 +103,11 @@ export async function checkRateLimit(
       retryAfter: allowed ? 0 : Math.max(1, ttl),
     };
   } catch (err) {
-    // Fail-open: Redis недоступен — пропускаем, но loudly.
-    console.error("[rate-limit] не удалось проверить лимит, пропускаю:", err);
-    return { allowed: true, limit, remaining: limit, retryAfter: 0 };
+    const failureMode = options.failureMode ?? "open";
+    console.error(`[rate-limit] check unavailable; ${failureMode === "closed" ? "denying" : "allowing"} request`, {
+      name: err instanceof Error ? err.name : "error",
+    });
+    return unavailableRateLimitResult(limit, windowSeconds, failureMode);
   }
 }
 
@@ -87,12 +119,16 @@ export function clientIp(req: Request): string {
   return req.headers.get("x-real-ip") || "unknown";
 }
 
-/** Единый ответ 429 — с заголовками, чтобы клиент мог показать «повторите через N сек». */
+/** Единый ответ 429/503 с заголовками, чтобы клиент мог безопасно предложить повтор. */
 export function rateLimitResponse(result: RateLimitResult): NextResponse {
   return NextResponse.json(
-    { ok: false, error: "rate_limited", retryAfter: result.retryAfter },
     {
-      status: 429,
+      ok: false,
+      error: result.unavailable ? "rate_limit_unavailable" : "rate_limited",
+      retryAfter: result.retryAfter,
+    },
+    {
+      status: result.unavailable ? 503 : 429,
       headers: {
         "Retry-After": String(result.retryAfter),
         "X-RateLimit-Limit": String(result.limit),

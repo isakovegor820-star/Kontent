@@ -20,9 +20,9 @@ const VARIANTS: Record<Variant, string> = {
   danger: "bg-danger-soft text-danger-text hover:brightness-95 active:brightness-90",
 };
 
-// Все цели ≥44px по высоте на md и выше (a11y, touch target)
+// Все интерактивные цели ≥44px по высоте, включая compact-вариант.
 const SIZES: Record<Size, string> = {
-  sm: "h-9 px-3.5 text-[13px] gap-1.5 rounded-[10px]",
+  sm: "min-h-11 px-3.5 py-2 text-[13px] gap-1.5 rounded-[10px]",
   md: "h-11 px-5 text-[15px] gap-2 rounded-xs",
   lg: "h-[52px] px-7 text-base gap-2.5 rounded-sm",
   xl: "h-[60px] px-9 text-[17px] gap-3 rounded-md",

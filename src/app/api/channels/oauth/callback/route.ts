@@ -14,7 +14,7 @@ import { checkRateLimit, clientIp, rateLimitResponse } from "@/lib/rate-limit";
 import { getOAuthConfig, getAdapter } from "@/lib/social-providers.mjs";
 import { exchangeCode } from "@/lib/oauth.mjs";
 import { encryptToken } from "@/lib/token-crypto.mjs";
-import { OAUTH_STATE_COOKIE, callbackUrlFromReq } from "../start/route";
+import { OAUTH_STATE_COOKIE, callbackUrlFromReq } from "@/lib/oauth-request";
 
 export const runtime = "nodejs";
 

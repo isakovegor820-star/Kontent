@@ -80,7 +80,7 @@ function CleanDraft() {
 
 export function V3QualityScanner() {
   const reduce = useReducedMotion();
-  const [phase, setPhase] = useState<Phase>("idle");
+  const [phase, setPhase] = useState<Phase>("blocked");
   const [preset, setPreset] = useState<Preset>("expert");
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
 
@@ -97,7 +97,7 @@ export function V3QualityScanner() {
   function choosePreset(next: Preset) {
     clearTimers();
     setPreset(next);
-    setPhase("idle");
+    setPhase("blocked");
   }
 
   function scan() {
@@ -122,7 +122,7 @@ export function V3QualityScanner() {
 
   function reset() {
     clearTimers();
-    setPhase("idle");
+    setPhase("blocked");
   }
 
   const busy = phase === "scanning" || phase === "fixing";
@@ -148,7 +148,7 @@ export function V3QualityScanner() {
             </h2>
           </div>
           <div className={styles.introCopy}>
-            <span>04 / Редакционный рентген</span>
+            <span>Проверка до выпуска</span>
             <p className="v3-body">
               Аврора проверяет не только смысл: факты, тон, структуру, стоп-фразы и правила
               конкретного канала — до постановки в расписание.
@@ -161,7 +161,7 @@ export function V3QualityScanner() {
             <div className={styles.topbar}>
               <span className={styles.live}>
                 <i aria-hidden />
-                Redscan / 01
+                Материал на проверке
               </span>
               <div className={styles.presets} aria-label="Редакционный стандарт">
                 {PRESETS.map((item) => (

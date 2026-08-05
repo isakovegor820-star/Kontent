@@ -1,8 +1,5 @@
-// Тесты чистого извлечения IP клиента. checkRateLimit не тестируем — ему нужен
-// живой Redis (а он поднимается лениво только внутри checkRateLimit, поэтому сам
-// импорт модуля в тестах безопасен и не создаёт соединений).
 import { describe, it, expect } from "vitest";
-import { clientIp } from "./rate-limit";
+import { clientIp, rateLimitResponse, unavailableRateLimitResult } from "./rate-limit";
 
 function reqWith(headers: Record<string, string>): Request {
   return new Request("http://localhost/api/x", { headers });
@@ -29,5 +26,35 @@ describe("clientIp", () => {
 
   it("нет заголовков — unknown", () => {
     expect(clientIp(reqWith({}))).toBe("unknown");
+  });
+});
+
+describe("rate-limit outage policy", () => {
+  it("fails closed with an explicit 503 for security-sensitive flows", async () => {
+    const result = unavailableRateLimitResult(5, 3600, "closed");
+    expect(result).toEqual({
+      allowed: false,
+      limit: 5,
+      remaining: 0,
+      retryAfter: 30,
+      unavailable: true,
+    });
+
+    const response = rateLimitResponse(result);
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      error: "rate_limit_unavailable",
+      retryAfter: 30,
+    });
+  });
+
+  it("keeps the existing fail-open default for non-critical callers", () => {
+    expect(unavailableRateLimitResult(10, 900)).toEqual({
+      allowed: true,
+      limit: 10,
+      remaining: 10,
+      retryAfter: 0,
+    });
   });
 });

@@ -7,10 +7,14 @@ import { getSessionUser } from "@/lib/session";
 import { getStatsQueue } from "@/lib/queue";
 import { MAX_COMPETITORS, parseHandle } from "@/lib/competitors";
 import { resolveChannel } from "@/lib/autopilot";
+import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 
 export const runtime = "nodejs";
 
 export async function POST(req: NextRequest) {
+  if (!hasTrustedMutationOrigin(req)) {
+    return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
+  }
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
 

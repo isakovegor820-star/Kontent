@@ -38,7 +38,7 @@ export function V3PostProof() {
             {/* 1. Карточка идеи */}
             <li className="v3-card v3-lift relative flex flex-col p-6">
               <span className="v3-stamp v3-stamp--acc absolute -top-3.5 left-5">01 · Идея</span>
-              <span className="v3-chip v3-chip--acc mt-2 w-fit">Сними это</span>
+              <span className="v3-chip v3-chip--acc mt-2 w-fit">Создать публикацию</span>
               <p className="mt-3 text-[17px] leading-snug font-bold">Кофе горчит? Дело в помоле</p>
               <ul className="mt-3 space-y-1.5">
                 {["Обвинение в первой секунде", "Решение — за 40 секунд"].map((l) => (

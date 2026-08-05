@@ -379,6 +379,7 @@
   transform: scaleX(var(--verb-squeeze));
   transform-origin: left center;
   text-transform: uppercase;
+  transition: text-shadow 180ms ease;
 }
 
 .verbList button:nth-child(1) {
@@ -413,12 +414,7 @@
 }
 
 .verbList button[aria-selected="true"] > strong {
-  background-image: linear-gradient(
-    transparent 58%,
-    color-mix(in srgb, var(--acc) 82%, transparent) 58% 88%,
-    transparent 88%
-  );
-  text-shadow: 0.045em 0.045em 0 color-mix(in srgb, var(--ink) 12%, transparent);
+  text-shadow: 0.035em 0.045em 0 var(--acc);
 }
 
 .verbList button > i {

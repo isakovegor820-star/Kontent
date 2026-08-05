@@ -3,7 +3,7 @@
 // Базовые кирпичики интерфейса. Один набор на лендинг и платформу (ТЗ 7.3:
 // «карточки как основной строительный блок», «мягкие тени вместо рамок»).
 
-import { forwardRef } from "react";
+import { forwardRef, useRef } from "react";
 import { Check, Minus } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -149,11 +149,13 @@ export function Switch({
   onChange,
   label,
   id,
+  disabled = false,
 }: {
   checked: boolean;
   onChange: (v: boolean) => void;
   label: string;
   id?: string;
+  disabled?: boolean;
 }) {
   return (
     <button
@@ -162,20 +164,27 @@ export function Switch({
       role="switch"
       aria-checked={checked}
       aria-label={label}
+      disabled={disabled}
       onClick={() => onChange(!checked)}
       className={cn(
-        "inline-flex h-7 w-12 shrink-0 cursor-pointer items-center rounded-full border p-0.5",
-        "transition-colors duration-200 focus-visible:ring-4 focus-visible:ring-brand/15",
-        checked ? "border-transparent bg-brand-gradient" : "border-line bg-surface-inset",
+        "inline-flex h-11 w-12 shrink-0 cursor-pointer items-center disabled:cursor-not-allowed disabled:opacity-50",
+        "rounded-full focus-visible:ring-4 focus-visible:ring-brand/15",
       )}
     >
-      {/* дорожка 48 − 2 (рамка) − 4 (padding) = 42; кружок 20 ⇒ ход ровно 22px */}
       <span
         className={cn(
-          "h-5 w-5 rounded-full bg-white shadow-sm transition-transform duration-200 ease-[var(--ease-spring)]",
-          checked ? "translate-x-[22px]" : "translate-x-0",
+          "flex h-7 w-12 items-center rounded-full border p-0.5 transition-colors duration-200",
+          checked ? "border-transparent bg-brand-gradient" : "border-line bg-surface-inset",
         )}
-      />
+      >
+        {/* дорожка 48 − 2 (рамка) − 4 (padding) = 42; кружок 20 ⇒ ход ровно 22px */}
+        <span
+          className={cn(
+            "h-5 w-5 rounded-full bg-white shadow-sm transition-transform duration-200 ease-[var(--ease-spring)]",
+            checked ? "translate-x-[22px]" : "translate-x-0",
+          )}
+        />
+      </span>
     </button>
   );
 }
@@ -186,23 +195,25 @@ export function Toggle({
   label,
   description,
   id,
+  disabled = false,
 }: {
   checked: boolean;
   onChange: (v: boolean) => void;
   label: string;
   description?: string;
   id?: string;
+  disabled?: boolean;
 }) {
   return (
     <div className="flex items-start justify-between gap-6">
       <div className="min-w-0">
-        <label htmlFor={id} className="block cursor-pointer text-[15px] font-semibold text-text">
+        <label htmlFor={id} className={cn("block text-[15px] font-semibold text-text", disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer")}>
           {label}
         </label>
         {description && <p className="mt-1 text-[13px] leading-relaxed text-text-2">{description}</p>}
       </div>
       <span className="mt-0.5">
-        <Switch checked={checked} onChange={onChange} label={label} id={id} />
+        <Switch checked={checked} onChange={onChange} label={label} id={id} disabled={disabled} />
       </span>
     </div>
   );
@@ -226,7 +237,7 @@ export function Checkbox({
       role="checkbox"
       aria-checked={checked}
       onClick={() => onChange(!checked)}
-      className="group flex cursor-pointer items-center gap-2.5 text-left"
+      className="group flex min-h-11 min-w-11 cursor-pointer items-center gap-2.5 py-2 text-left"
     >
       <span
         className={cn(
@@ -256,24 +267,46 @@ export function Tabs<T extends string>({
   items: { value: T; label: string; icon?: React.ReactNode }[];
   className?: string;
 }) {
+  const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const activeIndex = Math.max(0, items.findIndex((item) => item.value === value));
+
+  const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    let next = activeIndex;
+    if (event.key === "ArrowRight") next = (activeIndex + 1) % items.length;
+    else if (event.key === "ArrowLeft") next = (activeIndex - 1 + items.length) % items.length;
+    else if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = items.length - 1;
+    else return;
+    event.preventDefault();
+    onChange(items[next].value);
+    tabRefs.current[next]?.focus();
+  };
+
   return (
     <div
       role="tablist"
+      aria-label="Переключатель представления"
+      onKeyDown={onKeyDown}
       className={cn(
         "inline-flex gap-1 rounded-sm border border-line bg-surface-inset p-1",
         className,
       )}
     >
-      {items.map((it) => {
+      {items.map((it, index) => {
         const active = it.value === value;
         return (
           <button
             key={it.value}
+            ref={(element) => {
+              tabRefs.current[index] = element;
+            }}
+            type="button"
             role="tab"
             aria-selected={active}
+            tabIndex={active ? 0 : -1}
             onClick={() => onChange(it.value)}
             className={cn(
-              "inline-flex cursor-pointer items-center gap-1.5 rounded-[9px] px-3.5 py-2 text-[13px] font-semibold",
+              "inline-flex min-h-11 cursor-pointer items-center gap-1.5 rounded-[9px] px-3.5 py-2 text-[13px] font-semibold",
               "transition-all duration-200",
               active
                 ? "bg-surface text-text shadow-soft"

@@ -1,7 +1,7 @@
 "use client";
 
 // Единый таб-бар «Разведки». Три вкладки — три разные работы:
-//   Сигналы    — живой радар: кто пишет о тебе и твоей теме (слитые Радар + Упоминания);
+//   Поиск      — ручной поиск и алерты по уже собранным постам ниши;
 //   Конкуренты — досье на соседей: кто растёт и за счёт чего;
 //   Тренды     — что залетает в нише, источник идей.
 // Активная вкладка — пилюля на пружине, под ней — плавно сменяющаяся подсказка
@@ -10,58 +10,65 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { AnimatePresence, motion } from "motion/react";
-import { Flame, Radar, ScanSearch } from "lucide-react";
+import { Flame, Radar, Search } from "lucide-react";
 
+import {
+  APP_ROUTES,
+  appRouteLabel,
+  getActiveReconTabRouteId,
+  type ReconTabRouteId,
+} from "@/lib/app-routes";
 import { cn } from "@/lib/utils";
 
-const TABS = [
+const TABS: readonly {
+  routeId: ReconTabRouteId;
+  icon: typeof Search;
+  tone: string;
+  purpose: string;
+}[] = [
   {
-    href: "/app/recon",
-    label: "Сигналы",
-    icon: ScanSearch,
+    routeId: "recon",
+    icon: Search,
     tone: "text-info-text",
     purpose:
-      "Живой радар: кто прямо сейчас пишет о тебе, твоём бренде и твоей теме — в Telegram, VK и у конкурентов. Успевай отвечать, пока горячо.",
+      "Поиск по уже собранным постам конкурентов и трендов. Находи нужные темы и сохраняй полезные механики.",
   },
   {
-    href: "/app/competitors",
-    label: "Конкуренты",
+    routeId: "competitors",
     icon: Radar,
     tone: "text-brand",
     purpose:
       "Досье на соседей по нише: кто растёт и за счёт чего — просмотры, ритм публикаций, хитовые посты. Забирай лучшее себе.",
   },
   {
-    href: "/app/trends",
-    label: "Тренды",
+    routeId: "trends",
     icon: Flame,
     tone: "text-fire-text",
     purpose:
-      "Что залетает в твоей нише прямо сейчас и у кого учиться. Лови волну раньше других — и снимай первым.",
+      "Свежие публикации выбранных Telegram-каналов — отдельно от проверенных залётов. Видно, что вышло сегодня и когда источники обновлялись.",
   },
-] as const;
+];
 
 export function ReconTabs() {
   const pathname = usePathname();
-  const active =
-    TABS.find((t) => pathname === t.href || pathname.startsWith(`${t.href}/`)) ?? TABS[0];
+  const activeRouteId = getActiveReconTabRouteId(pathname);
+  const active = TABS.find((tab) => tab.routeId === activeRouteId) ?? TABS[0];
 
   return (
     <div>
-      <div
-        role="tablist"
-        aria-label="Разведка"
+      <nav
+        aria-label="Разделы разведки"
         className="inline-flex flex-wrap gap-1 rounded-sm border border-line bg-surface-inset p-1"
       >
         {TABS.map((t) => {
-          const isActive = t.href === active.href;
+          const route = APP_ROUTES[t.routeId];
+          const isActive = t.routeId === activeRouteId;
           const Icon = t.icon;
           return (
             <Link
-              key={t.href}
-              href={t.href}
-              role="tab"
-              aria-selected={isActive}
+              key={t.routeId}
+              href={route.href}
+              aria-current={isActive ? "page" : undefined}
               className={cn(
                 "relative inline-flex cursor-pointer items-center gap-1.5 rounded-[9px] px-3.5 py-2 text-[13px] font-semibold",
                 "transition-colors duration-200",
@@ -81,15 +88,15 @@ export function ReconTabs() {
                 strokeWidth={2.25}
                 aria-hidden
               />
-              <span className="relative">{t.label}</span>
+              <span className="relative">{appRouteLabel(t.routeId, "tab")}</span>
             </Link>
           );
         })}
-      </div>
+      </nav>
       {/* Подсказка «зачем эта вкладка» — мягко переливается при смене */}
       <AnimatePresence mode="wait" initial={false}>
         <motion.p
-          key={active.href}
+          key={active.routeId}
           initial={{ opacity: 0, y: 4 }}
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, y: -4 }}

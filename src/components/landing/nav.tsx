@@ -7,7 +7,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import Link from "next/link";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { CircleHelp, Menu, RefreshCw, Route, Scale, X } from "lucide-react";
+import { BookOpen, CircleHelp, Menu, Route, ShieldCheck, X } from "lucide-react";
 import { Wordmark } from "@/components/brand";
 import { Button } from "@/components/ui/button";
 import { Divider, GlassCard } from "@/components/ui/primitives";
@@ -29,11 +29,11 @@ type NavLink = {
   icon: NavIcon;
 };
 
-// Порядок — как в ТЗ 8.1: сначала объясняем продукт, потом сравниваем, потом снимаем возражения.
+// Навигация ведёт по главным опорам текущего оффера: механика, память, качество и вопросы.
 const LINKS: NavLink[] = [
   { href: "#how", label: "Как это работает", icon: Route },
-  { href: "#cycle", label: "Цикл", icon: RefreshCw },
-  { href: "#compare", label: "Сравнение", icon: Scale },
+  { href: "#memory", label: "Голос и факты", icon: BookOpen },
+  { href: "#quality", label: "Контроль", icon: ShieldCheck },
   { href: "#faq", label: "Вопросы", icon: CircleHelp },
 ];
 

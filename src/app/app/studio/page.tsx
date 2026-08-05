@@ -9,20 +9,17 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { motion, useReducedMotion } from "motion/react";
 import {
   ArrowUp,
-  Brain,
   CalendarRange,
   Check,
+  ChevronDown,
   Clapperboard,
   Copy,
-  Cpu,
   FileText,
   ImageIcon,
   ListChecks,
   MessageSquareText,
-  Pencil,
   Plus,
   RefreshCw,
-  Settings2,
   Sparkles,
   Square,
   Video,
@@ -30,30 +27,68 @@ import {
 
 import { AppShell } from "@/components/app/shell";
 import { Button } from "@/components/ui/button";
-import { Card, Input, Textarea } from "@/components/ui/primitives";
+import { Card, Textarea } from "@/components/ui/primitives";
 import {
   MediaGenerator,
   type MediaGeneration,
   type MediaKind,
 } from "@/components/studio/media-generator";
+import { requiresBriefConfirmation } from "@/lib/brief-confirmation";
 import { type AiCommand } from "@/lib/ai";
-import type { AiRole, ConversationTurn } from "@/lib/ai-provider";
+import { acknowledgeAiTerminal, AiTerminalAckError } from "@/lib/ai-client-idempotency";
+import { aiFailureRecoveryRu, type AiFailureInfo } from "@/lib/ai-client-recovery";
+import {
+  aiDraftPhaseLabel,
+  createAiDraftProjection,
+  projectAiDraftEvent,
+} from "@/lib/ai-draft-projection";
+import type { ConversationTurn } from "@/lib/ai-provider";
+import { finalizeAiClientStream, parseAiStreamBuffer, type AiStreamEvent } from "@/lib/ai-stream";
+import { getAiUsageMetrics } from "@/lib/ai-usage-sync";
+import {
+  createDraftClientKey,
+  createServerDraft,
+  DraftRequestError,
+  getServerDraft,
+} from "@/lib/draft-client";
+import type { ServerDraft } from "@/lib/draft-types";
+import {
+  DEFAULT_POST_SETTINGS,
+  buildPostSettingsSummary,
+  normalizePostSettings,
+  validatePostSettingsConflicts,
+  validatePostSettingsResult,
+  type PostSettings,
+} from "@/lib/post-settings";
+import { pickStudioCommand } from "@/lib/studio-command";
+import {
+  isStudioGenerationPlaceholder,
+  parseStudioChatSession,
+  serializeStudioChatSession,
+  studioChatStorageKey,
+  type StudioChatGeneration,
+  type StudioChatMessage,
+} from "@/lib/studio-chat-session";
+import {
+  abortStudioStream,
+  beginStudioStream,
+  clearStudioStream,
+  ownsStudioStream,
+  type StudioStreamBox,
+} from "@/lib/studio-stream-control";
 import { useStore } from "@/lib/store";
 import type { RealChannel } from "@/lib/types";
 import { cn, uid } from "@/lib/utils";
 
 /* --------------------------------------------------------------- ОСНОВЫ */
 
-type Msg = {
-  id: string;
-  role: "user" | "ai";
-  text: string;
-  streaming?: boolean;
-  postable?: boolean;
-};
+type Msg = StudioChatMessage;
 
 /** Что ИИ должен «помнить» для перегенерации ответа */
-type Gen = { cmd: AiCommand; input: string; variant: number; history: ConversationTurn[] };
+type Gen = StudioChatGeneration;
+type AskOptions = { cmd?: AiCommand; input?: string; skipBrief?: boolean };
+type PendingBrief = { text: string; opts?: Omit<AskOptions, "skipBrief"> };
+type PendingLibraryReference = { text: string; source?: string };
 
 type WorkspaceMode = "chat" | "studio";
 
@@ -123,24 +158,25 @@ const QUICK: Quick[] = [
   },
 ];
 
-/** Эвристика: понимаем, что человек хочет, по его же словам — без меню и настроек */
-function pickCommand(text: string): AiCommand {
-  const t = text.toLowerCase();
-  if (t.includes("план")) return "plan";
-  if (t.includes("сценар") || t.includes("видео")) return "script";
-  if (t.includes("сократ")) return "shorten";
-  if (t.includes("перепиш")) return "rewrite";
-  if (t.includes("картинк")) return "image";
-  if (t.includes("опрос") || t.includes("голосован")) return "poll";
-  if (t.includes("лонгрид") || t.includes("длинн")) return "longread";
-  return "write";
-}
-
 /** Короткая команда после готового ответа означает редактуру, а не новую тему поста. */
 function looksLikeEditFollowUp(text: string): boolean {
-  return /^(сделай|убери|добавь|замени|оставь|измени|поменяй|перестрой|давай|без|больше|меньше|ещё|слишком)\b/i.test(
+  return /^(сделай|исправь|убери|добавь|замени|оставь|измени|поменяй|перестрой|давай|без|больше|меньше|ещё|слишком)\b/i.test(
     text.trim(),
   );
+}
+
+function primaryPublication(text: string): string {
+  return text.split(/\n\s*---\s*\n/u)[0].trim();
+}
+
+function lexicalSimilarity(left: string, right: string): number {
+  const words = (value: string) => new Set(value.toLocaleLowerCase("ru").match(/[\p{L}\p{N}]{4,}/gu) ?? []);
+  const a = words(left);
+  const b = words(right);
+  if (!a.size || !b.size) return 0;
+  let shared = 0;
+  for (const word of a) if (b.has(word)) shared += 1;
+  return shared / Math.min(a.size, b.size);
 }
 
 // Примеры для пустого диалога: показать, что тут вообще можно попросить, вместо голого поля.
@@ -154,7 +190,10 @@ function MessageRow({
   onSchedule,
   onCopy,
   onRegenerate,
+  onRetry,
   onShorten,
+  onFixQuality,
+  creatingPost,
 }: {
   msg: Msg;
   reduce: boolean;
@@ -162,7 +201,10 @@ function MessageRow({
   onSchedule: () => void;
   onCopy: () => void;
   onRegenerate: () => void;
+  onRetry: () => void;
   onShorten: () => void;
+  onFixQuality: (issue: string) => void;
+  creatingPost: boolean;
 }) {
   const appear = {
     initial: reduce ? false : { opacity: 0, y: 10 },
@@ -199,6 +241,30 @@ function MessageRow({
           {msg.text}
         </p>
 
+        {msg.streaming && msg.progressLabel && (
+          <p role="status" aria-live="polite" className="mt-2 text-[12px] font-semibold text-info-text">
+            {msg.progressLabel}
+          </p>
+        )}
+
+        {msg.errorMessage && (
+          <div role="alert" className="mt-3 max-w-[72ch] rounded-sm border border-danger-text/25 bg-danger-soft px-3 py-2 text-[12px] leading-relaxed text-danger-text">
+            <p>{msg.errorMessage}</p>
+            {msg.requestId && <p className="mt-1 font-mono text-[10px] opacity-80">ID запроса: {msg.requestId}</p>}
+          </div>
+        )}
+
+        {!msg.errorMessage && msg.requestId && (
+          <p className="mt-2 font-mono text-[10px] text-text-3">ID запроса: {msg.requestId}</p>
+        )}
+
+        {!msg.streaming && msg.fallbackUsed && msg.requestedEngine && msg.effectiveEngine && (
+          <p className="mt-2 max-w-[72ch] rounded-sm bg-info-soft px-3 py-2 text-[11px] text-info-text">
+            Запрошенная модель: {msg.requestedEngine}. Итоговый проход: {msg.effectiveEngine}.
+            В ходе генерации использовался резервный маршрут; выбор в настройках не менялся.
+          </p>
+        )}
+
         {/* Печатает — можно остановить. Анимация никогда не держит человека (ТЗ 7.4) */}
         {msg.streaming && (
           <div className="mt-2">
@@ -209,11 +275,39 @@ function MessageRow({
           </div>
         )}
 
-        {/* Готовый текст → открыть как пост и выбрать публикацию сразу или по расписанию */}
-        {ready && msg.postable && (
+        {!msg.streaming && msg.retryable && (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            <Button variant="soft" size="sm" onClick={onRetry}>
+              <RefreshCw className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />
+              Повторить запрос
+            </Button>
+            {msg.text.trim() && (
+              <Button variant="ghost" size="sm" onClick={onCopy}>
+                <Copy className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />
+                Скопировать черновик
+              </Button>
+            )}
+          </div>
+        )}
+
+        {ready && msg.requiresReview && (
+          <p className="mt-3 max-w-[72ch] rounded-sm border border-brand/30 bg-info-soft px-3 py-2 text-[12px] leading-relaxed text-info-text">
+            Смысловая проверка сейчас недоступна. Открой текст как черновик и подтверди факты в редакторе перед публикацией.
+          </p>
+        )}
+
+        {/* Complete result remains reviewable even when semantic publication is blocked. */}
+        {ready && msg.reviewable && (
           <div className="mt-2 flex flex-wrap items-center gap-1.5">
-            <Button variant="soft" size="sm" className="h-8 px-2.5 text-[12px]" onClick={onSchedule}>
-              <FileText className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />В пост
+            <Button
+              variant="soft"
+              size="sm"
+              className="h-8 px-2.5 text-[12px]"
+              onClick={onSchedule}
+              loading={creatingPost}
+            >
+              {!creatingPost && <FileText className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />}
+              В пост
             </Button>
             <Button variant="ghost" size="sm" className="h-8 px-2.5 text-[12px]" onClick={onCopy}>
               <Copy className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />
@@ -228,99 +322,31 @@ function MessageRow({
             </Button>
           </div>
         )}
+
+        {ready && msg.reviewable && msg.quality && (
+          <details className="mt-3 max-w-[72ch] rounded-sm border border-line bg-surface">
+            <summary className="flex min-h-10 cursor-pointer list-none items-center justify-between gap-3 px-3 text-[12px] font-bold text-text marker:content-none">
+              <span>{msg.quality.passed ? "Проверка поста пройдена" : `Нужно улучшить: ${msg.quality.violations.length}`}</span>
+              <span className="text-[10px] font-semibold text-text-3">{msg.quality.metrics.chars} зн. · {msg.quality.metrics.emojis} эмодзи · {msg.quality.metrics.hashtags} хэшт.</span>
+            </summary>
+            <div className="border-t border-line px-3 py-2.5">
+              {msg.quality.violations.length === 0 ? (
+                <p className="text-[11px] leading-relaxed text-success-text">Длина, площадка, обязательные факты, CTA и технические ограничения соблюдены.</p>
+              ) : (
+                <div className="grid gap-2">
+                  {msg.quality.violations.map((issue) => (
+                    <div key={`${issue.code}-${issue.message}`} className="flex items-start justify-between gap-3 text-[11px] leading-relaxed text-text-2">
+                      <span>• {issue.message}</span>
+                      <button type="button" onClick={() => onFixQuality(issue.message)} className="shrink-0 font-bold text-info-text hover:underline">Исправить</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </details>
+        )}
       </div>
     </motion.div>
-  );
-}
-
-/* ------------------------------------------------- СТРОКА ПАМЯТИ СТИЛИ */
-
-function EditableRow({
-  label,
-  value,
-  onSave,
-}: {
-  label: string;
-  value: string;
-  onSave: (v: string) => void;
-}) {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(value);
-  const ref = useRef<HTMLInputElement>(null);
-  const cancelled = useRef(false);
-
-  useEffect(() => {
-    if (editing) ref.current?.focus();
-  }, [editing]);
-
-  // Черновик берём в момент открытия — он всегда свежий, синхронизировать нечего
-  const open = () => {
-    setDraft(value);
-    setEditing(true);
-  };
-
-  const commit = () => {
-    setEditing(false);
-    const next = draft.trim();
-    if (!next || next === value) return;
-    onSave(next);
-  };
-
-  if (editing) {
-    return (
-      <div>
-        <p className="text-[13px] font-semibold text-text-3">{label}</p>
-        <Input
-          ref={ref}
-          value={draft}
-          aria-label={label}
-          className="mt-1"
-          onChange={(e) => setDraft(e.target.value)}
-          onBlur={() => {
-            if (cancelled.current) {
-              cancelled.current = false;
-              return;
-            }
-            commit();
-          }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              e.currentTarget.blur();
-            }
-            if (e.key === "Escape") {
-              cancelled.current = true;
-              setEditing(false);
-            }
-          }}
-        />
-      </div>
-    );
-  }
-
-  return (
-    <div>
-      <p className="text-[13px] font-semibold text-text-3">{label}</p>
-      <button
-        type="button"
-        onClick={open}
-        aria-label={`Изменить: ${label}`}
-        className={cn(
-          "group -mx-2 mt-0.5 flex min-h-11 w-full cursor-pointer items-start gap-2 rounded-xs px-2 py-2 text-left",
-          "transition-colors duration-200 hover:bg-surface-inset",
-        )}
-      >
-        <span className="flex-1 text-[14px] leading-snug text-text">{value}</span>
-        <Pencil
-          className={cn(
-            "mt-0.5 h-3.5 w-3.5 shrink-0 text-text-3 opacity-0 transition-opacity duration-200",
-            "group-hover:opacity-100 group-focus-visible:opacity-100",
-          )}
-          strokeWidth={2}
-          aria-hidden
-        />
-      </button>
-    </div>
   );
 }
 
@@ -375,6 +401,10 @@ function WorkspaceModeSwitch({
   value: WorkspaceMode;
   onChange: (value: WorkspaceMode) => void;
 }) {
+  const modeRefs = useRef<Record<WorkspaceMode, HTMLButtonElement | null>>({
+    chat: null,
+    studio: null,
+  });
   const modes: { id: WorkspaceMode; label: string; icon: React.ReactNode }[] = [
     {
       id: "chat",
@@ -383,7 +413,7 @@ function WorkspaceModeSwitch({
     },
     {
       id: "studio",
-      label: "Студия",
+      label: "Картинки и видео",
       icon: <Sparkles className="h-4 w-4" strokeWidth={2} aria-hidden />,
     },
   ];
@@ -392,18 +422,30 @@ function WorkspaceModeSwitch({
     <div
       role="tablist"
       aria-label="Режим ИИ-студии"
+      onKeyDown={(event) => {
+        if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+        event.preventDefault();
+        const next: WorkspaceMode =
+          event.key === "ArrowLeft" || event.key === "Home" ? "chat" : "studio";
+        onChange(next);
+        modeRefs.current[next]?.focus();
+      }}
       className="inline-grid grid-cols-2 rounded-md border-2 border-line bg-surface p-1 shadow-[3px_3px_0_var(--ink)]"
     >
       {modes.map((mode) => (
         <button
           key={mode.id}
+          ref={(element) => {
+            modeRefs.current[mode.id] = element;
+          }}
           type="button"
           role="tab"
           aria-selected={value === mode.id}
+          tabIndex={value === mode.id ? 0 : -1}
           aria-controls={`${mode.id}-workspace`}
           onClick={() => onChange(mode.id)}
           className={cn(
-            "inline-flex min-h-10 items-center justify-center gap-2 rounded-xs px-4 text-[13px] font-extrabold transition-colors sm:min-w-[126px]",
+            "inline-flex min-h-10 items-center justify-center gap-2 rounded-xs px-3 text-[13px] font-extrabold whitespace-nowrap transition-colors sm:min-w-[126px] sm:px-4",
             value === mode.id
               ? "bg-brand text-text"
               : "text-text-2 hover:bg-surface-2 hover:text-text",
@@ -433,13 +475,6 @@ interface EngineInfo {
   recommended: boolean;
   status: "ready" | "no_key" | "offline";
   reason: string | null;
-}
-
-interface MoodInfo {
-  key: string;
-  label: string;
-  emoji: string;
-  description: string;
 }
 
 const engineDot = (st: EngineInfo["status"]) =>
@@ -490,7 +525,7 @@ function Popover({
   );
 }
 
-/** Все шаблоны спрятаны за одной кнопкой и не конкурируют с полем ввода. */
+/** Явное «Создать» объясняет действие без необходимости угадывать смысл иконки плюса. */
 function QuickActionsMenu({
   items,
   onPick,
@@ -509,14 +544,15 @@ function QuickActionsMenu({
         disabled={disabled}
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
-        aria-label="Открыть инструменты"
+        aria-label="Выбрать, что создать"
         className={cn(
-          "grid h-9 w-9 shrink-0 cursor-pointer place-items-center rounded-full text-text-2",
+          "inline-flex h-9 shrink-0 cursor-pointer items-center gap-1.5 rounded-full px-2.5 text-text-2",
           "transition-colors hover:bg-surface-2 hover:text-text disabled:pointer-events-none disabled:opacity-45",
           open && "bg-surface-2 text-text",
         )}
       >
         <Plus className="h-3.5 w-3.5" strokeWidth={2.25} aria-hidden />
+        <span className="text-[12px] font-semibold">Создать</span>
       </button>
 
       <Popover open={open} onClose={() => setOpen(false)} className="w-[300px] p-2.5">
@@ -630,255 +666,83 @@ function ChannelMenu({
   );
 }
 
-/** Настроение вынесено в composer: это ключевой редакторский выбор, а не скрытая технастройка. */
-function MoodMenu({
-  mood,
-  moods,
-  onMood,
-  onLimit,
-  saving,
+/** Выбор модели как в Codex: в панели видно текущее название, один клик применяет новую. */
+function ModelMenu({
+  engines,
+  current,
+  onPick,
+  loading,
   disabled,
 }: {
-  mood: string[];
-  moods: MoodInfo[];
-  onMood: (keys: string[]) => void;
-  onLimit: () => void;
-  saving: boolean;
+  engines: EngineInfo[];
+  current: string | null;
+  onPick: (engine: EngineInfo) => Promise<void>;
+  loading: boolean;
   disabled: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const active = mood
-    .map((key) => moods.find((item) => item.key === key))
-    .filter((item): item is MoodInfo => Boolean(item));
-  const activeLabel = active.map((item) => item.label).join(" + ") || "Экспертный";
-
-  const toggle = (key: string) => {
-    if (mood.includes(key)) {
-      if (mood.length === 1) return;
-      onMood(mood.filter((item) => item !== key));
-      return;
-    }
-    if (mood.length >= 3) {
-      onLimit();
-      return;
-    }
-    onMood([...mood, key]);
-  };
+  const activeEngine = engines.find((engine) => engine.id === current);
+  const label = loading ? "Модель…" : activeEngine?.label ?? "Выбрать модель";
 
   return (
-    <div className="relative">
+    <div className="relative min-w-0">
       <button
         type="button"
-        disabled={disabled}
+        disabled={disabled || loading}
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
-        aria-label={`Настроение текста: ${activeLabel}`}
+        aria-label={`Модель: ${label}`}
         className={cn(
-          "inline-flex h-9 max-w-[240px] min-w-0 shrink cursor-pointer items-center gap-1.5 rounded-full px-2.5",
+          "inline-flex h-9 max-w-[180px] min-w-0 shrink cursor-pointer items-center gap-1 rounded-full px-2.5",
           "text-[12px] font-semibold text-text-2 transition-colors hover:bg-surface-2 hover:text-text",
           "disabled:pointer-events-none disabled:opacity-45",
           open && "bg-surface-2 text-text",
         )}
       >
-        <Brain className="h-4 w-4 shrink-0" strokeWidth={2} aria-hidden />
-        <span className="truncate">{activeLabel}</span>
+        <span className="truncate">{label}</span>
+        <ChevronDown className="h-3.5 w-3.5 shrink-0" strokeWidth={2} aria-hidden />
       </button>
 
-      <Popover open={open} onClose={() => setOpen(false)} className="w-[390px] p-3">
-        <div className="px-1 pb-2">
-          <div className="flex items-center justify-between gap-3">
-            <p className="text-[14px] font-extrabold text-text">Как должен звучать пост?</p>
-            <span className="shrink-0 rounded-full bg-surface-inset px-2 py-1 text-[10px] font-bold text-text-2">
-              {saving ? "Сохраняю…" : `Выбрано ${mood.length}/3`}
-            </span>
-          </div>
-          <p className="mt-1 text-[11px] leading-relaxed text-text-3">
-            Соедини до трёх профилей. Аврора смешает их ритм, лексику и силу позиции, сохранив факты и ограничения.
-          </p>
+      <Popover open={open} onClose={() => setOpen(false)} className="w-[300px] p-2.5">
+        <div className="px-2 pb-2">
+          <p className="text-[13px] font-extrabold text-text">Выбрать модель</p>
+          <p className="mt-0.5 text-[11px] text-text-3">Нажми на название — модель применится сразу.</p>
         </div>
 
-        <div className="mt-1 grid gap-1">
-          {moods.map((item) => {
-            const selected = mood.includes(item.key);
-            const blocked = !selected && mood.length >= 3;
+        <div className="grid gap-1">
+          {engines.map((engine) => {
+            const ready = engine.supported && engine.status === "ready";
+            const selected = engine.id === current;
             return (
-              <button
-                key={item.key}
-                type="button"
-                disabled={saving}
-                aria-pressed={selected}
-                aria-disabled={blocked}
-                onClick={() => toggle(item.key)}
-                className={cn(
-                  "flex min-h-[58px] w-full cursor-pointer items-center gap-3 rounded-sm px-3 py-2 text-left transition-colors",
-                  selected ? "bg-info-soft" : "hover:bg-surface-inset",
-                  blocked && "opacity-45",
-                  saving && "cursor-wait",
-                )}
-              >
-                <span className="text-[18px]" aria-hidden>{item.emoji}</span>
-                <span className="min-w-0 flex-1">
-                  <span className="block text-[13px] font-bold text-text">{item.label}</span>
-                  <span className="mt-0.5 block text-[11px] leading-snug text-text-3">
-                    {item.description}
-                  </span>
-                </span>
-                <span
-                  className={cn(
-                    "grid h-5 w-5 shrink-0 place-items-center rounded-full",
-                    selected ? "bg-brand text-text" : "border border-line",
-                  )}
-                  aria-hidden
-                >
-                  {selected && <Check className="h-3.5 w-3.5" strokeWidth={2.5} />}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-
-        <p className="mt-2 border-t border-line px-1 pt-2 text-[10px] leading-relaxed text-text-3">
-          Должен остаться хотя бы один профиль. Связка сохраняется для следующих генераций Авроры.
-        </p>
-      </Popover>
-    </div>
-  );
-}
-
-/** Вторичные параметры живут за одной иконкой, чтобы сам чат оставался чистым. */
-function ChatSettingsMenu({
-  engines,
-  current,
-  onPick,
-  loading,
-  role,
-  onRole,
-  niche,
-  tone,
-  onNiche,
-  onTone,
-  publishedSamples,
-  left,
-  limit,
-}: {
-  engines: EngineInfo[];
-  current: string | null;
-  onPick: (engine: EngineInfo) => void;
-  loading: boolean;
-  role: AiRole | null;
-  onRole: (role: AiRole | null) => void;
-  niche: string;
-  tone: string;
-  onNiche: (v: string) => void;
-  onTone: (v: string) => void;
-  publishedSamples: number;
-  left: number;
-  limit: number;
-}) {
-  const [open, setOpen] = useState(false);
-  const activeEngine = engines.find((engine) => engine.id === current);
-
-  return (
-    <div className="relative">
-      <button
-        type="button"
-        onClick={() => setOpen((value) => !value)}
-        aria-expanded={open}
-        aria-label="Настройки чата"
-        className={cn(
-          "grid h-9 w-9 shrink-0 cursor-pointer place-items-center rounded-full text-text-2 transition-colors hover:bg-surface-2 hover:text-text",
-          open && "bg-surface-2 text-text",
-        )}
-      >
-        <Settings2 className="h-[17px] w-[17px]" strokeWidth={2} aria-hidden />
-      </button>
-
-      <Popover open={open} onClose={() => setOpen(false)} className="w-[380px] p-4">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <p className="text-[14px] font-extrabold text-text">Точная настройка</p>
-            <p className="mt-0.5 text-[11px] text-text-3">
-              {publishedSamples}/10 постов в контексте · {left} из {limit} генераций осталось
-            </p>
-          </div>
-          <span className={cn("mt-1.5 h-2 w-2 shrink-0 rounded-full", engineDot(activeEngine?.status ?? "no_key"))} aria-hidden />
-        </div>
-
-        <div className="mt-4 border-t border-line pt-3">
-          <p className="flex items-center gap-1.5 text-[12px] font-semibold text-text-3">
-            <Cpu className="h-3.5 w-3.5" aria-hidden /> Модель
-          </p>
-          <div className="mt-2 grid gap-1">
-            {loading ? (
-              <div className="skeleton h-10 w-full" />
-            ) : (
-              engines.map((engine) => (
                 <button
                   key={engine.id}
                   type="button"
-                  disabled={!engine.supported}
-                  aria-pressed={engine.id === current}
-                  onClick={() => onPick(engine)}
+                  disabled={!ready}
+                  aria-pressed={selected}
+                  onClick={() => {
+                    setOpen(false);
+                    void onPick(engine);
+                  }}
                   className={cn(
-                    "flex min-h-10 w-full cursor-pointer items-center gap-2 rounded-xs px-2.5 text-left transition-colors",
-                    engine.id === current ? "bg-info-soft" : "hover:bg-surface-inset",
-                    !engine.supported && "cursor-not-allowed opacity-50",
+                    "flex min-h-11 w-full cursor-pointer items-center gap-2.5 rounded-sm px-3 text-left transition-colors",
+                    selected ? "bg-info-soft" : "hover:bg-surface-inset",
+                    !ready && "cursor-not-allowed opacity-45",
                   )}
                 >
                   <span className={cn("h-2 w-2 shrink-0 rounded-full", engineDot(engine.status))} aria-hidden />
                   <span className="min-w-0 flex-1 truncate text-[12px] font-semibold text-text">{engine.label}</span>
-                  <span className="text-[10px] text-text-3">{engine.vendor}</span>
+                  {selected ? (
+                    <Check className="h-4 w-4 shrink-0 text-text" strokeWidth={2.5} aria-hidden />
+                  ) : !ready ? (
+                    <span className="shrink-0 text-[10px] text-text-3">
+                      {engine.status === "offline" ? "Ошибка" : "Не подключена"}
+                    </span>
+                  ) : null}
                 </button>
-              ))
-            )}
-          </div>
+            );
+          })}
         </div>
 
-        <div className="mt-3 border-t border-line pt-3">
-          <p className="text-[12px] font-semibold text-text-3">Роль</p>
-          <div className="mt-2 grid grid-cols-2 gap-1.5">
-            {([null, "copywriter", "strategist", "critic"] as const).map((item) => (
-              <button
-                key={item ?? "default"}
-                type="button"
-                onClick={() => onRole(item)}
-                aria-pressed={role === item}
-                className={cn(
-                  "min-h-9 rounded-xs border px-2.5 text-[12px] font-semibold transition-colors",
-                  role === item
-                    ? "border-brand bg-info-soft text-info-text"
-                    : "border-line bg-surface text-text-2 hover:border-line-strong hover:text-text",
-                )}
-              >
-                {item === null
-                  ? "Универсальный"
-                  : item === "copywriter"
-                    ? "Копирайтер"
-                    : item === "strategist"
-                      ? "Стратег"
-                      : "Критик"}
-              </button>
-            ))}
-          </div>
-          <p className="mt-2 text-[11px] leading-relaxed text-text-3">
-            {role === "copywriter"
-              ? "Сильный хук, структура и CTA."
-              : role === "strategist"
-                ? "Рубрики, идеи и системный контент-план."
-                : role === "critic"
-                  ? "Честный разбор слабых мест и конкретные правки."
-                  : "Подходит для большинства задач."}
-          </p>
-        </div>
-
-        <div className="mt-3 flex flex-col gap-2 border-t border-line pt-3">
-          <EditableRow label="Ниша" value={niche} onSave={onNiche} />
-          <EditableRow label="Голос автора" value={tone} onSave={onTone} />
-        </div>
-
-        <p className="mt-3 border-t border-line pt-2 text-[11px] leading-relaxed text-text-3">
-          Модель получает только текущую задачу, настройки профиля и твои опубликованные посты как образец голоса.
-        </p>
       </Popover>
     </div>
   );
@@ -895,30 +759,83 @@ function StudioPageInner() {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [draft, setDraft] = useState("");
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("chat");
+  const [chatSessionOwner, setChatSessionOwner] = useState<number | null>(null);
   const [mediaKind, setMediaKind] = useState<MediaKind>("image");
   const [pickedChannelId, setPickedChannelId] = useState<number | null>(null);
-  // Роль ИИ: модифицирует системный промпт (копирайтер / стратег / критик).
-  const [role, setRole] = useState<AiRole | null>(null);
-  // Настроение агента (одно на аккаунт, из БД) — влияет на всю генерацию.
-  const [mood, setMood] = useState<string[]>(["expert"]);
-  const [moods, setMoods] = useState<MoodInfo[]>([]);
-  const [moodSaving, setMoodSaving] = useState(false);
+  // Нормализованные параметры публикации нужны генератору и проверке результата.
+  // Пользовательский голос и формат редактируются только в единой настройке Авроры.
+  const [postSettings, setPostSettings] = useState<PostSettings>(() => normalizePostSettings(DEFAULT_POST_SETTINGS));
+  const [creatingPostId, setCreatingPostId] = useState<string | null>(null);
+  const [pendingBrief, setPendingBrief] = useState<PendingBrief | null>(null);
+  const [pendingLibraryReference, setPendingLibraryReference] = useState<PendingLibraryReference | null>(null);
+  const [contextDraft, setContextDraft] = useState<ServerDraft | null>(null);
+  const [pendingEngineSuggestion, setPendingEngineSuggestion] = useState<EngineInfo | null>(null);
 
   const feedRef = useRef<HTMLDivElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   /** Стабильная коробка под отмену печати — переживает ререндеры, чистится при уходе с экрана */
-  const streamRef = useRef<{ cancel: (() => void) | null }>({ cancel: null });
+  const streamRef = useRef<StudioStreamBox>({ current: null });
   /** Чем был рождён каждый ответ ИИ — чтобы «Ещё вариант» знал, что перегенерировать */
   const genRef = useRef(new Map<string, Gen>());
+  /** Один серверный черновик на один клик/ответ, включая безопасный повтор после обрыва сети. */
+  const postDraftRef = useRef<{ promise: Promise<void> | null; keys: Map<string, string> }>({
+    promise: null,
+    keys: new Map(),
+  });
+
+  const sessionOwner = s.user?.id ?? null;
+
+  // A request started by one account must not keep running after logout/account switch.
+  // The owner-token guard below also prevents any late completion from touching the next chat.
+  useEffect(() => {
+    if (chatSessionOwner !== null && chatSessionOwner !== sessionOwner) {
+      abortStudioStream(streamRef.current);
+    }
+  }, [chatSessionOwner, sessionOwner]);
+
+  // История диалога относится к аккаунту и переживает размонтирование страницы:
+  // переход в другой раздел, обновление и возврат из сохранённой вкладки больше её не стирают.
+  useEffect(() => {
+    if (!s.authReady || !sessionOwner || chatSessionOwner === sessionOwner) return;
+    let restored = null;
+    try {
+      restored = parseStudioChatSession(sessionStorage.getItem(studioChatStorageKey(sessionOwner)), sessionOwner);
+    } catch {
+      // В приватном режиме storage может быть запрещён — чат всё равно работает в памяти.
+    }
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- browser storage доступен только после монтирования
+    setMessages(restored?.messages ?? []);
+    setDraft(restored?.draft ?? "");
+    setWorkspaceMode(restored?.workspaceMode ?? "chat");
+    genRef.current = new Map(restored?.generations ?? []);
+    setChatSessionOwner(sessionOwner);
+  }, [chatSessionOwner, s.authReady, searchParams, sessionOwner]);
+
+  // Сохраняем после каждого содержательного изменения. При восстановлении незавершённый
+  // streaming-флаг снимается, чтобы после перезагрузки интерфейс не зависал в вечной «печати».
+  useEffect(() => {
+    if (!sessionOwner || chatSessionOwner !== sessionOwner) return;
+    try {
+      sessionStorage.setItem(
+        studioChatStorageKey(sessionOwner),
+        serializeStudioChatSession(sessionOwner, {
+          messages,
+          draft,
+          workspaceMode,
+          generations: [...genRef.current.entries()],
+        }),
+      );
+    } catch {
+      // Недоступный или переполненный storage не должен ломать генерацию.
+    }
+  }, [chatSessionOwner, draft, messages, sessionOwner, workspaceMode]);
 
   const busy = messages.some((m) => m.streaming);
   const streamingLen = messages.find((m) => m.streaming)?.text.length ?? 0;
   const count = messages.length;
 
-  const used = s.aiUsed;
-  const limit = s.aiLimit;
-  const left = Math.max(0, limit - used);
+  const aiUsage = getAiUsageMetrics(s.aiUsageStatus, s.aiUsed, s.aiLimit);
   const activeChannels = s.realChannels.filter((channel) => channel.is_active);
   const channelId =
     pickedChannelId && activeChannels.some((channel) => channel.id === pickedChannelId)
@@ -947,29 +864,50 @@ function StudioPageInner() {
     el.style.height = `${Math.min(el.scrollHeight, 180)}px`;
   }, [draft]);
 
-  // Уходим с экрана — печать останавливается, таймеры не тикают в пустоту
+  // Уходим с экрана — печать останавливается.
   useEffect(() => {
     const box = streamRef.current;
     return () => {
-      box.cancel?.();
-      box.cancel = null;
+      abortStudioStream(box);
     };
   }, []);
 
-  // Пришли из досье конкурента с темой (?topic=…) — подставляем в поле, человек жмёт «отправить».
+  // Library navigation carries only an owned server draft id. Reference text and source
+  // metadata are fetched through the authenticated draft API, never copied into the URL.
   useEffect(() => {
-    const topic = searchParams.get("topic");
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- предзаполнение поля из ссылки
-    if (topic) setDraft(`Напиши пост на тему: ${topic}`);
-  }, [searchParams]);
+    if (chatSessionOwner !== sessionOwner || sessionOwner == null) return;
+    const requestedDraftId = Number(searchParams.get("draft"));
+    if (!Number.isSafeInteger(requestedDraftId) || requestedDraftId <= 0) return;
+    const controller = new AbortController();
+    void getServerDraft(requestedDraftId, controller.signal)
+      .then((serverDraft) => {
+        if (
+          (serverDraft.origin !== "competitor" && serverDraft.origin !== "trend")
+          || !serverDraft.source_ref
+        ) return;
+        const destination = serverDraft.destinations.find((item) => item.is_active);
+        setContextDraft(serverDraft);
+        setPendingLibraryReference({
+          text: serverDraft.text.trim().slice(0, 4000),
+          source: serverDraft.source_ref.label.trim().slice(0, 160) || undefined,
+        });
+        if (destination) setPickedChannelId(destination.channel_id);
+      })
+      .catch((error) => {
+        if ((error as Error)?.name === "AbortError") return;
+        setContextDraft(null);
+        setPendingLibraryReference(null);
+      });
+    return () => controller.abort();
+  }, [chatSessionOwner, searchParams, sessionOwner]);
 
-  // Настроение агента и список пресетов — из базы.
+  // Технические параметры генерации загружаются из базы; голос канала приходит
+  // в серверный контекст из единого поканального профиля Авроры.
   useEffect(() => {
     fetch("/api/settings", { cache: "no-store" })
       .then((r) => r.json())
       .then((d) => {
-        setMood(Array.isArray(d.mood) ? d.mood : [d.mood ?? "expert"]);
-        setMoods(d.moods ?? []);
+        setPostSettings(normalizePostSettings(d.postSettings));
       })
       .catch(() => {});
   }, []);
@@ -979,16 +917,18 @@ function StudioPageInner() {
   // новом сообщении. Высоту считаем от реального положения блока, а не магическим числом:
   // подзаголовок может перенестись на две строки, и константа сразу бы соврала.
   const shellRef = useRef<HTMLDivElement | null>(null);
+  const designShellRef = useRef<HTMLDivElement | null>(null);
 
   const fit = useCallback(() => {
-    const el = shellRef.current;
-    if (!el) return;
-    const top = el.getBoundingClientRect().top + window.scrollY;
-    // Нижний отступ берём у main, а не константой: на телефоне там pb-24 под нижнее меню,
-    // на десктопе pb-10. Зашитое число увело бы ввод под панель навигации.
-    const main = el.closest("main");
-    const bottom = main ? parseFloat(getComputedStyle(main).paddingBottom) || 0 : 40;
-    el.style.setProperty("--studio-h", `${Math.max(420, window.innerHeight - top - bottom)}px`);
+    for (const el of [shellRef.current, designShellRef.current]) {
+      if (!el) continue;
+      const top = el.getBoundingClientRect().top + window.scrollY;
+      // Нижний отступ берём у main, а не константой: на телефоне там pb-24 под нижнее меню,
+      // на десктопе pb-10. Зашитое число увело бы ввод под панель навигации.
+      const main = el.closest("main");
+      const bottom = main ? parseFloat(getComputedStyle(main).paddingBottom) || 0 : 40;
+      el.style.setProperty("--studio-h", `${Math.max(420, window.innerHeight - top - bottom)}px`);
+    }
   }, []);
 
   // Меряем в момент появления узла, а не в эффекте страницы: AppShell держит собственный
@@ -1002,14 +942,21 @@ function StudioPageInner() {
     [fit],
   );
 
+  const attachDesignShell = useCallback(
+    (el: HTMLDivElement | null) => {
+      designShellRef.current = el;
+      if (el) fit();
+    },
+    [fit],
+  );
+
   useEffect(() => {
     window.addEventListener("resize", fit);
     return () => window.removeEventListener("resize", fit);
   }, [fit]);
 
-  // После возвращения из Студии чат снова подгоняется под доступную высоту экрана.
+  // При переключении оба режима снова подгоняются под доступную высоту экрана.
   useEffect(() => {
-    if (workspaceMode !== "chat") return;
     const frame = requestAnimationFrame(fit);
     return () => cancelAnimationFrame(frame);
   }, [fit, workspaceMode]);
@@ -1018,159 +965,370 @@ function StudioPageInner() {
   const [engines, setEngines] = useState<EngineInfo[]>([]);
   const [engine, setEngine] = useState<string | null>(null);
   const [enginesLoading, setEnginesLoading] = useState(true);
+  const [engineStatusError, setEngineStatusError] = useState<string | null>(null);
   useEffect(() => {
     fetch("/api/ai/engines", { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d: { engines?: EngineInfo[]; current?: string } | null) => {
-        if (!d) return;
-        setEngines(d.engines ?? []);
+      .then(async (response) => ({
+        response,
+        data: await response.json().catch(() => null) as {
+          engines?: EngineInfo[];
+          current?: string;
+          suggestedEngine?: EngineInfo | null;
+          error?: string;
+          requestId?: string;
+        } | null,
+      }))
+      .then(({ response, data: d }) => {
+        if (!response.ok || !d) {
+          setEngineStatusError(
+            `Не удалось проверить модели.${d?.requestId ? ` ID запроса: ${d.requestId}` : " Проверь соединение и обнови страницу."}`,
+          );
+          return;
+        }
+        setEngineStatusError(null);
+        const availableEngines = d.engines ?? [];
+        setEngines(availableEngines);
         setEngine(d.current ?? null);
+        setPendingEngineSuggestion(
+          d.suggestedEngine?.id
+            ? availableEngines.find((item) => item.id === d.suggestedEngine?.id && item.status === "ready") ?? null
+            : null,
+        );
       })
-      .catch(() => {})
+      .catch(() => setEngineStatusError("Не удалось проверить модели. Проверь соединение и обнови страницу."))
       .finally(() => setEnginesLoading(false));
   }, []);
 
   const pickEngine = async (e: EngineInfo) => {
-    if (!e.supported) return;
+    if (!e.supported || e.status !== "ready") return;
     const response = await fetch("/api/ai/engines", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ engine: e.id }),
     }).catch(() => null);
     if (!response?.ok) {
-      s.toast({ kind: "danger", title: "Не удалось сменить движок", body: "Попробуй ещё раз." });
+      const info = await response?.json().catch(() => null) as { requestId?: string; error?: string } | null;
+      s.toast({
+        kind: "danger",
+        title: "Не удалось сменить модель",
+        body: `${info?.error === "engine_offline" ? "Модель сейчас не отвечает." : "Проверь подключение и попробуй ещё раз."}${info?.requestId ? ` ID запроса: ${info.requestId}` : ""}`,
+      });
       return;
     }
     setEngine(e.id);
-    if (e.status === "ready") {
-      s.toast({ kind: "success", title: `Пишу через ${e.label}`, body: e.note });
-    } else {
-      // Не притворяемся, что переключились: движка нет — так и говорим.
-      s.toast({
-        kind: "info",
-        title: `${e.label} пока не подключён`,
-        body: e.reason ?? `Выбор запомнил. Пока не подключим — генерация через него не пойдёт.`,
-      });
-    }
+    setPendingEngineSuggestion(null);
+    s.toast({ kind: "success", title: `Выбрана модель ${e.label}` });
   };
-
-  const pickMood = async (keys: string[]) => {
-    if (moodSaving) return;
-    const previous = mood;
-    setMood(keys);
-    setMoodSaving(true);
-    const response = await fetch("/api/settings", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ mood: keys }),
-    }).catch(() => null);
-    if (!response?.ok) {
-      setMood(previous);
-      s.toast({
-        kind: "danger",
-        title: "Не удалось сохранить настроение",
-        body: "Попробуй выбрать профиль ещё раз.",
-      });
-      setMoodSaving(false);
-      return;
-    }
-    const labels = keys
-      .map((key) => moods.find((item) => item.key === key)?.label)
-      .filter(Boolean)
-      .join(" + ");
-    s.toast({
-      kind: "success",
-      title: `Связка: ${labels}`,
-      body: "Аврора объединит выбранные свойства в следующих текстах.",
-    });
-    setMoodSaving(false);
-  };
-
-  const moodLimitToast = () =>
-    s.toast({
-      kind: "info",
-      title: "Максимум три профиля",
-      body: "Сними один из выбранных профилей, чтобы добавить другой.",
-    });
 
   /* ------------------------------------------------------------ ДЕЙСТВИЯ */
 
-  const limitToast = () =>
+  const limitToast = () => {
+    if (!aiUsage) return;
     s.toast({
       kind: "danger",
       title: "Лимит на сегодня исчерпан",
-      body: `${limit} генераций в сутки — честный лимит, ИИ стоит денег. Обновится завтра.`,
+      body: `${aiUsage.limit} генераций в сутки — честный лимит, ИИ стоит денег. Обновится завтра.`,
     });
+  };
 
   // Настоящая генерация Д.8: стрим из /api/ai/generate (за ним переходник → Hermes).
   // Сервер подкладывает прошлые посты как образец стиля и считает дневной лимит.
   const startStream = async (id: string, gen: Gen) => {
-    const controller = new AbortController();
-    streamRef.current.cancel = () => controller.abort();
+    const requestKey = gen.requestKey ?? crypto.randomUUID();
+    if (!gen.requestKey) {
+      gen = { ...gen, requestKey };
+      genRef.current.set(id, gen);
+    }
+    const previousMessage = messages.find((message) => message.id === id && !message.streaming);
+    const previousText = previousMessage?.text ?? "";
+    let recoveryText = previousText;
+    const streamBox = streamRef.current;
+    const streamOwner = beginStudioStream(streamBox);
+    const controller = streamOwner.controller;
+    const ownsStream = () => ownsStudioStream(streamBox, streamOwner);
 
     const clearCancel = () => {
-      if (streamRef.current.cancel) streamRef.current.cancel = null;
+      clearStudioStream(streamBox, streamOwner);
     };
-    const setMsg = (patch: Partial<Msg>) =>
+    const generationSettings = gen.postSettings ?? postSettings;
+    const generationChannelId = gen.channelId !== undefined ? gen.channelId : channelId;
+    const selectedNetwork = activeChannels.find((channel) => channel.id === generationChannelId)?.network;
+    const variantInstruction: Record<PostSettings["variantChange"], string> = {
+      full: "полностью другая концепция",
+      hook: "новый хук при сохранении фактов",
+      sales_angle: "новый угол продажи",
+      structure: "другая структура",
+      emotional: "более эмоциональная подача",
+      expert: "более экспертная подача",
+      native: "более нативная подача для площадки",
+    };
+    const qualityFor = (text: string) => ["write", "rewrite", "shorten", "longread"].includes(gen.cmd)
+      ? validatePostSettingsResult(text, generationSettings, { network: selectedNetwork, kind: gen.cmd, task: gen.input })
+      : undefined;
+    const setMsg = (patch: Partial<Msg>) => {
+      if (!ownsStream()) return false;
       setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, ...patch } : m)));
+      return true;
+    };
+    const failureText = aiFailureRecoveryRu;
 
     try {
       const res = await fetch("/api/ai/generate", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": requestKey,
+        },
         signal: controller.signal,
         body: JSON.stringify({
           command: gen.cmd,
-          input: gen.input,
-          niche: s.settings.niche,
-          tone: s.settings.tone,
-          role: role ?? undefined,
-          channelId,
+          input: gen.variant > 0
+            ? `${gen.input}\n\nДля нового варианта используй: ${variantInstruction[generationSettings.variantChange]}. Не повторяй предыдущую формулировку.`
+            : gen.input,
+          channelId: generationChannelId,
           history: gen.history,
+          postSettings: generationSettings,
+          referenceText: gen.referenceText,
+          referenceSource: gen.referenceSource,
           // Сервер включает строгий режим: текущая задача + настройки + опубликованные посты.
-          // Контент конкурентов и внешние сведения в ИИ-студию не попадают.
+          // Референс конкурента передаётся отдельно и остаётся только образцом механики.
           surface: "studio",
         }),
       });
+      const responseRequestId = res.headers.get("x-ai-request-id") ?? undefined;
+      if (responseRequestId) setMsg({ requestId: responseRequestId });
 
-      // Лимит исчерпан — убираем пустой пузырь, показываем честный тост.
-      if (res.status === 429) {
+      if ([400, 401, 403, 409, 422, 429, 503].includes(res.status)) {
+        const info = (await res.json().catch(() => null)) as
+          | AiFailureInfo & { conflicts?: Array<{ message?: string }>; issues?: Array<{ message?: string }> }
+          | null;
+        if (!ownsStream()) return;
+        const correlatedRequestId = info?.requestId ?? responseRequestId;
+        const details = info?.conflicts?.map((item) => item.message).filter(Boolean).join("\n• ");
+        const preflight = info?.issues?.map((item) => item.message).filter(Boolean).join("\n• ");
+        const suggested = info?.suggestedEngine?.id
+          ? engines.find((item) => item.id === info.suggestedEngine?.id && item.status === "ready") ?? null
+          : null;
+        setPendingEngineSuggestion(suggested);
+        if (res.status === 429) limitToast();
+        setMsg({
+          text: info?.error === "post_settings_conflict" && details
+            ? `Проверь настройки перед генерацией:\n• ${details}`
+            : info?.error === "brief_insufficient_facts" && preflight
+              ? `Не могу безопасно выдержать заданный объём:\n• ${preflight}`
+              : previousText,
+          errorMessage: info?.error === "post_settings_conflict" && details
+            ? `Исправь конфликтующие настройки и повтори запрос.\n• ${details}`
+            : info?.error === "brief_insufficient_facts" && preflight
+              ? `Добавь подтверждённые факты и повтори запрос.\n• ${preflight}`
+              : res.status === 429
+                ? "Дневной лимит исчерпан. Текст запроса сохранён; повтори его после обновления лимита."
+                : failureText(info, res.status),
+          requestId: correlatedRequestId,
+          streaming: false,
+          progressLabel: undefined,
+          postable: false,
+          reviewable: false,
+          interrupted: true,
+          retryable: res.status === 429 || info?.retryable === true,
+        });
         clearCancel();
-        genRef.current.delete(id);
-        setMessages((prev) => prev.filter((m) => m.id !== id));
-        limitToast();
         void s.refreshAiUsage();
         return;
       }
-      // Движок не поднят — честно говорим, что именно и что делать. Два разных случая:
-      // выбран облачный движок без ключа, либо локальный Ollama не отвечает.
-      if (res.status === 503) {
-        clearCancel();
-        const info = (await res.json().catch(() => null)) as
-          | { error?: string; label?: string; needs?: string }
-          | null;
-        setMsg({
-          text:
-            info?.error === "engine_unsupported"
-              ? `Ты выбрал ${info.label}, но интеграция с этим движком пока не готова. ` +
-                `Выбери в «Движке» Ollama, OpenAI, Claude или Gemini.`
-              : info?.error === "engine_not_connected"
-              ? `Ты выбрал ${info.label} — он ещё не подключён, поэтому писать через него я не могу. ` +
-                `Нужен ключ в ${info.needs}. Подменять модель втихую не буду: выбери в «Движке» тот, что работает, или подключи ключ.`
-              : "ИИ-движок сейчас недоступен. Проверь, что запущен Ollama с моделью hermes3, и попробуй снова.",
-          streaming: false,
-          postable: false,
-        });
-        return;
-      }
       if (!res.ok || !res.body) {
+        if (!ownsStream()) return;
+        setMsg({
+          text: previousText,
+          errorMessage: `Не удалось получить ответ (HTTP ${res.status}). Повтори тот же запрос.`,
+          requestId: responseRequestId,
+          streaming: false,
+          progressLabel: undefined,
+          postable: false,
+          reviewable: false,
+          interrupted: true,
+          retryable: true,
+        });
         clearCancel();
-        setMsg({ text: "Не получилось сгенерировать. Попробуй ещё раз.", streaming: false, postable: false });
         return;
       }
 
       const reader = res.body.getReader();
       const dec = new TextDecoder();
+      if (res.headers.get("content-type")?.includes("application/x-ndjson")) {
+        let buffer = "";
+        let projection = createAiDraftProjection(previousText);
+        let failed = false;
+        let validationBlocked = false;
+        let validationRequiresReview = false;
+        let validationReceived = false;
+        let doneReceived = false;
+        let fallbackNoticeShown = false;
+        let terminalValidation: Msg["aiValidation"];
+        let effectiveEngineId: string | undefined;
+        let requestedEngineId: string | undefined = engine ?? undefined;
+        let fallbackUsed = false;
+        let replayed = false;
+        let terminalRequestId = responseRequestId;
+        const applyEvent = (event: AiStreamEvent) => {
+          if (!ownsStream()) return;
+          terminalRequestId = event.requestId;
+          if (event.type === "phase") {
+            projection = projectAiDraftEvent(projection, event);
+            recoveryText = projection.visibleText || recoveryText;
+            setMsg({
+              ...(projection.visibleText ? { text: projection.visibleText } : {}),
+              progressLabel: aiDraftPhaseLabel(projection.phase),
+              postable: false,
+              requestId: event.requestId,
+            });
+          } else if (event.type === "delta") {
+            projection = projectAiDraftEvent(projection, event);
+            recoveryText = projection.visibleText || recoveryText;
+            setMsg({ text: projection.visibleText, postable: false, requestId: event.requestId });
+          } else if (event.type === "replace") {
+            projection = projectAiDraftEvent(projection, event);
+            recoveryText = projection.visibleText || recoveryText;
+            setMsg({ text: projection.visibleText, postable: false, requestId: event.requestId });
+          } else if (event.type === "fallback") {
+            fallbackUsed = true;
+            requestedEngineId = event.fromEngine;
+            effectiveEngineId = event.toEngine;
+            if (!fallbackNoticeShown) {
+              fallbackNoticeShown = true;
+              const from = engines.find((item) => item.id === event.fromEngine)?.label ?? event.fromEngine;
+              const to = engines.find((item) => item.id === event.toEngine)?.label ?? event.toEngine;
+              s.toast({
+                kind: "info",
+                title: "Ответ создаёт резервная модель",
+                body: `${from} не ответила до начала текста. Этот ответ создаёт ${to}; выбранная модель в настройках не меняется.`,
+              });
+            }
+          } else if (event.type === "validation") {
+            validationReceived = true;
+            validationBlocked = event.status !== "passed";
+            validationRequiresReview = event.requiresReview;
+            terminalValidation = {
+              version: 1,
+              status: event.status,
+              requiresReview: event.requiresReview,
+              provenance: event.provenance,
+              blockerCodes: event.blockerCodes,
+            };
+          } else if (event.type === "done") {
+            projection = projectAiDraftEvent(projection, event);
+            recoveryText = projection.visibleText || recoveryText;
+            doneReceived = true;
+            effectiveEngineId = event.engine ?? effectiveEngineId;
+            requestedEngineId = event.requestedEngine ?? requestedEngineId;
+            fallbackUsed = event.fallbackUsed ?? fallbackUsed;
+            replayed = event.replayed === true;
+          } else if (event.type === "error") {
+            failed = true;
+            const suggested = event.suggestedEngine?.id
+              ? engines.find((item) => item.id === event.suggestedEngine?.id && item.status === "ready") ?? null
+              : null;
+            setPendingEngineSuggestion(suggested);
+            setMsg({
+              text: projection.visibleText || recoveryText,
+              errorMessage: failureText(event),
+              progressLabel: undefined,
+              requestId: event.requestId,
+              streaming: false,
+              postable: false,
+              reviewable: false,
+              requiresReview: false,
+              interrupted: true,
+              retryable: event.retryable === true,
+            });
+          }
+        };
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += dec.decode(value, { stream: true });
+          const parsed = parseAiStreamBuffer(buffer);
+          buffer = parsed.rest;
+          parsed.events.forEach(applyEvent);
+        }
+        buffer += dec.decode();
+        if (buffer.trim()) parseAiStreamBuffer(`${buffer}\n`).events.forEach(applyEvent);
+        if (!ownsStream()) return;
+        const completion = finalizeAiClientStream({
+          text: projection.buffer || projection.visibleText,
+          failed,
+          validationReceived,
+          doneReceived,
+          validationBlocked,
+          validationRequiresReview,
+        });
+        if (completion.status === "truncated") {
+          setMsg({
+            text: projection.visibleText || previousText || completion.partialText,
+            errorMessage: "Ответ оборвался до подтверждения завершения. Повтори тот же запрос: сохранённый результат будет восстановлен без двойного списания, а незавершённый — безопасно запущен снова.",
+            progressLabel: undefined,
+            requestId: terminalRequestId,
+            streaming: false,
+            postable: false,
+            reviewable: false,
+            requiresReview: false,
+            interrupted: true,
+            retryable: true,
+            quality: undefined,
+          });
+        }
+        if (completion.status === "complete") {
+          try {
+            await acknowledgeAiTerminal(requestKey, { signal: controller.signal });
+          } catch (error) {
+            if ((error as Error)?.name === "AbortError") throw error;
+            const ackRequestId = error instanceof AiTerminalAckError ? error.requestId : null;
+            setMsg({
+              text: projection.visibleText || previousText || completion.text,
+              errorMessage: "Ответ получен, но подтверждение списания не завершилось. Повтори тот же запрос: сохранённый результат вернётся без нового вызова модели.",
+              progressLabel: undefined,
+              requestId: ackRequestId ?? terminalRequestId,
+              streaming: false,
+              postable: false,
+              reviewable: false,
+              requiresReview: false,
+              interrupted: true,
+              retryable: true,
+              quality: undefined,
+            });
+            clearCancel();
+            void s.refreshAiUsage();
+            return;
+          }
+          setMsg({
+            text: completion.text,
+            progressLabel: undefined,
+            streaming: false,
+            postable: completion.postable,
+            reviewable: completion.reviewable,
+            requiresReview: completion.requiresReview,
+            quality: completion.reviewable ? qualityFor(completion.text) : undefined,
+            aiValidation: terminalValidation,
+            requestId: terminalRequestId,
+            errorMessage: undefined,
+            interrupted: false,
+            retryable: false,
+            requestedEngine: requestedEngineId
+              ? engines.find((item) => item.id === requestedEngineId)?.label ?? requestedEngineId
+              : undefined,
+            effectiveEngine: effectiveEngineId
+              ? engines.find((item) => item.id === effectiveEngineId)?.label ?? effectiveEngineId
+              : undefined,
+            fallbackUsed,
+            replayed,
+          });
+        }
+        clearCancel();
+        void s.refreshAiUsage();
+        return;
+      }
+
       let acc = "";
       while (true) {
         const { done, value } = await reader.read();
@@ -1178,34 +1336,51 @@ function StudioPageInner() {
         acc += dec.decode(value, { stream: true });
         setMsg({ text: acc });
       }
+      if (!ownsStream()) return;
+      setMsg({
+        streaming: false,
+        progressLabel: undefined,
+        postable: Boolean(acc.trim()),
+        quality: acc.trim() ? qualityFor(acc) : undefined,
+      });
       clearCancel();
-      setMsg({ streaming: false });
       void s.refreshAiUsage();
     } catch (err) {
-      clearCancel();
       // «Стоп» пользователя = AbortError: просто фиксируем, что успело напечататься.
       const aborted = (err as Error)?.name === "AbortError";
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === id
-            ? {
-                ...m,
-                streaming: false,
-                text: !aborted && !m.text ? "Связь с ИИ прервалась. Попробуй ещё раз." : m.text,
-              }
-            : m,
-        ),
-      );
+      if (ownsStream()) {
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === id
+              ? {
+                  ...m,
+                  streaming: false,
+                  text: recoveryText || previousText || (isStudioGenerationPlaceholder(m.text) ? "" : m.text),
+                  progressLabel: undefined,
+                  errorMessage: aborted
+                    ? "Генерация остановлена. Частичный текст сохранён; повтор использует тот же ключ запроса."
+                    : "Связь с ИИ прервалась. Проверь соединение и повтори тот же запрос — текст и ключ сохранены.",
+                  postable: false,
+                  reviewable: false,
+                  requiresReview: false,
+                  interrupted: true,
+                  retryable: true,
+                }
+              : m,
+          ),
+        );
+        clearCancel();
+      }
       void s.refreshAiUsage();
     }
   };
 
-  const ask = (userText: string, opts?: { cmd?: AiCommand; input?: string }) => {
-    const text = userText.trim();
-    if (!text || streamRef.current.cancel) return;
+  const ask = (userText: string, opts?: AskOptions) => {
+    const text = userText.trim() || postSettings.mainIdea.trim();
+    if (!text || streamRef.current.current) return;
 
     // Честный дневной лимит (ТЗ 12): оптимистично проверяем на клиенте, сервер — финальный судья.
-    if (used >= limit) {
+    if (aiUsage?.exhausted) {
       limitToast();
       return;
     }
@@ -1218,53 +1393,188 @@ function StudioPageInner() {
       }))
       .slice(-8);
     const hasAnswer = history.some((turn) => turn.role === "assistant");
-    const detected = opts?.cmd ?? pickCommand(text);
+    const detected = opts?.cmd ?? pickStudioCommand(text);
     const cmd = !opts?.cmd && detected === "write" && hasAnswer && looksLikeEditFollowUp(text)
       ? "rewrite"
       : detected;
-    const gen: Gen = { cmd, input: opts?.input ?? text, variant: 0, history };
+    const needsConfirmation = requiresBriefConfirmation({
+      text,
+      hasBlockers: validatePostSettingsConflicts(postSettings).some(
+        (conflict) => conflict.severity === "error",
+      ),
+    });
+    if (!opts?.skipBrief && (cmd === "write" || cmd === "longread") && needsConfirmation) {
+      setPendingBrief({ text, opts: opts ? { cmd: opts.cmd, input: opts.input } : undefined });
+      return;
+    }
+    setPendingBrief(null);
+    const gen: Gen = {
+      cmd,
+      input: opts?.input ?? text,
+      variant: 0,
+      history,
+      requestKey: crypto.randomUUID(),
+      referenceText: pendingLibraryReference?.text,
+      referenceSource: pendingLibraryReference?.source,
+      sourceRef: contextDraft?.source_ref ?? undefined,
+      channelId,
+      postSettings,
+    };
     const aiId = uid("m");
 
     genRef.current.set(aiId, gen);
     setMessages((prev) => [
       ...prev,
       { id: uid("m"), role: "user", text },
-      { id: aiId, role: "ai", text: "", streaming: true, postable: cmd !== "image" },
+      {
+        id: aiId,
+        role: "ai",
+        text: "Разбираю задачу…",
+        progressLabel: "Фиксирую задачу и готовлю черновик…",
+        streaming: true,
+        postable: false,
+      },
     ]);
     setDraft("");
+    setPendingLibraryReference(null);
+    setContextDraft(null);
     void startStream(aiId, gen);
   };
 
   const stop = () => {
-    streamRef.current.cancel?.();
-    streamRef.current.cancel = null;
-    setMessages((prev) => prev.map((m) => (m.streaming ? { ...m, streaming: false } : m)));
+    const stopped = abortStudioStream(streamRef.current);
+    if (!stopped) return;
+    setMessages((prev) => prev.map((m) => (m.streaming ? {
+      ...m,
+      text: isStudioGenerationPlaceholder(m.text) ? "" : m.text,
+      progressLabel: undefined,
+      streaming: false,
+      interrupted: true,
+      retryable: true,
+      postable: false,
+      errorMessage: "Генерация остановлена. Частичный текст сохранён; можно повторить тот же запрос без риска двойного списания.",
+    } : m)));
   };
 
   const regenerate = (id: string) => {
-    if (streamRef.current.cancel) return;
+    if (streamRef.current.current) return;
     const gen = genRef.current.get(id);
     if (!gen) return;
-    if (used >= limit) {
+    if (aiUsage?.exhausted) {
       limitToast();
       return;
     }
 
-    const next: Gen = { ...gen, variant: gen.variant + 1 };
+    const next: Gen = { ...gen, variant: gen.variant + 1, requestKey: crypto.randomUUID() };
     genRef.current.set(id, next);
-    setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, text: "", streaming: true } : m)));
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.id === id
+          ? {
+              ...m,
+              progressLabel: "Готовлю новый вариант — предыдущий текст остаётся на месте…",
+              streaming: true,
+              postable: false,
+              reviewable: false,
+              requiresReview: false,
+              errorMessage: undefined,
+              interrupted: false,
+              retryable: false,
+              quality: undefined,
+              aiValidation: undefined,
+              requestId: undefined,
+              requestedEngine: undefined,
+              effectiveEngine: undefined,
+              fallbackUsed: false,
+              replayed: false,
+            }
+          : m,
+      ),
+    );
     void startStream(id, next);
   };
 
-  // Главное действие экрана
-  const schedule = (text: string) => {
-    const post = s.addPost({ text, status: "draft", origin: "ai" });
-    s.toast({
-      kind: "success",
-      title: "Черновик готов",
-      body: "Открываем редактор — поставь день и время, дальше пост уйдёт сам.",
-    });
-    router.push(`/app/composer?id=${post.id}`);
+  const retryGeneration = (id: string) => {
+    if (streamRef.current.current) return;
+    const gen = genRef.current.get(id);
+    if (!gen) return;
+    if (aiUsage?.exhausted) {
+      limitToast();
+      return;
+    }
+    setMessages((prev) => prev.map((message) => message.id === id ? {
+      ...message,
+      streaming: true,
+      progressLabel: "Повторяю тот же запрос — сохранённый текст остаётся на месте…",
+      postable: false,
+      reviewable: false,
+      requiresReview: false,
+      errorMessage: undefined,
+      interrupted: false,
+      retryable: false,
+      quality: undefined,
+      aiValidation: undefined,
+      requestId: undefined,
+      requestedEngine: undefined,
+      effectiveEngine: undefined,
+      fallbackUsed: false,
+      replayed: false,
+    } : message));
+    void startStream(id, gen);
+  };
+
+  // Готовый ответ сразу становится серверным черновиком. Публикация остаётся явным
+  // действием в редакторе: там можно отправить сейчас, выбрать дату или подтвердить факты.
+  const openAsPost = (messageId: string, text: string) => {
+    if (postDraftRef.current.promise) return;
+    if (!channelId) {
+      s.toast({
+        kind: "danger",
+        title: "Некуда отправлять пост",
+        body: "Сначала подключи или выбери активный канал.",
+      });
+      return;
+    }
+
+    const clientKey = postDraftRef.current.keys.get(messageId) ?? createDraftClientKey();
+    const generation = genRef.current.get(messageId);
+    const generatedMessage = messages.find((message) => message.id === messageId);
+    postDraftRef.current.keys.set(messageId, clientKey);
+    setCreatingPostId(messageId);
+    const request = (async () => {
+      try {
+        const result = await createServerDraft({
+          text,
+          media: null,
+          scheduledAt: null,
+          origin: "ai",
+          sourceRef: generation?.sourceRef ?? null,
+          channelIds: [channelId],
+          // Если семантическая проверка недоступна, Composer потребует ручное подтверждение.
+          aiValidation: generatedMessage?.aiValidation ?? null,
+          clientKey,
+        });
+        s.toast({
+          kind: "success",
+          title: "Пост создан",
+          body: "Открываем редактор — можно опубликовать сразу или запланировать.",
+        });
+        router.push(`/app/composer?draft=${result.draft.id}`);
+      } catch (error) {
+        s.toast({
+          kind: "danger",
+          title: "Пост не создан",
+          body:
+            error instanceof DraftRequestError && error.kind === "offline"
+              ? "Нет связи с сервером. Текст остался в чате — повтори, когда соединение восстановится."
+              : "Черновик не удалось сохранить. Текст остался в чате, можно безопасно повторить.",
+        });
+      } finally {
+        postDraftRef.current.promise = null;
+        setCreatingPostId(null);
+      }
+    })();
+    postDraftRef.current.promise = request;
   };
 
   const copy = async (text: string) => {
@@ -1350,15 +1660,20 @@ function StudioPageInner() {
 
   /* ---------------------------------------------------------- РАБОЧАЯ ЗОНА */
 
-  const publishedSamples = Math.min(
-    10,
-    s.realPosts.filter(
-      (post) =>
-        post.channel_id === channelId &&
-        post.status === "published" &&
-        post.text.trim().length > 0,
-    ).length,
-  );
+  const selectedNetwork = activeChannels.find((channel) => channel.id === channelId)?.network;
+  const briefConflicts = validatePostSettingsConflicts(postSettings);
+  const briefBlockers = briefConflicts.filter((item) => item.severity === "error");
+  const briefSummary = buildPostSettingsSummary(postSettings, selectedNetwork);
+  const originalityLimit = postSettings.originalityDepth === "all" ? 200 : Number(postSettings.originalityDepth);
+  const similarPosts = pendingBrief && postSettings.showSimilarPosts
+    ? s.realPosts
+        .filter((post) => post.channel_id === channelId && post.status === "published" && post.text.trim())
+        .slice(0, originalityLimit)
+        .map((post) => ({ post, score: lexicalSimilarity(`${pendingBrief.text} ${postSettings.mainIdea}`, post.text) }))
+        .filter((item) => item.score >= 0.16)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 3)
+    : [];
 
   const changeWorkspace = (next: WorkspaceMode) => {
     setWorkspaceMode(next);
@@ -1366,15 +1681,15 @@ function StudioPageInner() {
 
   return (
     <AppShell
-      title="ИИ-студия"
+      title="Студия контента"
       subtitle={
         workspaceMode === "chat"
           ? "Обсуждай идеи и создавай тексты в обычном диалоге."
-          : "Создавай изображения и видео в отдельном рабочем пространстве."
+          : "Опиши идею словами — Аврора создаст визуал прямо в диалоге."
       }
       action={<WorkspaceModeSwitch value={workspaceMode} onChange={changeWorkspace} />}
     >
-      {!s.ready ? (
+      {!s.ready || !s.authReady || !sessionOwner || chatSessionOwner !== sessionOwner ? (
         <StudioSkeleton />
       ) : (
         <>
@@ -1407,10 +1722,13 @@ function StudioPageInner() {
                       msg={message}
                       reduce={reduce}
                       onStop={stop}
-                      onSchedule={() => schedule(message.text)}
+                      onSchedule={() => openAsPost(message.id, primaryPublication(message.text))}
                       onCopy={() => void copy(message.text)}
                       onRegenerate={() => regenerate(message.id)}
+                      onRetry={() => retryGeneration(message.id)}
                       onShorten={() => ask("Сделай короче")}
+                      onFixQuality={(issue) => ask(`Исправь только этот пункт: ${issue}`)}
+                      creatingPost={creatingPostId === message.id}
                     />
                   ))}
 
@@ -1432,6 +1750,78 @@ function StudioPageInner() {
               {/* Единый composer: текст сверху, все вторичные действия — в одной строке снизу. */}
               <div className="shrink-0 px-3 pb-3 md:px-5 md:pb-4">
                 <div className="mx-auto w-full max-w-[820px] rounded-[24px] border border-line/70 bg-surface shadow-[0_12px_40px_rgb(17_17_17/0.10)] transition-shadow focus-within:shadow-[0_14px_44px_rgb(17_17_17/0.14)] focus-within:ring-2 focus-within:ring-brand/15">
+                  {engineStatusError && (
+                    <div role="alert" className="border-b border-danger-text/20 bg-danger-soft px-4 py-2.5 text-[11px] text-danger-text">
+                      {engineStatusError}
+                    </div>
+                  )}
+                  {pendingBrief && (
+                    <div className="border-b border-line px-4 py-3.5">
+                      <div className="flex items-start justify-between gap-4">
+                        <div>
+                          <p className="text-[12px] font-extrabold text-text">Нужно уточнение</p>
+                          <p className="mt-1 text-[11px] leading-relaxed text-text-2">{briefSummary}</p>
+                        </div>
+                        <button type="button" onClick={() => setPendingBrief(null)} className="shrink-0 text-[11px] font-bold text-text-3 hover:text-text">Закрыть</button>
+                      </div>
+                      {briefConflicts.length > 0 && (
+                        <div className={cn("mt-2.5 rounded-sm px-3 py-2 text-[10px] leading-relaxed", briefBlockers.length ? "bg-danger-soft text-danger-text" : "bg-info-soft text-info-text") }>
+                          {briefConflicts.map((item) => <p key={item.code}>• {item.message}</p>)}
+                        </div>
+                      )}
+                      {postSettings.showSimilarPosts && (
+                        <div className="mt-2.5 rounded-sm bg-surface-inset px-3 py-2 text-[10px] leading-relaxed text-text-3">
+                          <p className="font-bold text-text-2">Похожие старые публикации</p>
+                          {similarPosts.length ? similarPosts.map(({ post, score }) => (
+                            <p key={post.id} className="mt-1">• {Math.round(score * 100)}% · {post.text.slice(0, 120)}{post.text.length > 120 ? "…" : ""}</p>
+                          )) : <p className="mt-1">Заметных смысловых повторов не найдено.</p>}
+                        </div>
+                      )}
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <Button size="sm" variant="brand" disabled={briefBlockers.length > 0} onClick={() => ask(pendingBrief.text, { ...pendingBrief.opts, skipBrief: true })}>Продолжить</Button>
+                        <Button size="sm" variant="ghost" onClick={() => {
+                          setPendingBrief(null);
+                          router.push(`/app/settings${channelId ? `?channel=${channelId}` : ""}`);
+                        }}>Открыть настройки Авроры</Button>
+                      </div>
+                    </div>
+                  )}
+                  {pendingLibraryReference && !pendingBrief && (
+                    <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-2.5 text-[11px]">
+                      <p className="min-w-0 truncate text-text-2">
+                        <span className="font-extrabold text-text">Референс подключён</span>
+                        {pendingLibraryReference.source ? ` · ${pendingLibraryReference.source}` : ""}
+                        <span className="ml-1 text-text-3">— беру только механику, не факты</span>
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPendingLibraryReference(null);
+                          setContextDraft(null);
+                        }}
+                        className="shrink-0 font-bold text-text-3 hover:text-text"
+                      >
+                        Убрать
+                      </button>
+                    </div>
+                  )}
+                  {pendingEngineSuggestion && !pendingBrief && (
+                    <div role="status" className="flex items-center justify-between gap-3 border-b border-line px-4 py-3 text-[11px]">
+                      <p className="text-text-2">
+                        <span className="font-extrabold text-text">Готова модель {pendingEngineSuggestion.label}.</span>{" "}
+                        Текущий выбор не изменится без подтверждения.
+                      </p>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="soft"
+                        className="shrink-0"
+                        onClick={() => void pickEngine(pendingEngineSuggestion)}
+                      >
+                        Переключиться на {pendingEngineSuggestion.label}
+                      </Button>
+                    </div>
+                  )}
                   <Textarea
                     ref={inputRef}
                     data-chat-composer
@@ -1452,34 +1842,12 @@ function StudioPageInner() {
                       onChange={setPickedChannelId}
                       disabled={busy}
                     />
-                    <MoodMenu
-                      mood={mood}
-                      moods={moods}
-                      onMood={pickMood}
-                      onLimit={moodLimitToast}
-                      saving={moodSaving}
-                      disabled={busy}
-                    />
-                    <ChatSettingsMenu
+                    <ModelMenu
                       engines={engines}
                       current={engine}
                       onPick={pickEngine}
                       loading={enginesLoading}
-                      role={role}
-                      onRole={setRole}
-                      niche={s.settings.niche}
-                      tone={s.settings.tone}
-                      onNiche={(value) => {
-                        s.updateSettings({ niche: value });
-                        s.toast({ kind: "info", title: "Запомнил", body: "Следующие тексты будут ближе к этой теме." });
-                      }}
-                      onTone={(value) => {
-                        s.updateSettings({ tone: value });
-                        s.toast({ kind: "info", title: "Запомнил", body: "Следующие тексты будут звучать так." });
-                      }}
-                      publishedSamples={publishedSamples}
-                      left={left}
-                      limit={limit}
+                      disabled={busy}
                     />
 
                     <Button
@@ -1487,7 +1855,7 @@ function StudioPageInner() {
                       size="icon"
                       className="ml-auto h-10 w-10 shrink-0 rounded-full"
                       aria-label="Отправить"
-                      disabled={busy || draft.trim().length === 0}
+                      disabled={busy || (draft.trim().length === 0 && postSettings.mainIdea.trim().length === 0)}
                       onClick={() => ask(draft)}
                     >
                       <ArrowUp className="h-[18px] w-[18px]" strokeWidth={2.5} aria-hidden />
@@ -1501,7 +1869,8 @@ function StudioPageInner() {
           <div
             id="studio-workspace"
             role="tabpanel"
-            aria-label="Режим Студия"
+            aria-label="Режим Картинки и видео"
+            ref={attachDesignShell}
             className={cn(
               "mx-auto w-full max-w-[1180px]",
               workspaceMode === "studio" ? "block" : "hidden",
@@ -1510,9 +1879,8 @@ function StudioPageInner() {
             <MediaGenerator
               key={mediaKind}
               initialKind={mediaKind}
-              niche={s.settings.niche}
-              tone={s.settings.tone}
-              onClose={() => setWorkspaceMode("chat")}
+              channelId={channelId}
+              sourceText={primaryPublication([...messages].reverse().find((message) => message.role === "ai" && message.postable)?.text ?? "")}
               onUse={useGeneratedMedia}
             />
           </div>
@@ -1532,8 +1900,8 @@ export default function StudioPage() {
     <Suspense
       fallback={
         <AppShell
-          title="ИИ-студия"
-          subtitle="Пиши как в чате. Модель использует только твои посты и настройки Авроры."
+          title="Студия контента"
+          subtitle="Создавай, улучшай и адаптируй публикации вместе с Авророй."
         >
           <StudioSkeleton />
         </AppShell>

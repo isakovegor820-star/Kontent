@@ -29,7 +29,9 @@ import {
 export interface Brief {
   niche: string; // о чём канал
   audience: string; // для кого
-  rubrics: string[]; // рубрики/форматы, которые чередуем
+  rubrics: string[]; // смысловые рубрики, которые чередуем
+  formats: string[]; // формы подачи: текст, карточки, видео и т. п.
+  authorRole: string; // от чьего лица и в какой профессиональной роли пишет автор
   goal: string; // зачем канал автору
   cta: string; // куда ведём читателя
   taboo: string; // о чём не писать никогда
@@ -42,6 +44,8 @@ export const EMPTY_BRIEF: Brief = {
   niche: "",
   audience: "",
   rubrics: [],
+  formats: [],
+  authorRole: "",
   goal: "",
   cta: "",
   taboo: "",
@@ -65,7 +69,16 @@ export const RUBRICS: { key: string; label: string; emoji: string }[] = [
 
 export const RUBRIC_LABELS = RUBRICS.map((r) => r.label);
 
-const LIMITS = { niche: 300, audience: 300, goal: 300, cta: 300, taboo: 600, rubric: 60 };
+const LIMITS = {
+  niche: 300,
+  audience: 300,
+  goal: 300,
+  cta: 300,
+  taboo: 600,
+  rubric: 60,
+  format: 60,
+  authorRole: 160,
+};
 
 const clean = (v: unknown, max: number) => String(v ?? "").trim().slice(0, max);
 
@@ -75,10 +88,15 @@ export function normalizeBrief(raw: unknown): Brief {
   const rubrics = Array.isArray(r.rubrics)
     ? [...new Set(r.rubrics.map((x) => clean(x, LIMITS.rubric)).filter(Boolean))].slice(0, 10)
     : [];
+  const formats = Array.isArray(r.formats)
+    ? [...new Set(r.formats.map((x) => clean(x, LIMITS.format)).filter(Boolean))].slice(0, 10)
+    : [];
   return {
     niche: clean(r.niche, LIMITS.niche),
     audience: clean(r.audience, LIMITS.audience),
     rubrics,
+    formats,
+    authorRole: clean(r.authorRole ?? r.author_role, LIMITS.authorRole),
     goal: clean(r.goal, LIMITS.goal),
     cta: clean(r.cta, LIMITS.cta),
     taboo: clean(r.taboo, LIMITS.taboo),
@@ -101,8 +119,10 @@ export function briefContext(b: Brief): string {
   const lines: string[] = ["О канале, для которого пишешь:", `— тема: ${b.niche}`];
   if (b.audience) lines.push(`— читатель: ${b.audience}`);
   if (b.goal) lines.push(`— зачем автор ведёт канал: ${b.goal}`);
+  if (b.authorRole) lines.push(`— роль автора: ${b.authorRole}`);
   if (b.cta) lines.push(`— куда ведём читателя: ${b.cta}`);
   if (b.rubrics.length) lines.push(`— рубрики канала: ${b.rubrics.join(", ")}`);
+  if (b.formats.length) lines.push(`— форматы публикаций: ${b.formats.join(", ")}`);
   if (b.taboo) lines.push("", `Категорически не пиши про: ${b.taboo}`);
   lines.push(
     "",

@@ -1,0 +1,188 @@
+// Единое сохранение поканального профиля Авроры.
+// Бриф, редакционный стандарт и режим автопилота меняются одной транзакцией:
+// пользователь либо получает целиком новую конфигурацию, либо остаётся на прежней.
+
+import { NextRequest, NextResponse } from "next/server";
+import type { PoolClient } from "pg";
+import { getPool } from "@/lib/db";
+import { getSessionUser } from "@/lib/session";
+import { MAX_WEEKLY_POSTS, briefComplete, normalizeBrief } from "@/lib/brief";
+import { ensureSettings, loadBrief, resolveChannel } from "@/lib/autopilot";
+import { hasTrustedMutationOrigin } from "@/lib/request-origin";
+import type { AutopilotSettings } from "@/lib/autopilot";
+
+export const runtime = "nodejs";
+
+type SettingsBody = {
+  channelId?: unknown;
+  brief?: unknown;
+  settings?: {
+    enabled?: unknown;
+    mode?: unknown;
+    post_frequency?: unknown;
+  };
+};
+
+export async function GET(req: NextRequest) {
+  const user = await getSessionUser(req);
+  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+
+  try {
+    const channelId = await resolveChannel(
+      user.id,
+      Number(req.nextUrl.searchParams.get("channel")) || null,
+    );
+    if (!channelId) {
+      return NextResponse.json({ error: "no_channel" }, { status: 422 });
+    }
+    const [brief, settings] = await Promise.all([
+      loadBrief(user.id, channelId),
+      ensureSettings(user.id, channelId),
+    ]);
+    return NextResponse.json({ channelId, brief, settings });
+  } catch (error) {
+    console.error("[/api/settings/channel] GET", {
+      errorName: error instanceof Error ? error.name : "Error",
+    });
+    return NextResponse.json({ error: "unavailable" }, { status: 503 });
+  }
+}
+
+export async function POST(req: NextRequest) {
+  if (!hasTrustedMutationOrigin(req)) {
+    return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
+  }
+  const user = await getSessionUser(req);
+  if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
+
+  let body: SettingsBody;
+  try {
+    body = (await req.json()) as SettingsBody;
+  } catch {
+    return NextResponse.json({ ok: false, error: "bad_request" }, { status: 400 });
+  }
+
+  if (!body.brief || typeof body.brief !== "object" || Array.isArray(body.brief)) {
+    return NextResponse.json({ ok: false, error: "bad_brief" }, { status: 422 });
+  }
+  if (!body.settings || typeof body.settings !== "object" || Array.isArray(body.settings)) {
+    return NextResponse.json({ ok: false, error: "bad_settings" }, { status: 422 });
+  }
+
+  let channelId: number | null;
+  try {
+    channelId = await resolveChannel(user.id, Number(body.channelId) || null);
+  } catch (error) {
+    console.error("[/api/settings/channel] resolve", {
+      errorName: error instanceof Error ? error.name : "Error",
+    });
+    return NextResponse.json({ ok: false, error: "unavailable" }, { status: 503 });
+  }
+  if (!channelId) return NextResponse.json({ ok: false, error: "no_channel" }, { status: 422 });
+
+  const brief = normalizeBrief({ ...body.brief, ready: true });
+  if (!briefComplete(brief)) {
+    return NextResponse.json({ ok: false, error: "incomplete" }, { status: 422 });
+  }
+
+  const frequency = Number(body.settings.post_frequency);
+  const postFrequency = Number.isFinite(frequency)
+    ? Math.min(MAX_WEEKLY_POSTS, Math.max(1, Math.round(frequency)))
+    : null;
+  const enabled = typeof body.settings.enabled === "boolean" ? body.settings.enabled : null;
+  const mode = body.settings.mode === "confirm" || body.settings.mode === "full"
+    ? body.settings.mode
+    : null;
+
+  if (postFrequency == null || enabled == null || mode == null) {
+    return NextResponse.json({ ok: false, error: "bad_settings" }, { status: 422 });
+  }
+
+  const pool = getPool();
+  let client: PoolClient;
+  try {
+    client = await pool.connect();
+  } catch (error) {
+    console.error("[/api/settings/channel] connect", {
+      errorName: error instanceof Error ? error.name : "Error",
+    });
+    return NextResponse.json({ ok: false, error: "unavailable" }, { status: 503 });
+  }
+  try {
+    await client.query("begin");
+    await client.query(
+      `insert into autopilot_settings (user_id, channel_id)
+       values ($1, $2)
+       on conflict (user_id, channel_id) do nothing`,
+      [user.id, channelId],
+    );
+    const current = await client.query<AutopilotSettings>(
+      `select enabled, mode, post_frequency, approvals_streak
+         from autopilot_settings
+        where user_id = $1 and channel_id = $2
+        for update`,
+      [user.id, channelId],
+    );
+    const previous = current.rows[0];
+    if (!previous) throw new Error("settings_missing");
+
+    if (mode === "full" && previous.mode !== "full" && previous.approvals_streak < 2) {
+      await client.query("rollback");
+      return NextResponse.json({ ok: false, error: "streak_required" }, { status: 422 });
+    }
+
+    await client.query(
+      `insert into content_brief
+         (user_id, channel_id, niche, audience, rubrics, formats, author_role, goal, cta, taboo, quality, ready, source, updated_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, true, $12, now())
+       on conflict (user_id, channel_id) do update
+         set niche = excluded.niche,
+             audience = excluded.audience,
+             rubrics = excluded.rubrics,
+             formats = excluded.formats,
+             author_role = excluded.author_role,
+             goal = excluded.goal,
+             cta = excluded.cta,
+             taboo = excluded.taboo,
+             quality = excluded.quality,
+             ready = true,
+             source = excluded.source,
+             updated_at = now()`,
+      [
+        user.id,
+        channelId,
+        brief.niche,
+        brief.audience,
+        brief.rubrics,
+        brief.formats,
+        brief.authorRole,
+        brief.goal,
+        brief.cta,
+        brief.taboo,
+        JSON.stringify(brief.quality),
+        brief.source ?? "manual",
+      ],
+    );
+
+    const updated = await client.query<AutopilotSettings>(
+      `update autopilot_settings
+          set enabled = $3,
+              mode = $4,
+              post_frequency = $5,
+              updated_at = now()
+        where user_id = $1 and channel_id = $2
+        returning enabled, mode, post_frequency, approvals_streak`,
+      [user.id, channelId, enabled, mode, postFrequency],
+    );
+    await client.query("commit");
+    return NextResponse.json({ ok: true, channelId, brief, settings: updated.rows[0] });
+  } catch (error) {
+    await client.query("rollback").catch(() => undefined);
+    console.error("[/api/settings/channel] POST", {
+      errorName: error instanceof Error ? error.name : "Error",
+    });
+    return NextResponse.json({ ok: false, error: "unavailable" }, { status: 503 });
+  } finally {
+    client.release();
+  }
+}

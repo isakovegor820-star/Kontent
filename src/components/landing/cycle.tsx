@@ -157,7 +157,7 @@ function ReconDemo({ active }: { active: boolean }) {
   );
 }
 
-/* ------------------------------------------- 2. ИИ-КОНТЕНТ: карточка «Сними это» */
+/* ------------------------------------------- 2. ИИ-КОНТЕНТ: карточка идеи */
 
 const SCRIPT = ["Обвинение в первой секунде", "Решение — за 40 секунд"] as const;
 
@@ -167,11 +167,11 @@ function AiDemo({ active }: { active: boolean }) {
   return (
     <DemoPanel
       tight
-      label="Карточка идеи «Сними это»: заголовок, сценарий из двух шагов и формат — видео на 40 секунд"
+      label="Карточка идеи для публикации: заголовок, сценарий из двух шагов и формат — видео на 40 секунд"
     >
       <p className="inline-flex items-center gap-1.5 text-[13px] font-bold text-brand">
         <Sparkles className="h-3.5 w-3.5" strokeWidth={2} />
-        Сними это
+        Создать публикацию
       </p>
 
       <p className="line-2 text-[14px] leading-snug font-bold text-text">

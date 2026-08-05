@@ -53,7 +53,10 @@ export async function POST(req: NextRequest) {
     } | null;
 
     if (!tokenRes.ok || !tokenData?.user_id) {
-      console.error("[/api/auth/vk] обмен кода не удался:", tokenData);
+      console.error("[/api/auth/vk] token exchange failed", {
+        status: tokenRes.status,
+        code: "vk_exchange_failed",
+      });
       return NextResponse.json({ ok: false, error: "vk_exchange_failed" }, { status: 401 });
     }
 
@@ -64,7 +67,9 @@ export async function POST(req: NextRequest) {
     await createSession(res, id, req.headers.get("user-agent"));
     return res;
   } catch (err) {
-    console.error("[/api/auth/vk]", err);
+    console.error("[/api/auth/vk] request failed", {
+      name: err instanceof Error ? err.name : "error",
+    });
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
 }

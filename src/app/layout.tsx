@@ -1,35 +1,20 @@
 import type { Metadata, Viewport } from "next";
-import { Golos_Text, JetBrains_Mono } from "next/font/google";
 import { StoreProvider } from "@/lib/store";
 import { Toaster } from "@/components/ui/toaster";
 import "./globals.css";
 
-// Golos Text — выбор ТЗ 7.3: отличная кириллица, свободная лицензия
-const golos = Golos_Text({
-  subsets: ["latin", "cyrillic"],
-  display: "swap",
-  variable: "--font-golos",
-});
-
-// Моно — только для цифр и метрик, чтобы они не «прыгали»
-const jetbrains = JetBrains_Mono({
-  subsets: ["latin"],
-  display: "swap",
-  variable: "--font-jetbrains",
-});
-
 export const metadata: Metadata = {
   title: {
-    default: "Аврора — соцсети, которые ведут себя сами",
+    default: "Аврора — автопилот для Telegram-каналов",
     template: "%s · Аврора",
   },
   description:
-    "Разведка конкурентов, залетающие темы, ИИ-контент в твоём стиле и автопостинг в Telegram и VK. Бесплатно. Без карты. Из России.",
-  keywords: ["автопостинг", "Telegram", "VK", "SMM", "ИИ-контент", "разведка конкурентов"],
+    "Аврора находит сильные темы, пишет посты в голосе канала, проверяет и публикует их в Telegram по расписанию.",
+  keywords: ["автопостинг", "Telegram", "SMM", "ИИ-контент", "разведка конкурентов"],
   openGraph: {
-    title: "Аврора — соцсети, которые ведут себя сами",
+    title: "Аврора — автопилот для Telegram-каналов",
     description:
-      "Разведка → ИИ-контент → автопостинг → реакции. Замкнутого круга нет ни у одного конкурента.",
+      "Темы, материалы в твоём голосе, проверка и публикация с сервера — в одном редакционном цикле.",
     locale: "ru_RU",
     type: "website",
   },
@@ -47,7 +32,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html
       lang="ru"
-      className={`${golos.variable} ${jetbrains.variable}`}
+      className="aurora-system-fonts"
       suppressHydrationWarning
       data-scroll-behavior="smooth"
     >
