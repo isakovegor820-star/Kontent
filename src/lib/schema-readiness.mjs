@@ -49,33 +49,33 @@ export async function probeSchemaCompatibility(client, manifest = SCHEMA_MANIFES
   );
   const schemaMigrationsTable = migrationTableResult.rows[0]?.present === true;
 
-  const [migrations, tables, columns, constraints, indexes] = await Promise.all([
-    schemaMigrationsTable
-      ? client.query("select name, checksum from schema_migrations order by name")
-      : Promise.resolve({ rows: [] }),
-    client.query(
-      `select table_name as name
-         from information_schema.tables
-        where table_schema = 'public'`,
-    ),
-    client.query(
-      `select table_name || '.' || column_name as name
-         from information_schema.columns
-        where table_schema = 'public'`,
-    ),
-    client.query(
-      `select cls.relname || '.' || con.conname as name
-         from pg_constraint con
-         join pg_class cls on cls.oid = con.conrelid
-         join pg_namespace ns on ns.oid = cls.relnamespace
-        where ns.nspname = 'public'`,
-    ),
-    client.query(
-      `select tablename || '.' || indexname as name
-         from pg_indexes
-        where schemaname = 'public'`,
-    ),
-  ]);
+  // pg@9 removes support for overlapping query calls on one Client. Keep this probe
+  // compatible (and warning-free in dev) by reading the catalogs sequentially.
+  const migrations = schemaMigrationsTable
+    ? await client.query("select name, checksum from schema_migrations order by name")
+    : { rows: [] };
+  const tables = await client.query(
+    `select table_name as name
+       from information_schema.tables
+      where table_schema = 'public'`,
+  );
+  const columns = await client.query(
+    `select table_name || '.' || column_name as name
+       from information_schema.columns
+      where table_schema = 'public'`,
+  );
+  const constraints = await client.query(
+    `select cls.relname || '.' || con.conname as name
+       from pg_constraint con
+       join pg_class cls on cls.oid = con.conrelid
+       join pg_namespace ns on ns.oid = cls.relnamespace
+      where ns.nspname = 'public'`,
+  );
+  const indexes = await client.query(
+    `select tablename || '.' || indexname as name
+       from pg_indexes
+      where schemaname = 'public'`,
+  );
 
   return evaluateSchemaSnapshot({
     schemaMigrationsTable,
@@ -86,4 +86,3 @@ export async function probeSchemaCompatibility(client, manifest = SCHEMA_MANIFES
     indexes: indexes.rows.map((row) => row.name),
   }, manifest);
 }
-
