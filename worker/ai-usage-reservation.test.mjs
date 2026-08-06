@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   acquireWorkerAiUsage,
   commitWorkerAiUsage,
+  expireWorkerAiUsageReservations,
   heartbeatWorkerAiUsage,
   releaseWorkerAiUsage,
   workerAiUsageCompositeKey,
@@ -209,5 +210,16 @@ describe("worker AI usage reservations", () => {
     expect(pool.rows[0].expiresAt).toBeGreaterThan(before);
     await releaseWorkerAiUsage(pool, 7, acquired.reservationId);
     await expect(heartbeatWorkerAiUsage(pool, 7, acquired.reservationId, 120_000)).resolves.toBe(false);
+  });
+
+  it("globally expires stale reservations in a bounded skip-locked batch", async () => {
+    const db = {
+      query: vi.fn(async () => ({ rowCount: 3, rows: [] })),
+    };
+    await expect(expireWorkerAiUsageReservations(db, 3)).resolves.toBe(3);
+    expect(db.query.mock.calls[0][0]).toContain("for update skip locked");
+    expect(db.query.mock.calls[0][0]).toContain("status = 'expired'");
+    expect(db.query.mock.calls[0][0]).not.toContain("delete");
+    expect(db.query.mock.calls[0][1]).toEqual([3]);
   });
 });

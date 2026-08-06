@@ -216,7 +216,7 @@ function ServiceHealthBanner() {
 
   // Состояние конкретных AI-моделей показывается рядом с их выбором в Студии.
   // Глобальная плашка остаётся только для сбоев, затрагивающих всю платформу.
-  if (!report || (report.webReady && report.publicationReady)) {
+  if (!report || (report.webReady && report.publicationReady && report.mailDeliveryReady)) {
     return null;
   }
 
@@ -224,6 +224,9 @@ function ServiceHealthBanner() {
     !report.webReady ? "Серверные данные сейчас недоступны." : null,
     !report.publicationReady
       ? "Фоновая публикация временно не готова: черновики можно сохранить, но отправку лучше отложить."
+      : null,
+    !report.mailDeliveryReady
+      ? "Восстановление пароля по email временно недоступно; текущая сессия и публикации не затронуты."
       : null,
   ].filter(Boolean);
 
@@ -476,7 +479,7 @@ function ShellSkeleton({ title, subtitle }: { title: string; subtitle?: string }
           </div>
         </header>
 
-        <main id="main" className="mx-auto max-w-[1400px] px-4 pt-6 pb-24 sm:px-6 lg:px-8 lg:pb-10">
+        <main id="main" className="mx-auto max-w-[1400px] px-4 pt-6 pb-[var(--app-content-bottom-inset)] sm:px-6 lg:px-8 lg:pb-10">
           <div className="skeleton mb-4 h-11 w-64 rounded-sm" />
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
             {[0, 1, 2, 3, 4, 5].map((i) => (
@@ -733,7 +736,7 @@ export function AppShell({
           <ServiceHealthBanner />
 
           {/* КОНТЕНТ: страница въезжает снизу — понятно, что сменился экран, а не сайт */}
-          <main id="main" className="mx-auto max-w-[1400px] px-4 pt-6 pb-24 sm:px-6 lg:px-8 lg:pb-10">
+          <main id="main" className="mx-auto max-w-[1400px] px-4 pt-6 pb-[var(--app-content-bottom-inset)] sm:px-6 lg:px-8 lg:pb-10">
             <motion.div
               key={pathname}
               initial={{ opacity: 0, y: 8 }}

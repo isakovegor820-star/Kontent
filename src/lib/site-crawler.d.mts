@@ -19,6 +19,7 @@ export const SITE_ANALYSIS_POLICY_VERSION: string;
 export const SITE_CRAWLER_USER_AGENT: string;
 export const DEFAULT_SITE_CRAWL_LIMITS: Readonly<SiteCrawlLimits>;
 export function normalizeSiteLimits(value?: Partial<SiteCrawlLimits>): Readonly<SiteCrawlLimits>;
+export function upgradeLegacySiteLimits(value?: Partial<SiteCrawlLimits>): Readonly<SiteCrawlLimits>;
 export function normalizeSiteTarget(value: unknown, confirmedDomain: unknown, consent: unknown): URL;
 export function parseRobotsTxt(text: unknown, userAgent?: string): Readonly<{ userAgent: string; rules: Array<{ type: "allow" | "disallow"; pattern: string }>; sitemaps: string[] }>;
 export function robotsAllows(policy: { rules?: Array<{ type: string; pattern: string }> }, value: URL | string): boolean;

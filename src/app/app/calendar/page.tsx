@@ -293,6 +293,8 @@ function PostCard({
 
   return (
     <article
+      id={`calendar-${post.id}`}
+      tabIndex={-1}
       className={cn(
         "relative rounded-sm border-l-2 shadow-soft ring-1 ring-line",
         "transition-[transform,box-shadow] duration-200 ease-[var(--ease-soft)]",
@@ -676,6 +678,7 @@ export default function CalendarPage() {
   const [showLocalRecovery, setShowLocalRecovery] = useState(false);
   const [showUnownedRecovery, setShowUnownedRecovery] = useState(false);
   const draftQueueHeadingRef = useRef<HTMLHeadingElement>(null);
+  const focusedPostRef = useRef<string | null>(null);
 
   const hasUser = Boolean(s.user);
   const refreshDrafts = useCallback(async (owner: User, signal?: AbortSignal) => {
@@ -710,6 +713,23 @@ export default function CalendarPage() {
       window.removeEventListener("focus", onFocus);
     };
   }, [hasUser, refreshDrafts, s.authReady, s.user]);
+
+  useEffect(() => {
+    if (!s.ready || focusedPostRef.current) return;
+    const match = window.location.hash.match(/^#calendar-real-(\d+)$/u);
+    if (!match) return;
+    const post = s.realPosts.find((candidate) => candidate.id === Number(match[1]));
+    if (!post?.scheduled_at) return;
+    focusedPostRef.current = `calendar-real-${post.id}`;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- focused deep link selects its exact week
+    setAnchor(new Date(post.scheduled_at));
+    setView("week");
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const element = document.getElementById(focusedPostRef.current ?? "");
+      element?.focus({ preventScroll: true });
+      element?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }));
+  }, [s.ready, s.realPosts]);
 
   // Полночь сегодняшнего дня. Считается на клиенте — до s.ready ничего датозависимого не рисуем
   const today = useMemo(() => {

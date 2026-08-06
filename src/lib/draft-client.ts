@@ -203,8 +203,9 @@ export function draftMatchesWrite(draft: ServerDraft, input: DraftWriteInput): b
     draft.scheduled_at === input.scheduledAt &&
     draft.origin === input.origin &&
     sameMedia(draft.media, input.media) &&
-    sameSource(draft.source_ref, input.sourceRef) &&
-    sameAiValidation(draft.ai_validation, input.aiValidation) &&
+    (input.generationResultId != null
+      ? draft.generation_result_id === input.generationResultId && draft.generation_binding_valid
+      : sameSource(draft.source_ref, input.sourceRef) && sameAiValidation(draft.ai_validation, input.aiValidation)) &&
     actualIds.length === expectedIds.length &&
     actualIds.every((id, index) => id === expectedIds[index])
   );

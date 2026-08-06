@@ -103,17 +103,19 @@ const approvedItem = {
   quality,
 };
 
+const planBinding = { planId: 44, planRevision: 3, itemId: 2 };
+
 function rejectRequest() {
   return new NextRequest("http://localhost/api/autopilot/item", {
     method: "PATCH",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ channelId: 7, index: 2, action: "reject" }),
+    body: JSON.stringify({ channelId: 7, index: 2, action: "reject", ...planBinding }),
   });
 }
 
 function mockOwnedPlan() {
   mocks.query.mockResolvedValue({
-    rows: [{ id: 44, items: [{ ...approvedItem }], channel_id: 7, status: "approved" }],
+    rows: [{ id: 44, items: [{ ...approvedItem }], channel_id: 7, status: "approved", revision: 3 }],
     rowCount: 1,
   });
 }
@@ -143,7 +145,7 @@ describe("PATCH /api/autopilot/item approve", () => {
     mocks.query.mockImplementation(async (sqlValue: string, params: unknown[] = []) => {
       const sql = sqlValue.replace(/\s+/g, " ").trim();
       calls.push({ sql, params });
-      if (sql.startsWith("select id, items, channel_id, status from autopilot_plan")) {
+      if (sql.startsWith("select id, items, channel_id, status, revision from autopilot_plan")) {
         return { rows: [{ id: 44, items: source, channel_id: 7, status: "pending" }], rowCount: 1 };
       }
       if (sql.includes("from autopilot_approval_operations where user_id")) {
@@ -164,6 +166,7 @@ describe("PATCH /api/autopilot/item approve", () => {
           index: 2,
           action: "approve",
           idempotencyKey: "item-expired-key",
+          ...planBinding,
         }),
       }),
     );
@@ -194,7 +197,7 @@ describe("PATCH /api/autopilot/item approve", () => {
     });
     mocks.query.mockImplementation(async (sqlValue: string) => {
       const sql = sqlValue.replace(/\s+/g, " ").trim();
-      if (sql.startsWith("select id, items, channel_id, status from autopilot_plan")) {
+      if (sql.startsWith("select id, items, channel_id, status, revision from autopilot_plan")) {
         return { rows: [{ id: 44, items: source, channel_id: 7, status: "pending" }], rowCount: 1 };
       }
       if (sql.includes("from autopilot_approval_operations where user_id")) {
@@ -215,6 +218,7 @@ describe("PATCH /api/autopilot/item approve", () => {
           index: 2,
           action: "approve",
           idempotencyKey: "item-outbox-key",
+          ...planBinding,
         }),
       }),
     );
@@ -234,6 +238,21 @@ describe("PATCH /api/autopilot/item approve", () => {
 });
 
 describe("PATCH /api/autopilot/item reject", () => {
+  it("rejects a stale plan revision instead of applying the item index to the latest plan", async () => {
+    mocks.query.mockResolvedValue({ rows: [], rowCount: 0 });
+
+    const response = await PATCH(rejectRequest());
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ ok: false, error: "stale_plan" });
+    expect(mocks.getJob).not.toHaveBeenCalled();
+    expect(mocks.connect).not.toHaveBeenCalled();
+    expect(mocks.query).toHaveBeenCalledWith(
+      expect.stringContaining("id = $3 and revision = $4"),
+      [3, 7, 44, 3],
+    );
+  });
+
   it("fails closed when the publish queue cannot confirm whether the job exists", async () => {
     mockOwnedPlan();
     mocks.getJob.mockRejectedValue(new Error("redis unavailable"));
@@ -334,11 +353,14 @@ describe("PATCH /api/autopilot/item edit quality provenance", () => {
     mocks.query.mockImplementation(async (sqlValue: string, params: unknown[] = []) => {
       const sql = sqlValue.replace(/\s+/g, " ").trim();
       calls.push({ sql, params });
-      if (sql.startsWith("select id, items, channel_id, status from autopilot_plan")) {
+      if (sql.startsWith("select id, items, channel_id, status, revision from autopilot_plan")) {
         return { rows: [{ id: 44, items: source, channel_id: 7, status: "pending" }], rowCount: 1 };
       }
       if (sql.startsWith("select quality from content_brief")) {
         return { rows: [{ quality: { preset: "expert" } }], rowCount: 1 };
+      }
+      if (sql.startsWith("update autopilot_plan")) {
+        return { rows: [{ revision: 4 }], rowCount: 1 };
       }
       return { rows: [], rowCount: 1 };
     });
@@ -352,15 +374,16 @@ describe("PATCH /api/autopilot/item edit quality provenance", () => {
           index: 2,
           action: "edit",
           draft: "Новый текст после редактирования.",
+          ...planBinding,
         }),
       }),
     );
 
     expect(response.status).toBe(200);
     const saved = calls.find((call) =>
-      call.sql.startsWith("update autopilot_plan set items = $2, edited = edited or $3"),
+      call.sql.startsWith("update autopilot_plan set items = $5::jsonb, edited = edited or $6"),
     );
-    const savedItem = JSON.parse(String(saved?.params[1]))[0];
+    const savedItem = JSON.parse(String(saved?.params[4]))[0];
     expect(savedItem.qualityOrigin).toBe("automatic");
     expect(savedItem.quality.metadata).toMatchObject({
       rules: { id: "aurora-post-quality", version: 1, profileVersion: 1 },

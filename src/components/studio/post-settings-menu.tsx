@@ -481,8 +481,8 @@ export function PostSettingsMenu({
                 </Section>
 
                 <Section title={`Доказательства · ${settings.proofs.filter((proof) => proof.text).length}`}>
-                  <SelectField label="Строгость фактов" value={settings.factStrictness} onChange={(next) => update({ factStrictness: next as PostSettings["factStrictness"] })} options={[
-                    ["verified", "Только подтверждённые"], ["verified_inference", "Факты + осторожные выводы"], ["general", "Общие рассуждения"], ["creative_no_new_facts", "Креативно, без новых фактов"],
+                  <SelectField label="Проверка фактов" hint="при отключении потребуется ручная проверка перед публикацией" value={settings.factStrictness} onChange={(next) => update({ factStrictness: next as PostSettings["factStrictness"] })} options={[
+                    ["off", "Отключена"], ["verified", "Только подтверждённые"], ["verified_inference", "Факты + осторожные выводы"], ["general", "Общие рассуждения"], ["creative_no_new_facts", "Креативно, без новых фактов"],
                   ]} />
                   <SelectField label="Если данных недостаточно" value={settings.missingFactsMode} onChange={(next) => update({ missingFactsMode: next as PostSettings["missingFactsMode"] })} options={[
                     ["ask", "Задать вопрос"], ["omit", "Не использовать утверждение"], ["neutral", "Написать нейтрально"], ["placeholder", "Оставить место для заполнения"],

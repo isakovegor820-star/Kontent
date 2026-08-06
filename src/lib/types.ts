@@ -32,10 +32,10 @@ export interface Post {
   scheduledAt: string | null;
   status: PostStatus;
   /** Источник: откуда пост появился — важно для «связки разведка → контент» */
-  origin: "manual" | "ai" | "trend" | "idea" | "competitor" | "autopilot";
+  origin: "manual" | "ai" | "trend" | "idea" | "competitor" | "rss" | "autopilot";
   /** Если пост родился из карточки тренда или залёта конкурента */
   sourceRef?: {
-    kind: "trend" | "idea" | "reference" | "competitor";
+    kind: "trend" | "idea" | "reference" | "competitor" | "rss";
     id: string;
     label: string;
     /** Semantic intent is not factual evidence. */
@@ -48,7 +48,7 @@ export interface Post {
     whyItWorked?: string;
     /** Where an idea/reference came from; provenance does not authorize its claims. */
     provenance?: {
-      kind: "content_idea" | "competitor_post" | "trend" | "saved_reference";
+      kind: "content_idea" | "competitor_post" | "trend" | "saved_reference" | "rss_item";
       id?: string;
       label?: string;
       url?: string;

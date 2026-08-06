@@ -34,7 +34,7 @@ export async function acknowledgeAiTerminal(
     signal?: AbortSignal;
     fetchImpl?: typeof fetch;
   } = {},
-): Promise<{ requestId: string | null; replayed: boolean }> {
+): Promise<{ requestId: string | null; replayed: boolean; generationResultId: number }> {
   if (!/^[A-Za-z0-9:_-]{8,96}$/u.test(key)) throw new TypeError("invalid AI request key");
   const fetchImpl = options.fetchImpl ?? fetch;
   let response: Response;
@@ -52,11 +52,15 @@ export async function acknowledgeAiTerminal(
     ok?: boolean;
     requestId?: string;
     replayed?: boolean;
+    generationResultId?: number;
     retryable?: boolean;
   } | null;
   const requestId = payload?.requestId ?? response.headers.get("x-ai-request-id");
   if (!response.ok || payload?.ok !== true || response.headers.get("x-ai-acknowledged") !== "true") {
     throw new AiTerminalAckError(response.status, requestId, payload?.retryable === true || response.status >= 500);
   }
-  return { requestId, replayed: payload.replayed === true };
+  if (!Number.isSafeInteger(payload.generationResultId) || Number(payload.generationResultId) <= 0) {
+    throw new AiTerminalAckError(response.status, requestId, true);
+  }
+  return { requestId, replayed: payload.replayed === true, generationResultId: Number(payload.generationResultId) };
 }

@@ -87,8 +87,10 @@ function adaptationKind(draft: ServerDraft): ReferenceAdaptationKind | null {
   if (draft.origin === "idea" || draft.source_ref?.kind === "idea") return "idea";
   if (
     draft.origin === "competitor"
+    || draft.origin === "rss"
     || draft.source_ref?.kind === "competitor"
     || draft.source_ref?.kind === "reference"
+    || draft.source_ref?.kind === "rss"
   ) return "reference";
   return null;
 }
@@ -146,12 +148,27 @@ function topicStem(word: string): string {
   return stem.length >= 4 ? stem : normalized;
 }
 
+const TOPIC_CONCEPTS: Array<{ concept: string; stems: string[] }> = [
+  { concept: "concept:enforcement", stems: ["исполнительск", "взыскан", "пристав", "исполнен"] },
+  { concept: "concept:protection", stems: ["иммунитет", "защит", "неприкосновен", "изъят"] },
+  { concept: "concept:housing", stems: ["жиль", "квартир", "дом"] },
+  { concept: "concept:sole", stems: ["единственн", "един"] },
+  { concept: "concept:contract", stems: ["договор", "контракт", "соглашен"] },
+  { concept: "concept:supply", stems: ["поставк", "поставщ", "товар"] },
+];
+
+function topicConcept(stem: string): string {
+  return TOPIC_CONCEPTS.find((group) => group.stems.some((alias) => (
+    stem.startsWith(alias) || alias.startsWith(stem)
+  )))?.concept ?? stem;
+}
+
 function alignmentTokens(value: string): string[] {
   const result: string[] = [];
   for (const word of value.match(/[\p{L}]{4,}/gu) ?? []) {
     const normalized = word.toLocaleLowerCase("ru").replace(/ё/gu, "е");
     if (TOPIC_STOP_WORDS.has(normalized)) continue;
-    const stem = topicStem(normalized);
+    const stem = topicConcept(topicStem(normalized));
     if (!result.includes(stem)) result.push(stem);
   }
   return result.slice(0, 12);
@@ -171,9 +188,26 @@ export function validateTopicAlignment(
   const score = anchorTokens.length ? matchedTokens.length / anchorTokens.length : 0;
   const minimumMatches = Math.min(2, anchorTokens.length);
   const minimumScore = anchorTokens.length >= 5 ? 0.25 : 0.4;
+  const normalizedText = text.toLocaleLowerCase("ru").replace(/ё/gu, "е");
+  const normalizedTopic = context.topic.toLocaleLowerCase("ru").replace(/ё/gu, "е");
+  const textWithoutExactTopic = normalizedText.includes(normalizedTopic)
+    ? normalizedText.replace(normalizedTopic, " ")
+    : normalizedText;
+  const remainingTokens = alignmentTokens(textWithoutExactTopic);
+  const remainingMatches = anchorTokens.filter((anchor) => remainingTokens.includes(anchor));
+  // Appending the exact topic as a label to an unrelated post is not semantic alignment.
+  // A real post must develop at least one subject concept outside that pasted phrase.
+  const exactTopicIndex = normalizedText.indexOf(normalizedTopic);
+  const prefixTokens = exactTopicIndex > 0
+    ? alignmentTokens(normalizedText.slice(0, exactTopicIndex))
+    : [];
+  const exactPhraseStuffing = exactTopicIndex > 0
+    && prefixTokens.length >= 3
+    && remainingMatches.length === 0;
   const passed = anchorTokens.length > 0
     && matchedTokens.length >= minimumMatches
-    && score >= minimumScore;
+    && score >= minimumScore
+    && !exactPhraseStuffing;
   return {
     status: passed ? "passed" : "failed",
     score: Number(score.toFixed(3)),

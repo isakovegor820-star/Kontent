@@ -85,14 +85,17 @@ describe("site analysis BullMQ worker core", () => {
     });
     const finalizeUsage = vi.fn(async () => ({ changed: true, status: "committed" }));
 
+    const runInterview = vi.fn(async () => interviewResult());
     await expect(processSiteAnalysisJob(pool, { analysisId: 41, runRevision: 2 }, {
       crawl,
       leaseToken: "lease-1",
+      engine: "navy-gpt-5-4",
       buildSnapshot: vi.fn(() => testSnapshot),
-      runInterview: vi.fn(async () => interviewResult()),
+      runInterview,
       finalizeUsage,
     })).resolves.toMatchObject({ ok: true, pages: 1, questions: SITE_INTERVIEW_QUESTIONS.length });
     expect(crawl).toHaveBeenCalledWith(expect.objectContaining({ confirmedDomain: "example.com", consent: true }), expect.any(Object));
+    expect(runInterview).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ engine: "navy-gpt-5-4" }), expect.any(Object));
     expect(txQuery).toHaveBeenCalledWith(expect.stringContaining("insert into site_analysis_pages"), expect.arrayContaining([41, "https://example.com/", 200]));
     expect(txQuery.mock.calls.filter(([sql]) => String(sql).includes("insert into site_analysis_pages"))).toHaveLength(1);
     expect(txQuery).toHaveBeenCalledWith(expect.stringContaining("status = 'ready'"), expect.arrayContaining([41, 2]));
@@ -241,5 +244,49 @@ describe("site analysis BullMQ worker core", () => {
       "robots.txt запрещает анализ указанной страницы.",
       expect.any(String),
     ]);
+  });
+
+  it("does not recrawl after an unexpected terminal saving failure and exposes only safe diagnostics", async () => {
+    const txQuery = vi.fn(async (sql) => {
+      if (String(sql).includes("select status, run_revision")) {
+        return { rows: [{ status: "saving", run_revision: 2, worker_lease_token: "lease-db" }] };
+      }
+      if (String(sql).includes("insert into site_analysis_pages")) {
+        throw Object.assign(new Error("secret row content"), {
+          code: "22021",
+          constraint: "site_analysis_pages_content_check",
+        });
+      }
+      return { rows: [] };
+    });
+    const pool = {
+      query: vi.fn()
+        .mockResolvedValueOnce({ rows: [analysisRow()] })
+        .mockResolvedValue({ rows: [] }),
+      connect: vi.fn(async () => ({ query: txQuery, release: vi.fn() })),
+    };
+
+    const error = await processSiteAnalysisJob(pool, { analysisId: 41, runRevision: 2 }, {
+      finalAttempt: false,
+      leaseToken: "lease-db",
+      crawl: vi.fn(async () => ({
+        pages: [{ url: "https://example.com/", status: 200, title: "A" }],
+        report: { inventory: [] },
+      })),
+      buildSnapshot: vi.fn(() => testSnapshot),
+      runInterview: vi.fn(async () => interviewResult()),
+    }).catch((value) => value);
+
+    expect(error).toMatchObject({
+      code: "worker_failed",
+      message: "Не удалось завершить анализ сайта.",
+      technical: {
+        pgCode: "22021",
+        constraint: "site_analysis_pages_content_check",
+        errorName: "Error",
+      },
+    });
+    expect(JSON.stringify(error)).not.toContain("secret row content");
+    expect(pool.query.mock.calls.at(-1)?.[0]).toContain("status = 'failed'");
   });
 });

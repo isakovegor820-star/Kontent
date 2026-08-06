@@ -18,8 +18,11 @@ interface Row {
   id: number;
   handle: string;
   title: string | null;
+  description: string | null;
   subscribers: number | null;
   posts: number;
+  last_post_at: Date | string | null;
+  posts_per_week: number | string | null;
   mentioned_by: number;
   sources: string[];
   /** true — ИИ сверил с брифом и подтвердил нишу; null — движка не было, никто не судил */
@@ -39,10 +42,22 @@ export async function GET(req: NextRequest) {
     // кто-то сослался. null — движка не было, судить было некому: показываем, но честно помечаем.
     const rows = (
       await pool.query<Row>(
-        `select id, handle, title, subscribers, posts, mentioned_by, sources, on_topic
-           from competitor_suggestions
-          where channel_id = $1 and status = 'new' and on_topic is distinct from false
-          order by on_topic desc nulls last, mentioned_by desc, subscribers desc nulls last
+        // to_jsonb делает чтение обратно совместимым во время rolling deploy: если новая
+        // колонка ещё не применена, PostgreSQL вернёт null вместо падения всего блока.
+        `select s.id,
+                s.handle,
+                s.title,
+                to_jsonb(s) ->> 'description' as description,
+                s.subscribers,
+                s.posts,
+                (to_jsonb(s) ->> 'last_post_at')::timestamptz as last_post_at,
+                (to_jsonb(s) ->> 'posts_per_week')::numeric as posts_per_week,
+                s.mentioned_by,
+                s.sources,
+                s.on_topic
+           from competitor_suggestions s
+          where s.channel_id = $1 and s.status = 'new' and s.on_topic is distinct from false
+          order by s.on_topic desc nulls last, s.mentioned_by desc, s.subscribers desc nulls last
           limit 12`,
         [channelId],
       )
@@ -64,8 +79,14 @@ export async function GET(req: NextRequest) {
         id: r.id,
         handle: r.handle,
         title: r.title,
+        description: r.description,
         subscribers: r.subscribers,
         posts: r.posts,
+        lastPostAt:
+          r.last_post_at instanceof Date
+            ? r.last_post_at.toISOString()
+            : r.last_post_at,
+        postsPerWeek: r.posts_per_week == null ? null : Number(r.posts_per_week),
         mentionedBy: r.mentioned_by,
         sources: r.sources ?? [],
         onTopic: r.on_topic,
@@ -76,7 +97,10 @@ export async function GET(req: NextRequest) {
     });
   } catch (err) {
     console.error("[/api/competitors/suggestions]", err);
-    return NextResponse.json({ suggestions: [], seeds: 0 });
+    return NextResponse.json(
+      { suggestions: [], seeds: 0, error: "suggestions_unavailable" },
+      { status: 503 },
+    );
   }
 }
 

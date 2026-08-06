@@ -20,6 +20,7 @@ const input: DraftCreateInput = {
   sourceRef: null,
   channelIds: [11],
   aiValidation: null,
+  generationResultId: null,
 };
 
 const row = {
@@ -28,7 +29,12 @@ const row = {
   media: null,
   scheduled_at: input.scheduledAt,
   origin: input.origin,
+  purpose: "publishable",
   source_ref: null,
+  generation_result_id: null,
+  generation_result_hash: null,
+  receipt_result_hash: null,
+  receipt_payload: null,
   client_key: input.clientKey,
   version: "3",
   review_policy_version: "1",
@@ -101,6 +107,142 @@ describe("draft input boundary", () => {
 });
 
 describe("server draft transactions", () => {
+  it("rebuilds source text, topic and provenance from the owned server record", async () => {
+    let insertedParams: unknown[] | undefined;
+    const canonicalRef = {
+      kind: "reference",
+      id: "55",
+      label: "Право без подмены",
+      topic: "Исполнительский иммунитет защищает жильё должника.",
+      provenance: {
+        kind: "competitor_post",
+        id: "55",
+        label: "Право без подмены",
+        url: "https://t.me/legal/77",
+      },
+    };
+    const sourceInput: DraftCreateInput = {
+      ...input,
+      origin: "competitor",
+      text: "ПОДДЕЛЬНЫЙ ТЕКСТ ПРО КОФЕ",
+      sourceRef: {
+        kind: "competitor",
+        id: "55",
+        label: "Поддельный источник",
+        topic: "Конференция по искусственному интеллекту",
+      },
+    };
+    const query = vi.fn(async (sql: string, params?: unknown[]) => {
+      if (sql.includes("select id from channels")) return { rowCount: 1, rows: [{ id: "11" }] };
+      if (sql.includes("from competitor_posts post")) {
+        return {
+          rowCount: 1,
+          rows: [{
+            id: "55",
+            text: "Исполнительский иммунитет защищает жильё должника.",
+            title: "Право без подмены",
+            handle: "legal",
+            tg_msg_id: "77",
+          }],
+        };
+      }
+      if (sql.includes("insert into drafts")) {
+        insertedParams = params;
+        return { rowCount: 1, rows: [{ id: "41" }] };
+      }
+      if (sql.includes("select d.id")) {
+        return {
+          rowCount: 1,
+          rows: [{
+            ...row,
+            text: "Исполнительский иммунитет защищает жильё должника.",
+            origin: "competitor",
+            purpose: "source_context",
+            source_ref: canonicalRef,
+          }],
+        };
+      }
+      return { rowCount: 1, rows: [] };
+    });
+    const { pool } = fakePool(query);
+
+    const result = await createDraftForUser(5, sourceInput, pool as never);
+
+    expect(result.draft).toMatchObject({
+      text: "Исполнительский иммунитет защищает жильё должника.",
+      purpose: "source_context",
+      source_ref: canonicalRef,
+    });
+    expect(insertedParams?.[1]).toBe("Исполнительский иммунитет защищает жильё должника.");
+    expect(insertedParams?.[5]).toBe("source_context");
+    expect(JSON.parse(String(insertedParams?.[6]))).toEqual(canonicalRef);
+  });
+
+  it("creates an RSS item as an immutable server-owned source context", async () => {
+    let insertedParams: unknown[] | undefined;
+    const canonicalRef = {
+      kind: "rss",
+      id: "88",
+      label: "Юридические новости",
+      topic: "Новые правила исполнительского производства",
+      provenance: {
+        kind: "rss_item",
+        id: "88",
+        label: "Юридические новости",
+        url: "https://example.test/news/88",
+      },
+    };
+    const query = vi.fn(async (sql: string, params?: unknown[]) => {
+      if (sql.includes("select id from channels")) return { rowCount: 1, rows: [{ id: "11" }] };
+      if (sql.includes("from rss_items item")) {
+        return {
+          rowCount: 1,
+          rows: [{
+            id: "88",
+            title: "Новые правила исполнительского производства",
+            summary: "Разбираем изменения и сроки вступления в силу.",
+            link: "https://example.test/news/88",
+            feed_title: "Юридические новости",
+          }],
+        };
+      }
+      if (sql.includes("insert into drafts")) {
+        insertedParams = params;
+        return { rowCount: 1, rows: [{ id: "41" }] };
+      }
+      if (sql.includes("select d.id")) {
+        return {
+          rowCount: 1,
+          rows: [{
+            ...row,
+            text: "Новые правила исполнительского производства\n\nРазбираем изменения и сроки вступления в силу.",
+            origin: "rss",
+            purpose: "source_context",
+            source_ref: canonicalRef,
+          }],
+        };
+      }
+      return { rowCount: 1, rows: [] };
+    });
+    const { pool } = fakePool(query);
+
+    const result = await createDraftForUser(5, {
+      ...input,
+      clientKey: "rss_item_source:88",
+      origin: "rss",
+      text: "CLIENT TEXT MUST NOT WIN",
+      sourceRef: { kind: "rss", id: "88", label: "Поддельная подпись" },
+    }, pool as never);
+
+    expect(result.draft).toMatchObject({
+      origin: "rss",
+      purpose: "source_context",
+      source_ref: canonicalRef,
+    });
+    expect(insertedParams?.[1]).toContain("Разбираем изменения");
+    expect(insertedParams?.[5]).toBe("source_context");
+  });
+
   it("returns the existing row for an idempotency-key replay without replacing destinations", async () => {
     const query = vi.fn(async (sql: string) => {
       if (sql.includes("select id from channels")) return { rowCount: 1, rows: [{ id: "11" }] };
@@ -165,6 +307,49 @@ describe("server draft transactions", () => {
     expect(query.mock.calls.some(([sql]) => String(sql).includes("delete from draft_destinations"))).toBe(false);
   });
 
+  it("detaches visible provenance after a human changes AI-generated text", async () => {
+    let selected = 0;
+    let updatedParams: unknown[] | undefined;
+    const query = vi.fn(async (sql: string, params?: unknown[]) => {
+      if (sql.includes("select d.id")) {
+        selected += 1;
+        return {
+          rowCount: 1,
+          rows: [{
+            ...row,
+            text: selected === 1 ? "Исходный AI-текст" : "Полностью новый текст автора",
+            origin: "ai",
+            purpose: "needs_review",
+            source_ref: selected === 1
+              ? { kind: "rss", id: "88", label: "Юридические новости" }
+              : null,
+            generation_result_id: "91",
+            version: selected === 1 ? "3" : "4",
+          }],
+        };
+      }
+      if (sql.includes("select id from channels")) return { rowCount: 1, rows: [{ id: "11" }] };
+      if (sql.includes("update drafts")) {
+        updatedParams = params;
+        return { rowCount: 1, rows: [{ id: "41" }] };
+      }
+      return { rowCount: 1, rows: [] };
+    });
+    const { pool } = fakePool(query);
+
+    const updated = await updateDraftForUser(5, 41, {
+      ...input,
+      version: 3,
+      origin: "ai",
+      text: "Полностью новый текст автора",
+      sourceRef: null,
+      generationResultId: null,
+    }, pool as never);
+
+    expect(updated).toMatchObject({ version: 4, source_ref: null, generation_binding_valid: false });
+    expect(updatedParams?.[7]).toBeNull();
+  });
+
   it("ACKs human review by advancing and binding the exact AI draft version", async () => {
     const aiValidation = {
       version: 1,
@@ -191,6 +376,8 @@ describe("server draft transactions", () => {
           rows: [{
             ...row,
             origin: "ai",
+            purpose: "needs_review",
+            generation_result_id: "91",
             ai_validation: aiValidation,
             version: selected === 1 ? "3" : "4",
             human_reviewed_version: selected === 1 ? null : "4",

@@ -41,7 +41,7 @@ export async function GET(req: NextRequest) {
     let plan =
       (
         await pool.query(
-          `select id, week_start, items, rules, status, created_at
+          `select id, week_start, items, rules, status, revision, created_at
              from autopilot_plan where user_id = $1 and channel_id = $2
              order by created_at desc limit 1`,
           [user.id, channelId],

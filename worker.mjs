@@ -28,6 +28,8 @@ import {
   autopilotBuildComplete,
   autopilotJobAttemptsExhausted,
   formatPost,
+  parseTelegramChannelDescription,
+  summarizeTelegramPostingActivity,
 } from "./worker/lib.mjs";
 import {
   collectRssPipeline,
@@ -123,6 +125,7 @@ import {
   commitWorkerAiUsage,
   heartbeatWorkerAiUsage,
   releaseWorkerAiUsage,
+  expireWorkerAiUsageReservations,
   workerAiUsageCompositeKey,
   workerAiUsageKey,
 } from "./worker/ai-usage-reservation.mjs";
@@ -2084,7 +2087,7 @@ async function collectVkStats(userId = null) {
 // + запасные название/подписчики из шапки.
 async function fetchCompetitorPage(handle) {
   const h = String(handle).replace(/^@/, "");
-  const out = { ok: false, title: null, subscribers: null, posts: [] };
+  const out = { ok: false, title: null, description: null, subscribers: null, posts: [] };
   try {
     const r = await fetchTgWithBackoff(`https://t.me/s/${h}`);
     if (!r.ok) return out;
@@ -2094,6 +2097,7 @@ async function fetchCompetitorPage(handle) {
     if (subM) out.subscribers = parseCount(subM[1].replace(/\s/g, ""));
     const titM = html.match(/tgme_channel_info_header_title[^>]*><span[^>]*>([^<]+)/);
     if (titM) out.title = decodeEntities(titM[1]).trim() || null;
+    out.description = parseTelegramChannelDescription(html);
 
     const parts = html.split('data-post="');
     for (let i = 1; i < parts.length; i++) {
@@ -2445,22 +2449,39 @@ async function discoverForChannel(userId, channelId) {
 
       const texts = page.posts.map((p) => p.text).filter(Boolean);
       const onTopic = await sameNiche(brief, page.title, texts);
+      const activity = summarizeTelegramPostingActivity(page.posts);
 
       const r = await pool.query(
-        `insert into competitor_suggestions (user_id, channel_id, handle, title, subscribers, posts, mentioned_by, sources, on_topic)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        `insert into competitor_suggestions (user_id, channel_id, handle, title, description, subscribers, posts, last_post_at, posts_per_week, mentioned_by, sources, on_topic)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
          on conflict (channel_id, handle) do update set
            title = coalesce($4, competitor_suggestions.title),
-           subscribers = coalesce($5, competitor_suggestions.subscribers),
-           posts = $6,
-           mentioned_by = greatest(competitor_suggestions.mentioned_by, $7),
-           sources = $8,
-           on_topic = $9
+           description = coalesce($5, competitor_suggestions.description),
+           subscribers = coalesce($6, competitor_suggestions.subscribers),
+           posts = $7,
+           last_post_at = $8,
+           posts_per_week = $9,
+           mentioned_by = greatest(competitor_suggestions.mentioned_by, $10),
+           sources = $11,
+           on_topic = $12
          where competitor_suggestions.status = 'new'
          returning (xmax = 0) as inserted`,
         // mentioned_by = 0 у находок из справочника: на них никто из твоих не ссылался, их
         // просто знает платформа. UI по этому нулю и отличает одно от другого.
-        [userId, channelId, c.handle, page.title, page.subscribers, page.posts.length, c.by.length, c.by, onTopic],
+        [
+          userId,
+          channelId,
+          c.handle,
+          page.title,
+          page.description,
+          page.subscribers,
+          page.posts.length,
+          activity.lastPostAt,
+          activity.postsPerWeek,
+          c.by.length,
+          c.by,
+          onTopic,
+        ],
       );
       if (r.rows[0]?.inserted && onTopic !== false) added++;
       console.log(
@@ -5064,8 +5085,9 @@ async function cleanupExpired() {
   const links = await pool.query(
     `delete from bot_links where used_at is not null or expires_at < now()`,
   );
+  const aiReservations = await expireWorkerAiUsageReservations(pool, 500);
   console.log(
-    `[cleanup] удалено: сессий — ${sessions.rowCount}, bot_links — ${links.rowCount}`,
+    `[cleanup] удалено: сессий — ${sessions.rowCount}, bot_links — ${links.rowCount}; закрыто AI reservations — ${aiReservations}`,
   );
 }
 

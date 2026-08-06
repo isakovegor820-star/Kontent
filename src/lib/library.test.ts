@@ -58,7 +58,7 @@ describe("library helpers", () => {
       text: "Полный текст референса, который не должен попасть в URL",
       channelId: 17,
       clientKey: "draft_library-reference-1234567890",
-      reference: { competitorId: 9, sourceLabel: "  Канал конкурента  " },
+      reference: { sourcePostId: 9, sourceLabel: "  Канал конкурента  " },
     });
 
     expect(input).toEqual({
@@ -66,7 +66,12 @@ describe("library helpers", () => {
       media: null,
       scheduledAt: null,
       origin: "competitor",
-      sourceRef: { kind: "competitor", id: "9", label: "Канал конкурента" },
+      sourceRef: {
+        kind: "competitor",
+        id: "9",
+        label: "Канал конкурента",
+        provenance: { kind: "competitor_post", id: "9", label: "Канал конкурента" },
+      },
       channelIds: [17],
       aiValidation: null,
       clientKey: "draft_library-reference-1234567890",

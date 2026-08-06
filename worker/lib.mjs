@@ -256,6 +256,52 @@ export function decodeEntities(s) {
     });
 }
 
+/**
+ * Публичное описание канала из шапки t.me/s/. Telegram оставляет внутри ссылки и
+ * переносы строк, поэтому возвращаем чистый читаемый текст, а не HTML из внешнего
+ * источника. null отличает отсутствующее описание от пустой строки после очистки.
+ */
+export function parseTelegramChannelDescription(html) {
+  const match = String(html).match(
+    /<div\b[^>]*class=["'][^"']*\btgme_channel_info_description\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/iu,
+  );
+  if (!match) return null;
+
+  const text = decodeEntities(
+    match[1]
+      .replace(/<br\s*\/?>/giu, "\n")
+      .replace(/<[^>]+>/gu, "")
+      .replace(/[ \t\f\v]+/gu, " ")
+      .replace(/ *\n */gu, "\n")
+      .replace(/\n{2,}/gu, "\n"),
+  ).trim();
+
+  return text || null;
+}
+
+/**
+ * Из последних публичных постов считает недавний темп без догадок о «качестве» канала.
+ * Темп — средний интервал между видимыми постами, а не число постов на странице: Telegram
+ * ограничивает публичную выдачу, поэтому простой count занижал бы активные каналы.
+ */
+export function summarizeTelegramPostingActivity(posts) {
+  const timestamps = (Array.isArray(posts) ? posts : [])
+    .map((post) => Date.parse(String(post?.postedAt || "")))
+    .filter(Number.isFinite)
+    .sort((a, b) => b - a);
+
+  if (timestamps.length === 0) return { lastPostAt: null, postsPerWeek: null };
+
+  const lastPostAt = new Date(timestamps[0]).toISOString();
+  if (timestamps.length < 2) return { lastPostAt, postsPerWeek: null };
+
+  const spanDays = Math.max((timestamps[0] - timestamps[timestamps.length - 1]) / 86_400_000, 1);
+  const rawRate = ((timestamps.length - 1) * 7) / spanDays;
+  const postsPerWeek = Math.round(Math.min(rawRate, 99) * 10) / 10;
+
+  return { lastPostAt, postsPerWeek };
+}
+
 // ── Страж фактов ─────────────────────────────────────────────────────────────
 /**
  * СТРАЖ ФАКТОВ. Ищет в готовом посте конкретику, которой нет в опоре: числа, даты,

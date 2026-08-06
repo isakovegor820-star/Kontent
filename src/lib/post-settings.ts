@@ -60,7 +60,7 @@ export type DesiredFeeling = "auto" | "interest" | "trust" | "desire" | "urgency
 export type PrimaryMetric = "auto" | "readthrough" | "saves" | "comments" | "clicks" | "leads" | "sales";
 export type MessageCount = "one" | "one_plus" | "several";
 export type TrustLevel = "auto" | "cold" | "familiar" | "warm" | "customer";
-export type FactStrictness = "verified" | "verified_inference" | "general" | "creative_no_new_facts";
+export type FactStrictness = "off" | "verified" | "verified_inference" | "general" | "creative_no_new_facts";
 export type MissingFactsMode = "ask" | "omit" | "neutral" | "placeholder";
 export type ProofType = "number" | "statistic" | "case" | "review" | "quote" | "experience" | "research" | "certificate" | "demo" | "comparison" | "product_fact";
 export type SalesAngle = "auto" | "problem" | "desired_result" | "mistake" | "lost_opportunity" | "saving" | "speed" | "simplicity" | "safety" | "status" | "novelty" | "comparison" | "case" | "objection" | "demo" | "personal_story";
@@ -524,7 +524,9 @@ export const DEFAULT_POST_SETTINGS: Readonly<PostSettings> = Object.freeze({
   forbiddenTopics: [],
   creativity: "balanced",
   proofs: [],
-  factStrictness: "verified",
+  // The explicit opt-out still creates a review-required receipt; strict checks can be
+  // enabled per publication when verified sources are available.
+  factStrictness: "off",
   missingFactsMode: "omit",
   salesAngle: "auto",
   persuasionFormula: "auto",
@@ -718,7 +720,7 @@ export function normalizePostSettings(raw: unknown): PostSettings {
     forbiddenTopics: uniqueList(source.forbiddenTopics, 30, 160),
     creativity: oneOf(source.creativity, ["low", "balanced", "high"] as const, DEFAULT_POST_SETTINGS.creativity),
     proofs: normalizeProofs(source.proofs),
-    factStrictness: oneOf(source.factStrictness, ["verified", "verified_inference", "general", "creative_no_new_facts"] as const, DEFAULT_POST_SETTINGS.factStrictness),
+    factStrictness: oneOf(source.factStrictness, ["off", "verified", "verified_inference", "general", "creative_no_new_facts"] as const, DEFAULT_POST_SETTINGS.factStrictness),
     missingFactsMode: oneOf(source.missingFactsMode, ["ask", "omit", "neutral", "placeholder"] as const, DEFAULT_POST_SETTINGS.missingFactsMode),
     salesAngle: oneOf(source.salesAngle, ["auto", "problem", "desired_result", "mistake", "lost_opportunity", "saving", "speed", "simplicity", "safety", "status", "novelty", "comparison", "case", "objection", "demo", "personal_story"] as const, DEFAULT_POST_SETTINGS.salesAngle),
     persuasionFormula: oneOf(source.persuasionFormula, ["auto", "aida", "pas", "problem_consequence_solution", "before_after_bridge", "story_insight_offer", "objection_proof_offer", "mistake_approach_product", "result_mechanism_cta", "alternatives", "demo_benefit_action"] as const, DEFAULT_POST_SETTINGS.persuasionFormula),
@@ -901,7 +903,7 @@ const BRIEF_LABELS = {
   promotion: { auto: "определи по предложению", product: "продукт", service: "услуга", event: "мероприятие", personal_brand: "личный бренд", lead_magnet: "бесплатный материал" },
   salesIntensity: { native: "нативная", soft: "мягкая", confident: "уверенная", direct: "прямая" },
   productReveal: { immediately: "сразу", after_problem: "после проблемы", near_end: "ближе к концу", cta_only: "только в призыве" },
-  strictness: { verified: "только подтверждённые факты", verified_inference: "факты и осторожные выводы", general: "допустимы общие рассуждения", creative_no_new_facts: "свободные формулировки без новых фактов" },
+  strictness: { off: "автоматическая проверка отключена; факты проверяются вручную", verified: "только подтверждённые факты", verified_inference: "факты и осторожные выводы", general: "допустимы общие рассуждения", creative_no_new_facts: "свободные формулировки без новых фактов" },
   missing: { ask: "задать уточняющий вопрос", omit: "не использовать утверждение", neutral: "сформулировать нейтрально", placeholder: "пометить место для ручного заполнения" },
   quality: { fast: "быстро: один проход и минимальная проверка", balanced: "сбалансированно: черновик, проверка и редактура", maximum: "максимальное качество: три концепции, выбор лучшей и финальная редактура" },
 } as const;

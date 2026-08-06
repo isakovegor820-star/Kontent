@@ -6,6 +6,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   ArrowRight,
   Bot,
@@ -204,6 +205,7 @@ function Metric({
 
 function RssScreen() {
   const store = useStore();
+  const router = useRouter();
   const [feeds, setFeeds] = useState<Feed[]>([]);
   const [channels, setChannels] = useState<Channel[]>([]);
   const [items, setItems] = useState<RssItem[]>([]);
@@ -225,6 +227,7 @@ function RssScreen() {
   const [maxPerDay, setMaxPerDay] = useState(3);
   const [saving, setSaving] = useState(false);
   const [connectingSourceId, setConnectingSourceId] = useState<string | null>(null);
+  const [creatingItemId, setCreatingItemId] = useState<number | null>(null);
 
   const [catalogSources, setCatalogSources] = useState<RankedRssSource[]>([]);
   const [catalogContext, setCatalogContext] = useState<RssCatalogContext | null>(null);
@@ -234,6 +237,35 @@ function RssScreen() {
   const [journalFilter, setJournalFilter] = useState<JournalFilter>("all");
   const [journalFeedId, setJournalFeedId] = useState<number | "all">("all");
   const [screenView, setScreenView] = useState<RssScreenView>("sources");
+
+  const createMaterial = async (item: RssItem) => {
+    if (!channelId || creatingItemId != null) return;
+    setCreatingItemId(item.id);
+    try {
+      const response = await fetch(`/api/rss/items/${item.id}/draft`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ channelId }),
+      });
+      const result = (await response.json().catch(() => null)) as
+        | { ok?: boolean; draft?: { id?: number }; error?: string }
+        | null;
+      const draftId = Number(result?.draft?.id);
+      if (response.ok && result?.ok && Number.isSafeInteger(draftId) && draftId > 0) {
+        router.push(`/app/studio?draft=${draftId}&intent=create`);
+        return;
+      }
+      store.toast({
+        kind: "danger",
+        title: "Материал не создан",
+        body: result?.error === "source_context_not_found"
+          ? "Запись или её канал уже недоступны. Обнови журнал и попробуй другую."
+          : "Источник не изменён. Попробуй ещё раз.",
+      });
+    } finally {
+      setCreatingItemId(null);
+    }
+  };
 
   const loadFeeds = useCallback(async () => {
     const response = await fetch("/api/rss", { cache: "no-store" });
@@ -1130,8 +1162,18 @@ function RssScreen() {
 
                       <div className="flex flex-wrap items-center gap-2 sm:justify-end">
                         <StatusBadge item={item} />
+                        <Button
+                          size="sm"
+                          variant="soft"
+                          loading={creatingItemId === item.id}
+                          disabled={creatingItemId != null}
+                          onClick={() => void createMaterial(item)}
+                        >
+                          <Sparkles className="h-3.5 w-3.5" aria-hidden />
+                          Создать материал
+                        </Button>
                         {item.status === "posted" && item.post_id && (
-                          <Link href="/app/calendar" className="inline-flex h-10 items-center gap-1.5 px-2 text-[12px] font-bold text-text underline-offset-4 hover:underline">
+                          <Link href={`/app/calendar#calendar-real-${item.post_id}`} className="inline-flex h-10 items-center gap-1.5 px-2 text-[12px] font-bold text-text underline-offset-4 hover:underline">
                             В календарь
                             <ArrowRight className="h-3.5 w-3.5" aria-hidden />
                           </Link>

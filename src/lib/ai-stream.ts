@@ -56,6 +56,7 @@ type AiStreamEventPayload =
       fallbackUsed?: boolean;
       replayed?: boolean;
       ackRequired?: boolean;
+      generationResultId?: number;
     };
 
 export type AiStreamEvent = AiStreamEventPayload & { requestId: string };
@@ -105,7 +106,10 @@ function isAiStreamEvent(value: unknown): value is AiStreamEvent {
       && typeof value.label === "string"
       && validSuggestion;
   }
-  return value.type === "done" && typeof value.pipeline === "string";
+  return value.type === "done"
+    && typeof value.pipeline === "string"
+    && (value.generationResultId == null
+      || (Number.isSafeInteger(value.generationResultId) && Number(value.generationResultId) > 0));
 }
 
 export function parseAiStreamBuffer(buffer: string): { events: AiStreamEvent[]; rest: string } {

@@ -686,10 +686,18 @@ export default function TrendsPage() {
   // Создание публикации: готовую идею воркера сначала показываем в карточке для ручной
   // проверки. Если идеи нет — пишем тем же движком (Д.8), потоком прямо в карточку.
   const snap = async (item: Item) => {
+    if (process.env.NEXT_PUBLIC_TREND_REFERENCE_STUDIO === "disabled") {
+      store.toast({
+        kind: "danger",
+        title: "Безопасный create-flow обязателен",
+        body: "Операторский rollback отключён: исходный текст нельзя превращать в публикуемый черновик напрямую.",
+      });
+      return;
+    }
     // Новый основной путь: сначала сохраняем принадлежавший пользователю reference-draft,
     // затем передаём в URL только его ID. Студия запускает адаптацию по механике источника.
-    // Старый inline-flow остаётся временным операторским rollback и включается только
-    // явным NEXT_PUBLIC_TREND_REFERENCE_STUDIO=disabled.
+    // Старый inline-flow оставлен только как мёртвый migration fallback: feature flag
+    // теперь fail-closed выше и не может вернуть прямую публикацию исходного текста.
     if (process.env.NEXT_PUBLIC_TREND_REFERENCE_STUDIO !== "disabled") {
       if (generationInFlightRef.current !== null) return;
       const destinationChannelId = Number(channelId);
@@ -712,8 +720,13 @@ export default function TrendsPage() {
           channelId: destinationChannelId,
           clientKey,
           sourceLabel: item.competitorTitle || `@${item.handle}`,
+          scope,
           text: item.text,
-          idea: item.idea,
+          idea: item.idea ? {
+            topic: item.idea.topic,
+            hook: item.idea.hook,
+            structure: item.idea.structure,
+          } : null,
         }));
         router.push(appDraftActionHref("create", result.draft.id));
       } catch (error) {

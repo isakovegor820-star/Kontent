@@ -9,11 +9,17 @@ describe("buildTrendReferenceDraft", () => {
       channelId: 7,
       clientKey: "draft_trend_reference_41",
       sourceLabel: "Legal Academy",
+      scope: "global",
       text: "Исходный тренд",
     })).toMatchObject({
       text: "Исходный тренд",
       origin: "trend",
-      sourceRef: { kind: "trend", id: "41", label: "Legal Academy" },
+      sourceRef: {
+        kind: "trend",
+        id: "41",
+        label: "Legal Academy",
+        provenance: { kind: "trend", id: "41", label: "Legal Academy" },
+      },
       channelIds: [7],
       clientKey: "draft_trend_reference_41",
     });

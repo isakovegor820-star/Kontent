@@ -4,10 +4,26 @@
 // добавляешь ссылку → воркер собирает статистику постов (t.me/s/ + Bot API). Лимит 20,
 // свободно добавлять/удалять. Словесные выводы ИИ подключим отдельно (пока — честная статистика).
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import Link from "next/link";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { Eye, Loader2, Plus, Radar, Sparkles, Trash2, TriangleAlert, Users } from "lucide-react";
+import {
+  Activity,
+  ArrowRight,
+  Clock3,
+  ExternalLink,
+  Eye,
+  FileText,
+  Loader2,
+  Plus,
+  Radar,
+  Sparkles,
+  Trash2,
+  TriangleAlert,
+  Users,
+  X,
+} from "lucide-react";
 
 import { AppShell } from "@/components/app/shell";
 import { ChannelPicker, useChannelChoice } from "@/components/app/channel-picker";
@@ -181,13 +197,231 @@ interface Suggestion {
   id: number;
   handle: string;
   title: string | null;
+  description: string | null;
   subscribers: number | null;
   posts: number;
+  lastPostAt: string | null;
+  postsPerWeek: number | null;
   mentionedBy: number;
   sources: string[];
   /** true — ИИ сверил посты кандидата с твоим брифом; null — движка не было, не судили */
   onTopic: boolean | null;
   link: string;
+}
+
+function postingRateLabel(value: number | null): string {
+  if (value == null || !Number.isFinite(value)) return "Недостаточно данных";
+  const rate = value.toLocaleString("ru-RU", { maximumFractionDigits: 1 });
+  return `≈ ${rate} ${plural(Math.round(value), "пост", "поста", "постов")}/нед.`;
+}
+
+function lastPostLabel(value: string | null): string {
+  if (!value) return "Дата не найдена";
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return "Дата не найдена";
+  const days = Math.max(0, Math.floor((Date.now() - timestamp) / 86_400_000));
+  if (days === 0) return "Сегодня";
+  if (days === 1) return "Вчера";
+  if (days <= 30) return `${days} ${plural(days, "день", "дня", "дней")} назад`;
+  return new Date(timestamp).toLocaleDateString("ru-RU", { day: "numeric", month: "short" });
+}
+
+function SuggestionPreviewDialog({
+  item,
+  atLimit,
+  fallbackFocusRef,
+  onClose,
+  onAdd,
+  onDismiss,
+}: {
+  item: Suggestion;
+  atLimit: boolean;
+  fallbackFocusRef: React.RefObject<HTMLButtonElement | null>;
+  onClose: () => void;
+  onAdd: () => void;
+  onDismiss: () => void;
+}) {
+  const titleId = useId();
+  const descriptionId = useId();
+  const overlayRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    const fallbackFocus = fallbackFocusRef.current;
+    previousFocusRef.current = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+    const overlay = overlayRef.current;
+    const inerted = Array.from(document.body.children)
+      .filter((element): element is HTMLElement => element instanceof HTMLElement && element !== overlay)
+      .map((element) => ({ element, wasInert: element.inert }));
+    inerted.forEach(({ element }) => {
+      element.inert = true;
+    });
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const frame = requestAnimationFrame(() => closeRef.current?.focus());
+
+    return () => {
+      cancelAnimationFrame(frame);
+      document.body.style.overflow = previousOverflow;
+      inerted.forEach(({ element, wasInert }) => {
+        element.inert = wasInert;
+      });
+      const previous = previousFocusRef.current;
+      if (previous?.isConnected) previous.focus();
+      else fallbackFocus?.focus();
+    };
+  }, [fallbackFocusRef, item.id]);
+
+  const dialog = (
+    <div
+      ref={overlayRef}
+      className="fixed inset-0 z-[110] grid place-items-center bg-black/45 p-3 sm:p-6"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={descriptionId}
+        tabIndex={-1}
+        className="max-h-[calc(100dvh-1.5rem)] w-full max-w-2xl overflow-y-auto overscroll-contain rounded-lg border border-line bg-surface p-5 shadow-float sm:max-h-[calc(100dvh-3rem)] sm:p-6"
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            event.preventDefault();
+            onClose();
+            return;
+          }
+          if (event.key !== "Tab") return;
+          const focusable = Array.from(
+            panelRef.current?.querySelectorAll<HTMLElement>(
+              'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])',
+            ) ?? [],
+          ).filter((element) => !element.hasAttribute("disabled"));
+          if (focusable.length === 0) {
+            event.preventDefault();
+            panelRef.current?.focus();
+            return;
+          }
+          const first = focusable[0];
+          const last = focusable[focusable.length - 1];
+          const active = document.activeElement;
+          if (event.shiftKey && (active === first || !panelRef.current?.contains(active))) {
+            event.preventDefault();
+            last.focus();
+          } else if (!event.shiftKey && (active === last || !panelRef.current?.contains(active))) {
+            event.preventDefault();
+            first.focus();
+          }
+        }}
+      >
+        <div className="flex items-start gap-3">
+          <span className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-info-soft text-info-text">
+            <TelegramIcon className="h-5 w-5" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-[13px] font-semibold text-text-3">@{item.handle}</p>
+            <h2 id={titleId} className="mt-0.5 text-balance text-[20px] leading-tight font-extrabold text-text">
+              {item.title || `@${item.handle}`}
+            </h2>
+            <p id={descriptionId} className="mt-1.5 text-[13px] leading-relaxed text-text-2">
+              Проверь канал по открытым данным Telegram перед добавлением в конкуренты.
+            </p>
+          </div>
+          <Button ref={closeRef} type="button" size="icon" variant="ghost" onClick={onClose} aria-label="Закрыть сводку">
+            <X className="h-5 w-5" aria-hidden />
+          </Button>
+        </div>
+
+        <dl className="mt-5 grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+          {[
+            {
+              label: "Подписчики",
+              value: item.subscribers == null ? "—" : fmtCompact(item.subscribers),
+              icon: Users,
+            },
+            { label: "Недавний темп", value: postingRateLabel(item.postsPerWeek), icon: Activity },
+            { label: "Посты в выборке", value: fmtNum(item.posts), icon: FileText },
+            { label: "Последний пост", value: lastPostLabel(item.lastPostAt), icon: Clock3 },
+          ].map((metric) => {
+            const Icon = metric.icon;
+            return (
+              <div key={metric.label} className="rounded-sm bg-surface-inset p-3">
+                <dt className="flex items-center gap-1.5 text-[12px] font-semibold text-text-3">
+                  <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                  {metric.label}
+                </dt>
+                <dd className="nums mt-1 text-[15px] leading-snug font-extrabold text-text">
+                  {metric.value}
+                </dd>
+              </div>
+            );
+          })}
+        </dl>
+        <p className="mt-2 text-[12px] leading-relaxed text-text-3">
+          Темп рассчитан по интервалам между последними публичными постами.
+        </p>
+
+        <section className="mt-5" aria-labelledby={`${titleId}-about`}>
+          <h3 id={`${titleId}-about`} className="text-[13px] font-bold text-text">О канале</h3>
+          <p className="mt-1.5 whitespace-pre-line break-words text-pretty text-[14px] leading-relaxed text-text-2">
+            {item.description || "Публичное описание Telegram пока недоступно."}
+          </p>
+        </section>
+
+        <section className="mt-5" aria-labelledby={`${titleId}-reason`}>
+          <h3 id={`${titleId}-reason`} className="text-[13px] font-bold text-text">Почему показали</h3>
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            {item.onTopic === true ? (
+              <Badge tone="success">совпадает с твоей темой</Badge>
+            ) : (
+              <Badge tone="neutral">тема ещё не проверена</Badge>
+            )}
+            {item.mentionedBy > 1 && <Badge tone="brand">{item.mentionedBy} независимые ссылки</Badge>}
+          </div>
+          <p className="mt-2 text-[13px] leading-relaxed text-text-2">
+            {item.sources.length > 0
+              ? `На канал ссылаются: ${item.sources.map((source) => `@${source}`).join(", ")}.`
+              : "Канал найден в справочнике платформы и проверен по открытой ленте."}
+          </p>
+        </section>
+
+        {atLimit && (
+          <p className="mt-5 rounded-sm bg-info-soft p-3 text-[13px] leading-relaxed text-info-text">
+            Достигнут лимит конкурентов. Удали один канал из списка, чтобы добавить новый.
+          </p>
+        )}
+
+        <div className="mt-6 flex flex-wrap items-center justify-end gap-2">
+          <a
+            href={item.link}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-[10px] border border-line-strong bg-surface px-3.5 py-2 text-[13px] font-semibold whitespace-nowrap text-text transition-[background-color,border-color,transform] duration-200 hover:bg-surface-inset active:scale-[0.96] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+            aria-label={`Открыть канал «${item.title || `@${item.handle}`}» в Telegram`}
+          >
+            Открыть канал
+            <ExternalLink className="h-3.5 w-3.5" aria-hidden />
+          </a>
+          <Button type="button" variant="ghost" onClick={onDismiss}>
+            Не подходит
+          </Button>
+          <Button type="button" variant="solid" onClick={onAdd} disabled={atLimit}>
+            <Plus className="h-4 w-4" aria-hidden />
+            Добавить конкурента
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+
+  return createPortal(dialog, document.body);
 }
 
 function Suggestions({
@@ -203,11 +437,15 @@ function Suggestions({
   const [items, setItems] = useState<Suggestion[]>([]);
   const [seeds, setSeeds] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [preview, setPreview] = useState<Suggestion | null>(null);
+  const searchButtonRef = useRef<HTMLButtonElement>(null);
 
   // Находки ищутся соседям КОНКРЕТНОГО канала — значит и показывать надо его находки.
   const load = useCallback(async () => {
     if (!channelId) {
+      setLoadError(false);
       setLoading(false);
       return;
     }
@@ -215,11 +453,13 @@ function Suggestions({
       const r = await fetch(`/api/competitors/suggestions?channel=${channelId}`, {
         cache: "no-store",
       });
+      if (!r.ok) throw new Error("suggestions_unavailable");
       const d = (await r.json()) as { suggestions?: Suggestion[]; seeds?: number };
       setItems(d.suggestions ?? []);
       setSeeds(d.seeds ?? 0);
+      setLoadError(false);
     } catch {
-      /* сеть */
+      setLoadError(true);
     } finally {
       setLoading(false);
     }
@@ -246,6 +486,7 @@ function Suggestions({
   };
 
   const act = async (it: Suggestion, action: "add" | "dismiss") => {
+    setPreview(null);
     setItems((prev) => prev.filter((x) => x.id !== it.id)); // убираем сразу — ждать нечего
     const r = await fetch("/api/competitors/suggestions", {
       method: "PATCH",
@@ -265,6 +506,23 @@ function Suggestions({
   };
 
   if (loading) return null;
+
+  if (loadError && !items.length) {
+    return (
+      <Card className="mb-6 flex flex-wrap items-center gap-x-4 gap-y-3 p-4" role="status">
+        <TriangleAlert className="h-[18px] w-[18px] shrink-0 text-danger-text" strokeWidth={2} aria-hidden />
+        <div className="min-w-0 flex-1">
+          <p className="text-[14px] font-semibold text-text">Не удалось загрузить похожие каналы</p>
+          <p className="mt-0.5 text-[13px] leading-relaxed text-text-2">
+            Рекомендации сохранены. Проверь соединение с сервером и попробуй снова.
+          </p>
+        </div>
+        <Button size="sm" variant="soft" onClick={load}>
+          Повторить
+        </Button>
+      </Card>
+    );
+  }
 
   // Графа нет без семени: не от чего идти — так и говорим, а не крутим пустой спиннер.
   if (!items.length && seeds === 0) return null;
@@ -295,59 +553,76 @@ function Suggestions({
           Похоже, это твои соседи
         </h2>
         <span className="text-[13px] text-text-3">нашёл {items.length}</span>
-        <Button size="sm" variant="ghost" onClick={search} loading={busy} className="ml-auto">
+        <Button ref={searchButtonRef} size="sm" variant="ghost" onClick={search} loading={busy} className="ml-auto">
           Искать ещё
         </Button>
       </div>
 
       <ul className="mt-4 grid gap-2.5 lg:grid-cols-2">
         {items.map((it) => (
-          <li key={it.id} className="rounded-sm border border-line bg-surface-2 p-3.5">
-            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-              <a
-                href={it.link}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="truncate text-[14px] font-bold text-text hover:text-brand"
+          <li key={it.id} className="h-full">
+            <button
+              type="button"
+              aria-haspopup="dialog"
+              aria-label={`Посмотреть сводку о канале «${it.title || `@${it.handle}`}»`}
+              onClick={() => setPreview(it)}
+              className="group flex h-full w-full cursor-pointer flex-col rounded-sm border border-line bg-surface-2 p-3.5 text-start transition-[background-color,border-color,box-shadow] duration-150 hover:border-line-strong hover:bg-surface focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+            >
+              <div className="flex w-full items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <h3
+                    className="truncate text-[14px] font-bold text-text"
+                    title={it.title || `@${it.handle}`}
+                  >
+                    {it.title || `@${it.handle}`}
+                  </h3>
+                  <p className="mt-0.5 truncate text-[12px] font-semibold text-text-3">@{it.handle}</p>
+                </div>
+                {it.subscribers != null && (
+                  <span className="nums shrink-0 text-[13px] text-text-3">{fmtCompact(it.subscribers)}</span>
+                )}
+              </div>
+
+              <p
+                className="mt-2 line-clamp-2 whitespace-pre-line break-words text-pretty text-[13px] leading-relaxed text-text-2"
+                title={it.description || undefined}
               >
-                {it.title || `@${it.handle}`}
-              </a>
-              {it.subscribers != null && (
-                <span className="nums text-[13px] text-text-3">{fmtCompact(it.subscribers)}</span>
-              )}
-              {it.mentionedBy > 1 && <Badge tone="brand">×{it.mentionedBy} ссылки</Badge>}
-              {/* Разные вещи: «сверено с твоим брифом» и «нашли, но судить было нечем» */}
-              {it.onTopic === true ? (
-                <Badge tone="success">твоя тема</Badge>
-              ) : (
-                <Badge tone="neutral">тему не проверил</Badge>
-              )}
-            </div>
-            {/* Обоснование: откуда он взялся. Без него это «доверься алгоритму».
-                Два разных источника, и путать их нельзя: «на него ссылается твой сосед» —
-                сигнал сильнее, чем «его знает платформа по другим людям». */}
-            <p className="mt-1 truncate text-[12px] text-text-3">
-              {it.sources.length > 0 ? (
-                <>
-                  ссылаются: {it.sources.slice(0, 2).map((x) => `@${x}`).join(", ")}
-                  {it.sources.length > 2 && ` и ещё ${it.sources.length - 2}`}
-                </>
-              ) : (
-                "из справочника платформы"
-              )}
-            </p>
-            <div className="mt-2.5 flex gap-2">
-              <Button size="sm" variant="soft" onClick={() => act(it, "add")} disabled={atLimit}>
-                <Plus className="h-4 w-4" aria-hidden />
-                Добавить
-              </Button>
-              <Button size="sm" variant="ghost" onClick={() => act(it, "dismiss")}>
-                Не он
-              </Button>
-            </div>
+                {it.description || "Публичное описание Telegram пока недоступно."}
+              </p>
+
+              <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                {it.mentionedBy > 1 && <Badge tone="brand">×{it.mentionedBy} ссылки</Badge>}
+                {it.onTopic === true ? (
+                  <Badge tone="success">твоя тема</Badge>
+                ) : (
+                  <Badge tone="neutral">тему не проверил</Badge>
+                )}
+              </div>
+
+              <span className="mt-auto flex w-full items-center justify-between gap-3 pt-3 text-[12px] font-semibold text-text-3 transition-colors group-hover:text-brand">
+                <span>
+                  {it.postsPerWeek == null ? `${fmtNum(it.posts)} постов в выборке` : postingRateLabel(it.postsPerWeek)}
+                </span>
+                <span className="inline-flex items-center gap-1.5 text-[13px] text-text-2 group-hover:text-brand">
+                  Посмотреть сводку
+                  <ArrowRight className="h-3.5 w-3.5" aria-hidden />
+                </span>
+              </span>
+            </button>
           </li>
         ))}
       </ul>
+
+      {preview && (
+        <SuggestionPreviewDialog
+          item={preview}
+          atLimit={atLimit}
+          fallbackFocusRef={searchButtonRef}
+          onClose={() => setPreview(null)}
+          onAdd={() => void act(preview, "add")}
+          onDismiss={() => void act(preview, "dismiss")}
+        />
+      )}
     </Card>
   );
 }

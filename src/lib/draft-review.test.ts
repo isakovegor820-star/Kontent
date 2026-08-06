@@ -29,6 +29,9 @@ const validation = (status: DraftAiValidation["status"]): DraftAiValidation => (
 
 const input = (overrides: Record<string, unknown> = {}) => ({
   origin: "ai" as const,
+  purpose: "publishable" as const,
+  generation_result_id: 81,
+  generation_binding_valid: true,
   version: 4,
   review_policy_version: 1 as const,
   ai_validation: validation("not_checked"),

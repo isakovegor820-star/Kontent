@@ -100,7 +100,7 @@ describe("P0 desktop/mobile navigation and Library action contract", () => {
       text: longReference,
       channelId: 18,
       clientKey: "draft_library_e2e_1234567890",
-      reference: { competitorId: 42, sourceLabel: "Открытый источник" },
+      reference: { sourcePostId: 42, sourceLabel: "Открытый источник" },
     });
 
     expect(draft).toMatchObject({

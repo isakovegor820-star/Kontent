@@ -20,6 +20,8 @@ export const SITE_OSINT_SYSTEM_PROMPT = `Ты — доказательный OSI
 
 Confidence: high — первичный источник или два независимых согласованных источника; medium — один содержательный источник или несколько косвенных сигналов; low — слабый, старый или неполный сигнал; none — доказательств нет.
 
+Пиши компактно: shortAnswer до 500 символов, explanation до 900 символов, не более 4 facts, 8 evidenceIds, 2 contradictions, 3 gaps и 3 recommendationHooks на ответ.
+
 Верни только один JSON-объект по переданному outputContract: без Markdown, пояснений вне JSON и дополнительных полей.`;
 
 const ANSWER_STATUS = new Set(["answered", "hypothesis", "conflicting", "insufficient_data"]);
@@ -187,6 +189,15 @@ export function buildSiteInterviewPrompt(input) {
         recommendationHooks: [{ kind: "string", rationale: "string", entityIds: ["existing entity id"], evidenceIds: ["existing evidence id"] }],
       }],
     },
+    responseLimits: {
+      shortAnswerCharacters: 500,
+      explanationCharacters: 900,
+      facts: 4,
+      evidenceIds: 8,
+      contradictions: 2,
+      gaps: 3,
+      recommendationHooks: 3,
+    },
   };
   return Object.freeze({
     system: SITE_OSINT_SYSTEM_PROMPT,
@@ -319,6 +330,95 @@ export function parseAndValidateSiteInterviewBatch(rawText, input) {
   if (returnedIds.length !== expectedIds.length) errors.push("answer count mismatch");
   if (errors.length) return Object.freeze({ ok: false, error: "schema_invalid", errors: Object.freeze(errors.slice(0, 100)) });
   return Object.freeze({ ok: true, value: Object.freeze({ batchId, reportStatus: "complete", answers: Object.freeze(answers) }) });
+}
+
+export function repairSiteInterviewBatch(rawText, input) {
+  let parsed;
+  try {
+    parsed = JSON.parse(text(rawText, 500_000));
+  } catch {
+    return parseAndValidateSiteInterviewBatch(rawText, input);
+  }
+  const questions = Array.isArray(input?.questions) ? input.questions : [];
+  const evidenceIds = new Set(input?.evidenceIds || []);
+  const entityIds = new Set(input?.entityIds || []);
+  const rawAnswers = Array.isArray(parsed?.answers) ? parsed.answers : [];
+  const rawByQuestion = new Map();
+  for (const candidate of rawAnswers) {
+    const questionId = text(candidate?.questionId, 120);
+    if (questionId && !rawByQuestion.has(questionId)) rawByQuestion.set(questionId, candidate);
+  }
+  const validReferences = (values, valid, maxItems = 200) => uniqueStrings(values, maxItems, 120)
+    .filter((id) => valid.has(id));
+  const rank = { none: 0, low: 1, medium: 2, high: 3 };
+  const answers = questions.map((question) => {
+    const source = strictObject(rawByQuestion.get(question.id)) ? rawByQuestion.get(question.id) : {};
+    const collectedEvidence = new Set(validReferences(source.evidenceIds, evidenceIds));
+    const facts = (Array.isArray(source.facts) ? source.facts : []).slice(0, 30).map((fact) => {
+      const statement = text(fact?.statement, 1_500);
+      const ids = validReferences(fact?.evidenceIds, evidenceIds);
+      if (!statement || !ids.length) return null;
+      ids.forEach((id) => collectedEvidence.add(id));
+      return { statement, evidenceIds: ids };
+    }).filter(Boolean);
+    const contradictions = (Array.isArray(source.contradictions) ? source.contradictions : []).slice(0, 20).map((item) => {
+      const description = text(item?.description, 1_500);
+      const ids = validReferences(item?.evidenceIds, evidenceIds);
+      if (!description || ids.length < 2) return null;
+      ids.forEach((id) => collectedEvidence.add(id));
+      return { description, evidenceIds: ids };
+    }).filter(Boolean);
+    const hooks = (Array.isArray(source.recommendationHooks) ? source.recommendationHooks : []).slice(0, 20).map((hook) => {
+      const kind = text(hook?.kind, 120);
+      const rationale = text(hook?.rationale, 1_500);
+      const hookEvidenceIds = validReferences(hook?.evidenceIds, evidenceIds);
+      if (!kind || !rationale || !hookEvidenceIds.length) return null;
+      hookEvidenceIds.forEach((id) => collectedEvidence.add(id));
+      return {
+        kind,
+        rationale,
+        entityIds: validReferences(hook?.entityIds, entityIds),
+        evidenceIds: hookEvidenceIds,
+      };
+    }).filter(Boolean);
+    let status = ANSWER_STATUS.has(source.status) ? source.status : "insufficient_data";
+    let confidence = CONFIDENCE.has(source.confidence) ? source.confidence : "none";
+    if (status === "answered" && (!facts.length || !collectedEvidence.size || rank[confidence] < rank[question.minimumConfidence])) {
+      status = collectedEvidence.size ? "hypothesis" : "insufficient_data";
+    }
+    if (status === "conflicting" && !contradictions.length) {
+      status = collectedEvidence.size ? "hypothesis" : "insufficient_data";
+    }
+    if (status === "hypothesis" && !collectedEvidence.size) status = "insufficient_data";
+    if (status === "insufficient_data") confidence = "none";
+    else if (confidence === "none") confidence = "low";
+    const requiredIntegrations = uniqueStrings(source.requiredIntegrations, 20, 120)
+      .filter((integration) => INTEGRATIONS.has(integration));
+    const gaps = uniqueStrings(source.gaps, 30, 1_000);
+    if (status === "insufficient_data" && !gaps.length && !requiredIntegrations.length) {
+      gaps.push("Недостаточно проверяемых доказательств в текущем срезе.");
+    }
+    return {
+      questionId: question.id,
+      status,
+      shortAnswer: text(source.shortAnswer, 1_500) || (status === "insufficient_data"
+        ? "Проверяемых данных недостаточно."
+        : "Вывод требует дополнительной проверки."),
+      explanation: text(source.explanation, 4_000) || "Ответ приведён к доказательному контракту без добавления новых фактов.",
+      facts,
+      evidenceIds: [...collectedEvidence],
+      confidence,
+      contradictions,
+      gaps,
+      requiredIntegrations,
+      recommendationHooks: status === "insufficient_data" ? [] : hooks,
+    };
+  });
+  return parseAndValidateSiteInterviewBatch(JSON.stringify({
+    batchId: safeBatchId(input?.batchId),
+    reportStatus: "complete",
+    answers,
+  }), input);
 }
 
 export function aggregateSiteInterviewReport(input) {

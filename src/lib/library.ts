@@ -24,7 +24,7 @@ export type LibraryDraftContextInput = {
   channelId: number;
   clientKey: string;
   reference?: {
-    competitorId: number | string;
+    sourcePostId: number | string;
     sourceLabel: string;
   } | null;
   material?: {
@@ -50,9 +50,9 @@ export function buildLibraryDraftContext(input: LibraryDraftContextInput): Draft
   if (!Number.isSafeInteger(input.channelId) || input.channelId <= 0) {
     throw new RangeError("channelId must be a positive safe integer");
   }
-  const referenceId = input.reference ? String(input.reference.competitorId).trim() : "";
+  const referenceId = input.reference ? String(input.reference.sourcePostId).trim() : "";
   if (input.reference && !referenceId) {
-    throw new RangeError("reference competitorId is required");
+    throw new RangeError("reference sourcePostId is required");
   }
   const sourceLabel = input.reference?.sourceLabel.trim().slice(0, 400) || "Конкурент";
   const materialId = input.material ? String(input.material.id).trim() : "";
@@ -83,7 +83,12 @@ export function buildLibraryDraftContext(input: LibraryDraftContextInput): Draft
     scheduledAt: null,
     origin: input.material?.kind === "idea" ? "idea" : input.material || input.reference ? "competitor" : "manual",
     sourceRef: materialSourceRef ?? (input.reference
-      ? { kind: "competitor", id: referenceId.slice(0, 200), label: sourceLabel }
+      ? {
+          kind: "competitor",
+          id: referenceId.slice(0, 200),
+          label: sourceLabel,
+          provenance: { kind: "competitor_post", id: referenceId.slice(0, 200), label: sourceLabel },
+        }
       : null),
     channelIds: [input.channelId],
     aiValidation: null,

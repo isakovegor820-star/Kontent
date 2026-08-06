@@ -7,6 +7,7 @@ import {
   buildSiteInterviewPrompt,
   createSiteInterviewBatches,
   parseAndValidateSiteInterviewBatch,
+  repairSiteInterviewBatch,
   siteInterviewProviderKey,
   siteInterviewSemanticKey,
 } from "./interview.mjs";
@@ -108,5 +109,41 @@ describe("site OSINT interview contract", () => {
     expect(report.marketingPlan.measurement).toEqual(expect.arrayContaining([
       expect.objectContaining({ requiredIntegration: "CRM", confidence: "requires_integration" }),
     ]));
+  });
+
+  it("repairs schema-only model mistakes without inventing evidence or answers", () => {
+    const current = snapshot();
+    const batch = createSiteInterviewBatches(SITE_INTERVIEW_QUESTIONS, 3)[0];
+    const prompt = buildSiteInterviewPrompt({ snapshot: current, questions: batch.questions, batchId: batch.id });
+    const malformed = JSON.stringify({
+      batchId: "wrong_batch",
+      reportStatus: "partial",
+      extra: "ignored",
+      answers: [{
+        questionId: batch.questions[0].id,
+        status: "answered",
+        shortAnswer: "Неподтверждённый вывод",
+        explanation: "Модель сослалась на неизвестное доказательство.",
+        confidence: "high",
+        evidenceIds: ["ev_invented"],
+        facts: [{ statement: "Выдуманный факт", evidenceIds: ["ev_invented"] }],
+        contradictions: [],
+        gaps: [],
+        requiredIntegrations: ["Несуществующая интеграция"],
+        recommendationHooks: [],
+      }],
+    });
+    const repaired = repairSiteInterviewBatch(malformed, {
+      batchId: batch.id,
+      questions: batch.questions,
+      evidenceIds: prompt.evidenceIds,
+      entityIds: prompt.entityIds,
+    });
+    expect(repaired).toMatchObject({ ok: true });
+    expect(repaired.value.answers).toHaveLength(3);
+    expect(repaired.value.answers.every((answer) => answer.status === "insufficient_data" && answer.confidence === "none"))
+      .toBe(true);
+    expect(JSON.stringify(repaired.value)).not.toContain("ev_invented");
+    expect(JSON.stringify(repaired.value)).not.toContain("Выдуманный факт");
   });
 });

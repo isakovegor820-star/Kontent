@@ -28,11 +28,23 @@ import { POST } from "./route";
 
 const failed = {
   id: "41", request_id: "req-41", target_url: "https://example.com/", confirmed_domain: "example.com",
-  status: "failed", stage: "failed", progress: 40, progress_detail: null, limits: {}, result: null,
+  status: "failed", stage: "failed", progress: 40, progress_detail: null,
+  limits: { maxPages: 20, maxPageBytes: 1_000_000, maxTotalBytes: 6_000_000 }, result: null,
   error_code: "timeout", error_message: "Сайт не ответил", attempts: 1, run_revision: 1,
   last_retry_key: null, queue_confirmed_at: new Date(), created_at: new Date(), updated_at: new Date(), completed_at: new Date(),
 };
-const queued = { ...failed, status: "queued", stage: "queued", progress: 0, error_code: null, error_message: null, run_revision: 2, last_retry_key: "site-analysis-retry-1234", completed_at: null };
+const queued = {
+  ...failed,
+  status: "queued",
+  stage: "queued",
+  progress: 0,
+  limits: { maxPages: 20, maxPageBytes: 5_000_000, maxTotalBytes: 50_000_000 },
+  error_code: null,
+  error_message: null,
+  run_revision: 2,
+  last_retry_key: "site-analysis-retry-1234",
+  completed_at: null,
+};
 
 function request(origin = "http://localhost") {
   return new NextRequest("http://localhost/api/site-analysis/41/retry", {
@@ -68,7 +80,20 @@ describe("POST /api/site-analysis/:id/retry", () => {
   it("increments the durable revision before enqueueing a deterministic retry", async () => {
     const response = await POST(request(), { params: Promise.resolve({ id: "41" }) });
     expect(response.status).toBe(202);
-    expect(mocks.txQuery).toHaveBeenCalledWith(expect.stringContaining("run_revision = run_revision + 1"), [41, 7, "site-analysis-retry-1234"]);
+    expect(mocks.txQuery).toHaveBeenCalledWith(expect.stringContaining("run_revision = run_revision + 1"), [
+      41,
+      7,
+      "site-analysis-retry-1234",
+      JSON.stringify({
+        maxPages: 20,
+        maxPageBytes: 5_000_000,
+        maxTotalBytes: 50_000_000,
+        maxRedirects: 3,
+        timeoutMs: 10_000,
+        maxSitemaps: 5,
+        maxSitemapUrls: 100,
+      }),
+    ]);
     expect(mocks.enqueueSiteAnalysis).toHaveBeenCalledWith({ analysisId: 41, requestId: "req-41", runRevision: 2 });
     expect(await response.json()).toMatchObject({ analysis: { id: 41, runRevision: 2, status: "queued" }, requestId: "req-41" });
     expect(mocks.enqueueSiteAnalysis.mock.invocationCallOrder[0])

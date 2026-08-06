@@ -88,6 +88,14 @@ describe("migration runner helpers", () => {
         },
       ]),
     ).toEqual([expect.stringContaining("not allowlisted")]);
+    expect(
+      validateMigrationSet([
+        {
+          name: "20260805_draft_purpose.sql",
+          sql: "begin;\nalter table drafts drop constraint if exists drafts_purpose_check;\ncommit;",
+        },
+      ]),
+    ).toEqual([]);
   });
 
   it("finishes policy validation before constructing a database pool", async () => {

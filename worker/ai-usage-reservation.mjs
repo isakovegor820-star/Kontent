@@ -221,6 +221,26 @@ export async function releaseWorkerAiUsage(db, userId, reservationId) {
   return (await finalizeWorkerAiUsage(db, userId, reservationId, "released")).changed;
 }
 
+/** Global bounded lease cleanup used by the cron worker; rows remain as audit history. */
+export async function expireWorkerAiUsageReservations(db, limitValue = CLEANUP_BATCH) {
+  const limit = positiveInt(limitValue, CLEANUP_BATCH, 1_000);
+  const result = await db.query(
+    `with stale as (
+       select id from ai_usage
+        where status = 'reserved' and expires_at <= now()
+        order by expires_at, id
+        limit $1
+        for update skip locked
+     )
+     update ai_usage usage
+        set status = 'expired', finalized_at = now()
+       from stale
+      where usage.id = stale.id`,
+    [limit],
+  );
+  return result.rowCount ?? 0;
+}
+
 /** Refreshes the short lease. A dead worker stops heartbeating and can be reclaimed. */
 export async function heartbeatWorkerAiUsage(db, userIdValue, reservationIdValue, ttlMsValue) {
   const userId = positiveId(userIdValue, "ai usage user");

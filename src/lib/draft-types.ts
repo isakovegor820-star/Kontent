@@ -35,7 +35,10 @@ export interface ServerDraft {
   media: Post["media"];
   scheduled_at: string | null;
   origin: Post["origin"];
+  purpose: "source_context" | "publishable" | "needs_review";
   source_ref: Post["sourceRef"] | null;
+  generation_result_id: number | null;
+  generation_binding_valid: boolean;
   client_key: string;
   version: number;
   review_policy_version: 1;
@@ -54,6 +57,7 @@ export interface DraftWriteInput {
   sourceRef: Post["sourceRef"] | null;
   channelIds: number[];
   aiValidation: DraftAiValidation | null;
+  generationResultId?: number | null;
 }
 
 export interface DraftCreateInput extends DraftWriteInput {

@@ -362,7 +362,7 @@ export function LibraryRegistryView({ channelId, channelName }: { channelId: num
         clientKey,
         material,
         reference: !material && item.sourceId
-          ? { competitorId: item.sourceId, sourceLabel: item.sourceTitle }
+          ? { sourcePostId: item.sourceId, sourceLabel: item.sourceTitle }
           : null,
       }));
       router.push(appDraftActionHref(action, result.draft.id));

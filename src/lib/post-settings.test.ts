@@ -263,7 +263,7 @@ describe("маркетинговый бриф публикации", () => {
     expect(migrated).toMatchObject({
       promotionType: "auto",
       messageCount: "one",
-      factStrictness: "verified",
+      factStrictness: "off",
       qualityMode: "balanced",
       outputParts: ["main"],
     });

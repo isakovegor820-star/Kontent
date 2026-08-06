@@ -3,6 +3,7 @@ import {
   buildSiteInterviewPrompt,
   createSiteInterviewBatches,
   parseAndValidateSiteInterviewBatch,
+  repairSiteInterviewBatch,
   siteInterviewProviderKey,
   siteInterviewSemanticKey,
 } from "../src/lib/site-analysis/interview.mjs";
@@ -26,6 +27,16 @@ export class SiteInterviewWorkerError extends Error {
     this.details = Array.isArray(options.details) ? options.details.slice(0, 20) : [];
   }
 }
+
+export const SITE_INTERVIEW_EXECUTION_LIMITS = Object.freeze({
+  maxQuestionsPerBatch: 2,
+  maxEvidence: 32,
+  maxCharacters: 24_000,
+  maxTokens: 2_400,
+  timeoutMs: 90_000,
+  providerAttempts: 2,
+});
+
 function safeProviderCode(error) {
   const code = String(error?.code || "provider_error");
   if (["provider_timeout", "network_error", "rate_limited", "stream_truncated", "empty_generation", "provider_error", "engine_not_connected", "engine_unsupported"].includes(code)) return code;
@@ -151,7 +162,10 @@ export async function runSiteInterview(pool, input, dependencies = {}) {
   heartbeatTimer?.unref?.();
 
   try {
-    const batches = createSiteInterviewBatches(SITE_INTERVIEW_QUESTIONS, dependencies.maxQuestionsPerBatch || 6);
+    const batches = createSiteInterviewBatches(
+      SITE_INTERVIEW_QUESTIONS,
+      dependencies.maxQuestionsPerBatch ?? SITE_INTERVIEW_EXECUTION_LIMITS.maxQuestionsPerBatch,
+    );
     const completed = [];
     for (const [index, batch] of batches.entries()) {
       await onProgress({
@@ -165,8 +179,8 @@ export async function runSiteInterview(pool, input, dependencies = {}) {
         snapshot: input.snapshot,
         questions: batch.questions,
         batchId: batch.id,
-        maxEvidence: dependencies.maxEvidence,
-        maxCharacters: dependencies.maxCharacters,
+        maxEvidence: dependencies.maxEvidence ?? SITE_INTERVIEW_EXECUTION_LIMITS.maxEvidence,
+        maxCharacters: dependencies.maxCharacters ?? SITE_INTERVIEW_EXECUTION_LIMITS.maxCharacters,
       });
       const keyInput = {
         analysisId,
@@ -196,40 +210,53 @@ export async function runSiteInterview(pool, input, dependencies = {}) {
       }
       await claimBatch(pool, identity);
       let completion;
-      try {
-        completion = await complete({
-          system: prompt.system,
-          user: prompt.user,
-          engine: input.engine,
-          temperature: 0.1,
-          maxTokens: dependencies.maxTokens || 7_000,
-          providerRequestKey,
-          providerRequestId: input.requestId,
-        }, {
-          signal: dependencies.signal,
-          allowFallback: false,
-          timeoutMs: dependencies.timeoutMs || 90_000,
-          telemetry: (event) => dependencies.telemetry?.({
-            ...event,
-            analysisId,
-            runRevision,
-            batchId: batch.id,
-            requestId: input.requestId,
-          }),
-        });
-      } catch (error) {
-        const code = safeProviderCode(error);
-        await failBatch(pool, identity, code);
-        throw new SiteInterviewWorkerError(code, "Провайдер не завершил этап OSINT-интервью.", {
-          retryable: retryableProviderError(error),
-        });
+      const providerAttempts = Math.min(3, Math.max(1, Number(
+        dependencies.providerAttempts ?? SITE_INTERVIEW_EXECUTION_LIMITS.providerAttempts,
+      )));
+      for (let providerAttempt = 1; providerAttempt <= providerAttempts; providerAttempt += 1) {
+        try {
+          completion = await complete({
+            system: prompt.system,
+            user: prompt.user,
+            engine: input.engine,
+            temperature: 0.1,
+            maxTokens: dependencies.maxTokens ?? SITE_INTERVIEW_EXECUTION_LIMITS.maxTokens,
+            providerRequestKey,
+            providerRequestId: input.requestId,
+          }, {
+            signal: dependencies.signal,
+            allowFallback: false,
+            timeoutMs: dependencies.timeoutMs ?? SITE_INTERVIEW_EXECUTION_LIMITS.timeoutMs,
+            telemetry: (event) => dependencies.telemetry?.({
+              ...event,
+              analysisId,
+              runRevision,
+              batchId: batch.id,
+              providerAttempt,
+              requestId: input.requestId,
+            }),
+          });
+          break;
+        } catch (error) {
+          const code = safeProviderCode(error);
+          if (providerAttempt < providerAttempts && retryableProviderError(error)) {
+            await claimBatch(pool, identity);
+            continue;
+          }
+          await failBatch(pool, identity, code);
+          throw new SiteInterviewWorkerError(code, "Провайдер не завершил этап OSINT-интервью.");
+        }
       }
-      const validated = parseAndValidateSiteInterviewBatch(completion.text, {
+      const validationInput = {
         batchId: batch.id,
         questions: batch.questions,
         evidenceIds: prompt.evidenceIds,
         entityIds: prompt.entityIds,
-      });
+      };
+      let validated = parseAndValidateSiteInterviewBatch(completion.text, validationInput);
+      if (!validated.ok && validated.error === "schema_invalid") {
+        validated = repairSiteInterviewBatch(completion.text, validationInput);
+      }
       if (!validated.ok) {
         await failBatch(pool, identity, "schema_invalid");
         throw new SiteInterviewWorkerError("schema_invalid", "Ответ аналитика не прошёл формальную проверку.", { details: validated.errors });

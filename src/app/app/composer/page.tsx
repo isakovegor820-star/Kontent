@@ -193,6 +193,7 @@ interface HydrateInput {
 
 interface ComposerValue {
   hydrated: boolean;
+  draftLoadError: "not_found" | "source_context" | null;
   editingId: string | null;
   draftId: number | null;
   text: string;
@@ -244,6 +245,8 @@ interface ComposerValue {
   saveDraft: () => Promise<void>;
   removeCurrent: () => Promise<void>;
   hydrate: (input: HydrateInput) => void;
+  beginHydration: () => void;
+  failHydration: (reason: "not_found" | "source_context") => void;
 }
 
 const ComposerCtx = createContext<ComposerValue | null>(null);
@@ -262,6 +265,7 @@ export default function ComposerPage() {
   const composerUserId = s.user?.id ?? null;
 
   const [hydrated, setHydrated] = useState(false);
+  const [draftLoadError, setDraftLoadError] = useState<"not_found" | "source_context" | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draftId, setDraftId] = useState<number | null>(null);
   const [draftVersion, setDraftVersion] = useState<number | null>(null);
@@ -280,7 +284,8 @@ export default function ComposerPage() {
   const [typing, setTyping] = useState(false);
   const [aiPreview, setAiPreview] = useState<ComposerAiPreview | null>(null);
   const [aiReview, setAiReview] = useState<AiReviewState>("none");
-  const [aiValidation, setAiValidation] = useState<DraftAiValidation | null>(null);
+  const [, setAiValidation] = useState<DraftAiValidation | null>(null);
+  const [generationResultId, setGenerationResultId] = useState<number | null>(null);
   const [topicOpen, setTopicOpen] = useState(false);
   const [topic, setTopic] = useState("");
   const [errors, setErrors] = useState<Errors>({});
@@ -299,6 +304,7 @@ export default function ComposerPage() {
   const aiRequestRef = useRef<AiClientRequestIdentity | null>(null);
   const draftClientKeyRef = useRef<string | null>(null);
   const draftRequestRef = useRef<Promise<ServerDraft | null> | null>(null);
+  const autosaveCancelRef = useRef<(() => void) | null>(null);
   const acknowledgedDraftRef = useRef<ServerDraft | null>(null);
   const scheduleRequestRef = useRef(false);
   const publicationOperationRef = useRef<{ key: string; fingerprint: string | null } | null>(null);
@@ -338,6 +344,7 @@ export default function ComposerPage() {
     defaultNetworks,
     ownerUserId,
   }: HydrateInput) => {
+    setDraftLoadError(null);
     const fallback = new Date(Date.now() + 3600_000);
     fallback.setMinutes(0, 0, 0); // ровный час — по нему легче попадать глазом
     const when = post?.scheduledAt ? new Date(post.scheduledAt) : fallback;
@@ -370,6 +377,7 @@ export default function ComposerPage() {
     setOrigin(pending?.payload.origin ?? post?.origin ?? "manual");
     setAiPreview(null);
     setAiValidation(pending?.payload.aiValidation ?? draft?.ai_validation ?? null);
+    setGenerationResultId(draft?.generation_binding_valid ? draft.generation_result_id : null);
     // Validation and a human ACK are server-owned and versioned. Reload/another tab gets
     // the exact persisted state; a legacy AI draft without it remains review-required.
     setAiReview(
@@ -390,6 +398,25 @@ export default function ComposerPage() {
     setDraftSaveState(pending ? (pendingConflict ? "conflict" : "pending") : draft ? "saved" : "idle");
     setDraftSavedAt(pending ? null : draft?.updated_at ?? null);
     setHydrated(true);
+  }, []);
+
+  const beginHydration = useCallback(() => {
+    autosaveCancelRef.current?.();
+    autosaveCancelRef.current = null;
+    setHydrated(false);
+    setDraftLoadError(null);
+  }, []);
+
+  const failHydration = useCallback((reason: "not_found" | "source_context") => {
+    acknowledgedDraftRef.current = null;
+    draftClientKeyRef.current = null;
+    setEditingId(null);
+    setDraftId(null);
+    setDraftVersion(null);
+    setText("");
+    setSourceRef(undefined);
+    setHydrated(false);
+    setDraftLoadError(reason);
   }, []);
 
   /* -------------------------------------------------------------- КАНАЛЫ */
@@ -447,6 +474,8 @@ export default function ComposerPage() {
     if (origin === "ai") {
       setAiValidation(null);
       setAiReview("required");
+      setGenerationResultId(null);
+      setSourceRef(undefined);
     }
     markDraftDirty();
   }, [markDraftDirty, origin]);
@@ -603,6 +632,8 @@ export default function ComposerPage() {
           input: source,
           surface: "composer",
           channelId: contextChannelId,
+          inputDraftId: draftId,
+          inputDraftVersion: draftVersion,
         });
         const aiRequest = stableAiClientRequest(aiRequestRef.current, requestBody);
         aiRequestRef.current = aiRequest;
@@ -657,7 +688,8 @@ export default function ComposerPage() {
           return;
         }
         try {
-          await acknowledgeAiTerminal(aiRequest.key, { signal: controller.signal });
+          const acknowledged = await acknowledgeAiTerminal(aiRequest.key, { signal: controller.signal });
+          setGenerationResultId(acknowledged.generationResultId);
         } catch (error) {
           if ((error as Error)?.name === "AbortError") throw error;
           setAiPreview({
@@ -711,6 +743,8 @@ export default function ComposerPage() {
     },
     [
       channelId,
+      draftId,
+      draftVersion,
       markDraftDirty,
       networks,
       s,
@@ -862,7 +896,8 @@ export default function ComposerPage() {
             origin,
             sourceRef: sourceRef ?? null,
             channelIds: selected,
-            aiValidation: origin === "ai" ? aiValidation : null,
+            aiValidation: null,
+            generationResultId: origin === "ai" ? generationResultId : null,
           };
           const clientKey = (draftClientKeyRef.current ??= createDraftClientKey());
           let draft: ServerDraft;
@@ -886,6 +921,7 @@ export default function ComposerPage() {
 
           setDraftId(draft.id);
           setDraftVersion(draft.version);
+          setGenerationResultId(null);
           acknowledgedDraftRef.current = draft;
           setEditingId(`draft-${draft.id}`);
           draftClientKeyRef.current = draft.client_key;
@@ -961,11 +997,11 @@ export default function ComposerPage() {
     },
     [
       channelId,
-      aiValidation,
       composerUserId,
       date,
       draftId,
       draftVersion,
+      generationResultId,
       legacyId,
       media,
       networks,
@@ -1028,7 +1064,8 @@ export default function ComposerPage() {
         origin,
         sourceRef: sourceRef ?? null,
         channelIds: selected,
-        aiValidation: origin === "ai" ? aiValidation : null,
+        aiValidation: null,
+        generationResultId: origin === "ai" ? generationResultId : null,
       },
       form: { networks, channelIds: selected, date, time, noDate },
     });
@@ -1040,7 +1077,6 @@ export default function ComposerPage() {
       return () => { cancelled = true; };
     }
   }, [
-    aiValidation,
     channelId,
     composerUserId,
     date,
@@ -1053,6 +1089,7 @@ export default function ComposerPage() {
     networks,
     noDate,
     origin,
+    generationResultId,
     sourceRef,
     text,
     time,
@@ -1062,10 +1099,15 @@ export default function ComposerPage() {
   useEffect(() => {
     if (!autosaveEligible) return;
     const revision = draftRevision;
-    return scheduleDraftAutosave(() => {
+    const cancel = scheduleDraftAutosave(() => {
       if (draftRevisionRef.current !== revision) return;
       void persistDraft("autosave");
     }, DRAFT_AUTOSAVE_DELAY_MS);
+    autosaveCancelRef.current = cancel;
+    return () => {
+      cancel();
+      if (autosaveCancelRef.current === cancel) autosaveCancelRef.current = null;
+    };
   }, [autosaveEligible, draftRevision, persistDraft]);
 
   useEffect(() => {
@@ -1080,6 +1122,8 @@ export default function ComposerPage() {
   }, []);
 
   const saveDraft = useCallback(async () => {
+    autosaveCancelRef.current?.();
+    autosaveCancelRef.current = null;
     await persistDraft("manual");
   }, [persistDraft]);
 
@@ -1257,6 +1301,7 @@ export default function ComposerPage() {
   const value = useMemo<ComposerValue>(
     () => ({
       hydrated,
+      draftLoadError,
       editingId,
       draftId,
       text,
@@ -1304,6 +1349,8 @@ export default function ComposerPage() {
       saveDraft,
       removeCurrent,
       hydrate,
+      beginHydration,
+      failHydration,
     }),
     [
       aiBusy,
@@ -1327,10 +1374,13 @@ export default function ComposerPage() {
       draftSaveState,
       dismissAiPreview,
       bestTime,
+      beginHydration,
       editingId,
       errors,
+      failHydration,
       hydrate,
       hydrated,
+      draftLoadError,
       media,
       networks,
       noDate,
@@ -1413,7 +1463,10 @@ function ComposerInner() {
 
   const {
     hydrate,
+    beginHydration,
+    failHydration,
     hydrated,
+    draftLoadError,
     draftId: currentDraftId,
     text,
     typing,
@@ -1454,6 +1507,7 @@ function ComposerInner() {
     const controller = new AbortController();
     let cancelled = false;
     const defaultNetworks = activeComposerNetworks(realChannels);
+    beginHydration();
 
     void (async () => {
       let draft: ServerDraft | null = null;
@@ -1468,9 +1522,19 @@ function ComposerInner() {
       if (draftParam) {
         try {
           draft = await getServerDraft(draftParam, controller.signal);
+          if (draft.purpose === "source_context") {
+            loadedKey.current = key;
+            failHydration("source_context");
+            return;
+          }
           post = draftToPost(draft);
         } catch (error) {
           if (cancelled) return;
+          if (!pending && error instanceof DraftRequestError && error.kind === "not_found") {
+            loadedKey.current = key;
+            failHydration("not_found");
+            return;
+          }
           toast({
             kind: pending ? "info" : "danger",
             title: pending ? "Открыта локальная версия" : "Черновик не загрузился",
@@ -1540,11 +1604,13 @@ function ComposerInner() {
       controller.abort();
     };
   }, [
+    beginHydration,
     channelParam,
     currentDraftId,
     currentUserId,
     dateParam,
     draftParam,
+    failHydration,
     fromMedia,
     hydrate,
     hydrated,
@@ -1570,7 +1636,48 @@ function ComposerInner() {
     if (c.topicOpen) topicRef.current?.focus();
   }, [c.topicOpen]);
 
-  if (!s.ready || !hydrated) return <ComposerSkeleton />;
+  if (!s.ready) return <ComposerSkeleton />;
+  if (draftLoadError === "source_context") {
+    return (
+      <Card className="py-6">
+        <EmptyState
+          icon={<Flame className="h-6 w-6" aria-hidden />}
+          title="Это исходный материал, а не черновик публикации"
+          body="Аврора хранит источник отдельно, чтобы чужой или сырой текст нельзя было случайно отправить в канал. Сначала создай самостоятельный материал в Студии."
+          action={
+            <div className="flex flex-wrap justify-center gap-2">
+              <Link href={draftParam ? `/app/studio?draft=${draftParam}&intent=create` : "/app/studio"}>
+                <Button variant="solid">Создать материал</Button>
+              </Link>
+              <Link href="/app/calendar"><Button variant="ghost">Вернуться в календарь</Button></Link>
+            </div>
+          }
+        />
+      </Card>
+    );
+  }
+  if (draftLoadError === "not_found") {
+    return (
+      <Card className="py-6">
+        <EmptyState
+          icon={<Bookmark className="h-6 w-6" aria-hidden />}
+          title="Черновик не найден"
+          body="Его могли удалить или он принадлежит другому аккаунту. Пустой редактор не открыт, чтобы ты случайно не продолжил не тот материал."
+          action={
+            <div className="flex flex-wrap justify-center gap-2">
+              <Link href="/app/calendar">
+                <Button variant="solid">Вернуться в календарь</Button>
+              </Link>
+              <Link href={channelParam ? `/app/composer?channel=${channelParam}` : "/app/composer"}>
+                <Button variant="ghost">Создать новый</Button>
+              </Link>
+            </div>
+          }
+        />
+      </Card>
+    );
+  }
+  if (!hydrated) return <ComposerSkeleton />;
 
   const len = text.length;
   // Лимит считаем по выбранной сети: TG режет на 4096, VK терпит до 16384.
@@ -2267,7 +2374,9 @@ function ComposerInner() {
 /* ------------------------------------------------------- ПЛАШКА «ИЗ РАЗВЕДКИ» */
 
 function SourcePlate({ source }: { source: NonNullable<Post["sourceRef"]> }) {
-  const href = source.kind === "competitor"
+  const href = source.kind === "rss"
+    ? "/app/rss?view=journal"
+    : source.kind === "competitor"
     ? `/app/competitors/${source.id}`
     : source.kind === "trend"
       ? "/app/trends"

@@ -14,4 +14,5 @@ export function buildSiteInterviewPrompt(input: Record<string, unknown>): Readon
   sourceIds: readonly string[];
 }>;
 export function parseAndValidateSiteInterviewBatch(rawText: unknown, input: Record<string, unknown>): Readonly<Record<string, unknown>>;
+export function repairSiteInterviewBatch(rawText: unknown, input: Record<string, unknown>): Readonly<Record<string, unknown>>;
 export function aggregateSiteInterviewReport(input: Record<string, unknown>): Readonly<Record<string, unknown>>;

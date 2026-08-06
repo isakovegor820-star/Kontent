@@ -28,13 +28,14 @@ describe("AI client request identity", () => {
 
   it("ACKs a terminal stream with the same stable key", async () => {
     const fetchImpl = vi.fn(async () => Response.json(
-      { ok: true, requestId: "ack-request", replayed: false },
+      { ok: true, requestId: "ack-request", replayed: false, generationResultId: 501 },
       { status: 200, headers: { "x-ai-acknowledged": "true" } },
     ));
 
     await expect(acknowledgeAiTerminal("studio_stream_test_1", { fetchImpl })).resolves.toEqual({
       requestId: "ack-request",
       replayed: false,
+      generationResultId: 501,
     });
     expect(fetchImpl).toHaveBeenCalledWith("/api/ai/generate/ack", expect.objectContaining({
       method: "POST",

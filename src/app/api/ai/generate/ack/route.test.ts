@@ -4,10 +4,14 @@ import { NextRequest } from "next/server";
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
   acknowledgeAiUsageResult: vi.fn(),
+  acknowledgeGenerationArtifact: vi.fn(),
 }));
 
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
 vi.mock("@/lib/ai-usage", () => ({ acknowledgeAiUsageResult: mocks.acknowledgeAiUsageResult }));
+vi.mock("@/lib/generation-artifacts", () => ({
+  acknowledgeGenerationArtifact: mocks.acknowledgeGenerationArtifact,
+}));
 
 import { POST } from "./route";
 
@@ -25,8 +29,9 @@ describe("POST /api/ai/generate/ack", () => {
     mocks.acknowledgeAiUsageResult.mockResolvedValue({
       changed: true,
       status: "committed",
-      result: { protocol: "ndjson", text: "done" },
+      result: { protocol: "ndjson", text: "done", generationResultId: 501 },
     });
+    mocks.acknowledgeGenerationArtifact.mockResolvedValue(501);
   });
 
   it("commits only the authenticated user's staged stable request", async () => {
@@ -42,7 +47,7 @@ describe("POST /api/ai/generate/ack", () => {
     mocks.acknowledgeAiUsageResult.mockResolvedValue({
       changed: false,
       status: "committed",
-      result: { protocol: "ndjson", text: "done" },
+      result: { protocol: "ndjson", text: "done", generationResultId: 501 },
     });
 
     const response = await POST(request());

@@ -33,6 +33,7 @@ import {
   type MediaGeneration,
   type MediaKind,
 } from "@/components/studio/media-generator";
+import { PostSettingsMenu } from "@/components/studio/post-settings-menu";
 import { requiresBriefConfirmation } from "@/lib/brief-confirmation";
 import { type AiCommand } from "@/lib/ai";
 import { acknowledgeAiTerminal, AiTerminalAckError } from "@/lib/ai-client-idempotency";
@@ -112,6 +113,28 @@ type PendingReferenceGeneration = {
 };
 
 type WorkspaceMode = "chat" | "studio";
+
+const VALIDATION_BLOCKER_LABELS: Record<string, string> = {
+  unsupported_semantic_claim: "есть утверждение, которое не подтверждено доступными фактами",
+  unsupported_number: "есть неподтверждённое число или сумма",
+  unsupported_date: "есть неподтверждённая дата",
+  unsupported_url: "есть неподтверждённая ссылка",
+  unsupported_legal_reference: "есть неподтверждённая правовая ссылка",
+  "topic:off_topic": "результат ушёл от выбранной темы",
+};
+
+function validationReviewMessage(validation: Msg["aiValidation"]): string {
+  if (!validation || validation.provenance.semanticEntailment === "not_checked") {
+    return "Смысловую проверку не удалось выполнить. Текст сохранён только для ручной правки; подтвердите факты перед публикацией.";
+  }
+  const details = validation.blockerCodes
+    .map((code) => VALIDATION_BLOCKER_LABELS[code] ?? null)
+    .filter((label): label is string => Boolean(label));
+  if (validation.provenance.semanticEntailment === "blocked" || validation.status === "blocked") {
+    return `Проверка выполнена и заблокировала публикацию${details.length ? `: ${[...new Set(details)].join("; ")}` : ". Исправьте или подтвердите спорные утверждения"}.`;
+  }
+  return "Автоматическая проверка завершена, но для этого текста всё ещё нужно ручное подтверждение фактов.";
+}
 
 const EASE_SOFT: [number, number, number, number] = [0.22, 1, 0.36, 1];
 
@@ -313,7 +336,7 @@ function MessageRow({
 
         {ready && msg.requiresReview && (
           <p className="mt-3 max-w-[72ch] rounded-sm border border-brand/30 bg-info-soft px-3 py-2 text-[12px] leading-relaxed text-info-text">
-            Смысловая проверка сейчас недоступна. Открой текст как черновик и подтверди факты в редакторе перед публикацией.
+            {validationReviewMessage(msg.aiValidation)}
           </p>
         )}
 
@@ -792,6 +815,7 @@ function StudioPageInner() {
   const [contextDraft, setContextDraft] = useState<ServerDraft | null>(null);
   const [pendingReferenceGeneration, setPendingReferenceGeneration] = useState<PendingReferenceGeneration | null>(null);
   const [postSettingsReady, setPostSettingsReady] = useState(false);
+  const [postSettingsSaving, setPostSettingsSaving] = useState(false);
   const [pendingEngineSuggestion, setPendingEngineSuggestion] = useState<EngineInfo | null>(null);
 
   const feedRef = useRef<HTMLDivElement>(null);
@@ -896,6 +920,34 @@ function StudioPageInner() {
     };
   }, []);
 
+  const savePostSettings = async (next: PostSettings) => {
+    if (postSettingsSaving) return;
+    const previous = postSettings;
+    const normalized = normalizePostSettings(next);
+    setPostSettings(normalized);
+    setPostSettingsSaving(true);
+    try {
+      const response = await fetch("/api/settings", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ postSettings: normalized }),
+      });
+      const result = await response.json().catch(() => null) as { postSettings?: unknown } | null;
+      if (!response.ok || !result?.postSettings) throw new Error("settings save failed");
+      setPostSettings(normalizePostSettings(result.postSettings));
+      s.toast({ kind: "success", title: "Настройки публикации сохранены" });
+    } catch {
+      setPostSettings(previous);
+      s.toast({
+        kind: "danger",
+        title: "Не удалось сохранить настройки",
+        body: "Изменения отменены. Проверь соединение и попробуй ещё раз.",
+      });
+    } finally {
+      setPostSettingsSaving(false);
+    }
+  };
+
   // Library navigation carries only an owned server draft id. Reference text and source
   // metadata are fetched through the authenticated draft API, never copied into the URL.
   useEffect(() => {
@@ -906,7 +958,10 @@ function StudioPageInner() {
     void getServerDraft(requestedDraftId, controller.signal)
       .then((serverDraft) => {
         if (
-          (serverDraft.origin !== "competitor" && serverDraft.origin !== "trend" && serverDraft.origin !== "idea")
+          (
+            serverDraft.origin !== "competitor" && serverDraft.origin !== "trend" &&
+            serverDraft.origin !== "idea" && serverDraft.origin !== "rss"
+          )
           || !serverDraft.source_ref
         ) return;
         const destination = serverDraft.destinations.find((item) => item.is_active);
@@ -964,12 +1019,16 @@ function StudioPageInner() {
   const fit = useCallback(() => {
     for (const el of [shellRef.current, designShellRef.current]) {
       if (!el) continue;
-      const top = el.getBoundingClientRect().top + window.scrollY;
+      const viewport = window.visualViewport;
+      const viewportHeight = viewport?.height ?? window.innerHeight;
+      const viewportTop = viewport?.offsetTop ?? 0;
+      const top = Math.max(0, el.getBoundingClientRect().top - viewportTop);
       // Нижний отступ берём у main, а не константой: на телефоне там pb-24 под нижнее меню,
       // на десктопе pb-10. Зашитое число увело бы ввод под панель навигации.
       const main = el.closest("main");
       const bottom = main ? parseFloat(getComputedStyle(main).paddingBottom) || 0 : 40;
-      el.style.setProperty("--studio-h", `${Math.max(420, window.innerHeight - top - bottom)}px`);
+      const available = Math.max(240, viewportHeight - top - bottom);
+      el.style.setProperty("--studio-h", `${available}px`);
     }
   }, []);
 
@@ -994,7 +1053,13 @@ function StudioPageInner() {
 
   useEffect(() => {
     window.addEventListener("resize", fit);
-    return () => window.removeEventListener("resize", fit);
+    window.visualViewport?.addEventListener("resize", fit);
+    window.visualViewport?.addEventListener("scroll", fit);
+    return () => {
+      window.removeEventListener("resize", fit);
+      window.visualViewport?.removeEventListener("resize", fit);
+      window.visualViewport?.removeEventListener("scroll", fit);
+    };
   }, [fit]);
 
   // При переключении оба режима снова подгоняются под доступную высоту экрана.
@@ -1215,6 +1280,7 @@ function StudioPageInner() {
         let requestedEngineId: string | undefined = engine ?? undefined;
         let fallbackUsed = false;
         let replayed = false;
+        let terminalGenerationResultId: number | undefined;
         let terminalRequestId = responseRequestId;
         const applyEvent = (event: AiStreamEvent) => {
           if (!ownsStream()) return;
@@ -1270,6 +1336,7 @@ function StudioPageInner() {
             requestedEngineId = event.requestedEngine ?? requestedEngineId;
             fallbackUsed = event.fallbackUsed ?? fallbackUsed;
             replayed = event.replayed === true;
+            terminalGenerationResultId = event.generationResultId;
           } else if (event.type === "error") {
             failed = true;
             const suggested = event.suggestedEngine?.id
@@ -1326,8 +1393,14 @@ function StudioPageInner() {
           });
         }
         if (completion.status === "complete") {
+          let acknowledgedGenerationResultId: number;
           try {
-            await acknowledgeAiTerminal(requestKey, { signal: controller.signal });
+            const acknowledged = await acknowledgeAiTerminal(requestKey, { signal: controller.signal });
+            acknowledgedGenerationResultId = acknowledged.generationResultId;
+            if (
+              terminalGenerationResultId != null
+              && terminalGenerationResultId !== acknowledgedGenerationResultId
+            ) throw new AiTerminalAckError(409, terminalRequestId ?? null, false);
           } catch (error) {
             if ((error as Error)?.name === "AbortError") throw error;
             const ackRequestId = error instanceof AiTerminalAckError ? error.requestId : null;
@@ -1369,12 +1442,15 @@ function StudioPageInner() {
               : undefined,
             fallbackUsed,
             replayed,
+            generationResultId: acknowledgedGenerationResultId,
           });
-          if (gen.autoOpenComposer) {
+          // Автопереход допустим только для результата, который прошёл обязательные
+          // тематические и фактические проверки. Reviewable-текст остаётся в Studio.
+          if (gen.autoOpenComposer && completion.postable) {
             openAsPost(id, completion.text, {
-              aiValidation: terminalValidation ?? null,
               channelId: generationChannelId,
               clientKey: gen.resultClientKey,
+              generationResultId: acknowledgedGenerationResultId,
             });
           }
         }
@@ -1615,9 +1691,9 @@ function StudioPageInner() {
   // Готовый ответ сразу становится серверным черновиком. Публикация остаётся явным
   // действием в редакторе: там можно отправить сейчас, выбрать дату или подтвердить факты.
   function openAsPost(messageId: string, text: string, options?: {
-    aiValidation?: Msg["aiValidation"] | null;
     channelId?: number | null;
     clientKey?: string;
+    generationResultId?: number;
   }) {
     if (postDraftRef.current.promise) return;
     const destinationChannelId = options?.channelId ?? channelId;
@@ -1635,6 +1711,15 @@ function StudioPageInner() {
       ?? createDraftClientKey();
     const generation = genRef.current.get(messageId);
     const generatedMessage = messages.find((message) => message.id === messageId);
+    const generationResultId = options?.generationResultId ?? generatedMessage?.generationResultId;
+    if (!generationResultId) {
+      s.toast({
+        kind: "danger",
+        title: "Текст ещё нельзя открыть в редакторе",
+        body: "Сервер не подтвердил точный результат и его проверки. Исправь задание и запусти генерацию снова.",
+      });
+      return;
+    }
     postDraftRef.current.keys.set(messageId, clientKey);
     setCreatingPostId(messageId);
     const request = (async () => {
@@ -1644,10 +1729,10 @@ function StudioPageInner() {
           media: null,
           scheduledAt: null,
           origin: "ai",
-          sourceRef: generation?.sourceRef ?? null,
+          sourceRef: null,
           channelIds: [destinationChannelId],
-          // Если семантическая проверка недоступна, Composer потребует ручное подтверждение.
-          aiValidation: options?.aiValidation ?? generatedMessage?.aiValidation ?? null,
+          aiValidation: null,
+          generationResultId,
           clientKey,
         });
         s.toast({
@@ -1937,6 +2022,13 @@ function StudioPageInner() {
 
                   <div className="flex min-w-0 items-center gap-1 px-3 pb-3">
                     <QuickActionsMenu items={QUICK} onPick={onQuick} disabled={busy} />
+                    <PostSettingsMenu
+                      value={postSettings}
+                      onChange={(next) => void savePostSettings(next)}
+                      network={selectedNetwork}
+                      disabled={busy || !postSettingsReady}
+                      saving={postSettingsSaving}
+                    />
                     <ChannelMenu
                       channels={activeChannels}
                       value={channelId}

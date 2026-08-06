@@ -9,7 +9,8 @@ export const DRAFT_REVIEW_POLICY_VERSION = 1 as const;
 
 type ReviewInput = Pick<
   ServerDraft,
-  "origin" | "version" | "review_policy_version" | "ai_validation" | "human_review"
+  "origin" | "purpose" | "generation_result_id" | "generation_binding_valid"
+  | "version" | "review_policy_version" | "ai_validation" | "human_review"
 >;
 
 export type DraftReviewDecision = "allowed" | "review_required" | "blocked";
@@ -137,18 +138,25 @@ export function validCurrentHumanReview(
 /** Server scheduling policy. Manual-origin drafts deliberately bypass AI review gates. */
 export function draftReviewDecision(input: {
   origin: Post["origin"];
+  purpose: ServerDraft["purpose"];
+  generation_result_id: number | null;
+  generation_binding_valid: boolean;
   version: number;
   review_policy_version: number;
   ai_validation: unknown;
   human_review: DraftHumanReview | null;
 }): DraftReviewDecision {
-  if (input.origin !== "ai") return "allowed";
+  if (input.purpose === "source_context") return "blocked";
+  if (input.origin !== "ai") return input.purpose === "publishable" ? "allowed" : "review_required";
+  // Legacy/client-forged AI rows have no immutable result and can never be attested into
+  // publishability. They remain recoverable for inspection, but fail closed forever.
+  if (!input.generation_result_id) return "blocked";
   if (input.review_policy_version !== DRAFT_REVIEW_POLICY_VERSION) return "review_required";
 
   const validation = normalizeDraftAiValidation(input.ai_validation);
   if (input.ai_validation != null && !validation) return "review_required";
   if (validation?.status === "blocked") return "blocked";
-  if (validation?.status === "passed") return "allowed";
+  if (validation?.status === "passed" && input.generation_binding_valid) return "allowed";
   return validCurrentHumanReview(input.human_review, input.version)
     ? "allowed"
     : "review_required";

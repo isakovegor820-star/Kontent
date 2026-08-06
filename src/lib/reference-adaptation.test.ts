@@ -15,7 +15,10 @@ function draft(overrides: Partial<ServerDraft> = {}): ServerDraft {
     media: null,
     scheduled_at: null,
     origin: "trend",
+    purpose: "source_context",
     source_ref: { kind: "trend", id: "9", label: "Юридический тренд" },
+    generation_result_id: null,
+    generation_binding_valid: false,
     client_key: "draft_reference_adaptation_71",
     version: 3,
     review_policy_version: 1,
@@ -104,5 +107,31 @@ describe("reference adaptation context", () => {
 
     expect(context.topic).toContain("Исполнительский иммунитет");
     expect(context.topic).not.toBe("Вы тоже это делаете?");
+  });
+
+  it("accepts Russian legal synonyms but rejects exact-topic token stuffing", () => {
+    const context = referenceAdaptationContextFromDraft(draft({
+      source_ref: {
+        kind: "trend",
+        id: "93",
+        label: "Юридическая тема",
+        topic: "Исполнительский иммунитет единственного жилья",
+        readerProblem: "Владелец боится потерять единственное жильё из-за долга",
+        semanticGoal: "Объяснить общий принцип без юридических обещаний",
+      },
+    }))!;
+
+    expect(validateTopicAlignment(
+      "Защита единственной квартиры должника от обращения взыскания сохраняет необходимое жильё, хотя границы правила зависят от обстоятельств.",
+      context,
+    ).status).toBe("passed");
+    expect(validateTopicAlignment(
+      "Как выбрать обжарку кофе и настроить кофемолку. Исполнительский иммунитет единственного жилья — важная тема.",
+      context,
+    ).status).toBe("failed");
+    expect(validateTopicAlignment(
+      "Конференция по искусственному интеллекту открывает регистрацию для участников.",
+      context,
+    ).status).toBe("failed");
   });
 });

@@ -82,6 +82,7 @@ describe("POST /api/drafts", () => {
       origin: "competitor",
       sourceRef: { kind: "competitor", id: "9", label: "Канал конкурента" },
       aiValidation: null,
+      generationResultId: null,
     };
     const request = new NextRequest("http://localhost/api/drafts", {
       method: "POST",

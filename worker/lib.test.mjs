@@ -17,6 +17,8 @@ import {
   autopilotBuildComplete,
   autopilotJobAttemptsExhausted,
   formatPost,
+  parseTelegramChannelDescription,
+  summarizeTelegramPostingActivity,
 } from "./lib.mjs";
 
 describe("parseCount", () => {
@@ -50,6 +52,56 @@ describe("sumReactions", () => {
   });
   it("null, когда реакции выключены (нет span)", () => {
     expect(sumReactions("<div>поста без реакций</div>")).toBeNull();
+  });
+});
+
+describe("parseTelegramChannelDescription", () => {
+  it("извлекает читаемое описание со ссылками, переносами и HTML-сущностями", () => {
+    const html = `
+      <div class="tgme_channel_info_description">
+        Практика для бизнеса &amp; юристов.<br>
+        Автор: <a href="https://t.me/example">Иван Петров</a>
+      </div>`;
+
+    expect(parseTelegramChannelDescription(html)).toBe(
+      "Практика для бизнеса & юристов.\nАвтор: Иван Петров",
+    );
+  });
+
+  it("учитывает дополнительные классы и возвращает null без описания", () => {
+    expect(
+      parseTelegramChannelDescription(
+        '<div class="compact tgme_channel_info_description visible">Описание</div>',
+      ),
+    ).toBe("Описание");
+    expect(parseTelegramChannelDescription("<main>Нет шапки</main>")).toBeNull();
+  });
+});
+
+describe("summarizeTelegramPostingActivity", () => {
+  it("считает дату последнего поста и недавний недельный темп", () => {
+    expect(
+      summarizeTelegramPostingActivity([
+        { postedAt: "2026-08-01T10:00:00.000Z" },
+        { postedAt: "2026-07-29T10:00:00.000Z" },
+        { postedAt: "2026-07-25T10:00:00.000Z" },
+        { postedAt: "2026-07-22T10:00:00.000Z" },
+        { postedAt: "2026-07-18T10:00:00.000Z" },
+      ]),
+    ).toEqual({
+      lastPostAt: "2026-08-01T10:00:00.000Z",
+      postsPerWeek: 2,
+    });
+  });
+
+  it("возвращает только дату при одном посте и null без валидных дат", () => {
+    expect(
+      summarizeTelegramPostingActivity([{ postedAt: "2026-08-01T10:00:00.000Z" }]),
+    ).toEqual({ lastPostAt: "2026-08-01T10:00:00.000Z", postsPerWeek: null });
+    expect(summarizeTelegramPostingActivity([{ postedAt: null }])).toEqual({
+      lastPostAt: null,
+      postsPerWeek: null,
+    });
   });
 });
 

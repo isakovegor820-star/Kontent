@@ -1,14 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  DEFAULT_SITE_CRAWL_LIMITS,
   buildSiteAnalysisReport,
   crawlSite,
   extractSitePage,
   extractSitemapDocument,
   extractSitemapUrls,
+  normalizeSiteLimits,
   normalizeSiteTarget,
   parseRobotsTxt,
   robotsAllows,
   stratifySitemapUrls,
+  upgradeLegacySiteLimits,
 } from "./site-crawler.mjs";
 
 function response(url, body, status = 200, contentType = "text/html; charset=utf-8") {
@@ -23,6 +26,39 @@ function response(url, body, status = 200, contentType = "text/html; charset=utf
 }
 
 describe("site crawler security and extraction", () => {
+  it("uses higher but still bounded limits for content-heavy public sites", () => {
+    expect(DEFAULT_SITE_CRAWL_LIMITS).toMatchObject({
+      maxPages: 20,
+      maxPageBytes: 5_000_000,
+      maxTotalBytes: 50_000_000,
+    });
+    expect(normalizeSiteLimits({ maxPageBytes: Number.MAX_SAFE_INTEGER, maxTotalBytes: Number.MAX_SAFE_INTEGER }))
+      .toMatchObject({ maxPageBytes: 10_000_000, maxTotalBytes: 100_000_000 });
+    expect(upgradeLegacySiteLimits({ maxPages: 20, maxPageBytes: 1_000_000, maxTotalBytes: 6_000_000 }))
+      .toMatchObject({ maxPageBytes: 5_000_000, maxTotalBytes: 50_000_000 });
+    expect(upgradeLegacySiteLimits({ maxPageBytes: 1_500_000, maxTotalBytes: 12_000_000 }))
+      .toMatchObject({ maxPageBytes: 1_500_000, maxTotalBytes: 12_000_000 });
+  });
+
+  it("accepts a 1.55 MB homepage within the new default page budget", async () => {
+    const heavyHomepage = `<html><body><script>${"x".repeat(1_550_000)}</script><main><h1>Публичный сайт</h1><p>Данные для анализа.</p></main></body></html>`;
+    const fetchText = vi.fn(async (url, options) => {
+      if (url.endsWith("/robots.txt")) return response(url, "User-agent: *\nAllow: /", 200, "text/plain");
+      if (url.endsWith("/sitemap.xml")) return response(url, "", 404, "application/xml");
+      const page = response(url, heavyHomepage);
+      if (page.byteLength > options.maxBytes) throw Object.assign(new Error("too large"), { code: "too_large" });
+      return page;
+    });
+    const result = await crawlSite({
+      targetUrl: "https://example.com/",
+      confirmedDomain: "example.com",
+      consent: true,
+    }, { fetchText });
+    expect(result.pages).toHaveLength(1);
+    expect(result.pages[0]).toMatchObject({ title: "", status: 200 });
+    expect(fetchText).toHaveBeenCalledWith("https://example.com/", expect.objectContaining({ maxBytes: 5_000_000 }));
+  });
+
   it("requires explicit consent, exact domain and standard ports", () => {
     expect(() => normalizeSiteTarget("https://example.com", "example.com", false)).toThrowError(
       expect.objectContaining({ code: "consent_required" }),
@@ -96,6 +132,24 @@ describe("site crawler security and extraction", () => {
     expect(page.forms[0]).toMatchObject({ method: "POST", fields: ["email"] });
     expect(page.publicComments).toEqual(["Публичный отзыв клиента"]);
     expect(page.technical).toMatchObject({ canonical: "https://example.com/practice", h1Count: 1 });
+  });
+
+  it("removes database-incompatible control characters from every extracted field", () => {
+    const page = extractSitePage(`
+      <html><head>
+        <title>Компания&#0; Аврора</title>
+        <script type="application/ld+json">{
+          "@type":"Organization",
+          "name":"Аврора",
+          "dateModified":"2026-08-05\\u0000",
+          "sameAs":["https://example.com/social\\u0000"]
+        }</script>
+      </head><body><main><h1>Анализ&#x0; сайта</h1></main></body></html>
+    `, "https://example.com/");
+
+    expect(JSON.stringify(page)).not.toContain("\\u0000");
+    expect(page.title).toBe("Компания Аврора");
+    expect(page.headings[0].text).toBe("Анализ сайта");
   });
 
   it("removes credentials and sensitive query data before URLs are stored", () => {

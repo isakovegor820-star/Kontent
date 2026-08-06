@@ -6,8 +6,10 @@ export interface TrendReferenceDraftInput {
   channelId: number;
   clientKey: string;
   sourceLabel: string;
+  scope?: "niche" | "global";
   text?: string | null;
   idea?: {
+    topic?: string | null;
     hook?: string | null;
     structure?: string | null;
   } | null;
@@ -42,11 +44,11 @@ export function buildTrendReferenceDraft(input: TrendReferenceDraftInput): Draft
       kind: "trend",
       id: trendId,
       label: input.sourceLabel.trim().slice(0, 400) || "Идея из трендов",
-      topic: topicFromSourceText(text),
+      topic: input.idea?.topic?.trim().slice(0, 500) || topicFromSourceText(text),
       ...(input.idea?.hook?.trim() ? { hook: input.idea.hook.trim().slice(0, 1_000) } : {}),
       ...(input.idea?.structure?.trim() ? { structure: input.idea.structure.trim().slice(0, 2_000) } : {}),
       provenance: {
-        kind: "trend",
+        kind: input.scope === "global" ? "trend" : "competitor_post",
         id: trendId,
         label: input.sourceLabel.trim().slice(0, 400) || "Идея из трендов",
       },

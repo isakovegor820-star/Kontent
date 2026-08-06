@@ -4,6 +4,7 @@ import type { PoolClient } from "pg";
 import { getPool } from "@/lib/db";
 import { draftReviewDecision } from "@/lib/draft-review";
 import type { DraftHumanReview } from "@/lib/draft-types";
+import { generationBindingValid } from "@/lib/generation-artifacts";
 import { normalizeIdempotencyKey } from "@/lib/publication-idempotency";
 import {
   normalizeOperationDestinations,
@@ -153,16 +154,25 @@ export async function POST(req: NextRequest) {
       text: string;
       media: unknown;
       scheduled_at: Date | string | null;
-      origin: "manual" | "ai" | "trend" | "idea" | "competitor" | "autopilot";
+      origin: "manual" | "ai" | "trend" | "idea" | "competitor" | "rss" | "autopilot";
+      purpose: "source_context" | "publishable" | "needs_review";
+      generation_result_id: string | null;
+      generation_result_hash: string | null;
+      receipt_result_hash: string | null;
+      receipt_payload: unknown;
       review_policy_version: string;
       ai_validation: unknown;
       human_reviewed_version: string | null;
       human_reviewed_at: Date | string | null;
     }>(
-      `select d.id, d.version, d.text, d.media, d.scheduled_at, d.origin,
+      `select d.id, d.version, d.text, d.media, d.scheduled_at, d.origin, d.purpose,
+              d.generation_result_id, result.result_hash as generation_result_hash,
+              receipt.result_hash as receipt_result_hash, receipt.receipt as receipt_payload,
               d.review_policy_version, d.ai_validation,
               d.human_reviewed_version, d.human_reviewed_at
          from drafts d
+         left join generation_results result on result.id = d.generation_result_id
+         left join validation_receipts receipt on receipt.generation_result_id = result.id
         where d.id = $1 and d.user_id = $2
         for update`,
       [draftId, user.id],
@@ -176,6 +186,9 @@ export async function POST(req: NextRequest) {
         error: "draft_version_conflict",
         currentVersion: Number(snapshot.version),
       }, { status: 409 });
+    }
+    if (snapshot.purpose === "source_context") {
+      return NextResponse.json({ ok: false, error: "source_context_not_publishable" }, { status: 422 });
     }
     if (!snapshot.scheduled_at) {
       return NextResponse.json({ ok: false, error: "schedule_required" }, { status: 422 });
@@ -205,6 +218,16 @@ export async function POST(req: NextRequest) {
       : null;
     const review = draftReviewDecision({
       origin: snapshot.origin,
+      purpose: snapshot.purpose,
+      generation_result_id: snapshot.generation_result_id == null ? null : Number(snapshot.generation_result_id),
+      generation_binding_valid: generationBindingValid({
+        generationResultId: snapshot.generation_result_id,
+        text: snapshot.text,
+        resultHash: snapshot.generation_result_hash,
+        receiptHash: snapshot.receipt_result_hash,
+        aiValidation: snapshot.ai_validation,
+        receipt: snapshot.receipt_payload,
+      }),
       version: Number(snapshot.version),
       review_policy_version: Number(snapshot.review_policy_version),
       ai_validation: snapshot.ai_validation,

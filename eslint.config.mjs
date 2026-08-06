@@ -9,7 +9,9 @@ const eslintConfig = defineConfig([
   globalIgnores([
     // Default ignores of eslint-config-next:
     ".next/**",
-    ".next-e2e-real/**",
+    // Next build/test gates use isolated dist dirs (`.next-e2e-real`, `.next-release-a`, …).
+    // Generated bundles are never application source and must not poison a later lint gate.
+    ".next-*/**",
     "out/**",
     "build/**",
     "next-env.d.ts",

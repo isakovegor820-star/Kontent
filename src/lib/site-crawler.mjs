@@ -2,10 +2,14 @@ import { fetchPublicText, parsePublicHttpUrl } from "./safe-http.mjs";
 
 export const SITE_ANALYSIS_POLICY_VERSION = "aurora-site-analysis-v1";
 export const SITE_CRAWLER_USER_AGENT = "AuroraSiteAnalyzer";
-export const DEFAULT_SITE_CRAWL_LIMITS = Object.freeze({
-  maxPages: 20,
+const LEGACY_DEFAULT_SITE_CRAWL_LIMITS = Object.freeze({
   maxPageBytes: 1_000_000,
   maxTotalBytes: 6_000_000,
+});
+export const DEFAULT_SITE_CRAWL_LIMITS = Object.freeze({
+  maxPages: 20,
+  maxPageBytes: 5_000_000,
+  maxTotalBytes: 50_000_000,
   maxRedirects: 3,
   timeoutMs: 10_000,
   maxSitemaps: 5,
@@ -32,13 +36,13 @@ export function normalizeSiteLimits(value = {}) {
       value.maxPageBytes,
       DEFAULT_SITE_CRAWL_LIMITS.maxPageBytes,
       64_000,
-      2_000_000,
+      10_000_000,
     ),
     maxTotalBytes: boundedInteger(
       value.maxTotalBytes,
       DEFAULT_SITE_CRAWL_LIMITS.maxTotalBytes,
       64_000,
-      20_000_000,
+      100_000_000,
     ),
     maxRedirects: boundedInteger(value.maxRedirects, DEFAULT_SITE_CRAWL_LIMITS.maxRedirects, 0, 5),
     timeoutMs: boundedInteger(value.timeoutMs, DEFAULT_SITE_CRAWL_LIMITS.timeoutMs, 1_000, 20_000),
@@ -49,6 +53,19 @@ export function normalizeSiteLimits(value = {}) {
       1,
       500,
     ),
+  });
+}
+
+export function upgradeLegacySiteLimits(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const normalized = normalizeSiteLimits(source);
+  const usesLegacyDefaults = Number(source.maxPageBytes) === LEGACY_DEFAULT_SITE_CRAWL_LIMITS.maxPageBytes
+    && Number(source.maxTotalBytes) === LEGACY_DEFAULT_SITE_CRAWL_LIMITS.maxTotalBytes;
+  if (!usesLegacyDefaults) return normalized;
+  return Object.freeze({
+    ...normalized,
+    maxPageBytes: DEFAULT_SITE_CRAWL_LIMITS.maxPageBytes,
+    maxTotalBytes: DEFAULT_SITE_CRAWL_LIMITS.maxTotalBytes,
   });
 }
 
@@ -207,7 +224,23 @@ function decodeHtml(value) {
   return String(value || "")
     .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCodePoint(Number.parseInt(code, 16)))
     .replace(/&#(\d+);/g, (_, code) => String.fromCodePoint(Number(code)))
-    .replace(/&([a-z]+);/gi, (entity, name) => HTML_ENTITIES[name.toLowerCase()] ?? entity);
+    .replace(/&([a-z]+);/gi, (entity, name) => HTML_ENTITIES[name.toLowerCase()] ?? entity)
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu, " ");
+}
+
+function sanitizeExtractedValue(value) {
+  if (typeof value === "string") {
+    return value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu, " ");
+  }
+  if (Array.isArray(value)) {
+    return Object.freeze(value.map((item) => sanitizeExtractedValue(item)));
+  }
+  if (value && typeof value === "object") {
+    return Object.freeze(Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, sanitizeExtractedValue(item)]),
+    ));
+  }
+  return value;
 }
 
 function stripMarkup(value) {
@@ -472,7 +505,7 @@ export function extractSitePage(html, value, status = 200) {
     })(),
   };
 
-  return Object.freeze({
+  return sanitizeExtractedValue({
     url: url.toString(),
     status,
     title,
@@ -484,14 +517,14 @@ export function extractSitePage(html, value, status = 200) {
     ctas: pageCtas(source),
     forms: pageForms(source, url),
     publicComments: comments,
-    metadata: Object.freeze({
+    metadata: {
       authors: [...new Set([...structured.authors, ...metaAuthors])].slice(0, 30),
       publishedAt: publishedAt || null,
       modifiedAt: modifiedAt || null,
-      openGraph: Object.freeze(openGraph),
+      openGraph,
       structuredEntities: structured.entities,
-    }),
-    technical: Object.freeze({
+    },
+    technical: {
       https: url.protocol === "https:",
       canonical,
       indexable: !/(?:^|\s|,)noindex(?:\s|,|$)/.test(robots),
@@ -501,7 +534,7 @@ export function extractSitePage(html, value, status = 200) {
       descriptionLength: description.length,
       h1Count: headings.filter((heading) => heading.level === 1).length,
       wordCount,
-    }),
+    },
   });
 }
 

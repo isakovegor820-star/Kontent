@@ -334,7 +334,7 @@ function LibraryInner() {
     action: DraftBackedAppAction,
     cardId: string,
     text: string,
-    reference?: { competitorId: number | string; sourceLabel: string } | null,
+    reference?: { sourcePostId: number | string; sourceLabel: string } | null,
   ) => {
     if (!channelId || draftActionsRef.current.promise) return;
     const actionKey = `${action}:${cardId}:channel:${channelId}`;
@@ -574,7 +574,7 @@ function LibraryInner() {
                 const contentId = libraryCardContentId("hit", h.id);
                 const expanded = expandedCardIds.has(cardId);
                 const sourceLabel = h.source_title || (h.handle ? `@${h.handle}` : "Конкурент");
-                const reference = { competitorId: h.competitor_id, sourceLabel };
+                const reference = { sourcePostId: h.id, sourceLabel };
                 const createActionKey = `create:${cardId}:channel:${channelId}`;
                 const discussActionKey = `discuss:${cardId}:channel:${channelId}`;
                 const analysis = analyzeLibraryHit({
@@ -769,7 +769,7 @@ function LibraryInner() {
                 const isReference = p.kind === "reference";
                 const reference = isReference
                   ? {
-                      competitorId: p.source_competitor_id ?? p.source_post_id ?? p.id,
+                      sourcePostId: p.source_post_id ?? p.id,
                       sourceLabel: p.source_title || "Конкурент",
                     }
                   : null;

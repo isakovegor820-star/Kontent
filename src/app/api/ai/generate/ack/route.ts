@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { acknowledgeAiUsageResult } from "@/lib/ai-usage";
+import { acknowledgeGenerationArtifact } from "@/lib/generation-artifacts";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import { getSessionUser } from "@/lib/session";
 
@@ -32,7 +33,7 @@ export async function POST(req: NextRequest) {
   try {
     user = await getSessionUser(req);
   } catch {
-    console.error("[/api/ai/generate/ack]", { requestId, code: "session_unavailable", status: 503 });
+    console.error(`[/api/ai/generate/ack] ${JSON.stringify({ requestId, code: "session_unavailable", status: 503 })}`);
     return ackJson(requestId, { ok: false, error: "session_unavailable", retryable: true }, 503);
   }
   if (!user) return ackJson(requestId, { ok: false, error: "unauthorized", retryable: false }, 401);
@@ -45,9 +46,17 @@ export async function POST(req: NextRequest) {
   try {
     const finalized = await acknowledgeAiUsageResult(user.id, `web:${clientKey}`);
     if (finalized.status === "committed" && finalized.result) {
+      const generationResultId = await acknowledgeGenerationArtifact(user.id, `web:${clientKey}`);
+      if (!generationResultId || finalized.result.generationResultId !== generationResultId) {
+        return ackJson(
+          requestId,
+          { ok: false, error: "generation_artifact_ack_unavailable", retryable: true },
+          409,
+        );
+      }
       return ackJson(
         requestId,
-        { ok: true, status: "committed", replayed: !finalized.changed },
+        { ok: true, status: "committed", replayed: !finalized.changed, generationResultId },
         200,
         { "x-ai-acknowledged": "true" },
       );
@@ -66,7 +75,7 @@ export async function POST(req: NextRequest) {
       409,
     );
   } catch {
-    console.error("[/api/ai/generate/ack]", { requestId, code: "usage_ack_unavailable", status: 503 });
+    console.error(`[/api/ai/generate/ack] ${JSON.stringify({ requestId, code: "usage_ack_unavailable", status: 503 })}`);
     return ackJson(requestId, { ok: false, error: "usage_ack_unavailable", retryable: true }, 503);
   }
 }

@@ -59,6 +59,13 @@ import {
 import { validatePostQuality } from "@/lib/post-quality.mjs";
 import { getDraftForUser } from "@/lib/server-drafts";
 import {
+  beginGenerationOperation,
+  failGenerationOperation,
+  GenerationArtifactError,
+  lookupTerminalGenerationFailure,
+  stageGenerationArtifact,
+} from "@/lib/generation-artifacts";
+import {
   buildReferenceAdaptationTask,
   buildTopicRepairInstructions,
   referenceAdaptationContextFromDraft,
@@ -106,13 +113,14 @@ type SafeAiLogCode =
   | "forbidden_origin"
   | "request_replayed"
   | "usage_lookup_unavailable"
-  | "usage_acquire_unavailable";
+  | "usage_acquire_unavailable"
+  | "generation_artifact_stage_failed";
 
 function logAiRequest(
   level: SafeLogLevel,
   requestId: string,
   code: SafeAiLogCode,
-  details: { engine?: string; status?: number | null; scope?: string } = {},
+  details: { engine?: string; status?: number | null; scope?: string; artifactCode?: string } = {},
 ) {
   const entry = {
     requestId,
@@ -120,8 +128,13 @@ function logAiRequest(
     ...(details.engine ? { engine: details.engine.slice(0, 80) } : {}),
     ...(details.status !== undefined ? { status: details.status } : {}),
     ...(details.scope ? { scope: details.scope.slice(0, 40) } : {}),
+    ...(details.artifactCode && /^[a-z0-9_]{1,100}$/u.test(details.artifactCode)
+      ? { artifactCode: details.artifactCode }
+      : {}),
   };
-  console[level]("[/api/ai/generate]", entry);
+  // Next's dev logger can collapse a second object argument to `{}`. Keep one redacted,
+  // machine-parseable line so the browser request id can be correlated end to end.
+  console[level](`[/api/ai/generate] ${JSON.stringify(entry)}`);
 }
 
 function aiJson(
@@ -386,6 +399,7 @@ function replayResponse(requestId: string, result: AiUsageStoredResult, used: nu
       fallbackUsed: result.fallbackUsed,
       replayed: true,
       ackRequired: true,
+      generationResultId: result.generationResultId,
     },
   ];
   // Stored validation provenance was produced by this route. The cast is only needed
@@ -425,7 +439,8 @@ function studioStreamResponse(
   editorial: boolean,
   factLedger: FactLedger,
   semanticAdapter: SemanticEntailmentAdapter | null,
-  allowReviewableBlockedDraft = false,
+  allowReviewableBlockedDraft: boolean,
+  operation: { providerEngine: string; providerModel: string },
 ) {
   const settings = normalizePostSettings(params.postSettings);
   const deadlines = generationDeadlines(settings.qualityMode);
@@ -557,6 +572,7 @@ function studioStreamResponse(
           .filter((item) => item.blocker)
           .map((item) => `channel:${item.code}`) ?? [];
         return {
+          version: 1,
           status: validation.blocked ? "blocked" : validation.factual.status,
           requiresReview: validation.requiresReview,
           provenance: validation.factual.provenance as unknown as Record<string, unknown>,
@@ -585,13 +601,39 @@ function studioStreamResponse(
         result: AiUsageStoredResult,
         terminal: Extract<AiStreamEvent, { type: "done" }>,
       ) => {
-        await stageReservation(result);
+        if (!result.validation) throw new AiUsageFinalizationError();
+        let artifact;
+        try {
+          artifact = await stageGenerationArtifact({
+            userId,
+            serverRequestId: requestId,
+            text: result.text,
+            validation: result.validation,
+            providerResult: {
+              protocol: result.protocol,
+              pipeline: result.pipeline,
+              requestedEngine: result.requestedEngine,
+              engine: result.engine,
+              fallbackUsed: result.fallbackUsed,
+              providerEngine: operation.providerEngine,
+              providerModel: operation.providerModel,
+            },
+          });
+        } catch (error) {
+          logAiRequest("error", requestId, "generation_artifact_stage_failed", {
+            engine: result.engine,
+            artifactCode: error instanceof GenerationArtifactError ? error.code : "artifact_store_failed",
+          });
+          throw new AiUsageFinalizationError();
+        }
+        const stored = { ...result, generationResultId: artifact.id };
+        await stageReservation(stored);
         if (consumerSignal.aborted) {
           throw new DOMException("AI stream consumer closed", "AbortError");
         }
         // This is the sole terminal outcome. It never charges quota: only a client that
         // received `done` can ACK the staged result in the separate second phase.
-        if (!send(terminal)) {
+        if (!send({ ...terminal, generationResultId: artifact.id })) {
           throw new DOMException("AI stream consumer closed", "AbortError");
         }
       };
@@ -631,12 +673,10 @@ function studioStreamResponse(
             validation = await validateResult(finalText);
           }
           if (!sendValidation(validation)) return;
-          if (validation.topic?.status === "failed" && !allowReviewableBlockedDraft) {
+          if (validation.topic?.status === "failed") {
             throw new PostSettingsValidationError(validation.issues, "topic_alignment_failed");
           }
-          // Фактологические blockers всегда fail-closed. Форматные — как и раньше,
-          // только если включено скрытие критичного результата.
-          if (validation.factual?.status === "blocked" && !allowReviewableBlockedDraft) {
+          if (validation.factual?.status === "blocked") {
             throw new PostSettingsValidationError(validation.issues, "factual_validation_failed");
           }
           if (
@@ -733,8 +773,11 @@ function studioStreamResponse(
         }
 
         if (!sendValidation(validation)) return;
-        if (validation.topic?.status === "failed" && !allowReviewableBlockedDraft) {
+        if (validation.topic?.status === "failed") {
           throw new PostSettingsValidationError(validation.issues, "topic_alignment_failed");
+        }
+        if (validation.factual?.status === "blocked") {
+          throw new PostSettingsValidationError(validation.issues, "factual_validation_failed");
         }
         if (validation.blocked && !allowReviewableBlockedDraft) {
           throw new PostSettingsValidationError(validation.issues, validation.errorCode);
@@ -764,6 +807,12 @@ function studioStreamResponse(
       } catch (error) {
         if (!isClientAbort(error, consumerSignal)) {
           const failure = await failurePayloadWithAlternative(requestId, error, finalEngine);
+          await failGenerationOperation(
+            userId,
+            requestId,
+            failure.code || failure.error || "generation_failed",
+            failure.retryable === true,
+          ).catch(() => {});
           send({ type: "error", requestId, ...failure });
         }
       } finally {
@@ -827,6 +876,8 @@ export async function POST(req: NextRequest) {
     referenceDraftId?: unknown;
     referenceDraftVersion?: unknown;
     referenceIntent?: unknown;
+    inputDraftId?: unknown;
+    inputDraftVersion?: unknown;
   };
   try {
     body = await req.json();
@@ -873,6 +924,12 @@ export async function POST(req: NextRequest) {
     if (referenceDraft.version !== referenceDraftVersion) {
       return aiJson(requestId, { error: "reference_draft_version_conflict", retryable: false }, { status: 409 });
     }
+    if (
+      referenceDraft.purpose !== "source_context"
+      && !["trend", "idea", "competitor"].includes(referenceDraft.origin)
+    ) {
+      return aiJson(requestId, { error: "bad_reference_context", retryable: false }, { status: 422 });
+    }
     const activeDestinations = referenceDraft.destinations.filter((destination) => destination.is_active);
     const destination = channelId == null
       ? activeDestinations[0]
@@ -887,11 +944,53 @@ export async function POST(req: NextRequest) {
       return aiJson(requestId, { error: "bad_reference_context", retryable: false }, { status: 422 });
     }
   }
+  const rawInputDraftId = body.inputDraftId;
+  const rawInputDraftVersion = body.inputDraftVersion;
+  const hasInputDraft = rawInputDraftId != null || rawInputDraftVersion != null;
+  const inputDraftId = Number(rawInputDraftId);
+  const inputDraftVersion = Number(rawInputDraftVersion);
+  if (hasInputDraft && (
+    !Number.isSafeInteger(inputDraftId) || inputDraftId <= 0
+    || !Number.isSafeInteger(inputDraftVersion) || inputDraftVersion <= 0
+  )) return aiJson(requestId, { error: "bad_input_draft", retryable: false }, { status: 400 });
+  if (hasReferenceDraft && hasInputDraft) {
+    return aiJson(requestId, { error: "ambiguous_generation_source", retryable: false }, { status: 422 });
+  }
+  if (channelId == null) {
+    return aiJson(requestId, { error: "no_channel", retryable: false }, { status: 422 });
+  }
+  let inputDraftContext: Awaited<ReturnType<typeof getDraftForUser>> = null;
+  if (hasInputDraft) {
+    try {
+      inputDraftContext = await getDraftForUser(user.id, inputDraftId);
+    } catch (error) {
+      return prerequisiteUnavailable(requestId, error, "context");
+    }
+    if (
+      !inputDraftContext
+      || inputDraftContext.version !== inputDraftVersion
+      || inputDraftContext.purpose === "source_context"
+      || !inputDraftContext.destinations.some((destination) => destination.channel_id === channelId && destination.is_active)
+    ) {
+      return aiJson(requestId, { error: "input_draft_conflict", retryable: false }, { status: 409 });
+    }
+  }
   const usageKey = `web:${requestKey}`;
-  const requestFingerprint = aiRequestFingerprint(hasReferenceDraft
-    ? { ...body, referenceText: undefined, referenceSource: undefined }
-    : body);
+  const fingerprintKind: AiKind = KINDS.includes(body.command as AiKind) ? (body.command as AiKind) : "write";
+  const requestFingerprint = aiRequestFingerprint({
+    ...body,
+    ...(hasReferenceDraft
+      ? { input: undefined, history: undefined, referenceText: undefined, referenceSource: undefined }
+      : {}),
+    ...(hasInputDraft && (fingerprintKind === "rewrite" || fingerprintKind === "shorten")
+      ? { input: undefined }
+      : {}),
+  });
   try {
+    const terminalFailure = await lookupTerminalGenerationFailure(user.id, usageKey, requestFingerprint);
+    if (terminalFailure) {
+      return aiJson(requestId, { error: terminalFailure.code, retryable: false }, { status: 422 });
+    }
     const existing = await lookupAiUsageRequest(user.id, usageKey, requestFingerprint);
     if ((existing.state === "replay" || existing.state === "terminal_pending_ack") && existing.result) {
       logAiRequest("info", requestId, "request_replayed", { engine: existing.result.engine });
@@ -918,7 +1017,10 @@ export async function POST(req: NextRequest) {
         { status: 409 },
       );
     }
-  } catch {
+  } catch (error) {
+    if (error instanceof GenerationArtifactError && error.code === "generation_operation_conflict") {
+      return aiJson(requestId, { error: "idempotency_key_conflict", retryable: false }, { status: 409 });
+    }
     logAiRequest("error", requestId, "usage_lookup_unavailable", { status: 503 });
     return aiJson(
       requestId,
@@ -927,8 +1029,8 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const kind: AiKind = KINDS.includes(body.command as AiKind) ? (body.command as AiKind) : "write";
-  const requestedTask = String(body.input ?? "").trim().slice(0, 8000);
+  const kind = fingerprintKind;
+  const clientRequestedTask = String(body.input ?? "").trim().slice(0, 8000);
   const interactiveStream = body.surface === "studio" || body.surface === "composer";
   // Every paid text call below uses the same explicit validation + done + client ACK
   // contract. The legacy plain-text stream cannot prove terminal delivery and is gone.
@@ -980,6 +1082,9 @@ export async function POST(req: NextRequest) {
   const effectivePostSettings = referenceContext && referenceIntent === "create"
     ? { ...postSettings, mainIdea: "" }
     : postSettings;
+  const requestedTask = inputDraftContext && (kind === "rewrite" || kind === "shorten")
+    ? inputDraftContext.text.slice(0, 8_000)
+    : clientRequestedTask;
   const task = referenceContext && referenceIntent === "create"
     ? buildReferenceAdaptationTask(referenceContext, referenceDestinationTitle || "выбранного канала")
     : requestedTask || effectivePostSettings.mainIdea;
@@ -1157,6 +1262,28 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  try {
+    await beginGenerationOperation({
+      userId: user.id,
+      aiUsageId: Number(reservation.reservationId),
+      requestKey: usageKey,
+      serverRequestId: requestId,
+      requestFingerprint,
+      channelId,
+      sourceContextId: hasReferenceDraft ? referenceDraftId : null,
+      sourceContextVersion: hasReferenceDraft ? referenceDraftVersion : null,
+      inputDraftId: hasInputDraft ? inputDraftId : null,
+      inputDraftVersion: hasInputDraft ? inputDraftVersion : null,
+      providerEngine: chosen,
+      providerModel: runtime.model,
+    });
+  } catch (error) {
+    await releaseAiUsageRequest(user.id, reservation.reservationId, requestId).catch(() => {});
+    const code = error instanceof GenerationArtifactError ? error.code : "generation_operation_unavailable";
+    const status = code.endsWith("_conflict") ? 409 : 503;
+    return aiJson(requestId, { error: code, retryable: status === 503 }, { status });
+  }
+
   const editorial = interactiveStream
     && effectivePostSettings.qualityMode !== "fast"
     && EDITORIAL_KINDS.includes(kind)
@@ -1173,5 +1300,6 @@ export async function POST(req: NextRequest) {
     factLedger,
     semanticAdapter,
     interactiveStream || body.surface === "trends",
+    { providerEngine: chosen, providerModel: runtime.model },
   );
 }

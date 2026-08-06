@@ -8,6 +8,7 @@ import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import { getSessionUser } from "@/lib/session";
 import { normalizeSiteAnalysisKey, serializeSiteAnalysis, type SiteAnalysisRow } from "@/lib/site-analysis";
 import { enqueueSiteAnalysis, hasSiteAnalysisWorker } from "@/lib/site-analysis-queue";
+import { upgradeLegacySiteLimits } from "@/lib/site-crawler.mjs";
 
 export const runtime = "nodejs";
 
@@ -68,6 +69,7 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
         await client.query("rollback");
         return reply({ error: "worker_unavailable" }, 503, requestId);
       }
+      const retryLimits = upgradeLegacySiteLimits(row.limits);
       const updated = await client.query<SiteAnalysisRow & { last_retry_key: string | null }>(
         `update site_analysis_jobs
             set status = 'queued', stage = 'queued', progress = 0,
@@ -77,10 +79,10 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
                 worker_heartbeat_at = null, snapshot_hash = null,
                 answered_count = 0, question_count = 0,
                 ai_usage_reservation_id = null, run_revision = run_revision + 1,
-                last_retry_key = $3, updated_at = now()
+                last_retry_key = $3, limits = $4::jsonb, updated_at = now()
           where id = $1 and user_id = $2
           returning ${FIELDS}`,
-        [id, user.id, retryKey],
+        [id, user.id, retryKey, JSON.stringify(retryLimits)],
       );
       row = updated.rows[0];
       await client.query("commit");

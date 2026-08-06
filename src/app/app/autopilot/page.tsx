@@ -63,6 +63,7 @@ interface State {
   settings: Settings | null;
   plan: {
     id: number;
+    revision: number;
     items: PlanItem[];
     rules: string | null;
     status: string;
@@ -113,10 +114,18 @@ export default function AutopilotPage() {
   const [data, setData] = useState<State | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [editing, setEditing] = useState<number | null>(null);
+  const [editing, setEditing] = useState<{
+    channelId: number;
+    planId: number;
+    revision: number;
+    itemIndex: number;
+  } | null>(null);
   const [editText, setEditText] = useState("");
   const [expanded, setExpanded] = useState<number | null>(null); // какая карточка раскрыта целиком
   const approvalBusy = useRef(false);
+  const loadSequence = useRef(0);
+  const loadAbort = useRef<AbortController | null>(null);
+  const activePlanIdentity = useRef<string | null>(null);
   const approvalAttempt = useRef<{
     planId: number;
     revision: number;
@@ -129,20 +138,48 @@ export default function AutopilotPage() {
   const { tgChannels, channelId: chId } = useChannelChoice(s.realChannels, picked);
 
   const load = useCallback(async () => {
+    const requestedChannelId = chId;
+    const sequence = ++loadSequence.current;
+    loadAbort.current?.abort();
+    const controller = new AbortController();
+    loadAbort.current = controller;
     try {
-      const r = await fetch(`/api/autopilot${chId ? `?channel=${chId}` : ""}`, { cache: "no-store" });
+      const r = await fetch(`/api/autopilot${requestedChannelId ? `?channel=${requestedChannelId}` : ""}`, {
+        cache: "no-store",
+        signal: controller.signal,
+      });
       const d = (await r.json()) as State;
+      if (sequence !== loadSequence.current || controller.signal.aborted) return;
+      if (requestedChannelId != null && d.channelId !== requestedChannelId) return;
       setData(d);
-    } catch {
+      activePlanIdentity.current = d.plan
+        ? `${d.channelId}:${d.plan.id}:${d.plan.revision}`
+        : null;
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
       /* сеть */
     } finally {
-      setLoading(false);
+      if (sequence === loadSequence.current) setLoading(false);
     }
   }, [chId]);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- загрузка при монтировании
-    load();
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setLoading(true);
+      setData(null);
+      setEditing(null);
+      setEditText("");
+      setExpanded(null);
+      activePlanIdentity.current = null;
+      void load();
+    });
+    return () => {
+      cancelled = true;
+      loadSequence.current += 1;
+      loadAbort.current?.abort();
+    };
   }, [load]);
 
   const building = data?.plan?.status === "building";
@@ -361,6 +398,10 @@ export default function AutopilotPage() {
   };
 
   const itemAction = async (index: number, action: string, draft?: string) => {
+    const plan = data?.plan;
+    const channelId = data?.channelId;
+    if (!plan || !channelId || channelId !== chId) return;
+    const identity = `${channelId}:${plan.id}:${plan.revision}`;
     const r = await fetch("/api/autopilot/item", {
       method: "PATCH",
       headers: { "content-type": "application/json" },
@@ -368,13 +409,17 @@ export default function AutopilotPage() {
         index,
         action,
         draft,
-        channelId: chId,
+        channelId,
+        planId: plan.id,
+        planRevision: plan.revision,
+        itemId: index,
         idempotencyKey: action === "approve" ? `item-${crypto.randomUUID()}` : undefined,
       }),
     }).catch(() => null);
     const result = (await r?.json().catch(() => null)) as
       | { ok?: boolean; error?: string; blockers?: string[] }
       | null;
+    if (activePlanIdentity.current !== identity) return;
     if (result?.error === "approval_blocked") {
       s.toast({
         kind: "danger",
@@ -386,6 +431,12 @@ export default function AutopilotPage() {
         kind: "danger",
         title: "Очередь публикации недоступна",
         body: "Пост не создан. Можно безопасно повторить.",
+      });
+    } else if (result?.error === "stale_plan") {
+      s.toast({
+        kind: "info",
+        title: "План уже изменился",
+        body: "Обновил карточки. Повтори действие для актуальной версии плана.",
       });
     }
     setEditing(null);
@@ -705,7 +756,11 @@ export default function AutopilotPage() {
           <ul className="space-y-3">
             {visible.map((it) => {
               const done = it.status === "approved" || it.status === "published";
-              const isOpen = expanded === it.i || editing === it.i;
+              const isEditing = editing?.channelId === data.channelId &&
+                editing.planId === plan.id &&
+                editing.revision === plan.revision &&
+                editing.itemIndex === it.i;
+              const isOpen = expanded === it.i || isEditing;
               return (
                 <motion.li
                   key={it.i}
@@ -716,7 +771,7 @@ export default function AutopilotPage() {
                     {/* Шапка: иконка темы + тема + когда + статус. Клик — раскрыть/свернуть. */}
                     <button
                       type="button"
-                      onClick={() => editing !== it.i && setExpanded(isOpen ? null : it.i)}
+                      onClick={() => !isEditing && setExpanded(isOpen ? null : it.i)}
                       className="flex w-full items-center gap-3 p-4 text-left"
                     >
                       <span
@@ -772,7 +827,7 @@ export default function AutopilotPage() {
 
                     {/* Тело: редактор / полный текст / короткое превью */}
                     <div className="px-4 pb-4">
-                      {editing === it.i ? (
+                      {isEditing ? (
                         <div>
                           <Textarea
                             rows={5}
@@ -806,7 +861,7 @@ export default function AutopilotPage() {
                       {/* Невыверенная конкретика — ВСЕГДА на виду, без раскрытия карточки.
                           Человек не должен раскапывать риск: выдуманный номер статьи в канале
                           юриста — это его репутация. Автопилот такой пост сам не публикует. */}
-                      {editing !== it.i && it.invented && it.invented.length > 0 && (
+                      {!isEditing && it.invented && it.invented.length > 0 && (
                         <div className="mt-3 flex items-start gap-2 rounded-sm bg-danger-soft p-3">
                           <AlertTriangle
                             className="mt-0.5 h-4 w-4 shrink-0 text-danger-text"
@@ -821,7 +876,7 @@ export default function AutopilotPage() {
                         </div>
                       )}
 
-                      {editing !== it.i && it.status === "expired" && (
+                      {!isEditing && it.status === "expired" && (
                         <div className="mt-3 flex items-start gap-2 rounded-sm bg-danger-soft p-3">
                           <Clock
                             className="mt-0.5 h-4 w-4 shrink-0 text-danger-text"
@@ -835,7 +890,7 @@ export default function AutopilotPage() {
                         </div>
                       )}
 
-                      {editing !== it.i &&
+                      {!isEditing &&
                         it.status === "pending" &&
                         !hasVerifiedQualityMetadata(it.quality) && (
                         <div className="mt-3 flex items-start gap-2 rounded-sm bg-danger-soft p-3">
@@ -850,7 +905,7 @@ export default function AutopilotPage() {
                         </div>
                       )}
 
-                      {editing !== it.i &&
+                      {!isEditing &&
                         it.qualityBlocked &&
                         it.quality &&
                         hasVerifiedQualityMetadata(it.quality) && (
@@ -869,7 +924,7 @@ export default function AutopilotPage() {
 
                       {/* На чём основан пост — только в раскрытой карточке. Это доказательство,
                           что конкретика взята из базы знаний, а не выдумана. */}
-                      {isOpen && editing !== it.i && it.sources && it.sources.length > 0 && (
+                      {isOpen && !isEditing && it.sources && it.sources.length > 0 && (
                         <div className="mt-3 rounded-sm bg-surface-inset p-3">
                           <p className="mb-1.5 flex items-center gap-1.5 text-[12px] font-semibold text-text-3">
                             <BookText className="h-3.5 w-3.5" aria-hidden />
@@ -885,7 +940,7 @@ export default function AutopilotPage() {
                         </div>
                       )}
 
-                      {it.status === "pending" && editing !== it.i && (
+                      {it.status === "pending" && !isEditing && (
                         <div className="mt-3 flex flex-wrap gap-2">
                           <Button
                             size="sm"
@@ -900,7 +955,13 @@ export default function AutopilotPage() {
                             size="sm"
                             variant="ghost"
                             onClick={() => {
-                              setEditing(it.i);
+                              if (!data.channelId) return;
+                              setEditing({
+                                channelId: data.channelId,
+                                planId: plan.id,
+                                revision: plan.revision,
+                                itemIndex: it.i,
+                              });
                               setEditText(it.draft);
                             }}
                           >

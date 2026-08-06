@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { extractSitePage } from "../src/lib/site-crawler.mjs";
 import { buildSiteEvidenceSnapshot } from "../src/lib/site-analysis/evidence.mjs";
-import { runSiteInterview } from "./site-analysis-interview.mjs";
+import { SITE_INTERVIEW_EXECUTION_LIMITS, runSiteInterview } from "./site-analysis-interview.mjs";
 
 function snapshot() {
   return buildSiteEvidenceSnapshot({
@@ -81,6 +81,11 @@ describe("site analysis AI interview worker", () => {
 
     expect(acquireUsage).toHaveBeenCalledTimes(1);
     expect(completeAiText.mock.calls.every(([, options]) => options.allowFallback === false)).toBe(true);
+    expect(completeAiText.mock.calls.every(([request, options]) => (
+      JSON.parse(request.user).questions.length <= SITE_INTERVIEW_EXECUTION_LIMITS.maxQuestionsPerBatch
+      && request.maxTokens === SITE_INTERVIEW_EXECUTION_LIMITS.maxTokens
+      && options.timeoutMs === SITE_INTERVIEW_EXECUTION_LIMITS.timeoutMs
+    ))).toBe(true);
     expect(new Set(providerKeys).size).toBe(providerKeys.length);
     expect(providerKeys.every((key) => /^[a-f0-9]{64}$/u.test(key))).toBe(true);
     expect(result.report.reportStatus).toBe("complete");
@@ -104,16 +109,12 @@ describe("site analysis AI interview worker", () => {
     const input = { analysisId: 41, runRevision: 2, userId: 7, requestId: "req-41", snapshot: snapshot() };
     await runSiteInterview(h.pool, input, deps);
     await runSiteInterview(h.pool, input, deps);
-    expect(completeAiText).toHaveBeenCalledTimes(9);
+    expect(completeAiText).toHaveBeenCalledTimes(26);
   });
 
   it.each([
     ["provider timeout", async () => { throw Object.assign(new Error("timeout"), { code: "provider_timeout", status: 504 }); }, "provider_timeout"],
     ["truncated terminal", async () => ({ engine: "navy-deepseek-pro", text: "{\"batchId\":" }), "invalid_json"],
-    ["schema failure", async (request) => {
-      const body = JSON.parse(request.user);
-      return { engine: "navy-deepseek-pro", text: JSON.stringify({ batchId: body.outputContract.batchId, reportStatus: "complete", answers: [] }) };
-    }, "schema_invalid"],
   ])("releases quota on %s and never returns a terminal report", async (_label, completion, expectedCode) => {
     const h = harness();
     const releaseUsage = vi.fn(async () => true);
@@ -131,5 +132,69 @@ describe("site analysis AI interview worker", () => {
     }).catch((value) => value);
     expect(error.code).toBe(expectedCode === "invalid_json" ? "schema_invalid" : expectedCode);
     expect(releaseUsage).toHaveBeenCalledWith(h.pool, 7, 91);
+  });
+
+  it("repairs schema-only omissions without a second provider call", async () => {
+    const h = harness();
+    const releaseUsage = vi.fn(async () => true);
+    const completeAiText = vi.fn(async (request) => {
+      const body = JSON.parse(request.user);
+      return {
+        engine: "navy-gpt-5-4",
+        text: JSON.stringify({ batchId: body.outputContract.batchId, reportStatus: "complete", answers: [] }),
+      };
+    });
+    const result = await runSiteInterview(h.pool, {
+      analysisId: 41,
+      runRevision: 2,
+      userId: 7,
+      requestId: "req-41",
+      snapshot: snapshot(),
+      engine: "navy-gpt-5-4",
+    }, {
+      acquireUsage: vi.fn(async () => ({ state: "acquired", reservationId: 91 })),
+      releaseUsage,
+      heartbeatUsage: vi.fn(async () => true),
+      completeAiText,
+    });
+    expect(result.report).toMatchObject({ reportStatus: "complete", summary: { insufficientData: 51 } });
+    expect(completeAiText).toHaveBeenCalledTimes(26);
+    expect(releaseUsage).not.toHaveBeenCalled();
+  });
+
+  it("retries a transient provider failure inside one immutable batch identity", async () => {
+    const h = harness();
+    const providerKeys = [];
+    let calls = 0;
+    const completeAiText = vi.fn(async (request) => {
+      providerKeys.push(request.providerRequestKey);
+      calls += 1;
+      if (calls === 1) throw Object.assign(new Error("truncated"), { code: "stream_truncated", status: 502 });
+      const body = JSON.parse(request.user);
+      return {
+        engine: "navy-gpt-5-4",
+        text: JSON.stringify({
+          batchId: body.outputContract.batchId,
+          reportStatus: "complete",
+          answers: body.questions.map(answerFor),
+        }),
+      };
+    });
+    const result = await runSiteInterview(h.pool, {
+      analysisId: 41,
+      runRevision: 2,
+      userId: 7,
+      requestId: "req-41",
+      snapshot: snapshot(),
+      engine: "navy-gpt-5-4",
+    }, {
+      acquireUsage: vi.fn(async () => ({ state: "acquired", reservationId: 91 })),
+      releaseUsage: vi.fn(async () => true),
+      heartbeatUsage: vi.fn(async () => true),
+      completeAiText,
+    });
+    expect(result.report.answers).toHaveLength(51);
+    expect(completeAiText).toHaveBeenCalledTimes(27);
+    expect(providerKeys[0]).toBe(providerKeys[1]);
   });
 });

@@ -5,17 +5,35 @@ const retryDelaySeconds = (attempts) => Math.min(3600, 60 * (2 ** Math.min(Math.
 async function refreshOperationStatus(pool, operationId) {
   const counts = (await pool.query(
     `select count(*)::int as total,
-            count(*) filter (where status = 'enqueued')::int as enqueued,
-            count(*) filter (where status = 'failed')::int as failed,
-            count(*) filter (where status = 'dispatching')::int as dispatching
-       from publication_outbox where operation_id = $1`,
+            count(*) filter (where outbox.status = 'enqueued')::int as enqueued,
+            count(*) filter (where outbox.status = 'failed')::int as failed,
+            count(*) filter (where outbox.status = 'dispatching')::int as dispatching,
+            count(*) filter (where post.status = 'published')::int as published,
+            count(*) filter (where post.status = 'published_unverified')::int as unverified,
+            count(*) filter (where post.status in ('failed','quarantined','missing','deleted_external'))::int as terminal_failed,
+            count(*) filter (where post.status in ('scheduled','publishing','failed_retry'))::int as active
+       from publication_outbox outbox
+       join posts post on post.id = outbox.post_id
+      where outbox.operation_id = $1`,
     [operationId],
   )).rows[0];
-  const status = counts.total > 0 && counts.enqueued === counts.total
+  const total = Number(counts.total || 0);
+  const published = Number(counts.published || 0);
+  const unverified = Number(counts.unverified || 0);
+  const terminalFailed = Number(counts.terminal_failed || 0);
+  const status = total > 0 && published === total
+    ? "published"
+    : total > 0 && published + unverified === total && unverified > 0
+      ? "published_unverified"
+      : total > 0 && terminalFailed === total
+        ? "failed"
+        : published + unverified + terminalFailed > 0
+          ? "partial"
+          : total > 0 && Number(counts.enqueued) === total
     ? "queued"
-    : counts.enqueued > 0
+    : Number(counts.enqueued) > 0
       ? "partial"
-      : counts.failed > 0
+      : Number(counts.failed) > 0
         ? "failed"
         : "pending";
   await pool.query(
@@ -42,6 +60,15 @@ export async function reconcilePublicationOutbox({
     [operationId],
   );
   const touched = new Set();
+  const recoverableOperations = await pool.query(
+    `select id from publication_operations
+      where status in ('pending','partial','queued','published_unverified')
+        and ($1::bigint is null or id = $1)
+      order by updated_at, id
+      limit $2`,
+    [operationId, bounded],
+  );
+  for (const row of recoverableOperations.rows) touched.add(Number(row.id));
   let scanned = 0;
   let enqueued = 0;
   let failed = 0;

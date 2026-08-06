@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 
 import { SiteCrawlerError, crawlSite } from "../src/lib/site-crawler.mjs";
 import { completeAiText } from "../src/lib/ai-completion-service.mjs";
+import { isConfiguredEngineId } from "../src/lib/ai-engine-policy.mjs";
 import { buildSiteEvidenceSnapshot } from "../src/lib/site-analysis/evidence.mjs";
 import {
   SITE_OSINT_PROMPT_VERSION,
@@ -24,12 +25,6 @@ const RETRYABLE_CODES = new Set([
   "ECONNREFUSED",
   "EAI_AGAIN",
   "ENOTFOUND",
-  "worker_failed",
-  "provider_timeout",
-  "network_error",
-  "rate_limited",
-  "stream_truncated",
-  "empty_generation",
   "analysis_in_progress",
   "quota_commit_failed",
 ]);
@@ -85,12 +80,28 @@ function errorCode(error) {
   return RETRYABLE_CODES.has(candidate) ? candidate : "worker_failed";
 }
 
+function safeTechnicalError(error) {
+  const pgCode = typeof error?.code === "string" && /^[0-9A-Z]{5}$/u.test(error.code)
+    ? error.code
+    : null;
+  const constraint = typeof error?.constraint === "string" && /^[a-z0-9_]{1,128}$/u.test(error.constraint)
+    ? error.constraint
+    : null;
+  const errorName = typeof error?.name === "string" ? error.name.slice(0, 80) : "Error";
+  return Object.freeze({ pgCode, constraint, errorName });
+}
+
 function statusForStage(stage) {
   if (["extracting", "resolving_entities", "researching_external", "answering", "validating"].includes(stage)) return "analyzing";
   if (stage === "planning") return "planning";
   if (stage === "saving") return "saving";
   if (stage === "ready") return "ready";
   return "crawling";
+}
+
+function configuredInterviewEngine(dependencies = {}, env = process.env) {
+  const candidate = dependencies.engine ?? env.SITE_ANALYSIS_ENGINE ?? env.AI_SEMANTIC_ENGINE;
+  return isConfiguredEngineId(candidate) ? candidate : undefined;
 }
 
 export async function processSiteAnalysisJob(pool, data, dependencies = {}) {
@@ -240,6 +251,7 @@ export async function processSiteAnalysisJob(pool, data, dependencies = {}) {
       userId: Number(analysis.user_id),
       requestId: analysis.request_id,
       snapshot,
+      engine: configuredInterviewEngine(dependencies),
     }, {
       completeAiText: dependencies.completeAiText || completeAiText,
       onProgress: async ({ progress, detail }) => {
@@ -514,6 +526,7 @@ export async function processSiteAnalysisJob(pool, data, dependencies = {}) {
     }
   } catch (error) {
     const code = errorCode(error);
+    const technical = safeTechnicalError(error);
     const retry = !finalAttempt && (RETRYABLE_CODES.has(code) || error?.retryable === true);
     await pool.query(
       retry
@@ -533,6 +546,7 @@ export async function processSiteAnalysisJob(pool, data, dependencies = {}) {
     );
     const wrapped = new Error(publicErrorMessage(code));
     wrapped.code = code;
+    wrapped.technical = technical;
     throw wrapped;
   } finally {
     clearInterval(heartbeat);
@@ -552,6 +566,9 @@ export function createSiteAnalysisWorker({ connection, pool, concurrency = 1 }) 
     analysisId: job?.data?.analysisId || job?.id || null,
     requestId: job?.data?.requestId || null,
     code: error?.code || error?.name || "worker_failed",
+    pgCode: error?.technical?.pgCode || null,
+    constraint: error?.technical?.constraint || null,
+    errorName: error?.technical?.errorName || error?.name || "Error",
   }));
   worker.on("error", (error) => console.error("[site-analysis] queue error", {
     errorName: error?.name || "Error",

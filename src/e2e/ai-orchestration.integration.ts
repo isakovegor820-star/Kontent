@@ -243,6 +243,7 @@ describe("Gate 4 common AI orchestration on disposable infrastructure", () => {
       engine: completed.engine,
       fallbackUsed: completed.fallbackUsed,
       validation: {
+        version: 1 as const,
         status: "not_checked" as const,
         requiresReview: true,
         provenance: {},

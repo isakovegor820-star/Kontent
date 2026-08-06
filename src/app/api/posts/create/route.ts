@@ -15,6 +15,7 @@ import {
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import { draftReviewDecision } from "@/lib/draft-review";
 import type { DraftHumanReview } from "@/lib/draft-types";
+import { generationBindingValid } from "@/lib/generation-artifacts";
 import { probeRedisAndPublicationWorker } from "@/lib/readiness-probes";
 
 export const runtime = "nodejs";
@@ -92,7 +93,7 @@ export async function POST(req: NextRequest) {
 
   let tx: PoolClient | null = null;
   let txOpen = false;
-  let publicationOrigin: "manual" | "ai" | "trend" | "idea" | "competitor" | "autopilot" = "manual";
+  let publicationOrigin: "manual" | "ai" | "trend" | "idea" | "competitor" | "rss" | "autopilot" = "manual";
   try {
     const pool = getPool();
     if (draftId != null) {
@@ -124,17 +125,26 @@ export async function POST(req: NextRequest) {
         id: number;
         text: string;
         scheduled_at: Date | string | null;
-        origin: "manual" | "ai" | "trend" | "idea" | "competitor" | "autopilot";
+        origin: "manual" | "ai" | "trend" | "idea" | "competitor" | "rss" | "autopilot";
+        purpose: "source_context" | "publishable" | "needs_review";
+        generation_result_id: number | string | null;
+        generation_result_hash: string | null;
+        receipt_result_hash: string | null;
+        receipt_payload: unknown;
         version: number | string;
         review_policy_version: number | string;
         ai_validation: unknown;
         human_reviewed_version: number | string | null;
         human_reviewed_at: Date | string | null;
       }>(
-        `select d.id, d.text, d.scheduled_at, d.origin, d.version,
+        `select d.id, d.text, d.scheduled_at, d.origin, d.purpose, d.version,
+                d.generation_result_id, result.result_hash as generation_result_hash,
+                receipt.result_hash as receipt_result_hash, receipt.receipt as receipt_payload,
                 d.review_policy_version, d.ai_validation,
                 d.human_reviewed_version, d.human_reviewed_at
           from drafts d
+           left join generation_results result on result.id = d.generation_result_id
+           left join validation_receipts receipt on receipt.generation_result_id = result.id
            join draft_destinations dd on dd.draft_id = d.id
           where d.id = $1 and d.user_id = $2 and dd.channel_id = $3
           for update of d`,
@@ -144,6 +154,9 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: false, error: "bad_draft_destination" }, { status: 422 });
       }
       const draft = destination.rows[0];
+      if (draft.purpose === "source_context") {
+        return NextResponse.json({ ok: false, error: "source_context_not_publishable" }, { status: 422 });
+      }
       publicationOrigin = draft.origin;
       const currentVersion = Number(draft.version);
       if (currentVersion !== draftVersion) {
@@ -175,6 +188,16 @@ export async function POST(req: NextRequest) {
           : null;
       const review = draftReviewDecision({
         origin: draft.origin,
+        purpose: draft.purpose,
+        generation_result_id: draft.generation_result_id == null ? null : Number(draft.generation_result_id),
+        generation_binding_valid: generationBindingValid({
+          generationResultId: draft.generation_result_id,
+          text: draft.text,
+          resultHash: draft.generation_result_hash,
+          receiptHash: draft.receipt_result_hash,
+          aiValidation: draft.ai_validation,
+          receipt: draft.receipt_payload,
+        }),
         version: currentVersion,
         review_policy_version: Number(draft.review_policy_version),
         ai_validation: draft.ai_validation,

@@ -42,7 +42,9 @@ export interface AiUsageStoredResult {
   requestedEngine: string;
   engine: string;
   fallbackUsed: boolean;
+  generationResultId?: number;
   validation?: {
+    version: 1;
     status: "passed" | "blocked" | "not_checked";
     requiresReview: boolean;
     provenance: Record<string, unknown>;
@@ -95,6 +97,8 @@ function storedResult(value: unknown): AiUsageStoredResult | null {
     || typeof result.requestedEngine !== "string"
     || typeof result.engine !== "string"
     || typeof result.fallbackUsed !== "boolean"
+    || (result.generationResultId != null
+      && (!Number.isSafeInteger(result.generationResultId) || Number(result.generationResultId) <= 0))
   ) return null;
   return result as AiUsageStoredResult;
 }
@@ -200,21 +204,21 @@ export async function lookupAiUsageRequest(
   if (row.request_fingerprint && row.request_fingerprint !== fingerprint) {
     return { state: "conflict", reservationId, result: null };
   }
+  const terminalResult = storedResult(row.result_payload);
   if (row.status === "committed") {
-    const result = storedResult(row.result_payload);
     return {
-      state: result ? "replay" : "committed_without_result",
+      state: terminalResult ? "replay" : "committed_without_result",
       reservationId,
-      result,
+      result: terminalResult,
     };
   }
+  // A validated terminal result survives lease expiry until the browser replays `done`
+  // and ACKs it. Lease expiry must never cause a second provider call.
+  if (terminalResult) {
+    return { state: "terminal_pending_ack", reservationId, result: terminalResult };
+  }
   if (row.status === "reserved" && row.fresh) {
-    const result = storedResult(row.result_payload);
-    return {
-      state: result ? "terminal_pending_ack" : "in_progress",
-      reservationId,
-      result,
-    };
+    return { state: "in_progress", reservationId, result: null };
   }
   return {
     state: row.status === "released" ? "released" : "expired",
@@ -257,8 +261,7 @@ export async function acquireAiUsageRequest(
           for update skip locked
        )
        update ai_usage u
-          set status = 'expired', finalized_at = now(),
-              result_payload = null, result_content_type = null
+          set status = 'expired', finalized_at = now()
          from stale
         where u.id = stale.id`,
       [userId, cleanupBatch],
@@ -295,8 +298,8 @@ export async function acquireAiUsageRequest(
         result: null,
       };
     }
+    const existingTerminalResult = storedResult(existing?.result_payload);
     if (existing?.status === "committed") {
-      const result = storedResult(existing.result_payload);
       await client.query("commit");
       return {
         allowed: false,
@@ -306,12 +309,25 @@ export async function acquireAiUsageRequest(
         reservationKey: key,
         status: null,
         expiresAt: null,
-        requestState: result ? "replay" : "committed_without_result",
-        result,
+        requestState: existingTerminalResult ? "replay" : "committed_without_result",
+        result: existingTerminalResult,
+      };
+    }
+    if (existingTerminalResult) {
+      await client.query("commit");
+      return {
+        allowed: false,
+        used: 0,
+        limit,
+        reservationId: existingId,
+        reservationKey: key,
+        status: null,
+        expiresAt: null,
+        requestState: "terminal_pending_ack",
+        result: existingTerminalResult,
       };
     }
     if (existing?.status === "reserved" && existing.fresh) {
-      const result = storedResult(existing.result_payload);
       await client.query("commit");
       return {
         allowed: false,
@@ -321,8 +337,8 @@ export async function acquireAiUsageRequest(
         reservationKey: key,
         status: null,
         expiresAt: null,
-        requestState: result ? "terminal_pending_ack" : "in_progress",
-        result,
+        requestState: "in_progress",
+        result: null,
       };
     }
 
@@ -575,21 +591,10 @@ export async function acknowledgeAiUsageResult(
   if (key !== keyValue) return { changed: false, status: null, result: null };
   const updated = await pool.query<{ status: AiUsageStatus; result_payload: unknown }>(
     `update ai_usage
-        set status = case
-                       when expires_at is null or expires_at <= now() then 'expired'
-                       else 'committed'
-                     end,
-            result_payload = case
-                               when expires_at is not null and expires_at > now() then result_payload
-                               else null
-                             end,
-            result_content_type = case
-                                    when expires_at is not null and expires_at > now() then result_content_type
-                                    else null
-                                  end,
+        set status = 'committed',
             finalized_at = now()
       where user_id = $1 and reservation_key = $2
-        and status = 'reserved' and result_payload is not null
+        and status in ('reserved', 'expired') and result_payload is not null
       returning status, result_payload`,
     [userId, key],
   );
@@ -700,6 +705,7 @@ export async function releaseAiUsageRequest(
             result_payload = null,
             result_content_type = null
       where id = $1 and user_id = $2 and operation_id = $3::uuid and status = 'reserved'
+        and result_payload is null
       returning status`,
     [reservationId, userId, operationId],
   );
@@ -769,8 +775,7 @@ export async function expireAiUsageReservations(
         for update skip locked
      )
      update ai_usage u
-        set status = 'expired', finalized_at = now(),
-            result_payload = null, result_content_type = null
+        set status = 'expired', finalized_at = now()
        from stale
       where u.id = stale.id`,
     [safeLimit],

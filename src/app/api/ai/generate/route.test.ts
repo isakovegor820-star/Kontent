@@ -13,6 +13,10 @@ const mocks = vi.hoisted(() => ({
   releaseAiUsageRequest: vi.fn(),
   aiReady: vi.fn(),
   getDraftForUser: vi.fn(),
+  beginGenerationOperation: vi.fn(),
+  failGenerationOperation: vi.fn(),
+  lookupTerminalGenerationFailure: vi.fn(),
+  stageGenerationArtifact: vi.fn(),
 }));
 
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
@@ -39,6 +43,16 @@ vi.mock("@/lib/server-drafts", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/server-drafts")>();
   return { ...actual, getDraftForUser: mocks.getDraftForUser };
 });
+vi.mock("@/lib/generation-artifacts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/generation-artifacts")>();
+  return {
+    ...actual,
+    beginGenerationOperation: mocks.beginGenerationOperation,
+    failGenerationOperation: mocks.failGenerationOperation,
+    lookupTerminalGenerationFailure: mocks.lookupTerminalGenerationFailure,
+    stageGenerationArtifact: mocks.stageGenerationArtifact,
+  };
+});
 
 import { generationDeadlines } from "@/lib/ai-generation-deadlines";
 import { presetQuality } from "@/lib/post-quality.mjs";
@@ -47,9 +61,9 @@ import { POST } from "./route";
 describe("generation deadlines", () => {
   it("does not false-fail balanced Navy startup at the old 12-second boundary", () => {
     expect(generationDeadlines("balanced", {})).toEqual({
-      firstTokenMs: 30_000,
-      attemptOverallMs: 75_000,
-      pipelineOverallMs: 240_000,
+      firstTokenMs: 60_000,
+      attemptOverallMs: 120_000,
+      pipelineOverallMs: 300_000,
     });
   });
 
@@ -80,10 +94,35 @@ function studioRequest() {
     body: JSON.stringify({
       command: "write",
       input: "Короткий бриф без обязательных фактов",
+      channelId: 42,
       surface: "studio",
       postSettings: {
         qualityMode: "fast",
         factStrictness: "general",
+        hideCriticalResult: false,
+        length: "custom",
+        customMinChars: 50,
+        customMaxChars: 2000,
+      },
+    }),
+  });
+}
+
+function studioFactCheckOffRequest() {
+  return new NextRequest("http://localhost/api/ai/generate", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "idempotency-key": "studio_fact_check_off_1",
+    },
+    body: JSON.stringify({
+      command: "write",
+      input: "Конференция по банкротству состоится 26 сентября",
+      channelId: 42,
+      surface: "studio",
+      postSettings: {
+        qualityMode: "fast",
+        factStrictness: "off",
         hideCriticalResult: false,
         length: "custom",
         customMinChars: 50,
@@ -103,6 +142,7 @@ function editorialRequest() {
     body: JSON.stringify({
       command: "write",
       input: "Подготовь спокойный пост с одним понятным следующим шагом",
+      channelId: 42,
       surface: "studio",
       postSettings: {
         qualityMode: "balanced",
@@ -127,6 +167,7 @@ function reviewableBlockedEditorialRequest() {
     body: JSON.stringify({
       command: "write",
       input: "Подготовь короткий спокойный черновик",
+      channelId: 42,
       surface: "composer",
       postSettings: {
         qualityMode: "balanced",
@@ -184,6 +225,7 @@ function ownedReferenceDraft(overrides: Record<string, unknown> = {}) {
     media: null,
     scheduled_at: null,
     origin: "competitor",
+    purpose: "source_context",
     source_ref: {
       kind: "reference",
       id: "91",
@@ -194,6 +236,8 @@ function ownedReferenceDraft(overrides: Record<string, unknown> = {}) {
     version: 3,
     review_policy_version: 1,
     ai_validation: null,
+    generation_result_id: null,
+    generation_binding_valid: false,
     human_review: null,
     created_at: "2026-08-05T10:00:00.000Z",
     updated_at: "2026-08-05T10:00:00.000Z",
@@ -239,7 +283,16 @@ describe("POST /api/ai/generate prerequisites", () => {
       rows: [{ ai_mood: null, ai_engine: "local", ai_post_settings: null }],
       rowCount: 1,
     });
-    mocks.channelAiContextFor.mockResolvedValue(null);
+    mocks.channelAiContextFor.mockResolvedValue({
+      id: 42,
+      title: "Тестовый канал",
+      network: "tg",
+      profile: null,
+      quality: null,
+      postIndex: 1,
+      facts: [],
+      styleSamples: [],
+    });
     mocks.styleSamplesFor.mockResolvedValue([]);
     mocks.lookupAiUsageRequest.mockResolvedValue({ state: "missing", reservationId: null, result: null });
     mocks.acquireAiUsageRequest.mockResolvedValue({
@@ -262,6 +315,15 @@ describe("POST /api/ai/generate prerequisites", () => {
     mocks.releaseAiUsageRequest.mockResolvedValue(true);
     mocks.aiReady.mockResolvedValue(true);
     mocks.getDraftForUser.mockResolvedValue(null);
+    mocks.lookupTerminalGenerationFailure.mockResolvedValue(null);
+    mocks.beginGenerationOperation.mockResolvedValue({ id: 301, state: "created" });
+    mocks.failGenerationOperation.mockResolvedValue(true);
+    mocks.stageGenerationArtifact.mockImplementation(async ({ text, validation }) => ({
+      id: 501,
+      text,
+      resultHash: "a".repeat(64),
+      validation,
+    }));
     vi.unstubAllGlobals();
   });
 
@@ -334,6 +396,7 @@ describe("POST /api/ai/generate prerequisites", () => {
   });
 
   it("returns 422 only when the requested owned active channel genuinely does not exist", async () => {
+    mocks.channelAiContextFor.mockResolvedValue(null);
     const response = await POST(request());
 
     expect(response.status).toBe(422);
@@ -384,6 +447,34 @@ describe("POST /api/ai/generate prerequisites", () => {
       text: "Полный ответ с содержательным утверждением.",
     }));
     expect(mocks.commitAiUsageResult).not.toHaveBeenCalled();
+    expect(mocks.releaseAiUsageRequest).not.toHaveBeenCalled();
+  });
+
+  it("does not block a dated post when factual validation is explicitly disabled", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(
+      '{"message":{"content":"Конференция по банкротству состоится 26 сентября. Подробности встречи появятся в канале."},"done":true}\n',
+      { status: 200, headers: { "content-type": "application/x-ndjson" } },
+    )));
+
+    const response = await POST(studioFactCheckOffRequest());
+    const events = (await response.text()).trim().split("\n").map((line) => JSON.parse(line));
+
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "validation",
+      status: "not_checked",
+      requiresReview: true,
+      blockerCodes: [],
+    }));
+    expect(events).toContainEqual(expect.objectContaining({ type: "done", ackRequired: true }));
+    expect(events.some((event) => event.type === "error")).toBe(false);
+    expect(mocks.stageAiUsageResult).toHaveBeenCalledWith(
+      7,
+      81,
+      response.headers.get("x-ai-request-id"),
+      expect.objectContaining({
+        validation: expect.objectContaining({ status: "not_checked", requiresReview: true }),
+      }),
+    );
     expect(mocks.releaseAiUsageRequest).not.toHaveBeenCalled();
   });
 
@@ -665,7 +756,7 @@ describe("POST /api/ai/generate prerequisites", () => {
     expect(repairBody.messages.at(-1)?.content).toContain("Тематическое соответствие провалено");
   });
 
-  it("stages an off-topic terminal result as a reviewable Composer draft after one repair", async () => {
+  it("fails closed after one off-topic repair without staging a terminal draft", async () => {
     mocks.getDraftForUser.mockResolvedValue(ownedReferenceDraft());
     mocks.channelAiContextFor.mockResolvedValue({
       id: 42,
@@ -693,21 +784,25 @@ describe("POST /api/ai/generate prerequisites", () => {
       blockerCodes: expect.arrayContaining(["topic:off_topic"]),
       topicAlignment: expect.objectContaining({ status: "failed" }),
     }));
-    expect(events.some((event) => event.type === "done")).toBe(true);
-    expect(mocks.stageAiUsageResult).toHaveBeenCalledWith(
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "error",
+      code: "topic_alignment_failed",
+      retryable: false,
+    }));
+    expect(events.some((event) => event.type === "done")).toBe(false);
+    expect(mocks.stageGenerationArtifact).not.toHaveBeenCalled();
+    expect(mocks.stageAiUsageResult).not.toHaveBeenCalled();
+    expect(mocks.failGenerationOperation).toHaveBeenCalledWith(
+      7,
+      response.headers.get("x-ai-request-id"),
+      "topic_alignment_failed",
+      false,
+    );
+    expect(mocks.releaseAiUsageRequest).toHaveBeenCalledWith(
       7,
       81,
       response.headers.get("x-ai-request-id"),
-      expect.objectContaining({
-        text: "Покупайте билеты на конференцию и занимайте место в зале.",
-        validation: expect.objectContaining({
-          status: "blocked",
-          requiresReview: true,
-          blockerCodes: expect.arrayContaining(["topic:off_topic"]),
-        }),
-      }),
     );
-    expect(mocks.releaseAiUsageRequest).not.toHaveBeenCalled();
   });
 
   it("rejects a missing or foreign reference draft before lookup, quota and provider work", async () => {
@@ -779,7 +874,7 @@ describe("POST /api/ai/generate prerequisites", () => {
     expect(fingerprints[1]).not.toBe(fingerprints[0]);
   });
 
-  it("keeps a fact-blocked Trends result as a confirmed reviewable draft", async () => {
+  it("fails closed for a fact-blocked Trends result without a terminal draft", async () => {
     mocks.channelAiContextFor.mockResolvedValue({
       id: 42,
       title: "Мой канал",
@@ -798,7 +893,6 @@ describe("POST /api/ai/generate prerequisites", () => {
     const response = await POST(trendsRequest());
     const events = (await response.text()).trim().split("\n").map((line) => JSON.parse(line));
     const validationIndex = events.findIndex((event) => event.type === "validation");
-    const doneIndex = events.findIndex((event) => event.type === "done");
     const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     const providerBody = JSON.parse(String(init.body)) as { messages: Array<{ role: string; content: string }> };
 
@@ -807,15 +901,26 @@ describe("POST /api/ai/generate prerequisites", () => {
     expect(providerBody.messages.at(-1)?.content).toContain("Опирайся на данные разведки");
     expect(events[validationIndex]).toMatchObject({ type: "validation", status: "blocked", requiresReview: true });
     expect(validationIndex).toBeGreaterThan(-1);
-    expect(doneIndex).toBeGreaterThan(validationIndex);
+    expect(events.some((event) => event.type === "done")).toBe(false);
     expect(mocks.channelAiContextFor).toHaveBeenCalledWith(7, 42, expect.any(Number));
-    expect(mocks.stageAiUsageResult).toHaveBeenCalledWith(
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "error",
+      code: "factual_validation_failed",
+      retryable: false,
+    }));
+    expect(mocks.stageGenerationArtifact).not.toHaveBeenCalled();
+    expect(mocks.stageAiUsageResult).not.toHaveBeenCalled();
+    expect(mocks.failGenerationOperation).toHaveBeenCalledWith(
+      7,
+      response.headers.get("x-ai-request-id"),
+      "factual_validation_failed",
+      false,
+    );
+    expect(mocks.releaseAiUsageRequest).toHaveBeenCalledWith(
       7,
       81,
       response.headers.get("x-ai-request-id"),
-      expect.objectContaining({ protocol: "ndjson" }),
     );
-    expect(mocks.releaseAiUsageRequest).not.toHaveBeenCalled();
   });
 
   it("returns a reserved Trends generation to the limit when the provider stream breaks", async () => {

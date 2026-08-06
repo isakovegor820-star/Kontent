@@ -12,6 +12,8 @@
 
 /* ---------------------------------------------------------------- ТОКЕНЫ */
 :root {
+  --app-bottom-nav-height: calc(3.5rem + env(safe-area-inset-bottom));
+  --app-content-bottom-inset: calc(var(--app-bottom-nav-height) + 1.5rem);
   color-scheme: light;
 
   /* Фирменный градиент (ТЗ 7.2).

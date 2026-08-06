@@ -8,6 +8,7 @@ import {
   channelAiContextFor,
   expireAiUsageReservations,
   finalizeAiUsage,
+  lookupAiUsageRequest,
   releaseAiUsage,
   releaseAiUsageRequest,
   reserveAiUsage,
@@ -172,6 +173,7 @@ describe("AI usage reservation lifecycle", () => {
     expect(pool.query.mock.calls[0][0]).toContain("limit $1");
     expect(pool.query.mock.calls[0][0]).toContain("for update skip locked");
     expect(pool.query.mock.calls[0][0]).toContain("status = 'expired'");
+    expect(pool.query.mock.calls[0][0]).not.toContain("result_payload = null");
     expect(pool.query.mock.calls[0][1]).toEqual([17]);
   });
 
@@ -245,6 +247,44 @@ describe("AI usage reservation lifecycle", () => {
       result: terminalResult,
     });
     expect(client.query.mock.calls.some(([sql]) => String(sql).includes("count(*)"))).toBe(false);
+  });
+
+  it("replays and ACKs a staged terminal result even after its reservation lease expired", async () => {
+    const fingerprint = aiRequestFingerprint({ input: "pending ack after refresh" });
+    const lookupPool = {
+      query: vi.fn(async () => ({
+        rowCount: 1,
+        rows: [{
+          id: "91",
+          status: "expired",
+          request_fingerprint: fingerprint,
+          result_payload: terminalResult,
+          fresh: false,
+        }],
+      })),
+    };
+    await expect(lookupAiUsageRequest(
+      7,
+      "web:request-expired-ack",
+      fingerprint,
+      lookupPool as never,
+    )).resolves.toMatchObject({
+      state: "terminal_pending_ack",
+      reservationId: 91,
+      result: terminalResult,
+    });
+
+    const ackPool = {
+      query: vi.fn(async (sql: string) => sql.includes("update ai_usage")
+        ? { rowCount: 1, rows: [{ status: "committed", result_payload: terminalResult }] }
+        : { rowCount: 0, rows: [] }),
+    };
+    await expect(acknowledgeAiUsageResult(
+      7,
+      "web:request-expired-ack",
+      ackPool as never,
+    )).resolves.toMatchObject({ changed: true, status: "committed", result: terminalResult });
+    expect(ackPool.query.mock.calls[0][0]).toContain("status in ('reserved', 'expired')");
   });
 
   it("reuses a released request key and excludes its audit row from the daily count", async () => {

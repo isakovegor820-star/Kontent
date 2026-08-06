@@ -1,6 +1,6 @@
 import { normalizePostSettings, type PostSettings } from "./post-settings";
 
-export type FactLedgerPolicy = "closed_world" | "allow_general";
+export type FactLedgerPolicy = "disabled" | "closed_world" | "allow_general";
 export type FactDomain = "general" | "legal" | "event" | "technology";
 
 export interface FactEvidence {
@@ -253,18 +253,6 @@ function domainFor(text: string): FactDomain {
   return "general";
 }
 
-function factFragments(task: string): string[] {
-  return task
-    .split(/\n+|(?<=[.!?;])\s+/u)
-    .map((part) => part.trim())
-    .filter((part) => part.length >= 15)
-    .filter((part) =>
-      /(?:\d|https?:\/\/|стать[ья]|ст\.|составля\p{L}*|исключа\p{L}*|аудитори\p{L}*|цель\p{L}*|бесплатн\p{L}*|решени\p{L}*|источник\p{L}*|анализир\p{L}*)/iu.test(part),
-    )
-    .slice(0, 20)
-    .map((part) => part.slice(0, 500));
-}
-
 /** Строит минимальный закрытый ledger из уже существующего контракта Studio. */
 export function buildFactLedger(input: {
   task: string;
@@ -273,7 +261,11 @@ export function buildFactLedger(input: {
   profile?: string;
 }): FactLedger {
   const settings = normalizePostSettings(input.postSettings);
-  const strict = settings.factStrictness !== "general";
+  const policy: FactLedgerPolicy = settings.factStrictness === "off"
+    ? "disabled"
+    : settings.factStrictness === "general"
+      ? "allow_general"
+      : "closed_world";
   const required: FactRequirement[] = settings.requiredFacts.map((fact, index) => ({
     id: `required-${index + 1}`,
     label: fact,
@@ -285,15 +277,11 @@ export function buildFactLedger(input: {
     label: proof.text,
     variants: [proof.text],
   })));
-  const fragments = factFragments(input.task);
+  // `task` is semantic intent, not evidence. In particular, a name, date, amount or
+  // legal citation typed into the free-form prompt must not authorise itself. Only
+  // server-owned channel facts and fields the user explicitly saved as required
+  // facts/proofs enter the factual allow-list.
   const evidence: FactEvidence[] = [
-    { id: "brief", text: input.task, source: "brief" as const, countsForCapacity: false },
-    ...fragments.map((text, index) => ({
-      id: `brief-fact-${index + 1}`,
-      text,
-      source: "brief" as const,
-      countsForCapacity: true,
-    })),
     ...(input.knownFacts ?? []).map((text, index) => ({
       id: `knowledge-${index + 1}`,
       text,
@@ -312,9 +300,6 @@ export function buildFactLedger(input: {
       source: "proof" as const,
       countsForCapacity: true,
     })),
-    ...(input.profile?.trim()
-      ? [{ id: "profile", text: input.profile, source: "profile" as const, countsForCapacity: false }]
-      : []),
   ].filter((item) => item.text.trim());
   const [requestedMinChars, requestedMaxChars] = requestedLength(input.task, settings);
   const emojiMax = settings.emojiMode === "none"
@@ -324,7 +309,7 @@ export function buildFactLedger(input: {
       : undefined;
   return {
     version: 1,
-    policy: strict ? "closed_world" : "allow_general",
+    policy,
     domain: domainFor(`${input.task}\n${settings.requiredFacts.join("\n")}`),
     evidence,
     required,
@@ -375,6 +360,24 @@ export function validateFactualOutput(
   options: { now?: () => Date } = {},
 ): FactualValidationResult {
   const value = String(text ?? "").trim();
+  if (ledger.policy === "disabled") {
+    return {
+      status: "not_checked",
+      passed: false,
+      requiresReview: true,
+      violations: [],
+      provenance: {
+        validatorVersion: "fact-ledger-v1",
+        ledgerHash: factLedgerHash(ledger),
+        checkedAt: (options.now ?? (() => new Date()))().toISOString(),
+        coverage: "deterministic",
+        semanticEntailment: "not_checked",
+        semanticAdapter: "user-opt-out",
+        rulesRun: ["factual_validation_disabled"],
+        sourceIds: ledger.evidence.map((item) => item.id),
+      },
+    };
+  }
   const evidence = evidenceText(ledger);
   const violations: FactualViolation[] = [];
   const rulesRun = new Set<string>();

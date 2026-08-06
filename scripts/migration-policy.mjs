@@ -16,6 +16,8 @@ const APPROVED_REPLACED_CONSTRAINTS = new Set([
   "posts_publication_origin_check",
   "posts_schedule_revision_check",
   "drafts_origin_check",
+  "drafts_purpose_check",
+  "publication_operations_status_check",
   "autopilot_plan_revision_check",
   "content_brief_source_check",
   "rss_items_skip_reason_check",

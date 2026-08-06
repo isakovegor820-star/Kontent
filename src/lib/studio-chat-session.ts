@@ -26,6 +26,7 @@ export type StudioChatMessage = {
   effectiveEngine?: string;
   fallbackUsed?: boolean;
   replayed?: boolean;
+  generationResultId?: number;
 };
 
 export type StudioChatGeneration = {
@@ -152,6 +153,9 @@ function safeMessage(value: unknown): StudioChatMessage | null {
     effectiveEngine: typeof value.effectiveEngine === "string" ? value.effectiveEngine.slice(0, 80) : undefined,
     fallbackUsed: value.fallbackUsed === true,
     replayed: value.replayed === true,
+    generationResultId: Number.isSafeInteger(value.generationResultId) && Number(value.generationResultId) > 0
+      ? Number(value.generationResultId)
+      : undefined,
   };
 }
 
@@ -164,7 +168,7 @@ function safeTurn(value: unknown): ConversationTurn | null {
 function safeSourceRef(value: unknown): Post["sourceRef"] | undefined {
   if (
     !isRecord(value)
-    || !["competitor", "trend", "idea", "reference"].includes(String(value.kind))
+    || !["competitor", "trend", "idea", "reference", "rss"].includes(String(value.kind))
     || typeof value.id !== "string"
     || typeof value.label !== "string"
   ) return undefined;
@@ -174,7 +178,7 @@ function safeSourceRef(value: unknown): Post["sourceRef"] | undefined {
   let provenance: NonNullable<Post["sourceRef"]>["provenance"];
   if (
     isRecord(value.provenance)
-    && ["content_idea", "competitor_post", "trend", "saved_reference"].includes(String(value.provenance.kind))
+    && ["content_idea", "competitor_post", "trend", "saved_reference", "rss_item"].includes(String(value.provenance.kind))
   ) {
     provenance = {
       kind: value.provenance.kind as NonNullable<typeof provenance>["kind"],

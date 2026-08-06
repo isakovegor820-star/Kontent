@@ -535,8 +535,11 @@ create table if not exists competitor_suggestions (
   user_id      bigint      not null references users (id) on delete cascade,
   handle       text        not null,           -- без @, нижний регистр
   title        text,
+  description  text,                            -- публичное описание из шапки t.me/s/
   subscribers  int,
   posts        int,                            -- сколько постов видно на публичной странице
+  last_post_at timestamptz,                    -- последний видимый публичный пост
+  posts_per_week numeric(6,1),                 -- недавний темп по интервалам между постами
   -- Сколько РАЗНЫХ каналов ниши его упомянули. Один — совпадение, два и больше — сигнал.
   mentioned_by int         not null default 1,
   sources      text[]      not null default '{}',  -- кто именно упомянул: показываем человеку
@@ -1198,7 +1201,7 @@ create table if not exists drafts (
   media         jsonb,
   scheduled_at  timestamptz,
   origin        text        not null default 'manual'
-                            check (origin in ('manual','ai','trend','idea','competitor','autopilot')),
+                            check (origin in ('manual','ai','trend','idea','competitor','rss','autopilot')),
   source_ref    jsonb,
   client_key    text        not null,
   version       bigint      not null default 1 check (version > 0),
@@ -1206,6 +1209,8 @@ create table if not exists drafts (
   ai_validation jsonb,
   human_reviewed_version bigint,
   human_reviewed_at timestamptz,
+  purpose       text        not null default 'needs_review'
+                            check (purpose in ('source_context','publishable','needs_review')),
   created_at    timestamptz not null default now(),
   updated_at    timestamptz not null default now(),
   unique (user_id, client_key)
@@ -1222,6 +1227,67 @@ create index if not exists drafts_user_scheduled_idx
   where scheduled_at is not null;
 create index if not exists draft_destinations_channel_idx
   on draft_destinations (channel_id, draft_id);
+
+-- Immutable server-owned lineage for paid text generation. The editable draft points to
+-- a result, never the other way around, so changing a draft cannot mutate provider output.
+create table if not exists generation_operations (
+  id                     bigint generated always as identity primary key,
+  user_id                bigint not null references users (id) on delete cascade,
+  ai_usage_id            bigint not null references ai_usage (id) on delete restrict,
+  request_key            varchar(128) not null,
+  server_request_id      uuid not null,
+  request_fingerprint    char(64) not null,
+  channel_id             bigint not null references channels (id) on delete restrict,
+  source_context_id      bigint references drafts (id) on delete restrict,
+  source_context_version bigint,
+  input_draft_id         bigint references drafts (id) on delete restrict,
+  input_draft_version    bigint,
+  provider_engine        varchar(80) not null,
+  provider_model         varchar(160) not null,
+  status                 text not null default 'running'
+                         check (status in ('running','pending_ack','acknowledged','failed','retryable_failed')),
+  error_code             varchar(100),
+  retryable              boolean not null default false,
+  acknowledged_at        timestamptz,
+  created_at             timestamptz not null default now(),
+  updated_at             timestamptz not null default now(),
+  unique (user_id, request_key),
+  unique (ai_usage_id),
+  check (request_fingerprint ~ '^[0-9a-f]{64}$'),
+  check ((source_context_id is null) = (source_context_version is null)),
+  check ((input_draft_id is null) = (input_draft_version is null)),
+  check (source_context_version is null or source_context_version > 0),
+  check (input_draft_version is null or input_draft_version > 0)
+);
+create unique index if not exists generation_operations_user_request_id_uniq
+  on generation_operations (user_id, server_request_id);
+create index if not exists generation_operations_recovery_idx
+  on generation_operations (user_id, status, updated_at desc);
+
+create table if not exists generation_results (
+  id              bigint generated always as identity primary key,
+  operation_id    bigint not null references generation_operations (id) on delete restrict,
+  result_hash     char(64) not null check (result_hash ~ '^[0-9a-f]{64}$'),
+  text            text not null,
+  provider_result jsonb not null default '{}'::jsonb,
+  created_at      timestamptz not null default now(),
+  unique (operation_id)
+);
+create table if not exists validation_receipts (
+  id                   bigint generated always as identity primary key,
+  generation_result_id bigint not null references generation_results (id) on delete restrict,
+  result_hash          char(64) not null check (result_hash ~ '^[0-9a-f]{64}$'),
+  status               text not null check (status in ('passed','blocked','not_checked')),
+  receipt              jsonb not null,
+  created_at           timestamptz not null default now(),
+  unique (generation_result_id)
+);
+alter table drafts add column if not exists generation_result_id bigint
+  references generation_results (id) on delete restrict;
+create index if not exists drafts_generation_result_idx
+  on drafts (generation_result_id) where generation_result_id is not null;
+create index if not exists drafts_publishable_user_updated_idx
+  on drafts (user_id, updated_at desc, id desc) where purpose <> 'source_context';
 
 -- Ledger is owned by the migration runner. It is included here so schema inspection
 -- and fresh-database snapshots describe the same operational schema.
@@ -1260,7 +1326,7 @@ create table if not exists publication_operations (
   destination_ids  jsonb not null,
   options           jsonb not null default '{}'::jsonb,
   status            text not null default 'pending'
-                    check (status in ('pending','partial','queued','published','failed')),
+                    check (status in ('pending','partial','queued','published_unverified','published','failed')),
   created_at        timestamptz not null default now(),
   updated_at        timestamptz not null default now(),
   unique (user_id, idempotency_key)

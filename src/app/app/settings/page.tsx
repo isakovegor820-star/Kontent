@@ -25,6 +25,7 @@ import {
   LogOut,
   Moon,
   Plus,
+  ShieldCheck,
   Sparkles,
   TriangleAlert,
   Users,
@@ -54,12 +55,83 @@ import { getAiUsageMetrics } from "@/lib/ai-usage-sync";
 import type { Network } from "@/lib/types";
 import { NETWORK_LABEL, cn, fmtNum, plural } from "@/lib/utils";
 import { parseBotLinkStatusResponse, requireBotUnlinkSuccess } from "@/lib/bot-link-client";
+import { readinessRequestFailure, type ServiceReadiness } from "@/lib/readiness";
 import {
   hasComposerPayloadSupport,
   type OAuthProviderCapability,
 } from "@/lib/oauth-capabilities";
 
 const EASE = [0.22, 1, 0.36, 1] as const;
+
+function ReliabilitySection({ index }: { index: number }) {
+  const [report, setReport] = useState<ServiceReadiness | null>(null);
+  const [checking, setChecking] = useState(false);
+
+  const refresh = useCallback(async () => {
+    // Keep the initial effect free of synchronous state writes; the same callback is
+    // also used by the explicit refresh button.
+    await Promise.resolve();
+    setChecking(true);
+    try {
+      const response = await fetch("/api/readiness", { cache: "no-store" });
+      const body = (await response.json().catch(() => null)) as ServiceReadiness | null;
+      setReport(body && typeof body.webReady === "boolean" ? body : readinessRequestFailure());
+    } catch {
+      setReport(readinessRequestFailure());
+    } finally {
+      setChecking(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) void refresh();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [refresh]);
+
+  const capabilities = [
+    { label: "Серверные черновики", ready: report?.webReady, detail: "сохранение и загрузка" },
+    { label: "Публикация", ready: report?.publicationReady, detail: "очередь и фоновый worker" },
+    { label: "Генерация ИИ", ready: report?.aiReady, detail: "проверенный ответ провайдера" },
+    { label: "Восстановление пароля", ready: report?.mailDeliveryReady, detail: "доставка письма" },
+  ];
+
+  return (
+    <div id="reliability" className="mb-5 break-inside-avoid scroll-mt-28">
+      <Section
+        icon={ShieldCheck}
+        index={index}
+        title="Центр надёжности"
+        description="Показывает готовность каждой возможности отдельно — сбой почты не маскируется статусом публикации."
+      >
+        <ul className="space-y-2">
+          {capabilities.map((capability) => (
+            <li key={capability.label} className="flex items-center justify-between gap-3 rounded-sm border border-line bg-surface-2 p-3">
+              <span className="min-w-0">
+                <span className="block text-[14px] font-bold text-text">{capability.label}</span>
+                <span className="block text-[12px] text-text-3">{capability.detail}</span>
+              </span>
+              {report == null ? (
+                <Badge tone="neutral">Проверяем</Badge>
+              ) : capability.ready ? (
+                <Badge tone="success"><Check className="h-3.5 w-3.5" aria-hidden />Готово</Badge>
+              ) : (
+                <Badge tone="danger"><TriangleAlert className="h-3.5 w-3.5" aria-hidden />Недоступно</Badge>
+              )}
+            </li>
+          ))}
+        </ul>
+        <Button className="mt-4" variant="outline" size="sm" loading={checking} onClick={() => void refresh()}>
+          Проверить снова
+        </Button>
+      </Section>
+    </div>
+  );
+}
 
 /* --------------------------------------------------------------- СЕКЦИЯ */
 // Единая рамка для всех блоков: иконка, заголовок, объяснение — и тело.
@@ -1077,8 +1149,9 @@ function SettingsContent() {
               <div className="mb-5 break-inside-avoid">
                 <AiSection index={4} />
               </div>
+              <ReliabilitySection index={5} />
               <div className="mb-5 break-inside-avoid">
-                <DangerSection index={5} />
+                <DangerSection index={6} />
               </div>
             </div>
           </section>

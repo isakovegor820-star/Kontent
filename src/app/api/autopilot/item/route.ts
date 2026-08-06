@@ -72,6 +72,9 @@ export async function PATCH(req: NextRequest) {
     action?: unknown;
     draft?: unknown;
     channelId?: unknown;
+    planId?: unknown;
+    planRevision?: unknown;
+    itemId?: unknown;
     idempotencyKey?: unknown;
   };
   try {
@@ -80,8 +83,17 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "bad_request" }, { status: 400 });
   }
   const index = Number(body.index);
+  const requestedPlanId = Number(body.planId);
+  const requestedRevision = Number(body.planRevision);
+  const itemId = Number(body.itemId);
   const action = String(body.action);
-  if (!Number.isInteger(index) || !["approve", "reject", "edit"].includes(action)) {
+  if (
+    !Number.isSafeInteger(index) ||
+    !Number.isSafeInteger(itemId) || itemId !== index ||
+    !Number.isSafeInteger(requestedPlanId) || requestedPlanId <= 0 ||
+    !Number.isSafeInteger(requestedRevision) || requestedRevision <= 0 ||
+    !["approve", "reject", "edit"].includes(action)
+  ) {
     return NextResponse.json({ ok: false, error: "bad_action" }, { status: 422 });
   }
 
@@ -100,14 +112,14 @@ export async function PATCH(req: NextRequest) {
     // План ищем в пределах канала: иначе, открыв план канала Б, человек правил бы более
     // свежий план канала А — тот же список на экране, чужие посты в базе.
     const plan = (
-      await pool.query<{ id: number; items: PlanItem[]; channel_id: number; status: string }>(
-        `select id, items, channel_id, status from autopilot_plan
-          where user_id = $1 and channel_id = $2 and status in ('pending', 'approved')
-          order by created_at desc limit 1`,
-        [user.id, channelId],
+      await pool.query<{ id: number; items: PlanItem[]; channel_id: number; status: string; revision: number }>(
+        `select id, items, channel_id, status, revision from autopilot_plan
+          where user_id = $1 and channel_id = $2 and id = $3 and revision = $4
+            and status in ('pending', 'approved')`,
+        [user.id, channelId, requestedPlanId, requestedRevision],
       )
     ).rows[0];
-    if (!plan) return NextResponse.json({ ok: false, error: "no_plan" }, { status: 404 });
+    if (!plan) return NextResponse.json({ ok: false, error: "stale_plan" }, { status: 409 });
 
     const items = plan.items;
     const it = items.find((x) => x.i === index);
@@ -123,7 +135,7 @@ export async function PATCH(req: NextRequest) {
         await pool.query<{
           channel_id: number;
           plan_id: number | null;
-          request_snapshot: { index?: number };
+          request_snapshot: { index?: number; planRevision?: number };
           result: Record<string, unknown> | null;
           http_status: number;
         }>(
@@ -136,7 +148,8 @@ export async function PATCH(req: NextRequest) {
         if (
           Number(replay.channel_id) !== Number(plan.channel_id) ||
           Number(replay.plan_id) !== Number(plan.id) ||
-          Number(replay.request_snapshot?.index) !== index
+          Number(replay.request_snapshot?.index) !== index ||
+          Number(replay.request_snapshot?.planRevision) !== requestedRevision
         ) {
           return NextResponse.json({ ok: false, error: "idempotency_conflict" }, { status: 409 });
         }
@@ -157,7 +170,12 @@ export async function PATCH(req: NextRequest) {
           plan.channel_id,
           plan.id,
           idempotencyKey,
-          JSON.stringify({ channelId: plan.channel_id, planId: plan.id, index }),
+          JSON.stringify({
+            channelId: plan.channel_id,
+            planId: plan.id,
+            planRevision: requestedRevision,
+            index,
+          }),
         ],
       );
       if (!operation.rowCount) {
@@ -173,6 +191,7 @@ export async function PATCH(req: NextRequest) {
         channelId: plan.channel_id,
         operationId,
         allowedStatuses: ["pending", "approved"],
+        expectedRevision: requestedRevision,
       }) as { items: PlanItem[]; channel_id: number } | null;
       if (!claim) {
         const result = { ok: false, error: "approval_in_progress", retryable: true };
@@ -347,8 +366,9 @@ export async function PATCH(req: NextRequest) {
                 set items = $4::jsonb, revision = revision + 1
               where id = $1 and user_id = $2 and channel_id = $3
                 and status in ('pending', 'approved') and items = $5::jsonb
+                and revision = $6
               returning id`,
-            [plan.id, user.id, plan.channel_id, JSON.stringify(items), originalItems],
+            [plan.id, user.id, plan.channel_id, JSON.stringify(items), originalItems, requestedRevision],
           );
           if (saved.rowCount !== 1) {
             await client.query("rollback");
@@ -401,23 +421,64 @@ export async function PATCH(req: NextRequest) {
         it.invented = undefined;
         // Если пост уже одобрен и стоит в очереди — правим и сам запланированный пост,
         // иначе воркер опубликует старый текст (ревью Д.9).
-        if (it.postId) {
-          await pool.query(`update posts set text = $2 where id = $1 and status = 'scheduled'`, [
-            it.postId,
-            next,
-          ]);
-        }
       }
     }
 
     // Правку помечаем на плане (для честного streak при следующем «Одобрить всё»), а не глобально.
-    await pool.query(
-      `update autopilot_plan
-          set items = $2, edited = edited or $3, revision = revision + 1
-        where id = $1`,
-      [plan.id, JSON.stringify(items), edited],
-    );
-    return NextResponse.json({ ok: true });
+    if (!(action === "edit" && edited && it.postId)) {
+      const saved = await pool.query<{ revision: number }>(
+        `update autopilot_plan
+            set items = $5::jsonb, edited = edited or $6, revision = revision + 1
+          where id = $1 and user_id = $2 and channel_id = $3 and revision = $4
+            and status in ('pending', 'approved')
+          returning revision`,
+        [plan.id, user.id, plan.channel_id, requestedRevision, JSON.stringify(items), edited],
+      );
+      if (saved.rowCount !== 1) {
+        return NextResponse.json({ ok: false, error: "stale_plan" }, { status: 409 });
+      }
+      return NextResponse.json({ ok: true, revision: Number(saved.rows[0].revision) });
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      if (action === "edit" && edited && it.postId) {
+        const post = await client.query(
+          `update posts set text = $4
+            where id = $1 and user_id = $2 and channel_id = $3 and status = 'scheduled'
+            returning id`,
+          [it.postId, user.id, plan.channel_id, it.draft],
+        );
+        if (post.rowCount !== 1) {
+          await client.query("rollback");
+          return NextResponse.json({ ok: false, error: "edit_conflict" }, { status: 409 });
+        }
+      }
+      const saved = await client.query<{ revision: number }>(
+        `update autopilot_plan
+            set items = $5::jsonb, edited = edited or $6, revision = revision + 1
+          where id = $1 and user_id = $2 and channel_id = $3 and revision = $4
+            and status in ('pending', 'approved')
+          returning revision`,
+        [plan.id, user.id, plan.channel_id, requestedRevision, JSON.stringify(items), edited],
+      );
+      if (saved.rowCount !== 1) {
+        await client.query("rollback");
+        return NextResponse.json({ ok: false, error: "stale_plan" }, { status: 409 });
+      }
+      await client.query("commit");
+      return NextResponse.json({ ok: true, revision: Number(saved.rows[0].revision) });
+    } catch (error) {
+      try {
+        await client.query("rollback");
+      } catch {
+        // Preserve the original database error.
+      }
+      throw error;
+    } finally {
+      client.release();
+    }
   } catch (err) {
     console.error("[/api/autopilot/item]", err);
     if (claimedApproval) {
