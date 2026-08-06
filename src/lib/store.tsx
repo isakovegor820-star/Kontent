@@ -80,6 +80,7 @@ interface StoreValue extends AppState {
     timezone: string;
   }) => Promise<{
     ok: boolean;
+    result?: "operation_not_created" | "partial" | "queued" | "conflict" | "worker_unavailable";
     error?: string;
     operationId?: number;
     operationStatus?: string;
@@ -317,6 +318,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         const data = (await response.json().catch(() => null)) as
           | {
               ok?: boolean;
+              result?: "operation_not_created" | "partial" | "queued" | "conflict" | "worker_unavailable";
               error?: string;
               operationId?: number;
               operationStatus?: string;
@@ -325,13 +327,13 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
               destinations?: Array<{ postId: number; channelId: number; queueStatus: string }>;
             }
           | null;
-        if (response.ok && data) {
-          await refreshReal();
-          return { ...data, ok: data.ok === true };
+        if (data) {
+          if (response.ok || data.operationId != null) await refreshReal();
+          return { ...data, ok: response.ok && data.ok === true };
         }
-        return { ok: false, error: data?.error };
+        return { ok: false, result: "operation_not_created", error: "invalid_response" };
       } catch {
-        return { ok: false, error: "network" };
+        return { ok: false, result: "operation_not_created", error: "network" };
       }
     },
     [refreshReal],

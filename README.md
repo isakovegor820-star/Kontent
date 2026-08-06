@@ -34,6 +34,13 @@ runner заранее проверяет additive policy и транзакцио
 Миграции запускай отдельным release-step до старта web/worker; при ошибке деплой нужно
 остановить, а не продолжать со старой схемой.
 
+Ingress/reverse proxy обязан жёстко ограничивать body запроса аватара до значения
+`AURORA_AVATAR_BODY_LIMIT_BYTES` (от 5 242 880 до 5 767 168 байт) и закрывать соединение
+до передачи превышения в Next.js. В production переменная обязательна: startup/readiness
+останавливает web при её отсутствии или значении вне диапазона. Route дополнительно читает
+chunked multipart потоково с тем же пределом, не доверяет `Content-Length` и допускает не
+более четырёх одновременных body в одном web-процессе.
+
 На платформе с отдельными типами процессов запускай `npm run start:web` для HTTP и
 `npm run start:worker` для фонового воркера. Все production-переменные должны быть
 внедрены самой платформой. Serverless-хостинг вроде Vercel подходит для web-процесса,
@@ -72,6 +79,7 @@ Mocked contract suite сохранён отдельно как `npm run test:con
 | `/app/onboarding` | А3 | Мастер: бриф → реальный Telegram-канал → профиль → конкуренты |
 | `/app/calendar` | А4 | **Главный экран.** Неделя/месяц, пост кликом в день, очередь без дат |
 | `/app/composer` | А5 | Редактор: ИИ напиши/перепиши/сократи, предпросмотр TG и VK рядом |
+| `/app/recon` | А6 | Гибридный поиск проверенных Telegram-каналов, постов и трендов по любой теме |
 | `/app/competitors` | А6 | Карточки конкурентов: рост, активность, последний залёт |
 | `/app/competitors/[id]` | А7 | Досье: статистика, лучшие посты, темы, упоминания, реклама, сравнение |
 | `/app/trends` | А8 | Тренды: что залетает, почему, готовый сценарий |
@@ -174,3 +182,7 @@ reset delivery. A reachable legacy database returns HTTP 503. Missing mail confi
 not stop draft/web work, but the response remains `degraded` and
 `passwordRecoveryReady=false`; production must not claim password recovery is available until
 `APP_URL`, a delivery key and a sender are configured.
+
+Readiness также проверяет, что каждый сохранённый `v1` token envelope ссылается на key ID,
+доступный в текущем write/read keyring. Неизвестный ID блокирует publication readiness до
+восстановления ключа; порядок безопасной ротации описан в `docs/token-key-rotation.md`.

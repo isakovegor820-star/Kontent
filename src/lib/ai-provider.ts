@@ -185,6 +185,13 @@ export interface GenerateParams {
   validationIssues?: string[];
   /** Студия: персональный контекст берётся только из постов и настроек Авроры. */
   grounding?: "platform";
+  /** Internal aggregate usage callback; never serialized into prompts or telemetry rows. */
+  onProviderUsage?: (usage: {
+    engine: EngineId;
+    model: string;
+    inputTokens: number;
+    outputTokens: number;
+  }) => void;
 }
 
 async function openAiModels(runtime: EngineRuntime): Promise<Set<string> | null> {
@@ -523,6 +530,13 @@ function outputTokens(p: GenerateParams): number {
   return 900;
 }
 
+export function estimateGenerateTokenBudget(p: GenerateParams) {
+  const inputTokens = Math.max(1, Math.ceil(
+    messagesFor(p).reduce((sum, message) => sum + message.content.length, 0) / 4,
+  ));
+  return { inputTokens, maxOutputTokens: outputTokens(p) };
+}
+
 async function providerHttpError(runtime: EngineRuntime, res: Response): Promise<AiProviderError> {
   let message: string | null = null;
   let code = res.status === 429 ? "rate_limited" : "http_error";
@@ -623,10 +637,26 @@ async function* streamOllama(
       buffer = buffer.slice(newline + 1);
       if (!line) continue;
       try {
-        const chunk = JSON.parse(line) as { message?: { content?: string }; done?: boolean; error?: string };
+        const chunk = JSON.parse(line) as {
+          message?: { content?: string };
+          done?: boolean;
+          error?: string;
+          prompt_eval_count?: number;
+          eval_count?: number;
+        };
         if (chunk.error) throw new Error(chunk.error);
         if (chunk.message?.content) yield chunk.message.content;
-        if (chunk.done) return;
+        if (chunk.done) {
+          if (Number.isFinite(chunk.prompt_eval_count) && Number.isFinite(chunk.eval_count)) {
+            p.onProviderUsage?.({
+              engine: runtime.id,
+              model: runtime.model,
+              inputTokens: Number(chunk.prompt_eval_count),
+              outputTokens: Number(chunk.eval_count),
+            });
+          }
+          return;
+        }
       } catch (error) {
         if (error instanceof SyntaxError) continue;
         throw error;
@@ -637,10 +667,26 @@ async function* streamOllama(
   const finalLine = buffer.trim();
   if (finalLine) {
     try {
-      const chunk = JSON.parse(finalLine) as { message?: { content?: string }; done?: boolean; error?: string };
+      const chunk = JSON.parse(finalLine) as {
+        message?: { content?: string };
+        done?: boolean;
+        error?: string;
+        prompt_eval_count?: number;
+        eval_count?: number;
+      };
       if (chunk.error) throw new AiProviderError(runtime.id, 502, "stream_error");
       if (chunk.message?.content) yield chunk.message.content;
-      if (chunk.done) return;
+      if (chunk.done) {
+        if (Number.isFinite(chunk.prompt_eval_count) && Number.isFinite(chunk.eval_count)) {
+          p.onProviderUsage?.({
+            engine: runtime.id,
+            model: runtime.model,
+            inputTokens: Number(chunk.prompt_eval_count),
+            outputTokens: Number(chunk.eval_count),
+          });
+        }
+        return;
+      }
     } catch (error) {
       if (!(error instanceof SyntaxError)) throw error;
     }
@@ -670,6 +716,7 @@ async function* streamOpenAiAttempt(
     body: JSON.stringify({
       model: runtime.model,
       stream: true,
+      stream_options: { include_usage: true },
       temperature: moodTemp(p.mood),
       max_tokens: options.maxTokens,
       reasoning_effort: options.reasoningEffort,
@@ -707,11 +754,20 @@ async function* streamOpenAiAttempt(
         const json = JSON.parse(data) as {
           error?: { message?: string; code?: string } | string;
           choices?: { delta?: { content?: string; reasoning?: string; reasoning_content?: string } }[];
+          usage?: { prompt_tokens?: number; completion_tokens?: number };
         };
         if (json.error) {
           const message = typeof json.error === "string" ? json.error : json.error.message ?? null;
           const code = typeof json.error === "string" ? "stream_error" : json.error.code ?? "stream_error";
           throw new AiProviderError(runtime.id, 502, code, message?.slice(0, 500) ?? null);
+        }
+        if (Number.isFinite(json.usage?.prompt_tokens) && Number.isFinite(json.usage?.completion_tokens)) {
+          p.onProviderUsage?.({
+            engine: runtime.id,
+            model: runtime.model,
+            inputTokens: Number(json.usage?.prompt_tokens),
+            outputTokens: Number(json.usage?.completion_tokens),
+          });
         }
         const delta = json.choices?.[0]?.delta;
         reasoningChars += delta?.reasoning?.length ?? delta?.reasoning_content?.length ?? 0;
@@ -744,11 +800,20 @@ async function* streamOpenAiAttempt(
       const json = JSON.parse(data) as {
         error?: { message?: string; code?: string } | string;
         choices?: { delta?: { content?: string; reasoning?: string; reasoning_content?: string } }[];
+        usage?: { prompt_tokens?: number; completion_tokens?: number };
       };
       if (json.error) {
         const message = typeof json.error === "string" ? json.error : json.error.message ?? null;
         const code = typeof json.error === "string" ? "stream_error" : json.error.code ?? "stream_error";
         throw new AiProviderError(runtime.id, 502, code, message?.slice(0, 500) ?? null);
+      }
+      if (Number.isFinite(json.usage?.prompt_tokens) && Number.isFinite(json.usage?.completion_tokens)) {
+        p.onProviderUsage?.({
+          engine: runtime.id,
+          model: runtime.model,
+          inputTokens: Number(json.usage?.prompt_tokens),
+          outputTokens: Number(json.usage?.completion_tokens),
+        });
       }
       const delta = json.choices?.[0]?.delta;
       reasoningChars += delta?.reasoning?.length ?? delta?.reasoning_content?.length ?? 0;

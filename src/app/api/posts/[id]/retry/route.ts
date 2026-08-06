@@ -41,7 +41,9 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
               last_retry_key = $3, retry_requested_at = now(),
               scheduled_at = $4, next_attempt_at = null,
               quarantined_at = null, quarantine_reason = null,
-              publication_origin = 'retry', schedule_revision = schedule_revision + 1
+              publication_origin = 'retry', schedule_revision = schedule_revision + 1,
+              provider_operation_id = null, provider_reconciliation_state = 'none',
+              provider_reconciliation_requested_at = null
         where id = $1 and user_id = $2 and status in ('failed', 'quarantined')
         returning id, schedule_revision, scheduled_at`,
       [postId, user.id, idempotencyKey, retryAt],

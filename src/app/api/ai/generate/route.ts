@@ -8,6 +8,7 @@ import { getSessionUser } from "@/lib/session";
 import {
   AiProviderError,
   aiReady,
+  estimateGenerateTokenBudget,
   resolveEngineRuntime,
   type AiKind,
   type AiRole,
@@ -73,6 +74,13 @@ import {
   type ReferenceAdaptationContext,
   type TopicAlignmentResult,
 } from "@/lib/reference-adaptation";
+import {
+  AiOperationBudgetError,
+  createAiAttemptTelemetry,
+  createAiOperationBudget,
+  recordAiProviderAttempt,
+  type AiAttemptPhase,
+} from "@/lib/ai-attempt-budget";
 
 export const runtime = "nodejs";
 
@@ -203,6 +211,17 @@ function failurePayload(
       status: 503,
     };
   }
+  if (error instanceof AiOperationBudgetError) {
+    return {
+      error: "ai_operation_budget_exhausted",
+      engine: engine.id,
+      label: `${engine.label} (${engine.vendor})`,
+      retryable: false,
+      code: "ai_operation_budget_exhausted",
+      status: 422,
+      dimension: error.dimension,
+    };
+  }
   if (error instanceof PostSettingsValidationError) {
     logAiRequest("warn", requestId, error.errorCode, { engine: engine.id, status: 422 });
     return {
@@ -308,36 +327,103 @@ async function runOrchestratedText(
   deadlines: GenerationDeadlines,
   send: (event: AiStreamEvent) => boolean,
   emitDeltas: boolean,
+  attemptContext: {
+    userId: number;
+    reservationId: number | null;
+    phase: AiAttemptPhase;
+    budget: ReturnType<typeof createAiOperationBudget>;
+  },
 ): Promise<OrchestratedText> {
+  const estimate = estimateGenerateTokenBudget(params);
+  const attemptTelemetry = createAiAttemptTelemetry({
+    pool: getPool(),
+    userId: attemptContext.userId,
+    aiUsageId: attemptContext.reservationId,
+    logicalOperationId: requestId,
+    phase: attemptContext.phase,
+    budget: attemptContext.budget,
+    projectionFor: (candidate) => ({
+      model: resolveEngineRuntime(candidate as EngineId).model,
+      inputTokens: estimate.inputTokens,
+      outputTokens: estimate.maxOutputTokens,
+    }),
+    // Keep this injected so route tests can verify durable rows without a real DB.
+    record: recordAiProviderAttempt,
+  });
   let text = "";
   let engine = engineId;
   let fallbackUsed = false;
+  let activeAttempt: { engine: EngineId; attempt: number; primary: boolean } | null = null;
   const failClosed = () => {
     throw new DOMException("AI stream consumer closed", "AbortError");
   };
-  for await (const event of orchestrateText(params, engineId, {
-    signal,
-    // Model choice belongs to the user. Runtime failures preserve the selected model
-    // and return one ready suggestion that requires explicit confirmation in the UI.
-    fallbackEngines: [],
-    firstTokenMs: deadlines.firstTokenMs,
-    overallMs: deadlines.attemptOverallMs,
-  })) {
-    if (event.type === "delta") {
-      text += event.text;
-      engine = event.engine;
-      if (emitDeltas && !send({ type: "delta", requestId, text: event.text })) failClosed();
-    } else if (event.type === "fallback") {
-      fallbackUsed = true;
-      if (!send({ requestId, ...event })) failClosed();
-    } else {
-      const telemetry: AiOrchestrationEvent & { type: "telemetry" } = event;
-      if (!send({ requestId, ...telemetry })) failClosed();
+  try {
+    const paramsWithUsage: GenerateParams = {
+      ...params,
+      onProviderUsage: (usage) => attemptTelemetry.addUsage(usage),
+    };
+    for await (const event of orchestrateText(paramsWithUsage, engineId, {
+      signal,
+      // Model choice belongs to the user. Runtime failures preserve the selected model
+      // and return one ready suggestion that requires explicit confirmation in the UI.
+      fallbackEngines: [],
+      firstTokenMs: deadlines.firstTokenMs,
+      overallMs: deadlines.attemptOverallMs,
+      beforeAttempt: (attempt) => attemptTelemetry.beforeAttempt(attempt),
+    })) {
+      if (event.type === "delta") {
+        text += event.text;
+        engine = event.engine;
+        attemptTelemetry.addDelta(event.engine, event.text);
+        if (emitDeltas && !send({ type: "delta", requestId, text: event.text })) failClosed();
+      } else if (event.type === "fallback") {
+        fallbackUsed = true;
+        if (!send({ requestId, ...event })) failClosed();
+      } else {
+        const telemetry: AiOrchestrationEvent & { type: "telemetry" } = event;
+        if (telemetry.outcome === "started") {
+          activeAttempt = {
+            engine: telemetry.engine,
+            attempt: telemetry.attempt,
+            primary: telemetry.primary,
+          };
+        } else if (telemetry.outcome === "succeeded" || telemetry.outcome === "failed") {
+          await attemptTelemetry.finish({
+            engine: telemetry.engine,
+            attempt: telemetry.attempt,
+            primary: telemetry.primary,
+            outcome: telemetry.outcome === "succeeded"
+              ? "succeeded"
+              : signal.aborted ? "cancelled" : "failed",
+            safeErrorCode: telemetry.code ?? null,
+          }).catch(() => logAiRequest("error", requestId, "generation_artifact_stage_failed", {
+            scope: "attempt_telemetry",
+          }));
+          console.info("[ai_attempt_completed]", {
+            requestId,
+            operationId: requestId,
+            provider: telemetry.engine,
+            phase: attemptContext.phase,
+            status: telemetry.outcome,
+            latency: telemetry.totalMs,
+          });
+        }
+        if (!send({ requestId, ...telemetry })) failClosed();
+      }
     }
+    const result = text.trim();
+    if (!result) throw new AiProviderError(engine, 502, "empty_generation");
+    return { text: result, engine, fallbackUsed };
+  } catch (error) {
+    if (activeAttempt) {
+      await attemptTelemetry.finish({
+        ...activeAttempt,
+        outcome: isClientAbort(error, signal) ? "cancelled" : "failed",
+        safeErrorCode: error instanceof AiOperationBudgetError ? error.code : publicAiFailureCode(error),
+      }).catch(() => {});
+    }
+    throw error;
   }
-  const result = text.trim();
-  if (!result) throw new AiProviderError(engine, 502, "empty_generation");
-  return { text: result, engine, fallbackUsed };
 }
 
 async function readyAlternative(chosen: EngineId): Promise<EngineId | null> {
@@ -444,6 +530,13 @@ function studioStreamResponse(
 ) {
   const settings = normalizePostSettings(params.postSettings);
   const deadlines = generationDeadlines(settings.qualityMode);
+  const attemptBudget = createAiOperationBudget();
+  const attemptContext = (phase: AiAttemptPhase) => ({
+    userId,
+    reservationId,
+    phase,
+    budget: attemptBudget,
+  });
   const consumerAbort = new AbortController();
   const consumerSignal = AbortSignal.any([signal, consumerAbort.signal]);
   // Один общий deadline не позволяет трём редакторским проходам сложиться в 3×90 секунд.
@@ -652,6 +745,7 @@ function studioStreamResponse(
             deadlines,
             send,
             true,
+            attemptContext("draft"),
           );
           finalEngine = generated.engine;
           anyFallback ||= generated.fallbackUsed;
@@ -665,7 +759,7 @@ function studioStreamResponse(
               ...paramsForProviderPhase(params, "topic-repair-1"),
               draft: finalText.slice(0, 12_000),
               validationIssues: buildTopicRepairInstructions(validation.topic),
-            }, finalEngine, pipelineSignal, requestId, deadlines, send, true);
+            }, finalEngine, pipelineSignal, requestId, deadlines, send, true, attemptContext("topic-repair"));
             finalText = repaired.text;
             finalEngine = repaired.engine;
             anyFallback ||= repaired.fallbackUsed;
@@ -721,6 +815,7 @@ function studioStreamResponse(
           deadlines,
           send,
           true,
+          attemptContext("draft"),
         );
         const draft = generatedDraft.text;
         finalEngine = generatedDraft.engine;
@@ -737,7 +832,7 @@ function studioStreamResponse(
           ...paramsForProviderPhase(params, "editorial-edit-1"),
           draft: draft.slice(0, 12_000),
           validationIssues: draftValidation.issues,
-        }, finalEngine, pipelineSignal, requestId, deadlines, send, true);
+        }, finalEngine, pipelineSignal, requestId, deadlines, send, true, attemptContext("edit"));
         finalText = edited.text;
         finalEngine = edited.engine;
         anyFallback ||= edited.fallbackUsed;
@@ -750,7 +845,7 @@ function studioStreamResponse(
             ...paramsForProviderPhase(params, "editorial-edit-2"),
             draft: finalText.slice(0, 12_000),
             validationIssues: validation.issues,
-          }, finalEngine, pipelineSignal, requestId, deadlines, send, true);
+          }, finalEngine, pipelineSignal, requestId, deadlines, send, true, attemptContext("auto-improve"));
           finalText = edited.text;
           finalEngine = edited.engine;
           anyFallback ||= edited.fallbackUsed;
@@ -765,7 +860,7 @@ function studioStreamResponse(
             ...paramsForProviderPhase(params, "topic-repair-1"),
             draft: finalText.slice(0, 12_000),
             validationIssues: buildTopicRepairInstructions(validation.topic),
-          }, finalEngine, pipelineSignal, requestId, deadlines, send, true);
+          }, finalEngine, pipelineSignal, requestId, deadlines, send, true, attemptContext("topic-repair"));
           finalText = edited.text;
           finalEngine = edited.engine;
           anyFallback ||= edited.fallbackUsed;

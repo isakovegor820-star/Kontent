@@ -3,6 +3,11 @@ import { randomUUID } from "node:crypto";
 
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
+import {
+  parseMediaRange,
+  postgresMediaStream,
+  signedMediaObjectUrl,
+} from "@/lib/media-storage.mjs";
 
 export const runtime = "nodejs";
 const SAFE_MEDIA_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "video/mp4"]);
@@ -27,12 +32,15 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
   try {
     const asset = (
       await getPool().query<{
-        data: Buffer;
+        storage_backend: "postgres" | "object";
+        object_key: string | null;
+        bytes: number;
         mime_type: string;
         file_name: string;
         sha256: string;
       }>(
-        `select data, mime_type, file_name, sha256 from media_assets where id = $1 and user_id = $2`,
+        `select storage_backend, object_key, bytes, mime_type, file_name, sha256
+           from media_assets where id = $1 and user_id = $2`,
         [assetId, user.id],
       )
     ).rows[0];
@@ -41,15 +49,64 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
       throw new Error("unsafe_stored_media_type");
     }
 
+    const etag = `"${asset.sha256}"`;
+    if (req.headers.get("if-none-match") === etag) {
+      return new Response(null, {
+        status: 304,
+        headers: { etag, "cache-control": "private, max-age=3600", "x-request-id": requestId },
+      });
+    }
+
     const download = req.nextUrl.searchParams.get("download") === "1";
     const disposition = `${download ? "attachment" : "inline"}; filename="${asset.file_name.replace(/[^a-z0-9_.-]/gi, "-")}"`;
-    return new Response(new Uint8Array(asset.data), {
+    if (asset.storage_backend === "object") {
+      if (!asset.object_key) throw new Error("object_key_missing");
+      const location = await signedMediaObjectUrl({ key: asset.object_key, fileName: asset.file_name, download });
+      return new Response(null, {
+        status: 307,
+        headers: {
+          location,
+          etag,
+          "cache-control": "private, no-store",
+          "x-request-id": requestId,
+        },
+      });
+    }
+    const parsedRange = parseMediaRange(req.headers.get("range"), Number(asset.bytes));
+    if (parsedRange && "error" in parsedRange) {
+      return new Response(null, {
+        status: 416,
+        headers: { "content-range": `bytes */${asset.bytes}`, etag, "x-request-id": requestId },
+      });
+    }
+    const range = parsedRange ?? { start: 0, end: Number(asset.bytes) - 1, length: Number(asset.bytes) };
+    const startedAt = Date.now();
+    const stream = postgresMediaStream({
+      pool: getPool(),
+      assetId,
+      userId: user.id,
+      start: range.start,
+      end: range.end,
+      onFinish: (outcome) => console.info("[media_event]", {
+        event: outcome === "failed" ? "media_stream_failed" : "media_stream_completed",
+        requestId,
+        assetId,
+        backend: "postgres",
+        bytes: range.length,
+        outcome,
+        latency: Date.now() - startedAt,
+      }),
+    });
+    return new Response(stream, {
+      status: parsedRange ? 206 : 200,
       headers: {
         "content-type": asset.mime_type,
-        "content-length": String(asset.data.byteLength),
+        "content-length": String(range.length),
+        ...(parsedRange ? { "content-range": `bytes ${range.start}-${range.end}/${asset.bytes}` } : {}),
+        "accept-ranges": "bytes",
         "content-disposition": disposition,
         "cache-control": "private, max-age=3600",
-        etag: `"${asset.sha256}"`,
+        etag,
         "x-content-type-options": "nosniff",
         "x-request-id": requestId,
       },

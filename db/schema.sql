@@ -101,7 +101,14 @@ create table if not exists channels (
   title       text,
   handle      text,
   is_active   boolean     not null default true,
-  created_at  timestamptz not null default now()
+  status      text        not null default 'active'
+                          constraint channels_status_check
+                          check (status in ('active','needs_reconnect','permission_lost','revoked','disconnected')),
+  last_auth_error_code text,
+  last_auth_error_at timestamptz,
+  disconnected_at timestamptz,
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now()
 );
 create index if not exists channels_user_idx on channels (user_id);
 
@@ -119,6 +126,22 @@ create unique index if not exists channels_tg_chat_active_uniq
 create unique index if not exists channels_vk_group_active_uniq
   on channels (vk_group_id)
   where vk_group_id is not null and is_active;
+
+create table if not exists channel_events (
+  id               bigint generated always as identity primary key,
+  channel_id       bigint not null references channels (id) on delete cascade,
+  actor_user_id    bigint references users (id) on delete set null,
+  action           text not null,
+  from_status      text,
+  to_status        text not null,
+  safe_error_code  text,
+  request_id       text,
+  created_at       timestamptz not null default now()
+);
+create index if not exists channel_events_channel_idx
+  on channel_events (channel_id, created_at desc);
+create unique index if not exists channel_events_request_uniq
+  on channel_events (channel_id, request_id) where request_id is not null;
 
 -- Посты. Публикует сервер по scheduled_at через очередь. Статусы — из ТЗ 5.3.
 -- Надёжность: перед публикацией проверяем, что статус ещё не 'published' —
@@ -190,6 +213,32 @@ create table if not exists ai_usage (
 );
 create index if not exists ai_usage_user_date_idx on ai_usage (user_id, usage_date);
 
+create table if not exists ai_provider_attempts (
+  id bigint generated always as identity primary key,
+  user_id bigint not null references users (id) on delete cascade,
+  ai_usage_id bigint references ai_usage (id) on delete set null,
+  logical_operation_id uuid not null,
+  phase text not null check (phase in ('draft','edit','auto-improve','topic-repair')),
+  attempt_index integer not null check (attempt_index > 0),
+  provider text not null,
+  model text not null,
+  input_tokens integer not null check (input_tokens >= 0),
+  output_tokens integer not null check (output_tokens >= 0),
+  usage_estimated boolean not null,
+  latency_ms integer not null check (latency_ms >= 0),
+  outcome text not null check (outcome in ('succeeded','failed','cancelled','budget_exhausted')),
+  fallback boolean not null default false,
+  estimated_cost_microusd bigint not null default 0 check (estimated_cost_microusd >= 0),
+  safe_error_code text,
+  request_correlation_id uuid not null,
+  created_at timestamptz not null default now(),
+  unique (logical_operation_id, attempt_index)
+);
+create index if not exists ai_provider_attempts_user_created_idx
+  on ai_provider_attempts (user_id, created_at desc);
+create index if not exists ai_provider_attempts_operation_idx
+  on ai_provider_attempts (logical_operation_id, attempt_index);
+
 -- ------------------------------------------- Д.8.1: изображения и видео
 -- NavyAI отдаёт временную ссылку. Worker немедленно копирует файл в PostgreSQL, чтобы
 -- результат не исчез после истечения provider job. Для первого production-MVP ставим
@@ -201,12 +250,49 @@ create table if not exists media_assets (
   file_name        text        not null,
   mime_type        text        not null,
   bytes            int         not null,
-  data             bytea       not null,
+  data             bytea,
+  storage_backend  text        not null default 'postgres'
+                               constraint media_assets_storage_backend_check
+                               check (storage_backend in ('postgres','object')),
+  object_key       text,
+  object_etag      text,
   sha256           text        not null,
   duration_seconds int,
-  created_at       timestamptz not null default now()
+  created_at       timestamptz not null default now(),
+  constraint media_assets_storage_payload_check check (
+    (storage_backend = 'postgres' and data is not null and object_key is null)
+    or (storage_backend = 'object' and data is null and object_key is not null)
+  )
 );
 create index if not exists media_assets_user_idx on media_assets (user_id, created_at desc);
+create unique index if not exists media_assets_object_key_uniq
+  on media_assets (object_key) where object_key is not null;
+
+create table if not exists media_object_orphans (
+  id bigint generated always as identity primary key,
+  object_key text not null unique,
+  reason_code text not null,
+  attempts integer not null default 0 check (attempts >= 0),
+  next_attempt_at timestamptz not null default now(),
+  last_error_code text,
+  created_at timestamptz not null default now(),
+  deleted_at timestamptz
+);
+create index if not exists media_object_orphans_due_idx
+  on media_object_orphans (next_attempt_at, id) where deleted_at is null;
+create or replace function queue_deleted_media_object() returns trigger language plpgsql as $$
+begin
+  if old.storage_backend = 'object' and old.object_key is not null then
+    insert into media_object_orphans (object_key, reason_code)
+    values (old.object_key, 'asset_deleted')
+    on conflict (object_key) do update
+      set reason_code = excluded.reason_code, next_attempt_at = now(), deleted_at = null;
+  end if;
+  return old;
+end $$;
+drop trigger if exists media_assets_queue_object_delete on media_assets;
+create trigger media_assets_queue_object_delete
+  after delete on media_assets for each row execute function queue_deleted_media_object();
 
 create table if not exists media_generations (
   id               bigint generated always as identity primary key,
@@ -351,6 +437,10 @@ create table if not exists autopilot_settings (
   mode             text        not null default 'confirm' check (mode in ('confirm', 'full')),
   post_frequency   int         not null default 5,   -- постов в неделю
   approvals_streak int         not null default 0,   -- недель подряд без правок (для полного режима)
+  generation_engine text       not null default 'navy-deepseek-pro'
+                               check (generation_engine in ('navy-deepseek-pro', 'navy-deepseek-flash', 'navy-gpt-5-4', 'navy-qwen-3-6', 'navy-minimax-m3')),
+  planning_months smallint      not null default 1 check (planning_months in (1, 2, 3)),
+  planning_weeks smallint       not null default 4 check (planning_weeks between 1 and 12),
   updated_at       timestamptz not null default now()
 );
 
@@ -363,6 +453,10 @@ create table if not exists autopilot_plan (
   items      jsonb       not null default '[]',
   rules      text,                    -- объяснение «почему так» из аналитики (ТЗ Д.9)
   edited     boolean     not null default false,  -- были ли ручные правки (для честного streak)
+  generation_engine text not null default 'navy-deepseek-pro'
+                         check (generation_engine in ('navy-deepseek-pro', 'navy-deepseek-flash', 'navy-gpt-5-4', 'navy-qwen-3-6', 'navy-minimax-m3')),
+  planning_months smallint not null default 1 check (planning_months in (1, 2, 3)),
+  planning_weeks smallint not null default 4 check (planning_weeks between 1 and 12),
   status     text        not null default 'building'
                          check (status in ('building', 'pending', 'approving', 'approved', 'done', 'error')),
   created_at timestamptz not null default now()
@@ -1200,6 +1294,13 @@ create table if not exists drafts (
   text          text        not null default '',
   media         jsonb,
   scheduled_at  timestamptz,
+  scheduled_timezone varchar(80),
+  scheduled_local_date date,
+  scheduled_local_time time,
+  scheduled_offset varchar(6),
+  scheduled_disambiguation text
+    constraint drafts_scheduled_disambiguation_check
+    check (scheduled_disambiguation is null or scheduled_disambiguation in ('reject','earlier','later')),
   origin        text        not null default 'manual'
                             check (origin in ('manual','ai','trend','idea','competitor','rss','autopilot')),
   source_ref    jsonb,
@@ -1323,10 +1424,16 @@ create table if not exists publication_operations (
   media            jsonb,
   scheduled_at     timestamptz not null,
   timezone         varchar(80) not null default 'UTC',
+  schedule_offset  varchar(6),
+  schedule_disambiguation text
+    constraint publication_operations_schedule_disambiguation_check
+    check (schedule_disambiguation is null or schedule_disambiguation in ('reject','earlier','later')),
   destination_ids  jsonb not null,
   options           jsonb not null default '{}'::jsonb,
+  schedule_revision bigint not null default 1 check (schedule_revision > 0),
   status            text not null default 'pending'
-                    check (status in ('pending','partial','queued','published_unverified','published','failed')),
+                    check (status in ('pending','partial','queued','published_unverified','published','failed','cancelled')),
+  cancelled_at      timestamptz,
   created_at        timestamptz not null default now(),
   updated_at        timestamptz not null default now(),
   unique (user_id, idempotency_key)
@@ -1338,14 +1445,32 @@ create unique index if not exists publication_operations_fingerprint_uniq
 alter table posts add column if not exists publication_operation_id bigint
   references publication_operations (id) on delete set null;
 alter table posts add column if not exists publication_draft_version bigint;
+alter table posts add column if not exists provider_started_at timestamptz;
+alter table posts add column if not exists cancelled_at timestamptz;
+alter table posts add column if not exists provider_operation_id text;
+alter table posts add column if not exists provider_reconciliation_state text not null default 'none';
+alter table posts add column if not exists provider_reconciliation_requested_at timestamptz;
+alter table posts add column if not exists scheduled_timezone varchar(80);
+alter table posts add column if not exists scheduled_offset varchar(6);
+alter table posts add column if not exists scheduled_disambiguation text;
+alter table posts drop constraint if exists posts_scheduled_disambiguation_check;
+alter table posts add constraint posts_scheduled_disambiguation_check check (
+  scheduled_disambiguation is null or scheduled_disambiguation in ('reject','earlier','later')
+);
+alter table posts drop constraint if exists posts_provider_reconciliation_state_check;
+alter table posts add constraint posts_provider_reconciliation_state_check check (
+  provider_reconciliation_state in ('none','pending','confirmed','unresolved','failed')
+);
 create unique index if not exists posts_publication_operation_destination_uniq
   on posts (publication_operation_id, channel_id) where publication_operation_id is not null;
+create unique index if not exists posts_provider_operation_identity_uniq
+  on posts (channel_id, provider_operation_id) where provider_operation_id is not null;
 create table if not exists publication_outbox (
   id               bigint generated always as identity primary key,
   operation_id     bigint not null references publication_operations (id) on delete cascade,
   post_id           bigint not null references posts (id) on delete cascade,
   status            text not null default 'pending'
-                    check (status in ('pending','dispatching','enqueued','failed')),
+                    check (status in ('pending','dispatching','enqueued','failed','cancelled')),
   attempts          integer not null default 0 check (attempts >= 0),
   next_attempt_at   timestamptz not null default now(),
   last_error_code   text,
@@ -1358,6 +1483,24 @@ create table if not exists publication_outbox (
 );
 create index if not exists publication_outbox_due_idx
   on publication_outbox (next_attempt_at, id) where status in ('pending','failed');
+
+create table if not exists publication_operation_events (
+  id                    bigint generated always as identity primary key,
+  operation_id          bigint not null references publication_operations (id) on delete cascade,
+  actor_user_id         bigint not null references users (id) on delete cascade,
+  action                text not null check (action in ('cancel','reschedule','restore_draft')),
+  idempotency_key       varchar(128) not null,
+  expected_revision     bigint not null check (expected_revision > 0),
+  resulting_revision    bigint not null check (resulting_revision > 0),
+  from_status           text not null,
+  to_status             text not null,
+  request_id            varchar(128),
+  result                jsonb not null default '{}'::jsonb,
+  created_at            timestamptz not null default now(),
+  unique (operation_id, idempotency_key)
+);
+create index if not exists publication_operation_events_operation_idx
+  on publication_operation_events (operation_id, created_at desc, id desc);
 
 -- Password changes fence concurrent login and reset generations; delivery is async.
 alter table users add column if not exists credential_epoch bigint not null default 1;
@@ -1405,6 +1548,19 @@ create table if not exists publication_parts (
   post_id               bigint not null references posts (id) on delete cascade,
   part_index            integer not null check (part_index >= 0),
   part_type             text not null check (part_type in ('text','media','media_caption')),
+  payload_html          text,
+  payload_hash          char(64)
+                        constraint publication_parts_payload_hash_check
+                        check (payload_hash is null or payload_hash ~ '^[0-9a-f]{64}$'),
+  entity_length         integer
+                        constraint publication_parts_entity_length_check
+                        check (
+                          entity_length is null
+                          or (
+                            entity_length >= 0
+                            and entity_length <= case when part_type = 'media_caption' then 1024 else 4096 end
+                          )
+                        ),
   external_message_id   text,
   send_status           text not null default 'pending'
                         check (send_status in ('pending','sending','sent','failed','unknown')),
@@ -1439,7 +1595,7 @@ alter table posts drop constraint if exists posts_status_check;
 alter table posts add constraint posts_status_check check (
   status in (
     'draft', 'scheduled', 'publishing', 'published_unverified', 'published',
-    'missing', 'deleted_external', 'failed_retry', 'quarantined', 'failed'
+    'missing', 'deleted_external', 'failed_retry', 'quarantined', 'cancelled', 'failed'
   )
 );
 create index if not exists posts_reconciliation_due_idx
@@ -1867,3 +2023,139 @@ create index if not exists legal_source_fragments_lookup_idx
   on legal_source_fragments (user_id, legal_type, source_date desc, id desc);
 create index if not exists legal_source_fragments_connection_idx
   on legal_source_fragments (connection_id, synced_at desc);
+
+
+-- ================================================== Гибридный поиск Telegram
+-- Быстрый локальный поиск остаётся основой. Сырые web-находки сохраняются отдельно,
+-- проходят живую проверку публичной t.me/s-страницы и только после неё попадают в выдачу.
+create table if not exists discovered_sources (
+  id                  bigint generated always as identity primary key,
+  network             text not null default 'tg',
+  handle              text not null,
+  canonical_url       text not null,
+  title               text,
+  description         text,
+  subscribers         integer,
+  last_post_at        timestamptz,
+  posts_per_week      numeric(7,1),
+  is_public           boolean not null default true,
+  verification_status text not null default 'verified',
+  provider            text not null,
+  raw_data             jsonb not null default '{}'::jsonb,
+  verified_at          timestamptz not null default now(),
+  cache_expires_at     timestamptz not null default (now() + interval '24 hours'),
+  tsv                  tsvector generated always as (
+    to_tsvector('russian', coalesce(title, '') || ' ' || coalesce(description, '') || ' ' || coalesce(handle, ''))
+  ) stored,
+  created_at           timestamptz not null default now(),
+  updated_at           timestamptz not null default now(),
+  constraint discovered_sources_network_handle_key unique (network, handle),
+  constraint discovered_sources_network_check check (network in ('tg')),
+  constraint discovered_sources_handle_check check (handle ~ '^[a-z][a-z0-9_]{3,31}$'),
+  constraint discovered_sources_url_check check (canonical_url ~ '^https://t\.me/'),
+  constraint discovered_sources_verification_check check (verification_status in ('verified','rejected','error')),
+  constraint discovered_sources_raw_data_check check (jsonb_typeof(raw_data) = 'object')
+);
+create index if not exists discovered_sources_tsv_idx on discovered_sources using gin (tsv);
+create index if not exists discovered_sources_cache_idx on discovered_sources (verification_status, cache_expires_at, verified_at desc);
+
+create table if not exists radar_search_runs (
+  id                bigint generated always as identity primary key,
+  user_id           bigint not null references users (id) on delete cascade,
+  channel_id        bigint references channels (id) on delete cascade,
+  request_key       varchar(128) not null,
+  query             varchar(200) not null,
+  normalized_query  varchar(200) not null,
+  status            text not null default 'queued',
+  stage             text not null default 'queued',
+  progress          smallint not null default 0,
+  provider          text,
+  local_count       integer not null default 0,
+  external_count    integer not null default 0,
+  error_code        varchar(80),
+  error_message     varchar(500),
+  queue_confirmed_at timestamptz,
+  cache_expires_at  timestamptz not null default (now() + interval '24 hours'),
+  created_at        timestamptz not null default now(),
+  updated_at        timestamptz not null default now(),
+  completed_at      timestamptz,
+  constraint radar_search_runs_user_request_key unique (user_id, request_key),
+  constraint radar_search_runs_query_check check (length(btrim(normalized_query)) between 2 and 200),
+  constraint radar_search_runs_status_check check (status in ('queued','running','ready','partial','failed')),
+  constraint radar_search_runs_stage_check check (stage in ('queued','discovering','verifying','ranking','ready','failed')),
+  constraint radar_search_runs_progress_check check (progress between 0 and 100),
+  constraint radar_search_runs_counts_check check (local_count >= 0 and external_count >= 0)
+);
+create index if not exists radar_search_runs_user_created_idx on radar_search_runs (user_id, created_at desc);
+create index if not exists radar_search_runs_cache_idx on radar_search_runs (user_id, normalized_query, cache_expires_at desc) where status in ('ready','partial');
+create index if not exists radar_search_runs_active_idx on radar_search_runs (status, updated_at) where status in ('queued','running');
+
+create table if not exists radar_search_candidates (
+  id               bigint generated always as identity primary key,
+  run_id           bigint not null references radar_search_runs (id) on delete cascade,
+  provider         text not null,
+  raw_url          text not null,
+  handle           text,
+  canonical_key    text,
+  verification_status text not null default 'pending',
+  rejection_reason varchar(160),
+  raw_data         jsonb not null default '{}'::jsonb,
+  created_at       timestamptz not null default now(),
+  verified_at      timestamptz,
+  constraint radar_search_candidates_status_check check (verification_status in ('pending','verified','rejected','error')),
+  constraint radar_search_candidates_raw_data_check check (jsonb_typeof(raw_data) = 'object'),
+  constraint radar_search_candidates_run_key unique (run_id, canonical_key)
+);
+create index if not exists radar_search_candidates_run_idx on radar_search_candidates (run_id, verification_status, id);
+
+create table if not exists radar_search_results (
+  id                  bigint generated always as identity primary key,
+  run_id              bigint not null references radar_search_runs (id) on delete cascade,
+  user_id             bigint not null references users (id) on delete cascade,
+  discovered_source_id bigint references discovered_sources (id) on delete set null,
+  result_type         text not null,
+  provider            text not null,
+  canonical_key       text not null,
+  url                 text not null,
+  handle              text,
+  external_id         bigint,
+  title               text,
+  description         text,
+  text                text,
+  posted_at           timestamptz,
+  subscribers         integer,
+  views               integer,
+  reactions           integer,
+  posts_per_week      numeric(7,1),
+  last_post_at        timestamptz,
+  relevance_score     smallint not null default 0,
+  freshness_score     smallint not null default 0,
+  activity_score      smallint not null default 0,
+  trust_score         smallint not null default 0,
+  quality_score       smallint not null default 0,
+  reason              varchar(500) not null,
+  verification_status text not null default 'verified',
+  verified_at         timestamptz not null default now(),
+  raw_data             jsonb not null default '{}'::jsonb,
+  tsv                  tsvector generated always as (
+    to_tsvector('russian', coalesce(title, '') || ' ' || coalesce(description, '') || ' ' || coalesce(text, '') || ' ' || coalesce(handle, ''))
+  ) stored,
+  created_at           timestamptz not null default now(),
+  constraint radar_search_results_run_key unique (run_id, canonical_key),
+  constraint radar_search_results_type_check check (result_type in ('channel','post','trend')),
+  constraint radar_search_results_url_check check (url ~ '^https://t\.me/'),
+  constraint radar_search_results_verification_check check (verification_status in ('verified')),
+  constraint radar_search_results_scores_check check (
+    relevance_score between 0 and 100 and freshness_score between 0 and 100
+    and activity_score between 0 and 100 and trust_score between 0 and 100
+    and quality_score between 0 and 100
+  ),
+  constraint radar_search_results_raw_data_check check (jsonb_typeof(raw_data) = 'object')
+);
+create index if not exists radar_search_results_run_score_idx on radar_search_results (run_id, result_type, quality_score desc, id);
+create index if not exists radar_search_results_user_idx on radar_search_results (user_id, created_at desc);
+create index if not exists radar_search_results_tsv_idx on radar_search_results using gin (tsv);
+
+create unique index if not exists saved_posts_discovery_source_uniq
+  on saved_posts (user_id, channel_id, source_url)
+  where kind = 'reference' and source_url is not null;

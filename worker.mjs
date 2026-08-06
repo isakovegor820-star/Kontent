@@ -18,7 +18,7 @@ import {
   splitChunks,
   plural,
   mskDatePlus,
-  weekSlots,
+  periodSlots,
   toTelegramHtml,
   keyboard,
   findInvented,
@@ -47,6 +47,11 @@ import {
 import { createNavyMediaClient } from "./src/lib/navy-media.mjs";
 import { cleanGeneratedImage } from "./src/lib/media-image-cleanup.mjs";
 import { fetchPublicBuffer } from "./src/lib/safe-http.mjs";
+import {
+  chooseMediaStorageBackend,
+  loadMediaAssetBuffer,
+  putMediaObject,
+} from "./src/lib/media-storage.mjs";
 import {
   executeMediaGenerationJob,
   MediaGenerationAttemptError,
@@ -87,6 +92,22 @@ import {
   configuredServiceEngine,
 } from "./src/lib/ai-engine-policy.mjs";
 import {
+  AUTOPILOT_ENGINE_OPTIONS,
+  applyAutopilotPresentation,
+  autopilotPresentationVariant,
+  findAutopilotNearDuplicate,
+  plannedPostCountForWeeks,
+  presentationVariantPrompt,
+} from "./src/lib/autopilot-config.mjs";
+import {
+  RADAR_SEARCH_RESULT_LIMIT,
+  RadarDiscoveryError,
+  discoverTelegramCandidates,
+  median as radarMedian,
+  rankVerifiedTelegramPost,
+  rankVerifiedTelegramSource,
+} from "./src/lib/radar-search.mjs";
+import {
   annotateAutopilotItems,
   autopilotPlanRevisionHash,
   buildAutopilotApprovalPreview,
@@ -103,6 +124,7 @@ import {
   scheduleAutopilotItem,
 } from "./src/lib/autopilot-scheduling.mjs";
 import { publicationSuccessState } from "./worker/publication-state.mjs";
+import { beginProviderCall, claimPublicationLease } from "./worker/publication-lease.mjs";
 import {
   decideTelegramAggregateReconciliation,
   decideTelegramReconciliation,
@@ -138,6 +160,18 @@ import { persistCompetitorLibraryAnalytics } from "./worker/library-analytics.mj
 import { reconcilePublicationOutbox } from "./src/lib/publication-outbox.mjs";
 import { deliverTelegramParts, telegramPartDefinitions } from "./worker/telegram-multipart.mjs";
 import {
+  classifyOAuthChannelFailure,
+  classifyTelegramChannelFailure,
+  classifyVkChannelFailure,
+  transitionChannelHealth,
+} from "./src/lib/channel-health.mjs";
+import {
+  PROVIDER_OUTCOMES,
+  publishVkWithRequest,
+  reconcileVkWithRequest,
+  vkProviderOperationIdentity,
+} from "./worker/vk-publication.mjs";
+import {
   assertRuntimeSchemaReady,
   safePreflightFailure,
 } from "./scripts/runtime-schema-preflight.mjs";
@@ -152,6 +186,10 @@ const OWNER_CHAT = process.env.TG_CHAT_ID;
 const AUTOPILOT_ONLY = process.env.AURORA_WORKER_MODE === "autopilot";
 const MEDIA_ONLY = process.env.AURORA_WORKER_MODE === "media";
 const PUBLICATION_ONLY = process.env.AURORA_WORKER_MODE === "publication";
+// Настройка retryLimit управляет обычной редактурой, но Автопилот обязан довести каждый
+// собственный пост до проходного балла. Шесть полных переписываний плюс две попытки самой
+// очереди дают модели достаточно шансов, не позволяя недоступному API зациклить воркер.
+const AUTOPILOT_QUALITY_REWRITE_ATTEMPTS = 6;
 const semanticPublicationAdapter = createConfiguredSemanticAdapter({
   telemetry: (event) => {
     if (event.outcome === "failed" || event.type === "fallback") {
@@ -348,8 +386,9 @@ async function indexSource(sourceId) {
     vectors.push([part, v]);
   }
 
-  const tx = await pool.connect();
+  let tx = null;
   try {
+    tx = await pool.connect();
     await tx.query("begin");
     await tx.query(`delete from knowledge_chunks where source_id = $1`, [sourceId]);
     for (const [text, v] of vectors) {
@@ -365,10 +404,10 @@ async function indexSource(sourceId) {
     );
     await tx.query("commit");
   } catch (err) {
-    await tx.query("rollback").catch(() => {});
+    await tx?.query("rollback").catch(() => {});
     throw err;
   } finally {
-    tx.release();
+    tx?.release();
   }
   console.log(`[база] «${src.title}» (канал ${src.channel_id}): ${vectors.length} кусков`);
   return { chunks: vectors.length };
@@ -582,6 +621,19 @@ async function persistMediaResult(generation, outputUrl, lease) {
   await lease.assertActive();
   const ext = mime === "video/mp4" ? "mp4" : mime === "image/png" ? "png" : mime === "image/webp" ? "webp" : "jpg";
   const sha256 = createHash("sha256").update(buffer).digest("hex");
+  const storageBackend = chooseMediaStorageBackend({
+    kind: generation.kind,
+    bytes: buffer.byteLength,
+  });
+  const object = storageBackend === "object"
+    ? await putMediaObject({
+        userId: generation.user_id,
+        sha256,
+        extension: ext,
+        mimeType: mime,
+        body: buffer,
+      })
+    : null;
   const tx = await pool.connect();
   try {
     await tx.query("begin");
@@ -600,17 +652,21 @@ async function persistMediaResult(generation, outputUrl, lease) {
     }
     const asset = await tx.query(
       `insert into media_assets
-        (user_id, kind, file_name, mime_type, bytes, data, sha256, duration_seconds)
-       values ($1,$2,$3,$4,$5,$6,$7,$8) returning id`,
+        (user_id, kind, file_name, mime_type, bytes, data, sha256, duration_seconds,
+         storage_backend, object_key, object_etag)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) returning id`,
       [
         generation.user_id,
         generation.kind,
         `aurora-${generation.kind}-${generation.id}.${ext}`,
         mime,
         buffer.byteLength,
-        buffer,
+        storageBackend === "postgres" ? buffer : null,
         sha256,
         generation.kind === "video" ? generation.seconds : null,
+        storageBackend,
+        object?.key ?? null,
+        object?.etag ?? null,
       ],
     );
     await tx.query(
@@ -636,6 +692,16 @@ async function persistMediaResult(generation, outputUrl, lease) {
     await tx.query("commit");
   } catch (error) {
     await tx.query("rollback").catch(() => {});
+    if (object?.key) {
+      await pool.query(
+        `insert into media_object_orphans (object_key, reason_code, last_error_code)
+         values ($1, 'asset_transaction_failed', $2)
+         on conflict (object_key) do update
+           set reason_code = excluded.reason_code, last_error_code = excluded.last_error_code,
+               next_attempt_at = now(), deleted_at = null`,
+        [object.key, error?.code || "transaction_failed"],
+      ).catch(() => {});
+    }
     throw error;
   } finally {
     tx.release();
@@ -972,15 +1038,24 @@ async function tgSend(chatId, text, buttons) {
   }); // { ok, result: { message_id }, description }
 }
 
-async function tgSendAsset(chatId, asset, caption = null) {
+async function tgSendHtml(chatId, html) {
+  return tg("sendMessage", {
+    chat_id: chatId,
+    text: html,
+    parse_mode: "HTML",
+    disable_web_page_preview: true,
+  });
+}
+
+async function tgSendAsset(chatId, asset, captionHtml = null) {
   const isVideo = asset.kind === "video";
   const method = isVideo ? "sendVideo" : "sendPhoto";
   const field = isVideo ? "video" : "photo";
   const form = new FormData();
   form.set("chat_id", String(chatId));
   form.set(field, new Blob([asset.data], { type: asset.mime_type }), asset.file_name);
-  if (caption) {
-    form.set("caption", toTelegramHtml(caption));
+  if (captionHtml) {
+    form.set("caption", captionHtml);
     form.set("parse_mode", "HTML");
   }
   const response = await fetch(`${TELEGRAM_API_URL}/bot${TOKEN}/${method}`, {
@@ -1011,14 +1086,6 @@ async function vkApi(method, params, token, timeoutMs = 20_000) {
 }
 
 const vkPostUrl = (groupId, postId) => `https://vk.com/wall-${groupId}_${postId}`;
-
-/** Публикация записи от имени сообщества VK. */
-async function vkWallPost(token, groupId, message) {
-  const d = await vkApi("wall.post", { owner_id: `-${groupId}`, from_group: 1, message }, token);
-  if (d.error) return { ok: false, errorMsg: d.error.error_msg || "VK error" };
-  if (typeof d.response?.post_id === "number") return { ok: true, postId: d.response.post_id };
-  return { ok: false, errorMsg: "VK не вернул post_id" };
-}
 
 /** Подписчики сообщества VK (groups.getById, fields=members_count). */
 async function vkMembersCount(token, groupId) {
@@ -1058,35 +1125,84 @@ async function publishTg(channel, postId, text, media) {
   try {
     const assetId = Number(media?.assetId);
     const asset = Number.isInteger(assetId) && assetId > 0
-      ? (
-          await pool.query(
-            `select kind, file_name, mime_type, data from media_assets where id = $1 and user_id = $2`,
-            [assetId, channel.user_id],
-          )
-        ).rows[0]
+      ? await loadMediaAssetBuffer({
+          pool,
+          assetId,
+          userId: channel.user_id,
+          maxBytes: MEDIA_VIDEO_MAX_BYTES,
+        })
       : null;
-    const formatted = formatPost(text);
-    const definitions = telegramPartDefinitions({
-      hasAsset: Boolean(asset),
-      formattedLength: formatted.length,
-    });
-    for (const part of definitions) {
-      await pool.query(
-        `insert into publication_parts (post_id, part_index, part_type)
-         values ($1, $2, $3) on conflict (post_id, part_index) do nothing`,
-        [postId, part.index, part.type],
-      );
-    }
-    const parts = (await pool.query(
-      `select id, part_index, part_type, external_message_id, send_status, attempts
+    const previousParts = (await pool.query(
+      `select id, part_index, part_type, external_message_id, send_status,
+              payload_html, payload_hash, entity_length
          from publication_parts where post_id = $1 order by part_index`,
       [postId],
     )).rows;
+    const forceSeparateMedia = previousParts.some((part) =>
+      part.part_index === 0
+      && part.part_type === "media"
+      && ["sending", "sent", "unknown"].includes(part.send_status),
+    );
+    const definitions = telegramPartDefinitions({
+      hasAsset: Boolean(asset),
+      text,
+      forceSeparateMedia,
+    });
+    // Unsent legacy plans can be replaced safely. Once any provider call may have
+    // happened, existing indexes are fenced and only missing deterministic parts are added.
+    if (
+      previousParts.length > 0
+      && previousParts.every((part) =>
+        ["pending", "failed"].includes(part.send_status)
+        && !part.external_message_id
+        && !part.payload_hash,
+      )
+    ) {
+      await pool.query(`delete from publication_parts where post_id = $1`, [postId]);
+    }
+    for (const part of definitions) {
+      const payloadHash = createHash("sha256")
+        .update(`${part.type}\0${part.payloadHtml || ""}`)
+        .digest("hex");
+      await pool.query(
+        `insert into publication_parts
+           (post_id, part_index, part_type, payload_html, payload_hash, entity_length)
+         values ($1, $2, $3, $4, $5, $6)
+         on conflict (post_id, part_index) do update
+           set payload_html = excluded.payload_html,
+               payload_hash = excluded.payload_hash,
+               entity_length = excluded.entity_length,
+               updated_at = now()
+         where publication_parts.payload_html is null
+           and publication_parts.external_message_id is null
+           and publication_parts.send_status in ('pending','failed')`,
+        [postId, part.index, part.type, part.payloadHtml, payloadHash, part.entityLength],
+      );
+    }
+    const parts = (await pool.query(
+      `select id, part_index, part_type, payload_html, payload_hash, entity_length,
+              external_message_id, send_status, attempts
+         from publication_parts where post_id = $1 order by part_index`,
+      [postId],
+    )).rows;
+    const corruptPart = parts.find((part) => {
+      if (!part.payload_hash) return ["pending", "failed"].includes(part.send_status);
+      const actual = createHash("sha256")
+        .update(`${part.part_type}\0${part.payload_html || ""}`)
+        .digest("hex");
+      return actual !== String(part.payload_hash).trim();
+    });
+    if (corruptPart) {
+      return {
+        ok: false,
+        reason: "telegram_payload_integrity_failed",
+        deliveryUnknown: false,
+      };
+    }
     const result = await deliverTelegramParts({
       parts,
-      formatted,
       asset,
-      sendText: (value) => tgSend(channel.tg_chat_id, value),
+      sendText: (value) => tgSendHtml(channel.tg_chat_id, value),
       sendAsset: (value, caption) => tgSendAsset(channel.tg_chat_id, value, caption),
       markSending: (part) => pool.query(
         `update publication_parts set send_status = 'sending', updated_at = now()
@@ -1116,7 +1232,12 @@ async function publishTg(channel, postId, text, media) {
         [part.id],
       ),
     });
-    if (!result.ok) return result;
+    if (!result.ok) {
+      const health = classifyTelegramChannelFailure(result);
+      return health
+        ? { ...result, outcome: PROVIDER_OUTCOMES.AUTH_FAILED, code: health.errorCode }
+        : result;
+    }
     const primaryId = result.externalId;
     const postUrl = channel.handle && Number.isSafeInteger(primaryId)
       ? `https://t.me/${channel.handle}/${primaryId}`
@@ -1132,20 +1253,36 @@ async function publishTg(channel, postId, text, media) {
 }
 
 /** VK: расшифровываем токен сообщества (привязка к владельцу) и публикуем на стену. */
-async function publishVk(channel, text) {
+async function publishVk(channel, text, providerOperationId) {
   let token;
   try {
     token = decryptToken(channel.vk_token, { userId: channel.user_id, provider: "vk" });
   } catch {
-    return { ok: false, reason: "не удалось расшифровать токен VK — переподключи сообщество" };
+    return {
+      ok: false,
+      outcome: PROVIDER_OUTCOMES.AUTH_FAILED,
+      code: "vk_token_unreadable",
+      reason: "не удалось прочитать токен VK — переподключи сообщество",
+    };
   }
-  try {
-    const res = await vkWallPost(token, channel.vk_group_id, formatPost(text));
-    if (!res.ok) return { ok: false, reason: res.errorMsg };
-    return { ok: true, externalId: res.postId, postUrl: vkPostUrl(channel.vk_group_id, res.postId) };
-  } catch (err) {
-    return { ok: false, reason: String(err?.message || err) };
+  const result = await publishVkWithRequest({
+    request: vkApi,
+    token,
+    groupId: channel.vk_group_id,
+    message: formatPost(text),
+    providerOperationId,
+  });
+  if (!result.ok) {
+    return {
+      ...result,
+      reason: result.reason || result.errorCode || result.code || "VK не подтвердил публикацию",
+    };
   }
+  return {
+    ...result,
+    externalId: result.postId,
+    postUrl: vkPostUrl(channel.vk_group_id, result.postId),
+  };
 }
 
 // ----------------------------------------------------------------------------
@@ -1214,7 +1351,14 @@ async function publishOAuth(channel, payload) {
   if (!adapter) return { ok: false, reason: `сеть ${channel.network} не поддерживается` };
 
   let tok = await loadOAuthToken(channel);
-  if (!tok) return { ok: false, reason: "нет токена — переподключи канал" };
+  if (!tok) {
+    return {
+      ok: false,
+      outcome: PROVIDER_OUTCOMES.AUTH_FAILED,
+      code: "oauth_token_missing",
+      reason: "нет токена — переподключи канал",
+    };
+  }
 
   // Токен на исходе (<5 мин) — обновляем заранее, чтобы не получить 401 на публикации.
   if (tok.expiresAt && tok.expiresAt.getTime() - Date.now() < 5 * 60 * 1000) {
@@ -1229,7 +1373,16 @@ async function publishOAuth(channel, payload) {
     if (fresh) {
       tok = fresh;
       res = await adapter.publish(tok.accessToken, payload, tok.externalId);
+    } else {
+      return {
+        ...res,
+        outcome: PROVIDER_OUTCOMES.AUTH_FAILED,
+        code: "oauth_refresh_failed",
+      };
     }
+  }
+  if (!res.ok && /401|invalid.*(token|grant)|expired/i.test(res.reason || "")) {
+    return { ...res, outcome: PROVIDER_OUTCOMES.AUTH_FAILED, code: "oauth_token_rejected" };
   }
   return res;
 }
@@ -1241,7 +1394,6 @@ const RECON_CONCURRENCY = 6; // скромно, чтобы самим не пр�
 // Облачный API выдерживает параллельные вызовы; локальный Ollama с одной 8B-моделью — нет.
 // Три одновременных запроса ставили друг друга в очередь и ловили 90-секундные таймауты,
 // после чего в плане появлялись пустые карточки. Локально пишем последовательно.
-const AUTOPILOT_CONCURRENCY = configuredAiConcurrency(configuredServiceEngine());
 // A broken cloud candidate must not hold every post for four minutes. Local fallback runs on
 // the user's machine and legitimately needs longer; completeAiText applies its own deadline
 // after the serialized local call reaches the front of the FIFO.
@@ -1431,45 +1583,25 @@ const worker = AUTOPILOT_ONLY || MEDIA_ONLY ? null : new Worker(
 
     // Заявляем пост атомарно: публикуем ТОЛЬКО если он ещё scheduled.
     // Так пост никогда не выйдет дважды — даже если задача продублировалась.
-    const claim = await pool.query(
-      `update posts p set status = 'publishing', publish_started_at = now(),
-                          publish_lease_token = $2
-       where p.id = $1 and p.status = 'scheduled'
-         and p.schedule_revision = $3
-         and p.scheduled_at >= $4
-         and p.scheduled_at <= now() + interval '30 seconds'
-         and not exists (
-           select 1
-             from rss_items ri
-             join rss_feeds rf on rf.id = ri.feed_id
-            where ri.post_id = p.id and rf.is_active = false
-         )
-       returning p.id, p.user_id, p.channel_id, p.text, p.media, p.attempts`,
-      [postId, leaseToken, scheduleRevision, new Date(Date.now() - PUBLICATION_OVERDUE_GRACE_MS)],
-    );
-    if (claim.rowCount === 0) {
-      const retryClaim = await pool.query(
-        `update posts p set status = 'publishing', publish_started_at = now(),
-                            publish_lease_token = $2
-         where p.id = $1 and p.status = 'failed_retry'
-           and p.schedule_revision = $3
-           and p.next_attempt_at is not null
-           and p.next_attempt_at <= now() + interval '30 seconds'
-         returning p.id, p.user_id, p.channel_id, p.text, p.media, p.attempts`,
-        [postId, leaseToken, scheduleRevision],
-      );
-      claim.rows = retryClaim.rows;
-      claim.rowCount = retryClaim.rowCount;
-    }
-    if (claim.rowCount === 0) {
-      console.log(`[worker] пост ${postId} уже обработан или не ждёт публикации — пропускаю`);
+    const post = await claimPublicationLease(pool, {
+      postId,
+      leaseToken,
+      scheduleRevision,
+      overdueCutoff: new Date(Date.now() - PUBLICATION_OVERDUE_GRACE_MS),
+    });
+    if (!post) {
+      console.info("[publication_event]", {
+        event: "stale_revision_ignored",
+        postId,
+        revision: scheduleRevision,
+        status: "not_claimed",
+      });
       return;
     }
-    const post = claim.rows[0];
 
     const ch = await pool.query(
-      `select user_id, network, tg_chat_id, vk_group_id, vk_token, oauth_token_id,
-              instagram_account_id, title, handle, is_active
+      `select id, user_id, network, tg_chat_id, vk_group_id, vk_token, oauth_token_id,
+              instagram_account_id, title, handle, is_active, status
          from channels where id = $1`,
       [post.channel_id],
     );
@@ -1495,10 +1627,41 @@ const worker = AUTOPILOT_ONLY || MEDIA_ONLY ? null : new Worker(
       return;
     }
 
+    // Cancellation and rescheduling may commit after the lease was acquired. Fence once
+    // more immediately before the provider call; only this update marks external delivery
+    // as started and makes subsequent cancellation return publication_in_progress.
+    const providerCallStarted = await beginProviderCall(pool, {
+      postId,
+      scheduleRevision,
+      leaseToken,
+    });
+    if (!providerCallStarted) {
+      console.info("[publication_event]", {
+        event: "stale_revision_ignored",
+        postId,
+        provider: channel.network,
+        revision: scheduleRevision,
+        status: "fenced_before_provider",
+      });
+      return;
+    }
+
     // Публикуем по сети; результат нормализован (publishTg/publishVk/publishOAuth).
     let out;
     if (channel.network === "vk") {
-      out = await publishVk(channel, post.text);
+      const providerOperationId = vkProviderOperationIdentity({
+        postId,
+        revision: scheduleRevision,
+      });
+      const providerIdentitySaved = await pool.query(
+        `update posts
+            set provider_operation_id = $2, provider_reconciliation_state = 'none',
+                provider_reconciliation_requested_at = null
+          where id = $1 and publish_lease_token = $3 and schedule_revision = $4`,
+        [postId, providerOperationId, leaseToken, scheduleRevision],
+      );
+      if (providerIdentitySaved.rowCount !== 1) return;
+      out = await publishVk(channel, post.text, providerOperationId);
     } else if (OAUTH_NETWORKS.includes(channel.network)) {
       // media — jsonb: объект или null. Для видео (YouTube/Reels) нужен источник файла.
       const media = post.media && typeof post.media === "object" ? post.media : null;
@@ -1513,13 +1676,58 @@ const worker = AUTOPILOT_ONLY || MEDIA_ONLY ? null : new Worker(
       out = await publishTg(channel, post.id, post.text, post.media);
     }
 
+    const channelFailure = channel.network === "vk"
+      ? classifyVkChannelFailure(out)
+      : OAUTH_NETWORKS.includes(channel.network)
+        ? classifyOAuthChannelFailure(out)
+        : classifyTelegramChannelFailure(out);
+    if (channelFailure) {
+      await transitionChannelHealth(pool, {
+        channelId: Number(channel.id),
+        status: channelFailure.status,
+        errorCode: channelFailure.errorCode,
+        action: "provider_auth_failed",
+      });
+      await pool.query(
+        `update posts
+            set status = 'failed', attempts = attempts + 1,
+                last_error = 'Канал требует повторного подключения',
+                verification_error_code = $2, verification_error_reason = null,
+                publish_lease_token = null, next_attempt_at = null
+          where id = $1 and publish_lease_token = $3`,
+        [postId, channelFailure.errorCode, leaseToken],
+      );
+      console.info("[publication_event]", {
+        event: "provider_auth_failed",
+        operationId: post.publication_operation_id == null ? null : Number(post.publication_operation_id),
+        postId,
+        destinationId: Number(channel.id),
+        provider: channel.network,
+        revision: scheduleRevision,
+        status: channelFailure.status,
+        errorCode: channelFailure.errorCode,
+      });
+      console.info("[channel_event]", {
+        event: "channel_needs_reconnect",
+        destinationId: Number(channel.id),
+        provider: channel.network,
+        status: channelFailure.status,
+        errorCode: channelFailure.errorCode,
+      });
+      await notifyUser(
+        post.user_id,
+        "⚠️ Публикация остановлена: канал нужно переподключить в настройках. Новые посты в него не ставятся в очередь.",
+      );
+      return;
+    }
+
     const confirmed = publicationSuccessState(channel.network, out);
 
     // A timeout after sending (or an invalid success payload) has an unknown delivery
     // outcome. Retrying automatically could duplicate a real external message.
     if (out.deliveryUnknown || (out.ok && !confirmed.ok)) {
       const reason = out.deliveryUnknown
-        ? "Telegram не подтвердил результат отправки — проверь канал перед повтором"
+        ? `${channel.network === "vk" ? "VK" : "Telegram"} не подтвердил результат отправки — повтор остановлен до сверки`
         : confirmed.reason;
       await pool.query(
         `update posts
@@ -1529,10 +1737,22 @@ const worker = AUTOPILOT_ONLY || MEDIA_ONLY ? null : new Worker(
                 verification_error_code = 'delivery_unknown',
                 verification_error_reason = $2,
                 verification_result = '{"result":"delivery_unknown"}'::jsonb,
+                provider_reconciliation_state = 'pending',
+                provider_reconciliation_requested_at = now(),
                 publish_lease_token = null, next_attempt_at = null
           where id = $1 and publish_lease_token = $3`,
         [postId, reason, leaseToken],
       );
+      console.info("[publication_event]", {
+        event: "provider_delivery_unknown",
+        operationId: post.publication_operation_id == null ? null : Number(post.publication_operation_id),
+        postId,
+        destinationId: Number(channel.id),
+        provider: channel.network,
+        revision: scheduleRevision,
+        status: "published_unverified",
+        errorCode: out.errorCode || "delivery_unknown",
+      });
       await notifyUser(
         post.user_id,
         "⚠️ Внешняя сеть не подтвердила результат отправки. Проверь канал: повтор автоматически не запускаю, чтобы не создать дубль.",
@@ -1558,6 +1778,7 @@ const worker = AUTOPILOT_ONLY || MEDIA_ONLY ? null : new Worker(
                           last_verification_attempt_at = now(),
                           verification_result = $4::jsonb,
                           verification_error_code = null, verification_error_reason = null,
+                          provider_reconciliation_state = 'confirmed',
                           consecutive_missing_checks = 0, publish_lease_token = null,
                           next_attempt_at = null
          where id = $1 and publish_lease_token = $5`,
@@ -2052,6 +2273,53 @@ async function collectVkStats(userId = null) {
       );
     }
 
+    // Read-only reconciliation for an ambiguous wall.post. Never call wall.post here:
+    // exact recent-wall matching may confirm delivery, but absence cannot prove failure.
+    const unknownPosts = (await pool.query(
+      `select id, text, provider_started_at, provider_operation_id
+         from posts
+        where channel_id = $1 and status = 'published_unverified'
+          and provider_reconciliation_state in ('pending','unresolved')
+          and provider_started_at is not null
+        order by provider_started_at desc
+        limit 25`,
+      [ch.id],
+    )).rows;
+    for (const post of unknownPosts) {
+      const reconciliation = await reconcileVkWithRequest({
+        request: vkApi,
+        token,
+        groupId: ch.vk_group_id,
+        message: formatPost(post.text),
+        providerStartedAt: post.provider_started_at,
+      });
+      if (reconciliation.outcome === PROVIDER_OUTCOMES.SUCCESS) {
+        await pool.query(
+          `update posts
+              set status = 'published', vk_post_id = $2, external_message_id = $2::text,
+                  published_at = coalesce(published_at, provider_started_at),
+                  verification_state = 'verified', last_verified_at = now(),
+                  last_verification_attempt_at = now(),
+                  verification_result = '{"result":"seen","source":"vk_wall_reconciliation"}'::jsonb,
+                  verification_error_code = null, verification_error_reason = null,
+                  provider_reconciliation_state = 'confirmed'
+            where id = $1 and status = 'published_unverified'
+              and provider_operation_id is not distinct from $3`,
+          [post.id, reconciliation.postId, post.provider_operation_id],
+        );
+      } else {
+        await pool.query(
+          `update posts
+              set provider_reconciliation_state = 'unresolved',
+                  last_verification_attempt_at = now(),
+                  verification_error_code = $2,
+                  verification_result = '{"result":"delivery_unknown","source":"vk_wall_reconciliation"}'::jsonb
+            where id = $1 and status = 'published_unverified'`,
+          [post.id, reconciliation.errorCode || reconciliation.code || "vk_reconcile_unresolved"],
+        );
+      }
+    }
+
     // 2) Метрики вышедших постов VK (просмотры/лайки/репосты/комментарии).
     const posts = (
       await pool.query(
@@ -2225,6 +2493,351 @@ async function collectCompetitor(comp) {
   }).catch(
     (e) => console.error(`[hits] @${comp.handle}:`, e?.message),
   );
+}
+
+// ============================================================================
+// Гибридный радар. Web-поисковик здесь только ОБНАРУЖИВАЕТ возможный t.me URL.
+// В выдачу попадает исключительно то, что этот воркер повторно открыл через t.me/s/,
+// прочитал и признал релевантным запросу кодовым ранжированием.
+// ============================================================================
+
+function radarSafeScore(value) {
+  return Math.max(0, Math.min(100, Math.round(Number(value) || 0)));
+}
+
+async function insertRadarResult({
+  runId,
+  userId,
+  sourceId,
+  type,
+  provider,
+  canonicalKey,
+  url,
+  handle,
+  externalId = null,
+  title = null,
+  description = null,
+  text = null,
+  postedAt = null,
+  subscribers = null,
+  views = null,
+  reactions = null,
+  postsPerWeek = null,
+  lastPostAt = null,
+  rank,
+  rawData = {},
+}) {
+  const inserted = await pool.query(
+    `insert into radar_search_results
+       (run_id, user_id, discovered_source_id, result_type, provider, canonical_key,
+        url, handle, external_id, title, description, text, posted_at, subscribers,
+        views, reactions, posts_per_week, last_post_at, relevance_score,
+        freshness_score, activity_score, trust_score, quality_score, reason, raw_data)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+             $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25::jsonb)
+     on conflict (run_id, canonical_key) do update set
+       title = excluded.title,
+       description = excluded.description,
+       text = excluded.text,
+       posted_at = excluded.posted_at,
+       subscribers = excluded.subscribers,
+       views = excluded.views,
+       reactions = excluded.reactions,
+       posts_per_week = excluded.posts_per_week,
+       last_post_at = excluded.last_post_at,
+       relevance_score = excluded.relevance_score,
+       freshness_score = excluded.freshness_score,
+       activity_score = excluded.activity_score,
+       trust_score = excluded.trust_score,
+       quality_score = excluded.quality_score,
+       reason = excluded.reason,
+       raw_data = excluded.raw_data,
+       verified_at = now()
+     returning id`,
+    [
+      runId,
+      userId,
+      sourceId,
+      type,
+      provider,
+      canonicalKey,
+      url,
+      handle,
+      externalId,
+      title,
+      description,
+      text,
+      postedAt,
+      subscribers,
+      views,
+      reactions,
+      postsPerWeek,
+      lastPostAt,
+      radarSafeScore(rank.relevance),
+      radarSafeScore(rank.freshness),
+      radarSafeScore(rank.activity),
+      radarSafeScore(rank.trust),
+      radarSafeScore(rank.score),
+      String(rank.reason || "Публичный источник проверен").slice(0, 500),
+      JSON.stringify(rawData),
+    ],
+  );
+  return inserted.rowCount > 0;
+}
+
+async function runRadarSearch(runId, userId) {
+  const claimed = (
+    await pool.query(
+      `update radar_search_runs
+          set status = 'running', stage = 'discovering', progress = 8,
+              error_code = null, error_message = null, updated_at = now()
+        where id = $1 and user_id = $2 and status = 'queued'
+      returning id, query, normalized_query, local_count`,
+      [runId, userId],
+    )
+  ).rows[0];
+  if (!claimed) return;
+
+  const query = claimed.normalized_query;
+  let resultCount = 0;
+  let providerLabel = null;
+  try {
+    const candidates = await discoverTelegramCandidates(query, {
+      searxngUrl: process.env.RADAR_SEARXNG_URL,
+      fetchImpl: fetch,
+    });
+    providerLabel = [...new Set(candidates.map((candidate) => candidate.provider).filter(Boolean))].join(",") || "web";
+
+    for (const candidate of candidates) {
+      await pool.query(
+        `insert into radar_search_candidates
+           (run_id, provider, raw_url, handle, canonical_key, raw_data)
+         values ($1, $2, $3, $4, $5, $6::jsonb)
+         on conflict (run_id, canonical_key) do nothing`,
+        [
+          runId,
+          candidate.provider || "web",
+          candidate.canonicalUrl,
+          candidate.handle,
+          candidate.canonicalKey,
+          JSON.stringify(candidate),
+        ],
+      );
+    }
+
+    await pool.query(
+      `update radar_search_runs
+          set stage = 'verifying', progress = $2, provider = $3, updated_at = now()
+        where id = $1 and status = 'running'`,
+      [runId, candidates.length ? 28 : 72, providerLabel],
+    );
+
+    for (let index = 0; index < candidates.length; index++) {
+      const candidate = candidates[index];
+      let page;
+      try {
+        page = await fetchCompetitorPage(candidate.handle);
+      } catch (error) {
+        await pool.query(
+          `update radar_search_candidates
+              set verification_status = 'error', rejection_reason = 'telegram_unavailable',
+                  verified_at = now()
+            where run_id = $1 and canonical_key = $2`,
+          [runId, candidate.canonicalKey],
+        );
+        console.warn(`[radar] @${candidate.handle}: verify error`, error?.message);
+        continue;
+      }
+
+      if (!page.ok || page.posts.length === 0) {
+        await pool.query(
+          `update radar_search_candidates
+              set verification_status = 'rejected', rejection_reason = 'not_public_or_empty',
+                  verified_at = now()
+            where run_id = $1 and canonical_key = $2`,
+          [runId, candidate.canonicalKey],
+        );
+        continue;
+      }
+
+      const activity = summarizeTelegramPostingActivity(page.posts);
+      const sourceRank = rankVerifiedTelegramSource(query, { ...page, activity });
+      if (!sourceRank.accepted) {
+        await pool.query(
+          `update radar_search_candidates
+              set verification_status = 'rejected', rejection_reason = 'off_topic',
+                  verified_at = now()
+            where run_id = $1 and canonical_key = $2`,
+          [runId, candidate.canonicalKey],
+        );
+        continue;
+      }
+
+      const provider = candidate.provider || "web";
+      const source = (
+        await pool.query(
+          `insert into discovered_sources
+             (network, handle, canonical_url, title, description, subscribers,
+              last_post_at, posts_per_week, is_public, verification_status, provider,
+              raw_data, verified_at, cache_expires_at)
+           values ('tg', $1, $2, $3, $4, $5, $6, $7, true, 'verified', $8,
+                   $9::jsonb, now(), now() + interval '24 hours')
+           on conflict (network, handle) do update set
+             canonical_url = excluded.canonical_url,
+             title = coalesce(excluded.title, discovered_sources.title),
+             description = coalesce(excluded.description, discovered_sources.description),
+             subscribers = coalesce(excluded.subscribers, discovered_sources.subscribers),
+             last_post_at = coalesce(excluded.last_post_at, discovered_sources.last_post_at),
+             posts_per_week = coalesce(excluded.posts_per_week, discovered_sources.posts_per_week),
+             is_public = true,
+             verification_status = 'verified',
+             provider = excluded.provider,
+             raw_data = excluded.raw_data,
+             verified_at = now(),
+             cache_expires_at = now() + interval '24 hours',
+             updated_at = now()
+           returning id`,
+          [
+            candidate.handle,
+            `https://t.me/${candidate.handle}`,
+            page.title,
+            page.description,
+            page.subscribers,
+            activity.lastPostAt,
+            activity.postsPerWeek,
+            provider,
+            JSON.stringify({ publicPosts: page.posts.length }),
+          ],
+        )
+      ).rows[0];
+
+      if (resultCount < RADAR_SEARCH_RESULT_LIMIT) {
+        if (await insertRadarResult({
+          runId,
+          userId,
+          sourceId: source.id,
+          type: "channel",
+          provider,
+          canonicalKey: `tg:channel:${candidate.handle}`,
+          url: `https://t.me/${candidate.handle}`,
+          handle: candidate.handle,
+          title: page.title,
+          description: page.description,
+          subscribers: page.subscribers,
+          postsPerWeek: activity.postsPerWeek,
+          lastPostAt: activity.lastPostAt,
+          rank: sourceRank,
+          rawData: { publicPosts: page.posts.length },
+        })) resultCount += 1;
+      }
+
+      const postRanks = page.posts
+        .map((post) => ({ post, rank: rankVerifiedTelegramPost(query, post, sourceRank) }))
+        .filter((item) => item.rank.accepted)
+        .sort((a, b) => b.rank.score - a.rank.score);
+      for (const item of postRanks.slice(0, 3)) {
+        if (resultCount >= RADAR_SEARCH_RESULT_LIMIT) break;
+        if (await insertRadarResult({
+          runId,
+          userId,
+          sourceId: source.id,
+          type: "post",
+          provider,
+          canonicalKey: `tg:post:${candidate.handle}:${item.post.msgId}`,
+          url: `https://t.me/${candidate.handle}/${item.post.msgId}`,
+          handle: candidate.handle,
+          externalId: item.post.msgId,
+          title: page.title,
+          description: page.description,
+          text: item.post.text,
+          postedAt: item.post.postedAt,
+          subscribers: page.subscribers,
+          views: item.post.views,
+          reactions: item.post.reactions,
+          postsPerWeek: activity.postsPerWeek,
+          lastPostAt: activity.lastPostAt,
+          rank: { ...item.rank, activity: sourceRank.activity, trust: sourceRank.trust },
+          rawData: { media: item.post.media, photoUrl: item.post.photoUrl },
+        })) resultCount += 1;
+      }
+
+      // «Тренд» — не мнение ИИ: только релевантный пост, чьи просмотры минимум в 1,5 раза
+      // выше медианы видимых публикаций этого же канала.
+      const typicalViews = radarMedian(page.posts.map((post) => post.views));
+      const trend = postRanks.find(({ post }) =>
+        typicalViews != null && typicalViews > 0 && Number(post.views) >= typicalViews * 1.5,
+      );
+      if (trend && resultCount < RADAR_SEARCH_RESULT_LIMIT) {
+        const ratio = Number(trend.post.views) / typicalViews;
+        if (await insertRadarResult({
+          runId,
+          userId,
+          sourceId: source.id,
+          type: "trend",
+          provider,
+          canonicalKey: `tg:trend:${candidate.handle}:${trend.post.msgId}`,
+          url: `https://t.me/${candidate.handle}/${trend.post.msgId}`,
+          handle: candidate.handle,
+          externalId: trend.post.msgId,
+          title: page.title,
+          description: page.description,
+          text: trend.post.text,
+          postedAt: trend.post.postedAt,
+          subscribers: page.subscribers,
+          views: trend.post.views,
+          reactions: trend.post.reactions,
+          postsPerWeek: activity.postsPerWeek,
+          lastPostAt: activity.lastPostAt,
+          rank: {
+            ...trend.rank,
+            activity: sourceRank.activity,
+            trust: sourceRank.trust,
+            score: Math.min(100, trend.rank.score + Math.min(12, Math.round((ratio - 1) * 8))),
+            reason: `публикация набрала ×${ratio.toFixed(1)} к медиане этого канала`,
+          },
+          rawData: { medianViews: typicalViews, viewRatio: ratio },
+        })) resultCount += 1;
+      }
+
+      await pool.query(
+        `update radar_search_candidates
+            set verification_status = 'verified', verified_at = now()
+          where run_id = $1 and canonical_key = $2`,
+        [runId, candidate.canonicalKey],
+      );
+      const progress = 35 + Math.round(((index + 1) / Math.max(1, candidates.length)) * 55);
+      await pool.query(
+        `update radar_search_runs set progress = $2, external_count = $3, updated_at = now()
+          where id = $1 and status = 'running'`,
+        [runId, progress, resultCount],
+      );
+      await sleep(180);
+    }
+
+    await pool.query(
+      `update radar_search_runs
+          set status = 'ready', stage = 'ready', progress = 100,
+              external_count = $2, provider = $3, completed_at = now(), updated_at = now(),
+              error_code = null, error_message = null
+        where id = $1 and status = 'running'`,
+      [runId, resultCount, providerLabel],
+    );
+    console.log(`[radar] run ${runId}: ${candidates.length} кандидатов, ${resultCount} проверенных результатов`);
+  } catch (error) {
+    const localCount = Number(claimed.local_count) || 0;
+    const partial = localCount > 0;
+    const code = error instanceof RadarDiscoveryError ? error.code : "external_search_failed";
+    await pool.query(
+      `update radar_search_runs
+          set status = $2, stage = $3, progress = 100, external_count = $4,
+              provider = coalesce($5, provider), error_code = $6,
+              error_message = 'Поиск в интернете временно недоступен. Локальная выдача продолжает работать.',
+              completed_at = now(), updated_at = now()
+        where id = $1 and status = 'running'`,
+      [runId, partial ? "partial" : "failed", partial ? "ready" : "failed", resultCount, providerLabel, code],
+    );
+    console.warn(`[radar] run ${runId}: ${code}`);
+  }
 }
 
 // ============================================================================
@@ -2567,6 +3180,7 @@ async function askAI(
   numPredict = 500,
   mood = null,
   tempOverride = null,
+  explicitEngine = null,
 ) {
   assertWorkerAiCallPolicy(surface, usageReservationId);
   const messages = [
@@ -2589,7 +3203,7 @@ async function askAI(
     }
     const completed = await completeAiText({
       messages,
-      engine: configuredServiceEngine(requestedEngine),
+      engine: configuredServiceEngine(explicitEngine || requestedEngine),
       temperature: temp,
       maxTokens: numPredict,
     }, {
@@ -3012,12 +3626,13 @@ const FORMAT_RULES_W = [
   "— никаких мета-меток: не пиши «Хук:», «Абзац:», «CTA:» — только сам текст.",
 ].join("\n");
 
-function postSystem(samples, brief, support = [], quality, postIndex = 0) {
+function postSystem(samples, brief, support = [], quality, postIndex = 0, presentation = null) {
   let s =
     "Ты — строгий выпускающий редактор Telegram-канала. Выдай ТОЛЬКО готовый текст поста, без пояснений, приветствий и подписи.\n\n" +
     FORMAT_RULES_W +
     "\n\n" +
     buildQualityPrompt(quality, { postIndex });
+  if (presentation) s += "\n\n" + presentationVariantPrompt(presentation);
   if (brief) s += "\n\n" + briefContextW(brief);
   if (!quality.disclaimerRequired) {
     s += "\n\nНе добавляй дисклеймер про информационный характер текста или юридическую консультацию: он не настроен для этого канала.";
@@ -3060,8 +3675,29 @@ function postSystem(samples, brief, support = [], quality, postIndex = 0) {
  * придумывает ИИ ПОД НИШУ из брифа; залёты конкурентов (Д.7) идут первыми.
  * Возвращает [{ topic, rubric }]. Пусто = движок молчит, врать не будем.
  */
-async function planTopics(brief, need, hitTopics, mood, channelId = null, usageReservationId = null) {
-  const out = hitTopics.slice(0, need).map((t) => ({ topic: t, rubric: null }));
+async function planTopics(
+  brief,
+  need,
+  hitTopics,
+  mood,
+  channelId = null,
+  usageReservationId = null,
+  generationEngine = null,
+  historicalTopics = [],
+) {
+  const out = [];
+  const topicHistory = historicalTopics
+    .filter(Boolean)
+    .slice(0, 80)
+    .map((topic) => ({ topic, draft: "" }));
+  const pushUnique = (item) => {
+    const candidate = { topic: item?.topic, draft: "" };
+    const existing = [...topicHistory, ...out.map((entry) => ({ topic: entry.topic, draft: "" }))];
+    if (!candidate.topic || findAutopilotNearDuplicate(candidate, existing)) return false;
+    out.push(item);
+    return true;
+  };
+  for (const topic of hitTopics.slice(0, need)) pushUnique({ topic, rubric: null });
   if (out.length >= need) return out;
 
   // ТЕМЫ ИЗ БАЗЫ ЗНАНИЙ. Здесь был корень вранья, и он не в посте, а в теме: ниже стоит
@@ -3103,6 +3739,7 @@ async function planTopics(brief, need, hitTopics, mood, channelId = null, usageR
           60,
           mood,
           0.25,
+          generationEngine,
         );
         const candidate = String(raw || "")
           .split("\n")[0]
@@ -3112,7 +3749,7 @@ async function planTopics(brief, need, hitTopics, mood, channelId = null, usageR
         if (validateTopicQuality(candidate, seed.text).passed) topic = candidate;
       }
       const checked = validateTopicQuality(topic, seed.text);
-      if (checked.passed) out.push({ topic: checked.value, rubric: null, seed: seed.id });
+      if (checked.passed) pushUnique({ topic: checked.value, rubric: null, seed: seed.id });
     }
     // A weekly frequency can be one item higher than the number of unique chunks. Reuse one
     // real chunk with a visibly different editorial angle instead of asking the model for an
@@ -3122,61 +3759,63 @@ async function planTopics(brief, need, hitTopics, mood, channelId = null, usageR
       const seed = seeds[i];
       const variant = fallbackTopicVariantFromSeed(seed.text);
       const checked = validateTopicQuality(variant, seed.text);
-      if (checked.passed && !out.some((item) => item.topic === checked.value)) {
-        out.push({ topic: checked.value, rubric: null, seed: seed.id });
-      }
+      if (checked.passed) pushUnique({ topic: checked.value, rubric: null, seed: seed.id });
     }
     if (out.length >= need) return out;
   }
 
-  const want = need - out.length;
   const list = brief.rubrics.length ? brief.rubrics : RUBRICS_W;
-  const system = [
-    "Ты — редактор Telegram-канала. Придумываешь конкретные темы будущих постов.",
-    "",
-    briefContextW(brief),
-    "",
-    "Правила:",
-    "— тема конкретная и предметная, по нише канала;",
-    "— из заголовка сразу понятно, о чём пост: не «полезный совет», а какой именно;",
-    "— 3–9 слов, без нумерации, без кавычек, без точки в конце;",
-    "— темы не повторяют друг друга;",
-    // Прямое лекарство от «крестовского острова» и «кредитной истории -3». Под выдуманную
-    // тему проверенных материалов нет по определению — значит пост придётся сочинить.
-    "— НЕ выдумывай случаи, дела, проекты, названия и цифры: тема должна быть о том, что",
-    "  верно и без ссылки на источник, а не о придуманной истории;",
-    "— никаких номеров дел, статей, дат и сумм в теме.",
-    "",
-    `Формат каждой строки строго такой: Рубрика :: Тема`,
-    `Рубрику бери только из списка: ${list.join(", ")}.`,
-    "",
-    `Выдай ровно ${want} ${plural(want, "строку", "строки", "строк")}. Больше ничего не пиши.`,
-  ].join("\n");
+  // Большой план не просим одним ответом: провайдеры обрезают 84 строки. Генерируем
+  // партиями до 15 тем и после каждой партии снова применяем программный дедупликатор.
+  for (let round = 0; out.length < need && round < 10; round++) {
+    const batch = Math.min(15, need - out.length);
+    const system = [
+      "Ты — редактор Telegram-канала. Придумываешь конкретные темы будущих постов.",
+      "",
+      briefContextW(brief),
+      "",
+      "Правила:",
+      "— тема конкретная и предметная, по нише канала;",
+      "— из заголовка сразу понятно, о чём пост: не «полезный совет», а какой именно;",
+      "— 3–9 слов, без нумерации, без кавычек, без точки в конце;",
+      "— темы не повторяют друг друга и список исключений;",
+      "— НЕ выдумывай случаи, дела, проекты, названия и цифры;",
+      "— никаких номеров дел, статей, дат и сумм в теме.",
+      "",
+      "Формат каждой строки строго такой: Рубрика :: Тема",
+      `Рубрику бери только из списка: ${list.join(", ")}.`,
+      "",
+      `Выдай ровно ${batch} ${plural(batch, "строку", "строки", "строк")}. Больше ничего не пиши.`,
+    ].join("\n");
+    const avoidTopics = [...historicalTopics.slice(0, 50), ...out.map((item) => item.topic)].slice(-80);
+    const raw = await askAI(
+      "autopilot-plan",
+      usageReservationId,
+      system,
+      `Придумай следующую партию тем. Не используй и не перефразируй: ${avoidTopics.join("; ") || "нет"}.`,
+      Math.max(400, batch * 55),
+      mood,
+      0.55,
+      generationEngine,
+    );
 
-  const avoid = out.length ? ` Не повторяй уже взятые темы: ${out.map((o) => o.topic).join("; ")}.` : "";
-  const raw = await askAI(
-    "autopilot-plan",
-    usageReservationId,
-    system,
-    `Придумай темы на неделю.${avoid}`,
-    400,
-    mood,
-  );
-
-  for (const line of String(raw || "").split("\n")) {
-    const s = line.replace(/^\s*[-–—•*\d.)\s]+/, "").trim();
-    if (!s) continue;
-    let rubric = null;
-    let topic = s;
-    const parts = s.split("::");
-    if (parts.length >= 2) {
-      rubric = parts[0].trim();
-      topic = parts.slice(1).join("::").trim();
+    let added = 0;
+    for (const line of String(raw || "").split("\n")) {
+      const s = line.replace(/^\s*[-–—•*\d.)\s]+/, "").trim();
+      if (!s) continue;
+      let rubric = null;
+      let topic = s;
+      const parts = s.split("::");
+      if (parts.length >= 2) {
+        rubric = parts[0].trim();
+        topic = parts.slice(1).join("::").trim();
+      }
+      topic = topic.replace(/^["«]+|["»]+$/g, "").trim();
+      if (rubric && !list.includes(rubric)) rubric = null;
+      if (topic.length >= 8 && topic.length <= 120 && pushUnique({ topic, rubric })) added++;
+      if (out.length >= need) break;
     }
-    topic = topic.replace(/^["«]+|["»]+$/g, "").trim();
-    if (rubric && !list.includes(rubric)) rubric = null;
-    if (topic.length >= 8 && topic.length <= 120) out.push({ topic, rubric });
-    if (out.length >= need) break;
+    if (!raw || added === 0) break;
   }
   return out;
 }
@@ -3194,9 +3833,10 @@ async function buildAutopilotPlan(userId, channelId, expectedPlanId = null, usag
   // A manual build is tied to the placeholder created by the API. Old duplicate jobs used
   // to rebuild the same channel one after another and could overwrite a newer retry. A job
   // whose placeholder is gone or no longer `building` is obsolete and must do no work.
+  let expectedPlan = null;
   if (expectedPlanId != null) {
     const expected = await pool.query(
-      `select 1 from autopilot_plan
+      `select generation_engine, planning_months, planning_weeks from autopilot_plan
         where id = $1 and user_id = $2 and channel_id = $3 and status = 'building'`,
       [expectedPlanId, userId, channelId],
     );
@@ -3204,6 +3844,7 @@ async function buildAutopilotPlan(userId, channelId, expectedPlanId = null, usag
       console.log(`[auto] plan ${expectedPlanId}: задача устарела — пропускаю`);
       return { superseded: true };
     }
+    expectedPlan = expected.rows[0];
   }
 
   const ch = (
@@ -3228,12 +3869,22 @@ async function buildAutopilotPlan(userId, channelId, expectedPlanId = null, usag
 
   const st = (
     await pool.query(
-      `select post_frequency, mode, approvals_streak from autopilot_settings
+      `select post_frequency, mode, approvals_streak, generation_engine,
+              planning_months, planning_weeks
+         from autopilot_settings
         where user_id = $1 and channel_id = $2`,
       [userId, channelId],
     )
   ).rows[0];
-  const N = Math.max(1, Math.min(MAX_WEEKLY_POSTS, st?.post_frequency || 5));
+  const generationEngine = expectedPlan?.generation_engine || st?.generation_engine || "navy-deepseek-pro";
+  const planWeeks = Number(
+    expectedPlan?.planning_weeks || st?.planning_weeks ||
+    (expectedPlan?.planning_months || st?.planning_months || 1) * 4,
+  );
+  const planningMonths = Math.max(1, Math.min(3, Math.ceil(planWeeks / 4)));
+  const N = plannedPostCountForWeeks(Math.min(MAX_WEEKLY_POSTS, st?.post_frequency || 5), planWeeks);
+  const engineLabel = AUTOPILOT_ENGINE_OPTIONS.find((option) => option.id === generationEngine)?.label
+    || generationEngine;
 
   // Лучшее время из аналитики Д.5: час МСК с наибольшим средним просмотром.
   const published = (
@@ -3280,12 +3931,13 @@ async function buildAutopilotPlan(userId, channelId, expectedPlanId = null, usag
 
   // Больше семи в неделю — значит несколько в день, и «ставлю на 19:00» перестаёт быть правдой.
   // Объясняем, что на самом деле произойдёт, а не оставляем прежний текст.
-  if (N > 7) {
-    const perDay = Math.ceil(N / 7);
+  if (st?.post_frequency > 7) {
+    const perDay = Math.ceil(st.post_frequency / 7);
     rule =
-      `${N} ${plural(N, "пост", "поста", "постов")} в неделю — это ${perDay} в день. ` +
+      `${st.post_frequency} ${plural(st.post_frequency, "пост", "поста", "постов")} в неделю — это до ${perDay} в день. ` +
       `Развожу их по дню с 9:00 до 21:00 МСК, чтобы подписчик не получал пачку подряд.`;
   }
+  rule += ` План на ${planWeeks} ${plural(planWeeks, "неделю", "недели", "недель")}, модель — ${engineLabel}.`;
 
   const quality = brief.quality;
 
@@ -3312,11 +3964,42 @@ async function buildAutopilotPlan(userId, channelId, expectedPlanId = null, usag
   // Полный режим требует и mode='full', и заслуженный streak (защита в глубину, ревью).
   const full = (st?.mode || "confirm") === "full" && (st?.approvals_streak ?? 0) >= 2;
   const planMood = await userMood(userId); // настроение агента для постов плана
-  // Время постов считаем ЗАРАНЕЕ на всю неделю: раскладка зависит от их числа, а не от порядка.
-  const slots = weekSlots(N, bestHour);
+  // Время постов считаем заранее на весь выбранный горизонт: раскладка зависит от их числа.
+  const slots = periodSlots(N, planWeeks, bestHour);
+
+  const recentPlanRows = (
+    await pool.query(
+      `select items from autopilot_plan
+        where user_id = $1 and channel_id = $2 and status in ('pending', 'approved', 'done')
+        order by created_at desc limit 3`,
+      [userId, channelId],
+    )
+  ).rows;
+  const historicalPlanItems = recentPlanRows
+    .flatMap((plan) => Array.isArray(plan.items) ? plan.items : [])
+    .filter((item) => item && (item.topic || item.draft))
+    .slice(0, 100);
+  const recentPublished = (
+    await pool.query(
+      `select text from posts
+        where user_id = $1 and channel_id = $2 and status in ('published', 'scheduled')
+        order by coalesce(published_at, scheduled_at, created_at) desc limit 60`,
+      [userId, channelId],
+    )
+  ).rows.map((post) => ({ topic: "", draft: post.text || "" }));
+  const historicalTopics = historicalPlanItems.map((item) => item.topic).filter(Boolean);
 
   // Сначала конкретные темы под нишу, только потом тексты.
-  const topics = await planTopics(brief, N, ideaTopics, planMood, channelId, usageReservationId);
+  const topics = await planTopics(
+    brief,
+    N,
+    ideaTopics,
+    planMood,
+    channelId,
+    usageReservationId,
+    generationEngine,
+    historicalTopics,
+  );
   if (!autopilotBuildComplete(N, topics)) {
     console.log(`[auto] user ${userId}: получено тем ${topics.length}/${N} — неполный план не сохраняю`);
     return { error: "ai_unavailable" };
@@ -3333,12 +4016,14 @@ async function buildAutopilotPlan(userId, channelId, expectedPlanId = null, usag
     ? ` Факты — из твоей базы знаний (${facts} ${plural(facts, "кусок", "куска", "кусков")}).`
     : ` База знаний пуста, поэтому пишу без конкретики — ни дат, ни сумм, ни номеров дел выдумывать не стану. Добавь материалы, и посты станут предметными.`;
   rule += ` Каждый текст проходит редакционный порог ${quality.qualityThreshold}/100; нарушение жёстких правил блокирует выпуск.`;
+  rule += " Темы и готовые тексты сверяются с текущим планом и недавней историей канала; близкий дубль переписывается или останавливает сборку.";
 
   // Генерация постов — узкое место плана: каждый пост это findSupport + askAI (~90с) + возможный
   // ретрай. Последовательно 30 постов собирались до 45 минут и всё это время держали крон-очередь
   // (concurrency: 1), простаивая разведку и аналитику. Параллелим через mapConcurrent — порядок
   // элементов сохраняется по индексу, поэтому slots[i] и нумерация карточек не разъезжаются.
-  const items = await mapConcurrent(topics, AUTOPILOT_CONCURRENCY, async (t, i) => {
+  const autopilotConcurrency = configuredAiConcurrency(generationEngine);
+  const items = await mapConcurrent(topics, autopilotConcurrency, async (t, i) => {
     const { topic, rubric } = t;
     // Опора под КАЖДУЮ тему. В строгом профиле пустая опора — блокер, а не разрешение
     // модели заполнить пробел убедительно звучащей выдумкой.
@@ -3355,7 +4040,8 @@ async function buildAutopilotPlan(userId, channelId, expectedPlanId = null, usag
       ).rows[0];
       if (seeded) support = [seeded, ...support].slice(0, TOP_K);
     }
-    const system = postSystem(samples, brief, support, quality, i);
+    const presentation = autopilotPresentationVariant(i, quality);
+    const system = postSystem(samples, brief, support, quality, i, presentation);
     const task = rubric
       ? `Напиши пост в рубрику «${rubric}» на тему: ${topic}.`
       : `Напиши пост на тему: ${topic}.`;
@@ -3368,9 +4054,16 @@ async function buildAutopilotPlan(userId, channelId, expectedPlanId = null, usag
       outputTokens,
       null,
       0.45,
+      generationEngine,
     );
     let aiDraft = candidateRaw
-      ? padDraftToMinimum(stripCites(candidateRaw), quality.minChars, quality.maxChars)
+      ? applyAutopilotPresentation(
+          padDraftToMinimum(stripCites(candidateRaw), quality.minChars, quality.maxChars),
+          presentation,
+          quality,
+          brief,
+          i,
+        )
       : null;
     let cited = support.length && candidateRaw ? citedShare(candidateRaw) : null;
     let invented = aiDraft ? findInvented(aiDraft, support) : [];
@@ -3386,15 +4079,17 @@ async function buildAutopilotPlan(userId, channelId, expectedPlanId = null, usag
     });
 
     // Модель получает замечания выпускающего редактора и переписывает весь текст. После
-    // каждой попытки работает тот же программный валидатор. Retry не является обходом:
-    // если правила так и не выполнены, карточка остаётся заблокированной.
-    for (let attempt = 0; attempt < quality.retryLimit && !qualityResult.passed; attempt++) {
+    // каждой попытки работает тот же программный валидатор. Для Автопилота не используем
+    // маленький пользовательский retryLimit как повод показать человеку слабый пост:
+    // дожимаем до прохода, а при техническом исчерпании попыток бракуем всю сборку.
+    const rewriteAttempts = Math.max(quality.retryLimit, AUTOPILOT_QUALITY_REWRITE_ATTEMPTS);
+    for (let attempt = 0; attempt < rewriteAttempts && !qualityResult.passed; attempt++) {
       if (
         qualityResult.semantic?.status === "not_checked" ||
         qualityResult.violations.some((v) => v.code === "no_sources")
       ) break;
       console.log(
-        `[auto]   «${topic.slice(0, 40)}»: ${qualityResult.score}/100 — редактура ${attempt + 1}/${quality.retryLimit}`,
+        `[auto]   «${topic.slice(0, 40)}»: ${qualityResult.score}/100 — редактура ${attempt + 1}/${rewriteAttempts}`,
       );
       candidateRaw = await askAI(
         "autopilot-plan",
@@ -3404,9 +4099,16 @@ async function buildAutopilotPlan(userId, channelId, expectedPlanId = null, usag
         outputTokens,
         null,
         0.35,
+        generationEngine,
       );
       aiDraft = candidateRaw
-        ? padDraftToMinimum(stripCites(candidateRaw), quality.minChars, quality.maxChars)
+        ? applyAutopilotPresentation(
+            padDraftToMinimum(stripCites(candidateRaw), quality.minChars, quality.maxChars),
+            presentation,
+            quality,
+            brief,
+            i,
+          )
         : null;
       cited = support.length && candidateRaw ? citedShare(candidateRaw) : null;
       invented = aiDraft ? findInvented(aiDraft, support) : [];
@@ -3463,6 +4165,11 @@ async function buildAutopilotPlan(userId, channelId, expectedPlanId = null, usag
       qualityBlocked: !aiDraft || !qualityResult.passed,
       quality: qualityResult,
       qualityOrigin: "automatic",
+      presentation: presentation.name,
+      _support: support,
+      _system: system,
+      _task: task,
+      _outputTokens: outputTokens,
     };
     // Полный режим публикует БЕЗ подтверждения — но ТОЛЬКО настоящий ИИ-текст. Заглушку
     // (ИИ недоступен) в живой канал автоматически не отправляем: оставляем на подтверждение (честность).
@@ -3480,9 +4187,100 @@ async function buildAutopilotPlan(userId, channelId, expectedPlanId = null, usag
   });
 
   if (!autopilotBuildComplete(N, topics, items)) {
-    const ready = items.filter((item) => item.aiReady).length;
-    console.log(`[auto] user ${userId}: готово текстов ${ready}/${N} — неполный план не сохраняю`);
-    return { error: "ai_unavailable" };
+    const passed = items.filter(
+      (item) => item.aiReady && item.quality?.passed === true && item.qualityBlocked !== true,
+    ).length;
+    console.log(
+      `[auto] user ${userId}: редакционный порог прошли ${passed}/${N} — слабый план пользователю не сохраняю`,
+    );
+    return { error: "quality_gate_unsatisfied" };
+  }
+
+  // Промпт снижает повторы, но не гарантирует их отсутствие. Финальная граница работает
+  // кодом: сравнивает тему и текст с недавними публикациями и уже принятыми элементами
+  // этого плана. Близкий дубль получает несколько отдельных переписываний; если модель всё
+  // равно повторяется, неполный/дублирующийся план не заменяет хороший старый.
+  const acceptedForVariety = [...historicalPlanItems, ...recentPublished];
+  for (let index = 0; index < items.length; index++) {
+    const item = items[index];
+    let duplicate = findAutopilotNearDuplicate(item, acceptedForVariety);
+    let varietyRewritePrompt = null;
+    for (
+      let attempt = 0;
+      duplicate && attempt < AUTOPILOT_QUALITY_REWRITE_ATTEMPTS;
+      attempt++
+    ) {
+      const duplicateItem = acceptedForVariety[duplicate.index];
+      const presentation = autopilotPresentationVariant(index + (attempt + 1) * 5, quality);
+      const support = item._support || [];
+      const system = postSystem(samples, brief, support, quality, index, presentation);
+      const raw = await askAI(
+        "autopilot-plan",
+        usageReservationId,
+        system,
+        varietyRewritePrompt || [
+          item._task,
+          "Перепиши с другим хуком, логикой блоков и финалом. Не перефразируй похожий пост:",
+          `\"\"\"${String(duplicateItem?.draft || duplicateItem?.topic || "").slice(0, 1200)}\"\"\"`,
+        ].join("\n\n"),
+        item._outputTokens,
+        null,
+        0.6,
+        generationEngine,
+      );
+      if (!raw?.trim()) continue;
+      const candidate = applyAutopilotPresentation(
+        padDraftToMinimum(stripCites(raw), quality.minChars, quality.maxChars),
+        presentation,
+        quality,
+        brief,
+        index,
+      );
+      const cited = support.length ? citedShare(raw) : null;
+      const invented = findInvented(candidate, support);
+      const qualityResult = await assessAutopilotDraft({
+        text: candidate,
+        quality,
+        topic: item.topic,
+        sources: support,
+        citedShare: cited,
+        invented,
+        trigger: "rewrite",
+        semanticAdapter: semanticPublicationAdapter,
+      });
+      if (!qualityResult.passed) {
+        varietyRewritePrompt = [
+          buildRewritePrompt(raw, qualityResult),
+          "После исправления текст всё ещё должен заметно отличаться от этого похожего поста:",
+          `\"\"\"${String(duplicateItem?.draft || duplicateItem?.topic || "").slice(0, 1200)}\"\"\"`,
+        ].join("\n\n");
+        continue;
+      }
+      item.draft = candidate;
+      item.aiReady = true;
+      item.cited = cited;
+      item.invented = invented.length ? invented : undefined;
+      item.qualityBlocked = false;
+      item.quality = qualityResult;
+      item.presentation = presentation.name;
+      if (full) item.autoApprove = true;
+      else delete item.autoApprove;
+      duplicate = findAutopilotNearDuplicate(item, acceptedForVariety);
+    }
+    if (duplicate) {
+      console.warn("[auto] план остановлен: модель повторила близкий текст", {
+        userId,
+        channelId,
+        item: index,
+        score: duplicate.score,
+      });
+      return { error: "content_variety_insufficient" };
+    }
+    acceptedForVariety.push({ topic: item.topic, draft: item.draft });
+    delete item._support;
+    delete item._system;
+    delete item._task;
+    delete item._outputTokens;
   }
 
   // Снести старый план и вставить новый — одной транзакцией. Порознь это ловушка: если
@@ -3592,9 +4390,21 @@ async function buildAutopilotPlan(userId, channelId, expectedPlanId = null, usag
       channelId,
     ]);
     ins = await tx.query(
-      `insert into autopilot_plan (user_id, channel_id, week_start, items, rules, status)
-       values ($1, $2, $3, $4, $5, $6) returning id`,
-      [userId, channelId, mskDatePlus(1), JSON.stringify(items), rule, planStatus],
+      `insert into autopilot_plan
+         (user_id, channel_id, week_start, items, rules, status, generation_engine,
+          planning_months, planning_weeks)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9) returning id`,
+      [
+        userId,
+        channelId,
+        mskDatePlus(1),
+        JSON.stringify(items),
+        rule,
+        planStatus,
+        generationEngine,
+        planningMonths,
+        planWeeks,
+      ],
     );
     if (full && fullApprovalPreview) {
       fullApprovalPreview.planId = Number(ins.rows[0].id);
@@ -3679,14 +4489,15 @@ async function buildAutopilotPlan(userId, channelId, expectedPlanId = null, usag
   const blockedCount = items.filter(
     (item) => item.status === "pending" && !evaluateAutopilotItem(item, notificationTime).eligible,
   ).length;
+  const horizonLabel = `${planWeeks} ${plural(planWeeks, "неделю", "недели", "недель")}`;
   const planTextBase =
     planStatus === "approved"
-      ? `🚀 Автопилот (полный режим)${who}: ${N} ${plural(N, "пост", "поста", "постов")} на неделю уже в очереди.\n${rule}`
+      ? `🚀 Автопилот (полный режим)${who}: ${N} ${plural(N, "пост", "поста", "постов")} на ${horizonLabel} уже в очереди.\n${rule}`
       : full && anyPending
         ? `🗓 План собран${who}: полный режим поставил ${scheduledByBuild.length} безопасных постов; ${blockedCount} заблокировано контролем, ${expiredCount} с истёкшей датой оставлены черновиками.`
         : blockedCount || expiredCount
           ? `🗓 План собран${who}: ${readyCount} готовы, ${blockedCount} заблокировано контролем, ${expiredCount} с истёкшей датой.`
-          : `🗓 План на неделю готов${who}: ${N} ${plural(N, "пост", "поста", "постов")}.\n${rule}`;
+          : `🗓 План на ${horizonLabel} готов${who}: ${N} ${plural(N, "пост", "поста", "постов")}.\n${rule}`;
   const planText = queuePendingReconciliation
     ? `${planTextBase}\n\n⚠️ ${queuePendingReconciliation} ${plural(queuePendingReconciliation, "задача ждёт", "задачи ждут", "задач ждут")} восстановления очереди. Посты сохранены в календаре, повторно одобрять их не нужно.`
     : planTextBase;
@@ -3706,7 +4517,7 @@ async function buildAutopilotPlan(userId, channelId, expectedPlanId = null, usag
       userId,
       channelId,
       "empty-base",
-      "Собрал план на неделю, но о твоём бизнесе знаю пока мало — поэтому пишу без цен и сроков, чтобы не наврать. Расскажи одним сообщением: что предлагаешь и сколько это стоит? Запомню и буду использовать в постах.",
+      `Собрал план на ${horizonLabel}, но о твоём бизнесе знаю пока мало — поэтому пишу без цен и сроков, чтобы не наврать. Расскажи одним сообщением: что предлагаешь и сколько это стоит? Запомню и буду использовать в постах.`,
     );
   } else {
     const missing = items
@@ -3885,6 +4696,21 @@ async function weeklyPlans() {
   for (const t of targets) {
     const userId = Number(t.user_id);
     const channelId = Number(t.channel_id);
+    const latestPlan = (
+      await pool.query(
+        `select items from autopilot_plan
+          where user_id = $1 and channel_id = $2 and status in ('pending', 'approved')
+          order by created_at desc limit 1`,
+        [userId, channelId],
+      )
+    ).rows[0];
+    const coverageUntil = (Array.isArray(latestPlan?.items) ? latestPlan.items : [])
+      .map((item) => Date.parse(String(item?.scheduledAt || "")))
+      .filter(Number.isFinite)
+      .reduce((latest, value) => Math.max(latest, value), 0);
+    // A three-month plan must not be overwritten by the Sunday job every week. Refresh only
+    // when less than one week of future content remains.
+    if (coverageUntil > Date.now() + 7 * 86_400_000) continue;
     const usage = await acquireWorkerAiUsage(pool, {
       userId,
       kind: "autopilot-plan",
@@ -4749,6 +5575,12 @@ const statsWorker = MEDIA_ONLY || AUTOPILOT_ONLY || PUBLICATION_ONLY ? null : ne
       // новый — ищем соседей ему) или нет (кнопка в кабинете — обходим все каналы).
       if (job.data.channelId) await discoverForChannel(job.data.userId, job.data.channelId);
       else await discoverForUser(job.data.userId);
+    } else if (job.name === "radar-search") {
+      const runId = Number(job.data.runId);
+      const userId = Number(job.data.userId);
+      if (!Number.isSafeInteger(runId) || runId <= 0) throw new Error("radar-search: bad runId");
+      if (!Number.isSafeInteger(userId) || userId <= 0) throw new Error("radar-search: bad userId");
+      await runRadarSearch(runId, userId);
     } else if (job.name === "autopilot-plan") {
       // Пользователь нажал «Собрать план» — строим сейчас (Д.9). При любом сбое переводим
       // застрявший 'building'-план в 'error', чтобы интерфейс не крутил спиннер вечно (ревью).
@@ -4800,7 +5632,14 @@ const statsWorker = MEDIA_ONLY || AUTOPILOT_ONLY || PUBLICATION_ONLY ? null : ne
       try {
         const r = await buildAutopilotPlan(userId, channelId, planId, usage.reservationId);
         usageCommitted = r?.usageCommitted === true;
-        if (r?.error) throw new Error(r.error);
+        if (r?.error) {
+          await pool.query(
+            `update autopilot_plan set rules = $4
+              where id = $1 and user_id = $2 and channel_id = $3 and status = 'building'`,
+            [planId, userId, channelId, r.error],
+          );
+          throw new Error(r.error);
+        }
         return r;
       } catch (err) {
         // Only the placeholder owned by this job. An older failed job must never turn a newer
@@ -5132,6 +5971,26 @@ cronWorker?.on("error", (err) => console.error("[cron] ошибка:", err));
 // публикуем молча: помечаем 'failed' с честной ошибкой (виден в календаре с кнопкой «Отправить
 // снова») и зовём владельца проверить. Так нет ни тихой потери, ни тихого дубля (ревью регрессии).
 async function reclaimStuckPosts() {
+  const safeRows = (
+    await pool.query(
+      `update posts
+          set status = 'quarantined', schedule_revision = schedule_revision + 1,
+              quarantined_at = now(), quarantine_reason = 'worker_restart_before_provider',
+              last_error = 'Worker перезапустился до внешней отправки — выберите новую дату',
+              publish_lease_token = null, publish_started_at = null
+        where status = 'publishing' and provider_started_at is null
+          and coalesce(publish_started_at, created_at) < now() - interval '15 minutes'
+        returning id, schedule_revision`,
+    )
+  ).rows;
+  for (const row of safeRows) {
+    console.info("[publication_event]", {
+      event: "stale_revision_ignored",
+      postId: Number(row.id),
+      revision: Number(row.schedule_revision),
+      status: "quarantined_after_restart_before_provider",
+    });
+  }
   const rows = (
     await pool.query(
       `update posts
@@ -5141,7 +6000,7 @@ async function reclaimStuckPosts() {
               verification_result = '{"result":"delivery_unknown","source":"worker_reclaim"}'::jsonb,
               last_error = 'Результат публикации неизвестен — проверь канал перед повтором',
               publish_lease_token = null
-        where status = 'publishing'
+        where status = 'publishing' and provider_started_at is not null
           and coalesce(publish_started_at, created_at) < now() - interval '15 minutes'
         returning id`,
     )

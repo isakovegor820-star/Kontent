@@ -1,329 +1,499 @@
 "use client";
 
-// Нишевой радар: полнотекстовый поиск по постам конкурентов/трендов + алерты по ключевым словам.
+// Гибридный поиск: локальная база отвечает сразу, внешний discovery работает в фоне.
+// В карточки попадают только URL, которые воркер повторно проверил на публичной t.me/s.
 
-import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
-import { motion } from "motion/react";
-import { Bell, Eye, Heart, Link2, Plus, Radar, RefreshCw, Search, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  BookmarkPlus,
+  CheckCircle2,
+  ExternalLink,
+  Eye,
+  Heart,
+  RefreshCw,
+  Search,
+  ShieldCheck,
+  Sparkles,
+  UserPlus,
+} from "lucide-react";
 
+import { ChannelPicker, useChannelChoice } from "@/components/app/channel-picker";
 import { Button } from "@/components/ui/button";
-import { Badge, Card, EmptyState, Input } from "@/components/ui/primitives";
+import { Badge, Card, EmptyState, Input, Tabs } from "@/components/ui/primitives";
 import { useStore } from "@/lib/store";
-import { cn, fmtAgo, fmtNum } from "@/lib/utils";
+import { cn, fmtAgo, fmtCompact, fmtNum, plural } from "@/lib/utils";
 
-/* ------------------------------------------------------------------ ТИПЫ */
+type ResultKind = "channel" | "post" | "trend";
+type ResultTab = "all" | ResultKind;
 
 type SearchResult = {
-  id: number;
+  id: string;
+  actionId: number | null;
+  kind: ResultKind;
+  origin: string;
+  title: string | null;
+  handle: string | null;
+  description: string | null;
   text: string | null;
+  url: string | null;
+  postedAt: string | null;
+  lastPostAt: string | null;
+  verifiedAt: string | null;
+  subscribers: number | null;
+  postsPerWeek: number | null;
   views: number | null;
   reactions: number | null;
-  posted_at: string | null;
-  source_title: string | null;
-  source_handle: string | null;
-  origin: "competitor" | "trend";
+  score: number;
+  reason: string;
+  verified: boolean;
 };
 
-type Alert = {
+type SearchRun = {
   id: number;
-  channel_id: number;
-  channel_title: string | null;
-  keyword: string;
-  is_active: boolean;
-  last_notified_at: string | null;
-  matches_count: number;
-  created_at: string;
+  status: "queued" | "running" | "ready" | "partial" | "failed";
+  stage: "queued" | "discovering" | "verifying" | "ranking" | "ready" | "failed";
+  progress: number;
+  provider: string | null;
+  localCount: number;
+  externalCount: number;
+  errorCode: string | null;
+  errorMessage: string | null;
+  completedAt: string | null;
 };
 
-type Channel = { id: number; title: string };
+const RESULT_TABS: { value: ResultTab; label: string }[] = [
+  { value: "all", label: "Все" },
+  { value: "channel", label: "Каналы" },
+  { value: "post", label: "Посты" },
+  { value: "trend", label: "Тренды" },
+];
 
-/* ----------------------------------------------------------------- ЭКРАН */
+const KIND_LABELS: Record<ResultKind, string> = {
+  channel: "Канал",
+  post: "Пост",
+  trend: "Тренд",
+};
 
-export function RadarInner({
-  onStats,
+function mergeResults(current: SearchResult[], incoming: SearchResult[]) {
+  const merged = new Map<string, SearchResult>();
+  for (const item of [...current, ...incoming]) {
+    const canonicalUrl = item.url
+      ?.toLowerCase()
+      .replace("https://t.me/s/", "https://t.me/")
+      .replace(/\/$/u, "");
+    const key = canonicalUrl || `${item.kind}:${item.id}`;
+    const previous = merged.get(key);
+    if (!previous) merged.set(key, item);
+    else {
+      const itemPriority = item.score * 10 + (item.kind === "trend" ? 2 : item.kind === "post" ? 1 : 0);
+      const previousPriority = previous.score * 10 + (previous.kind === "trend" ? 2 : previous.kind === "post" ? 1 : 0);
+      const stronger = itemPriority > previousPriority ? item : previous;
+      merged.set(key, {
+        ...stronger,
+        actionId: item.actionId ?? previous.actionId,
+        verified: item.verified || previous.verified,
+      });
+    }
+  }
+  return [...merged.values()].sort((a, b) => b.score - a.score);
+}
+
+function runMessage(run: SearchRun) {
+  if (run.status === "partial") return run.errorMessage || "Интернет-поиск недоступен. Показываю результаты из базы.";
+  if (run.status === "failed") return run.errorMessage || "Не удалось расширить поиск. Локальные результаты сохранены.";
+  if (run.status === "ready") {
+    return run.externalCount > 0
+      ? `Проверено: ${run.externalCount} ${plural(run.externalCount, "результат", "результата", "результатов")} из интернета.`
+      : "Публичные источники проверены, но новых совпадений не найдено.";
+  }
+  if (run.stage === "verifying") return "Проверяю найденные каналы и публикации…";
+  if (run.stage === "ranking") return "Убираю дубли и ранжирую результаты…";
+  if (run.stage === "discovering") return "Расширяю поиск по публичному Telegram…";
+  return "Запускаю поиск в интернете…";
+}
+
+function ResultCard({
+  item,
+  channelId,
+  acting,
+  completedAction,
+  onAction,
 }: {
-  onStats?: (s: { alerts: Alert[] }) => void;
+  item: SearchResult;
+  channelId: number | null;
+  acting: boolean;
+  completedAction: boolean;
+  onAction: (item: SearchResult) => void;
 }) {
-  const s = useStore();
-  const [q, setQ] = useState("");
+  const action = item.kind === "channel" ? "add_competitor" : "save_idea";
+  const canAct = Boolean(item.actionId && channelId);
+  const date = item.postedAt || item.lastPostAt;
+  return (
+    <Card as="article" className="flex h-full flex-col p-4 sm:p-5">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge tone={item.kind === "trend" ? "fire" : item.kind === "channel" ? "brand" : "neutral"}>
+          {KIND_LABELS[item.kind]}
+        </Badge>
+        {item.verified && (
+          <span className="inline-flex items-center gap-1 text-[12px] font-semibold text-success-text">
+            <ShieldCheck className="h-3.5 w-3.5" aria-hidden />
+            Проверено
+          </span>
+        )}
+        <span className="ml-auto nums text-[12px] font-semibold text-text-3">
+          {Math.round(item.score)}/100
+        </span>
+      </div>
+
+      <h3 className="mt-3 line-clamp-2 text-[16px] leading-snug font-bold text-text">
+        {item.title || (item.handle ? `@${item.handle}` : "Telegram")}
+      </h3>
+      {item.handle && <p className="mt-0.5 text-[13px] text-text-3">@{item.handle}</p>}
+
+      {item.description && item.kind === "channel" && (
+        <p className="mt-3 line-clamp-3 text-[14px] leading-relaxed text-text-2">{item.description}</p>
+      )}
+      {item.text && item.kind !== "channel" && (
+        <p className="mt-3 line-clamp-5 whitespace-pre-wrap text-[14px] leading-relaxed text-text">
+          {item.text}
+        </p>
+      )}
+
+      <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[12px] text-text-3">
+        {item.subscribers != null && <span>{fmtCompact(item.subscribers)} подписчиков</span>}
+        {item.postsPerWeek != null && <span>≈ {item.postsPerWeek.toLocaleString("ru-RU")} поста/нед.</span>}
+        {item.views != null && (
+          <span className="inline-flex items-center gap-1">
+            <Eye className="h-3.5 w-3.5" aria-hidden />
+            {fmtNum(item.views)}
+          </span>
+        )}
+        {item.reactions != null && (
+          <span className="inline-flex items-center gap-1">
+            <Heart className="h-3.5 w-3.5" aria-hidden />
+            {fmtNum(item.reactions)}
+          </span>
+        )}
+        {date && <span>{fmtAgo(date)}</span>}
+      </div>
+
+      <p className="mt-3 flex items-start gap-2 rounded-xs bg-surface-inset px-3 py-2 text-[12px] leading-relaxed text-text-2">
+        <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-success-text" aria-hidden />
+        <span>{item.reason}</span>
+      </p>
+
+      <div className="mt-auto flex flex-wrap items-center gap-2 pt-4">
+        {item.url && (
+          <a
+            href={item.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex min-h-11 items-center gap-1.5 rounded-[10px] px-2 text-[13px] font-semibold text-text-2 transition-colors duration-150 hover:bg-surface-inset hover:text-text focus-visible:outline-2 focus-visible:outline-offset-2"
+          >
+            <ExternalLink className="h-4 w-4" aria-hidden />
+            Открыть источник
+          </a>
+        )}
+        {canAct && (
+          <Button
+            size="sm"
+            variant="soft"
+            loading={acting}
+            disabled={completedAction}
+            onClick={() => onAction(item)}
+            className="ml-auto"
+          >
+            {completedAction ? (
+              <CheckCircle2 className="h-4 w-4" aria-hidden />
+            ) : action === "add_competitor" ? (
+              <UserPlus className="h-4 w-4" aria-hidden />
+            ) : (
+              <BookmarkPlus className="h-4 w-4" aria-hidden />
+            )}
+            {completedAction
+              ? action === "add_competitor" ? "Добавлен" : "Сохранено"
+              : action === "add_competitor" ? "Добавить в конкуренты" : "Сохранить идею"}
+          </Button>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+export function RadarInner() {
+  const store = useStore();
+  const [query, setQuery] = useState("");
+  const [submittedQuery, setSubmittedQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
-  const [searching, setSearching] = useState(false);
+  const [tab, setTab] = useState<ResultTab>("all");
+  const [searchingLocal, setSearchingLocal] = useState(false);
   const [searched, setSearched] = useState(false);
-  const [loadError, setLoadError] = useState(false);
+  const [run, setRun] = useState<SearchRun | null>(null);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [picked, setPicked] = useState<number | null>(null);
+  const { tgChannels, channelId } = useChannelChoice(store.realChannels, picked);
 
-  const [alerts, setAlerts] = useState<Alert[]>([]);
-  const [channels, setChannels] = useState<Channel[]>([]);
-  const [loaded, setLoaded] = useState(false);
-  const [newKeyword, setNewKeyword] = useState("");
-  const [alertChannelId, setAlertChannelId] = useState<number | null>(null);
-  const [savingAlert, setSavingAlert] = useState(false);
+  const [actingId, setActingId] = useState<number | null>(null);
+  const [completedActions, setCompletedActions] = useState<Set<number>>(new Set());
 
-  const loadAlerts = useCallback(async () => {
-    try {
-      const r = await fetch("/api/radar/alerts", { cache: "no-store" });
-      if (r.ok) {
-        const d = await r.json();
-        const as: Alert[] = d.alerts ?? [];
-        setAlerts(as);
-        onStats?.({ alerts: as });
-        setLoadError(false);
-      } else {
-        setLoadError(true);
-      }
-    } catch { setLoadError(true); }
-  }, [onStats]);
-
-  const loadChannels = useCallback(async () => {
-    try {
-      const r = await fetch("/api/channels", { cache: "no-store" });
-      if (r.ok) {
-        const d = await r.json();
-        const chs: Channel[] = (d.channels ?? []).map((c: { id: number; title: string }) => ({ id: c.id, title: c.title }));
-        setChannels(chs);
-        if (chs.length) setAlertChannelId(chs[0].id);
-        setLoadError(false);
-      } else {
-        setLoadError(true);
-      }
-    } catch { setLoadError(true); }
+  const pollRun = useCallback(async (runId: number) => {
+    const response = await fetch(`/api/radar/search?run=${runId}`, { cache: "no-store" });
+    if (!response.ok) throw new Error("poll_failed");
+    const data = (await response.json()) as { run: SearchRun; results?: SearchResult[] };
+    setRun(data.run);
+    if (data.results?.length) setResults((current) => mergeResults(current, data.results ?? []));
+    return data.run;
   }, []);
 
-  const reload = useCallback(() => {
-    setLoadError(false);
-    setLoaded(false);
-    Promise.all([loadAlerts(), loadChannels()]).finally(() => setLoaded(true));
-  }, [loadAlerts, loadChannels]);
-
+  const activeRunId = run && (run.status === "queued" || run.status === "running") ? run.id : null;
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    reload();
-  }, [reload]);
-
-  const doSearch = async () => {
-    const query = q.trim();
-    if (!query) return;
-    setSearching(true);
-    setSearched(true);
-    try {
-      const r = await fetch(`/api/radar/search?q=${encodeURIComponent(query)}`, { cache: "no-store" });
-      if (r.ok) {
-        const d = await r.json();
-        setResults(d.results ?? []);
-      } else {
-        s.toast({ kind: "danger", title: "Ошибка поиска" });
+    if (!activeRunId) return;
+    let stopped = false;
+    const check = async () => {
+      try {
+        const next = await pollRun(activeRunId);
+        if (!stopped && (next.status === "ready" || next.status === "partial" || next.status === "failed")) {
+          setSearchError(next.status === "failed" ? next.errorMessage : null);
+        }
+      } catch {
+        if (!stopped) setSearchError("Не удалось обновить результаты. Повтори поиск.");
       }
+    };
+    const timer = window.setInterval(check, 1_800);
+    void check();
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+  }, [activeRunId, pollRun]);
+
+  const startExternal = useCallback(async (value: string, force = false) => {
+    try {
+      const response = await fetch("/api/radar/search", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": crypto.randomUUID(),
+        },
+        body: JSON.stringify({ q: value, channelId, force }),
+      });
+      const data = (await response.json().catch(() => null)) as {
+        run?: SearchRun;
+        results?: SearchResult[];
+        error?: string;
+      } | null;
+      if (data?.results?.length) setResults((current) => mergeResults(current, data.results ?? []));
+      if (data?.run) setRun(data.run);
+      if (!response.ok && data?.error !== "queue_unavailable") throw new Error(data?.error || "external_failed");
+      if (!response.ok) setSearchError(data?.run?.errorMessage || "Поиск в интернете временно недоступен.");
     } catch {
-      s.toast({ kind: "danger", title: "Сетевая ошибка" });
+      setSearchError("Не удалось расширить поиск. Локальные результаты остаются доступны.");
     }
-    setSearching(false);
+  }, [channelId]);
+
+  const doSearch = async (event?: React.FormEvent<HTMLFormElement>) => {
+    event?.preventDefault();
+    const value = query.trim();
+    if (value.length < 2 || searchingLocal) return;
+    setSearchingLocal(true);
+    setSearched(true);
+    setSubmittedQuery(value);
+    setResults([]);
+    setRun(null);
+    setSearchError(null);
+    setTab("all");
+    try {
+      const params = new URLSearchParams({ q: value });
+      if (channelId) params.set("channel", String(channelId));
+      const response = await fetch(`/api/radar/search?${params}`, { cache: "no-store" });
+      const data = (await response.json().catch(() => null)) as {
+        results?: SearchResult[];
+        run?: SearchRun | null;
+        shouldExpand?: boolean;
+        error?: string;
+      } | null;
+      if (!response.ok || !data) throw new Error(data?.error || "local_failed");
+      setResults(data.results ?? []);
+      setRun(data.run ?? null);
+      if (data.shouldExpand) void startExternal(value);
+    } catch {
+      setSearchError("Не удалось выполнить поиск. Проверь соединение и попробуй ещё раз.");
+    } finally {
+      setSearchingLocal(false);
+    }
   };
 
-  const addAlert = async () => {
-    const keyword = newKeyword.trim();
-    if (!keyword || !alertChannelId) return;
-    setSavingAlert(true);
+  const actOnResult = async (item: SearchResult) => {
+    if (!item.actionId || !channelId || actingId) return;
+    setActingId(item.actionId);
     try {
-      const r = await fetch("/api/radar/alerts", {
+      const response = await fetch(`/api/radar/results/${item.actionId}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ keyword, channelId: alertChannelId }),
+        body: JSON.stringify({
+          action: item.kind === "channel" ? "add_competitor" : "save_idea",
+          channelId,
+        }),
       });
-      if (r.ok) {
-        setNewKeyword("");
-        await loadAlerts();
-        s.toast({ kind: "success", title: `Алерт «${keyword}» создан` });
-      } else {
-        s.toast({ kind: "danger", title: "Не удалось создать алерт" });
+      const data = (await response.json().catch(() => null)) as { error?: string; alreadyAdded?: boolean } | null;
+      if (!response.ok) {
+        const message = data?.error === "limit"
+          ? "Достигнут лимит конкурентов. Удали ненужный канал и повтори."
+          : "Не удалось выполнить действие. Попробуй ещё раз.";
+        throw new Error(message);
       }
-    } catch {
-      s.toast({ kind: "danger", title: "Сетевая ошибка" });
+      setCompletedActions((current) => new Set(current).add(item.actionId as number));
+      store.toast({
+        kind: "success",
+        title: item.kind === "channel"
+          ? data?.alreadyAdded ? "Канал уже среди конкурентов" : "Канал добавлен в конкуренты"
+          : "Идея сохранена в библиотеку",
+      });
+    } catch (error) {
+      store.toast({
+        kind: "danger",
+        title: "Действие не выполнено",
+        body: error instanceof Error ? error.message : "Попробуй ещё раз.",
+      });
+    } finally {
+      setActingId(null);
     }
-    setSavingAlert(false);
   };
 
-  const deleteAlert = async (id: number) => {
-    await fetch(`/api/radar/alerts?id=${id}`, { method: "DELETE" });
-    const next = alerts.filter((a) => a.id !== id);
-    setAlerts(next);
-    onStats?.({ alerts: next });
-  };
+  const filtered = useMemo(
+    () => tab === "all" ? results : results.filter((item) => item.kind === tab),
+    [results, tab],
+  );
+  const running = run?.status === "queued" || run?.status === "running";
 
   return (
     <div className="mx-auto w-full">
-      {/* Ошибка загрузки */}
-      {loadError && (
-        <Card className="mt-5 p-4">
-          <div className="flex items-center justify-between">
-            <p className="text-[14px] text-text">Не удалось загрузить данные</p>
-            <Button variant="soft" size="sm" onClick={reload}>
-              <RefreshCw className="h-4 w-4" />
-              Повторить
-            </Button>
-          </div>
-        </Card>
-      )}
+      <ChannelPicker
+        channels={tgChannels}
+        value={channelId}
+        onChange={setPicked}
+        label="Ищем для канала"
+        className="mt-5"
+      />
 
-      {/* Guard: без конкурентов радар пуст — поиск ищет по их постам */}
-      {loaded && !loadError && channels.length === 0 ? (
-        <Card className="mt-5">
-          <EmptyState
-            icon={<Radar className="h-6 w-6" />}
-            title="Сначала добавь конкурентов"
-            body="Радар ищет по постам каналов-конкурентов. Добавь хотя бы один — и поиск заработает."
-            action={
-              <Link href="/app/competitors">
-                <Button variant="solid" size="sm">
-                  <Link2 className="h-4 w-4" />
-                  Добавить конкурентов
-                </Button>
-              </Link>
-            }
-          />
-        </Card>
-      ) : (
-        <>
-      {/* Поиск */}
-      <Card className="mt-5 p-4">
-        <div className="flex gap-2">
-          <div className="relative flex-1">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-3" />
-            <Input
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && doSearch()}
-              placeholder="Поиск по постам конкурентов и трендов…"
-              className="pl-9"
-            />
-          </div>
-          <Button variant="solid" size="sm" onClick={doSearch} loading={searching} disabled={!q.trim()}>
-            Найти
-          </Button>
-        </div>
-      </Card>
-
-      {/* Результаты поиска */}
-      {searched && (
-        <div className="mt-4 grid gap-3 lg:grid-cols-2">
-          {searching ? (
-            [0, 1, 2].map((i) => <div key={i} className="skeleton h-24" />)
-          ) : results.length === 0 ? (
-            <div className="lg:col-span-2">
-              <EmptyState
-                icon={<Search className="h-5 w-5" />}
-                title="Ничего не найдено"
-                body="Попробуй другой запрос — поиск полнотекстовый, по русскому языку."
+      <Card className="mt-5 p-4 sm:p-5">
+        <form onSubmit={doSearch} className="flex flex-col gap-3 sm:flex-row sm:items-end">
+          <div className="min-w-0 flex-1">
+            <label htmlFor="radar-query" className="mb-2 block text-[13px] font-semibold text-text-2">
+              Тема, канал или вопрос
+            </label>
+            <div className="relative">
+              <Search className="pointer-events-none absolute top-1/2 left-3.5 h-4 w-4 -translate-y-1/2 text-text-3" aria-hidden />
+              <Input
+                id="radar-query"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Например: рыбалка, садоводство или банкротство"
+                className="pl-10"
+                autoComplete="off"
+                enterKeyHint="search"
               />
             </div>
-          ) : (
-            results.map((r, i) => (
-              <motion.div
-                key={`${r.origin}-${r.id}`}
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ type: "spring", bounce: 0.15, duration: 0.4, delay: Math.min(i, 6) * 0.06 }}
-              >
-                <Card className="p-4 transition-all duration-200 hover:border-line-strong hover:shadow-soft">
-                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-text-3">
-                    <Badge tone={r.origin === "competitor" ? "brand" : "fire"}>
-                      {r.origin === "competitor" ? "Конкурент" : "Тренд"}
-                    </Badge>
-                    <span className="font-semibold text-text-2">
-                      {r.source_title || (r.source_handle ? `@${r.source_handle}` : "—")}
-                    </span>
-                    {r.posted_at && <span>{fmtAgo(r.posted_at)}</span>}
-                  </div>
-                  <p className="mt-1.5 line-clamp-4 text-[14px] leading-relaxed whitespace-pre-wrap text-text">
-                    {r.text || "(без текста)"}
-                  </p>
-                  {(r.views != null || r.reactions != null) && (
-                    <div className="mt-2 flex items-center gap-3 text-[12px] text-text-3">
-                      {r.views != null && (
-                        <span className="inline-flex items-center gap-1">
-                          <Eye className="h-3.5 w-3.5" aria-hidden />
-                          {fmtNum(r.views)}
-                        </span>
-                      )}
-                      {r.reactions != null && (
-                        <span className="inline-flex items-center gap-1">
-                          <Heart className="h-3.5 w-3.5" aria-hidden />
-                          {fmtNum(r.reactions)}
-                        </span>
-                      )}
-                    </div>
-                  )}
-                </Card>
-              </motion.div>
-            ))
-          )}
-        </div>
-      )}
-
-      {/* Алерты */}
-      <div className="mt-8">
-        <h2 className="flex items-center gap-2 text-[15px] font-bold text-text">
-          <Bell className="h-4 w-4" />
-          Алерты по ключевым словам
-        </h2>
-        <p className="mt-1 text-[13px] text-text-3">
-          Воркер проверяет новые посты конкурентов каждые 2 часа и пушит совпадения в бота.
-        </p>
-
-        <Card className="mt-3 p-4">
-          <div className="flex flex-col gap-2 sm:flex-row">
-            <Input
-              value={newKeyword}
-              onChange={(e) => setNewKeyword(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && addAlert()}
-              placeholder="Ключевое слово или фраза"
-              className="flex-1"
-            />
-            <select
-              value={alertChannelId ?? ""}
-              onChange={(e) => setAlertChannelId(Number(e.target.value) || null)}
-              className="rounded-sm border border-line bg-surface-inset px-3 py-2 text-[13px] text-text focus:border-brand focus:outline-none"
-            >
-              {channels.map((c) => (
-                <option key={c.id} value={c.id}>{c.title}</option>
-              ))}
-            </select>
-            <Button variant="solid" size="sm" onClick={addAlert} loading={savingAlert} disabled={!newKeyword.trim()}>
-              <Plus className="h-4 w-4" />
-              Создать
-            </Button>
           </div>
-        </Card>
+          <Button type="submit" variant="brand" loading={searchingLocal} disabled={query.trim().length < 2}>
+            <Search className="h-4 w-4" aria-hidden />
+            Найти
+          </Button>
+        </form>
+        <p className="mt-3 text-[12px] leading-relaxed text-text-3">
+          Сначала проверяем собственную базу. Если совпадений мало, ищем публичные Telegram-источники и проверяем каждую ссылку.
+        </p>
+      </Card>
 
-        <div className="mt-3 flex flex-wrap gap-2">
-          {alerts.map((a) => (
-            <span
-              key={a.id}
+      {searched && (
+        <section aria-labelledby="radar-results-title" className="mt-5">
+          <div className="flex flex-wrap items-center gap-3">
+            <div>
+              <h2 id="radar-results-title" className="text-[16px] font-bold text-text">
+                Результаты по запросу «{submittedQuery}»
+              </h2>
+              <p className="mt-0.5 text-[13px] text-text-3">
+                {results.length} {plural(results.length, "совпадение", "совпадения", "совпадений")}
+              </p>
+            </div>
+            <Tabs value={tab} onChange={setTab} items={RESULT_TABS} className="ml-auto" />
+          </div>
+
+          {run && (
+            <div
+              role="status"
+              aria-live="polite"
               className={cn(
-                "inline-flex items-center gap-2 rounded-full border border-line bg-surface py-1 pl-3 pr-1.5 text-[13px]",
-                !a.is_active && "opacity-55",
+                "mt-4 flex items-center gap-3 rounded-md px-4 py-3 text-[13px] font-medium",
+                run.status === "failed" || run.status === "partial"
+                  ? "bg-fire-soft text-fire-text"
+                  : run.status === "ready"
+                    ? "bg-success-soft text-success-text"
+                    : "bg-info-soft text-info-text",
               )}
             >
-              <span className="font-semibold text-text">{a.keyword}</span>
-              <span className="text-[11px] text-text-3">{a.channel_title ?? "—"}</span>
-              {a.matches_count > 0 && (
-                <span className="rounded-full bg-surface-inset px-1.5 py-0.5 text-[11px] font-semibold text-text-2">
-                  {a.matches_count}
-                </span>
-              )}
-              <button
-                type="button"
-                onClick={() => deleteAlert(a.id)}
-                aria-label={`Удалить алерт «${a.keyword}»`}
-                className="flex h-5 w-5 items-center justify-center rounded-full text-text-3 transition-colors duration-200 hover:bg-danger-soft hover:text-danger-text"
-              >
-                <X className="h-3 w-3" />
-              </button>
-            </span>
-          ))}
-        </div>
-      </div>
-        </>
+              {running ? <RefreshCw className="h-4 w-4 shrink-0 animate-spin" aria-hidden /> : <ShieldCheck className="h-4 w-4 shrink-0" aria-hidden />}
+              <span>{runMessage(run)}</span>
+              {running && <span className="nums ml-auto shrink-0">{run.progress}%</span>}
+            </div>
+          )}
+
+          {searchError && !running && (
+            <div role="alert" className="mt-4 flex flex-wrap items-center gap-3 rounded-md bg-danger-soft px-4 py-3">
+              <p className="text-[13px] font-medium text-danger-text">{searchError}</p>
+              <Button size="sm" variant="ghost" onClick={() => void startExternal(submittedQuery, true)} className="ml-auto">
+                <RefreshCw className="h-4 w-4" aria-hidden />
+                Повторить поиск в интернете
+              </Button>
+            </div>
+          )}
+
+          {searchingLocal && results.length === 0 ? (
+            <div className="mt-4 grid gap-4 lg:grid-cols-2" aria-hidden>
+              {[0, 1, 2, 3].map((item) => <div key={item} className="skeleton h-52 rounded-md" />)}
+            </div>
+          ) : filtered.length === 0 && !running ? (
+            <Card className="mt-4">
+              <EmptyState
+                icon={<Search className="h-5 w-5" aria-hidden />}
+                title={results.length ? "В этой категории совпадений нет" : `По запросу «${submittedQuery}» ничего не найдено`}
+                body={results.length
+                  ? "Выбери вкладку «Все», чтобы вернуться к полной выдаче."
+                  : "Попробуй более широкую формулировку или запусти повторную проверку публичных источников."}
+                action={!results.length ? (
+                  <Button variant="solid" onClick={() => void startExternal(submittedQuery, true)}>
+                    <Sparkles className="h-4 w-4" aria-hidden />
+                    Искать в интернете ещё раз
+                  </Button>
+                ) : undefined}
+              />
+            </Card>
+          ) : (
+            <div className="mt-4 grid gap-4 lg:grid-cols-2">
+              {filtered.map((item) => (
+                <ResultCard
+                  key={item.id}
+                  item={item}
+                  channelId={channelId}
+                  acting={actingId === item.actionId}
+                  completedAction={Boolean(item.actionId && completedActions.has(item.actionId))}
+                  onAction={actOnResult}
+                />
+              ))}
+            </div>
+          )}
+
+          {!running && results.length >= 8 && !run && (
+            <div className="mt-4 flex justify-center">
+              <Button variant="outline" onClick={() => void startExternal(submittedQuery)}>
+                <Sparkles className="h-4 w-4" aria-hidden />
+                Расширить поиск в интернете
+              </Button>
+            </div>
+          )}
+        </section>
       )}
+
     </div>
   );
 }

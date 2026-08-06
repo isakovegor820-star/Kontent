@@ -5,11 +5,13 @@ const retryDelaySeconds = (attempts) => Math.min(3600, 60 * (2 ** Math.min(Math.
 async function refreshOperationStatus(pool, operationId) {
   const counts = (await pool.query(
     `select count(*)::int as total,
+            count(*) filter (where outbox.status = 'pending')::int as pending,
             count(*) filter (where outbox.status = 'enqueued')::int as enqueued,
             count(*) filter (where outbox.status = 'failed')::int as failed,
             count(*) filter (where outbox.status = 'dispatching')::int as dispatching,
             count(*) filter (where post.status = 'published')::int as published,
             count(*) filter (where post.status = 'published_unverified')::int as unverified,
+            count(*) filter (where post.status = 'cancelled')::int as cancelled,
             count(*) filter (where post.status in ('failed','quarantined','missing','deleted_external'))::int as terminal_failed,
             count(*) filter (where post.status in ('scheduled','publishing','failed_retry'))::int as active
        from publication_outbox outbox
@@ -21,23 +23,32 @@ async function refreshOperationStatus(pool, operationId) {
   const published = Number(counts.published || 0);
   const unverified = Number(counts.unverified || 0);
   const terminalFailed = Number(counts.terminal_failed || 0);
-  const status = total > 0 && published === total
+  const cancelled = Number(counts.cancelled || 0);
+  const outboxFailed = Number(counts.failed || 0);
+  const status = total > 0 && cancelled === total
+    ? "cancelled"
+    : total > 0 && published === total
     ? "published"
     : total > 0 && published + unverified === total && unverified > 0
       ? "published_unverified"
       : total > 0 && terminalFailed === total
         ? "failed"
-        : published + unverified + terminalFailed > 0
+        : published + unverified + terminalFailed + cancelled > 0
           ? "partial"
-          : total > 0 && Number(counts.enqueued) === total
-    ? "queued"
-    : Number(counts.enqueued) > 0
-      ? "partial"
-      : Number(counts.failed) > 0
-        ? "failed"
-        : "pending";
+          : total > 0 && outboxFailed === total
+            ? "failed"
+            : outboxFailed > 0
+              ? "partial"
+              // pending/dispatching/enqueued are all durable outbox ownership states.
+              // A parallel idempotent replay must not downgrade an operation merely because
+              // the first request currently holds the short dispatch lease.
+              : total > 0
+                ? "queued"
+                : "pending";
   await pool.query(
-    "update publication_operations set status = $2, updated_at = now() where id = $1",
+    `update publication_operations
+        set status = $2, updated_at = now()
+      where id = $1 and (status <> 'cancelled' or $2 = 'cancelled')`,
     [operationId, status],
   );
   return status;

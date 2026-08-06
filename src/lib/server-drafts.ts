@@ -19,6 +19,7 @@ import {
 } from "./generation-artifacts";
 import type { Post } from "./types";
 import { topicFromSourceText } from "./reference-adaptation";
+import { resolveLocalSchedule, ScheduleValidationError } from "./timezone-schedule";
 
 type Queryable = Pick<Pool | PoolClient, "query">;
 type TransactionPool = Pick<Pool, "connect">;
@@ -28,6 +29,11 @@ type DraftRow = {
   text: string;
   media: unknown;
   scheduled_at: Date | string | null;
+  scheduled_timezone: string | null;
+  scheduled_local_date: Date | string | null;
+  scheduled_local_time: string | null;
+  scheduled_offset: string | null;
+  scheduled_disambiguation: "reject" | "earlier" | "later" | null;
   origin: Post["origin"];
   purpose: ServerDraft["purpose"];
   source_ref: unknown;
@@ -60,7 +66,10 @@ const MAX_TEXT = 16_384;
 const MAX_DESTINATIONS = 12;
 
 const DRAFT_SELECT = `
-  select d.id, d.text, d.media, d.scheduled_at, d.origin, d.purpose, d.source_ref,
+  select d.id, d.text, d.media, d.scheduled_at,
+         d.scheduled_timezone, d.scheduled_local_date, d.scheduled_local_time,
+         d.scheduled_offset, d.scheduled_disambiguation,
+         d.origin, d.purpose, d.source_ref,
          d.generation_result_id, gr.result_hash as generation_result_hash,
          vr.result_hash as receipt_result_hash, vr.receipt as receipt_payload,
          d.client_key, d.version, d.review_policy_version, d.ai_validation,
@@ -223,12 +232,43 @@ function channelIds(value: unknown): number[] {
   return ids;
 }
 
-function scheduledAt(value: unknown): string | null {
-  if (value == null || value === "") return null;
-  if (typeof value !== "string") throw new DraftValidationError("bad_time");
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) throw new DraftValidationError("bad_time");
-  return date.toISOString();
+function schedule(value: Record<string, unknown>) {
+  if (value.scheduledAt == null || value.scheduledAt === "") {
+    if (value.schedule != null) throw new DraftValidationError("schedule_instant_required");
+    return { scheduledAt: null, schedule: null };
+  }
+  if (typeof value.scheduledAt !== "string" || !isRecord(value.schedule)) {
+    throw new DraftValidationError("schedule_contract_required");
+  }
+  const disambiguation = value.schedule.disambiguation;
+  if (disambiguation !== "reject" && disambiguation !== "earlier" && disambiguation !== "later") {
+    throw new DraftValidationError("schedule_disambiguation_required");
+  }
+  try {
+    const resolved = resolveLocalSchedule({
+      localDate: requiredString(value.schedule.localDate, "invalid_local_time", 10),
+      localTime: requiredString(value.schedule.localTime, "invalid_local_time", 5),
+      timezone: requiredString(value.schedule.timezone, "invalid_timezone", 80),
+      disambiguation,
+      offset: value.schedule.offset == null || value.schedule.offset === ""
+        ? null
+        : requiredString(value.schedule.offset, "bad_schedule_offset", 6),
+    }, value.scheduledAt);
+    return {
+      scheduledAt: resolved.scheduledAt,
+      schedule: {
+        localDate: resolved.localDate,
+        localTime: resolved.localTime,
+        timezone: resolved.timezone,
+        disambiguation: resolved.disambiguation,
+        offset: resolved.offset,
+      },
+    };
+  } catch (error) {
+    throw new DraftValidationError(
+      error instanceof ScheduleValidationError ? error.code : "bad_time",
+    );
+  }
 }
 
 /** Строгий парсер границы API: неизвестные/неверные значения до SQL не доходят. */
@@ -247,10 +287,12 @@ export function parseDraftWriteInput(value: unknown): DraftWriteInput {
   if ((origin === "ai") !== (generationResultId != null)) {
     throw new DraftValidationError(origin === "ai" ? "generation_result_required" : "generation_result_unexpected");
   }
+  const resolvedSchedule = schedule(value);
   return {
     text: draftText(value.text),
     media: nullableMedia(value.media),
-    scheduledAt: scheduledAt(value.scheduledAt),
+    scheduledAt: resolvedSchedule.scheduledAt,
+    schedule: resolvedSchedule.schedule,
     origin: origin as Post["origin"],
     // Manual content has no server-verifiable provenance. Source metadata is accepted only
     // on records that are classified as non-publishable Source Contexts.
@@ -333,6 +375,15 @@ function mapDraft(row: DraftRow): ServerDraft {
     text: row.text,
     media: (row.media ?? null) as Post["media"],
     scheduled_at: row.scheduled_at == null ? null : toIso(row.scheduled_at),
+    scheduled_timezone: row.scheduled_timezone,
+    scheduled_local_date: row.scheduled_local_date == null
+      ? null
+      : String(row.scheduled_local_date).slice(0, 10),
+    scheduled_local_time: row.scheduled_local_time == null
+      ? null
+      : String(row.scheduled_local_time).slice(0, 5),
+    scheduled_offset: row.scheduled_offset,
+    scheduled_disambiguation: row.scheduled_disambiguation,
     origin: row.origin,
     purpose,
     source_ref: (row.source_ref ?? null) as Post["sourceRef"] | null,
@@ -377,7 +428,7 @@ async function assertOwnedActiveChannels(
 ): Promise<void> {
   const result = await db.query<{ id: number | string }>(
     `select id from channels
-      where user_id = $1 and is_active = true and id = any($2::bigint[])
+      where user_id = $1 and is_active = true and status = 'active' and id = any($2::bigint[])
       for share`,
     [userId, ids],
   );
@@ -666,8 +717,11 @@ export async function createDraftForUser(
     const inserted = await tx.query<{ id: number | string }>(
       `insert into drafts
          (user_id, text, media, scheduled_at, origin, purpose, source_ref, client_key,
-          review_policy_version, ai_validation, generation_result_id)
-       values ($1, $2, $3::jsonb, $4, $5, $6, $7::jsonb, $8, $9, $10::jsonb, $11)
+          review_policy_version, ai_validation, generation_result_id,
+          scheduled_timezone, scheduled_local_date, scheduled_local_time,
+          scheduled_offset, scheduled_disambiguation)
+       values ($1, $2, $3::jsonb, $4, $5, $6, $7::jsonb, $8, $9, $10::jsonb, $11,
+               $12, $13, $14, $15, $16)
        on conflict (user_id, client_key) do nothing
        returning id`,
       [
@@ -682,6 +736,11 @@ export async function createDraftForUser(
         DRAFT_REVIEW_POLICY_VERSION,
         trusted.aiValidation == null ? null : JSON.stringify(trusted.aiValidation),
         trusted.generationResultId ?? null,
+        trusted.schedule?.timezone ?? null,
+        trusted.schedule?.localDate ?? null,
+        trusted.schedule?.localTime ?? null,
+        trusted.schedule?.offset ?? null,
+        trusted.schedule?.disambiguation ?? null,
       ],
     );
     const created = inserted.rowCount === 1;
@@ -792,6 +851,11 @@ export async function updateDraftForUser(
               review_policy_version = $9,
               ai_validation = $10::jsonb,
               generation_result_id = $11,
+              scheduled_timezone = $13,
+              scheduled_local_date = $14,
+              scheduled_local_time = $15,
+              scheduled_offset = $16,
+              scheduled_disambiguation = $17,
               human_reviewed_version = null,
               human_reviewed_at = null,
               version = version + 1,
@@ -811,6 +875,11 @@ export async function updateDraftForUser(
         trustedValidation == null ? null : JSON.stringify(trustedValidation),
         trustedGenerationResultId,
         input.version,
+        input.schedule?.timezone ?? null,
+        input.schedule?.localDate ?? null,
+        input.schedule?.localTime ?? null,
+        input.schedule?.offset ?? null,
+        input.schedule?.disambiguation ?? null,
       ],
     );
 

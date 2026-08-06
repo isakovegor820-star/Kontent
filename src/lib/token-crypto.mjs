@@ -21,18 +21,51 @@ function deriveKey(masterKey) {
 // Ключ НЕ кэшируем на уровне модуля: читаем env на каждый вызов. Операции редкие
 // (подключение канала / публикация), sha256 дёшев, а зато смена TOKENS_MASTER_KEY
 // видна сразу и тестируется без перезагрузки модуля.
-function getMasterKey() {
-  const secret = process.env.TOKENS_MASTER_KEY;
-  if (!secret) {
-    throw new Error("TOKENS_MASTER_KEY не задан — токены сообществ шифровать нечем");
+export class TokenCryptoError extends Error {
+  constructor(code) {
+    super(code);
+    this.name = "TokenCryptoError";
+    this.code = code;
   }
-  return deriveKey(secret);
 }
 
-// key_id кладём в конверт с первого дня: при будущей ротации ключей расшифровка
-// сможет выбрать нужный ключ по id, не перешифровывая все строки разом.
-function getKeyId() {
-  return process.env.TOKENS_KEY_ID || "1";
+function validKeyId(value) {
+  return /^[a-zA-Z0-9._-]{1,64}$/u.test(value);
+}
+
+export function tokenKeyring(env = process.env) {
+  const currentSecret = String(env.TOKENS_MASTER_KEY || "");
+  const currentKeyId = String(env.TOKENS_KEY_ID || "1");
+  if (!currentSecret) throw new TokenCryptoError("token_key_missing");
+  if (!validKeyId(currentKeyId)) throw new TokenCryptoError("token_key_id_invalid");
+  let oldKeys = {};
+  if (String(env.TOKENS_OLD_KEYS || "").trim()) {
+    try {
+      oldKeys = JSON.parse(String(env.TOKENS_OLD_KEYS));
+    } catch {
+      throw new TokenCryptoError("token_old_keys_invalid");
+    }
+  }
+  if (!oldKeys || typeof oldKeys !== "object" || Array.isArray(oldKeys)) {
+    throw new TokenCryptoError("token_old_keys_invalid");
+  }
+  const keys = new Map();
+  for (const [keyId, secret] of Object.entries(oldKeys)) {
+    if (!validKeyId(keyId) || typeof secret !== "string" || !secret) {
+      throw new TokenCryptoError("token_old_keys_invalid");
+    }
+    keys.set(keyId, deriveKey(secret));
+  }
+  keys.set(currentKeyId, deriveKey(currentSecret));
+  return { currentKeyId, keys };
+}
+
+export function tokenEnvelopeKeyId(envelope) {
+  const parts = String(envelope).split(":");
+  if (parts.length !== 5 || parts[0] !== ENVELOPE_VERSION || !validKeyId(parts[1])) {
+    throw new TokenCryptoError("token_envelope_invalid");
+  }
+  return parts[1];
 }
 
 function aadOf({ userId, provider }) {
@@ -45,7 +78,8 @@ function aadOf({ userId, provider }) {
  * не расшифруется (GCM не сойдётся auth tag).
  */
 export function encryptToken(plaintext, ctx) {
-  const key = getMasterKey();
+  const { currentKeyId, keys } = tokenKeyring();
+  const key = keys.get(currentKeyId);
   const iv = randomBytes(12); // 96 бит — рекомендованный размер IV для GCM
   const cipher = createCipheriv(ALGO, key, iv);
   cipher.setAAD(Buffer.from(aadOf(ctx), "utf8"));
@@ -53,7 +87,7 @@ export function encryptToken(plaintext, ctx) {
   const authTag = cipher.getAuthTag();
   return [
     ENVELOPE_VERSION,
-    getKeyId(),
+    currentKeyId,
     iv.toString("hex"),
     authTag.toString("hex"),
     ciphertext.toString("hex"),
@@ -66,16 +100,24 @@ export function encryptToken(plaintext, ctx) {
  */
 export function decryptToken(envelope, ctx) {
   const parts = String(envelope).split(":");
-  if (parts.length !== 5 || parts[0] !== ENVELOPE_VERSION) {
-    throw new Error("неверный формат конверта токена");
-  }
+  const keyId = tokenEnvelopeKeyId(envelope);
   const [, , ivHex, authTagHex, ciphertextHex] = parts;
-  const key = getMasterKey();
-  const decipher = createDecipheriv(ALGO, key, Buffer.from(ivHex, "hex"));
-  decipher.setAAD(Buffer.from(aadOf(ctx), "utf8"));
-  decipher.setAuthTag(Buffer.from(authTagHex, "hex"));
-  return Buffer.concat([
-    decipher.update(Buffer.from(ciphertextHex, "hex")),
-    decipher.final(),
-  ]).toString("utf8");
+  if (!/^[a-f0-9]{24}$/iu.test(ivHex)
+    || !/^[a-f0-9]{32}$/iu.test(authTagHex)
+    || !/^(?:[a-f0-9]{2})+$/iu.test(ciphertextHex)) {
+    throw new TokenCryptoError("token_envelope_invalid");
+  }
+  const key = tokenKeyring().keys.get(keyId);
+  if (!key) throw new TokenCryptoError("token_key_unknown");
+  try {
+    const decipher = createDecipheriv(ALGO, key, Buffer.from(ivHex, "hex"));
+    decipher.setAAD(Buffer.from(aadOf(ctx), "utf8"));
+    decipher.setAuthTag(Buffer.from(authTagHex, "hex"));
+    return Buffer.concat([
+      decipher.update(Buffer.from(ciphertextHex, "hex")),
+      decipher.final(),
+    ]).toString("utf8");
+  } catch {
+    throw new TokenCryptoError("token_authentication_failed");
+  }
 }

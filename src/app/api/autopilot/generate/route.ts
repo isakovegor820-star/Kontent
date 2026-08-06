@@ -9,6 +9,13 @@ import { ensureSettings, loadBrief, resolveChannel } from "@/lib/autopilot";
 import { briefComplete } from "@/lib/brief";
 import { isAutopilotBuildStale } from "@/lib/autopilot-build";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
+import {
+  AUTOPILOT_PLANNING_MONTHS,
+  isAutopilotEngine,
+  isAutopilotPlanningWeeks,
+  plannedPostCountForWeeks,
+} from "@/lib/autopilot-config.mjs";
+import { resolveAiEngineRuntime } from "@/lib/ai-engine-policy.mjs";
 
 export const runtime = "nodejs";
 
@@ -21,7 +28,12 @@ export async function POST(req: NextRequest) {
 
   try {
     const pool = getPool();
-    const body = (await req.json().catch(() => ({}))) as { channelId?: number };
+    const body = (await req.json().catch(() => ({}))) as {
+      channelId?: number;
+      generationEngine?: unknown;
+      planningMonths?: unknown;
+      planningWeeks?: unknown;
+    };
     const channelId = await resolveChannel(user.id, body.channelId ?? null);
     if (!channelId) {
       return NextResponse.json({ ok: false, error: "no_channel" }, { status: 422 });
@@ -34,6 +46,36 @@ export async function POST(req: NextRequest) {
     }
 
     const settings = await ensureSettings(user.id, channelId);
+    if (body.generationEngine != null && !isAutopilotEngine(body.generationEngine)) {
+      return NextResponse.json({ ok: false, error: "bad_engine" }, { status: 422 });
+    }
+    const generationEngine = isAutopilotEngine(body.generationEngine)
+      ? body.generationEngine
+      : isAutopilotEngine(settings.generation_engine)
+        ? settings.generation_engine
+        : "navy-deepseek-pro";
+    const requestedMonths = Number(body.planningMonths);
+    const requestedWeeks = body.planningWeeks != null
+      ? Number(body.planningWeeks)
+      : body.planningMonths != null && AUTOPILOT_PLANNING_MONTHS.includes(requestedMonths)
+        ? requestedMonths * 4
+        : null;
+    if (
+      (body.planningMonths != null && !AUTOPILOT_PLANNING_MONTHS.includes(requestedMonths)) ||
+      (requestedWeeks != null && !isAutopilotPlanningWeeks(requestedWeeks))
+    ) {
+      return NextResponse.json({ ok: false, error: "bad_horizon" }, { status: 422 });
+    }
+    const selectedPlanningWeeks = requestedWeeks ?? settings.planning_weeks ?? settings.planning_months * 4;
+    if (!isAutopilotPlanningWeeks(selectedPlanningWeeks)) {
+      return NextResponse.json({ ok: false, error: "bad_horizon" }, { status: 422 });
+    }
+    const planningWeeks = Number(selectedPlanningWeeks);
+    const planningMonths = Math.max(1, Math.min(3, Math.ceil(planningWeeks / 4)));
+    const engineRuntime = resolveAiEngineRuntime(generationEngine);
+    if (!engineRuntime.supported || !engineRuntime.configured) {
+      return NextResponse.json({ ok: false, error: "engine_unavailable" }, { status: 422 });
+    }
     const statsQueue = getStatsQueue();
 
     // Next.js only enqueues this work; worker.mjs executes it. Previously we returned `ok`
@@ -61,16 +103,31 @@ export async function POST(req: NextRequest) {
           where user_id = $1 and channel_id = $2 for update`,
         [user.id, channelId],
       );
+      await tx.query(
+        `update autopilot_settings
+            set generation_engine = $3,
+                planning_months = $4,
+                planning_weeks = $5,
+                updated_at = now()
+          where user_id = $1 and channel_id = $2`,
+        [user.id, channelId, generationEngine, planningMonths, planningWeeks],
+      );
       const current = (
         await tx.query(
-          `select id, created_at from autopilot_plan
+          `select id, created_at, planning_months, planning_weeks from autopilot_plan
             where user_id = $1 and channel_id = $2 and status = 'building'
             order by created_at desc limit 1`,
           [user.id, channelId],
         )
       ).rows[0];
 
-      if (current && !isAutopilotBuildStale(current.created_at, settings.post_frequency)) {
+      const currentPostCount = current
+        ? plannedPostCountForWeeks(
+            settings.post_frequency,
+            current.planning_weeks ?? current.planning_months * 4,
+          )
+        : 0;
+      if (current && !isAutopilotBuildStale(current.created_at, currentPostCount)) {
         planId = String(current.id);
         alreadyBuilding = true;
         await tx.query("commit");
@@ -91,9 +148,11 @@ export async function POST(req: NextRequest) {
           [user.id, channelId],
         );
         const inserted = await tx.query(
-          `insert into autopilot_plan (user_id, channel_id, week_start, status)
-             values ($1, $2, current_date, 'building') returning id`,
-          [user.id, channelId],
+          `insert into autopilot_plan
+             (user_id, channel_id, week_start, status, generation_engine,
+              planning_months, planning_weeks)
+             values ($1, $2, current_date, 'building', $3, $4, $5) returning id`,
+          [user.id, channelId, generationEngine, planningMonths, planningWeeks],
         );
         planId = String(inserted.rows[0].id);
         await tx.query("commit");

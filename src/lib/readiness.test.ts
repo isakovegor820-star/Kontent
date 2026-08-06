@@ -31,6 +31,8 @@ const healthyDefaults = {
   schema: readySchema,
   aiConfigured: true,
   mailDelivery: "up" as const,
+  uploadIngress: "up" as const,
+  tokenEncryption: "up" as const,
 };
 
 describe("readiness model", () => {
@@ -79,6 +81,8 @@ describe("readiness model", () => {
       aiProviders: [provider],
       aiConfigured: true,
       mailDelivery: "up",
+      uploadIngress: "up",
+      tokenEncryption: "up",
     });
 
     expect(report).toMatchObject({
@@ -87,6 +91,23 @@ describe("readiness model", () => {
       publicationReady: false,
       schemaReady: false,
       reasons: ["capability_missing:table:drafts"],
+    });
+  });
+
+  it("fails web readiness when the production upload ingress limit is not configured", () => {
+    expect(evaluateReadiness({
+      ...healthyDefaults,
+      database: "up",
+      redis: "up",
+      publicationWorker: "up",
+      aiProviders: [provider],
+      uploadIngress: "not_configured",
+    })).toMatchObject({
+      status: "not_ready",
+      webReady: false,
+      uploadReady: false,
+      tokenEncryptionReady: true,
+      reasons: expect.arrayContaining(["avatar_ingress_limit_not_configured"]),
     });
   });
 
@@ -119,6 +140,8 @@ describe("readiness model", () => {
       aiReady: false,
       schemaReady: false,
       mailDeliveryReady: false,
+      uploadReady: false,
+      tokenEncryptionReady: false,
     });
   });
 });

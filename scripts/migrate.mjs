@@ -162,7 +162,14 @@ export async function migrate(options = {}) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   migrate().catch((error) => {
-    console.error("[migrate] failed", { name: error instanceof Error ? error.name : "error" });
+    console.error("[migration_event]", {
+      event: "migration_failed",
+      status: "failed",
+      safeErrorCode: error && typeof error === "object" && "code" in error
+        ? String(error.code).slice(0, 80)
+        : "migration_failed",
+      name: error instanceof Error ? error.name : "error",
+    });
     process.exitCode = 1;
   });
 }

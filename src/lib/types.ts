@@ -13,6 +13,7 @@ export type PostStatus =
   | "deleted_external" // удалён во внешней сети
   | "failed_retry" // временный сбой, ждём server-side next_attempt_at
   | "quarantined" // дата истекла; нужна новая пользовательская revision
+  | "cancelled" // пользователь отменил всю publication operation до provider-call
   | "failed"; // сбой (после 3 автоповторов)
 
 export interface PostMetrics {
@@ -195,6 +196,10 @@ export interface RealChannel {
   title: string | null;
   handle: string | null;
   is_active: boolean;
+  status?: "active" | "needs_reconnect" | "permission_lost" | "revoked" | "disconnected";
+  last_auth_error_code?: string | null;
+  last_auth_error_at?: string | null;
+  reconnect_required?: boolean;
 }
 
 export interface RealPost {
@@ -220,6 +225,12 @@ export interface RealPost {
   quarantined_at: string | null;
   quarantine_reason: string | null;
   schedule_revision: number;
+  scheduled_timezone: string | null;
+  scheduled_offset: string | null;
+  scheduled_disambiguation: "reject" | "earlier" | "later" | null;
+  publication_operation_id: number | null;
+  publication_operation_status: string | null;
+  operation_schedule_revision: number | null;
   created_at: string;
   network: Network;
   channel_title: string | null;

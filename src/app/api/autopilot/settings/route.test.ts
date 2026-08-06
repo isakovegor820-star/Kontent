@@ -49,6 +49,9 @@ describe("POST /api/autopilot/settings", () => {
       mode: "confirm",
       post_frequency: 3,
       approvals_streak: 0,
+      generation_engine: "navy-deepseek-pro",
+      planning_months: 1,
+      planning_weeks: 4,
     });
     mocks.loadBrief.mockResolvedValue(readyBrief);
     mocks.query.mockResolvedValue({
@@ -116,7 +119,54 @@ describe("POST /api/autopilot/settings", () => {
       true,
       null,
       30,
+      null,
+      null,
+      null,
     ]);
+  });
+
+  it("saves an Autopilot model and planning horizon", async () => {
+    mocks.query.mockResolvedValue({
+      rows: [{
+        enabled: false,
+        mode: "confirm",
+        post_frequency: 3,
+        approvals_streak: 0,
+        generation_engine: "navy-gpt-5-4",
+        planning_months: 2,
+        planning_weeks: 7,
+      }],
+      rowCount: 1,
+    });
+
+    const response = await POST(request({
+      channelId: 22,
+      generation_engine: "navy-gpt-5-4",
+      planning_weeks: 7,
+    }));
+
+    expect(response.status).toBe(200);
+    expect(mocks.query).toHaveBeenCalledWith(expect.stringContaining("generation_engine"), [
+      4,
+      22,
+      null,
+      null,
+      null,
+      "navy-gpt-5-4",
+      2,
+      7,
+    ]);
+  });
+
+  it("rejects unknown generation settings", async () => {
+    const response = await POST(request({
+      channelId: 22,
+      generation_engine: "not-a-model",
+      planning_months: 12,
+    }));
+
+    expect(response.status).toBe(422);
+    expect(mocks.query).not.toHaveBeenCalled();
   });
 
   it("returns a retryable service failure instead of pretending settings were saved", async () => {

@@ -26,6 +26,11 @@ import {
 } from "lucide-react";
 
 import { AppShell } from "@/components/app/shell";
+import {
+  PublicationActionsDialog,
+  type PublicationActionTarget,
+  type PublicationRescheduleInput,
+} from "@/components/app/publication-actions-dialog";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
@@ -46,6 +51,11 @@ import {
 } from "@/lib/draft-client";
 import type { ServerDraft } from "@/lib/draft-types";
 import { useStore } from "@/lib/store";
+import {
+  cancelPublication,
+  reschedulePublication,
+  restorePublicationToDraft,
+} from "@/lib/publication-lifecycle-client";
 import type { Network, Post, RealPost, Trend, User } from "@/lib/types";
 import {
   addDays,
@@ -78,6 +88,12 @@ type CalendarPost = Post & {
   draftVersion?: number;
   destinationIds?: number[];
   publicationParts?: RealPost["publication_parts"];
+  publicationOperationId?: number;
+  operationStatus?: string;
+  operationScheduleRevision?: number;
+  scheduleTimezone?: string;
+  scheduledOffset?: string | null;
+  scheduleDisambiguation?: "reject" | "earlier" | "later";
 };
 
 /** Пост с датой — только такие живут в сетке */
@@ -94,6 +110,7 @@ const GRID_STATUSES: Post["status"][] = [
   "deleted_external",
   "failed_retry",
   "quarantined",
+  "cancelled",
   "failed",
 ];
 
@@ -138,6 +155,12 @@ function realToPost(rp: RealPost): CalendarPost {
     postUrl: postUrlFor(rp),
     verificationState: rp.verification_state,
     publicationParts: rp.publication_parts,
+    publicationOperationId: rp.publication_operation_id ?? undefined,
+    operationStatus: rp.publication_operation_status ?? undefined,
+    operationScheduleRevision: rp.operation_schedule_revision ?? undefined,
+    scheduleTimezone: rp.scheduled_timezone ?? undefined,
+    scheduledOffset: rp.scheduled_offset,
+    scheduleDisambiguation: rp.scheduled_disambiguation ?? undefined,
   };
 }
 
@@ -268,28 +291,15 @@ function PostCard({
   // Мультиканальность — по всем активным каналам (TG + VK): метка канала нужна,
   // когда их больше одного, независимо от сети.
   const multiChannel = store.realChannels.filter((c) => c.is_active).length > 1;
-  // Сервер публикует прямо сейчас — показываем это честно
-  if (post.status === "publishing") {
-    return (
-      <div
-        aria-live="polite"
-        className="rounded-sm border-l-2 border-brand bg-surface p-2.5 ring-1 ring-line"
-      >
-        <div className="skeleton h-3 w-10" />
-        <div className="skeleton mt-2 h-3 w-full" />
-        <div className="skeleton mt-1.5 h-3 w-2/3" />
-        <p className="mt-2 text-[13px] font-semibold text-brand">Отправляем…</p>
-      </div>
-    );
-  }
-
   const failed = post.status === "failed";
+  const publishing = post.status === "publishing";
   const retrying = post.status === "failed_retry";
   const quarantined = post.status === "quarantined";
   const published = post.status === "published";
   const draft = post.status === "draft";
   const missing = post.status === "missing" || post.status === "deleted_external";
   const unverified = post.status === "published_unverified";
+  const cancelled = post.status === "cancelled";
 
   return (
     <article
@@ -301,6 +311,8 @@ function PostCard({
         "hover:-translate-y-0.5 hover:shadow-card",
         failed || missing || quarantined
           ? "border-danger bg-danger-soft"
+          : cancelled
+            ? "border-line-strong bg-surface-2"
           : published
             ? "border-success bg-surface"
             : unverified
@@ -312,7 +324,7 @@ function PostCard({
       <button
         type="button"
         onClick={onOpen}
-        aria-label={`Открыть в редакторе: ${post.text.slice(0, 60)}`}
+        aria-label={`Открыть действия с публикацией: ${post.text.slice(0, 60)}`}
         className="absolute inset-0 z-0 cursor-pointer rounded-sm"
       />
 
@@ -388,9 +400,21 @@ function PostCard({
           </span>
         )}
 
+        {publishing && (
+          <span aria-live="polite" className="text-[13px] font-semibold text-brand">
+            Публикация готовится к отправке. Открой действия, чтобы проверить, можно ли её ещё отменить.
+          </span>
+        )}
+
         {quarantined && (
           <span className="text-[13px] font-semibold text-danger-text">
             Дата истекла. Пост не будет отправлен без нового подтверждения.
+          </span>
+        )}
+
+        {cancelled && (
+          <span className="text-[13px] font-semibold text-text-2">
+            Отменена. Старая задача больше не может отправить этот пост.
           </span>
         )}
 
@@ -675,6 +699,8 @@ export default function CalendarPage() {
   const [draftsError, setDraftsError] = useState(false);
   const [deletingDraftId, setDeletingDraftId] = useState<number | null>(null);
   const [draftDeleteTarget, setDraftDeleteTarget] = useState<DraftDeleteTarget | null>(null);
+  const [publicationTarget, setPublicationTarget] = useState<PublicationActionTarget | null>(null);
+  const [publicationBusy, setPublicationBusy] = useState(false);
   const [showLocalRecovery, setShowLocalRecovery] = useState(false);
   const [showUnownedRecovery, setShowUnownedRecovery] = useState(false);
   const draftQueueHeadingRef = useRef<HTMLHeadingElement>(null);
@@ -861,6 +887,27 @@ export default function CalendarPage() {
       router.push(`/app/composer?legacy=${encodeURIComponent(post.id)}`);
       return;
     }
+    if (
+      post.publicationOperationId != null
+      && post.operationScheduleRevision != null
+      && post.operationStatus
+      && post.scheduledAt
+      && post.scheduleTimezone
+      && !["published", "published_unverified", "missing", "deleted_external"].includes(post.status)
+    ) {
+      setPublicationTarget({
+        operationId: post.publicationOperationId,
+        operationStatus: post.operationStatus,
+        postStatus: post.status,
+        scheduleRevision: post.operationScheduleRevision,
+        scheduledAt: post.scheduledAt,
+        timezone: post.scheduleTimezone,
+        scheduledOffset: post.scheduledOffset ?? null,
+        scheduleDisambiguation: post.scheduleDisambiguation ?? "reject",
+        text: post.text,
+      });
+      return;
+    }
     const title =
       post.status === "published"
         ? "Пост вышел"
@@ -883,12 +930,140 @@ export default function CalendarPage() {
       body:
         post.status === "failed"
           ? (post.failReason ?? "Можно отправить снова кнопкой на карточке.")
+          : post.status === "published_unverified"
+            ? "Сеть могла принять публикацию, но не вернула подтверждение. Автоматический повтор остановлен, чтобы не создать дубль; Аврора сверяет внешний канал."
           : post.scheduledAt
             ? `${fmtDateTime(post.scheduledAt)}. Публикует сервер.`
             : "",
     });
   };
   const addPostOn = (day: Date) => router.push(composerForDay(day));
+
+  const publicationFailure = useCallback((error?: string) => {
+    const conflict = error === "schedule_revision_conflict" || error === "publication_status_conflict";
+    const inProgress = error === "publication_in_progress";
+    s.toast({
+      kind: "danger",
+      title: inProgress
+        ? "Публикация уже отправляется"
+        : conflict
+          ? "Состояние публикации изменилось"
+          : "Действие не выполнено",
+      body: inProgress
+        ? "Отправка уже началась. Дождись результата; если статус останется неподтверждённым, проверь публикацию в канале."
+        : conflict
+          ? "Состояние изменилось в другой вкладке или во время обработки. Календарь обновлён — повтори действие с актуальными данными."
+          : "Сервер не подтвердил изменение. Запланированная публикация оставлена в прежнем состоянии.",
+    });
+  }, [s]);
+
+  const cancelTargetPublication = useCallback(async () => {
+    const target = publicationTarget;
+    if (!target || publicationBusy) return;
+    setPublicationBusy(true);
+    try {
+      const result = await cancelPublication({
+        operationId: target.operationId,
+        expectedScheduleRevision: target.scheduleRevision,
+        expectedStatus: target.operationStatus,
+        idempotencyKey: crypto.randomUUID(),
+      });
+      if (!result.ok) {
+        publicationFailure(result.error);
+        await s.refreshReal();
+        return;
+      }
+      await s.refreshReal();
+      setPublicationTarget(null);
+      s.toast({
+        kind: "success",
+        title: "Публикация отменена",
+        body: "Отмена подтверждена сервером. Даже если старая задача осталась в очереди, она ничего не отправит.",
+      });
+    } finally {
+      setPublicationBusy(false);
+    }
+  }, [publicationBusy, publicationFailure, publicationTarget, s]);
+
+  const rescheduleTargetPublication = useCallback(async (schedule: PublicationRescheduleInput) => {
+    const target = publicationTarget;
+    if (!target || publicationBusy) return;
+    setPublicationBusy(true);
+    try {
+      const result = await reschedulePublication({
+        operationId: target.operationId,
+        expectedScheduleRevision: target.scheduleRevision,
+        expectedStatus: target.operationStatus,
+        idempotencyKey: crypto.randomUUID(),
+        scheduledAt: schedule.scheduledAt,
+        localDate: schedule.localDate,
+        localTime: schedule.localTime,
+        timezone: schedule.timezone,
+        disambiguation: schedule.disambiguation,
+        offset: schedule.offset,
+      });
+      if (!result.ok && result.status !== "scheduled") {
+        publicationFailure(result.error);
+        await s.refreshReal();
+        return;
+      }
+      await s.refreshReal();
+      setPublicationTarget(null);
+      s.toast({
+        kind: result.ok ? "success" : "info",
+        title: result.ok ? "Публикация перенесена" : "Дата сохранена, очередь восстанавливается",
+        body: result.scheduledAt
+          ? `${fmtDateTime(result.scheduledAt)}. Предыдущая дата больше не действует.`
+          : "Новая дата сохранена; сервис планирования восстановит очередь.",
+      });
+    } finally {
+      setPublicationBusy(false);
+    }
+  }, [publicationBusy, publicationFailure, publicationTarget, s]);
+
+  const editTargetPublication = useCallback(async () => {
+    const target = publicationTarget;
+    if (!target || publicationBusy) return;
+    setPublicationBusy(true);
+    try {
+      let revision = target.scheduleRevision;
+      let status = target.operationStatus;
+      if (status !== "cancelled") {
+        const cancelled = await cancelPublication({
+          operationId: target.operationId,
+          expectedScheduleRevision: revision,
+          expectedStatus: status,
+          idempotencyKey: crypto.randomUUID(),
+        });
+        if (!cancelled.ok || cancelled.scheduleRevision == null) {
+          publicationFailure(cancelled.error);
+          await s.refreshReal();
+          return;
+        }
+        revision = cancelled.scheduleRevision;
+        status = "cancelled";
+      }
+      const restored = await restorePublicationToDraft({
+        operationId: target.operationId,
+        expectedScheduleRevision: revision,
+        expectedStatus: status,
+        idempotencyKey: crypto.randomUUID(),
+      });
+      await s.refreshReal();
+      if (!restored.ok || restored.draftId == null) {
+        s.toast({
+          kind: "danger",
+          title: "Публикация остановлена, черновик не создан",
+          body: "Старая отправка безопасно отменена. Повтори «Редактировать», чтобы восстановить snapshot в новый черновик.",
+        });
+        return;
+      }
+      setPublicationTarget(null);
+      router.push(`/app/composer?draft=${restored.draftId}`);
+    } finally {
+      setPublicationBusy(false);
+    }
+  }, [publicationBusy, publicationFailure, publicationTarget, router, s]);
 
   const removeDraft = async () => {
     const target = draftDeleteTarget;
@@ -1408,10 +1583,24 @@ export default function CalendarPage() {
         </aside>
       </div>
 
+      <PublicationActionsDialog
+        key={publicationTarget
+          ? `${publicationTarget.operationId}:${publicationTarget.scheduleRevision}`
+          : "closed-publication-actions"}
+        target={publicationTarget}
+        busy={publicationBusy}
+        onClose={() => {
+          if (!publicationBusy) setPublicationTarget(null);
+        }}
+        onEdit={() => void editTargetPublication()}
+        onCancel={() => void cancelTargetPublication()}
+        onReschedule={(value) => void rescheduleTargetPublication(value)}
+      />
+
       <ConfirmDialog
         open={draftDeleteTarget != null}
         title="Удалить черновик?"
-        description="Черновик исчезнет из календаря и очереди только после подтверждения сервера. Восстановить удалённую версию автоматически нельзя."
+        description="Черновик исчезнет из списка только после подтверждения сервера. Это действие не управляет уже запланированными публикациями. Восстановить удалённую версию автоматически нельзя."
         confirmLabel="Удалить черновик"
         cancelLabel="Оставить"
         busy={deletingDraftId != null}

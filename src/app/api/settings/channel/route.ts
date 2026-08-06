@@ -117,7 +117,8 @@ export async function POST(req: NextRequest) {
       [user.id, channelId],
     );
     const current = await client.query<AutopilotSettings>(
-      `select enabled, mode, post_frequency, approvals_streak
+      `select enabled, mode, post_frequency, approvals_streak, generation_engine,
+              planning_months, planning_weeks
          from autopilot_settings
         where user_id = $1 and channel_id = $2
         for update`,
@@ -173,7 +174,8 @@ export async function POST(req: NextRequest) {
               post_frequency = $5,
               updated_at = now()
         where user_id = $1 and channel_id = $2
-        returning enabled, mode, post_frequency, approvals_streak`,
+        returning enabled, mode, post_frequency, approvals_streak, generation_engine,
+                  planning_months, planning_weeks`,
       [user.id, channelId, enabled, mode, postFrequency],
     );
     await client.query("commit");

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import type { PoolClient } from "pg";
+import { createHash } from "node:crypto";
 
 import { getPool } from "@/lib/db";
 import { draftReviewDecision } from "@/lib/draft-review";
@@ -15,6 +16,8 @@ import { reconcilePublicationOutbox } from "@/lib/publication-outbox.mjs";
 import { probeRedisAndPublicationWorker } from "@/lib/readiness-probes";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import { getSessionUser } from "@/lib/session";
+import { buildTelegramPayload } from "@/lib/telegram-payload.mjs";
+import { resolveLocalSchedule, ScheduleValidationError } from "@/lib/timezone-schedule";
 
 export const runtime = "nodejs";
 
@@ -26,6 +29,47 @@ type OperationRow = {
   status: string;
   scheduled_at: Date | string;
 };
+
+type OperationResult =
+  | "operation_not_created"
+  | "partial"
+  | "queued"
+  | "conflict"
+  | "worker_unavailable";
+
+function requestId(req: NextRequest) {
+  const value = String(req.headers.get("x-request-id") || "").trim();
+  return /^[a-zA-Z0-9._:-]{1,128}$/u.test(value) ? value : null;
+}
+
+function logOperationEvent(
+  event: "publication_operation_created" | "publication_operation_partial",
+  response: Awaited<ReturnType<typeof operationResponse>>,
+  req: NextRequest,
+) {
+  const destinations = response.destinations.length > 0 ? response.destinations : [null];
+  for (const destination of destinations) {
+    console.info("[publication_event]", {
+      event,
+      requestId: requestId(req),
+      operationId: response.operationId,
+      postId: destination?.postId ?? null,
+      destinationId: destination?.channelId ?? null,
+      provider: destination?.network ?? null,
+      revision: 1,
+      status: response.operationStatus,
+    });
+  }
+}
+
+function operationError(
+  error: string,
+  status: number,
+  result: Exclude<OperationResult, "partial" | "queued"> = "operation_not_created",
+  details: Record<string, unknown> = {},
+) {
+  return NextResponse.json({ ok: false, result, error, ...details }, { status });
+}
 
 async function operationResponse(db: Pick<PoolClient, "query">, operation: OperationRow, replayed: boolean) {
   const destinations = await db.query<{
@@ -47,6 +91,7 @@ async function operationResponse(db: Pick<PoolClient, "query">, operation: Opera
   );
   return {
     ok: operation.status === "queued",
+    result: operation.status === "queued" ? "queued" : "partial",
     operationId: Number(operation.id),
     operationStatus: operation.status,
     fingerprint: operation.fingerprint,
@@ -85,10 +130,10 @@ async function dispatchPublicationOperation(operation: OperationRow): Promise<Op
 
 export async function POST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
-    return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
+    return operationError("forbidden_origin", 403);
   }
   const user = await getSessionUser(req);
-  if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
+  if (!user) return operationError("unauthorized", 401);
   const body = (await req.json().catch(() => null)) as {
     draftId?: unknown;
     draftVersion?: unknown;
@@ -103,10 +148,10 @@ export async function POST(req: NextRequest) {
     ? body.operationFingerprint
     : null;
   if (!idempotencyKey) {
-    return NextResponse.json({ ok: false, error: "idempotency_key_required" }, { status: 400 });
+    return operationError("idempotency_key_required", 400);
   }
   if (!Number.isSafeInteger(draftId) || draftId <= 0 || !Number.isSafeInteger(draftVersion) || draftVersion <= 0) {
-    return NextResponse.json({ ok: false, error: "bad_draft_revision" }, { status: 422 });
+    return operationError("bad_draft_revision", 422);
   }
 
   // Redis can accept a delayed job even when no publication consumer exists. Without
@@ -114,17 +159,17 @@ export async function POST(req: NextRequest) {
   // Keep the server draft intact and let the user retry once a live worker heartbeats.
   const publication = await probeRedisAndPublicationWorker();
   if (publication.redis !== "up" || publication.publicationWorker !== "up") {
-    return NextResponse.json(
-      { ok: false, error: "publication_worker_unavailable", retryable: true },
-      { status: 503 },
-    );
+    return operationError("publication_worker_unavailable", 503, "worker_unavailable", {
+      retryable: true,
+    });
   }
 
   const pool = getPool();
   let tx: PoolClient | null = await pool.connect();
   let open = true;
-  let operation: OperationRow;
+  let operation: OperationRow | null = null;
   let created = false;
+  let committed = false;
   try {
     await tx.query("begin");
     const replay = (await tx.query<OperationRow>(
@@ -139,12 +184,16 @@ export async function POST(req: NextRequest) {
         Number(replay.draft_id) !== draftId || Number(replay.draft_version) !== draftVersion
         || (expectedFingerprint !== null && replay.fingerprint !== expectedFingerprint)
       ) {
-        return NextResponse.json({ ok: false, error: "idempotency_fingerprint_conflict" }, { status: 409 });
+        return operationError("idempotency_fingerprint_conflict", 409, "conflict");
       }
+      operation = replay;
       await tx.query("commit");
       open = false;
-      const dispatched = await dispatchPublicationOperation(replay);
-      const response = await operationResponse(tx, dispatched, true);
+      committed = true;
+      tx.release();
+      tx = null;
+      const dispatched = await dispatchPublicationOperation(operation);
+      const response = await operationResponse(pool as unknown as Pick<PoolClient, "query">, dispatched, true);
       return NextResponse.json(response, { status: dispatched.status === "queued" ? 200 : 207 });
     }
 
@@ -154,6 +203,11 @@ export async function POST(req: NextRequest) {
       text: string;
       media: unknown;
       scheduled_at: Date | string | null;
+      scheduled_timezone: string | null;
+      scheduled_local_date: string | null;
+      scheduled_local_time: string | null;
+      scheduled_offset: string | null;
+      scheduled_disambiguation: "reject" | "earlier" | "later" | null;
       origin: "manual" | "ai" | "trend" | "idea" | "competitor" | "rss" | "autopilot";
       purpose: "source_context" | "publishable" | "needs_review";
       generation_result_id: string | null;
@@ -165,7 +219,11 @@ export async function POST(req: NextRequest) {
       human_reviewed_version: string | null;
       human_reviewed_at: Date | string | null;
     }>(
-      `select d.id, d.version, d.text, d.media, d.scheduled_at, d.origin, d.purpose,
+      `select d.id, d.version, d.text, d.media, d.scheduled_at,
+              d.scheduled_timezone, d.scheduled_local_date::text as scheduled_local_date,
+              d.scheduled_local_time::text as scheduled_local_time,
+              d.scheduled_offset, d.scheduled_disambiguation,
+              d.origin, d.purpose,
               d.generation_result_id, result.result_hash as generation_result_hash,
               receipt.result_hash as receipt_result_hash, receipt.receipt as receipt_payload,
               d.review_policy_version, d.ai_validation,
@@ -174,38 +232,64 @@ export async function POST(req: NextRequest) {
          left join generation_results result on result.id = d.generation_result_id
          left join validation_receipts receipt on receipt.generation_result_id = result.id
         where d.id = $1 and d.user_id = $2
-        for update`,
+        for update of d`,
       [draftId, user.id],
     )).rows[0];
     if (!snapshot) {
-      return NextResponse.json({ ok: false, error: "draft_not_found" }, { status: 404 });
+      return operationError("draft_not_found", 404);
     }
     if (Number(snapshot.version) !== draftVersion) {
-      return NextResponse.json({
-        ok: false,
-        error: "draft_version_conflict",
+      return operationError("draft_version_conflict", 409, "conflict", {
         currentVersion: Number(snapshot.version),
-      }, { status: 409 });
+      });
     }
     if (snapshot.purpose === "source_context") {
-      return NextResponse.json({ ok: false, error: "source_context_not_publishable" }, { status: 422 });
+      return operationError("source_context_not_publishable", 422);
     }
     if (!snapshot.scheduled_at) {
-      return NextResponse.json({ ok: false, error: "schedule_required" }, { status: 422 });
+      return operationError("schedule_required", 422);
     }
-    const scheduledAt = new Date(snapshot.scheduled_at);
+    if (
+      !snapshot.scheduled_timezone || !snapshot.scheduled_local_date
+      || !snapshot.scheduled_local_time || !snapshot.scheduled_disambiguation
+    ) {
+      return operationError("schedule_metadata_required", 422);
+    }
+    let authoritativeSchedule;
+    try {
+      authoritativeSchedule = resolveLocalSchedule({
+        localDate: String(snapshot.scheduled_local_date).slice(0, 10),
+        localTime: String(snapshot.scheduled_local_time).slice(0, 5),
+        timezone: snapshot.scheduled_timezone,
+        disambiguation: snapshot.scheduled_disambiguation,
+        offset: snapshot.scheduled_offset,
+      }, new Date(snapshot.scheduled_at).toISOString());
+    } catch (error) {
+      return operationError(
+        error instanceof ScheduleValidationError ? error.code : "bad_time",
+        422,
+      );
+    }
+    if (timezone !== authoritativeSchedule.timezone) {
+      return operationError("schedule_timezone_conflict", 409, "conflict");
+    }
+    const scheduledAt = new Date(authoritativeSchedule.scheduledAt);
     if (Number.isNaN(scheduledAt.getTime()) || scheduledAt.getTime() < Date.now() - 60_000) {
-      return NextResponse.json({ ok: false, error: "past" }, { status: 422 });
+      return operationError("past", 422);
     }
-    const destinationIds = normalizeOperationDestinations((await tx.query<{ channel_id: string }>(
-      `select dd.channel_id
+    const destinationRows = (await tx.query<{ channel_id: string; network: string }>(
+      `select dd.channel_id, c.network
          from draft_destinations dd join channels c on c.id = dd.channel_id
-        where dd.draft_id = $1 and c.user_id = $2 and c.is_active = true
+        where dd.draft_id = $1 and c.user_id = $2
+          and c.is_active = true and c.status = 'active'
         order by dd.channel_id`,
       [draftId, user.id],
-    )).rows.map((row) => Number(row.channel_id)));
+    )).rows;
+    const destinationIds = normalizeOperationDestinations(
+      destinationRows.map((row) => Number(row.channel_id)),
+    );
     if (!destinationIds.length) {
-      return NextResponse.json({ ok: false, error: "destination_required" }, { status: 422 });
+      return operationError("destination_required", 422);
     }
     const reviewedVersion = Number(snapshot.human_reviewed_version);
     const humanReview: DraftHumanReview | null = Number.isSafeInteger(reviewedVersion)
@@ -234,11 +318,37 @@ export async function POST(req: NextRequest) {
       human_review: humanReview,
     });
     if (review !== "allowed") {
-      return NextResponse.json({
-        ok: false,
-        error: review === "blocked" ? "ai_draft_blocked" : "ai_draft_review_required",
-      }, { status: 422 });
+      return operationError(
+        review === "blocked" ? "ai_draft_blocked" : "ai_draft_review_required",
+        422,
+      );
     }
+    const media = snapshot.media && typeof snapshot.media === "object"
+      ? snapshot.media as Record<string, unknown>
+      : null;
+    const telegramPayload = destinationRows.some((destination) => destination.network === "tg")
+      ? buildTelegramPayload({
+          text: snapshot.text,
+          hasAsset: Number.isSafeInteger(Number(media?.assetId)) && Number(media?.assetId) > 0,
+        })
+      : null;
+    const telegramParts = telegramPayload?.parts.map((part) => ({
+      ...part,
+      payloadHash: createHash("sha256")
+        .update(`${part.type}\0${part.payloadHtml || ""}`)
+        .digest("hex"),
+    })) ?? [];
+    const operationOptions = telegramPayload
+      ? {
+          telegramPayloadVersion: 1,
+          telegramParts: telegramParts.map((part) => ({
+            index: part.index,
+            type: part.type,
+            entityLength: part.entityLength,
+            payloadHash: part.payloadHash,
+          })),
+        }
+      : {};
     const normalizedScheduledAt = scheduledAt.toISOString();
     const fingerprint = publicationOperationFingerprint({
       userId: user.id,
@@ -248,18 +358,20 @@ export async function POST(req: NextRequest) {
       media: snapshot.media,
       destinationIds,
       scheduledAt: normalizedScheduledAt,
-      timezone,
-      options: {},
+      timezone: authoritativeSchedule.timezone,
+      options: operationOptions,
     });
     if (expectedFingerprint !== null && expectedFingerprint !== fingerprint) {
-      return NextResponse.json({ ok: false, error: "operation_fingerprint_conflict" }, { status: 409 });
+      return operationError("operation_fingerprint_conflict", 409, "conflict");
     }
 
     const inserted = await tx.query<OperationRow>(
       `insert into publication_operations
          (user_id, draft_id, draft_version, idempotency_key, fingerprint,
-          text, media, scheduled_at, timezone, destination_ids, options, status)
-       values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10::jsonb, '{}'::jsonb, 'pending')
+          text, media, scheduled_at, timezone, schedule_offset, schedule_disambiguation,
+          destination_ids, options, status)
+       values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11,
+               $12::jsonb, $13::jsonb, 'pending')
        on conflict do nothing
        returning id, draft_id, draft_version, fingerprint, status, scheduled_at`,
       [
@@ -271,8 +383,11 @@ export async function POST(req: NextRequest) {
         snapshot.text,
         snapshot.media == null ? null : JSON.stringify(snapshot.media),
         normalizedScheduledAt,
-        timezone,
+        authoritativeSchedule.timezone,
+        authoritativeSchedule.offset,
+        authoritativeSchedule.disambiguation,
         JSON.stringify(destinationIds),
+        JSON.stringify(operationOptions),
       ],
     );
     if (inserted.rowCount !== 1) {
@@ -285,25 +400,32 @@ export async function POST(req: NextRequest) {
         [user.id, idempotencyKey, draftId, draftVersion],
       )).rows[0];
       if (!existing || existing.fingerprint !== fingerprint) {
-        return NextResponse.json({ ok: false, error: "idempotency_fingerprint_conflict" }, { status: 409 });
+        return operationError("idempotency_fingerprint_conflict", 409, "conflict");
       }
+      operation = existing;
       await tx.query("commit");
       open = false;
-      const dispatched = await dispatchPublicationOperation(existing);
+      committed = true;
+      tx.release();
+      tx = null;
+      const dispatched = await dispatchPublicationOperation(operation);
       return NextResponse.json(
-        await operationResponse(tx, dispatched, true),
+        await operationResponse(pool as unknown as Pick<PoolClient, "query">, dispatched, true),
         { status: dispatched.status === "queued" ? 200 : 207 },
       );
     }
     operation = inserted.rows[0];
     created = true;
-    for (const channelId of destinationIds) {
+    for (const destination of destinationRows) {
+      const channelId = Number(destination.channel_id);
       const post = await tx.query<{ id: string; schedule_revision: string }>(
         `insert into posts
            (user_id, channel_id, text, media, scheduled_at, status,
             idempotency_key, request_fingerprint, publication_origin,
-            publication_operation_id, publication_draft_version)
-         values ($1, $2, $3, $4::jsonb, $5, 'scheduled', $6, $7, $8, $9, $10)
+            publication_operation_id, publication_draft_version,
+            scheduled_timezone, scheduled_offset, scheduled_disambiguation)
+         values ($1, $2, $3, $4::jsonb, $5, 'scheduled', $6, $7, $8, $9, $10,
+                 $11, $12, $13)
          returning id, schedule_revision`,
         [
           user.id,
@@ -316,6 +438,9 @@ export async function POST(req: NextRequest) {
           snapshot.origin,
           operation.id,
           draftVersion,
+          authoritativeSchedule.timezone,
+          authoritativeSchedule.offset,
+          authoritativeSchedule.disambiguation,
         ],
       );
       await tx.query(
@@ -323,24 +448,76 @@ export async function POST(req: NextRequest) {
          values ($1, $2)`,
         [operation.id, post.rows[0].id],
       );
+      if (destination.network === "tg") {
+        for (const part of telegramParts) {
+          await tx.query(
+            `insert into publication_parts
+               (post_id, part_index, part_type, payload_html, payload_hash, entity_length)
+             values ($1, $2, $3, $4, $5, $6)`,
+            [
+              post.rows[0].id,
+              part.index,
+              part.type,
+              part.payloadHtml,
+              part.payloadHash,
+              part.entityLength,
+            ],
+          );
+        }
+      }
     }
     await tx.query("commit");
     open = false;
+    committed = true;
   } catch (error) {
-    if (open && tx) await tx.query("rollback").catch(() => {});
+    if (open && tx) {
+      await tx.query("rollback").catch(() => {});
+      open = false;
+    }
     console.error("[/api/publication-operations]", {
       errorName: error instanceof Error ? error.name : "Error",
       code: error && typeof error === "object" && "code" in error ? String(error.code) : "unknown",
     });
-    return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
+    if (committed && operation) {
+      return operationError("publication_dispatch_unavailable", 503, "worker_unavailable", {
+        retryable: true,
+        operationId: Number(operation.id),
+      });
+    }
+    return operationError("operation_not_created", 500);
   } finally {
     if (open && tx) await tx.query("rollback").catch(() => {});
     tx?.release();
     tx = null;
   }
 
-  if (!created) throw new Error("publication operation missing");
-  operation = await dispatchPublicationOperation(operation);
-  const response = await operationResponse(pool as unknown as Pick<PoolClient, "query">, operation, false);
-  return NextResponse.json(response, { status: operation.status === "queued" ? 201 : 207 });
+  if (!created || !operation) throw new Error("publication operation missing");
+  try {
+    operation = await dispatchPublicationOperation(operation);
+    const response = await operationResponse(pool as unknown as Pick<PoolClient, "query">, operation, false);
+    logOperationEvent(
+      operation.status === "queued" ? "publication_operation_created" : "publication_operation_partial",
+      response,
+      req,
+    );
+    return NextResponse.json(response, { status: operation.status === "queued" ? 201 : 207 });
+  } catch (error) {
+    console.error("[publication_event]", {
+      event: "publication_operation_partial",
+      requestId: requestId(req),
+      operationId: Number(operation.id),
+      postId: null,
+      destinationId: null,
+      provider: null,
+      revision: 1,
+      status: "dispatch_unavailable",
+      safeErrorCode: error && typeof error === "object" && "code" in error
+        ? String(error.code).slice(0, 80)
+        : "publication_dispatch_unavailable",
+    });
+    return operationError("publication_dispatch_unavailable", 503, "worker_unavailable", {
+      retryable: true,
+      operationId: Number(operation.id),
+    });
+  }
 }

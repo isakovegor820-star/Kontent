@@ -10,6 +10,9 @@ export interface AutopilotSettings {
   mode: "confirm" | "full";
   post_frequency: number;
   approvals_streak: number;
+  generation_engine: string;
+  planning_months: number;
+  planning_weeks: number;
 }
 
 /**
@@ -59,7 +62,8 @@ export async function ensureSettings(userId: number, channelId: number): Promise
     [userId, channelId],
   );
   const r = await pool.query<AutopilotSettings>(
-    `select enabled, mode, post_frequency, approvals_streak
+    `select enabled, mode, post_frequency, approvals_streak, generation_engine,
+            planning_months, planning_weeks
        from autopilot_settings where user_id = $1 and channel_id = $2`,
     [userId, channelId],
   );

@@ -14,6 +14,10 @@ if (
 }
 
 const pool = new pg.Pool({ connectionString, ssl: false, max: 1 });
+const resetPublic = async () => {
+  await pool.query("drop schema public cascade");
+  await pool.query("create schema public");
+};
 try {
   const occupied = await pool.query(
     `select count(*)::int as n from pg_tables where schemaname = 'public'`,
@@ -22,10 +26,17 @@ try {
     throw new Error("aurora_migration_test must be an empty disposable database");
   }
   const fixture = await readFile(resolve("db/fixtures/legacy-migration.sql"), "utf8");
+  const freshSchema = await readFile(resolve("db/schema.sql"), "utf8");
   const migrationFiles = (await readdir(resolve("db/migrations")))
     .filter((name) => name.endsWith(".sql"))
     .sort();
   await pool.query(fixture);
+  const acceptedLegacyHasSuggestions = await pool.query(
+    "select to_regclass('public.competitor_suggestions') is not null as present",
+  );
+  if (acceptedLegacyHasSuggestions.rows[0]?.present !== false) {
+    throw new Error("legacy fixture must prove recovery from a missing competitor_suggestions table");
+  }
 
   const env = { ...process.env, DATABASE_URL: connectionString };
   await migrate({ env, logger: { log() {} } });
@@ -49,7 +60,11 @@ try {
        (select count(*)::int from hashtag_sets where channel_id is null) as tags_unassigned,
        (select count(*)::int from rss_items where skip_reason = 'limit') as rss_labeled,
        (select count(*)::int from ai_usage where status = 'committed') as usage_preserved,
-       (select count(*)::int from content_brief where source = 'quiz') as quiz_briefs`,
+       (select count(*)::int from content_brief where source = 'quiz') as quiz_briefs,
+       (select count(*)::int from information_schema.columns
+         where table_schema = 'public' and table_name = 'competitor_suggestions'
+           and column_name in ('channel_id','description','last_post_at','posts_per_week','on_topic'))
+         as suggestion_columns`,
   );
   const byId = new Map(posts.rows.map((row) => [Number(row.id), row]));
   const summary = checks.rows[0];
@@ -60,6 +75,7 @@ try {
     || Number(summary.rss_labeled) !== 1
     || Number(summary.usage_preserved) !== 1
     || Number(summary.quiz_briefs) !== 1
+    || Number(summary.suggestion_columns) !== 5
     || byId.get(101)?.external_message_id !== "77"
     || byId.get(102)?.external_message_id !== null
     || byId.get(102)?.result !== "duplicate_legacy_external_id"
@@ -67,7 +83,81 @@ try {
   ) {
     throw new Error(`migration integration assertions failed: ${JSON.stringify({ posts: posts.rows, summary })}`);
   }
-  console.log(`[migrate:integration] ${summary.migrations}/${migrationFiles.length} migrations; legacy fixtures preserved`);
+
+  // A partially provisioned table keeps its row while the additive baseline fills the
+  // missing channel/activity columns and constraints.
+  await resetPublic();
+  await pool.query(fixture);
+  await pool.query(`create table competitor_suggestions (
+    id bigint generated always as identity primary key,
+    user_id bigint not null references users (id) on delete cascade,
+    handle text not null,
+    title text,
+    mentioned_by int not null default 1,
+    status text not null default 'new',
+    found_at timestamptz not null default now()
+  )`);
+  await pool.query(
+    "insert into competitor_suggestions (user_id, handle, title) values (1, 'legacy_peer', 'Legacy peer')",
+  );
+  await migrate({ env, logger: { log() {} } });
+  await migrate({ env, logger: { log() {} } });
+  const partialSuggestion = (await pool.query(
+    `select channel_id, title, description, last_post_at, posts_per_week, on_topic
+       from competitor_suggestions where handle = 'legacy_peer'`,
+  )).rows[0];
+  if (Number(partialSuggestion?.channel_id) !== 10 || partialSuggestion?.title !== "Legacy peer") {
+    throw new Error(`partial competitor_suggestions row was not preserved: ${JSON.stringify(partialSuggestion)}`);
+  }
+
+  // A fresh monolithic bootstrap already contains every column/constraint. Applying the
+  // complete migration set twice must remain a no-op for data and schema.
+  await resetPublic();
+  await pool.query(freshSchema);
+  await migrate({ env, logger: { log() {} } });
+  await migrate({ env, logger: { log() {} } });
+  const freshMigrationCount = Number((await pool.query(
+    "select count(*)::int as count from schema_migrations",
+  )).rows[0]?.count ?? 0);
+  if (freshMigrationCount !== migrationFiles.length) {
+    throw new Error(`fresh schema applied ${freshMigrationCount}/${migrationFiles.length} migrations`);
+  }
+
+  // Runner-level regression: a SQL failure rolls back both DDL and its migration record.
+  const rollbackProbe = {
+    name: "20991231_rollback_probe.sql",
+    sql: "begin;\ncreate table migration_rollback_probe (id int);\nselect * from migration_probe_missing;\ncommit;\n",
+  };
+  await migrate({ env, migrations: [rollbackProbe], logger: { log() {} } })
+    .then(() => { throw new Error("rollback probe unexpectedly succeeded"); })
+    .catch((error) => {
+      if (!String(error?.message || "").includes("migration_probe_missing")) throw error;
+    });
+  const rollbackState = (await pool.query(
+    `select to_regclass('public.migration_rollback_probe') as relation,
+            exists(select 1 from schema_migrations where name = $1) as recorded`,
+    [rollbackProbe.name],
+  )).rows[0];
+  if (rollbackState?.relation !== null || rollbackState?.recorded !== false) {
+    throw new Error(`failed migration was not rolled back: ${JSON.stringify(rollbackState)}`);
+  }
+
+  // An applied filename with different bytes must fail closed without changing its row.
+  const firstName = migrationFiles[0];
+  const firstSql = await readFile(resolve("db/migrations", firstName), "utf8");
+  const changedSql = firstSql.replace(/commit\s*;\s*$/iu, "-- checksum probe\ncommit;\n");
+  await migrate({
+    env,
+    migrations: [{ name: firstName, sql: changedSql }],
+    logger: { log() {} },
+  }).then(() => { throw new Error("checksum probe unexpectedly succeeded"); })
+    .catch((error) => {
+      if (!String(error?.message || "").includes("checksum changed after application")) throw error;
+    });
+
+  console.log(
+    `[migrate:integration] ${summary.migrations}/${migrationFiles.length} migrations; legacy, partial and fresh schemas preserved; rollback/checksum fail closed`,
+  );
 } finally {
   await pool.end();
 }

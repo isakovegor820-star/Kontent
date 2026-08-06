@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   probeRedisAndPublicationWorker: vi.fn(),
   probeAiConfiguration: vi.fn(),
   probeMailDeliveryConfiguration: vi.fn(),
+  probeUploadIngressConfiguration: vi.fn(),
   aiProviderHealthSnapshot: vi.fn(),
 }));
 
@@ -13,6 +14,7 @@ vi.mock("@/lib/readiness-probes", () => ({
   probeRedisAndPublicationWorker: mocks.probeRedisAndPublicationWorker,
   probeAiConfiguration: mocks.probeAiConfiguration,
   probeMailDeliveryConfiguration: mocks.probeMailDeliveryConfiguration,
+  probeUploadIngressConfiguration: mocks.probeUploadIngressConfiguration,
 }));
 vi.mock("@/lib/ai-provider-health", () => ({
   aiProviderHealthSnapshot: mocks.aiProviderHealthSnapshot,
@@ -25,6 +27,7 @@ describe("GET /api/readiness", () => {
     vi.clearAllMocks();
     mocks.probeDatabaseAndSchema.mockResolvedValue({
       database: "up",
+      tokenEncryption: "up",
       schema: {
         ready: true,
         expectedVersion: "aurora-test",
@@ -40,6 +43,7 @@ describe("GET /api/readiness", () => {
     });
     mocks.probeAiConfiguration.mockReturnValue(true);
     mocks.probeMailDeliveryConfiguration.mockReturnValue("up");
+    mocks.probeUploadIngressConfiguration.mockReturnValue("up");
     mocks.aiProviderHealthSnapshot.mockReturnValue([{
       engine: "openai",
       state: "closed",
@@ -71,6 +75,7 @@ describe("GET /api/readiness", () => {
   it("returns 503 when the web database dependency is down", async () => {
     mocks.probeDatabaseAndSchema.mockResolvedValue({
       database: "down",
+      tokenEncryption: "down",
       schema: {
         ready: false,
         expectedVersion: "aurora-test",
@@ -91,6 +96,7 @@ describe("GET /api/readiness", () => {
   it("returns 503 with exact schema reasons for a reachable legacy database", async () => {
     mocks.probeDatabaseAndSchema.mockResolvedValue({
       database: "up",
+      tokenEncryption: "down",
       schema: {
         ready: false,
         expectedVersion: "aurora-test",

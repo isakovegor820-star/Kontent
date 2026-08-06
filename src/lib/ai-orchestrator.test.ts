@@ -75,6 +75,28 @@ describe("AI provider orchestration", () => {
     expect(keys.slice(0, 2)).toEqual(keys.slice(2));
   });
 
+  it("checks the per-attempt budget before opening each provider stream", async () => {
+    const calls: string[] = [];
+    const factory: AiStreamFactory = async function* (_input, engine) {
+      calls.push(engine);
+      if (engine === "navy-deepseek-pro") throw new AiProviderError(engine, 503, "http_error");
+      yield "не должно выполниться";
+    };
+    const beforeAttempt = vi.fn(async ({ attempt }: { attempt: number }) => {
+      if (attempt === 2) throw new Error("budget_exhausted");
+    });
+    const stream = collect(orchestrateText(params, "navy-deepseek-pro", {
+      fallbackEngines: ["navy-deepseek-flash"],
+      streamFactory: factory,
+      beforeAttempt,
+      circuitBreaker: null,
+    }));
+
+    await expect(stream).rejects.toThrow("budget_exhausted");
+    expect(beforeAttempt).toHaveBeenCalledTimes(2);
+    expect(calls).toEqual(["navy-deepseek-pro"]);
+  });
+
   it("не склеивает второй движок после уже показанного delta", async () => {
     const calls: string[] = [];
     const factory: AiStreamFactory = async function* (_input, engine) {

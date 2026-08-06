@@ -35,6 +35,15 @@ import {
 import type { ApprovalBlocker, AutopilotApprovalPreview } from "@/lib/autopilot-approval.mjs";
 import { cn, plural } from "@/lib/utils";
 import { ChannelPicker, useChannelChoice } from "@/components/app/channel-picker";
+import {
+  AUTOPILOT_ENGINE_OPTIONS,
+  DEFAULT_AUTOPILOT_PLANNING_WEEKS,
+  DEFAULT_AUTOPILOT_ENGINE,
+  MAX_AUTOPILOT_PLANNING_WEEKS,
+  MIN_AUTOPILOT_PLANNING_WEEKS,
+  planCountWasCappedForWeeks,
+  plannedPostCountForWeeks,
+} from "@/lib/autopilot-config.mjs";
 
 interface PlanItem {
   i: number;
@@ -46,11 +55,12 @@ interface PlanItem {
   // На чём основан пост: куски базы знаний. Это доказательство, что цифры не выдуманы,
   // а взяты из материалов автора. Пусто — пост написан без конкретики (её нечем подпереть).
   sources?: { id: number; text: string }[];
-  // Конкретика, которой нет в базе: ИИ её выдумал, и вторая попытка не помогла. Такой пост
-  // автопилот НИКОГДА не публикует сам — решает человек.
+  // Конкретика, которой нет в базе: она может остаться в старом плане или после ручной
+  // правки. Новая автоматическая сборка такой пост готовым уже не считает.
   invented?: string[];
   qualityBlocked?: boolean;
   quality?: QualityResult;
+  qualityOrigin?: string;
   approvalBlockers?: ApprovalBlocker[];
 }
 interface Settings {
@@ -58,6 +68,9 @@ interface Settings {
   mode: "confirm" | "full";
   post_frequency: number;
   approvals_streak: number;
+  generation_engine: string;
+  planning_months: number;
+  planning_weeks: number;
 }
 interface State {
   settings: Settings | null;
@@ -67,7 +80,10 @@ interface State {
     items: PlanItem[];
     rules: string | null;
     status: string;
-    errorReason?: "timeout" | "quota";
+    generation_engine: string;
+    planning_months: number;
+    planning_weeks: number;
+    errorReason?: "timeout" | "quota" | "variety" | "quality";
   } | null;
   hasChannel: boolean;
   brief: Brief | null;
@@ -122,6 +138,10 @@ export default function AutopilotPage() {
   } | null>(null);
   const [editText, setEditText] = useState("");
   const [expanded, setExpanded] = useState<number | null>(null); // какая карточка раскрыта целиком
+  const [generationEngine, setGenerationEngine] = useState(DEFAULT_AUTOPILOT_ENGINE);
+  const [planningWeeks, setPlanningWeeks] = useState(DEFAULT_AUTOPILOT_PLANNING_WEEKS);
+  const [planningAnchorMs] = useState(Date.now);
+  const [visibleLimit, setVisibleLimit] = useState(14);
   const approvalBusy = useRef(false);
   const loadSequence = useRef(0);
   const loadAbort = useRef<AbortController | null>(null);
@@ -152,9 +172,24 @@ export default function AutopilotPage() {
       if (sequence !== loadSequence.current || controller.signal.aborted) return;
       if (requestedChannelId != null && d.channelId !== requestedChannelId) return;
       setData(d);
-      activePlanIdentity.current = d.plan
+      if (d.settings) {
+        setGenerationEngine(
+          AUTOPILOT_ENGINE_OPTIONS.some((option) => option.id === d.settings?.generation_engine)
+            ? d.settings.generation_engine as typeof DEFAULT_AUTOPILOT_ENGINE
+            : DEFAULT_AUTOPILOT_ENGINE,
+        );
+        const savedWeeks = Number(d.settings.planning_weeks || d.settings.planning_months * 4);
+        setPlanningWeeks(
+          savedWeeks >= MIN_AUTOPILOT_PLANNING_WEEKS && savedWeeks <= MAX_AUTOPILOT_PLANNING_WEEKS
+            ? savedWeeks
+            : DEFAULT_AUTOPILOT_PLANNING_WEEKS,
+        );
+      }
+      const nextPlanIdentity = d.plan
         ? `${d.channelId}:${d.plan.id}:${d.plan.revision}`
         : null;
+      if (activePlanIdentity.current !== nextPlanIdentity) setVisibleLimit(14);
+      activePlanIdentity.current = nextPlanIdentity;
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
       /* сеть */
@@ -196,11 +231,20 @@ export default function AutopilotPage() {
       const r = await fetch("/api/autopilot/generate", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ channelId: chId }),
+        body: JSON.stringify({
+          channelId: chId,
+          generationEngine,
+          planningWeeks,
+        }),
       });
       const d = (await r.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
       if (d?.ok) {
-        s.toast({ kind: "info", title: "Собираю план", body: "ИИ пишет посты на неделю — минутку." });
+        const count = plannedPostCountForWeeks(data?.settings?.post_frequency ?? 5, planningWeeks);
+        s.toast({
+          kind: "info",
+          title: "Собираю контент-план",
+          body: `${count} ${plural(count, "пост", "поста", "постов")} на ${planningWeeks} ${plural(planningWeeks, "неделю", "недели", "недель")}. Можно продолжать работу — сборка идёт в фоне.`,
+        });
         await load();
       } else {
         const why: Record<string, string> = {
@@ -208,6 +252,9 @@ export default function AutopilotPage() {
           no_brief: "Сначала настрой автопилот — без этого он не знает, о чём твой канал.",
           worker_unavailable: "Фоновый обработчик не запущен. Перезапусти приложение и повтори.",
           queue_unavailable: "Очередь генерации сейчас недоступна. Попробуй ещё раз через минуту.",
+          bad_engine: "Выбери доступную модель и повтори.",
+          bad_horizon: "Выбери период от 1 до 12 недель.",
+          engine_unavailable: "Для выбранной модели не настроен API-ключ Navy.",
         };
         s.toast({
           kind: "danger",
@@ -458,12 +505,12 @@ export default function AutopilotPage() {
   // фоне «Сначала подключи канал» мигало бы человеку, у которого канал давно подключён.
   if (!data.hasChannel) {
     return (
-      <AppShell title="Автопилот" subtitle="Веди канал на автопилоте — план недели за одну кнопку.">
+      <AppShell title="Автопилот" subtitle="Выбери любой период от 1 до 12 недель.">
         <Card className="py-4">
           <EmptyState
             icon={<Rocket className="h-6 w-6" strokeWidth={1.75} aria-hidden />}
             title="Сначала подключи канал"
-            body="Автопилот публикует в твой Telegram-канал. Подключи его — и я соберу план на неделю."
+            body="Автопилот публикует в твой Telegram-канал. Подключи его — и я соберу контент-план."
             action={
               <Link href="/app/onboarding">
                 <Button variant="solid">Подключить канал</Button>
@@ -491,7 +538,7 @@ export default function AutopilotPage() {
     return (
       <AppShell
         title="Автопилот"
-        subtitle="Веди канал на автопилоте — план недели за одну кнопку."
+        subtitle="Выбери любой период от 1 до 12 недель."
       >
         {picker}
         <Card className="py-4">
@@ -518,6 +565,7 @@ export default function AutopilotPage() {
   const items = plan?.items ?? [];
   const pending = items.filter((it) => it.status === "pending");
   const blocked = pending.filter((it) => !hasPassedVerifiedQuality(it));
+  const hasLegacyAutomaticBlock = blocked.some((it) => it.qualityOrigin === "automatic");
   const readyPending = pending.filter(hasPassedVerifiedQuality);
   const expired = items.filter((it) => it.status === "expired");
   const approved = items.filter((it) => it.status === "approved" || it.status === "published");
@@ -532,17 +580,20 @@ export default function AutopilotPage() {
       ? `${fmtRangeMsk(visible[0].scheduledAt)} — ${fmtRangeMsk(visible[visible.length - 1].scheduledAt)}`
       : "";
   const allApproved = pending.length === 0 && expired.length === 0 && approved.length > 0;
+  const plannedCount = plannedPostCountForWeeks(st.post_frequency, planningWeeks);
+  const countCapped = planCountWasCappedForWeeks(st.post_frequency, planningWeeks);
+  const selectedEngine = AUTOPILOT_ENGINE_OPTIONS.find((option) => option.id === generationEngine)
+    ?? AUTOPILOT_ENGINE_OPTIONS[0];
+  const renderedVisible = visible.slice(0, visibleLimit);
+  const planEndLabel = new Date(planningAnchorMs + planningWeeks * 7 * 86_400_000).toLocaleDateString(
+    "ru-RU",
+    { day: "numeric", month: "long", year: "numeric" },
+  );
 
   return (
     <AppShell
       title="Автопилот"
-      subtitle="ИИ собирает план недели по твоей аналитике и залётам конкурентов. Ты одобряешь — посты выходят сами."
-      action={
-        <Button variant="brand" onClick={generate} loading={busy} disabled={busy || building}>
-          <Sparkles className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
-          {building ? "План собирается" : plan ? "Пересобрать план" : "Собрать план недели"}
-        </Button>
-      }
+      subtitle="Выбери модель и горизонт. ИИ соберёт непохожие посты, а ты проверишь их перед публикацией."
     >
       {picker}
       {/* Резюме настроек. Редактирование живёт в одном месте — «Настройке Авроры». */}
@@ -580,6 +631,71 @@ export default function AutopilotPage() {
         </div>
       </Card>
 
+      <Card className="mb-5 p-4 sm:p-5">
+        <div className="flex flex-col gap-5 lg:flex-row lg:items-end">
+          <div className="min-w-0 flex-1">
+            <label htmlFor="autopilot-engine" className="text-[13px] font-semibold text-text">
+              Модель генерации
+            </label>
+            <select
+              id="autopilot-engine"
+              value={generationEngine}
+              onChange={(event) => setGenerationEngine(event.target.value as typeof generationEngine)}
+              disabled={busy || building}
+              className="mt-2 h-11 w-full rounded-md border border-line bg-surface px-3 text-[14px] font-semibold text-text outline-none transition-colors focus-visible:border-brand focus-visible:ring-2 focus-visible:ring-brand/20 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {AUTOPILOT_ENGINE_OPTIONS.map((option) => (
+                <option key={option.id} value={option.id}>{option.label}</option>
+              ))}
+            </select>
+            <p className="mt-1.5 text-[12px] leading-relaxed text-text-3">
+              {selectedEngine.note}
+            </p>
+          </div>
+
+          <div className="min-w-0 flex-1">
+            <label htmlFor="autopilot-horizon" className="text-[13px] font-semibold text-text">
+              На сколько недель
+            </label>
+            <select
+              id="autopilot-horizon"
+              value={planningWeeks}
+              onChange={(event) => setPlanningWeeks(Number(event.target.value))}
+              disabled={busy || building}
+              className="mt-2 h-11 w-full rounded-md border border-line bg-surface px-3 text-[14px] font-semibold text-text outline-none transition-colors focus-visible:border-brand focus-visible:ring-2 focus-visible:ring-brand/20 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {Array.from(
+                { length: MAX_AUTOPILOT_PLANNING_WEEKS - MIN_AUTOPILOT_PLANNING_WEEKS + 1 },
+                (_, index) => index + MIN_AUTOPILOT_PLANNING_WEEKS,
+              ).map((weeks) => (
+                <option key={weeks} value={weeks}>
+                  {weeks} {plural(weeks, "неделя", "недели", "недель")}
+                </option>
+              ))}
+            </select>
+            <p className="mt-1.5 text-[12px] text-text-3" aria-live="polite">
+              До {planEndLabel} · {plannedCount} {plural(plannedCount, "пост", "поста", "постов")}
+              {countCapped && " · максимум 90 за один запуск"}
+            </p>
+          </div>
+
+          <Button
+            variant="brand"
+            onClick={generate}
+            loading={busy}
+            disabled={busy || building}
+            className="min-h-11 shrink-0 lg:min-w-[230px]"
+          >
+            <Sparkles className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
+            {building ? "План собирается" : `${plan ? "Пересобрать" : "Сгенерировать"} ${plannedCount} ${plural(plannedCount, "пост", "поста", "постов")}`}
+          </Button>
+        </div>
+        <p className="mt-4 flex items-start gap-2 rounded-md bg-surface-inset p-3 text-[12px] leading-relaxed text-text-3">
+          <Check className="mt-0.5 h-4 w-4 shrink-0 text-success" aria-hidden />
+          Аврора переписывает каждый слабый черновик до проходного балла. Посты, которые не прошли проверку, в готовый план не попадут.
+        </p>
+      </Card>
+
       {/* Предложение полного режима после 2 недель без правок */}
       {canOfferFull && (
         <div className="mb-5 flex items-start gap-3 rounded-lg bg-info-soft p-4">
@@ -604,10 +720,12 @@ export default function AutopilotPage() {
 
       {/* Состояние плана */}
       {building ? (
-        <Card className="p-8 text-center">
+        <Card className="p-8 text-center" aria-live="polite" aria-busy="true">
           <Loader2 className="mx-auto h-7 w-7 animate-spin text-brand" aria-hidden />
-          <p className="mt-3 text-[15px] font-semibold text-text">Собираю план недели…</p>
-          <p className="mt-1 text-[14px] text-text-3">ИИ пишет посты в твоём стиле. Обычно минута.</p>
+          <p className="mt-3 text-[15px] font-semibold text-text">Собираю контент-план…</p>
+          <p className="mt-1 text-[14px] text-text-3">
+            ИИ пишет и проверяет {plannedCount} {plural(plannedCount, "пост", "поста", "постов")}. Большой план может занять несколько минут.
+          </p>
         </Card>
       ) : plan?.status === "error" ? (
         <Card className="p-8 text-center">
@@ -617,11 +735,29 @@ export default function AutopilotPage() {
               ? "Сборка не была обработана вовремя. Перезапусти приложение и попробуй ещё раз."
               : plan.errorReason === "quota"
                 ? "Дневной лимит ИИ исчерпан. Он обновится завтра; текущий план и настройки сохранены."
+                : plan.errorReason === "variety"
+                  ? "Модель несколько раз повторила похожие темы или тексты. Старый план сохранён — выбери другую модель или попробуй снова."
+                  : plan.errorReason === "quality"
+                    ? `Аврора автоматически переписала слабые черновики, но модель не достигла порога ${data.brief?.quality.qualityThreshold ?? 85}/100. Эти посты не попали в план. Пересобери план или выбери другую модель.`
               : "Проверь, что канал подключён и ИИ-движок доступен, и попробуй ещё раз."}
           </p>
           <div className="mt-4">
             <Button variant="solid" onClick={generate} loading={busy} disabled={busy}>
-              Попробовать снова
+              Пересобрать план
+            </Button>
+          </div>
+        </Card>
+      ) : hasLegacyAutomaticBlock ? (
+        <Card className="p-8 text-center">
+          <AlertTriangle className="mx-auto h-7 w-7 text-brand" aria-hidden />
+          <p className="mt-3 text-[15px] font-semibold text-text">План нужно пересобрать</p>
+          <p className="mx-auto mt-1 max-w-md text-[14px] text-text-3">
+            Этот план создан до обновления контроля качества. Теперь Аврора автоматически
+            переписывает каждый слабый черновик и показывает только посты, прошедшие проверку.
+          </p>
+          <div className="mt-4">
+            <Button variant="brand" onClick={generate} loading={busy} disabled={busy}>
+              Пересобрать план
             </Button>
           </div>
         </Card>
@@ -630,17 +766,17 @@ export default function AutopilotPage() {
           <EmptyState
             icon={<CalendarCheck className="h-6 w-6" strokeWidth={1.75} aria-hidden />}
             title="Плана пока нет"
-            body="Жми «Собрать план недели» — ИИ подготовит посты по твоей аналитике и залётам конкурентов, а ты одобришь одной кнопкой."
+            body="Выбери модель и период выше. ИИ подготовит разные посты, а ты проверишь и одобришь их одной кнопкой."
           />
         </Card>
       ) : (
         <div className="space-y-5">
-          {/* Обзор недели — с одного взгляда: что, когда и что от тебя нужно */}
+          {/* Обзор плана — с одного взгляда: что, когда и что от тебя нужно */}
           <Card className="p-4 sm:p-5">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="min-w-0">
                 <p className="text-[15px] font-bold text-text">
-                  {allApproved ? "Неделя в очереди 🚀" : "Твоя неделя готова"}
+                  {allApproved ? "Контент-план в очереди 🚀" : "Контент-план готов"}
                 </p>
                 <p className="mt-0.5 text-[13px] text-text-3">
                   {visible.length} {plural(visible.length, "пост", "поста", "постов")}
@@ -678,7 +814,7 @@ export default function AutopilotPage() {
 
             {/* Полоса дней. Кликни день — раскроется текст этого поста ниже. */}
             <div className="mt-4 flex gap-2 overflow-x-auto pb-1">
-              {visible.map((it) => {
+              {renderedVisible.map((it) => {
                 const done = it.status === "approved" || it.status === "published";
                 const active = expanded === it.i;
                 return (
@@ -754,7 +890,7 @@ export default function AutopilotPage() {
 
           {/* Посты плана — компактные карточки, раскрываются по клику */}
           <ul className="space-y-3">
-            {visible.map((it) => {
+            {renderedVisible.map((it) => {
               const done = it.status === "approved" || it.status === "published";
               const isEditing = editing?.channelId === data.channelId &&
                 editing.planId === plan.id &&
@@ -980,6 +1116,17 @@ export default function AutopilotPage() {
               );
             })}
           </ul>
+          {visible.length > renderedVisible.length && (
+            <div className="flex justify-center pt-1">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setVisibleLimit((current) => Math.min(visible.length, current + 14))}
+              >
+                Показать ещё {Math.min(14, visible.length - renderedVisible.length)}
+              </Button>
+            </div>
+          )}
         </div>
       )}
     </AppShell>

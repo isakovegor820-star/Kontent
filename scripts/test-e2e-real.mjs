@@ -40,7 +40,6 @@ let fakeServer;
 let browser;
 let page;
 let mediaQueue;
-let publishQueue;
 
 function assert(value, message) {
   if (!value) throw new Error(message);
@@ -259,6 +258,7 @@ const runtimeEnv = {
   NAVYAI_API_URL: `${fakeBase}/v1`,
   TOKENS_MASTER_KEY: "e2e-only-master-key-with-enough-entropy-2026",
   TOKENS_KEY_ID: "1",
+  AURORA_AVATAR_BODY_LIMIT_BYTES: String(5 * 1024 * 1024 + 512 * 1024),
   AURORA_WORKER_MODE: "full",
   AURORA_NEXT_DIST_DIR: ".next-e2e-real",
   TG_WEBHOOK_URL: `${baseUrl}/api/e2e-disabled-webhook`,
@@ -634,7 +634,13 @@ try {
   await registrySearch.fill("E2E_LIBRARY_REFERENCE");
   await page.waitForTimeout(450);
   await libraryText.waitFor();
-  await page.locator("summary").filter({ hasText: "Все фильтры" }).click();
+  const filtersSummary = page.locator("summary").filter({ hasText: "Все фильтры" });
+  await filtersSummary.focus();
+  await page.keyboard.press("Enter");
+  assert(
+    await filtersSummary.evaluate((summary) => summary.parentElement?.open === true),
+    "keyboard activation did not open Library filters",
+  );
   await page.getByRole("button", { name: "Экспорт текущего среза", exact: true }).click();
   await page.getByText(/Один срез данных · 1 запис/u).waitFor({ timeout: 10_000 });
   const exportLinks = page.locator('a[download][href^="/api/library/exports/"]');
@@ -1141,20 +1147,87 @@ try {
      values ($1, 'image', 'qa.png', 'image/png', 4, decode('89504e47','hex'), 'e2e-image') returning id`,
     [userId],
   )).rows[0].id);
-  const publicationPostId = Number((await pool.query(
-    `insert into posts (user_id, channel_id, text, media, scheduled_at, status,
-                        idempotency_key, request_fingerprint, publication_origin)
-     values ($1, $2, $3, $4::jsonb, now() + interval '1 second', 'scheduled',
-             'e2e-multipart-post', 'e2e-multipart-fingerprint', 'manual') returning id`,
-    [userId, channels[0], `Длинный текст E2E. ${"Проверяем продолжение без дубля медиа. ".repeat(40)}`, JSON.stringify({ assetId })],
-  )).rows[0].id);
-  publishQueue = new Queue("publish", { connection: redis });
-  await publishQueue.add("publish", { postId: publicationPostId, scheduleRevision: 1 }, {
-    delay: 1_000,
-    jobId: `post-${publicationPostId}-r1-e2e`,
-    removeOnComplete: true,
-    removeOnFail: false,
+  const publicationInstant = new Date();
+  publicationInstant.setUTCSeconds(0, 0);
+  const publicationDraftResponse = await authenticatedRequest("/api/drafts", {
+    method: "POST",
+    data: {
+      clientKey: "draft_e2e_publication_pipeline_1",
+      text: `Длинный текст E2E. ${"Проверяем продолжение без дубля медиа. ".repeat(40)}`,
+      media: {
+        kind: "image",
+        label: "Безопасное E2E-изображение",
+        hue: 210,
+        assetId: String(assetId),
+        url: `/api/media/assets/${assetId}`,
+        mimeType: "image/png",
+      },
+      scheduledAt: publicationInstant.toISOString(),
+      schedule: {
+        localDate: publicationInstant.toISOString().slice(0, 10),
+        localTime: publicationInstant.toISOString().slice(11, 16),
+        timezone: "UTC",
+        offset: "+00:00",
+        disambiguation: "reject",
+      },
+      origin: "manual",
+      sourceRef: null,
+      channelIds: [channels[0]],
+      aiValidation: null,
+    },
   });
+  assert(
+    publicationDraftResponse.status === 201,
+    `publication draft API failed with ${publicationDraftResponse.status}:${publicationDraftResponse.text}`,
+  );
+  const publicationDraft = JSON.parse(publicationDraftResponse.text).draft;
+  assert(publicationDraft?.version === 1, "publication draft API omitted immutable version 1");
+
+  const operationRequest = {
+    method: "POST",
+    headers: { "idempotency-key": "e2e_publication_pipeline_1" },
+    data: {
+      draftId: publicationDraft.id,
+      draftVersion: publicationDraft.version,
+      timezone: "UTC",
+    },
+  };
+  const [operationLeft, operationRight] = await Promise.all([
+    authenticatedRequest("/api/publication-operations", operationRequest),
+    authenticatedRequest("/api/publication-operations", operationRequest),
+  ]);
+  assert(
+    [operationLeft.status, operationRight.status].every((status) => status === 200 || status === 201),
+    `parallel publication API failed: ${operationLeft.status}/${operationRight.status}`,
+  );
+  const operationLeftBody = JSON.parse(operationLeft.text);
+  const operationRightBody = JSON.parse(operationRight.text);
+  assert(
+    Number(operationLeftBody.operationId) === Number(operationRightBody.operationId),
+    "double schedule created different publication operations",
+  );
+  const publicationOperationId = Number(operationLeftBody.operationId);
+  const publicationPostId = Number(operationLeftBody.destinations?.[0]?.postId);
+  const publicationRows = (await pool.query(
+    `select operation.id, operation.draft_version, operation.schedule_revision,
+            count(distinct post.id)::int as posts,
+            count(distinct outbox.id)::int as outbox_rows
+       from publication_operations operation
+       join posts post on post.publication_operation_id = operation.id
+       join publication_outbox outbox on outbox.operation_id = operation.id and outbox.post_id = post.id
+      where operation.draft_id = $1 and operation.draft_version = $2
+      group by operation.id, operation.draft_version, operation.schedule_revision`,
+    [publicationDraft.id, publicationDraft.version],
+  )).rows;
+  assert(publicationRows.length === 1, "draft revision produced more than one immutable operation");
+  assert(
+    Number(publicationRows[0].id) === publicationOperationId
+      && Number(publicationRows[0].draft_version) === 1
+      && Number(publicationRows[0].schedule_revision) === 1
+      && publicationRows[0].posts === 1
+      && publicationRows[0].outbox_rows === 1,
+    "publication operation did not create exactly one revision/post/outbox destination",
+  );
   await waitFor(async () => (await pool.query("select status from posts where id = $1", [publicationPostId])).rows[0]?.status === "published", "multipart publication did not recover", 15_000);
   const parts = (await pool.query(
     "select part_index, part_type, external_message_id, send_status from publication_parts where post_id = $1 order by part_index",
@@ -1162,8 +1235,6 @@ try {
   )).rows;
   assert(parts.length === 2 && parts.every((part) => part.send_status === "sent"), "multipart external IDs were not both persisted");
   assert(fakeState.telegram.photoCalls === 1 && fakeState.telegram.textCalls === 2, "multipart retry duplicated media or skipped text retry");
-  await publishQueue.close();
-  publishQueue = undefined;
 
   console.log(JSON.stringify({
     ok: true,
@@ -1203,6 +1274,13 @@ try {
     trendsOperations: 1,
     weeklyViews: analyticsBody.totals.totalViews,
     telegramParts: parts.map((part) => part.external_message_id),
+    publicationPipeline: {
+      draftId: publicationDraft.id,
+      operationId: publicationOperationId,
+      postId: publicationPostId,
+      scheduleRevision: Number(publicationRows[0].schedule_revision),
+      doubleSubmitCollapsed: true,
+    },
     telegramCalls: fakeState.telegram,
     ai: {
       calls: fakeState.ai.calls,
@@ -1217,7 +1295,6 @@ try {
   throw error;
 } finally {
   if (browser) await browser.close().catch(() => {});
-  if (publishQueue) await publishQueue.close().catch(() => {});
   if (mediaQueue) await mediaQueue.close().catch(() => {});
   for (const process of children) process.kill("SIGTERM");
   await new Promise((resolve) => setTimeout(resolve, 500));

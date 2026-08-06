@@ -62,6 +62,16 @@ export interface AiOrchestratorOptions {
   now?: () => number;
   /** null отключает breaker для изолированного caller/test. undefined = общий production breaker. */
   circuitBreaker?: ProviderCircuitBreaker | null;
+  /**
+   * Вызывается после circuit-breaker, но до открытия provider stream. Caller может
+   * атомарно зарезервировать budget; исключение гарантирует, что запрос провайдеру
+   * ещё не начался.
+   */
+  beforeAttempt?: (attempt: {
+    engine: EngineId;
+    attempt: number;
+    primary: boolean;
+  }) => void | Promise<void>;
 }
 
 const DEFAULT_FIRST_TOKEN_MS = 12_000;
@@ -246,6 +256,7 @@ export async function* orchestrateText(
         }
         throw error;
       }
+      await options.beforeAttempt?.({ engine, attempt, primary: primaryAttempt });
       yield { type: "telemetry", engine, primary: primaryAttempt, attempt, outcome: "started" };
 
       const firstTokenController = new AbortController();

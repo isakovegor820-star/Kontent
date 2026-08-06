@@ -60,7 +60,9 @@ async function startAndObserveWorker(queue, redis) {
       NODE_ENV: "test",
       DATABASE_URL: databaseUrl,
       REDIS_URL: redisUrl,
-      AURORA_WORKER_MODE: "full",
+      // Keep this gate isolated from unrelated cron/media/site-analysis work. Those workers
+      // have their own tests and can legitimately still be active when this short process exits.
+      AURORA_WORKER_MODE: "publication",
       PUBLICATION_OVERDUE_GRACE_MS: "300000",
       TG_BOT_TOKEN: "",
       TG_CHAT_ID: "",

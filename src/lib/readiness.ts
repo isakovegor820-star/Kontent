@@ -27,6 +27,8 @@ export interface ReadinessInput {
   aiProviders: ProviderHealthSnapshot[];
   aiConfigured: boolean;
   mailDelivery: DependencyState;
+  uploadIngress: DependencyState;
+  tokenEncryption: DependencyState;
   checkedAt?: Date;
 }
 
@@ -39,6 +41,8 @@ export interface ReadinessReport {
   publicationReady: boolean;
   aiReady: boolean;
   mailDeliveryReady: boolean;
+  uploadReady: boolean;
+  tokenEncryptionReady: boolean;
   passwordRecoveryReady: boolean;
   reasons: string[];
   checkedAt: string;
@@ -50,12 +54,16 @@ export interface ReadinessReport {
     aiProviders: ProviderHealthSnapshot[];
     aiConfigured: boolean;
     mailDelivery: DependencyState;
+    uploadIngress: DependencyState;
+    tokenEncryption: DependencyState;
   };
 }
 
 export type ServiceReadiness = Pick<
   ReadinessReport,
   "webReady" | "publicationReady" | "aiReady" | "schemaReady" | "mailDeliveryReady"
+  | "uploadReady"
+  | "tokenEncryptionReady"
 >;
 
 /** A failed readiness request must fail closed instead of claiming that the web tier is ready. */
@@ -66,16 +74,20 @@ export function readinessRequestFailure(): ServiceReadiness {
     aiReady: false,
     schemaReady: false,
     mailDeliveryReady: false,
+    uploadReady: false,
+    tokenEncryptionReady: false,
   };
 }
 
 export function evaluateReadiness(input: ReadinessInput): ReadinessReport {
   const databaseReady = input.database === "up";
   const schemaReady = databaseReady && input.schema.ready;
-  const webReady = databaseReady && schemaReady;
+  const uploadReady = input.uploadIngress === "up";
+  const webReady = databaseReady && schemaReady && uploadReady;
   const publicationReady = webReady
     && input.redis === "up"
-    && input.publicationWorker === "up";
+    && input.publicationWorker === "up"
+    && input.tokenEncryption === "up";
   // A configured but never-observed provider is not production evidence. The first
   // successful bounded provider call will populate the shared health snapshot.
   const aiReady = input.aiConfigured
@@ -84,6 +96,7 @@ export function evaluateReadiness(input: ReadinessInput): ReadinessReport {
       (provider) => provider.state !== "open" && provider.lastOutcome === "success",
     );
   const mailDeliveryReady = input.mailDelivery === "up";
+  const tokenEncryptionReady = input.tokenEncryption === "up";
   const passwordRecoveryReady = webReady && mailDeliveryReady;
   const reasons = [
     input.database === "not_configured" ? "database_not_configured" : null,
@@ -102,6 +115,10 @@ export function evaluateReadiness(input: ReadinessInput): ReadinessReport {
       : null,
     input.mailDelivery === "not_configured" ? "mail_delivery_not_configured" : null,
     input.mailDelivery === "down" ? "mail_delivery_unavailable" : null,
+    input.uploadIngress === "not_configured" ? "avatar_ingress_limit_not_configured" : null,
+    input.uploadIngress === "down" ? "avatar_ingress_limit_invalid" : null,
+    schemaReady && input.tokenEncryption === "not_configured" ? "token_keyring_not_configured" : null,
+    schemaReady && input.tokenEncryption === "down" ? "token_envelope_key_unknown" : null,
   ].filter((reason): reason is string => Boolean(reason));
   const degraded = !publicationReady || !aiReady || !mailDeliveryReady;
 
@@ -114,6 +131,8 @@ export function evaluateReadiness(input: ReadinessInput): ReadinessReport {
     publicationReady,
     aiReady,
     mailDeliveryReady,
+    uploadReady,
+    tokenEncryptionReady,
     passwordRecoveryReady,
     reasons,
     checkedAt: (input.checkedAt ?? new Date()).toISOString(),
@@ -125,6 +144,8 @@ export function evaluateReadiness(input: ReadinessInput): ReadinessReport {
       aiProviders: input.aiProviders,
       aiConfigured: input.aiConfigured,
       mailDelivery: input.mailDelivery,
+      uploadIngress: input.uploadIngress,
+      tokenEncryption: input.tokenEncryption,
     },
   };
 }

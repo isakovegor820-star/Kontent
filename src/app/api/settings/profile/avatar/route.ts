@@ -4,16 +4,20 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { getPool } from "@/lib/db";
 import {
+  PROFILE_AVATAR_MULTIPART_MAX_BYTES,
   PROFILE_AVATAR_UPLOAD_MAX_BYTES,
   ProfileAvatarError,
   prepareProfileAvatar,
 } from "@/lib/profile-avatar";
+import {
+  acquireAvatarBodySlot,
+  BoundedBodyError,
+  readRequestBodyLimited,
+} from "@/lib/bounded-request-body";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import { getSessionUser } from "@/lib/session";
 
 export const runtime = "nodejs";
-
-const MAX_MULTIPART_BYTES = PROFILE_AVATAR_UPLOAD_MAX_BYTES + 512 * 1024;
 
 function response(requestId: string, body: Record<string, unknown>, status = 200) {
   return NextResponse.json(
@@ -31,15 +35,27 @@ export async function POST(req: NextRequest) {
   if (!user) return response(requestId, { ok: false, error: "unauthorized" }, 401);
 
   const contentLength = Number(req.headers.get("content-length"));
-  if (Number.isFinite(contentLength) && contentLength > MAX_MULTIPART_BYTES) {
+  if (Number.isFinite(contentLength) && contentLength > PROFILE_AVATAR_MULTIPART_MAX_BYTES) {
     return response(requestId, { ok: false, error: "too_large" }, 413);
   }
 
+  let releaseBodySlot: (() => void) | null = null;
   try {
-    const form = await req.formData();
+    releaseBodySlot = acquireAvatarBodySlot();
+    const contentType = req.headers.get("content-type") || "";
+    if (!/^multipart\/form-data;.*boundary=/iu.test(contentType)) {
+      return response(requestId, { ok: false, error: "bad_multipart" }, 422);
+    }
+    const body = await readRequestBodyLimited(req.body, PROFILE_AVATAR_MULTIPART_MAX_BYTES);
+    const form = await new Response(body.buffer as ArrayBuffer, {
+      headers: { "content-type": contentType },
+    }).formData();
     const avatar = form.get("avatar");
     if (!(avatar instanceof File)) {
       return response(requestId, { ok: false, error: "missing_file" }, 422);
+    }
+    if (avatar.size > PROFILE_AVATAR_UPLOAD_MAX_BYTES) {
+      return response(requestId, { ok: false, error: "too_large" }, 413);
     }
     const prepared = await prepareProfileAvatar(await avatar.arrayBuffer(), avatar.type);
     const pool = getPool();
@@ -78,6 +94,13 @@ export async function POST(req: NextRequest) {
       bytes: prepared.data.byteLength,
     });
   } catch (error) {
+    if (error instanceof BoundedBodyError) {
+      return response(
+        requestId,
+        { ok: false, error: error.code },
+        error.code === "too_large" ? 413 : error.code === "upload_busy" ? 429 : 422,
+      );
+    }
     if (error instanceof ProfileAvatarError) {
       const status = error.code === "too_large" ? 413 : 422;
       return response(requestId, { ok: false, error: error.code }, status);
@@ -87,5 +110,7 @@ export async function POST(req: NextRequest) {
       errorName: error instanceof Error ? error.name : "Error",
     });
     return response(requestId, { ok: false, error: "unavailable" }, 503);
+  } finally {
+    releaseBodySlot?.();
   }
 }

@@ -9,8 +9,9 @@
 // Безопасность: client_secret читаем только из env, никогда не логируем. Токены в БД
 // кладутся ТОЛЬКО в AES-GCM конвертах (token-crypto.mjs) — этим занимается колбэк-роут.
 
-import { resolveChannel, uploadVideo } from "./youtube.mjs";
-import { exchangeLongLivedToken, resolveIgUser, publishMedia } from "./instagram.mjs";
+import { reconcileUploadSession, resolveChannel, uploadVideo } from "./youtube.mjs";
+import { exchangeLongLivedToken, reconcileMediaCreation, resolveIgUser, publishMedia } from "./instagram.mjs";
+import { assertFutureProviderAdapter } from "./social-provider-contract.mjs";
 
 const GRAPH_BASE = "https://graph.facebook.com/v19.0";
 
@@ -93,7 +94,11 @@ async function youtubePublish(accessToken, payload) {
     media: payload.media,
   });
   if (!res.ok) return res;
-  return { ok: true, externalId: res.videoId, postUrl: res.url };
+  return {
+    ...res,
+    externalId: res.videoId,
+    postUrl: res.url,
+  };
 }
 
 /**
@@ -141,7 +146,11 @@ async function instagramPublish(accessToken, payload, externalId) {
     media: payload.media,
   });
   if (!res.ok) return res;
-  return { ok: true, externalId: res.mediaId, postUrl: res.url };
+  return {
+    ...res,
+    externalId: res.mediaId,
+    postUrl: res.url,
+  };
 }
 
 /**
@@ -179,17 +188,32 @@ export const SOCIAL_ADAPTERS = {
     id: "youtube",
     label: "YouTube",
     refresh: true,
+    composerSupported: false,
+    retryPolicy: "reconcile_before_retry",
     finalizeTokens: youtubeFinalize,
     publish: youtubePublish,
+    reconcile: (accessToken, operation) => reconcileUploadSession(
+      accessToken,
+      operation.providerOperationId,
+      operation.totalBytes,
+    ),
   },
   instagram: {
     id: "instagram",
     label: "Instagram",
     refresh: true,
+    composerSupported: false,
+    retryPolicy: "reconcile_before_retry",
     finalizeTokens: instagramFinalize,
     publish: instagramPublish,
+    reconcile: (accessToken, operation) => reconcileMediaCreation(
+      accessToken,
+      operation.providerOperationId,
+    ),
   },
 };
+
+for (const adapter of Object.values(SOCIAL_ADAPTERS)) assertFutureProviderAdapter(adapter);
 
 export function getAdapter(network) {
   return SOCIAL_ADAPTERS[network] ?? null;

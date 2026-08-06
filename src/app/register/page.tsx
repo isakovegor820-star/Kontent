@@ -122,7 +122,12 @@ export default function RegisterPage() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ email: email.trim(), password }),
       });
-      const data = (await res.json().catch(() => null)) as { ok?: boolean; error?: string; retryAfter?: number } | null;
+      const data = (await res.json().catch(() => null)) as {
+        ok?: boolean;
+        error?: string;
+        retryAfter?: number;
+        accountCreated?: boolean;
+      } | null;
 
       if (res.ok && data?.ok) {
         await s.refreshAuth();
@@ -148,6 +153,9 @@ export default function RegisterPage() {
         setEmailErr("Кажется, тут опечатка. Проверь адрес.");
       } else if (res.status === 422 && data?.error === "bad_password") {
         setPwErr(`Пароль — минимум ${PASSWORD_MIN} символов.`);
+      } else if (res.status === 503 && data?.error === "session_creation_failed" && data.accountCreated) {
+        setMode("login");
+        setFormErr("Аккаунт создан, но автоматический вход не завершился. Войди с тем же паролем.");
       } else {
         setFormErr("Сервер не ответил. Попробуй ещё раз.");
       }

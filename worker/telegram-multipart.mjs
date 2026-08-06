@@ -1,12 +1,16 @@
-export function telegramPartDefinitions({ hasAsset, formattedLength }) {
-  if (!hasAsset) return [{ index: 0, type: "text" }];
-  if (Number(formattedLength) <= 900) return [{ index: 0, type: "media_caption" }];
-  return [{ index: 0, type: "media" }, { index: 1, type: "text" }];
+import {
+  buildTelegramPayload,
+  TELEGRAM_CAPTION_LIMIT,
+  TELEGRAM_TEXT_LIMIT,
+  telegramEntityLength,
+} from "../src/lib/telegram-payload.mjs";
+
+export function telegramPartDefinitions({ hasAsset, text, forceSeparateMedia = false }) {
+  return buildTelegramPayload({ hasAsset, text, forceSeparateMedia }).parts;
 }
 
 export async function deliverTelegramParts({
   parts,
-  formatted,
   asset,
   sendText,
   sendAsset,
@@ -21,12 +25,37 @@ export async function deliverTelegramParts({
       completed.push(part);
       continue;
     }
+    // A previous process may have sent this part before losing its response. Neither a
+    // retry nor a restart may cross that ambiguity without provider reconciliation.
+    if (part.send_status === "unknown" || part.send_status === "sending") {
+      return {
+        ok: false,
+        parts: completed,
+        reason: "Telegram не подтвердил ранее начатую отправку части",
+        deliveryUnknown: true,
+      };
+    }
+    const expectsText = part.part_type === "text" || part.part_type === "media_caption";
+    const payloadHtml = expectsText ? String(part.payload_html || "") : null;
+    const payloadLimit = part.part_type === "media_caption"
+      ? TELEGRAM_CAPTION_LIMIT
+      : TELEGRAM_TEXT_LIMIT;
+    if (expectsText && (!payloadHtml || telegramEntityLength(payloadHtml) > payloadLimit)) {
+      const response = { ok: false, description: "telegram_payload_invalid" };
+      await markFailed(part, response);
+      return {
+        ok: false,
+        parts: completed,
+        reason: "telegram_payload_invalid",
+        deliveryUnknown: false,
+      };
+    }
     await markSending(part);
     let response;
     try {
       response = part.part_type === "text"
-        ? await sendText(formatted)
-        : await sendAsset(asset, part.part_type === "media_caption" ? formatted : null);
+        ? await sendText(payloadHtml)
+        : await sendAsset(asset, part.part_type === "media_caption" ? payloadHtml : null);
     } catch (error) {
       await markUnknown(part, error);
       return {
@@ -43,6 +72,7 @@ export async function deliverTelegramParts({
         ok: false,
         parts: completed,
         reason: response?.description || "Telegram не подтвердил часть публикации",
+        providerErrorCode: Number(response?.error_code) || null,
         retryAfterSeconds: Number(response?.parameters?.retry_after) || null,
         deliveryUnknown: false,
       };

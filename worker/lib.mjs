@@ -53,108 +53,9 @@ export function splitChunks(raw) {
   return out;
 }
 
-// ── Разметка и клавиатура Telegram ───────────────────────────────────────────
-// Наша разметка → HTML Telegram: ||спойлер|| и **жирный**. Спецсимволы экранируем.
-export function toTelegramHtml(text) {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/\|\|([\s\S]+?)\|\|/g, "<tg-spoiler>$1</tg-spoiler>")
-    .replace(/\*\*([\s\S]+?)\*\*/g, "<b>$1</b>");
-}
-
-// ── Гарант структуры поста ───────────────────────────────────────────────────
-// Промпт просит ИИ разбивать текст на абзацы, но модель может «забыть». Форматтер
-// дожимает программно: режет «простыни» по границам предложений (абзац — не длиннее
-// PARAGRAPH_MAX знаков и не больше SENTENCES_PER_PARAGRAPH предложений), отрывает
-// хэштеги в отдельные блоки, списки сохраняет столбиком. Консервативен: слова не
-// меняет, только добавляет переносы. Применяется перед самой публикацией.
-const PARAGRAPH_MAX = 300; // знаков без переноса — дальше «простыня», режем
-const SENTENCES_PER_PARAGRAPH = 3; // предложений в абзаце — как в промпте («1–3»)
-
-/** Граница предложения: точка/!/…/… + пробел + заглавная буква или кавычка. */
-const SENTENCE_BREAK = /(?<=[.!?…])\s+(?=[А-ЯЁA-Z«„"])/;
-const TAG_RE = /^#[\wа-яА-ЯёЁ]+(\s+#[\wа-яА-ЯёЁ]+)*$/;
-const LIST_RE = /^\s*([—–-]|[•*]|[0-9]+[.)])\s+/;
-
-/** Режет одну длинную строку на абзацы по границам предложений.
- * Абзац «хороший», если он короткий И в нём не больше SENTENCES_PER_PARAGRAPH
- * предложений — иначе режем, даже если по знакам лимит не превышен. */
-function splitLongParagraph(block) {
-  const sentences = block.split(SENTENCE_BREAK);
-  if (sentences.length <= 1) return [block]; // одно предложение — некуда резать
-  if (sentences.length <= SENTENCES_PER_PARAGRAPH && block.length <= PARAGRAPH_MAX) return [block];
-
-  const out = [];
-  let cur = "";
-  let count = 0;
-  for (const s of sentences) {
-    if (cur && (count >= SENTENCES_PER_PARAGRAPH || (cur + " " + s).length > PARAGRAPH_MAX)) {
-      out.push(cur);
-      cur = s;
-      count = 1;
-    } else {
-      cur = cur ? cur + " " + s : s;
-      count++;
-    }
-  }
-  if (cur) out.push(cur);
-  return out;
-}
-
-/**
- * Доводит текст поста до читаемой структуры: воздух между абзацами, без «простыней».
- * Гарантии:
- *  — абзац не длиннее PARAGRAPH_MAX и не больше SENTENCES_PER_PARAGRAPH предложений;
- *  — хэштеги — всегда отдельным блоком (включая «прилипшие» к концу предложения);
- *  — списки («— пункт» / «• пункт») остаются столбиком, не склеиваются с текстом;
- *  — не более одной пустой строки между блоками.
- */
-export function formatPost(text) {
-  if (!text) return text;
-  let t = String(text).replace(/\r\n/g, "\n").trim();
-  if (!t) return t;
-
-  // 1. Схлопываем 3+ переноса до одной пустой строки.
-  t = t.replace(/\n{3,}/g, "\n\n");
-
-  // 2. Хэштеги, «прилипшие» к концу предложения, отрываем на отдельную строку.
-  t = t.replace(/^(.+?[.!?…»")])\s+(#[\wа-яА-ЯёЁ]+(?:[ \t]+#[\wа-яА-ЯёЁ]+)*)[ \t]*$/gm, "$1\n$2");
-
-  // 3. Собираем итоговые абзацы. Каждая длинная строка режется по предложениям,
-  //    соседние строки-списки группируются в один блок, теги — в свой блок.
-  const paragraphs = [];
-  let listBuf = [];
-  const flushList = () => {
-    if (listBuf.length) {
-      paragraphs.push(listBuf.join("\n"));
-      listBuf = [];
-    }
-  };
-
-  for (const line of t.split("\n")) {
-    const s = line.trim();
-    if (!s) {
-      flushList(); // пустая строка — граница блока
-      continue;
-    }
-    if (TAG_RE.test(s)) {
-      flushList();
-      paragraphs.push(s);
-      continue;
-    }
-    if (LIST_RE.test(s)) {
-      listBuf.push(s);
-      continue;
-    }
-    flushList();
-    paragraphs.push(...splitLongParagraph(s));
-  }
-  flushList();
-
-  return paragraphs.join("\n\n").trim();
-}
+// ── Разметка и финальный формат Telegram ────────────────────────────────────
+// Единая реализация также используется Composer preview и server-side preflight.
+export { formatPost, toTelegramHtml } from "../src/lib/telegram-format.mjs";
 
 /** buttons — массив рядов: [[{ text, data }|{ text, url }]]. */
 export function keyboard(buttons) {
@@ -184,8 +85,9 @@ export async function mapConcurrent(items, limit, fn) {
 }
 
 // План нельзя объявлять готовым, если модель вернула меньше тем, чем попросил человек,
-// или хотя бы один пост остался заглушкой. В таком случае BullMQ повторит всю сборку, а
-// предыдущий готовый план останется в базе до полноценного результата.
+// хотя бы один пост остался заглушкой ИЛИ не прошёл редакционный порог. Аврора не должна
+// перекладывать проверку собственного слабого черновика на пользователя: BullMQ повторит
+// сборку, а предыдущий хороший план останется в базе до полноценного результата.
 export function autopilotBuildComplete(expected, topics, items = null) {
   const count = Number(expected);
   if (!Number.isInteger(count) || count < 1) return false;
@@ -193,7 +95,12 @@ export function autopilotBuildComplete(expected, topics, items = null) {
   if (items == null) return true;
   return Array.isArray(items) &&
     items.length === count &&
-    items.every((item) => item?.aiReady === true && String(item?.draft || "").trim().length > 0);
+    items.every((item) =>
+      item?.aiReady === true &&
+      String(item?.draft || "").trim().length > 0 &&
+      item?.qualityBlocked !== true &&
+      item?.quality?.passed === true,
+    );
 }
 
 export function autopilotJobAttemptsExhausted(attemptsMade, configuredAttempts) {
@@ -403,25 +310,41 @@ export function citedShare(text) {
  * Теперь: дни делим поровну, а внутри дня разносим по часам, чтобы посты не падали в одну минуту.
  * Возвращает массив ISO-строк длиной N.
  */
-export function weekSlots(n, bestHour) {
-  const perDay = Math.ceil(n / 7);
+export function periodSlots(n, weeks, bestHour) {
+  const count = Math.max(0, Math.round(Number(n) || 0));
+  const days = Math.max(7, Math.round(Number(weeks) || 1) * 7);
+  const byDay = new Map();
+  for (let i = 0; i < count; i++) {
+    // Evenly span the complete horizon. The old `i / perDay` layout put a capped
+    // 90-post plan into the first half of its 12-week period and left the rest empty.
+    const day = Math.floor((i * days) / count) + 1;
+    const group = byDay.get(day) || [];
+    group.push(i);
+    byDay.set(day, group);
+  }
+
   const out = [];
-  for (let i = 0; i < n; i++) {
-    const day = Math.floor(i / perDay) + 1;
-    const slot = i % perDay;
-    let hour;
-    if (perDay === 1) {
-      hour = bestHour; // один пост в день — ставим в лучший час по аналитике
-    } else {
-      // Несколько постов в день — разносим равномерно по дневному окну 9:00–21:00.
-      // Впритык друг к другу их ставить нельзя: подписчик получит пачку уведомлений.
-      const from = 9;
-      const to = 21;
-      hour = Math.round(from + (slot * (to - from)) / (perDay - 1));
+  for (const [day, indices] of byDay) {
+    const perDay = indices.length;
+    for (let slot = 0; slot < perDay; slot++) {
+      let hour;
+      if (perDay === 1) {
+        hour = bestHour; // один пост в день — ставим в лучший час по аналитике
+      } else {
+        // Несколько постов в день — разносим равномерно по дневному окну 9:00–21:00.
+        // Впритык друг к другу их ставить нельзя: подписчик получит пачку уведомлений.
+        const from = 9;
+        const to = 21;
+        hour = Math.round(from + (slot * (to - from)) / (perDay - 1));
+      }
+      out.push(`${mskDatePlus(day)}T${String(hour).padStart(2, "0")}:00:00+03:00`);
     }
-    out.push(`${mskDatePlus(day)}T${String(hour).padStart(2, "0")}:00:00+03:00`);
   }
   return out;
+}
+
+export function weekSlots(n, bestHour) {
+  return periodSlots(n, 1, bestHour);
 }
 
 // МСК-дата через K дней в формате YYYY-MM-DD.

@@ -11,9 +11,11 @@ export async function GET(req: NextRequest) {
     const user = await getSessionUser(req);
     if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
     const rows = await getPool().query(
-      `select id, network, title, handle, is_active
+      `select id, network, title, handle,
+              (is_active and status = 'active') as is_active,
+              status, last_auth_error_code, last_auth_error_at
          from channels
-        where user_id = $1 and is_active = true
+        where user_id = $1 and status <> 'disconnected'
         order by id`,
       [user.id],
     );
@@ -23,6 +25,7 @@ export async function GET(req: NextRequest) {
         // `channels.id` — bigint, node-postgres отдаёт его строкой. Клиентский
         // контракт RealChannel использует number, поэтому нормализуем один раз здесь.
         id: Number(channel.id),
+        reconnect_required: ["needs_reconnect", "permission_lost", "revoked"].includes(channel.status),
       })),
     });
   } catch (err) {

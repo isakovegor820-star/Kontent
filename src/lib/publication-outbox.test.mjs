@@ -9,7 +9,7 @@ function poolForCounts(counts) {
       return { rowCount: 1, rows: [{ id: 9 }] };
     }
     if (sql.includes("count(*)::int as total")) return { rowCount: 1, rows: [counts] };
-    if (sql.includes("update publication_operations set status")) {
+    if (sql.includes("update publication_operations") && sql.includes("set status")) {
       operationStatus = params[1];
       return { rowCount: 1, rows: [] };
     }
@@ -54,5 +54,28 @@ describe("publication operation terminal reconciliation", () => {
     });
     const result = await reconcilePublicationOutbox({ pool, enqueue: vi.fn() });
     expect(result.statuses[9]).toBe("queued");
+  });
+
+  it.each([
+    { pending: 1, enqueued: 0, dispatching: 0 },
+    { pending: 0, enqueued: 0, dispatching: 1 },
+  ])("keeps a durable $pending/$dispatching dispatch state queued", async (outbox) => {
+    const pool = poolForCounts({
+      total: 1, failed: 0,
+      published: 0, unverified: 0, cancelled: 0, terminal_failed: 0, active: 1,
+      ...outbox,
+    });
+    const result = await reconcilePublicationOutbox({ pool, enqueue: vi.fn() });
+    expect(result.statuses[9]).toBe("queued");
+  });
+
+  it("keeps a fully cancelled operation terminal during reconciliation", async () => {
+    const pool = poolForCounts({
+      total: 1, enqueued: 0, failed: 0, dispatching: 0,
+      published: 0, unverified: 0, cancelled: 1, terminal_failed: 0, active: 0,
+    });
+    const result = await reconcilePublicationOutbox({ pool, enqueue: vi.fn() });
+    expect(result.statuses[9]).toBe("cancelled");
+    expect(pool.status()).toBe("cancelled");
   });
 });

@@ -27,8 +27,20 @@ const EXTERNAL_ID_COLUMN: Record<string, string> = {
   linkedin: "linkedin_account_id",
 };
 
+const CLEAR_OAUTH_COOKIE = { httpOnly: true, path: "/", maxAge: 0 } as const;
+
 function settingsRedirect(req: NextRequest, params: string): NextResponse {
-  return NextResponse.redirect(new URL(`/app/settings?${params}`, req.url));
+  const response = NextResponse.redirect(new URL(`/app/settings?${params}`, req.url));
+  response.cookies.set(OAUTH_STATE_COOKIE, "", CLEAR_OAUTH_COOKIE);
+  return response;
+}
+
+function safeOAuthError(error: unknown): { name: string; code?: string } {
+  const value = error && typeof error === "object" ? error as { name?: unknown; code?: unknown } : null;
+  return {
+    name: typeof value?.name === "string" ? value.name.slice(0, 80) : "oauth_error",
+    code: typeof value?.code === "string" ? value.code.slice(0, 80) : undefined,
+  };
 }
 
 export async function GET(req: NextRequest) {
@@ -47,14 +59,17 @@ export async function GET(req: NextRequest) {
   // Чувствительный роут (обмен чужих кодов): режем частые переборы по IP.
   const ip = clientIp(req);
   const byIp = await checkRateLimit(`oauth-callback:ip:${ip}`, 20, 900);
-  if (!byIp.allowed) return rateLimitResponse(byIp);
+  if (!byIp.allowed) {
+    const response = rateLimitResponse(byIp);
+    response.cookies.set(OAUTH_STATE_COOKIE, "", CLEAR_OAUTH_COOKIE);
+    return response;
+  }
 
   const code = req.nextUrl.searchParams.get("code") || "";
   const state = req.nextUrl.searchParams.get("state") || "";
 
   // Достаём и сразу жгём cookie состояния (одноразовое использование).
   const raw = req.cookies.get(OAUTH_STATE_COOKIE)?.value;
-  const clearCookie = { httpOnly: true, path: "/", maxAge: 0 };
   if (!raw) return settingsRedirect(req, `oauth=expired&network=${network}`);
 
   let saved: { state?: string; verifier?: string; network?: string; userId?: number };
@@ -66,9 +81,7 @@ export async function GET(req: NextRequest) {
 
   // Сверяем state, сеть и владельца. Несовпадение = чужой/подменённый код.
   if (!state || saved.state !== state || saved.network !== network || saved.userId !== user.id) {
-    const res = settingsRedirect(req, `oauth=state_mismatch&network=${network}`);
-    res.cookies.set(OAUTH_STATE_COOKIE, "", clearCookie);
-    return res;
+    return settingsRedirect(req, `oauth=state_mismatch&network=${network}`);
   }
 
   const cfg = getOAuthConfig(network);
@@ -94,7 +107,7 @@ export async function GET(req: NextRequest) {
     // 2) Пост-обработка: резолв канала/аккаунта, иногда замена токена (IG long-lived).
     const fin = await adapter.finalizeTokens(tokens);
     if (!fin.ok) {
-      console.warn(`[oauth/${network}] finalize:`, fin.reason);
+      console.warn("oauth_callback_finalize_failed", { provider: network, code: "account_resolution_failed" });
       return settingsRedirect(req, `oauth=no_account&network=${network}`);
     }
 
@@ -111,8 +124,11 @@ export async function GET(req: NextRequest) {
 
     const pool = getPool();
     const meta = JSON.stringify(fin.meta ?? {});
-    const tok = await pool.query<{ id: number }>(
-      `insert into oauth_tokens
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      const tok = await client.query<{ id: number }>(
+        `insert into oauth_tokens
          (user_id, provider, external_id, access_token, refresh_token, scopes, expires_at, meta)
        values ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
        on conflict (user_id, provider, external_id) where is_active and external_id is not null
@@ -124,41 +140,44 @@ export async function GET(req: NextRequest) {
                      is_active = true,
                      updated_at = now()
        returning id`,
-      [user.id, network, fin.externalId, accessEnc, refreshEnc, tokens.scope, expiresAt, meta],
-    );
-    const tokenId = tok.rows[0].id;
+        [user.id, network, fin.externalId, accessEnc, refreshEnc, tokens.scope, expiresAt, meta],
+      );
+      const tokenId = tok.rows[0].id;
 
-    // 4) Канал: upsert по (user, внешний id). Гонку за владение ловим кодом 23505.
-    try {
-      const existing = await pool.query<{ id: number }>(
-        `select id from channels where user_id = $1 and ${idCol} = $2`,
+      // 4) Канал и token живут в одной транзакции: конфликт владения не оставляет orphan token.
+      const existing = await client.query<{ id: number }>(
+        `select id from channels where user_id = $1 and ${idCol} = $2 for update`,
         [user.id, fin.externalId],
       );
       if (existing.rowCount) {
-        await pool.query(
-          `update channels set title = $2, handle = $3, oauth_token_id = $4, is_active = true
+        await client.query(
+          `update channels set title = $2, handle = $3, oauth_token_id = $4,
+              is_active = true, status = 'active', last_auth_error_code = null,
+              last_auth_error_at = null, disconnected_at = null, updated_at = now()
             where id = $1`,
           [existing.rows[0].id, fin.meta?.title ?? null, fin.meta?.handle ?? null, tokenId],
         );
       } else {
-        await pool.query(
+        await client.query(
           `insert into channels (user_id, network, ${idCol}, oauth_token_id, title, handle)
            values ($1, $2, $3, $4, $5, $6)`,
           [user.id, network, fin.externalId, tokenId, fin.meta?.title ?? null, fin.meta?.handle ?? null],
         );
       }
+      await client.query("commit");
     } catch (err) {
+      await client.query("rollback").catch(() => {});
       if ((err as { code?: string }).code === "23505") {
         return settingsRedirect(req, `oauth=taken&network=${network}`);
       }
       throw err;
+    } finally {
+      client.release();
     }
 
-    const res = settingsRedirect(req, `connected=${network}`);
-    res.cookies.set(OAUTH_STATE_COOKIE, "", clearCookie);
-    return res;
+    return settingsRedirect(req, `connected=${network}`);
   } catch (err) {
-    console.error(`[/api/channels/oauth/callback:${label}]`, err);
+    console.error("oauth_callback_failed", { provider: label, ...safeOAuthError(err) });
     return settingsRedirect(req, `oauth=server&network=${network}`);
   }
 }

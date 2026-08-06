@@ -1,7 +1,9 @@
 // Тесты чистых парсеров YouTube-клиента. Формат ответов Google стабилен, но парсим
 // защитно (любое поле может отсутствовать) — поэтому покрыто, как vk.ts.
-import { describe, it, expect } from "vitest";
-import { parseChannel, parseUploadResult, resolveMediaBytes } from "./youtube.mjs";
+import { afterEach, describe, it, expect, vi } from "vitest";
+import { parseChannel, parseUploadResult, resolveMediaBytes, uploadVideo } from "./youtube.mjs";
+
+afterEach(() => vi.unstubAllGlobals());
 
 describe("parseChannel", () => {
   it("разбирает канал из channels?mine=true", () => {
@@ -67,5 +69,30 @@ describe("resolveMediaBytes", () => {
   it("бросается на пустой источник", async () => {
     await expect(resolveMediaBytes(null)).rejects.toThrow();
     await expect(resolveMediaBytes({})).rejects.toThrow();
+  });
+});
+
+describe("uploadVideo ambiguous delivery", () => {
+  it("does not start a second upload when the final PUT response is lost", async () => {
+    const sessionUrl = "https://upload.example/session-redacted";
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(null, { status: 200, headers: { location: sessionUrl } }))
+      .mockRejectedValueOnce(Object.assign(new Error("socket reset"), { code: "ECONNRESET" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await uploadVideo("secret-token", {
+      title: "Test",
+      media: new Uint8Array([1, 2, 3]),
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      outcome: "delivery_unknown",
+      deliveryUnknown: true,
+      retryable: false,
+      providerOperationId: sessionUrl,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "PUT")).toHaveLength(1);
   });
 });

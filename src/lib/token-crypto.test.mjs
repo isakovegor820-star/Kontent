@@ -2,13 +2,14 @@
 // Ключ читается из env на каждый вызов (не кэшируется), поэтому «чужой ключ»
 // проверяется простой сменой TOKENS_MASTER_KEY между шифровкой и расшифровкой.
 import { describe, it, expect, beforeEach } from "vitest";
-import { encryptToken, decryptToken } from "./token-crypto.mjs";
+import { encryptToken, decryptToken, tokenEnvelopeKeyId } from "./token-crypto.mjs";
 
 const CTX = { userId: 42, provider: "vk" };
 
 beforeEach(() => {
   process.env.TOKENS_MASTER_KEY = "test-master-key";
   process.env.TOKENS_KEY_ID = "1";
+  delete process.env.TOKENS_OLD_KEYS;
 });
 
 describe("encryptToken / decryptToken", () => {
@@ -40,10 +41,22 @@ describe("encryptToken / decryptToken", () => {
     expect(() => decryptToken(envelope, { userId: 42, provider: "tg" })).toThrow();
   });
 
-  it("смена мастер-ключа — не расшифровывается", () => {
+  it("старый v1-конверт читается по key ID после ротации", () => {
     const envelope = encryptToken("secret", CTX);
     process.env.TOKENS_MASTER_KEY = "another-master-key";
-    expect(() => decryptToken(envelope, CTX)).toThrow();
+    process.env.TOKENS_KEY_ID = "2";
+    process.env.TOKENS_OLD_KEYS = JSON.stringify({ 1: "test-master-key" });
+    expect(decryptToken(envelope, CTX)).toBe("secret");
+    expect(tokenEnvelopeKeyId(encryptToken("new", CTX))).toBe("2");
+  });
+
+  it("неизвестный key ID fail-closed", () => {
+    const envelope = encryptToken("secret", CTX);
+    process.env.TOKENS_MASTER_KEY = "another-master-key";
+    process.env.TOKENS_KEY_ID = "2";
+    expect(() => decryptToken(envelope, CTX)).toThrowError(expect.objectContaining({
+      code: "token_key_unknown",
+    }));
   });
 
   it("подмена шифртекста (tamper) — не расшифровывается", () => {
@@ -62,6 +75,6 @@ describe("encryptToken / decryptToken", () => {
 
   it("нет мастер-ключа — явный throw", () => {
     delete process.env.TOKENS_MASTER_KEY;
-    expect(() => encryptToken("x", CTX)).toThrow(/TOKENS_MASTER_KEY/);
+    expect(() => encryptToken("x", CTX)).toThrowError(expect.objectContaining({ code: "token_key_missing" }));
   });
 });

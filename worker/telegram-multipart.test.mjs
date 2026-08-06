@@ -12,7 +12,6 @@ function harness(parts, responses) {
     sendAsset,
     input: {
       parts: mutable,
-      formatted: "x".repeat(901),
       asset: { kind: "image" },
       sendText,
       sendAsset,
@@ -29,24 +28,26 @@ function harness(parts, responses) {
 }
 
 describe("Telegram multipart delivery", () => {
-  it("plans one caption within Telegram's safe limit and two ordered parts above it", () => {
-    expect(telegramPartDefinitions({ hasAsset: true, formattedLength: 900 })).toEqual([
-      { index: 0, type: "media_caption" },
+  it("plans a caption up to 1024 and deterministic text chunks above it", () => {
+    expect(telegramPartDefinitions({ hasAsset: true, text: "x".repeat(1024) })).toEqual([
+      expect.objectContaining({ index: 0, type: "media_caption", entityLength: 1024 }),
     ]);
-    expect(telegramPartDefinitions({ hasAsset: true, formattedLength: 901 })).toEqual([
-      { index: 0, type: "media" },
-      { index: 1, type: "text" },
+    expect(telegramPartDefinitions({ hasAsset: true, text: "x".repeat(4097) })).toEqual([
+      expect.objectContaining({ index: 0, type: "media" }),
+      expect.objectContaining({ index: 1, type: "text", entityLength: 4096 }),
+      expect.objectContaining({ index: 2, type: "text", entityLength: 1 }),
     ]);
-    expect(telegramPartDefinitions({ hasAsset: false, formattedLength: 10 })).toEqual([
-      { index: 0, type: "text" },
+    expect(telegramPartDefinitions({ hasAsset: false, text: "text" })).toEqual([
+      expect.objectContaining({ index: 0, type: "text", entityLength: 4 }),
     ]);
   });
 
   it("persists partial success and retries only the missing second part", async () => {
     const first = harness(
-      telegramPartDefinitions({ hasAsset: true, formattedLength: 901 }).map((part) => ({
+      telegramPartDefinitions({ hasAsset: true, text: "x".repeat(1025) }).map((part) => ({
         part_index: part.index,
         part_type: part.type,
+        payload_html: part.payloadHtml,
         send_status: "pending",
         external_message_id: null,
       })),
@@ -74,7 +75,13 @@ describe("Telegram multipart delivery", () => {
 
   it("marks a thrown transport result unknown and forbids automatic continuation", async () => {
     const attempt = harness(
-      [{ part_index: 0, part_type: "text", send_status: "pending", external_message_id: null }],
+      [{
+        part_index: 0,
+        part_type: "text",
+        payload_html: "message",
+        send_status: "pending",
+        external_message_id: null,
+      }],
       [],
     );
     attempt.sendText.mockRejectedValueOnce(new Error("timeout after send"));
@@ -84,5 +91,47 @@ describe("Telegram multipart delivery", () => {
       parts: [],
     });
     expect(attempt.mutable[0].send_status).toBe("unknown");
+  });
+
+  it("does not resend an unknown second part or an already sent first part", async () => {
+    const attempt = harness([
+      {
+        part_index: 0,
+        part_type: "text",
+        payload_html: "first",
+        send_status: "sent",
+        external_message_id: "201",
+      },
+      {
+        part_index: 1,
+        part_type: "text",
+        payload_html: "second",
+        send_status: "unknown",
+        external_message_id: null,
+      },
+    ], []);
+    await expect(deliverTelegramParts(attempt.input)).resolves.toMatchObject({
+      ok: false,
+      deliveryUnknown: true,
+      parts: [expect.objectContaining({ external_message_id: "201" })],
+    });
+    expect(attempt.sendText).not.toHaveBeenCalled();
+  });
+
+  it("rejects an oversized persisted part before any provider call", async () => {
+    const attempt = harness([{
+      part_index: 0,
+      part_type: "text",
+      payload_html: "x".repeat(4097),
+      send_status: "pending",
+      external_message_id: null,
+    }], []);
+    await expect(deliverTelegramParts(attempt.input)).resolves.toMatchObject({
+      ok: false,
+      deliveryUnknown: false,
+      reason: "telegram_payload_invalid",
+    });
+    expect(attempt.sendText).not.toHaveBeenCalled();
+    expect(attempt.mutable[0].send_status).toBe("failed");
   });
 });

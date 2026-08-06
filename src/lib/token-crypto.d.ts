@@ -8,6 +8,13 @@ export interface TokenCryptoContext {
   provider: string;
 }
 
+export class TokenCryptoError extends Error { readonly code: string }
+export function tokenKeyring(env?: NodeJS.ProcessEnv): {
+  currentKeyId: string;
+  keys: Map<string, Buffer>;
+};
+export function tokenEnvelopeKeyId(envelope: string): string;
+
 /** Шифрует токен в конверт `v1:<keyId>:<iv>:<authTag>:<ciphertext>`. */
 export function encryptToken(plaintext: string, ctx: TokenCryptoContext): string;
 

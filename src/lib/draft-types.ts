@@ -1,5 +1,6 @@
 import type { Network, Post } from "./types";
 import type { FactualValidationProvenance } from "./fact-ledger";
+import type { LocalScheduleInput } from "./timezone-schedule";
 
 export interface DraftAiValidation {
   version: 1;
@@ -34,6 +35,12 @@ export interface ServerDraft {
   text: string;
   media: Post["media"];
   scheduled_at: string | null;
+  /** Optional only for compatibility with cached/pre-migration API payloads. New writes always return it. */
+  scheduled_timezone?: string | null;
+  scheduled_local_date?: string | null;
+  scheduled_local_time?: string | null;
+  scheduled_offset?: string | null;
+  scheduled_disambiguation?: "reject" | "earlier" | "later" | null;
   origin: Post["origin"];
   purpose: "source_context" | "publishable" | "needs_review";
   source_ref: Post["sourceRef"] | null;
@@ -53,6 +60,7 @@ export interface DraftWriteInput {
   text: string;
   media: Post["media"];
   scheduledAt: string | null;
+  schedule?: LocalScheduleInput | null;
   origin: Post["origin"];
   sourceRef: Post["sourceRef"] | null;
   channelIds: number[];

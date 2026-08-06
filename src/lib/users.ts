@@ -60,28 +60,51 @@ export async function findOrCreateUser(idn: Identity): Promise<{ id: number; cre
   const contacts: string[] = [];
   if (email) contacts.push(email);
   if (idn.username) contacts.push("@" + idn.username.toLowerCase());
-  await convertMatchingLead(contacts, name);
+  await convertMatchingLeadAfterRegistration(contacts, name);
 
   return { id, created: true };
 }
 
 /** Если заявка того же контакта ещё не registered — помечаем и сообщаем владельцу. */
-async function convertMatchingLead(contacts: string[], name: string | null): Promise<void> {
+export async function convertMatchingLeadAfterRegistration(
+  contacts: string[],
+  name: string | null,
+  dependencies: {
+    query?: Pick<ReturnType<typeof getPool>, "query">;
+    notify?: typeof notifyOwner;
+  } = {},
+): Promise<{ converted: boolean; notified: boolean }> {
   const list = contacts.filter(Boolean).map((c) => c.toLowerCase());
-  if (list.length === 0) return;
+  if (list.length === 0) return { converted: false, notified: false };
 
-  const upd = await getPool().query<{ contact: string }>(
-    `update leads set status = 'registered'
-      where contact = any($1) and status <> 'registered'
-      returning contact`,
-    [list],
-  );
+  let upd;
+  try {
+    upd = await (dependencies.query ?? getPool()).query<{ contact: string }>(
+      `update leads set status = 'registered'
+        where contact = any($1) and status <> 'registered'
+        returning contact`,
+      [list],
+    );
+  } catch (error) {
+    console.warn("[registration_event]", {
+      event: "lead_conversion_failed",
+      code: error && typeof error === "object" && "code" in error ? String(error.code) : "unknown",
+    });
+    return { converted: false, notified: false };
+  }
 
   if (upd.rowCount) {
     const who = name || upd.rows[0].contact;
-    await notifyOwner(
-      `🎉 Заявка сконвертировалась: ${who} вошёл в платформу\n` +
-        `Контакт: ${upd.rows[0].contact}\nКогда: ${nowMoscow()} МСК`,
-    );
+    try {
+      const notified = await (dependencies.notify ?? notifyOwner)(
+        `🎉 Заявка сконвертировалась: ${who} вошёл в платформу\n` +
+          `Контакт: ${upd.rows[0].contact}\nКогда: ${nowMoscow()} МСК`,
+      );
+      return { converted: true, notified };
+    } catch {
+      console.warn("[registration_event]", { event: "lead_notification_failed", code: "notify_failed" });
+      return { converted: true, notified: false };
+    }
   }
+  return { converted: false, notified: false };
 }

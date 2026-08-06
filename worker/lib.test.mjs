@@ -7,6 +7,7 @@ import {
   decodeEntities,
   splitChunks,
   plural,
+  periodSlots,
   weekSlots,
   toTelegramHtml,
   keyboard,
@@ -199,6 +200,32 @@ describe("weekSlots", () => {
   });
 });
 
+describe("periodSlots", () => {
+  it("spreads a three-month plan across the complete 12-week horizon", () => {
+    const slots = periodSlots(84, 12, 19);
+    expect(slots).toHaveLength(84);
+    const first = Date.parse(slots[0]);
+    const last = Date.parse(slots.at(-1));
+    expect((last - first) / 86_400_000).toBeGreaterThanOrEqual(82);
+  });
+
+  it("keeps multiple same-day posts separated inside the daytime window", () => {
+    const slots = periodSlots(90, 12, 19);
+    expect(slots).toHaveLength(90);
+    const grouped = new Map();
+    for (const slot of slots) {
+      const date = slot.slice(0, 10);
+      grouped.set(date, [...(grouped.get(date) || []), slot]);
+    }
+    for (const daySlots of grouped.values()) {
+      const hours = daySlots.map((slot) => Number(slot.slice(11, 13)));
+      expect(new Set(hours).size).toBe(hours.length);
+      expect(Math.min(...hours)).toBeGreaterThanOrEqual(9);
+      expect(Math.max(...hours)).toBeLessThanOrEqual(21);
+    }
+  });
+});
+
 describe("mapConcurrent", () => {
   it("сохраняет порядок по индексу", async () => {
     const out = await mapConcurrent([1, 2, 3, 4, 5], 2, async (x) => x * 2);
@@ -225,8 +252,8 @@ describe("mapConcurrent", () => {
 describe("autopilotBuildComplete", () => {
   const topics = [{ topic: "Один" }, { topic: "Два" }];
   const items = [
-    { aiReady: true, draft: "Готовый первый пост" },
-    { aiReady: true, draft: "Готовый второй пост" },
+    { aiReady: true, draft: "Готовый первый пост", qualityBlocked: false, quality: { passed: true } },
+    { aiReady: true, draft: "Готовый второй пост", qualityBlocked: false, quality: { passed: true } },
   ];
 
   it("принимает только план точного размера с готовыми ИИ-текстами", () => {
@@ -240,6 +267,16 @@ describe("autopilotBuildComplete", () => {
 
   it("не принимает пустой ИИ-черновик", () => {
     expect(autopilotBuildComplete(2, topics, [items[0], { aiReady: false, draft: "" }])).toBe(false);
+  });
+
+  it("не отдаёт пользователю план с постом, который Аврора сама заблокировала", () => {
+    const blocked = {
+      aiReady: true,
+      draft: "Слабый черновик",
+      qualityBlocked: true,
+      quality: { passed: false, score: 65, threshold: 95 },
+    };
+    expect(autopilotBuildComplete(2, topics, [items[0], blocked])).toBe(false);
   });
 });
 

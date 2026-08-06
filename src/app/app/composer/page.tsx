@@ -100,10 +100,20 @@ import {
   type PendingDraftRevision,
 } from "@/lib/draft-outbox";
 import { composerAiReviewState } from "@/lib/draft-review";
+import { publicationOperationFailureFeedback } from "@/lib/publication-operation-feedback";
+import {
+  buildTelegramPayload,
+  telegramHtmlToText,
+} from "@/lib/telegram-payload.mjs";
 import {
   nextMoscowPublishingSlot,
   type BestPublishingTime,
 } from "@/lib/best-publishing-time";
+import {
+  inspectLocalSchedule,
+  resolveLocalSchedule,
+  type ScheduleDisambiguation,
+} from "@/lib/timezone-schedule";
 import { useStore } from "@/lib/store";
 import type { Network, Post, RealChannel } from "@/lib/types";
 import {
@@ -120,12 +130,7 @@ import {
 
 /* ------------------------------------------------------------------ ХЕЛПЕРЫ */
 
-/** Лимиты сетей на текст сообщения. Предпросмотр TG честно режет до своего.
- * Композитор пока умеет только в текстовые сети (tg/vk); у медиа-сетей (youtube/instagram/...)
- * лимит другой, поэтому здесь Partial — не требуем ключи всех сетей. */
-const TG_LIMIT = 4096;
 const VK_LIMIT = 16384;
-const NETWORK_LIMIT: Partial<Record<Network, number>> = { tg: TG_LIMIT, vk: VK_LIMIT };
 
 const NETWORK_ORDER: Network[] = ["tg", "vk"];
 
@@ -135,11 +140,23 @@ const toDateValue = (d: Date) =>
 const toTimeValue = (d: Date) =>
   `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 
-/** «2026-07-15» + «10:00» → Date в местном времени. null — если пусто или мусор. */
-function parseWhen(date: string, time: string): Date | null {
+function resolveComposerSchedule(
+  date: string,
+  time: string,
+  timezone: string,
+  disambiguation: ScheduleDisambiguation,
+) {
   if (!date || !time) return null;
-  const d = new Date(`${date}T${time}:00`);
-  return Number.isNaN(d.getTime()) ? null : d;
+  try {
+    return resolveLocalSchedule({
+      localDate: date,
+      localTime: time,
+      timezone,
+      disambiguation,
+    });
+  } catch {
+    return null;
+  }
 }
 
 /** Заглушка медиа: цветной градиент по hue — файлы в демо не грузим. */
@@ -218,6 +235,9 @@ interface ComposerValue {
   setDate: (v: string) => void;
   time: string;
   setTime: (v: string) => void;
+  scheduleTimezone: string;
+  timeDisambiguation: ScheduleDisambiguation;
+  setTimeDisambiguation: (value: ScheduleDisambiguation) => void;
   noDate: boolean;
   setNoDate: (v: boolean) => void;
   aiBusy: ComposerAiCommand | null;
@@ -279,6 +299,10 @@ export default function ComposerPage() {
   const [origin, setOrigin] = useState<Post["origin"]>("manual");
   const [date, setDate] = useState("");
   const [time, setTime] = useState("");
+  const [scheduleTimezone, setScheduleTimezone] = useState(
+    () => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+  );
+  const [timeDisambiguation, setTimeDisambiguation] = useState<ScheduleDisambiguation>("reject");
   const [noDate, setNoDate] = useState(false);
   const [aiBusy, setAiBusy] = useState<ComposerAiCommand | null>(null);
   const [typing, setTyping] = useState(false);
@@ -391,8 +415,19 @@ export default function ComposerPage() {
           ? "required"
           : "none",
     );
-    setDate(pending?.form.date ?? d ?? toDateValue(when));
-    setTime(pending?.form.time ?? t ?? toTimeValue(when));
+    setDate(pending?.form.date ?? draft?.scheduled_local_date ?? d ?? toDateValue(when));
+    setTime(pending?.form.time ?? draft?.scheduled_local_time ?? t ?? toTimeValue(when));
+    setScheduleTimezone(
+      pending?.payload.schedule?.timezone
+        ?? draft?.scheduled_timezone
+        ?? Intl.DateTimeFormat().resolvedOptions().timeZone
+        ?? "UTC",
+    );
+    setTimeDisambiguation(
+      pending?.payload.schedule?.disambiguation
+        ?? draft?.scheduled_disambiguation
+        ?? "reject",
+    );
     // Клик по дню в календаре — это явное намерение поставить дату
     setNoDate(pending?.form.noDate ?? (d ? false : post ? post.scheduledAt === null : false));
     setDraftSaveState(pending ? (pendingConflict ? "conflict" : "pending") : draft ? "saved" : "idle");
@@ -497,10 +532,16 @@ export default function ComposerPage() {
   }, [markDraftDirty]);
   const changeDate = useCallback((value: string) => {
     setDate(value);
+    setTimeDisambiguation("reject");
     markDraftDirty();
   }, [markDraftDirty]);
   const changeTime = useCallback((value: string) => {
     setTime(value);
+    setTimeDisambiguation("reject");
+    markDraftDirty();
+  }, [markDraftDirty]);
+  const changeTimeDisambiguation = useCallback((value: ScheduleDisambiguation) => {
+    setTimeDisambiguation(value);
     markDraftDirty();
   }, [markDraftDirty]);
   const changeNoDate = useCallback((value: boolean) => {
@@ -789,6 +830,8 @@ export default function ComposerPage() {
     setNoDate(false);
     setDate(toDateValue(target));
     setTime(toTimeValue(target));
+    setScheduleTimezone(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
+    setTimeDisambiguation("reject");
     markDraftDirty();
     setErrors((e) => ({ ...e, when: undefined }));
   }, [bestTime, markDraftDirty]);
@@ -810,16 +853,27 @@ export default function ComposerPage() {
       }
 
       if (needWhen && !noDate) {
-        const when = parseWhen(date, time);
-        if (!when) next.when = "Поставь дату и время — или отметь «Без даты — в очередь».";
-        else if (when.getTime() <= Date.now())
+        if (!date || !time) {
+          next.when = "Поставь дату и время — или отметь «Без даты — в очередь».";
+        } else {
+          const inspected = inspectLocalSchedule({ localDate: date, localTime: time, timezone: scheduleTimezone });
+          if (inspected.kind === "nonexistent") {
+            next.when = "Такого местного времени нет из-за перехода на летнее время. Выбери другое.";
+          } else if (inspected.kind === "ambiguous" && timeDisambiguation === "reject") {
+            next.when = "Это время повторяется при переводе часов. Выбери первый или второй вариант.";
+          } else if (inspected.kind === "invalid_timezone" || inspected.kind === "invalid_local_time") {
+            next.when = "Дата, время или часовой пояс не распознаны.";
+          }
+        }
+        const resolved = resolveComposerSchedule(date, time, scheduleTimezone, timeDisambiguation);
+        if (resolved && Date.parse(resolved.scheduledAt) <= Date.now())
           next.when = "Это время уже прошло. Выбери будущее — или отправим в очередь без даты.";
       }
 
       setErrors(next);
       return next;
     },
-    [aiReview, date, networks.length, noDate, text, time, typing],
+    [aiReview, date, networks.length, noDate, scheduleTimezone, text, time, timeDisambiguation, typing],
   );
 
   const persistDraft = useCallback(
@@ -860,9 +914,18 @@ export default function ComposerPage() {
         return Promise.resolve(null);
       }
 
-      const when = noDate ? null : parseWhen(date, time);
-      if (!noDate && (date || time) && !when) {
-        const message = "Дата заполнена не полностью. Исправь её или выбери «Без даты».";
+      const resolvedSchedule = noDate
+        ? null
+        : resolveComposerSchedule(date, time, scheduleTimezone, timeDisambiguation);
+      if (!noDate && (date || time) && !resolvedSchedule) {
+        const inspection = date && time
+          ? inspectLocalSchedule({ localDate: date, localTime: time, timezone: scheduleTimezone })
+          : null;
+        const message = inspection?.kind === "nonexistent"
+          ? "Такого времени нет из-за перевода часов. Выбери другое."
+          : inspection?.kind === "ambiguous"
+            ? "Выбери первый или второй вариант повторяющегося времени."
+            : "Дата заполнена не полностью. Исправь её или выбери «Без даты».";
         setErrors((current) => ({ ...current, when: message }));
         setDraftSaveState("failed");
         if (mode !== "autosave") {
@@ -870,7 +933,7 @@ export default function ComposerPage() {
         }
         return Promise.resolve(null);
       }
-      const scheduledAt = when ? when.toISOString() : null;
+      const scheduledAt = resolvedSchedule?.scheduledAt ?? null;
       const unchanged = reusableAcknowledgedDraft({
         draft: acknowledgedDraftRef.current,
         draftId,
@@ -893,6 +956,15 @@ export default function ComposerPage() {
             text,
             media: media ?? null,
             scheduledAt,
+            schedule: resolvedSchedule
+              ? {
+                  localDate: resolvedSchedule.localDate,
+                  localTime: resolvedSchedule.localTime,
+                  timezone: resolvedSchedule.timezone,
+                  disambiguation: resolvedSchedule.disambiguation,
+                  offset: resolvedSchedule.offset,
+                }
+              : null,
             origin,
             sourceRef: sourceRef ?? null,
             channelIds: selected,
@@ -1008,16 +1080,24 @@ export default function ComposerPage() {
       noDate,
       origin,
       s,
+      scheduleTimezone,
       sourceRef,
       text,
       tgChannels,
       time,
+      timeDisambiguation,
       validate,
       vkChannelId,
       vkChannels,
     ],
   );
 
+  const currentSchedule = useMemo(
+    () => noDate
+      ? null
+      : resolveComposerSchedule(date, time, scheduleTimezone, timeDisambiguation),
+    [date, noDate, scheduleTimezone, time, timeDisambiguation],
+  );
   const autosaveEligible = shouldAutosaveDraft({
     hydrated,
     revision: draftRevision,
@@ -1030,8 +1110,7 @@ export default function ComposerPage() {
       networks.every((network) =>
         network === "tg" ? channelId != null : network === "vk" ? vkChannelId != null : false,
       ),
-    scheduleValid:
-      noDate || (!(date || time)) || Boolean(parseWhen(date, time)),
+    scheduleValid: noDate || (!(date || time)) || Boolean(currentSchedule),
     busy: typing || saving,
   });
 
@@ -1047,7 +1126,6 @@ export default function ComposerPage() {
       ...(networks.includes("tg") && channelId != null ? [channelId] : []),
       ...(networks.includes("vk") && vkChannelId != null ? [vkChannelId] : []),
     ];
-    const when = noDate ? null : parseWhen(date, time);
     const durable = persistPendingDraft({
       schema: 1,
       userId: composerUserId,
@@ -1060,7 +1138,16 @@ export default function ComposerPage() {
       payload: {
         text,
         media: media ?? null,
-        scheduledAt: when?.toISOString() ?? null,
+        scheduledAt: currentSchedule?.scheduledAt ?? null,
+        schedule: currentSchedule
+          ? {
+              localDate: currentSchedule.localDate,
+              localTime: currentSchedule.localTime,
+              timezone: currentSchedule.timezone,
+              disambiguation: currentSchedule.disambiguation,
+              offset: currentSchedule.offset,
+            }
+          : null,
         origin,
         sourceRef: sourceRef ?? null,
         channelIds: selected,
@@ -1089,6 +1176,7 @@ export default function ComposerPage() {
     networks,
     noDate,
     origin,
+    currentSchedule,
     generationResultId,
     sourceRef,
     text,
@@ -1220,7 +1308,7 @@ export default function ComposerPage() {
         draftVersion: draft.version,
         idempotencyKey: operation.key,
         operationFingerprint: operation.fingerprint,
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+        timezone: draft.scheduled_timezone || scheduleTimezone,
       });
       if (result.fingerprint) operation.fingerprint = result.fingerprint;
       if (
@@ -1241,26 +1329,18 @@ export default function ComposerPage() {
         publicationOperationRef.current = null;
         router.push("/app/calendar");
       } else {
-        const publicationUnavailable = result.error === "publication_worker_unavailable";
+        const feedback = publicationOperationFailureFeedback(result);
         s.toast({
           kind: "danger",
-          title: publicationUnavailable
-            ? "Публикация временно недоступна"
-            : result.error?.includes("conflict")
-            ? "Версия операции изменилась"
-            : "Операция принята частично",
-          body: publicationUnavailable
-            ? "Фоновый обработчик не запущен. Черновик сохранён — запусти сервер через npm run dev и повтори планирование."
-            : result.error?.includes("conflict")
-            ? "Повтор не смешал новый текст со старой отправкой. Черновик сохранён; проверь назначения в календаре."
-            : "Черновик не удалён. Успешные и ожидающие назначения показаны отдельно в календаре.",
+          title: feedback.title,
+          body: feedback.body,
         });
       }
     } finally {
       setSaving(false);
       scheduleRequestRef.current = false;
     }
-  }, [composerUserId, persistDraft, router, s, validate]);
+  }, [composerUserId, persistDraft, router, s, scheduleTimezone, validate]);
 
   const removeCurrent = useCallback(async () => {
     if (!editingId) return;
@@ -1322,6 +1402,9 @@ export default function ComposerPage() {
       setDate: changeDate,
       time,
       setTime: changeTime,
+      scheduleTimezone,
+      timeDisambiguation,
+      setTimeDisambiguation: changeTimeDisambiguation,
       noDate,
       setNoDate: changeNoDate,
       aiBusy,
@@ -1365,6 +1448,7 @@ export default function ComposerPage() {
       changeNoDate,
       changeText,
       changeTime,
+      changeTimeDisambiguation,
       changeVkChannelId,
       confirmDelete,
       confirmAiReview,
@@ -1391,12 +1475,14 @@ export default function ComposerPage() {
       removeCurrent,
       runAi,
       saveDraft,
+      scheduleTimezone,
       saving,
       schedule,
       sourceRef,
       stopAi,
       text,
       time,
+      timeDisambiguation,
       topic,
       topicOpen,
       toggleNetwork,
@@ -1680,16 +1766,28 @@ function ComposerInner() {
   if (!hydrated) return <ComposerSkeleton />;
 
   const len = text.length;
-  // Лимит считаем по выбранной сети: TG режет на 4096, VK терпит до 16384.
-  // Если включены обе — ориентиром служит более строгий telegram-лимит.
-  const effLimit = c.networks.includes("tg")
-    ? NETWORK_LIMIT.tg ?? TG_LIMIT
-    : NETWORK_LIMIT.vk ?? VK_LIMIT;
-  const over = len > effLimit;
   const tgOn = c.networks.includes("tg");
   const vkOn = c.networks.includes("vk");
+  const over = vkOn && len > VK_LIMIT;
+  const telegramPreviewPayload = buildTelegramPayload({ text, hasAsset: Boolean(c.media) });
+  const telegramMessageCount = telegramPreviewPayload.parts.filter(
+    (part) => part.type === "text" || part.type === "media_caption",
+  ).length;
   const aiUsage = getAiUsageMetrics(s.aiUsageStatus, s.aiUsed, s.aiLimit);
-  const when = parseWhen(c.date, c.time);
+  const previewSchedule = resolveComposerSchedule(
+    c.date,
+    c.time,
+    c.scheduleTimezone,
+    c.timeDisambiguation,
+  );
+  const when = previewSchedule ? new Date(previewSchedule.scheduledAt) : null;
+  const scheduleInspection = c.date && c.time
+    ? inspectLocalSchedule({
+        localDate: c.date,
+        localTime: c.time,
+        timezone: c.scheduleTimezone,
+      })
+    : null;
 
   // Предпросмотр обязан показывать ТОТ канал, в который уйдёт пост. Раньше он всегда брал
   // демо-канал из моков — при одном канале это была незаметная условность, но теперь человек
@@ -1791,9 +1889,11 @@ function ComposerInner() {
             <div className="mt-2 flex items-start justify-between gap-4">
               {over ? (
                 <p className="text-[13px] font-medium text-danger">
-                  {c.networks.includes("tg")
-                    ? `Для Telegram лимит ${fmtNum(TG_LIMIT)} символов — VK стерпит, Telegram обрежет.`
-                    : `Для VK лимит ${fmtNum(VK_LIMIT)} символов — сократи текст.`}
+                  Для VK лимит {fmtNum(VK_LIMIT)} символов — сократи текст.
+                </p>
+              ) : tgOn && telegramMessageCount > 1 ? (
+                <p className="text-[13px] font-medium text-text-2">
+                  Telegram отправит текст {telegramMessageCount} сообщениями. Границы показаны в предпросмотре.
                 </p>
               ) : (
                 <p className="text-[13px] text-text-3">Ctrl + Enter — запланировать</p>
@@ -2142,6 +2242,41 @@ function ComposerInner() {
               />
             </div>
 
+            {!c.noDate && (
+              <p className="text-[13px] text-text-3">
+                Часовой пояс: <span className="font-medium text-text-2">{c.scheduleTimezone}</span>
+              </p>
+            )}
+            {!c.noDate && scheduleInspection?.kind === "nonexistent" && (
+              <p role="alert" className="text-[13px] font-medium text-danger-text">
+                В этот момент часы переводятся вперёд, поэтому местного времени не существует.
+              </p>
+            )}
+            {!c.noDate && scheduleInspection?.kind === "ambiguous" && (
+              <fieldset className="rounded-sm border border-fire/30 bg-fire-soft p-3">
+                <legend className="px-1 text-[13px] font-semibold text-text">
+                  Это время повторяется — какой вариант выбрать?
+                </legend>
+                <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                  {([
+                    ["earlier", scheduleInspection.earlier.offset, "Первый раз"],
+                    ["later", scheduleInspection.later.offset, "Второй раз"],
+                  ] as const).map(([value, offset, label]) => (
+                    <label key={value} className="flex min-h-11 cursor-pointer items-center gap-2 rounded-xs border border-line bg-surface px-3 text-[13px] text-text">
+                      <input
+                        type="radio"
+                        name="schedule-disambiguation"
+                        value={value}
+                        checked={c.timeDisambiguation === value}
+                        onChange={() => c.setTimeDisambiguation(value)}
+                      />
+                      <span><b className="font-semibold">{label}</b> ({offset})</span>
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+            )}
+
             <div className="flex flex-wrap gap-2">
               <Button
                 variant="soft"
@@ -2479,8 +2614,10 @@ function TelegramPreview({
   subscribers,
   when,
 }: PreviewProps & { handle: string }) {
-  const shown = text.slice(0, TG_LIMIT);
-  const cut = Math.max(0, text.length - TG_LIMIT);
+  const payload = buildTelegramPayload({ text, hasAsset: Boolean(media) });
+  const textParts = payload.parts.filter(
+    (part) => part.type === "text" || part.type === "media_caption",
+  );
   const views = subscribers > 0 ? Math.round(subscribers * 0.26) : null;
 
   return (
@@ -2507,12 +2644,21 @@ function TelegramPreview({
         )}
 
         <div className="px-4 py-3">
-          <PreviewText value={shown} typing={typing} />
-          {cut > 0 && (
-            <p className="mt-2 text-[13px] font-medium text-danger">
-              Telegram обрежет здесь — {chars(cut)} не поместились.
-            </p>
-          )}
+          <div className="space-y-3">
+            {textParts.length > 0 ? textParts.map((part, index) => (
+                <div key={part.index} className={cn(index > 0 && "border-t border-line pt-3")}>
+                  {textParts.length > 1 && (
+                    <p className="mb-1 text-[12px] font-semibold text-text-3">
+                      Сообщение {index + 1} из {textParts.length}
+                    </p>
+                  )}
+                  <PreviewText
+                    value={telegramHtmlToText(part.payloadHtml || "")}
+                    typing={typing && index === textParts.length - 1}
+                  />
+                </div>
+              )) : <PreviewText value="" typing={typing} />}
+          </div>
         </div>
 
         <div className="flex items-center gap-1.5 border-t border-line px-4 py-2.5 text-[13px] text-text-3">

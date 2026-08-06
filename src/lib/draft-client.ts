@@ -201,6 +201,13 @@ export function draftMatchesWrite(draft: ServerDraft, input: DraftWriteInput): b
   return (
     draft.text === input.text &&
     draft.scheduled_at === input.scheduledAt &&
+    (input.scheduledAt == null
+      ? draft.scheduled_timezone == null
+      : draft.scheduled_timezone === input.schedule?.timezone
+        && draft.scheduled_local_date === input.schedule?.localDate
+        && draft.scheduled_local_time === input.schedule?.localTime
+        && draft.scheduled_offset === input.schedule?.offset
+        && draft.scheduled_disambiguation === input.schedule?.disambiguation) &&
     draft.origin === input.origin &&
     sameMedia(draft.media, input.media) &&
     (input.generationResultId != null

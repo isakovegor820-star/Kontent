@@ -12,6 +12,13 @@
 // При исчерпании Google вернёт 403 quotaExceeded — пробрасываем код, чтобы воркер
 // показал человеку понятную причину и перенёс публикацию на завтра.
 
+import {
+  classifiedFailure,
+  definiteFailure,
+  deliveryUnknown,
+  PROVIDER_DELIVERY_OUTCOMES,
+} from "./social-provider-contract.mjs";
+
 const API_BASE = "https://www.googleapis.com";
 const UPLOAD_BASE = "https://www.googleapis.com";
 const TIMEOUT_MS = 30_000;
@@ -99,8 +106,8 @@ export async function resolveChannel(accessToken) {
 
 /**
  * Публикует видео на канал (resumable upload, упрощённо: init → один PUT всего тела).
- * Для файлов до сотен МБ одного PUT достаточно; при обрыве Google вернёт ошибку —
- * воркер повторит задачу целиком.
+ * Для файлов до сотен МБ одного PUT достаточно. После начала финального PUT транспортный
+ * обрыв считается delivery_unknown: новый upload запрещён до reconciliation сохранённой session.
  *
  * @returns {{ ok:true, videoId:string, url:string } | { ok:false, reason:string, code?:string }}
  */
@@ -114,7 +121,7 @@ export async function uploadVideo(accessToken, opts) {
     body = resolved.buffer;
     contentType = resolved.contentType;
   } catch (err) {
-    return { ok: false, reason: String(err?.message || err) };
+    return definiteFailure("youtube_media_unavailable", { code: safeErrorCode(err) });
   }
 
   // 1) Init: метаданные + X-Upload-Content-* → получаем Location для загрузки тела.
@@ -141,12 +148,15 @@ export async function uploadVideo(accessToken, opts) {
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
     if (!initRes.ok) {
-      return { ok: false, reason: await errorReason(initRes), code: await errorCode(initRes) };
+      return httpFailure(initRes, await errorReason(initRes), await errorCode(initRes));
     }
     location = initRes.headers.get("location");
-    if (!location) return { ok: false, reason: "YouTube не вернул location для загрузки" };
+    if (!location) return definiteFailure("youtube_upload_session_missing");
   } catch (err) {
-    return { ok: false, reason: String(err?.message || err) };
+    return definiteFailure("youtube_upload_init_failed", {
+      code: safeErrorCode(err),
+      retryable: true,
+    });
   }
 
   // 2) PUT тела видео по Location.
@@ -158,13 +168,65 @@ export async function uploadVideo(accessToken, opts) {
       signal: AbortSignal.timeout(120_000),
     });
     if (!putRes.ok) {
-      return { ok: false, reason: await errorReason(putRes), code: await errorCode(putRes) };
+      return httpFailure(putRes, await errorReason(putRes), await errorCode(putRes), location);
     }
     const parsed = parseUploadResult(await putRes.json());
-    if (!parsed) return { ok: false, reason: "YouTube не вернул id видео" };
-    return { ok: true, videoId: parsed.videoId, url: parsed.url };
-  } catch (err) {
-    return { ok: false, reason: String(err?.message || err) };
+    if (!parsed) return deliveryUnknown(location, "youtube_final_response_missing_video_id");
+    return {
+      ok: true,
+      outcome: PROVIDER_DELIVERY_OUTCOMES.SUCCESS,
+      videoId: parsed.videoId,
+      url: parsed.url,
+      providerOperationId: location,
+      retryable: false,
+    };
+  } catch {
+    return deliveryUnknown(location, "youtube_final_put_delivery_unknown");
+  }
+}
+
+function httpFailure(response, reason, code, providerOperationId = null) {
+  const outcome = response.status === 401 || response.status === 403
+    ? PROVIDER_DELIVERY_OUTCOMES.AUTH_FAILED
+    : response.status === 429
+      ? PROVIDER_DELIVERY_OUTCOMES.RATE_LIMITED
+      : PROVIDER_DELIVERY_OUTCOMES.DEFINITE_FAILURE;
+  return classifiedFailure(outcome, reason, {
+    code: code || `http_${response.status}`,
+    providerOperationId,
+    retryable: outcome === PROVIDER_DELIVERY_OUTCOMES.RATE_LIMITED || response.status >= 500,
+  });
+}
+
+function safeErrorCode(error) {
+  if (error && typeof error === "object" && "code" in error && error.code) return String(error.code).slice(0, 80);
+  return error instanceof Error ? error.name : "provider_error";
+}
+
+/** Read-only status probe for a stored resumable session; it never starts a second upload. */
+export async function reconcileUploadSession(accessToken, sessionUrl, totalBytes) {
+  try {
+    const response = await fetch(sessionUrl, {
+      method: "PUT",
+      headers: {
+        authorization: `Bearer ${accessToken}`,
+        "content-length": "0",
+        "content-range": `bytes */${totalBytes}`,
+      },
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+    if (response.ok) {
+      const parsed = parseUploadResult(await response.json().catch(() => null));
+      return parsed
+        ? { status: "confirmed", externalId: parsed.videoId, postUrl: parsed.url }
+        : { status: "unresolved" };
+    }
+    if (response.status === 308) {
+      return { status: "in_progress", acknowledgedRange: response.headers.get("range") };
+    }
+    return { status: "unresolved", code: `http_${response.status}` };
+  } catch {
+    return { status: "unresolved", code: "status_probe_failed" };
   }
 }
 

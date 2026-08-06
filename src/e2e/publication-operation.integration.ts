@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { beforeAll, afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 import pg from "pg";
+import { Temporal } from "@js-temporal/polyfill";
 
 import { migrate } from "../../scripts/migrate.mjs";
 
@@ -50,11 +51,26 @@ function request(draftId: number, draftVersion: number, key: string, fingerprint
 }
 
 async function createDraft(text: string, version = 1) {
+  const future = new Date(Date.now() + 2 * 60 * 60_000);
+  future.setSeconds(0, 0);
+  const zoned = Temporal.Instant.from(future.toISOString()).toZonedDateTimeISO("Europe/Moscow");
   const draftId = Number((await pool.query(
     `insert into drafts
-       (user_id, text, scheduled_at, origin, client_key, version)
-     values ($1, $2, now() + interval '2 hour', 'manual', $3, $4) returning id`,
-    [userId, text, `draft_gate6_${crypto.randomUUID()}`, version],
+       (user_id, text, scheduled_at, scheduled_timezone, scheduled_local_date,
+        scheduled_local_time, scheduled_offset, scheduled_disambiguation,
+        origin, purpose, client_key, version)
+     values ($1, $2, $3, 'Europe/Moscow', $4, $5, $6, 'reject',
+             'manual', 'publishable', $7, $8) returning id`,
+    [
+      userId,
+      text,
+      future,
+      zoned.toPlainDate().toString(),
+      zoned.toPlainTime().toString().slice(0, 5),
+      zoned.offset,
+      `draft_gate6_${crypto.randomUUID()}`,
+      version,
+    ],
   )).rows[0].id);
   for (const channelId of channels) {
     await pool.query("insert into draft_destinations (draft_id, channel_id) values ($1, $2)", [draftId, channelId]);
@@ -130,6 +146,21 @@ describe("immutable multi-destination publication operation", () => {
     );
     expect(posts.rows).toHaveLength(2);
     expect(posts.rows.every((row) => row.text === "Revision one" && Number(row.publication_draft_version) === 1)).toBe(true);
+    const durableParts = await pool.query(
+      `select pp.post_id, pp.part_index, pp.part_type, pp.payload_hash, pp.entity_length
+         from publication_parts pp
+         join posts p on p.id = pp.post_id
+        where p.publication_operation_id = $1
+        order by pp.post_id, pp.part_index`,
+      [firstBody.operationId],
+    );
+    expect(durableParts.rows).toHaveLength(2);
+    expect(durableParts.rows.every((row) =>
+      row.part_index === 0
+      && row.part_type === "text"
+      && /^[0-9a-f]{64}$/u.test(String(row.payload_hash).trim())
+      && Number(row.entity_length) === "Revision one".length,
+    )).toBe(true);
   });
 
   it("retries a due failed destination with the original immutable revision", async () => {

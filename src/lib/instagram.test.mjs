@@ -1,6 +1,8 @@
 // Тесты чистых парсеров Instagram-клиента.
-import { describe, it, expect } from "vitest";
-import { parseIgUser, parsePublishResult, detectMediaType } from "./instagram.mjs";
+import { afterEach, describe, it, expect, vi } from "vitest";
+import { parseIgUser, parsePublishResult, detectMediaType, publishMedia } from "./instagram.mjs";
+
+afterEach(() => vi.unstubAllGlobals());
 
 describe("parseIgUser", () => {
   it("разбирает профиль", () => {
@@ -47,5 +49,29 @@ describe("detectMediaType", () => {
   it("null без медиа", () => {
     expect(detectMediaType(null)).toBeNull();
     expect(detectMediaType({})).toBeNull();
+  });
+});
+
+describe("publishMedia ambiguous delivery", () => {
+  it("preserves creation identity and does not repeat media_publish after a lost response", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json({ id: "creation-7" }))
+      .mockRejectedValueOnce(Object.assign(new Error("socket reset"), { code: "ECONNRESET" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await publishMedia("secret-token", "account-1", {
+      caption: "Test",
+      media: "https://cdn.example/photo.jpg",
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      outcome: "delivery_unknown",
+      deliveryUnknown: true,
+      retryable: false,
+      providerOperationId: "creation-7",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("media_publish"))).toHaveLength(1);
   });
 });

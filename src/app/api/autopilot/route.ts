@@ -10,6 +10,7 @@ import { getSessionUser } from "@/lib/session";
 import { ensureSettings, loadBrief, resolveChannel } from "@/lib/autopilot";
 import { briefComplete } from "@/lib/brief";
 import { isAutopilotBuildStale } from "@/lib/autopilot-build";
+import { plannedPostCountForWeeks } from "@/lib/autopilot-config.mjs";
 
 export const runtime = "nodejs";
 
@@ -41,7 +42,8 @@ export async function GET(req: NextRequest) {
     let plan =
       (
         await pool.query(
-          `select id, week_start, items, rules, status, revision, created_at
+          `select id, week_start, items, rules, status, revision, created_at,
+                  generation_engine, planning_months, planning_weeks
              from autopilot_plan where user_id = $1 and channel_id = $2
              order by created_at desc limit 1`,
           [user.id, channelId],
@@ -50,13 +52,25 @@ export async function GET(req: NextRequest) {
     if (plan?.status === "error" && plan.rules === "ai_usage_limit") {
       plan = { ...plan, errorReason: "quota" };
     }
+    if (plan?.status === "error" && plan.rules === "content_variety_insufficient") {
+      plan = { ...plan, errorReason: "variety" };
+    }
+    if (plan?.status === "error" && plan.rules === "quality_gate_unsatisfied") {
+      plan = { ...plan, errorReason: "quality" };
+    }
 
     // A queue job can survive while its worker is stopped. Without a deadline that left the
     // page polling `building` forever (the real incident lasted two days). Mark only the exact
     // placeholder we loaded, so a concurrent retry for the same channel cannot be touched.
     if (
       plan?.status === "building" &&
-      isAutopilotBuildStale(plan.created_at, settings.post_frequency)
+      isAutopilotBuildStale(
+        plan.created_at,
+        plannedPostCountForWeeks(
+          settings.post_frequency,
+          plan.planning_weeks ?? plan.planning_months * 4,
+        ),
+      )
     ) {
       const expired = await pool.query(
         `update autopilot_plan set status = 'error', revision = revision + 1

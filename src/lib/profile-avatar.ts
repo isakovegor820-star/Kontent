@@ -5,12 +5,13 @@ import sharp from "sharp";
 import {
   PROFILE_AVATAR_ACCEPTED_TYPES,
   PROFILE_AVATAR_UPLOAD_MAX_BYTES,
-} from "./profile-avatar-contract";
+} from "./profile-avatar-contract.mjs";
 
 export {
   PROFILE_AVATAR_ACCEPTED_TYPES,
+  PROFILE_AVATAR_MULTIPART_MAX_BYTES,
   PROFILE_AVATAR_UPLOAD_MAX_BYTES,
-} from "./profile-avatar-contract";
+} from "./profile-avatar-contract.mjs";
 
 const MAX_INPUT_PIXELS = 40_000_000;
 const OUTPUT_SIZE = 512;
@@ -32,7 +33,7 @@ export async function prepareProfileAvatar(
   value: ArrayBuffer | Uint8Array | Buffer,
   declaredType: string,
 ): Promise<{ data: Buffer; mimeType: "image/webp"; sha256: string; fileName: string }> {
-  if (!PROFILE_AVATAR_ACCEPTED_TYPES.includes(declaredType)) {
+  if (!(PROFILE_AVATAR_ACCEPTED_TYPES as readonly string[]).includes(declaredType)) {
     throw new ProfileAvatarError("unsupported_type");
   }
   const input = Buffer.isBuffer(value)

@@ -27,6 +27,7 @@ import {
 import { AppShell } from "@/components/app/shell";
 import { ChannelPicker, useChannelChoice } from "@/components/app/channel-picker";
 import { ReconTabs } from "@/components/app/recon-tabs";
+import { TrendStatistics } from "@/app/app/trends/trend-statistics";
 import { Button } from "@/components/ui/button";
 import { Badge, Card, Checkbox, EmptyState, Tabs } from "@/components/ui/primitives";
 import { appDraftActionHref } from "@/lib/app-routes";
@@ -1006,18 +1007,24 @@ export default function TrendsPage() {
   return (
     <AppShell
       title="Тренды"
-      subtitle={
-        global
-          ? "Свежие публикации из редакционной подборки открытых Telegram-каналов."
-          : "Свежие публикации выбранных конкурентов — без старого архива вперемешку."
-      }
+      subtitle="Сравнивай динамику тем и находи публикации, которые набирают интерес."
     >
       {/* Единый таб-бар «Разведки»: Поиск / Конкуренты / Тренды */}
       <div className="mb-5">
         <ReconTabs />
       </div>
 
+      <TrendStatistics channelId={channelId} channelTopic={niche} />
+
+      <div className="mt-10 max-w-3xl">
+        <h2 className="text-[19px] font-bold text-text">Лента публикаций</h2>
+        <p className="mt-1.5 text-[13px] leading-relaxed text-text-3">
+          Просматривай свежие посты конкурентов или редакционной подборки и создавай собственные публикации по найденным темам.
+        </p>
+      </div>
+
       <Tabs
+        className="mt-5"
         items={[
           { value: "niche", label: "Моя ниша" },
           { value: "global", label: "Подборка платформы" },

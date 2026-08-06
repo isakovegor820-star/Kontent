@@ -8,6 +8,8 @@ import {
 } from "./readiness";
 import { SCHEMA_MANIFEST } from "./schema-manifest.mjs";
 import { probeSchemaCompatibility } from "./schema-readiness.mjs";
+import { avatarIngressConfigured } from "./upload-ingress.mjs";
+import { tokenEnvelopeKeyReadiness } from "./token-reencryption.mjs";
 
 function schemaNotChecked(reason: string): SchemaReadinessState {
   return {
@@ -23,11 +25,13 @@ function schemaNotChecked(reason: string): SchemaReadinessState {
 export async function probeDatabaseAndSchema(): Promise<{
   database: DependencyState;
   schema: SchemaReadinessState;
+  tokenEncryption: DependencyState;
 }> {
   if (!process.env.DATABASE_URL) {
     return {
       database: "not_configured",
       schema: schemaNotChecked("schema_not_checked:database_not_configured"),
+      tokenEncryption: "not_configured",
     };
   }
   let timeout: ReturnType<typeof setTimeout> | null = null;
@@ -38,11 +42,16 @@ export async function probeDatabaseAndSchema(): Promise<{
         timeout = setTimeout(() => reject(new Error("database_probe_timeout")), 2_000);
       }),
     ]);
-    return { database: "up", schema };
+    let tokenEncryption: DependencyState = "down";
+    if (schema.ready) {
+      tokenEncryption = (await tokenEnvelopeKeyReadiness(getPool())).state;
+    }
+    return { database: "up", schema, tokenEncryption };
   } catch {
     return {
       database: "down",
       schema: schemaNotChecked("schema_not_checked:database_unreachable"),
+      tokenEncryption: "down",
     };
   } finally {
     if (timeout) clearTimeout(timeout);
@@ -81,6 +90,12 @@ export function probeMailDeliveryConfiguration(
   } catch {
     return "not_configured";
   }
+}
+
+export function probeUploadIngressConfiguration(
+  env: NodeJS.ProcessEnv = process.env,
+): DependencyState {
+  return avatarIngressConfigured(env) ? "up" : "not_configured";
 }
 
 export async function probeRedisAndPublicationWorker(): Promise<{

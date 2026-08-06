@@ -8,6 +8,11 @@ import { MAX_WEEKLY_POSTS } from "@/lib/brief";
 import { briefComplete } from "@/lib/brief";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import type { AutopilotSettings } from "@/lib/autopilot";
+import {
+  AUTOPILOT_PLANNING_MONTHS,
+  isAutopilotEngine,
+  isAutopilotPlanningWeeks,
+} from "@/lib/autopilot-config.mjs";
 
 export const runtime = "nodejs";
 
@@ -15,7 +20,15 @@ export async function POST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
   }
-  let body: { enabled?: unknown; mode?: unknown; post_frequency?: unknown; channelId?: unknown };
+  let body: {
+    enabled?: unknown;
+    mode?: unknown;
+    post_frequency?: unknown;
+    generation_engine?: unknown;
+    planning_months?: unknown;
+    planning_weeks?: unknown;
+    channelId?: unknown;
+  };
   try {
     body = await req.json();
   } catch {
@@ -58,16 +71,38 @@ export async function POST(req: NextRequest) {
       Number.isFinite(Number(body.post_frequency)) && Number(body.post_frequency) > 0
         ? Math.min(MAX_WEEKLY_POSTS, Math.max(1, Math.round(Number(body.post_frequency))))
         : null;
+    const generationEngine = body.generation_engine == null
+      ? null
+      : isAutopilotEngine(body.generation_engine)
+        ? body.generation_engine
+        : undefined;
+    const requestedMonths = Number(body.planning_months);
+    const requestedWeeks = Number(body.planning_weeks);
+    const planningWeeks = body.planning_weeks != null
+      ? isAutopilotPlanningWeeks(requestedWeeks) ? requestedWeeks : undefined
+      : body.planning_months != null
+        ? AUTOPILOT_PLANNING_MONTHS.includes(requestedMonths) ? requestedMonths * 4 : undefined
+        : null;
+    const planningMonths = planningWeeks == null
+      ? null
+      : Math.max(1, Math.min(3, Math.ceil(planningWeeks / 4)));
+    if (generationEngine === undefined || planningWeeks === undefined) {
+      return NextResponse.json({ ok: false, error: "bad_generation_settings" }, { status: 422 });
+    }
 
     const updated = await getPool().query<AutopilotSettings>(
       `update autopilot_settings
           set enabled = coalesce($3, enabled),
               mode = coalesce($4, mode),
               post_frequency = coalesce($5, post_frequency),
+              generation_engine = coalesce($6, generation_engine),
+              planning_months = coalesce($7, planning_months),
+              planning_weeks = coalesce($8, planning_weeks),
               updated_at = now()
         where user_id = $1 and channel_id = $2
-        returning enabled, mode, post_frequency, approvals_streak`,
-      [user.id, channelId, enabled, mode, freq],
+        returning enabled, mode, post_frequency, approvals_streak, generation_engine,
+                  planning_months, planning_weeks`,
+      [user.id, channelId, enabled, mode, freq, generationEngine, planningMonths, planningWeeks],
     );
     if (!updated.rows[0]) {
       return NextResponse.json({ ok: false, error: "not_found" }, { status: 404 });

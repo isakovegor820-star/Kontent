@@ -4,7 +4,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { EMAIL } from "@/lib/leads";
-import { findOrCreateUser } from "@/lib/users";
+import { convertMatchingLeadAfterRegistration } from "@/lib/users";
+import { registerPasswordUser } from "@/lib/password-registration";
 import { createSession } from "@/lib/session";
 import { hashPassword, validatePassword } from "@/lib/password";
 import { checkRateLimit, clientIp, rateLimitResponse } from "@/lib/rate-limit";
@@ -49,27 +50,42 @@ export async function POST(req: NextRequest) {
 
   try {
     const pool = getPool();
-    const existing = await pool.query<{ id: number; password_hash: string | null }>(
-      `select id, password_hash from users where email = $1`,
-      [email],
-    );
-
-    // Почта уже есть — это вход, а не регистрация. НЕ привязываем пароль к существующему
-    // аккаунту без подтверждения владения почтой (иначе захват чужого аккаунта — ревью).
-    if (existing.rowCount && existing.rows[0]) {
-      return NextResponse.json({ ok: false, error: "email_taken" }, { status: 409 });
+    const hash = await hashPassword(password);
+    const registration = await registerPasswordUser({ pool, email, name, passwordHash: hash });
+    if (!registration.ok) {
+      return NextResponse.json({ ok: false, error: registration.error }, { status: 409 });
     }
 
-    // Новый человек: создаём (с конвертацией заявки) и ставим пароль.
-    const hash = await hashPassword(password);
-    const { id: userId } = await findOrCreateUser({ email, name });
-    await pool.query(`update users set password_hash = $2 where id = $1`, [userId, hash]);
+    // Только после commit: сбой CRM/Telegram не откатывает и не маскирует созданный аккаунт.
+    await convertMatchingLeadAfterRegistration([email], name);
 
     const res = NextResponse.json({ ok: true });
-    await createSession(res, userId, req.headers.get("user-agent"));
+    try {
+      const created = await createSession(res, registration.userId, req.headers.get("user-agent"));
+      if (!created) {
+        return NextResponse.json({
+          ok: false,
+          error: "session_creation_failed",
+          accountCreated: true,
+        }, { status: 503 });
+      }
+    } catch (error) {
+      console.warn("[registration_event]", {
+        event: "session_creation_failed",
+        userId: registration.userId,
+        code: error && typeof error === "object" && "code" in error ? String(error.code) : "unknown",
+      });
+      return NextResponse.json({
+        ok: false,
+        error: "session_creation_failed",
+        accountCreated: true,
+      }, { status: 503 });
+    }
     return res;
   } catch (err) {
-    console.error("[/api/auth/register]", err);
+    console.error("[/api/auth/register]", {
+      code: err && typeof err === "object" && "code" in err ? String(err.code) : "unknown",
+    });
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
 }

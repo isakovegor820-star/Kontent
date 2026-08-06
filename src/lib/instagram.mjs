@@ -12,6 +12,13 @@
 //  - наше Meta-приложение прошло App Review на instagram_content_publish +
 //    pages_manage_posts + pages_read_engagement (иначе публикация только для ролей приложения).
 
+import {
+  classifiedFailure,
+  definiteFailure,
+  deliveryUnknown,
+  PROVIDER_DELIVERY_OUTCOMES,
+} from "./social-provider-contract.mjs";
+
 const GRAPH_BASE = "https://graph.facebook.com/v19.0";
 const TIMEOUT_MS = 30_000;
 
@@ -102,7 +109,7 @@ export async function publishMedia(accessToken, igUserId, { caption = "", media 
   const type = detectMediaType(media);
   const mediaUrl = typeof media === "string" ? media : media.videoUrl || media.imageUrl || media.url;
   if (!type || !mediaUrl) {
-    return { ok: false, reason: "нет медиа (нужна публичная ссылка на изображение или видео)" };
+    return definiteFailure("instagram_media_required");
   }
 
   // 1) Создаём контейнер.
@@ -121,15 +128,14 @@ export async function publishMedia(accessToken, igUserId, { caption = "", media 
     const cRes = await fetch(containerUrl, { method: "POST", signal: AbortSignal.timeout(TIMEOUT_MS) });
     const cData = await cRes.json().catch(() => null);
     if (!cRes.ok || typeof cData?.id !== "string") {
-      return {
-        ok: false,
-        reason: `HTTP ${cRes.status}: ${cData?.error?.message || "не удалось создать контейнер"}`,
-        code: cData?.error?.type,
-      };
+      return graphFailure(cRes.status, cData, "instagram_container_create_failed");
     }
     creationId = cData.id;
   } catch (err) {
-    return { ok: false, reason: String(err?.message || err) };
+    return definiteFailure("instagram_container_create_failed", {
+      code: safeErrorCode(err),
+      retryable: true,
+    });
   }
 
   // 2) Публикуем контейнер.
@@ -140,16 +146,56 @@ export async function publishMedia(accessToken, igUserId, { caption = "", media 
     const pRes = await fetch(publishUrl, { method: "POST", signal: AbortSignal.timeout(TIMEOUT_MS) });
     const pData = await pRes.json().catch(() => null);
     if (!pRes.ok) {
-      return {
-        ok: false,
-        reason: `HTTP ${pRes.status}: ${pData?.error?.message || "не удалось опубликовать"}`,
-        code: pData?.error?.type,
-      };
+      return graphFailure(pRes.status, pData, "instagram_media_publish_failed", creationId);
     }
     const parsed = parsePublishResult(pData);
-    if (!parsed) return { ok: false, reason: "Instagram не вернул id медиа" };
-    return { ok: true, mediaId: parsed.mediaId, url: parsed.url };
-  } catch (err) {
-    return { ok: false, reason: String(err?.message || err) };
+    if (!parsed) return deliveryUnknown(creationId, "instagram_publish_response_missing_media_id");
+    return {
+      ok: true,
+      outcome: PROVIDER_DELIVERY_OUTCOMES.SUCCESS,
+      mediaId: parsed.mediaId,
+      url: parsed.url,
+      providerOperationId: creationId,
+      retryable: false,
+    };
+  } catch {
+    return deliveryUnknown(creationId, "instagram_media_publish_delivery_unknown");
+  }
+}
+
+function graphFailure(status, data, reason, providerOperationId = null) {
+  const providerCode = data?.error?.code;
+  const outcome = status === 401 || status === 403 || providerCode === 190
+    ? PROVIDER_DELIVERY_OUTCOMES.AUTH_FAILED
+    : status === 429 || providerCode === 4 || providerCode === 17 || providerCode === 32
+      ? PROVIDER_DELIVERY_OUTCOMES.RATE_LIMITED
+      : PROVIDER_DELIVERY_OUTCOMES.DEFINITE_FAILURE;
+  return classifiedFailure(outcome, reason, {
+    code: data?.error?.type || (providerCode ? `graph_${providerCode}` : `http_${status}`),
+    providerOperationId,
+    retryable: outcome === PROVIDER_DELIVERY_OUTCOMES.RATE_LIMITED || status >= 500,
+  });
+}
+
+function safeErrorCode(error) {
+  if (error && typeof error === "object" && "code" in error && error.code) return String(error.code).slice(0, 80);
+  return error instanceof Error ? error.name : "provider_error";
+}
+
+/** Read-only container probe. FINISHED alone is not claimed as published without a media ID. */
+export async function reconcileMediaCreation(accessToken, creationId) {
+  const url = new URL(`${GRAPH_BASE}/${creationId}`);
+  url.searchParams.set("fields", "status_code,status");
+  url.searchParams.set("access_token", accessToken);
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(TIMEOUT_MS) });
+    const body = await response.json().catch(() => null);
+    if (!response.ok) return { status: "unresolved", code: body?.error?.type || `http_${response.status}` };
+    return {
+      status: body?.status_code === "ERROR" ? "failed" : "unresolved",
+      providerState: typeof body?.status_code === "string" ? body.status_code : null,
+    };
+  } catch {
+    return { status: "unresolved", code: "status_probe_failed" };
   }
 }

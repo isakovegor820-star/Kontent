@@ -13,6 +13,7 @@ import { checkRateLimit, clientIp, rateLimitResponse } from "@/lib/rate-limit";
 import { resolveGroupByToken } from "@/lib/vk";
 import { encryptToken } from "@/lib/token-crypto.mjs";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
+import { transitionChannelHealth } from "@/lib/channel-health.mjs";
 
 export const runtime = "nodejs";
 
@@ -67,15 +68,27 @@ export async function POST(req: NextRequest) {
     );
     if (existing.rowCount) {
       await pool.query(
-        `update channels set title = $2, handle = $3, vk_token = $4, is_active = true where id = $1`,
+        `update channels set title = $2, handle = $3, vk_token = $4, updated_at = now() where id = $1`,
         [existing.rows[0].id, group.name || null, group.screenName || null, encrypted],
       );
+      await transitionChannelHealth(pool, {
+        channelId: existing.rows[0].id,
+        userId: user.id,
+        actorUserId: user.id,
+        status: "active",
+        action: "reconnected",
+      });
       return NextResponse.json({ ok: true, channelId: existing.rows[0].id, title: group.name });
     }
     const ins = await pool.query<{ id: number }>(
       `insert into channels (user_id, network, vk_group_id, vk_token, title, handle)
        values ($1, 'vk', $2, $3, $4, $5) returning id`,
       [user.id, group.groupId, encrypted, group.name || null, group.screenName || null],
+    );
+    await pool.query(
+      `insert into channel_events (channel_id, actor_user_id, action, from_status, to_status)
+       values ($1, $2, 'connected', null, 'active')`,
+      [ins.rows[0].id, user.id],
     );
     return NextResponse.json({ ok: true, channelId: ins.rows[0].id, title: group.name });
   } catch (err) {

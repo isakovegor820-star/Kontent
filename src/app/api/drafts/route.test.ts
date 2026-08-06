@@ -94,6 +94,9 @@ describe("POST /api/drafts", () => {
 
     expect(response.status).toBe(201);
     expect(request.nextUrl.search).toBe("");
-    expect(mocks.createDraftForUser).toHaveBeenCalledWith(5, referenceBody);
+    expect(mocks.createDraftForUser).toHaveBeenCalledWith(5, {
+      ...referenceBody,
+      schedule: null,
+    });
   });
 });

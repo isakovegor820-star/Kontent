@@ -204,8 +204,37 @@ function Section({
 function ChannelsSection({ index }: { index: number }) {
   const s = useStore();
   const router = useRouter();
-  const channels = s.realChannels.filter((channel) => channel.is_active);
+  const [disconnecting, setDisconnecting] = useState<number | null>(null);
+  const channels = s.realChannels.filter((channel) => channel.status !== "disconnected");
   const addMore = () => router.push("/app/onboarding");
+  const disconnect = async (channelId: number) => {
+    if (disconnecting != null) return;
+    if (!window.confirm("Отключить канал? История останется. Если есть запланированные публикации, Аврора сначала попросит отменить их.")) return;
+    setDisconnecting(channelId);
+    try {
+      const response = await fetch(`/api/channels/${channelId}`, {
+        method: "DELETE",
+        headers: { "idempotency-key": crypto.randomUUID() },
+      });
+      const body = (await response.json().catch(() => null)) as { error?: string } | null;
+      if (response.ok) {
+        await s.refreshReal();
+        s.toast({ kind: "success", title: "Канал отключён", body: "Токен деактивирован, история публикаций сохранена." });
+      } else {
+        s.toast({
+          kind: "danger",
+          title: "Канал пока не отключён",
+          body: body?.error === "scheduled_publications_require_resolution"
+            ? "Сначала отмени запланированные публикации этого канала в календаре."
+            : body?.error === "publication_in_progress"
+              ? "Публикация уже отправляется. Дождись подтверждённого результата."
+              : "Не удалось подтвердить отключение. Попробуй ещё раз.",
+        });
+      }
+    } finally {
+      setDisconnecting(null);
+    }
+  };
 
   return (
     <Section
@@ -270,20 +299,44 @@ function ChannelsSection({ index }: { index: number }) {
                     )}
                   </div>
 
-                  {publishSupported ? (
+                  {publishSupported && ch.is_active ? (
                     <Badge tone="success">
                       <Check className="h-3.5 w-3.5" strokeWidth={3} aria-hidden />
                       Активен
                     </Badge>
+                  ) : ch.reconnect_required ? (
+                    <Badge tone="fire">Нужно переподключить</Badge>
                   ) : (
                     <Badge tone="neutral">Публикация недоступна</Badge>
                   )}
                 </div>
-                {!publishSupported && (
+                {ch.reconnect_required && (
+                  <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                    <p role="status" className="text-[13px] leading-relaxed text-danger-text">
+                      Аврора остановила новые публикации после ошибки доступа. История сохранена.
+                    </p>
+                    <Button type="button" variant="outline" size="sm" onClick={addMore}>
+                      Переподключить
+                    </Button>
+                  </div>
+                )}
+                {!publishSupported && !ch.reconnect_required && (
                   <p className="mt-2 text-[13px] leading-relaxed text-text-3">
                     Подключение сохранено, но выбрать эту сеть в Композиторе пока нельзя.
                   </p>
                 )}
+                <div className="mt-3 flex justify-end">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    loading={disconnecting === ch.id}
+                    disabled={disconnecting != null && disconnecting !== ch.id}
+                    onClick={() => void disconnect(ch.id)}
+                  >
+                    Отключить
+                  </Button>
+                </div>
               </li>
             );
           })}

@@ -3,6 +3,7 @@ import {
   assertRuntimeSchemaReady,
   safePreflightFailure,
 } from "./runtime-schema-preflight.mjs";
+import { assertAvatarIngressConfigured } from "../src/lib/upload-ingress.mjs";
 
 // Production entrypoint for a single long-lived container. Aurora is two processes:
 // Next serves HTTP, worker.mjs publishes scheduled posts and consumes background jobs.
@@ -45,6 +46,7 @@ process.once("SIGINT", () => stop("SIGINT", 130));
 process.once("SIGTERM", () => stop("SIGTERM", 143));
 
 try {
+  assertAvatarIngressConfigured();
   await assertRuntimeSchemaReady();
 } catch (error) {
   console.error("[start] runtime preflight failed", safePreflightFailure(error));

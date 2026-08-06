@@ -7,6 +7,7 @@ import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
 import { getStatsQueue } from "@/lib/queue";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
+import { transitionChannelHealth } from "@/lib/channel-health.mjs";
 
 export const runtime = "nodejs";
 
@@ -86,15 +87,27 @@ export async function POST(req: NextRequest) {
     );
     if (existing.rowCount) {
       await pool.query(
-        `update channels set title = $2, handle = $3, is_active = true where id = $1`,
+        `update channels set title = $2, handle = $3, updated_at = now() where id = $1`,
         [existing.rows[0].id, chat.title ?? null, chat.username ?? handle],
       );
+      await transitionChannelHealth(pool, {
+        channelId: existing.rows[0].id,
+        userId: user.id,
+        actorUserId: user.id,
+        status: "active",
+        action: "reconnected",
+      });
       return NextResponse.json({ ok: true, channelId: existing.rows[0].id, title: chat.title });
     }
     const ins = await pool.query<{ id: number }>(
       `insert into channels (user_id, network, tg_chat_id, title, handle)
        values ($1, 'tg', $2, $3, $4) returning id`,
       [user.id, chat.id, chat.title ?? null, chat.username ?? handle],
+    );
+    await pool.query(
+      `insert into channel_events (channel_id, actor_user_id, action, from_status, to_status)
+       values ($1, $2, 'connected', null, 'active')`,
+      [ins.rows[0].id, user.id],
     );
 
     // Подключил канал — ищем соседей сразу, не дожидаясь суточного цикла. Человек идёт в

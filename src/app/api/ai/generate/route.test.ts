@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   failGenerationOperation: vi.fn(),
   lookupTerminalGenerationFailure: vi.fn(),
   stageGenerationArtifact: vi.fn(),
+  recordAiProviderAttempt: vi.fn(),
 }));
 
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
@@ -52,6 +53,10 @@ vi.mock("@/lib/generation-artifacts", async (importOriginal) => {
     lookupTerminalGenerationFailure: mocks.lookupTerminalGenerationFailure,
     stageGenerationArtifact: mocks.stageGenerationArtifact,
   };
+});
+vi.mock("@/lib/ai-attempt-budget", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/ai-attempt-budget")>();
+  return { ...actual, recordAiProviderAttempt: mocks.recordAiProviderAttempt };
 });
 
 import { generationDeadlines } from "@/lib/ai-generation-deadlines";
@@ -318,6 +323,7 @@ describe("POST /api/ai/generate prerequisites", () => {
     mocks.lookupTerminalGenerationFailure.mockResolvedValue(null);
     mocks.beginGenerationOperation.mockResolvedValue({ id: 301, state: "created" });
     mocks.failGenerationOperation.mockResolvedValue(true);
+    mocks.recordAiProviderAttempt.mockResolvedValue({ estimatedCostMicrousd: 0 });
     mocks.stageGenerationArtifact.mockImplementation(async ({ text, validation }) => ({
       id: 501,
       text,

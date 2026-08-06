@@ -11,7 +11,7 @@ import { RUBRICS, type Brief } from "@/lib/brief";
 import {
   PROFILE_AVATAR_ACCEPTED_TYPES,
   PROFILE_AVATAR_UPLOAD_MAX_BYTES,
-} from "@/lib/profile-avatar-contract";
+} from "@/lib/profile-avatar-contract.mjs";
 import { PROFILE_FORMAT_OPTIONS } from "@/lib/profile";
 import { useStore } from "@/lib/store";
 import { NETWORK_LABEL, cn } from "@/lib/utils";
@@ -236,7 +236,7 @@ export function ProfileBriefSection() {
     const file = input.files?.[0];
     input.value = "";
     if (!file || avatarUploading) return;
-    if (!PROFILE_AVATAR_ACCEPTED_TYPES.includes(file.type)) {
+    if (!(PROFILE_AVATAR_ACCEPTED_TYPES as readonly string[]).includes(file.type)) {
       setAvatarErrorText(avatarUploadError("unsupported_type"));
       return;
     }
