@@ -756,7 +756,7 @@ describe("POST /api/ai/generate prerequisites", () => {
     expect(repairBody.messages.at(-1)?.content).toContain("Тематическое соответствие провалено");
   });
 
-  it("fails closed after one off-topic repair without staging a terminal draft", async () => {
+  it("preserves a repeated off-topic Studio result as a reviewable terminal draft", async () => {
     mocks.getDraftForUser.mockResolvedValue(ownedReferenceDraft());
     mocks.channelAiContextFor.mockResolvedValue({
       id: 42,
@@ -785,24 +785,18 @@ describe("POST /api/ai/generate prerequisites", () => {
       topicAlignment: expect.objectContaining({ status: "failed" }),
     }));
     expect(events).toContainEqual(expect.objectContaining({
-      type: "error",
-      code: "topic_alignment_failed",
-      retryable: false,
+      type: "done",
+      ackRequired: true,
+      generationResultId: 501,
     }));
-    expect(events.some((event) => event.type === "done")).toBe(false);
-    expect(mocks.stageGenerationArtifact).not.toHaveBeenCalled();
-    expect(mocks.stageAiUsageResult).not.toHaveBeenCalled();
-    expect(mocks.failGenerationOperation).toHaveBeenCalledWith(
-      7,
-      response.headers.get("x-ai-request-id"),
-      "topic_alignment_failed",
-      false,
-    );
-    expect(mocks.releaseAiUsageRequest).toHaveBeenCalledWith(
-      7,
-      81,
-      response.headers.get("x-ai-request-id"),
-    );
+    expect(events.some((event) => event.type === "error")).toBe(false);
+    expect(mocks.stageGenerationArtifact).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 7,
+      validation: expect.objectContaining({ status: "blocked", requiresReview: true }),
+    }));
+    expect(mocks.stageAiUsageResult).toHaveBeenCalledOnce();
+    expect(mocks.failGenerationOperation).not.toHaveBeenCalled();
+    expect(mocks.releaseAiUsageRequest).not.toHaveBeenCalled();
   });
 
   it("rejects a missing or foreign reference draft before lookup, quota and provider work", async () => {
@@ -874,7 +868,7 @@ describe("POST /api/ai/generate prerequisites", () => {
     expect(fingerprints[1]).not.toBe(fingerprints[0]);
   });
 
-  it("fails closed for a fact-blocked Trends result without a terminal draft", async () => {
+  it("preserves a fact-blocked Trends result as a reviewable terminal draft", async () => {
     mocks.channelAiContextFor.mockResolvedValue({
       id: 42,
       title: "Мой канал",
@@ -901,26 +895,18 @@ describe("POST /api/ai/generate prerequisites", () => {
     expect(providerBody.messages.at(-1)?.content).toContain("Опирайся на данные разведки");
     expect(events[validationIndex]).toMatchObject({ type: "validation", status: "blocked", requiresReview: true });
     expect(validationIndex).toBeGreaterThan(-1);
-    expect(events.some((event) => event.type === "done")).toBe(false);
+    expect(events.findIndex((event) => event.type === "done")).toBeGreaterThan(validationIndex);
     expect(mocks.channelAiContextFor).toHaveBeenCalledWith(7, 42, expect.any(Number));
     expect(events).toContainEqual(expect.objectContaining({
-      type: "error",
-      code: "factual_validation_failed",
-      retryable: false,
+      type: "done",
+      ackRequired: true,
+      generationResultId: 501,
     }));
-    expect(mocks.stageGenerationArtifact).not.toHaveBeenCalled();
-    expect(mocks.stageAiUsageResult).not.toHaveBeenCalled();
-    expect(mocks.failGenerationOperation).toHaveBeenCalledWith(
-      7,
-      response.headers.get("x-ai-request-id"),
-      "factual_validation_failed",
-      false,
-    );
-    expect(mocks.releaseAiUsageRequest).toHaveBeenCalledWith(
-      7,
-      81,
-      response.headers.get("x-ai-request-id"),
-    );
+    expect(events.some((event) => event.type === "error")).toBe(false);
+    expect(mocks.stageGenerationArtifact).toHaveBeenCalledOnce();
+    expect(mocks.stageAiUsageResult).toHaveBeenCalledOnce();
+    expect(mocks.failGenerationOperation).not.toHaveBeenCalled();
+    expect(mocks.releaseAiUsageRequest).not.toHaveBeenCalled();
   });
 
   it("returns a reserved Trends generation to the limit when the provider stream breaks", async () => {

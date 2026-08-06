@@ -1444,9 +1444,9 @@ function StudioPageInner() {
             replayed,
             generationResultId: acknowledgedGenerationResultId,
           });
-          // Автопереход допустим только для результата, который прошёл обязательные
-          // тематические и фактические проверки. Reviewable-текст остаётся в Studio.
-          if (gen.autoOpenComposer && completion.postable) {
+          // «Создать публикацию» сохраняет любой полученный terminal-result. Спорный текст
+          // открывается как needs_review, но публикация остаётся fail-closed до проверки.
+          if (gen.autoOpenComposer && completion.reviewable) {
             openAsPost(id, completion.text, {
               channelId: generationChannelId,
               clientKey: gen.resultClientKey,

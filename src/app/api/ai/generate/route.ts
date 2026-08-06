@@ -673,10 +673,10 @@ function studioStreamResponse(
             validation = await validateResult(finalText);
           }
           if (!sendValidation(validation)) return;
-          if (validation.topic?.status === "failed") {
+          if (validation.topic?.status === "failed" && !allowReviewableBlockedDraft) {
             throw new PostSettingsValidationError(validation.issues, "topic_alignment_failed");
           }
-          if (validation.factual?.status === "blocked") {
+          if (validation.factual?.status === "blocked" && !allowReviewableBlockedDraft) {
             throw new PostSettingsValidationError(validation.issues, "factual_validation_failed");
           }
           if (
@@ -773,10 +773,10 @@ function studioStreamResponse(
         }
 
         if (!sendValidation(validation)) return;
-        if (validation.topic?.status === "failed") {
+        if (validation.topic?.status === "failed" && !allowReviewableBlockedDraft) {
           throw new PostSettingsValidationError(validation.issues, "topic_alignment_failed");
         }
-        if (validation.factual?.status === "blocked") {
+        if (validation.factual?.status === "blocked" && !allowReviewableBlockedDraft) {
           throw new PostSettingsValidationError(validation.issues, "factual_validation_failed");
         }
         if (validation.blocked && !allowReviewableBlockedDraft) {
