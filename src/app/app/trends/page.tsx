@@ -13,6 +13,7 @@ import { useRouter } from "next/navigation";
 import { motion, useReducedMotion } from "motion/react";
 import {
   AlertTriangle,
+  BarChart3,
   Clock,
   ExternalLink,
   Eye,
@@ -114,6 +115,8 @@ interface Data {
   period: TrendPeriod;
   meta: (typeof TREND_PERIODS)[TrendPeriod];
 }
+
+type TrendView = "feed" | "statistics";
 
 // Пороги — то, что раньше было env-переменной HIT_RATIO=5 и молча решало за пользователя.
 const THRESHOLDS = [
@@ -502,6 +505,12 @@ export default function TrendsPage() {
   const [data, setData] = useState<Data | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
+  const [view, setView] = useState<TrendView>(() => {
+    if (typeof window === "undefined") return "feed";
+    return new URLSearchParams(window.location.search).get("view") === "statistics"
+      ? "statistics"
+      : "feed";
+  });
   const [scope, setScope] = useState<"niche" | "global">("niche");
   const [period, setPeriod] = useState<TrendPeriod>("today");
   const [threshold, setThreshold] = useState<ThresholdValue>("all");
@@ -591,6 +600,15 @@ export default function TrendsPage() {
     setDraftReviews({});
     setDraftAcknowledgements({});
     load();
+  };
+
+  const switchView = (next: TrendView) => {
+    if (next === view) return;
+    setView(next);
+    const url = new URL(window.location.href);
+    if (next === "statistics") url.searchParams.set("view", "statistics");
+    else url.searchParams.delete("view");
+    window.history.replaceState(window.history.state, "", url);
   };
 
   const switchPeriod = (value: TrendPeriod) => {
@@ -1014,26 +1032,47 @@ export default function TrendsPage() {
         <ReconTabs />
       </div>
 
-      <TrendStatistics channelId={channelId} channelTopic={niche} />
-
-      <div className="mt-10 max-w-3xl">
-        <h2 className="text-[19px] font-bold text-text">Лента публикаций</h2>
-        <p className="mt-1.5 text-[13px] leading-relaxed text-text-3">
-          Просматривай свежие посты конкурентов или редакционной подборки и создавай собственные публикации по найденным темам.
-        </p>
-      </div>
-
       <Tabs
-        className="mt-5"
         items={[
-          { value: "niche", label: "Моя ниша" },
-          { value: "global", label: "Подборка платформы" },
+          {
+            value: "feed",
+            label: "Лента",
+            icon: <FileText className="h-4 w-4" aria-hidden />,
+          },
+          {
+            value: "statistics",
+            label: "Статистика",
+            icon: <BarChart3 className="h-4 w-4" aria-hidden />,
+          },
         ]}
-        value={scope}
-        onChange={switchScope}
+        value={view}
+        onChange={switchView}
       />
 
-      {global && (
+      {view === "statistics" ? (
+        <div className="mt-5">
+          <TrendStatistics channelId={channelId} channelTopic={niche} />
+        </div>
+      ) : (
+        <>
+          <div className="mt-7 max-w-3xl">
+            <h2 className="text-[19px] font-bold text-text">Лента публикаций</h2>
+            <p className="mt-1.5 text-[13px] leading-relaxed text-text-3">
+              Просматривай свежие посты конкурентов или редакционной подборки и создавай собственные публикации по найденным темам.
+            </p>
+          </div>
+
+          <Tabs
+            className="mt-5"
+            items={[
+              { value: "niche", label: "Моя ниша" },
+              { value: "global", label: "Подборка платформы" },
+            ]}
+            value={scope}
+            onChange={switchScope}
+          />
+
+          {global && (
         <p className="mt-3 max-w-2xl text-[13px] leading-relaxed text-text-3">
           Сейчас это общая редакционная подборка про право и ИИ. Она одинакова для всех каналов и не зависит от выбора ниши.
         </p>
@@ -1041,7 +1080,7 @@ export default function TrendsPage() {
 
       {/* Только на «Моей нише»: «Насмотренность» — это глобальные источники, у них
           канала нет по определению, и селектор там был бы бессмыслицей. */}
-      {!global && (
+          {!global && (
         <ChannelPicker
           channels={tgChannels}
           value={channelId}
@@ -1051,7 +1090,7 @@ export default function TrendsPage() {
         />
       )}
 
-      <div className="mt-5 flex flex-wrap items-center gap-x-4 gap-y-2">
+          <div className="mt-5 flex flex-wrap items-center gap-x-4 gap-y-2">
         <Tabs
           items={(Object.keys(TREND_PERIODS) as TrendPeriod[]).map((value) => ({
             value,
@@ -1065,7 +1104,7 @@ export default function TrendsPage() {
         </p>
       </div>
 
-      {loading ? (
+          {loading ? (
         <div className="mt-5 grid gap-5">
           <div className="skeleton h-14 rounded-md" />
           <div className="grid gap-5 lg:grid-cols-2">
@@ -1228,6 +1267,8 @@ export default function TrendsPage() {
             </ul>
           )}
         </div>
+          )}
+        </>
       )}
     </AppShell>
   );
