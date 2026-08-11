@@ -1,4 +1,5 @@
 import type { Pool } from "pg";
+import { ensureDefaultPersonalProjectInTransaction } from "./project-context";
 
 export type PasswordRegistrationResult =
   | { ok: true; userId: number }
@@ -33,9 +34,11 @@ export async function registerPasswordUser(input: RegistrationInput): Promise<Pa
       await client.query("rollback");
       return { ok: false, error: "email_taken" };
     }
+    const userId = Number(inserted.rows[0].id);
+    await ensureDefaultPersonalProjectInTransaction(client, userId);
     await input.afterInsert?.();
     await client.query("commit");
-    return { ok: true, userId: Number(inserted.rows[0].id) };
+    return { ok: true, userId };
   } catch (error) {
     await client.query("rollback").catch(() => {});
     if (isUniqueViolation(error)) return { ok: false, error: "email_taken" };

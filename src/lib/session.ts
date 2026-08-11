@@ -6,6 +6,7 @@ import { randomBytes } from "node:crypto";
 import type { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { getPool } from "./db";
+import { ensureDefaultPersonalProject } from "./project-context";
 
 const COOKIE = "sid";
 const THIRTY_DAYS_S = 60 * 60 * 24 * 30;
@@ -74,9 +75,21 @@ export async function getSessionUser(req: NextRequest): Promise<SessionUser | nu
   if (!token) return null;
 
   const pool = getPool();
-  const rows = await pool.query<SessionUser & { expires_at: string }>(
+  const rows = await pool.query<SessionUser & { expires_at: string; has_project_context: boolean }>(
     `select u.id, u.tg_id, u.vk_id, u.email, u.name, u.avatar,
-            u.onboarding_completed_at, s.expires_at
+            u.onboarding_completed_at, s.expires_at,
+            exists (
+              select 1
+                from user_project_preferences preference
+                join project_members member
+                  on member.project_id = preference.selected_project_id
+                 and member.user_id = preference.user_id
+                 and member.status = 'active'
+                join projects project
+                  on project.id = preference.selected_project_id
+                 and project.is_archived = false
+               where preference.user_id = u.id
+            ) as has_project_context
        from sessions s
        join users u on u.id = s.user_id
       where s.token = $1 and s.expires_at > now()
@@ -85,7 +98,7 @@ export async function getSessionUser(req: NextRequest): Promise<SessionUser | nu
   );
   if (rows.rowCount === 0) return null;
 
-  const { expires_at, ...rawUser } = rows.rows[0];
+  const { expires_at, has_project_context, ...rawUser } = rows.rows[0];
   // `pg` returns PostgreSQL bigint values as strings at runtime. Keep the public
   // session contract numeric so account-scoped caches and persistence never compare
   // `"1"` with `1` and accidentally reject valid data.
@@ -96,6 +109,9 @@ export async function getSessionUser(req: NextRequest): Promise<SessionUser | nu
     vk_id: rawUser.vk_id == null ? null : Number(rawUser.vk_id),
   };
   if (!Number.isSafeInteger(user.id) || user.id <= 0) return null;
+  if (has_project_context === false) {
+    await ensureDefaultPersonalProject(pool, user.id);
+  }
   const leftMs = new Date(expires_at).getTime() - Date.now();
   if (leftMs < RENEW_WHEN_LEFT_S * 1000) {
     await pool.query(`update sessions set expires_at = $1 where token = $2`, [

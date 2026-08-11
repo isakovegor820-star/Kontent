@@ -401,9 +401,15 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     refreshReal();
     refreshAiUsage();
     const t = setInterval(refreshReal, 8000);
+    const onProjectChanged = () => {
+      setRealReady(false);
+      void refreshReal();
+    };
+    window.addEventListener("aurora:project-changed", onProjectChanged);
     const stopAiUsagePolling = startAiUsagePolling(refreshAiUsage);
     return () => {
       clearInterval(t);
+      window.removeEventListener("aurora:project-changed", onProjectChanged);
       stopAiUsagePolling();
     };
   }, [activeUserId, hasUser, refreshReal, refreshAiUsage]);

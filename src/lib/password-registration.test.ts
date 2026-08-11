@@ -27,6 +27,8 @@ describe("atomic password registration", () => {
     expect(h.client.query).toHaveBeenCalledWith(expect.stringContaining("password_hash"), [
       "new@example.test", "New", "salt:hash",
     ]);
+    expect(h.queries.some((sql) => sql.includes("insert into projects"))).toBe(true);
+    expect(h.queries.some((sql) => sql.includes("project_members"))).toBe(true);
     expect(h.queries).toEqual(expect.arrayContaining(["begin", "commit"]));
     expect(h.client.release).toHaveBeenCalledOnce();
   });

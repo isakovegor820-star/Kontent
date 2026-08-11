@@ -22,6 +22,7 @@ import { Button } from "@/components/ui/button";
 import { Badge, Divider, Field, GlassCard, Input } from "@/components/ui/primitives";
 import { useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
+import { hasPendingProjectInvite } from "@/lib/project-invite-client";
 
 const EASE = [0.22, 1, 0.36, 1] as const;
 const PASSWORD_MIN = 8;
@@ -58,6 +59,12 @@ function validateEmail(raw: string): string | undefined {
 
 type Mode = "register" | "login";
 
+function signedInDestination() {
+  return hasPendingProjectInvite(typeof window === "undefined" ? null : window.sessionStorage)
+    ? "/invite"
+    : "/app/calendar";
+}
+
 /* ------------------------------------------------------------------- ЭКРАН */
 
 export default function RegisterPage() {
@@ -81,10 +88,9 @@ export default function RegisterPage() {
   const [pending, setPending] = useState(false);
 
   const busy = pending;
-
   // Уже вошёл (например, вернулся по ссылке) — сразу в платформу, не показываем вход.
   useEffect(() => {
-    if (s.authReady && s.user) router.replace("/app/calendar");
+    if (s.authReady && s.user) router.replace(signedInDestination());
   }, [s.authReady, s.user, router]);
 
   function switchMode(next: Mode) {
@@ -136,7 +142,7 @@ export default function RegisterPage() {
           title: mode === "register" ? "Аккаунт создан" : "Ты вошёл",
           body: "Осталось пара шагов — и ты в календаре.",
         });
-        router.push("/app/calendar");
+        router.push(signedInDestination());
         return;
       }
 

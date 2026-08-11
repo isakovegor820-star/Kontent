@@ -2172,3 +2172,410 @@ create index if not exists radar_search_results_tsv_idx on radar_search_results 
 create unique index if not exists saved_posts_discovery_source_uniq
   on saved_posts (user_id, channel_id, source_url)
   where kind = 'reference' and source_url is not null;
+
+-- ------------------------------------------------ Project workspaces and RBAC
+-- Project is the collaboration/tenant boundary. user_id remains actor attribution.
+create table if not exists projects (
+  id                     bigint generated always as identity primary key,
+  name                   varchar(160) not null,
+  timezone               varchar(80) not null default 'UTC',
+  created_by_user_id     bigint references users (id) on delete set null,
+  personal_owner_user_id bigint unique references users (id) on delete cascade,
+  is_archived            boolean not null default false,
+  version                bigint not null default 1,
+  created_at             timestamptz not null default now(),
+  updated_at             timestamptz not null default now(),
+  constraint projects_name_check check (length(btrim(name)) between 1 and 160),
+  constraint projects_timezone_check check (length(btrim(timezone)) between 1 and 80),
+  constraint projects_version_check check (version > 0)
+);
+
+create table if not exists project_members (
+  project_id bigint not null references projects (id) on delete cascade,
+  user_id    bigint not null references users (id) on delete cascade,
+  role       text not null,
+  status     text not null default 'active',
+  version    bigint not null default 1,
+  joined_at  timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  revoked_at timestamptz,
+  primary key (project_id, user_id),
+  constraint project_members_role_check check (role in ('owner','author','approver','publisher')),
+  constraint project_members_status_check check (status in ('active','revoked')),
+  constraint project_members_version_check check (version > 0),
+  constraint project_members_revocation_check check (
+    (status = 'active' and revoked_at is null)
+    or (status = 'revoked' and revoked_at is not null)
+  )
+);
+create index if not exists project_members_user_active_idx
+  on project_members (user_id, project_id) where status = 'active';
+create index if not exists project_members_project_role_idx
+  on project_members (project_id, role, user_id) where status = 'active';
+
+-- Only a SHA-256 invitation token hash is persisted; the raw secret is never stored.
+create table if not exists project_invitations (
+  id                  bigint generated always as identity primary key,
+  project_id          bigint not null references projects (id) on delete cascade,
+  email               text not null,
+  role                text not null,
+  token_hash          char(64) not null unique,
+  invited_by_user_id  bigint not null references users (id) on delete restrict,
+  accepted_by_user_id bigint references users (id) on delete set null,
+  expires_at          timestamptz not null,
+  accepted_at         timestamptz,
+  revoked_at          timestamptz,
+  created_at          timestamptz not null default now(),
+  constraint project_invitations_email_check
+    check (email = lower(btrim(email)) and position('@' in email) > 1),
+  constraint project_invitations_role_check check (role in ('author','approver','publisher')),
+  constraint project_invitations_token_hash_check check (token_hash ~ '^[0-9a-f]{64}$'),
+  constraint project_invitations_ttl_check check (expires_at > created_at),
+  constraint project_invitations_resolution_check check (
+    not (accepted_at is not null and revoked_at is not null)
+    and (accepted_at is null or accepted_by_user_id is not null)
+  )
+);
+create index if not exists project_invitations_project_pending_idx
+  on project_invitations (project_id, expires_at, id)
+  where accepted_at is null and revoked_at is null;
+create index if not exists project_invitations_email_pending_idx
+  on project_invitations (email, expires_at, id)
+  where accepted_at is null and revoked_at is null;
+
+create table if not exists user_project_preferences (
+  user_id             bigint primary key references users (id) on delete cascade,
+  selected_project_id bigint not null references projects (id) on delete restrict,
+  updated_at          timestamptz not null default now()
+);
+create index if not exists user_project_preferences_project_idx
+  on user_project_preferences (selected_project_id, user_id);
+
+create table if not exists audit_events (
+  id              bigint generated always as identity primary key,
+  project_id      bigint not null references projects (id) on delete restrict,
+  actor_user_id   bigint references users (id) on delete set null,
+  action          varchar(100) not null,
+  entity_type     varchar(80) not null,
+  entity_id       text,
+  before_version  bigint,
+  after_version   bigint,
+  safe_data       jsonb not null default '{}'::jsonb,
+  request_id      varchar(128),
+  idempotency_key varchar(160),
+  created_at      timestamptz not null default now(),
+  constraint audit_events_action_check check (length(btrim(action)) between 1 and 100),
+  constraint audit_events_entity_type_check check (length(btrim(entity_type)) between 1 and 80),
+  constraint audit_events_versions_check check (
+    (before_version is null or before_version > 0)
+    and (after_version is null or after_version > 0)
+  ),
+  constraint audit_events_safe_data_check check (jsonb_typeof(safe_data) = 'object')
+);
+create index if not exists audit_events_project_created_idx
+  on audit_events (project_id, created_at desc, id desc);
+create unique index if not exists audit_events_project_idempotency_uniq
+  on audit_events (project_id, idempotency_key) where idempotency_key is not null;
+
+insert into projects (name, timezone, created_by_user_id, personal_owner_user_id, created_at, updated_at)
+select 'Личный проект', 'UTC', users.id, users.id, now(), now() from users
+on conflict (personal_owner_user_id) do nothing;
+insert into project_members (project_id, user_id, role, status, joined_at, updated_at)
+select projects.id, projects.personal_owner_user_id, 'owner', 'active', projects.created_at, projects.created_at
+  from projects where projects.personal_owner_user_id is not null
+on conflict (project_id, user_id) do nothing;
+insert into user_project_preferences (user_id, selected_project_id)
+select projects.personal_owner_user_id, projects.id
+  from projects where projects.personal_owner_user_id is not null
+on conflict (user_id) do nothing;
+insert into audit_events (
+  project_id, actor_user_id, action, entity_type, entity_id,
+  after_version, safe_data, idempotency_key, created_at
+)
+select projects.id, projects.personal_owner_user_id, 'project.created', 'project', projects.id::text,
+       projects.version, jsonb_build_object('kind', 'personal', 'source', 'legacy_backfill'),
+       'bootstrap:personal-project:' || projects.id::text, projects.created_at
+  from projects where projects.personal_owner_user_id is not null
+on conflict (project_id, idempotency_key) where idempotency_key is not null do nothing;
+
+create or replace function aurora_selected_project_for_user(target_user_id bigint)
+returns bigint language sql stable as $$
+  select coalesce(
+    (select preference.selected_project_id
+       from user_project_preferences preference
+       join project_members member
+         on member.project_id = preference.selected_project_id
+        and member.user_id = preference.user_id and member.status = 'active'
+       join projects project on project.id = preference.selected_project_id
+      where preference.user_id = target_user_id and project.is_archived = false limit 1),
+    (select project.id
+       from projects project
+       join project_members member
+         on member.project_id = project.id
+        and member.user_id = target_user_id and member.status = 'active'
+      where project.personal_owner_user_id = target_user_id and project.is_archived = false limit 1)
+  )
+$$;
+
+create or replace function aurora_assign_user_project()
+returns trigger language plpgsql as $$
+begin
+  if new.project_id is null then new.project_id := aurora_selected_project_for_user(new.user_id); end if;
+  if new.project_id is null then raise exception 'project_context_missing' using errcode = '23514'; end if;
+  return new;
+end
+$$;
+
+-- Immutable editorial evidence and a project-scoped review workflow. Publication
+-- delivery state continues to live in posts/publication_operations.
+create table if not exists draft_revisions (
+  id             bigint generated always as identity primary key,
+  project_id     bigint not null references projects (id) on delete restrict,
+  draft_id       bigint not null references drafts (id) on delete cascade,
+  draft_version  bigint not null,
+  author_user_id bigint not null references users (id) on delete restrict,
+  content_hash   char(64) not null,
+  snapshot       jsonb not null,
+  created_at     timestamptz not null default now(),
+  constraint draft_revisions_version_check check (draft_version > 0),
+  constraint draft_revisions_hash_check check (content_hash ~ '^[0-9a-f]{64}$'),
+  constraint draft_revisions_snapshot_check check (jsonb_typeof(snapshot) = 'object'),
+  unique (draft_id, draft_version)
+);
+create index if not exists draft_revisions_project_draft_idx
+  on draft_revisions (project_id, draft_id, draft_version desc);
+create index if not exists draft_revisions_hash_idx
+  on draft_revisions (project_id, draft_id, content_hash);
+
+create table if not exists draft_editorial_workflows (
+  draft_id              bigint primary key references drafts (id) on delete cascade,
+  project_id            bigint not null references projects (id) on delete restrict,
+  state                 text not null default 'draft',
+  version               bigint not null default 1,
+  current_revision_id   bigint not null references draft_revisions (id) on delete restrict,
+  submitted_revision_id bigint references draft_revisions (id) on delete restrict,
+  submitted_by_user_id  bigint references users (id) on delete set null,
+  submitted_at          timestamptz,
+  approved_revision_id  bigint references draft_revisions (id) on delete restrict,
+  approved_content_hash char(64),
+  updated_at             timestamptz not null default now(),
+  constraint draft_editorial_workflows_state_check
+    check (state in ('draft','in_review','changes_requested','approved')),
+  constraint draft_editorial_workflows_version_check check (version > 0),
+  constraint draft_editorial_workflows_submission_check check (
+    (submitted_revision_id is null and submitted_by_user_id is null and submitted_at is null)
+    or (submitted_revision_id is not null and submitted_by_user_id is not null and submitted_at is not null)
+  ),
+  constraint draft_editorial_workflows_approval_check check (
+    (state = 'approved' and approved_revision_id is not null and approved_content_hash is not null)
+    or (state <> 'approved' and approved_revision_id is null and approved_content_hash is null)
+  ),
+  constraint draft_editorial_workflows_hash_check
+    check (approved_content_hash is null or approved_content_hash ~ '^[0-9a-f]{64}$'),
+  unique (project_id, draft_id)
+);
+create index if not exists draft_editorial_workflows_project_state_idx
+  on draft_editorial_workflows (project_id, state, updated_at desc, draft_id);
+
+create table if not exists draft_editorial_requests (
+  id                    bigint generated always as identity primary key,
+  project_id            bigint not null references projects (id) on delete restrict,
+  draft_id              bigint not null references drafts (id) on delete cascade,
+  revision_id           bigint not null references draft_revisions (id) on delete restrict,
+  content_hash          char(64) not null,
+  requested_by_user_id  bigint not null references users (id) on delete restrict,
+  status                text not null default 'open',
+  version               bigint not null default 1,
+  resolved_by_user_id   bigint references users (id) on delete set null,
+  requested_at          timestamptz not null default now(),
+  resolved_at           timestamptz,
+  constraint draft_editorial_requests_status_check
+    check (status in ('open','approved','changes_requested','superseded')),
+  constraint draft_editorial_requests_version_check check (version > 0),
+  constraint draft_editorial_requests_hash_check check (content_hash ~ '^[0-9a-f]{64}$'),
+  constraint draft_editorial_requests_resolution_check check (
+    (status = 'open' and resolved_by_user_id is null and resolved_at is null)
+    or (status <> 'open' and resolved_at is not null)
+  )
+);
+create unique index if not exists draft_editorial_requests_open_uniq
+  on draft_editorial_requests (draft_id) where status = 'open';
+create index if not exists draft_editorial_requests_project_status_idx
+  on draft_editorial_requests (project_id, status, requested_at desc, id desc);
+
+create table if not exists draft_editorial_comments (
+  id             bigint generated always as identity primary key,
+  project_id     bigint not null references projects (id) on delete restrict,
+  draft_id       bigint not null references drafts (id) on delete cascade,
+  revision_id    bigint not null references draft_revisions (id) on delete restrict,
+  content_hash   char(64) not null,
+  author_user_id bigint not null references users (id) on delete restrict,
+  body           text not null,
+  created_at     timestamptz not null default now(),
+  constraint draft_editorial_comments_hash_check check (content_hash ~ '^[0-9a-f]{64}$'),
+  constraint draft_editorial_comments_body_check check (length(btrim(body)) between 1 and 4000)
+);
+create index if not exists draft_editorial_comments_revision_idx
+  on draft_editorial_comments (project_id, draft_id, revision_id, created_at, id);
+
+create table if not exists draft_editorial_decisions (
+  id             bigint generated always as identity primary key,
+  project_id     bigint not null references projects (id) on delete restrict,
+  request_id     bigint not null unique references draft_editorial_requests (id) on delete cascade,
+  draft_id       bigint not null references drafts (id) on delete cascade,
+  revision_id    bigint not null references draft_revisions (id) on delete restrict,
+  content_hash   char(64) not null,
+  actor_user_id  bigint not null references users (id) on delete restrict,
+  decision       text not null,
+  note           text,
+  created_at     timestamptz not null default now(),
+  constraint draft_editorial_decisions_decision_check check (decision in ('approve','request_changes')),
+  constraint draft_editorial_decisions_hash_check check (content_hash ~ '^[0-9a-f]{64}$'),
+  constraint draft_editorial_decisions_note_check check (note is null or length(note) <= 4000),
+  constraint draft_editorial_decisions_changes_note_check
+    check (decision = 'approve' or length(btrim(coalesce(note, ''))) > 0)
+);
+create index if not exists draft_editorial_decisions_project_created_idx
+  on draft_editorial_decisions (project_id, created_at desc, id desc);
+
+create table if not exists project_notifications (
+  id                bigint generated always as identity primary key,
+  project_id        bigint not null references projects (id) on delete cascade,
+  recipient_user_id bigint not null references users (id) on delete cascade,
+  actor_user_id     bigint references users (id) on delete set null,
+  event_type        varchar(100) not null,
+  entity_type       varchar(80) not null,
+  entity_id         text not null,
+  safe_data         jsonb not null default '{}'::jsonb,
+  idempotency_key   varchar(180),
+  read_at           timestamptz,
+  created_at        timestamptz not null default now(),
+  constraint project_notifications_event_check check (length(btrim(event_type)) between 1 and 100),
+  constraint project_notifications_entity_check check (length(btrim(entity_type)) between 1 and 80),
+  constraint project_notifications_safe_data_check check (jsonb_typeof(safe_data) = 'object')
+);
+create unique index if not exists project_notifications_idempotency_uniq
+  on project_notifications (project_id, recipient_user_id, idempotency_key)
+  where idempotency_key is not null;
+create index if not exists project_notifications_inbox_idx
+  on project_notifications (project_id, recipient_user_id, read_at, created_at desc, id desc);
+
+create or replace function aurora_reject_editorial_evidence_update()
+returns trigger language plpgsql as $$
+begin
+  raise exception 'editorial_evidence_immutable' using errcode = '55000';
+end
+$$;
+
+do $$
+begin
+  if not exists (select 1 from pg_trigger where tgname = 'draft_revisions_immutable_update') then
+    create trigger draft_revisions_immutable_update before update on draft_revisions
+      for each row execute function aurora_reject_editorial_evidence_update();
+  end if;
+  if not exists (select 1 from pg_trigger where tgname = 'draft_editorial_decisions_immutable_update') then
+    create trigger draft_editorial_decisions_immutable_update before update on draft_editorial_decisions
+      for each row execute function aurora_reject_editorial_evidence_update();
+  end if;
+end
+$$;
+
+create or replace function aurora_assign_channel_project()
+returns trigger language plpgsql as $$
+begin
+  if new.project_id is null then
+    select channel.project_id into new.project_id from channels channel
+      where channel.id = new.channel_id and channel.user_id = new.user_id;
+    new.project_id := coalesce(new.project_id, aurora_selected_project_for_user(new.user_id));
+  end if;
+  if new.project_id is null then raise exception 'project_context_missing' using errcode = '23514'; end if;
+  return new;
+end
+$$;
+
+create or replace function aurora_assign_operation_project()
+returns trigger language plpgsql as $$
+begin
+  if new.project_id is null and new.draft_id is not null then
+    select draft.project_id into new.project_id from drafts draft
+      where draft.id = new.draft_id and draft.user_id = new.user_id;
+  end if;
+  if new.project_id is null then new.project_id := aurora_selected_project_for_user(new.user_id); end if;
+  if new.project_id is null then raise exception 'project_context_missing' using errcode = '23514'; end if;
+  return new;
+end
+$$;
+
+alter table channels add column if not exists project_id bigint references projects (id) on delete restrict;
+update channels channel set project_id = project.id from projects project
+ where channel.project_id is null and project.personal_owner_user_id = channel.user_id;
+alter table channels alter column project_id set not null;
+create index if not exists channels_project_idx on channels (project_id, id);
+
+alter table drafts add column if not exists project_id bigint references projects (id) on delete restrict;
+update drafts draft set project_id = project.id from projects project
+ where draft.project_id is null and project.personal_owner_user_id = draft.user_id;
+alter table drafts alter column project_id set not null;
+create index if not exists drafts_project_updated_idx on drafts (project_id, updated_at desc, id desc);
+
+alter table posts add column if not exists project_id bigint references projects (id) on delete restrict;
+update posts post set project_id = coalesce(
+  (select channel.project_id from channels channel where channel.id = post.channel_id),
+  (select project.id from projects project where project.personal_owner_user_id = post.user_id)
+) where post.project_id is null;
+alter table posts alter column project_id set not null;
+create index if not exists posts_project_schedule_idx on posts (project_id, scheduled_at, id);
+
+alter table autopilot_settings add column if not exists project_id bigint references projects (id) on delete restrict;
+update autopilot_settings settings set project_id = coalesce(
+  (select channel.project_id from channels channel where channel.id = settings.channel_id),
+  (select project.id from projects project where project.personal_owner_user_id = settings.user_id)
+) where settings.project_id is null;
+alter table autopilot_settings alter column project_id set not null;
+create index if not exists autopilot_settings_project_idx on autopilot_settings (project_id, channel_id);
+
+alter table content_brief add column if not exists project_id bigint references projects (id) on delete restrict;
+update content_brief brief set project_id = coalesce(
+  (select channel.project_id from channels channel where channel.id = brief.channel_id),
+  (select project.id from projects project where project.personal_owner_user_id = brief.user_id)
+) where brief.project_id is null;
+alter table content_brief alter column project_id set not null;
+create index if not exists content_brief_project_idx on content_brief (project_id, channel_id);
+
+alter table publication_operations add column if not exists project_id bigint references projects (id) on delete restrict;
+update publication_operations operation set project_id = coalesce(
+  (select draft.project_id from drafts draft where draft.id = operation.draft_id),
+  (select project.id from projects project where project.personal_owner_user_id = operation.user_id)
+) where operation.project_id is null;
+alter table publication_operations alter column project_id set not null;
+create index if not exists publication_operations_project_created_idx
+  on publication_operations (project_id, created_at desc, id desc);
+
+do $$
+begin
+  if not exists (select 1 from pg_trigger where tgname = 'channels_assign_project_before_insert') then
+    create trigger channels_assign_project_before_insert before insert on channels
+      for each row execute function aurora_assign_user_project();
+  end if;
+  if not exists (select 1 from pg_trigger where tgname = 'drafts_assign_project_before_insert') then
+    create trigger drafts_assign_project_before_insert before insert on drafts
+      for each row execute function aurora_assign_user_project();
+  end if;
+  if not exists (select 1 from pg_trigger where tgname = 'posts_assign_project_before_insert') then
+    create trigger posts_assign_project_before_insert before insert on posts
+      for each row execute function aurora_assign_channel_project();
+  end if;
+  if not exists (select 1 from pg_trigger where tgname = 'autopilot_settings_assign_project_before_insert') then
+    create trigger autopilot_settings_assign_project_before_insert before insert on autopilot_settings
+      for each row execute function aurora_assign_channel_project();
+  end if;
+  if not exists (select 1 from pg_trigger where tgname = 'content_brief_assign_project_before_insert') then
+    create trigger content_brief_assign_project_before_insert before insert on content_brief
+      for each row execute function aurora_assign_channel_project();
+  end if;
+  if not exists (select 1 from pg_trigger where tgname = 'publication_operations_assign_project_before_insert') then
+    create trigger publication_operations_assign_project_before_insert before insert on publication_operations
+      for each row execute function aurora_assign_operation_project();
+  end if;
+end
+$$;

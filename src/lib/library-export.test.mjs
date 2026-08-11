@@ -5,6 +5,7 @@ import {
   libraryPdfItemLines,
   LIBRARY_EXPORT_FORMATS,
   renderLibraryExport,
+  renderTabularXlsx,
   resolveLibraryPdfFontPath,
 } from "./library-export.mjs";
 
@@ -82,5 +83,18 @@ describe("library snapshot exports", () => {
       "Оценка 0–100:", "Оценка 1–5:", "Качество данных:",
       "Зрелость данных:", "Версия формулы:", "Оригинал:",
     ]) expect(lines).toContain(label);
+  });
+
+  it("creates a usable XLSX table with typed dates, widths, a frozen header and filters", () => {
+    const bytes = renderTabularXlsx([
+      ["Дата", "Заявки", "Формула"],
+      [new Date("2026-08-11T09:30:00.000Z"), 3, "=2+2"],
+    ], "Аналитика", { headerRow: 1 });
+    expect(bytes.includes(Buffer.from('<pane ySplit="1"'))).toBe(true);
+    expect(bytes.includes(Buffer.from('<autoFilter ref="A1:C2"'))).toBe(true);
+    expect(bytes.includes(Buffer.from('customWidth="1"'))).toBe(true);
+    expect(bytes.includes(Buffer.from('s="1"><v>'))).toBe(true);
+    expect(bytes.includes(Buffer.from("'=2+2"))).toBe(true);
+    expect(bytes.includes(Buffer.from('formatCode="yyyy-mm-dd hh:mm"'))).toBe(true);
   });
 });

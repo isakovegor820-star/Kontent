@@ -4,6 +4,7 @@
 
 import { getPool } from "./db";
 import { notifyOwner, nowMoscow } from "./notify";
+import { ensureDefaultPersonalProjectInTransaction } from "./project-context";
 
 export interface Identity {
   tg_id?: number | null;
@@ -23,46 +24,63 @@ export async function findOrCreateUser(idn: Identity): Promise<{ id: number; cre
   const name = idn.name ?? null;
   const avatar = idn.avatar ?? null;
 
-  // 1. Ищем по любому совпадению идентификатора.
-  const found = await pool.query<{ id: number }>(
-    `select id from users
-      where (tg_id is not null and tg_id = $1)
-         or (vk_id is not null and vk_id = $2)
-         or (email is not null and email = $3)
-      limit 1`,
-    [tg_id, vk_id, email],
-  );
-
-  if (found.rowCount && found.rows[0]) {
-    // 2. Нашли — дозаполняем пустые связи (вошёл вторым способом) и имя/аватар.
-    await pool.query(
-      `update users set
-         tg_id  = coalesce(tg_id, $2),
-         vk_id  = coalesce(vk_id, $3),
-         email  = coalesce(email, $4),
-         name   = coalesce(name, $5),
-         avatar = coalesce(avatar, $6)
-       where id = $1`,
-      [found.rows[0].id, tg_id, vk_id, email, name, avatar],
+  // Identity creation/linking and the personal project invariant commit together.
+  // No login can observe a user row without its owner membership and server selection.
+  const client = await pool.connect();
+  let id = 0;
+  let created = false;
+  try {
+    await client.query("begin");
+    const found = await client.query<{ id: number | string }>(
+      `select id from users
+        where (tg_id is not null and tg_id = $1)
+           or (vk_id is not null and vk_id = $2)
+           or (email is not null and email = $3)
+        limit 1
+        for update`,
+      [tg_id, vk_id, email],
     );
-    return { id: found.rows[0].id, created: false };
+
+    if (found.rows[0]) {
+      id = Number(found.rows[0].id);
+      await client.query(
+        `update users set
+           tg_id  = coalesce(tg_id, $2),
+           vk_id  = coalesce(vk_id, $3),
+           email  = coalesce(email, $4),
+           name   = coalesce(name, $5),
+           avatar = coalesce(avatar, $6)
+         where id = $1`,
+        [id, tg_id, vk_id, email, name, avatar],
+      );
+    } else {
+      const inserted = await client.query<{ id: number | string }>(
+        `insert into users (tg_id, vk_id, email, name, avatar)
+         values ($1, $2, $3, $4, $5) returning id`,
+        [tg_id, vk_id, email, name, avatar],
+      );
+      id = Number(inserted.rows[0]?.id ?? 0);
+      created = true;
+    }
+    if (!Number.isSafeInteger(id) || id <= 0) throw new Error("identity_creation_failed");
+    await ensureDefaultPersonalProjectInTransaction(client, id);
+    await client.query("commit");
+  } catch (error) {
+    await client.query("rollback").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
   }
 
-  // 3. Не нашли — создаём.
-  const ins = await pool.query<{ id: number }>(
-    `insert into users (tg_id, vk_id, email, name, avatar)
-     values ($1, $2, $3, $4, $5) returning id`,
-    [tg_id, vk_id, email, name, avatar],
-  );
-  const id = ins.rows[0].id;
-
   // 4. Связка с заявками: контакт нового пользователя — почта и/или @username.
-  const contacts: string[] = [];
-  if (email) contacts.push(email);
-  if (idn.username) contacts.push("@" + idn.username.toLowerCase());
-  await convertMatchingLeadAfterRegistration(contacts, name);
+  if (created) {
+    const contacts: string[] = [];
+    if (email) contacts.push(email);
+    if (idn.username) contacts.push("@" + idn.username.toLowerCase());
+    await convertMatchingLeadAfterRegistration(contacts, name);
+  }
 
-  return { id, created: true };
+  return { id, created };
 }
 
 /** Если заявка того же контакта ещё не registered — помечаем и сообщаем владельцу. */

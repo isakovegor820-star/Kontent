@@ -169,10 +169,15 @@ function columnName(index) {
   return result;
 }
 
-function xlsxCell(value, rowIndex, columnIndex) {
+function xlsxCell(value, rowIndex, columnIndex, headerRow) {
   const ref = `${columnName(columnIndex)}${rowIndex + 1}`;
+  if (value instanceof Date && Number.isFinite(value.getTime())) {
+    const serial = value.getTime() / 86_400_000 + 25_569;
+    return `<c r="${ref}" s="1"><v>${serial}</v></c>`;
+  }
   if (typeof value === "number" && Number.isFinite(value)) return `<c r="${ref}"><v>${value}</v></c>`;
-  return `<c r="${ref}" t="inlineStr"><is><t xml:space="preserve">${xmlText(value)}</t></is></c>`;
+  const style = rowIndex + 1 === headerRow ? ' s="2"' : "";
+  return `<c r="${ref}"${style} t="inlineStr"><is><t xml:space="preserve">${xmlText(value)}</t></is></c>`;
 }
 
 function crc32(bytes) {
@@ -197,7 +202,7 @@ function u32(value) {
 }
 
 /** Minimal deterministic, store-only ZIP writer; XLSX does not require compression. */
-function zip(files) {
+export function createStoreZip(files) {
   const locals = [];
   const centrals = [];
   let offset = 0;
@@ -229,17 +234,38 @@ function zip(files) {
   ]);
 }
 
-export function renderTabularXlsx(rows, sheetName = "Экспорт") {
+export function renderTabularXlsx(rows, sheetName = "Экспорт", options = {}) {
   const safeSheetName = String(sheetName || "Экспорт").replace(/[\\/*?:\[\]]/gu, " ").slice(0, 31) || "Экспорт";
-  const sheetRows = rows.map((row, rowIndex) =>
-    `<row r="${rowIndex + 1}">${row.map((value, columnIndex) => xlsxCell(value, rowIndex, columnIndex)).join("")}</row>`,
+  const headerRow = Number.isInteger(options.headerRow) && options.headerRow >= 1 && options.headerRow <= rows.length
+    ? options.headerRow
+    : 1;
+  const columnCount = Math.max(1, ...rows.map((row) => row.length));
+  const widths = Array.from({ length: columnCount }, (_, columnIndex) => {
+    const max = rows.reduce((current, row) => {
+      const value = row[columnIndex];
+      const display = value instanceof Date ? value.toISOString() : String(displayValue(value));
+      return Math.max(current, ...display.split(/[\r\n]/u).map((line) => [...line].length));
+    }, 0);
+    return Math.min(Math.max(max + 2, 10), 60);
+  });
+  const columns = widths.map((width, index) =>
+    `<col min="${index + 1}" max="${index + 1}" width="${width}" customWidth="1"/>`
   ).join("");
-  const sheet = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${sheetRows}</sheetData></worksheet>`;
-  return zip([
-    ["[Content_Types].xml", `<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>`],
+  const sheetRows = rows.map((row, rowIndex) =>
+    `<row r="${rowIndex + 1}">${row.map((value, columnIndex) => xlsxCell(value, rowIndex, columnIndex, headerRow)).join("")}</row>`,
+  ).join("");
+  const lastColumn = columnName(columnCount - 1);
+  const autoFilter = rows.length >= headerRow
+    ? `<autoFilter ref="A${headerRow}:${lastColumn}${Math.max(rows.length, headerRow)}"/>`
+    : "";
+  const sheet = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="${headerRow}" topLeftCell="A${headerRow + 1}" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><cols>${columns}</cols><sheetData>${sheetRows}</sheetData>${autoFilter}</worksheet>`;
+  const styles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><numFmts count="1"><numFmt numFmtId="164" formatCode="yyyy-mm-dd hh:mm"/></numFmts><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="3"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
+  return createStoreZip([
+    ["[Content_Types].xml", `<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>`],
     ["_rels/.rels", `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`],
     ["xl/workbook.xml", `<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="${xmlText(safeSheetName)}" sheetId="1" r:id="rId1"/></sheets></workbook>`],
-    ["xl/_rels/workbook.xml.rels", `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>`],
+    ["xl/_rels/workbook.xml.rels", `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`],
+    ["xl/styles.xml", styles],
     ["xl/worksheets/sheet1.xml", sheet],
   ]);
 }
@@ -249,7 +275,7 @@ export function renderLibraryXlsx(snapshot) {
     ...metadataRows(snapshot),
     [],
     ...tableRows(snapshot),
-  ], "Идеи и примеры");
+  ], "Идеи и примеры", { headerRow: metadataRows(snapshot).length + 2 });
 }
 
 export function libraryPdfItemLines(item) {

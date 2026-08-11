@@ -12,6 +12,7 @@
 import { reconcileUploadSession, resolveChannel, uploadVideo } from "./youtube.mjs";
 import { exchangeLongLivedToken, reconcileMediaCreation, resolveIgUser, publishMedia } from "./instagram.mjs";
 import { assertFutureProviderAdapter } from "./social-provider-contract.mjs";
+import { providerSupportsOperation } from "./provider-capabilities.mjs";
 
 const GRAPH_BASE = "https://graph.facebook.com/v19.0";
 
@@ -188,7 +189,7 @@ export const SOCIAL_ADAPTERS = {
     id: "youtube",
     label: "YouTube",
     refresh: true,
-    composerSupported: false,
+    composerSupported: providerSupportsOperation("youtube", "livePublish"),
     retryPolicy: "reconcile_before_retry",
     finalizeTokens: youtubeFinalize,
     publish: youtubePublish,
@@ -202,7 +203,7 @@ export const SOCIAL_ADAPTERS = {
     id: "instagram",
     label: "Instagram",
     refresh: true,
-    composerSupported: false,
+    composerSupported: providerSupportsOperation("instagram", "livePublish"),
     retryPolicy: "reconcile_before_retry",
     finalizeTokens: instagramFinalize,
     publish: instagramPublish,

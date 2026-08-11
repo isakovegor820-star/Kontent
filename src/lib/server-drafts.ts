@@ -20,12 +20,14 @@ import {
 import type { Post } from "./types";
 import { topicFromSourceText } from "./reference-adaptation";
 import { resolveLocalSchedule, ScheduleValidationError } from "./timezone-schedule";
+import { recordDraftRevisionInTransaction } from "./editorial-approval";
 
 type Queryable = Pick<Pool | PoolClient, "query">;
 type TransactionPool = Pick<Pool, "connect">;
 
 type DraftRow = {
   id: number | string;
+  project_id: number | string;
   text: string;
   media: unknown;
   scheduled_at: Date | string | null;
@@ -66,7 +68,7 @@ const MAX_TEXT = 16_384;
 const MAX_DESTINATIONS = 12;
 
 const DRAFT_SELECT = `
-  select d.id, d.text, d.media, d.scheduled_at,
+  select d.id, d.project_id, d.text, d.media, d.scheduled_at,
          d.scheduled_timezone, d.scheduled_local_date, d.scheduled_local_time,
          d.scheduled_offset, d.scheduled_disambiguation,
          d.origin, d.purpose, d.source_ref,
@@ -752,7 +754,7 @@ export async function createDraftForUser(
       purpose = result.purpose;
     }
     await assertOwnedMedia(tx, userId, trusted.media);
-    const inserted = await tx.query<{ id: number | string }>(
+    const inserted = await tx.query<{ id: number | string; project_id: number | string }>(
       `insert into drafts
          (user_id, text, media, scheduled_at, origin, purpose, source_ref, client_key,
           review_policy_version, ai_validation, generation_result_id,
@@ -761,7 +763,7 @@ export async function createDraftForUser(
        values ($1, $2, $3::jsonb, $4, $5, $6, $7::jsonb, $8, $9, $10::jsonb, $11,
                $12, $13, $14, $15, $16)
        on conflict (user_id, client_key) do nothing
-       returning id`,
+       returning id, project_id`,
       [
         userId,
         trusted.text,
@@ -786,6 +788,11 @@ export async function createDraftForUser(
 
     if (draftId != null) {
       await replaceDestinations(tx, draftId, trusted.channelIds);
+      await recordDraftRevisionInTransaction(tx, {
+        draftId,
+        actorUserId: userId,
+        projectId: Number(inserted.rows[0]?.project_id),
+      });
     } else {
       const existing = await tx.query<{ id: number | string }>(
         `select id from drafts where user_id = $1 and client_key = $2`,
@@ -928,6 +935,11 @@ export async function updateDraftForUser(
     }
 
     await replaceDestinations(tx, draftId, input.channelIds);
+    await recordDraftRevisionInTransaction(tx, {
+      draftId,
+      actorUserId: userId,
+      projectId: Number(selected.rows[0].project_id),
+    });
     const draft = await selectDraft(tx, userId, draftId);
     if (!draft) throw new Error("updated draft lookup failed");
     await tx.query("commit");

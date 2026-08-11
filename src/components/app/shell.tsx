@@ -31,6 +31,7 @@ import {
 import type { LucideIcon } from "lucide-react";
 import { AuroraBackground } from "@/components/aurora-background";
 import { Wordmark } from "@/components/brand";
+import { ProjectSwitcher } from "@/components/app/project-switcher";
 import { Button } from "@/components/ui/button";
 import { getAiUsageMetrics } from "@/lib/ai-usage-sync";
 import {
@@ -268,6 +269,8 @@ function SidebarInner({
           </Button>
         )}
       </div>
+
+      <ProjectSwitcher />
 
       <nav
         aria-label="Разделы платформы"
@@ -648,13 +651,7 @@ export function AppShell({
             >
               <Menu className="h-5 w-5" strokeWidth={1.75} aria-hidden />
             </Button>
-            <Link
-              href="/app/calendar"
-              aria-label="Аврора — на главный экран"
-              className="justify-self-center"
-            >
-              <AppBrand />
-            </Link>
+            <div className="min-w-0 px-2"><ProjectSwitcher compact /></div>
             <span aria-hidden className="justify-self-end" />
           </div>
 

@@ -1,5 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 
+const editorialMocks = vi.hoisted(() => ({
+  recordDraftRevisionInTransaction: vi.fn(async () => undefined),
+}));
+
+vi.mock("./editorial-approval", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./editorial-approval")>();
+  return { ...actual, recordDraftRevisionInTransaction: editorialMocks.recordDraftRevisionInTransaction };
+});
+
 import type { DraftCreateInput, DraftUpdateInput } from "./draft-types";
 import {
   attestDraftReviewForUser,
@@ -32,6 +41,7 @@ const input: DraftCreateInput = {
 
 const row = {
   id: "41",
+  project_id: "7",
   text: input.text,
   media: null,
   scheduled_at: input.scheduledAt,
@@ -160,7 +170,7 @@ describe("server draft transactions", () => {
       }
       if (sql.includes("insert into drafts")) {
         insertedParams = params;
-        return { rowCount: 1, rows: [{ id: "41" }] };
+        return { rowCount: 1, rows: [{ id: "41", project_id: "7" }] };
       }
       if (sql.includes("select d.id")) {
         return {
@@ -188,6 +198,10 @@ describe("server draft transactions", () => {
     expect(insertedParams?.[1]).toBe("Исполнительский иммунитет защищает жильё должника.");
     expect(insertedParams?.[5]).toBe("source_context");
     expect(JSON.parse(String(insertedParams?.[6]))).toEqual(canonicalRef);
+    expect(editorialMocks.recordDraftRevisionInTransaction).toHaveBeenCalledWith(
+      expect.anything(),
+      { draftId: 41, actorUserId: 5, projectId: 7 },
+    );
   });
 
   it("rebuilds an internet trend from the owned verified radar result", async () => {
@@ -233,7 +247,7 @@ describe("server draft transactions", () => {
       }
       if (sql.includes("insert into drafts")) {
         insertedParams = params;
-        return { rowCount: 1, rows: [{ id: "41" }] };
+        return { rowCount: 1, rows: [{ id: "41", project_id: "7" }] };
       }
       if (sql.includes("select d.id")) {
         return {
@@ -291,7 +305,7 @@ describe("server draft transactions", () => {
       }
       if (sql.includes("insert into drafts")) {
         insertedParams = params;
-        return { rowCount: 1, rows: [{ id: "41" }] };
+        return { rowCount: 1, rows: [{ id: "41", project_id: "7" }] };
       }
       if (sql.includes("select d.id")) {
         return {
