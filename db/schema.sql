@@ -853,6 +853,19 @@ alter table hashtag_sets
 
 create index if not exists saved_posts_channel_idx
   on saved_posts (user_id, channel_id, created_at desc);
+
+-- Постоянная история ИИ-студии. В БД лежит нормализованный снимок диалога,
+-- а revision защищает новые сообщения от перезаписи устаревшей вкладкой.
+create table if not exists studio_chat_sessions (
+  user_id     bigint primary key references users (id) on delete cascade,
+  payload     jsonb       not null,
+  revision    bigint      not null default 1,
+  updated_at  timestamptz not null default now(),
+  constraint studio_chat_sessions_payload_check
+    check (jsonb_typeof(payload) = 'object'),
+  constraint studio_chat_sessions_revision_check
+    check (revision > 0)
+);
 alter table hashtag_sets drop constraint if exists hashtag_sets_user_id_name_key;
 create unique index if not exists hashtag_sets_channel_name_uniq
   on hashtag_sets (user_id, channel_id, name);

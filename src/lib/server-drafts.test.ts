@@ -190,6 +190,77 @@ describe("server draft transactions", () => {
     expect(JSON.parse(String(insertedParams?.[6]))).toEqual(canonicalRef);
   });
 
+  it("rebuilds an internet trend from the owned verified radar result", async () => {
+    let insertedParams: unknown[] | undefined;
+    const canonicalRef = {
+      kind: "trend",
+      id: "91",
+      label: "Рыбалка каждый день",
+      topic: "Как выбрать место для летней рыбалки",
+      provenance: {
+        kind: "radar_result",
+        id: "91",
+        label: "Рыбалка каждый день",
+        url: "https://t.me/fishing_public/345",
+      },
+    };
+    const sourceInput: DraftCreateInput = {
+      ...input,
+      origin: "trend",
+      text: "Подменённый текст",
+      sourceRef: {
+        kind: "trend",
+        id: "91",
+        label: "Поддельное название",
+        provenance: { kind: "radar_result", id: "91" },
+      },
+    };
+    const query = vi.fn(async (sql: string, params?: unknown[]) => {
+      if (sql.includes("select id from channels")) return { rowCount: 1, rows: [{ id: "11" }] };
+      if (sql.includes("from radar_search_results result")) {
+        expect(params).toEqual(["91", 5, 11]);
+        return {
+          rowCount: 1,
+          rows: [{
+            id: "91",
+            text: "Как выбрать место для летней рыбалки",
+            description: null,
+            title: "Рыбалка каждый день",
+            handle: "fishing_public",
+            url: "https://t.me/fishing_public/345",
+          }],
+        };
+      }
+      if (sql.includes("insert into drafts")) {
+        insertedParams = params;
+        return { rowCount: 1, rows: [{ id: "41" }] };
+      }
+      if (sql.includes("select d.id")) {
+        return {
+          rowCount: 1,
+          rows: [{
+            ...row,
+            text: "Как выбрать место для летней рыбалки",
+            origin: "trend",
+            purpose: "source_context",
+            source_ref: canonicalRef,
+          }],
+        };
+      }
+      return { rowCount: 1, rows: [] };
+    });
+    const { pool } = fakePool(query);
+
+    const result = await createDraftForUser(5, sourceInput, pool as never);
+
+    expect(result.draft).toMatchObject({
+      text: "Как выбрать место для летней рыбалки",
+      source_ref: canonicalRef,
+    });
+    expect(insertedParams?.[1]).toBe("Как выбрать место для летней рыбалки");
+    expect(JSON.parse(String(insertedParams?.[6]))).toEqual(canonicalRef);
+  });
+
   it("creates an RSS item as an immutable server-owned source context", async () => {
     let insertedParams: unknown[] | undefined;
     const canonicalRef = {

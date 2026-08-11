@@ -75,7 +75,7 @@ export function projectAiDraftEvent(
 }
 
 export function aiDraftPhaseLabel(phase: AiDraftPhase | null): string {
-  if (phase === "draft") return "Собираю первый черновик…";
-  if (phase === "editing") return "Улучшаю текст — текущий черновик остаётся на месте…";
-  return "Пишу текст…";
+  if (phase === "draft") return "Готовлю текст по выбранным настройкам…";
+  if (phase === "editing") return "Проверяю настройки и улучшаю текст…";
+  return "Создаю готовый пост…";
 }

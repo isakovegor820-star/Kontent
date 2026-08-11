@@ -143,7 +143,8 @@ function load(): AppState {
 
 // Пользователь с сервера (/api/auth/me) → форма User для интерфейса.
 type ServerUser = {
-  id: number;
+  // PostgreSQL `bigint` may arrive through JSON as a string depending on the driver.
+  id: number | string;
   tg_id: number | null;
   vk_id: number | null;
   email: string | null;
@@ -155,7 +156,7 @@ type ServerUser = {
 function mapUser(su: ServerUser): User {
   const provider: User["provider"] = su.tg_id ? "telegram" : su.vk_id ? "vk" : "email";
   return {
-    id: su.id,
+    id: Number(su.id),
     name: su.name || su.email?.split("@")[0] || "Ты",
     email: su.email || (su.tg_id ? `Telegram` : su.vk_id ? `VK` : ""),
     provider,

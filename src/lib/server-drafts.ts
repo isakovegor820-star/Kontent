@@ -185,6 +185,7 @@ function nullableSourceRef(value: unknown): Post["sourceRef"] | null {
       "content_idea",
       "competitor_post",
       "trend",
+      "radar_result",
       "saved_reference",
       "rss_item",
     ].includes(String(value.provenance.kind))) {
@@ -466,6 +467,43 @@ async function resolveSourceContext(
 
   if (input.origin === "trend") {
     if (source.kind !== "trend") throw new DraftValidationError("bad_source_context");
+    if (source.provenance?.kind === "radar_result") {
+      const row = (await db.query<{
+        id: string;
+        text: string | null;
+        description: string | null;
+        title: string | null;
+        handle: string | null;
+        url: string;
+      }>(
+        `select result.id, result.text, result.description, result.title, result.handle, result.url
+           from radar_search_results result
+           join radar_search_runs run on run.id = result.run_id and run.user_id = $2
+          where result.id = $1 and result.user_id = $2 and run.channel_id = $3
+            and result.verification_status = 'verified'
+            and result.result_type in ('post', 'trend')`,
+        [sourceId, userId, channelId],
+      )).rows[0];
+      const canonicalText = String(row?.text || row?.description || row?.title || "").trim();
+      if (!row || !canonicalText) throw new DraftValidationError("source_context_not_found");
+      const label = row.title?.trim() || (row.handle ? `@${row.handle}` : "Публичный Telegram-источник");
+      return {
+        ...input,
+        text: canonicalText,
+        sourceRef: {
+          kind: "trend",
+          id: String(row.id),
+          label,
+          topic: topicFromSourceText(canonicalText),
+          provenance: {
+            kind: "radar_result",
+            id: String(row.id),
+            label,
+            url: row.url,
+          },
+        },
+      };
+    }
     if (source.provenance?.kind === "trend") {
       const row = (await db.query<{
         id: string; text: string; title: string | null; handle: string;

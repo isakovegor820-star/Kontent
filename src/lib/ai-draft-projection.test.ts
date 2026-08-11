@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { createAiDraftProjection, projectAiDraftEvent } from "./ai-draft-projection";
+import { aiDraftPhaseLabel, createAiDraftProjection, projectAiDraftEvent } from "./ai-draft-projection";
 import type { AiStreamEvent } from "./ai-stream";
 
 const requestId = "projection-test";
@@ -16,6 +16,12 @@ function apply(events: AiStreamEvent[]) {
 }
 
 describe("AI draft projection", () => {
+  it("describes private quality work without promising or exposing an intermediate draft", () => {
+    expect(aiDraftPhaseLabel("draft")).toBe("Готовлю текст по выбранным настройкам…");
+    expect(aiDraftPhaseLabel("editing")).toBe("Проверяю настройки и улучшаю текст…");
+    expect(aiDraftPhaseLabel("writing")).toBe("Создаю готовый пост…");
+  });
+
   it("never erases a complete candidate between editorial passes", () => {
     const { state, observed } = apply([
       { type: "phase", phase: "draft", requestId },

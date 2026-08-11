@@ -12,6 +12,7 @@ import {
   CalendarRange,
   Check,
   ChevronDown,
+  CircleStop,
   Clapperboard,
   Copy,
   FileText,
@@ -21,7 +22,6 @@ import {
   Plus,
   RefreshCw,
   Sparkles,
-  Square,
   Video,
 } from "lucide-react";
 
@@ -60,14 +60,15 @@ import {
   buildPostSettingsSummary,
   normalizePostSettings,
   validatePostSettingsConflicts,
-  validatePostSettingsResult,
   type PostSettings,
 } from "@/lib/post-settings";
 import { pickStudioCommand } from "@/lib/studio-command";
 import {
   isStudioGenerationPlaceholder,
+  mergeStudioChatSessions,
   parseStudioChatSession,
   serializeStudioChatSession,
+  stopStudioStreamingMessages,
   studioChatStorageKey,
   type StudioChatGeneration,
   type StudioChatMessage,
@@ -113,28 +114,7 @@ type PendingReferenceGeneration = {
 };
 
 type WorkspaceMode = "chat" | "studio";
-
-const VALIDATION_BLOCKER_LABELS: Record<string, string> = {
-  unsupported_semantic_claim: "есть утверждение, которое не подтверждено доступными фактами",
-  unsupported_number: "есть неподтверждённое число или сумма",
-  unsupported_date: "есть неподтверждённая дата",
-  unsupported_url: "есть неподтверждённая ссылка",
-  unsupported_legal_reference: "есть неподтверждённая правовая ссылка",
-  "topic:off_topic": "результат ушёл от выбранной темы",
-};
-
-function validationReviewMessage(validation: Msg["aiValidation"]): string {
-  if (!validation || validation.provenance.semanticEntailment === "not_checked") {
-    return "Смысловую проверку не удалось выполнить. Текст сохранён только для ручной правки; подтвердите факты перед публикацией.";
-  }
-  const details = validation.blockerCodes
-    .map((code) => VALIDATION_BLOCKER_LABELS[code] ?? null)
-    .filter((label): label is string => Boolean(label));
-  if (validation.provenance.semanticEntailment === "blocked" || validation.status === "blocked") {
-    return `Проверка выполнена и заблокировала публикацию${details.length ? `: ${[...new Set(details)].join("; ")}` : ". Исправьте или подтвердите спорные утверждения"}.`;
-  }
-  return "Автоматическая проверка завершена, но для этого текста всё ещё нужно ручное подтверждение фактов.";
-}
+type ChatPersistenceStatus = "loading" | "saving" | "saved" | "local";
 
 const EASE_SOFT: [number, number, number, number] = [0.22, 1, 0.36, 1];
 
@@ -236,7 +216,6 @@ function MessageRow({
   onRegenerate,
   onRetry,
   onShorten,
-  onFixQuality,
   creatingPost,
 }: {
   msg: Msg;
@@ -247,7 +226,6 @@ function MessageRow({
   onRegenerate: () => void;
   onRetry: () => void;
   onShorten: () => void;
-  onFixQuality: (issue: string) => void;
   creatingPost: boolean;
 }) {
   const appear = {
@@ -276,14 +254,11 @@ function MessageRow({
           <span className="h-1.5 w-1.5 rounded-full bg-success-text" aria-hidden />
           Аврора
         </p>
-        <p
-          className={cn(
-            "max-w-[72ch] text-[15px] leading-[1.7] whitespace-pre-wrap text-text",
-            msg.streaming && "caret",
-          )}
-        >
-          {msg.text}
-        </p>
+        {msg.text.trim() && (
+          <p className="max-w-[72ch] text-[15px] leading-[1.7] whitespace-pre-wrap text-text">
+            {msg.text}
+          </p>
+        )}
 
         {msg.streaming && msg.progressLabel && (
           <p role="status" aria-live="polite" className="mt-2 text-[12px] font-semibold text-info-text">
@@ -294,12 +269,17 @@ function MessageRow({
         {msg.errorMessage && (
           <div role="alert" className="mt-3 max-w-[72ch] rounded-sm border border-danger-text/25 bg-danger-soft px-3 py-2 text-[12px] leading-relaxed text-danger-text">
             <p>{msg.errorMessage}</p>
-            {msg.requestId && <p className="mt-1 font-mono text-[10px] opacity-80">Номер запроса: {msg.requestId}</p>}
           </div>
         )}
 
-        {!msg.errorMessage && msg.requestId && (
-          <p className="mt-2 font-mono text-[10px] text-text-3">Номер запроса: {msg.requestId}</p>
+        {msg.statusMessage && (
+          <p
+            role="status"
+            aria-live="polite"
+            className="mt-3 max-w-[72ch] rounded-sm border border-line bg-surface-inset px-3 py-2 text-[12px] leading-relaxed text-text-2"
+          >
+            {msg.statusMessage}
+          </p>
         )}
 
         {!msg.streaming && msg.fallbackUsed && msg.requestedEngine && msg.effectiveEngine && (
@@ -311,10 +291,18 @@ function MessageRow({
 
         {/* Печатает — можно остановить. Анимация никогда не держит человека (ТЗ 7.4) */}
         {msg.streaming && (
-          <div className="mt-2">
-            <Button variant="ghost" size="sm" onClick={onStop}>
-              <Square className="h-3 w-3" fill="currentColor" strokeWidth={2} aria-hidden />
-              Стоп
+          <div className="mt-3">
+            <Button
+              type="button"
+              variant="danger"
+              size="sm"
+              className="border border-danger-text/20 px-4 shadow-sm"
+              onClick={onStop}
+              aria-label="Остановить генерацию"
+              title="Остановить генерацию"
+            >
+              <CircleStop className="h-4 w-4" strokeWidth={2} aria-hidden />
+              Остановить
             </Button>
           </div>
         )}
@@ -332,12 +320,6 @@ function MessageRow({
               </Button>
             )}
           </div>
-        )}
-
-        {ready && msg.requiresReview && (
-          <p className="mt-3 max-w-[72ch] rounded-sm border border-brand/30 bg-info-soft px-3 py-2 text-[12px] leading-relaxed text-info-text">
-            {validationReviewMessage(msg.aiValidation)}
-          </p>
         )}
 
         {/* Complete result remains reviewable even when semantic publication is blocked. */}
@@ -367,28 +349,6 @@ function MessageRow({
           </div>
         )}
 
-        {ready && msg.reviewable && msg.quality && (
-          <details className="mt-3 max-w-[72ch] rounded-sm border border-line bg-surface">
-            <summary className="flex min-h-10 cursor-pointer list-none items-center justify-between gap-3 px-3 text-[12px] font-bold text-text marker:content-none">
-              <span>{msg.quality.passed ? "Проверка поста пройдена" : `Нужно улучшить: ${msg.quality.violations.length}`}</span>
-              <span className="text-[10px] font-semibold text-text-3">{msg.quality.metrics.chars} зн. · {msg.quality.metrics.emojis} эмодзи · {msg.quality.metrics.hashtags} хэшт.</span>
-            </summary>
-            <div className="border-t border-line px-3 py-2.5">
-              {msg.quality.violations.length === 0 ? (
-                <p className="text-[11px] leading-relaxed text-success-text">Длина, площадка, обязательные факты, призыв и технические ограничения соблюдены.</p>
-              ) : (
-                <div className="grid gap-2">
-                  {msg.quality.violations.map((issue) => (
-                    <div key={`${issue.code}-${issue.message}`} className="flex items-start justify-between gap-3 text-[11px] leading-relaxed text-text-2">
-                      <span>• {issue.message}</span>
-                      <button type="button" onClick={() => onFixQuality(issue.message)} className="shrink-0 font-bold text-info-text hover:underline">Исправить</button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </details>
-        )}
       </div>
     </motion.div>
   );
@@ -558,7 +518,8 @@ function Popover({
       className={cn(
         // Открываем вверх — панель прижата к низу экрана. Высоту ограничиваем вьюпортом:
         // без этого длинный список уезжал за верхний край и обрезался.
-        "absolute bottom-[calc(100%+8px)] left-0 z-40 w-[320px] max-w-[calc(100vw-2rem)]",
+        "fixed inset-x-4 bottom-[calc(env(safe-area-inset-bottom)+5.5rem)] z-40 w-auto",
+        "sm:absolute sm:inset-x-auto sm:bottom-[calc(100%+8px)] sm:left-0 sm:w-[320px] sm:max-w-[calc(100vw-2rem)]",
         "max-h-[min(60dvh,420px)] overflow-y-auto overscroll-contain",
         "rounded-md border border-line-strong bg-surface-2 p-2 shadow-lift",
         className,
@@ -599,7 +560,7 @@ function QuickActionsMenu({
         <span className="text-[12px] font-semibold">Создать</span>
       </button>
 
-      <Popover open={open} onClose={() => setOpen(false)} className="w-[300px] p-2.5">
+      <Popover open={open} onClose={() => setOpen(false)} className="p-2.5 sm:w-[300px]">
         <p className="px-2 pb-2 text-[11px] font-bold tracking-wide text-text-3 uppercase">
           Что создать
         </p>
@@ -665,7 +626,7 @@ function ChannelMenu({
         <span className="truncate">{label}</span>
       </button>
 
-      <Popover open={open} onClose={() => setOpen(false)} className="w-[320px] p-3">
+      <Popover open={open} onClose={() => setOpen(false)} className="p-3 sm:w-[320px]">
         <div className="px-1 pb-2">
           <p className="text-[14px] font-extrabold text-text">Для какого канала пишем?</p>
           <p className="mt-1 text-[11px] leading-relaxed text-text-3">
@@ -747,7 +708,7 @@ function ModelMenu({
         <ChevronDown className="h-3.5 w-3.5 shrink-0" strokeWidth={2} aria-hidden />
       </button>
 
-      <Popover open={open} onClose={() => setOpen(false)} className="w-[300px] p-2.5">
+      <Popover open={open} onClose={() => setOpen(false)} className="p-2.5 sm:w-[300px]">
         <div className="px-2 pb-2">
           <p className="text-[13px] font-extrabold text-text">Выбрать модель</p>
           <p className="mt-0.5 text-[11px] text-text-3">Нажми на название — модель применится сразу.</p>
@@ -804,6 +765,7 @@ function StudioPageInner() {
   const [draft, setDraft] = useState("");
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("chat");
   const [chatSessionOwner, setChatSessionOwner] = useState<number | null>(null);
+  const [chatPersistenceStatus, setChatPersistenceStatus] = useState<ChatPersistenceStatus>("loading");
   const [mediaKind, setMediaKind] = useState<MediaKind>("image");
   const [pickedChannelId, setPickedChannelId] = useState<number | null>(null);
   // Нормализованные параметры публикации нужны генератору и проверке результата.
@@ -831,8 +793,16 @@ function StudioPageInner() {
     keys: new Map(),
   });
   const startedReferenceDraftsRef = useRef<Set<number>>(new Set());
+  const sessionRevisionRef = useRef(0);
+  const sessionSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sessionSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const sessionPersistenceOwnerRef = useRef<number | null>(null);
+  const latestSessionSnapshotRef = useRef<{ owner: number; serialized: string } | null>(null);
 
-  const sessionOwner = s.user?.id ?? null;
+  const parsedSessionOwner = Number(s.user?.id);
+  const sessionOwner = Number.isSafeInteger(parsedSessionOwner) && parsedSessionOwner > 0
+    ? parsedSessionOwner
+    : null;
 
   // A request started by one account must not keep running after logout/account switch.
   // The owner-token guard below also prevents any late completion from touching the next chat.
@@ -842,48 +812,176 @@ function StudioPageInner() {
     }
   }, [chatSessionOwner, sessionOwner]);
 
-  // История диалога относится к аккаунту и переживает размонтирование страницы:
-  // переход в другой раздел, обновление и возврат из сохранённой вкладки больше её не стирают.
+  // История диалога относится к аккаунту и хранится на сервере. localStorage — аварийная
+  // копия, а старый sessionStorage читаем один раз для бесшовной миграции уже созданных чатов.
   useEffect(() => {
     if (!s.authReady || !sessionOwner || chatSessionOwner === sessionOwner) return;
-    let restored = null;
-    try {
-      restored = parseStudioChatSession(sessionStorage.getItem(studioChatStorageKey(sessionOwner)), sessionOwner);
-    } catch {
-      // В приватном режиме storage может быть запрещён — чат всё равно работает в памяти.
-    }
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- browser storage доступен только после монтирования
-    setMessages(restored?.messages ?? []);
-    setDraft(restored?.draft ?? "");
-    setWorkspaceMode(restored?.workspaceMode ?? "chat");
-    genRef.current = new Map(restored?.generations ?? []);
-    setChatSessionOwner(sessionOwner);
-  }, [chatSessionOwner, s.authReady, searchParams, sessionOwner]);
+    let cancelled = false;
+    sessionPersistenceOwnerRef.current = sessionOwner;
+    sessionRevisionRef.current = 0;
+    if (sessionSaveTimerRef.current) clearTimeout(sessionSaveTimerRef.current);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- начало асинхронного восстановления нового аккаунта
+    setChatPersistenceStatus("loading");
 
-  // Сохраняем после каждого содержательного изменения. При восстановлении незавершённый
-  // streaming-флаг снимается, чтобы после перезагрузки интерфейс не зависал в вечной «печати».
+    void (async () => {
+      let serverUnavailable = false;
+      let remoteSession = null;
+      let revision = 0;
+      try {
+        const response = await fetch("/api/studio/session", { cache: "no-store" });
+        const body = (await response.json().catch(() => null)) as {
+          session?: unknown;
+          revision?: number;
+        } | null;
+        if (!response.ok) throw new Error("session_load_failed");
+        remoteSession = body?.session
+          ? parseStudioChatSession(JSON.stringify(body.session), sessionOwner)
+          : null;
+        revision = Number.isSafeInteger(body?.revision) ? Number(body?.revision) : 0;
+      } catch {
+        serverUnavailable = true;
+      }
+
+      let localSession = null;
+      try {
+        const key = studioChatStorageKey(sessionOwner);
+        localSession = parseStudioChatSession(localStorage.getItem(key), sessionOwner)
+          ?? parseStudioChatSession(sessionStorage.getItem(key), sessionOwner);
+      } catch {
+        // В приватном режиме storage может быть запрещён — сервер остаётся источником правды.
+      }
+      if (cancelled || sessionPersistenceOwnerRef.current !== sessionOwner) return;
+      // Сервер мог отстать от вкладки на доли секунды, если dev-сервер или браузер
+      // перезагрузил страницу между локальной записью и отложенным PUT. Объединяем оба
+      // снимка, чтобы свежий пост из чата не исчезал за более старой серверной версией.
+      const restored = remoteSession && localSession
+        ? mergeStudioChatSessions(remoteSession, localSession)
+        : remoteSession ?? localSession;
+      sessionRevisionRef.current = revision;
+      setMessages(restored?.messages ?? []);
+      setDraft(restored?.draft ?? "");
+      setWorkspaceMode(restored?.workspaceMode ?? "chat");
+      genRef.current = new Map(restored?.generations ?? []);
+      setChatSessionOwner(sessionOwner);
+      setChatPersistenceStatus(serverUnavailable ? "local" : localSession ? "saving" : "saved");
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [chatSessionOwner, s.authReady, sessionOwner]);
+
+  // Локальную копию обновляем сразу, а PostgreSQL — после короткой паузы и строго
+  // последовательно. Так streaming не создаёт запрос на каждый токен, но готовый текст
+  // уже не зависит от жизни вкладки. Revision защищает историю от устаревшей вкладки.
   useEffect(() => {
     if (!sessionOwner || chatSessionOwner !== sessionOwner) return;
+    const session = {
+      messages,
+      draft,
+      workspaceMode,
+      generations: [...genRef.current.entries()],
+    };
+    const serialized = serializeStudioChatSession(sessionOwner, session);
+    latestSessionSnapshotRef.current = { owner: sessionOwner, serialized };
     try {
-      sessionStorage.setItem(
-        studioChatStorageKey(sessionOwner),
-        serializeStudioChatSession(sessionOwner, {
-          messages,
-          draft,
-          workspaceMode,
-          generations: [...genRef.current.entries()],
-        }),
-      );
+      const key = studioChatStorageKey(sessionOwner);
+      localStorage.setItem(key, serialized);
+      sessionStorage.removeItem(key);
     } catch {
-      // Недоступный или переполненный storage не должен ломать генерацию.
+      // Недоступный storage не должен ломать серверное сохранение.
     }
+    if (sessionSaveTimerRef.current) clearTimeout(sessionSaveTimerRef.current);
+    sessionSaveTimerRef.current = setTimeout(() => {
+      const owner = sessionOwner;
+      setChatPersistenceStatus("saving");
+      sessionSaveQueueRef.current = sessionSaveQueueRef.current
+        .catch(() => undefined)
+        .then(async () => {
+          if (sessionPersistenceOwnerRef.current !== owner) return;
+          let payload = JSON.parse(serialized) as unknown;
+          let expectedRevision = sessionRevisionRef.current;
+          for (let attempt = 0; attempt < 2; attempt += 1) {
+            const response = await fetch("/api/studio/session", {
+              method: "PUT",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ expectedRevision, session: payload }),
+            });
+            const body = (await response.json().catch(() => null)) as {
+              session?: unknown;
+              revision?: number;
+            } | null;
+            if (response.ok && Number.isSafeInteger(body?.revision)) {
+              if (sessionPersistenceOwnerRef.current === owner) {
+                sessionRevisionRef.current = Number(body?.revision);
+                setChatPersistenceStatus("saved");
+              }
+              return;
+            }
+            if (response.status !== 409 || !body?.session || !Number.isSafeInteger(body.revision)) {
+              throw new Error("session_save_failed");
+            }
+            const remote = parseStudioChatSession(JSON.stringify(body.session), owner);
+            const local = parseStudioChatSession(JSON.stringify(payload), owner);
+            if (!remote || !local) throw new Error("session_conflict_invalid");
+            expectedRevision = Number(body.revision);
+            payload = JSON.parse(serializeStudioChatSession(owner, mergeStudioChatSessions(remote, local))) as unknown;
+          }
+          throw new Error("session_conflict_repeated");
+        })
+        .catch(() => {
+          if (sessionPersistenceOwnerRef.current === owner) setChatPersistenceStatus("local");
+        });
+    }, 600);
+    return () => {
+      if (sessionSaveTimerRef.current) clearTimeout(sessionSaveTimerRef.current);
+    };
   }, [chatSessionOwner, draft, messages, sessionOwner, workspaceMode]);
+
+  // Последняя синхронная страховка на случай Fast Refresh, рестарта dev-сервера или
+  // перезагрузки браузера. localStorage записывается до ухода страницы; небольшой снимок
+  // дополнительно отправляем с keepalive, не задерживая навигацию.
+  useEffect(() => {
+    const persistOnPageHide = () => {
+      const snapshot = latestSessionSnapshotRef.current;
+      if (!snapshot || snapshot.owner !== sessionPersistenceOwnerRef.current) return;
+      try {
+        localStorage.setItem(studioChatStorageKey(snapshot.owner), snapshot.serialized);
+      } catch {
+        // Серверное сохранение всё равно могло завершиться до закрытия страницы.
+      }
+      if (new Blob([snapshot.serialized]).size > 60_000) return;
+      void fetch("/api/studio/session", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          expectedRevision: sessionRevisionRef.current,
+          session: JSON.parse(snapshot.serialized) as unknown,
+        }),
+        credentials: "same-origin",
+        keepalive: true,
+      }).catch(() => undefined);
+    };
+    window.addEventListener("pagehide", persistOnPageHide);
+    return () => window.removeEventListener("pagehide", persistOnPageHide);
+  }, []);
+
+  useEffect(() => () => {
+    if (sessionSaveTimerRef.current) clearTimeout(sessionSaveTimerRef.current);
+  }, []);
 
   const busy = messages.some((m) => m.streaming);
   const streamingLen = messages.find((m) => m.streaming)?.text.length ?? 0;
   const count = messages.length;
 
   const aiUsage = getAiUsageMetrics(s.aiUsageStatus, s.aiUsed, s.aiLimit);
+  const persistenceLabel = chatPersistenceStatus === "loading"
+    ? "Восстанавливаю историю…"
+    : chatPersistenceStatus === "saving"
+      ? "Сохраняю историю…"
+      : chatPersistenceStatus === "local"
+        ? "Сервер временно недоступен — история сохранена на этом устройстве"
+        : "История сохранена";
   const activeChannels = s.realChannels.filter((channel) => channel.is_active);
   const channelId =
     pickedChannelId && activeChannels.some((channel) => channel.id === pickedChannelId)
@@ -1087,9 +1185,7 @@ function StudioPageInner() {
       }))
       .then(({ response, data: d }) => {
         if (!response.ok || !d) {
-          setEngineStatusError(
-            `Не удалось проверить модели.${d?.requestId ? ` Номер запроса: ${d.requestId}` : " Проверь соединение и обнови страницу."}`,
-          );
+          setEngineStatusError("Не удалось проверить модели. Проверь соединение и обнови страницу.");
           return;
         }
         setEngineStatusError(null);
@@ -1118,7 +1214,7 @@ function StudioPageInner() {
       s.toast({
         kind: "danger",
         title: "Не удалось сменить модель",
-        body: `${info?.error === "engine_offline" ? "Модель сейчас не отвечает." : "Проверь подключение и попробуй ещё раз."}${info?.requestId ? ` Номер запроса: ${info.requestId}` : ""}`,
+        body: info?.error === "engine_offline" ? "Модель сейчас не отвечает." : "Проверь подключение и попробуй ещё раз.",
       });
       return;
     }
@@ -1138,6 +1234,83 @@ function StudioPageInner() {
     });
   };
 
+
+  // Готовый ответ сразу становится серверным черновиком. Публикация остаётся явным
+  // действием в редакторе: там можно отправить сейчас, выбрать дату или подтвердить факты.
+  function openAsPost(messageId: string, text: string, options?: {
+    channelId?: number | null;
+    clientKey?: string;
+    generationResultId?: number;
+  }) {
+    if (postDraftRef.current.promise) return;
+    const destinationChannelId = options?.channelId ?? channelId;
+    if (!destinationChannelId) {
+      s.toast({
+        kind: "danger",
+        title: "Некуда отправлять пост",
+        body: "Сначала подключи или выбери активный канал.",
+      });
+      return;
+    }
+
+    const clientKey = options?.clientKey
+      ?? postDraftRef.current.keys.get(messageId)
+      ?? createDraftClientKey();
+    const generation = genRef.current.get(messageId);
+    const generatedMessage = messages.find((message) => message.id === messageId);
+    const generationResultId = options?.generationResultId ?? generatedMessage?.generationResultId;
+    if (!generationResultId) {
+      s.toast({
+        kind: "danger",
+        title: "Текст ещё нельзя открыть в редакторе",
+        body: "Сервер не подтвердил точный результат и его проверки. Исправь задание и запусти генерацию снова.",
+      });
+      return;
+    }
+    postDraftRef.current.keys.set(messageId, clientKey);
+    setCreatingPostId(messageId);
+    const request = (async () => {
+      try {
+        const result = await createServerDraft({
+          text,
+          media: null,
+          scheduledAt: null,
+          origin: "ai",
+          sourceRef: null,
+          channelIds: [destinationChannelId],
+          aiValidation: null,
+          generationResultId,
+          clientKey,
+        });
+        s.toast({
+          kind: "success",
+          title: "Пост создан",
+          body: "Открываем редактор — можно опубликовать сразу или запланировать.",
+        });
+        if (generation?.autoOpenComposer && generation.referenceDraftId) {
+          // Only now is it safe to consume the one-shot intent: the generated text already
+          // has a durable, idempotent draft. Back returns to Studio without starting again.
+          window.history.replaceState(null, "", `/app/studio?draft=${generation.referenceDraftId}`);
+        }
+        router.push(`/app/composer?draft=${result.draft.id}`);
+      } catch (error) {
+        s.toast({
+          kind: "danger",
+          title: "Пост не создан",
+          body:
+            error instanceof DraftRequestError && error.kind === "offline"
+              ? "Нет связи с сервером. Текст остался в чате — повтори, когда соединение восстановится."
+              : "Черновик не удалось сохранить. Текст остался в чате, можно безопасно повторить.",
+        });
+      } finally {
+        postDraftRef.current.promise = null;
+        setCreatingPostId(null);
+      }
+    })();
+    postDraftRef.current.promise = request;
+  }
+
+
   // Настоящая генерация Д.8: стрим из /api/ai/generate (за ним переходник → Hermes).
   // Сервер подкладывает прошлые посты как образец стиля и считает дневной лимит.
   const startStream = async (id: string, gen: Gen) => {
@@ -1148,7 +1321,6 @@ function StudioPageInner() {
     }
     const previousMessage = messages.find((message) => message.id === id && !message.streaming);
     const previousText = previousMessage?.text ?? "";
-    let recoveryText = previousText;
     const streamBox = streamRef.current;
     const streamOwner = beginStudioStream(streamBox);
     const controller = streamOwner.controller;
@@ -1159,7 +1331,6 @@ function StudioPageInner() {
     };
     const generationSettings = gen.postSettings ?? postSettings;
     const generationChannelId = gen.channelId !== undefined ? gen.channelId : channelId;
-    const selectedNetwork = activeChannels.find((channel) => channel.id === generationChannelId)?.network;
     const variantInstruction: Record<PostSettings["variantChange"], string> = {
       full: "полностью другая концепция",
       hook: "новый хук при сохранении фактов",
@@ -1169,9 +1340,6 @@ function StudioPageInner() {
       expert: "более экспертная подача",
       native: "более нативная подача для площадки",
     };
-    const qualityFor = (text: string) => ["write", "rewrite", "shorten", "longread"].includes(gen.cmd)
-      ? validatePostSettingsResult(text, generationSettings, { network: selectedNetwork, kind: gen.cmd, task: gen.input })
-      : undefined;
     const setMsg = (patch: Partial<Msg>) => {
       if (!ownsStream()) return false;
       setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, ...patch } : m)));
@@ -1211,12 +1379,21 @@ function StudioPageInner() {
 
       if ([400, 401, 403, 409, 422, 429, 503].includes(res.status)) {
         const info = (await res.json().catch(() => null)) as
-          | AiFailureInfo & { conflicts?: Array<{ message?: string }>; issues?: Array<{ message?: string }> }
+          | Omit<AiFailureInfo, "issues"> & {
+              conflicts?: Array<{ message?: string }>;
+              issues?: Array<string | { message?: string }>;
+            }
           | null;
         if (!ownsStream()) return;
         const correlatedRequestId = info?.requestId ?? responseRequestId;
         const details = info?.conflicts?.map((item) => item.message).filter(Boolean).join("\n• ");
-        const preflight = info?.issues?.map((item) => item.message).filter(Boolean).join("\n• ");
+        const preflight = info?.issues
+          ?.map((item) => typeof item === "string" ? item : item.message)
+          .filter((item): item is string => Boolean(item))
+          .join("\n• ");
+        const failureInfo: AiFailureInfo | null = info
+          ? { ...info, issues: info.issues?.map((item) => typeof item === "string" ? item : item.message).filter((item): item is string => Boolean(item)) }
+          : null;
         const suggested = info?.suggestedEngine?.id
           ? engines.find((item) => item.id === info.suggestedEngine?.id && item.status === "ready") ?? null
           : null;
@@ -1234,7 +1411,7 @@ function StudioPageInner() {
               ? `Добавь подтверждённые факты и повтори запрос.\n• ${preflight}`
               : res.status === 429
                 ? "Дневной лимит исчерпан. Текст запроса сохранён; повтори его после обновления лимита."
-                : failureText(info, res.status),
+                : failureText(failureInfo, res.status),
           requestId: correlatedRequestId,
           streaming: false,
           progressLabel: undefined,
@@ -1287,21 +1464,15 @@ function StudioPageInner() {
           terminalRequestId = event.requestId;
           if (event.type === "phase") {
             projection = projectAiDraftEvent(projection, event);
-            recoveryText = projection.visibleText || recoveryText;
             setMsg({
-              ...(projection.visibleText ? { text: projection.visibleText } : {}),
               progressLabel: aiDraftPhaseLabel(projection.phase),
               postable: false,
               requestId: event.requestId,
             });
           } else if (event.type === "delta") {
             projection = projectAiDraftEvent(projection, event);
-            recoveryText = projection.visibleText || recoveryText;
-            setMsg({ text: projection.visibleText, postable: false, requestId: event.requestId });
           } else if (event.type === "replace") {
             projection = projectAiDraftEvent(projection, event);
-            recoveryText = projection.visibleText || recoveryText;
-            setMsg({ text: projection.visibleText, postable: false, requestId: event.requestId });
           } else if (event.type === "fallback") {
             fallbackUsed = true;
             requestedEngineId = event.fromEngine;
@@ -1330,7 +1501,6 @@ function StudioPageInner() {
             };
           } else if (event.type === "done") {
             projection = projectAiDraftEvent(projection, event);
-            recoveryText = projection.visibleText || recoveryText;
             doneReceived = true;
             effectiveEngineId = event.engine ?? effectiveEngineId;
             requestedEngineId = event.requestedEngine ?? requestedEngineId;
@@ -1344,7 +1514,7 @@ function StudioPageInner() {
               : null;
             setPendingEngineSuggestion(suggested);
             setMsg({
-              text: projection.visibleText || recoveryText,
+              text: previousText,
               errorMessage: failureText(event),
               progressLabel: undefined,
               requestId: event.requestId,
@@ -1379,7 +1549,7 @@ function StudioPageInner() {
         });
         if (completion.status === "truncated") {
           setMsg({
-            text: projection.visibleText || previousText || completion.partialText,
+            text: previousText,
             errorMessage: "Ответ оборвался до подтверждения завершения. Повтори тот же запрос: сохранённый результат будет восстановлен без двойного списания, а незавершённый — безопасно запущен снова.",
             progressLabel: undefined,
             requestId: terminalRequestId,
@@ -1389,7 +1559,6 @@ function StudioPageInner() {
             requiresReview: false,
             interrupted: true,
             retryable: true,
-            quality: undefined,
           });
         }
         if (completion.status === "complete") {
@@ -1405,7 +1574,7 @@ function StudioPageInner() {
             if ((error as Error)?.name === "AbortError") throw error;
             const ackRequestId = error instanceof AiTerminalAckError ? error.requestId : null;
             setMsg({
-              text: projection.visibleText || previousText || completion.text,
+              text: completion.text,
               errorMessage: "Ответ получен, но подтверждение списания не завершилось. Повтори тот же запрос: сохранённый результат вернётся без нового вызова модели.",
               progressLabel: undefined,
               requestId: ackRequestId ?? terminalRequestId,
@@ -1415,7 +1584,6 @@ function StudioPageInner() {
               requiresReview: false,
               interrupted: true,
               retryable: true,
-              quality: undefined,
             });
             clearCancel();
             void s.refreshAiUsage();
@@ -1428,7 +1596,6 @@ function StudioPageInner() {
             postable: completion.postable,
             reviewable: completion.reviewable,
             requiresReview: completion.requiresReview,
-            quality: completion.reviewable ? qualityFor(completion.text) : undefined,
             aiValidation: terminalValidation,
             requestId: terminalRequestId,
             errorMessage: undefined,
@@ -1464,14 +1631,13 @@ function StudioPageInner() {
         const { done, value } = await reader.read();
         if (done) break;
         acc += dec.decode(value, { stream: true });
-        setMsg({ text: acc });
       }
       if (!ownsStream()) return;
       setMsg({
+        text: acc,
         streaming: false,
         progressLabel: undefined,
         postable: Boolean(acc.trim()),
-        quality: acc.trim() ? qualityFor(acc) : undefined,
       });
       clearCancel();
       void s.refreshAiUsage();
@@ -1485,7 +1651,7 @@ function StudioPageInner() {
               ? {
                   ...m,
                   streaming: false,
-                  text: recoveryText || previousText || (isStudioGenerationPlaceholder(m.text) ? "" : m.text),
+                  text: previousText || (isStudioGenerationPlaceholder(m.text) ? "" : m.text),
                   progressLabel: undefined,
                   errorMessage: aborted
                     ? "Генерация остановлена. Частичный текст сохранён; повтор использует тот же ключ запроса."
@@ -1564,8 +1730,8 @@ function StudioPageInner() {
       {
         id: aiId,
         role: "ai",
-        text: "Разбираю задачу…",
-        progressLabel: "Фиксирую задачу и готовлю черновик…",
+        text: "",
+        progressLabel: "Готовлю текст по выбранным настройкам…",
         streaming: true,
         postable: false,
       },
@@ -1609,16 +1775,7 @@ function StudioPageInner() {
   const stop = () => {
     const stopped = abortStudioStream(streamRef.current);
     if (!stopped) return;
-    setMessages((prev) => prev.map((m) => (m.streaming ? {
-      ...m,
-      text: isStudioGenerationPlaceholder(m.text) ? "" : m.text,
-      progressLabel: undefined,
-      streaming: false,
-      interrupted: true,
-      retryable: true,
-      postable: false,
-      errorMessage: "Генерация остановлена. Частичный текст сохранён; можно повторить тот же запрос без риска двойного списания.",
-    } : m)));
+    setMessages(stopStudioStreamingMessages);
   };
 
   const regenerate = (id: string) => {
@@ -1643,6 +1800,7 @@ function StudioPageInner() {
               reviewable: false,
               requiresReview: false,
               errorMessage: undefined,
+              statusMessage: undefined,
               interrupted: false,
               retryable: false,
               quality: undefined,
@@ -1675,6 +1833,7 @@ function StudioPageInner() {
       reviewable: false,
       requiresReview: false,
       errorMessage: undefined,
+      statusMessage: undefined,
       interrupted: false,
       retryable: false,
       quality: undefined,
@@ -1687,81 +1846,6 @@ function StudioPageInner() {
     } : message));
     void startStream(id, gen);
   };
-
-  // Готовый ответ сразу становится серверным черновиком. Публикация остаётся явным
-  // действием в редакторе: там можно отправить сейчас, выбрать дату или подтвердить факты.
-  function openAsPost(messageId: string, text: string, options?: {
-    channelId?: number | null;
-    clientKey?: string;
-    generationResultId?: number;
-  }) {
-    if (postDraftRef.current.promise) return;
-    const destinationChannelId = options?.channelId ?? channelId;
-    if (!destinationChannelId) {
-      s.toast({
-        kind: "danger",
-        title: "Некуда отправлять пост",
-        body: "Сначала подключи или выбери активный канал.",
-      });
-      return;
-    }
-
-    const clientKey = options?.clientKey
-      ?? postDraftRef.current.keys.get(messageId)
-      ?? createDraftClientKey();
-    const generation = genRef.current.get(messageId);
-    const generatedMessage = messages.find((message) => message.id === messageId);
-    const generationResultId = options?.generationResultId ?? generatedMessage?.generationResultId;
-    if (!generationResultId) {
-      s.toast({
-        kind: "danger",
-        title: "Текст ещё нельзя открыть в редакторе",
-        body: "Сервер не подтвердил точный результат и его проверки. Исправь задание и запусти генерацию снова.",
-      });
-      return;
-    }
-    postDraftRef.current.keys.set(messageId, clientKey);
-    setCreatingPostId(messageId);
-    const request = (async () => {
-      try {
-        const result = await createServerDraft({
-          text,
-          media: null,
-          scheduledAt: null,
-          origin: "ai",
-          sourceRef: null,
-          channelIds: [destinationChannelId],
-          aiValidation: null,
-          generationResultId,
-          clientKey,
-        });
-        s.toast({
-          kind: "success",
-          title: "Пост создан",
-          body: "Открываем редактор — можно опубликовать сразу или запланировать.",
-        });
-        if (generation?.autoOpenComposer && generation.referenceDraftId) {
-          // Only now is it safe to consume the one-shot intent: the generated text already
-          // has a durable, idempotent draft. Back returns to Studio without starting again.
-          window.history.replaceState(null, "", `/app/studio?draft=${generation.referenceDraftId}`);
-        }
-        router.push(`/app/composer?draft=${result.draft.id}`);
-      } catch (error) {
-        s.toast({
-          kind: "danger",
-          title: "Пост не создан",
-          body:
-            error instanceof DraftRequestError && error.kind === "offline"
-              ? "Нет связи с сервером. Текст остался в чате — повтори, когда соединение восстановится."
-              : "Черновик не удалось сохранить. Текст остался в чате, можно безопасно повторить.",
-        });
-      } finally {
-        postDraftRef.current.promise = null;
-        setCreatingPostId(null);
-      }
-    })();
-    postDraftRef.current.promise = request;
-  }
 
   const copy = async (text: string) => {
     try {
@@ -1913,7 +1997,6 @@ function StudioPageInner() {
                       onRegenerate={() => regenerate(message.id)}
                       onRetry={() => retryGeneration(message.id)}
                       onShorten={() => ask("Сделай короче")}
-                      onFixQuality={(issue) => ask(`Исправь только этот пункт: ${issue}`)}
                       creatingPost={creatingPostId === message.id}
                     />
                   ))}
@@ -2020,7 +2103,7 @@ function StudioPageInner() {
                     className="min-h-[64px] max-h-[180px] overflow-y-auto rounded-t-[24px] border-0 bg-transparent px-5 pt-4 pb-2 text-[16px] leading-relaxed hover:border-0 focus:border-0 focus-visible:ring-0"
                   />
 
-                  <div className="flex min-w-0 items-center gap-1 px-3 pb-3">
+                  <div className="flex min-w-0 flex-wrap items-center gap-x-1 gap-y-1.5 px-3 pb-3">
                     <QuickActionsMenu items={QUICK} onPick={onQuick} disabled={busy} />
                     <PostSettingsMenu
                       value={postSettings}
@@ -2054,6 +2137,16 @@ function StudioPageInner() {
                       <ArrowUp className="h-[18px] w-[18px]" strokeWidth={2.5} aria-hidden />
                     </Button>
                   </div>
+                  <p
+                    role="status"
+                    aria-live="polite"
+                    className={cn(
+                      "px-5 pb-3 text-[12px] leading-relaxed",
+                      chatPersistenceStatus === "local" ? "text-danger-text" : "text-text-3",
+                    )}
+                  >
+                    {persistenceLabel}
+                  </p>
                 </div>
               </div>
             </section>

@@ -35,6 +35,21 @@ describe("buildTrendReferenceDraft", () => {
     }).text).toBe("Хук\n\nСтруктура");
   });
 
+  it("marks a verified internet result with its own server-checked provenance", () => {
+    expect(buildTrendReferenceDraft({
+      trendId: 91,
+      channelId: 7,
+      clientKey: "draft_radar_reference_91",
+      sourceLabel: "Публичный источник",
+      scope: "internet",
+      text: "Проверенный текст из Telegram",
+    }).sourceRef?.provenance).toEqual({
+      kind: "radar_result",
+      id: "91",
+      label: "Публичный источник",
+    });
+  });
+
   it("preserves a PostgreSQL bigint id without a lossy Number conversion", () => {
     expect(buildTrendReferenceDraft({
       trendId: "9007199254740993",

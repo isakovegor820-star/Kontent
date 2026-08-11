@@ -5,7 +5,7 @@
  */
 export const SCHEMA_MANIFEST = Object.freeze({
   manifestVersion: 1,
-  schemaVersion: "2026-08-06.48",
+  schemaVersion: "2026-08-10.49",
   migrations: Object.freeze([
     ["20260801_account_onboarding.sql", "ac0e1f10046cf620185570ab5f40437991d08513473f67d4e93bdafa07b86614"],
     ["20260801_ai_usage_reservations.sql", "991c3a92dce16df55011d9df52fb65af1a7f4310b27f61dc519705f05528d7a0"],
@@ -54,6 +54,7 @@ export const SCHEMA_MANIFEST = Object.freeze({
     ["20260806_radar_hybrid_search.sql", "ada406e487cb85a1bd13f39df3716a4ac8e735ca3c07ef00b1c3602957b23ce8"],
     ["20260806_telegram_payload.sql", "2578ab7763624e1e59ecf19a5d8a6a2735c45240299cb4a8ce947d8fbcde5087"],
     ["20260806_timezone_schedule.sql", "fa3bef2118a87d9a59613dd884c05d432d183a3fc1aa32c6222bc8d2f127ea17"],
+    ["20260810_studio_chat_persistence.sql", "0ffbdefb7b988fe08714e6bc3f3f51c7765d133260359631420c702f584bb68f"],
   ].map(([name, checksum]) => Object.freeze({ name, checksum }))),
   capabilities: Object.freeze({
     tables: Object.freeze([
@@ -98,6 +99,7 @@ export const SCHEMA_MANIFEST = Object.freeze({
       "generation_operations",
       "generation_results",
       "validation_receipts",
+      "studio_chat_sessions",
     ]),
     columns: Object.freeze([
       "users.onboarding_completed_at",
@@ -255,6 +257,9 @@ export const SCHEMA_MANIFEST = Object.freeze({
       "legal_source_fragments.source_date",
       "legal_source_fragments.currentness",
       "legal_source_fragments.source_url",
+      "studio_chat_sessions.payload",
+      "studio_chat_sessions.revision",
+      "studio_chat_sessions.updated_at",
     ]),
     constraints: Object.freeze([
       "ai_usage.ai_usage_status_check",
@@ -345,6 +350,8 @@ export const SCHEMA_MANIFEST = Object.freeze({
       "posts.posts_scheduled_disambiguation_check",
       "media_assets.media_assets_storage_backend_check",
       "media_assets.media_assets_storage_payload_check",
+      "studio_chat_sessions.studio_chat_sessions_payload_check",
+      "studio_chat_sessions.studio_chat_sessions_revision_check",
     ]),
     indexes: Object.freeze([
       "ai_usage.ai_usage_user_reservation_key_uniq",

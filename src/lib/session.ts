@@ -85,7 +85,17 @@ export async function getSessionUser(req: NextRequest): Promise<SessionUser | nu
   );
   if (rows.rowCount === 0) return null;
 
-  const { expires_at, ...user } = rows.rows[0];
+  const { expires_at, ...rawUser } = rows.rows[0];
+  // `pg` returns PostgreSQL bigint values as strings at runtime. Keep the public
+  // session contract numeric so account-scoped caches and persistence never compare
+  // `"1"` with `1` and accidentally reject valid data.
+  const user: SessionUser = {
+    ...rawUser,
+    id: Number(rawUser.id),
+    tg_id: rawUser.tg_id == null ? null : Number(rawUser.tg_id),
+    vk_id: rawUser.vk_id == null ? null : Number(rawUser.vk_id),
+  };
+  if (!Number.isSafeInteger(user.id) || user.id <= 0) return null;
   const leftMs = new Date(expires_at).getTime() - Date.now();
   if (leftMs < RENEW_WHEN_LEFT_S * 1000) {
     await pool.query(`update sessions set expires_at = $1 where token = $2`, [

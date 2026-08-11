@@ -10,10 +10,12 @@ import {
   buildPostRepairInstructions,
   buildPostSettingsPrompt,
   compactPostSettings,
+  finalizePostSettingsDeterministically,
   normalizePostSettings,
   patchPostSettings,
   postLengthRange,
   postSettingsOutputTokens,
+  postSettingsQualityOverrides,
   resolvePostTarget,
   validatePostSettingsConflicts,
   validatePostSettingsResult,
@@ -39,7 +41,15 @@ describe("настройки публикации", () => {
   it("мигрирует пустые и старые настройки в безопасный Auto без исключений", () => {
     expect(normalizePostSettings(null)).toEqual(DEFAULT_POST_SETTINGS);
     expect(normalizePostSettings({ version: 0, platform: "tg", tone: "старое поле" })).toEqual(DEFAULT_POST_SETTINGS);
+    expect(DEFAULT_POST_SETTINGS.profanityMode).toBe("forbid");
     expect(compactPostSettings(DEFAULT_POST_SETTINGS)).toEqual({ version: 1 });
+  });
+
+  it("сохраняет режим мата и отбрасывает неизвестное значение", () => {
+    expect(normalizePostSettings({ profanityMode: "masked" }).profanityMode).toBe("masked");
+    expect(normalizePostSettings({ profanityMode: "allow" }).profanityMode).toBe("allow");
+    expect(normalizePostSettings({ profanityMode: "unexpected" }).profanityMode).toBe("forbid");
+    expect(compactPostSettings({ profanityMode: "allow" })).toMatchObject({ profanityMode: "allow" });
   });
 
   it("пресет не сбрасывает площадку и аудиторию, а ручная правка делает профиль custom", () => {
@@ -139,6 +149,12 @@ describe("платформенный prompt builder", () => {
     expect(prompt).toContain("революционный");
     expect(prompt).toContain("не имитируй шрифт Unicode-символами");
   });
+
+  it("передаёт выбранный режим мата как явное правило текущей публикации", () => {
+    expect(buildPostSettingsPrompt({ profanityMode: "forbid" })).toContain("полностью запрещены");
+    expect(buildPostSettingsPrompt({ profanityMode: "masked" })).toContain("ровно одно уместное матерное выражение с частичной цензурой");
+    expect(buildPostSettingsPrompt({ profanityMode: "allow" })).toContain("ровно одно прямое матерное слово как эмоциональный акцент");
+  });
 });
 
 describe("программная поствалидация", () => {
@@ -162,6 +178,41 @@ describe("программная поствалидация", () => {
     expect(result.violations.map((item) => item.code)).toEqual(expect.arrayContaining([
       "emoji", "hashtags", "forbidden_phrase", "meta_labels",
     ]));
+  });
+
+  it("проверяет выбранный режим мата как точное обязательное правило", () => {
+    const direct = "Это охуенно точный пример, который помогает увидеть проблему.";
+    expect(validatePostSettingsResult(direct, exact()).violations).toContainEqual(
+      expect.objectContaining({ code: "profanity", blocker: true }),
+    );
+    expect(validatePostSettingsResult(direct, exact({ profanityMode: "masked" })).passed).toBe(false);
+    expect(validatePostSettingsResult(direct, exact({ profanityMode: "allow" })).passed).toBe(true);
+    expect(validatePostSettingsResult("Это точный пример без выбранной лексики.", exact({ profanityMode: "allow" })).violations)
+      .toContainEqual(expect.objectContaining({ code: "profanity_required" }));
+    expect(validatePostSettingsResult("Это бл*** точный пример.", exact({ profanityMode: "masked" })).passed).toBe(true);
+  });
+
+  it("детерминированно выполняет точные механические настройки перед показом", () => {
+    const settings = exact({
+      profanityMode: "allow",
+      emojiMode: "custom",
+      emojiMax: 2,
+      emojiPlacement: "line_end",
+      hashtags: "custom",
+      hashtagCount: 2,
+      keywords: ["LegalTech", "Конференция"],
+    });
+    const result = finalizePostSettingsDeterministically(
+      "Команда обсудила будущее юридических технологий.",
+      settings,
+      { task: "Пост о конференции LegalTech" },
+    );
+    const validation = validatePostSettingsResult(result, settings);
+    expect(result).toContain("блядь");
+    expect(validation.metrics).toMatchObject({ emojis: 2, hashtags: 2 });
+    expect(validation.violations.map((item) => item.code)).not.toEqual(
+      expect.arrayContaining(["profanity_required", "emoji", "hashtags", "emoji_placement"]),
+    );
   });
 
   it("проверяет обязательный факт, слово, ссылку и выбранный CTA", () => {
@@ -226,6 +277,22 @@ describe("программная поствалидация", () => {
 
     const prompt = buildPostSettingsPrompt(settings, { task: "Сделай текст на 100 знаков" });
     expect(prompt).toContain("85–115 знаков");
+  });
+
+  it("не позволяет команде чата отменить явно выбранную длину", () => {
+    const settings = exact({ customMinChars: 300, customMaxChars: 500 });
+    const prompt = buildPostSettingsPrompt(settings, { task: "Сделай текст до 100 знаков" });
+    expect(prompt).toContain("300–500 знаков");
+  });
+
+  it("блокирует слишком похожий пост и передаёт порог качества общему валидатору", () => {
+    const settings = exact({ requireNewAngle: true, similarityLevel: "strict", qualityThreshold: 9 });
+    const text = "Новый продукт помогает команде быстро проверить юридический документ.";
+    const result = validatePostSettingsResult(text, settings, {
+      history: ["Новый продукт помогает команде быстро проверить юридический документ."],
+    });
+    expect(result.violations).toContainEqual(expect.objectContaining({ code: "similarity" }));
+    expect(postSettingsQualityOverrides(settings)).toMatchObject({ qualityThreshold: 90, retryLimit: 2 });
   });
 });
 

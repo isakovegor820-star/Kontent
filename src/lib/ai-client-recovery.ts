@@ -5,6 +5,7 @@ export interface AiFailureInfo {
   requestId?: string;
   retryable?: boolean;
   code?: string;
+  issues?: string[];
   suggestedEngine?: { id?: string; label?: string } | null;
 }
 
@@ -44,7 +45,10 @@ export function aiFailureRecoveryRu(info: AiFailureInfo | null, status?: number)
     return "Ответ оборвался до подтверждения завершения. Повтори тот же запрос: сервер вернёт сохранённый результат или безопасно запустит его заново без двойного списания.";
   }
   if (info?.error === "post_validation_failed") {
-    return "Модель не смогла соблюсти настройки публикации. Уточни диапазон или обязательные условия и повтори тот же запрос.";
+    const details = info.issues?.slice(0, 3).join("; ");
+    return details
+      ? `Аврора не показала пост, потому что он не прошёл выбранные настройки: ${details}. Повтори запрос — настройки сохранены.`
+      : "Аврора не показала пост, потому что он не прошёл выбранные настройки. Повтори запрос — настройки сохранены.";
   }
   if (info?.error === "factual_validation_failed") {
     return "Проверка нашла неподтверждённые факты или искажённые реквизиты. Уточни бриф или добавь проверенные источники и повтори запрос.";

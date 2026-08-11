@@ -28,8 +28,9 @@ describe("local development runtime", () => {
     expect(devBootstrap).toContain("await assertRuntimeSchemaReady({ env })");
   });
 
-  it("allows both loopback hostnames and keeps credentials out of a native GET fallback", () => {
-    expect(nextConfig).toContain('allowedDevOrigins: ["127.0.0.1", "localhost"]');
+  it("allows loopback and local-network dev origins while keeping credentials out of a native GET fallback", () => {
+    expect(nextConfig).toContain('new Set(["127.0.0.1", "localhost", ...localNetworkOrigins])');
+    expect(nextConfig).toContain("allowedDevOrigins,");
     expect(registerPage).toMatch(/<motion\.form[\s\S]*?method="post"[\s\S]*?onSubmit=\{submit\}/);
   });
 });

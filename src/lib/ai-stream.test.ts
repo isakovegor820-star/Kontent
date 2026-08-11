@@ -64,6 +64,20 @@ describe("AI NDJSON stream", () => {
     expect(parseAiStreamBuffer(new TextDecoder().decode(encodeAiStreamEvent(event))).events).toEqual([event]);
   });
 
+  it("сохраняет причины строгой проверки в терминальной ошибке", () => {
+    const event = {
+      type: "error" as const,
+      requestId: "r-settings",
+      error: "post_validation_failed",
+      engine: "local",
+      label: "Hermes 3 (Локально)",
+      retryable: false,
+      issues: ["Нужно ровно одно прямое матерное слово", "Нужно ровно два эмодзи"],
+    };
+
+    expect(parseAiStreamBuffer(new TextDecoder().decode(encodeAiStreamEvent(event))).events).toEqual([event]);
+  });
+
   it("пропускает только известные структурированные события", () => {
     const parsed = parseAiStreamBuffer([
       '{"type":"delta","requestId":"r1","text":"ok"}',

@@ -49,7 +49,7 @@ export interface Post {
     whyItWorked?: string;
     /** Where an idea/reference came from; provenance does not authorize its claims. */
     provenance?: {
-      kind: "content_idea" | "competitor_post" | "trend" | "saved_reference" | "rss_item";
+      kind: "content_idea" | "competitor_post" | "trend" | "radar_result" | "saved_reference" | "rss_item";
       id?: string;
       label?: string;
       url?: string;

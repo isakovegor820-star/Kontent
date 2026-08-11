@@ -17,6 +17,8 @@ export type StudioChatMessage = {
   aiValidation?: DraftAiValidation;
   /** Visible recovery context; generated text remains separate and copyable. */
   errorMessage?: string;
+  /** Calm user-initiated state, kept separate from actual failures. */
+  statusMessage?: string;
   /** Technical phase is separate from the draft body, so progress never replaces text. */
   progressLabel?: string;
   requestId?: string;
@@ -53,6 +55,34 @@ export type StudioChatSession = {
   generations: Array<[string, StudioChatGeneration]>;
 };
 
+/**
+ * Объединяет серверный снимок с изменениями активной вкладки при конфликте revision.
+ * Одинаковое сообщение берём из активной вкладки, а уникальные сообщения не теряем.
+ */
+export function mergeStudioChatSessions(
+  remote: StudioChatSession,
+  local: StudioChatSession,
+): StudioChatSession {
+  const messageOrder: string[] = [];
+  const messages = new Map<string, StudioChatMessage>();
+  for (const message of [...remote.messages, ...local.messages]) {
+    if (!messages.has(message.id)) messageOrder.push(message.id);
+    messages.set(message.id, message);
+  }
+  const generations = new Map<string, StudioChatGeneration>(remote.generations);
+  for (const [id, generation] of local.generations) generations.set(id, generation);
+  const mergedMessages = messageOrder.map((id) => messages.get(id)).filter((message): message is StudioChatMessage => Boolean(message));
+  const messageIds = new Set(mergedMessages.map((message) => message.id));
+  return {
+    messages: mergedMessages,
+    // При восстановлении важнее не потерять набранный текст: пустой локальный снимок мог
+    // появиться до загрузки более свежей серверной версии после Fast Refresh.
+    draft: local.draft || remote.draft,
+    workspaceMode: local.workspaceMode,
+    generations: [...generations].filter(([id]) => messageIds.has(id)),
+  };
+}
+
 const VERSION = 2;
 const MAX_MESSAGES = 60;
 const MAX_MESSAGE_LENGTH = 100_000;
@@ -67,6 +97,30 @@ const INTERRUPTED_PLACEHOLDERS = new Set([
 
 export function isStudioGenerationPlaceholder(text: string): boolean {
   return INTERRUPTED_PLACEHOLDERS.has(text.trim());
+}
+
+const STOPPED_STATUS = "Генерация остановлена. Черновик сохранён — его можно скопировать или повторить запрос.";
+
+/**
+ * Finalizes the visible client state immediately after a user cancellation.
+ * The stream owner is invalidated separately, so late chunks cannot overwrite it.
+ */
+export function stopStudioStreamingMessages(messages: StudioChatMessage[]): StudioChatMessage[] {
+  return messages.map((message) => message.streaming ? {
+    ...message,
+    text: isStudioGenerationPlaceholder(message.text) ? "" : message.text,
+    streaming: false,
+    progressLabel: undefined,
+    postable: false,
+    reviewable: false,
+    requiresReview: false,
+    quality: undefined,
+    aiValidation: undefined,
+    errorMessage: undefined,
+    statusMessage: STOPPED_STATUS,
+    interrupted: true,
+    retryable: true,
+  } : message);
 }
 const COMMANDS = new Set<AiCommand>([
   "write",
@@ -141,6 +195,9 @@ function safeMessage(value: unknown): StudioChatMessage | null {
       : wasStreaming
         ? "Генерация прервалась до подтверждения результата. Повтори запрос — черновик и ключ сохранены."
         : undefined,
+    statusMessage: typeof value.statusMessage === "string"
+      ? value.statusMessage.slice(0, 500)
+      : undefined,
     progressLabel: wasStreaming
       ? undefined
       : typeof value.progressLabel === "string"
@@ -178,7 +235,7 @@ function safeSourceRef(value: unknown): Post["sourceRef"] | undefined {
   let provenance: NonNullable<Post["sourceRef"]>["provenance"];
   if (
     isRecord(value.provenance)
-    && ["content_idea", "competitor_post", "trend", "saved_reference", "rss_item"].includes(String(value.provenance.kind))
+    && ["content_idea", "competitor_post", "trend", "radar_result", "saved_reference", "rss_item"].includes(String(value.provenance.kind))
   ) {
     provenance = {
       kind: value.provenance.kind as NonNullable<typeof provenance>["kind"],

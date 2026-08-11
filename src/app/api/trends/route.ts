@@ -5,6 +5,7 @@ import { getStatsQueue } from "@/lib/queue";
 import { getSessionUser } from "@/lib/session";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import { normalizeIdempotencyKey } from "@/lib/publication-idempotency";
+import { normalizeRadarQuery } from "@/lib/radar-search.mjs";
 import {
   TREND_BASELINE_DAYS,
   TREND_MATURE_HOURS,
@@ -51,7 +52,10 @@ interface ItemRow {
   structure: string | null;
   why_it_worked: string | null;
   ai_status: string | null;
+  url?: string | null;
 }
+
+type TrendScope = "niche" | "internet" | "global";
 
 interface NormRow {
   competitor_id: number;
@@ -99,7 +103,7 @@ function shape(
   sources: (CompetitorRow & { category?: string })[],
   items: (ItemRow & { category?: string })[],
   norms: NormRow[],
-  scope: "niche" | "global",
+  scope: TrendScope,
   period: TrendPeriod,
   waiting = 0,
   niche: string | null = null,
@@ -169,7 +173,7 @@ function shape(
       median: item.median == null ? null : Math.round(Number(item.median)),
       ratio: item.ratio == null ? null : Number(item.ratio),
       isMature: item.is_mature,
-      link: `https://t.me/${item.handle}/${item.tg_msg_id}`,
+      link: item.url || `https://t.me/${item.handle}/${item.tg_msg_id}`,
       idea:
         item.idea_id && item.ai_status === "ready"
           ? {
@@ -256,12 +260,129 @@ async function globalScope(period: TrendPeriod) {
   return { competitors: sources, items, norms };
 }
 
+function internetPeriodSql(period: TrendPeriod) {
+  if (period === "hits") {
+    return {
+      where: "base.posted_at >= now() - interval '30 days'",
+      order: "case when base.result_type = 'trend' then 0 else 1 end, base.quality_score desc, base.views desc, base.posted_at desc",
+    };
+  }
+  if (period === "week") {
+    return {
+      where: "base.posted_at >= now() - interval '7 days'",
+      order: "base.posted_at desc, base.quality_score desc",
+    };
+  }
+  return {
+    where:
+      "base.posted_at >= (date_trunc('day', now() at time zone 'Europe/Moscow') at time zone 'Europe/Moscow')",
+    order: "base.posted_at desc, base.quality_score desc",
+  };
+}
+
+async function internetScope(
+  userId: number,
+  channelId: number,
+  period: TrendPeriod,
+  query: string,
+) {
+  const pool = getPool();
+  const sourceSql = `with latest as (
+    select distinct on (result.url)
+           result.id,
+           coalesce(nullif(result.handle, ''), split_part(replace(result.url, 'https://t.me/s/', 'https://t.me/'), '/', 4)) as handle,
+           result.title, result.subscribers, result.verified_at,
+           coalesce(result.posted_at, result.verified_at) as posted_at
+      from radar_search_results result
+      join radar_search_runs run on run.id = result.run_id and run.user_id = $1
+     where result.user_id = $1
+       and run.channel_id = $2
+       and result.verification_status = 'verified'
+       and result.result_type in ('post', 'trend')
+       and ($3 = '' or result.tsv @@ plainto_tsquery('russian', $3))
+     order by result.url, result.verified_at desc, result.quality_score desc
+  )
+  select min(id)::int as id, handle,
+         (array_agg(title order by verified_at desc) filter (where title is not null))[1] as title,
+         max(subscribers)::int as subscribers,
+         'ready'::text as status, null::text as last_error,
+         max(verified_at) as collected_at,
+         count(*)::int as posts,
+         max(posted_at) as newest_post_at
+    from latest
+   where handle <> ''
+   group by handle
+   order by max(verified_at) desc`;
+
+  const sources = (await pool.query<CompetitorRow>(sourceSql, [userId, channelId, query])).rows;
+  const window = internetPeriodSql(period);
+  const items = (
+    await pool.query<ItemRow>(
+      `with latest as (
+         select distinct on (result.url)
+                result.id,
+                result.result_type,
+                coalesce(nullif(result.handle, ''), split_part(replace(result.url, 'https://t.me/s/', 'https://t.me/'), '/', 4)) as handle,
+                result.title, result.text, result.url, result.external_id,
+                coalesce(result.views, 0)::int as views,
+                result.reactions,
+                coalesce(result.posted_at, result.verified_at) as posted_at,
+                result.quality_score,
+                result.verified_at
+           from radar_search_results result
+           join radar_search_runs run on run.id = result.run_id and run.user_id = $1
+          where result.user_id = $1
+            and run.channel_id = $2
+            and result.verification_status = 'verified'
+            and result.result_type in ('post', 'trend')
+            and ($3 = '' or result.tsv @@ plainto_tsquery('russian', $3))
+          order by result.url, result.verified_at desc, result.quality_score desc
+       ), base as (
+         select id::int as id,
+                (min(id) over (partition by handle))::int as competitor_id,
+                handle,
+                coalesce(title, case when handle <> '' then '@' || handle end, 'Telegram') as competitor_title,
+                case
+                  when coalesce(external_id::text, split_part(regexp_replace(replace(url, 'https://t.me/s/', 'https://t.me/'), '[?#].*$', ''), '/', 5)) ~ '^[0-9]+$'
+                  then coalesce(external_id::text, split_part(regexp_replace(replace(url, 'https://t.me/s/', 'https://t.me/'), '[?#].*$', ''), '/', 5))::int
+                  else id::int
+                end as tg_msg_id,
+                text, views, reactions, null::text as photo_url, null::text as media,
+                posted_at, null::numeric as median, null::int as matured,
+                case when result_type = 'trend' then 1.5::numeric end as ratio,
+                true as is_mature,
+                null::bigint as idea_id, null::text as topic, null::text as hook,
+                null::text as structure, null::text as why_it_worked, null::text as ai_status,
+                url, result_type, quality_score
+           from latest
+          where handle <> ''
+       )
+       select base.*, count(*) over()::int as period_count
+         from base
+        where ${window.where}
+        order by ${window.order}
+        limit ${TREND_PERIODS[period].limit}`,
+      [userId, channelId, query],
+    )
+  ).rows;
+
+  return { competitors: sources, items, norms: [] as NormRow[] };
+}
+
 export async function GET(req: NextRequest) {
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
-  const scope = req.nextUrl.searchParams.get("scope") === "global" ? "global" : "niche";
+  const requestedScope = req.nextUrl.searchParams.get("scope");
+  const scope: TrendScope = requestedScope === "global"
+    ? "global"
+    : requestedScope === "internet"
+      ? "internet"
+      : "niche";
   const period = parseTrendPeriod(req.nextUrl.searchParams.get("period"));
+  const query = scope === "internet"
+    ? normalizeRadarQuery(req.nextUrl.searchParams.get("q"))
+    : "";
 
   try {
     const pool = getPool();
@@ -273,6 +394,19 @@ export async function GET(req: NextRequest) {
 
     const channelId = await resolveChannel(user.id, Number(req.nextUrl.searchParams.get("channel")) || null);
     if (!channelId) return NextResponse.json(shape([], [], [], scope, period));
+
+    if (scope === "internet") {
+      const internet = await internetScope(user.id, channelId, period, query);
+      const niche = (
+        await pool.query<{ niche: string | null }>(
+          `select niche from content_brief where channel_id = $1 and ready`,
+          [channelId],
+        )
+      ).rows[0]?.niche ?? null;
+      return NextResponse.json(
+        shape(internet.competitors, internet.items, internet.norms, scope, period, 0, niche),
+      );
+    }
 
     const competitors = (
       await pool.query<CompetitorRow>(
@@ -374,7 +508,11 @@ export async function POST(req: NextRequest) {
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
 
-  const scope = req.nextUrl.searchParams.get("scope") === "global" ? "global" : "niche";
+  const requestedScope = req.nextUrl.searchParams.get("scope");
+  if (requestedScope === "internet") {
+    return NextResponse.json({ ok: false, error: "unsupported_scope" }, { status: 422 });
+  }
+  const scope = requestedScope === "global" ? "global" : "niche";
   const idempotencyKey = normalizeIdempotencyKey(req.headers.get("idempotency-key"));
   if (!idempotencyKey) {
     return NextResponse.json({ ok: false, error: "idempotency_key_required" }, { status: 400 });

@@ -28,7 +28,106 @@ vi.mock("@/lib/queue", () => ({ getStatsQueue: () => ({ add: mocks.add }) }));
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
 vi.mock("@/lib/autopilot", () => ({ resolveChannel: mocks.resolveChannel }));
 
-import { POST } from "./route";
+import { GET, POST } from "./route";
+
+describe("GET /api/trends internet feed", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.getSessionUser.mockResolvedValue({ id: 1 });
+    mocks.resolveChannel.mockResolvedValue(7);
+  });
+
+  it("returns only verified search posts scoped to the user and selected channel", async () => {
+    mocks.query.mockImplementation(async (sql: string, params?: unknown[]) => {
+      if (sql.includes("group by handle")) {
+        expect(params).toEqual([1, 7, "рыбалка"]);
+        return {
+          rowCount: 1,
+          rows: [{
+            id: 91,
+            handle: "fishing_public",
+            title: "Рыбалка каждый день",
+            subscribers: 12_000,
+            status: "ready",
+            last_error: null,
+            collected_at: "2026-08-06T08:00:00.000Z",
+            newest_post_at: "2026-08-06T07:00:00.000Z",
+            posts: 1,
+          }],
+        };
+      }
+      if (sql.includes("select base.*, count(*) over()")) {
+        expect(params).toEqual([1, 7, "рыбалка"]);
+        return {
+          rowCount: 1,
+          rows: [{
+            id: 91,
+            competitor_id: 91,
+            handle: "fishing_public",
+            competitor_title: "Рыбалка каждый день",
+            tg_msg_id: 345,
+            text: "Как выбрать место для летней рыбалки",
+            views: 4200,
+            reactions: 84,
+            photo_url: null,
+            media: null,
+            posted_at: "2026-08-06T07:00:00.000Z",
+            median: null,
+            matured: null,
+            ratio: null,
+            is_mature: true,
+            period_count: 1,
+            idea_id: null,
+            topic: null,
+            hook: null,
+            structure: null,
+            why_it_worked: null,
+            ai_status: null,
+            url: "https://t.me/fishing_public/345",
+          }],
+        };
+      }
+      if (sql.includes("select niche from content_brief")) {
+        return { rowCount: 1, rows: [{ niche: "Рыбалка" }] };
+      }
+      throw new Error(`unexpected query: ${sql}`);
+    });
+
+    const response = await GET(new NextRequest(
+      "http://localhost/api/trends?scope=internet&period=week&channel=7&q=%D0%A0%D1%8B%D0%B1%D0%B0%D0%BB%D0%BA%D0%B0",
+    ));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      scope: "internet",
+      status: { competitors: 1, periodPosts: 1, niche: "Рыбалка" },
+      competitors: [{ handle: "fishing_public", status: "ready" }],
+      items: [{
+        id: 91,
+        text: "Как выбрать место для летней рыбалки",
+        link: "https://t.me/fishing_public/345",
+        isMature: true,
+      }],
+    });
+    expect(mocks.resolveChannel).toHaveBeenCalledWith(1, 7);
+  });
+
+  it("does not query internet results without an owned channel", async () => {
+    mocks.resolveChannel.mockResolvedValue(null);
+
+    const response = await GET(new NextRequest(
+      "http://localhost/api/trends?scope=internet&channel=999",
+    ));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      scope: "internet",
+      status: { competitors: 0, periodPosts: 0 },
+      items: [],
+    });
+    expect(mocks.query).not.toHaveBeenCalled();
+  });
+});
 
 describe("POST /api/trends", () => {
   beforeEach(() => {

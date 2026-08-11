@@ -53,7 +53,10 @@ import { createConfiguredSemanticAdapter } from "@/lib/ai-semantic-adapter.mjs";
 import { generationDeadlines } from "@/lib/ai-generation-deadlines";
 import {
   buildPostRepairInstructions,
+  finalizePostSettingsDeterministically,
   normalizePostSettings,
+  postSettingsPrimaryText,
+  postSettingsQualityOverrides,
   validatePostSettingsConflicts,
   validatePostSettingsResult,
 } from "@/lib/post-settings";
@@ -231,6 +234,7 @@ function failurePayload(
       retryable: false,
       code: error.errorCode,
       status: 422,
+      issues: error.issues.slice(0, 8),
     };
   }
   let reason = "provider_unavailable";
@@ -530,13 +534,24 @@ function studioStreamResponse(
 ) {
   const settings = normalizePostSettings(params.postSettings);
   const deadlines = generationDeadlines(settings.qualityMode);
-  const attemptBudget = createAiOperationBudget();
+  // Внутренние попытки не показываются человеку. Даём редактору достаточно проходов,
+  // но результат всё равно остаётся fail-closed: наружу выйдет только прошедший gate текст.
+  const defaultAttempts = settings.qualityMode === "maximum" ? 10 : settings.qualityMode === "balanced" ? 7 : 5;
+  const attemptBudget = createAiOperationBudget(
+    process.env.AI_OPERATION_MAX_ATTEMPTS
+      ? process.env
+      : { ...process.env, AI_OPERATION_MAX_ATTEMPTS: String(defaultAttempts) },
+  );
   const attemptContext = (phase: AiAttemptPhase) => ({
     userId,
     reservationId,
     phase,
     budget: attemptBudget,
   });
+  const hasAttemptCapacity = () => {
+    const snapshot = attemptBudget.snapshot();
+    return snapshot.attempts < snapshot.limits.attempts;
+  };
   const consumerAbort = new AbortController();
   const consumerSignal = AbortSignal.any([signal, consumerAbort.signal]);
   // Один общий deadline не позволяет трём редакторским проходам сложиться в 3×90 секунд.
@@ -573,12 +588,20 @@ function studioStreamResponse(
         && CHANNEL_QUALITY_KINDS.includes(params.kind)
         && params.role !== "critic",
       );
+      const finishCandidate = (text: string) => shouldValidatePostSettings
+        ? finalizePostSettingsDeterministically(text, params.postSettings, {
+            network: params.network,
+            kind: params.kind,
+            task: params.task,
+          })
+        : text.trim();
       const validateResult = async (text: string): Promise<CombinedValidation> => {
         const post = shouldValidatePostSettings
           ? validatePostSettingsResult(text, params.postSettings, {
               network: params.network,
               kind: params.kind,
               task: params.task,
+              history: params.styleSamples,
             })
           : null;
         // No production semantic adapter is registered: draft/ledger content is not sent
@@ -588,8 +611,18 @@ function studioStreamResponse(
           adapter: semanticAdapter,
         });
         const supportCount = factLedger.evidence.filter((item) => item.countsForCapacity !== false).length;
+        const channelQualityForPost = params.postSettings
+          ? {
+              ...(params.channelQuality ?? {}),
+              ...postSettingsQualityOverrides(params.postSettings, {
+                network: params.network,
+                kind: params.kind,
+                task: params.task,
+              }),
+            }
+          : params.channelQuality;
         const channelQuality = shouldValidateChannelQuality
-          ? validatePostQuality(text, params.channelQuality, {
+          ? validatePostQuality(postSettingsPrimaryText(text, params.postSettings), channelQualityForPost, {
               supportCount,
               // Семантический ledger ниже остаётся источником правды о фактах. Здесь единица
               // означает лишь наличие серверных источников, чтобы второй валидатор не требовал
@@ -744,30 +777,44 @@ function studioStreamResponse(
             requestId,
             deadlines,
             send,
-            true,
+            false,
             attemptContext("draft"),
           );
           finalEngine = generated.engine;
           anyFallback ||= generated.fallbackUsed;
-          let finalText = generated.text;
+          let finalText = finishCandidate(generated.text);
           let finalPipeline: "single" | "editorial" = "single";
           let validation = await validateResult(finalText);
           if (validation.topic?.status === "failed") {
             if (!send({ type: "phase", requestId, phase: "editing" })) return;
-            if (!send({ type: "replace", requestId, text: "", pipeline: "editorial" })) return;
             const repaired = await runOrchestratedText({
               ...paramsForProviderPhase(params, "topic-repair-1"),
               draft: finalText.slice(0, 12_000),
               validationIssues: buildTopicRepairInstructions(validation.topic),
-            }, finalEngine, pipelineSignal, requestId, deadlines, send, true, attemptContext("topic-repair"));
-            finalText = repaired.text;
+            }, finalEngine, pipelineSignal, requestId, deadlines, send, false, attemptContext("topic-repair"));
+            finalText = finishCandidate(repaired.text);
+            finalEngine = repaired.engine;
+            anyFallback ||= repaired.fallbackUsed;
+            finalPipeline = "editorial";
+            validation = await validateResult(finalText);
+          }
+          let repairIndex = 0;
+          while (validation.blocked && hasAttemptCapacity()) {
+            repairIndex += 1;
+            if (!send({ type: "phase", requestId, phase: "editing" })) return;
+            const repaired = await runOrchestratedText({
+              ...paramsForProviderPhase(params, `strict-repair-${repairIndex}`),
+              draft: finalText.slice(0, 12_000),
+              validationIssues: validation.issues,
+            }, finalEngine, pipelineSignal, requestId, deadlines, send, false, attemptContext("auto-improve"));
+            finalText = finishCandidate(repaired.text);
             finalEngine = repaired.engine;
             anyFallback ||= repaired.fallbackUsed;
             finalPipeline = "editorial";
             validation = await validateResult(finalText);
           }
           if (!sendValidation(validation)) return;
-          if (validation.topic?.status === "failed" && !allowReviewableBlockedDraft) {
+          if (validation.topic?.status === "failed") {
             throw new PostSettingsValidationError(validation.issues, "topic_alignment_failed");
           }
           if (validation.factual?.status === "blocked" && !allowReviewableBlockedDraft) {
@@ -776,8 +823,6 @@ function studioStreamResponse(
           if (
             ((validation.post && !validation.post.passed)
               || (validation.channelQuality && !validation.channelQuality.passed))
-            && settings.hideCriticalResult
-            && !allowReviewableBlockedDraft
           ) {
             throw new PostSettingsValidationError(validation.issues);
           }
@@ -814,39 +859,35 @@ function studioStreamResponse(
           requestId,
           deadlines,
           send,
-          true,
+          false,
           attemptContext("draft"),
         );
-        const draft = generatedDraft.text;
+        const draft = finishCandidate(generatedDraft.text);
         finalEngine = generatedDraft.engine;
         anyFallback ||= generatedDraft.fallbackUsed;
         const draftValidation = await validateResult(draft);
         let topicRepairAttempted = draftValidation.topic?.status === "failed";
 
         if (!send({ type: "phase", requestId, phase: "editing" })) return;
-        // Клиент уже умеет replace: очищаем provisional draft и стримим редакторский текст
-        // с первого delta, не склеивая два прохода.
-        if (!send({ type: "replace", requestId, text: "", pipeline: "editorial" })) return;
         let finalText = "";
         let edited = await runOrchestratedText({
           ...paramsForProviderPhase(params, "editorial-edit-1"),
           draft: draft.slice(0, 12_000),
           validationIssues: draftValidation.issues,
-        }, finalEngine, pipelineSignal, requestId, deadlines, send, true, attemptContext("edit"));
-        finalText = edited.text;
+        }, finalEngine, pipelineSignal, requestId, deadlines, send, false, attemptContext("edit"));
+        finalText = finishCandidate(edited.text);
         finalEngine = edited.engine;
         anyFallback ||= edited.fallbackUsed;
         let validation = await validateResult(finalText);
 
         if (validation.blocked && validation.topic?.status !== "failed" && settings.autoImprove) {
           if (!send({ type: "phase", requestId, phase: "editing" })) return;
-          if (!send({ type: "replace", requestId, text: "", pipeline: "editorial" })) return;
           edited = await runOrchestratedText({
             ...paramsForProviderPhase(params, "editorial-edit-2"),
             draft: finalText.slice(0, 12_000),
             validationIssues: validation.issues,
-          }, finalEngine, pipelineSignal, requestId, deadlines, send, true, attemptContext("auto-improve"));
-          finalText = edited.text;
+          }, finalEngine, pipelineSignal, requestId, deadlines, send, false, attemptContext("auto-improve"));
+          finalText = finishCandidate(edited.text);
           finalEngine = edited.engine;
           anyFallback ||= edited.fallbackUsed;
           validation = await validateResult(finalText);
@@ -855,26 +896,43 @@ function studioStreamResponse(
         if (validation.topic?.status === "failed" && !topicRepairAttempted) {
           topicRepairAttempted = true;
           if (!send({ type: "phase", requestId, phase: "editing" })) return;
-          if (!send({ type: "replace", requestId, text: "", pipeline: "editorial" })) return;
           edited = await runOrchestratedText({
             ...paramsForProviderPhase(params, "topic-repair-1"),
             draft: finalText.slice(0, 12_000),
             validationIssues: buildTopicRepairInstructions(validation.topic),
-          }, finalEngine, pipelineSignal, requestId, deadlines, send, true, attemptContext("topic-repair"));
-          finalText = edited.text;
+          }, finalEngine, pipelineSignal, requestId, deadlines, send, false, attemptContext("topic-repair"));
+          finalText = finishCandidate(edited.text);
+          finalEngine = edited.engine;
+          anyFallback ||= edited.fallbackUsed;
+          validation = await validateResult(finalText);
+        }
+
+        let repairIndex = 0;
+        while (validation.blocked && hasAttemptCapacity()) {
+          repairIndex += 1;
+          if (!send({ type: "phase", requestId, phase: "editing" })) return;
+          edited = await runOrchestratedText({
+            ...paramsForProviderPhase(params, `strict-editorial-repair-${repairIndex}`),
+            draft: finalText.slice(0, 12_000),
+            validationIssues: validation.issues,
+          }, finalEngine, pipelineSignal, requestId, deadlines, send, false, attemptContext("auto-improve"));
+          finalText = finishCandidate(edited.text);
           finalEngine = edited.engine;
           anyFallback ||= edited.fallbackUsed;
           validation = await validateResult(finalText);
         }
 
         if (!sendValidation(validation)) return;
-        if (validation.topic?.status === "failed" && !allowReviewableBlockedDraft) {
+        if (validation.topic?.status === "failed") {
           throw new PostSettingsValidationError(validation.issues, "topic_alignment_failed");
         }
         if (validation.factual?.status === "blocked" && !allowReviewableBlockedDraft) {
           throw new PostSettingsValidationError(validation.issues, "factual_validation_failed");
         }
-        if (validation.blocked && !allowReviewableBlockedDraft) {
+        if (
+          (validation.post && !validation.post.passed)
+          || (validation.channelQuality && !validation.channelQuality.passed)
+        ) {
           throw new PostSettingsValidationError(validation.issues, validation.errorCode);
         }
         if (!send({ type: "replace", requestId, text: finalText, pipeline: "editorial" })) return;
@@ -1394,7 +1452,7 @@ export async function POST(req: NextRequest) {
     editorial,
     factLedger,
     semanticAdapter,
-    interactiveStream || body.surface === "trends",
+    body.surface === "trends",
     { providerEngine: chosen, providerModel: runtime.model },
   );
 }

@@ -180,18 +180,6 @@ export function LandingNav() {
         )}
       />
 
-      {/* Первая цель Tab: увести клавиатуру мимо навигации сразу к содержимому */}
-      <a
-        href="#main"
-        className={cn(
-          "absolute top-3 left-5 z-10 inline-flex h-11 items-center rounded-xs px-4",
-          "bg-surface text-[14px] font-semibold text-text shadow-float",
-          "-translate-y-24 focus:translate-y-0",
-        )}
-      >
-        Перейти к содержимому
-      </a>
-
       <div className="relative mx-auto max-w-6xl px-5 sm:px-8">
         <nav aria-label="Основная навигация" className="flex h-16 items-center sm:h-[68px]">
           {/* ------------------------------------------------- СЛЕВА: знак */}

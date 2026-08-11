@@ -41,10 +41,6 @@ import {
   isAppRouteActive,
   type AppNavRouteId,
 } from "@/lib/app-routes";
-import {
-  readinessRequestFailure,
-  type ServiceReadiness,
-} from "@/lib/readiness";
 import { useStore } from "@/lib/store";
 import type { User } from "@/lib/types";
 import { cn, fmtNum, plural } from "@/lib/utils";
@@ -186,60 +182,6 @@ function AiLimitCard() {
       <p className="mt-0.5 text-[13px] leading-snug text-text-3">
         {hot ? "Почти всё. Счётчик обнулится в полночь." : "Счётчик обнуляется в полночь."}
       </p>
-    </div>
-  );
-}
-
-function ServiceHealthBanner() {
-  const [report, setReport] = useState<ServiceReadiness | null>(null);
-
-  const refresh = useCallback(async () => {
-    try {
-      const response = await fetch("/api/readiness", { cache: "no-store" });
-      const body = (await response.json().catch(() => null)) as ServiceReadiness | null;
-      setReport(
-        body && typeof body.webReady === "boolean" ? body : readinessRequestFailure(),
-      );
-    } catch {
-      setReport(readinessRequestFailure());
-    }
-  }, []);
-
-  useEffect(() => {
-    const kickoff = window.setTimeout(() => void refresh(), 0);
-    const timer = window.setInterval(refresh, 30_000);
-    return () => {
-      window.clearTimeout(kickoff);
-      window.clearInterval(timer);
-    };
-  }, [refresh]);
-
-  // Состояние конкретных AI-моделей показывается рядом с их выбором в Студии.
-  // Глобальная плашка остаётся только для сбоев, затрагивающих всю платформу.
-  if (!report || (report.webReady && report.publicationReady && report.mailDeliveryReady)) {
-    return null;
-  }
-
-  const messages = [
-    !report.webReady ? "Серверные данные сейчас недоступны." : null,
-    !report.publicationReady
-      ? "Фоновая публикация временно не готова: черновики можно сохранить, но отправку лучше отложить."
-      : null,
-    !report.mailDeliveryReady
-      ? "Восстановление пароля по email временно недоступно; текущая сессия и публикации не затронуты."
-      : null,
-  ].filter(Boolean);
-
-  return (
-    <div
-      role="status"
-      aria-live="polite"
-      className="border-b border-fire/20 bg-fire-soft/90 px-4 py-3 text-text backdrop-blur-xl sm:px-6 lg:px-8"
-    >
-      <div className="mx-auto flex max-w-[1400px] items-start gap-2.5 text-[13px] leading-relaxed font-semibold">
-        <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-        <span>{messages.join(" ")}</span>
-      </div>
     </div>
   );
 }
@@ -732,8 +674,6 @@ export function AppShell({
               {action && <div className="shrink-0">{action}</div>}
             </div>
           </header>
-
-          <ServiceHealthBanner />
 
           {/* КОНТЕНТ: страница въезжает снизу — понятно, что сменился экран, а не сайт */}
           <main id="main" className="mx-auto max-w-[1400px] px-4 pt-6 pb-[var(--app-content-bottom-inset)] sm:px-6 lg:px-8 lg:pb-10">

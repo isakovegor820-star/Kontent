@@ -274,6 +274,9 @@ function trendsRequest() {
         qualityMode: "balanced",
         factStrictness: "verified",
         hideCriticalResult: false,
+        length: "custom",
+        customMinChars: 20,
+        customMaxChars: 2000,
       },
     }),
   });
@@ -428,7 +431,7 @@ describe("POST /api/ai/generate prerequisites", () => {
 
   it("stages a complete reviewable result and sends combined validation before ACK-required done", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(
-      '{"message":{"content":"Полный ответ с содержательным утверждением."},"done":true}\n',
+      '{"message":{"content":"Полный содержательный ответ объясняет идею спокойно, точно и без лишних обещаний."},"done":true}\n',
       { status: 200, headers: { "content-type": "application/x-ndjson" } },
     )));
 
@@ -438,19 +441,23 @@ describe("POST /api/ai/generate prerequisites", () => {
     const doneIndex = events.findIndex((event) => event.type === "done");
     const requestId = response.headers.get("x-ai-request-id");
 
-    expect(events[validationIndex]).toMatchObject({ status: "blocked", requiresReview: true });
-    expect(events[validationIndex].blockerCodes).toEqual(
-      expect.arrayContaining([expect.stringMatching(/^post:/u)]),
-    );
+    expect(events[validationIndex]).toMatchObject({ status: "not_checked", requiresReview: true });
+    expect(events[validationIndex].blockerCodes).toEqual([]);
     expect(requestId).toMatch(/^[a-f0-9-]{36}$/u);
     expect(events.every((event) => event.requestId === requestId)).toBe(true);
     expect(validationIndex).toBeGreaterThan(-1);
     expect(doneIndex).toBeGreaterThan(validationIndex);
     expect(events[doneIndex]).toMatchObject({ ackRequired: true });
+    expect(events.some((event) => event.type === "delta")).toBe(false);
+    expect(events.filter((event) => event.type === "replace")).toEqual([
+      expect.objectContaining({
+        text: "Полный содержательный ответ объясняет идею спокойно, точно и без лишних обещаний.",
+      }),
+    ]);
     expect(response.headers.get("x-ai-ack-required")).toBe("true");
     expect(mocks.stageAiUsageResult).toHaveBeenCalledWith(7, 81, requestId, expect.objectContaining({
       protocol: "ndjson",
-      text: "Полный ответ с содержательным утверждением.",
+      text: "Полный содержательный ответ объясняет идею спокойно, точно и без лишних обещаний.",
     }));
     expect(mocks.commitAiUsageResult).not.toHaveBeenCalled();
     expect(mocks.releaseAiUsageRequest).not.toHaveBeenCalled();
@@ -563,13 +570,10 @@ describe("POST /api/ai/generate prerequisites", () => {
     const response = await POST(studioRequest());
     const reader = response.body!.getReader();
     const decoder = new TextDecoder();
-    let deltaReceived = false;
-    while (!deltaReceived) {
-      const chunk = await reader.read();
-      expect(chunk.done).toBe(false);
-      const event = JSON.parse(decoder.decode(chunk.value));
-      deltaReceived = event.type === "delta";
-    }
+    const chunk = await reader.read();
+    expect(chunk.done).toBe(false);
+    expect(JSON.parse(decoder.decode(chunk.value))).toMatchObject({ type: "phase" });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
     await reader.cancel(new DOMException("cancelled", "AbortError"));
 
     await vi.waitFor(() => expect(mocks.releaseAiUsageRequest).toHaveBeenCalledOnce());
@@ -616,6 +620,8 @@ describe("POST /api/ai/generate prerequisites", () => {
     const requestIds = providerHeaders.map((headers) => headers.get("x-request-id"));
 
     expect(retryEvents).toContainEqual(expect.objectContaining({ type: "done", pipeline: "editorial" }));
+    expect(retryEvents.some((event) => event.type === "delta")).toBe(false);
+    expect(retryEvents.filter((event) => event.type === "replace" && event.text)).toHaveLength(1);
     expect(mocks.stageAiUsageResult).toHaveBeenCalledOnce();
     expect(mocks.commitAiUsageResult).not.toHaveBeenCalled();
     expect(mocks.releaseAiUsageRequest).not.toHaveBeenCalled();
@@ -631,27 +637,19 @@ describe("POST /api/ai/generate prerequisites", () => {
     expect(requestIds[2]).not.toBe(requestIds[0]);
   });
 
-  it("finishes a blocked Composer candidate as a durable reviewable draft", async () => {
+  it("repairs a blocked Composer candidate and refuses to finish until settings pass", async () => {
     const draft = "Черновик готов и остаётся доступным для дальнейшей ручной работы.";
     const edited = "Готовый короткий пост. Проверьте детали и дополните его перед публикацией.";
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(new Response(
-        `${JSON.stringify({ message: { content: draft }, done: true })}\n`,
-        { status: 200 },
-      ))
-      .mockResolvedValueOnce(new Response(
-        `${JSON.stringify({ message: { content: edited }, done: true })}\n`,
-        { status: 200 },
-      ));
+    const fetchMock = vi.fn(async () => new Response(
+      `${JSON.stringify({ message: { content: fetchMock.mock.calls.length === 1 ? draft : edited }, done: true })}\n`,
+      { status: 200 },
+    ));
     vi.stubGlobal("fetch", fetchMock);
 
     const response = await POST(reviewableBlockedEditorialRequest());
     const events = (await response.text()).trim().split("\n").map((line) => JSON.parse(line));
     const validationIndex = events.findIndex((event) => event.type === "validation");
-    const doneIndex = events.findIndex((event) => event.type === "done");
-
-    expect(events).toContainEqual(expect.objectContaining({ type: "replace", text: edited }));
+    expect(fetchMock).toHaveBeenCalledTimes(7);
     expect(events[validationIndex]).toMatchObject({
       type: "validation",
       status: "blocked",
@@ -660,17 +658,14 @@ describe("POST /api/ai/generate prerequisites", () => {
     expect(events[validationIndex].blockerCodes).toEqual(
       expect.arrayContaining([expect.stringMatching(/^post:/u)]),
     );
-    expect(doneIndex).toBeGreaterThan(validationIndex);
-    expect(mocks.stageAiUsageResult).toHaveBeenCalledWith(
-      7,
-      81,
-      response.headers.get("x-ai-request-id"),
-      expect.objectContaining({
-        text: edited,
-        validation: expect.objectContaining({ status: "blocked", requiresReview: true }),
-      }),
-    );
-    expect(mocks.releaseAiUsageRequest).not.toHaveBeenCalled();
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "error",
+      error: "post_validation_failed",
+      issues: expect.arrayContaining([expect.stringMatching(/1000–2000/u)]),
+    }));
+    expect(events.some((event) => event.type === "done")).toBe(false);
+    expect(mocks.stageAiUsageResult).not.toHaveBeenCalled();
+    expect(mocks.releaseAiUsageRequest).toHaveBeenCalledOnce();
   });
 
   it("uses the owned reference semantic intent, isolates history and ignores client source substitution", async () => {
@@ -762,7 +757,7 @@ describe("POST /api/ai/generate prerequisites", () => {
     expect(repairBody.messages.at(-1)?.content).toContain("Тематическое соответствие провалено");
   });
 
-  it("preserves a repeated off-topic Studio result as a reviewable terminal draft", async () => {
+  it("blocks a repeated off-topic Studio result instead of exposing it as a finished draft", async () => {
     mocks.getDraftForUser.mockResolvedValue(ownedReferenceDraft());
     mocks.channelAiContextFor.mockResolvedValue({
       id: 42,
@@ -791,18 +786,15 @@ describe("POST /api/ai/generate prerequisites", () => {
       topicAlignment: expect.objectContaining({ status: "failed" }),
     }));
     expect(events).toContainEqual(expect.objectContaining({
-      type: "done",
-      ackRequired: true,
-      generationResultId: 501,
+      type: "error",
+      error: "topic_alignment_failed",
+      issues: expect.arrayContaining([expect.stringContaining("Тематическое соответствие")]),
     }));
-    expect(events.some((event) => event.type === "error")).toBe(false);
-    expect(mocks.stageGenerationArtifact).toHaveBeenCalledWith(expect.objectContaining({
-      userId: 7,
-      validation: expect.objectContaining({ status: "blocked", requiresReview: true }),
-    }));
-    expect(mocks.stageAiUsageResult).toHaveBeenCalledOnce();
-    expect(mocks.failGenerationOperation).not.toHaveBeenCalled();
-    expect(mocks.releaseAiUsageRequest).not.toHaveBeenCalled();
+    expect(events.some((event) => event.type === "done")).toBe(false);
+    expect(mocks.stageGenerationArtifact).not.toHaveBeenCalled();
+    expect(mocks.stageAiUsageResult).not.toHaveBeenCalled();
+    expect(mocks.failGenerationOperation).toHaveBeenCalledOnce();
+    expect(mocks.releaseAiUsageRequest).toHaveBeenCalledOnce();
   });
 
   it("rejects a missing or foreign reference draft before lookup, quota and provider work", async () => {

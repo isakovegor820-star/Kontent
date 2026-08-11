@@ -46,6 +46,7 @@ type AiStreamEventPayload =
       retryable?: boolean;
       code?: string;
       status?: number | null;
+      issues?: string[];
       suggestedEngine?: { id: string; label: string; vendor?: string } | null;
     }
   | {
@@ -101,10 +102,13 @@ function isAiStreamEvent(value: unknown): value is AiStreamEvent {
     const validSuggestion = suggested === undefined
       || suggested === null
       || (isRecord(suggested) && typeof suggested.id === "string" && typeof suggested.label === "string");
+    const validIssues = value.issues === undefined
+      || (Array.isArray(value.issues) && value.issues.every((issue) => typeof issue === "string"));
     return typeof value.error === "string"
       && typeof value.engine === "string"
       && typeof value.label === "string"
-      && validSuggestion;
+      && validSuggestion
+      && validIssues;
   }
   return value.type === "done"
     && typeof value.pipeline === "string"

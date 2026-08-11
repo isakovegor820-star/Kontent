@@ -41,6 +41,7 @@ export type PostLength = "auto" | "short" | "medium" | "long" | "custom";
 export type Formality = "auto" | "casual" | "neutral" | "formal";
 export type Energy = "auto" | "calm" | "balanced" | "high";
 export type Humor = "auto" | "none" | "light" | "bold";
+export type ProfanityMode = "forbid" | "masked" | "allow";
 export type Address = "auto" | "ты" | "вы" | "neutral";
 export type EmojiMode = "auto" | "none" | "few" | "moderate" | "many" | "custom";
 export type EmojiPlacement = "auto" | "inline" | "line_end" | "bullets";
@@ -142,6 +143,7 @@ export interface PostSettings {
   formality: Formality;
   energy: Energy;
   humor: Humor;
+  profanityMode: ProfanityMode;
   address: Address;
   emojiMode: EmojiMode;
   emojiMax: number | null;
@@ -493,6 +495,7 @@ export const DEFAULT_POST_SETTINGS: Readonly<PostSettings> = Object.freeze({
   formality: "auto",
   energy: "auto",
   humor: "auto",
+  profanityMode: "forbid",
   address: "auto",
   emojiMode: "auto",
   emojiMax: null,
@@ -689,6 +692,7 @@ export function normalizePostSettings(raw: unknown): PostSettings {
     formality: oneOf(source.formality, ["auto", "casual", "neutral", "formal"] as const, DEFAULT_POST_SETTINGS.formality),
     energy: oneOf(source.energy, ["auto", "calm", "balanced", "high"] as const, DEFAULT_POST_SETTINGS.energy),
     humor: oneOf(source.humor, ["auto", "none", "light", "bold"] as const, DEFAULT_POST_SETTINGS.humor),
+    profanityMode: oneOf(source.profanityMode, ["forbid", "masked", "allow"] as const, DEFAULT_POST_SETTINGS.profanityMode),
     address: oneOf(source.address, ["auto", "ты", "вы", "neutral"] as const, DEFAULT_POST_SETTINGS.address),
     emojiMode,
     emojiMax,
@@ -863,19 +867,36 @@ function explicitTaskLength(
   return fallback;
 }
 
-function emojiLimit(settings: PostSettings, rule: PlatformRule): number {
-  if (settings.emojiMode === "none") return 0;
-  if (settings.emojiMode === "few") return Math.min(1, rule.defaultEmojiMax);
-  if (settings.emojiMode === "moderate") return Math.min(3, Math.max(1, rule.defaultEmojiMax));
-  if (settings.emojiMode === "many") return Math.min(8, Math.max(4, rule.defaultEmojiMax));
-  if (settings.emojiMode === "custom") return Math.min(settings.emojiMax ?? 0, 20);
-  return rule.defaultEmojiMax;
+function emojiRange(settings: PostSettings, rule: PlatformRule): readonly [number, number] {
+  if (settings.emojiMode === "none") return [0, 0];
+  if (settings.emojiMode === "few") return [1, 1];
+  if (settings.emojiMode === "moderate") return [2, 3];
+  if (settings.emojiMode === "many") return [4, 8];
+  if (settings.emojiMode === "custom") {
+    const exact = Math.min(settings.emojiMax ?? 0, 20);
+    return [exact, exact];
+  }
+  return [0, rule.defaultEmojiMax];
 }
 
-function hashtagLimit(settings: PostSettings, rule: PlatformRule): number {
-  if (settings.hashtags === "none") return 0;
-  if (settings.hashtags === "custom") return Math.min(settings.hashtagCount ?? 0, rule.platformHashtagMax);
-  return Math.min(rule.defaultHashtagMax, rule.platformHashtagMax);
+function hashtagRange(settings: PostSettings, rule: PlatformRule): readonly [number, number] {
+  if (settings.hashtags === "none") return [0, 0];
+  if (settings.hashtags === "custom") {
+    const exact = Math.min(settings.hashtagCount ?? 0, rule.platformHashtagMax);
+    return [exact, exact];
+  }
+  return [0, Math.min(rule.defaultHashtagMax, rule.platformHashtagMax)];
+}
+
+function effectiveLengthRange(
+  settings: PostSettings,
+  rule: PlatformRule,
+  context: { network?: string | null; kind?: AiKind; task?: string },
+): readonly [number, number] {
+  const selected = postLengthRange(settings, context.network, context.kind);
+  return settings.length === "auto"
+    ? explicitTaskLength(context.task, selected, rule.hardLimit)
+    : selected;
 }
 
 const LABELS = {
@@ -931,13 +952,9 @@ export function buildPostSettingsPrompt(raw: unknown, context: { network?: strin
   const settings = normalizePostSettings(raw);
   const target = resolvePostTarget(settings, context.network, context.kind);
   const rule = POST_TARGET_RULES[target];
-  const [minChars, maxChars] = explicitTaskLength(
-    context.task,
-    postLengthRange(settings, context.network, context.kind),
-    rule.hardLimit,
-  );
-  const maxEmojis = emojiLimit(settings, rule);
-  const maxHashtags = hashtagLimit(settings, rule);
+  const [minChars, maxChars] = effectiveLengthRange(settings, rule, context);
+  const [minEmojis, maxEmojis] = emojiRange(settings, rule);
+  const [minHashtags, maxHashtags] = hashtagRange(settings, rule);
   const lines = [
     "КОНТРАКТ КОНКРЕТНОЙ ПУБЛИКАЦИИ. Применяй разделы строго в указанном порядке: нижний раздел не может отменить верхний.",
   ];
@@ -1026,8 +1043,13 @@ export function buildPostSettingsPrompt(raw: unknown, context: { network?: strin
   section("7. СТИЛЬ И ОРИГИНАЛЬНОСТЬ", [
     `язык: ${settings.language === "ru" ? "русский" : settings.language === "en" ? "английский" : "язык задачи и канала"}`,
     `формальность: ${LABELS.formality[settings.formality]}; энергия: ${LABELS.energy[settings.energy]}; юмор: ${LABELS.humor[settings.humor]}; обращение: ${LABELS.address[settings.address]}`,
+    settings.profanityMode === "forbid"
+      ? "мат и замаскированная обсценная лексика полностью запрещены"
+      : settings.profanityMode === "masked"
+        ? "ОБЯЗАТЕЛЬНО используй ровно одно уместное матерное выражение с частичной цензурой звёздочками; прямой мат запрещён; не оскорбляй читателя"
+        : "ОБЯЗАТЕЛЬНО используй ровно одно прямое матерное слово как эмоциональный акцент; не маскируй его, не направляй на читателя и не используй для травли",
     `начало: ${LABELS.hook[settings.hook]}; структура: ${LABELS.structure[settings.structure]}; абзацы: ${LABELS.paragraphs[settings.paragraphs]}; списки: ${LABELS.lists[settings.lists]}`,
-    `эмодзи: максимум ${maxEmojis}; хэштеги: максимум ${maxHashtags}; креативность: ${LABELS.creativity[settings.creativity]}`,
+    `эмодзи: ${minEmojis === maxEmojis ? `ровно ${maxEmojis}` : `${minEmojis}–${maxEmojis}`}; расположение: ${settings.emojiPlacement}; хэштеги: ${minHashtags === maxHashtags ? `ровно ${maxHashtags}` : `${minHashtags}–${maxHashtags}`}; креативность: ${LABELS.creativity[settings.creativity]}`,
     settings.allowedEmojis.length ? `только допустимые эмодзи: ${settings.allowedEmojis.join(" ")}` : null,
     settings.forbiddenEmojis.length ? `запрещённые эмодзи: ${settings.forbiddenEmojis.join(" ")}` : null,
     settings.keywords.length ? `ключевые слова: ${settings.keywords.join(", ")}` : null,
@@ -1037,6 +1059,8 @@ export function buildPostSettingsPrompt(raw: unknown, context: { network?: strin
     settings.neverStart.length ? `никогда не начинай: ${settings.neverStart.join("; ")}` : null,
     settings.neverEnd.length ? `никогда не заканчивай: ${settings.neverEnd.join("; ")}` : null,
     settings.punctuationNotes ? `пунктуация: ${settings.punctuationNotes}` : null,
+    settings.capitalsAllowed ? "заглавные слова допустимы как редкий смысловой акцент" : "не используй слова целиком ЗАГЛАВНЫМИ буквами, кроме общепринятых аббревиатур",
+    `если создаёшь ещё один вариант, измени его так: ${settings.variantChange}`,
     `сходство с голосом: ${settings.styleMatch}; длина предложений: ${settings.sentenceLength}; сленг ${settings.slangLevel}; метафоры ${settings.metaphorLevel}; англицизмы ${settings.anglicisms}; риторические вопросы ${settings.rhetoricalQuestions}; провокация ${settings.provocationLevel}`,
     settings.requireNewAngle ? `найди новый угол и не повторяй ${settings.avoidRepetitions.join(", ") || "прошлые публикации"}; сравни с ${settings.originalityDepth} последними публикациями; допустимая похожесть: ${settings.similarityLevel}` : null,
     settings.blockGenericPhrases ? "убери общие фразы, которые не добавляют факта, примера или полезного вывода" : null,
@@ -1121,10 +1145,59 @@ export function buildPostSettingsSummary(raw: unknown, network?: string | null):
     settings.objection ? `Закрываем возражение: ${settings.objection}.` : "",
     settings.proofs.length ? `Используем доказательств: ${settings.proofs.length}.` : "",
     `Формат: ${target.label}.`,
+    `Мат: ${settings.profanityMode === "forbid" ? "запрещён" : settings.profanityMode === "masked" ? "обязательно одно цензурированное выражение" : "обязательно одно прямое слово"}.`,
     `Действие: ${settings.readerAction || LABELS.cta[settings.cta]}.`,
     `Качество: ${settings.qualityMode === "fast" ? "быстро" : settings.qualityMode === "maximum" ? "максимальное" : "сбалансированно"}.`,
   ].filter(Boolean);
   return parts.join(" ");
+}
+
+/** Основной текст отделён от дополнительных материалов единым разделителем. */
+export function postSettingsPrimaryText(text: string, raw: unknown): string {
+  const settings = normalizePostSettings(raw);
+  const value = String(text ?? "").trim();
+  return settings.outputParts.length > 1 ? value.split(/\n\s*---\s*\n/u)[0].trim() : value;
+}
+
+/**
+ * Настройки одной публикации имеют приоритет над постоянным профилем канала.
+ * Возвращаем только поля, которые умеет детерминированно проверить общий quality-gate.
+ */
+export function postSettingsQualityOverrides(
+  raw: unknown,
+  context: { network?: string | null; kind?: AiKind; task?: string } = {},
+): Record<string, unknown> {
+  const settings = normalizePostSettings(raw);
+  const target = resolvePostTarget(settings, context.network, context.kind);
+  const rule = POST_TARGET_RULES[target];
+  const [minChars, maxChars] = effectiveLengthRange(settings, rule, context);
+  const [, maxEmojis] = emojiRange(settings, rule);
+  const [, maxHashtags] = hashtagRange(settings, rule);
+  return {
+    minChars,
+    maxChars,
+    hookRequired: settings.hook !== "none",
+    hookMaxChars: target === "youtube_title" ? rule.hardLimit : 120,
+    maxParagraphSentences: settings.paragraphs === "short" ? 2 : settings.paragraphs === "medium" ? 4 : 3,
+    requireConclusion: settings.includeConclusion,
+    listPolicy: settings.lists === "required" ? "required" : settings.lists === "avoid" ? "avoid" : "when_useful",
+    ...(settings.address === "auto" ? {} : { address: settings.address }),
+    profanity: settings.profanityMode === "forbid" ? "forbid" : "allow",
+    profanityLevel: settings.profanityMode === "forbid" ? 0 : settings.profanityMode === "masked" ? 50 : 80,
+    emojiPolicy: settings.emojiMode === "none" ? "none" : "restrained",
+    maxEmojis,
+    hashtagsPolicy: settings.hashtags === "none" ? "none" : "restrained",
+    maxHashtags,
+    factsPolicy: settings.factStrictness === "verified"
+      ? "source_required"
+      : settings.factStrictness === "off" || settings.factStrictness === "general"
+        ? "open"
+        : "no_unverified_specifics",
+    forbiddenPhrases: [...(settings.blockAiCliches ? AI_CLICHES : []), ...settings.forbiddenWords, ...settings.bannedExpressions],
+    forbiddenTopics: settings.forbiddenTopics,
+    qualityThreshold: settings.qualityThreshold * 10,
+    retryLimit: settings.qualityMode === "fast" ? 1 : settings.qualityMode === "maximum" ? 3 : 2,
+  };
 }
 
 export interface PostSettingsViolation {
@@ -1136,13 +1209,30 @@ export interface PostSettingsViolation {
 export interface PostSettingsValidation {
   passed: boolean;
   violations: PostSettingsViolation[];
-  metrics: { chars: number; bytes: number; emojis: number; hashtags: number; mentions: number };
+  metrics: {
+    chars: number;
+    bytes: number;
+    emojis: number;
+    hashtags: number;
+    mentions: number;
+    qualityScore: number;
+    maxSimilarity: number | null;
+  };
   target: Exclude<PostTarget, "auto">;
 }
 
 const emojiPattern = /\p{Extended_Pictographic}/gu;
 const hashtagPattern = /(^|\s)#[\p{L}\p{N}_]+/gu;
+const hashtagTokenPattern = /#[\p{L}\p{N}_]+/gu;
 const mentionPattern = /(^|\s)@[\p{L}\p{N}_.]+/gu;
+// Unicode-lookaround не ловит корни внутри обычных слов вроде «страхуй».
+const directProfanityWordPattern = /(?<!\p{L})(?:(?:на|по|о|за|до|вы|при)?ху(?:й|е|ё|я|и)\p{L}*|пизд\p{L}*|(?:за|до|по|на|вы|при|под)?(?:еб|ёб)\p{L}*|бля(?:д\p{L}*)?|мудак\p{L}*|долбоеб\p{L}*)(?!\p{L})/giu;
+const maskedProfanityWordPattern = /(?<!\p{L})(?:х[\p{L}]*\*+[\p{L}]*|п[\p{L}]*\*+[\p{L}]*|[её][\p{L}]*\*+[\p{L}]*|бл[\p{L}]*\*+[\p{L}]*|муд[\p{L}]*\*+[\p{L}]*|долбо[\p{L}]*\*+[\p{L}]*)(?!\p{L})/giu;
+const listPattern = /(?:^|\n)\s*(?:[-—•]|\d+[.)])\s+/mu;
+const informalAddressPattern = /(?:^|[^\p{L}])(?:ты|тебя|тебе|тобой|твой|твоя|твоё|твое|твои|твоего|твоей|твою|твоим|твоих)(?!\p{L})/iu;
+const formalAddressPattern = /(?:^|[^\p{L}])(?:вы|вас|вам|вами|ваш|ваша|ваше|ваши|вашего|вашей|вашу|вашим|ваших)(?!\p{L})/iu;
+const uppercaseWordPattern = /(?:^|[^\p{L}\p{N}])([\p{Lu}Ё]{3,})(?![\p{L}\p{N}])/gu;
+const COMMON_UPPERCASE = new Set(["AI", "ИИ", "IT", "ИТ", "CTA", "API", "VK", "ВК", "FAQ", "B2B", "B2C", "SEO", "SMM", "URL", "UTM", "PDF"]);
 const AI_CLICHES = [
   "в современном мире",
   "ни для кого не секрет",
@@ -1157,7 +1247,7 @@ function containsPhrase(text: string, phrase: string): boolean {
   return text.toLocaleLowerCase("ru").includes(phrase.toLocaleLowerCase("ru"));
 }
 
-function ctaPresent(text: string, type: CtaType): boolean {
+function ctaPattern(type: CtaType): RegExp | null {
   const patterns: Partial<Record<CtaType, RegExp>> = {
     comment: /(?:напиш|расскаж|поделит|ответ)\p{L}*(?:\s.{0,30})?(?:комментар|мнение|опыт)/iu,
     save: /сохран\p{L}*/iu,
@@ -1169,33 +1259,77 @@ function ctaPresent(text: string, type: CtaType): boolean {
     register: /зарегистр\p{L}*|регистрац\p{L}*/iu,
     download: /скача\p{L}*|получи\p{L}*\s+(?:файл|гайд|материал|чек)/iu,
   };
-  return type === "auto" || type === "none" || Boolean(patterns[type]?.test(text));
+  return patterns[type] ?? null;
+}
+
+function ctaPresent(text: string, type: CtaType): boolean {
+  return type === "auto" || type === "none" || Boolean(ctaPattern(type)?.test(text));
+}
+
+function ctaCount(text: string, type: CtaType, wording: string): number {
+  if (wording) {
+    const escaped = wording.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return (text.match(new RegExp(escaped, "giu")) ?? []).length;
+  }
+  const pattern = ctaPattern(type);
+  if (!pattern) return 0;
+  return (text.match(new RegExp(pattern.source, `${pattern.flags.replace("g", "")}g`)) ?? []).length;
+}
+
+function sentenceWordCounts(text: string): number[] {
+  return text
+    .split(/[.!?…]+/u)
+    .map((sentence) => sentence.match(/[\p{L}\p{N}]+/gu)?.length ?? 0)
+    .filter(Boolean);
+}
+
+function normalizedWordSet(text: string): Set<string> {
+  return new Set(
+    text.toLocaleLowerCase("ru")
+      .match(/[\p{L}\p{N}]+/gu)
+      ?.filter((word) => word.length >= 4) ?? [],
+  );
+}
+
+function lexicalSimilarity(left: string, right: string): number {
+  const a = normalizedWordSet(left);
+  const b = normalizedWordSet(right);
+  if (!a.size || !b.size) return 0;
+  let intersection = 0;
+  for (const word of a) if (b.has(word)) intersection += 1;
+  return intersection / Math.max(1, a.size + b.size - intersection);
+}
+
+function maxHistorySimilarity(text: string, history: readonly string[]): number | null {
+  const values = history.map((item) => String(item ?? "").trim()).filter(Boolean);
+  if (!values.length) return null;
+  return Math.max(...values.map((item) => lexicalSimilarity(text, item)));
 }
 
 export function validatePostSettingsResult(
   text: string,
   raw: unknown,
-  context: { network?: string | null; kind?: AiKind; task?: string } = {},
+  context: { network?: string | null; kind?: AiKind; task?: string; history?: readonly string[] } = {},
 ): PostSettingsValidation {
   const settings = normalizePostSettings(raw);
   const target = resolvePostTarget(settings, context.network, context.kind);
   const rule = POST_TARGET_RULES[target];
-  const [minChars, maxChars] = explicitTaskLength(
-    context.task,
-    postLengthRange(settings, context.network, context.kind),
-    rule.hardLimit,
-  );
-  const fullValue = String(text ?? "").trim();
-  // При расширенной комплектации после разделителя идут хуки, alt-текст и другие
-  // материалы. Платформенный лимит и CTA проверяем только у основной публикации.
-  const value = settings.outputParts.length > 1 ? fullValue.split(/\n\s*---\s*\n/u)[0].trim() : fullValue;
+  const [minChars, maxChars] = effectiveLengthRange(settings, rule, context);
+  const [minEmojis, maxEmojis] = emojiRange(settings, rule);
+  const [minHashtags, maxHashtags] = hashtagRange(settings, rule);
+  const value = postSettingsPrimaryText(text, settings);
   const bytes = new TextEncoder().encode(value).byteLength;
+  const emojiTokens = value.match(emojiPattern) ?? [];
+  const hashtagTokens = value.match(hashtagTokenPattern) ?? [];
+  const maxSimilarity = maxHistorySimilarity(value, context.history ?? []);
   const metrics = {
     chars: value.length,
     bytes,
-    emojis: (value.match(emojiPattern) ?? []).length,
-    hashtags: (value.match(hashtagPattern) ?? []).length,
+    emojis: emojiTokens.length,
+    hashtags: hashtagTokens.length,
     mentions: (value.match(mentionPattern) ?? []).length,
+    qualityScore: 100,
+    maxSimilarity,
   };
   const violations: PostSettingsViolation[] = [];
   const add = (code: string, message: string, blocker = true) => violations.push({ code, message, blocker });
@@ -1204,12 +1338,44 @@ export function validatePostSettingsResult(
   if (metrics.chars > maxChars) add("too_long", `Нужно ${minChars}–${maxChars} знаков, сейчас ${metrics.chars}`);
   const hardValue = rule.hardLimitUnit === "bytes" ? metrics.bytes : metrics.chars;
   if (hardValue > rule.hardLimit) add("platform_limit", `Превышен предел ${rule.label}: ${rule.hardLimit} ${rule.hardLimitUnit === "bytes" ? "байт" : "знаков"}`);
-  if (metrics.emojis > emojiLimit(settings, rule)) add("emoji", `Эмодзи ${metrics.emojis}, разрешено максимум ${emojiLimit(settings, rule)}`);
-  if (metrics.hashtags > hashtagLimit(settings, rule)) add("hashtags", `Хэштегов ${metrics.hashtags}, разрешено максимум ${hashtagLimit(settings, rule)}`);
+  if (metrics.emojis < minEmojis || metrics.emojis > maxEmojis) {
+    add("emoji", `Эмодзи должно быть ${minEmojis === maxEmojis ? `ровно ${maxEmojis}` : `${minEmojis}–${maxEmojis}`}, сейчас ${metrics.emojis}`);
+  }
+  if (metrics.hashtags < minHashtags || metrics.hashtags > maxHashtags) {
+    add("hashtags", `Хэштегов должно быть ${minHashtags === maxHashtags ? `ровно ${maxHashtags}` : `${minHashtags}–${maxHashtags}`}, сейчас ${metrics.hashtags}`);
+  }
+  if (settings.allowedEmojis.length) {
+    const unexpected = emojiTokens.filter((item) => !settings.allowedEmojis.includes(item));
+    if (unexpected.length) add("allowed_emoji", `Используй только выбранные эмодзи: ${settings.allowedEmojis.join(" ")}`);
+  }
+  const forbiddenEmoji = emojiTokens.find((item) => settings.forbiddenEmojis.includes(item));
+  if (forbiddenEmoji) add("forbidden_emoji", `Запрещённый эмодзи: ${forbiddenEmoji}`);
+  if (metrics.emojis > 0 && settings.emojiPlacement === "line_end") {
+    const misplaced = value.split("\n").some((line) => line.match(emojiPattern)?.length && !/\p{Extended_Pictographic}\s*$/u.test(line));
+    if (misplaced) add("emoji_placement", "Каждый эмодзи должен стоять в конце строки");
+  }
+  if (metrics.emojis > 0 && settings.emojiPlacement === "bullets") {
+    const misplaced = value.split("\n").some((line) => line.match(emojiPattern)?.length && !/^\s*\p{Extended_Pictographic}/u.test(line));
+    if (misplaced) add("emoji_placement", "Используй эмодзи только как маркеры в начале строк");
+  }
+  if (metrics.emojis > 0 && settings.emojiPlacement === "inline") {
+    const hasInline = value.split("\n").some((line) => /\p{Extended_Pictographic}\s+\p{L}/u.test(line));
+    if (!hasInline) add("emoji_placement", "Размести эмодзи внутри строк, а не отдельными маркерами или только в финале");
+  }
   if (rule.platformMentionMax !== null && metrics.mentions > rule.platformMentionMax) add("mentions", `Упоминаний ${metrics.mentions}, разрешено максимум ${rule.platformMentionMax}`);
   if (target.startsWith("youtube_") && /[<>]/.test(value)) add("youtube_chars", "YouTube не принимает символы < и > в этом поле");
   if (target === "youtube_title" && /\n/.test(value)) add("title_lines", "Заголовок YouTube должен занимать одну строку");
   if (target === "youtube_title" && /[.!?…]$/.test(value)) add("title_punctuation", "Убери финальную точку или восклицание из заголовка", false);
+  const directProfanityCount = (value.match(directProfanityWordPattern) ?? []).length;
+  const maskedProfanityCount = (value.match(maskedProfanityWordPattern) ?? []).length;
+  if (settings.profanityMode === "forbid" && (directProfanityCount > 0 || maskedProfanityCount > 0)) {
+    add("profanity", "Мат, включая цензурированный звёздочками, запрещён настройками публикации");
+  } else if (settings.profanityMode === "masked") {
+    if (directProfanityCount > 0) add("profanity_direct", "Прямой мат запрещён: оставь ровно одно выражение со звёздочками");
+    if (maskedProfanityCount !== 1) add("profanity_required", `Нужно ровно одно цензурированное матерное выражение, сейчас ${maskedProfanityCount}`);
+  } else if (settings.profanityMode === "allow" && directProfanityCount !== 1) {
+    add("profanity_required", `Нужно ровно одно прямое матерное слово, сейчас ${directProfanityCount}`);
+  }
   for (const phrase of [...(settings.blockAiCliches ? AI_CLICHES : []), ...settings.forbiddenWords, ...settings.bannedExpressions]) {
     if (containsPhrase(value, phrase)) add("forbidden_phrase", `Запрещённая формулировка: «${phrase}»`);
   }
@@ -1235,12 +1401,230 @@ export function validatePostSettingsResult(
   if (settings.ctaCodeword && !containsPhrase(value, settings.ctaCodeword)) add("cta_codeword", `Нет кодового слова: «${settings.ctaCodeword}»`);
   if (settings.ctaDestination && /^https?:\/\//iu.test(settings.ctaDestination) && !value.includes(settings.ctaDestination)) add("cta_destination", `Нет ссылки для призыва: «${settings.ctaDestination}»`);
   if (!ctaPresent(value, settings.cta)) add("cta", `Нет выбранного призыва: ${LABELS.cta[settings.cta]}`);
+  if (!["auto", "none"].includes(settings.cta)) {
+    const count = ctaCount(value, settings.cta, settings.ctaWording);
+    if (count !== settings.ctaRepeats) add("cta_repeats", `Призыв должен встретиться ровно ${settings.ctaRepeats} раз(а), сейчас ${count}`);
+    if (settings.ctaPlacement === "end") {
+      const finalPart = value.slice(Math.floor(value.length * 0.65));
+      if (!ctaPresent(finalPart, settings.cta) && !(settings.ctaWording && containsPhrase(finalPart, settings.ctaWording))) {
+        add("cta_placement", "Размести основной призыв в заключительной части поста");
+      }
+    }
+  }
+  if (settings.secondaryCta !== "none" && !ctaPresent(value, settings.secondaryCta)) {
+    add("secondary_cta", `Нет второго призыва: ${LABELS.cta[settings.secondaryCta]}`);
+  }
   if (settings.cta === "none" && /(?:подпиш\p{L}*|переход\p{L}*\s+по\s+ссылке|остав\p{L}*\s+заявк|куп\p{L}*\s+сейчас)/iu.test(value)) {
     add("unexpected_cta", "Призыв отключён, но текст всё равно призывает к действию");
   }
+  const hasList = listPattern.test(value);
+  if (settings.lists === "required" && !hasList) add("list_required", "По настройкам в публикации обязателен один список");
+  if (settings.lists === "avoid" && hasList) add("list_forbidden", "По настройкам списки запрещены");
+  if (settings.structure === "list" && !hasList) add("structure_list", "Выбрана структура списка, но список отсутствует");
+  const paragraphs = value.split(/\n\s*\n/u).map((item) => item.trim()).filter(Boolean);
+  const paragraphLimit = settings.paragraphs === "short" ? 2 : settings.paragraphs === "medium" ? 4 : null;
+  if (paragraphLimit !== null && paragraphs.some((paragraph) => sentenceWordCounts(paragraph).length > paragraphLimit)) {
+    add("paragraphs", `В одном абзаце должно быть не больше ${paragraphLimit} предложений`);
+  }
+  const cyrillic = (value.match(/[А-Яа-яЁё]/g) ?? []).length;
+  const latin = (value.match(/[A-Za-z]/g) ?? []).length;
+  if (settings.language === "ru" && latin > Math.max(12, cyrillic * 0.22)) add("language", "Основной язык должен быть русским");
+  if (settings.language === "en" && cyrillic > Math.max(8, latin * 0.12)) add("language", "Основной язык должен быть английским");
+  if (settings.address === "вы" && informalAddressPattern.test(value)) add("address", "Обращайся к читателю только на «вы»");
+  if (settings.address === "ты" && formalAddressPattern.test(value)) add("address", "Обращайся к читателю только на «ты»");
+  if (settings.address === "neutral" && (informalAddressPattern.test(value) || formalAddressPattern.test(value))) add("address", "Пиши без прямого обращения к читателю");
+  if (!settings.capitalsAllowed) {
+    const requiredUppercase = new Set(
+      [
+        settings.ctaCodeword,
+        ...settings.keywords,
+        ...settings.mentions,
+        ...settings.requiredFacts,
+        ...settings.proofs.map((proof) => proof.text),
+      ].flatMap((item) => String(item ?? "").match(/[\p{Lu}Ё]{3,}/gu) ?? []),
+    );
+    const uppercaseWords = [...value.matchAll(uppercaseWordPattern)]
+      .map((match) => match[1])
+      .filter((word) => !COMMON_UPPERCASE.has(word) && !requiredUppercase.has(word));
+    if (uppercaseWords.length) add("capitals", `Не используй слова целиком заглавными буквами: ${uppercaseWords.slice(0, 3).join(", ")}`);
+  }
+  const sentenceLengths = sentenceWordCounts(value);
+  if (settings.sentenceLength === "short" && sentenceLengths.some((count) => count > 16)) add("sentence_length", "Сократи предложения: каждое должно быть не длиннее 16 слов");
+  if (settings.sentenceLength === "long" && sentenceLengths.length > 1 && sentenceLengths.reduce((sum, item) => sum + item, 0) / sentenceLengths.length < 12) add("sentence_length", "Используй более развёрнутые предложения");
+  if (settings.sentenceLength === "mixed" && sentenceLengths.length >= 3 && Math.max(...sentenceLengths) - Math.min(...sentenceLengths) < 7) add("sentence_rhythm", "Сделай ритм разнообразнее: сочетай короткие и развёрнутые предложения");
+  const questionCount = (value.match(/\?/g) ?? []).length;
+  if (settings.rhetoricalQuestions === "none" && questionCount > 0) add("rhetorical_questions", "Риторические вопросы запрещены");
+  if (settings.rhetoricalQuestions === "high" && questionCount === 0) add("rhetorical_questions", "Добавь один уместный риторический вопрос");
+  for (const start of settings.neverStart) {
+    if (value.toLocaleLowerCase("ru").startsWith(start.toLocaleLowerCase("ru"))) add("never_start", `Публикация не должна начинаться с «${start}»`);
+  }
+  for (const end of settings.neverEnd) {
+    if (value.toLocaleLowerCase("ru").replace(/[.!?…\s]+$/u, "").endsWith(end.toLocaleLowerCase("ru").replace(/[.!?…\s]+$/u, ""))) add("never_end", `Публикация не должна заканчиваться на «${end}»`);
+  }
+  if (settings.signatureExpressions.length && !settings.signatureExpressions.some((phrase) => containsPhrase(value, phrase))) {
+    add("signature_expression", `Используй хотя бы одно фирменное выражение: ${settings.signatureExpressions.join("; ")}`);
+  }
+  if (settings.requireConcreteExample && !/(?:например|к примеру|представьте|допустим|вот конкретный пример|случай из практики)/iu.test(value)) {
+    add("concrete_example", "Добавь конкретный пример только из переданных данных");
+  }
+  if (settings.priceMode === "required" && settings.price && !containsPhrase(value, settings.price)) add("price_required", `Укажи выбранную цену дословно: «${settings.price}»`);
+  if (settings.priceMode === "never" && settings.price && containsPhrase(value, settings.price)) add("price_forbidden", "Убери цену: для этой публикации она запрещена");
+  if (settings.requireNewAngle && settings.similarityLevel !== "allow" && maxSimilarity !== null) {
+    const threshold = settings.similarityLevel === "strict" ? 0.34 : 0.52;
+    if (maxSimilarity >= threshold) add("similarity", `Публикация слишком похожа на историю канала (${Math.round(maxSimilarity * 100)}%); нужен другой угол, структура и формулировки`);
+  }
   if (/\p{Extended_Pictographic}{3,}/u.test(value)) add("emoji_chain", "Убери цепочку из трёх и более эмодзи");
   if (/(?:^|[^\p{L}])(?:хук|основная часть|вывод|cta|призыв к действию)\s*:/iu.test(value)) add("meta_labels", "В публикацию попали служебные метки промпта");
+  const words = value.toLocaleLowerCase("ru").match(/[\p{L}\p{N}]+/gu) ?? [];
+  const lexicalDiversity = words.length ? new Set(words).size / words.length : 1;
+  const qualityPenalty = violations.reduce((sum, item) => sum + (item.blocker ? 12 : 3), 0)
+    + (words.length > 45 && lexicalDiversity < 0.46 ? 8 : 0)
+    + (/(?:в целом|следует отметить|данный вопрос|осуществлять|является важным)/iu.test(value) ? 6 : 0);
+  metrics.qualityScore = Math.max(0, 100 - qualityPenalty);
+  const qualityThreshold = settings.qualityThreshold * 10;
+  if (metrics.qualityScore < qualityThreshold) {
+    add("quality_score", `Редакционная оценка ${Math.round(metrics.qualityScore / 10)}/10 — нужно минимум ${settings.qualityThreshold}/10`);
+  }
   return { passed: violations.every((item) => !item.blocker), violations, metrics, target };
+}
+
+const DEFAULT_EMOJIS = ["✨", "💡", "✅", "📌", "🚀", "💬", "🔹", "🔥"] as const;
+const HASHTAG_STOP_WORDS = new Set([
+  "этот", "эта", "это", "эти", "того", "чтобы", "когда", "который", "которая", "после", "перед", "через",
+  "если", "почему", "нужно", "можно", "будет", "пост", "текст", "аврора", "the", "and", "with", "from", "this",
+]);
+
+function appendBeforeHashtags(text: string, addition: string): string {
+  const value = text.trim();
+  const lines = value.split("\n");
+  const hashtagStart = lines.findIndex((line) => /^\s*(?:#[\p{L}\p{N}_]+\s*)+$/u.test(line));
+  if (hashtagStart < 0) return `${value}\n\n${addition}`.trim();
+  lines.splice(hashtagStart, 0, addition, "");
+  return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function normalizeRequiredProfanity(text: string, mode: ProfanityMode): string {
+  let value = text;
+  if (mode === "forbid") {
+    return value
+      .replace(directProfanityWordPattern, "чёрт")
+      .replace(maskedProfanityWordPattern, "чёрт");
+  }
+  let kept = false;
+  if (mode === "masked") {
+    value = value.replace(directProfanityWordPattern, () => {
+      if (!kept) {
+        kept = true;
+        return "бл***";
+      }
+      return "очень";
+    });
+    value = value.replace(maskedProfanityWordPattern, () => {
+      if (!kept) {
+        kept = true;
+        return "бл***";
+      }
+      return "очень";
+    });
+    return kept ? value : appendBeforeHashtags(value, "Скажу прямо: это, бл***, действительно важно.");
+  }
+  value = value.replace(maskedProfanityWordPattern, "очень");
+  value = value.replace(directProfanityWordPattern, (word) => {
+    if (!kept) {
+      kept = true;
+      return word;
+    }
+    return "очень";
+  });
+  return kept ? value : appendBeforeHashtags(value, "Скажу прямо: это, блядь, действительно важно.");
+}
+
+function hashtagCandidates(settings: PostSettings, task: string | undefined, text: string): string[] {
+  const values = [
+    ...settings.keywords,
+    settings.promotionName,
+    settings.mainIdea,
+    task ?? "",
+    text,
+  ];
+  const words = values
+    .flatMap((item) => String(item).match(/[\p{L}\p{N}]+/gu) ?? [])
+    .map((item) => item.toLocaleLowerCase("ru"))
+    .filter((item) => item.length >= 4 && !HASHTAG_STOP_WORDS.has(item));
+  return [...new Set(words)].map((item) => `#${item[0].toLocaleUpperCase("ru")}${item.slice(1)}`);
+}
+
+function placeMissingEmojis(text: string, emojis: readonly string[], placement: EmojiPlacement): string {
+  if (!emojis.length) return text;
+  const lines = text.split("\n");
+  const candidates = lines
+    .map((line, index) => ({ line, index }))
+    .filter(({ line }) => line.trim() && !/^\s*#/u.test(line));
+  if (!candidates.length) return `${text}\n\n${emojis.join(" ")}`.trim();
+  emojis.forEach((emoji, offset) => {
+    const target = candidates[offset % candidates.length];
+    const line = lines[target.index];
+    if (placement === "bullets") lines[target.index] = `${emoji} ${line.trimStart()}`;
+    else if (placement === "inline") {
+      const match = line.match(/^\s*\S+/u)?.[0] ?? line;
+      lines[target.index] = `${match} ${emoji}${line.slice(match.length)}`;
+    } else lines[target.index] = `${line.trimEnd()} ${emoji}`;
+  });
+  return lines.join("\n");
+}
+
+/**
+ * Последний безопасный слой для механических требований. Он не сочиняет факты и не
+ * заменяет редактуру: только приводит мат, эмодзи, хэштеги и регистр к выбранному режиму.
+ */
+export function finalizePostSettingsDeterministically(
+  text: string,
+  raw: unknown,
+  context: { network?: string | null; kind?: AiKind; task?: string } = {},
+): string {
+  const settings = normalizePostSettings(raw);
+  const target = resolvePostTarget(settings, context.network, context.kind);
+  const rule = POST_TARGET_RULES[target];
+  const [minEmojis, maxEmojis] = emojiRange(settings, rule);
+  const [minHashtags, maxHashtags] = hashtagRange(settings, rule);
+  const full = String(text ?? "").trim();
+  const primary = postSettingsPrimaryText(full, settings);
+  const extras = settings.outputParts.length > 1 ? full.slice(primary.length).trimStart() : "";
+  let value = normalizeRequiredProfanity(primary, settings.profanityMode);
+
+  const allowed = settings.allowedEmojis.length ? settings.allowedEmojis : [...DEFAULT_EMOJIS];
+  const usable = allowed.filter((item) => !settings.forbiddenEmojis.includes(item));
+  value = value.replace(emojiPattern, (item) => {
+    if (settings.forbiddenEmojis.includes(item)) return "";
+    if (settings.allowedEmojis.length && !settings.allowedEmojis.includes(item)) return "";
+    return item;
+  });
+  let seenEmojis = 0;
+  value = value.replace(emojiPattern, (item) => {
+    seenEmojis += 1;
+    return seenEmojis <= maxEmojis ? item : "";
+  });
+  const currentEmojiCount = (value.match(emojiPattern) ?? []).length;
+  if (currentEmojiCount < minEmojis && usable.length) {
+    const missing = Array.from({ length: minEmojis - currentEmojiCount }, (_, index) => usable[index % usable.length]);
+    value = placeMissingEmojis(value, missing, settings.emojiPlacement);
+  }
+
+  if (settings.hashtags !== "auto") {
+    const existing = value.match(hashtagTokenPattern) ?? [];
+    value = value.replace(hashtagPattern, "$1").replace(/[ \t]+\n/g, "\n").trim();
+    if (maxHashtags > 0) {
+      const tags = [...new Set([...existing, ...hashtagCandidates(settings, context.task, value)])].slice(0, maxHashtags);
+      while (tags.length < minHashtags) tags.push(`#Тема${tags.length + 1}`);
+      value = `${value}\n\n${tags.join(" ")}`.trim();
+    }
+  }
+
+  if (!settings.capitalsAllowed) {
+    value = value.replace(uppercaseWordPattern, (match, word: string) =>
+      COMMON_UPPERCASE.has(word) ? match : match.replace(word, word.toLocaleLowerCase("ru")));
+  }
+  return extras ? `${value}\n${extras}`.trim() : value.trim();
 }
 
 export function buildPostRepairInstructions(result: PostSettingsValidation): string[] {
@@ -1250,7 +1634,7 @@ export function buildPostRepairInstructions(result: PostSettingsValidation): str
 export function postSettingsOutputTokens(raw: unknown, network?: string | null, kind?: AiKind, task?: string): number {
   const settings = normalizePostSettings(raw);
   const rule = POST_TARGET_RULES[resolvePostTarget(settings, network, kind)];
-  const [, maxChars] = explicitTaskLength(task, postLengthRange(settings, network, kind), rule.hardLimit);
+  const [, maxChars] = effectiveLengthRange(settings, rule, { network, kind, task });
   const extrasBudget = Math.max(0, settings.outputParts.length - 1) * 180;
   return Math.min(4000, Math.max(300, Math.ceil(maxChars / 2) + extrasBudget));
 }

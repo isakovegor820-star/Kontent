@@ -1,6 +1,7 @@
 import type { NextConfig } from "next";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
+import { networkInterfaces } from "node:os";
 
 // Явно фиксируем корень проекта — рядом лежит второй lockfile, и Turbopack иначе
 // выбирает не ту директорию (предупреждение при сборке).
@@ -9,16 +10,23 @@ const requestedDistDir = String(process.env.AURORA_NEXT_DIST_DIR ?? "").trim();
 const isolatedDistDir = /^\.next-[a-z0-9_-]+$/u.test(requestedDistDir)
   ? requestedDistDir
   : undefined;
+const localNetworkOrigins = Object.values(networkInterfaces())
+  .flatMap((addresses) => addresses ?? [])
+  .filter((address) => address.family === "IPv4" && !address.internal)
+  .map((address) => address.address);
+const allowedDevOrigins = Array.from(
+  new Set(["127.0.0.1", "localhost", ...localNetworkOrigins]),
+);
 
 const nextConfig: NextConfig = {
   // Browser E2E runs the same full `npm run dev` runtime alongside a developer's server.
   // A separate dist directory prevents both Next instances from sharing a dev lock/cache.
   ...(isolatedDistDir ? { distDir: isolatedDistDir } : {}),
 
-  // `npm run dev` binds Next to localhost, while local browser/E2E tooling may use
-  // 127.0.0.1. Next 16 blocks the dev chunks for that otherwise same-machine origin,
-  // leaving Client Components unhydrated unless it is explicitly allowed.
-  allowedDevOrigins: ["127.0.0.1", "localhost"],
+  // Next 16 blocks dev chunks requested through a hostname other than the one that
+  // started the server. Keep loopback/E2E access and the Network URL printed by Next
+  // hydrated without opening arbitrary external origins.
+  allowedDevOrigins,
 
   turbopack: {
     root,
