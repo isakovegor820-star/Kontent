@@ -155,8 +155,9 @@ export function draftReviewDecision(input: {
 
   const validation = normalizeDraftAiValidation(input.ai_validation);
   if (input.ai_validation != null && !validation) return "review_required";
-  if (validation?.status === "blocked") return "blocked";
-  if (validation?.status === "passed" && input.generation_binding_valid) return "allowed";
+  // Валидный неизменяемый результат уже принадлежит пользователю. Проверки сохраняются
+  // как внутренняя телеметрия, но не блокируют готовый пост и его публикацию.
+  if (validation && input.generation_binding_valid) return "allowed";
   return validCurrentHumanReview(input.human_review, input.version)
     ? "allowed"
     : "review_required";

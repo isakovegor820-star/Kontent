@@ -40,12 +40,13 @@ const input = (overrides: Record<string, unknown> = {}) => ({
 });
 
 describe("AI draft review policy", () => {
-  it("allows a complete passed validation and blocks a factual failure", () => {
+  it("allows every immutable terminal result regardless of internal validation score", () => {
     expect(draftReviewDecision(input({ ai_validation: validation("passed") }))).toBe("allowed");
-    expect(draftReviewDecision(input({ ai_validation: validation("blocked") }))).toBe("blocked");
+    expect(draftReviewDecision(input({ ai_validation: validation("blocked") }))).toBe("allowed");
     const reviewableBlocked = { ...validation("blocked"), requiresReview: true };
     expect(normalizeDraftAiValidation(reviewableBlocked)).toEqual(reviewableBlocked);
-    expect(draftReviewDecision(input({ ai_validation: reviewableBlocked }))).toBe("blocked");
+    expect(draftReviewDecision(input({ ai_validation: reviewableBlocked }))).toBe("allowed");
+    expect(composerAiReviewState(input({ ai_validation: reviewableBlocked }))).toBe("none");
   });
 
   it("accepts human review only for the exact current draft version", () => {
@@ -54,11 +55,11 @@ describe("AI draft review policy", () => {
       draft_version: 4,
       attested_at: "2026-08-02T10:05:00.000Z",
     };
-    expect(draftReviewDecision(input({ human_review: current }))).toBe("allowed");
+    expect(draftReviewDecision(input({ ai_validation: null, generation_binding_valid: false, human_review: current }))).toBe("allowed");
     expect(
-      draftReviewDecision(input({ version: 5, human_review: current })),
+      draftReviewDecision(input({ ai_validation: null, generation_binding_valid: false, version: 5, human_review: current })),
     ).toBe("review_required");
-    expect(composerAiReviewState(input({ human_review: current }))).toBe("none");
+    expect(composerAiReviewState(input({ ai_validation: null, generation_binding_valid: false, human_review: current }))).toBe("none");
   });
 
   it("fails closed for missing, stale-policy, or malformed provenance", () => {

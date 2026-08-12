@@ -761,9 +761,9 @@ export async function POST(req: NextRequest) {
     if (review === "blocked") {
       return operationError("ai_draft_blocked", 422);
     }
-    // The immutable revision reached this point only through an exact editorial
-    // approval. That human decision satisfies a review_required/not_checked AI
-    // outcome, but it can never override an explicit deterministic blocker.
+    // The immutable revision reached this point through exact editorial approval.
+    // Internal AI quality checks may guide generation, but they do not take a
+    // generated post away from the user after the post is ready.
     let typographySnapshot;
     try {
       typographySnapshot = await recheckTypographyForPublication({
@@ -772,8 +772,7 @@ export async function POST(req: NextRequest) {
         text: approvedSnapshot.text,
         // The exact immutable revision has already been approved by an authorized
         // editor. Composer no longer exposes a second typography-review panel, so
-        // that approval is the durable human decision to keep any non-blocking
-        // wording as written. Deterministic AI blockers are still rejected above.
+        // that approval is the durable decision to keep the wording as written.
         allowPublishAsIs: true,
       });
     } catch (error) {

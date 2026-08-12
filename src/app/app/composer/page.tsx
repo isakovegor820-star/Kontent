@@ -1072,11 +1072,9 @@ export default function ComposerPage() {
             provenance: event.provenance,
             blockerCodes: event.blockerCodes,
           };
-          streamState.validation = event.status === "passed"
-            ? "none"
-            : event.status === "blocked"
-              ? "blocked"
-              : "required";
+          // Validation remains attached as internal telemetry, but every terminal
+          // generated result is a ready post and must stay publishable.
+          streamState.validation = "none";
         } else if (event.type === "error") {
           failed = true;
           updatePreview("interrupted");
@@ -1085,7 +1083,7 @@ export default function ComposerPage() {
             title: "ИИ не закончил текст",
             body: event.retryable
               ? "Связь с моделью прервалась. Исходный текст сохранён — можно повторить."
-              : "Результат не прошёл проверку. Уточни задание или открой ИИ-студию.",
+              : "Генерация не завершилась. Исходный текст сохранён — можно повторить.",
           });
         } else if (event.type === "done") {
           projection = projectAiDraftEvent(projection, event);
@@ -1187,13 +1185,6 @@ export default function ComposerPage() {
           inputDraftVersion: draftVersion,
         });
         aiRequestRef.current = null;
-        if (streamState.validation === "blocked") {
-          s.toast({
-            kind: "danger",
-            title: "Вариант требует правки",
-            body: "ИИ нашёл спорные факты. Исходный пост не изменён — можно закрыть вариант или использовать его для ручной правки.",
-          });
-        }
       } catch (error) {
         updatePreview("interrupted");
         if ((error as Error)?.name !== "AbortError") {
@@ -1305,7 +1296,7 @@ export default function ComposerPage() {
         next.text = "Проверь факты в тексте ИИ и подтверди ручную проверку перед планированием.";
       }
       if (needWhen && aiReview === "blocked") {
-        next.text = "В тексте ИИ найдена критичная фактическая ошибка. Исправь текст и проверь его вручную.";
+        next.text = "Эта старая версия не привязана к завершённой генерации. Сохрани текст как новый пост.";
       }
 
       if (needWhen && noDate) {
@@ -1765,8 +1756,8 @@ export default function ComposerPage() {
     if (aiReview === "blocked") {
       s.toast({
         kind: "danger",
-        title: "Сначала исправьте факты",
-        body: "Проверка нашла спорные утверждения. Исправьте или удалите их перед публикацией.",
+        title: "Пересохраните старую версию",
+        body: "Эта версия не привязана к завершённой генерации. Сохраните текст как новый пост и повторите публикацию.",
       });
       return;
     }
@@ -1783,7 +1774,7 @@ export default function ComposerPage() {
     const bad = validate(mode === "calendar");
     const first = bad.text ?? bad.networks ?? bad.tracking ?? bad.when;
     if (first) {
-      s.toast({ kind: "danger", title: "Пост пока не готов", body: first });
+      s.toast({ kind: "danger", title: "Нужно заполнить данные", body: first });
       revealComposerProblem(bad);
       scheduleRequestRef.current = false;
       return;
@@ -2326,7 +2317,7 @@ function ComposerActionBar() {
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div className="min-w-0 text-[13px]" aria-live="polite">
               <p className="font-semibold text-text">
-                {approved ? "Готово к публикации" : c.aiReview === "blocked" ? "Нужно исправить текст" : "Нужно согласовать пост"}
+                {approved ? "Готово к публикации" : c.aiReview === "blocked" ? "Нужно пересохранить версию" : "Нужно согласовать пост"}
               </p>
               <p className="truncate text-text-3">
                 {c.draftSaveState === "offline"

@@ -14,6 +14,13 @@ describe("composer UX protection contract", () => {
     expect(source).toContain("<PostSettingsMenu");
   });
 
+  it("treats every terminal AI result as ready without judging the post in the UI", () => {
+    expect(source).toContain('streamState.validation = "none"');
+    expect(source).not.toContain("Вариант требует правки");
+    expect(source).not.toContain("Сначала исправьте факты");
+    expect(source).not.toContain("Нужно исправить текст");
+  });
+
   it("exposes the three working publication paths in one sticky action bar", () => {
     expect(source).toContain('void publish("calendar")');
     expect(source).toContain('void publish("now")');

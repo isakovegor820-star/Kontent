@@ -2,6 +2,14 @@ import { describe, expect, it } from "vitest";
 import { aiFailureRecoveryRu } from "./ai-client-recovery";
 
 describe("AI client recovery copy", () => {
+  it("does not blame the model when the internal operation budget is exhausted", () => {
+    expect(aiFailureRecoveryRu({
+      error: "ai_operation_budget_exhausted",
+      label: "GPT-5.4 (NavyAI)",
+      dimension: "tokens",
+    }, 422)).toBe("Запрос слишком объёмный для одного запуска. Сократи исходный текст и отправь его снова.");
+  });
+
   it.each([
     [400, "bad_request", "Проверь текст"],
     [401, "unauthorized", "войди снова"],

@@ -162,6 +162,32 @@ function editorialRequest() {
   });
 }
 
+function maximumStudioRequest() {
+  return new NextRequest("http://localhost/api/ai/generate", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "idempotency-key": "maximum_studio_ready_post_1",
+    },
+    body: JSON.stringify({
+      command: "write",
+      input: "Напиши короткий пост о конференции завтра",
+      channelId: 42,
+      surface: "studio",
+      postSettings: {
+        qualityMode: "maximum",
+        qualityThreshold: 9,
+        autoImprove: true,
+        factStrictness: "general",
+        hideCriticalResult: true,
+        length: "custom",
+        customMinChars: 1000,
+        customMaxChars: 2000,
+      },
+    }),
+  });
+}
+
 function reviewableBlockedEditorialRequest() {
   return new NextRequest("http://localhost/api/ai/generate", {
     method: "POST",
@@ -580,9 +606,8 @@ describe("POST /api/ai/generate prerequisites", () => {
     expect(mocks.commitAiUsageResult).not.toHaveBeenCalled();
   });
 
-  it("treats an interrupted editorial pass as failed and reuses stable phase idempotency keys", async () => {
+  it("returns the ready draft when an optional editorial pass is interrupted", async () => {
     const draft = "Перед публикацией выберите один тезис и покажите читателю следующий понятный шаг.";
-    const edited = "Сначала назовите проблему читателя, затем предложите конкретное действие и завершите пост спокойным вопросом.";
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(new Response(
@@ -592,7 +617,34 @@ describe("POST /api/ai/generate prerequisites", () => {
       .mockResolvedValueOnce(new Response(
         `${JSON.stringify({ message: { content: "Оборванный редакторский текст" } })}\n`,
         { status: 200 },
-      ))
+      ));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await POST(editorialRequest());
+    const events = (await response.text()).trim().split("\n").map((line) => JSON.parse(line));
+    const providerHeaders = fetchMock.mock.calls.map((call) => new Headers((call[1] as RequestInit).headers));
+    const keys = providerHeaders.map((headers) => headers.get("idempotency-key"));
+    const requestIds = providerHeaders.map((headers) => headers.get("x-request-id"));
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(events.some((event) => event.type === "error")).toBe(false);
+    expect(events).toContainEqual(expect.objectContaining({ type: "done", pipeline: "draft-fallback" }));
+    expect(events).toContainEqual(expect.objectContaining({ type: "replace", pipeline: "draft-fallback", text: draft }));
+    expect(mocks.stageAiUsageResult).toHaveBeenCalledOnce();
+    expect(mocks.commitAiUsageResult).not.toHaveBeenCalled();
+    expect(mocks.releaseAiUsageRequest).not.toHaveBeenCalled();
+    expect(keys[0]).toMatch(/^[a-f0-9]{64}$/u);
+    expect(keys[1]).toMatch(/^[a-f0-9]{64}$/u);
+    expect(keys[0]).not.toBe(keys[1]);
+    expect(requestIds[0]).toBe(response.headers.get("x-ai-request-id"));
+    expect(requestIds[1]).toBe(requestIds[0]);
+  });
+
+  it("finishes a maximum-quality Studio post after one optional edit even when validation stays blocked", async () => {
+    const draft = "Завтра встречаемся на конференции. Подробности и программа уже опубликованы.";
+    const edited = "Конференция уже завтра. Выберите участие и присоединяйтесь к разговору о технологиях в праве.";
+    const fetchMock = vi
+      .fn()
       .mockResolvedValueOnce(new Response(
         `${JSON.stringify({ message: { content: draft }, done: true })}\n`,
         { status: 200 },
@@ -603,41 +655,28 @@ describe("POST /api/ai/generate prerequisites", () => {
       ));
     vi.stubGlobal("fetch", fetchMock);
 
-    const failedResponse = await POST(editorialRequest());
-    const failedEvents = (await failedResponse.text()).trim().split("\n").map((line) => JSON.parse(line));
+    const response = await POST(maximumStudioRequest());
+    const events = (await response.text()).trim().split("\n").map((line) => JSON.parse(line));
 
-    expect(failedEvents).toContainEqual(expect.objectContaining({ type: "error", code: "stream_truncated" }));
-    expect(failedEvents.some((event) => event.type === "done")).toBe(false);
-    expect(failedEvents.some((event) => event.pipeline === "draft-fallback")).toBe(false);
-    expect(mocks.commitAiUsageResult).not.toHaveBeenCalled();
-    expect(mocks.releaseAiUsageRequest).toHaveBeenCalledOnce();
-
-    mocks.releaseAiUsageRequest.mockClear();
-    const retryResponse = await POST(editorialRequest());
-    const retryEvents = (await retryResponse.text()).trim().split("\n").map((line) => JSON.parse(line));
-    const providerHeaders = fetchMock.mock.calls.map((call) => new Headers((call[1] as RequestInit).headers));
-    const keys = providerHeaders.map((headers) => headers.get("idempotency-key"));
-    const requestIds = providerHeaders.map((headers) => headers.get("x-request-id"));
-
-    expect(retryEvents).toContainEqual(expect.objectContaining({ type: "done", pipeline: "editorial" }));
-    expect(retryEvents.some((event) => event.type === "delta")).toBe(false);
-    expect(retryEvents.filter((event) => event.type === "replace" && event.text)).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "validation",
+      status: "blocked",
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "replace",
+      text: edited,
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "done",
+      ackRequired: true,
+    }));
+    expect(events.some((event) => event.type === "error")).toBe(false);
     expect(mocks.stageAiUsageResult).toHaveBeenCalledOnce();
-    expect(mocks.commitAiUsageResult).not.toHaveBeenCalled();
     expect(mocks.releaseAiUsageRequest).not.toHaveBeenCalled();
-    expect(keys[0]).toMatch(/^[a-f0-9]{64}$/u);
-    expect(keys[1]).toMatch(/^[a-f0-9]{64}$/u);
-    expect(keys[0]).not.toBe(keys[1]);
-    expect(keys[2]).toBe(keys[0]);
-    expect(keys[3]).toBe(keys[1]);
-    expect(requestIds[0]).toBe(failedResponse.headers.get("x-ai-request-id"));
-    expect(requestIds[1]).toBe(requestIds[0]);
-    expect(requestIds[2]).toBe(retryResponse.headers.get("x-ai-request-id"));
-    expect(requestIds[3]).toBe(requestIds[2]);
-    expect(requestIds[2]).not.toBe(requestIds[0]);
   });
 
-  it("repairs a blocked Composer candidate and refuses to finish until settings pass", async () => {
+  it("returns a ready Composer post without repeated internal repairs", async () => {
     const draft = "Черновик готов и остаётся доступным для дальнейшей ручной работы.";
     const edited = "Готовый короткий пост. Проверьте детали и дополните его перед публикацией.";
     const fetchMock = vi.fn(async () => new Response(
@@ -649,7 +688,7 @@ describe("POST /api/ai/generate prerequisites", () => {
     const response = await POST(reviewableBlockedEditorialRequest());
     const events = (await response.text()).trim().split("\n").map((line) => JSON.parse(line));
     const validationIndex = events.findIndex((event) => event.type === "validation");
-    expect(fetchMock).toHaveBeenCalledTimes(7);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(events[validationIndex]).toMatchObject({
       type: "validation",
       status: "blocked",
@@ -658,14 +697,14 @@ describe("POST /api/ai/generate prerequisites", () => {
     expect(events[validationIndex].blockerCodes).toEqual(
       expect.arrayContaining([expect.stringMatching(/^post:/u)]),
     );
+    expect(events.some((event) => event.type === "error")).toBe(false);
     expect(events).toContainEqual(expect.objectContaining({
-      type: "error",
-      error: "post_validation_failed",
-      issues: expect.arrayContaining([expect.stringMatching(/1000–2000/u)]),
+      type: "replace",
+      text: edited,
     }));
-    expect(events.some((event) => event.type === "done")).toBe(false);
-    expect(mocks.stageAiUsageResult).not.toHaveBeenCalled();
-    expect(mocks.releaseAiUsageRequest).toHaveBeenCalledOnce();
+    expect(events.some((event) => event.type === "done")).toBe(true);
+    expect(mocks.stageAiUsageResult).toHaveBeenCalledOnce();
+    expect(mocks.releaseAiUsageRequest).not.toHaveBeenCalled();
   });
 
   it("uses the owned reference semantic intent, isolates history and ignores client source substitution", async () => {
@@ -718,7 +757,7 @@ describe("POST /api/ai/generate prerequisites", () => {
     );
   });
 
-  it("repairs one off-topic automatic result and only then sends terminal done", async () => {
+  it("returns an off-topic Studio result instead of hiding the generated post", async () => {
     mocks.getDraftForUser.mockResolvedValue(ownedReferenceDraft());
     mocks.channelAiContextFor.mockResolvedValue({
       id: 42,
@@ -744,20 +783,19 @@ describe("POST /api/ai/generate prerequisites", () => {
     const response = await POST(studioReferenceRequest());
     const events = (await response.text()).trim().split("\n").map((line) => JSON.parse(line));
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(events).toContainEqual(expect.objectContaining({ type: "phase", phase: "editing" }));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(events).toContainEqual(expect.objectContaining({
       type: "validation",
-      topicAlignment: expect.objectContaining({ status: "passed" }),
+      topicAlignment: expect.objectContaining({ status: "failed" }),
     }));
     expect(events.some((event) => event.type === "done")).toBe(true);
-    const repairBody = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)) as {
-      messages: Array<{ role: string; content: string }>;
-    };
-    expect(repairBody.messages.at(-1)?.content).toContain("Тематическое соответствие провалено");
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "replace",
+      text: "Регистрация на конференцию открыта, места в зале заканчиваются.",
+    }));
   });
 
-  it("blocks a repeated off-topic Studio result instead of exposing it as a finished draft", async () => {
+  it("stages a terminal Studio post even when internal topic validation is blocked", async () => {
     mocks.getDraftForUser.mockResolvedValue(ownedReferenceDraft());
     mocks.channelAiContextFor.mockResolvedValue({
       id: 42,
@@ -785,16 +823,12 @@ describe("POST /api/ai/generate prerequisites", () => {
       blockerCodes: expect.arrayContaining(["topic:off_topic"]),
       topicAlignment: expect.objectContaining({ status: "failed" }),
     }));
-    expect(events).toContainEqual(expect.objectContaining({
-      type: "error",
-      error: "topic_alignment_failed",
-      issues: expect.arrayContaining([expect.stringContaining("Тематическое соответствие")]),
-    }));
-    expect(events.some((event) => event.type === "done")).toBe(false);
-    expect(mocks.stageGenerationArtifact).not.toHaveBeenCalled();
-    expect(mocks.stageAiUsageResult).not.toHaveBeenCalled();
-    expect(mocks.failGenerationOperation).toHaveBeenCalledOnce();
-    expect(mocks.releaseAiUsageRequest).toHaveBeenCalledOnce();
+    expect(events.some((event) => event.type === "error")).toBe(false);
+    expect(events.some((event) => event.type === "done")).toBe(true);
+    expect(mocks.stageGenerationArtifact).toHaveBeenCalledOnce();
+    expect(mocks.stageAiUsageResult).toHaveBeenCalledOnce();
+    expect(mocks.failGenerationOperation).not.toHaveBeenCalled();
+    expect(mocks.releaseAiUsageRequest).not.toHaveBeenCalled();
   });
 
   it("rejects a missing or foreign reference draft before lookup, quota and provider work", async () => {

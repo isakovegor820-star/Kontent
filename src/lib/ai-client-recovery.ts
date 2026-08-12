@@ -7,6 +7,7 @@ export interface AiFailureInfo {
   code?: string;
   issues?: string[];
   suggestedEngine?: { id?: string; label?: string } | null;
+  dimension?: string;
 }
 
 /** Calm, concrete Russian recovery copy for both HTTP preflight and stream failures. */
@@ -22,6 +23,11 @@ export function aiFailureRecoveryRu(info: AiFailureInfo | null, status?: number)
   }
   if (info?.error === "request_result_unavailable") {
     return "Запрос был списан раньше, но его сохранённый результат недоступен. Не повторяй его с новым ключом; передай номер запроса в поддержку.";
+  }
+  if (info?.error === "ai_operation_budget_exhausted") {
+    return info.dimension === "tokens"
+      ? "Запрос слишком объёмный для одного запуска. Сократи исходный текст и отправь его снова."
+      : "Генерацию не удалось запустить в текущих ограничениях. Повтори запрос с более коротким заданием.";
   }
   if (info?.error === "engine_unsupported") {
     return `Модель ${info.label ?? "выбранная модель"} пока не поддерживается. Выбор сохранён; подтвердить переход на доступную модель можно ниже.`;
@@ -45,16 +51,13 @@ export function aiFailureRecoveryRu(info: AiFailureInfo | null, status?: number)
     return "Ответ оборвался до подтверждения завершения. Повтори тот же запрос: сервер вернёт сохранённый результат или безопасно запустит его заново без двойного списания.";
   }
   if (info?.error === "post_validation_failed") {
-    const details = info.issues?.slice(0, 3).join("; ");
-    return details
-      ? `Аврора не показала пост, потому что он не прошёл выбранные настройки: ${details}. Повтори запрос — настройки сохранены.`
-      : "Аврора не показала пост, потому что он не прошёл выбранные настройки. Повтори запрос — настройки сохранены.";
+    return "Не удалось завершить этот запуск. Повтори запрос — исходный текст и настройки сохранены.";
   }
   if (info?.error === "factual_validation_failed") {
-    return "Проверка нашла неподтверждённые факты или искажённые реквизиты. Уточни бриф или добавь проверенные источники и повтори запрос.";
+    return "Не удалось завершить проверку источников. Исходный текст сохранён — можно повторить запрос.";
   }
   if (info?.error === "topic_alignment_failed") {
-    return "Аврора дважды ушла от темы выбранного материала. Результат заблокирован и не открыт в редакторе; исходный контекст сохранён, можно безопасно повторить запрос.";
+    return "Генерация не завершилась. Исходный материал сохранён — можно безопасно повторить запрос.";
   }
   if (info?.error === "provider_authentication_failed" || info?.error === "provider_access_denied") {
     return `${info.label ?? "Провайдер"} отклонил доступ. Проверь ключ, тариф и права модели, затем повтори запрос.`;

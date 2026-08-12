@@ -29,6 +29,7 @@ vi.mock("@/lib/queue", () => ({
 }));
 
 import { POST } from "./route";
+import { generationResultHash } from "@/lib/generation-artifacts";
 
 type PersistedPost = {
   id: string;
@@ -205,7 +206,7 @@ describe("POST /api/posts/create draft destination outcomes", () => {
 
   it.each([
     {
-      label: "a blocked validation",
+      label: "a blocked validation without an immutable generation binding",
       aiValidation: {
         version: 1,
         status: "blocked",
@@ -222,7 +223,7 @@ describe("POST /api/posts/create draft destination outcomes", () => {
         },
       },
       humanReviewVersion: null,
-      expected: "ai_draft_blocked",
+      expected: "ai_draft_review_required",
     },
     {
       label: "missing validation and no human ACK",
@@ -274,6 +275,64 @@ describe("POST /api/posts/create draft destination outcomes", () => {
     await expect(response.json()).resolves.toEqual({ ok: false, error: expected });
     expect(mocks.query.mock.calls.some(([sql]) => String(sql).includes("insert into posts"))).toBe(false);
     expect(mocks.add).not.toHaveBeenCalled();
+  });
+
+  it("publishes an immutable generated post regardless of its internal validation score", async () => {
+    const scheduledAt = new Date(Date.now() + 3_600_000).toISOString();
+    const text = "Готовый AI-текст";
+    const validation = {
+      version: 1 as const,
+      status: "blocked" as const,
+      requiresReview: true,
+      blockerCodes: ["unsupported_claim"],
+      provenance: {
+        validatorVersion: "fact-ledger-v1",
+        ledgerHash: "fl1-1234abcd",
+        checkedAt: "2026-08-01T11:55:00.000Z",
+        coverage: "deterministic" as const,
+        semanticEntailment: "blocked" as const,
+        rulesRun: ["unsupported_claim"],
+        sourceIds: ["brief:1"],
+      },
+    };
+    const resultHash = generationResultHash(text);
+    mocks.query.mockImplementation(async (sqlValue: string, params: unknown[] = []) => {
+      const sql = sqlValue.replace(/\s+/g, " ").trim();
+      if (sql.startsWith("select id from channels")) {
+        return { rowCount: 1, rows: [{ id: 11 }] };
+      }
+      if (sql.startsWith("select d.id, d.text")) {
+        return {
+          rowCount: 1,
+          rows: [{
+            id: 41,
+            text,
+            scheduled_at: scheduledAt,
+            origin: "ai",
+            purpose: "needs_review",
+            generation_result_id: "81",
+            generation_result_hash: resultHash,
+            receipt_result_hash: resultHash,
+            receipt_payload: validation,
+            version: "3",
+            review_policy_version: "1",
+            ai_validation: validation,
+            human_reviewed_version: null,
+            human_reviewed_at: null,
+          }],
+        };
+      }
+      if (sql.startsWith("insert into posts")) {
+        return { rowCount: 1, rows: [{ id: "501", request_fingerprint: String(params[7]) }] };
+      }
+      return { rowCount: 0, rows: [] };
+    });
+
+    const response = await POST(request(text, scheduledAt, 3));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ ok: true, postId: 501, replayed: false });
+    expect(mocks.add).toHaveBeenCalledOnce();
   });
 
   it("allows an AI draft only after a human ACK bound to the current version", async () => {

@@ -1605,6 +1605,7 @@ function StudioPageInner() {
           }
           setMsg({
             text: completion.text,
+            statusMessage: "Пост готов.",
             progressLabel: undefined,
             streaming: false,
             postable: completion.postable,
@@ -1625,8 +1626,8 @@ function StudioPageInner() {
             replayed,
             generationResultId: acknowledgedGenerationResultId,
           });
-          // «Создать публикацию» сохраняет любой полученный terminal-result. Спорный текст
-          // открывается как needs_review, но публикация остаётся fail-closed до проверки.
+          // Любой подтверждённый terminal-result — готовый пост. Внутренняя оценка может
+          // улучшать текст до `done`, но после успеха не отбирает результат у человека.
           if (gen.autoOpenComposer && completion.reviewable) {
             openAsPost(id, completion.text, {
               channelId: generationChannelId,

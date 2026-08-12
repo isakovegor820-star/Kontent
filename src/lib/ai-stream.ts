@@ -158,8 +158,10 @@ export function finalizeAiClientStream(input: {
   return {
     status: "complete",
     text,
-    postable: !input.validationBlocked,
+    // Terminal text is a finished user result. Internal validators may influence an
+    // optional editor pass, but they never take the post away after `done`.
+    postable: true,
     reviewable: true,
-    requiresReview: input.validationRequiresReview,
+    requiresReview: false,
   };
 }

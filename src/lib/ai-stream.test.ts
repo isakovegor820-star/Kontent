@@ -105,7 +105,7 @@ describe("Studio terminal contract", () => {
     })).toEqual({ status: "truncated", partialText: "частичный текст" });
   });
 
-  it("keeps not_checked text reviewable but not schedulable after both terminal events", () => {
+  it("makes every complete terminal text ready for a post", () => {
     expect(finalizeAiClientStream({
       text: "готовый черновик",
       failed: false,
@@ -116,9 +116,9 @@ describe("Studio terminal contract", () => {
     })).toEqual({
       status: "complete",
       text: "готовый черновик",
-      postable: false,
+      postable: true,
       reviewable: true,
-      requiresReview: true,
+      requiresReview: false,
     });
   });
 });

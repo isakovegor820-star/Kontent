@@ -529,13 +529,14 @@ function studioStreamResponse(
   editorial: boolean,
   factLedger: FactLedger,
   semanticAdapter: SemanticEntailmentAdapter | null,
-  allowReviewableBlockedDraft: boolean,
+  deliverGeneratedResult: boolean,
   operation: { providerEngine: string; providerModel: string },
 ) {
   const settings = normalizePostSettings(params.postSettings);
   const deadlines = generationDeadlines(settings.qualityMode);
-  // Внутренние попытки не показываются человеку. Даём редактору достаточно проходов,
-  // но результат всё равно остаётся fail-closed: наружу выйдет только прошедший gate текст.
+  // Внутренние попытки не показываются человеку. На пользовательских поверхностях
+  // успешный ответ провайдера всегда остаётся результатом: проверки могут помочь
+  // редактуре, но не имеют права отобрать уже написанный пост.
   const defaultAttempts = settings.qualityMode === "maximum" ? 10 : settings.qualityMode === "balanced" ? 7 : 5;
   const attemptBudget = createAiOperationBudget(
     process.env.AI_OPERATION_MAX_ATTEMPTS
@@ -785,7 +786,7 @@ function studioStreamResponse(
           let finalText = finishCandidate(generated.text);
           let finalPipeline: "single" | "editorial" = "single";
           let validation = await validateResult(finalText);
-          if (validation.topic?.status === "failed") {
+          if (!deliverGeneratedResult && validation.topic?.status === "failed") {
             if (!send({ type: "phase", requestId, phase: "editing" })) return;
             const repaired = await runOrchestratedText({
               ...paramsForProviderPhase(params, "topic-repair-1"),
@@ -799,7 +800,7 @@ function studioStreamResponse(
             validation = await validateResult(finalText);
           }
           let repairIndex = 0;
-          while (validation.blocked && hasAttemptCapacity()) {
+          while (!deliverGeneratedResult && validation.blocked && hasAttemptCapacity()) {
             repairIndex += 1;
             if (!send({ type: "phase", requestId, phase: "editing" })) return;
             const repaired = await runOrchestratedText({
@@ -814,13 +815,15 @@ function studioStreamResponse(
             validation = await validateResult(finalText);
           }
           if (!sendValidation(validation)) return;
-          if (validation.topic?.status === "failed") {
+          if (!deliverGeneratedResult && validation.topic?.status === "failed") {
             throw new PostSettingsValidationError(validation.issues, "topic_alignment_failed");
           }
-          if (validation.factual?.status === "blocked" && !allowReviewableBlockedDraft) {
+          if (!deliverGeneratedResult && validation.factual?.status === "blocked") {
             throw new PostSettingsValidationError(validation.issues, "factual_validation_failed");
           }
           if (
+            !deliverGeneratedResult
+            &&
             ((validation.post && !validation.post.passed)
               || (validation.channelQuality && !validation.channelQuality.passed))
           ) {
@@ -867,80 +870,90 @@ function studioStreamResponse(
         anyFallback ||= generatedDraft.fallbackUsed;
         const draftValidation = await validateResult(draft);
         let topicRepairAttempted = draftValidation.topic?.status === "failed";
+        let finalText = draft;
+        let validation = draftValidation;
+        let finalPipeline: "editorial" | "draft-fallback" = "draft-fallback";
 
-        if (!send({ type: "phase", requestId, phase: "editing" })) return;
-        let finalText = "";
-        let edited = await runOrchestratedText({
-          ...paramsForProviderPhase(params, "editorial-edit-1"),
-          draft: draft.slice(0, 12_000),
-          validationIssues: draftValidation.issues,
-        }, finalEngine, pipelineSignal, requestId, deadlines, send, false, attemptContext("edit"));
-        finalText = finishCandidate(edited.text);
-        finalEngine = edited.engine;
-        anyFallback ||= edited.fallbackUsed;
-        let validation = await validateResult(finalText);
-
-        if (validation.blocked && validation.topic?.status !== "failed" && settings.autoImprove) {
+        try {
           if (!send({ type: "phase", requestId, phase: "editing" })) return;
-          edited = await runOrchestratedText({
+          const edited = await runOrchestratedText({
+            ...paramsForProviderPhase(params, "editorial-edit-1"),
+            draft: draft.slice(0, 12_000),
+            validationIssues: draftValidation.issues,
+          }, finalEngine, pipelineSignal, requestId, deadlines, send, false, attemptContext("edit"));
+          finalText = finishCandidate(edited.text);
+          finalEngine = edited.engine;
+          anyFallback ||= edited.fallbackUsed;
+          validation = await validateResult(finalText);
+          finalPipeline = "editorial";
+        } catch (error) {
+          // Первый готовый текст уже существует. На пользовательской поверхности сбой
+          // необязательной шлифовки не уничтожает его и не превращается в ошибку модели.
+          if (!deliverGeneratedResult || isClientAbort(error, consumerSignal)) throw error;
+        }
+
+        if (!deliverGeneratedResult && validation.blocked && validation.topic?.status !== "failed" && settings.autoImprove) {
+          if (!send({ type: "phase", requestId, phase: "editing" })) return;
+          const improved = await runOrchestratedText({
             ...paramsForProviderPhase(params, "editorial-edit-2"),
             draft: finalText.slice(0, 12_000),
             validationIssues: validation.issues,
           }, finalEngine, pipelineSignal, requestId, deadlines, send, false, attemptContext("auto-improve"));
-          finalText = finishCandidate(edited.text);
-          finalEngine = edited.engine;
-          anyFallback ||= edited.fallbackUsed;
+          finalText = finishCandidate(improved.text);
+          finalEngine = improved.engine;
+          anyFallback ||= improved.fallbackUsed;
           validation = await validateResult(finalText);
         }
 
-        if (validation.topic?.status === "failed" && !topicRepairAttempted) {
+        if (!deliverGeneratedResult && validation.topic?.status === "failed" && !topicRepairAttempted) {
           topicRepairAttempted = true;
           if (!send({ type: "phase", requestId, phase: "editing" })) return;
-          edited = await runOrchestratedText({
+          const repaired = await runOrchestratedText({
             ...paramsForProviderPhase(params, "topic-repair-1"),
             draft: finalText.slice(0, 12_000),
             validationIssues: buildTopicRepairInstructions(validation.topic),
           }, finalEngine, pipelineSignal, requestId, deadlines, send, false, attemptContext("topic-repair"));
-          finalText = finishCandidate(edited.text);
-          finalEngine = edited.engine;
-          anyFallback ||= edited.fallbackUsed;
+          finalText = finishCandidate(repaired.text);
+          finalEngine = repaired.engine;
+          anyFallback ||= repaired.fallbackUsed;
           validation = await validateResult(finalText);
         }
 
         let repairIndex = 0;
-        while (validation.blocked && hasAttemptCapacity()) {
+        while (!deliverGeneratedResult && validation.blocked && hasAttemptCapacity()) {
           repairIndex += 1;
           if (!send({ type: "phase", requestId, phase: "editing" })) return;
-          edited = await runOrchestratedText({
+          const repaired = await runOrchestratedText({
             ...paramsForProviderPhase(params, `strict-editorial-repair-${repairIndex}`),
             draft: finalText.slice(0, 12_000),
             validationIssues: validation.issues,
           }, finalEngine, pipelineSignal, requestId, deadlines, send, false, attemptContext("auto-improve"));
-          finalText = finishCandidate(edited.text);
-          finalEngine = edited.engine;
-          anyFallback ||= edited.fallbackUsed;
+          finalText = finishCandidate(repaired.text);
+          finalEngine = repaired.engine;
+          anyFallback ||= repaired.fallbackUsed;
           validation = await validateResult(finalText);
         }
 
         if (!sendValidation(validation)) return;
-        if (validation.topic?.status === "failed") {
+        if (!deliverGeneratedResult && validation.topic?.status === "failed") {
           throw new PostSettingsValidationError(validation.issues, "topic_alignment_failed");
         }
-        if (validation.factual?.status === "blocked" && !allowReviewableBlockedDraft) {
+        if (!deliverGeneratedResult && validation.factual?.status === "blocked") {
           throw new PostSettingsValidationError(validation.issues, "factual_validation_failed");
         }
         if (
-          (validation.post && !validation.post.passed)
-          || (validation.channelQuality && !validation.channelQuality.passed)
+          !deliverGeneratedResult
+          && ((validation.post && !validation.post.passed)
+            || (validation.channelQuality && !validation.channelQuality.passed))
         ) {
           throw new PostSettingsValidationError(validation.issues, validation.errorCode);
         }
-        if (!send({ type: "replace", requestId, text: finalText, pipeline: "editorial" })) return;
+        if (!send({ type: "replace", requestId, text: finalText, pipeline: finalPipeline })) return;
         await stageAndSendTerminal(
           {
             protocol: "ndjson",
             text: finalText,
-            pipeline: "editorial",
+            pipeline: finalPipeline,
             requestedEngine: engineId,
             engine: finalEngine,
             fallbackUsed: anyFallback,
@@ -948,7 +961,7 @@ function studioStreamResponse(
           },
           {
             type: "done",
-            pipeline: "editorial",
+            pipeline: finalPipeline,
             requestId,
             engine: finalEngine,
             requestedEngine: engineId,
@@ -1452,7 +1465,7 @@ export async function POST(req: NextRequest) {
     editorial,
     factLedger,
     semanticAdapter,
-    body.surface === "trends",
+    interactiveStream || body.surface === "trends",
     { providerEngine: chosen, providerModel: runtime.model },
   );
 }

@@ -649,11 +649,14 @@ describe("POST /api/publication-operations readiness gate", () => {
     });
   });
 
-  it("never lets exact editorial approval override a blocked AI result", async () => {
+  it("keeps an approved generated post ready when an internal AI check was blocked", async () => {
     mocks.probePublication.mockResolvedValue({ redis: "up", publicationWorker: "up" });
     const tx = {
-      query: vi.fn(async (sql: string) => {
-        if (sql === "begin" || sql === "rollback") return { rows: [], rowCount: null };
+      query: vi.fn(async (sql: string, params?: unknown[]) => {
+        if (sql === "begin" || sql === "commit") return { rows: [], rowCount: null };
+        if (sql.includes("from publication_operations") && sql.includes("idempotency_key")) {
+          return { rows: [], rowCount: 0 };
+        }
         if (sql.includes("pg_advisory_xact_lock")) return { rows: [], rowCount: 0 };
         if (sql.includes("from drafts d")) {
           return {
@@ -679,21 +682,75 @@ describe("POST /api/publication-operations readiness gate", () => {
         if (sql.includes("from channels channel")) {
           return { rows: [{ channel_id: "12", network: "vk" }], rowCount: 1 };
         }
-        throw new Error(`unexpected blocked-AI query: ${sql}`);
+        if (sql.includes("insert into publication_operations")) {
+          return {
+            rows: [{
+              id: "91",
+              project_id: "23",
+              draft_id: "41",
+              draft_version: "3",
+              fingerprint: params?.[5],
+              status: "pending",
+              scheduled_at: "2099-08-20T08:00:00.000Z",
+              timezone: "Europe/Amsterdam",
+              schedule_offset: "+02:00",
+              schedule_disambiguation: "reject",
+            }],
+            rowCount: 1,
+          };
+        }
+        if (sql.includes("insert into posts")) {
+          return { rows: [{ id: "81", schedule_revision: "1" }], rowCount: 1 };
+        }
+        if (sql.startsWith("update monthly_campaign_items item")) {
+          return { rows: [], rowCount: 0 };
+        }
+        if (sql.includes("from monthly_campaign_items item")) {
+          return { rows: [], rowCount: 0 };
+        }
+        if (sql.includes("insert into publication_outbox")) {
+          return { rows: [], rowCount: 1 };
+        }
+        if (sql.includes("insert into audit_events")) {
+          return { rows: [], rowCount: 1 };
+        }
+        throw new Error(`unexpected ready-post query: ${sql}`);
       }),
       release: vi.fn(),
     };
-    mocks.getPool.mockReturnValue({ connect: vi.fn().mockResolvedValue(tx) });
+    const pool = {
+      connect: vi.fn().mockResolvedValue(tx),
+      query: vi.fn().mockResolvedValue({
+        rows: [{
+          post_id: "81",
+          channel_id: "12",
+          network: "vk",
+          title: "Практика",
+          post_status: "scheduled",
+          queue_status: "enqueued",
+        }],
+      }),
+    };
+    mocks.getPool.mockReturnValue(pool);
 
     const response = await POST(request());
 
-    expect(response.status).toBe(422);
-    await expect(response.json()).resolves.toMatchObject({ error: "ai_draft_blocked" });
+    expect(response.status).toBe(201);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      operationStatus: "queued",
+      destinations: [{ postId: 81, channelId: 12 }],
+    });
     expect(mocks.requireCurrentDraftApproval).toHaveBeenCalledWith(tx, 5, 23, 41);
-    expect(mocks.recheckTypographyForPublication).not.toHaveBeenCalled();
+    expect(mocks.recheckTypographyForPublication).toHaveBeenCalledWith({
+      db: tx,
+      projectId: 23,
+      text: "Проверенный материал",
+      allowPublishAsIs: true,
+    });
     expect(tx.query.mock.calls.some(([sql]) =>
-      String(sql).includes("insert into publication_operations"))).toBe(false);
-    expect(tx.query).toHaveBeenCalledWith("rollback");
+      String(sql).includes("insert into publication_operations"))).toBe(true);
+    expect(tx.query).toHaveBeenCalledWith("commit");
   });
 
   it("converges concurrent publication attempts by two publishers on one approved revision", async () => {
