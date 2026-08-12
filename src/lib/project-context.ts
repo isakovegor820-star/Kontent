@@ -120,9 +120,9 @@ export async function ensureDefaultPersonalProjectInTransaction(
        project_id, actor_user_id, action, entity_type, entity_id,
        after_version, safe_data, idempotency_key
      ) values (
-       $1, $2, 'project.created', 'project', $1::text,
+       $1::bigint, $2::bigint, 'project.created', 'project', ($1::bigint)::text,
        1, '{"kind":"personal","source":"registration"}'::jsonb,
-       'bootstrap:personal-project:' || $1::text
+       'bootstrap:personal-project:' || ($1::bigint)::text
      )
      on conflict (project_id, idempotency_key) where idempotency_key is not null do nothing`,
     [projectId, userId],

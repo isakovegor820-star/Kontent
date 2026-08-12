@@ -9,6 +9,7 @@ export function claimPublicationLease(
   pool: Queryable,
   input: {
     postId: number;
+    projectId: number;
     scheduleRevision: number;
     leaseToken: string;
     overdueCutoff: Date;
@@ -17,5 +18,5 @@ export function claimPublicationLease(
 
 export function beginProviderCall(
   pool: Queryable,
-  input: { postId: number; scheduleRevision: number; leaseToken: string },
+  input: { postId: number; projectId: number; scheduleRevision: number; leaseToken: string },
 ): Promise<boolean>;

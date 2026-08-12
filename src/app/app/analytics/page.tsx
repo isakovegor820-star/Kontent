@@ -22,6 +22,8 @@ import {
 } from "lucide-react";
 import { AppShell } from "@/components/app/shell";
 import { ChannelPicker, useChannelChoice } from "@/components/app/channel-picker";
+import { ProjectExportButton } from "@/components/app/project-export-button";
+import { TrackingAnalyticsSection } from "@/components/app/tracking-analytics";
 import { Button } from "@/components/ui/button";
 import { Badge, Card, EmptyState } from "@/components/ui/primitives";
 import { useStore } from "@/lib/store";
@@ -41,6 +43,10 @@ interface PostStat {
   stats_state: string | null;
   views: number | null;
   reactions: number | null;
+  monthly_campaign_id: number | null;
+  monthly_campaign_goal: string | null;
+  monthly_item_id: number | null;
+  monthly_item_title: string | null;
 }
 interface StatsData {
   hasChannel: boolean;
@@ -372,6 +378,17 @@ function Content({
               return (
                 <li key={p.id} className="rounded-sm border border-line bg-surface p-3.5">
                   <p className="line-2 text-[14px] leading-snug text-text">{p.text}</p>
+                  {p.monthly_campaign_id != null && p.monthly_item_title && (
+                    <p className="mt-2 text-[12px] leading-relaxed text-text-2">
+                      Кампания: {p.monthly_campaign_goal || "План на месяц"} · {p.monthly_item_title}{" "}
+                      <Link
+                        href={`/app/autopilot/month?campaign=${p.monthly_campaign_id}${p.monthly_item_id ? `#monthly-item-${p.monthly_item_id}` : ""}`}
+                        className="inline-flex min-h-11 items-center font-semibold text-brand underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15"
+                      >
+                        Открыть тему
+                      </Link>
+                    </p>
+                  )}
                   <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[13px]">
                     {p.views != null ? (
                       <>
@@ -536,30 +553,50 @@ export default function AnalyticsPage() {
       title="Результаты"
       subtitle="Узнай, какие публикации работают, почему они сработали и что стоит повторить."
       action={
-        <Button variant="brand" size="md" onClick={refresh} loading={refreshing}>
-          <RefreshCw className="h-4 w-4" aria-hidden />
-          Обновить
-        </Button>
+        <div className="grid grid-cols-1 gap-2 min-[24rem]:grid-cols-2">
+          <ProjectExportButton
+            channels={s.realChannels}
+            defaultKind="analytics"
+            initialChannelId={channelId}
+          />
+          <Button variant="brand" size="md" onClick={refresh} loading={refreshing}>
+            <RefreshCw className="h-4 w-4" aria-hidden />
+            Обновить
+          </Button>
+        </div>
       }
     >
-      {/* Цифры и выводы — про один канал за раз. Иначе «лучшее время» усредняется
-          по разным аудиториям и оказывается неверным сразу для всех. */}
-      <ChannelPicker
-        channels={tgChannels}
-        value={channelId}
-        onChange={setPicked}
-        label="Результаты канала"
-        className="mb-6"
-      />
+      <section aria-labelledby="channel-statistics-heading">
+        <div className="mb-4">
+          <h2 id="channel-statistics-heading" className="text-balance text-[20px] leading-tight font-bold text-text">
+            Статистика публикаций
+          </h2>
+          <p className="mt-1 max-w-[68ch] text-pretty text-[14px] leading-relaxed text-text-3">
+            Просмотры, реакции и подписчики выбранного канала.
+          </p>
+        </div>
 
-      <Content
-        data={data}
-        loading={loading}
-        loadError={loadError}
-        onRetryLoad={() => void load()}
-        onReport={sendReport}
-        sending={sending}
-      />
+        {/* Цифры и выводы — про один канал за раз. Иначе «лучшее время» усредняется
+            по разным аудиториям и оказывается неверным сразу для всех. */}
+        <ChannelPicker
+          channels={tgChannels}
+          value={channelId}
+          onChange={setPicked}
+          label="Результаты канала"
+          className="mb-6"
+        />
+
+        <Content
+          data={data}
+          loading={loading}
+          loadError={loadError}
+          onRetryLoad={() => void load()}
+          onReport={sendReport}
+          sending={sending}
+        />
+      </section>
+
+      <TrackingAnalyticsSection className="mt-10" />
     </AppShell>
   );
 }

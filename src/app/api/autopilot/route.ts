@@ -11,6 +11,7 @@ import { ensureSettings, loadBrief, resolveChannel } from "@/lib/autopilot";
 import { briefComplete } from "@/lib/brief";
 import { isAutopilotBuildStale } from "@/lib/autopilot-build";
 import { plannedPostCountForWeeks } from "@/lib/autopilot-config.mjs";
+import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/project-permissions";
 
 export const runtime = "nodejs";
 
@@ -22,31 +23,33 @@ export async function GET(req: NextRequest) {
 
   try {
     const pool = getPool();
+    const membership = await requireSelectedProjectPermission(pool, user.id, "project.read");
+    const scope = { actorUserId: user.id, projectId: membership.projectId };
 
     // Список каналов нужен странице всегда: без него не нарисовать выбор.
     const channels = (
       await pool.query<{ id: string; title: string | null; handle: string | null }>(
         `select id, title, handle from channels
-          where user_id = $1 and network = 'tg' and is_active = true order by id`,
-        [user.id],
+          where project_id = $1 and network = 'tg' and is_active = true order by id`,
+        [membership.projectId],
       )
     ).rows.map((c) => ({ ...c, id: Number(c.id) })); // bigint приезжает строкой — см. resolveChannel
     if (!channels.length) return NextResponse.json({ ...empty, channels: [] });
 
     const wanted = Number(req.nextUrl.searchParams.get("channel")) || null;
-    const channelId = await resolveChannel(user.id, wanted);
+    const channelId = await resolveChannel(scope, wanted);
     // Попросили чужой или отключённый канал — честная 404, а не тихая подмена на свой.
     if (!channelId) return NextResponse.json({ ...empty, channels }, { status: wanted ? 404 : 200 });
 
-    const settings = await ensureSettings(user.id, channelId);
+    const settings = await ensureSettings(scope, channelId);
     let plan =
       (
         await pool.query(
           `select id, week_start, items, rules, status, revision, created_at,
                   generation_engine, planning_months, planning_weeks
-             from autopilot_plan where user_id = $1 and channel_id = $2
+             from autopilot_plan where project_id = $1 and channel_id = $2
              order by created_at desc limit 1`,
-          [user.id, channelId],
+          [membership.projectId, channelId],
         )
       ).rows[0] ?? null;
     if (plan?.status === "error" && plan.rules === "ai_usage_limit") {
@@ -74,13 +77,13 @@ export async function GET(req: NextRequest) {
     ) {
       const expired = await pool.query(
         `update autopilot_plan set status = 'error', revision = revision + 1
-          where id = $1 and user_id = $2 and channel_id = $3 and status = 'building'
+          where id = $1 and project_id = $2 and channel_id = $3 and status = 'building'
           returning id`,
-        [plan.id, user.id, channelId],
+        [plan.id, membership.projectId, channelId],
       );
       if (expired.rowCount) plan = { ...plan, status: "error", errorReason: "timeout" };
     }
-    const brief = await loadBrief(user.id, channelId);
+    const brief = await loadBrief(scope, channelId);
 
     return NextResponse.json({
       settings,
@@ -92,6 +95,9 @@ export async function GET(req: NextRequest) {
       channelId,
     });
   } catch (err) {
+    if (err instanceof ProjectAccessError) {
+      return NextResponse.json({ ...empty, error: "access_denied" }, { status: 403 });
+    }
     console.error("[/api/autopilot]", err);
     return NextResponse.json(empty);
   }

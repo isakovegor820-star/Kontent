@@ -123,6 +123,69 @@ try {
     throw new Error(`fresh schema applied ${freshMigrationCount}/${migrationFiles.length} migrations`);
   }
 
+  const repairedSchema = (await pool.query(
+    `select
+       exists (
+         select 1 from information_schema.columns
+          where table_schema = 'public'
+            and table_name = 'monthly_campaign_regeneration_targets'
+            and column_name = 'item_regeneration_version'
+            and is_nullable = 'NO'
+       ) as regeneration_version_ready,
+       exists (
+         select 1 from information_schema.columns
+          where table_schema = 'public' and table_name = 'publication_review_tasks'
+            and column_name = 'version' and is_nullable = 'NO'
+            and column_default = '1'::text
+       ) as review_version_ready,
+       exists (
+         select 1 from pg_constraint
+          where conrelid = 'autopilot_plan'::regclass
+            and conname = 'autopilot_plan_approval_operation_project_fk'
+       ) as approval_project_fk_ready,
+       exists (
+         select 1 from pg_constraint
+          where conrelid = 'publication_review_tasks'::regclass
+            and conname = 'publication_review_tasks_version_check'
+       ) as review_version_check_ready,
+       not exists (
+         select 1 from pg_constraint
+          where conrelid = 'publication_extra_operations'::regclass
+            and conname = 'publication_extra_operations_project_id_post_id_sequence_in_key'
+       ) as sequence_constraint_removed`,
+  )).rows[0];
+  if (!Object.values(repairedSchema).every(Boolean)) {
+    throw new Error(`post-apply migration repairs are incomplete: ${JSON.stringify(repairedSchema)}`);
+  }
+
+  // A partially-managed installation may already have a nullable version column.
+  // Re-run only the repair body against that shape and prove the backfill/default/
+  // constraint converge without rewriting migration history.
+  await pool.query("alter table publication_review_tasks alter column version drop not null");
+  await pool.query("alter table publication_review_tasks alter column version drop default");
+  await pool.query("alter table publication_review_tasks drop constraint publication_review_tasks_version_check");
+  const repairName = "20260827_post_apply_migration_repairs.sql";
+  const repairSql = await readFile(resolve("db/migrations", repairName), "utf8");
+  await pool.query(repairSql);
+  const partialRepair = (await pool.query(
+    `select c.is_nullable, c.column_default,
+            exists (
+              select 1 from pg_constraint
+               where conrelid = 'publication_review_tasks'::regclass
+                 and conname = 'publication_review_tasks_version_check'
+            ) as version_check
+       from information_schema.columns c
+      where c.table_schema = 'public' and c.table_name = 'publication_review_tasks'
+        and c.column_name = 'version'`,
+  )).rows[0];
+  if (
+    partialRepair?.is_nullable !== "NO"
+    || partialRepair?.column_default !== "1"
+    || partialRepair?.version_check !== true
+  ) {
+    throw new Error(`partial repair did not converge: ${JSON.stringify(partialRepair)}`);
+  }
+
   // Runner-level regression: a SQL failure rolls back both DDL and its migration record.
   const rollbackProbe = {
     name: "20991231_rollback_probe.sql",

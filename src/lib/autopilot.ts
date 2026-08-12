@@ -4,6 +4,7 @@
 import { getPool } from "./db";
 import { getPublishQueue, jobIdForPostRevision } from "./queue";
 import { EMPTY_BRIEF, normalizeBrief, type Brief } from "./brief";
+import { requireSelectedProjectPermission } from "./project-permissions";
 
 export interface AutopilotSettings {
   enabled: boolean;
@@ -16,62 +17,146 @@ export interface AutopilotSettings {
 }
 
 /**
+ * The project is the tenant boundary. `actorUserId` is retained only for audit fields on
+ * newly-created rows; it must never be used to decide which channel/project data is visible.
+ */
+export interface AutopilotProjectScope {
+  actorUserId: number;
+  projectId: number;
+}
+
+function isProjectScope(value: number | AutopilotProjectScope): value is AutopilotProjectScope {
+  return typeof value === "object" && value !== null;
+}
+
+/**
  * Канал, с которым сейчас работает автопилот.
  * Раньше по всему коду стояло «...is_active = true limit 1» — БЕЗ order by. При двух каналах
  * это значило: автопилот молча берёт какой-то один (какой — Postgres не обещает) и пишет туда
  * посты по брифу другого, а второй канал не получает ничего. Теперь канал выбирает человек,
  * а если не выбрал — берём самый ранний ЯВНО и предсказуемо.
  */
-export async function resolveChannel(userId: number, wanted?: number | null): Promise<number | null> {
+export async function resolveChannel(
+  scope: AutopilotProjectScope,
+  wanted?: number | null,
+): Promise<number | null>;
+/** Compatibility overload: resolves the server-owned selected project before reading a channel. */
+export async function resolveChannel(userId: number, wanted?: number | null): Promise<number | null>;
+export async function resolveChannel(
+  scopeOrUserId: number | AutopilotProjectScope,
+  wanted?: number | null,
+): Promise<number | null> {
   const pool = getPool();
-  if (wanted) {
-    const own = await pool.query(
-      `select id from channels where id = $1 and user_id = $2 and network = 'tg' and is_active = true`,
-      [wanted, userId],
+  if (isProjectScope(scopeOrUserId)) {
+    if (wanted) {
+      const selected = await pool.query(
+        `select id from channels
+          where id = $1 and project_id = $2 and network = 'tg' and is_active = true`,
+        [wanted, scopeOrUserId.projectId],
+      );
+      return selected.rowCount ? wanted : null;
+    }
+    const selected = await pool.query<{ id: string }>(
+      `select id from channels
+        where project_id = $1 and network = 'tg' and is_active = true
+        order by id limit 1`,
+      [scopeOrUserId.projectId],
     );
-    if (own.rowCount) return wanted;
-    return null; // чужой или отключённый канал — молча подменять на свой нельзя
+    return selected.rows[0] ? Number(selected.rows[0].id) : null;
   }
-  const r = await pool.query<{ id: string }>(
-    `select id from channels where user_id = $1 and network = 'tg' and is_active = true
-      order by id limit 1`,
-    [userId],
+
+  const membership = await requireSelectedProjectPermission(pool, scopeOrUserId, "project.read");
+  return resolveChannel(
+    { actorUserId: scopeOrUserId, projectId: membership.projectId },
+    wanted,
   );
-  // Number обязателен: id — bigint, а драйвер отдаёт bigint строкой. Без этого функция
-  // возвращала бы то число (когда канал выбран), то строку (когда взят по умолчанию),
-  // и сравнение id на клиенте ломалось бы ровно в одном из двух случаев.
-  return r.rows[0] ? Number(r.rows[0].id) : null;
 }
 
 /** Бриф контента КАНАЛА. Нет строки — пустой бриф (значит, автопилот запускать нельзя). */
-export async function loadBrief(userId: number, channelId: number): Promise<Brief> {
+export async function loadBrief(scope: AutopilotProjectScope, channelId: number): Promise<Brief>;
+/** Compatibility overload: resolves the server-owned selected project before reading a brief. */
+export async function loadBrief(userId: number, channelId: number): Promise<Brief>;
+export async function loadBrief(
+  scopeOrUserId: number | AutopilotProjectScope,
+  channelId: number,
+): Promise<Brief> {
+  if (!isProjectScope(scopeOrUserId)) {
+    const pool = getPool();
+    const membership = await requireSelectedProjectPermission(pool, scopeOrUserId, "project.read");
+    return loadBrief(
+      { actorUserId: scopeOrUserId, projectId: membership.projectId },
+      channelId,
+    );
+  }
   const r = await getPool().query(
-    `select niche, audience, rubrics, formats, author_role, goal, cta, taboo, profile_answers, quality, ready, source
-       from content_brief where user_id = $1 and channel_id = $2`,
-    [userId, channelId],
+    `select niche, audience, rubrics, formats, author_role, goal, cta, taboo,
+            profile_answers, quality, ready, source
+       from content_brief
+      where project_id = $1 and channel_id = $2
+      order by updated_at desc, user_id
+      limit 1`,
+    [scopeOrUserId.projectId, channelId],
   );
   return r.rows[0] ? normalizeBrief(r.rows[0]) : { ...EMPTY_BRIEF };
 }
 
 /** Гарантирует строку настроек КАНАЛА и возвращает её. */
-export async function ensureSettings(userId: number, channelId: number): Promise<AutopilotSettings> {
+export async function ensureSettings(
+  scope: AutopilotProjectScope,
+  channelId: number,
+): Promise<AutopilotSettings>;
+/** Compatibility overload: resolves the server-owned selected project before ensuring settings. */
+export async function ensureSettings(userId: number, channelId: number): Promise<AutopilotSettings>;
+export async function ensureSettings(
+  scopeOrUserId: number | AutopilotProjectScope,
+  channelId: number,
+): Promise<AutopilotSettings> {
   const pool = getPool();
-  await pool.query(
-    `insert into autopilot_settings (user_id, channel_id) values ($1, $2)
-     on conflict (user_id, channel_id) do nothing`,
-    [userId, channelId],
+  if (isProjectScope(scopeOrUserId)) {
+    const existing = await pool.query<AutopilotSettings>(
+      `select enabled, mode, post_frequency, approvals_streak, generation_engine,
+              planning_months, planning_weeks
+         from autopilot_settings
+        where project_id = $1 and channel_id = $2
+        order by updated_at desc, user_id
+        limit 1`,
+      [scopeOrUserId.projectId, channelId],
+    );
+    if (existing.rows[0]) return existing.rows[0];
+
+    await pool.query(
+      `insert into autopilot_settings (project_id, user_id, channel_id)
+       select $1, $2, $3
+        where exists (
+          select 1 from channels
+           where id = $3 and project_id = $1 and network = 'tg' and is_active = true
+        )
+       on conflict (project_id, channel_id) do nothing`,
+      [scopeOrUserId.projectId, scopeOrUserId.actorUserId, channelId],
+    );
+    const created = await pool.query<AutopilotSettings>(
+      `select enabled, mode, post_frequency, approvals_streak, generation_engine,
+              planning_months, planning_weeks
+         from autopilot_settings
+        where project_id = $1 and channel_id = $2
+        order by updated_at desc, user_id
+        limit 1`,
+      [scopeOrUserId.projectId, channelId],
+    );
+    if (!created.rows[0]) throw new Error("autopilot channel settings unavailable");
+    return created.rows[0];
+  }
+
+  const membership = await requireSelectedProjectPermission(pool, scopeOrUserId, "project.read");
+  return ensureSettings(
+    { actorUserId: scopeOrUserId, projectId: membership.projectId },
+    channelId,
   );
-  const r = await pool.query<AutopilotSettings>(
-    `select enabled, mode, post_frequency, approvals_streak, generation_engine,
-            planning_months, planning_weeks
-       from autopilot_settings where user_id = $1 and channel_id = $2`,
-    [userId, channelId],
-  );
-  return r.rows[0];
 }
 
 /** Повторяемая доставка уже сохранённого post; `post-{id}` не допускает две BullMQ job. */
 export async function enqueueAutopilotPost(
+  projectId: number,
   postId: number,
   scheduledAt: string,
   scheduleRevision = 1,
@@ -79,29 +164,44 @@ export async function enqueueAutopilotPost(
   const delay = Math.max(0, new Date(scheduledAt).getTime() - Date.now());
   await getPublishQueue().add(
     "publish",
-    { postId, scheduleRevision },
+    { projectId, postId, scheduleRevision },
     { delay, jobId: jobIdForPostRevision(postId, scheduleRevision), removeOnComplete: true, removeOnFail: false },
   );
 }
 
 /** Legacy helper for non-checkpointed callers. Approval routes use the transactional outbox. */
 export async function schedulePost(
-  userId: number,
+  scope: AutopilotProjectScope,
   channelId: number,
   text: string,
   scheduledAt: string,
 ): Promise<number> {
   const pool = getPool();
   const ins = await pool.query<{ id: number; schedule_revision: number | string }>(
-    `insert into posts (user_id, channel_id, text, scheduled_at, status, publication_origin)
-     values ($1, $2, $3, $4, 'scheduled', 'autopilot') returning id, schedule_revision`,
-    [userId, channelId, text, scheduledAt],
+    `insert into posts
+       (project_id, user_id, channel_id, text, scheduled_at, status, publication_origin)
+     select $1, $2, $3, $4, $5, 'scheduled', 'autopilot'
+      where exists (
+        select 1 from channels
+         where id = $3 and project_id = $1 and network = 'tg' and is_active = true
+      )
+     returning id, schedule_revision`,
+    [scope.projectId, scope.actorUserId, channelId, text, scheduledAt],
   );
+  if (!ins.rows[0]) throw new Error("autopilot channel unavailable");
   const postId = ins.rows[0].id;
   try {
-    await enqueueAutopilotPost(postId, scheduledAt, Number(ins.rows[0].schedule_revision || 1));
+    await enqueueAutopilotPost(
+      scope.projectId,
+      postId,
+      scheduledAt,
+      Number(ins.rows[0].schedule_revision || 1),
+    );
   } catch (error) {
-    await pool.query(`delete from posts where id = $1 and status = 'scheduled'`, [postId]).catch(() => {});
+    await pool.query(
+      `delete from posts where id = $1 and project_id = $2 and status = 'scheduled'`,
+      [postId, scope.projectId],
+    ).catch(() => {});
     throw error;
   }
   return postId;

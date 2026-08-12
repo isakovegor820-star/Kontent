@@ -22,6 +22,8 @@
     "test:ai-orchestration:integration": "vitest run --config vitest.integration.config.ts src/e2e/ai-orchestration.integration.ts",
     "test:publication-operation:integration": "vitest run --config vitest.integration.config.ts src/e2e/publication-operation.integration.ts",
     "test:publication-lifecycle:integration": "vitest run --config vitest.integration.config.ts src/e2e/publication-lifecycle.integration.ts",
+    "test:project-collaboration:integration": "vitest run --config vitest.integration.config.ts src/e2e/project-collaboration.integration.ts",
+    "test:tracking-lifecycle:integration": "vitest run --config vitest.integration.config.ts src/e2e/tracking-lifecycle.integration.ts",
     "test:registration:integration": "vitest run --config vitest.integration.config.ts src/e2e/registration.integration.ts",
     "test:password-recovery:integration": "vitest run --config vitest.integration.config.ts src/e2e/password-recovery.integration.ts",
     "test:contracts": "vitest run src/e2e/critical-journeys.test.ts",

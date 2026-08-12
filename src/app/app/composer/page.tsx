@@ -1,13 +1,12 @@
 "use client";
 
-// А5. Редактор поста (Приложение А). Главное действие — «Запланировать».
-// ТЗ 5.3: один пост адаптируется под обе сети с предпросмотром — предпросмотры
-// TG и VK живут справа и обновляются на каждый символ.
+// А5. Редактор поста (Приложение А). Главное действие — «Добавить в календарь».
+// ТЗ 5.3: один пост адаптируется под обе сети перед публикацией.
 // ТЗ 5.6: ИИ пишет/переписывает/сокращает с опорой на разведку (sourceRef → тренд/конкурент).
 //
 // Next 16: страница читает ?draft=, ?date=, ?time= через useSearchParams(), а он требует
 // обёртки в <Suspense> — иначе билд падает на CSR bailout. Поэтому всё состояние формы
-// живёт в ComposerPage (над Suspense), чтобы кнопка «Запланировать» в шапке AppShell
+// живёт в ComposerPage (над Suspense), чтобы кнопка «Добавить в календарь» в шапке AppShell
 // видела то же состояние, что и редактор. ComposerInner только читает параметры и рисует.
 
 import {
@@ -16,6 +15,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -24,28 +24,43 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
+  ArrowLeft,
   ArrowRight,
   Bookmark,
   CalendarClock,
+  CheckCircle2,
+  ChevronDown,
   CircleStop,
-  Clapperboard,
   Clock,
-  Eye,
   Flame,
-  Heart,
+  History,
   ImageIcon,
-  MessageCircle,
+  Layers3,
+  ListEnd,
+  MoreHorizontal,
+  Redo2,
   RefreshCw,
   Scissors,
-  Share2,
+  Send,
   Sparkles,
   Trash2,
   TrendingUp,
+  Undo2,
+  Upload,
   Video,
   X,
 } from "lucide-react";
 
 import { AppShell } from "@/components/app/shell";
+import { EditorialReviewPanel } from "@/components/app/editorial-review-panel";
+import { useProjects } from "@/components/app/project-provider";
+import { PostSettingsMenu } from "@/components/studio/post-settings-menu";
+import {
+  composerTrackingDraftSelection,
+  composerTrackingHasInput,
+  EMPTY_COMPOSER_TRACKING,
+  type ComposerTrackingValue,
+} from "@/components/app/tracking-builder";
 import { Button } from "@/components/ui/button";
 import {
   Badge,
@@ -72,10 +87,13 @@ import {
   type AiClientRequestIdentity,
 } from "@/lib/ai-client-idempotency";
 import { getAiUsageMetrics } from "@/lib/ai-usage-sync";
-import { composerHydrationIdentity } from "@/lib/app-routes";
+import {
+  composerHydrationIdentity,
+  composerReturnTarget,
+  composerSource,
+} from "@/lib/app-routes";
 import {
   activeComposerNetworks,
-  attestServerDraftReview,
   createDraftClientKey,
   createServerDraft,
   deleteServerDraft,
@@ -84,27 +102,43 @@ import {
   DraftRequestError,
   getServerDraft,
   isRecoverableLegacyDraft,
+  resolveAcknowledgedDraftRevision,
   runSingleDraftSave,
   reusableAcknowledgedDraft,
   scheduleDraftAutosave,
   shouldAutosaveDraft,
   updateServerDraft,
 } from "@/lib/draft-client";
-import type { DraftAiValidation, DraftSaveState, ServerDraft } from "@/lib/draft-types";
+import type {
+  DraftAiValidation,
+  DraftSaveState,
+  DraftTrackingSelection,
+  DraftWriteInput,
+  ServerDraft,
+} from "@/lib/draft-types";
 import {
   acknowledgePendingDraft,
   findPendingDraft,
   listPendingDrafts,
   persistPendingDraft,
+  projectDraftWorkspaceId,
   removePendingDraft,
   type PendingDraftRevision,
 } from "@/lib/draft-outbox";
 import { composerAiReviewState } from "@/lib/draft-review";
-import { publicationOperationFailureFeedback } from "@/lib/publication-operation-feedback";
 import {
-  buildTelegramPayload,
-  telegramHtmlToText,
-} from "@/lib/telegram-payload.mjs";
+  approvePersonalDraftForPublication,
+  editorialErrorMessage,
+  type ClientEditorialState,
+} from "@/lib/editorial-client";
+import { publicationOperationFailureFeedback } from "@/lib/publication-operation-feedback";
+import { renderPublicationTracking } from "@/lib/publication-tracking";
+import {
+  DEFAULT_POST_SETTINGS,
+  normalizePostSettings,
+  type PostSettings,
+} from "@/lib/post-settings";
+import { buildTelegramPayload } from "@/lib/telegram-payload.mjs";
 import {
   nextMoscowPublishingSlot,
   type BestPublishingTime,
@@ -120,8 +154,6 @@ import {
   addDays,
   atTime,
   cn,
-  fmtCompact,
-  fmtDate,
   fmtDateTime,
   fmtNum,
   fmtTime,
@@ -159,12 +191,53 @@ function resolveComposerSchedule(
   }
 }
 
+function revealComposerProblem(errors: Errors) {
+  const id = errors.text
+    ? "composer-text"
+    : errors.networks
+      ? "composer-destinations"
+      : errors.tracking
+        ? "composer-protection"
+        : "publication-time";
+  const element = document.getElementById(id);
+  if (!element) return;
+  const details = element.closest("details") as HTMLDetailsElement | null;
+  if (details) details.open = true;
+  window.requestAnimationFrame(() => {
+    element.scrollIntoView({ behavior: "smooth", block: "center" });
+    if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLButtonElement) {
+      element.focus({ preventScroll: true });
+    } else {
+      element.querySelector<HTMLElement>("input, textarea, button, [tabindex]")?.focus({ preventScroll: true });
+    }
+  });
+}
+
 /** Заглушка медиа: цветной градиент по hue — файлы в демо не грузим. */
 const mediaStyle = (hue: number) => ({
   backgroundImage: `linear-gradient(135deg, hsl(${hue} 88% 64%), hsl(${(hue + 46) % 360} 82% 48%))`,
 });
 
 const chars = (n: number) => `${fmtNum(n)} ${plural(n, "символ", "символа", "символов")}`;
+
+function composerTrackingFromDraft(
+  value: DraftTrackingSelection | null | undefined,
+): ComposerTrackingValue {
+  return value
+    ? { ...value, templateId: null }
+    : { ...EMPTY_COMPOSER_TRACKING, utmValues: {} };
+}
+
+function pendingComposerTracking(value: ComposerTrackingValue): DraftTrackingSelection | null {
+  if (!composerTrackingHasInput(value)) return null;
+  return {
+    shortLinkId: value.shortLinkId,
+    shortUrlPath: value.shortUrlPath,
+    destination: value.destination,
+    utmValues: { ...value.utmValues },
+    placement: value.placement,
+  };
+}
 
 function draftToPost(draft: ServerDraft): Post {
   const networks = NETWORK_ORDER.filter((network) =>
@@ -185,15 +258,24 @@ function draftToPost(draft: ServerDraft): Post {
 
 /* ------------------------------------------------------------- ОБЩЕЕ СОСТОЯНИЕ */
 
-type Errors = { text?: string; networks?: string; when?: string };
+type Errors = { text?: string; networks?: string; tracking?: string; when?: string };
 type ComposerAiCommand = "write" | "rewrite" | "shorten" | "script";
 type AiReviewState = "none" | "required" | "blocked";
 type DraftPersistMode = "manual" | "autosave" | "schedule";
+type PublicationMode = "calendar" | "now" | "queue";
+type PublicationSuccess = {
+  mode: PublicationMode;
+  scheduledAt: string;
+};
+type ResolvedComposerSchedule = NonNullable<ReturnType<typeof resolveComposerSchedule>>;
 type ComposerAiPreview = {
   text: string;
   phase: AiDraftPhase | null;
-  status: "running" | "interrupted";
+  status: "running" | "ready" | "interrupted";
   requestId?: string;
+  validation?: DraftAiValidation | null;
+  review?: AiReviewState;
+  inputDraftVersion?: number | null;
 };
 
 interface HydrateInput {
@@ -213,6 +295,13 @@ interface ComposerValue {
   draftLoadError: "not_found" | "source_context" | null;
   editingId: string | null;
   draftId: number | null;
+  draftVersion: number | null;
+  editorialState: ClientEditorialState;
+  onEditorialStateChange: (state: ClientEditorialState | null) => void;
+  canEditContent: boolean;
+  canPublish: boolean;
+  canChangeSchedule: boolean;
+  setDraftVersionFromPublicationSettings: (version: number) => void;
   text: string;
   setText: (v: string) => void;
   networks: Network[];
@@ -224,12 +313,18 @@ interface ComposerValue {
   vkChannels: RealChannel[];
   /** В какой TG-канал уходит пост. null — каналов нет или ещё грузятся. */
   channelId: number | null;
+  channelIds: number[];
   setChannelId: (id: number) => void;
+  toggleChannelId: (id: number) => void;
   /** В какое VK-сообщество уходит пост. null — сообществ нет или ещё грузятся. */
   vkChannelId: number | null;
+  vkChannelIds: number[];
   setVkChannelId: (id: number) => void;
+  toggleVkChannelId: (id: number) => void;
   media: Post["media"];
   setMedia: (m: Post["media"]) => void;
+  tracking: ComposerTrackingValue;
+  setTracking: (value: ComposerTrackingValue) => void;
   sourceRef: Post["sourceRef"];
   date: string;
   setDate: (v: string) => void;
@@ -246,7 +341,6 @@ interface ComposerValue {
   applyAiPreview: () => void;
   dismissAiPreview: () => void;
   aiReview: AiReviewState;
-  confirmAiReview: () => void;
   topicOpen: boolean;
   setTopicOpen: (v: boolean) => void;
   topic: string;
@@ -256,13 +350,26 @@ interface ComposerValue {
   setConfirmDelete: (v: boolean) => void;
   draftSaveState: DraftSaveState;
   draftSavedAt: string | null;
+  postSettings: PostSettings;
+  postSettingsSaving: boolean;
+  savePostSettings: (value: PostSettings) => Promise<void>;
+  canUndo: boolean;
+  canRedo: boolean;
+  undoText: () => void;
+  redoText: () => void;
+  restoreRevision: (snapshot: Record<string, unknown>) => void;
   bestTime: BestPublishingTime | null;
   saving: boolean;
+  publicationMode: PublicationMode | null;
+  publicationSuccess: PublicationSuccess | null;
+  clearPublicationSuccess: () => void;
   runAi: (cmd: ComposerAiCommand) => void;
   stopAi: () => void;
-  quick: (kind: "hour" | "tomorrow" | "best") => void;
+  quick: (kind: "hour" | "evening" | "tomorrow" | "best") => void;
   schedule: () => void;
-  saveDraft: () => Promise<void>;
+  publishNow: () => void;
+  enqueue: () => void;
+  saveDraft: () => Promise<ServerDraft | null>;
   removeCurrent: () => Promise<void>;
   hydrate: (input: HydrateInput) => void;
   beginHydration: () => void;
@@ -281,20 +388,32 @@ function useComposer() {
 
 export default function ComposerPage() {
   const s = useStore();
+  const projects = useProjects();
   const router = useRouter();
   const composerUserId = s.user?.id ?? null;
+  const currentProjectId = projects.current?.id ?? null;
+  const projectRole = projects.current?.role ?? null;
+  const canEditContent = projectRole != null && projectRole !== "publisher";
+  const canPublish = projectRole === "owner" || projectRole === "publisher";
+  const personalProject = projects.current?.personal === true;
+  const draftWorkspaceId = currentProjectId == null ? null : projectDraftWorkspaceId(currentProjectId);
 
   const [hydrated, setHydrated] = useState(false);
   const [draftLoadError, setDraftLoadError] = useState<"not_found" | "source_context" | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draftId, setDraftId] = useState<number | null>(null);
   const [draftVersion, setDraftVersion] = useState<number | null>(null);
+  const [editorialState, setEditorialState] = useState<ClientEditorialState>("draft");
   const [legacyId, setLegacyId] = useState<string | null>(null);
   const [text, setText] = useState("");
   const [networks, setNetworks] = useState<Network[]>([]);
-  const [pickedId, setPickedId] = useState<number | null>(null);
-  const [pickedVkId, setPickedVkId] = useState<number | null>(null);
+  const [pickedIds, setPickedIds] = useState<number[] | null>(null);
+  const [pickedVkIds, setPickedVkIds] = useState<number[] | null>(null);
   const [media, setMedia] = useState<Post["media"]>(null);
+  const [tracking, setTracking] = useState<ComposerTrackingValue>(() => ({
+    ...EMPTY_COMPOSER_TRACKING,
+    utmValues: {},
+  }));
   const [sourceRef, setSourceRef] = useState<Post["sourceRef"]>(undefined);
   const [origin, setOrigin] = useState<Post["origin"]>("manual");
   const [date, setDate] = useState("");
@@ -317,6 +436,14 @@ export default function ComposerPage() {
   const [saving, setSaving] = useState(false);
   const [draftSaveState, setDraftSaveState] = useState<DraftSaveState>("idle");
   const [draftSavedAt, setDraftSavedAt] = useState<string | null>(null);
+  const [postSettings, setPostSettings] = useState<PostSettings>(() => DEFAULT_POST_SETTINGS);
+  const [postSettingsSaving, setPostSettingsSaving] = useState(false);
+  const [undoStack, setUndoStack] = useState<string[]>([]);
+  const [redoStack, setRedoStack] = useState<string[]>([]);
+  const undoStackRef = useRef<string[]>([]);
+  const redoStackRef = useRef<string[]>([]);
+  const [publicationMode, setPublicationMode] = useState<PublicationMode | null>(null);
+  const [publicationSuccess, setPublicationSuccess] = useState<PublicationSuccess | null>(null);
   const [draftRevision, setDraftRevision] = useState(0);
   const [lastSavedRevision, setLastSavedRevision] = useState(0);
   const [lastAttemptedRevision, setLastAttemptedRevision] = useState(0);
@@ -331,14 +458,59 @@ export default function ComposerPage() {
   const autosaveCancelRef = useRef<(() => void) | null>(null);
   const acknowledgedDraftRef = useRef<ServerDraft | null>(null);
   const scheduleRequestRef = useRef(false);
-  const publicationOperationRef = useRef<{ key: string; fingerprint: string | null } | null>(null);
-  const reviewRequestRef = useRef(false);
+  const publicationOperationRef = useRef<{
+    key: string;
+    fingerprint: string | null;
+    mode: PublicationMode;
+  } | null>(null);
   const draftRevisionRef = useRef(0);
   const lastSavedRevisionRef = useRef(0);
   const lastAttemptedRevisionRef = useRef(0);
+  const currentDraftWriteRef = useRef<DraftWriteInput | null>(null);
   const hydratedUserIdRef = useRef<number | null>(null);
+  const textHistoryAtRef = useRef(0);
+
+  useEffect(() => {
+    if (!s.authReady || !s.user) return;
+    const controller = new AbortController();
+    void fetch("/api/settings", { cache: "no-store", signal: controller.signal })
+      .then((response) => response.ok ? response.json() : null)
+      .then((payload: { postSettings?: unknown } | null) => {
+        if (payload?.postSettings) setPostSettings(normalizePostSettings(payload.postSettings));
+      })
+      .catch(() => {});
+    return () => controller.abort();
+  }, [s.authReady, s.user]);
+
+  const savePostSettings = useCallback(async (value: PostSettings) => {
+    const previous = postSettings;
+    const next = normalizePostSettings(value);
+    setPostSettings(next);
+    setPostSettingsSaving(true);
+    try {
+      const response = await fetch("/api/settings", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ postSettings: next }),
+      });
+      if (!response.ok) throw new Error("settings_save_failed");
+      const payload = await response.json().catch(() => null) as { postSettings?: unknown } | null;
+      if (payload?.postSettings) setPostSettings(normalizePostSettings(payload.postSettings));
+      s.toast({ kind: "success", title: "Настройки поста сохранены" });
+    } catch {
+      setPostSettings(previous);
+      s.toast({
+        kind: "danger",
+        title: "Настройки не сохранены",
+        body: "Вернули предыдущие значения. Проверь соединение и попробуй ещё раз.",
+      });
+    } finally {
+      setPostSettingsSaving(false);
+    }
+  }, [postSettings, s]);
 
   const markDraftDirty = useCallback(() => {
+    currentDraftWriteRef.current = null;
     draftRevisionRef.current += 1;
     setDraftRevision(draftRevisionRef.current);
     setDraftSaveState((state) => {
@@ -346,6 +518,27 @@ export default function ComposerPage() {
       return "pending";
     });
     setDraftSavedAt(null);
+    setEditorialState((state) => state === "approved" ? "draft" : state);
+  }, []);
+
+  const onEditorialStateChange = useCallback((state: ClientEditorialState | null) => {
+    if (state) setEditorialState(state);
+  }, []);
+  const scheduleIsPublicationOverlay = canPublish && editorialState === "approved";
+  const canChangeSchedule = canEditContent || scheduleIsPublicationOverlay;
+
+  const setDraftVersionFromPublicationSettings = useCallback((version: number) => {
+    if (!Number.isSafeInteger(version) || version <= 0) return;
+    setDraftVersion(version);
+    setEditorialState("draft");
+    const acknowledged = acknowledgedDraftRef.current;
+    if (acknowledged) {
+      acknowledgedDraftRef.current = {
+        ...acknowledged,
+        version,
+        human_review: null,
+      };
+    }
   }, []);
 
   // Уходим со страницы — гасим печать ИИ, чтобы не сыпать setState в пустоту
@@ -373,35 +566,64 @@ export default function ComposerPage() {
     fallback.setMinutes(0, 0, 0); // ровный час — по нему легче попадать глазом
     const when = post?.scheduledAt ? new Date(post.scheduledAt) : fallback;
 
+    const existingMedia = pending?.payload.media ?? post?.media ?? null;
+    const generatedMediaChanged = generatedMedia != null
+      && JSON.stringify(generatedMedia) !== JSON.stringify(existingMedia);
+    const initialRevision = (pending?.revision ?? 0) + (generatedMediaChanged ? 1 : 0);
+
     setEditingId(post?.id ?? null);
     setDraftId(draft?.id ?? pending?.draftId ?? null);
     setDraftVersion(draft?.version ?? pending?.baseVersion ?? null);
+    setEditorialState(generatedMediaChanged || pending ? "draft" : draft?.editorial_state ?? "draft");
     setLegacyId(post && !draft ? post.id : null);
-    draftRevisionRef.current = pending?.revision ?? 0;
+    draftRevisionRef.current = initialRevision;
     lastSavedRevisionRef.current = 0;
     lastAttemptedRevisionRef.current = 0;
-    setDraftRevision(pending?.revision ?? 0);
+    setDraftRevision(initialRevision);
     setLastSavedRevision(0);
     setLastAttemptedRevision(0);
     draftClientKeyRef.current = pending?.clientKey ?? draft?.client_key ?? null;
     acknowledgedDraftRef.current = draft ?? null;
     hydratedUserIdRef.current = ownerUserId;
-    const pendingTgId = pending?.form.channelIds.find((id) =>
-      pending.form.networks.includes("tg") && defaultNetworks?.includes("tg") && id > 0,
-    );
-    const pendingVkId = pending?.form.channelIds.find((id) =>
-      pending.form.networks.includes("vk") && id !== pendingTgId && id > 0,
-    );
-    setPickedId(pendingTgId ?? draft?.destinations.find((destination) => destination.network === "tg")?.channel_id ?? null);
-    setPickedVkId(pendingVkId ?? draft?.destinations.find((destination) => destination.network === "vk")?.channel_id ?? null);
+    const pendingTgIds = pending?.form.channelIds.filter((id) =>
+      s.realChannels.some((channel) => channel.id === id && channel.network === "tg" && channel.is_active),
+    ) ?? [];
+    const pendingVkIds = pending?.form.channelIds.filter((id) =>
+      s.realChannels.some((channel) => channel.id === id && channel.network === "vk" && channel.is_active),
+    ) ?? [];
+    const draftTgIds = draft?.destinations
+      .filter((destination) => destination.network === "tg")
+      .map((destination) => destination.channel_id) ?? [];
+    const draftVkIds = draft?.destinations
+      .filter((destination) => destination.network === "vk")
+      .map((destination) => destination.channel_id) ?? [];
+    setPickedIds(pending ? pendingTgIds : draft ? draftTgIds : null);
+    setPickedVkIds(pending ? pendingVkIds : draft ? draftVkIds : null);
     setText(pending?.payload.text ?? post?.text ?? "");
+    undoStackRef.current = [];
+    redoStackRef.current = [];
+    setUndoStack([]);
+    setRedoStack([]);
+    textHistoryAtRef.current = 0;
+    setPublicationSuccess(null);
+    setPublicationMode(null);
     setNetworks(pending?.form.networks ?? (post?.networks?.length ? post.networks : (defaultNetworks ?? [])));
     setMedia(generatedMedia ?? pending?.payload.media ?? post?.media ?? null);
+    setTracking(composerTrackingFromDraft(pending?.payload.tracking ?? draft?.tracking));
     setSourceRef(pending?.payload.sourceRef ?? post?.sourceRef);
     setOrigin(pending?.payload.origin ?? post?.origin ?? "manual");
     setAiPreview(null);
     setAiValidation(pending?.payload.aiValidation ?? draft?.ai_validation ?? null);
-    setGenerationResultId(draft?.generation_binding_valid ? draft.generation_result_id : null);
+    // generationResultId is a one-shot token for a newly generated result that has not
+    // been bound to a draft yet. A hydrated draft already owns its server-side lineage;
+    // replaying that id on the next PATCH makes the server treat an ordinary edit as a
+    // second generation attachment and correctly reject it with 422.
+    setGenerationResultId(
+      pending?.payload.generationResultId != null
+      && pending.payload.generationResultId !== draft?.generation_result_id
+        ? pending.payload.generationResultId
+        : null,
+    );
     // Validation and a human ACK are server-owned and versioned. Reload/another tab gets
     // the exact persisted state; a legacy AI draft without it remains review-required.
     setAiReview(
@@ -428,12 +650,22 @@ export default function ComposerPage() {
         ?? draft?.scheduled_disambiguation
         ?? "reject",
     );
-    // Клик по дню в календаре — это явное намерение поставить дату
-    setNoDate(pending?.form.noDate ?? (d ? false : post ? post.scheduledAt === null : false));
-    setDraftSaveState(pending ? (pendingConflict ? "conflict" : "pending") : draft ? "saved" : "idle");
-    setDraftSavedAt(pending ? null : draft?.updated_at ?? null);
+    // «Без даты» — только явный выбор человека. Раньше любой загруженный черновик без
+    // schedule автоматически попадал в очередь, а заполненные дата и время выглядели
+    // сломанными. Новый черновик сразу готов к добавлению в календарь.
+    // Queueing is now an explicit action in the sticky publication bar. Always keep
+    // the calendar fields available when reopening an older undated draft.
+    setNoDate(false);
+    setDraftSaveState(
+      generatedMediaChanged
+        ? "pending"
+        : pending
+          ? pendingConflict ? "conflict" : "pending"
+          : draft ? "saved" : "idle",
+    );
+    setDraftSavedAt(generatedMediaChanged || pending ? null : draft?.updated_at ?? null);
     setHydrated(true);
-  }, []);
+  }, [s.realChannels]);
 
   const beginHydration = useCallback(() => {
     autosaveCancelRef.current?.();
@@ -448,7 +680,13 @@ export default function ComposerPage() {
     setEditingId(null);
     setDraftId(null);
     setDraftVersion(null);
+    setEditorialState("draft");
     setText("");
+    undoStackRef.current = [];
+    redoStackRef.current = [];
+    setUndoStack([]);
+    setRedoStack([]);
+    setTracking({ ...EMPTY_COMPOSER_TRACKING, utmValues: {} });
     setSourceRef(undefined);
     setHydrated(false);
     setDraftLoadError(reason);
@@ -469,14 +707,62 @@ export default function ComposerPage() {
   // и выбранный мог быть отключён в другой вкладке — при вычислении оба случая
   // разруливаются сами: нет живого выбора → первый активный. Плюс никакого setState
   // в эффекте, за который справедливо ругается линтер.
-  const channelId = useMemo(() => {
-    if (pickedId != null) return tgChannels.some((c) => c.id === pickedId) ? pickedId : null;
-    return tgChannels[0]?.id ?? null;
-  }, [pickedId, tgChannels]);
-  const vkChannelId = useMemo(() => {
-    if (pickedVkId != null) return vkChannels.some((c) => c.id === pickedVkId) ? pickedVkId : null;
-    return vkChannels[0]?.id ?? null;
-  }, [pickedVkId, vkChannels]);
+  const channelIds = useMemo(() => {
+    if (pickedIds == null) return tgChannels[0] ? [tgChannels[0].id] : [];
+    return pickedIds.filter((id) => tgChannels.some((channel) => channel.id === id));
+  }, [pickedIds, tgChannels]);
+  const vkChannelIds = useMemo(() => {
+    if (pickedVkIds == null) return vkChannels[0] ? [vkChannels[0].id] : [];
+    return pickedVkIds.filter((id) => vkChannels.some((channel) => channel.id === id));
+  }, [pickedVkIds, vkChannels]);
+  const channelId = channelIds[0] ?? null;
+  const vkChannelId = vkChannelIds[0] ?? null;
+  const currentDraftWrite = useMemo<DraftWriteInput>(() => {
+    const schedule = noDate
+      ? null
+      : resolveComposerSchedule(date, time, scheduleTimezone, timeDisambiguation);
+    return {
+      text,
+      media: media ?? null,
+      scheduledAt: schedule?.scheduledAt ?? null,
+      schedule: schedule
+        ? {
+            localDate: schedule.localDate,
+            localTime: schedule.localTime,
+            timezone: schedule.timezone,
+            disambiguation: schedule.disambiguation,
+            offset: schedule.offset,
+          }
+        : null,
+      origin,
+      sourceRef: sourceRef ?? null,
+      channelIds: [
+        ...(networks.includes("tg") ? channelIds : []),
+        ...(networks.includes("vk") ? vkChannelIds : []),
+      ],
+      aiValidation: null,
+      generationResultId: origin === "ai" ? generationResultId : null,
+      tracking: composerTrackingDraftSelection(tracking).selection,
+    };
+  }, [
+    channelIds,
+    date,
+    generationResultId,
+    media,
+    networks,
+    noDate,
+    origin,
+    scheduleTimezone,
+    sourceRef,
+    text,
+    time,
+    timeDisambiguation,
+    tracking,
+    vkChannelIds,
+  ]);
+  useLayoutEffect(() => {
+    currentDraftWriteRef.current = currentDraftWrite;
+  }, [currentDraftWrite]);
   const bestTime = bestTimeResult?.channelId === channelId ? bestTimeResult : null;
 
   useEffect(() => {
@@ -493,7 +779,9 @@ export default function ComposerPage() {
 
   const toggleNetwork = useCallback(
     (n: Network, on: boolean) => {
+      if (!canEditContent) return;
       const next = NETWORK_ORDER.filter((x) => (x === n ? on : networks.includes(x)));
+      if (next.length === networks.length && next.every((item, index) => item === networks[index])) return;
       setNetworks(next);
       markDraftDirty();
       setErrors((e) => ({
@@ -501,10 +789,20 @@ export default function ComposerPage() {
         networks: next.length ? undefined : "Выбери хотя бы одну сеть — иначе посту некуда идти.",
       }));
     },
-    [markDraftDirty, networks],
+    [canEditContent, markDraftDirty, networks],
   );
 
   const changeText = useCallback((value: string) => {
+    if (!canEditContent || value === text) return;
+    const now = Date.now();
+    if (now - textHistoryAtRef.current > 800) {
+      const nextUndo = [...undoStackRef.current.slice(-49), text];
+      undoStackRef.current = nextUndo;
+      setUndoStack(nextUndo);
+    }
+    textHistoryAtRef.current = now;
+    redoStackRef.current = [];
+    setRedoStack([]);
     setText(value);
     if (origin === "ai") {
       setAiValidation(null);
@@ -513,41 +811,169 @@ export default function ComposerPage() {
       setSourceRef(undefined);
     }
     markDraftDirty();
-  }, [markDraftDirty, origin]);
+  }, [canEditContent, markDraftDirty, origin, text]);
+
+  const undoText = useCallback(() => {
+    if (!canEditContent || typing || undoStackRef.current.length === 0) return;
+    const previous = undoStackRef.current[undoStackRef.current.length - 1];
+    const nextUndo = undoStackRef.current.slice(0, -1);
+    const nextRedo = [...redoStackRef.current.slice(-49), text];
+    undoStackRef.current = nextUndo;
+    redoStackRef.current = nextRedo;
+    setUndoStack(nextUndo);
+    setRedoStack(nextRedo);
+    setText(previous);
+    setOrigin("manual");
+    setSourceRef(undefined);
+    setAiValidation(null);
+    setAiReview("none");
+    setGenerationResultId(null);
+    textHistoryAtRef.current = 0;
+    markDraftDirty();
+  }, [canEditContent, markDraftDirty, text, typing]);
+
+  const redoText = useCallback(() => {
+    if (!canEditContent || typing || redoStackRef.current.length === 0) return;
+    const next = redoStackRef.current[redoStackRef.current.length - 1];
+    const nextRedo = redoStackRef.current.slice(0, -1);
+    const nextUndo = [...undoStackRef.current.slice(-49), text];
+    redoStackRef.current = nextRedo;
+    undoStackRef.current = nextUndo;
+    setRedoStack(nextRedo);
+    setUndoStack(nextUndo);
+    setText(next);
+    setOrigin("manual");
+    setSourceRef(undefined);
+    setAiValidation(null);
+    setAiReview("none");
+    setGenerationResultId(null);
+    textHistoryAtRef.current = 0;
+    markDraftDirty();
+  }, [canEditContent, markDraftDirty, text, typing]);
+
+  const restoreRevision = useCallback((snapshot: Record<string, unknown>) => {
+    if (!canEditContent) return;
+    const restoredText = typeof snapshot.text === "string" ? snapshot.text : "";
+    if (!restoredText.trim()) return;
+    const restoredChannelIds = Array.isArray(snapshot.channelIds)
+      ? snapshot.channelIds.map(Number).filter((id) => Number.isSafeInteger(id) && id > 0)
+      : [];
+    const restoredTgIds = restoredChannelIds.filter((id) =>
+      s.realChannels.some((channel) => channel.id === id && channel.network === "tg" && channel.is_active),
+    );
+    const restoredVkIds = restoredChannelIds.filter((id) =>
+      s.realChannels.some((channel) => channel.id === id && channel.network === "vk" && channel.is_active),
+    );
+    const restoredSchedule = snapshot.schedule && typeof snapshot.schedule === "object"
+      ? snapshot.schedule as Record<string, unknown>
+      : null;
+    const nextUndo = [...undoStackRef.current.slice(-49), text];
+    undoStackRef.current = nextUndo;
+    redoStackRef.current = [];
+    setUndoStack(nextUndo);
+    setRedoStack([]);
+    setText(restoredText);
+    setMedia((snapshot.media ?? null) as Post["media"]);
+    setTracking(composerTrackingFromDraft(snapshot.tracking as DraftTrackingSelection | null));
+    setPickedIds(restoredTgIds);
+    setPickedVkIds(restoredVkIds);
+    setNetworks(NETWORK_ORDER.filter((network) => network === "tg" ? restoredTgIds.length > 0 : restoredVkIds.length > 0));
+    setDate(typeof restoredSchedule?.localDate === "string" ? restoredSchedule.localDate : "");
+    setTime(typeof restoredSchedule?.localTime === "string" ? restoredSchedule.localTime : "");
+    setScheduleTimezone(
+      typeof restoredSchedule?.timezone === "string"
+        ? restoredSchedule.timezone
+        : Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+    );
+    setTimeDisambiguation(
+      restoredSchedule?.disambiguation === "earlier" || restoredSchedule?.disambiguation === "later"
+        ? restoredSchedule.disambiguation
+        : "reject",
+    );
+    setNoDate(false);
+    setOrigin("manual");
+    setSourceRef(undefined);
+    setAiValidation(null);
+    setAiReview("none");
+    setGenerationResultId(null);
+    textHistoryAtRef.current = 0;
+    markDraftDirty();
+    s.toast({
+      kind: "success",
+      title: "Версия восстановлена",
+      body: "Она стала новым изменением. Старые версии остались в истории.",
+    });
+  }, [canEditContent, markDraftDirty, s, text]);
   const changeNetworks = useCallback((value: Network[]) => {
+    if (
+      !canEditContent
+      || (value.length === networks.length && value.every((item, index) => item === networks[index]))
+    ) return;
     setNetworks(value);
     markDraftDirty();
-  }, [markDraftDirty]);
+  }, [canEditContent, markDraftDirty, networks]);
   const changeChannelId = useCallback((value: number) => {
-    setPickedId(value);
+    if (!canEditContent || (channelIds.length === 1 && channelIds[0] === value)) return;
+    setPickedIds([value]);
     markDraftDirty();
-  }, [markDraftDirty]);
+  }, [canEditContent, channelIds, markDraftDirty]);
+  const toggleChannelId = useCallback((value: number) => {
+    if (!canEditContent) return;
+    setPickedIds((current) => {
+      const active = current ?? (tgChannels[0] ? [tgChannels[0].id] : []);
+      return active.includes(value) ? active.filter((id) => id !== value) : [...active, value];
+    });
+    markDraftDirty();
+  }, [canEditContent, markDraftDirty, tgChannels]);
   const changeVkChannelId = useCallback((value: number) => {
-    setPickedVkId(value);
+    if (!canEditContent || (vkChannelIds.length === 1 && vkChannelIds[0] === value)) return;
+    setPickedVkIds([value]);
     markDraftDirty();
-  }, [markDraftDirty]);
+  }, [canEditContent, markDraftDirty, vkChannelIds]);
+  const toggleVkChannelId = useCallback((value: number) => {
+    if (!canEditContent) return;
+    setPickedVkIds((current) => {
+      const active = current ?? (vkChannels[0] ? [vkChannels[0].id] : []);
+      return active.includes(value) ? active.filter((id) => id !== value) : [...active, value];
+    });
+    markDraftDirty();
+  }, [canEditContent, markDraftDirty, vkChannels]);
   const changeMedia = useCallback((value: Post["media"]) => {
+    if (!canEditContent || JSON.stringify(value ?? null) === JSON.stringify(media ?? null)) return;
     setMedia(value);
     markDraftDirty();
-  }, [markDraftDirty]);
+  }, [canEditContent, markDraftDirty, media]);
+  const changeTracking = useCallback((value: ComposerTrackingValue) => {
+    if (!canEditContent || JSON.stringify(value) === JSON.stringify(tracking)) return;
+    setTracking(value);
+    setErrors((current) => ({ ...current, tracking: undefined }));
+    markDraftDirty();
+  }, [canEditContent, markDraftDirty, tracking]);
   const changeDate = useCallback((value: string) => {
+    if (!canChangeSchedule || saving || value === date) return;
+    publicationOperationRef.current = null;
     setDate(value);
     setTimeDisambiguation("reject");
-    markDraftDirty();
-  }, [markDraftDirty]);
+    if (!scheduleIsPublicationOverlay) markDraftDirty();
+  }, [canChangeSchedule, date, markDraftDirty, saving, scheduleIsPublicationOverlay]);
   const changeTime = useCallback((value: string) => {
+    if (!canChangeSchedule || saving || value === time) return;
+    publicationOperationRef.current = null;
     setTime(value);
     setTimeDisambiguation("reject");
-    markDraftDirty();
-  }, [markDraftDirty]);
+    if (!scheduleIsPublicationOverlay) markDraftDirty();
+  }, [canChangeSchedule, markDraftDirty, saving, scheduleIsPublicationOverlay, time]);
   const changeTimeDisambiguation = useCallback((value: ScheduleDisambiguation) => {
+    if (!canChangeSchedule || saving || value === timeDisambiguation) return;
+    publicationOperationRef.current = null;
     setTimeDisambiguation(value);
-    markDraftDirty();
-  }, [markDraftDirty]);
+    if (!scheduleIsPublicationOverlay) markDraftDirty();
+  }, [canChangeSchedule, markDraftDirty, saving, scheduleIsPublicationOverlay, timeDisambiguation]);
   const changeNoDate = useCallback((value: boolean) => {
+    if (!canEditContent || value === noDate) return;
     setNoDate(value);
     markDraftDirty();
-  }, [markDraftDirty]);
+  }, [canEditContent, markDraftDirty, noDate]);
 
   /* --------------------------------------------------------------------- ИИ */
 
@@ -557,7 +983,7 @@ export default function ComposerPage() {
 
   const runAi = useCallback(
     async (cmd: ComposerAiCommand) => {
-      if (typing || cancelRef.current) return;
+      if (!canEditContent || typing || cancelRef.current) return;
 
       const hasText = text.trim().length > 0;
       const hasTopic = topic.trim().length > 0;
@@ -571,7 +997,7 @@ export default function ComposerPage() {
         s.toast({
           kind: "info",
           title: "Сначала нужен текст",
-          body: "Перепишу и сокращу то, что уже написано. Пустой лист — жми «Напиши».",
+          body: "Перепишу и сокращу то, что уже написано. Для пустого листа нажми «Написать».",
         });
         return;
       }
@@ -622,6 +1048,7 @@ export default function ComposerPage() {
           phase: projection.phase,
           status,
           requestId,
+          inputDraftVersion: draftVersion,
         });
       };
 
@@ -657,8 +1084,8 @@ export default function ComposerPage() {
             kind: "danger",
             title: "ИИ не закончил текст",
             body: event.retryable
-              ? `Связь с моделью прервалась. Исходный текст и ключ запроса сохранены — можно повторить.${requestId ? ` Номер запроса: ${requestId}` : ""}`
-              : `Результат не прошёл проверку. Уточни задание или открой ИИ-студию.${requestId ? ` Номер запроса: ${requestId}` : ""}`,
+              ? "Связь с моделью прервалась. Исходный текст сохранён — можно повторить."
+              : "Результат не прошёл проверку. Уточни задание или открой ИИ-студию.",
           });
         } else if (event.type === "done") {
           projection = projectAiDraftEvent(projection, event);
@@ -675,6 +1102,7 @@ export default function ComposerPage() {
           channelId: contextChannelId,
           inputDraftId: draftId,
           inputDraftVersion: draftVersion,
+          postSettings,
         });
         const aiRequest = stableAiClientRequest(aiRequestRef.current, requestBody);
         aiRequestRef.current = aiRequest;
@@ -699,7 +1127,7 @@ export default function ComposerPage() {
           s.toast({
             kind: "danger",
             title: "Не получилось",
-            body: `${message}${requestId ? ` Номер запроса: ${requestId}` : ""}`,
+            body: message,
           });
           return;
         }
@@ -723,7 +1151,7 @@ export default function ComposerPage() {
             s.toast({
               kind: "danger",
               title: "Ответ ИИ не подтверждён",
-              body: `Поток завершился без финального результата или проверки. Исходный текст и ключ запроса сохранены.${requestId ? ` Номер запроса: ${requestId}` : ""}`,
+              body: "Поток завершился без финального результата или проверки. Исходный текст сохранён.",
             });
           }
           return;
@@ -738,30 +1166,32 @@ export default function ComposerPage() {
             phase: projection.phase,
             status: "interrupted",
             requestId,
+            inputDraftVersion: draftVersion,
           });
           s.toast({
             kind: "danger",
             title: "Ответ ещё не подтверждён",
-            body: `Текст сохранён на сервере, но подтверждение списания не завершилось. Повтори тот же запрос — модель не будет вызвана заново.${requestId ? ` Номер запроса: ${requestId}` : ""}`,
+            body: "Текст сохранён на сервере, но подтверждение не завершилось. Повтори тот же запрос — модель не будет вызвана заново.",
           });
           return;
         }
-        setText(finalText);
-        setAiValidation(streamState.payload);
-        setAiReview(streamState.validation);
         setTopicOpen(false);
         setTopic("");
-        setOrigin("ai");
-        markDraftDirty();
-        setAiPreview(null);
+        setAiPreview({
+          text: finalText,
+          phase: projection.phase,
+          status: "ready",
+          requestId,
+          validation: streamState.payload,
+          review: streamState.validation,
+          inputDraftVersion: draftVersion,
+        });
         aiRequestRef.current = null;
-        if (streamState.validation !== "none") {
+        if (streamState.validation === "blocked") {
           s.toast({
-            kind: streamState.validation === "blocked" ? "danger" : "info",
-            title: streamState.validation === "blocked" ? "Текст заблокирован проверкой" : "Нужна ручная проверка",
-            body: streamState.validation === "blocked"
-              ? "Исправь отмеченные факты перед планированием."
-              : "Проверь факты и нажми подтверждение под ИИ-помощником до планирования.",
+            kind: "danger",
+            title: "Вариант требует правки",
+            body: "ИИ нашёл спорные факты. Исходный пост не изменён — можно закрыть вариант или использовать его для ручной правки.",
           });
         }
       } catch (error) {
@@ -770,7 +1200,7 @@ export default function ComposerPage() {
           s.toast({
             kind: "danger",
             title: "Связь с ИИ прервалась",
-            body: `Исходный текст и ключ запроса сохранены. Попробуй ещё раз.${requestId ? ` Номер запроса: ${requestId}` : ""}`,
+            body: "Исходный текст сохранён. Попробуйте ещё раз.",
           });
         }
       } finally {
@@ -783,11 +1213,12 @@ export default function ComposerPage() {
       }
     },
     [
+      canEditContent,
       channelId,
       draftId,
       draftVersion,
-      markDraftDirty,
       networks,
+      postSettings,
       s,
       text,
       topic,
@@ -797,29 +1228,45 @@ export default function ComposerPage() {
   );
 
   const applyAiPreview = useCallback(() => {
-    if (!aiPreview?.text.trim() || aiPreview.status !== "interrupted") return;
+    if (!canEditContent || !aiPreview?.text.trim() || aiPreview.status === "running") return;
+    const hasTrustedGeneration = aiPreview.status === "ready"
+      && generationResultId != null
+      && aiPreview.inputDraftVersion === draftVersion;
+    const nextUndo = [...undoStackRef.current.slice(-49), text];
+    undoStackRef.current = nextUndo;
+    redoStackRef.current = [];
+    setUndoStack(nextUndo);
+    setRedoStack([]);
     setText(aiPreview.text);
-    setOrigin("ai");
-    setAiValidation(null);
-    setAiReview("required");
+    setOrigin(hasTrustedGeneration ? "ai" : "manual");
+    setAiValidation(hasTrustedGeneration ? aiPreview.validation ?? null : null);
+    setAiReview(hasTrustedGeneration ? aiPreview.review ?? "required" : "none");
+    if (!hasTrustedGeneration) setGenerationResultId(null);
     setAiPreview(null);
+    textHistoryAtRef.current = 0;
     markDraftDirty();
-  }, [aiPreview, markDraftDirty]);
+  }, [aiPreview, canEditContent, draftVersion, generationResultId, markDraftDirty, text]);
 
   const dismissAiPreview = useCallback(() => {
     if (typing) return;
     setAiPreview(null);
+    setGenerationResultId(null);
   }, [typing]);
 
   /* ------------------------------------------------------------------ ВРЕМЯ */
 
-  const quick = useCallback((kind: "hour" | "tomorrow" | "best") => {
+  const quick = useCallback((kind: "hour" | "evening" | "tomorrow" | "best") => {
+    if (!canChangeSchedule || saving) return;
+    publicationOperationRef.current = null;
     const now = new Date();
     let target: Date;
 
     if (kind === "hour") {
       target = new Date(now.getTime() + 3600_000);
       target.setSeconds(0, 0);
+    } else if (kind === "evening") {
+      target = atTime(now, "19:00");
+      if (target.getTime() <= now.getTime()) target = atTime(addDays(now, 1), "19:00");
     } else if (kind === "tomorrow") {
       target = atTime(addDays(now, 1), "10:00");
     } else {
@@ -832,9 +1279,9 @@ export default function ComposerPage() {
     setTime(toTimeValue(target));
     setScheduleTimezone(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
     setTimeDisambiguation("reject");
-    markDraftDirty();
+    if (!scheduleIsPublicationOverlay) markDraftDirty();
     setErrors((e) => ({ ...e, when: undefined }));
-  }, [bestTime, markDraftDirty]);
+  }, [bestTime, canChangeSchedule, markDraftDirty, saving, scheduleIsPublicationOverlay]);
 
   /* ------------------------------------------------------------- СОХРАНЕНИЕ */
 
@@ -845,14 +1292,27 @@ export default function ComposerPage() {
       if (typing || cancelRef.current) next.text = "Дождись финальной проверки ИИ или останови генерацию.";
       if (!text.trim()) next.text = "Пост пустой. Напиши что-нибудь или попроси ИИ.";
       if (!networks.length) next.networks = "Выбери хотя бы одну сеть — иначе посту некуда идти.";
-      if (needWhen && aiReview === "required") {
+      if (networks.includes("tg") && channelIds.length === 0) next.networks = "Выбери хотя бы один канал Telegram.";
+      if (networks.includes("vk") && vkChannelIds.length === 0) next.networks = "Выбери хотя бы одно сообщество VK.";
+      const trackingValidation = composerTrackingDraftSelection(tracking);
+      if (trackingValidation.error) next.tracking = trackingValidation.error;
+      if (
+        needWhen
+        && aiReview === "required"
+        && editorialState !== "approved"
+        && !personalProject
+      ) {
         next.text = "Проверь факты в тексте ИИ и подтверди ручную проверку перед планированием.";
       }
       if (needWhen && aiReview === "blocked") {
         next.text = "В тексте ИИ найдена критичная фактическая ошибка. Исправь текст и проверь его вручную.";
       }
 
-      if (needWhen && !noDate) {
+      if (needWhen && noDate) {
+        next.when = personalProject
+          ? "Выбери дату и время, чтобы добавить пост в календарь."
+          : "Выбери дату и время для согласованной публикации.";
+      } else if (needWhen) {
         if (!date || !time) {
           next.when = "Поставь дату и время — или отметь «Без даты — в очередь».";
         } else {
@@ -873,17 +1333,21 @@ export default function ComposerPage() {
       setErrors(next);
       return next;
     },
-    [aiReview, date, networks.length, noDate, scheduleTimezone, text, time, timeDisambiguation, typing],
+    [aiReview, channelIds.length, date, editorialState, networks, noDate, personalProject, scheduleTimezone, text, time, timeDisambiguation, tracking, typing, vkChannelIds.length],
   );
 
   const persistDraft = useCallback(
-    (mode: DraftPersistMode = "manual"): Promise<ServerDraft | null> => {
+    (
+      mode: DraftPersistMode = "manual",
+      publicationSchedule?: ResolvedComposerSchedule | null,
+    ): Promise<ServerDraft | null> => {
+      if (!canEditContent) return Promise.resolve(null);
       // setState асинхронен, поэтому одной disabled-кнопки недостаточно: два события в
       // одном кадре должны получить один и тот же Promise и один client_key.
       if (draftRequestRef.current) return draftRequestRef.current;
 
       const bad = validate(false);
-      const first = bad.text ?? bad.networks;
+      const first = bad.text ?? bad.networks ?? bad.tracking;
       if (first) {
         setDraftSaveState("failed");
         if (mode !== "autosave") {
@@ -895,13 +1359,15 @@ export default function ComposerPage() {
       const selected: number[] = [];
       const missing: string[] = [];
       if (networks.includes("tg")) {
-        if (channelId != null && tgChannels.some((channel) => channel.id === channelId)) {
-          selected.push(channelId);
+        const selectedTelegram = channelIds.filter((id) => tgChannels.some((channel) => channel.id === id));
+        if (selectedTelegram.length > 0) {
+          selected.push(...selectedTelegram);
         } else missing.push("Telegram");
       }
       if (networks.includes("vk")) {
-        if (vkChannelId != null && vkChannels.some((channel) => channel.id === vkChannelId)) {
-          selected.push(vkChannelId);
+        const selectedVk = vkChannelIds.filter((id) => vkChannels.some((channel) => channel.id === id));
+        if (selectedVk.length > 0) {
+          selected.push(...selectedVk);
         } else missing.push("VK");
       }
       if (missing.length) {
@@ -914,10 +1380,13 @@ export default function ComposerPage() {
         return Promise.resolve(null);
       }
 
-      const resolvedSchedule = noDate
-        ? null
-        : resolveComposerSchedule(date, time, scheduleTimezone, timeDisambiguation);
-      if (!noDate && (date || time) && !resolvedSchedule) {
+      const hasPublicationSchedule = publicationSchedule !== undefined;
+      const resolvedSchedule = hasPublicationSchedule
+        ? publicationSchedule
+        : noDate
+          ? null
+          : resolveComposerSchedule(date, time, scheduleTimezone, timeDisambiguation);
+      if (!hasPublicationSchedule && !noDate && (date || time) && !resolvedSchedule) {
         const inspection = date && time
           ? inspectLocalSchedule({ localDate: date, localTime: time, timezone: scheduleTimezone })
           : null;
@@ -934,10 +1403,13 @@ export default function ComposerPage() {
         return Promise.resolve(null);
       }
       const scheduledAt = resolvedSchedule?.scheduledAt ?? null;
+      const acknowledged = acknowledgedDraftRef.current;
+      const currentDraftId = acknowledged?.id ?? draftId;
+      const currentDraftVersion = acknowledged?.version ?? draftVersion;
       const unchanged = reusableAcknowledgedDraft({
-        draft: acknowledgedDraftRef.current,
-        draftId,
-        draftVersion,
+        draft: acknowledged,
+        draftId: currentDraftId,
+        draftVersion: currentDraftVersion,
         revision: draftRevisionRef.current,
         lastSavedRevision: lastSavedRevisionRef.current,
       });
@@ -952,6 +1424,7 @@ export default function ComposerPage() {
         setDraftSaveState("saving");
         setDraftSavedAt(null);
         try {
+          const trackingSelection = composerTrackingDraftSelection(tracking).selection;
           const common = {
             text,
             media: media ?? null,
@@ -970,11 +1443,13 @@ export default function ComposerPage() {
             channelIds: selected,
             aiValidation: null,
             generationResultId: origin === "ai" ? generationResultId : null,
+            tracking: trackingSelection,
           };
+          const requestedWrite: DraftWriteInput = common;
           const clientKey = (draftClientKeyRef.current ??= createDraftClientKey());
           let draft: ServerDraft;
-          if (draftId != null && draftVersion != null) {
-            draft = await updateServerDraft(draftId, { ...common, version: draftVersion });
+          if (currentDraftId != null && currentDraftVersion != null) {
+            draft = await updateServerDraft(currentDraftId, { ...common, version: currentDraftVersion });
           } else {
             const created = await createServerDraft({
               ...common,
@@ -990,9 +1465,27 @@ export default function ComposerPage() {
             }
             draft = created.draft;
           }
+          // A field event can advance the revision before React commits the matching
+          // form snapshot. Wait one frame only in that narrow window, then compare the
+          // ACK with the actual rendered values instead of treating a missing snapshot
+          // as a real concurrent edit.
+          if (currentDraftWriteRef.current == null) {
+            await new Promise<void>((resolve) => {
+              window.requestAnimationFrame(() => resolve());
+            });
+          }
+          const acknowledgedRevision = resolveAcknowledgedDraftRevision({
+            draft,
+            currentWrite: hasPublicationSchedule ? requestedWrite : currentDraftWriteRef.current,
+            requestRevision: revisionAtStart,
+            currentRevision: draftRevisionRef.current,
+          });
 
           setDraftId(draft.id);
           setDraftVersion(draft.version);
+          setEditorialState(draft.editorial_state ?? "draft");
+          setOrigin(draft.origin);
+          setSourceRef(draft.source_ref ?? undefined);
           setGenerationResultId(null);
           acknowledgedDraftRef.current = draft;
           setEditingId(`draft-${draft.id}`);
@@ -1000,14 +1493,20 @@ export default function ComposerPage() {
           if (composerUserId != null) {
             // A newer local edit may already have replaced this record. Exact revision
             // matching prevents an older ACK from deleting that newer pending copy.
-            acknowledgePendingDraft(composerUserId, clientKey, revisionAtStart);
+            acknowledgePendingDraft(composerUserId, clientKey, acknowledgedRevision.revision);
           }
           // Меняем адрес только после ACK сервера. Hard reload теперь восстановит именно
           // серверную версию; локальная legacy-копия при этом остаётся нетронутой.
-          window.history.replaceState(null, "", `/app/composer?draft=${draft.id}`);
-          lastSavedRevisionRef.current = Math.max(lastSavedRevisionRef.current, revisionAtStart);
-          setLastSavedRevision((current) => Math.max(current, revisionAtStart));
-          if (draftRevisionRef.current !== revisionAtStart) {
+          const nextParams = new URLSearchParams();
+          nextParams.set("draft", String(draft.id));
+          const safeSource = composerSource(new URLSearchParams(window.location.search).get("from"));
+          if (safeSource) nextParams.set("from", safeSource);
+          window.history.replaceState(null, "", `/app/composer?${nextParams.toString()}`);
+          lastSavedRevisionRef.current = Math.max(lastSavedRevisionRef.current, acknowledgedRevision.revision);
+          lastAttemptedRevisionRef.current = Math.max(lastAttemptedRevisionRef.current, acknowledgedRevision.revision);
+          setLastSavedRevision((current) => Math.max(current, acknowledgedRevision.revision));
+          setLastAttemptedRevision((current) => Math.max(current, acknowledgedRevision.revision));
+          if (!acknowledgedRevision.current) {
             setDraftSaveState("idle");
             setDraftSavedAt(null);
             if (mode !== "autosave") {
@@ -1068,7 +1567,8 @@ export default function ComposerPage() {
       });
     },
     [
-      channelId,
+      canEditContent,
+      channelIds,
       composerUserId,
       date,
       draftId,
@@ -1086,8 +1586,9 @@ export default function ComposerPage() {
       tgChannels,
       time,
       timeDisambiguation,
+      tracking,
       validate,
-      vkChannelId,
+      vkChannelIds,
       vkChannels,
     ],
   );
@@ -1098,7 +1599,7 @@ export default function ComposerPage() {
       : resolveComposerSchedule(date, time, scheduleTimezone, timeDisambiguation),
     [date, noDate, scheduleTimezone, time, timeDisambiguation],
   );
-  const autosaveEligible = shouldAutosaveDraft({
+  const autosaveEligible = canEditContent && shouldAutosaveDraft({
     hydrated,
     revision: draftRevision,
     lastSavedRevision,
@@ -1108,7 +1609,7 @@ export default function ComposerPage() {
     hasDestinations:
       networks.length > 0 &&
       networks.every((network) =>
-        network === "tg" ? channelId != null : network === "vk" ? vkChannelId != null : false,
+        network === "tg" ? channelIds.length > 0 : network === "vk" ? vkChannelIds.length > 0 : false,
       ),
     scheduleValid: noDate || (!(date || time)) || Boolean(currentSchedule),
     busy: typing || saving,
@@ -1118,18 +1619,19 @@ export default function ComposerPage() {
   // incomplete form state too: a hard close immediately after a keystroke must not lose it.
   useEffect(() => {
     if (
-      !hydrated || composerUserId == null || hydratedUserIdRef.current !== composerUserId
+      !canEditContent || !hydrated || composerUserId == null || draftWorkspaceId == null
+      || hydratedUserIdRef.current !== composerUserId
       || draftRevision <= lastSavedRevision
     ) return;
     const clientKey = (draftClientKeyRef.current ??= createDraftClientKey());
     const selected = [
-      ...(networks.includes("tg") && channelId != null ? [channelId] : []),
-      ...(networks.includes("vk") && vkChannelId != null ? [vkChannelId] : []),
+      ...(networks.includes("tg") ? channelIds : []),
+      ...(networks.includes("vk") ? vkChannelIds : []),
     ];
     const durable = persistPendingDraft({
       schema: 1,
       userId: composerUserId,
-      workspaceId: `personal:${composerUserId}`,
+      workspaceId: draftWorkspaceId,
       clientKey,
       draftId,
       baseVersion: draftVersion,
@@ -1153,6 +1655,7 @@ export default function ComposerPage() {
         channelIds: selected,
         aiValidation: null,
         generationResultId: origin === "ai" ? generationResultId : null,
+        tracking: pendingComposerTracking(tracking),
       },
       form: { networks, channelIds: selected, date, time, noDate },
     });
@@ -1164,12 +1667,14 @@ export default function ComposerPage() {
       return () => { cancelled = true; };
     }
   }, [
-    channelId,
+    channelIds,
+    canEditContent,
     composerUserId,
     date,
     draftId,
     draftRevision,
     draftVersion,
+    draftWorkspaceId,
     hydrated,
     lastSavedRevision,
     media,
@@ -1181,7 +1686,8 @@ export default function ComposerPage() {
     sourceRef,
     text,
     time,
-    vkChannelId,
+    tracking,
+    vkChannelIds,
   ]);
 
   useEffect(() => {
@@ -1212,122 +1718,174 @@ export default function ComposerPage() {
   const saveDraft = useCallback(async () => {
     autosaveCancelRef.current?.();
     autosaveCancelRef.current = null;
-    await persistDraft("manual");
+    const acceptCurrentAcknowledgement = async (candidate: ServerDraft | null) => {
+      if (!candidate) return null;
+      if (currentDraftWriteRef.current == null) {
+        await new Promise<void>((resolve) => {
+          window.requestAnimationFrame(() => resolve());
+        });
+      }
+      const acknowledged = resolveAcknowledgedDraftRevision({
+        draft: candidate,
+        currentWrite: currentDraftWriteRef.current,
+        requestRevision: lastSavedRevisionRef.current,
+        currentRevision: draftRevisionRef.current,
+      });
+      if (!acknowledged.current) return null;
+      acknowledgedDraftRef.current = candidate;
+      lastSavedRevisionRef.current = Math.max(lastSavedRevisionRef.current, acknowledged.revision);
+      lastAttemptedRevisionRef.current = Math.max(lastAttemptedRevisionRef.current, acknowledged.revision);
+      setLastSavedRevision((current) => Math.max(current, acknowledged.revision));
+      setLastAttemptedRevision((current) => Math.max(current, acknowledged.revision));
+      setDraftSaveState("saved");
+      setDraftSavedAt(candidate.updated_at);
+      return candidate;
+    };
+    const request = draftRequestRef.current;
+    if (request) {
+      const result = await request;
+      const acknowledged = await acceptCurrentAcknowledgement(
+        result ?? acknowledgedDraftRef.current,
+      );
+      if (acknowledged) return acknowledged;
+    }
+    const result = await persistDraft("manual");
+    return result ?? await acceptCurrentAcknowledgement(acknowledgedDraftRef.current);
   }, [persistDraft]);
 
-  const confirmAiReview = useCallback(async () => {
-    if (aiReview !== "required" || reviewRequestRef.current) return;
-    reviewRequestRef.current = true;
-    try {
-      // Persist the exact current text first; the ACK then increments and binds itself to
-      // that returned version. A concurrent tab receives 409 and cannot attest our copy.
-      const persisted = await persistDraft("schedule");
-      if (!persisted) return;
-      const reviewRevision = draftRevisionRef.current;
-      const acknowledged = await attestServerDraftReview(persisted.id, persisted.version);
-      setDraftId(acknowledged.id);
-      setDraftVersion(acknowledged.version);
-      acknowledgedDraftRef.current = acknowledged;
-      if (draftRevisionRef.current !== reviewRevision) {
-        // The ACK is valid for the persisted server version, but not for text changed while
-        // attestation was in flight. Preserve fail-closed local state and autosave the newer
-        // revision against the acknowledged version before allowing another review.
-        if (origin === "ai") {
-          setAiValidation(null);
-          setAiReview("required");
-        }
-        setDraftSaveState("idle");
-        setDraftSavedAt(null);
-        s.toast({
-          kind: "info",
-          title: "Текст изменился во время проверки",
-          body: "Новая версия сохранится автоматически, после этого подтверди её ещё раз.",
-        });
-        return;
-      }
-      setAiValidation(acknowledged.ai_validation);
-      setAiReview(composerAiReviewState(acknowledged));
-      setDraftSaveState("saved");
-      setDraftSavedAt(acknowledged.updated_at);
-      s.toast({
-        kind: "info",
-        title: "Ручная проверка подтверждена сервером",
-        body: "Отметка привязана к этой версии. После изменения текста потребуется новая проверка.",
-      });
-    } catch (error) {
-      setDraftSaveState(
-        error instanceof DraftRequestError && error.kind === "conflict" ? "conflict" : "failed",
-      );
+  const publish = useCallback(async (mode: PublicationMode) => {
+    if (!canPublish) {
       s.toast({
         kind: "danger",
-        title: "Проверка не подтверждена",
-        body:
-          error instanceof DraftRequestError && error.kind === "conflict"
-            ? "Черновик изменён в другой вкладке. Открой актуальную версию и проверь её."
-            : "Сервер не принял отметку. Планирование остаётся заблокированным.",
+        title: "Нет права на публикацию",
+        body: "Запланировать согласованный материал может владелец проекта или публикатор.",
       });
-    } finally {
-      reviewRequestRef.current = false;
+      return;
     }
-  }, [aiReview, origin, persistDraft, s]);
-
-  const schedule = useCallback(async () => {
+    if (aiReview === "blocked") {
+      s.toast({
+        kind: "danger",
+        title: "Сначала исправьте факты",
+        body: "Проверка нашла спорные утверждения. Исправьте или удалите их перед публикацией.",
+      });
+      return;
+    }
+    if (!personalProject && editorialState !== "approved") {
+      s.toast({
+        kind: "info",
+        title: "Сначала согласуйте материал",
+        body: "Планирование откроется после одобрения сохранённой версии.",
+      });
+      return;
+    }
     if (scheduleRequestRef.current) return;
     scheduleRequestRef.current = true;
-    const bad = validate(true);
-    const first = bad.text ?? bad.networks ?? bad.when;
+    const bad = validate(mode === "calendar");
+    const first = bad.text ?? bad.networks ?? bad.tracking ?? bad.when;
     if (first) {
       s.toast({ kind: "danger", title: "Пост пока не готов", body: first });
+      revealComposerProblem(bad);
       scheduleRequestRef.current = false;
       return;
     }
 
     setSaving(true);
+    setPublicationMode(mode);
+    setPublicationSuccess(null);
     try {
-      // Сначала фиксируем редактируемую версию на сервере. Если публикационная очередь
-      // откажет, пользователь не потеряет текст и увидит его в календаре как черновик.
-      const draft = await persistDraft("schedule");
-      if (!draft) return;
-      const scheduledAt = draft.scheduled_at;
-      if (!scheduledAt) {
+      let scheduleOverlay = mode === "calendar"
+        ? resolveComposerSchedule(date, time, scheduleTimezone, timeDisambiguation)
+        : null;
+      if (mode !== "calendar") {
+        const now = new Date();
+        let target: Date;
+        if (mode === "now") {
+          target = new Date(now.getTime() + 120_000);
+          target.setSeconds(0, 0);
+        } else if (bestTime) {
+          target = nextMoscowPublishingSlot(bestTime.hour, now);
+        } else {
+          target = new Date(now.getTime() + 3_600_000);
+          target.setMinutes(0, 0, 0);
+        }
+        const localTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+        scheduleOverlay = resolveComposerSchedule(
+          toDateValue(target),
+          toTimeValue(target),
+          localTimezone,
+          "reject",
+        );
+      }
+      if (!scheduleOverlay) {
         s.toast({
-          kind: "success",
-          title: "Пост в очереди",
-          body: "Черновик сохранён на сервере без даты. Поставишь время, когда решишь.",
+          kind: "danger",
+          title: "Время публикации не определено",
+          body: "Выбери корректную дату или повтори действие.",
         });
-        router.push("/app/calendar");
         return;
       }
 
+      // В личном проекте нажатие «Добавить в календарь» само является решением владельца
+      // выпустить текущий текст. Сначала сохраняем именно видимую версию, затем без
+      // дополнительной кнопки фиксируем её в том же versioned editorial-контракте,
+      // который остаётся обязательным для командных проектов.
+      let draft = personalProject
+        ? await persistDraft("schedule", scheduleOverlay)
+        : acknowledgedDraftRef.current;
+      if (personalProject && draft) {
+        await approvePersonalDraftForPublication(draft.id, draft.version);
+        setEditorialState("approved");
+        draft = { ...draft, editorial_state: "approved" };
+        acknowledgedDraftRef.current = draft;
+      }
+
+      if (!draft) {
+        s.toast({
+          kind: "danger",
+          title: personalProject ? "Черновик не сохранён" : "Версия не загружена",
+          body: personalProject
+            ? "Текст остался в редакторе. Исправь отмеченные поля или повтори сохранение."
+            : "Открой материал из календаря заново. Согласованный текст не изменён.",
+        });
+        return;
+      }
+      if (publicationOperationRef.current?.mode !== mode) publicationOperationRef.current = null;
       const operation = (publicationOperationRef.current ??= {
         key: crypto.randomUUID(),
         fingerprint: null,
+        mode,
       });
       const result = await s.createPublicationOperation({
         draftId: draft.id,
         draftVersion: draft.version,
         idempotencyKey: operation.key,
         operationFingerprint: operation.fingerprint,
-        timezone: draft.scheduled_timezone || scheduleTimezone,
+        timezone: scheduleOverlay.timezone,
+        schedule: scheduleOverlay,
       });
       if (result.fingerprint) operation.fingerprint = result.fingerprint;
-      if (
-        result.ok && result.operationStatus === "queued"
-        && result.destinations?.length === draft.destinations.length
-      ) {
-        // Удаляем только подтверждённую версию. Конфликт означает, что в другой вкладке
-        // уже есть более свежий текст: его сохраняем, а не уничтожаем вслед за публикацией.
-        await deleteServerDraft(draft.id, draft.version).catch(() => {});
+      if (result.ok && result.operationStatus === "queued") {
+        publicationOperationRef.current = null;
+        router.push("/app/calendar");
+        if (mode !== "calendar") {
+          setDate(scheduleOverlay.localDate);
+          setTime(scheduleOverlay.localTime);
+          setScheduleTimezone(scheduleOverlay.timezone);
+          setTimeDisambiguation(scheduleOverlay.disambiguation);
+          setNoDate(false);
+        }
+        setPublicationSuccess({
+          mode,
+          scheduledAt: result.scheduledAt ?? scheduleOverlay.scheduledAt,
+        });
         if (composerUserId != null && draftClientKeyRef.current) {
           removePendingDraft(composerUserId, draftClientKeyRef.current);
         }
         s.toast({
           kind: "success",
-          title: "Пост запланирован",
-          body: `${fmtDateTime(result.scheduledAt ?? scheduledAt)}. Все назначения используют одну подтверждённую версию.`,
+          title: mode === "now" ? "Публикация принята" : mode === "queue" ? "Пост поставлен в очередь" : "Пост добавлен в календарь",
+          body: `${fmtDateTime(result.scheduledAt ?? scheduleOverlay.scheduledAt)}. Повторное нажатие не создаст дубликат.`,
         });
-        publicationOperationRef.current = null;
-        router.push("/app/calendar");
       } else {
         const feedback = publicationOperationFailureFeedback(result);
         s.toast({
@@ -1336,14 +1894,51 @@ export default function ComposerPage() {
           body: feedback.body,
         });
       }
+    } catch (error) {
+      s.toast({
+        kind: "danger",
+        title: "Не удалось добавить пост в календарь",
+        body: personalProject
+          ? editorialErrorMessage(error)
+          : "Сервер не подтвердил операцию. Черновик остался в редакторе — повтори попытку.",
+      });
     } finally {
       setSaving(false);
+      setPublicationMode(null);
       scheduleRequestRef.current = false;
     }
-  }, [composerUserId, persistDraft, router, s, scheduleTimezone, validate]);
+  }, [
+    bestTime,
+    canPublish,
+    composerUserId,
+    date,
+    editorialState,
+    aiReview,
+    personalProject,
+    persistDraft,
+    router,
+    s,
+    scheduleTimezone,
+    time,
+    timeDisambiguation,
+    validate,
+  ]);
+
+  const schedule = useCallback(() => {
+    void publish("calendar");
+  }, [publish]);
+  const publishNow = useCallback(() => {
+    void publish("now");
+  }, [publish]);
+  const enqueue = useCallback(() => {
+    void publish("queue");
+  }, [publish]);
+  const clearPublicationSuccess = useCallback(() => {
+    setPublicationSuccess(null);
+  }, []);
 
   const removeCurrent = useCallback(async () => {
-    if (!editingId) return;
+    if (!canEditContent || !editingId) return;
     if (draftId != null && draftVersion != null) {
       setDraftSaveState("saving");
       try {
@@ -1376,7 +1971,7 @@ export default function ComposerPage() {
     }
     s.toast({ kind: "info", title: "Черновик удалён" });
     router.push("/app/calendar");
-  }, [composerUserId, draftId, draftVersion, editingId, legacyId, router, s]);
+  }, [canEditContent, composerUserId, draftId, draftVersion, editingId, legacyId, router, s]);
 
   const value = useMemo<ComposerValue>(
     () => ({
@@ -1384,6 +1979,12 @@ export default function ComposerPage() {
       draftLoadError,
       editingId,
       draftId,
+      draftVersion,
+      editorialState,
+      onEditorialStateChange,
+      canEditContent,
+      canPublish,
+      canChangeSchedule,
       text,
       setText: changeText,
       networks,
@@ -1392,11 +1993,17 @@ export default function ComposerPage() {
       tgChannels,
       vkChannels,
       channelId,
+      channelIds,
       setChannelId: changeChannelId,
+      toggleChannelId,
       vkChannelId,
+      vkChannelIds,
       setVkChannelId: changeVkChannelId,
+      toggleVkChannelId,
       media,
       setMedia: changeMedia,
+      tracking,
+      setTracking: changeTracking,
       sourceRef,
       date,
       setDate: changeDate,
@@ -1413,7 +2020,6 @@ export default function ComposerPage() {
       applyAiPreview,
       dismissAiPreview,
       aiReview,
-      confirmAiReview,
       topicOpen,
       setTopicOpen,
       topic,
@@ -1423,12 +2029,26 @@ export default function ComposerPage() {
       setConfirmDelete,
       draftSaveState,
       draftSavedAt,
+      postSettings,
+      postSettingsSaving,
+      savePostSettings,
+      canUndo: undoStack.length > 0,
+      canRedo: redoStack.length > 0,
+      undoText,
+      redoText,
+      restoreRevision,
       bestTime,
       saving,
+      publicationMode,
+      publicationSuccess,
+      clearPublicationSuccess,
       runAi,
       stopAi,
       quick,
       schedule,
+      publishNow,
+      enqueue,
+      setDraftVersionFromPublicationSettings,
       saveDraft,
       removeCurrent,
       hydrate,
@@ -1440,22 +2060,38 @@ export default function ComposerPage() {
       aiPreview,
       aiReview,
       applyAiPreview,
+      canChangeSchedule,
+      canEditContent,
+      canPublish,
       channelId,
+      channelIds,
       changeChannelId,
       changeDate,
       changeMedia,
+      changeTracking,
       changeNetworks,
       changeNoDate,
       changeText,
       changeTime,
       changeTimeDisambiguation,
       changeVkChannelId,
+      toggleChannelId,
+      toggleVkChannelId,
       confirmDelete,
-      confirmAiReview,
       date,
       draftId,
+      draftVersion,
       draftSavedAt,
       draftSaveState,
+      postSettings,
+      postSettingsSaving,
+      savePostSettings,
+      undoStack.length,
+      redoStack.length,
+      undoText,
+      redoText,
+      restoreRevision,
+      editorialState,
       dismissAiPreview,
       bestTime,
       beginHydration,
@@ -1468,21 +2104,30 @@ export default function ComposerPage() {
       media,
       networks,
       noDate,
+      onEditorialStateChange,
       tgChannels,
       vkChannels,
       vkChannelId,
+      vkChannelIds,
       quick,
       removeCurrent,
       runAi,
       saveDraft,
       scheduleTimezone,
       saving,
+      publicationMode,
+      publicationSuccess,
+      clearPublicationSuccess,
       schedule,
+      publishNow,
+      enqueue,
+      setDraftVersionFromPublicationSettings,
       sourceRef,
       stopAi,
       text,
       time,
       timeDisambiguation,
+      tracking,
       topic,
       topicOpen,
       toggleNetwork,
@@ -1494,8 +2139,7 @@ export default function ComposerPage() {
     <ComposerCtx.Provider value={value}>
       <AppShell
         title="Редактор поста"
-        subtitle="Один пост — обе сети. Предпросмотр покажет, как он будет выглядеть."
-        action={<ScheduleButton />}
+        subtitle="Создавай, оформляй и добавляй публикации в календарь."
       >
         <Suspense fallback={<ComposerSkeleton />}>
           <ComposerInner />
@@ -1505,23 +2149,234 @@ export default function ComposerPage() {
   );
 }
 
-/* ------------------------------------------------- ГЛАВНОЕ ДЕЙСТВИЕ (шапка) */
-// Единственный градиент на экране — правило ТЗ 7.2 («магнит»).
+/* ---------------------------------------------------- БЛОКИ И ЗАЩИТА РЕДАКТОРА */
 
-function ScheduleButton() {
-  const c = useComposer();
+function EditorSection({
+  id,
+  title,
+  summary,
+  icon,
+  error,
+  defaultOpen = false,
+  children,
+}: {
+  id: string;
+  title: string;
+  summary: string;
+  icon: React.ReactNode;
+  error?: string;
+  defaultOpen?: boolean;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
   return (
-    <Button
-      variant="brand"
-      size="lg"
-      onClick={c.schedule}
-      disabled={!c.hydrated || c.draftSaveState === "saving" || c.typing}
-      loading={c.saving}
-      className="glow-pulse"
+    <details
+      id={id}
+      open={open || Boolean(error)}
+      onToggle={(event) => {
+        if (!error) setOpen(event.currentTarget.open);
+      }}
+      className={cn(
+        "group scroll-mt-24 overflow-hidden rounded-sm border bg-surface",
+        error ? "border-danger/40" : "border-line",
+      )}
     >
-      {!c.saving && <CalendarClock className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />}
-      {c.noDate ? "Отправить в очередь" : "Запланировать"}
-    </Button>
+      <summary className="flex min-h-16 cursor-pointer list-none items-center gap-3 px-4 py-3 marker:content-none focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15">
+        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xs bg-surface-inset text-text-2" aria-hidden>
+          {icon}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-[15px] font-bold text-text">{title}</span>
+          <span className={cn("mt-0.5 block truncate text-[13px]", error ? "text-danger-text" : "text-text-3")}>
+            {error || summary}
+          </span>
+        </span>
+        <ChevronDown className="h-5 w-5 shrink-0 text-text-3 transition-transform duration-200 group-open:rotate-180 motion-reduce:transition-none" aria-hidden />
+      </summary>
+      <div className="border-t border-line px-4 py-4 sm:px-5">{children}</div>
+    </details>
+  );
+}
+
+type RevisionHistoryItem = {
+  id: number;
+  draftVersion: number;
+  authorName?: string;
+  snapshot: Record<string, unknown>;
+  createdAt: string;
+};
+
+function RevisionHistoryPanel() {
+  const c = useComposer();
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [items, setItems] = useState<RevisionHistoryItem[]>([]);
+
+  const load = useCallback(async () => {
+    if (!c.draftId) return;
+    setLoading(true);
+    setError("");
+    try {
+      const response = await fetch(`/api/drafts/${c.draftId}/revisions`, { cache: "no-store" });
+      const payload = await response.json().catch(() => null) as { revisions?: RevisionHistoryItem[] } | null;
+      if (!response.ok || !payload?.revisions) throw new Error("history_unavailable");
+      setItems(payload.revisions);
+    } catch {
+      setError("История временно недоступна. Текущий текст и локальная копия не затронуты.");
+    } finally {
+      setLoading(false);
+    }
+  }, [c.draftId]);
+
+  if (!c.draftId) {
+    return <p className="text-[13px] leading-relaxed text-text-3">Первая серверная версия появится после автосохранения.</p>;
+  }
+  return (
+    <div className="space-y-3">
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => {
+          const next = !open;
+          setOpen(next);
+          if (next) void load();
+        }}
+        aria-expanded={open}
+      >
+        <History className="h-4 w-4" aria-hidden />
+        {open ? "Скрыть историю" : "Открыть историю версий"}
+      </Button>
+      {open && (
+        <div className="space-y-2" aria-live="polite">
+          {loading ? (
+            <p role="status" className="text-[13px] text-text-3">Загружаем сохранённые версии…</p>
+          ) : error ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <p role="alert" className="flex-1 text-[13px] text-danger-text">{error}</p>
+              <Button variant="ghost" size="sm" onClick={() => void load()}>Повторить</Button>
+            </div>
+          ) : items.length === 0 ? (
+            <p className="text-[13px] text-text-3">Сохранённых версий пока нет.</p>
+          ) : (
+            <ol className="grid max-h-80 gap-2 overflow-y-auto pr-1" aria-label="История версий черновика">
+              {items.map((item) => {
+                const versionText = typeof item.snapshot.text === "string" ? item.snapshot.text : "";
+                return (
+                  <li key={item.id} className="rounded-xs border border-line bg-surface-2 p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <p className="text-[13px] font-bold text-text">Версия {item.draftVersion}</p>
+                        <p className="text-[12px] text-text-3">
+                          {fmtDateTime(item.createdAt)}{item.authorName ? ` · ${item.authorName}` : ""}
+                        </p>
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        disabled={!c.canEditContent}
+                        onClick={() => c.restoreRevision(item.snapshot)}
+                      >
+                        Восстановить
+                      </Button>
+                    </div>
+                    <p className="mt-2 line-clamp-2 text-[13px] leading-relaxed text-text-2">{versionText || "Пустая версия"}</p>
+                  </li>
+                );
+              })}
+            </ol>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ComposerActionBar() {
+  const c = useComposer();
+  const projects = useProjects();
+  const personal = projects.current?.personal === true;
+  const approved = (personal || c.editorialState === "approved") && c.aiReview !== "blocked";
+  if (!c.canPublish) return null;
+  const unavailable = !c.hydrated || c.draftSaveState === "saving" || c.typing || c.saving;
+  return (
+    <div className="fixed inset-x-4 bottom-[calc(4.5rem+env(safe-area-inset-bottom))] z-30 lg:right-8 lg:left-[calc(260px+2rem)] lg:bottom-4">
+      <div className="mx-auto w-full max-w-5xl rounded-md border border-line bg-surface/95 p-3 shadow-lift backdrop-blur-xl sm:p-4">
+        {c.publicationSuccess ? (
+          <div role="status" aria-live="polite" className="flex flex-wrap items-center gap-3">
+            <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-success-soft text-success-text">
+              <CheckCircle2 className="h-5 w-5" aria-hidden />
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className="text-[14px] font-bold text-text">
+                {c.publicationSuccess.mode === "now"
+                  ? "Публикация принята"
+                  : c.publicationSuccess.mode === "queue"
+                    ? "Пост поставлен в очередь"
+                    : "Пост добавлен в календарь"}
+              </p>
+              <p className="text-[13px] text-text-3">{fmtDateTime(c.publicationSuccess.scheduledAt)}</p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Link href="/app/calendar"><Button variant="solid" size="sm">Открыть календарь</Button></Link>
+              <Link href="/app/composer"><Button variant="ghost" size="sm" onClick={c.clearPublicationSuccess}>Создать ещё пост</Button></Link>
+            </div>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div className="min-w-0 text-[13px]" aria-live="polite">
+              <p className="font-semibold text-text">
+                {approved ? "Готово к публикации" : c.aiReview === "blocked" ? "Нужно исправить текст" : "Нужно согласовать пост"}
+              </p>
+              <p className="truncate text-text-3">
+                {c.draftSaveState === "offline"
+                  ? "Нет сети — изменения защищены локальной копией"
+                  : c.draftSaveState === "saving"
+                    ? "Сохраняем изменения…"
+                    : c.draftSaveState === "saved"
+                      ? `Сохранено${c.draftSavedAt ? ` в ${fmtTime(c.draftSavedAt)}` : ""}`
+                      : "Изменения сохраняются автоматически"}
+              </p>
+            </div>
+            <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap lg:justify-end">
+              <Button
+                variant="brand"
+                size="sm"
+                className="col-span-2"
+                disabled={unavailable}
+                loading={c.publicationMode === "calendar"}
+                onClick={c.schedule}
+              >
+                {c.publicationMode !== "calendar" && <CalendarClock className="h-4 w-4" aria-hidden />}
+                Добавить в календарь
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={unavailable}
+                loading={c.publicationMode === "now"}
+                onClick={c.publishNow}
+              >
+                {c.publicationMode !== "now" && <Send className="h-4 w-4" aria-hidden />}
+                <span className="sm:hidden">Сейчас</span>
+                <span className="hidden sm:inline">Опубликовать сейчас</span>
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={unavailable}
+                loading={c.publicationMode === "queue"}
+                onClick={c.enqueue}
+              >
+                {c.publicationMode !== "queue" && <ListEnd className="h-4 w-4" aria-hidden />}
+                <span className="sm:hidden">В очередь</span>
+                <span className="hidden sm:inline">Поставить в очередь</span>
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -1529,10 +2384,28 @@ function ScheduleButton() {
 
 function ComposerInner() {
   const s = useStore();
+  const projects = useProjects();
+  const router = useRouter();
   const params = useSearchParams();
   const reduce = useReducedMotion();
   const c = useComposer();
-  const [mobilePane, setMobilePane] = useState<"editor" | "preview">("editor");
+  const [publicOrigin, setPublicOrigin] = useState("");
+  const [mediaLibraryOpen, setMediaLibraryOpen] = useState(false);
+  const [mediaLibraryLoading, setMediaLibraryLoading] = useState(false);
+  const [mediaUploading, setMediaUploading] = useState(false);
+  const [mediaLibraryError, setMediaLibraryError] = useState("");
+  const [mediaLibraryAssets, setMediaLibraryAssets] = useState<Array<{
+    id: number;
+    fileName: string;
+    mimeType: string;
+    url: string;
+    origin: string;
+  }>>([]);
+  const uploadRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setPublicOrigin(window.location.origin), 0);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   const idParam = params.get("id");
   const draftParam = Number(params.get("draft")) || null;
@@ -1546,6 +2419,13 @@ function ComposerInner() {
   const timeParam = params.get("time");
   const channelParam = Number(params.get("channel")) || null;
   const fromMedia = params.get("fromMedia") === "1";
+  const mediaReturnSource = params.get("from") === "studio-visuals"
+    ? composerSource(params.get("returnTo"))
+    : null;
+  const returnTarget = composerReturnTarget(
+    mediaReturnSource ?? composerSource(params.get("from")),
+    c.draftId ?? draftParam,
+  );
 
   const {
     hydrate,
@@ -1569,14 +2449,19 @@ function ComposerInner() {
   const realChannels = s.realChannels;
   const localPosts = s.posts;
   const currentUserId = s.user?.id ?? null;
+  const currentProjectId = projects.current?.id ?? null;
+  const canEditContent = c.canEditContent;
+  const currentProjectPersonal = projects.current?.personal === true;
+  const currentWorkspaceId = currentProjectId == null ? null : projectDraftWorkspaceId(currentProjectId);
   const toast = s.toast;
 
   // Pending outbox is selected before the server snapshot, so a hard reload never flashes
   // and then overwrites the newer local text with an older acknowledged version.
   useEffect(() => {
-    if (!storeReady || !authReady || !realReady) return;
+    if (!storeReady || !authReady || !realReady || !projects.ready || currentProjectId == null || !currentWorkspaceId) return;
     const key = composerHydrationIdentity({
       userId: currentUserId,
+      projectId: currentProjectId,
       draftId: draftParam,
       legacyId: legacyParam,
       channelId: channelParam,
@@ -1584,7 +2469,7 @@ function ComposerInner() {
       time: timeParam,
       fromMedia,
     });
-    if (draftParam && currentDraftId === draftParam && hydrated) {
+    if (draftParam && currentDraftId === draftParam && hydrated && loadedKey.current === key) {
       loadedKey.current = key;
       return;
     }
@@ -1598,13 +2483,20 @@ function ComposerInner() {
     void (async () => {
       let draft: ServerDraft | null = null;
       let post: Post | null = null;
-      const pending = currentUserId == null
+      const projectPending = currentUserId == null
         ? null
         : draftParam
-          ? findPendingDraft(currentUserId, { draftId: draftParam })
+          ? findPendingDraft(currentUserId, { draftId: draftParam }, undefined, currentWorkspaceId)
           : !legacyParam && !fromMedia
-            ? listPendingDrafts(currentUserId)[0] ?? null
+            ? listPendingDrafts(currentUserId, undefined, currentWorkspaceId)[0] ?? null
             : null;
+      const pending = projectPending ?? (currentUserId != null && currentProjectPersonal
+        ? draftParam
+          ? findPendingDraft(currentUserId, { draftId: draftParam }, undefined, `personal:${currentUserId}`)
+          : !legacyParam && !fromMedia
+            ? listPendingDrafts(currentUserId, undefined, `personal:${currentUserId}`)[0] ?? null
+            : null
+        : null);
       if (draftParam) {
         try {
           draft = await getServerDraft(draftParam, controller.signal);
@@ -1693,7 +2585,10 @@ function ComposerInner() {
     beginHydration,
     channelParam,
     currentDraftId,
+    currentProjectId,
+    currentProjectPersonal,
     currentUserId,
+    currentWorkspaceId,
     dateParam,
     draftParam,
     failHydration,
@@ -1703,6 +2598,7 @@ function ComposerInner() {
     legacyParam,
     authReady,
     localPosts,
+    projects.ready,
     realChannels,
     realReady,
     setComposerChannelId,
@@ -1765,22 +2661,25 @@ function ComposerInner() {
   }
   if (!hydrated) return <ComposerSkeleton />;
 
-  const len = text.length;
+  const trackingSelection = composerTrackingDraftSelection(c.tracking).selection;
+  const publicationPreview = trackingSelection?.shortLinkId != null && !publicOrigin
+    ? { mainText: text, firstCommentText: null, publicUrl: null }
+    : renderPublicationTracking(text, trackingSelection, publicOrigin);
   const tgOn = c.networks.includes("tg");
   const vkOn = c.networks.includes("vk");
-  const over = vkOn && len > VK_LIMIT;
-  const telegramPreviewPayload = buildTelegramPayload({ text, hasAsset: Boolean(c.media) });
+  const telegramPublicationPreview = publicationPreview;
+  const vkPublicationPreview = publicationPreview;
+  const previewText = tgOn ? telegramPublicationPreview.mainText : vkPublicationPreview.mainText;
+  const len = previewText.length;
+  const over = vkOn && vkPublicationPreview.mainText.length > VK_LIMIT;
+  const telegramPreviewPayload = buildTelegramPayload({
+    text: telegramPublicationPreview.mainText,
+    hasAsset: Boolean(c.media),
+  });
   const telegramMessageCount = telegramPreviewPayload.parts.filter(
     (part) => part.type === "text" || part.type === "media_caption",
   ).length;
   const aiUsage = getAiUsageMetrics(s.aiUsageStatus, s.aiUsed, s.aiLimit);
-  const previewSchedule = resolveComposerSchedule(
-    c.date,
-    c.time,
-    c.scheduleTimezone,
-    c.timeDisambiguation,
-  );
-  const when = previewSchedule ? new Date(previewSchedule.scheduledAt) : null;
   const scheduleInspection = c.date && c.time
     ? inspectLocalSchedule({
         localDate: c.date,
@@ -1789,43 +2688,71 @@ function ComposerInner() {
       })
     : null;
 
-  // Предпросмотр обязан показывать ТОТ канал, в который уйдёт пост. Раньше он всегда брал
-  // демо-канал из моков — при одном канале это была незаметная условность, но теперь человек
-  // выбирает канал сам, и чужое имя в превью прямо противоречило бы его выбору.
   const pickedCh = c.tgChannels.find((ch) => ch.id === c.channelId);
-  const tgCh = pickedCh
-    ? {
-        name: pickedCh.title ?? "Твой канал",
-        handle: pickedCh.handle ? `@${pickedCh.handle.replace(/^@/, "")}` : "",
-        subscribers: 0,
-      }
-    : { name: "Telegram не выбран", handle: "", subscribers: 0 };
   const pickedVk = c.vkChannels.find((ch) => ch.id === c.vkChannelId);
-  const vkCh = pickedVk
-    ? { name: pickedVk.title ?? "Твоё сообщество", subscribers: 0 }
-    : { name: "VK не выбран", subscribers: 0 };
   const aiContextDestination = tgOn ? pickedCh : vkOn ? pickedVk : null;
 
   const aiActions: { cmd: ComposerAiCommand; label: string; icon: React.ReactNode }[] = [
-    { cmd: "write", label: "Напиши", icon: <Sparkles className="h-4 w-4" aria-hidden /> },
-    { cmd: "rewrite", label: "Перепиши", icon: <RefreshCw className="h-4 w-4" aria-hidden /> },
-    { cmd: "shorten", label: "Сократи", icon: <Scissors className="h-4 w-4" aria-hidden /> },
-    {
-      cmd: "script",
-      label: "Сценарий видео",
-      icon: <Clapperboard className="h-4 w-4" aria-hidden />,
-    },
+    { cmd: "write", label: "Написать", icon: <Sparkles className="h-4 w-4" aria-hidden /> },
+    { cmd: "rewrite", label: "Улучшить", icon: <RefreshCw className="h-4 w-4" aria-hidden /> },
+    { cmd: "shorten", label: "Сократить", icon: <Scissors className="h-4 w-4" aria-hidden /> },
   ];
 
-  const addMedia = (kind: "image" | "video") =>
-    c.setMedia({
-      kind,
-      label: kind === "video" ? "Вертикалка 9:16" : "Фото к посту",
-      hue: Math.floor(Math.random() * 360),
-    });
+  const openMediaLibrary = async () => {
+    const nextOpen = !mediaLibraryOpen;
+    setMediaLibraryOpen(nextOpen);
+    if (!nextOpen || mediaLibraryAssets.length > 0) return;
+    setMediaLibraryLoading(true);
+    setMediaLibraryError("");
+    try {
+      const response = await fetch("/api/media/assets", { cache: "no-store" });
+      const payload = await response.json().catch(() => null) as { assets?: typeof mediaLibraryAssets } | null;
+      if (!response.ok || !payload?.assets) throw new Error("media_library_unavailable");
+      setMediaLibraryAssets(payload.assets);
+    } catch {
+      setMediaLibraryError("Медиатека не загрузилась. Проверь соединение и попробуй ещё раз.");
+    } finally {
+      setMediaLibraryLoading(false);
+    }
+  };
+
+  const uploadMedia = async (file: File | null) => {
+    if (!file || !canEditContent) return;
+    setMediaUploading(true);
+    try {
+      const form = new FormData();
+      form.set("file", file);
+      form.set("alt", "Изображение к публикации");
+      const response = await fetch("/api/media/assets", { method: "POST", body: form });
+      const payload = await response.json().catch(() => null) as {
+        asset?: { id: number; fileName: string; mimeType: string; url: string; origin: string };
+        error?: string;
+      } | null;
+      if (!response.ok || !payload?.asset) throw new Error(payload?.error || "upload_failed");
+      c.setMedia({
+        kind: "image",
+        label: payload.asset.fileName,
+        hue: 255,
+        assetId: String(payload.asset.id),
+        url: payload.asset.url,
+        mimeType: payload.asset.mimeType,
+      });
+      setMediaLibraryAssets((assets) => [payload.asset!, ...assets.filter((asset) => asset.id !== payload.asset!.id)]);
+      s.toast({ kind: "success", title: "Изображение добавлено" });
+    } catch {
+      s.toast({
+        kind: "danger",
+        title: "Изображение не загрузилось",
+        body: "Подойдут JPG, PNG или WebP до 10 МБ.",
+      });
+    } finally {
+      setMediaUploading(false);
+      if (uploadRef.current) uploadRef.current.value = "";
+    }
+  };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+    if (c.canPublish && (e.metaKey || e.ctrlKey) && e.key === "Enter") {
       e.preventDefault();
       c.schedule();
     }
@@ -1840,51 +2767,78 @@ function ComposerInner() {
 
   return (
     <>
-      <div
-        role="group"
-        aria-label="Редактор или предпросмотр"
-        className="grid grid-cols-2 gap-1 rounded-sm border border-line bg-surface-inset p-1 lg:hidden"
-      >
-        {(["editor", "preview"] as const).map((pane) => (
-          <button
-            key={pane}
-            type="button"
-            aria-pressed={mobilePane === pane}
-            onClick={() => setMobilePane(pane)}
-            className={cn(
-              "min-h-11 rounded-xs px-3 text-[14px] font-semibold",
-              mobilePane === pane ? "bg-surface text-text shadow-soft" : "text-text-2",
-            )}
-          >
-            {pane === "editor" ? "Редактор" : "Предпросмотр"}
-          </button>
-        ))}
-      </div>
+      <nav aria-label="Возврат к предыдущему шагу">
+        <Link
+          href={returnTarget.href}
+          className={cn(
+            "inline-flex min-h-11 items-center gap-2 rounded-xs px-2 text-[14px] font-semibold text-text-2",
+            "transition-colors duration-200 hover:bg-surface-inset hover:text-text",
+            "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15 motion-reduce:transition-none",
+          )}
+        >
+          <ArrowLeft className="h-4 w-4" aria-hidden />
+          {returnTarget.label}
+        </Link>
+      </nav>
 
-      <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
-      {/* ------------------------------------------------------ ЛЕВО: РЕДАКТОР */}
       <Card
-        className={cn(
-          "min-w-0 flex-1 space-y-6 p-5 sm:p-6",
-          mobilePane === "preview" && "hidden lg:block",
-        )}
+        className="mx-auto w-full max-w-5xl min-w-0 space-y-6 p-5 sm:p-6"
       >
         {c.sourceRef && <SourcePlate source={c.sourceRef} />}
 
-        <Field label="Текст поста" htmlFor="composer-text" error={c.errors.text}>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-[18px] font-bold text-text">Текст поста</h2>
+            <p className="mt-0.5 text-[13px] text-text-3">Пиши сам или подготовь отдельный вариант с ИИ.</p>
+          </div>
+          <div className="flex items-center gap-1">
+            <Button variant="ghost" size="icon" disabled={!c.canUndo || !canEditContent} onClick={c.undoText} aria-label="Отменить изменение">
+              <Undo2 className="h-[18px] w-[18px]" aria-hidden />
+            </Button>
+            <Button variant="ghost" size="icon" disabled={!c.canRedo || !canEditContent} onClick={c.redoText} aria-label="Вернуть изменение">
+              <Redo2 className="h-[18px] w-[18px]" aria-hidden />
+            </Button>
+            <PostSettingsMenu
+              value={c.postSettings}
+              onChange={(value) => void c.savePostSettings(value)}
+              network={tgOn && vkOn ? null : tgOn ? "tg" : vkOn ? "vk" : null}
+              disabled={!canEditContent}
+              saving={c.postSettingsSaving}
+            />
+          </div>
+        </div>
+
+        <div className="flex flex-wrap gap-2" aria-label="Выбранные настройки поста">
+          <Badge>{c.postSettings.length === "short" ? "Короткий" : c.postSettings.length === "long" ? "Длинный" : "Средний"}</Badge>
+          <Badge>{c.postSettings.formality === "formal" ? "Официально" : c.postSettings.formality === "casual" ? "Неформально" : "Спокойный тон"}</Badge>
+          <Badge>{c.postSettings.emojiMode === "none" ? "Без эмодзи" : "С эмодзи"}</Badge>
+          <Badge>{c.postSettings.profanityMode === "allow" ? "Мат разрешён" : c.postSettings.profanityMode === "masked" ? "Мат со звёздочками" : c.postSettings.profanityMode === "forbid" ? "Без мата" : "Мат — автоматически"}</Badge>
+        </div>
+
+        <Field label="Текст публикации" htmlFor="composer-text" error={c.errors.text}>
           <div>
             <Textarea
               id="composer-text"
               ref={taRef}
               rows={7}
               value={text}
-              readOnly={typing}
+              readOnly={typing || !canEditContent}
               aria-busy={typing || undefined}
               onChange={(e) => c.setText(e.target.value)}
               onKeyDown={onKeyDown}
-              placeholder="Пиши как обычно — или нажми «Напиши», и ИИ начнёт за тебя."
-              className={cn("min-h-[180px] sm:min-h-[280px]", typing && "cursor-progress")}
+              placeholder="Пиши как обычно — или нажми «Написать», и ИИ подготовит вариант."
+              className={cn(
+                "min-h-[180px] sm:min-h-[280px]",
+                typing && "cursor-progress",
+                !canEditContent && "cursor-default bg-surface-inset",
+              )}
             />
+
+            {!canEditContent && (
+              <p role="status" className="mt-2 text-[13px] leading-relaxed text-text-2">
+                Согласованный текст открыт только для чтения. Публикатор выбирает дату и отправляет именно эту версию.
+              </p>
+            )}
 
             <div className="mt-2 flex items-start justify-between gap-4">
               {over ? (
@@ -1893,10 +2847,12 @@ function ComposerInner() {
                 </p>
               ) : tgOn && telegramMessageCount > 1 ? (
                 <p className="text-[13px] font-medium text-text-2">
-                  Telegram отправит текст {telegramMessageCount} сообщениями. Границы показаны в предпросмотре.
+                  Telegram отправит текст {telegramMessageCount} сообщениями.
                 </p>
               ) : (
-                <p className="text-[13px] text-text-3">Ctrl + Enter — запланировать</p>
+                <p className="text-[13px] text-text-3">
+                  {c.canPublish ? "Ctrl + Enter — запланировать" : "Изменения сохраняются автоматически"}
+                </p>
               )}
               <span className="nums shrink-0 text-[13px] text-text-3">{chars(len)}</span>
             </div>
@@ -1937,10 +2893,11 @@ function ComposerInner() {
                     if (e.key === "Escape") c.setTopicOpen(false);
                   }}
                   placeholder="О чём пост?"
+                  disabled={!canEditContent}
                   className="min-w-0 flex-1"
                   aria-label="Тема поста"
                 />
-                <Button variant="soft" onClick={() => c.runAi("write")} className="shrink-0">
+                <Button variant="soft" disabled={!canEditContent} onClick={() => c.runAi("write")} className="shrink-0">
                   <Sparkles className="h-[18px] w-[18px]" aria-hidden />
                   Написать
                 </Button>
@@ -1955,13 +2912,23 @@ function ComposerInner() {
                 variant="soft"
                 size="sm"
                 loading={c.aiBusy === a.cmd}
-                disabled={typing && c.aiBusy !== a.cmd}
+                disabled={!canEditContent || (typing && c.aiBusy !== a.cmd)}
                 onClick={() => c.runAi(a.cmd)}
               >
                 {c.aiBusy === a.cmd ? null : a.icon}
                 {a.label}
               </Button>
             ))}
+            <Button
+              variant="ghost"
+              size="sm"
+              loading={c.aiBusy === "script"}
+              disabled={!canEditContent || (typing && c.aiBusy !== "script")}
+              onClick={() => c.runAi("script")}
+            >
+              {c.aiBusy !== "script" && <MoreHorizontal className="h-4 w-4" aria-hidden />}
+              Ещё: сценарий
+            </Button>
           </div>
 
           <AnimatePresence initial={false}>
@@ -1984,49 +2951,26 @@ function ComposerInner() {
                     <p role="status" aria-live="polite" aria-atomic="true" className="text-[12px] text-text-3">
                       {c.aiPreview.status === "running"
                         ? aiDraftPhaseLabel(c.aiPreview.phase)
-                        : "Поток остановился. Готовая часть сохранена отдельно; исходный пост не изменён."}
+                        : c.aiPreview.status === "ready"
+                          ? "Вариант готов. Исходный текст не изменится, пока ты его не применишь."
+                          : "Генерация остановлена. Готовая часть сохранена отдельно; исходный пост не изменён."}
                     </p>
                   </div>
-                  {c.aiPreview.requestId && (
-                    <span className="nums text-[11px] text-text-3">Номер: {c.aiPreview.requestId}</span>
-                  )}
                 </div>
                 <div className="max-h-56 overflow-y-auto whitespace-pre-wrap rounded-xs bg-surface px-3 py-2 text-[14px] leading-relaxed text-text">
                   {c.aiPreview.text}
                 </div>
-                {c.aiPreview.status === "interrupted" && (
+                {c.aiPreview.status !== "running" && (
                   <div className="flex flex-wrap gap-2">
                     <Button variant="soft" size="sm" onClick={c.applyAiPreview}>
-                      Использовать сохранённую часть
+                      {c.aiPreview.status === "ready" ? "Применить вариант" : "Использовать сохранённую часть"}
                     </Button>
                     <Button variant="ghost" size="sm" onClick={c.dismissAiPreview}>
-                      Закрыть
+                      Оставить текущий текст
                     </Button>
                   </div>
                 )}
               </motion.section>
-            )}
-            {c.aiReview !== "none" && !typing && (
-              <motion.div
-                key="ai-review"
-                {...fade}
-                role={c.aiReview === "blocked" ? "alert" : "status"}
-                className={cn(
-                  "flex flex-wrap items-center gap-2 rounded-sm px-3 py-2",
-                  c.aiReview === "blocked" ? "bg-danger-soft text-danger-text" : "bg-fire-soft text-fire-text",
-                )}
-              >
-                <span className="text-[13px] font-semibold">
-                  {c.aiReview === "blocked"
-                    ? "Проверка нашла спорные утверждения. Исправь или удали их в тексте — после изменения можно будет подтвердить факты и выбрать дату."
-                    : "Семантическая проверка недоступна — проверь факты вручную."}
-                </span>
-                {c.aiReview === "required" && (
-                  <Button variant="outline" size="sm" onClick={c.confirmAiReview} className="ml-auto">
-                    Я проверил(а) факты
-                  </Button>
-                )}
-              </motion.div>
             )}
             {typing && (
               <motion.div
@@ -2047,22 +2991,76 @@ function ComposerInner() {
           </AnimatePresence>
         </div>
 
-        <Divider />
-
         {/* ------------------------------------------------------------ МЕДИА */}
+        <EditorSection
+          id="composer-media"
+          title="Медиа"
+          summary={c.media ? `Добавлено: ${c.media.label}` : "Без изображения или видео"}
+          icon={<ImageIcon className="h-5 w-5" />}
+        >
         <div className="space-y-3">
-          <p className="text-[13px] font-semibold text-text-2">Медиа</p>
 
           <div className="flex flex-wrap gap-2">
-            <Button variant="outline" size="sm" onClick={() => addMedia("image")}>
-              <ImageIcon className="h-4 w-4" aria-hidden />
-              {c.media?.kind === "image" ? "Заменить фото" : "Добавить фото"}
+            <input
+              ref={uploadRef}
+              type="file"
+              accept="image/jpeg,image/png,image/webp"
+              className="sr-only"
+              tabIndex={-1}
+              onChange={(event) => void uploadMedia(event.target.files?.[0] ?? null)}
+            />
+            <Button variant="outline" size="sm" disabled={!canEditContent} loading={mediaUploading} onClick={() => uploadRef.current?.click()}>
+              {!mediaUploading && <Upload className="h-4 w-4" aria-hidden />}
+              Загрузить
             </Button>
-            <Button variant="outline" size="sm" onClick={() => addMedia("video")}>
-              <Video className="h-4 w-4" aria-hidden />
-              {c.media?.kind === "video" ? "Заменить видео" : "Добавить видео"}
+            <Button variant="outline" size="sm" disabled={!canEditContent} aria-expanded={mediaLibraryOpen} onClick={() => void openMediaLibrary()}>
+              <ImageIcon className="h-4 w-4" aria-hidden />
+              {c.media?.kind === "image" ? "Заменить из медиатеки" : "Выбрать из медиатеки"}
+            </Button>
+            <Button variant="outline" size="sm" disabled={!canEditContent} onClick={() => {
+              const returnSource = mediaReturnSource ?? composerSource(params.get("from"));
+              const returnSuffix = returnSource ? `&returnTo=${returnSource}` : "";
+              router.push(currentDraftId
+                ? `/app/studio/visuals?draft=${currentDraftId}${returnSuffix}`
+                : `/app/studio/visuals${returnSource ? `?returnTo=${returnSource}` : ""}`);
+            }}>
+              <Layers3 className="h-4 w-4" aria-hidden />
+              Создать с ИИ
             </Button>
           </div>
+
+          {mediaLibraryOpen && (
+            <div className="rounded-sm border border-line bg-surface-2 p-3">
+              <p className="text-[12px] font-bold tracking-wide text-text-3 uppercase">Медиатека проекта</p>
+              {mediaLibraryLoading ? (
+                <p role="status" className="mt-3 text-[13px] text-text-3">Загружаем изображения…</p>
+              ) : mediaLibraryError ? (
+                <p role="alert" className="mt-3 text-[13px] font-medium text-danger-text">{mediaLibraryError}</p>
+              ) : mediaLibraryAssets.length === 0 ? (
+                <p className="mt-3 text-[13px] text-text-3">Пока пусто. Создайте карусель или загрузите изображение в визуальной студии.</p>
+              ) : (
+                <div className="mt-3 flex snap-x gap-3 overflow-x-auto pb-2" role="list" aria-label="Изображения проекта">
+                  {mediaLibraryAssets.map((asset) => (
+                    <button
+                      key={asset.id}
+                      type="button"
+                      role="listitem"
+                      disabled={!canEditContent}
+                      onClick={() => {
+                        c.setMedia({ kind: "image", label: asset.fileName, hue: 255, assetId: String(asset.id), url: asset.url, mimeType: asset.mimeType });
+                        setMediaLibraryOpen(false);
+                      }}
+                      className="w-32 shrink-0 snap-start rounded-xs border border-line bg-surface p-2 text-left hover:border-line-strong focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15"
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element -- authenticated project media cannot use the image optimizer */}
+                      <img src={asset.url} alt="" className="aspect-square w-full rounded-[8px] object-cover" />
+                      <span className="mt-2 block truncate text-[12px] font-semibold text-text">{asset.fileName}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
           <AnimatePresence initial={false}>
             {c.media && (
@@ -2076,25 +3074,34 @@ function ComposerInner() {
                   style={mediaStyle(c.media.hue)}
                   aria-hidden
                 >
-                  <span className="absolute inset-0 flex items-center justify-center text-white">
+                  {c.media.kind === "image" && c.media.url ? (
+                    // eslint-disable-next-line @next/next/no-img-element -- authenticated project media cannot use the image optimizer
+                    <img src={c.media.url} alt="" className="h-full w-full object-cover" />
+                  ) : <span className="absolute inset-0 flex items-center justify-center text-white">
                     {c.media.kind === "video" ? (
                       <Video className="h-5 w-5" strokeWidth={2} />
+                    ) : c.media.kind === "carousel" ? (
+                      <Layers3 className="h-5 w-5" strokeWidth={2} />
                     ) : (
                       <ImageIcon className="h-5 w-5" strokeWidth={2} />
                     )}
-                  </span>
+                  </span>}
                 </div>
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-[14px] font-semibold text-text">{c.media.label}</p>
                   <p className="truncate text-[13px] text-text-3">
-                    {c.media.kind === "video" ? "Видео" : "Изображение"} · размер подгоним под каждую
-                    сеть
+                    {c.media.kind === "video"
+                      ? "Видео · размер подгоним под каждую сеть"
+                      : c.media.kind === "carousel"
+                        ? `Карусель · ${c.media.items.length} карточки · публикация альбомом в Telegram`
+                        : "Изображение · размер подгоним под каждую сеть"}
                   </p>
                 </div>
                 <Button
                   variant="ghost"
                   size="icon"
                   aria-label="Убрать медиа"
+                  disabled={!canEditContent}
                   onClick={() => c.setMedia(null)}
                 >
                   <X className="h-[18px] w-[18px]" aria-hidden />
@@ -2107,18 +3114,28 @@ function ComposerInner() {
             Готовые изображения и видео из ИИ-студии сохраняются вместе с постом.
           </p>
         </div>
-
-        <Divider />
+        </EditorSection>
 
         {/* ------------------------------------------------------------- СЕТИ */}
+        <EditorSection
+          id="composer-destinations"
+          title="Куда публикуем"
+          summary={[
+            tgOn ? `Telegram · ${c.channelIds.length} ${plural(c.channelIds.length, "канал", "канала", "каналов")}` : "",
+            vkOn ? `VK · ${c.vkChannelIds.length} ${plural(c.vkChannelIds.length, "сообщество", "сообщества", "сообществ")}` : "",
+          ].filter(Boolean).join(" · ") || "Назначение не выбрано"}
+          error={c.errors.networks}
+          icon={<Send className="h-5 w-5" />}
+          defaultOpen={Boolean(c.errors.networks)}
+        >
         <div className="space-y-3">
-          <p className="text-[13px] font-semibold text-text-2">Куда публикуем</p>
 
           <div className="flex flex-wrap items-center gap-6">
             {(c.tgChannels.length > 0 || tgOn) && (
               <Checkbox
                 id="net-tg"
                 checked={tgOn}
+                disabled={!canEditContent}
                 onChange={(v) => c.toggleNetwork("tg", v)}
                 label={
                   <span className="inline-flex items-center gap-1.5">
@@ -2132,6 +3149,7 @@ function ComposerInner() {
               <Checkbox
                 id="net-vk"
                 checked={vkOn}
+                disabled={!canEditContent}
                 onChange={(v) => c.toggleNetwork("vk", v)}
                 label={
                   <span className="inline-flex items-center gap-1.5">
@@ -2155,22 +3173,22 @@ function ComposerInner() {
             </p>
           )}
 
-          {/* Выбор канала — только при нескольких. У кого канал один, тому нечего решать,
-              и лишний селектор был бы шумом. */}
           {tgOn && (c.tgChannels.length > 1 || c.channelId == null) && (
             <div className="space-y-2 pt-1">
-              <p className="text-[13px] font-semibold text-text-2">В какой канал</p>
+              <p className="text-[13px] font-semibold text-text-2">Каналы Telegram</p>
+              <p className="text-[12px] text-text-3">Можно выбрать несколько.</p>
               <div className="flex flex-wrap gap-2">
                 {c.tgChannels.map((ch) => {
-                  const on = c.channelId === ch.id;
+                  const on = c.channelIds.includes(ch.id);
                   return (
                     <button
                       key={ch.id}
                       type="button"
-                      onClick={() => c.setChannelId(ch.id)}
+                      disabled={!canEditContent}
+                      onClick={() => c.toggleChannelId(ch.id)}
                       aria-pressed={on}
                       className={cn(
-                        "inline-flex h-11 max-w-full cursor-pointer items-center gap-2 rounded-xs px-3.5",
+                        "inline-flex h-11 max-w-full items-center gap-2 rounded-xs px-3.5 enabled:cursor-pointer disabled:cursor-not-allowed disabled:opacity-60",
                         "text-[14px] font-semibold transition-colors duration-200",
                         on
                           ? "bg-info-soft text-info-text ring-1 ring-brand/30 ring-inset"
@@ -2188,18 +3206,20 @@ function ComposerInner() {
 
           {vkOn && (c.vkChannels.length > 1 || c.vkChannelId == null) && (
             <div className="space-y-2 pt-1">
-              <p className="text-[13px] font-semibold text-text-2">В какое сообщество</p>
+              <p className="text-[13px] font-semibold text-text-2">Сообщества VK</p>
+              <p className="text-[12px] text-text-3">Можно выбрать несколько.</p>
               <div className="flex flex-wrap gap-2">
                 {c.vkChannels.map((ch) => {
-                  const on = c.vkChannelId === ch.id;
+                  const on = c.vkChannelIds.includes(ch.id);
                   return (
                     <button
                       key={ch.id}
                       type="button"
-                      onClick={() => c.setVkChannelId(ch.id)}
+                      disabled={!canEditContent}
+                      onClick={() => c.toggleVkChannelId(ch.id)}
                       aria-pressed={on}
                       className={cn(
-                        "inline-flex h-11 max-w-full cursor-pointer items-center gap-2 rounded-xs px-3.5",
+                        "inline-flex h-11 max-w-full items-center gap-2 rounded-xs px-3.5 enabled:cursor-pointer disabled:cursor-not-allowed disabled:opacity-60",
                         "text-[14px] font-semibold transition-colors duration-200",
                         on
                           ? "bg-info-soft text-info-text ring-1 ring-brand/30 ring-inset"
@@ -2215,19 +3235,50 @@ function ComposerInner() {
             </div>
           )}
         </div>
+        </EditorSection>
+
+        {!currentProjectPersonal && (
+          <>
+            <Divider />
+
+            <div id="editorial-readiness" className="scroll-mt-6">
+              <EditorialReviewPanel
+                projectId={projects.current?.id ?? null}
+                draftId={c.draftId}
+                role={projects.current?.role}
+                draftSaveState={c.draftSaveState}
+                disabled={c.typing || c.saving}
+                onSaveDraft={c.saveDraft}
+                onStateChange={c.onEditorialStateChange}
+              />
+            </div>
+          </>
+        )}
 
         {/* ------------------------------------------------------------ ВРЕМЯ */}
-        <Field
-          label="Когда публикуем"
+        <EditorSection
+          id="publication-time"
+          title="Дата и публикация"
+          summary={c.date && c.time ? `${c.date.split("-").reverse().join(".")} · ${c.time} · ${c.scheduleTimezone}` : "Дата и время не выбраны"}
           error={c.errors.when}
-          hint="Публикует сервер — компьютер можно выключить."
+          icon={<CalendarClock className="h-5 w-5" />}
+          defaultOpen={Boolean(c.errors.when)}
         >
+          <Field
+            label="Когда добавить в календарь"
+            error={c.errors.when}
+            hint={currentProjectPersonal
+              ? "Выберите время будущей публикации. После добавления пост появится в календаре."
+              : canEditContent
+                ? "Дата черновика входит в согласуемую версию."
+                : "Дата хранится в задании на публикацию и не меняет согласованный текст."}
+          >
           <div className="space-y-3">
             <div className="flex flex-wrap gap-2">
               <Input
                 type="date"
                 value={c.date}
-                disabled={c.noDate}
+                disabled={c.saving || c.noDate || !c.canChangeSchedule}
                 aria-label="Дата публикации"
                 onChange={(e) => c.setDate(e.target.value)}
                 className="w-[176px] nums"
@@ -2235,7 +3286,7 @@ function ComposerInner() {
               <Input
                 type="time"
                 value={c.time}
-                disabled={c.noDate}
+                disabled={c.saving || c.noDate || !c.canChangeSchedule}
                 aria-label="Время публикации"
                 onChange={(e) => c.setTime(e.target.value)}
                 className="w-[136px] nums"
@@ -2267,6 +3318,7 @@ function ComposerInner() {
                         type="radio"
                         name="schedule-disambiguation"
                         value={value}
+                        disabled={c.saving || !c.canChangeSchedule}
                         checked={c.timeDisambiguation === value}
                         onChange={() => c.setTimeDisambiguation(value)}
                       />
@@ -2281,7 +3333,7 @@ function ComposerInner() {
               <Button
                 variant="soft"
                 size="sm"
-                disabled={c.noDate}
+                disabled={c.saving || c.noDate || !c.canChangeSchedule}
                 onClick={() => c.quick("hour")}
               >
                 <Clock className="h-4 w-4" aria-hidden />
@@ -2290,17 +3342,26 @@ function ComposerInner() {
               <Button
                 variant="soft"
                 size="sm"
-                disabled={c.noDate}
+                disabled={c.saving || c.noDate || !c.canChangeSchedule}
+                onClick={() => c.quick("evening")}
+              >
+                <Clock className="h-4 w-4" aria-hidden />
+                Сегодня вечером
+              </Button>
+              <Button
+                variant="soft"
+                size="sm"
+                disabled={c.saving || c.noDate || !c.canChangeSchedule}
                 onClick={() => c.quick("tomorrow")}
               >
                 <CalendarClock className="h-4 w-4" aria-hidden />
-                Завтра 10:00
+                Завтра утром
               </Button>
               {c.bestTime ? (
                 <Button
                   variant="soft"
                   size="sm"
-                  disabled={c.noDate}
+                  disabled={c.saving || c.noDate || !c.canChangeSchedule}
                   onClick={() => c.quick("best")}
                   className="gap-2"
                   title={`Среднее ${c.bestTime.averageViews} просмотров; всего в расчёте ${c.bestTime.totalSample} подтверждённых постов`}
@@ -2319,32 +3380,43 @@ function ComposerInner() {
                 </Button>
               ) : (
                 <p className="self-center text-[12px] leading-relaxed text-text-3">
-                  Лучшее время появится после 3 подтверждённых постов с метриками.
+                  Лучшее время появится после 3 опубликованных постов с метриками.
                 </p>
               )}
             </div>
 
-            <Checkbox
-              id="no-date"
-              checked={c.noDate}
-              onChange={c.setNoDate}
-              label="Без даты — в очередь"
-            />
+            <p className="text-[13px] leading-relaxed text-text-3">
+              Для публикации без ручной даты используйте кнопку «Поставить в очередь» в нижней панели.
+            </p>
           </div>
-        </Field>
-
-        <Divider />
+          </Field>
+        </EditorSection>
 
         {/* --------------------------------------------------------- ДЕЙСТВИЯ */}
+        <EditorSection
+          id="composer-protection"
+          title="Сохранение и версии"
+          summary={c.draftSaveState === "offline"
+            ? "Защищено локально · ждём сеть"
+            : c.draftSaveState === "saved"
+              ? `Сохранено${c.draftSavedAt ? ` в ${fmtTime(c.draftSavedAt)}` : ""}`
+              : c.draftSaveState === "saving"
+                ? "Сохраняем на сервере…"
+                : "Автосохранение включено"}
+          icon={<History className="h-5 w-5" />}
+        >
+        <div className="space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap gap-2">
+            {canEditContent && (
+              <>
             <Button
               variant="outline"
               onClick={c.saveDraft}
               loading={c.draftSaveState === "saving"}
               disabled={c.saving || c.typing}
             >
-              {c.draftSaveState === "saved" ? "Сохранено" : "Сохранить как черновик"}
+              {c.draftSaveState === "saved" ? "Сохранено" : "Сохранить сейчас"}
             </Button>
             <Button
               variant="outline"
@@ -2374,7 +3446,9 @@ function ComposerInner() {
               <Bookmark className="h-[18px] w-[18px]" aria-hidden />
               В библиотеку
             </Button>
-            {c.editingId && (
+              </>
+            )}
+            {canEditContent && c.editingId && (
               <Button
                 variant="danger"
                 disabled={c.draftSaveState === "saving" || c.saving || c.typing}
@@ -2386,7 +3460,11 @@ function ComposerInner() {
             )}
           </div>
           <div className="text-right text-[13px]" aria-live="polite">
-            {c.draftSaveState === "saving" ? (
+            {!canEditContent ? (
+              <p className="max-w-[360px] font-medium text-text-2">
+                Согласованная версия защищена от изменений.
+              </p>
+            ) : c.draftSaveState === "saving" ? (
               <p className="font-medium text-brand">Сохраняем на сервере…</p>
             ) : c.draftSaveState === "saved" ? (
               <p className="font-medium text-success">
@@ -2420,8 +3498,25 @@ function ComposerInner() {
           </div>
         </div>
 
+        <RevisionHistoryPanel />
+
+        {c.errors.tracking && (
+          <div className="flex flex-wrap items-center gap-3 rounded-xs border border-danger/30 bg-danger-soft p-3">
+            <p role="alert" className="min-w-0 flex-1 text-[13px] font-medium text-danger-text">
+              {c.errors.tracking}
+            </p>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => c.setTracking({ ...EMPTY_COMPOSER_TRACKING, utmValues: {} })}
+            >
+              Убрать старые метки
+            </Button>
+          </div>
+        )}
+
         <AnimatePresence initial={false}>
-          {c.confirmDelete && (
+          {canEditContent && c.confirmDelete && (
             <motion.div key="confirm" {...fade}>
               <div className="rounded-sm border border-danger/30 bg-danger-soft p-4">
                 <p className="text-[15px] font-bold text-danger-text">
@@ -2443,65 +3538,13 @@ function ComposerInner() {
             </motion.div>
           )}
         </AnimatePresence>
+        </div>
+        </EditorSection>
       </Card>
 
-      {/* -------------------------------------------------- ПРАВО: ПРЕДПРОСМОТР */}
-      <aside
-        className={cn(
-          "w-full shrink-0 space-y-4 lg:sticky lg:top-6 lg:block lg:w-[380px]",
-          mobilePane === "editor" && "hidden",
-        )}
-      >
-        <div className="flex items-baseline justify-between gap-3">
-          <h2 className="text-[17px] font-extrabold tracking-tight text-text">Как это увидят</h2>
-          <span className="text-[13px] text-text-3">обновляется на лету</span>
-        </div>
+      <ComposerActionBar />
+      <div aria-hidden className="h-40 sm:h-28" />
 
-        {tgOn && pickedCh && (
-          <TelegramPreview
-            on
-            text={text}
-            media={c.media}
-            typing={typing}
-            name={tgCh.name}
-            handle={tgCh.handle}
-            subscribers={tgCh.subscribers}
-            when={c.noDate ? "в очереди" : c.time || "—"}
-          />
-        )}
-
-        {vkOn && pickedVk && (
-          <VkPreview
-            on
-            text={text}
-            media={c.media}
-            typing={typing}
-            name={vkCh.name}
-            subscribers={vkCh.subscribers}
-            when={
-              c.noDate
-                ? "в очереди · без даты"
-                : when
-                  ? `${fmtDate(when.toISOString())} в ${c.time}`
-                  : "дата не выбрана"
-            }
-          />
-        )}
-
-        {!((tgOn && pickedCh) || (vkOn && pickedVk)) && (
-          <EmptyState
-            icon={<Eye className="h-5 w-5" strokeWidth={1.5} aria-hidden />}
-            title="Выбери активный канал"
-            body="Предпросмотр появится только для реального назначения этого черновика."
-          />
-        )}
-
-        <p className="text-[13px] leading-relaxed text-text-3">
-          Различия сетей платформа учтёт сама: длину, разметку и размер картинки. Метрики появятся
-          только после настоящей публикации.
-        </p>
-      </aside>
-      </div>
     </>
   );
 }
@@ -2534,232 +3577,23 @@ function SourcePlate({ source }: { source: NonNullable<Post["sourceRef"]> }) {
   );
 }
 
-/* ------------------------------------------------------------- ПРЕДПРОСМОТРЫ */
-
-interface PreviewProps {
-  on: boolean;
-  text: string;
-  media: Post["media"];
-  typing: boolean;
-  name: string;
-  subscribers: number;
-  when: string;
-}
-
-function PreviewHead({ network, on }: { network: Network; on: boolean }) {
-  return (
-    <div className="mb-2 flex items-center justify-between gap-2">
-      <span className="inline-flex items-center gap-1.5 text-[13px] font-semibold text-text-2">
-        {network === "tg" ? (
-          <TelegramIcon className="h-4 w-4" />
-        ) : (
-          <VkIcon className="h-4 w-4" />
-        )}
-        {network === "tg" ? "Telegram" : "VK"}
-      </span>
-      {!on && <span className="text-[13px] font-medium text-text-3">Сеть отключена</span>}
-    </div>
-  );
-}
-
-function PreviewText({ value, typing }: { value: string; typing: boolean }) {
-  return (
-    <p className="max-h-[280px] overflow-y-auto text-[15px] leading-relaxed whitespace-pre-wrap break-words text-text">
-      {value ? (
-        value
-      ) : (
-        <span className="text-text-3">
-          Здесь появится твой пост. Начни печатать — или попроси ИИ.
-        </span>
-      )}
-      {typing && <span className="caret" aria-hidden />}
-    </p>
-  );
-}
-
-function MediaBlock({ media, className }: { media: NonNullable<Post["media"]>; className?: string }) {
-  return (
-    <div
-      className={cn("relative overflow-hidden rounded-sm", className)}
-      style={media.url ? undefined : mediaStyle(media.hue)}
-      aria-hidden
-    >
-      {media.url && media.kind === "image" && (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img src={media.url} alt="" className="h-full w-full object-cover" />
-      )}
-      {media.url && media.kind === "video" && (
-        <video src={media.url} muted playsInline preload="metadata" className="h-full w-full object-cover" />
-      )}
-      <div className="absolute inset-x-0 bottom-0 flex items-center gap-1.5 bg-black/25 px-3 py-1.5 text-[13px] font-semibold text-white backdrop-blur-[2px]">
-        {media.kind === "video" ? (
-          <Video className="h-4 w-4" strokeWidth={2} />
-        ) : (
-          <ImageIcon className="h-4 w-4" strokeWidth={2} />
-        )}
-        {media.label}
-      </div>
-    </div>
-  );
-}
-
-// Telegram: медиа сверху, текст под ним, снизу — просмотры и время.
-function TelegramPreview({
-  on,
-  text,
-  media,
-  typing,
-  name,
-  handle,
-  subscribers,
-  when,
-}: PreviewProps & { handle: string }) {
-  const payload = buildTelegramPayload({ text, hasAsset: Boolean(media) });
-  const textParts = payload.parts.filter(
-    (part) => part.type === "text" || part.type === "media_caption",
-  );
-  const views = subscribers > 0 ? Math.round(subscribers * 0.26) : null;
-
-  return (
-    <div>
-      <PreviewHead network="tg" on={on} />
-      <Card
-        className={cn(
-          "overflow-hidden rounded-lg p-0 transition-opacity duration-200",
-          !on && "opacity-40",
-        )}
-      >
-        <div className="flex items-center gap-3 border-b border-line px-4 py-3">
-          <div className="h-9 w-9 shrink-0 rounded-full bg-brand-gradient" aria-hidden />
-          <div className="min-w-0">
-            <p className="truncate text-[14px] font-bold text-text">{name}</p>
-            <p className="truncate text-[13px] text-text-3">{handle}</p>
-          </div>
-        </div>
-
-        {media && (
-          <div className="px-3 pt-3">
-            <MediaBlock media={media} className="h-32" />
-          </div>
-        )}
-
-        <div className="px-4 py-3">
-          <div className="space-y-3">
-            {textParts.length > 0 ? textParts.map((part, index) => (
-                <div key={part.index} className={cn(index > 0 && "border-t border-line pt-3")}>
-                  {textParts.length > 1 && (
-                    <p className="mb-1 text-[12px] font-semibold text-text-3">
-                      Сообщение {index + 1} из {textParts.length}
-                    </p>
-                  )}
-                  <PreviewText
-                    value={telegramHtmlToText(part.payloadHtml || "")}
-                    typing={typing && index === textParts.length - 1}
-                  />
-                </div>
-              )) : <PreviewText value="" typing={typing} />}
-          </div>
-        </div>
-
-        <div className="flex items-center gap-1.5 border-t border-line px-4 py-2.5 text-[13px] text-text-3">
-          {views != null && (
-            <>
-              <Eye className="h-4 w-4" strokeWidth={1.75} aria-hidden />
-              <span className="nums">{fmtCompact(views)}</span>
-              <span aria-hidden>·</span>
-            </>
-          )}
-          <span className="nums">{when}</span>
-        </div>
-      </Card>
-    </div>
-  );
-}
-
-// VK: текст сверху, вложение под ним, снизу — реакции.
-function VkPreview({ on, text, media, typing, name, subscribers, when }: PreviewProps) {
-  const hasMetrics = subscribers > 0;
-  const likes = Math.round(subscribers * 0.021);
-  const comments = Math.round(subscribers * 0.004);
-  const shares = Math.round(subscribers * 0.0022);
-  const views = Math.round(subscribers * 0.42);
-
-  return (
-    <div>
-      <PreviewHead network="vk" on={on} />
-      <Card className={cn("overflow-hidden p-0 transition-opacity duration-200", !on && "opacity-40")}>
-        <div className="flex items-center gap-3 px-4 pt-4">
-          <div className="h-10 w-10 shrink-0 rounded-xs bg-brand-gradient" aria-hidden />
-          <div className="min-w-0">
-            <p className="truncate text-[14px] font-bold text-text">{name}</p>
-            <p className="truncate text-[13px] text-text-3">{when}</p>
-          </div>
-        </div>
-
-        <div className="px-4 py-3">
-          <PreviewText value={text} typing={typing} />
-        </div>
-
-        {media && (
-          <div className="px-4 pb-3">
-            <MediaBlock media={media} className="h-36" />
-          </div>
-        )}
-
-        <div className="flex items-center gap-4 border-t border-line px-4 py-2.5 text-[13px] text-text-3">
-          {hasMetrics ? (
-            <>
-              <span className="inline-flex items-center gap-1.5">
-                <Heart className="h-4 w-4" strokeWidth={1.75} aria-hidden />
-                <span className="nums">{fmtNum(likes)}</span>
-              </span>
-              <span className="inline-flex items-center gap-1.5">
-                <MessageCircle className="h-4 w-4" strokeWidth={1.75} aria-hidden />
-                <span className="nums">{fmtNum(comments)}</span>
-              </span>
-              <span className="inline-flex items-center gap-1.5">
-                <Share2 className="h-4 w-4" strokeWidth={1.75} aria-hidden />
-                <span className="nums">{fmtNum(shares)}</span>
-              </span>
-              <span className="ml-auto inline-flex items-center gap-1.5">
-                <Eye className="h-4 w-4" strokeWidth={1.75} aria-hidden />
-                <span className="nums">{fmtCompact(views)}</span>
-              </span>
-            </>
-          ) : (
-            <span>Метрики появятся после публикации</span>
-          )}
-        </div>
-      </Card>
-    </div>
-  );
-}
-
 /* ---------------------------------------------------------------- СКЕЛЕТОН */
 
 function ComposerSkeleton() {
   return (
-    <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
-      <Card className="min-w-0 flex-1 space-y-5 p-5 sm:p-6">
-        <div className="skeleton h-4 w-28" />
-        <div className="skeleton h-64 w-full rounded-sm" />
-        <div className="flex flex-wrap gap-2">
-          {[0, 1, 2, 3].map((i) => (
-            <div key={i} className="skeleton h-9 w-32 rounded-[10px]" />
-          ))}
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <div className="skeleton h-12 w-[176px] rounded-xs" />
-          <div className="skeleton h-12 w-[136px] rounded-xs" />
-        </div>
-        <div className="skeleton h-11 w-56 rounded-xs" />
-      </Card>
-
-      <aside className="w-full shrink-0 space-y-4 lg:w-[380px]">
-        <div className="skeleton h-5 w-40" />
-        <div className="skeleton h-60 w-full rounded-lg" />
-        <div className="skeleton h-60 w-full rounded-md" />
-      </aside>
-    </div>
+    <Card className="mx-auto w-full max-w-5xl min-w-0 space-y-5 p-5 sm:p-6">
+      <div className="skeleton h-4 w-28" />
+      <div className="skeleton h-64 w-full rounded-sm" />
+      <div className="flex flex-wrap gap-2">
+        {[0, 1, 2, 3].map((i) => (
+          <div key={i} className="skeleton h-9 w-32 rounded-[10px]" />
+        ))}
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <div className="skeleton h-12 w-[176px] rounded-xs" />
+        <div className="skeleton h-12 w-[136px] rounded-xs" />
+      </div>
+      <div className="skeleton h-11 w-56 rounded-xs" />
+    </Card>
   );
 }

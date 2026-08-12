@@ -5,6 +5,7 @@
 // Главное действие — сгенерировать и отправить в календарь.
 
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { motion, useReducedMotion } from "motion/react";
 import {
@@ -17,6 +18,7 @@ import {
   Copy,
   FileText,
   ImageIcon,
+  Layers3,
   ListChecks,
   MessageSquareText,
   Plus,
@@ -102,6 +104,8 @@ type AskOptions = {
   referenceDraftId?: number;
   referenceDraftVersion?: number;
   resultClientKey?: string;
+  /** Source-bound destination survives reload before the global channel store is ready. */
+  channelId?: number | null;
 };
 type PendingBrief = { text: string; opts?: Omit<AskOptions, "skipBrief"> };
 type PendingLibraryReference = { text: string; source?: string; topic?: string };
@@ -111,6 +115,7 @@ type PendingReferenceGeneration = {
   prompt: string;
   requestKey: string;
   resultClientKey: string;
+  channelId: number;
 };
 
 type WorkspaceMode = "chat" | "studio";
@@ -371,13 +376,13 @@ function StudioSkeleton() {
             <div className="skeleton h-28 w-4/5" />
           </div>
         </div>
-        <div className="flex flex-col gap-3 border-t border-line p-4 md:p-5">
-          <div className="flex gap-2">
+        <div className="min-w-0 overflow-hidden border-t border-line p-4 md:p-5">
+          <div className="grid min-w-0 grid-cols-2 gap-2 sm:grid-cols-4">
             {Array.from({ length: 4 }, (_, i) => (
-              <div key={i} className="skeleton h-11 w-32 shrink-0" />
+              <div key={i} className="skeleton h-11 min-w-0 w-full" />
             ))}
           </div>
-          <div className="skeleton h-[86px] w-full" />
+          <div className="skeleton mt-3 h-[86px] w-full" />
         </div>
       </div>
 
@@ -409,7 +414,7 @@ function WorkspaceModeSwitch({
     chat: null,
     studio: null,
   });
-  const modes: { id: WorkspaceMode; label: string; icon: React.ReactNode }[] = [
+  const modes: { id: WorkspaceMode; label: string; compactLabel?: string; icon: React.ReactNode }[] = [
     {
       id: "chat",
       label: "Чат",
@@ -418,6 +423,7 @@ function WorkspaceModeSwitch({
     {
       id: "studio",
       label: "Картинки и видео",
+      compactLabel: "Медиа",
       icon: <Sparkles className="h-4 w-4" strokeWidth={2} aria-hidden />,
     },
   ];
@@ -434,7 +440,7 @@ function WorkspaceModeSwitch({
         onChange(next);
         modeRefs.current[next]?.focus();
       }}
-      className="inline-grid grid-cols-2 rounded-md border-2 border-line bg-surface p-1 shadow-[3px_3px_0_var(--ink)]"
+      className="grid w-full min-w-0 grid-cols-2 rounded-md border-2 border-line bg-surface p-1 shadow-[3px_3px_0_var(--ink)] sm:w-auto"
     >
       {modes.map((mode) => (
         <button
@@ -444,19 +450,26 @@ function WorkspaceModeSwitch({
           }}
           type="button"
           role="tab"
+          aria-label={mode.label}
           aria-selected={value === mode.id}
           tabIndex={value === mode.id ? 0 : -1}
           aria-controls={`${mode.id}-workspace`}
           onClick={() => onChange(mode.id)}
           className={cn(
-            "inline-flex min-h-10 items-center justify-center gap-2 rounded-xs px-3 text-[13px] font-extrabold whitespace-nowrap transition-colors sm:min-w-[126px] sm:px-4",
+            "inline-flex min-h-11 min-w-0 items-center justify-center gap-2 rounded-xs px-2.5 text-[13px] font-extrabold whitespace-nowrap",
+            "transition-colors duration-200 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15 motion-reduce:transition-none sm:min-w-[126px] sm:px-4",
             value === mode.id
               ? "bg-brand text-text"
               : "text-text-2 hover:bg-surface-2 hover:text-text",
           )}
         >
           {mode.icon}
-          {mode.label}
+          <span aria-hidden className={mode.compactLabel ? "hidden sm:inline" : undefined}>
+            {mode.label}
+          </span>
+          {mode.compactLabel && (
+            <span aria-hidden className="sm:hidden">{mode.compactLabel}</span>
+          )}
         </button>
       ))}
     </div>
@@ -551,8 +564,8 @@ function QuickActionsMenu({
         aria-expanded={open}
         aria-label="Выбрать, что создать"
         className={cn(
-          "inline-flex h-9 shrink-0 cursor-pointer items-center gap-1.5 rounded-full px-2.5 text-text-2",
-          "transition-colors hover:bg-surface-2 hover:text-text disabled:pointer-events-none disabled:opacity-45",
+          "inline-flex min-h-11 shrink-0 cursor-pointer items-center gap-1.5 rounded-full px-2.5 text-text-2",
+          "transition-colors duration-200 hover:bg-surface-2 hover:text-text focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15 motion-reduce:transition-none disabled:pointer-events-none disabled:opacity-45",
           open && "bg-surface-2 text-text",
         )}
       >
@@ -616,8 +629,8 @@ function ChannelMenu({
         aria-expanded={open}
         aria-label={`Канал: ${label}`}
         className={cn(
-          "inline-flex h-9 max-w-[180px] min-w-0 shrink cursor-pointer items-center gap-1.5 rounded-full px-2.5",
-          "text-[12px] font-semibold text-text-2 transition-colors hover:bg-surface-2 hover:text-text",
+          "inline-flex min-h-11 max-w-[180px] min-w-0 shrink cursor-pointer items-center gap-1.5 rounded-full px-2.5",
+          "text-[12px] font-semibold text-text-2 transition-colors duration-200 hover:bg-surface-2 hover:text-text focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15 motion-reduce:transition-none",
           "disabled:pointer-events-none disabled:opacity-45",
           open && "bg-surface-2 text-text",
         )}
@@ -698,8 +711,8 @@ function ModelMenu({
         aria-expanded={open}
         aria-label={`Модель: ${label}`}
         className={cn(
-          "inline-flex h-9 max-w-[180px] min-w-0 shrink cursor-pointer items-center gap-1 rounded-full px-2.5",
-          "text-[12px] font-semibold text-text-2 transition-colors hover:bg-surface-2 hover:text-text",
+          "inline-flex min-h-11 max-w-[180px] min-w-0 shrink cursor-pointer items-center gap-1 rounded-full px-2.5",
+          "text-[12px] font-semibold text-text-2 transition-colors duration-200 hover:bg-surface-2 hover:text-text focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15 motion-reduce:transition-none",
           "disabled:pointer-events-none disabled:opacity-45",
           open && "bg-surface-2 text-text",
         )}
@@ -1069,7 +1082,7 @@ function StudioPageInner() {
           source: serverDraft.source_ref.label.trim().slice(0, 160) || undefined,
         });
         if (destination) setPickedChannelId(destination.channel_id);
-        if (searchParams.get("intent") === "create") {
+        if (searchParams.get("intent") === "create" && destination) {
           const adaptation = buildLibraryAdaptation({
             channelName: destination?.title || "выбранного канала",
             text: serverDraft.text,
@@ -1083,6 +1096,7 @@ function StudioPageInner() {
             draftId: serverDraft.id,
             version: serverDraft.version,
             prompt: adaptation.prompt,
+            channelId: destination.channel_id,
             ...identity,
           });
         }
@@ -1292,7 +1306,7 @@ function StudioPageInner() {
           // has a durable, idempotent draft. Back returns to Studio without starting again.
           window.history.replaceState(null, "", `/app/studio?draft=${generation.referenceDraftId}`);
         }
-        router.push(`/app/composer?draft=${result.draft.id}`);
+        router.push(`/app/composer?draft=${result.draft.id}&from=studio`);
       } catch (error) {
         s.toast({
           kind: "danger",
@@ -1716,7 +1730,7 @@ function StudioPageInner() {
       referenceDraftId: opts?.referenceDraftId ?? contextDraft?.id,
       referenceDraftVersion: opts?.referenceDraftVersion ?? contextDraft?.version,
       referenceIntent: opts?.autoOpenComposer ? "create" : contextDraft ? "discuss" : undefined,
-      channelId,
+      channelId: opts?.channelId ?? channelId,
       postSettings,
       autoOpenComposer: opts?.autoOpenComposer,
       resultClientKey: opts?.resultClientKey,
@@ -1767,6 +1781,7 @@ function StudioPageInner() {
       referenceDraftId: pending.draftId,
       referenceDraftVersion: pending.version,
       resultClientKey: pending.resultClientKey,
+      channelId: pending.channelId,
     });
     // `ask` intentionally consumes the reference/context captured by this render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1919,7 +1934,7 @@ function StudioPageInner() {
         mimeType: generation.mimeType,
       }),
     );
-    router.push("/app/composer?fromMedia=1");
+    router.push("/app/composer?fromMedia=1&from=studio");
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1957,7 +1972,22 @@ function StudioPageInner() {
           ? "Обсуждай идеи и создавай тексты в обычном диалоге."
           : "Опиши идею словами — Аврора создаст визуал прямо в диалоге."
       }
-      action={<WorkspaceModeSwitch value={workspaceMode} onChange={changeWorkspace} />}
+      action={
+        <div className="grid w-full min-w-0 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:items-center sm:justify-end">
+          <Link
+            href={contextDraft ? `/app/studio/visuals?draft=${contextDraft.id}` : "/app/studio/visuals"}
+            className={cn(
+              "inline-flex min-h-11 w-full items-center justify-center gap-1.5 rounded-[10px] border border-line-strong bg-surface px-3.5 py-2",
+              "text-[13px] font-semibold whitespace-nowrap text-text transition-colors duration-200 hover:bg-surface-inset active:bg-surface-2",
+              "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15 motion-reduce:transition-none sm:w-auto",
+            )}
+          >
+            <Layers3 className="h-4 w-4" aria-hidden />
+            Карусели и сценарии
+          </Link>
+          <WorkspaceModeSwitch value={workspaceMode} onChange={changeWorkspace} />
+        </div>
+      }
     >
       {!s.ready || !s.authReady || !sessionOwner || chatSessionOwner !== sessionOwner ? (
         <StudioSkeleton />
@@ -2129,7 +2159,7 @@ function StudioPageInner() {
                     <Button
                       variant="brand"
                       size="icon"
-                      className="ml-auto h-10 w-10 shrink-0 rounded-full"
+                      className="ml-auto shrink-0 rounded-full"
                       aria-label="Отправить"
                       disabled={busy || (draft.trim().length === 0 && postSettings.mainIdea.trim().length === 0)}
                       onClick={() => ask(draft)}

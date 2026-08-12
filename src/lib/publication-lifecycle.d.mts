@@ -3,6 +3,7 @@ import type { Pool } from "pg";
 type MutationBase = {
   pool: Pool;
   userId: number;
+  projectId: number;
   operationId: number;
   expectedRevision: number;
   expectedStatus?: string;

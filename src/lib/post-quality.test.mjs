@@ -134,6 +134,30 @@ describe("post quality contract", () => {
     expect(prompt).toContain("Тёмная юридическая инфографика");
   });
 
+  it("передаёт уровень 100 как мат без цензуры и количественного лимита", () => {
+    const quality = normalizePostQuality({ ...legal, profanityLevel: 100 });
+    const prompt = buildQualityPrompt(quality, { postIndex: 0 });
+
+    expect(quality.profanity).toBe("allow");
+    expect(quality.profanityLevel).toBe(100);
+    expect(prompt).toContain("обязательно используй минимум одно прямое матерное выражение без цензуры");
+    expect(prompt).toContain("верхнего количественного лимита нет");
+    expect(prompt).toContain("не добавляй дежурную фразу ради галочки");
+  });
+
+  it("не принимает нейтральный текст при обязательном неограниченном мате", () => {
+    const quality = normalizePostQuality({ ...legal, profanityLevel: 100 });
+    const neutral = validatePostQuality(goodLegalPost(), quality, { supportCount: 1, citedShare: 1 });
+    const direct = validatePostQuality(
+      goodLegalPost().replace("значимый документ", "пиздец какой значимый документ"),
+      quality,
+      { supportCount: 1, citedShare: 1 },
+    );
+
+    expect(neutral.violations).toContainEqual(expect.objectContaining({ code: "profanity_required", blocker: true }));
+    expect(direct.violations).not.toContainEqual(expect.objectContaining({ code: "profanity_required" }));
+  });
+
   it("rejects clickbait and builds a safe useful topic from a fact", () => {
     const source =
       "Внесудебное банкротство через МФЦ доступно при долге от 25 тысяч до 1 миллиона рублей и занимает шесть месяцев.";

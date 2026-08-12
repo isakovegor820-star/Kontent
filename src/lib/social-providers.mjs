@@ -13,6 +13,7 @@ import { reconcileUploadSession, resolveChannel, uploadVideo } from "./youtube.m
 import { exchangeLongLivedToken, reconcileMediaCreation, resolveIgUser, publishMedia } from "./instagram.mjs";
 import { assertFutureProviderAdapter } from "./social-provider-contract.mjs";
 import { providerSupportsOperation } from "./provider-capabilities.mjs";
+import { TENCHAT_ADAPTER } from "./tenchat-adapter.mjs";
 
 const GRAPH_BASE = "https://graph.facebook.com/v19.0";
 
@@ -212,6 +213,10 @@ export const SOCIAL_ADAPTERS = {
       operation.providerOperationId,
     ),
   },
+  // Export-only until written official access and a documented partner contract exist.
+  // Registering the adapter gives API/worker code one fail-closed contract instead of a
+  // network-specific fallback that could accidentally report a live success.
+  tenchat: TENCHAT_ADAPTER,
 };
 
 for (const adapter of Object.values(SOCIAL_ADAPTERS)) assertFutureProviderAdapter(adapter);

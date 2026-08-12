@@ -59,15 +59,24 @@ const sourceItems = () => [{
   quality: passedQuality,
 }];
 
+const monthlySourceItems = () => [{
+  ...sourceItems()[0],
+  draftId: 301,
+  monthlyCampaignItemId: 901,
+  monthlyCampaignItemVersion: 4,
+}];
+
 function checkpointPool({
   failPlanUpdate = false,
   failDispatchAck = false,
+  failMonthlyLineage = false,
   items = sourceItems(),
 } = {}) {
   const state = {
     items: structuredClone(items),
     post: null,
     outbox: null,
+    monthlyLink: null,
     postInsertions: 0,
     commits: 0,
     rollbacks: 0,
@@ -96,10 +105,11 @@ function checkpointPool({
           working.postInsertions += 1;
           working.post = {
             id: 501,
-            scheduled_at: params[3],
+            project_id: params[0],
+            scheduled_at: params[4],
             status: "scheduled",
-            idempotency_key: params[4],
-            request_fingerprint: params[5],
+            idempotency_key: params[5],
+            request_fingerprint: params[6],
           };
           return { rows: [structuredClone(working.post)], rowCount: 1 };
         }
@@ -116,6 +126,7 @@ function checkpointPool({
           if (!working.outbox) {
             working.outbox = {
               id: 71,
+              project_id: 11,
               post_id: working.post.id,
               scheduled_at: working.post.scheduled_at,
               status: "pending",
@@ -124,9 +135,22 @@ function checkpointPool({
           }
           return { rows: [structuredClone(working.outbox)], rowCount: 1 };
         }
+        if (sql.startsWith("update monthly_campaign_items")) {
+          if (failMonthlyLineage) return { rows: [], rowCount: 0 };
+          working.monthlyLink = {
+            itemId: params[0],
+            projectId: params[1],
+            planId: params[2],
+            postId: params[3],
+            draftId: params[4],
+            itemIndex: params[5],
+            contentVersion: params[6],
+          };
+          return { rows: [], rowCount: 1 };
+        }
         if (sql.startsWith("update autopilot_plan") && sql.includes("approval_heartbeat_at")) {
           if (failPlanUpdate) throw new Error("checkpoint db failure");
-          working.items = JSON.parse(String(params[4]));
+        working.items = JSON.parse(String(params[5]));
           return { rows: [{ id: 44 }], rowCount: 1 };
         }
         if (sql === "commit") {
@@ -147,7 +171,7 @@ function checkpointPool({
     if (sql.startsWith("update autopilot_schedule_outbox")) {
       if (failDispatchAck) throw new Error("ack db failure");
       if (state.outbox) {
-        state.outbox.status = params[1] ? "enqueued" : "pending";
+        state.outbox.status = params[2] ? "enqueued" : "pending";
         state.outbox.post_status = state.post?.status ?? "scheduled";
       }
       return { rows: [], rowCount: 1 };
@@ -164,6 +188,7 @@ const scheduleInput = (pool, enqueue) => ({
   pool,
   enqueue,
   planId: 44,
+  projectId: 11,
   userId: 3,
   channelId: 7,
   operationId: 91,
@@ -181,18 +206,19 @@ describe("transactional Autopilot scheduling", () => {
     const first = await scheduleAutopilotItem(scheduleInput(pool, enqueue));
     expect(first).toMatchObject({ postId: 501, queuePending: true });
     expect(state.postInsertions).toBe(1);
-    expect(state.post.idempotency_key).toBe("autopilot:44:item:0");
+    expect(state.post.idempotency_key).toBe("autopilot:11:44:item:0");
     expect(state.items[0]).toMatchObject({ status: "approved", postId: 501 });
     expect(state.outbox).toMatchObject({ post_id: 501, status: "pending" });
 
     const replay = await scheduleAutopilotItem(scheduleInput(pool, enqueue));
     expect(replay).toMatchObject({ postId: 501, queuePending: false });
     expect(state.postInsertions).toBe(1);
-    expect(enqueue).toHaveBeenNthCalledWith(1, 501, scheduledAt, 1);
-    expect(enqueue).toHaveBeenNthCalledWith(2, 501, scheduledAt, 1);
+    expect(enqueue).toHaveBeenNthCalledWith(1, 11, 501, scheduledAt, 1);
+    expect(enqueue).toHaveBeenNthCalledWith(2, 11, 501, scheduledAt, 1);
     expect(state.outbox.status).toBe("enqueued");
     const planLock = statements.find((sql) => sql.startsWith("select items from autopilot_plan"));
     expect(planLock).toContain("c.network = 'tg' and c.is_active = true");
+    expect(planLock).toContain("op.status = 'processing'");
   });
 
   it("keeps the committed outcome retryable when DB acknowledgement fails after enqueue", async () => {
@@ -222,6 +248,42 @@ describe("transactional Autopilot scheduling", () => {
     expect(enqueue).not.toHaveBeenCalled();
   });
 
+  it("atomically links the approved monthly item to its draft and scheduled post", async () => {
+    const { pool, state } = checkpointPool({ items: monthlySourceItems() });
+    const enqueue = vi.fn().mockResolvedValue(undefined);
+
+    await scheduleAutopilotItem(scheduleInput(pool, enqueue));
+
+    expect(state.monthlyLink).toEqual({
+      itemId: 901,
+      projectId: 11,
+      planId: 44,
+      postId: 501,
+      draftId: 301,
+      itemIndex: 0,
+      contentVersion: 4,
+    });
+    expect(state.items[0]).toMatchObject({ status: "approved", postId: 501 });
+  });
+
+  it("rolls back scheduling when the monthly item lineage has changed", async () => {
+    const { pool, state } = checkpointPool({
+      items: monthlySourceItems(),
+      failMonthlyLineage: true,
+    });
+    const enqueue = vi.fn();
+
+    await expect(scheduleAutopilotItem(scheduleInput(pool, enqueue))).rejects.toThrow(
+      "monthly campaign lineage changed before scheduling",
+    );
+
+    expect(state.post).toBeNull();
+    expect(state.outbox).toBeNull();
+    expect(state.monthlyLink).toBeNull();
+    expect(state.items[0]).toMatchObject({ status: "pending" });
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
   it("rechecks the fail-closed quality policy inside the checkpoint transaction", async () => {
     const unsafe = sourceItems();
     delete unsafe[0].quality;
@@ -247,7 +309,7 @@ describe("transactional Autopilot scheduling", () => {
     const result = await reconcileAutopilotScheduleOutbox({ pool, enqueue });
 
     expect(result).toEqual({ scanned: 1, enqueued: 1, pending: 0 });
-    expect(enqueue).toHaveBeenCalledWith(501, scheduledAt, 1);
+    expect(enqueue).toHaveBeenCalledWith(11, 501, scheduledAt, 1);
     expect(state.postInsertions).toBe(1);
     expect(state.outbox.status).toBe("enqueued");
   });
@@ -255,11 +317,12 @@ describe("transactional Autopilot scheduling", () => {
 
 describe("Autopilot approval lease", () => {
   it("uses a deterministic item identity and fences the plan with operation_id", async () => {
-    expect(autopilotItemOperationKey(44, 2)).toBe("autopilot:44:item:2");
+    expect(autopilotItemOperationKey(11, 44, 2)).toBe("autopilot:11:44:item:2");
     const query = vi.fn().mockResolvedValue({ rows: [{ id: 44 }], rowCount: 1 });
 
     await claimAutopilotPlan({ query }, {
       planId: 44,
+      projectId: 11,
       userId: 3,
       channelId: 7,
       operationId: 91,
@@ -268,11 +331,11 @@ describe("Autopilot approval lease", () => {
     });
 
     expect(query).toHaveBeenCalledWith(
-      expect.stringContaining("approval_operation_id = $4"),
-      [44, 3, 7, 91, ["pending", "approved"], 11],
+      expect.stringContaining("approval_operation_id = $5"),
+      [44, 11, 3, 7, 91, ["pending", "approved"], 11],
     );
     expect(query.mock.calls[0][0]).toContain("c.network = 'tg' and c.is_active = true");
-    expect(query.mock.calls[0][0]).toContain("revision = $6");
+    expect(query.mock.calls[0][0]).toContain("revision = $7");
     expect(query.mock.calls[0][0]).toContain("revision = revision + 1");
   });
 
@@ -291,6 +354,7 @@ describe("Autopilot approval lease", () => {
     await expect(finalizeAutopilotApproval({
       pool,
       planId: 44,
+      projectId: 11,
       userId: 3,
       channelId: 7,
       operationId: 91,
@@ -312,16 +376,17 @@ describe("Autopilot approval lease", () => {
 
     const rows = await reclaimStaleAutopilotApprovals(
       { query },
-      { userId: 3, channelId: 7, leaseSeconds: 300 },
+      { projectId: 11, userId: 3, channelId: 7, leaseSeconds: 300 },
     );
 
     expect(rows).toHaveLength(1);
     const [sql, params] = query.mock.calls[0];
     expect(sql).toContain("for update of p skip locked");
     expect(sql).toContain("approval_operation_id = null");
+    expect(sql).toContain("o.operation_id = p.approval_operation_id");
     expect(sql).toContain("'approval_interrupted'");
     expect(sql).toContain("op.status = 'processing'");
-    expect(params).toEqual([300, 3, 7]);
+    expect(params).toEqual([300, 11, 3, 7]);
   });
 
   it("derives partial abort audit state from durable checkpoints, not caller memory", async () => {
@@ -343,6 +408,7 @@ describe("Autopilot approval lease", () => {
     await abortAutopilotApproval({
       pool,
       planId: 44,
+      projectId: 11,
       userId: 3,
       channelId: 7,
       operationId: 91,
@@ -353,13 +419,52 @@ describe("Autopilot approval lease", () => {
     const operationUpdate = calls.find(({ sql }) =>
       sql.startsWith("update autopilot_approval_operations"),
     );
-    expect(operationUpdate.params[1]).toBe("partial");
-    expect(JSON.parse(operationUpdate.params[2])).toMatchObject({
+    const checkpointCount = calls.find(({ sql }) =>
+      sql.startsWith("select count(*)::int as count"),
+    );
+    expect(checkpointCount.sql).toContain("operation_id = $4");
+    expect(checkpointCount.params).toEqual([44, 11, 7, 91]);
+    expect(operationUpdate.params[3]).toBe("partial");
+    expect(JSON.parse(operationUpdate.params[4])).toMatchObject({
       scheduled: 1,
       partial: true,
       retryable: true,
     });
     expect(calls.at(-1).sql).toBe("commit");
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it("rolls back abort when its project-scoped operation lease is already terminal", async () => {
+    const calls = [];
+    const query = vi.fn(async (sqlValue) => {
+      const sql = String(sqlValue).replace(/\s+/g, " ").trim();
+      calls.push(sql);
+      if (sql.startsWith("select items from autopilot_plan")) {
+        return { rows: [{ items: sourceItems() }], rowCount: 1 };
+      }
+      if (sql.startsWith("select count(*)::int as count")) {
+        return { rows: [{ count: 0 }], rowCount: 1 };
+      }
+      if (sql.startsWith("update autopilot_plan")) return { rows: [{ id: 44 }], rowCount: 1 };
+      if (sql.startsWith("update autopilot_approval_operations")) {
+        return { rows: [], rowCount: 0 };
+      }
+      return { rows: [], rowCount: null };
+    });
+    const release = vi.fn();
+    const pool = { connect: vi.fn(async () => ({ query, release })) };
+
+    await expect(abortAutopilotApproval({
+      pool,
+      planId: 44,
+      projectId: 11,
+      userId: 3,
+      channelId: 7,
+      operationId: 91,
+      result: { ok: false, error: "server" },
+    })).rejects.toMatchObject({ code: "AUTOPILOT_APPROVAL_LEASE_LOST" });
+
+    expect(calls.at(-1)).toBe("rollback");
     expect(release).toHaveBeenCalledOnce();
   });
 });

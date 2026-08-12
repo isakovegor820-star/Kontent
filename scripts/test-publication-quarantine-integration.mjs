@@ -51,6 +51,31 @@ async function waitFor(predicate, timeoutMs = 12_000) {
   throw new Error("timed out waiting for isolated worker state");
 }
 
+async function ensurePersonalProject(pool, userId) {
+  const result = await pool.query(
+    `with selected_project as (
+       insert into projects (name, timezone, created_by_user_id, personal_owner_user_id)
+       values ('QA personal project', 'UTC', $1, $1)
+       on conflict (personal_owner_user_id) do update
+         set updated_at = projects.updated_at
+       returning id
+     ), member as (
+       insert into project_members (project_id, user_id, role, status)
+       select id, $1, 'owner', 'active' from selected_project
+       on conflict (project_id, user_id) do update
+         set role = 'owner', status = 'active', revoked_at = null, updated_at = now()
+     )
+     insert into user_project_preferences (user_id, selected_project_id)
+     select $1, id from selected_project
+     on conflict (user_id) do update set selected_project_id = excluded.selected_project_id
+     returning selected_project_id`,
+    [userId],
+  );
+  const projectId = Number(result.rows[0]?.selected_project_id ?? 0);
+  assert(Number.isSafeInteger(projectId) && projectId > 0, "personal project fixture was not created");
+  return projectId;
+}
+
 async function startAndObserveWorker(queue, redis) {
   let output = "";
   const child = spawn(process.execPath, ["worker.mjs"], {
@@ -109,30 +134,31 @@ try {
   const userId = Number((await pool.query(
     "insert into users (email, name) values ('qa-gate1@example.test', 'QA Gate 1') returning id",
   )).rows[0].id);
+  const projectId = await ensurePersonalProject(pool, userId);
   const channels = (await pool.query(
-    `insert into channels (user_id, network, title, handle, is_active)
-     values ($1, 'tg', 'QA active', 'qa_active', true),
-            ($1, 'tg', 'QA inactive RSS', 'qa_inactive', true)
+    `insert into channels (project_id, user_id, network, title, handle, is_active)
+     values ($1, $2, 'tg', 'QA active', 'qa_active', true),
+            ($1, $2, 'tg', 'QA inactive RSS', 'qa_inactive', true)
      returning id`,
-    [userId],
+    [projectId, userId],
   )).rows.map((row) => Number(row.id));
   const [activeChannelId, inactiveRssChannelId] = channels;
 
   const inserted = await pool.query(
     `insert into posts
-       (user_id, channel_id, text, scheduled_at, status, publication_origin,
+       (project_id, user_id, channel_id, text, scheduled_at, status, publication_origin,
         next_attempt_at, verification_state)
      values
-       ($1, $2, 'QA overdue manual', now() - interval '2 hours', 'scheduled', 'manual', null, 'unverified'),
-       ($1, $2, 'QA overdue autopilot', now() - interval '3 hours', 'scheduled', 'autopilot', null, 'unverified'),
-       ($1, $2, 'QA overdue active RSS', now() - interval '4 hours', 'scheduled', 'rss', null, 'unverified'),
-       ($1, $3, 'QA overdue inactive RSS', now() - interval '5 hours', 'scheduled', 'rss', null, 'unverified'),
-       ($1, $2, 'QA future scheduled', now() + interval '2 hours', 'scheduled', 'manual', null, 'unverified'),
-       ($1, $2, 'QA retry clock', now() - interval '1 hour', 'failed_retry', 'retry', now() + interval '1 hour', 'unverified'),
-       ($1, $2, 'QA published', now() - interval '1 day', 'published', 'manual', null, 'verified'),
-       ($1, $2, 'QA missing', now() - interval '1 day', 'missing', 'manual', null, 'missing')
+       ($1, $2, $3, 'QA overdue manual', now() - interval '2 hours', 'scheduled', 'manual', null, 'unverified'),
+       ($1, $2, $3, 'QA overdue autopilot', now() - interval '3 hours', 'scheduled', 'autopilot', null, 'unverified'),
+       ($1, $2, $3, 'QA overdue active RSS', now() - interval '4 hours', 'scheduled', 'rss', null, 'unverified'),
+       ($1, $2, $4, 'QA overdue inactive RSS', now() - interval '5 hours', 'scheduled', 'rss', null, 'unverified'),
+       ($1, $2, $3, 'QA future scheduled', now() + interval '2 hours', 'scheduled', 'manual', null, 'unverified'),
+       ($1, $2, $3, 'QA retry clock', now() - interval '1 hour', 'failed_retry', 'retry', now() + interval '1 hour', 'unverified'),
+       ($1, $2, $3, 'QA published', now() - interval '1 day', 'published', 'manual', null, 'verified'),
+       ($1, $2, $3, 'QA missing', now() - interval '1 day', 'missing', 'manual', null, 'missing')
      returning id, text`,
-    [userId, activeChannelId, inactiveRssChannelId],
+    [projectId, userId, activeChannelId, inactiveRssChannelId],
   );
   const postIds = new Map(inserted.rows.map((row) => [row.text, Number(row.id)]));
 
@@ -164,8 +190,8 @@ try {
 
   const states = (await pool.query(
     `select text, status, quarantine_reason, next_attempt_at
-       from posts where user_id = $1 order by id`,
-    [userId],
+       from posts where project_id = $1 and user_id = $2 order by id`,
+    [projectId, userId],
   )).rows;
   const byText = new Map(states.map((row) => [row.text, row]));
   for (const text of [

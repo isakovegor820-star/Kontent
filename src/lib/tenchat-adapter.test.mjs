@@ -46,10 +46,23 @@ describe("TenChat contract-ready export-only adapter", () => {
       mode: "export_only",
       livePublishing: false,
       officialAccessRequired: true,
+      manualPublishRequired: true,
+      providerLimitsVerified: false,
+      mediaCompatibilityVerified: false,
+      checkedAt: "2026-08-12",
       assets: [{ mimeType: "image/png", bytes: image.length }],
     });
     expect(first.bytes.includes(Buffer.from("Аврора не отправляла этот материал"))).toBe(true);
     expect(first.bytes.includes(Buffer.from("Пять действий для проверки договора"))).toBe(true);
+  });
+
+  it("rejects invalid schedule metadata instead of emitting a misleading manifest", () => {
+    expect(() => createTenChatExportPackage({
+      projectName: "Проект",
+      text: "Пост",
+      exportedAt,
+      scheduledAt: "not-a-date",
+    })).toThrow("tenchat_scheduled_at_invalid");
   });
 
   it("rejects altered media and contains no private or browser-automation implementation", async () => {

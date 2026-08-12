@@ -48,8 +48,8 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
       data-variant={variant}
       className={cn(
         "relative inline-flex cursor-pointer items-center justify-center font-semibold whitespace-nowrap",
-        "transition-[transform,filter,background-color,box-shadow,opacity] duration-200 ease-[var(--ease-soft)]",
-        "active:scale-[0.97] disabled:pointer-events-none disabled:opacity-45",
+        "transition-[transform,filter,background-color,box-shadow,opacity] duration-200 ease-[var(--ease-soft)] motion-reduce:transition-none",
+        "active:scale-[0.96] motion-reduce:transform-none disabled:pointer-events-none disabled:opacity-45",
         VARIANTS[variant],
         SIZES[size],
         className,

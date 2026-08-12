@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { getSessionUser } from "@/lib/session";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
+import { ProjectAccessError } from "@/lib/project-permissions";
 import {
   attestDraftReviewForUser,
   DraftConflictError,
@@ -32,6 +33,9 @@ export async function POST(req: NextRequest, ctx: Context) {
     const draft = await attestDraftReviewForUser(user.id, id, version);
     return NextResponse.json({ ok: true, draft });
   } catch (error) {
+    if (error instanceof ProjectAccessError) {
+      return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
+    }
     if (error instanceof SyntaxError) {
       return NextResponse.json({ ok: false, error: "bad_request" }, { status: 400 });
     }

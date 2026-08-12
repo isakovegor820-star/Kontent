@@ -4,6 +4,10 @@ import { randomUUID } from "node:crypto";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
 import {
+  ProjectAccessError,
+  requireSelectedProjectPermission,
+} from "@/lib/project-permissions";
+import {
   parseMediaRange,
   postgresMediaStream,
   signedMediaObjectUrl,
@@ -30,8 +34,10 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
   }
 
   try {
+    const pool = getPool();
+    const membership = await requireSelectedProjectPermission(pool, user.id, "project.read");
     const asset = (
-      await getPool().query<{
+      await pool.query<{
         storage_backend: "postgres" | "object";
         object_key: string | null;
         bytes: number;
@@ -40,8 +46,8 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
         sha256: string;
       }>(
         `select storage_backend, object_key, bytes, mime_type, file_name, sha256
-           from media_assets where id = $1 and user_id = $2`,
-        [assetId, user.id],
+           from media_assets where id = $1 and project_id = $2`,
+        [assetId, membership.projectId],
       )
     ).rows[0];
     if (!asset) return assetJson(requestId, { error: "not_found" }, 404);
@@ -82,9 +88,9 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
     const range = parsedRange ?? { start: 0, end: Number(asset.bytes) - 1, length: Number(asset.bytes) };
     const startedAt = Date.now();
     const stream = postgresMediaStream({
-      pool: getPool(),
+      pool,
       assetId,
-      userId: user.id,
+      projectId: membership.projectId,
       start: range.start,
       end: range.end,
       onFinish: (outcome) => console.info("[media_event]", {
@@ -112,6 +118,9 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
       },
     });
   } catch (error) {
+    if (error instanceof ProjectAccessError) {
+      return assetJson(requestId, { error: "project_access_denied" }, 403);
+    }
     console.error("[media-api]", {
       event: "asset_read_failed",
       requestId,

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { getSessionUser } from "@/lib/session";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
+import { ProjectAccessError } from "@/lib/project-permissions";
 import {
   createDraftForUser,
   DraftValidationError,
@@ -19,6 +20,9 @@ export async function GET(req: NextRequest) {
   try {
     return NextResponse.json({ ok: true, drafts: await listDraftsForUser(user.id) });
   } catch (error) {
+    if (error instanceof ProjectAccessError) {
+      return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
+    }
     console.error("[/api/drafts GET]", error);
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
@@ -46,6 +50,9 @@ export async function POST(req: NextRequest) {
     }
     if (error instanceof DraftValidationError) {
       return NextResponse.json({ ok: false, error: error.code }, { status: 422 });
+    }
+    if (error instanceof ProjectAccessError) {
+      return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
     }
     console.error("[/api/drafts POST]", error);
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });

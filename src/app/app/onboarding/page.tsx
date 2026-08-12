@@ -228,6 +228,7 @@ function StepQuiz({
                 ref={nicheRef}
                 id={`${uid}-niche`}
                 rows={3}
+                required
                 value={answers.niche}
                 aria-invalid={nicheError ? true : undefined}
                 aria-describedby={nicheError ? `${uid}-niche-message` : undefined}
@@ -242,6 +243,7 @@ function StepQuiz({
                 ref={audienceRef}
                 id={`${uid}-aud`}
                 rows={3}
+                required
                 value={answers.audience}
                 aria-invalid={audienceError ? true : undefined}
                 aria-describedby={audienceError ? `${uid}-aud-message` : undefined}
@@ -876,8 +878,10 @@ function StepProfile({
 
   const set =
     (k: keyof ProfileEdit) =>
-    (e: React.ChangeEvent<HTMLInputElement>) =>
-      setEdit((v) => ({ ...v, [k]: e.target.value }));
+    (event: React.ChangeEvent<HTMLInputElement>) => {
+      const value = event.currentTarget.value;
+      setEdit((current) => ({ ...current, [k]: value }));
+    };
 
   // Подтверждение или интервью — в обоих случаях сохраняем как «профиль, проверенный
   // человеком» (profile_edit): его еженедельное авто-обновление уже не перезапишет.

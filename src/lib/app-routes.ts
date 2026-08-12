@@ -74,7 +74,7 @@ export const APP_ROUTES = {
   },
   settings: {
     href: "/app/settings",
-    label: "Настройка Авроры",
+    label: "Настройки",
     activeAliases: [],
   },
 } as const satisfies Record<string, AppRouteDefinition>;
@@ -175,8 +175,28 @@ export function appDraftActionHref(action: DraftBackedAppAction, draftId: number
   return `${route.href}?${params.toString()}`;
 }
 
+export const COMPOSER_SOURCES = ["calendar", "studio", "autopilot-month", "studio-visuals"] as const;
+export type ComposerSource = (typeof COMPOSER_SOURCES)[number];
+
+export function composerSource(value: string | null): ComposerSource | null {
+  return COMPOSER_SOURCES.includes(value as ComposerSource) ? value as ComposerSource : null;
+}
+
+export function composerReturnTarget(source: ComposerSource | null, draftId?: number | null) {
+  if (source === "studio") return { href: "/app/studio", label: "Вернуться в Студию" } as const;
+  if (source === "autopilot-month") {
+    return { href: "/app/autopilot/month", label: "Вернуться к плану месяца" } as const;
+  }
+  if (source === "studio-visuals") {
+    const suffix = Number.isSafeInteger(draftId) && Number(draftId) > 0 ? `?draft=${draftId}` : "";
+    return { href: `/app/studio/visuals${suffix}`, label: "Вернуться к визуалам" } as const;
+  }
+  return { href: "/app/calendar", label: "Вернуться в календарь" } as const;
+}
+
 export function composerHydrationIdentity(input: {
   userId: number | null;
+  projectId?: number | null;
   draftId: number | null;
   legacyId: string | null;
   channelId: number | null;
@@ -186,6 +206,7 @@ export function composerHydrationIdentity(input: {
 }): string {
   return [
     `user:${input.userId ?? "guest"}`,
+    `project:${input.projectId ?? "none"}`,
     `draft:${input.draftId ?? "new"}`,
     `channel:${input.channelId ?? "default"}`,
     `legacy:${input.legacyId ?? "none"}`,

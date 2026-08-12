@@ -7,6 +7,8 @@ const mocks = vi.hoisted(() => ({
   ensureSettings: vi.fn(),
   loadBrief: vi.fn(),
   query: vi.fn(),
+  requireSelectedProjectPermission: vi.fn(),
+  checkRateLimit: vi.fn(),
 }));
 
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
@@ -16,6 +18,14 @@ vi.mock("@/lib/autopilot", () => ({
   ensureSettings: mocks.ensureSettings,
   loadBrief: mocks.loadBrief,
 }));
+vi.mock("@/lib/project-permissions", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/project-permissions")>();
+  return { ...actual, requireSelectedProjectPermission: mocks.requireSelectedProjectPermission };
+});
+vi.mock("@/lib/rate-limit", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/rate-limit")>();
+  return { ...actual, checkRateLimit: mocks.checkRateLimit };
+});
 
 import { POST } from "./route";
 
@@ -43,6 +53,18 @@ describe("POST /api/autopilot/settings", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.getSessionUser.mockResolvedValue({ id: 4 });
+    mocks.checkRateLimit.mockResolvedValue({
+      allowed: true,
+      limit: 120,
+      remaining: 119,
+      retryAfter: 0,
+    });
+    mocks.requireSelectedProjectPermission.mockResolvedValue({
+      projectId: 88,
+      userId: 4,
+      role: "owner",
+      version: 1,
+    });
     mocks.resolveChannel.mockResolvedValue(22);
     mocks.ensureSettings.mockResolvedValue({
       enabled: false,
@@ -74,16 +96,63 @@ describe("POST /api/autopilot/settings", () => {
 
     expect(response.status).toBe(401);
     expect(mocks.resolveChannel).not.toHaveBeenCalled();
+    expect(mocks.checkRateLimit).not.toHaveBeenCalled();
     expect(mocks.query).not.toHaveBeenCalled();
   });
 
-  it("rejects a channel that is not owned by the authenticated account", async () => {
+  it("fails closed before reading the body when the limiter is unavailable", async () => {
+    mocks.checkRateLimit.mockResolvedValue({
+      allowed: false,
+      limit: 120,
+      remaining: 0,
+      retryAfter: 30,
+      unavailable: true,
+    });
+
+    const response = await POST(request({ channelId: 22, enabled: true }));
+
+    expect(response.status).toBe(503);
+    expect(mocks.requireSelectedProjectPermission).not.toHaveBeenCalled();
+    expect(mocks.resolveChannel).not.toHaveBeenCalled();
+  });
+
+  it("rejects oversized streamed input and unexpected fields", async () => {
+    const oversized = new NextRequest("http://localhost/api/autopilot/settings", {
+      method: "POST",
+      headers: { "content-type": "application/json", "content-length": "2" },
+      body: JSON.stringify({ channelId: 22, padding: "x".repeat(17 * 1024) }),
+    });
+    const oversizedResponse = await POST(oversized);
+    expect(oversizedResponse.status).toBe(400);
+    expect(mocks.requireSelectedProjectPermission).not.toHaveBeenCalled();
+
+    const unknownResponse = await POST(request({ channelId: 22, project_id: 999 }));
+    expect(unknownResponse.status).toBe(400);
+    expect(mocks.requireSelectedProjectPermission).not.toHaveBeenCalled();
+  });
+
+  it("requires JSON instead of parsing an ambiguous content type", async () => {
+    const response = await POST(new NextRequest("http://localhost/api/autopilot/settings", {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: JSON.stringify({ channelId: 22 }),
+    }));
+
+    expect(response.status).toBe(400);
+    expect(mocks.requireSelectedProjectPermission).not.toHaveBeenCalled();
+  });
+
+  it("rejects a channel from project A while project B is selected", async () => {
     mocks.resolveChannel.mockResolvedValue(null);
 
     const response = await POST(request({ channelId: 99, enabled: true }));
 
     expect(response.status).toBe(422);
     await expect(response.json()).resolves.toMatchObject({ ok: false, error: "no_channel" });
+    expect(mocks.resolveChannel).toHaveBeenCalledWith(
+      { actorUserId: 4, projectId: 88 },
+      99,
+    );
     expect(mocks.query).not.toHaveBeenCalled();
   });
 
@@ -114,7 +183,7 @@ describe("POST /api/autopilot/settings", () => {
       settings: { enabled: true, mode: "confirm", post_frequency: 30, approvals_streak: 0 },
     });
     expect(mocks.query).toHaveBeenCalledWith(expect.stringContaining("returning enabled"), [
-      4,
+      88,
       22,
       true,
       null,
@@ -147,7 +216,7 @@ describe("POST /api/autopilot/settings", () => {
 
     expect(response.status).toBe(200);
     expect(mocks.query).toHaveBeenCalledWith(expect.stringContaining("generation_engine"), [
-      4,
+      88,
       22,
       null,
       null,

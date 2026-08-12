@@ -44,12 +44,21 @@ describe("timezone-aware schedules", () => {
   });
 
   it("handles a timezone without DST", () => {
-    expect(resolveLocalSchedule({
+    const resolved = resolveLocalSchedule({
       localDate: "2026-08-20",
       localTime: "10:15",
       timezone: "Asia/Kolkata",
       disambiguation: "reject",
-    })).toMatchObject({ scheduledAt: "2026-08-20T04:45:00.000Z", offset: "+05:30" });
+    });
+    expect(resolved).toMatchObject({ scheduledAt: "2026-08-20T04:45:00.000Z", offset: "+05:30" });
+    expect(Object.keys(resolved).sort()).toEqual([
+      "disambiguation",
+      "localDate",
+      "localTime",
+      "offset",
+      "scheduledAt",
+      "timezone",
+    ]);
   });
 
   it("restores the saved wall-clock fields in the saved zone after a browser-zone change", () => {

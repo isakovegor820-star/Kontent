@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   probeAiConfiguration: vi.fn(),
   probeMailDeliveryConfiguration: vi.fn(),
   probeUploadIngressConfiguration: vi.fn(),
+  probeTrackingSecretsConfiguration: vi.fn(),
   aiProviderHealthSnapshot: vi.fn(),
 }));
 
@@ -15,6 +16,7 @@ vi.mock("@/lib/readiness-probes", () => ({
   probeAiConfiguration: mocks.probeAiConfiguration,
   probeMailDeliveryConfiguration: mocks.probeMailDeliveryConfiguration,
   probeUploadIngressConfiguration: mocks.probeUploadIngressConfiguration,
+  probeTrackingSecretsConfiguration: mocks.probeTrackingSecretsConfiguration,
 }));
 vi.mock("@/lib/ai-provider-health", () => ({
   aiProviderHealthSnapshot: mocks.aiProviderHealthSnapshot,
@@ -44,6 +46,7 @@ describe("GET /api/readiness", () => {
     mocks.probeAiConfiguration.mockReturnValue(true);
     mocks.probeMailDeliveryConfiguration.mockReturnValue("up");
     mocks.probeUploadIngressConfiguration.mockReturnValue("up");
+    mocks.probeTrackingSecretsConfiguration.mockReturnValue("up");
     mocks.aiProviderHealthSnapshot.mockReturnValue([{
       engine: "openai",
       state: "closed",

@@ -341,7 +341,7 @@ function InterviewEvidence({
         const source = sourceById.get(item.sourceId);
         return (
           <li key={item.id} className="rounded-sm border border-line bg-surface-inset p-3">
-            <p className="text-[12px] leading-relaxed text-text-2">{formattedEvidenceValue(item.value)}</p>
+            <p className="min-w-0 text-[12px] leading-relaxed [overflow-wrap:anywhere] text-text-2">{formattedEvidenceValue(item.value)}</p>
             <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-text-3">
               <span>{source?.title || "Публичный источник"}</span>
               <span>{evidenceDate(item.publishedAt || source?.publishedAt)}</span>
@@ -982,7 +982,7 @@ export default function SiteAnalysisPage() {
     >
       <div role="status" className="sr-only">{liveStatus}</div>
       <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_320px]">
-        <div className="space-y-6">
+        <div className="min-w-0 space-y-6">
           <Card className="overflow-hidden">
             <div className="border-b border-line px-5 py-5 sm:px-7">
               <div className="flex items-start gap-3">

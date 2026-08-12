@@ -31,9 +31,17 @@ import {
   startAiUsagePolling,
   type AiUsageStatus,
 } from "./ai-usage-sync";
+import {
+  createWorkspaceRequestFence,
+  isAbortError,
+  parseServerSelectedProjectId,
+  readWorkspaceState,
+  removeWorkspaceState,
+  workspaceIdentityKey,
+  writeWorkspaceState,
+  type ClientWorkspaceIdentity,
+} from "./client-workspace-isolation";
 import { uid } from "./utils";
-
-const KEY = "aurora.state.v1";
 
 type Toast = {
   id: string;
@@ -43,7 +51,7 @@ type Toast = {
 };
 
 interface StoreValue extends AppState {
-  ready: boolean; // localStorage поднят (демо-данные)
+  ready: boolean; // сервер подтвердил проект, его localStorage поднят (демо-данные)
   authReady: boolean; // /api/auth/me ответил — можно решать лендинг/платформа
   authError: boolean;
   toasts: Toast[];
@@ -78,6 +86,14 @@ interface StoreValue extends AppState {
     idempotencyKey: string;
     operationFingerprint?: string | null;
     timezone: string;
+    schedule?: {
+      scheduledAt: string;
+      localDate: string;
+      localTime: string;
+      timezone: string;
+      disambiguation: "reject" | "earlier" | "later";
+      offset: string;
+    } | null;
   }) => Promise<{
     ok: boolean;
     result?: "operation_not_created" | "partial" | "queued" | "conflict" | "worker_unavailable";
@@ -126,21 +142,6 @@ export function useStore() {
   return v;
 }
 
-function load(): AppState {
-  if (typeof window === "undefined") return seedState();
-  try {
-    const raw = localStorage.getItem(KEY);
-    if (!raw) return seedState();
-    const parsed = JSON.parse(raw) as AppState;
-    // Простая проверка формы — если схема поменялась, пересеиваем
-    if (!parsed.posts || !parsed.competitors || !parsed.settings) return seedState();
-    // user приходит с сервера (сессия), а не из localStorage — сбрасываем.
-    return { ...parsed, user: null, onboarded: parsed.onboarded ?? false };
-  } catch {
-    return seedState();
-  }
-}
-
 // Пользователь с сервера (/api/auth/me) → форма User для интерфейса.
 type ServerUser = {
   // PostgreSQL `bigint` may arrive through JSON as a string depending on the driver.
@@ -172,24 +173,90 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const timers = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
 
+  const [realChannels, setRealChannels] = useState<RealChannel[]>([]);
+  const [realPosts, setRealPosts] = useState<RealPost[]>([]);
+  const [realReady, setRealReady] = useState(false);
+  const [realError, setRealError] = useState(false);
+  const [aiUsed, setAiUsed] = useState(0);
+  const [aiLimit, setAiLimit] = useState(30);
+  const [aiUsageStatus, setAiUsageStatus] = useState<AiUsageStatus>("loading");
+
+  const [workspaceKey, setWorkspaceKey] = useState<string | null>(null);
+  const workspaceRef = useRef<ClientWorkspaceIdentity | null>(null);
+  const activeUserRef = useRef<User | null>(state.user);
+  const authReadyRef = useRef(authReady);
+  const stateRef = useRef(state);
+  const projectChangeQueuedRef = useRef(false);
+  const [selectedProjectFence] = useState(createWorkspaceRequestFence);
+  const [realRequestFence] = useState(createWorkspaceRequestFence);
+  const [aiUsageRequestFence] = useState(createWorkspaceRequestFence);
+
+  const persistCurrentWorkspace = useCallback(() => {
+    const identity = workspaceRef.current;
+    if (!identity || typeof window === "undefined") return;
+    try {
+      writeWorkspaceState(window.localStorage, identity, stateRef.current);
+    } catch {
+      /* приватный режим — состояние продолжает жить только в памяти */
+    }
+  }, []);
+
+  const beginWorkspaceTransition = useCallback(() => {
+    persistCurrentWorkspace();
+    selectedProjectFence.invalidate();
+    realRequestFence.invalidate();
+    aiUsageRequestFence.invalidate();
+    workspaceRef.current = null;
+    const currentUser = activeUserRef.current;
+    setWorkspaceKey(null);
+    setReady(false);
+    setState({
+      ...seedState(),
+      onboarded: currentUser?.onboarded ?? false,
+      user: currentUser,
+    });
+    setRealChannels([]);
+    setRealPosts([]);
+    setRealReady(false);
+    setRealError(false);
+    setAiUsed(0);
+    setAiLimit(30);
+    setAiUsageStatus("loading");
+  }, [aiUsageRequestFence, persistCurrentWorkspace, realRequestFence, selectedProjectFence]);
+
   // Кто вошёл — спрашиваем сервер (сессия в cookie). Зовём при загрузке и после входа.
   const refreshAuth = useCallback(async () => {
     try {
       const res = await fetch("/api/auth/me", { cache: "no-store" });
       const data = (await res.json().catch(() => null)) as { user: ServerUser | null } | null;
       if (!res.ok) throw new Error("auth_unavailable");
+      const nextUser = data?.user ? mapUser(data.user) : null;
+      const accountChanged = (activeUserRef.current?.id ?? null) !== (nextUser?.id ?? null);
+      if (accountChanged) beginWorkspaceTransition();
+      activeUserRef.current = nextUser;
       setAuthError(false);
-      setState((s) => ({
-        ...s,
-        onboarded: Boolean(data?.user?.onboarding_completed_at),
-        user: data?.user ? mapUser(data.user) : null,
-      }));
+      setState((current) => {
+        if (!accountChanged) {
+          return {
+            ...current,
+            onboarded: nextUser?.onboarded ?? false,
+            user: nextUser,
+          };
+        }
+        return {
+          ...seedState(),
+          onboarded: nextUser?.onboarded ?? false,
+          user: nextUser,
+        };
+      });
+      if (accountChanged && !nextUser) setReady(true);
     } catch {
       setAuthError(true);
     } finally {
+      authReadyRef.current = true;
       setAuthReady(true);
     }
-  }, []);
+  }, [beginWorkspaceTransition]);
 
   useEffect(() => {
     // Загрузка сессии с сервера — side-effect; setState происходит внутри async-колбэка.
@@ -197,32 +264,45 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     refreshAuth();
   }, [refreshAuth]);
 
+  useEffect(() => {
+    activeUserRef.current = state.user;
+    stateRef.current = state;
+  }, [state]);
+
   /* ------------------------------- НАСТОЯЩИЙ ПОСТИНГ (Д.3): каналы и посты */
 
-  const [realChannels, setRealChannels] = useState<RealChannel[]>([]);
-  const [realPosts, setRealPosts] = useState<RealPost[]>([]);
-  const [realReady, setRealReady] = useState(false);
-  const [realError, setRealError] = useState(false);
-
   const refreshReal = useCallback(async () => {
+    const identity = workspaceRef.current;
+    if (!identity) return;
+    const identityKey = workspaceIdentityKey(identity);
+    const ticket = realRequestFence.start(identityKey);
+    const isCurrent = () => {
+      const current = workspaceRef.current;
+      return realRequestFence.isCurrent(
+        ticket,
+        current ? workspaceIdentityKey(current) : null,
+      );
+    };
     try {
       const [chRes, poRes] = await Promise.all([
-        fetch("/api/channels", { cache: "no-store" }),
-        fetch("/api/posts", { cache: "no-store" }),
+        fetch("/api/channels", { cache: "no-store", signal: ticket.signal }),
+        fetch("/api/posts", { cache: "no-store", signal: ticket.signal }),
       ]);
       if (!chRes.ok || !poRes.ok) throw new Error("real_data_unavailable");
       const ch = (await chRes.json().catch(() => null)) as { channels?: RealChannel[] } | null;
       const po = (await poRes.json().catch(() => null)) as { posts?: RealPost[] } | null;
+      if (!isCurrent()) return;
       setRealChannels(ch?.channels ?? []);
       setRealPosts(po?.posts ?? []);
       setRealError(false);
-    } catch {
+    } catch (error) {
+      if (isAbortError(error) || !isCurrent()) return;
       /* сеть пропала — оставляем что было */
       setRealError(true);
     } finally {
-      setRealReady(true);
+      if (isCurrent()) setRealReady(true);
     }
-  }, []);
+  }, [realRequestFence]);
 
   const connectChannel = useCallback<StoreValue["connectChannel"]>(
     async (handle) => {
@@ -306,7 +386,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   );
 
   const createPublicationOperation = useCallback<StoreValue["createPublicationOperation"]>(
-    async ({ draftId, draftVersion, idempotencyKey, operationFingerprint, timezone }) => {
+    async ({ draftId, draftVersion, idempotencyKey, operationFingerprint, timezone, schedule }) => {
       try {
         const response = await fetch("/api/publication-operations", {
           method: "POST",
@@ -314,7 +394,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
             "content-type": "application/json",
             "idempotency-key": idempotencyKey,
           },
-          body: JSON.stringify({ draftId, draftVersion, operationFingerprint, timezone }),
+          body: JSON.stringify({ draftId, draftVersion, operationFingerprint, timezone, schedule }),
         });
         const data = (await response.json().catch(() => null)) as
           | {
@@ -358,88 +438,140 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
   /* ---------------------------- ИИ-студия (Д.8): реальный дневной лимит */
 
-  const [aiUsed, setAiUsed] = useState(0);
-  const [aiLimit, setAiLimit] = useState(30);
-  const [aiUsageStatus, setAiUsageStatus] = useState<AiUsageStatus>("loading");
-  const aiUsageRequestSequence = useRef(0);
-
   const refreshAiUsage = useCallback(async () => {
-    const requestSequence = ++aiUsageRequestSequence.current;
+    const identity = workspaceRef.current;
+    if (!identity) return;
+    const identityKey = workspaceIdentityKey(identity);
+    const ticket = aiUsageRequestFence.start(identityKey);
+    const isCurrent = () => {
+      const current = workspaceRef.current;
+      return aiUsageRequestFence.isCurrent(
+        ticket,
+        current ? workspaceIdentityKey(current) : null,
+      );
+    };
     try {
-      const r = await fetch("/api/ai/usage", { cache: "no-store" });
+      const r = await fetch("/api/ai/usage", { cache: "no-store", signal: ticket.signal });
       const parsed = parseAiUsageResponse(r.ok, await r.json().catch(() => null));
-      if (requestSequence !== aiUsageRequestSequence.current) return;
+      if (!isCurrent()) return;
       if (parsed.status === "ok") {
         setAiUsed(parsed.used);
         setAiLimit(parsed.limit);
       }
       setAiUsageStatus(parsed.status);
-    } catch {
-      if (requestSequence !== aiUsageRequestSequence.current) return;
+    } catch (error) {
+      if (isAbortError(error) || !isCurrent()) return;
       // Keep the last confirmed number internally, but do not present it as current fact.
       setAiUsageStatus("unknown");
     }
-  }, []);
+  }, [aiUsageRequestFence]);
 
-  // Как только знаем пользователя — тянем его каналы и посты и держим их свежими
-  // (пока открыта платформа): статусы двигаются на сервере, интерфейс это показывает.
-  const activeUserId = state.user?.id ?? null;
-  const hasUser = activeUserId != null;
-  /* eslint-disable react-hooks/set-state-in-effect -- синхронизация реальных данных со входом */
-  useEffect(() => {
-    // Ignore a response that was started for a previous session/account.
-    aiUsageRequestSequence.current += 1;
-    if (!hasUser) {
-      setRealChannels([]);
-      setRealPosts([]);
-      setRealReady(false);
-      setAiUsed(0);
-      setAiUsageStatus("loading");
-      return;
-    }
-    setAiUsageStatus("loading");
-    refreshReal();
-    refreshAiUsage();
-    const t = setInterval(refreshReal, 8000);
-    const onProjectChanged = () => {
-      setRealReady(false);
-      void refreshReal();
-    };
-    window.addEventListener("aurora:project-changed", onProjectChanged);
-    const stopAiUsagePolling = startAiUsagePolling(refreshAiUsage);
-    return () => {
-      clearInterval(t);
-      window.removeEventListener("aurora:project-changed", onProjectChanged);
-      stopAiUsagePolling();
-    };
-  }, [activeUserId, hasUser, refreshReal, refreshAiUsage]);
-  /* eslint-enable react-hooks/set-state-in-effect */
+  const resolveSelectedWorkspace = useCallback(async (expectedUserId: number) => {
+    const requestScope = `user:${expectedUserId}:current-project`;
+    const ticket = selectedProjectFence.start(requestScope);
+    const isCurrent = () => (
+      selectedProjectFence.isCurrent(ticket, requestScope)
+      && activeUserRef.current?.id === expectedUserId
+    );
+    try {
+      const response = await fetch("/api/projects/current", {
+        cache: "no-store",
+        signal: ticket.signal,
+      });
+      const body: unknown = await response.json().catch(() => null);
+      const projectId = response.ok ? parseServerSelectedProjectId(body) : null;
+      if (!projectId) throw new Error("project_context_unavailable");
+      if (!isCurrent()) return;
 
-  // Гидрация из localStorage — только на клиенте, после монтирования.
-  // localStorage недоступен во время SSR, поэтому читаем его в эффекте (иначе
-  // разошлась бы серверная и клиентская разметка). До гидрации ready=false —
-  // экраны показывают скелетоны, а не чужие данные.
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- гидрация из localStorage возможна только после монтирования
-    setState((current) => {
-      const loaded = load();
-      return {
-        ...loaded,
+      const identity: ClientWorkspaceIdentity = { userId: expectedUserId, projectId };
+      const loaded = typeof window === "undefined"
+        ? null
+        : readWorkspaceState(window.localStorage, identity);
+      if (!isCurrent()) return;
+
+      workspaceRef.current = identity;
+      setWorkspaceKey(workspaceIdentityKey(identity));
+      setState((current) => {
+        if (current.user?.id !== expectedUserId) return current;
+        return {
+          ...(loaded ?? seedState()),
+          onboarded: current.user.onboarded,
+          user: current.user,
+        };
+      });
+      setReady(true);
+    } catch (error) {
+      if (isAbortError(error) || !isCurrent()) return;
+      workspaceRef.current = null;
+      setWorkspaceKey(null);
+      setState((current) => ({
+        ...seedState(),
         onboarded: current.user?.onboarded ?? false,
         user: current.user,
-      };
-    });
-    setReady(true);
-  }, []);
+      }));
+      setReady(true);
+      setRealReady(true);
+      setRealError(true);
+      setAiUsageStatus("unknown");
+    }
+  }, [selectedProjectFence]);
+
+  const activeUserId = state.user?.id ?? null;
+
+  // Выбор проекта всегда перечитываем с сервера. projectId из DOM-события — только
+  // сигнал об изменении, но никогда не источник полномочий или ключа localStorage.
+  useEffect(() => {
+    const onProjectChanged = () => {
+      projectChangeQueuedRef.current = true;
+      beginWorkspaceTransition();
+      const user = activeUserRef.current;
+      if (!authReadyRef.current || !user) return;
+      projectChangeQueuedRef.current = false;
+      void resolveSelectedWorkspace(user.id);
+    };
+    window.addEventListener("aurora:project-changed", onProjectChanged);
+    return () => window.removeEventListener("aurora:project-changed", onProjectChanged);
+  }, [beginWorkspaceTransition, resolveSelectedWorkspace]);
 
   useEffect(() => {
-    if (!ready) return;
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled || !authReady) return;
+      const user = activeUserRef.current;
+      if (!user) {
+        projectChangeQueuedRef.current = false;
+        setReady(true);
+        return;
+      }
+      projectChangeQueuedRef.current = false;
+      void resolveSelectedWorkspace(user.id);
+    });
+    return () => { cancelled = true; };
+  }, [activeUserId, authReady, resolveSelectedWorkspace]);
+
+  // Реальные данные и счётчик ИИ начинают обновляться только после подтверждённой
+  // сервером workspace identity. Смена workspace сначала очищает предыдущий экран.
+  useEffect(() => {
+    if (!workspaceKey) return;
+    void refreshReal();
+    void refreshAiUsage();
+    const realTimer = setInterval(refreshReal, 8000);
+    const stopAiUsagePolling = startAiUsagePolling(refreshAiUsage);
+    return () => {
+      clearInterval(realTimer);
+      stopAiUsagePolling();
+    };
+  }, [workspaceKey, refreshReal, refreshAiUsage]);
+
+  useEffect(() => {
+    const identity = workspaceRef.current;
+    if (!ready || !workspaceKey || !identity) return;
     try {
-      localStorage.setItem(KEY, JSON.stringify(state));
+      writeWorkspaceState(window.localStorage, identity, state);
     } catch {
       /* приватный режим — молча живём в памяти */
     }
-  }, [state, ready]);
+  }, [state, ready, workspaceKey]);
 
   useEffect(() => {
     const t = timers.current;
@@ -471,9 +603,12 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
   // Выход: оптимистично убираем пользователя сразу, сессию на сервере гасим в фоне.
   const signOut = useCallback(() => {
-    setState((s) => ({ ...s, user: null }));
+    beginWorkspaceTransition();
+    activeUserRef.current = null;
+    setState({ ...seedState(), user: null, onboarded: false });
+    setReady(true);
     fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
-  }, []);
+  }, [beginWorkspaceTransition]);
 
   const finishOnboarding = useCallback<StoreValue["finishOnboarding"]>(
     async () => {
@@ -778,12 +913,18 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   );
 
   const reset = useCallback(() => {
+    const identity = workspaceRef.current;
     try {
-      localStorage.removeItem(KEY);
+      if (identity) removeWorkspaceState(window.localStorage, identity);
     } catch {
       /* noop */
     }
-    setState(seedState());
+    const user = activeUserRef.current;
+    setState({
+      ...seedState(),
+      onboarded: user?.onboarded ?? false,
+      user,
+    });
   }, []);
 
   const value = useMemo<StoreValue>(

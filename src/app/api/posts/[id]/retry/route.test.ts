@@ -5,10 +5,15 @@ const mocks = vi.hoisted(() => ({
   query: vi.fn(),
   add: vi.fn(),
   getSessionUser: vi.fn(),
+  requireSelectedProjectPermission: vi.fn(),
 }));
 
 vi.mock("@/lib/db", () => ({ getPool: () => ({ query: mocks.query }) }));
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
+vi.mock("@/lib/project-permissions", () => ({
+  ProjectAccessError: class ProjectAccessError extends Error {},
+  requireSelectedProjectPermission: mocks.requireSelectedProjectPermission,
+}));
 vi.mock("@/lib/queue", () => ({
   getPublishQueue: () => ({ add: mocks.add }),
   jobIdForPostRevision: (id: number, revision: number) => `post-${id}-r${revision}`,
@@ -29,6 +34,7 @@ describe("POST /api/posts/:id/retry", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-02T12:00:00.000Z"));
     mocks.getSessionUser.mockResolvedValue({ id: 7 });
+    mocks.requireSelectedProjectPermission.mockResolvedValue({ projectId: 23, role: "publisher" });
     mocks.add.mockResolvedValue({ id: "job" });
   });
 
@@ -45,10 +51,12 @@ describe("POST /api/posts/:id/retry", () => {
       scheduleRevision: 2,
     });
     expect(String(mocks.query.mock.calls[0][0])).toContain("status in ('failed', 'quarantined')");
+    expect(String(mocks.query.mock.calls[0][0])).toContain("project_id = $2");
+    expect(mocks.query.mock.calls[0][1]?.[1]).toBe(23);
     expect(String(mocks.query.mock.calls[0][0])).toContain("schedule_revision = schedule_revision + 1");
     expect(mocks.add).toHaveBeenCalledWith(
       "publish",
-      { postId: 41, scheduleRevision: 2 },
+      { postId: 41, projectId: 23, scheduleRevision: 2 },
       expect.objectContaining({ delay: 120_000, jobId: expect.stringContaining("post-41-r2-manual-") }),
     );
   });
@@ -66,4 +74,3 @@ describe("POST /api/posts/:id/retry", () => {
     expect(String(mocks.query.mock.calls[1][0])).toContain("schedule_revision = $4");
   });
 });
-

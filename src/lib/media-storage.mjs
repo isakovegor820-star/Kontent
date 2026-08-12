@@ -4,6 +4,7 @@ import {
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
+import { randomUUID } from "node:crypto";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 const DEFAULT_SIGNED_URL_TTL_SECONDS = 300;
@@ -47,11 +48,15 @@ export function chooseMediaStorageBackend({ kind, bytes, env = process.env }) {
   return "object";
 }
 
-export async function putMediaObject({ userId, sha256, extension, mimeType, body, env = process.env }) {
+export async function putMediaObject({ projectId, sha256, extension, mimeType, body, env = process.env }) {
   const config = mediaObjectConfig(env);
   if (!config) throw Object.assign(new Error("object_storage_not_configured"), { code: "object_storage_not_configured" });
   const safeExtension = String(extension).replace(/[^a-z0-9]/giu, "").slice(0, 8) || "bin";
-  const key = `users/${Number(userId)}/media/${sha256}.${safeExtension}`;
+  const normalizedProjectId = Number(projectId);
+  if (!Number.isSafeInteger(normalizedProjectId) || normalizedProjectId <= 0) {
+    throw new Error("invalid_media_project");
+  }
+  const key = `projects/${normalizedProjectId}/media/${sha256}-${randomUUID()}.${safeExtension}`;
   const response = await s3(config).send(new PutObjectCommand({
     Bucket: config.bucket,
     Key: key,
@@ -81,11 +86,11 @@ export async function deleteMediaObject(key, env = process.env) {
   await s3(config).send(new DeleteObjectCommand({ Bucket: config.bucket, Key: key }));
 }
 
-export async function loadMediaAssetBuffer({ pool, assetId, userId, maxBytes, env = process.env }) {
+export async function loadMediaAssetBuffer({ pool, assetId, projectId, maxBytes, env = process.env }) {
   const asset = (await pool.query(
-    `select kind, file_name, mime_type, bytes, storage_backend, object_key
-       from media_assets where id = $1 and user_id = $2`,
-    [assetId, userId],
+    `select kind, file_name, mime_type, bytes, sha256, storage_backend, object_key
+       from media_assets where id = $1 and project_id = $2`,
+    [assetId, projectId],
   )).rows[0];
   if (!asset) return null;
   if (Number(asset.bytes) > maxBytes) throw Object.assign(new Error("media_too_large"), { code: "media_too_large" });
@@ -103,8 +108,8 @@ export async function loadMediaAssetBuffer({ pool, assetId, userId, maxBytes, en
   } else {
     data = (await pool.query(
       `select data from media_assets
-        where id = $1 and user_id = $2 and storage_backend = 'postgres'`,
-      [assetId, userId],
+        where id = $1 and project_id = $2 and storage_backend = 'postgres'`,
+      [assetId, projectId],
     )).rows[0]?.data;
   }
   if (!data || !data.byteLength || data.byteLength > maxBytes) {
@@ -184,7 +189,7 @@ export function parseMediaRange(value, bytes) {
   return { start, end, length: end - start + 1 };
 }
 
-export function postgresMediaStream({ pool, assetId, userId, start, end, chunkBytes = 1024 * 1024, onFinish }) {
+export function postgresMediaStream({ pool, assetId, projectId, start, end, chunkBytes = 1024 * 1024, onFinish }) {
   let offset = start;
   let finished = false;
   const finish = (outcome) => {
@@ -202,10 +207,10 @@ export function postgresMediaStream({ pool, assetId, userId, start, end, chunkBy
       const length = Math.min(chunkBytes, end - offset + 1);
       try {
         const row = (await pool.query(
-          `select substring(data from $3 for $4) as chunk
+           `select substring(data from $3 for $4) as chunk
              from media_assets
-            where id = $1 and user_id = $2 and storage_backend = 'postgres'`,
-          [assetId, userId, offset + 1, length],
+            where id = $1 and project_id = $2 and storage_backend = 'postgres'`,
+          [assetId, projectId, offset + 1, length],
         )).rows[0];
         if (!row?.chunk?.byteLength) throw new Error("media_chunk_missing");
         controller.enqueue(new Uint8Array(row.chunk));

@@ -40,6 +40,7 @@ import {
   type AiClientRequestIdentity,
 } from "@/lib/ai-client-idempotency";
 import { createDraftClientKey, createServerDraft, DraftRequestError } from "@/lib/draft-client";
+import { isAbortError } from "@/lib/client-workspace-isolation";
 import { useStore } from "@/lib/store";
 import {
   createReviewedTrendDraft,
@@ -578,6 +579,8 @@ export default function TrendsPage() {
   const periodRef = useRef(period);
   const channelRef = useRef(channelId);
   const requestRef = useRef<AbortController | null>(null);
+  const mountedRef = useRef(true);
+  const pageLeavingRef = useRef(false);
   channelRef.current = channelId;
 
   const load = useCallback(async () => {
@@ -598,12 +601,21 @@ export default function TrendsPage() {
         setLoadError(false);
       }
     } catch (error) {
-      if (!controller.signal.aborted) {
+      // Навигация и размонтирование могут прийти в тот же цикл событий, что и сетевой
+      // TypeError. Даём cleanup выполнить abort, прежде чем показывать реальную ошибку.
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+      const requestIsCurrent = requestRef.current === controller;
+      const expectedCancellation = controller.signal.aborted
+        || isAbortError(error)
+        || !mountedRef.current
+        || pageLeavingRef.current
+        || !requestIsCurrent;
+      if (!expectedCancellation) {
         console.error("[trends] load", error);
         setLoadError(true);
       }
     } finally {
-      if (requestRef.current === controller) setLoading(false);
+      if (mountedRef.current && requestRef.current === controller) setLoading(false);
     }
   }, []);
 
@@ -611,10 +623,30 @@ export default function TrendsPage() {
     load();
   }, [load]);
 
-  useEffect(() => () => {
-    requestRef.current?.abort();
-    internetSearchTokenRef.current += 1;
-  }, []);
+  useEffect(() => {
+    mountedRef.current = true;
+    pageLeavingRef.current = false;
+    const cancelPendingLoad = () => {
+      pageLeavingRef.current = true;
+      requestRef.current?.abort();
+      internetSearchTokenRef.current += 1;
+    };
+    const resumePage = (event: PageTransitionEvent) => {
+      pageLeavingRef.current = false;
+      if (event.persisted) {
+        setLoading(true);
+        void load();
+      }
+    };
+    window.addEventListener("pagehide", cancelPendingLoad);
+    window.addEventListener("pageshow", resumePage);
+    return () => {
+      mountedRef.current = false;
+      window.removeEventListener("pagehide", cancelPendingLoad);
+      window.removeEventListener("pageshow", resumePage);
+      cancelPendingLoad();
+    };
+  }, [load]);
 
   // Каналы приезжают асинхронно, и первый load уходит раньше них — без ?channel=.
   // Сервер в этом случае молча подставляет первый канал: сейчас это совпадает с тем, что

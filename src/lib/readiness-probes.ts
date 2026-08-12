@@ -98,6 +98,16 @@ export function probeUploadIngressConfiguration(
   return avatarIngressConfigured(env) ? "up" : "not_configured";
 }
 
+export function probeTrackingSecretsConfiguration(
+  env: NodeJS.ProcessEnv = process.env,
+): DependencyState {
+  const attribution = String(env.TRACKING_ATTRIBUTION_SECRET || "").trim();
+  const fingerprint = String(env.TRACKING_FINGERPRINT_SECRET || "").trim();
+  if (!attribution && !fingerprint) return "not_configured";
+  if (attribution.length < 32 || fingerprint.length < 32 || attribution === fingerprint) return "down";
+  return "up";
+}
+
 export async function probeRedisAndPublicationWorker(): Promise<{
   redis: DependencyState;
   publicationWorker: DependencyState;

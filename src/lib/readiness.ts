@@ -29,6 +29,7 @@ export interface ReadinessInput {
   mailDelivery: DependencyState;
   uploadIngress: DependencyState;
   tokenEncryption: DependencyState;
+  trackingSecrets: DependencyState;
   checkedAt?: Date;
 }
 
@@ -43,6 +44,7 @@ export interface ReadinessReport {
   mailDeliveryReady: boolean;
   uploadReady: boolean;
   tokenEncryptionReady: boolean;
+  trackingReady: boolean;
   passwordRecoveryReady: boolean;
   reasons: string[];
   checkedAt: string;
@@ -56,6 +58,7 @@ export interface ReadinessReport {
     mailDelivery: DependencyState;
     uploadIngress: DependencyState;
     tokenEncryption: DependencyState;
+    trackingSecrets: DependencyState;
   };
 }
 
@@ -64,6 +67,7 @@ export type ServiceReadiness = Pick<
   "webReady" | "publicationReady" | "aiReady" | "schemaReady" | "mailDeliveryReady"
   | "uploadReady"
   | "tokenEncryptionReady"
+  | "trackingReady"
 >;
 
 /** A failed readiness request must fail closed instead of claiming that the web tier is ready. */
@@ -76,6 +80,7 @@ export function readinessRequestFailure(): ServiceReadiness {
     mailDeliveryReady: false,
     uploadReady: false,
     tokenEncryptionReady: false,
+    trackingReady: false,
   };
 }
 
@@ -97,6 +102,7 @@ export function evaluateReadiness(input: ReadinessInput): ReadinessReport {
     );
   const mailDeliveryReady = input.mailDelivery === "up";
   const tokenEncryptionReady = input.tokenEncryption === "up";
+  const trackingReady = input.trackingSecrets === "up";
   const passwordRecoveryReady = webReady && mailDeliveryReady;
   const reasons = [
     input.database === "not_configured" ? "database_not_configured" : null,
@@ -119,8 +125,10 @@ export function evaluateReadiness(input: ReadinessInput): ReadinessReport {
     input.uploadIngress === "down" ? "avatar_ingress_limit_invalid" : null,
     schemaReady && input.tokenEncryption === "not_configured" ? "token_keyring_not_configured" : null,
     schemaReady && input.tokenEncryption === "down" ? "token_envelope_key_unknown" : null,
+    input.trackingSecrets === "not_configured" ? "tracking_secrets_not_configured" : null,
+    input.trackingSecrets === "down" ? "tracking_secrets_invalid" : null,
   ].filter((reason): reason is string => Boolean(reason));
-  const degraded = !publicationReady || !aiReady || !mailDeliveryReady;
+  const degraded = !publicationReady || !aiReady || !mailDeliveryReady || !trackingReady;
 
   return {
     status: !webReady ? "not_ready" : degraded ? "degraded" : "ready",
@@ -133,6 +141,7 @@ export function evaluateReadiness(input: ReadinessInput): ReadinessReport {
     mailDeliveryReady,
     uploadReady,
     tokenEncryptionReady,
+    trackingReady,
     passwordRecoveryReady,
     reasons,
     checkedAt: (input.checkedAt ?? new Date()).toISOString(),
@@ -146,6 +155,7 @@ export function evaluateReadiness(input: ReadinessInput): ReadinessReport {
       mailDelivery: input.mailDelivery,
       uploadIngress: input.uploadIngress,
       tokenEncryption: input.tokenEncryption,
+      trackingSecrets: input.trackingSecrets,
     },
   };
 }

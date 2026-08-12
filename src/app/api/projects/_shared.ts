@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 
+import { BoundedBodyError, readRequestBodyLimited } from "@/lib/bounded-request-body";
 import { ProjectMembershipMutationError } from "@/lib/project-context";
 import { ProjectAccessError } from "@/lib/project-permissions";
 import { ProjectTeamError } from "@/lib/project-team";
@@ -23,12 +24,48 @@ export function objectBody(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-export async function readObjectBody(req: Request): Promise<Record<string, unknown> | null> {
-  try {
-    return objectBody(await req.json());
-  } catch {
-    return null;
+export const PROJECT_JSON_BODY_MAX_BYTES = 16 * 1024;
+
+export type ProjectBodyResult =
+  | { ok: true; body: Record<string, unknown> }
+  | { ok: false; error: "bad_request" | "payload_too_large" | "unsupported_media_type" };
+
+export async function readProjectBody(
+  req: Request,
+  allowedKeys: readonly string[],
+): Promise<ProjectBodyResult> {
+  const contentType = req.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+  if (contentType !== "application/json") {
+    return { ok: false, error: "unsupported_media_type" };
   }
+  try {
+    const bytes = await readRequestBodyLimited(req.body, PROJECT_JSON_BODY_MAX_BYTES);
+    const parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
+    const body = objectBody(parsed);
+    if (!body) return { ok: false, error: "bad_request" };
+    const allowed = new Set(allowedKeys);
+    if (Object.keys(body).some((key) => !allowed.has(key))) {
+      return { ok: false, error: "bad_request" };
+    }
+    return { ok: true, body };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof BoundedBodyError && error.code === "too_large"
+        ? "payload_too_large"
+        : "bad_request",
+    };
+  }
+}
+
+export function projectBodyFailure(
+  result: Exclude<ProjectBodyResult, { ok: true }>,
+  requestId: string,
+) {
+  const status = result.error === "unsupported_media_type" ? 415
+    : result.error === "payload_too_large" ? 413
+      : 400;
+  return projectJson({ ok: false, error: result.error }, status, requestId);
 }
 
 export function projectApiError(error: unknown, requestId: string) {

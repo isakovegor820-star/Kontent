@@ -2,6 +2,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
+import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/project-permissions";
 import { getSessionUser } from "@/lib/session";
 
 export const runtime = "nodejs";
@@ -10,8 +11,12 @@ export async function GET(req: NextRequest) {
   try {
     const user = await getSessionUser(req);
     if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-    const rows = await getPool().query(
-      `select p.id, p.text, p.media, p.scheduled_at, p.status, p.tg_message_id, p.vk_post_id,
+    const pool = getPool();
+    const membership = await requireSelectedProjectPermission(pool, user.id, "project.read");
+    const rows = await pool.query(
+      `select p.id, p.user_id as author_user_id,
+              coalesce(nullif(btrim(post_author.name), ''), 'Участник ' || p.user_id::text) as author_name,
+              p.text, p.media, p.scheduled_at, p.status, p.tg_message_id, p.vk_post_id,
               p.attempts, p.last_error, p.published_at, p.created_at,
               p.external_message_id, p.verification_state,
               p.last_verification_attempt_at, p.last_verified_at,
@@ -27,8 +32,10 @@ export async function GET(req: NextRequest) {
               p.channel_id, c.network, c.title as channel_title, c.handle, c.vk_group_id,
               coalesce(parts.items, '[]'::jsonb) as publication_parts
          from posts p
-         join channels c on c.id = p.channel_id
-         left join publication_operations operation on operation.id = p.publication_operation_id
+         join users post_author on post_author.id = p.user_id
+         join channels c on c.id = p.channel_id and c.project_id = p.project_id
+         left join publication_operations operation
+           on operation.id = p.publication_operation_id and operation.project_id = p.project_id
          left join lateral (
            select jsonb_agg(jsonb_build_object(
                     'partIndex', pp.part_index,
@@ -40,13 +47,16 @@ export async function GET(req: NextRequest) {
                   ) order by pp.part_index) as items
              from publication_parts pp where pp.post_id = p.id
          ) parts on true
-        where p.user_id = $1
+        where p.project_id = $1
         order by p.scheduled_at nulls last, p.id desc
         limit 200`,
-      [user.id],
+      [membership.projectId],
     );
     return NextResponse.json({ posts: rows.rows });
   } catch (err) {
+    if (err instanceof ProjectAccessError) {
+      return NextResponse.json({ error: "access_denied" }, { status: 403 });
+    }
     console.error("[/api/posts]", { errorName: err instanceof Error ? err.name : "Error" });
     return NextResponse.json({ error: "unavailable" }, { status: 503 });
   }

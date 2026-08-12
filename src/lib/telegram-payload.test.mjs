@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildTelegramCarouselParts,
   buildTelegramPayload,
   splitTelegramHtml,
   telegramEntityLength,
@@ -69,6 +70,22 @@ describe("Telegram final payload", () => {
     const payload = buildTelegramPayload({ text: "x".repeat(1025), hasAsset: true });
     expect(payload.parts.map((part) => part.type)).toEqual(["media", "text"]);
     expect(payload.parts[1].entityLength).toBe(1025);
+  });
+
+  it("persists one deterministic media part for every carousel image", () => {
+    const parts = buildTelegramCarouselParts({ assetCount: 5, text: "Короткая подпись" });
+    expect(parts).toHaveLength(5);
+    expect(parts.map((part) => part.type)).toEqual(["media", "media", "media", "media", "media"]);
+    expect(parts.map((part) => part.index)).toEqual([0, 1, 2, 3, 4]);
+    expect(parts[0].payloadHtml).toContain("Короткая подпись");
+    expect(parts.slice(1).every((part) => part.payloadHtml === null)).toBe(true);
+  });
+
+  it("puts long carousel text after all media parts", () => {
+    const parts = buildTelegramCarouselParts({ assetCount: 3, text: "я".repeat(1025) });
+    expect(parts.map((part) => part.type)).toEqual(["media", "media", "media", "text"]);
+    expect(parts.map((part) => part.index)).toEqual([0, 1, 2, 3]);
+    expect(parts[3].entityLength).toBe(1025);
   });
 
   it("prefers paragraph and sentence boundaries", () => {

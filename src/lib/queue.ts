@@ -109,6 +109,7 @@ type MediaQueueProducer = Pick<Queue, "add" | "getJob">;
 
 export interface MediaQueueJobData {
   generationId: number;
+  projectId: number;
   requestId: string;
   requestKey: string;
   providerRequestKey: string;
@@ -125,6 +126,9 @@ export async function enqueueMediaGeneration(
   timeoutMs = 2_000,
 ): Promise<{ recovered: boolean; jobId: string }> {
   const jobId = `media-${data.generationId}`;
+  if (!Number.isSafeInteger(data.projectId) || data.projectId <= 0) {
+    throw new TypeError("media queue project is required");
+  }
   try {
     await within(queue.add(
       "generate",

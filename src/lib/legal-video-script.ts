@@ -94,7 +94,8 @@ export type LegalVideoValidationIssue = {
     | "hash_mismatch"
     | "source_mismatch"
     | "unknown_source_claim"
-    | "unsupported_factual_marker";
+    | "unsupported_factual_marker"
+    | "unsupported_semantic_claim";
   message: string;
   marker?: string;
 };
@@ -123,6 +124,40 @@ const FORBIDDEN_TEXT_PATTERN = /(?:<\s*\/?\s*(?:script|iframe|object|embed|style
 const CONTROL_PATTERN = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u;
 const URL_PATTERN = /https?:\/\/[^\s<>()]+/giu;
 const LEGAL_CODE_PATTERN = "(?:ГК|ГПК|АПК|УК|УПК|НК|ТК|ЖК|СК|КоАП)\\s+РФ|(?:44|127|223)-ФЗ";
+
+/**
+ * Words that only connect or frame a statement and therefore do not add a
+ * factual proposition. Negation, modality and universal quantifiers are
+ * intentionally absent: changing any of them can reverse or strengthen a
+ * legal claim.
+ */
+const SEMANTIC_STOP_WORDS = new Set([
+  "а", "без", "бы", "в", "во", "для", "до", "же", "за", "и", "из", "или", "к", "как",
+  "ко", "на", "над", "но", "о", "об", "от", "по", "под", "при", "про", "с", "со", "у",
+  "через", "что", "это", "этот", "эта", "эти", "его", "ее", "её", "их", "ваш", "ваша",
+  "ваше", "ваши", "свой", "своя", "свое", "своё", "свои", "который", "которая", "которые",
+]);
+const SEMANTIC_FRAMING_WORDS = new Set([
+  "главн", "кратк", "коротк", "важн", "разбор", "памятк", "тезис",
+]);
+const CTA_LEAD_STEMS = new Set([
+  "сохран", "провер", "обсуд", "зада", "обрат", "подпиш", "подел", "напиш", "скача", "откр",
+]);
+const CTA_INFINITIVE_STEMS = new Set([
+  "сохран", "провер", "обсуд", "зада", "обрат", "подпис", "подел", "напис", "скача", "откр",
+]);
+const CTA_SAFE_STEMS = new Set([
+  ...CTA_LEAD_STEMS,
+  ...CTA_INFINITIVE_STEMS,
+  "разбор", "памятк", "материал", "публикац", "услов", "договор", "правил", "примен",
+  "ситуац", "вопрос", "консультац", "подробност", "источник",
+]);
+const SEMANTIC_POLARITY_WORDS = new Set([
+  "не", "нет", "нельзя", "невозможно", "запрещено", "никогда",
+]);
+const SEMANTIC_STRENGTH_WORDS = new Set([
+  "всегда", "все", "всё", "любой", "каждый", "только", "исключительно", "обязательно",
+]);
 
 const MONTHS: Readonly<Record<string, string>> = {
   января: "01",
@@ -407,6 +442,64 @@ function unsupportedMarkers(text: string, sourceMaterial: string) {
   return extractLegalVideoFactualMarkers(text).filter((marker) => !allowed.has(`${marker.kind}:${marker.value}`));
 }
 
+function semanticStem(token: string) {
+  const normalized = token.toLocaleLowerCase("ru-RU").replace(/ё/gu, "е");
+  if (SEMANTIC_POLARITY_WORDS.has(normalized) || SEMANTIC_STRENGTH_WORDS.has(normalized)) {
+    return normalized;
+  }
+  if (normalized.length <= 2 || /\d/u.test(normalized)) return normalized;
+  return normalized.replace(/(?:ся|сь)$/u, "").replace(
+    /(?:иями|ями|ами|ией|ого|ему|ому|ыми|ими|ая|яя|ое|ее|ые|ие|ый|ий|ой|ую|юю|ов|ев|ам|ям|ах|ях|ом|ем|ы|и|а|я|у|ю|е|о)$/u,
+    "",
+  );
+}
+
+function semanticTokens(text: string) {
+  return [...text.normalize("NFC").toLocaleLowerCase("ru-RU").replace(URL_PATTERN, " ").matchAll(/[\p{L}\d]+/gu)]
+    .map((match) => match[0])
+    .filter((token) => !SEMANTIC_STOP_WORDS.has(token))
+    .map(semanticStem)
+    .filter(Boolean);
+}
+
+function semanticSentences(text: string) {
+  return text
+    .normalize("NFC")
+    .split(/(?:[!?]+\s*|\.\s+(?=[А-ЯЁ])|[;\n]+|\s+[—–-]\s+)/gu)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+}
+
+function isSafeCallToAction(sentence: string) {
+  const tokens = semanticTokens(sentence);
+  if (!tokens.length) return true;
+  const first = tokens[0];
+  const hasCtaLead = [...CTA_LEAD_STEMS, ...CTA_INFINITIVE_STEMS]
+    .some((stem) => first.startsWith(stem));
+  if (!hasCtaLead) return false;
+  return tokens.every((token) => [...CTA_SAFE_STEMS].some((stem) => token.startsWith(stem)));
+}
+
+function semanticClaimSupported(sentence: string, sourceMaterial: string) {
+  if (isSafeCallToAction(sentence)) return true;
+  const narrativeTokens = semanticTokens(sentence)
+    .filter((token) => !SEMANTIC_FRAMING_WORDS.has(token));
+  if (!narrativeTokens.length) return true;
+
+  const narrativePolarity = new Set(narrativeTokens.filter((token) => SEMANTIC_POLARITY_WORDS.has(token)));
+  const narrativeStrength = new Set(narrativeTokens.filter((token) => SEMANTIC_STRENGTH_WORDS.has(token)));
+  const sourceTokens = new Set(semanticTokens(sourceMaterial));
+  if (!narrativeTokens.every((token) => sourceTokens.has(token))) return false;
+  const sourcePolarity = new Set([...sourceTokens].filter((token) => SEMANTIC_POLARITY_WORDS.has(token)));
+  const sourceStrength = new Set([...sourceTokens].filter((token) => SEMANTIC_STRENGTH_WORDS.has(token)));
+  if ([...narrativePolarity].some((token) => !sourcePolarity.has(token))) return false;
+  return [...narrativeStrength].every((token) => sourceStrength.has(token));
+}
+
+function unsupportedSemanticClaims(text: string, sourceMaterial: string) {
+  return semanticSentences(text).filter((sentence) => !semanticClaimSupported(sentence, sourceMaterial));
+}
+
 function sourceDraftAt(value: unknown, issues: LegalVideoValidationIssue[]): LegalVideoSourceDraft {
   const source = recordAt(value, "sourceDraft", issues);
   const body = boundedText(source.body, "sourceDraft.body", issues, {
@@ -518,6 +611,14 @@ function evidenceAt(
       "unsupported_factual_marker",
       `Маркер «${marker.display}» отсутствует в цитируемом фрагменте`,
       `${marker.kind}:${marker.value}`,
+    );
+  }
+  for (const claim of unsupportedSemanticClaims(normalized.claim, normalized.excerpt)) {
+    issue(
+      issues,
+      `${path}.claim`,
+      "unsupported_semantic_claim",
+      `Фраза «${claim.slice(0, 160)}» не подтверждена цитируемым фрагментом`,
     );
   }
   const calculatedHash = evidenceHash(normalized);
@@ -660,6 +761,15 @@ function buildScript(value: unknown, requireComputedHashes: boolean): LegalVideo
         "unsupported_factual_marker",
         `Маркер «${marker.display}» отсутствует в указанных основаниях`,
         `${marker.kind}:${marker.value}`,
+      );
+    }
+    const spokenNarrative = `${scene.voiceOver}\n${scene.onScreenText}`;
+    for (const claim of unsupportedSemanticClaims(spokenNarrative, citedMaterial)) {
+      issue(
+        issues,
+        path,
+        "unsupported_semantic_claim",
+        `Фраза «${claim.slice(0, 160)}» не подтверждена выбранными основаниями`,
       );
     }
     const productionTiming = { startSecond: elapsed, endSecond: elapsed + scene.durationSeconds };

@@ -41,7 +41,7 @@ export type PostLength = "auto" | "short" | "medium" | "long" | "custom";
 export type Formality = "auto" | "casual" | "neutral" | "formal";
 export type Energy = "auto" | "calm" | "balanced" | "high";
 export type Humor = "auto" | "none" | "light" | "bold";
-export type ProfanityMode = "forbid" | "masked" | "allow";
+export type ProfanityMode = "auto" | "forbid" | "masked" | "allow";
 export type Address = "auto" | "ты" | "вы" | "neutral";
 export type EmojiMode = "auto" | "none" | "few" | "moderate" | "many" | "custom";
 export type EmojiPlacement = "auto" | "inline" | "line_end" | "bullets";
@@ -495,7 +495,7 @@ export const DEFAULT_POST_SETTINGS: Readonly<PostSettings> = Object.freeze({
   formality: "auto",
   energy: "auto",
   humor: "auto",
-  profanityMode: "forbid",
+  profanityMode: "auto",
   address: "auto",
   emojiMode: "auto",
   emojiMax: null,
@@ -692,7 +692,7 @@ export function normalizePostSettings(raw: unknown): PostSettings {
     formality: oneOf(source.formality, ["auto", "casual", "neutral", "formal"] as const, DEFAULT_POST_SETTINGS.formality),
     energy: oneOf(source.energy, ["auto", "calm", "balanced", "high"] as const, DEFAULT_POST_SETTINGS.energy),
     humor: oneOf(source.humor, ["auto", "none", "light", "bold"] as const, DEFAULT_POST_SETTINGS.humor),
-    profanityMode: oneOf(source.profanityMode, ["forbid", "masked", "allow"] as const, DEFAULT_POST_SETTINGS.profanityMode),
+    profanityMode: oneOf(source.profanityMode, ["auto", "forbid", "masked", "allow"] as const, DEFAULT_POST_SETTINGS.profanityMode),
     address: oneOf(source.address, ["auto", "ты", "вы", "neutral"] as const, DEFAULT_POST_SETTINGS.address),
     emojiMode,
     emojiMax,
@@ -899,6 +899,35 @@ function effectiveLengthRange(
     : selected;
 }
 
+/**
+ * В режиме Auto прямое пожелание из текущего запроса важнее постоянного голоса
+ * канала. Явно выбранный режим публикации при этом не переопределяем текстом.
+ */
+export function resolvePostProfanityMode(raw: unknown, task?: string): ProfanityMode {
+  const settings = normalizePostSettings(raw);
+  if (settings.profanityMode !== "auto") return settings.profanityMode;
+
+  const value = String(task ?? "").toLocaleLowerCase("ru").replace(/\s+/g, " ").trim();
+  if (!value) return "auto";
+  if (
+    /(?:без|никакого)\s+мата/u.test(value)
+    || /не\s+(?:используй|добавляй|пиши)(?:\s+\p{L}+){0,3}\s+мат/u.test(value)
+    || /мат\s+(?:запрещ[её]н|нельзя)/u.test(value)
+  ) return "forbid";
+  if (
+    /(?:мат|ругательств\p{L}*)\s+со\s+зв[её]здочк/u.test(value)
+    || /(?:цензурированн\p{L}*\s+мат|запика(?:й|нн)\p{L}*)/u.test(value)
+  ) return "masked";
+  if (
+    /(?:без\s+цензур\p{L}*|не\s+(?:цензурируй|маскируй)(?:\s+\p{L}+){0,3}\s+мат)/u.test(value)
+    || /(?:с|добавь|используй|можно)\s+мат(?:ом|а)?(?!\p{L})/u.test(value)
+    || /(?:много|побольше|больше)\s+мата/u.test(value)
+    || /мат(?:ом|а)?\s+без\s+(?:цензур\p{L}*|ограничен\p{L}*|лимит\p{L}*)/u.test(value)
+    || /(?:прям\p{L}*\s+мат|матерн\p{L}*\s+(?:пост|лексик\p{L}*|слов\p{L}*))/u.test(value)
+  ) return "allow";
+  return "auto";
+}
+
 const LABELS = {
   goal: { auto: "определи по задаче", reach: "охват", engagement: "вовлечение", sale: "продажа", traffic: "переходы", education: "обучение", announcement: "анонс", warmup: "прогрев" },
   awareness: { auto: "определи по контексту", unaware: "не знает о проблеме", problem_aware: "понимает проблему", solution_aware: "ищет решение", product_aware: "знает продукт", ready: "готова действовать" },
@@ -950,6 +979,7 @@ const OUTPUT_LABELS: Record<OutputPart, string> = {
 
 export function buildPostSettingsPrompt(raw: unknown, context: { network?: string | null; kind?: AiKind; task?: string } = {}): string {
   const settings = normalizePostSettings(raw);
+  const profanityMode = resolvePostProfanityMode(settings, context.task);
   const target = resolvePostTarget(settings, context.network, context.kind);
   const rule = POST_TARGET_RULES[target];
   const [minChars, maxChars] = effectiveLengthRange(settings, rule, context);
@@ -1043,11 +1073,13 @@ export function buildPostSettingsPrompt(raw: unknown, context: { network?: strin
   section("7. СТИЛЬ И ОРИГИНАЛЬНОСТЬ", [
     `язык: ${settings.language === "ru" ? "русский" : settings.language === "en" ? "английский" : "язык задачи и канала"}`,
     `формальность: ${LABELS.formality[settings.formality]}; энергия: ${LABELS.energy[settings.energy]}; юмор: ${LABELS.humor[settings.humor]}; обращение: ${LABELS.address[settings.address]}`,
-    settings.profanityMode === "forbid"
+    profanityMode === "auto"
+      ? "мат регулируется постоянной настройкой выбранного канала; если она отсутствует и пользователь прямо не просил мат, не добавляй его"
+      : profanityMode === "forbid"
       ? "мат и замаскированная обсценная лексика полностью запрещены"
-      : settings.profanityMode === "masked"
+      : profanityMode === "masked"
         ? "ОБЯЗАТЕЛЬНО используй ровно одно уместное матерное выражение с частичной цензурой звёздочками; прямой мат запрещён; не оскорбляй читателя"
-        : "ОБЯЗАТЕЛЬНО используй ровно одно прямое матерное слово как эмоциональный акцент; не маскируй его, не направляй на читателя и не используй для травли",
+        : "ОБЯЗАТЕЛЬНО используй в готовом посте минимум одно прямое матерное выражение без цензуры; верхнего количественного лимита нет. Мат должен усиливать конкретную мысль: из того же предложения должно быть понятно, какой риск, ошибка, абсурд, польза или эмоция автора так оценивается и почему. Не вставляй отдельную дежурную фразу ради выполнения правила, не искажай матерным словом юридический факт, название или цитату, не оскорбляй читателя и не заменяй мат звёздочками или нейтральными эвфемизмами",
     `начало: ${LABELS.hook[settings.hook]}; структура: ${LABELS.structure[settings.structure]}; абзацы: ${LABELS.paragraphs[settings.paragraphs]}; списки: ${LABELS.lists[settings.lists]}`,
     `эмодзи: ${minEmojis === maxEmojis ? `ровно ${maxEmojis}` : `${minEmojis}–${maxEmojis}`}; расположение: ${settings.emojiPlacement}; хэштеги: ${minHashtags === maxHashtags ? `ровно ${maxHashtags}` : `${minHashtags}–${maxHashtags}`}; креативность: ${LABELS.creativity[settings.creativity]}`,
     settings.allowedEmojis.length ? `только допустимые эмодзи: ${settings.allowedEmojis.join(" ")}` : null,
@@ -1145,7 +1177,7 @@ export function buildPostSettingsSummary(raw: unknown, network?: string | null):
     settings.objection ? `Закрываем возражение: ${settings.objection}.` : "",
     settings.proofs.length ? `Используем доказательств: ${settings.proofs.length}.` : "",
     `Формат: ${target.label}.`,
-    `Мат: ${settings.profanityMode === "forbid" ? "запрещён" : settings.profanityMode === "masked" ? "обязательно одно цензурированное выражение" : "обязательно одно прямое слово"}.`,
+    `Мат: ${settings.profanityMode === "auto" ? "по настройке канала или прямому запросу" : settings.profanityMode === "forbid" ? "запрещён" : settings.profanityMode === "masked" ? "одно выражение со звёздочками" : "разрешён без цензуры и лимита"}.`,
     `Действие: ${settings.readerAction || LABELS.cta[settings.cta]}.`,
     `Качество: ${settings.qualityMode === "fast" ? "быстро" : settings.qualityMode === "maximum" ? "максимальное" : "сбалансированно"}.`,
   ].filter(Boolean);
@@ -1168,6 +1200,7 @@ export function postSettingsQualityOverrides(
   context: { network?: string | null; kind?: AiKind; task?: string } = {},
 ): Record<string, unknown> {
   const settings = normalizePostSettings(raw);
+  const profanityMode = resolvePostProfanityMode(settings, context.task);
   const target = resolvePostTarget(settings, context.network, context.kind);
   const rule = POST_TARGET_RULES[target];
   const [minChars, maxChars] = effectiveLengthRange(settings, rule, context);
@@ -1182,8 +1215,12 @@ export function postSettingsQualityOverrides(
     requireConclusion: settings.includeConclusion,
     listPolicy: settings.lists === "required" ? "required" : settings.lists === "avoid" ? "avoid" : "when_useful",
     ...(settings.address === "auto" ? {} : { address: settings.address }),
-    profanity: settings.profanityMode === "forbid" ? "forbid" : "allow",
-    profanityLevel: settings.profanityMode === "forbid" ? 0 : settings.profanityMode === "masked" ? 50 : 80,
+    ...(profanityMode === "auto"
+      ? {}
+      : {
+          profanity: profanityMode === "forbid" ? "forbid" : "allow",
+          profanityLevel: profanityMode === "forbid" ? 0 : profanityMode === "masked" ? 50 : 100,
+        }),
     emojiPolicy: settings.emojiMode === "none" ? "none" : "restrained",
     maxEmojis,
     hashtagsPolicy: settings.hashtags === "none" ? "none" : "restrained",
@@ -1312,6 +1349,7 @@ export function validatePostSettingsResult(
   context: { network?: string | null; kind?: AiKind; task?: string; history?: readonly string[] } = {},
 ): PostSettingsValidation {
   const settings = normalizePostSettings(raw);
+  const profanityMode = resolvePostProfanityMode(settings, context.task);
   const target = resolvePostTarget(settings, context.network, context.kind);
   const rule = POST_TARGET_RULES[target];
   const [minChars, maxChars] = effectiveLengthRange(settings, rule, context);
@@ -1368,13 +1406,16 @@ export function validatePostSettingsResult(
   if (target === "youtube_title" && /[.!?…]$/.test(value)) add("title_punctuation", "Убери финальную точку или восклицание из заголовка", false);
   const directProfanityCount = (value.match(directProfanityWordPattern) ?? []).length;
   const maskedProfanityCount = (value.match(maskedProfanityWordPattern) ?? []).length;
-  if (settings.profanityMode === "forbid" && (directProfanityCount > 0 || maskedProfanityCount > 0)) {
+  if (profanityMode === "forbid" && (directProfanityCount > 0 || maskedProfanityCount > 0)) {
     add("profanity", "Мат, включая цензурированный звёздочками, запрещён настройками публикации");
-  } else if (settings.profanityMode === "masked") {
+  } else if (profanityMode === "masked") {
     if (directProfanityCount > 0) add("profanity_direct", "Прямой мат запрещён: оставь ровно одно выражение со звёздочками");
     if (maskedProfanityCount !== 1) add("profanity_required", `Нужно ровно одно цензурированное матерное выражение, сейчас ${maskedProfanityCount}`);
-  } else if (settings.profanityMode === "allow" && directProfanityCount !== 1) {
-    add("profanity_required", `Нужно ровно одно прямое матерное слово, сейчас ${directProfanityCount}`);
+  } else if (profanityMode === "allow" && directProfanityCount === 0) {
+    add(
+      "profanity_required",
+      "Добавь минимум одно прямое матерное выражение без звёздочек внутрь содержательного предложения: должно быть понятно, какой конкретный риск, ошибка, абсурд, польза или эмоция так оценивается и почему. Не добавляй отдельную дежурную фразу ради проверки",
+    );
   }
   for (const phrase of [...(settings.blockAiCliches ? AI_CLICHES : []), ...settings.forbiddenWords, ...settings.bannedExpressions]) {
     if (containsPhrase(value, phrase)) add("forbidden_phrase", `Запрещённая формулировка: «${phrase}»`);
@@ -1528,15 +1569,10 @@ function normalizeRequiredProfanity(text: string, mode: ProfanityMode): string {
     });
     return kept ? value : appendBeforeHashtags(value, "Скажу прямо: это, бл***, действительно важно.");
   }
-  value = value.replace(maskedProfanityWordPattern, "очень");
-  value = value.replace(directProfanityWordPattern, (word) => {
-    if (!kept) {
-      kept = true;
-      return word;
-    }
-    return "очень";
-  });
-  return kept ? value : appendBeforeHashtags(value, "Скажу прямо: это, блядь, действительно важно.");
+  // В свободном режиме наличие прямого мата обязательно проверяет semantic repair-loop.
+  // Детерминированно вставлять слово сюда нельзя: без понимания смысла оно почти наверняка
+  // окажется механической припиской. Здесь только сохраняем всю выбранную моделью лексику.
+  return value;
 }
 
 function hashtagCandidates(settings: PostSettings, task: string | undefined, text: string): string[] {
@@ -1583,6 +1619,7 @@ export function finalizePostSettingsDeterministically(
   context: { network?: string | null; kind?: AiKind; task?: string } = {},
 ): string {
   const settings = normalizePostSettings(raw);
+  const profanityMode = resolvePostProfanityMode(settings, context.task);
   const target = resolvePostTarget(settings, context.network, context.kind);
   const rule = POST_TARGET_RULES[target];
   const [minEmojis, maxEmojis] = emojiRange(settings, rule);
@@ -1590,7 +1627,7 @@ export function finalizePostSettingsDeterministically(
   const full = String(text ?? "").trim();
   const primary = postSettingsPrimaryText(full, settings);
   const extras = settings.outputParts.length > 1 ? full.slice(primary.length).trimStart() : "";
-  let value = normalizeRequiredProfanity(primary, settings.profanityMode);
+  let value = normalizeRequiredProfanity(primary, profanityMode);
 
   const allowed = settings.allowedEmojis.length ? settings.allowedEmojis : [...DEFAULT_EMOJIS];
   const usable = allowed.filter((item) => !settings.forbiddenEmojis.includes(item));

@@ -102,7 +102,7 @@ describe("legal visual model", () => {
       "Вопрос / ответ",
       "Цифра",
       "Анонс",
-      "Кейс",
+      "Разбор ситуации",
     ]);
     expect(new Set(LEGAL_VISUAL_TEMPLATES.map((template) => template.layout))).toHaveLength(11);
   });
@@ -138,20 +138,45 @@ describe("legal visual model", () => {
     expect(() => validateLegalVisualConfig(tooLong)).toThrow(LegalVisualValidationError);
   });
 
-  it("round-trips editable card content and order through a stable persistence snapshot", () => {
+  it("round-trips editable card content through a stable persistence snapshot", () => {
     const original = configFor("4:5");
-    original.cards = [original.cards[2], original.cards[0], original.cards[1]].map((card, index) => ({
-      ...card,
-      order: index + 1,
-    }));
     const first = serializeLegalVisualConfig(original);
     const restored = deserializeLegalVisualConfig(first);
     const second = serializeLegalVisualConfig(restored);
 
     expect(second).toBe(first);
-    expect(restored.cards.map((card) => card.id)).toEqual(["cta-card", "hook-card", "context-card"]);
-    expect(restored.cards[0].cta?.label).toBe("Сохранить чек-лист");
-    expect(restored.cards[1].emphasis).toBe("30 дней");
+    expect(restored.cards.map((card) => card.id)).toEqual(["hook-card", "context-card", "cta-card"]);
+    expect(restored.cards[2].cta?.label).toBe("Сохранить чек-лист");
+    expect(restored.cards[0].emphasis).toBe("30 дней");
+  });
+
+  it("blocks missing endpoints, duplicate roles, and reversed semantic sequences", () => {
+    const ctaFirst = configFor();
+    ctaFirst.cards = [ctaFirst.cards[2], ctaFirst.cards[0], ctaFirst.cards[1]].map((card, index) => ({
+      ...card,
+      order: index + 1,
+    }));
+    expect(() => validateLegalVisualConfig(ctaFirst)).toThrow(LegalVisualValidationError);
+
+    const hookMiddle = configFor();
+    hookMiddle.cards[0].role = "context";
+    hookMiddle.cards[1].role = "hook";
+    expect(() => validateLegalVisualConfig(hookMiddle)).toThrow(LegalVisualValidationError);
+
+    const duplicate = configFor();
+    duplicate.cards[1].role = "hook";
+    expect(() => validateLegalVisualConfig(duplicate)).toThrow(LegalVisualValidationError);
+
+    const reversedMiddle = configFor();
+    reversedMiddle.cards.splice(1, 0, {
+      ...reversedMiddle.cards[1],
+      id: "actions-card",
+      order: 2,
+      role: "actions",
+    });
+    reversedMiddle.cards[2] = { ...reversedMiddle.cards[2], order: 3, role: "context" };
+    reversedMiddle.cards[3] = { ...reversedMiddle.cards[3], order: 4 };
+    expect(() => validateLegalVisualConfig(reversedMiddle)).toThrow(LegalVisualValidationError);
   });
 });
 

@@ -21,6 +21,8 @@ if (!target || !["localhost", "127.0.0.1", "::1"].includes(target.hostname)
 const pool = new pg.Pool({ connectionString: databaseUrl, ssl: false, max: 12 });
 let userId = 0;
 let otherUserId = 0;
+let projectId = 0;
+let otherProjectId = 0;
 let channelId = 0;
 
 async function createOperation(suffix: string, postCount = 1) {
@@ -28,11 +30,12 @@ async function createOperation(suffix: string, postCount = 1) {
   const fingerprint = crypto.randomUUID().replaceAll("-", "").padEnd(64, "0");
   const operation = (await pool.query(
     `insert into publication_operations
-       (user_id, draft_version, idempotency_key, fingerprint, text, scheduled_at,
+       (project_id, user_id, draft_version, idempotency_key, fingerprint, text, scheduled_at,
         timezone, destination_ids, status)
-     values ($1, 1, $2, $3, $4, $5, 'UTC', $6::jsonb, 'queued')
+     values ($1, $2, 1, $3, $4, $5, $6, 'UTC', $7::jsonb, 'queued')
      returning id, schedule_revision`,
     [
+      projectId,
       userId,
       `lifecycle:${suffix}`,
       fingerprint,
@@ -45,11 +48,11 @@ async function createOperation(suffix: string, postCount = 1) {
   for (let index = 0; index < postCount; index += 1) {
     const post = (await pool.query(
       `insert into posts
-         (user_id, channel_id, text, scheduled_at, status, publication_origin,
+         (project_id, user_id, channel_id, text, scheduled_at, status, publication_origin,
           publication_operation_id, publication_draft_version)
-       values ($1, $2, $3, $4, 'scheduled', 'manual', $5, 1)
+       values ($1, $2, $3, $4, $5, 'scheduled', 'manual', $6, 1)
        returning id`,
-      [userId, channelId, `Lifecycle ${suffix} ${index}`, scheduledAt, operation.id],
+      [projectId, userId, channelId, `Lifecycle ${suffix} ${index}`, scheduledAt, operation.id],
     )).rows[0];
     postIds.push(Number(post.id));
     await pool.query(
@@ -69,6 +72,7 @@ function cancelInput(operationId: number, revision = 1, key = crypto.randomUUID(
   return {
     pool,
     userId,
+    projectId,
     operationId,
     expectedRevision: revision,
     expectedStatus: "queued",
@@ -82,6 +86,7 @@ async function claim(postId: number, revision = 1, leaseToken = crypto.randomUUI
     leaseToken,
     post: await claimPublicationLease(pool, {
       postId,
+      projectId,
       scheduleRevision: revision,
       leaseToken,
       overdueCutoff: new Date(Date.now() - 5 * 60_000),
@@ -100,10 +105,28 @@ beforeAll(async () => {
   otherUserId = Number((await pool.query(
     "insert into users (email, name) values ('qa-lifecycle-other@example.test', 'QA Other') returning id",
   )).rows[0].id);
-  channelId = Number((await pool.query(
-    `insert into channels (user_id, network, title, handle, is_active)
-     values ($1, 'tg', 'Lifecycle', 'qa_lifecycle', true) returning id`,
+  projectId = Number((await pool.query(
+    `insert into projects (name, timezone, created_by_user_id, personal_owner_user_id)
+     values ('Lifecycle project', 'UTC', $1, $1) returning id`,
     [userId],
+  )).rows[0].id);
+  otherProjectId = Number((await pool.query(
+    `insert into projects (name, timezone, created_by_user_id, personal_owner_user_id)
+     values ('Other project', 'UTC', $1, $1) returning id`,
+    [otherUserId],
+  )).rows[0].id);
+  await pool.query(
+    `insert into project_members (project_id, user_id, role) values ($1, $2, 'owner'), ($3, $4, 'owner')`,
+    [projectId, userId, otherProjectId, otherUserId],
+  );
+  await pool.query(
+    `insert into user_project_preferences (user_id, selected_project_id) values ($1, $2), ($3, $4)`,
+    [userId, projectId, otherUserId, otherProjectId],
+  );
+  channelId = Number((await pool.query(
+    `insert into channels (project_id, user_id, network, title, handle, is_active)
+     values ($1, $2, 'tg', 'Lifecycle', 'qa_lifecycle', true) returning id`,
+    [projectId, userId],
   )).rows[0].id);
 });
 
@@ -116,6 +139,7 @@ describe("publication lifecycle revision fencing", () => {
     expect(result).toMatchObject({ ok: true, status: "cancelled", scheduleRevision: 2 });
     expect(await claimPublicationLease(pool, {
       postId: fixture.postIds[0],
+      projectId,
       scheduleRevision: 1,
       leaseToken: "stale-before-claim",
       overdueCutoff: new Date(Date.now() - 5 * 60_000),
@@ -129,6 +153,7 @@ describe("publication lifecycle revision fencing", () => {
     expect(result.ok).toBe(true);
     expect(await claimPublicationLease(pool, {
       ...receivedJob,
+      projectId,
       leaseToken: "job-before-lease",
       overdueCutoff: new Date(Date.now() - 5 * 60_000),
     })).toBeNull();
@@ -142,6 +167,7 @@ describe("publication lifecycle revision fencing", () => {
     expect(cancelled.ok).toBe(true);
     expect(await beginProviderCall(pool, {
       postId: fixture.postIds[0],
+      projectId,
       scheduleRevision: 1,
       leaseToken: leased.leaseToken,
     })).toBe(false);
@@ -152,6 +178,7 @@ describe("publication lifecycle revision fencing", () => {
     const leased = await claim(fixture.postIds[0]);
     expect(await beginProviderCall(pool, {
       postId: fixture.postIds[0],
+      projectId,
       scheduleRevision: 1,
       leaseToken: leased.leaseToken,
     })).toBe(true);
@@ -171,6 +198,7 @@ describe("publication lifecycle revision fencing", () => {
     expect(result).toMatchObject({ ok: true, status: "scheduled", scheduleRevision: 2 });
     expect(await claimPublicationLease(pool, {
       postId: fixture.postIds[0],
+      projectId,
       scheduleRevision: 1,
       leaseToken: "old-delayed-job",
       overdueCutoff: new Date(Date.now() - 5 * 60_000),
@@ -238,13 +266,18 @@ describe("publication lifecycle revision fencing", () => {
     expect(first).toMatchObject({ ok: true, draftVersion: 1, replayed: false });
     expect(replay).toMatchObject({ ok: true, draftId: first.draftId, replayed: true });
     expect((await pool.query(
-      "select count(*)::int as count from drafts where id = $1 and user_id = $2",
-      [first.draftId, userId],
+      "select count(*)::int as count from drafts where id = $1 and user_id = $2 and project_id = $3",
+      [first.draftId, userId, projectId],
     )).rows[0].count).toBe(1);
     const foreign = await restorePublicationDraft({
       ...cancelInput(fixture.operationId, 1, "foreign-restore"),
       userId: otherUserId,
     });
     expect(foreign).toMatchObject({ ok: false, error: "publication_operation_not_found", httpStatus: 404 });
+    const wrongProject = await restorePublicationDraft({
+      ...cancelInput(fixture.operationId, 1, "cross-project-restore"),
+      projectId: otherProjectId,
+    });
+    expect(wrongProject).toMatchObject({ ok: false, error: "publication_operation_not_found", httpStatus: 404 });
   });
 });

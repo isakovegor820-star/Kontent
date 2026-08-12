@@ -59,6 +59,7 @@ export interface ProviderCapability {
     readonly verified: boolean;
     readonly checkedAt: string;
     readonly contactUrl: string;
+    readonly rulesUrl: string;
     readonly note: string;
   };
 }

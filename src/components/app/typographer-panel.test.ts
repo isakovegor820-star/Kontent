@@ -14,9 +14,13 @@ describe("TypographerPanel", () => {
       suggestions,
       selectedIds: suggestions.map((item) => item.id),
       onSelectionChange: noop,
+      onApplyOne: noop,
       onApplySelected: noop,
       onApplySafe: noop,
+      onRejectAll: noop,
       onUndo: noop,
+      formatQuotes: false,
+      onFormatQuotesChange: noop,
       canUndo: true,
     }));
     expect(html).toContain("<section");
@@ -26,7 +30,10 @@ describe("TypographerPanel", () => {
     expect(html).toContain("<ins");
     expect(html).toContain("Было: ");
     expect(html).toContain("Станет: ");
+    expect(html).toContain("Применить эту правку");
     expect(html).toContain("Применить выбранные");
+    expect(html).toContain("Отклонить остальные");
+    expect(html).toContain("Предлагать оформление прямых кавычек");
     expect(html).not.toContain("transition-all");
   });
 

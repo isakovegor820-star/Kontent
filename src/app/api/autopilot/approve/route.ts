@@ -1,6 +1,7 @@
 // Д.9 — безопасное массовое одобрение плана.
 // Сначала сервер возвращает точный preview, затем принимает отдельный confirm с idempotency key.
 
+import { createHash } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
@@ -23,6 +24,7 @@ import {
 } from "@/lib/autopilot-scheduling.mjs";
 import type { QualityResult } from "@/lib/post-quality.mjs";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
+import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/project-permissions";
 
 export const runtime = "nodejs";
 
@@ -81,6 +83,12 @@ const validPreviewHash = (value: unknown) => {
   return /^[a-f0-9]{64}$/.test(hash) ? hash : null;
 };
 
+function projectIdempotencyKey(projectId: number, clientKey: string): string {
+  const prefix = `project:${projectId}:`;
+  if (prefix.length + clientKey.length <= 128) return `${prefix}${clientKey}`;
+  return `${prefix}sha256:${createHash("sha256").update(clientKey).digest("hex")}`;
+}
+
 function approvalSemantics(preview: AutopilotApprovalPreview) {
   return JSON.stringify({
     counts: preview.counts,
@@ -91,15 +99,16 @@ function approvalSemantics(preview: AutopilotApprovalPreview) {
 
 async function createStoredPreview(
   pool: ReturnType<typeof getPool>,
+  projectId: number,
   userId: number,
   channel: AutopilotApprovalPreview["channel"],
 ) {
   const plan = (
     await pool.query<{ id: string; items: PlanItem[]; revision: string }>(
       `select id, items, revision from autopilot_plan
-        where user_id = $1 and channel_id = $2 and status = 'pending'
+        where project_id = $1 and channel_id = $2 and status = 'pending'
         order by created_at desc limit 1`,
-      [userId, channel.id],
+      [projectId, channel.id],
     )
   ).rows[0];
   if (!plan) return null;
@@ -114,10 +123,11 @@ async function createStoredPreview(
   const token = createAutopilotPreviewToken();
   await pool.query(
     `insert into autopilot_approval_previews
-       (token_hash, user_id, channel_id, plan_id, plan_revision, preview_hash, snapshot, expires_at)
-     values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)`,
+       (token_hash, project_id, user_id, channel_id, plan_id, plan_revision, preview_hash, snapshot, expires_at)
+     values ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)`,
     [
       hashAutopilotPreviewToken(token),
+      projectId,
       userId,
       channel.id,
       preview.planId,
@@ -132,15 +142,17 @@ async function createStoredPreview(
 
 async function finishOperation(
   operationId: number,
+  projectId: number,
+  userId: number,
   status: "completed" | "partial" | "failed",
   result: unknown,
   httpStatus: number,
 ) {
   await getPool().query(
     `update autopilot_approval_operations
-        set status = $2, result = $3, http_status = $4, completed_at = now()
-      where id = $1`,
-    [operationId, status, JSON.stringify(result), httpStatus],
+        set status = $4, result = $5, http_status = $6, completed_at = now()
+      where id = $1 and project_id = $2 and user_id = $3`,
+    [operationId, projectId, userId, status, JSON.stringify(result), httpStatus],
   );
 }
 
@@ -159,18 +171,25 @@ export async function POST(req: NextRequest) {
   }
 
   let operationId: number | null = null;
-  let claimedContext: { planId: number; userId: number; channelId: number } | null = null;
+  let authorizedProjectId: number | null = null;
+  let claimedContext: { planId: number; projectId: number; userId: number; channelId: number } | null = null;
   let fallbackChannel: AutopilotApprovalPreview["channel"] | null = null;
   try {
     const pool = getPool();
-    const channelId = await resolveChannel(user.id, Number(body.channelId) || null);
+    const membership = await requireSelectedProjectPermission(pool, user.id, "content.publish");
+    const projectId = membership.projectId;
+    authorizedProjectId = projectId;
+    const channelId = await resolveChannel(
+      { actorUserId: user.id, projectId },
+      Number(body.channelId) || null,
+    );
     if (!channelId) return NextResponse.json({ ok: false, error: "no_channel" }, { status: 422 });
 
     const channel = (
       await pool.query<{ id: string; title: string | null; handle: string | null }>(
         `select id, title, handle from channels
-          where id = $1 and user_id = $2 and network = 'tg' and is_active = true`,
-        [channelId, user.id],
+          where id = $1 and project_id = $2 and network = 'tg' and is_active = true`,
+        [channelId, projectId],
       )
     ).rows[0];
     if (!channel) return NextResponse.json({ ok: false, error: "no_channel" }, { status: 422 });
@@ -179,11 +198,11 @@ export async function POST(req: NextRequest) {
 
     // A process may have died after a durable per-item checkpoint. Reclaim first so the
     // old idempotency key receives a terminal retryable result and a new key can continue.
-    await reclaimStaleAutopilotApprovals(pool, { userId: user.id, channelId });
+    await reclaimStaleAutopilotApprovals(pool, { projectId, channelId });
 
     const action = body.action === "confirm" ? "confirm" : "preview";
     if (action === "preview") {
-      const preview = await createStoredPreview(pool, user.id, channelSnapshot);
+      const preview = await createStoredPreview(pool, projectId, user.id, channelSnapshot);
       if (!preview) return NextResponse.json({ ok: true, preview: null, already: true });
       return NextResponse.json({ ok: true, preview });
     }
@@ -199,6 +218,7 @@ export async function POST(req: NextRequest) {
     ) {
       return NextResponse.json({ ok: false, error: "bad_confirmation" }, { status: 422 });
     }
+    const scopedIdempotencyKey = projectIdempotencyKey(projectId, idempotencyKey);
 
     // A completed key always replays its stored result. It cannot be reused for another
     // channel or plan, which prevents an accidental cross-channel confirmation.
@@ -212,8 +232,9 @@ export async function POST(req: NextRequest) {
         http_status: number;
       }>(
         `select channel_id, plan_id, plan_revision, preview_hash, result, http_status
-           from autopilot_approval_operations where user_id = $1 and idempotency_key = $2`,
-        [user.id, idempotencyKey],
+           from autopilot_approval_operations
+          where project_id = $1 and user_id = $2 and idempotency_key = $3`,
+        [projectId, user.id, scopedIdempotencyKey],
       )
     ).rows[0];
     if (replay) {
@@ -237,17 +258,18 @@ export async function POST(req: NextRequest) {
       }>(
         `select snapshot, plan_revision, preview_hash
            from autopilot_approval_previews
-          where token_hash = $1 and user_id = $2 and channel_id = $3 and plan_id = $4
+          where token_hash = $1 and project_id = $2 and user_id = $3
+            and channel_id = $4 and plan_id = $5
             and consumed_at is null and expires_at > now()`,
-        [hashAutopilotPreviewToken(previewToken), user.id, channelId, planId],
+        [hashAutopilotPreviewToken(previewToken), projectId, user.id, channelId, planId],
       )
     ).rows[0];
 
     const currentPlan = (
       await pool.query<{ items: PlanItem[]; revision: string; status: string }>(
         `select items, revision, status from autopilot_plan
-          where id = $1 and user_id = $2 and channel_id = $3`,
-        [planId, user.id, channelId],
+          where id = $1 and project_id = $2 and channel_id = $3`,
+        [planId, projectId, channelId],
       )
     ).rows[0];
     const currentRevision = Number(currentPlan?.revision);
@@ -274,7 +296,7 @@ export async function POST(req: NextRequest) {
       currentRevision !== planRevision || currentHash !== previewHash ||
       !currentPreview || approvalSemantics(currentPreview) !== approvalSemantics(previewRecord.snapshot);
     if (previewIsStale) {
-      const freshPreview = await createStoredPreview(pool, user.id, channelSnapshot);
+      const freshPreview = await createStoredPreview(pool, projectId, user.id, channelSnapshot);
       return NextResponse.json(
         { ok: false, error: "stale_preview", preview: freshPreview },
         { status: 409 },
@@ -283,18 +305,19 @@ export async function POST(req: NextRequest) {
 
     const operation = await pool.query<{ id: string }>(
       `insert into autopilot_approval_operations
-         (user_id, channel_id, plan_id, plan_revision, preview_hash,
+         (project_id, user_id, channel_id, plan_id, plan_revision, preview_hash,
           idempotency_key, actor_type, status, request_snapshot)
-       values ($1, $2, $3, $4, $5, $6, 'web', 'processing', $7)
-       on conflict (user_id, idempotency_key) do nothing
+       values ($1, $2, $3, $4, $5, $6, $7, 'web', 'processing', $8)
+       on conflict do nothing
        returning id`,
       [
+        projectId,
         user.id,
         channelId,
         planId,
         planRevision,
         previewHash,
-        idempotencyKey,
+        scopedIdempotencyKey,
         JSON.stringify(previewRecord.snapshot),
       ],
     );
@@ -305,15 +328,16 @@ export async function POST(req: NextRequest) {
 
     const consumed = await pool.query(
       `update autopilot_approval_previews
-          set consumed_at = now(), operation_id = $2
-        where token_hash = $1 and consumed_at is null and expires_at > now()
+          set consumed_at = now(), operation_id = $3
+        where token_hash = $1 and project_id = $2
+          and consumed_at is null and expires_at > now()
         returning token_hash`,
-      [hashAutopilotPreviewToken(previewToken), operationId],
+      [hashAutopilotPreviewToken(previewToken), projectId, operationId],
     );
     if (!consumed.rowCount) {
-      const freshPreview = await createStoredPreview(pool, user.id, channelSnapshot);
+      const freshPreview = await createStoredPreview(pool, projectId, user.id, channelSnapshot);
       const result = { ok: false, error: "stale_preview", preview: freshPreview };
-      await finishOperation(operationId, "failed", result, 409);
+      await finishOperation(operationId, projectId, user.id, "failed", result, 409);
       return NextResponse.json(result, { status: 409 });
     }
 
@@ -321,6 +345,7 @@ export async function POST(req: NextRequest) {
     // schedule the same items while this operation is running.
     const plan = await claimAutopilotPlan(pool, {
       planId,
+      projectId,
       userId: user.id,
       channelId,
       operationId,
@@ -328,12 +353,12 @@ export async function POST(req: NextRequest) {
       expectedRevision: planRevision,
     }) as { id: string; items: PlanItem[]; edited: boolean; channel_id: string; revision: string } | null;
     if (!plan) {
-      const freshPreview = await createStoredPreview(pool, user.id, channelSnapshot);
+      const freshPreview = await createStoredPreview(pool, projectId, user.id, channelSnapshot);
       const result = { ok: false, error: "stale_preview", preview: freshPreview };
-      await finishOperation(operationId, "failed", result, 409);
+      await finishOperation(operationId, projectId, user.id, "failed", result, 409);
       return NextResponse.json(result, { status: 409 });
     }
-    claimedContext = { planId, userId: user.id, channelId };
+    claimedContext = { planId, projectId, userId: user.id, channelId };
     const approvalTime = Date.now();
     const preview = buildAutopilotApprovalPreview({
       items: plan.items,
@@ -343,8 +368,10 @@ export async function POST(req: NextRequest) {
       planRevision: Number(plan.revision || planRevision + 1),
     });
     await pool.query(
-      `update autopilot_approval_operations set request_snapshot = $2 where id = $1`,
-      [operationId, JSON.stringify(preview)],
+      `update autopilot_approval_operations
+          set request_snapshot = $4
+        where id = $1 and project_id = $2 and user_id = $3`,
+      [operationId, projectId, user.id, JSON.stringify(preview)],
     );
 
     let queuePendingReconciliation = 0;
@@ -356,6 +383,7 @@ export async function POST(req: NextRequest) {
           pool,
           enqueue: enqueueAutopilotPost,
           planId,
+          projectId,
           userId: user.id,
           channelId,
           operationId: operationId!,
@@ -392,6 +420,7 @@ export async function POST(req: NextRequest) {
       await finalizeAutopilotApproval({
         pool,
         planId,
+        projectId,
         userId: user.id,
         channelId,
         operationId,
@@ -422,6 +451,7 @@ export async function POST(req: NextRequest) {
     await finalizeAutopilotApproval({
       pool,
       planId,
+      projectId,
       userId: user.id,
       channelId,
       operationId,
@@ -436,6 +466,9 @@ export async function POST(req: NextRequest) {
     claimedContext = null;
     return NextResponse.json(result);
   } catch (err) {
+    if (err instanceof ProjectAccessError) {
+      return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
+    }
     console.error("[/api/autopilot/approve]", err);
     if (operationId) {
       const fallback: OperationResult = {
@@ -456,8 +489,15 @@ export async function POST(req: NextRequest) {
           result: fallback,
           httpStatus: 500,
         }).catch(() => {});
-      } else {
-        await finishOperation(operationId, "failed", fallback, 500).catch(() => {});
+      } else if (authorizedProjectId) {
+        await finishOperation(
+          operationId,
+          authorizedProjectId,
+          user.id,
+          "failed",
+          fallback,
+          500,
+        ).catch(() => {});
       }
     }
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });

@@ -10,6 +10,10 @@ export const metadata: Metadata = {
   },
   description:
     "Аврора находит сильные темы, пишет посты в голосе канала, проверяет и публикует их в Telegram по расписанию.",
+  icons: {
+    icon: "/icon.svg",
+    shortcut: "/icon.svg",
+  },
   keywords: ["автопостинг", "Telegram", "SMM", "ИИ-контент", "разведка конкурентов"],
   openGraph: {
     title: "Аврора — автопилот для Telegram-каналов",

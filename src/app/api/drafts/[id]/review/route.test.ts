@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
+import { ProjectAccessError } from "@/lib/project-permissions";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -97,6 +98,26 @@ describe("POST /api/drafts/:id/review", () => {
 
     expect(response.status).toBe(422);
     await expect(response.json()).resolves.toEqual({ ok: false, error: "bad_version" });
+    expect(mocks.attestDraftReviewForUser).not.toHaveBeenCalled();
+  });
+
+  it("returns access denied for a role without edit permission", async () => {
+    mocks.attestDraftReviewForUser.mockRejectedValue(new ProjectAccessError("permission_denied"));
+    const response = await POST(request(3), { params: Promise.resolve({ id: "41" }) });
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({ ok: false, error: "access_denied" });
+  });
+
+  it("rejects cross-origin review before reading the session", async () => {
+    const response = await POST(new NextRequest("http://localhost/api/drafts/41/review", {
+      method: "POST",
+      headers: { origin: "https://attacker.example", "sec-fetch-site": "cross-site" },
+      body: JSON.stringify({ version: 3 }),
+    }), { params: Promise.resolve({ id: "41" }) });
+
+    expect(response.status).toBe(403);
+    expect(mocks.getSessionUser).not.toHaveBeenCalled();
     expect(mocks.attestDraftReviewForUser).not.toHaveBeenCalled();
   });
 });

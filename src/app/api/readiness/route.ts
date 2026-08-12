@@ -5,6 +5,7 @@ import {
   probeDatabaseAndSchema,
   probeMailDeliveryConfiguration,
   probeRedisAndPublicationWorker,
+  probeTrackingSecretsConfiguration,
   probeUploadIngressConfiguration,
 } from "@/lib/readiness-probes";
 import { evaluateReadiness } from "@/lib/readiness";
@@ -26,6 +27,7 @@ export async function GET() {
     mailDelivery: probeMailDeliveryConfiguration(),
     uploadIngress: probeUploadIngressConfiguration(),
     tokenEncryption: database.tokenEncryption,
+    trackingSecrets: probeTrackingSecretsConfiguration(),
   });
   return NextResponse.json(report, {
     status: report.webReady ? 200 : 503,

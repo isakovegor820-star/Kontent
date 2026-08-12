@@ -29,16 +29,22 @@ export class AutopilotScheduleBlockedError extends Error {
   blockers: Array<{ code: string; message: string }>;
 }
 
-export function autopilotItemOperationKey(planId: number, index: number): string;
+export function autopilotItemOperationKey(projectId: number, planId: number, index: number): string;
 export function resolvedAutopilotPlanStatus(items: unknown[]): "pending" | "approved";
 export function reclaimStaleAutopilotApprovals(
   db: AutopilotQueryable,
-  input?: { userId?: number | null; channelId?: number | null; leaseSeconds?: number },
+  input?: {
+    projectId?: number | null;
+    userId?: number | null;
+    channelId?: number | null;
+    leaseSeconds?: number;
+  },
 ): Promise<unknown[]>;
 export function claimAutopilotPlan(
   db: AutopilotQueryable,
   input: {
     planId: number;
+    projectId: number;
     userId: number;
     channelId: number;
     operationId: number;
@@ -48,8 +54,14 @@ export function claimAutopilotPlan(
 ): Promise<Record<string, unknown> | null>;
 export function scheduleAutopilotItem(input: {
   pool: AutopilotPool;
-  enqueue: (postId: number, scheduledAt: string, scheduleRevision?: number) => Promise<unknown>;
+  enqueue: (
+    projectId: number,
+    postId: number,
+    scheduledAt: string,
+    scheduleRevision?: number,
+  ) => Promise<unknown>;
   planId: number;
+  projectId: number;
   userId: number;
   channelId: number;
   operationId: number;
@@ -66,6 +78,7 @@ export function scheduleAutopilotItem(input: {
 export function finalizeAutopilotApproval(input: {
   pool: AutopilotPool;
   planId: number;
+  projectId: number;
   userId: number;
   channelId: number;
   operationId: number;
@@ -80,6 +93,7 @@ export function finalizeAutopilotApproval(input: {
 export function abortAutopilotApproval(input: {
   pool: AutopilotPool;
   planId: number;
+  projectId: number;
   userId: number;
   channelId: number;
   operationId: number;
@@ -88,6 +102,11 @@ export function abortAutopilotApproval(input: {
 }): Promise<boolean>;
 export function reconcileAutopilotScheduleOutbox(input: {
   pool: AutopilotPool;
-  enqueue: (postId: number, scheduledAt: string, scheduleRevision?: number) => Promise<unknown>;
+  enqueue: (
+    projectId: number,
+    postId: number,
+    scheduledAt: string,
+    scheduleRevision?: number,
+  ) => Promise<unknown>;
   limit?: number;
 }): Promise<{ scanned: number; enqueued: number; pending: number }>;

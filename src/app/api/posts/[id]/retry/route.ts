@@ -7,6 +7,10 @@ import { getSessionUser } from "@/lib/session";
 import { getPublishQueue, jobIdForPostRevision } from "@/lib/queue";
 import { normalizeIdempotencyKey, retryJobSuffix } from "@/lib/publication-idempotency";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
+import {
+  ProjectAccessError,
+  requireSelectedProjectPermission,
+} from "@/lib/project-permissions";
 
 export const runtime = "nodejs";
 
@@ -19,7 +23,9 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
 
   const { id } = await ctx.params;
   const postId = Number(id);
-  if (!postId) return NextResponse.json({ ok: false, error: "bad_id" }, { status: 400 });
+  if (!Number.isSafeInteger(postId) || postId <= 0) {
+    return NextResponse.json({ ok: false, error: "bad_id" }, { status: 400 });
+  }
   const idempotencyKey = normalizeIdempotencyKey(req.headers.get("idempotency-key"));
   if (!idempotencyKey) {
     return NextResponse.json({ ok: false, error: "idempotency_key_required" }, { status: 400 });
@@ -27,6 +33,8 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
 
   try {
     const pool = getPool();
+    const membership = await requireSelectedProjectPermission(pool, user.id, "content.publish");
+    const projectId = membership.projectId;
     // Повтор допустим только после подтверждённого failure. `publishing` и
     // `published_unverified` означают неизвестный внешний результат: повтор там может
     // создать дубль и должен начинаться с reconciliation.
@@ -44,15 +52,15 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
               publication_origin = 'retry', schedule_revision = schedule_revision + 1,
               provider_operation_id = null, provider_reconciliation_state = 'none',
               provider_reconciliation_requested_at = null
-        where id = $1 and user_id = $2 and status in ('failed', 'quarantined')
+        where id = $1 and project_id = $2 and status in ('failed', 'quarantined')
         returning id, schedule_revision, scheduled_at`,
-      [postId, user.id, idempotencyKey, retryAt],
+      [postId, projectId, idempotencyKey, retryAt],
     );
     if (upd.rowCount === 0) {
       const current = (
         await pool.query<{ status: string; last_retry_key: string | null }>(
-          `select status, last_retry_key from posts where id = $1 and user_id = $2`,
-          [postId, user.id],
+          `select status, last_retry_key from posts where id = $1 and project_id = $2`,
+          [postId, projectId],
         )
       ).rows[0];
       if (current?.last_retry_key === idempotencyKey) {
@@ -66,7 +74,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     try {
       await getPublishQueue().add(
         "publish",
-        { postId, scheduleRevision },
+        { postId, projectId, scheduleRevision },
         {
           delay: Math.max(0, retryAt.getTime() - Date.now()),
           jobId: `${jobIdForPostRevision(postId, scheduleRevision)}-manual-${retryJobSuffix(idempotencyKey)}`,
@@ -80,9 +88,9 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
         `update posts
             set status = 'failed', last_error = 'Не удалось поставить повтор в очередь — попробуй ещё раз',
                 last_retry_key = null
-          where id = $1 and user_id = $2 and status = 'scheduled'
+          where id = $1 and project_id = $2 and status = 'scheduled'
             and schedule_revision = $4 and last_retry_key = $3`,
-        [postId, user.id, idempotencyKey, scheduleRevision],
+        [postId, projectId, idempotencyKey, scheduleRevision],
       ).catch(() => {});
       throw error;
     }
@@ -92,6 +100,9 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       scheduleRevision,
     });
   } catch (err) {
+    if (err instanceof ProjectAccessError) {
+      return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
+    }
     console.error("[/api/posts/:id/retry]", err);
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }

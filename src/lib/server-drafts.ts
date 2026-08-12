@@ -4,6 +4,7 @@ import { getPool } from "./db";
 import type {
   DraftCreateInput,
   DraftDestination,
+  DraftTrackingSelection,
   DraftUpdateInput,
   DraftWriteInput,
   ServerDraft,
@@ -21,6 +22,13 @@ import type { Post } from "./types";
 import { topicFromSourceText } from "./reference-adaptation";
 import { resolveLocalSchedule, ScheduleValidationError } from "./timezone-schedule";
 import { recordDraftRevisionInTransaction } from "./editorial-approval";
+import { requireSelectedProjectPermission } from "./project-permissions";
+import {
+  normalizeTrackingDestination,
+  normalizeUtmValues,
+  UTM_FIELDS,
+  type UtmValues,
+} from "./utm";
 
 type Queryable = Pick<Pool | PoolClient, "query">;
 type TransactionPool = Pick<Pool, "connect">;
@@ -28,8 +36,12 @@ type TransactionPool = Pick<Pool, "connect">;
 type DraftRow = {
   id: number | string;
   project_id: number | string;
+  author_user_id?: number | string;
+  author_name?: string | null;
+  editorial_state?: "draft" | "in_review" | "changes_requested" | "approved" | null;
   text: string;
   media: unknown;
+  tracking: unknown;
   scheduled_at: Date | string | null;
   scheduled_timezone: string | null;
   scheduled_local_date: Date | string | null;
@@ -68,8 +80,12 @@ const MAX_TEXT = 16_384;
 const MAX_DESTINATIONS = 12;
 
 const DRAFT_SELECT = `
-  select d.id, d.project_id, d.text, d.media, d.scheduled_at,
-         d.scheduled_timezone, d.scheduled_local_date, d.scheduled_local_time,
+  select d.id, d.project_id, d.user_id as author_user_id,
+         coalesce(nullif(btrim(draft_author.name), ''), 'Участник ' || d.user_id::text) as author_name,
+         coalesce(editorial_workflow.state, 'draft') as editorial_state,
+         d.text, d.media, d.tracking, d.scheduled_at,
+         d.scheduled_timezone, d.scheduled_local_date::text as scheduled_local_date,
+         d.scheduled_local_time::text as scheduled_local_time,
          d.scheduled_offset, d.scheduled_disambiguation,
          d.origin, d.purpose, d.source_ref,
          d.generation_result_id, gr.result_hash as generation_result_hash,
@@ -88,10 +104,13 @@ const DRAFT_SELECT = `
              ) order by c.id
            )
              from draft_destinations dd
-             join channels c on c.id = dd.channel_id and c.user_id = d.user_id
+             join channels c on c.id = dd.channel_id and c.project_id = d.project_id
             where dd.draft_id = d.id
          ), '[]'::jsonb) as destinations
     from drafts d
+    join users draft_author on draft_author.id = d.user_id
+    left join draft_editorial_workflows editorial_workflow
+      on editorial_workflow.draft_id = d.id and editorial_workflow.project_id = d.project_id
     left join generation_results gr on gr.id = d.generation_result_id
     left join validation_receipts vr on vr.generation_result_id = gr.id`;
 
@@ -136,7 +155,7 @@ function draftText(value: unknown): string {
 
 function nullableMedia(value: unknown): Post["media"] {
   if (value == null) return null;
-  if (!isRecord(value) || (value.kind !== "image" && value.kind !== "video")) {
+  if (!isRecord(value) || !["image", "video", "carousel"].includes(String(value.kind))) {
     throw new DraftValidationError("bad_media");
   }
   const label = requiredString(value.label, "bad_media", 200);
@@ -145,7 +164,40 @@ function nullableMedia(value: unknown): Post["media"] {
     throw new DraftValidationError("bad_media");
   }
 
-  const media: NonNullable<Post["media"]> = { kind: value.kind, label, hue };
+  if (value.kind === "carousel") {
+    if (!Array.isArray(value.items) || value.items.length < 3 || value.items.length > 7) {
+      throw new DraftValidationError("bad_media");
+    }
+    const seen = new Set<number>();
+    const items = value.items.map((candidate) => {
+      if (!isRecord(candidate)) throw new DraftValidationError("bad_media");
+      const assetId = Number(candidate.assetId);
+      if (!Number.isSafeInteger(assetId) || assetId <= 0 || seen.has(assetId)) {
+        throw new DraftValidationError("bad_media");
+      }
+      seen.add(assetId);
+      const itemLabel = requiredString(candidate.label, "bad_media", 200);
+      const mimeType = String(candidate.mimeType || "");
+      if (!["image/jpeg", "image/png", "image/webp"].includes(mimeType)) {
+        throw new DraftValidationError("bad_media");
+      }
+      let url: string | undefined;
+      if (candidate.url != null) {
+        url = String(candidate.url);
+        if (url.length > 2_048 || !(url.startsWith("/") || /^https:\/\//iu.test(url))) {
+          throw new DraftValidationError("bad_media");
+        }
+      }
+      return { assetId: String(assetId), label: itemLabel, mimeType: mimeType as "image/jpeg" | "image/png" | "image/webp", ...(url ? { url } : {}) };
+    });
+    const renderOperationId = value.renderOperationId == null ? undefined : Number(value.renderOperationId);
+    if (renderOperationId != null && (!Number.isSafeInteger(renderOperationId) || renderOperationId <= 0)) {
+      throw new DraftValidationError("bad_media");
+    }
+    return { kind: "carousel", label, hue, items, ...(renderOperationId ? { renderOperationId } : {}) };
+  }
+
+  const media: NonNullable<Post["media"]> = { kind: value.kind as "image" | "video", label, hue };
   if (value.assetId != null) {
     const assetId = Number(value.assetId);
     if (!Number.isSafeInteger(assetId) || assetId <= 0) {
@@ -235,6 +287,86 @@ function channelIds(value: unknown): number[] {
   return ids;
 }
 
+const TRACKING_KEYS = new Set([
+  "shortLinkId",
+  "shortUrlPath",
+  "destination",
+  "utmValues",
+  "placement",
+]);
+const SHORT_URL_PATH_RE = /^\/r\/[A-Za-z0-9_-]{20,64}$/u;
+const TRACKING_PLACEMENTS = new Set<DraftTrackingSelection["placement"]>([
+  "post",
+  "first_comment",
+  "cta",
+  "source",
+]);
+
+function trackingSelection(value: unknown): DraftTrackingSelection | null {
+  if (value == null) return null;
+  if (!isRecord(value)) throw new DraftValidationError("bad_tracking");
+  const keys = Object.keys(value);
+  if (keys.length === 0) return null;
+  if (keys.some((key) => !TRACKING_KEYS.has(key))) {
+    throw new DraftValidationError("bad_tracking");
+  }
+  if (
+    !Object.hasOwn(value, "shortLinkId")
+    || !Object.hasOwn(value, "shortUrlPath")
+    || !Object.hasOwn(value, "destination")
+    || !Object.hasOwn(value, "utmValues")
+    || !Object.hasOwn(value, "placement")
+  ) {
+    throw new DraftValidationError("bad_tracking");
+  }
+
+  const shortLinkId = value.shortLinkId == null ? null : Number(value.shortLinkId);
+  if (shortLinkId != null && (!Number.isSafeInteger(shortLinkId) || shortLinkId <= 0)) {
+    throw new DraftValidationError("bad_tracking");
+  }
+  const shortUrlPath = value.shortUrlPath == null ? null : String(value.shortUrlPath);
+  if (
+    (shortUrlPath != null && !SHORT_URL_PATH_RE.test(shortUrlPath))
+    || (shortLinkId == null && shortUrlPath != null)
+  ) {
+    throw new DraftValidationError("bad_tracking");
+  }
+  if (!isRecord(value.utmValues)) throw new DraftValidationError("bad_tracking");
+  if (
+    Object.keys(value.utmValues).some((key) => !UTM_FIELDS.includes(key as (typeof UTM_FIELDS)[number]))
+    || Object.values(value.utmValues).some((item) => typeof item !== "string")
+  ) {
+    throw new DraftValidationError("bad_tracking");
+  }
+  const placement = value.placement;
+  if (typeof placement !== "string" || !TRACKING_PLACEMENTS.has(placement as DraftTrackingSelection["placement"])) {
+    throw new DraftValidationError("bad_tracking");
+  }
+  try {
+    return {
+      shortLinkId,
+      shortUrlPath,
+      destination: normalizeTrackingDestination(
+        requiredString(value.destination, "bad_tracking", 2_048),
+      ),
+      utmValues: normalizeUtmValues(value.utmValues as UtmValues),
+      placement: placement as DraftTrackingSelection["placement"],
+    };
+  } catch (error) {
+    if (error instanceof DraftValidationError) throw error;
+    throw new DraftValidationError("bad_tracking");
+  }
+}
+
+function storedTrackingSelection(value: unknown): DraftTrackingSelection | null {
+  try {
+    return trackingSelection(value);
+  } catch {
+    // A malformed legacy/database value is never reflected back into publication input.
+    return null;
+  }
+}
+
 function schedule(value: Record<string, unknown>) {
   if (value.scheduledAt == null || value.scheduledAt === "") {
     if (value.schedule != null) throw new DraftValidationError("schedule_instant_required");
@@ -291,7 +423,7 @@ export function parseDraftWriteInput(value: unknown): DraftWriteInput {
     throw new DraftValidationError(origin === "ai" ? "generation_result_required" : "generation_result_unexpected");
   }
   const resolvedSchedule = schedule(value);
-  return {
+  const parsed: DraftWriteInput = {
     text: draftText(value.text),
     media: nullableMedia(value.media),
     scheduledAt: resolvedSchedule.scheduledAt,
@@ -306,13 +438,16 @@ export function parseDraftWriteInput(value: unknown): DraftWriteInput {
     aiValidation: null,
     generationResultId,
   };
+  if (Object.hasOwn(value, "tracking")) parsed.tracking = trackingSelection(value.tracking);
+  return parsed;
 }
 
 export function parseDraftCreateInput(value: unknown): DraftCreateInput {
   if (!isRecord(value)) throw new DraftValidationError("bad_request");
   const clientKey = typeof value.clientKey === "string" ? value.clientKey : "";
   if (!CLIENT_KEY_RE.test(clientKey)) throw new DraftValidationError("bad_client_key");
-  return { ...parseDraftWriteInput(value), clientKey };
+  const parsed = parseDraftWriteInput(value);
+  return { ...parsed, tracking: parsed.tracking ?? null, clientKey };
 }
 
 export function parseDraftUpdateInput(value: unknown): DraftUpdateInput {
@@ -324,8 +459,18 @@ export function parseDraftUpdateInput(value: unknown): DraftUpdateInput {
   // An existing AI draft may be human-edited without minting a new provider result. The
   // server loads and preserves its origin/lineage; the client hint does not grant trust.
   const editableAiWithoutResult = value.origin === "ai" && value.generationResultId == null;
-  const parsed = parseDraftWriteInput(editableAiWithoutResult ? { ...value, origin: "manual" } : value);
-  return { ...parsed, origin: editableAiWithoutResult ? "ai" : parsed.origin, version };
+  // Autopilot/monthly drafts are server-created but intentionally become normal human
+  // drafts on the first explicit edit. The monthly item keeps the immutable lineage by
+  // draft_id; the client cannot mint trusted autopilot provenance by sending this value.
+  const adoptsAutopilotDraft = value.origin === "autopilot";
+  const parsed = parseDraftWriteInput(
+    editableAiWithoutResult || adoptsAutopilotDraft ? { ...value, origin: "manual" } : value,
+  );
+  return {
+    ...parsed,
+    origin: editableAiWithoutResult ? "ai" : parsed.origin,
+    version,
+  };
 }
 
 export function parseDraftVersion(value: unknown): number {
@@ -360,6 +505,7 @@ function normalizeDestinations(value: unknown): DraftDestination[] {
 
 function mapDraft(row: DraftRow): ServerDraft {
   const humanReviewVersion = Number(row.human_reviewed_version);
+  const authorUserId = Number(row.author_user_id);
   const purpose: ServerDraft["purpose"] = row.purpose === "source_context" || row.purpose === "publishable"
     ? row.purpose
     : "needs_review";
@@ -375,8 +521,21 @@ function mapDraft(row: DraftRow): ServerDraft {
     && JSON.stringify(normalizedValidation) === JSON.stringify(receiptValidation);
   return {
     id: Number(row.id),
+    ...(Number.isSafeInteger(authorUserId) && authorUserId > 0
+      ? {
+          author_user_id: authorUserId,
+          author_name: row.author_name?.trim() || `Участник ${authorUserId}`,
+        }
+      : {}),
+    editorial_state:
+      row.editorial_state === "in_review"
+      || row.editorial_state === "changes_requested"
+      || row.editorial_state === "approved"
+        ? row.editorial_state
+        : "draft",
     text: row.text,
     media: (row.media ?? null) as Post["media"],
+    tracking: storedTrackingSelection(row.tracking),
     scheduled_at: row.scheduled_at == null ? null : toIso(row.scheduled_at),
     scheduled_timezone: row.scheduled_timezone,
     scheduled_local_date: row.scheduled_local_date == null
@@ -414,26 +573,26 @@ function mapDraft(row: DraftRow): ServerDraft {
 
 async function selectDraft(
   db: Queryable,
-  userId: number,
+  projectId: number,
   draftId: number,
 ): Promise<ServerDraft | null> {
   const result = await db.query<DraftRow>(
-    `${DRAFT_SELECT} where d.user_id = $1 and d.id = $2`,
-    [userId, draftId],
+    `${DRAFT_SELECT} where d.project_id = $1 and d.id = $2`,
+    [projectId, draftId],
   );
   return result.rows[0] ? mapDraft(result.rows[0]) : null;
 }
 
-async function assertOwnedActiveChannels(
+async function assertProjectActiveChannels(
   db: Queryable,
-  userId: number,
+  projectId: number,
   ids: number[],
 ): Promise<void> {
   const result = await db.query<{ id: number | string }>(
     `select id from channels
-      where user_id = $1 and is_active = true and status = 'active' and id = any($2::bigint[])
+      where project_id = $1 and is_active = true and status = 'active' and id = any($2::bigint[])
       for share`,
-    [userId, ids],
+    [projectId, ids],
   );
   const owned = new Set(result.rows.map((row) => Number(row.id)));
   if (owned.size !== ids.length || ids.some((id) => !owned.has(id))) {
@@ -442,15 +601,69 @@ async function assertOwnedActiveChannels(
   }
 }
 
+async function resolveProjectTracking(
+  db: Queryable,
+  projectId: number,
+  tracking: DraftTrackingSelection | null | undefined,
+): Promise<DraftTrackingSelection | null> {
+  if (!tracking) return null;
+  if (tracking.shortLinkId == null) return tracking;
+  const result = await db.query<{
+    id: number | string;
+    slug: string;
+    destination_url: string;
+    utm_values: unknown;
+  }>(
+    `select id, slug, destination_url, utm_values
+       from short_links
+      where id = $1 and project_id = $2 and status = 'active'
+        and revoked_at is null and (expires_at is null or expires_at > now())
+      for share`,
+    [tracking.shortLinkId, projectId],
+  );
+  const row = result.rows[0];
+  if (!row) throw new DraftValidationError("bad_tracking");
+  try {
+    const utmValues = isRecord(row.utm_values)
+      ? normalizeUtmValues(row.utm_values as UtmValues)
+      : null;
+    if (!utmValues) throw new Error("invalid_utm");
+    const shortUrlPath = `/r/${row.slug}`;
+    if (!SHORT_URL_PATH_RE.test(shortUrlPath)) throw new Error("invalid_slug");
+    return {
+      shortLinkId: Number(row.id),
+      shortUrlPath,
+      destination: normalizeTrackingDestination(row.destination_url),
+      utmValues,
+      placement: tracking.placement,
+    } satisfies DraftTrackingSelection;
+  } catch {
+    throw new DraftValidationError("bad_tracking");
+  }
+}
+
 async function assertOwnedMedia(
   db: Queryable,
-  userId: number,
+  projectId: number,
   media: Post["media"],
 ): Promise<void> {
-  if (!media?.assetId) return;
+  if (!media) return;
+  if (media.kind === "carousel") {
+    const assetIds = media.items.map((item) => Number(item.assetId));
+    const result = await db.query<{ id: number | string; kind: "image" | "video" }>(
+      `select id, kind from media_assets
+        where project_id = $1 and id = any($2::bigint[]) for share`,
+      [projectId, assetIds],
+    );
+    if (result.rowCount !== assetIds.length || result.rows.some((row) => row.kind !== "image")) {
+      throw new DraftValidationError("bad_media");
+    }
+    return;
+  }
+  if (!media.assetId) return;
   const result = await db.query<{ kind: "image" | "video" }>(
-    `select kind from media_assets where id = $1 and user_id = $2 for share`,
-    [Number(media.assetId), userId],
+    `select kind from media_assets where id = $1 and project_id = $2 for share`,
+    [Number(media.assetId), projectId],
   );
   if (result.rowCount !== 1 || result.rows[0]?.kind !== media.kind) {
     throw new DraftValidationError("bad_media");
@@ -691,12 +904,21 @@ export async function listDraftsForUser(
   userId: number,
   db: Queryable = getPool(),
 ): Promise<ServerDraft[]> {
+  const membership = await requireSelectedProjectPermission(db, userId, "project.read");
   const result = await db.query<DraftRow>(
     `${DRAFT_SELECT}
-      where d.user_id = $1 and d.purpose <> 'source_context'
+      where d.project_id = $1 and d.purpose <> 'source_context'
+        and not exists (
+          select 1
+            from publication_operations operation
+           where operation.project_id = d.project_id
+             and operation.draft_id = d.id
+             and operation.approved_revision_id is not null
+             and operation.status in ('queued', 'published_unverified', 'published')
+        )
       order by d.updated_at desc, d.id desc
       limit 200`,
-    [userId],
+    [membership.projectId],
   );
   return result.rows.map(mapDraft);
 }
@@ -706,7 +928,12 @@ export async function getDraftForUser(
   draftId: number,
   db: Queryable = getPool(),
 ): Promise<ServerDraft | null> {
-  return selectDraft(db, userId, draftId);
+  const membership = await requireSelectedProjectPermission(db, userId, "project.read");
+  return selectDraft(db, membership.projectId, draftId);
+}
+
+export function generationDestinationIsSelected(channelIds: readonly number[], generationChannelId: number) {
+  return channelIds.includes(generationChannelId);
 }
 
 export async function createDraftForUser(
@@ -717,13 +944,15 @@ export async function createDraftForUser(
   const tx = await pool.connect();
   try {
     await tx.query("begin");
+    const membership = await requireSelectedProjectPermission(tx, userId, "content.create");
+    const projectId = membership.projectId;
     let trusted = input;
     let purpose: ServerDraft["purpose"] = input.origin === "manual"
       ? "publishable"
       : input.origin === "ai"
         ? "needs_review"
         : "source_context";
-    await assertOwnedActiveChannels(tx, userId, input.channelIds);
+    await assertProjectActiveChannels(tx, projectId, input.channelIds);
     if (
       input.origin === "trend" || input.origin === "idea" ||
       input.origin === "competitor" || input.origin === "rss"
@@ -739,7 +968,7 @@ export async function createDraftForUser(
       }
       if (result.inputDraftId != null) throw new DraftValidationError("generation_result_target_conflict");
       if (input.text !== result.text) throw new DraftValidationError("generation_result_text_conflict");
-      if (input.channelIds.length !== 1 || input.channelIds[0] !== result.channelId) {
+      if (!generationDestinationIsSelected(input.channelIds, result.channelId)) {
         throw new DraftValidationError("generation_result_channel_conflict");
       }
       trusted = {
@@ -747,27 +976,30 @@ export async function createDraftForUser(
         text: result.text,
         origin: "ai",
         sourceRef: result.sourceRef,
-        channelIds: [result.channelId],
+        channelIds: input.channelIds,
         aiValidation: result.validation,
         generationResultId: result.id,
       };
       purpose = result.purpose;
     }
-    await assertOwnedMedia(tx, userId, trusted.media);
+    await assertOwnedMedia(tx, projectId, trusted.media);
+    const trustedTracking = await resolveProjectTracking(tx, projectId, trusted.tracking);
     const inserted = await tx.query<{ id: number | string; project_id: number | string }>(
       `insert into drafts
-         (user_id, text, media, scheduled_at, origin, purpose, source_ref, client_key,
+         (user_id, project_id, text, media, tracking, scheduled_at, origin, purpose, source_ref, client_key,
           review_policy_version, ai_validation, generation_result_id,
           scheduled_timezone, scheduled_local_date, scheduled_local_time,
           scheduled_offset, scheduled_disambiguation)
-       values ($1, $2, $3::jsonb, $4, $5, $6, $7::jsonb, $8, $9, $10::jsonb, $11,
-               $12, $13, $14, $15, $16)
+       values ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, $9::jsonb, $10, $11, $12::jsonb, $13,
+               $14, $15, $16, $17, $18)
        on conflict (user_id, client_key) do nothing
        returning id, project_id`,
       [
         userId,
+        projectId,
         trusted.text,
         trusted.media == null ? null : JSON.stringify(trusted.media),
+        JSON.stringify(trustedTracking ?? {}),
         trusted.scheduledAt,
         trusted.origin,
         purpose,
@@ -791,18 +1023,18 @@ export async function createDraftForUser(
       await recordDraftRevisionInTransaction(tx, {
         draftId,
         actorUserId: userId,
-        projectId: Number(inserted.rows[0]?.project_id),
+        projectId,
       });
     } else {
       const existing = await tx.query<{ id: number | string }>(
-        `select id from drafts where user_id = $1 and client_key = $2`,
-        [userId, input.clientKey],
+        `select id from drafts where project_id = $1 and user_id = $2 and client_key = $3`,
+        [projectId, userId, input.clientKey],
       );
       draftId = existing.rows[0] ? Number(existing.rows[0].id) : null;
     }
 
     if (draftId == null) throw new Error("idempotent draft lookup failed");
-    const draft = await selectDraft(tx, userId, draftId);
+    const draft = await selectDraft(tx, projectId, draftId);
     if (!draft) throw new Error("created draft lookup failed");
     await tx.query("commit");
     return { draft, created };
@@ -823,9 +1055,11 @@ export async function updateDraftForUser(
   const tx = await pool.connect();
   try {
     await tx.query("begin");
+    const membership = await requireSelectedProjectPermission(tx, userId, "content.edit");
+    const projectId = membership.projectId;
     const selected = await tx.query<DraftRow>(
-      `${DRAFT_SELECT} where d.id = $1 and d.user_id = $2 for update of d`,
-      [draftId, userId],
+      `${DRAFT_SELECT} where d.id = $1 and d.project_id = $2 for update of d`,
+      [draftId, projectId],
     );
     if (!selected.rows[0]) throw new DraftNotFoundError();
     const current = mapDraft(selected.rows[0]);
@@ -833,10 +1067,6 @@ export async function updateDraftForUser(
     if (current.purpose === "source_context") {
       throw new DraftValidationError("source_context_immutable");
     }
-    if (current.origin === "autopilot") {
-      throw new DraftValidationError("server_owned_origin");
-    }
-
     let trustedText = input.text;
     let trustedOrigin: Post["origin"] = current.origin === "ai" ? "ai" : "manual";
     let trustedPurpose: ServerDraft["purpose"] = current.origin === "ai"
@@ -865,7 +1095,7 @@ export async function updateDraftForUser(
         throw new DraftValidationError("generation_result_target_conflict");
       }
       if (input.text !== result.text) throw new DraftValidationError("generation_result_text_conflict");
-      if (input.channelIds.length !== 1 || input.channelIds[0] !== result.channelId) {
+      if (!generationDestinationIsSelected(input.channelIds, result.channelId)) {
         throw new DraftValidationError("generation_result_channel_conflict");
       }
       trustedText = result.text;
@@ -874,17 +1104,15 @@ export async function updateDraftForUser(
       trustedSourceRef = result.sourceRef ?? current.source_ref;
       trustedValidation = result.validation;
       trustedGenerationResultId = result.id;
-    } else if (current.origin === "ai") {
-      const currentChannelIds = current.destinations.map((destination) => destination.channel_id).sort((a, b) => a - b);
-      const requestedChannelIds = [...input.channelIds].sort((a, b) => a - b);
-      if (
-        currentChannelIds.length !== requestedChannelIds.length
-        || currentChannelIds.some((id, index) => id !== requestedChannelIds[index])
-      ) throw new DraftValidationError("generation_result_channel_conflict");
     }
 
-    await assertOwnedActiveChannels(tx, userId, input.channelIds);
-    await assertOwnedMedia(tx, userId, input.media);
+    await assertProjectActiveChannels(tx, projectId, input.channelIds);
+    await assertOwnedMedia(tx, projectId, input.media);
+    const trustedTracking = await resolveProjectTracking(
+      tx,
+      projectId,
+      input.tracking === undefined ? current.tracking : input.tracking,
+    );
     const updated = await tx.query<{ id: number | string }>(
       `update drafts
           set text = $3,
@@ -901,15 +1129,16 @@ export async function updateDraftForUser(
               scheduled_local_time = $15,
               scheduled_offset = $16,
               scheduled_disambiguation = $17,
+              tracking = $18::jsonb,
               human_reviewed_version = null,
               human_reviewed_at = null,
               version = version + 1,
               updated_at = now()
-        where id = $1 and user_id = $2 and version = $12
+        where id = $1 and project_id = $2 and version = $12
         returning id`,
       [
         draftId,
-        userId,
+        projectId,
         trustedText,
         input.media == null ? null : JSON.stringify(input.media),
         input.scheduledAt,
@@ -925,11 +1154,12 @@ export async function updateDraftForUser(
         input.schedule?.localTime ?? null,
         input.schedule?.offset ?? null,
         input.schedule?.disambiguation ?? null,
+        JSON.stringify(trustedTracking ?? {}),
       ],
     );
 
     if (updated.rowCount !== 1) {
-      const latest = await selectDraft(tx, userId, draftId);
+      const latest = await selectDraft(tx, projectId, draftId);
       if (!latest) throw new DraftNotFoundError();
       throw new DraftConflictError(latest);
     }
@@ -938,9 +1168,9 @@ export async function updateDraftForUser(
     await recordDraftRevisionInTransaction(tx, {
       draftId,
       actorUserId: userId,
-      projectId: Number(selected.rows[0].project_id),
+      projectId,
     });
-    const draft = await selectDraft(tx, userId, draftId);
+    const draft = await selectDraft(tx, projectId, draftId);
     if (!draft) throw new Error("updated draft lookup failed");
     await tx.query("commit");
     return draft;
@@ -962,11 +1192,13 @@ export async function attestDraftReviewForUser(
   const tx = await pool.connect();
   try {
     await tx.query("begin");
+    const membership = await requireSelectedProjectPermission(tx, userId, "content.edit");
+    const projectId = membership.projectId;
     const selected = await tx.query<DraftRow>(
       `${DRAFT_SELECT}
-        where d.user_id = $1 and d.id = $2
+        where d.project_id = $1 and d.id = $2
         for update of d`,
-      [userId, draftId],
+      [projectId, draftId],
     );
     const row = selected.rows[0];
     if (!row) throw new DraftNotFoundError();
@@ -994,16 +1226,32 @@ export async function attestDraftReviewForUser(
               human_reviewed_version = version + 1,
               human_reviewed_at = now(),
               updated_at = now()
-        where id = $1 and user_id = $2 and version = $3
+        where id = $1 and project_id = $2 and version = $3
         returning id`,
-      [draftId, userId, version, DRAFT_REVIEW_POLICY_VERSION],
+      [draftId, projectId, version, DRAFT_REVIEW_POLICY_VERSION],
     );
     if (acknowledged.rowCount !== 1) {
-      const latest = await selectDraft(tx, userId, draftId);
+      const latest = await selectDraft(tx, projectId, draftId);
       if (!latest) throw new DraftNotFoundError();
       throw new DraftConflictError(latest);
     }
-    const draft = await selectDraft(tx, userId, draftId);
+    await tx.query(
+      `insert into audit_events (
+         project_id, actor_user_id, action, entity_type, entity_id,
+         before_version, after_version, safe_data, idempotency_key
+       ) values ($1, $2, 'draft.human_review_attested', 'draft', $3::text,
+                 $4, $4 + 1, $5::jsonb, $6)
+       on conflict (project_id, idempotency_key) where idempotency_key is not null do nothing`,
+      [
+        projectId,
+        userId,
+        String(draftId),
+        version,
+        JSON.stringify({ policyVersion: DRAFT_REVIEW_POLICY_VERSION }),
+        `draft:${draftId}:human-review:${version + 1}`,
+      ],
+    );
+    const draft = await selectDraft(tx, projectId, draftId);
     if (!draft) throw new Error("reviewed draft lookup failed");
     await tx.query("commit");
     return draft;
@@ -1024,15 +1272,32 @@ export async function deleteDraftForUser(
   const tx = await pool.connect();
   try {
     await tx.query("begin");
-    const deleted = await tx.query<{ id: number | string }>(
-      `delete from drafts where id = $1 and user_id = $2 and version = $3 returning id`,
-      [draftId, userId, version],
+    const membership = await requireSelectedProjectPermission(tx, userId, "content.edit");
+    const projectId = membership.projectId;
+    const deleted = await tx.query<{ id: number | string; version: number | string }>(
+      `delete from drafts where id = $1 and project_id = $2 and version = $3 returning id, version`,
+      [draftId, projectId, version],
     );
     if (deleted.rowCount !== 1) {
-      const current = await selectDraft(tx, userId, draftId);
+      const current = await selectDraft(tx, projectId, draftId);
       if (!current) throw new DraftNotFoundError();
       throw new DraftConflictError(current);
     }
+    await tx.query(
+      `insert into audit_events (
+         project_id, actor_user_id, action, entity_type, entity_id,
+         before_version, safe_data, idempotency_key
+       ) values ($1, $2, 'draft.deleted', 'draft', $3::text,
+                 $4, '{}'::jsonb, $5)
+       on conflict (project_id, idempotency_key) where idempotency_key is not null do nothing`,
+      [
+        projectId,
+        userId,
+        String(draftId),
+        Number(deleted.rows[0]?.version ?? version),
+        `draft:${draftId}:deleted:${version}`,
+      ],
+    );
     await tx.query("commit");
   } catch (error) {
     await tx.query("rollback").catch(() => {});

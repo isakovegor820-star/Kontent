@@ -16,6 +16,9 @@ async function refreshOperationStatus(pool, operationId) {
             count(*) filter (where post.status in ('scheduled','publishing','failed_retry'))::int as active
        from publication_outbox outbox
        join posts post on post.id = outbox.post_id
+       join publication_operations operation
+         on operation.id = outbox.operation_id
+        and operation.project_id = post.project_id
       where outbox.operation_id = $1`,
     [operationId],
   )).rows[0];
@@ -33,7 +36,11 @@ async function refreshOperationStatus(pool, operationId) {
       ? "published_unverified"
       : total > 0 && terminalFailed === total
         ? "failed"
-        : published + unverified + terminalFailed + cancelled > 0
+        // Different providers finish at different speeds. A confirmed child plus
+        // another healthy scheduled/publishing child is still one queued operation,
+        // not a partial failure. Only a terminal failure/cancellation or failed
+        // dispatch makes a mixed operation partial.
+        : terminalFailed + cancelled > 0
           ? "partial"
           : total > 0 && outboxFailed === total
             ? "failed"
@@ -91,8 +98,12 @@ export async function reconcilePublicationOutbox({
       await client.query("begin");
       row = (await client.query(
         `select o.id, o.operation_id, o.post_id, o.attempts,
-                p.schedule_revision, p.scheduled_at
-           from publication_outbox o join posts p on p.id = o.post_id
+                p.project_id, p.schedule_revision, p.scheduled_at
+           from publication_outbox o
+           join posts p on p.id = o.post_id
+           join publication_operations operation
+             on operation.id = o.operation_id
+            and operation.project_id = p.project_id
           where o.status in ('pending','failed') and o.next_attempt_at <= $2
             and ($1::bigint is null or o.operation_id = $1)
           order by o.next_attempt_at, o.id
@@ -120,7 +131,12 @@ export async function reconcilePublicationOutbox({
     scanned += 1;
     touched.add(Number(row.operation_id));
     try {
-      await enqueue(Number(row.post_id), new Date(row.scheduled_at), Number(row.schedule_revision));
+      await enqueue(
+        Number(row.post_id),
+        new Date(row.scheduled_at),
+        Number(row.schedule_revision),
+        Number(row.project_id),
+      );
       const updated = await pool.query(
         `update publication_outbox
             set status = 'enqueued', attempts = attempts + 1, enqueued_at = now(),

@@ -51,6 +51,25 @@ describe("editorial input and immutable hashes", () => {
     expect(draftRevisionContentHash(first)).toMatch(/^[a-f0-9]{64}$/u);
   });
 
+  it("treats a tracking change as a new editorial revision", () => {
+    const base = {
+      schemaVersion: 2,
+      text: "Запишитесь на консультацию",
+      tracking: {
+        shortLinkId: 12,
+        shortUrlPath: "/r/abcdefghijklmnopqrst",
+        destination: "https://example.test/consultation",
+        utmValues: { utm_campaign: "bankruptcy_august" },
+        placement: "cta",
+      },
+    };
+
+    expect(draftRevisionContentHash(base)).not.toBe(draftRevisionContentHash({
+      ...base,
+      tracking: { ...base.tracking, shortLinkId: 13, shortUrlPath: "/r/zyxwvutsrqponmlkjihg" },
+    }));
+  });
+
   it("requires exact revision, workflow and request versions at the API boundary", () => {
     expect(parseEditorialSubmitInput({
       revisionId: 81,
@@ -88,10 +107,80 @@ describe("editorial project and revision safety", () => {
     expect(query.mock.calls.flatMap((call) => call[1] ?? [])).not.toContain(8);
   });
 
+  it("returns named comments and an immutable decision journal for the selected project", async () => {
+    const query = vi.fn(async (sql: string, params?: unknown[]) => {
+      if (sql.includes("from user_project_preferences preference")) {
+        return { rowCount: 1, rows: [membership("approver", 9)] };
+      }
+      if (sql.includes("from draft_editorial_workflows workflow")) {
+        expect(sql).toContain("left join users revision_author");
+        return { rowCount: 1, rows: [{ ...workflowRow, revision_author_name: "Анна" }] };
+      }
+      if (sql.includes("from draft_editorial_requests request")) {
+        expect(params).toEqual([7, 41]);
+        return {
+          rowCount: 1,
+          rows: [{
+            id: "12",
+            revision_id: "81",
+            content_hash: HASH_A,
+            requested_by_user_id: "5",
+            requested_by_name: "Анна",
+            status: "open",
+            version: "1",
+            requested_at: "2026-08-11T10:00:00.000Z",
+            resolved_at: null,
+          }],
+        };
+      }
+      if (sql.includes("from draft_editorial_comments comment")) {
+        expect(sql).toContain("left join users author");
+        return {
+          rowCount: 1,
+          rows: [{
+            id: "21",
+            revision_id: "81",
+            content_hash: HASH_A,
+            author_user_id: "9",
+            author_name: "Игорь",
+            body: "Уточните источник.",
+            created_at: "2026-08-11T10:05:00.000Z",
+          }],
+        };
+      }
+      if (sql.includes("from draft_editorial_decisions decision")) {
+        expect(sql).toContain("left join users actor");
+        return {
+          rowCount: 1,
+          rows: [{
+            id: "31",
+            request_id: "11",
+            revision_id: "80",
+            content_hash: HASH_B,
+            actor_user_id: "9",
+            actor_name: "Игорь",
+            decision: "request_changes",
+            note: "Добавьте ссылку.",
+            created_at: "2026-08-10T10:00:00.000Z",
+          }],
+        };
+      }
+      throw new Error(`unexpected SQL: ${sql}`);
+    });
+
+    await expect(getEditorialSnapshotForUser(9, 41, { query } as never)).resolves.toMatchObject({
+      currentRevision: { authorName: "Анна" },
+      request: { requestedByName: "Анна" },
+      comments: [{ authorName: "Игорь", body: "Уточните источник." }],
+      decisions: [{ actorName: "Игорь", decision: "request_changes" }],
+    });
+  });
+
   it("records an immutable revision and transactionally invalidates an older approval", async () => {
     const workflowUpdates: unknown[][] = [];
     const query = vi.fn(async (sql: string, params?: unknown[]) => {
       if (sql.includes("from drafts draft")) {
+        expect(sql).toContain("draft.tracking");
         return {
           rowCount: 1,
           rows: [{
@@ -101,6 +190,13 @@ describe("editorial project and revision safety", () => {
             version: "5",
             text: "Исправленный текст",
             media: null,
+            tracking: {
+              shortLinkId: 12,
+              shortUrlPath: "/r/abcdefghijklmnopqrst",
+              destination: "https://example.test/consultation",
+              utmValues: { utm_campaign: "bankruptcy_august" },
+              placement: "cta",
+            },
             origin: "manual",
             purpose: "publishable",
             source_ref: null,
@@ -156,6 +252,45 @@ describe("editorial project and revision safety", () => {
     expect(invalidationAudit?.[1]).toContain(5);
   });
 
+  it("keeps changes requested visible while moving to a corrected revision", async () => {
+    let updateSql = "";
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes("from drafts draft")) {
+        return {
+          rowCount: 1,
+          rows: [{
+            id: "41", project_id: "7", user_id: "5", version: "5",
+            text: "Исправленный текст", media: null, tracking: null,
+            origin: "manual", purpose: "publishable", source_ref: null,
+            scheduled_at: null, scheduled_timezone: null, scheduled_local_date: null,
+            scheduled_local_time: null, scheduled_offset: null,
+            scheduled_disambiguation: null, channel_ids: [11],
+          }],
+        };
+      }
+      if (sql.includes("from project_members member")) return { rowCount: 1, rows: [membership("author")] };
+      if (sql.includes("insert into draft_revisions")) {
+        return { rowCount: 1, rows: [{ id: "82", created_at: "2026-08-11T10:05:00.000Z" }] };
+      }
+      if (sql.includes("current_revision.content_hash")) {
+        return { rowCount: 1, rows: [{
+          state: "changes_requested", version: "4", current_revision_id: "81",
+          current_content_hash: HASH_B,
+        }] };
+      }
+      if (sql.includes("update draft_editorial_workflows")) updateSql = sql;
+      return { rowCount: 1, rows: [] };
+    });
+
+    await recordDraftRevisionInTransaction({ query } as never, {
+      draftId: 41,
+      actorUserId: 5,
+      projectId: 7,
+    });
+
+    expect(updateSql).toContain("when $4 and state = 'changes_requested' then 'changes_requested'");
+  });
+
   it("rejects submit against a stale revision before creating a request", async () => {
     const query = vi.fn(async (sql: string) => {
       if (sql === "begin" || sql === "rollback") return { rowCount: 0, rows: [] };
@@ -183,7 +318,8 @@ describe("editorial approval race and permissions", () => {
     let requestStatus: "open" | "approved" = "open";
     let requestVersion = 1;
     let decisionInserts = 0;
-    const query = vi.fn(async (sql: string) => {
+    const notificationEvents: string[] = [];
+    const query = vi.fn(async (sql: string, params?: unknown[]) => {
       if (sql === "begin" || sql === "commit" || sql === "rollback") {
         return { rowCount: 0, rows: [] };
       }
@@ -215,6 +351,10 @@ describe("editorial approval race and permissions", () => {
         requestVersion += 1;
         return { rowCount: 1, rows: [] };
       }
+      if (sql.includes("insert into project_notifications")) {
+        notificationEvents.push(String(params?.[3] ?? ""));
+        return { rowCount: 1, rows: [] };
+      }
       return { rowCount: 1, rows: [] };
     });
     const { pool } = fakePool(query);
@@ -236,6 +376,8 @@ describe("editorial approval race and permissions", () => {
       new EditorialConflictError("stale_request"),
     );
     expect(decisionInserts).toBe(1);
+    expect(notificationEvents).toContain("draft_approved");
+    expect(notificationEvents).toContain("draft_ready_to_publish");
   });
 
   it("forbids an author-role approval before reading or locking the request", async () => {

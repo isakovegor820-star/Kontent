@@ -1,24 +1,50 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const editorialMocks = vi.hoisted(() => ({
   recordDraftRevisionInTransaction: vi.fn(async () => undefined),
+}));
+const projectMocks = vi.hoisted(() => ({
+  requireSelectedProjectPermission: vi.fn(async (_db: unknown, userId: number) => ({
+    projectId: 7,
+    userId,
+    role: "owner" as const,
+    version: 1,
+  })),
 }));
 
 vi.mock("./editorial-approval", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./editorial-approval")>();
   return { ...actual, recordDraftRevisionInTransaction: editorialMocks.recordDraftRevisionInTransaction };
 });
+vi.mock("./project-permissions", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./project-permissions")>();
+  return { ...actual, requireSelectedProjectPermission: projectMocks.requireSelectedProjectPermission };
+});
 
 import type { DraftCreateInput, DraftUpdateInput } from "./draft-types";
+import { ProjectAccessError } from "./project-permissions";
 import {
   attestDraftReviewForUser,
   createDraftForUser,
+  deleteDraftForUser,
   DraftConflictError,
+  DraftNotFoundError,
   DraftValidationError,
+  generationDestinationIsSelected,
+  getDraftForUser,
+  listDraftsForUser,
   parseDraftCreateInput,
   parseDraftUpdateInput,
   updateDraftForUser,
 } from "./server-drafts";
+
+describe("generated draft destinations", () => {
+  it("keeps provenance tied to its generation channel while allowing additional destinations", () => {
+    expect(generationDestinationIsSelected([11], 11)).toBe(true);
+    expect(generationDestinationIsSelected([11, 22, 33], 11)).toBe(true);
+    expect(generationDestinationIsSelected([22, 33], 11)).toBe(false);
+  });
+});
 
 const input: DraftCreateInput = {
   clientKey: "draft_12345678-1234-4234-9234-123456789abc",
@@ -37,13 +63,18 @@ const input: DraftCreateInput = {
   channelIds: [11],
   aiValidation: null,
   generationResultId: null,
+  tracking: null,
 };
 
 const row = {
   id: "41",
   project_id: "7",
+  author_user_id: "5",
+  author_name: "Анна Юрист",
+  editorial_state: "in_review",
   text: input.text,
   media: null,
+  tracking: {},
   scheduled_at: input.scheduledAt,
   scheduled_timezone: input.schedule?.timezone ?? null,
   scheduled_local_date: input.schedule?.localDate ?? null,
@@ -76,6 +107,17 @@ const row = {
   ],
 };
 
+beforeEach(() => {
+  projectMocks.requireSelectedProjectPermission.mockClear();
+  projectMocks.requireSelectedProjectPermission.mockImplementation(async (_db: unknown, userId: number) => ({
+    projectId: 7,
+    userId,
+    role: "owner" as const,
+    version: 1,
+  }));
+  editorialMocks.recordDraftRevisionInTransaction.mockClear();
+});
+
 function fakePool(query: ReturnType<typeof vi.fn>) {
   const release = vi.fn();
   return {
@@ -102,6 +144,46 @@ describe("draft input boundary", () => {
     );
   });
 
+  it("adopts a server-created autopilot draft as a human-editable manual revision", () => {
+    expect(parseDraftUpdateInput({
+      ...input,
+      origin: "autopilot",
+      sourceRef: {
+        kind: "monthly_campaign",
+        campaignId: 10,
+        planId: 20,
+        itemId: 30,
+      },
+      version: 7,
+    })).toMatchObject({
+      origin: "manual",
+      sourceRef: null,
+      version: 7,
+    });
+  });
+
+  it("accepts an ordered 3–7 image carousel and rejects duplicate or undersized albums", () => {
+    const carousel = {
+      kind: "carousel" as const,
+      label: "Юридическая памятка",
+      hue: 255,
+      renderOperationId: 88,
+      items: [1, 2, 3].map((assetId) => ({
+        assetId: String(assetId),
+        label: `Карточка ${assetId}`,
+        url: `/api/media/assets/${assetId}`,
+        mimeType: "image/png" as const,
+      })),
+    };
+    expect(parseDraftCreateInput({ ...input, media: carousel })).toMatchObject({
+      media: { kind: "carousel", renderOperationId: 88, items: [{ assetId: "1" }, { assetId: "2" }, { assetId: "3" }] },
+    });
+    expect(() => parseDraftCreateInput({ ...input, media: { ...carousel, items: carousel.items.slice(0, 2) } }))
+      .toThrowError(new DraftValidationError("bad_media"));
+    expect(() => parseDraftCreateInput({ ...input, media: { ...carousel, items: [carousel.items[0], carousel.items[0], carousel.items[2]] } }))
+      .toThrowError(new DraftValidationError("bad_media"));
+  });
+
   it("accepts an idea origin with semantic metadata and separate provenance", () => {
     const parsed = parseDraftCreateInput({
       ...input,
@@ -126,9 +208,103 @@ describe("draft input boundary", () => {
       },
     });
   });
+
+  it("normalizes a structured tracking choice and rejects client-owned project or slug fields", () => {
+    const tracking = {
+      shortLinkId: null,
+      shortUrlPath: null,
+      destination: "https://example.test/consultation",
+      utmValues: { utm_source: "telegram", utm_campaign: "споры" },
+      placement: "post",
+    } as const;
+    expect(parseDraftCreateInput({ ...input, tracking })).toMatchObject({ tracking });
+    expect(() => parseDraftCreateInput({
+      ...input,
+      tracking: { ...tracking, projectId: 999 },
+    })).toThrowError(new DraftValidationError("bad_tracking"));
+    expect(() => parseDraftCreateInput({
+      ...input,
+      tracking: { ...tracking, slug: "client-controlled" },
+    })).toThrowError(new DraftValidationError("bad_tracking"));
+    expect(() => parseDraftCreateInput({
+      ...input,
+      tracking: { ...tracking, shortLinkId: 3, shortUrlPath: "/r/too-short" },
+    })).toThrowError(new DraftValidationError("bad_tracking"));
+  });
 });
 
 describe("server draft transactions", () => {
+  it("reads PostgreSQL date-only schedule fields as ISO text", async () => {
+    const selects: string[] = [];
+    const query = vi.fn(async (sql: string) => {
+      selects.push(sql.replace(/\s+/gu, " ").trim());
+      return { rowCount: 1, rows: [row] };
+    });
+    const db = { query };
+
+    await expect(listDraftsForUser(5, db as never)).resolves.toHaveLength(1);
+    await expect(getDraftForUser(5, 41, db as never)).resolves.toMatchObject({
+      scheduled_local_date: "2026-08-05",
+    });
+
+    expect(selects).toHaveLength(2);
+    for (const sql of selects) {
+      expect(sql).toContain("d.scheduled_local_date::text as scheduled_local_date");
+    }
+  });
+
+  it("lists and reads the selected project for every active teammate without a user tenant filter", async () => {
+    const query = vi.fn(async (sql: string, params?: unknown[]) => {
+      expect(sql).toContain("d.project_id = $1");
+      expect(sql).not.toContain("d.user_id = $1");
+      expect(sql).toContain("draft_author.id = d.user_id");
+      expect(sql).toContain("editorial_workflow.project_id = d.project_id");
+      if (sql.includes("limit 200")) {
+        expect(sql).toContain("operation.approved_revision_id is not null");
+        expect(sql).toContain("operation.status in ('queued', 'published_unverified', 'published')");
+      }
+      if (params?.length === 1) return { rowCount: 1, rows: [row] };
+      expect(params).toEqual([7, 41]);
+      return { rowCount: 1, rows: [row] };
+    });
+    const db = { query };
+
+    await expect(listDraftsForUser(5, db as never)).resolves.toMatchObject([{
+      id: 41,
+      author_user_id: 5,
+      author_name: "Анна Юрист",
+      editorial_state: "in_review",
+    }]);
+    await expect(getDraftForUser(5, 41, db as never)).resolves.toMatchObject({ id: 41 });
+    await expect(getDraftForUser(6, 41, db as never)).resolves.toMatchObject({ id: 41 });
+
+    expect(projectMocks.requireSelectedProjectPermission).toHaveBeenCalledWith(
+      db,
+      5,
+      "project.read",
+    );
+    expect(query.mock.calls.filter(([, params]) => (params as unknown[])?.length === 2))
+      .toHaveLength(2);
+  });
+
+  it("does not expose a draft from another project and stops before SQL without membership", async () => {
+    const query = vi.fn(async (sql: string, params?: unknown[]) => {
+      expect(sql).toContain("d.project_id = $1");
+      expect(params).toEqual([7, 91]);
+      return { rowCount: 0, rows: [] };
+    });
+    await expect(getDraftForUser(5, 91, { query } as never)).resolves.toBeNull();
+
+    projectMocks.requireSelectedProjectPermission.mockRejectedValueOnce(
+      new ProjectAccessError("membership_required"),
+    );
+    const forbiddenQuery = vi.fn();
+    await expect(getDraftForUser(99, 41, { query: forbiddenQuery } as never)).rejects.toMatchObject({
+      code: "membership_required",
+    });
+    expect(forbiddenQuery).not.toHaveBeenCalled();
+  });
+
   it("rebuilds source text, topic and provenance from the owned server record", async () => {
     let insertedParams: unknown[] | undefined;
     const canonicalRef = {
@@ -195,12 +371,18 @@ describe("server draft transactions", () => {
       purpose: "source_context",
       source_ref: canonicalRef,
     });
-    expect(insertedParams?.[1]).toBe("Исполнительский иммунитет защищает жильё должника.");
-    expect(insertedParams?.[5]).toBe("source_context");
-    expect(JSON.parse(String(insertedParams?.[6]))).toEqual(canonicalRef);
+    expect(insertedParams?.[1]).toBe(7);
+    expect(insertedParams?.[2]).toBe("Исполнительский иммунитет защищает жильё должника.");
+    expect(insertedParams?.[7]).toBe("source_context");
+    expect(JSON.parse(String(insertedParams?.[8]))).toEqual(canonicalRef);
     expect(editorialMocks.recordDraftRevisionInTransaction).toHaveBeenCalledWith(
       expect.anything(),
       { draftId: 41, actorUserId: 5, projectId: 7 },
+    );
+    expect(projectMocks.requireSelectedProjectPermission).toHaveBeenCalledWith(
+      expect.anything(),
+      5,
+      "content.create",
     );
   });
 
@@ -271,8 +453,8 @@ describe("server draft transactions", () => {
       text: "Как выбрать место для летней рыбалки",
       source_ref: canonicalRef,
     });
-    expect(insertedParams?.[1]).toBe("Как выбрать место для летней рыбалки");
-    expect(JSON.parse(String(insertedParams?.[6]))).toEqual(canonicalRef);
+    expect(insertedParams?.[2]).toBe("Как выбрать место для летней рыбалки");
+    expect(JSON.parse(String(insertedParams?.[8]))).toEqual(canonicalRef);
   });
 
   it("creates an RSS item as an immutable server-owned source context", async () => {
@@ -336,8 +518,8 @@ describe("server draft transactions", () => {
       purpose: "source_context",
       source_ref: canonicalRef,
     });
-    expect(insertedParams?.[1]).toContain("Разбираем изменения");
-    expect(insertedParams?.[5]).toBe("source_context");
+    expect(insertedParams?.[2]).toContain("Разбираем изменения");
+    expect(insertedParams?.[7]).toBe("source_context");
   });
 
   it("returns the existing row for an idempotency-key replay without replacing destinations", async () => {
@@ -384,6 +566,81 @@ describe("server draft transactions", () => {
       ...input,
       media: { kind: "image", label: "Картинка", hue: 42, assetId: "99" },
     }, pool as never)).rejects.toMatchObject({ code: "bad_media" });
+    expect(query.mock.calls.some(([sql]) => String(sql).includes("insert into drafts"))).toBe(false);
+  });
+
+  it("rebuilds a selected short link from the selected project instead of trusting client metadata", async () => {
+    let insertedParams: unknown[] | undefined;
+    const canonicalTracking = {
+      shortLinkId: 88,
+      shortUrlPath: "/r/abcdefghijklmnopqrstuvwxyz123456",
+      destination: "https://example.test/consultation?utm_source=telegram",
+      utmValues: { utm_source: "telegram" },
+      placement: "post",
+    } as const;
+    const query = vi.fn(async (sql: string, params?: unknown[]) => {
+      if (sql.includes("select id from channels")) {
+        expect(params).toEqual([7, [11]]);
+        return { rowCount: 1, rows: [{ id: "11" }] };
+      }
+      if (sql.includes("from short_links")) {
+        expect(params).toEqual([88, 7]);
+        return {
+          rowCount: 1,
+          rows: [{
+            id: "88",
+            slug: "abcdefghijklmnopqrstuvwxyz123456",
+            destination_url: canonicalTracking.destination,
+            utm_values: canonicalTracking.utmValues,
+          }],
+        };
+      }
+      if (sql.includes("insert into drafts")) {
+        insertedParams = params;
+        return { rowCount: 1, rows: [{ id: "41", project_id: "7" }] };
+      }
+      if (sql.includes("select d.id")) {
+        return { rowCount: 1, rows: [{ ...row, tracking: canonicalTracking }] };
+      }
+      return { rowCount: 1, rows: [] };
+    });
+    const { pool } = fakePool(query);
+
+    const result = await createDraftForUser(23, {
+      ...input,
+      tracking: {
+        shortLinkId: 88,
+        shortUrlPath: "/r/this-client-path-is-valid-but-ignored",
+        destination: "https://attacker.example/wrong",
+        utmValues: { utm_source: "spoofed" },
+        placement: "post",
+      },
+    }, pool as never);
+
+    expect(result.draft.tracking).toEqual(canonicalTracking);
+    expect(JSON.parse(String(insertedParams?.[4]))).toEqual(canonicalTracking);
+    expect(insertedParams?.[0]).toBe(23);
+    expect(insertedParams?.[1]).toBe(7);
+  });
+
+  it("rejects a short link from another project before inserting a draft", async () => {
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes("select id from channels")) return { rowCount: 1, rows: [{ id: "11" }] };
+      if (sql.includes("from short_links")) return { rowCount: 0, rows: [] };
+      return { rowCount: 0, rows: [] };
+    });
+    const { pool } = fakePool(query);
+
+    await expect(createDraftForUser(5, {
+      ...input,
+      tracking: {
+        shortLinkId: 999,
+        shortUrlPath: "/r/abcdefghijklmnopqrstuvwxyz123456",
+        destination: "https://example.test/",
+        utmValues: {},
+        placement: "post",
+      },
+    }, pool as never)).rejects.toMatchObject({ code: "bad_tracking" });
     expect(query.mock.calls.some(([sql]) => String(sql).includes("insert into drafts"))).toBe(false);
   });
 
@@ -445,6 +702,98 @@ describe("server draft transactions", () => {
 
     expect(updated).toMatchObject({ version: 4, source_ref: null, generation_binding_valid: false });
     expect(updatedParams?.[7]).toBeNull();
+    expect(updatedParams?.[1]).toBe(7);
+    expect(editorialMocks.recordDraftRevisionInTransaction).toHaveBeenCalledWith(
+      expect.anything(),
+      { draftId: 41, actorUserId: 5, projectId: 7 },
+    );
+  });
+
+  it("persists a monthly autopilot draft as a manual revision without changing its id", async () => {
+    let selected = 0;
+    let updatedParams: unknown[] | undefined;
+    const query = vi.fn(async (sql: string, params?: unknown[]) => {
+      if (sql.includes("select d.id")) {
+        selected += 1;
+        return {
+          rowCount: 1,
+          rows: [{
+            ...row,
+            text: selected === 1 ? "План месяца" : "Текст после правки автора",
+            origin: selected === 1 ? "autopilot" : "manual",
+            purpose: selected === 1 ? "needs_review" : "publishable",
+            source_ref: selected === 1
+              ? { kind: "monthly_campaign", campaignId: 10, planId: 20, itemId: 30 }
+              : null,
+            version: selected === 1 ? "3" : "4",
+          }],
+        };
+      }
+      if (sql.includes("select id from channels")) return { rowCount: 1, rows: [{ id: "11" }] };
+      if (sql.includes("update drafts")) {
+        updatedParams = params;
+        return { rowCount: 1, rows: [{ id: "41" }] };
+      }
+      return { rowCount: 1, rows: [] };
+    });
+    const { pool } = fakePool(query);
+
+    const updated = await updateDraftForUser(5, 41, {
+      ...input,
+      version: 3,
+      origin: "manual",
+      text: "Текст после правки автора",
+      sourceRef: null,
+    }, pool as never);
+
+    expect(updated).toMatchObject({ id: 41, version: 4, origin: "manual", source_ref: null });
+    expect(updatedParams?.[5]).toBe("manual");
+    expect(editorialMocks.recordDraftRevisionInTransaction).toHaveBeenCalledWith(
+      expect.anything(),
+      { draftId: 41, actorUserId: 5, projectId: 7 },
+    );
+  });
+
+  it("preserves tracking for a legacy PATCH that omits the field and records the new revision", async () => {
+    const existingTracking = {
+      shortLinkId: null,
+      shortUrlPath: null,
+      destination: "https://example.test/consultation",
+      utmValues: { utm_source: "telegram" },
+      placement: "post",
+    } as const;
+    let selected = 0;
+    let updatedParams: unknown[] | undefined;
+    const query = vi.fn(async (sql: string, params?: unknown[]) => {
+      if (sql.includes("select d.id")) {
+        selected += 1;
+        return {
+          rowCount: 1,
+          rows: [{ ...row, version: selected === 1 ? "3" : "4", tracking: existingTracking }],
+        };
+      }
+      if (sql.includes("select id from channels")) return { rowCount: 1, rows: [{ id: "11" }] };
+      if (sql.includes("update drafts")) {
+        updatedParams = params;
+        return { rowCount: 1, rows: [{ id: "41" }] };
+      }
+      return { rowCount: 1, rows: [] };
+    });
+    const { pool } = fakePool(query);
+    const { tracking: _legacyMissingTracking, ...legacyInput } = input;
+    void _legacyMissingTracking;
+
+    const updated = await updateDraftForUser(19, 41, {
+      ...legacyInput,
+      version: 3,
+    }, pool as never);
+
+    expect(updated.tracking).toEqual(existingTracking);
+    expect(JSON.parse(String(updatedParams?.[17]))).toEqual(existingTracking);
+    expect(editorialMocks.recordDraftRevisionInTransaction).toHaveBeenCalledWith(
+      expect.anything(),
+      { draftId: 41, actorUserId: 19, projectId: 7 },
+    );
   });
 
   it("ACKs human review by advancing and binding the exact AI draft version", async () => {
@@ -496,7 +845,55 @@ describe("server draft transactions", () => {
       human_review: { policy_version: 1, draft_version: 4 },
     });
     const mutation = query.mock.calls.find(([sql]) => String(sql).includes("update drafts"));
-    expect(mutation?.[1]).toEqual([41, 5, 3, 1]);
+    expect(mutation?.[1]).toEqual([41, 7, 3, 1]);
+    const audit = query.mock.calls.find(([sql]) => String(sql).includes("draft.human_review_attested"));
+    expect(audit?.[1]).toEqual([
+      7,
+      5,
+      "41",
+      3,
+      JSON.stringify({ policyVersion: 1 }),
+      "draft:41:human-review:4",
+    ]);
     expect(query).toHaveBeenCalledWith("commit");
+    expect(projectMocks.requireSelectedProjectPermission).toHaveBeenCalledWith(
+      expect.anything(),
+      5,
+      "content.edit",
+    );
+  });
+
+  it("deletes only from the selected project and treats user id as the actor", async () => {
+    const query = vi.fn(async (sql: string, params?: unknown[]) => {
+      if (sql.includes("delete from drafts")) {
+        expect(sql).toContain("project_id = $2");
+        expect(sql).not.toContain("user_id = $2");
+        expect(params).toEqual([41, 7, 3]);
+        return { rowCount: 1, rows: [{ id: "41" }] };
+      }
+      return { rowCount: 0, rows: [] };
+    });
+    const { pool } = fakePool(query);
+
+    await expect(deleteDraftForUser(23, 41, 3, pool as never)).resolves.toBeUndefined();
+    expect(projectMocks.requireSelectedProjectPermission).toHaveBeenCalledWith(
+      expect.anything(),
+      23,
+      "content.edit",
+    );
+    const audit = query.mock.calls.find(([sql]) => String(sql).includes("draft.deleted"));
+    expect(audit?.[1]).toEqual([7, 23, "41", 3, "draft:41:deleted:3"]);
+  });
+
+  it("returns not found instead of crossing projects on a delete miss", async () => {
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes("delete from drafts")) return { rowCount: 0, rows: [] };
+      if (sql.includes("select d.id")) return { rowCount: 0, rows: [] };
+      return { rowCount: 0, rows: [] };
+    });
+    const { pool } = fakePool(query);
+    await expect(deleteDraftForUser(5, 91, 1, pool as never)).rejects.toBeInstanceOf(
+      DraftNotFoundError,
+    );
   });
 });

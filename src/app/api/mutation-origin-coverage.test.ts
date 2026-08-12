@@ -22,7 +22,56 @@ vi.mock("@/lib/rate-limit", () => ({
 import { POST as createBotLink } from "./bot/link/route";
 import { POST as collectStats } from "./stats/collect/route";
 
-const MUTATION = /export async function (POST|PUT|PATCH|DELETE)\s*\([^)]*\)\s*\{/g;
+const MUTATION = /export async function (POST|PUT|PATCH|DELETE)\s*\(([^)]*)\)\s*\{/g;
+const IDENTIFIER = "[A-Za-z_$][A-Za-z0-9_$]*";
+const REQUEST_ID_PREFIX =
+  "(?:(?:const|let)\\s+requestId(?:\\s*:\\s*string)?\\s*=\\s*(?:crypto\\.)?randomUUID\\(\\);\\s*)?";
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function requestParameterName(parameters: string): string | null {
+  return parameters.match(new RegExp(`^\\s*(${IDENTIFIER})\\b`))?.[1] ?? null;
+}
+
+function beginsWithInlineOriginGuard(body: string, requestName: string): boolean {
+  const request = escapeRegExp(requestName);
+  return new RegExp(
+    `^\\s*${REQUEST_ID_PREFIX}if\\s*\\(\\s*!hasTrustedMutationOrigin\\(\\s*${request}\\s*\\)\\s*\\)\\s*(?:\\{|return\\b)`,
+  ).test(body);
+}
+
+function beginsWithDelegatedOriginGuard(
+  source: string,
+  body: string,
+  requestName: string,
+): boolean {
+  const request = escapeRegExp(requestName);
+  const call = new RegExp(
+    `^\\s*${REQUEST_ID_PREFIX}const\\s+${IDENTIFIER}\\s*=\\s*await\\s+(${IDENTIFIER})\\(\\s*${request}\\s*(?:,\\s*requestId\\s*)?\\)\\s*;`,
+  ).exec(body);
+  const helperName = call?.[1];
+  if (!helperName) return false;
+
+  const helper = new RegExp(
+    `async\\s+function\\s+${escapeRegExp(helperName)}\\s*\\(\\s*(${IDENTIFIER})\\b[^)]*\\)\\s*\\{`,
+  ).exec(source);
+  if (!helper) return false;
+  const helperBodyStart = (helper.index ?? 0) + helper[0].length;
+  return beginsWithInlineOriginGuard(source.slice(helperBodyStart), helper[1]);
+}
+
+function mutationStartsWithOriginGate(
+  source: string,
+  body: string,
+  parameters: string,
+): boolean {
+  const requestName = requestParameterName(parameters);
+  if (!requestName) return false;
+  return beginsWithInlineOriginGuard(body, requestName)
+    || beginsWithDelegatedOriginGuard(source, body, requestName);
+}
 
 function findRouteFiles(root: string): string[] {
   return fs.readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
@@ -63,17 +112,39 @@ describe("authenticated browser mutation origin coverage", () => {
         // A correlation ID may be allocated first so even the forbidden-origin response can
         // be traced. Keep the allowance deliberately narrow: no auth, request parsing,
         // database access, or other work may happen before the origin gate.
-        if (
-          !/^\s*(?:(?:const|let)\s+requestId(?::\s*string)?\s*=\s*(?:crypto\.)?randomUUID\(\);\s*)?if \(!hasTrustedMutationOrigin\((?:req|_req)\)\) \{/.test(
-            body,
-          )
-        ) {
+        if (!mutationStartsWithOriginGate(source, body, match[2])) {
           uncovered.push(`${path.relative(apiRoot, file)}:${match[1]}`);
         }
       }
     }
 
     expect(uncovered).toEqual([]);
+  });
+
+  it("accepts equivalent inline and local-helper gates but rejects work before the gate", () => {
+    expect(mutationStartsWithOriginGate(
+      "",
+      "\n const requestId = randomUUID();\n if (!hasTrustedMutationOrigin(request)) return forbidden();",
+      "request: NextRequest",
+    )).toBe(true);
+
+    const delegated = `
+      async function authorizeMutation(req: NextRequest, requestId: string) {
+        if (!hasTrustedMutationOrigin(req)) return { response: forbidden(requestId) };
+        return { user: await getSessionUser(req) };
+      }
+    `;
+    expect(mutationStartsWithOriginGate(
+      delegated,
+      "\n const requestId = randomUUID();\n const auth = await authorizeMutation(request, requestId);",
+      "request: NextRequest",
+    )).toBe(true);
+
+    expect(mutationStartsWithOriginGate(
+      "",
+      "\n const user = await getSessionUser(request);\n if (!hasTrustedMutationOrigin(request)) return forbidden();",
+      "request: NextRequest",
+    )).toBe(false);
   });
 
   it.each([

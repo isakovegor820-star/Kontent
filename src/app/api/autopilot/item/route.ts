@@ -1,6 +1,7 @@
 // Д.9 — действие над одним постом плана: одобрить / отклонить / поправить текст.
 // Правка сбрасывает streak (значит план не идеален — полный режим пока рано).
 
+import { createHash } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
@@ -22,6 +23,11 @@ import {
   scheduleAutopilotItem,
 } from "@/lib/autopilot-scheduling.mjs";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
+import {
+  ProjectAccessError,
+  requireProjectPermission,
+  requireSelectedProjectPermission,
+} from "@/lib/project-permissions";
 
 export const runtime = "nodejs";
 
@@ -46,17 +52,25 @@ const validKey = (value: unknown) => {
   return /^[A-Za-z0-9._:-]{8,128}$/.test(key) ? key : null;
 };
 
+function projectIdempotencyKey(projectId: number, clientKey: string): string {
+  const prefix = `project:${projectId}:`;
+  if (prefix.length + clientKey.length <= 128) return `${prefix}${clientKey}`;
+  return `${prefix}sha256:${createHash("sha256").update(clientKey).digest("hex")}`;
+}
+
 async function finishApprovalOperation(
   id: number,
+  projectId: number,
+  userId: number,
   status: "completed" | "partial" | "failed",
   result: Record<string, unknown>,
   httpStatus: number,
 ) {
   await getPool().query(
     `update autopilot_approval_operations
-        set status = $2, result = $3, http_status = $4, completed_at = now()
-      where id = $1`,
-    [id, status, JSON.stringify(result), httpStatus],
+        set status = $4, result = $5, http_status = $6, completed_at = now()
+      where id = $1 and project_id = $2 and user_id = $3`,
+    [id, projectId, userId, status, JSON.stringify(result), httpStatus],
   );
 }
 
@@ -99,24 +113,31 @@ export async function PATCH(req: NextRequest) {
 
   let claimedApproval: {
     planId: number;
+    projectId: number;
     userId: number;
     channelId: number;
     operationId: number;
   } | null = null;
   try {
     const pool = getPool();
-    const channelId = await resolveChannel(user.id, Number(body.channelId) || null);
+    const permission = action === "edit" ? "content.edit" : "content.publish";
+    const membership = await requireSelectedProjectPermission(pool, user.id, permission);
+    const projectId = membership.projectId;
+    const channelId = await resolveChannel(
+      { actorUserId: user.id, projectId },
+      Number(body.channelId) || null,
+    );
     if (!channelId) return NextResponse.json({ ok: false, error: "no_channel" }, { status: 422 });
-    await reclaimStaleAutopilotApprovals(pool, { userId: user.id, channelId });
+    await reclaimStaleAutopilotApprovals(pool, { projectId, channelId });
 
     // План ищем в пределах канала: иначе, открыв план канала Б, человек правил бы более
     // свежий план канала А — тот же список на экране, чужие посты в базе.
     const plan = (
       await pool.query<{ id: number; items: PlanItem[]; channel_id: number; status: string; revision: number }>(
         `select id, items, channel_id, status, revision from autopilot_plan
-          where user_id = $1 and channel_id = $2 and id = $3 and revision = $4
+          where project_id = $1 and channel_id = $2 and id = $3 and revision = $4
             and status in ('pending', 'approved')`,
-        [user.id, channelId, requestedPlanId, requestedRevision],
+        [projectId, channelId, requestedPlanId, requestedRevision],
       )
     ).rows[0];
     if (!plan) return NextResponse.json({ ok: false, error: "stale_plan" }, { status: 409 });
@@ -124,12 +145,16 @@ export async function PATCH(req: NextRequest) {
     const items = plan.items;
     const it = items.find((x) => x.i === index);
     if (!it) return NextResponse.json({ ok: false, error: "no_item" }, { status: 404 });
+    if (action === "edit" && it.postId) {
+      await requireProjectPermission(pool, user.id, projectId, "content.publish");
+    }
 
     if (action === "approve") {
       const idempotencyKey = validKey(body.idempotencyKey);
       if (!idempotencyKey) {
         return NextResponse.json({ ok: false, error: "bad_confirmation" }, { status: 422 });
       }
+      const scopedIdempotencyKey = projectIdempotencyKey(projectId, idempotencyKey);
 
       const replay = (
         await pool.query<{
@@ -140,8 +165,9 @@ export async function PATCH(req: NextRequest) {
           http_status: number;
         }>(
           `select channel_id, plan_id, request_snapshot, result, http_status
-             from autopilot_approval_operations where user_id = $1 and idempotency_key = $2`,
-          [user.id, idempotencyKey],
+             from autopilot_approval_operations
+            where project_id = $1 and user_id = $2 and idempotency_key = $3`,
+          [projectId, user.id, scopedIdempotencyKey],
         )
       ).rows[0];
       if (replay) {
@@ -161,15 +187,16 @@ export async function PATCH(req: NextRequest) {
 
       const operation = await pool.query<{ id: number }>(
         `insert into autopilot_approval_operations
-           (user_id, channel_id, plan_id, idempotency_key, actor_type, status, request_snapshot)
-         values ($1, $2, $3, $4, 'web', 'processing', $5)
-         on conflict (user_id, idempotency_key) do nothing
+           (project_id, user_id, channel_id, plan_id, idempotency_key, actor_type, status, request_snapshot)
+         values ($1, $2, $3, $4, $5, 'web', 'processing', $6)
+         on conflict do nothing
          returning id`,
         [
+          projectId,
           user.id,
           plan.channel_id,
           plan.id,
-          idempotencyKey,
+          scopedIdempotencyKey,
           JSON.stringify({
             channelId: plan.channel_id,
             planId: plan.id,
@@ -187,6 +214,7 @@ export async function PATCH(req: NextRequest) {
       // repeated here so a stale UI cannot claim another channel's plan by id.
       const claim = await claimAutopilotPlan(pool, {
         planId: plan.id,
+        projectId,
         userId: user.id,
         channelId: plan.channel_id,
         operationId,
@@ -195,11 +223,12 @@ export async function PATCH(req: NextRequest) {
       }) as { items: PlanItem[]; channel_id: number } | null;
       if (!claim) {
         const result = { ok: false, error: "approval_in_progress", retryable: true };
-        await finishApprovalOperation(operationId, "failed", result, 409);
+        await finishApprovalOperation(operationId, projectId, user.id, "failed", result, 409);
         return NextResponse.json(result, { status: 409 });
       }
       const approvalContext = {
         planId: plan.id,
+        projectId,
         userId: user.id,
         channelId: Number(plan.channel_id),
         operationId,
@@ -275,6 +304,7 @@ export async function PATCH(req: NextRequest) {
           pool,
           enqueue: enqueueAutopilotPost,
           planId: plan.id,
+          projectId,
           userId: user.id,
           channelId: Number(claim.channel_id),
           operationId,
@@ -346,9 +376,9 @@ export async function PATCH(req: NextRequest) {
           await client.query("begin");
           const cancelled = await client.query<{ id: number }>(
             `delete from posts
-              where id = $1 and user_id = $2 and channel_id = $3 and status = 'scheduled'
+              where id = $1 and project_id = $2 and channel_id = $3 and status = 'scheduled'
               returning id`,
-            [it.postId, user.id, plan.channel_id],
+            [it.postId, projectId, plan.channel_id],
           );
           if (cancelled.rowCount !== 1) {
             // Воркер мог уже перевести строку в publishing. Не называем такую гонку
@@ -364,11 +394,18 @@ export async function PATCH(req: NextRequest) {
           const saved = await client.query<{ id: number }>(
             `update autopilot_plan
                 set items = $4::jsonb, revision = revision + 1
-              where id = $1 and user_id = $2 and channel_id = $3
+              where id = $1 and project_id = $2 and channel_id = $3
                 and status in ('pending', 'approved') and items = $5::jsonb
                 and revision = $6
               returning id`,
-            [plan.id, user.id, plan.channel_id, JSON.stringify(items), originalItems, requestedRevision],
+            [
+              plan.id,
+              projectId,
+              plan.channel_id,
+              JSON.stringify(items),
+              originalItems,
+              requestedRevision,
+            ],
           );
           if (saved.rowCount !== 1) {
             await client.query("rollback");
@@ -398,8 +435,9 @@ export async function PATCH(req: NextRequest) {
         edited = true;
         const row = (
           await pool.query<{ quality: unknown }>(
-            `select quality from content_brief where user_id = $1 and channel_id = $2`,
-            [user.id, plan.channel_id],
+            `select quality from content_brief where project_id = $1 and channel_id = $2
+              order by updated_at desc, user_id limit 1`,
+            [projectId, plan.channel_id],
           )
         ).rows[0];
         const quality = normalizePostQuality(row?.quality);
@@ -429,10 +467,10 @@ export async function PATCH(req: NextRequest) {
       const saved = await pool.query<{ revision: number }>(
         `update autopilot_plan
             set items = $5::jsonb, edited = edited or $6, revision = revision + 1
-          where id = $1 and user_id = $2 and channel_id = $3 and revision = $4
+          where id = $1 and project_id = $2 and channel_id = $3 and revision = $4
             and status in ('pending', 'approved')
           returning revision`,
-        [plan.id, user.id, plan.channel_id, requestedRevision, JSON.stringify(items), edited],
+        [plan.id, projectId, plan.channel_id, requestedRevision, JSON.stringify(items), edited],
       );
       if (saved.rowCount !== 1) {
         return NextResponse.json({ ok: false, error: "stale_plan" }, { status: 409 });
@@ -446,9 +484,9 @@ export async function PATCH(req: NextRequest) {
       if (action === "edit" && edited && it.postId) {
         const post = await client.query(
           `update posts set text = $4
-            where id = $1 and user_id = $2 and channel_id = $3 and status = 'scheduled'
+            where id = $1 and project_id = $2 and channel_id = $3 and status = 'scheduled'
             returning id`,
-          [it.postId, user.id, plan.channel_id, it.draft],
+          [it.postId, projectId, plan.channel_id, it.draft],
         );
         if (post.rowCount !== 1) {
           await client.query("rollback");
@@ -458,10 +496,10 @@ export async function PATCH(req: NextRequest) {
       const saved = await client.query<{ revision: number }>(
         `update autopilot_plan
             set items = $5::jsonb, edited = edited or $6, revision = revision + 1
-          where id = $1 and user_id = $2 and channel_id = $3 and revision = $4
+          where id = $1 and project_id = $2 and channel_id = $3 and revision = $4
             and status in ('pending', 'approved')
           returning revision`,
-        [plan.id, user.id, plan.channel_id, requestedRevision, JSON.stringify(items), edited],
+        [plan.id, projectId, plan.channel_id, requestedRevision, JSON.stringify(items), edited],
       );
       if (saved.rowCount !== 1) {
         await client.query("rollback");
@@ -480,6 +518,9 @@ export async function PATCH(req: NextRequest) {
       client.release();
     }
   } catch (err) {
+    if (err instanceof ProjectAccessError) {
+      return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
+    }
     console.error("[/api/autopilot/item]", err);
     if (claimedApproval) {
       await abortAutopilotApproval({

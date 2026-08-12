@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   abortApproval: vi.fn(),
   getJob: vi.fn(),
   removeJob: vi.fn(),
+  requireSelectedProjectPermission: vi.fn(),
 }));
 
 vi.mock("@/lib/db", () => ({
@@ -41,6 +42,10 @@ vi.mock("@/lib/queue", () => ({
   getPublishQueue: () => ({ getJob: mocks.getJob }),
   jobIdForPost: (id: number) => `post-${id}`,
 }));
+vi.mock("@/lib/project-permissions", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/project-permissions")>();
+  return { ...actual, requireSelectedProjectPermission: mocks.requireSelectedProjectPermission };
+});
 
 import { PATCH } from "./route";
 
@@ -87,6 +92,12 @@ const quality = {
 beforeEach(() => {
   vi.resetAllMocks();
   mocks.getSessionUser.mockResolvedValue({ id: 3 });
+  mocks.requireSelectedProjectPermission.mockResolvedValue({
+    projectId: 88,
+    userId: 3,
+    role: "publisher",
+    version: 1,
+  });
   mocks.resolveChannel.mockResolvedValue(7);
   mocks.reclaimStaleApprovals.mockResolvedValue([]);
   mocks.finalizeApproval.mockResolvedValue(true);
@@ -148,7 +159,7 @@ describe("PATCH /api/autopilot/item approve", () => {
       if (sql.startsWith("select id, items, channel_id, status, revision from autopilot_plan")) {
         return { rows: [{ id: 44, items: source, channel_id: 7, status: "pending" }], rowCount: 1 };
       }
-      if (sql.includes("from autopilot_approval_operations where user_id")) {
+      if (sql.includes("from autopilot_approval_operations where project_id")) {
         return { rows: [], rowCount: 0 };
       }
       if (sql.startsWith("insert into autopilot_approval_operations")) {
@@ -180,6 +191,19 @@ describe("PATCH /api/autopilot/item approve", () => {
     const savedItem = finalized.items[0];
     expect(savedItem).toMatchObject({ status: "expired", scheduledAt: originalDate });
     expect(finalized).toMatchObject({ planStatus: "pending", operationStatus: "completed", httpStatus: 422 });
+    const operation = calls.find((call) => call.sql.startsWith("insert into autopilot_approval_operations"));
+    expect(operation?.params.slice(0, 5)).toEqual([
+      88,
+      3,
+      7,
+      44,
+      "project:88:item-expired-key",
+    ]);
+    expect(mocks.claimPlan).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      projectId: 88,
+      planId: 44,
+      channelId: 7,
+    }));
   });
 
   it("returns success with the durable post id when queue reconciliation is pending", async () => {
@@ -200,7 +224,7 @@ describe("PATCH /api/autopilot/item approve", () => {
       if (sql.startsWith("select id, items, channel_id, status, revision from autopilot_plan")) {
         return { rows: [{ id: 44, items: source, channel_id: 7, status: "pending" }], rowCount: 1 };
       }
-      if (sql.includes("from autopilot_approval_operations where user_id")) {
+      if (sql.includes("from autopilot_approval_operations where project_id")) {
         return { rows: [], rowCount: 0 };
       }
       if (sql.startsWith("insert into autopilot_approval_operations")) {
@@ -249,7 +273,7 @@ describe("PATCH /api/autopilot/item reject", () => {
     expect(mocks.connect).not.toHaveBeenCalled();
     expect(mocks.query).toHaveBeenCalledWith(
       expect.stringContaining("id = $3 and revision = $4"),
-      [3, 7, 44, 3],
+      [88, 7, 44, 3],
     );
   });
 
@@ -303,9 +327,9 @@ describe("PATCH /api/autopilot/item reject", () => {
     });
     const deletion = transactionCalls.find((call) => call.sql.startsWith("delete from posts"));
     expect(deletion?.sql).toContain(
-      "where id = $1 and user_id = $2 and channel_id = $3 and status = 'scheduled'",
+      "where id = $1 and project_id = $2 and channel_id = $3 and status = 'scheduled'",
     );
-    expect(deletion?.params).toEqual([501, 3, 7]);
+    expect(deletion?.params).toEqual([501, 88, 7]);
     expect(transactionCalls.some((call) => call.sql.startsWith("update autopilot_plan"))).toBe(false);
     expect(transactionCalls.at(-1)?.sql).toBe("rollback");
     expect(mocks.release).toHaveBeenCalledOnce();
@@ -328,8 +352,8 @@ describe("PATCH /api/autopilot/item reject", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ ok: true });
     const saved = transactionCalls.find((call) => call.sql.startsWith("update autopilot_plan"));
-    expect(saved?.sql).toContain("where id = $1 and user_id = $2 and channel_id = $3");
-    expect(saved?.params.slice(0, 3)).toEqual([44, 3, 7]);
+    expect(saved?.sql).toContain("where id = $1 and project_id = $2 and channel_id = $3");
+    expect(saved?.params.slice(0, 3)).toEqual([44, 88, 7]);
     expect(JSON.parse(String(saved?.params[3]))[0]).toMatchObject({
       i: 2,
       postId: 501,

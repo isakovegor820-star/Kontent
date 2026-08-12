@@ -37,7 +37,7 @@ export function useProjects() {
 }
 
 export function ProjectProvider({ children }: { children: React.ReactNode }) {
-  const { user, authReady } = useStore();
+  const { user, authReady, toast } = useStore();
   const [projects, setProjects] = useState<ClientProject[]>([]);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState(false);
@@ -116,15 +116,29 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(input),
       });
-      const body = await response.json().catch(() => null) as { error?: string } | null;
-      if (!response.ok) return { ok: false, error: body?.error ?? "server" };
+      const body = await response.json().catch(() => null) as {
+        ok?: unknown;
+        project?: unknown;
+        error?: string;
+      } | null;
+      const created = response.ok && body?.ok === true ? parseClientProject(body.project) : null;
+      if (!created) return { ok: false, error: body?.error ?? "server" };
       await refresh();
-      window.dispatchEvent(new CustomEvent("aurora:project-changed"));
+      setProjects((current) => {
+        const byId = new Map(current.map((project) => [project.id, project]));
+        byId.set(created.id, created);
+        return [...byId.values()].map((project) => ({
+          ...project,
+          selected: project.id === created.id,
+        }));
+      });
+      toast({ kind: "success", title: `Проект «${created.name}» создан и выбран.` });
+      window.dispatchEvent(new CustomEvent("aurora:project-changed", { detail: { projectId: created.id } }));
       return { ok: true };
     } catch {
       return { ok: false, error: "network" };
     }
-  }, [refresh]);
+  }, [refresh, toast]);
 
   const current = projects.find((project) => project.selected) ?? null;
   const value = useMemo<ProjectContextValue>(() => ({

@@ -42,11 +42,11 @@ export function LibraryCardText({
   className?: string;
 }) {
   return (
-    <div className={cn("flex w-full flex-1 flex-col items-start", className)}>
+    <div className={cn("flex w-full min-w-0 flex-1 flex-col items-start", className)}>
       <p
         id={contentId}
         className={cn(
-          "w-full flex-1 text-[14px] leading-relaxed whitespace-pre-wrap text-text",
+          "w-full flex-1 text-[14px] leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere] text-text",
           !expanded && "line-clamp-4",
         )}
       >

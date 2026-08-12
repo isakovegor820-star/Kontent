@@ -9,6 +9,7 @@ import {
 
 const data = {
   generationId: 41,
+  projectId: 23,
   requestId: "11111111-1111-4111-8111-111111111111",
   requestKey: "media_client_key_1234",
   providerRequestKey: "aurora-media-11111111-1111-4111-8111-111111111111",
@@ -57,5 +58,20 @@ describe("media queue producer safety", () => {
     };
     await expect(enqueueMediaGeneration(data, queue as never, 5))
       .rejects.toBeInstanceOf(MediaQueueUnavailableError);
+  });
+
+  it("rejects a job without a valid project boundary before touching Redis", async () => {
+    const queue = {
+      add: vi.fn(),
+      getJob: vi.fn(),
+    };
+
+    await expect(enqueueMediaGeneration(
+      { ...data, projectId: 0 },
+      queue as never,
+      25,
+    )).rejects.toThrow("media queue project is required");
+    expect(queue.add).not.toHaveBeenCalled();
+    expect(queue.getJob).not.toHaveBeenCalled();
   });
 });

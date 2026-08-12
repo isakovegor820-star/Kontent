@@ -26,6 +26,11 @@ const APPROVED_REPLACED_CONSTRAINTS = new Set([
   "site_analysis_jobs_status_check",
   "site_analysis_jobs_stage_check",
   "media_generations_prompt_policy_version_check",
+  "project_tracking_settings_status_check",
+  "project_tracking_settings_readiness_check",
+  "project_tracking_settings_challenge_check",
+  "project_tracking_settings_verification_error_check",
+  "publication_extra_operations_project_id_post_id_sequence_in_key",
 ]);
 
 function withoutSqlComments(sql) {

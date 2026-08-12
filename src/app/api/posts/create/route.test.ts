@@ -8,12 +8,17 @@ const mocks = vi.hoisted(() => ({
   add: vi.fn(),
   getSessionUser: vi.fn(),
   probePublication: vi.fn(),
+  requireSelectedProjectPermission: vi.fn(),
 }));
 
 vi.mock("@/lib/db", () => ({
   getPool: () => ({ query: mocks.query, connect: mocks.connect }),
 }));
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
+vi.mock("@/lib/project-permissions", () => ({
+  ProjectAccessError: class ProjectAccessError extends Error {},
+  requireSelectedProjectPermission: mocks.requireSelectedProjectPermission,
+}));
 vi.mock("@/lib/readiness-probes", () => ({
   probeRedisAndPublicationWorker: mocks.probePublication,
 }));
@@ -56,6 +61,7 @@ describe("POST /api/posts/create draft destination outcomes", () => {
     vi.clearAllMocks();
     mocks.getSessionUser.mockResolvedValue({ id: 5 });
     mocks.probePublication.mockResolvedValue({ redis: "up", publicationWorker: "up" });
+    mocks.requireSelectedProjectPermission.mockResolvedValue({ projectId: 23, role: "publisher" });
     mocks.add.mockResolvedValue({ id: "post-501" });
     mocks.connect.mockResolvedValue({ query: mocks.query, release: mocks.release });
   });
@@ -116,9 +122,9 @@ describe("POST /api/posts/create draft destination outcomes", () => {
         if (persisted) return { rowCount: 0, rows: [] };
         persisted = {
           id: "501",
-          idempotency_key: String(params[5]),
-          request_fingerprint: String(params[6]),
-          scheduled_at: String(params[4]),
+          idempotency_key: String(params[6]),
+          request_fingerprint: String(params[7]),
+          scheduled_at: String(params[5]),
           status: "scheduled",
         };
         return {
@@ -151,15 +157,16 @@ describe("POST /api/posts/create draft destination outcomes", () => {
     });
 
     expect(insertCalls).toHaveLength(2);
-    expect(insertCalls[0]?.[2]).toBe("Первая ревизия");
-    expect(insertCalls[1]?.[2]).toBe("Текст изменён после partial failure");
-    expect(insertCalls[0]?.[5]).toBe("draft:41:destination:11");
-    expect(insertCalls[1]?.[5]).toBe("draft:41:destination:11");
+    expect(insertCalls[0]?.[0]).toBe(23);
+    expect(insertCalls[0]?.[3]).toBe("Первая ревизия");
+    expect(insertCalls[1]?.[3]).toBe("Текст изменён после partial failure");
+    expect(insertCalls[0]?.[6]).toBe("draft:41:destination:11");
+    expect(insertCalls[1]?.[6]).toBe("draft:41:destination:11");
     expect(mocks.add).toHaveBeenCalledTimes(2);
     expect(mocks.add).toHaveBeenNthCalledWith(
       2,
       "publish",
-      { postId: 501, scheduleRevision: 1 },
+      { postId: 501, projectId: 23, scheduleRevision: 1 },
       expect.objectContaining({ jobId: "post-501-r1" }),
     );
     const statements = mocks.query.mock.calls.map(([sql]) =>
@@ -298,7 +305,7 @@ describe("POST /api/posts/create draft destination outcomes", () => {
         };
       }
       if (sql.startsWith("insert into posts")) {
-        return { rowCount: 1, rows: [{ id: "501", request_fingerprint: String(params[6]) }] };
+        return { rowCount: 1, rows: [{ id: "501", request_fingerprint: String(params[7]) }] };
       }
       return { rowCount: 0, rows: [] };
     });

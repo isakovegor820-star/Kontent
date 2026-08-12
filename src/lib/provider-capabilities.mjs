@@ -72,6 +72,8 @@ const VK_API_SCHEMA = "https://github.com/VKCOM/vk-api-schema";
 const YOUTUBE_API = "https://developers.google.com/youtube/v3/docs/videos";
 const INSTAGRAM_API = "https://www.postman.com/meta/instagram/documentation/6yqw8pt/instagram-api";
 const TENCHAT_PARTNER_CONTACT = "https://tenchat.ru/contacts";
+const TENCHAT_RULES =
+  "https://cdn1.tenchat.ru/static/vbc-gostinder/document/921e5418-d917-4e97-bb89-e296418e2a30.pdf";
 
 function deepFreeze(value) {
   if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
@@ -128,18 +130,18 @@ export const PROVIDER_CAPABILITY_REGISTRY = deepFreeze({
     capabilities: {
       livePublish: supported({ credentials: true, permissions: true }),
       exportPackage: unsupported("export_package_not_implemented", NOT_IMPLEMENTED),
-      firstComment: unsupported("first_comment_not_implemented", NOT_IMPLEMENTED),
-      pin: unsupported("pin_not_implemented", NOT_IMPLEMENTED),
+      firstComment: supported({ credentials: true, permissions: true }),
+      pin: supported({ credentials: true, permissions: true }),
       commentToggle: unsupported("comment_toggle_not_implemented", NOT_IMPLEMENTED),
       analytics: supported({ credentials: true, permissions: true }),
     },
-    mediaTypes: ["text", "image", "video"],
+    mediaTypes: ["text", "image", "video", "carousel"],
     limits: {
       textChars: 4096,
       captionChars: 1024,
       titleChars: null,
       descriptionBytes: null,
-      mediaPerPost: 1,
+      mediaPerPost: 10,
       authority: "provider",
       source: TELEGRAM_BOT_API,
     },
@@ -152,9 +154,9 @@ export const PROVIDER_CAPABILITY_REGISTRY = deepFreeze({
     capabilities: {
       livePublish: supported({ credentials: true, permissions: true }),
       exportPackage: unsupported("export_package_not_implemented", NOT_IMPLEMENTED),
-      firstComment: unsupported("first_comment_not_implemented", NOT_IMPLEMENTED),
+      firstComment: supported({ credentials: true, permissions: true }),
       pin: unsupported("pin_not_implemented", NOT_IMPLEMENTED),
-      commentToggle: unsupported("comment_toggle_not_implemented", NOT_IMPLEMENTED),
+      commentToggle: supported({ credentials: true, permissions: true }),
       analytics: supported({ credentials: true, permissions: true }),
     },
     // The current worker publishes wall text only. Media stays closed until the
@@ -268,8 +270,9 @@ export const PROVIDER_CAPABILITY_REGISTRY = deepFreeze({
     },
     officialAccess: {
       verified: false,
-      checkedAt: "2026-08-11",
+      checkedAt: "2026-08-12",
       contactUrl: TENCHAT_PARTNER_CONTACT,
+      rulesUrl: TENCHAT_RULES,
       note: TENCHAT_OFFICIAL_ACCESS,
     },
   },

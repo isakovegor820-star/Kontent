@@ -26,6 +26,31 @@ function assertDisposableTargets() {
   }
 }
 
+async function ensurePersonalProject(pool, userId) {
+  const result = await pool.query(
+    `with selected_project as (
+       insert into projects (name, timezone, created_by_user_id, personal_owner_user_id)
+       values ('QA personal project', 'UTC', $1, $1)
+       on conflict (personal_owner_user_id) do update
+         set updated_at = projects.updated_at
+       returning id
+     ), member as (
+       insert into project_members (project_id, user_id, role, status)
+       select id, $1, 'owner', 'active' from selected_project
+       on conflict (project_id, user_id) do update
+         set role = 'owner', status = 'active', revoked_at = null, updated_at = now()
+     )
+     insert into user_project_preferences (user_id, selected_project_id)
+     select $1, id from selected_project
+     on conflict (user_id) do update set selected_project_id = excluded.selected_project_id
+     returning selected_project_id`,
+    [userId],
+  );
+  const projectId = Number(result.rows[0]?.selected_project_id ?? 0);
+  assert(Number.isSafeInteger(projectId) && projectId > 0, "personal project fixture was not created");
+  return projectId;
+}
+
 assertDisposableTargets();
 const schemaSql = await readFile(resolve(process.cwd(), "db/schema.sql"), "utf8");
 const pool = new pg.Pool({ connectionString: databaseUrl, ssl: false, max: 4 });
@@ -42,10 +67,11 @@ try {
   const userId = Number((await pool.query(
     "insert into users (email, name) values ('qa-gate3@example.test', 'QA Gate 3') returning id",
   )).rows[0].id);
+  const projectId = await ensurePersonalProject(pool, userId);
   const channelId = Number((await pool.query(
-    `insert into channels (user_id, network, title, handle, is_active)
-     values ($1, 'tg', 'QA semantic channel', 'qa_semantic', true) returning id`,
-    [userId],
+    `insert into channels (project_id, user_id, network, title, handle, is_active)
+     values ($1, $2, 'tg', 'QA semantic channel', 'qa_semantic', true) returning id`,
+    [projectId, userId],
   )).rows[0].id);
   const source = {
     id: "knowledge-446",
@@ -97,20 +123,22 @@ try {
     qualityBlocked: true,
   }];
   const planId = Number((await pool.query(
-    `insert into autopilot_plan (user_id, channel_id, week_start, items, status)
-     values ($1, $2, current_date, $3::jsonb, 'pending') returning id`,
-    [userId, channelId, JSON.stringify(items)],
+    `insert into autopilot_plan (project_id, user_id, channel_id, week_start, items, status)
+     values ($1, $2, $3, current_date, $4::jsonb, 'pending') returning id`,
+    [projectId, userId, channelId, JSON.stringify(items)],
   )).rows[0].id);
   const operationId = Number((await pool.query(
     `insert into autopilot_approval_operations
-       (user_id, channel_id, plan_id, plan_revision, preview_hash,
+       (project_id, user_id, channel_id, plan_id, plan_revision, preview_hash,
         idempotency_key, actor_type, status, request_snapshot)
-     values ($1, $2, $3, 1, $4, 'qa-semantic-gate', 'web', 'processing', '{}'::jsonb)
+     values ($1, $2, $3, $4, 1, $5, 'project:' || ($1::bigint)::text || ':qa-semantic-gate',
+             'web', 'processing', '{}'::jsonb)
      returning id`,
-    [userId, channelId, planId, "0".repeat(64)],
+    [projectId, userId, channelId, planId, "0".repeat(64)],
   )).rows[0].id);
   const claim = await claimAutopilotPlan(pool, {
     planId,
+    projectId,
     userId,
     channelId,
     operationId,
@@ -122,11 +150,17 @@ try {
   await assert.rejects(
     scheduleAutopilotItem({
       pool,
-      enqueue: async (postId, date, scheduleRevision) => {
+      enqueue: async (scopedProjectId, postId, date, scheduleRevision) => {
+        assert.equal(scopedProjectId, projectId);
         enqueueCalls += 1;
-        await publishQueue.add("publish", { postId, scheduleRevision }, { delay: Math.max(0, Date.parse(date) - Date.now()) });
+        await publishQueue.add(
+          "publish",
+          { projectId: scopedProjectId, postId, scheduleRevision },
+          { delay: Math.max(0, Date.parse(date) - Date.now()) },
+        );
       },
       planId,
+      projectId,
       userId,
       channelId,
       operationId,
@@ -137,9 +171,10 @@ try {
   assert.equal(enqueueCalls, 0);
   const counts = (await pool.query(
     `select
-       (select count(*)::int from posts where user_id = $1) as posts,
-       (select count(*)::int from autopilot_schedule_outbox where user_id = $1) as outbox`,
-    [userId],
+       (select count(*)::int from posts where project_id = $1 and user_id = $2) as posts,
+       (select count(*)::int from autopilot_schedule_outbox
+         where project_id = $1 and user_id = $2) as outbox`,
+    [projectId, userId],
   )).rows[0];
   assert.deepEqual(counts, { posts: 0, outbox: 0 });
   assert.equal(Object.values(await publishQueue.getJobCounts()).reduce((sum, count) => sum + Number(count), 0), 0);

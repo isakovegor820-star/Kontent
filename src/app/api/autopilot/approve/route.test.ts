@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   scheduleItem: vi.fn(),
   finalizeApproval: vi.fn(),
   abortApproval: vi.fn(),
+  requireSelectedProjectPermission: vi.fn(),
 }));
 
 vi.mock("@/lib/db", () => ({ getPool: () => ({ query: mocks.query }) }));
@@ -32,6 +33,10 @@ vi.mock("@/lib/autopilot-scheduling.mjs", () => ({
   finalizeAutopilotApproval: mocks.finalizeApproval,
   abortAutopilotApproval: mocks.abortApproval,
 }));
+vi.mock("@/lib/project-permissions", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/project-permissions")>();
+  return { ...actual, requireSelectedProjectPermission: mocks.requireSelectedProjectPermission };
+});
 
 import { POST } from "./route";
 
@@ -137,7 +142,7 @@ function approvalDb(
     if (sql.includes("select id, title, handle from channels")) {
       return { rows: [{ id: "7", title: "Канал А", handle: "channel_a" }], rowCount: 1 };
     }
-    if (sql.includes("from autopilot_approval_operations where user_id")) {
+    if (sql.includes("from autopilot_approval_operations where project_id")) {
       return { rows: replay ? [replay] : [], rowCount: replay ? 1 : 0 };
     }
     if (sql.includes("from autopilot_approval_previews")) {
@@ -171,6 +176,12 @@ function approvalDb(
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.getSessionUser.mockResolvedValue({ id: 3 });
+  mocks.requireSelectedProjectPermission.mockResolvedValue({
+    projectId: 88,
+    userId: 3,
+    role: "publisher",
+    version: 1,
+  });
   mocks.resolveChannel.mockResolvedValue(7);
   mocks.reclaimStaleApprovals.mockResolvedValue([]);
   mocks.finalizeApproval.mockResolvedValue(true);
@@ -199,6 +210,7 @@ describe("POST /api/autopilot/approve", () => {
     expect(body.preview.token).toMatch(/^[A-Za-z0-9_-]{16,64}$/);
     const stored = calls.find((call) => call.sql.startsWith("insert into autopilot_approval_previews"));
     expect(stored?.params).toEqual(expect.arrayContaining([
+      88,
       3,
       7,
       44,
@@ -246,6 +258,7 @@ describe("POST /api/autopilot/approve", () => {
     ]);
     expect(mocks.claimPlan).toHaveBeenCalledWith(expect.anything(), {
       planId: 44,
+      projectId: 88,
       userId: 3,
       channelId: 7,
       operationId: 91,
@@ -253,13 +266,14 @@ describe("POST /api/autopilot/approve", () => {
       expectedRevision: 1,
     });
     const audit = calls.find((call) => call.sql.startsWith("insert into autopilot_approval_operations"));
-    expect(audit?.params.slice(0, 6)).toEqual([
+    expect(audit?.params.slice(0, 7)).toEqual([
+      88,
       3,
       7,
       44,
       1,
       expect.stringMatching(/^[a-f0-9]{64}$/),
-      "web-test-key-1",
+      "project:88:web-test-key-1",
     ]);
   });
 
@@ -360,13 +374,17 @@ describe("POST /api/autopilot/approve", () => {
     }));
   });
 
-  it("stops before any DB mutation when the requested channel is not owned", async () => {
+  it("stops before any DB mutation for a project A channel while project B is selected", async () => {
     mocks.resolveChannel.mockResolvedValue(null);
 
     const response = await POST(confirmRequest("web-channel-key"));
 
     expect(response.status).toBe(422);
     expect(await response.json()).toMatchObject({ ok: false, error: "no_channel" });
+    expect(mocks.resolveChannel).toHaveBeenCalledWith(
+      { actorUserId: 3, projectId: 88 },
+      7,
+    );
     expect(mocks.query).not.toHaveBeenCalled();
     expect(mocks.scheduleItem).not.toHaveBeenCalled();
   });

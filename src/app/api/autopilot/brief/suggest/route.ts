@@ -13,6 +13,7 @@ import { commitAiUsage, releaseAiUsage, reserveAiUsage } from "@/lib/ai-usage";
 import { RUBRIC_LABELS, normalizeBrief } from "@/lib/brief";
 import { fetchPublicPosts } from "@/lib/tg-public";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
+import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/project-permissions";
 
 export const runtime = "nodejs";
 
@@ -54,19 +55,34 @@ export async function POST(req: NextRequest) {
   }
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
+  const pool = getPool();
+  let projectId: number;
+  try {
+    projectId = (await requireSelectedProjectPermission(pool, user.id, "content.create")).projectId;
+  } catch (error) {
+    if (error instanceof ProjectAccessError) {
+      return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
+    }
+    console.error("[/api/autopilot/brief/suggest] project", {
+      errorName: error instanceof Error ? error.name : "Error",
+    });
+    return NextResponse.json({ ok: false, error: "unavailable" }, { status: 503 });
+  }
+  const scope = { actorUserId: user.id, projectId };
 
   // Читаем ИМЕННО тот канал, чей бриф настраивают. Раньше здесь всегда был первый канал:
   // человек настраивал второй, жал «прочитай мой канал» — и получал бриф первого.
   const body = (await req.json().catch(() => ({}))) as { channelId?: number };
-  const channelId = await resolveChannel(user.id, body.channelId ?? null);
+  const channelId = await resolveChannel(scope, body.channelId ?? null);
   if (!channelId) return NextResponse.json({ ok: false, error: "no_channel" }, { status: 422 });
 
   const ch = (
-    await getPool().query<{ handle: string | null; ai_engine: string | null }>(
+    await pool.query<{ handle: string | null; ai_engine: string | null }>(
       `select c.handle, u.ai_engine
-         from channels c join users u on u.id = c.user_id
-        where c.id = $1 and c.user_id = $2`,
-      [channelId, user.id],
+         from channels c join users u on u.id = $3
+        where c.id = $1 and c.project_id = $2
+          and c.network = 'tg' and c.is_active = true`,
+      [channelId, projectId, user.id],
     )
   ).rows[0];
 

@@ -20,14 +20,23 @@ async function rollback(client) {
   await client.query("rollback").catch(() => {});
 }
 
-async function lockedOperation(client, userId, operationId) {
+async function lockedOperation(client, userId, projectId, operationId) {
   return (await client.query(
-    `select id, user_id, draft_id, draft_version, text, media, scheduled_at, timezone,
-            destination_ids, status, schedule_revision
-       from publication_operations
-      where id = $1 and user_id = $2
-      for update`,
-    [operationId, userId],
+    `select operation.id, operation.project_id, operation.user_id, operation.draft_id,
+            operation.draft_version, operation.text, operation.media,
+            operation.scheduled_at, operation.timezone, operation.destination_ids,
+            operation.status, operation.schedule_revision
+       from publication_operations operation
+       join project_members member
+         on member.project_id = operation.project_id
+        and member.user_id = $2
+        and member.status = 'active'
+        and member.role in ('owner', 'publisher')
+       join projects project
+         on project.id = operation.project_id and project.is_archived = false
+      where operation.id = $1 and operation.project_id = $3
+      for update of operation`,
+    [operationId, userId, projectId],
   )).rows[0] ?? null;
 }
 
@@ -59,14 +68,14 @@ function concurrencyFailure(operation, expectedRevision, expectedStatus) {
   return null;
 }
 
-async function lockedPosts(client, operationId) {
+async function lockedPosts(client, operationId, projectId) {
   return (await client.query(
     `select id, status, schedule_revision, provider_started_at
        from posts
-      where publication_operation_id = $1
+      where publication_operation_id = $1 and project_id = $2
       order by id
       for update`,
-    [operationId],
+    [operationId, projectId],
   )).rows;
 }
 
@@ -106,7 +115,11 @@ async function recordEvent(client, input, result) {
 }
 
 function validateMutationInput(input) {
-  if (!validPositiveInteger(input.userId) || !validPositiveInteger(input.operationId)) {
+  if (
+    !validPositiveInteger(input.userId)
+    || !validPositiveInteger(input.projectId)
+    || !validPositiveInteger(input.operationId)
+  ) {
     return mutationFailure("bad_operation", 422);
   }
   if (!validPositiveInteger(input.expectedRevision)) {
@@ -124,7 +137,7 @@ export async function cancelPublicationOperation(input) {
   const client = await input.pool.connect();
   try {
     await client.query("begin");
-    const operation = await lockedOperation(client, input.userId, input.operationId);
+    const operation = await lockedOperation(client, input.userId, input.projectId, input.operationId);
     if (!operation) {
       await rollback(client);
       return mutationFailure("publication_operation_not_found", 404);
@@ -139,7 +152,7 @@ export async function cancelPublicationOperation(input) {
       await rollback(client);
       return conflict;
     }
-    const posts = await lockedPosts(client, input.operationId);
+    const posts = await lockedPosts(client, input.operationId, input.projectId);
     if (!posts.length) {
       await rollback(client);
       return mutationFailure("publication_destinations_missing", 409);
@@ -154,23 +167,53 @@ export async function cancelPublicationOperation(input) {
     await client.query(
       `update publication_operations
           set status = 'cancelled', schedule_revision = $2, cancelled_at = now(), updated_at = now()
-        where id = $1`,
-      [input.operationId, scheduleRevision],
+        where id = $1 and project_id = $3`,
+      [input.operationId, scheduleRevision, input.projectId],
     );
     await client.query(
       `update posts
           set status = 'cancelled', schedule_revision = $2, cancelled_at = now(),
               publish_lease_token = null, publish_started_at = null,
               provider_started_at = null, next_attempt_at = null
-        where publication_operation_id = $1`,
-      [input.operationId, scheduleRevision],
+        where publication_operation_id = $1 and project_id = $3`,
+      [input.operationId, scheduleRevision, input.projectId],
     );
     await client.query(
       `update publication_outbox
           set status = 'cancelled', lease_token = null, lease_expires_at = null,
               last_error_code = 'publication_cancelled', updated_at = now()
-        where operation_id = $1`,
-      [input.operationId],
+        where operation_id = $1
+          and exists (
+            select 1 from publication_operations operation
+             where operation.id = publication_outbox.operation_id
+               and operation.project_id = $2
+          )`,
+      [input.operationId, input.projectId],
+    );
+    await client.query(
+      `update publication_review_tasks task
+          set status = 'cancelled',
+              reminder_status = case
+                when reminder_status in ('pending','failed') then 'cancelled'
+                else reminder_status
+              end,
+              version = version + 1, updated_at = now()
+         from posts post
+        where post.id = task.post_id and post.project_id = task.project_id
+          and post.publication_operation_id = $1 and task.project_id = $2
+          and task.status in ('scheduled','due')`,
+      [input.operationId, input.projectId],
+    );
+    await client.query(
+      `update publication_review_reminder_outbox outbox
+          set status = 'cancelled', lease_token = null, lease_expires_at = null,
+              last_error_code = 'publication_cancelled', updated_at = now()
+         from publication_review_tasks task
+         join posts post on post.id = task.post_id and post.project_id = task.project_id
+        where outbox.review_task_id = task.id and outbox.project_id = task.project_id
+          and post.publication_operation_id = $1 and task.project_id = $2
+          and outbox.status in ('pending','dispatching','enqueued','failed')`,
+      [input.operationId, input.projectId],
     );
     const result = {
       ok: true,
@@ -216,7 +259,7 @@ export async function reschedulePublicationOperation(input) {
   const client = await input.pool.connect();
   try {
     await client.query("begin");
-    const operation = await lockedOperation(client, input.userId, input.operationId);
+    const operation = await lockedOperation(client, input.userId, input.projectId, input.operationId);
     if (!operation) {
       await rollback(client);
       return mutationFailure("publication_operation_not_found", 404);
@@ -231,7 +274,7 @@ export async function reschedulePublicationOperation(input) {
       await rollback(client);
       return conflict;
     }
-    const posts = await lockedPosts(client, input.operationId);
+    const posts = await lockedPosts(client, input.operationId, input.projectId);
     if (!posts.length) {
       await rollback(client);
       return mutationFailure("publication_destinations_missing", 409);
@@ -248,8 +291,8 @@ export async function reschedulePublicationOperation(input) {
           set status = 'pending', scheduled_at = $2, timezone = $3,
               schedule_offset = $4, schedule_disambiguation = $5,
               schedule_revision = $6, cancelled_at = null, updated_at = now()
-        where id = $1`,
-      [input.operationId, scheduledAt, timezone, offset, disambiguation, scheduleRevision],
+        where id = $1 and project_id = $7`,
+      [input.operationId, scheduledAt, timezone, offset, disambiguation, scheduleRevision, input.projectId],
     );
     await client.query(
       `update posts
@@ -260,16 +303,49 @@ export async function reschedulePublicationOperation(input) {
               publish_started_at = null, provider_started_at = null, publish_lease_token = null,
               provider_operation_id = null, provider_reconciliation_state = 'none',
               provider_reconciliation_requested_at = null
-        where publication_operation_id = $1`,
-      [input.operationId, scheduledAt, scheduleRevision, timezone, offset, disambiguation],
+        where publication_operation_id = $1 and project_id = $7`,
+      [input.operationId, scheduledAt, scheduleRevision, timezone, offset, disambiguation, input.projectId],
     );
     await client.query(
       `update publication_outbox
           set status = 'pending', attempts = 0, next_attempt_at = now(),
               last_error_code = null, lease_token = null, lease_expires_at = null,
               enqueued_at = null, updated_at = now()
-        where operation_id = $1`,
-      [input.operationId],
+        where operation_id = $1
+          and exists (
+            select 1 from publication_operations operation
+             where operation.id = publication_outbox.operation_id
+               and operation.project_id = $2
+          )`,
+      [input.operationId, input.projectId],
+    );
+    await client.query(
+      `update publication_review_tasks task
+          set review_at = case
+                when $3::timestamptz is null then review_at
+                else review_at + ($2::timestamptz - $3::timestamptz)
+              end,
+              timezone = $4,
+              status = 'scheduled', reminder_status = 'pending',
+              reminder_sent_at = null, reminder_provider_started_at = null,
+              reminder_last_error_code = null,
+              version = version + 1, updated_at = now()
+         from posts post
+        where post.id = task.post_id and post.project_id = task.project_id
+          and post.publication_operation_id = $1 and task.project_id = $5
+          and task.status = 'scheduled'`,
+      [input.operationId, scheduledAt, operation.scheduled_at, timezone, input.projectId],
+    );
+    await client.query(
+      `update publication_review_reminder_outbox outbox
+          set status = 'cancelled', lease_token = null, lease_expires_at = null,
+              last_error_code = 'publication_rescheduled', updated_at = now()
+         from publication_review_tasks task
+         join posts post on post.id = task.post_id and post.project_id = task.project_id
+        where outbox.review_task_id = task.id and outbox.project_id = task.project_id
+          and post.publication_operation_id = $1 and task.project_id = $2
+          and outbox.status in ('pending','dispatching','enqueued','failed')`,
+      [input.operationId, input.projectId],
     );
     const result = {
       ok: true,
@@ -306,7 +382,7 @@ export async function restorePublicationDraft(input) {
   const client = await input.pool.connect();
   try {
     await client.query("begin");
-    const operation = await lockedOperation(client, input.userId, input.operationId);
+    const operation = await lockedOperation(client, input.userId, input.projectId, input.operationId);
     if (!operation) {
       await rollback(client);
       return mutationFailure("publication_operation_not_found", 404);
@@ -324,28 +400,40 @@ export async function restorePublicationDraft(input) {
     const clientKey = `publication-restore:${input.operationId}:${input.idempotencyKey}`;
     const draft = (await client.query(
       `insert into drafts
-         (user_id, text, media, scheduled_at, origin, purpose, client_key, version)
-       values ($1, $2, $3::jsonb, null, 'manual', 'publishable', $4, 1)
+         (project_id, user_id, text, media, scheduled_at, origin, purpose, client_key, version)
+       values ($1, $2, $3, $4::jsonb, null, 'manual', 'publishable', $5, 1)
        returning id, version`,
       [
+        input.projectId,
         input.userId,
         operation.text,
         operation.media == null ? null : JSON.stringify(operation.media),
         clientKey,
       ],
     )).rows[0];
-    const destinationIds = Array.isArray(operation.destination_ids)
-      ? operation.destination_ids.map(Number).filter(validPositiveInteger)
+    const rawDestinationIds = Array.isArray(operation.destination_ids)
+      ? operation.destination_ids.map(Number)
       : [];
-    if (destinationIds.length) {
-      await client.query(
+    const destinationIds = [...new Set(rawDestinationIds)];
+    if (
+      destinationIds.length === 0
+      || destinationIds.length !== rawDestinationIds.length
+      || destinationIds.some((id) => !validPositiveInteger(id))
+    ) {
+      await rollback(client);
+      return mutationFailure("publication_destinations_missing", 409);
+    }
+    const restoredDestinations = await client.query(
         `insert into draft_destinations (draft_id, channel_id)
          select $1, channel.id
            from channels channel
-          where channel.user_id = $2 and channel.id = any($3::bigint[])
+          where channel.project_id = $2 and channel.id = any($3::bigint[])
          on conflict do nothing`,
-        [draft.id, input.userId, destinationIds],
-      );
+        [draft.id, input.projectId, destinationIds],
+    );
+    if (restoredDestinations.rowCount !== destinationIds.length) {
+      await rollback(client);
+      return mutationFailure("publication_destinations_missing", 409);
     }
     const result = {
       ok: true,

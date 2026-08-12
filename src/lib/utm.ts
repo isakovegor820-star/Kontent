@@ -62,6 +62,13 @@ export function normalizeUtmValues(input: UtmValues): UtmValues {
   return result;
 }
 
+/** Сравнивает метки по значениям, не полагаясь на порядок ключей в JSONB. */
+export function sameUtmValues(left: UtmValues, right: UtmValues): boolean {
+  const normalizedLeft = normalizeUtmValues(left);
+  const normalizedRight = normalizeUtmValues(right);
+  return UTM_FIELDS.every((field) => normalizedLeft[field] === normalizedRight[field]);
+}
+
 export function buildTrackedDestination(destination: string, utm: UtmValues) {
   const url = new URL(normalizeTrackingDestination(destination));
   for (const [field, value] of Object.entries(normalizeUtmValues(utm)) as [UtmField, string][]) {

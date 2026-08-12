@@ -17,6 +17,10 @@ import { draftReviewDecision } from "@/lib/draft-review";
 import type { DraftHumanReview } from "@/lib/draft-types";
 import { generationBindingValid } from "@/lib/generation-artifacts";
 import { probeRedisAndPublicationWorker } from "@/lib/readiness-probes";
+import {
+  ProjectAccessError,
+  requireSelectedProjectPermission,
+} from "@/lib/project-permissions";
 
 export const runtime = "nodejs";
 
@@ -83,19 +87,20 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "past" }, { status: 422 });
   }
 
-  const publication = await probeRedisAndPublicationWorker();
-  if (publication.redis !== "up" || publication.publicationWorker !== "up") {
-    return NextResponse.json(
-      { ok: false, error: "publication_worker_unavailable", retryable: true },
-      { status: 503 },
-    );
-  }
-
   let tx: PoolClient | null = null;
   let txOpen = false;
   let publicationOrigin: "manual" | "ai" | "trend" | "idea" | "competitor" | "rss" | "autopilot" = "manual";
   try {
     const pool = getPool();
+    const membership = await requireSelectedProjectPermission(pool, user.id, "content.publish");
+    const projectId = membership.projectId;
+    const publication = await probeRedisAndPublicationWorker();
+    if (publication.redis !== "up" || publication.publicationWorker !== "up") {
+      return NextResponse.json(
+        { ok: false, error: "publication_worker_unavailable", retryable: true },
+        { status: 503 },
+      );
+    }
     if (draftId != null) {
       tx = await pool.connect();
       await tx.query("begin");
@@ -111,10 +116,10 @@ export async function POST(req: NextRequest) {
       tx = null;
     };
 
-    // Канал должен принадлежать этому пользователю.
+    // Destination is authorized by the selected project, not by the channel creator.
     const ch = await db.query<{ id: number }>(
-      `select id from channels where id = $1 and user_id = $2 and is_active = true`,
-      [channelId, user.id],
+      `select id from channels where id = $1 and project_id = $2 and is_active = true`,
+      [channelId, projectId],
     );
     if (ch.rowCount === 0) {
       return NextResponse.json({ ok: false, error: "no_channel" }, { status: 422 });
@@ -146,9 +151,9 @@ export async function POST(req: NextRequest) {
            left join generation_results result on result.id = d.generation_result_id
            left join validation_receipts receipt on receipt.generation_result_id = result.id
            join draft_destinations dd on dd.draft_id = d.id
-          where d.id = $1 and d.user_id = $2 and dd.channel_id = $3
+          where d.id = $1 and d.project_id = $2 and dd.channel_id = $3
           for update of d`,
-        [draftId, user.id, channelId],
+        [draftId, projectId, channelId],
       );
       if (destination.rowCount === 0) {
         return NextResponse.json({ ok: false, error: "bad_draft_destination" }, { status: 422 });
@@ -220,8 +225,8 @@ export async function POST(req: NextRequest) {
       const assetId = Number(candidate.assetId);
       if (Number.isInteger(assetId) && assetId > 0) {
         const owned = await db.query<{ id: number; kind: "image" | "video" }>(
-          `select id, kind from media_assets where id = $1 and user_id = $2`,
-          [assetId, user.id],
+          `select id, kind from media_assets where id = $1 and project_id = $2`,
+          [assetId, projectId],
         );
         if (owned.rowCount === 0) {
           return NextResponse.json({ ok: false, error: "bad_media" }, { status: 422 });
@@ -243,13 +248,13 @@ export async function POST(req: NextRequest) {
       schedule_revision: number | string;
     }>(
       `insert into posts (
-         user_id, channel_id, text, media, scheduled_at, status,
+         project_id, user_id, channel_id, text, media, scheduled_at, status,
          idempotency_key, request_fingerprint, publication_origin
        )
-       values ($1, $2, $3, $4, $5, 'scheduled', $6, $7, $8)
+       values ($1, $2, $3, $4, $5, $6, 'scheduled', $7, $8, $9)
        on conflict do nothing
        returning id, request_fingerprint, schedule_revision`,
-      [user.id, channelId, text, media, requestedScheduledAt, idempotencyKey, fingerprint, publicationOrigin],
+      [projectId, user.id, channelId, text, media, requestedScheduledAt, idempotencyKey, fingerprint, publicationOrigin],
     );
     const created = ins.rowCount === 1;
     let postId = Number(ins.rows[0]?.id);
@@ -268,10 +273,11 @@ export async function POST(req: NextRequest) {
         }>(
           `select id, idempotency_key, request_fingerprint, scheduled_at, status, schedule_revision
              from posts
-            where user_id = $1 and (idempotency_key = $2 or request_fingerprint = $3)
-            order by case when idempotency_key = $2 then 0 else 1 end
+            where project_id = $1 and user_id = $2
+              and (idempotency_key = $3 or request_fingerprint = $4)
+            order by case when idempotency_key = $3 then 0 else 1 end
             limit 1`,
-          [user.id, idempotencyKey, fingerprint],
+          [projectId, user.id, idempotencyKey, fingerprint],
         )
       ).rows[0];
       const persistedDraftDestination =
@@ -316,7 +322,7 @@ export async function POST(req: NextRequest) {
     try {
       await getPublishQueue().add(
         "publish",
-        { postId, scheduleRevision },
+        { postId, projectId, scheduleRevision },
         {
           delay,
           jobId: jobIdForPostRevision(postId, scheduleRevision),
@@ -330,8 +336,9 @@ export async function POST(req: NextRequest) {
       if (created) {
         await pool.query(
           `delete from posts
-            where id = $1 and status = 'scheduled' and idempotency_key = $2`,
-          [postId, idempotencyKey],
+            where id = $1 and project_id = $2
+              and status = 'scheduled' and idempotency_key = $3`,
+          [postId, projectId, idempotencyKey],
         ).catch(() => {});
       }
       throw error;
@@ -347,6 +354,9 @@ export async function POST(req: NextRequest) {
     if (txOpen && tx) {
       await tx.query("rollback").catch(() => {});
       txOpen = false;
+    }
+    if (err instanceof ProjectAccessError) {
+      return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
     }
     console.error("[/api/posts/create]", err);
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });

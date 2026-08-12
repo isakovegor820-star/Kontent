@@ -1,8 +1,17 @@
 import { plural } from "./lib.mjs";
 
-/** Собирает недельный отчёт только из данных одного пользователя. */
-export async function buildWeeklyReport(pool, userId) {
-  if (!Number.isInteger(userId) || userId <= 0) throw new Error("weekly report: bad userId");
+/**
+ * Собирает недельный отчёт только из данных одного проекта.
+ * userId остаётся явным получателем сообщения, но не является tenant-фильтром: в общем
+ * проекте отчёт обязан включать публикации всей команды, а не только автора запроса.
+ */
+export async function buildWeeklyReport(pool, { userId, projectId }) {
+  if (!Number.isSafeInteger(userId) || userId <= 0) {
+    throw new Error("weekly report: bad userId");
+  }
+  if (!Number.isSafeInteger(projectId) || projectId <= 0) {
+    throw new Error("weekly report: bad projectId");
+  }
 
   const week = (
     await pool.query(
@@ -13,9 +22,9 @@ export async function buildWeeklyReport(pool, userId) {
          join lateral (
            select views from post_stats where post_id = p.id order by snapshot_date desc limit 1
          ) ps on true
-        where p.user_id = $1 and p.status = 'published'
+        where p.project_id = $1 and p.status = 'published'
           and p.published_at > now() - interval '7 days'`,
-      [userId],
+      [projectId],
     )
   ).rows[0];
 
@@ -25,10 +34,10 @@ export async function buildWeeklyReport(pool, userId) {
          join lateral (
            select views from post_stats where post_id = p.id order by snapshot_date desc limit 1
          ) ps on true
-        where p.user_id = $1 and p.status = 'published' and ps.views is not null
+        where p.project_id = $1 and p.status = 'published' and ps.views is not null
           and p.published_at > now() - interval '7 days'
         order by ps.views desc limit 1`,
-      [userId],
+      [projectId],
     )
   ).rows[0];
 
@@ -37,8 +46,8 @@ export async function buildWeeklyReport(pool, userId) {
       `select coalesce(sum(cs.subscribers_delta), 0)::int as g
          from channel_stats cs
          join channels c on c.id = cs.channel_id
-        where c.user_id = $1 and cs.snapshot_date > (current_date - 7)`,
-      [userId],
+        where c.project_id = $1 and cs.snapshot_date > (current_date - 7)`,
+      [projectId],
     )
   ).rows[0];
 

@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   reconcileStaleMediaGeneration: vi.fn(),
   poolQuery: vi.fn(),
   pool: { connect: vi.fn(), query: vi.fn() },
+  requireSelectedProjectPermission: vi.fn(),
 }));
 
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
@@ -13,6 +14,10 @@ vi.mock("@/lib/media-generation-reconciliation", () => ({
   reconcileStaleMediaGeneration: mocks.reconcileStaleMediaGeneration,
 }));
 vi.mock("@/lib/db", () => ({ getPool: () => mocks.pool }));
+vi.mock("@/lib/project-permissions", () => ({
+  ProjectAccessError: class ProjectAccessError extends Error {},
+  requireSelectedProjectPermission: mocks.requireSelectedProjectPermission,
+}));
 
 import { GET } from "./route";
 
@@ -21,6 +26,12 @@ describe("GET /api/media/generations/[id]", () => {
     vi.clearAllMocks();
     mocks.pool.query = mocks.poolQuery;
     mocks.getSessionUser.mockResolvedValue({ id: 7 });
+    mocks.requireSelectedProjectPermission.mockResolvedValue({
+      projectId: 23,
+      userId: 7,
+      role: "author",
+      version: 1,
+    });
     mocks.reconcileStaleMediaGeneration.mockResolvedValue({ reconciled: [], released: [] });
     mocks.poolQuery.mockResolvedValue({
       rows: [{
@@ -58,7 +69,7 @@ describe("GET /api/media/generations/[id]", () => {
     expect(response.status).toBe(200);
     expect(mocks.reconcileStaleMediaGeneration).toHaveBeenCalledWith(
       mocks.pool,
-      { userId: 7, generationId: 41 },
+      { userId: 7, projectId: 23, generationId: 41 },
     );
     expect(mocks.reconcileStaleMediaGeneration.mock.invocationCallOrder[0])
       .toBeLessThan(mocks.poolQuery.mock.invocationCallOrder[0]);
@@ -66,5 +77,9 @@ describe("GET /api/media/generations/[id]", () => {
       requestId: "11111111-1111-4111-8111-111111111111",
       generation: { id: "41", status: "generating" },
     });
+    expect(mocks.poolQuery).toHaveBeenCalledWith(
+      expect.stringContaining("where g.id = $1 and g.project_id = $2"),
+      [41, 23],
+    );
   });
 });

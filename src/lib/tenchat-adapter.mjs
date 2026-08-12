@@ -2,8 +2,11 @@ import { createHash } from "node:crypto";
 
 import { createStoreZip } from "./library-export.mjs";
 import { definiteFailure } from "./social-provider-contract.mjs";
-
-const OFFICIAL_CONTACT_URL = "https://tenchat.ru/contacts";
+import {
+  TENCHAT_OFFICIAL_CONTACT_URL,
+  TENCHAT_OFFICIAL_RULES_URL,
+  TENCHAT_OFFICIAL_SOURCE_CHECKED_AT,
+} from "./tenchat-integration.mjs";
 
 function safeFileName(value, fallback) {
   const normalized = String(value || "")
@@ -48,8 +51,15 @@ export function createTenChatExportPackage(input) {
   if (!projectName || projectName.length > 160) throw new Error("tenchat_project_name_invalid");
   if (!text || text.length > 30_000) throw new Error("tenchat_text_invalid");
   if (!Number.isFinite(exportedAt.getTime())) throw new Error("tenchat_exported_at_invalid");
-  const assets = (Array.isArray(input?.assets) ? input.assets : []).map(validateAsset);
-  if (assets.length > 10) throw new Error("tenchat_asset_count_invalid");
+  const rawAssets = Array.isArray(input?.assets) ? input.assets : [];
+  if (rawAssets.length > 10) throw new Error("tenchat_asset_count_invalid");
+  const assets = rawAssets.map(validateAsset);
+  let scheduledAt = null;
+  if (input?.scheduledAt != null && input.scheduledAt !== "") {
+    const candidate = new Date(input.scheduledAt);
+    if (!Number.isFinite(candidate.getTime())) throw new Error("tenchat_scheduled_at_invalid");
+    scheduledAt = candidate.toISOString();
+  }
 
   const manifest = {
     schemaVersion: 1,
@@ -57,11 +67,15 @@ export function createTenChatExportPackage(input) {
     mode: "export_only",
     livePublishing: false,
     officialAccessRequired: true,
-    officialContactUrl: OFFICIAL_CONTACT_URL,
-    checkedAt: "2026-08-11",
+    manualPublishRequired: true,
+    providerLimitsVerified: false,
+    mediaCompatibilityVerified: false,
+    officialContactUrl: TENCHAT_OFFICIAL_CONTACT_URL,
+    officialRulesUrl: TENCHAT_OFFICIAL_RULES_URL,
+    checkedAt: TENCHAT_OFFICIAL_SOURCE_CHECKED_AT,
     projectName,
     exportedAt: exportedAt.toISOString(),
-    scheduledAt: input?.scheduledAt ? new Date(input.scheduledAt).toISOString() : null,
+    scheduledAt,
     textSha256: createHash("sha256").update(text).digest("hex"),
     assets: assets.map((asset) => ({
       fileName: asset.fileName,
@@ -75,7 +89,9 @@ export function createTenChatExportPackage(input) {
     "",
     "Аврора не отправляла этот материал в TenChat.",
     "Автопубликация недоступна без подтверждённого официального доступа TenChat.",
-    `Официальный запрос партнёрского доступа: ${OFFICIAL_CONTACT_URL}`,
+    "Публичные лимиты publishing API и совместимость вложений не подтверждены.",
+    `Официальный запрос партнёрского доступа: ${TENCHAT_OFFICIAL_CONTACT_URL}`,
+    `Правила TenChat: ${TENCHAT_OFFICIAL_RULES_URL}`,
     "",
     "Проверьте текст и медиа, затем опубликуйте их вручную из официального приложения.",
   ].join("\n");
@@ -118,7 +134,8 @@ export const TENCHAT_ADAPTER = Object.freeze({
   exportPackage: createTenChatExportPackage,
   officialAccess: Object.freeze({
     verified: false,
-    checkedAt: "2026-08-11",
-    contactUrl: OFFICIAL_CONTACT_URL,
+    checkedAt: TENCHAT_OFFICIAL_SOURCE_CHECKED_AT,
+    contactUrl: TENCHAT_OFFICIAL_CONTACT_URL,
+    rulesUrl: TENCHAT_OFFICIAL_RULES_URL,
   }),
 });

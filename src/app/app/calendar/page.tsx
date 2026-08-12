@@ -26,6 +26,11 @@ import {
 } from "lucide-react";
 
 import { AppShell } from "@/components/app/shell";
+import { useProjects } from "@/components/app/project-provider";
+import {
+  calendarProjectExportPeriod,
+  ProjectExportButton,
+} from "@/components/app/project-export-button";
 import {
   PublicationActionsDialog,
   type PublicationActionTarget,
@@ -50,6 +55,12 @@ import {
   listServerDrafts,
 } from "@/lib/draft-client";
 import type { ServerDraft } from "@/lib/draft-types";
+import {
+  calendarAuthorOptions,
+  calendarRecordMatches,
+  calendarRecordStatus,
+} from "@/lib/calendar-team-filters";
+import type { ClientProjectRole } from "@/lib/project-client";
 import { useStore } from "@/lib/store";
 import {
   cancelPublication,
@@ -84,6 +95,9 @@ type DraftDeleteTarget = {
 };
 
 type CalendarPost = Post & {
+  authorUserId?: number;
+  authorName?: string;
+  calendarStatus?: string;
   serverDraftId?: number;
   draftVersion?: number;
   destinationIds?: number[];
@@ -117,6 +131,57 @@ const GRID_STATUSES: Post["status"][] = [
 const DEFAULT_TIME = "10:00";
 const EASE_SOFT: [number, number, number, number] = [0.22, 1, 0.36, 1];
 
+const CALENDAR_STATUS_LABEL: Record<string, string> = {
+  draft: "Черновик",
+  in_review: "На согласовании",
+  changes_requested: "Нужны правки",
+  approved: "Согласовано",
+  scheduled: "Запланировано",
+  publishing: "Публикуется",
+  published_unverified: "Ждёт подтверждения",
+  published: "Опубликовано",
+  missing: "Не найдено на площадке",
+  deleted_external: "Удалено на площадке",
+  failed_retry: "Повтор публикации",
+  quarantined: "Нужна новая дата",
+  cancelled: "Отменено",
+  failed: "Ошибка публикации",
+};
+
+type CalendarEditorialStatus = NonNullable<ServerDraft["editorial_state"]>;
+
+function calendarRoleCapabilities(role: ClientProjectRole | null | undefined) {
+  return {
+    canEdit: role === "owner" || role === "author" || role === "approver",
+    canPublish: role === "owner" || role === "publisher",
+  };
+}
+
+function calendarQueueAction(
+  role: ClientProjectRole | null | undefined,
+  status: CalendarEditorialStatus,
+) {
+  const { canPublish } = calendarRoleCapabilities(role);
+  if (canPublish && status === "approved") {
+    return { kind: "schedule", label: "Запланировать" } as const;
+  }
+  if (role === "publisher" || role === "approver" || status === "approved") {
+    return { kind: "review", label: "Проверить" } as const;
+  }
+  return { kind: "open", label: "Открыть" } as const;
+}
+
+function calendarStatusTone(status: string): "brand" | "success" | "danger" | "neutral" {
+  if (status === "approved" || status === "published") return "success";
+  if (status === "changes_requested" || status === "failed" || status === "quarantined") {
+    return "danger";
+  }
+  if (status === "in_review" || status === "scheduled" || status === "publishing") {
+    return "brand";
+  }
+  return "neutral";
+}
+
 const isOnGrid = (p: CalendarPost): p is DatedPost =>
   typeof p.scheduledAt === "string" && GRID_STATUSES.includes(p.status);
 
@@ -139,6 +204,9 @@ function postUrlFor(rp: RealPost): string | undefined {
 function realToPost(rp: RealPost): CalendarPost {
   return {
     id: `real-${rp.id}`,
+    authorUserId: rp.author_user_id,
+    authorName: rp.author_name,
+    calendarStatus: rp.status,
     text: rp.text,
     networks: [rp.network],
     scheduledAt: rp.scheduled_at,
@@ -168,6 +236,9 @@ function serverDraftToPost(draft: ServerDraft): CalendarPost {
   const networks = [...new Set(draft.destinations.map((destination) => destination.network))];
   return {
     id: `draft-${draft.id}`,
+    authorUserId: draft.author_user_id,
+    authorName: draft.author_name,
+    calendarStatus: draft.editorial_state ?? "draft",
     text: draft.text,
     networks,
     scheduledAt: draft.scheduled_at,
@@ -280,10 +351,12 @@ function PostCard({
   post,
   onOpen,
   onRetry,
+  onReschedule,
 }: {
   post: DatedPost;
   onOpen: () => void;
-  onRetry: () => void;
+  onRetry?: () => void;
+  onReschedule?: () => void;
 }) {
   // Метка канала нужна только при мультиканальности. Считаем здесь, а не прокидываем
   // пропом через календарь → неделю → день → карточку: стор всё равно контекст.
@@ -296,17 +369,17 @@ function PostCard({
   const retrying = post.status === "failed_retry";
   const quarantined = post.status === "quarantined";
   const published = post.status === "published";
-  const draft = post.status === "draft";
   const missing = post.status === "missing" || post.status === "deleted_external";
   const unverified = post.status === "published_unverified";
   const cancelled = post.status === "cancelled";
+  const visibleStatus = calendarRecordStatus(post);
 
   return (
     <article
       id={`calendar-${post.id}`}
       tabIndex={-1}
       className={cn(
-        "relative rounded-sm border-l-2 shadow-soft ring-1 ring-line",
+        "relative min-w-0 rounded-sm border-l-2 shadow-soft ring-1 ring-line",
         "transition-[transform,box-shadow] duration-200 ease-[var(--ease-soft)]",
         "hover:-translate-y-0.5 hover:shadow-card",
         failed || missing || quarantined
@@ -324,11 +397,11 @@ function PostCard({
       <button
         type="button"
         onClick={onOpen}
-        aria-label={`Открыть действия с публикацией: ${post.text.slice(0, 60)}`}
-        className="absolute inset-0 z-0 cursor-pointer rounded-sm"
+        aria-label={`Открыть публикацию: ${post.text.slice(0, 60)}`}
+        className="absolute inset-0 z-0 min-h-11 cursor-pointer rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
       />
 
-      <div className="pointer-events-none relative z-10 flex flex-col gap-1.5 p-2.5">
+      <div className="pointer-events-none relative z-10 flex min-w-0 flex-col gap-1.5 p-2.5">
         <div className="flex items-center justify-between gap-2">
           <span className="flex items-center gap-1">
             {published && (
@@ -356,14 +429,16 @@ function PostCard({
               />
             )}
             <span className="nums text-[13px] font-bold text-text">{fmtTime(post.scheduledAt)}</span>
-            {draft && (
-              <span className="rounded-full bg-info-soft px-1.5 py-0.5 text-[11px] font-bold text-info-text">
-                Черновик
-              </span>
-            )}
           </span>
           <NetworkChips networks={post.networks} />
         </div>
+
+        <Badge
+          tone={calendarStatusTone(visibleStatus)}
+          className="max-w-full self-start whitespace-normal leading-tight"
+        >
+          {CALENDAR_STATUS_LABEL[visibleStatus] ?? visibleStatus}
+        </Badge>
 
         {/* Канал показываем только когда их несколько: при одном это очевидно и лишь шумит */}
         {multiChannel && post.channelTitle && (
@@ -402,7 +477,7 @@ function PostCard({
 
         {publishing && (
           <span aria-live="polite" className="text-[13px] font-semibold text-brand">
-            Публикация готовится к отправке. Открой действия, чтобы проверить, можно ли её ещё отменить.
+            Публикация готовится к отправке. Статус обновится автоматически.
           </span>
         )}
 
@@ -433,7 +508,7 @@ function PostCard({
             href={post.postUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="pointer-events-auto relative z-20 inline-flex items-center gap-1 self-start text-[13px] font-semibold text-brand transition-opacity duration-200 hover:opacity-70"
+            className="pointer-events-auto relative z-20 inline-flex min-h-11 items-center gap-1 self-start rounded-xs px-1 text-[13px] font-semibold text-brand transition-opacity duration-200 hover:opacity-70 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
           >
             Открыть пост
             <ExternalLink className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />
@@ -441,7 +516,7 @@ function PostCard({
         )}
 
         {/* Сбой: что случилось → что делаем → что нужно от тебя (ТЗ 7.5) */}
-        {failed && (
+        {failed && onRetry && (
           <>
             {post.failReason && (
               <p className="text-[13px] leading-snug font-medium text-danger-text">
@@ -459,11 +534,11 @@ function PostCard({
             </Button>
           </>
         )}
-        {quarantined && (
+        {quarantined && onReschedule && (
           <Button
             variant="danger"
             size="sm"
-            onClick={onRetry}
+            onClick={onReschedule}
             className="pointer-events-auto mt-0.5 w-full"
           >
             <CalendarPlus className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />
@@ -486,20 +561,22 @@ function DayColumn({
   onAdd,
   onOpen,
   onRetry,
+  onReschedule,
 }: {
   day: Date;
   index: number;
   posts: DatedPost[];
   isToday: boolean;
   isPast: boolean;
-  onAdd: () => void;
+  onAdd?: () => void;
   onOpen: (post: DatedPost) => void;
-  onRetry: (post: DatedPost) => void;
+  onRetry?: (post: DatedPost) => void;
+  onReschedule?: (post: DatedPost) => void;
 }) {
   return (
     <div
       className={cn(
-        "group/day flex flex-col rounded-md ring-1 transition-colors duration-200",
+        "group/day min-w-0 flex flex-col rounded-md ring-1 transition-colors duration-200",
         isToday ? "bg-surface ring-brand/35" : "ring-line",
         !isToday && isPast ? "bg-surface-2/60" : "bg-surface",
       )}
@@ -529,37 +606,45 @@ function DayColumn({
         )}
       </div>
 
-      <div className="flex min-h-[88px] flex-1 flex-col gap-1.5 p-1.5 pt-0 md:min-h-[180px]">
+      <div className="flex min-h-[88px] min-w-0 flex-1 flex-col gap-1.5 p-1.5 pt-0 xl:min-h-[180px]">
         {posts.map((p) => (
-          <PostCard key={p.id} post={p} onOpen={() => onOpen(p)} onRetry={() => onRetry(p)} />
+          <PostCard
+            key={p.id}
+            post={p}
+            onOpen={() => onOpen(p)}
+            onRetry={onRetry ? () => onRetry(p) : undefined}
+            onReschedule={onReschedule ? () => onReschedule(p) : undefined}
+          />
         ))}
 
         {/* Пустое место в дне — и есть кнопка «создать пост» (главное действие) */}
-        <button
-          type="button"
-          onClick={onAdd}
-          aria-label={`Создать пост: ${weekdayFull(index)}, ${fmtDate(day.toISOString())}, ${DEFAULT_TIME}`}
-          className={cn(
-            "flex min-h-[44px] flex-1 cursor-pointer items-center justify-center rounded-sm",
-            "border border-dashed border-transparent transition-colors duration-200",
-            "hover:border-line-strong hover:bg-surface-inset/70",
-            "focus-visible:border-line-strong focus-visible:bg-surface-inset/70",
-          )}
-        >
-          <span
+        {onAdd && (
+          <button
+            type="button"
+            onClick={onAdd}
+            aria-label={`Создать пост: ${weekdayFull(index)}, ${fmtDate(day.toISOString())}, ${DEFAULT_TIME}`}
             className={cn(
-              "flex h-8 w-8 items-center justify-center rounded-full bg-surface-inset text-text-2 shadow-soft",
-              "transition-[opacity,color,transform] duration-200 ease-[var(--ease-soft)]",
-              "group-hover/day:text-brand",
-              // На тач-устройствах кнопка видна всегда, на десктопе — по наведению
-              "opacity-100 md:opacity-0",
-              "md:group-hover/day:opacity-100 md:group-focus-within/day:opacity-100",
-              "[@media(hover:none)]:opacity-100",
+              "flex min-h-[44px] flex-1 cursor-pointer items-center justify-center rounded-sm",
+              "border border-dashed border-transparent transition-colors duration-200",
+              "hover:border-line-strong hover:bg-surface-inset/70",
+              "focus-visible:border-line-strong focus-visible:bg-surface-inset/70",
             )}
           >
-            <Plus className="h-4 w-4" strokeWidth={2.5} aria-hidden />
-          </span>
-        </button>
+            <span
+              className={cn(
+                "flex h-8 w-8 items-center justify-center rounded-full bg-surface-inset text-text-2 shadow-soft",
+                "transition-[opacity,color,transform] duration-200 ease-[var(--ease-soft)]",
+                "group-hover/day:text-brand",
+                // На тач-устройствах кнопка видна всегда, на десктопе — по наведению
+                "opacity-100 md:opacity-0",
+                "md:group-hover/day:opacity-100 md:group-focus-within/day:opacity-100",
+                "[@media(hover:none)]:opacity-100",
+              )}
+            >
+              <Plus className="h-4 w-4" strokeWidth={2.5} aria-hidden />
+            </span>
+          </button>
+        )}
       </div>
     </div>
   );
@@ -656,13 +741,13 @@ function MonthCell({
 
 function GridSkeleton() {
   return (
-    <div className="grid gap-2 md:grid-cols-7">
+    <div className="grid gap-2 xl:grid-cols-7">
       {Array.from({ length: 7 }, (_, i) => (
         <div key={i} className="flex flex-col gap-2 rounded-md bg-surface p-2 ring-1 ring-line">
           <div className="skeleton h-7 w-full" />
           <div className="skeleton h-14 w-full" />
           {i % 2 === 0 && <div className="skeleton h-14 w-full" />}
-          <div className="min-h-[40px] md:min-h-[70px]" />
+          <div className="min-h-[40px] xl:min-h-[70px]" />
         </div>
       ))}
     </div>
@@ -688,7 +773,11 @@ function SideSkeleton() {
 export default function CalendarPage() {
   const router = useRouter();
   const s = useStore();
+  const projects = useProjects();
   const reduce = useReducedMotion();
+  const currentRole = projects.current?.role;
+  const { canEdit, canPublish } = calendarRoleCapabilities(currentRole);
+  const canInspectPublication = currentRole != null;
 
   const [view, setView] = useState<View>("week");
   const [dir, setDir] = useState(0);
@@ -765,6 +854,10 @@ export default function CalendarPage() {
   }, []);
 
   const weekStart = useMemo(() => startOfWeek(anchor), [anchor]);
+  const exportPeriod = useMemo(
+    () => calendarProjectExportPeriod(view, anchor, weekStart),
+    [anchor, view, weekStart],
+  );
   const weekDays = useMemo(
     () => Array.from({ length: 7 }, (_, i) => addDays(weekStart, i)),
     [weekStart],
@@ -791,6 +884,8 @@ export default function CalendarPage() {
     [s.realChannels],
   );
   const [hidden, setHidden] = useState<Set<number>>(new Set());
+  const [authorFilter, setAuthorFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all");
   const multiChannel = tgChannels.length > 1;
 
   const toggleChannel = useCallback((id: number) => {
@@ -808,17 +903,50 @@ export default function CalendarPage() {
     [draftOwner, s.user, serverDrafts],
   );
 
+  const allCalendarPosts = useMemo<CalendarPost[]>(
+    () => [...s.realPosts.map(realToPost), ...serverDraftPosts],
+    [s.realPosts, serverDraftPosts],
+  );
+  const calendarAuthors = useMemo(() => {
+    return calendarAuthorOptions(allCalendarPosts);
+  }, [allCalendarPosts]);
+  const calendarStatuses = useMemo(() => {
+    const statuses = new Set(allCalendarPosts.map(calendarRecordStatus));
+    return Object.entries(CALENDAR_STATUS_LABEL)
+      .filter(([value]) => statuses.has(value))
+      .map(([value, label]) => ({ value, label }));
+  }, [allCalendarPosts]);
+  useEffect(() => {
+    if (authorFilter === "all" || calendarAuthors.some((author) => String(author.id) === authorFilter)) return;
+    queueMicrotask(() => setAuthorFilter("all"));
+  }, [authorFilter, calendarAuthors]);
+  useEffect(() => {
+    if (statusFilter === "all" || calendarStatuses.some((status) => status.value === statusFilter)) return;
+    queueMicrotask(() => setStatusFilter("all"));
+  }, [calendarStatuses, statusFilter]);
+  const matchesTeamFilters = useCallback(
+    (post: CalendarPost) => calendarRecordMatches(post, {
+      author: authorFilter,
+      status: statusFilter,
+    }),
+    [authorFilter, statusFilter],
+  );
+  const filteredServerDraftPosts = useMemo(
+    () => serverDraftPosts.filter(matchesTeamFilters),
+    [matchesTeamFilters, serverDraftPosts],
+  );
+
   // В авторизованном календаре основной источник только серверный. Демо/localStorage
   // не смешиваются с публикациями и черновиками аккаунта.
   const gridPosts = useMemo(() => {
-    const all: CalendarPost[] = [...s.realPosts.map(realToPost), ...serverDraftPosts];
-    if (!hidden.size) return all;
-    return all.filter((p) =>
+    const teamFiltered = allCalendarPosts.filter(matchesTeamFilters);
+    if (!hidden.size) return teamFiltered;
+    return teamFiltered.filter((p) =>
       p.destinationIds?.length
         ? p.destinationIds.some((id) => !hidden.has(id))
         : p.channelId == null || !hidden.has(p.channelId),
     );
-  }, [s.realPosts, serverDraftPosts, hidden]);
+  }, [allCalendarPosts, hidden, matchesTeamFilters]);
 
   // Посты по дням — один проход вместо фильтра на каждую ячейку
   const postsByDay = useMemo(() => {
@@ -841,8 +969,8 @@ export default function CalendarPage() {
   // Основная очередь теперь только серверная. Старый глобальный localStorage ниже показан
   // отдельно как recovery-копии: он не привязан к пользователю и потому не импортируется сам.
   const queue = useMemo(
-    () => serverDraftPosts.filter((post) => !post.scheduledAt),
-    [serverDraftPosts],
+    () => filteredServerDraftPosts.filter((post) => !post.scheduledAt),
+    [filteredServerDraftPosts],
   );
   const localRecovery = useMemo(
     () => (s.user ? s.posts.filter((post) => isRecoverableLegacyDraft(post, s.user!.id)) : []),
@@ -880,20 +1008,20 @@ export default function CalendarPage() {
 
   const openPost = (post: CalendarPost) => {
     if (post.serverDraftId != null) {
-      router.push(`/app/composer?draft=${post.serverDraftId}`);
+      router.push(`/app/composer?draft=${post.serverDraftId}&from=calendar`);
       return;
     }
     if ((post.status === "draft" || post.status === "queued") && !post.id.startsWith("real-")) {
-      router.push(`/app/composer?legacy=${encodeURIComponent(post.id)}`);
+      router.push(`/app/composer?legacy=${encodeURIComponent(post.id)}&from=calendar`);
       return;
     }
     if (
-      post.publicationOperationId != null
+      canInspectPublication
+      && post.publicationOperationId != null
       && post.operationScheduleRevision != null
       && post.operationStatus
       && post.scheduledAt
       && post.scheduleTimezone
-      && !["published", "published_unverified", "missing", "deleted_external"].includes(post.status)
     ) {
       setPublicationTarget({
         operationId: post.publicationOperationId,
@@ -929,7 +1057,11 @@ export default function CalendarPage() {
       title,
       body:
         post.status === "failed"
-          ? (post.failReason ?? "Можно отправить снова кнопкой на карточке.")
+          ? (post.failReason ?? (
+              canPublish
+                ? "Можно отправить снова кнопкой на карточке."
+                : "Статус сохранён в календаре. Повторную отправку выполняет участник с правом публикации."
+            ))
           : post.status === "published_unverified"
             ? "Сеть могла принять публикацию, но не вернула подтверждение. Автоматический повтор остановлен, чтобы не создать дубль; Аврора сверяет внешний канал."
           : post.scheduledAt
@@ -938,6 +1070,13 @@ export default function CalendarPage() {
     });
   };
   const addPostOn = (day: Date) => router.push(composerForDay(day));
+  const retryCalendarPost = (post: DatedPost) => {
+    if (post.id.startsWith("real-")) {
+      s.retryRealPost(realId(post.id));
+      return;
+    }
+    s.retryPost(post.id);
+  };
 
   const publicationFailure = useCallback((error?: string) => {
     const conflict = error === "schedule_revision_conflict" || error === "publication_status_conflict";
@@ -1028,7 +1167,9 @@ export default function CalendarPage() {
     try {
       let revision = target.scheduleRevision;
       let status = target.operationStatus;
-      if (status !== "cancelled") {
+      const publicationSettled = ["published", "published_unverified", "missing", "deleted_external"]
+        .includes(target.postStatus);
+      if (!publicationSettled && status !== "cancelled") {
         const cancelled = await cancelPublication({
           operationId: target.operationId,
           expectedScheduleRevision: revision,
@@ -1053,13 +1194,15 @@ export default function CalendarPage() {
       if (!restored.ok || restored.draftId == null) {
         s.toast({
           kind: "danger",
-          title: "Публикация остановлена, черновик не создан",
-          body: "Старая отправка безопасно отменена. Повтори «Редактировать», чтобы восстановить snapshot в новый черновик.",
+          title: publicationSettled ? "Новая версия не создана" : "Публикация остановлена, черновик не создан",
+          body: publicationSettled
+            ? "Опубликованный пост не изменён. Повторите действие, чтобы создать новый черновик."
+            : "Старая отправка безопасно отменена. Повторите «Редактировать», чтобы восстановить сохранённый текст в новый черновик.",
         });
         return;
       }
       setPublicationTarget(null);
-      router.push(`/app/composer?draft=${restored.draftId}`);
+      router.push(`/app/composer?draft=${restored.draftId}&from=calendar`);
     } finally {
       setPublicationBusy(false);
     }
@@ -1139,12 +1282,28 @@ export default function CalendarPage() {
   return (
     <AppShell
       title="Календарь"
-      subtitle="Кликни на день — создашь пост. Публикует сервер, твой компьютер не нужен."
+      subtitle={canEdit
+        ? "Выбери день, чтобы создать пост. Публикацию выполняет сервер."
+        : "Следи за статусами и открывай публикации для проверки."}
       action={
-        <Button variant="brand" size="md" onClick={() => router.push("/app/composer")}>
-          <Plus className="h-[18px] w-[18px]" strokeWidth={2.5} aria-hidden />
-          Новый пост
-        </Button>
+        <div
+          className={cn(
+            "grid grid-cols-1 gap-2",
+            canEdit && "min-[24rem]:grid-cols-2",
+          )}
+        >
+          <ProjectExportButton
+            channels={s.realChannels}
+            defaultKind="content_plan"
+            initialPeriod={exportPeriod}
+          />
+          {canEdit && (
+            <Button variant="brand" size="md" onClick={() => router.push("/app/composer?from=calendar")}>
+              <Plus className="h-[18px] w-[18px]" strokeWidth={2.5} aria-hidden />
+              Новый пост
+            </Button>
+          )}
+        </div>
       }
     >
       <div className="flex flex-col gap-6 xl:flex-row xl:items-start">
@@ -1165,7 +1324,7 @@ export default function CalendarPage() {
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="h-10 w-10"
+                    className="h-11 w-11"
                     aria-label={view === "week" ? "Предыдущая неделя" : "Предыдущий месяц"}
                     onClick={() => shift(-1)}
                   >
@@ -1179,7 +1338,7 @@ export default function CalendarPage() {
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="h-10 w-10"
+                    className="h-11 w-11"
                     aria-label={view === "week" ? "Следующая неделя" : "Следующий месяц"}
                     onClick={() => shift(1)}
                   >
@@ -1216,6 +1375,53 @@ export default function CalendarPage() {
                 </div>
               </div>
 
+              <fieldset className="mb-4 flex min-w-0 flex-col gap-3 border-0 p-0 sm:flex-row sm:flex-wrap sm:items-end">
+                <legend className="sr-only">Фильтры общего календаря</legend>
+                <label className="min-w-0 flex-1 text-[13px] font-semibold text-text-2 sm:max-w-[17rem]">
+                  <span className="mb-1.5 block">Автор</span>
+                  <select
+                    value={authorFilter}
+                    onChange={(event) => setAuthorFilter(event.currentTarget.value)}
+                    className="h-11 w-full rounded-sm border border-line-strong bg-surface px-3 text-[14px] text-text outline-none focus-visible:ring-4 focus-visible:ring-brand/15"
+                  >
+                    <option value="all">Все авторы</option>
+                    {calendarAuthors.map((author) => (
+                      <option key={author.id} value={author.id}>{author.name}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="min-w-0 flex-1 text-[13px] font-semibold text-text-2 sm:max-w-[17rem]">
+                  <span className="mb-1.5 block">Статус</span>
+                  <select
+                    value={statusFilter}
+                    onChange={(event) => setStatusFilter(event.currentTarget.value)}
+                    className="h-11 w-full rounded-sm border border-line-strong bg-surface px-3 text-[14px] text-text outline-none focus-visible:ring-4 focus-visible:ring-brand/15"
+                  >
+                    <option value="all">Все статусы</option>
+                    {calendarStatuses.map((status) => (
+                      <option key={status.value} value={status.value}>{status.label}</option>
+                    ))}
+                  </select>
+                </label>
+                {(authorFilter !== "all" || statusFilter !== "all") && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="min-h-11 self-start sm:self-auto"
+                    onClick={() => {
+                      setAuthorFilter("all");
+                      setStatusFilter("all");
+                    }}
+                  >
+                    Сбросить фильтры
+                  </Button>
+                )}
+                <p className="sr-only" role="status" aria-live="polite">
+                  В календаре показано материалов: {gridPosts.length}.
+                </p>
+              </fieldset>
+
               {/* ------------------------------------------- ФИЛЬТР ПО КАНАЛАМ */}
               {/* Sprout Social в своей же справке признаёт: состояние фильтров — причина №1,
                   по которой запланированный пост «пропадает» из календаря («Missing posts are
@@ -1233,7 +1439,7 @@ export default function CalendarPage() {
                         onClick={() => toggleChannel(ch.id)}
                         aria-pressed={!off}
                         className={cn(
-                          "inline-flex h-9 max-w-[16rem] cursor-pointer items-center gap-2 rounded-full border px-3",
+                          "inline-flex min-h-11 max-w-[16rem] cursor-pointer items-center gap-2 rounded-full border px-3",
                           "text-[13px] font-semibold transition-colors duration-200",
                           off
                             ? "border-line bg-transparent text-text-3"
@@ -1253,7 +1459,7 @@ export default function CalendarPage() {
                   {hidden.size > 0 && (
                     <div
                       role="status"
-                      className="inline-flex items-center gap-2 rounded-full bg-fire-soft px-3 py-1.5 text-[13px] font-semibold text-fire-text"
+                      className="inline-flex min-h-11 items-center gap-2 rounded-full bg-fire-soft px-3 py-1.5 text-[13px] font-semibold text-fire-text"
                     >
                       <EyeOff className="h-3.5 w-3.5 shrink-0" strokeWidth={2} aria-hidden />
                       {hidden.size}{" "}
@@ -1261,7 +1467,7 @@ export default function CalendarPage() {
                       <button
                         type="button"
                         onClick={() => setHidden(new Set())}
-                        className="cursor-pointer rounded-xs underline underline-offset-2 hover:no-underline"
+                        className="min-h-11 cursor-pointer rounded-xs px-1 underline underline-offset-2 hover:no-underline"
                       >
                         Показать все
                       </button>
@@ -1277,7 +1483,7 @@ export default function CalendarPage() {
                 transition={{ duration: 0.22, ease: EASE_SOFT }}
               >
                 {view === "week" ? (
-                  <div className="grid gap-2 md:grid-cols-7">
+                  <div className="grid min-w-0 gap-2 xl:grid-cols-7">
                     {weekDays.map((day, i) => (
                       <DayColumn
                         key={day.toISOString()}
@@ -1286,11 +1492,10 @@ export default function CalendarPage() {
                         posts={dayPosts(day)}
                         isToday={sameDay(day, today)}
                         isPast={day.getTime() < today.getTime()}
-                        onAdd={() => addPostOn(day)}
+                        onAdd={canEdit ? () => addPostOn(day) : undefined}
                         onOpen={openPost}
-                        onRetry={(p) =>
-                          p.id.startsWith("real-") ? s.retryRealPost(realId(p.id)) : s.retryPost(p.id)
-                        }
+                        onRetry={canPublish ? retryCalendarPost : undefined}
+                        onReschedule={canPublish ? retryCalendarPost : undefined}
                       />
                     ))}
                   </div>
@@ -1375,54 +1580,75 @@ export default function CalendarPage() {
                   <EmptyState
                     icon={<Inbox className="h-5 w-5" strokeWidth={1.5} aria-hidden />}
                     title="Очередь пуста"
-                    body="Черновики без даты появятся здесь. Их можно поставить в календарь в один клик."
+                    body={canPublish
+                      ? "Согласованные черновики без даты можно запланировать здесь. Остальные доступны для проверки."
+                      : "Черновики без даты появятся здесь — их можно открыть и проверить."}
                   />
                 ) : (
                   <ul className="mt-3 flex flex-col gap-2">
-                    {queue.map((p) => (
-                      <li key={p.id} className="rounded-sm bg-surface-2 p-3 ring-1 ring-line">
-                        <p className="line-2 text-[14px] leading-snug text-text">{p.text}</p>
-
-                        {p.sourceRef && (
-                          <div className="mt-2">
-                            <SourceBadge label={p.sourceRef.label} />
+                    {queue.map((p) => {
+                      const editorialStatus = (p.calendarStatus ?? "draft") as CalendarEditorialStatus;
+                      const action = calendarQueueAction(currentRole, editorialStatus);
+                      return (
+                        <li key={p.id} className="rounded-sm bg-surface-2 p-3 ring-1 ring-line">
+                          <div className="flex min-w-0 flex-wrap items-center gap-2">
+                            <Badge tone={calendarStatusTone(editorialStatus)}>
+                              {CALENDAR_STATUS_LABEL[editorialStatus] ?? editorialStatus}
+                            </Badge>
+                            <NetworkChips networks={p.networks} />
                           </div>
-                        )}
+                          <p className="mt-2 line-clamp-2 break-words text-[14px] leading-snug text-text">
+                            {p.text}
+                          </p>
 
-                        <div className="mt-2.5 flex items-center gap-2">
-                          <NetworkChips networks={p.networks} />
-                          <div className="ml-auto flex items-center gap-1">
-                            <Button variant="soft" size="sm" onClick={() => openPost(p)}>
-                              <CalendarPlus className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />
-                              Запланировать
-                            </Button>
+                          {p.sourceRef && (
+                            <div className="mt-2">
+                              <SourceBadge label={p.sourceRef.label} />
+                            </div>
+                          )}
+
+                          <div className="mt-2.5 flex flex-wrap items-center justify-end gap-2">
                             <Button
-                              variant="ghost"
+                              variant={action.kind === "schedule" ? "soft" : "ghost"}
                               size="sm"
-                              className="w-9 px-0"
-                              aria-label="Удалить черновик"
-                              aria-haspopup="dialog"
-                              loading={deletingDraftId === p.serverDraftId}
-                              onClick={() => {
-                                if (p.serverDraftId == null || p.draftVersion == null) return;
-                                setDraftDeleteTarget({
-                                  id: p.serverDraftId,
-                                  version: p.draftVersion,
-                                });
-                              }}
+                              onClick={() => openPost(p)}
                             >
-                              {deletingDraftId !== p.serverDraftId && (
-                                <X className="h-4 w-4" strokeWidth={2} aria-hidden />
+                              {action.kind === "schedule" ? (
+                                <CalendarPlus className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />
+                              ) : (
+                                <Eye className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />
                               )}
+                              {action.label}
                             </Button>
+                            {canEdit && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="w-11 px-0"
+                                aria-label="Удалить черновик"
+                                aria-haspopup="dialog"
+                                loading={deletingDraftId === p.serverDraftId}
+                                onClick={() => {
+                                  if (p.serverDraftId == null || p.draftVersion == null) return;
+                                  setDraftDeleteTarget({
+                                    id: p.serverDraftId,
+                                    version: p.draftVersion,
+                                  });
+                                }}
+                              >
+                                {deletingDraftId !== p.serverDraftId && (
+                                  <X className="h-4 w-4" strokeWidth={2} aria-hidden />
+                                )}
+                              </Button>
+                            )}
                           </div>
-                        </div>
-                      </li>
-                    ))}
+                        </li>
+                      );
+                    })}
                   </ul>
                 )}
 
-                {(localRecovery.length > 0 || unownedLocalRecovery.length > 0) && (
+                {(localRecovery.length > 0 || (canEdit && unownedLocalRecovery.length > 0)) && (
                   <div className="mt-4 border-t border-line pt-4">
                     <h3 className="text-[14px] font-extrabold text-text">Локальные копии этого браузера</h3>
                     {localRecovery.length > 0 && (
@@ -1453,15 +1679,17 @@ export default function CalendarPage() {
                                   <Button variant="soft" size="sm" onClick={() => openPost(post)}>
                                     Открыть копию
                                   </Button>
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    className="w-9 px-0"
-                                    aria-label="Удалить локальную копию из этого браузера"
-                                    onClick={() => removeLocalRecovery(post)}
-                                  >
-                                    <X className="h-4 w-4" strokeWidth={2} aria-hidden />
-                                  </Button>
+                                  {canEdit && (
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      className="w-11 px-0"
+                                      aria-label="Удалить локальную копию из этого браузера"
+                                      onClick={() => removeLocalRecovery(post)}
+                                    >
+                                      <X className="h-4 w-4" strokeWidth={2} aria-hidden />
+                                    </Button>
+                                  )}
                                 </div>
                               </li>
                             ))}
@@ -1470,7 +1698,7 @@ export default function CalendarPage() {
                       </>
                     )}
 
-                    {unownedLocalRecovery.length > 0 && (
+                    {canEdit && unownedLocalRecovery.length > 0 && (
                       <div className={localRecovery.length ? "mt-4 border-t border-line pt-4" : "mt-2"}>
                         <div className="flex items-start gap-2 rounded-sm bg-fire-soft p-3 text-[13px] text-fire-text ring-1 ring-line">
                           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-fire" strokeWidth={2} aria-hidden />
@@ -1513,7 +1741,7 @@ export default function CalendarPage() {
                                     <Button
                                       variant="ghost"
                                       size="sm"
-                                      className="w-9 px-0"
+                                      className="w-11 px-0"
                                       aria-label="Удалить непривязанную локальную копию из этого браузера"
                                       onClick={() => removeLocalRecovery(post)}
                                     >
@@ -1564,15 +1792,17 @@ export default function CalendarPage() {
                           </Badge>
                         </div>
 
-                        <Button
-                          variant="soft"
-                          size="sm"
-                          className="mt-2.5 w-full"
-                          onClick={() => makeDraft(t)}
-                        >
-                          <Sparkles className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />
-                          Сделать черновик
-                        </Button>
+                        {canEdit && (
+                          <Button
+                            variant="soft"
+                            size="sm"
+                            className="mt-2.5 w-full"
+                            onClick={() => makeDraft(t)}
+                          >
+                            <Sparkles className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />
+                            Сделать черновик
+                          </Button>
+                        )}
                       </li>
                     ))}
                   </ul>
@@ -1583,32 +1813,41 @@ export default function CalendarPage() {
         </aside>
       </div>
 
-      <PublicationActionsDialog
-        key={publicationTarget
-          ? `${publicationTarget.operationId}:${publicationTarget.scheduleRevision}`
-          : "closed-publication-actions"}
-        target={publicationTarget}
-        busy={publicationBusy}
-        onClose={() => {
-          if (!publicationBusy) setPublicationTarget(null);
-        }}
-        onEdit={() => void editTargetPublication()}
-        onCancel={() => void cancelTargetPublication()}
-        onReschedule={(value) => void rescheduleTargetPublication(value)}
-      />
+      {canInspectPublication && (
+        <PublicationActionsDialog
+          key={publicationTarget
+            ? `${publicationTarget.operationId}:${publicationTarget.scheduleRevision}`
+            : "closed-publication-actions"}
+          target={publicationTarget}
+          busy={publicationBusy}
+          onClose={() => {
+            if (!publicationBusy) setPublicationTarget(null);
+          }}
+          onEdit={() => void editTargetPublication()}
+          onOpenReviewDraft={(draftId) => {
+            setPublicationTarget(null);
+            router.push(`/app/composer?draft=${draftId}&from=calendar`);
+          }}
+          onCancel={() => void cancelTargetPublication()}
+          onReschedule={(value) => void rescheduleTargetPublication(value)}
+          canManageSchedule={canPublish}
+        />
+      )}
 
-      <ConfirmDialog
-        open={draftDeleteTarget != null}
-        title="Удалить черновик?"
-        description="Черновик исчезнет из списка только после подтверждения сервера. Это действие не управляет уже запланированными публикациями. Восстановить удалённую версию автоматически нельзя."
-        confirmLabel="Удалить черновик"
-        cancelLabel="Оставить"
-        busy={deletingDraftId != null}
-        onCancel={() => {
-          if (deletingDraftId == null) setDraftDeleteTarget(null);
-        }}
-        onConfirm={() => void removeDraft()}
-      />
+      {canEdit && (
+        <ConfirmDialog
+          open={draftDeleteTarget != null}
+          title="Удалить черновик?"
+          description="Черновик исчезнет из списка только после подтверждения сервера. Это действие не управляет уже запланированными публикациями. Восстановить удалённую версию автоматически нельзя."
+          confirmLabel="Удалить черновик"
+          cancelLabel="Оставить"
+          busy={deletingDraftId != null}
+          onCancel={() => {
+            if (deletingDraftId == null) setDraftDeleteTarget(null);
+          }}
+          onConfirm={() => void removeDraft()}
+        />
+      )}
     </AppShell>
   );
 }

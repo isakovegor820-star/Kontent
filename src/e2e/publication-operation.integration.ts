@@ -23,6 +23,11 @@ vi.mock("@/lib/queue", async (original) => {
 });
 
 import { POST } from "@/app/api/publication-operations/route";
+import {
+  decideDraftEditorialRequest,
+  recordDraftRevisionInTransaction,
+  submitDraftForEditorialReview,
+} from "@/lib/editorial-approval";
 import { reconcilePublicationOutbox } from "@/lib/publication-outbox.mjs";
 
 const databaseUrl = String(process.env.MIGRATION_TEST_DATABASE_URL || "").trim();
@@ -34,6 +39,7 @@ if (!target || !["localhost", "127.0.0.1", "::1"].includes(target.hostname)
 const pool = new pg.Pool({ connectionString: databaseUrl, ssl: false, max: 10 });
 let userId = 0;
 let otherUserId = 0;
+let projectId = 0;
 let channels: number[] = [];
 const acceptedJobs = new Set<string>();
 
@@ -56,12 +62,13 @@ async function createDraft(text: string, version = 1) {
   const zoned = Temporal.Instant.from(future.toISOString()).toZonedDateTimeISO("Europe/Moscow");
   const draftId = Number((await pool.query(
     `insert into drafts
-       (user_id, text, scheduled_at, scheduled_timezone, scheduled_local_date,
+       (project_id, user_id, text, scheduled_at, scheduled_timezone, scheduled_local_date,
         scheduled_local_time, scheduled_offset, scheduled_disambiguation,
         origin, purpose, client_key, version)
-     values ($1, $2, $3, 'Europe/Moscow', $4, $5, $6, 'reject',
-             'manual', 'publishable', $7, $8) returning id`,
+     values ($1, $2, $3, $4, 'Europe/Moscow', $5, $6, $7, 'reject',
+             'manual', 'publishable', $8, $9) returning id`,
     [
+      projectId,
       userId,
       text,
       future,
@@ -75,7 +82,26 @@ async function createDraft(text: string, version = 1) {
   for (const channelId of channels) {
     await pool.query("insert into draft_destinations (draft_id, channel_id) values ($1, $2)", [draftId, channelId]);
   }
-  return draftId;
+  const revision = await recordDraftRevisionInTransaction(pool, {
+    draftId,
+    actorUserId: userId,
+    projectId,
+  });
+  const submitted = await submitDraftForEditorialReview(userId, draftId, {
+    revisionId: revision.id,
+    contentHash: revision.contentHash,
+    workflowVersion: 1,
+  }, pool);
+  await decideDraftEditorialRequest(userId, draftId, {
+    requestId: submitted.request.id,
+    requestVersion: submitted.request.version,
+    workflowVersion: submitted.workflow.version,
+    revisionId: revision.id,
+    contentHash: revision.contentHash,
+    decision: "approve",
+    note: null,
+  }, pool);
+  return { draftId, revisionId: revision.id, contentHash: revision.contentHash };
 }
 
 beforeAll(async () => {
@@ -90,10 +116,24 @@ beforeAll(async () => {
   otherUserId = Number((await pool.query(
     "insert into users (email, name) values ('qa-publication-other@example.test', 'QA Publication Other') returning id",
   )).rows[0].id);
+  projectId = Number((await pool.query(
+    `insert into projects (name, timezone, created_by_user_id, personal_owner_user_id)
+     values ('QA publication project', 'Europe/Moscow', $1, $1) returning id`,
+    [userId],
+  )).rows[0].id);
+  await pool.query(
+    `insert into project_members (project_id, user_id, role, status)
+     values ($1, $2, 'owner', 'active')`,
+    [projectId, userId],
+  );
+  await pool.query(
+    `insert into user_project_preferences (user_id, selected_project_id) values ($1, $2)`,
+    [userId, projectId],
+  );
   channels = (await Promise.all(["A", "B"].map(async (title) => Number((await pool.query(
-    `insert into channels (user_id, network, title, handle, is_active)
-     values ($1, 'tg', $2, $3, true) returning id`,
-    [userId, `QA ${title}`, `qa_gate6_${title.toLowerCase()}`],
+    `insert into channels (project_id, user_id, network, title, handle, is_active)
+     values ($1, $2, 'tg', $3, $4, true) returning id`,
+    [projectId, userId, `QA ${title}`, `qa_gate6_${title.toLowerCase()}`],
   )).rows[0].id))));
 });
 
@@ -111,7 +151,7 @@ beforeEach(() => {
 
 describe("immutable multi-destination publication operation", () => {
   it("keeps one revision after partial enqueue and conflicts after the draft changes", async () => {
-    const draftId = await createDraft("Revision one");
+    const { draftId } = await createDraft("Revision one");
     let call = 0;
     mocks.add.mockImplementation(async (_name: string, _data: unknown, options: { jobId?: string }) => {
       call += 1;
@@ -120,7 +160,7 @@ describe("immutable multi-destination publication operation", () => {
       return { id: options.jobId };
     });
     const first = await POST(request(draftId, 1, "gate6:partial:operation"));
-    expect(first.status).toBe(207);
+    expect(first.status, JSON.stringify(await first.clone().json())).toBe(207);
     const firstBody = await first.json();
     expect(firstBody).toMatchObject({ ok: false, operationStatus: "partial", draftVersion: 1 });
     expect(firstBody.destinations.map((item: { queueStatus: string }) => item.queueStatus).sort()).toEqual([
@@ -133,10 +173,15 @@ describe("immutable multi-destination publication operation", () => {
           version = version + 1 where id = $1`,
       [draftId],
     );
+    await recordDraftRevisionInTransaction(pool, {
+      draftId,
+      actorUserId: userId,
+      projectId,
+    });
     const jobsBefore = mocks.add.mock.calls.length;
     const conflict = await POST(request(draftId, 2, "gate6:partial:operation", firstBody.fingerprint));
-    expect(conflict.status).toBe(409);
-    await expect(conflict.json()).resolves.toMatchObject({ error: "idempotency_fingerprint_conflict" });
+    expect(conflict.status).toBe(422);
+    await expect(conflict.json()).resolves.toMatchObject({ error: "approval_required" });
     expect(mocks.add).toHaveBeenCalledTimes(jobsBefore);
 
     const posts = await pool.query(
@@ -164,7 +209,7 @@ describe("immutable multi-destination publication operation", () => {
   });
 
   it("retries a due failed destination with the original immutable revision", async () => {
-    const draftId = await createDraft("Original retry text");
+    const { draftId } = await createDraft("Original retry text");
     let call = 0;
     mocks.add.mockImplementation(async (_name: string, _data: unknown, options: { jobId?: string }) => {
       call += 1;
@@ -187,7 +232,7 @@ describe("immutable multi-destination publication operation", () => {
   });
 
   it("linearizes parallel keys into one operation and one destination row each", async () => {
-    const draftId = await createDraft("Parallel immutable text");
+    const { draftId } = await createDraft("Parallel immutable text");
     const [left, right] = await Promise.all([
       POST(request(draftId, 1, "gate6:parallel:left")),
       POST(request(draftId, 1, "gate6:parallel:right")),
@@ -207,10 +252,10 @@ describe("immutable multi-destination publication operation", () => {
   });
 
   it("does not expose another owner's draft or destinations", async () => {
-    const draftId = await createDraft("Owned text");
+    const { draftId } = await createDraft("Owned text");
     mocks.getSessionUser.mockResolvedValue({ id: otherUserId });
     const response = await POST(request(draftId, 1, "gate6:ownership:test"));
-    expect(response.status).toBe(404);
+    expect(response.status).toBe(403);
     expect((await pool.query(
       "select count(*)::int as count from publication_operations where user_id = $1",
       [otherUserId],
@@ -218,7 +263,7 @@ describe("immutable multi-destination publication operation", () => {
   });
 
   it("honors the persisted retry time and parallel reconcilers enqueue a due row once", async () => {
-    const draftId = await createDraft("Outbox timing proof");
+    const { draftId } = await createDraft("Outbox timing proof");
     mocks.add.mockRejectedValue(new Error("queue unavailable"));
     const created = await POST(request(draftId, 1, "gate8:outbox:timing"));
     expect(created.status).toBe(207);

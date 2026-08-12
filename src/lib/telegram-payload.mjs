@@ -150,3 +150,26 @@ export function buildTelegramPayload({ text, hasAsset = false, forceSeparateMedi
   }
   return { formattedText, formattedHtml, entityLength, parts };
 }
+
+/**
+ * Build the immutable provider plan for a native Telegram album. The plan is
+ * persisted when publication is scheduled, so the worker must derive the same
+ * indexes after a restart instead of replacing a generic single-media plan.
+ */
+export function buildTelegramCarouselParts({ assetCount, text }) {
+  if (!Number.isInteger(assetCount) || assetCount < 3 || assetCount > 7) {
+    throw new Error("telegram_carousel_asset_count_invalid");
+  }
+  const payload = buildTelegramPayload({ hasAsset: true, text });
+  const captionPart = payload.parts[0]?.type === "media_caption" ? payload.parts[0] : null;
+  const mediaParts = Array.from({ length: assetCount }, (_unused, index) => ({
+    index,
+    type: "media",
+    payloadHtml: index === 0 ? captionPart?.payloadHtml ?? null : null,
+    entityLength: index === 0 ? captionPart?.entityLength ?? null : null,
+  }));
+  const textParts = payload.parts
+    .filter((part) => part.type === "text")
+    .map((part, index) => ({ ...part, index: assetCount + index }));
+  return [...mediaParts, ...textParts];
+}

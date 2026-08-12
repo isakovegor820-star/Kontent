@@ -1,6 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { chooseMediaStorageBackend, parseMediaRange } from "./media-storage.mjs";
+import {
+  chooseMediaStorageBackend,
+  loadMediaAssetBuffer,
+  parseMediaRange,
+  postgresMediaStream,
+} from "./media-storage.mjs";
 
 describe("media storage routing", () => {
   it("keeps legacy/small data in PostgreSQL and requires object storage for large video", () => {
@@ -25,5 +30,45 @@ describe("media storage routing", () => {
     expect(parseMediaRange("bytes=-10", 100)).toEqual({ start: 90, end: 99, length: 10 });
     expect(parseMediaRange("bytes=100-101", 100)).toEqual({ error: "invalid_range" });
     expect(parseMediaRange("bytes=0-1,5-6", 100)).toEqual({ error: "invalid_range" });
+  });
+
+  it("loads PostgreSQL media only through the selected project boundary", async () => {
+    const query = vi.fn()
+      .mockResolvedValueOnce({ rows: [{
+        kind: "image",
+        file_name: "card.png",
+        mime_type: "image/png",
+        bytes: 4,
+        storage_backend: "postgres",
+        object_key: null,
+      }] })
+      .mockResolvedValueOnce({ rows: [{ data: Buffer.from("card") }] });
+
+    await expect(loadMediaAssetBuffer({
+      pool: { query },
+      assetId: 91,
+      projectId: 23,
+      maxBytes: 100,
+      env: {},
+    })).resolves.toMatchObject({ file_name: "card.png", data: Buffer.from("card") });
+    expect(query).toHaveBeenNthCalledWith(1, expect.any(String), [91, 23]);
+    expect(query).toHaveBeenNthCalledWith(2, expect.any(String), [91, 23]);
+  });
+
+  it("streams PostgreSQL media with the project id in every chunk query", async () => {
+    const query = vi.fn().mockResolvedValue({ rows: [{ chunk: Buffer.from("abc") }] });
+    const stream = postgresMediaStream({
+      pool: { query },
+      assetId: 91,
+      projectId: 23,
+      start: 0,
+      end: 2,
+      chunkBytes: 3,
+    });
+
+    const reader = stream.getReader();
+    await expect(reader.read()).resolves.toMatchObject({ done: false, value: new Uint8Array(Buffer.from("abc")) });
+    await expect(reader.read()).resolves.toEqual({ done: true, value: undefined });
+    expect(query).toHaveBeenCalledWith(expect.any(String), [91, 23, 1, 3]);
   });
 });

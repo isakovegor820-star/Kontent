@@ -413,7 +413,10 @@ function AddPanel({
           <Field label="Кто ты и о чём канал">
             <Textarea
               value={form.about}
-              onChange={(e) => setForm((f) => ({ ...f, about: e.target.value }))}
+              onChange={(event) => {
+                const value = event.currentTarget.value;
+                setForm((current) => ({ ...current, about: value }));
+              }}
               rows={2}
               placeholder="Юрист по банкротству физлиц, 8 лет практики, веду дела по всей России."
             />
@@ -421,7 +424,10 @@ function AddPanel({
           <Field label="Услуги — что именно делаешь">
             <Textarea
               value={form.services}
-              onChange={(e) => setForm((f) => ({ ...f, services: e.target.value }))}
+              onChange={(event) => {
+                const value = event.currentTarget.value;
+                setForm((current) => ({ ...current, services: value }));
+              }}
               rows={2}
               placeholder="Банкротство под ключ, сопровождение в суде, защита единственного жилья."
             />
@@ -429,7 +435,10 @@ function AddPanel({
           <Field label="Цены и сроки">
             <Textarea
               value={form.prices}
-              onChange={(e) => setForm((f) => ({ ...f, prices: e.target.value }))}
+              onChange={(event) => {
+                const value = event.currentTarget.value;
+                setForm((current) => ({ ...current, prices: value }));
+              }}
               rows={2}
               placeholder="Банкротство под ключ — 120 000 ₽, рассрочка 10 месяцев. Срок — 6–9 месяцев."
             />
@@ -437,7 +446,10 @@ function AddPanel({
           <Field label="Чего НЕ обещаешь" hint="Важно: удержит ИИ от обещаний, за которые тебе потом отвечать.">
             <Textarea
               value={form.taboo}
-              onChange={(e) => setForm((f) => ({ ...f, taboo: e.target.value }))}
+              onChange={(event) => {
+                const value = event.currentTarget.value;
+                setForm((current) => ({ ...current, taboo: value }));
+              }}
               rows={2}
               placeholder="Не гарантирую стопроцентное списание — оно зависит от ситуации."
             />

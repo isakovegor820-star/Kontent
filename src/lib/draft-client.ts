@@ -1,11 +1,13 @@
 import type {
   DraftCreateInput,
   DraftSaveState,
+  DraftTrackingSelection,
   DraftWriteInput,
   DraftUpdateInput,
   ServerDraft,
 } from "./draft-types";
 import type { Network, Post, RealChannel } from "./types";
+import { buildTrackedDestination } from "./utm";
 
 type ErrorBody = {
   error?: string;
@@ -153,8 +155,23 @@ export function activeComposerNetworks(channels: RealChannel[]): Network[] {
 
 function sameMedia(left: Post["media"], right: Post["media"]): boolean {
   if (left == null || right == null) return left == null && right == null;
+  if (left.kind !== right.kind) return false;
+  if (left.kind === "carousel" && right.kind === "carousel") {
+    return left.label === right.label.trim()
+      && left.hue === right.hue
+      && (left.renderOperationId ?? null) === (right.renderOperationId ?? null)
+      && left.items.length === right.items.length
+      && left.items.every((item, index) => {
+        const expected = right.items[index];
+        return expected != null
+          && String(item.assetId) === String(expected.assetId)
+          && item.label === expected.label.trim()
+          && (item.url ?? null) === (expected.url ?? null)
+          && item.mimeType === expected.mimeType;
+      });
+  }
+  if (left.kind === "carousel" || right.kind === "carousel") return false;
   return (
-    left.kind === right.kind &&
     left.label === right.label.trim() &&
     left.hue === right.hue &&
     (left.assetId ?? null) === (right.assetId == null ? null : String(right.assetId)) &&
@@ -194,28 +211,90 @@ function sameAiValidation(
   return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
 }
 
+function sameTracking(
+  left: DraftTrackingSelection | null | undefined,
+  right: DraftTrackingSelection | null | undefined,
+): boolean {
+  if (left == null || right == null) return left == null && right == null;
+  const utm = (values: DraftTrackingSelection["utmValues"]) => Object.entries(values)
+    .filter((entry): entry is [string, string] => typeof entry[1] === "string")
+    .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey));
+  try {
+    return (
+      left.shortLinkId === right.shortLinkId
+      && left.shortUrlPath === right.shortUrlPath
+      && buildTrackedDestination(left.destination, left.utmValues)
+        === buildTrackedDestination(right.destination, right.utmValues)
+      && left.placement === right.placement
+      && JSON.stringify(utm(left.utmValues)) === JSON.stringify(utm(right.utmValues))
+    );
+  } catch {
+    return false;
+  }
+}
+
 /** Отличает безопасный replay того же POST от локально изменившегося содержимого. */
 export function draftMatchesWrite(draft: ServerDraft, input: DraftWriteInput): boolean {
+  return draftWriteMismatchFields(draft, input).length === 0;
+}
+
+export function draftWriteMismatchFields(draft: ServerDraft, input: DraftWriteInput): string[] {
   const actualIds = draft.destinations.map((destination) => destination.channel_id).sort((a, b) => a - b);
   const expectedIds = [...input.channelIds].sort((a, b) => a - b);
-  return (
-    draft.text === input.text &&
-    draft.scheduled_at === input.scheduledAt &&
-    (input.scheduledAt == null
-      ? draft.scheduled_timezone == null
-      : draft.scheduled_timezone === input.schedule?.timezone
-        && draft.scheduled_local_date === input.schedule?.localDate
-        && draft.scheduled_local_time === input.schedule?.localTime
-        && draft.scheduled_offset === input.schedule?.offset
-        && draft.scheduled_disambiguation === input.schedule?.disambiguation) &&
-    draft.origin === input.origin &&
-    sameMedia(draft.media, input.media) &&
-    (input.generationResultId != null
-      ? draft.generation_result_id === input.generationResultId && draft.generation_binding_valid
-      : sameSource(draft.source_ref, input.sourceRef) && sameAiValidation(draft.ai_validation, input.aiValidation)) &&
-    actualIds.length === expectedIds.length &&
-    actualIds.every((id, index) => id === expectedIds[index])
-  );
+  const fields: string[] = [];
+  if (draft.text !== input.text) fields.push("text");
+  if (draft.scheduled_at !== input.scheduledAt) fields.push("scheduledAt");
+  if (input.scheduledAt == null) {
+    if (draft.scheduled_timezone != null) fields.push("schedule");
+  } else if (
+    draft.scheduled_timezone !== input.schedule?.timezone
+    || draft.scheduled_local_date !== input.schedule?.localDate
+    || draft.scheduled_local_time !== input.schedule?.localTime
+    || draft.scheduled_offset !== input.schedule?.offset
+    || draft.scheduled_disambiguation !== input.schedule?.disambiguation
+  ) fields.push("schedule");
+  if (draft.origin !== input.origin) fields.push("origin");
+  if (!sameMedia(draft.media, input.media)) fields.push("media");
+  if (!sameTracking(draft.tracking, input.tracking)) fields.push("tracking");
+  if (input.generationResultId != null) {
+    if (draft.generation_result_id !== input.generationResultId || !draft.generation_binding_valid) {
+      fields.push("generation");
+    }
+  } else {
+    if (!sameSource(draft.source_ref, input.sourceRef)) fields.push("source");
+    if (!sameAiValidation(draft.ai_validation, input.aiValidation)) fields.push("validation");
+  }
+  if (
+    actualIds.length !== expectedIds.length
+    || !actualIds.every((id, index) => id === expectedIds[index])
+  ) fields.push("destinations");
+  return fields;
+}
+
+/**
+ * Интерфейс может повторно сообщить об изменении, пока запрос уже выполняется.
+ * Ответ сервера относится к самой новой локальной редакции только тогда, когда
+ * все сохранённые поля по-прежнему совпадают с формой. Настоящая новая правка
+ * остаётся несохранённой независимо от гонки счётчиков.
+ */
+export function resolveAcknowledgedDraftRevision(input: {
+  draft: ServerDraft;
+  currentWrite: DraftWriteInput | null;
+  requestRevision: number;
+  currentRevision: number;
+}): { revision: number; current: boolean; mismatchFields: string[] } {
+  const normalizedWrite = input.currentWrite?.origin === "autopilot"
+    ? { ...input.currentWrite, origin: "manual" as const, sourceRef: null }
+    : input.currentWrite;
+  const mismatchFields = normalizedWrite == null
+    ? ["form_snapshot"]
+    : draftWriteMismatchFields(input.draft, normalizedWrite);
+  const current = mismatchFields.length === 0;
+  return {
+    revision: current ? input.currentRevision : input.requestRevision,
+    current,
+    mismatchFields,
+  };
 }
 
 /**

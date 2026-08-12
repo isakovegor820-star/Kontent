@@ -38,16 +38,6 @@ const VALUE: { icon: LucideIcon; tint: string; text: string }[] = [
 
 /* ------------------------------------------------------------------ АНИМАЦИЯ */
 
-const stagger: Variants = {
-  hidden: {},
-  show: { transition: { staggerChildren: 0.08, delayChildren: 0.2 } },
-};
-const item: Variants = {
-  hidden: { opacity: 0, y: 16 },
-  show: { opacity: 1, y: 0, transition: { duration: 0.5, ease: EASE } },
-};
-const still: Variants = { hidden: { opacity: 1, y: 0 }, show: { opacity: 1, y: 0 } };
-
 /* -------------------------------------------------------------- ВАЛИДАЦИЯ */
 
 function validateEmail(raw: string): string | undefined {
@@ -172,11 +162,32 @@ export default function RegisterPage() {
     }
   }
 
+  // Начальное состояние всегда одинаково на сервере и при первом клиентском рендере.
+  // useReducedMotion() на сервере возвращает null, поэтому ветвление в initial/variants
+  // вызывает hydration mismatch. При reduced motion обнуляем только время движения.
   const rise = (delay: number) => ({
-    initial: reduce ? false : { opacity: 0, y: 16 },
+    initial: { opacity: 0, y: 16 },
     animate: { opacity: 1, y: 0 },
-    transition: { duration: 0.5, delay: reduce ? 0 : delay, ease: EASE },
+    transition: { duration: reduce ? 0 : 0.5, delay: reduce ? 0 : delay, ease: EASE },
   });
+
+  const valueStagger: Variants = {
+    hidden: {},
+    show: {
+      transition: {
+        staggerChildren: reduce ? 0 : 0.08,
+        delayChildren: reduce ? 0 : 0.2,
+      },
+    },
+  };
+  const valueItem: Variants = {
+    hidden: { opacity: 0, y: 16 },
+    show: {
+      opacity: 1,
+      y: 0,
+      transition: { duration: reduce ? 0 : 0.5, ease: EASE },
+    },
+  };
 
   const isReg = mode === "register";
 
@@ -410,14 +421,14 @@ export default function RegisterPage() {
         <motion.aside
           initial="hidden"
           animate="show"
-          variants={reduce ? still : stagger}
+          variants={valueStagger}
           className="hidden lg:flex"
           aria-labelledby="value-title"
         >
           <GlassCard strong className="w-full p-9">
             <motion.h2
               id="value-title"
-              variants={reduce ? still : item}
+              variants={valueItem}
               className="text-2xl font-extrabold -tracking-[0.02em] text-text"
             >
               Что тебя ждёт внутри
@@ -425,7 +436,7 @@ export default function RegisterPage() {
 
             <ul className="mt-7 space-y-4">
               {VALUE.map(({ icon: Icon, tint, text }) => (
-                <motion.li key={text} variants={reduce ? still : item} className="flex items-start gap-4">
+                <motion.li key={text} variants={valueItem} className="flex items-start gap-4">
                   <span
                     className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-[4px] border-2 border-line bg-surface ${tint}`}
                   >
@@ -436,7 +447,7 @@ export default function RegisterPage() {
               ))}
             </ul>
 
-            <motion.div variants={reduce ? still : item}>
+            <motion.div variants={valueItem}>
               <Divider className="my-7" />
               <blockquote>
                 <p className="text-[15px] leading-relaxed font-semibold text-text">

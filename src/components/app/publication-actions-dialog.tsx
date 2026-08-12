@@ -3,6 +3,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { CalendarClock, Pencil, Trash2 } from "lucide-react";
 
+import { PublicationFollowupSection } from "@/components/app/publication-followup-section";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/primitives";
 import { fmtDateTime } from "@/lib/utils";
@@ -42,15 +43,19 @@ export function PublicationActionsDialog({
   busy,
   onClose,
   onEdit,
+  onOpenReviewDraft,
   onCancel,
   onReschedule,
+  canManageSchedule,
 }: {
   target: PublicationActionTarget | null;
   busy: boolean;
   onClose: () => void;
   onEdit: () => void;
+  onOpenReviewDraft: (draftId: number) => void;
   onCancel: () => void;
   onReschedule: (schedule: PublicationRescheduleInput) => void;
+  canManageSchedule: boolean;
 }) {
   const titleId = useId();
   const descriptionId = useId();
@@ -76,7 +81,7 @@ export function PublicationActionsDialog({
     previousFocusRef.current = document.activeElement instanceof HTMLElement
       ? document.activeElement
       : null;
-    const frame = requestAnimationFrame(() => firstActionRef.current?.focus());
+    const frame = requestAnimationFrame(() => (firstActionRef.current ?? dialogRef.current)?.focus());
     return () => {
       cancelAnimationFrame(frame);
       if (previousFocusRef.current?.isConnected) previousFocusRef.current.focus();
@@ -92,8 +97,8 @@ export function PublicationActionsDialog({
       const parent = current.parentElement;
       for (const sibling of parent.children) {
         if (sibling !== current && sibling instanceof HTMLElement) {
-          inerted.push({ element: sibling, previous: sibling.inert });
-          sibling.inert = true;
+          inerted.push({ element: sibling, previous: sibling.hasAttribute("inert") });
+          sibling.setAttribute("inert", "");
         }
       }
       if (parent === document.body) break;
@@ -102,7 +107,9 @@ export function PublicationActionsDialog({
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     return () => {
-      for (const item of inerted) item.element.inert = item.previous;
+      for (const item of inerted) {
+        if (!item.previous) item.element.removeAttribute("inert");
+      }
       document.body.style.overflow = previousOverflow;
     };
   }, [target]);
@@ -110,6 +117,7 @@ export function PublicationActionsDialog({
   if (!target) return null;
   const cancelled = target.operationStatus === "cancelled";
   const inProgress = target.postStatus === "publishing";
+  const publicationSettled = ["published", "published_unverified", "missing", "deleted_external"].includes(target.postStatus);
 
   return (
     <div
@@ -135,7 +143,7 @@ export function PublicationActionsDialog({
           }
           if (event.key !== "Tab") return;
           const focusable = [...(dialogRef.current?.querySelectorAll<HTMLElement>(
-            "button:not([disabled]), input:not([disabled])",
+            "a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled])",
           ) ?? [])];
           if (!focusable.length) return;
           const first = focusable[0];
@@ -155,13 +163,15 @@ export function PublicationActionsDialog({
         <p id={descriptionId} className="mt-2 text-[14px] leading-relaxed text-text-2">
           {cancelled
             ? "Публикация отменена и больше не будет отправлена старой задачей. Её можно перенести или вернуть в редактор."
-            : `Запланировано на ${fmtDateTime(target.scheduledAt)}. Действия применяются ко всем каналам этой публикации.`}
+            : publicationSettled
+              ? "Основная отправка завершена или требует внешней сверки. Дополнительные действия показаны отдельно ниже."
+              : `Запланировано на ${fmtDateTime(target.scheduledAt)}. Действия применяются ко всем каналам этой публикации.`}
         </p>
         <p className="mt-3 line-clamp-3 rounded-sm bg-surface-2 p-3 text-[14px] leading-relaxed text-text">
           {target.text}
         </p>
 
-        <div className="mt-5 grid gap-3">
+        {!publicationSettled && canManageSchedule && <div className="mt-5 grid gap-3">
           <div className="rounded-sm border border-line p-3">
             <h3 className="text-[14px] font-bold text-text">Редактировать</h3>
             <p className="mt-1 text-[13px] leading-relaxed text-text-2">
@@ -291,7 +301,12 @@ export function PublicationActionsDialog({
               Публикация уже готовится к отправке. Если запрос в социальную сеть начался, Аврора сообщит, что отменить его уже нельзя.
             </p>
           )}
-        </div>
+        </div>}
+
+        <PublicationFollowupSection
+          operationId={target.operationId}
+          onUpdateRequested={onOpenReviewDraft}
+        />
 
         <div className="mt-5 flex justify-end">
           <Button variant="ghost" disabled={busy} onClick={onClose}>Закрыть</Button>

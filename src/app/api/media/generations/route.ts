@@ -14,6 +14,10 @@ import { enqueueMediaGeneration, hasMediaWorker } from "@/lib/queue";
 import { getSessionUser } from "@/lib/session";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import {
+  ProjectAccessError,
+  requireSelectedProjectPermission,
+} from "@/lib/project-permissions";
+import {
   AI_DAILY_LIMIT,
   acquireAiUsageRequest,
   channelAiContextFor,
@@ -85,7 +89,8 @@ const SELECT_GENERATION = `
          g.created_at, g.updated_at, g.completed_at, g.queue_confirmed_at,
          a.mime_type, a.bytes
     from media_generations g
-    left join media_assets a on a.id = g.output_asset_id`;
+    left join media_assets a
+      on a.id = g.output_asset_id and a.project_id = g.project_id`;
 
 const activeGeneration = (status: MediaGenerationStatus) =>
   status === "queued" || status === "submitting" || status === "generating" || status === "saving";
@@ -130,12 +135,17 @@ export async function GET(req: NextRequest) {
   if (!user) return mediaResponse(requestId, { generations: [], error: "unauthorized" }, 401);
 
   try {
-    const rows = await getPool().query<GenerationRow>(
-      `${SELECT_GENERATION} where g.user_id = $1 order by g.created_at desc limit 24`,
-      [user.id],
+    const pool = getPool();
+    const membership = await requireSelectedProjectPermission(pool, user.id, "project.read");
+    const rows = await pool.query<GenerationRow>(
+      `${SELECT_GENERATION} where g.project_id = $1 order by g.created_at desc limit 24`,
+      [membership.projectId],
     );
     return mediaResponse(requestId, { generations: rows.rows.map(present) });
   } catch (error) {
+    if (error instanceof ProjectAccessError) {
+      return mediaResponse(requestId, { generations: [], error: "project_access_denied" }, 403);
+    }
     mediaLog("list_failed", { requestId, code: "server", error });
     return mediaResponse(requestId, { generations: [], error: "server" }, 500);
   }
@@ -149,6 +159,17 @@ export async function POST(req: NextRequest) {
   const user = await getSessionUser(req);
   if (!user) return mediaResponse(requestId, { error: "unauthorized" }, 401);
 
+  const pool = getPool();
+  let membership;
+  try {
+    membership = await requireSelectedProjectPermission(pool, user.id, "content.create");
+  } catch (error) {
+    if (error instanceof ProjectAccessError) {
+      return mediaResponse(requestId, { error: "project_access_denied" }, 403);
+    }
+    throw error;
+  }
+
   const requestKey = mediaRequestKey(req);
   if (!requestKey) {
     return mediaResponse(requestId, { error: "idempotency_key_required" }, 400);
@@ -156,12 +177,15 @@ export async function POST(req: NextRequest) {
 
   // Replay is available even while the provider or worker is temporarily down. It is a
   // read of the already-authorized logical request and can safely return current/result.
-  const pool = getPool();
   try {
-    await reconcileStaleMediaGeneration(pool, { userId: user.id, requestKey });
+    await reconcileStaleMediaGeneration(pool, {
+      userId: user.id,
+      projectId: membership.projectId,
+      requestKey,
+    });
     const replay = await pool.query<GenerationRow>(
-      `${SELECT_GENERATION} where g.user_id = $1 and g.request_key = $2`,
-      [user.id, requestKey],
+      `${SELECT_GENERATION} where g.project_id = $1 and g.request_key = $2`,
+      [membership.projectId, requestKey],
     );
     if (replay.rows[0]) {
       requestId = replay.rows[0].request_id;
@@ -302,11 +326,11 @@ export async function POST(req: NextRequest) {
           set status = 'failed', error_code = 'stale_generation',
               error_message = 'Предыдущая генерация прервалась. Запусти её ещё раз.',
               updated_at = now(), completed_at = now()
-        where user_id = $1 and kind = $2
+        where user_id = $1 and kind = $2 and project_id = $3
           and status in ('queued','submitting','generating','saving')
           and updated_at < now() - interval '15 minutes'
         returning ai_usage_reservation_id`,
-      [user.id, input.kind],
+      [user.id, input.kind, membership.projectId],
     );
     const staleReservations = stale.rows
       .map((row) => Number(row.ai_usage_reservation_id))
@@ -341,12 +365,13 @@ export async function POST(req: NextRequest) {
 
     const inserted = await tx.query<{ id: number }>(
       `insert into media_generations
-        (user_id, kind, prompt, negative_prompt, model, aspect_ratio, quality, seconds,
+        (user_id, project_id, kind, prompt, negative_prompt, model, aspect_ratio, quality, seconds,
          style, niche, tone, request_key, ai_usage_reservation_id, request_id,
          provider_request_key, prompt_policy_version, prompt_context)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) returning id`,
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) returning id`,
       [
         user.id,
+        membership.projectId,
         input.kind,
         input.prompt,
         input.negativePrompt || null,
@@ -381,12 +406,18 @@ export async function POST(req: NextRequest) {
 
   try {
     if (generationId == null) throw new Error("generation_id_missing");
-    await enqueueMediaGeneration({ generationId, requestId, requestKey, providerRequestKey });
+    await enqueueMediaGeneration({
+      generationId,
+      projectId: membership.projectId,
+      requestId,
+      requestKey,
+      providerRequestKey,
+    });
     const confirmed = await pool.query(
       `update media_generations
           set queue_confirmed_at = now(), updated_at = now()
-        where id = $1 and user_id = $2 and status = 'queued' and queue_confirmed_at is null`,
-      [generationId, user.id],
+        where id = $1 and project_id = $2 and status = 'queued' and queue_confirmed_at is null`,
+      [generationId, membership.projectId],
     );
     if ((confirmed.rowCount ?? 0) !== 1) throw new Error("queue_handoff_not_confirmed");
   } catch (error) {
@@ -396,9 +427,10 @@ export async function POST(req: NextRequest) {
         `update media_generations set status = 'failed', error_code = 'queue_unavailable',
                 error_message = 'Очередь генерации недоступна. Запусти генерацию ещё раз.',
                 updated_at = now(), completed_at = now()
-          where id = $1 and user_id = $2 and status = 'queued' and queue_confirmed_at is null
+          where id = $1 and user_id = $2 and project_id = $3
+            and status = 'queued' and queue_confirmed_at is null
         returning id`,
-        [generationId, user.id],
+        [generationId, user.id, membership.projectId],
       );
       compensated = (failed.rowCount ?? 0) === 1;
     } catch {
@@ -407,8 +439,8 @@ export async function POST(req: NextRequest) {
     if (!compensated) {
       try {
         const durable = await pool.query<GenerationRow>(
-          `${SELECT_GENERATION} where g.id = $1 and g.user_id = $2`,
-          [generationId, user.id],
+          `${SELECT_GENERATION} where g.id = $1 and g.user_id = $2 and g.project_id = $3`,
+          [generationId, user.id, membership.projectId],
         );
         const row = durable.rows[0];
         if (row?.queue_confirmed_at) {
@@ -437,8 +469,8 @@ export async function POST(req: NextRequest) {
 
   try {
     const row = await pool.query<GenerationRow>(
-      `${SELECT_GENERATION} where g.id = $1 and g.user_id = $2`,
-      [generationId, user.id],
+      `${SELECT_GENERATION} where g.id = $1 and g.user_id = $2 and g.project_id = $3`,
+      [generationId, user.id, membership.projectId],
     );
     if (!row.rows[0]) throw new Error("generation_not_found_after_handoff");
     return mediaResponse(

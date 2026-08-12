@@ -639,10 +639,10 @@ export function ChannelSettingsCenter() {
             >
               <div className="grid gap-5 sm:grid-cols-2">
                 <Field label="Тема и ниша" required htmlFor="channel-niche" hint="Предметная область и конкретный фокус канала.">
-                  <Textarea id="channel-niche" rows={3} value={draft.brief.niche} onChange={(event) => setBrief("niche", event.target.value)} placeholder="Например: кофе и домашнее заваривание для небольших кухонь" />
+                  <Textarea id="channel-niche" rows={3} required value={draft.brief.niche} onChange={(event) => setBrief("niche", event.target.value)} placeholder="Например: кофе и домашнее заваривание для небольших кухонь" />
                 </Field>
                 <Field label="Аудитория и её задача" required htmlFor="channel-audience" hint="Кто читает, что уже знает и какую проблему решает.">
-                  <Textarea id="channel-audience" rows={3} value={draft.brief.audience} onChange={(event) => setBrief("audience", event.target.value)} placeholder="Например: новички, которым нужна стабильная чашка без дорогого оборудования" />
+                  <Textarea id="channel-audience" rows={3} required value={draft.brief.audience} onChange={(event) => setBrief("audience", event.target.value)} placeholder="Например: новички, которым нужна стабильная чашка без дорогого оборудования" />
                 </Field>
                 <Field label="Цель канала" htmlFor="channel-goal" hint="Результат, который должен поддерживать контент.">
                   <Textarea id="channel-goal" rows={3} value={draft.brief.goal} onChange={(event) => setBrief("goal", event.target.value)} placeholder="Например: растить доверие и продавать консультации" />
@@ -900,9 +900,9 @@ export function ChannelSettingsCenter() {
                   min={0}
                   max={100}
                   value={draft.brief.quality.profanityLevel}
-                  valueLabel={scaleLabel(draft.brief.quality.profanityLevel, ["полный запрет", "просторечия", "мат со звёздочками", "редкий прямой мат", "свободно"])}
+                  valueLabel={scaleLabel(draft.brief.quality.profanityLevel, ["полный запрет", "просторечия", "мат со звёздочками", "прямой мат", "без ограничений"])}
                   startLabel="без мата"
-                  endLabel="часть голоса"
+                  endLabel="без ограничений"
                   onChange={(value) => setQualityPatch({ profanityLevel: value, profanity: value === 0 ? "forbid" : "allow" })}
                 />
                 <Field label="Роль / персона автора" htmlFor="channel-persona">

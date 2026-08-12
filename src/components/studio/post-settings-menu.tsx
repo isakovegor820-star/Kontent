@@ -62,9 +62,10 @@ const CTAS = [
 ] as const;
 
 const PROFANITY_MODES = [
+  ["auto", "Как в настройках канала"],
   ["forbid", "Без мата"],
   ["masked", "Одно слово со звёздочками"],
-  ["allow", "Одно прямое матерное слово"],
+  ["allow", "Без цензуры и лимита"],
 ] as const;
 
 const AUDIENCE_PRESETS = [
@@ -348,7 +349,7 @@ export function PostSettingsMenu({
       language: "auto",
       emojiMode: "auto",
       hashtags: "auto",
-      profanityMode: "forbid",
+      profanityMode: "auto",
       cta: "auto",
       similarityLevel: "moderate",
       requireNewAngle: true,
@@ -692,7 +693,7 @@ export function PostSettingsMenu({
                   <SelectField label="Длина предложений" value={settings.sentenceLength} onChange={(next) => update({ sentenceLength: next as PostSettings["sentenceLength"] })} options={[["auto", "Авто"], ["short", "Короткие"], ["mixed", "Разный ритм"], ["long", "Развёрнутые"]]} />
                   <SelectField label="Степень копирования" value={settings.styleMatch} onChange={(next) => update({ styleMatch: next as PostSettings["styleMatch"] })} options={[["light", "Лёгкое сходство"], ["recognizable", "Узнаваемый голос"], ["maximum", "Максимально близко"]]} />
                   <SelectField label="Уровень сленга" value={settings.slangLevel} onChange={(next) => update({ slangLevel: next as PostSettings["slangLevel"] })} options={[["none", "Не использовать"], ["low", "Низкий"], ["medium", "Средний"], ["high", "Высокий"]]} />
-                  <SelectField label="Мат" hint="настройка текущего поста" value={settings.profanityMode} onChange={(next) => update({ profanityMode: next as PostSettings["profanityMode"] })} options={PROFANITY_MODES} />
+                  <SelectField label="Мат" hint="Настройка текущего поста" value={settings.profanityMode} onChange={(next) => update({ profanityMode: next as PostSettings["profanityMode"] })} options={PROFANITY_MODES} />
                   <SelectField label="Уровень метафор" value={settings.metaphorLevel} onChange={(next) => update({ metaphorLevel: next as PostSettings["metaphorLevel"] })} options={[["none", "Не использовать"], ["low", "Низкий"], ["medium", "Средний"], ["high", "Высокий"]]} />
                   <SelectField label="Англицизмы" value={settings.anglicisms} onChange={(next) => update({ anglicisms: next as PostSettings["anglicisms"] })} options={[["none", "Не использовать"], ["low", "Редко"], ["medium", "Умеренно"], ["high", "Свободно"]]} />
                   <SelectField label="Риторические вопросы" value={settings.rhetoricalQuestions} onChange={(next) => update({ rhetoricalQuestions: next as PostSettings["rhetoricalQuestions"] })} options={[["none", "Запрещены"], ["low", "Редко"], ["medium", "Умеренно"], ["high", "Допустимы"]]} />

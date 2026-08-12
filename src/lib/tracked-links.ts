@@ -3,6 +3,7 @@ export {
   buildTrackedDestination,
   normalizeTrackingDestination,
   normalizeUtmValues,
+  sameUtmValues,
   UTM_FIELDS,
   type UtmField,
   type UtmValues,
@@ -81,11 +82,42 @@ export function verifyAttribution(
   return payload;
 }
 
-export function visitorFingerprint(input: { ip?: string | null; userAgent?: string | null }, secret: string) {
+export function visitorFingerprint(
+  input: { ip?: string | null; userAgent?: string | null },
+  secret: string,
+  scope = "global",
+) {
   if (secret.length < 32) throw new Error("fingerprint_secret_too_short");
   const ip = (input.ip ?? "unknown").trim().slice(0, 128);
   const userAgent = (input.userAgent ?? "unknown").trim().slice(0, 512);
-  return createHmac("sha256", secret).update(`${ip}\u0000${userAgent}`).digest("hex");
+  const normalizedScope = scope.trim().slice(0, 180) || "global";
+  return createHmac("sha256", secret)
+    .update(`${normalizedScope}\u0000${ip}\u0000${userAgent}`)
+    .digest("hex");
+}
+
+export function clickDedupeKey(input: {
+  shortLinkId: number;
+  placementId?: number | null;
+  visitorHash: string;
+  windowKey: string;
+}, secret: string) {
+  if (secret.length < 32) throw new Error("fingerprint_secret_too_short");
+  if (!Number.isSafeInteger(input.shortLinkId) || input.shortLinkId <= 0) {
+    throw new Error("invalid_short_link_id");
+  }
+  if (
+    input.placementId != null
+    && (!Number.isSafeInteger(input.placementId) || input.placementId <= 0)
+  ) throw new Error("invalid_short_link_placement_id");
+  if (!/^[0-9a-f]{64}$/u.test(input.visitorHash)) throw new Error("invalid_visitor_hash");
+  if (!/^\d{4}-\d{2}-\d{2}$/u.test(input.windowKey)) throw new Error("invalid_window_key");
+  const scope = input.placementId == null
+    ? `${input.shortLinkId}`
+    : `${input.shortLinkId}\u0000placement:${input.placementId}`;
+  return createHmac("sha256", secret)
+    .update(`${scope}\u0000${input.windowKey}\u0000${input.visitorHash}`)
+    .digest("hex");
 }
 
 export function classifyLikelyBot(userAgent: string | null | undefined) {

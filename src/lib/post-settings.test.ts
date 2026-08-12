@@ -16,6 +16,7 @@ import {
   postLengthRange,
   postSettingsOutputTokens,
   postSettingsQualityOverrides,
+  resolvePostProfanityMode,
   resolvePostTarget,
   validatePostSettingsConflicts,
   validatePostSettingsResult,
@@ -41,15 +42,25 @@ describe("настройки публикации", () => {
   it("мигрирует пустые и старые настройки в безопасный Auto без исключений", () => {
     expect(normalizePostSettings(null)).toEqual(DEFAULT_POST_SETTINGS);
     expect(normalizePostSettings({ version: 0, platform: "tg", tone: "старое поле" })).toEqual(DEFAULT_POST_SETTINGS);
-    expect(DEFAULT_POST_SETTINGS.profanityMode).toBe("forbid");
+    expect(DEFAULT_POST_SETTINGS.profanityMode).toBe("auto");
     expect(compactPostSettings(DEFAULT_POST_SETTINGS)).toEqual({ version: 1 });
   });
 
   it("сохраняет режим мата и отбрасывает неизвестное значение", () => {
+    expect(normalizePostSettings({ profanityMode: "auto" }).profanityMode).toBe("auto");
     expect(normalizePostSettings({ profanityMode: "masked" }).profanityMode).toBe("masked");
     expect(normalizePostSettings({ profanityMode: "allow" }).profanityMode).toBe("allow");
-    expect(normalizePostSettings({ profanityMode: "unexpected" }).profanityMode).toBe("forbid");
+    expect(normalizePostSettings({ profanityMode: "unexpected" }).profanityMode).toBe("auto");
     expect(compactPostSettings({ profanityMode: "allow" })).toMatchObject({ profanityMode: "allow" });
+  });
+
+  it("в Auto распознаёт прямую просьбу о мате и прямой запрет", () => {
+    expect(resolvePostProfanityMode({ profanityMode: "auto" }, "Напиши жёсткий пост с матом без цензуры")).toBe("allow");
+    expect(resolvePostProfanityMode({ profanityMode: "auto" }, "Сделай резкий текст, пусть будет много мата")).toBe("allow");
+    expect(resolvePostProfanityMode({ profanityMode: "auto" }, "Напиши пост без мата")).toBe("forbid");
+    expect(resolvePostProfanityMode({ profanityMode: "auto" }, "Мат со звёздочками, пожалуйста")).toBe("masked");
+    expect(resolvePostProfanityMode({ profanityMode: "auto" }, "Напиши пост без ограничений по длине")).toBe("auto");
+    expect(resolvePostProfanityMode({ profanityMode: "forbid" }, "Напиши пост с матом")).toBe("forbid");
   });
 
   it("пресет не сбрасывает площадку и аудиторию, а ручная правка делает профиль custom", () => {
@@ -151,9 +162,13 @@ describe("платформенный prompt builder", () => {
   });
 
   it("передаёт выбранный режим мата как явное правило текущей публикации", () => {
+    expect(buildPostSettingsPrompt({ profanityMode: "auto" })).toContain("постоянной настройкой выбранного канала");
     expect(buildPostSettingsPrompt({ profanityMode: "forbid" })).toContain("полностью запрещены");
     expect(buildPostSettingsPrompt({ profanityMode: "masked" })).toContain("ровно одно уместное матерное выражение с частичной цензурой");
-    expect(buildPostSettingsPrompt({ profanityMode: "allow" })).toContain("ровно одно прямое матерное слово как эмоциональный акцент");
+    const unrestricted = buildPostSettingsPrompt({ profanityMode: "allow" });
+    expect(unrestricted).toContain("ОБЯЗАТЕЛЬНО используй в готовом посте минимум одно прямое матерное выражение без цензуры");
+    expect(unrestricted).toContain("верхнего количественного лимита нет");
+    expect(unrestricted).toContain("какой риск, ошибка, абсурд, польза или эмоция автора так оценивается и почему");
   });
 });
 
@@ -180,16 +195,30 @@ describe("программная поствалидация", () => {
     ]));
   });
 
-  it("проверяет выбранный режим мата как точное обязательное правило", () => {
+  it("требует уместный прямой мат, но не ограничивает его количество в свободном режиме", () => {
     const direct = "Это охуенно точный пример, который помогает увидеть проблему.";
-    expect(validatePostSettingsResult(direct, exact()).violations).toContainEqual(
+    const several = "Это охуенно точный, пиздец какой полезный разбор без лишней хуйни.";
+    expect(validatePostSettingsResult(direct, exact({ profanityMode: "forbid" })).violations).toContainEqual(
       expect.objectContaining({ code: "profanity", blocker: true }),
     );
     expect(validatePostSettingsResult(direct, exact({ profanityMode: "masked" })).passed).toBe(false);
     expect(validatePostSettingsResult(direct, exact({ profanityMode: "allow" })).passed).toBe(true);
-    expect(validatePostSettingsResult("Это точный пример без выбранной лексики.", exact({ profanityMode: "allow" })).violations)
-      .toContainEqual(expect.objectContaining({ code: "profanity_required" }));
+    expect(validatePostSettingsResult(several, exact({ profanityMode: "allow" })).passed).toBe(true);
+    expect(validatePostSettingsResult("Это точный пример без выбранной лексики.", exact({ profanityMode: "allow" })).violations).toContainEqual(
+      expect.objectContaining({ code: "profanity_required", blocker: true }),
+    );
     expect(validatePostSettingsResult("Это бл*** точный пример.", exact({ profanityMode: "masked" })).passed).toBe(true);
+  });
+
+  it("применяет неограниченный режим к прямому запросу в Auto", () => {
+    const task = "Напиши резкий пост с матом без цензуры и ограничений";
+    const settings = exact({ profanityMode: "auto" });
+    const text = "Это охуенно полезный, пиздец какой прямой разбор без лишней хуйни.";
+
+    expect(buildPostSettingsPrompt(settings, { task })).toContain("верхнего количественного лимита нет");
+    expect(postSettingsQualityOverrides(settings, { task })).toMatchObject({ profanity: "allow", profanityLevel: 100 });
+    expect(validatePostSettingsResult(text, settings, { task }).passed).toBe(true);
+    expect(finalizePostSettingsDeterministically(text, settings, { task })).toBe(text);
   });
 
   it("детерминированно выполняет точные механические настройки перед показом", () => {
@@ -202,13 +231,16 @@ describe("программная поствалидация", () => {
       hashtagCount: 2,
       keywords: ["LegalTech", "Конференция"],
     });
+    const source = "Команда охуенно точно разобрала проблему без лишней хуйни и пустых обещаний.";
     const result = finalizePostSettingsDeterministically(
-      "Команда обсудила будущее юридических технологий.",
+      source,
       settings,
       { task: "Пост о конференции LegalTech" },
     );
     const validation = validatePostSettingsResult(result, settings);
-    expect(result).toContain("блядь");
+    expect(result).toContain("охуенно");
+    expect(result).toContain("хуйни");
+    expect(result).not.toContain("блядь");
     expect(validation.metrics).toMatchObject({ emojis: 2, hashtags: 2 });
     expect(validation.violations.map((item) => item.code)).not.toEqual(
       expect.arrayContaining(["profanity_required", "emoji", "hashtags", "emoji_placement"]),

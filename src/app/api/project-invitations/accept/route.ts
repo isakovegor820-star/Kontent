@@ -6,7 +6,7 @@ import { checkRateLimit, clientIp, rateLimitResponse } from "@/lib/rate-limit";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import { getSessionUser } from "@/lib/session";
 import { acceptProjectInvitation } from "@/lib/project-team";
-import { projectApiError, projectJson, readObjectBody } from "@/app/api/projects/_shared";
+import { projectApiError, projectBodyFailure, projectJson, readProjectBody } from "@/app/api/projects/_shared";
 
 export const runtime = "nodejs";
 
@@ -25,8 +25,9 @@ export async function POST(req: NextRequest) {
     { failureMode: "closed" },
   );
   if (!rate.allowed) return rateLimitResponse(rate);
-  const body = await readObjectBody(req);
-  if (!body) return projectJson({ ok: false, error: "bad_request" }, 400, requestId);
+  const parsed = await readProjectBody(req, ["token"]);
+  if (!parsed.ok) return projectBodyFailure(parsed, requestId);
+  const body = parsed.body;
   try {
     const membership = await acceptProjectInvitation({
       pool: getPool(), actorUserId: user.id, token: body.token, requestId,

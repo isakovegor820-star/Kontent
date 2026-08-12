@@ -211,11 +211,11 @@ function NumberRange({
   onMax: (value: string) => void;
 }) {
   return (
-    <fieldset>
+    <fieldset className="min-w-0">
       <legend className="mb-1.5 text-[12px] font-bold text-text-2">{label}</legend>
-      <div className="grid grid-cols-2 gap-2">
-        <Input type="number" min={0} value={min} onChange={(event) => onMin(event.target.value)} placeholder={minLabel} aria-label={`${label}: ${minLabel.toLowerCase()}`} />
-        <Input type="number" min={0} value={max} onChange={(event) => onMax(event.target.value)} placeholder={maxLabel} aria-label={`${label}: ${maxLabel.toLowerCase()}`} />
+      <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-2">
+        <Input className="min-w-0" type="number" min={0} value={min} onChange={(event) => onMin(event.target.value)} placeholder={minLabel} aria-label={`${label}: ${minLabel.toLowerCase()}`} />
+        <Input className="min-w-0" type="number" min={0} value={max} onChange={(event) => onMax(event.target.value)} placeholder={maxLabel} aria-label={`${label}: ${maxLabel.toLowerCase()}`} />
       </div>
     </fieldset>
   );
@@ -410,7 +410,7 @@ export function LibraryRegistryView({ channelId, channelName }: { channelId: num
   }, [filters]);
 
   return (
-    <div className="mt-5 space-y-4">
+    <div className="mt-5 min-w-0 space-y-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h2 className="text-[18px] font-extrabold text-text">Аналитический реестр</h2>
@@ -424,22 +424,22 @@ export function LibraryRegistryView({ channelId, channelName }: { channelId: num
         </div>
       </div>
 
-      <Card className="overflow-hidden">
+      <Card className="min-w-0 overflow-hidden">
         <div className="border-b border-line px-4 py-4 sm:px-5">
-          <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_220px_190px]">
-            <label className="relative">
+          <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-3 md:grid-cols-[minmax(0,1fr)_220px_190px]">
+            <label className="relative min-w-0">
               <span className="sr-only">Поиск по реестру</span>
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-3" aria-hidden />
               <Input value={filters.q} onChange={(event) => update("q", event.target.value)} placeholder="Поиск по тексту, источнику или каналу…" className="pl-9" />
             </label>
-            <label>
+            <label className="min-w-0">
               <span className="sr-only">Источник</span>
               <select value={filters.source} onChange={(event) => update("source", event.target.value)} className="h-12 w-full rounded-xs border border-line bg-surface px-3 text-[13px] font-semibold text-text focus:border-brand focus:outline-none">
                 <option value="">Все источники</option>
                 {sourceOptions.map((source) => <option key={source.id} value={source.id}>{source.title}</option>)}
               </select>
             </label>
-            <label>
+            <label className="min-w-0">
               <span className="sr-only">Сортировка</span>
               <select value={filters.sort} onChange={(event) => update("sort", event.target.value as LibrarySort)} className="h-12 w-full rounded-xs border border-line bg-surface px-3 text-[13px] font-semibold text-text focus:border-brand focus:outline-none">
                 {Object.entries(SORT_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
@@ -448,22 +448,22 @@ export function LibraryRegistryView({ channelId, channelName }: { channelId: num
           </div>
         </div>
 
-        <details className="group">
+        <details className="group min-w-0">
           <summary className="flex min-h-12 cursor-pointer list-none items-center gap-2 px-4 py-3 text-[13px] font-bold text-text sm:px-5">
             <Filter className="h-4 w-4 text-brand" aria-hidden />
             Все фильтры
             {activeFilterCount > 0 && <Badge tone="brand">{activeFilterCount}</Badge>}
             <ArrowDownAZ className="ml-auto h-4 w-4 text-text-3 transition-transform group-open:rotate-180" aria-hidden />
           </summary>
-          <div className="grid gap-4 border-t border-line px-4 py-5 sm:grid-cols-2 sm:px-5 xl:grid-cols-4">
-            <fieldset>
+          <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-4 border-t border-line px-4 py-5 sm:grid-cols-2 sm:px-5 xl:grid-cols-4">
+            <fieldset className="min-w-0">
               <legend className="mb-1.5 text-[12px] font-bold text-text-2">Период</legend>
-              <div className="grid grid-cols-2 gap-2">
-                <Input type="date" value={filters.from} onChange={(event) => update("from", event.target.value)} aria-label="Период от" />
-                <Input type="date" value={filters.to} onChange={(event) => update("to", event.target.value)} aria-label="Период до" />
+              <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-2">
+                <Input className="min-w-0" type="date" value={filters.from} onChange={(event) => update("from", event.target.value)} aria-label="Период от" />
+                <Input className="min-w-0" type="date" value={filters.to} onChange={(event) => update("to", event.target.value)} aria-label="Период до" />
               </div>
             </fieldset>
-            <fieldset>
+            <fieldset className="min-w-0">
               <legend className="mb-1.5 text-[12px] font-bold text-text-2">Формат</legend>
               <div className="flex min-h-12 flex-wrap items-center gap-2 rounded-xs border border-line px-2">
                 {(Object.keys(FORMAT_LABELS) as LibraryFormat[]).map((format) => (
@@ -473,13 +473,13 @@ export function LibraryRegistryView({ channelId, channelName }: { channelId: num
                 ))}
               </div>
             </fieldset>
-            <label>
+            <label className="min-w-0">
               <span className="mb-1.5 block text-[12px] font-bold text-text-2">Сохранение</span>
               <select value={filters.saved} onChange={(event) => update("saved", event.target.value as LibrarySavedFilter)} className="h-12 w-full rounded-xs border border-line bg-surface px-3 text-[13px] text-text">
                 <option value="all">Все</option><option value="saved">Сохранённые</option><option value="unsaved">Несохранённые</option>
               </select>
             </label>
-            <label>
+            <label className="min-w-0">
               <span className="mb-1.5 block text-[12px] font-bold text-text-2">Просмотр</span>
               <select value={filters.viewed} onChange={(event) => update("viewed", event.target.value as LibraryViewedFilter)} className="h-12 w-full rounded-xs border border-line bg-surface px-3 text-[13px] text-text">
                 <option value="all">Новые и просмотренные</option><option value="new">Только новые</option><option value="viewed">Просмотренные</option>
@@ -490,7 +490,7 @@ export function LibraryRegistryView({ channelId, channelName }: { channelId: num
             <NumberRange label="Реакции" min={filters.reactionsMin} max={filters.reactionsMax} onMin={(value) => update("reactionsMin", value)} onMax={(value) => update("reactionsMax", value)} />
             <NumberRange label="Прирост" min={filters.liftMin} max={filters.liftMax} onMin={(value) => update("liftMin", value)} onMax={(value) => update("liftMax", value)} />
             <NumberRange label="Аналитическая оценка 0–100" min={filters.scoreMin} max={filters.scoreMax} onMin={(value) => update("scoreMin", value)} onMax={(value) => update("scoreMax", value)} />
-            <fieldset>
+            <fieldset className="min-w-0">
               <legend className="mb-1.5 text-[12px] font-bold text-text-2">Качество данных</legend>
               <div className="flex min-h-12 flex-wrap items-center gap-2 rounded-xs border border-line px-2">
                 {(["low", "medium", "high"] as LibraryQuality[]).map((quality) => (
@@ -501,7 +501,7 @@ export function LibraryRegistryView({ channelId, channelName }: { channelId: num
                 ))}
               </div>
             </fieldset>
-            <fieldset>
+            <fieldset className="min-w-0">
               <legend className="mb-1.5 text-[12px] font-bold text-text-2">Зрелость данных</legend>
               <div className="flex min-h-12 flex-wrap items-center gap-2 rounded-xs border border-line px-2">
                 {(["collecting", "mature"] as LibraryMaturity[]).map((maturity) => (
@@ -552,21 +552,21 @@ export function LibraryRegistryView({ channelId, channelName }: { channelId: num
           </div>
         </Card>
       ) : loading ? (
-        <div className="grid gap-3 lg:grid-cols-2" role="status" aria-busy="true">
+        <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-3 lg:grid-cols-2" role="status" aria-busy="true">
           <span className="sr-only">Применяем фильтры</span>
           {[0, 1, 2, 3].map((item) => <div key={item} className="skeleton h-72 rounded-md" />)}
         </div>
       ) : items.length === 0 ? (
         <Card><EmptyState icon={<Filter className="h-6 w-6" />} title="По этим условиям ничего нет" body="Ослабь диапазон или сбрось фильтры. Исходные данные не удалены." action={<Button variant="outline" size="sm" onClick={() => setFilters(DEFAULT_FILTERS)}>Сбросить фильтры</Button>} /></Card>
       ) : (
-        <div className="grid gap-3 lg:grid-cols-2">
+        <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-3 lg:grid-cols-2">
           {items.map((item) => {
             const isExpanded = expanded.has(item.id);
             const primaryAction: DraftBackedAppAction = item.kind === "saved" ? "editor" : "create";
             const primaryKey = `${primaryAction}:${item.id}:channel:${channelId}`;
             const discussKey = `discuss:${item.id}:channel:${channelId}`;
             return (
-              <Card key={item.id} className="flex flex-col p-4 transition-[border-color,box-shadow] hover:border-line-strong hover:shadow-soft">
+              <Card key={item.id} className="min-w-0 flex flex-col p-4 transition-[border-color,box-shadow] hover:border-line-strong hover:shadow-soft">
                 <div className="flex flex-wrap items-center gap-2 text-[11px]">
                   <Badge tone={item.kind === "reference" ? "fire" : item.kind === "idea" ? "brand" : "neutral"}>
                     {item.kind === "reference" ? "Референс" : item.kind === "idea" ? "Идея" : "Коллекция"}
@@ -607,7 +607,7 @@ export function LibraryRegistryView({ channelId, channelName }: { channelId: num
 
                 <fieldset className="mt-3">
                   <legend className="text-[11px] font-bold text-text-2">Ваша оценка, отдельно от аналитической</legend>
-                  <div className="mt-1 flex items-center gap-1" aria-label="Оценка от 1 до 5">
+                  <div className="mt-1 flex flex-wrap items-center gap-1" aria-label="Оценка от 1 до 5">
                     {[1, 2, 3, 4, 5].map((rating) => (
                       <button
                         key={rating}
@@ -625,7 +625,7 @@ export function LibraryRegistryView({ channelId, channelName }: { channelId: num
                       type="button"
                       disabled={Boolean(stateBusy)}
                       onClick={() => void setItemState(item, { viewed: !item.viewedAt })}
-                      className="ml-auto inline-flex min-h-10 items-center gap-1.5 rounded-sm px-2 text-[11px] font-semibold text-text-2 hover:bg-surface-inset"
+                      className="inline-flex min-h-10 basis-full items-center gap-1.5 rounded-sm px-2 text-[11px] font-semibold text-text-2 hover:bg-surface-inset sm:ml-auto sm:basis-auto"
                     >
                       {item.viewedAt ? <EyeOff className="h-3.5 w-3.5" aria-hidden /> : <Check className="h-3.5 w-3.5" aria-hidden />}
                       {item.viewedAt ? "Сделать новым" : "Просмотрено"}

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
+import { ProjectAccessError } from "@/lib/project-permissions";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -20,7 +21,7 @@ vi.mock("@/lib/server-drafts", async (importOriginal) => {
 });
 
 import { DraftConflictError } from "@/lib/server-drafts";
-import { PATCH } from "./route";
+import { GET, PATCH } from "./route";
 
 const current = {
   id: 41,
@@ -73,5 +74,31 @@ describe("PATCH /api/drafts/:id", () => {
       error: "version_conflict",
       current: { id: 41, version: 3 },
     });
+  });
+
+  it("returns access denied when the selected project cannot read the draft", async () => {
+    mocks.getDraftForUser.mockRejectedValue(new ProjectAccessError("membership_required"));
+    const response = await GET(
+      new NextRequest("http://localhost/api/drafts/41"),
+      { params: Promise.resolve({ id: "41" }) },
+    );
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({ ok: false, error: "access_denied" });
+  });
+
+  it("checks mutation origin before authentication", async () => {
+    const response = await PATCH(
+      new NextRequest("http://localhost/api/drafts/41", {
+        method: "PATCH",
+        headers: { origin: "https://attacker.example", "sec-fetch-site": "cross-site" },
+        body: "{}",
+      }),
+      { params: Promise.resolve({ id: "41" }) },
+    );
+
+    expect(response.status).toBe(403);
+    expect(mocks.getSessionUser).not.toHaveBeenCalled();
+    expect(mocks.updateDraftForUser).not.toHaveBeenCalled();
   });
 });

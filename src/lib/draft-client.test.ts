@@ -13,6 +13,7 @@ import {
   isRecoverableLegacyDraft,
   isUnownedLegacyDraftCandidate,
   reusableAcknowledgedDraft,
+  resolveAcknowledgedDraftRevision,
   runSingleDraftSave,
   scheduleDraftAutosave,
   shouldAutosaveDraft,
@@ -56,6 +57,13 @@ describe("draft client coordination", () => {
       clientKey: "draft_library-reference-1234567890",
       text,
       media: null,
+      tracking: {
+        shortLinkId: 12,
+        shortUrlPath: "/r/abcdefghijklmnopqrst",
+        destination: "https://example.test/consultation",
+        utmValues: { utm_campaign: "bankruptcy_august" },
+        placement: "cta" as const,
+      },
       scheduledAt: null,
       origin: "competitor" as const,
       sourceRef: { kind: "competitor" as const, id: "9", label: "Конкурент" },
@@ -142,6 +150,13 @@ describe("draft client coordination", () => {
       id: 41,
       text: "Старая версия",
       media: null,
+      tracking: {
+        shortLinkId: 12,
+        shortUrlPath: "/r/abcdefghijklmnopqrst",
+        destination: "https://example.test/consultation",
+        utmValues: { utm_campaign: "bankruptcy_august" },
+        placement: "cta" as const,
+      },
       scheduled_at: null,
       origin: "manual" as const,
       purpose: "publishable" as const,
@@ -165,9 +180,84 @@ describe("draft client coordination", () => {
       sourceRef: null,
       channelIds: [11],
       aiValidation: null,
+      tracking: {
+        shortLinkId: 12,
+        shortUrlPath: "/r/abcdefghijklmnopqrst",
+        destination: "https://example.test/consultation",
+        utmValues: { utm_campaign: "bankruptcy_august" },
+        placement: "cta" as const,
+      },
     };
     expect(draftMatchesWrite(draft, write)).toBe(false);
     expect(draftMatchesWrite(draft, { ...write, text: "Старая версия" })).toBe(true);
+    expect(draftMatchesWrite({
+      ...draft,
+      tracking: {
+        ...draft.tracking,
+        destination: "https://example.test/consultation?utm_campaign=bankruptcy_august",
+      },
+    }, { ...write, text: "Старая версия" })).toBe(true);
+    expect(draftMatchesWrite(draft, {
+      ...write,
+      text: "Старая версия",
+      tracking: { ...write.tracking, shortLinkId: 13, shortUrlPath: "/r/zyxwvutsrqponmlkjihg" },
+    })).toBe(false);
+
+    const carouselItems = [
+      { assetId: "41", label: "Карточка 1", url: "/api/media/assets/41", mimeType: "image/png" as const },
+      { assetId: "42", label: "Карточка 2", url: "/api/media/assets/42", mimeType: "image/png" as const },
+      { assetId: "43", label: "Карточка 3", url: "/api/media/assets/43", mimeType: "image/png" as const },
+    ];
+    expect(draftMatchesWrite({
+      ...draft,
+      media: {
+        kind: "carousel",
+        hue: 255,
+        items: carouselItems.map((item) => ({
+          url: item.url,
+          label: item.label,
+          mimeType: item.mimeType,
+          assetId: item.assetId,
+        })),
+        label: "Пять карточек",
+        renderOperationId: 17,
+      },
+    }, {
+      ...write,
+      text: "Старая версия",
+      media: {
+        kind: "carousel",
+        label: "Пять карточек",
+        hue: 255,
+        renderOperationId: 17,
+        items: carouselItems,
+      },
+    })).toBe(true);
+
+    expect(resolveAcknowledgedDraftRevision({
+      draft,
+      currentWrite: { ...write, text: "Старая версия" },
+      requestRevision: 4,
+      currentRevision: 5,
+    })).toEqual({ revision: 5, current: true, mismatchFields: [] });
+    expect(resolveAcknowledgedDraftRevision({
+      draft,
+      currentWrite: write,
+      requestRevision: 4,
+      currentRevision: 5,
+    })).toEqual({ revision: 4, current: false, mismatchFields: ["text"] });
+
+    expect(resolveAcknowledgedDraftRevision({
+      draft: { ...draft, origin: "manual", source_ref: null },
+      currentWrite: {
+        ...write,
+        text: "Старая версия",
+        origin: "autopilot" as const,
+        sourceRef: { kind: "monthly_campaign", campaignId: 10, planId: 20, itemId: 30 } as never,
+      },
+      requestRevision: 4,
+      currentRevision: 5,
+    })).toEqual({ revision: 5, current: true, mismatchFields: [] });
   });
 
   it("debounces one autosave for the next unattempted local revision", async () => {

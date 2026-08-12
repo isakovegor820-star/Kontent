@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
+import { ProjectAccessError } from "@/lib/project-permissions";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -17,7 +18,7 @@ vi.mock("@/lib/server-drafts", async (importOriginal) => {
   };
 });
 
-import { POST } from "./route";
+import { GET, POST } from "./route";
 
 const body = {
   clientKey: "draft_12345678-1234-4234-9234-123456789abc",
@@ -61,6 +62,26 @@ describe("POST /api/drafts", () => {
     expect(mocks.createDraftForUser).not.toHaveBeenCalled();
   });
 
+  it("rejects a cross-origin mutation before reading the session", async () => {
+    const response = await POST(new NextRequest("http://localhost/api/drafts", {
+      method: "POST",
+      headers: { origin: "https://attacker.example", "sec-fetch-site": "cross-site" },
+      body: JSON.stringify(body),
+    }));
+
+    expect(response.status).toBe(403);
+    expect(mocks.getSessionUser).not.toHaveBeenCalled();
+    expect(mocks.createDraftForUser).not.toHaveBeenCalled();
+  });
+
+  it("maps a missing selected-project membership to access denied", async () => {
+    mocks.listDraftsForUser.mockRejectedValue(new ProjectAccessError("membership_required"));
+    const response = await GET(new NextRequest("http://localhost/api/drafts"));
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({ ok: false, error: "access_denied" });
+  });
+
   it("returns 200 and the same draft for an idempotency replay", async () => {
     mocks.createDraftForUser.mockResolvedValue({ draft, created: false });
     const response = await POST(new NextRequest("http://localhost/api/drafts", {
@@ -97,6 +118,19 @@ describe("POST /api/drafts", () => {
     expect(mocks.createDraftForUser).toHaveBeenCalledWith(5, {
       ...referenceBody,
       schedule: null,
+      tracking: null,
     });
+  });
+
+  it("does not turn a create permission failure into a server error", async () => {
+    mocks.createDraftForUser.mockRejectedValue(new ProjectAccessError("permission_denied"));
+    const response = await POST(new NextRequest("http://localhost/api/drafts", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }));
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({ ok: false, error: "access_denied" });
   });
 });

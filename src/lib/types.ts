@@ -68,14 +68,28 @@ export interface Post {
   /** Внешняя проверка: ссылка/метрики допустимы только для verified. */
   verificationState?: "unverified" | "verified" | "missing" | "unverifiable";
   /** Медиа поста. assetId/url появляются у реального результата ИИ-студии. */
-  media?: {
-    kind: "image" | "video";
-    label: string;
-    hue: number;
-    assetId?: string;
-    url?: string;
-    mimeType?: string | null;
-  } | null;
+  media?: (
+    | {
+        kind: "image" | "video";
+        label: string;
+        hue: number;
+        assetId?: string;
+        url?: string;
+        mimeType?: string | null;
+      }
+    | {
+        kind: "carousel";
+        label: string;
+        hue: number;
+        items: Array<{
+          assetId: string;
+          label: string;
+          url?: string;
+          mimeType: "image/jpeg" | "image/png" | "image/webp";
+        }>;
+        renderOperationId?: number;
+      }
+  ) | null;
   metrics?: PostMetrics;
   /** Попытки публикации — сбой → 3 автоповтора (ТЗ 5.3) */
   attempts?: number;
@@ -204,6 +218,8 @@ export interface RealChannel {
 
 export interface RealPost {
   id: number;
+  author_user_id?: number;
+  author_name?: string;
   text: string;
   media: unknown;
   scheduled_at: string | null;

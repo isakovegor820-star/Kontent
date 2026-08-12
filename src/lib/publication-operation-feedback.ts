@@ -6,6 +6,30 @@ type PublicationOperationFailure = {
 };
 
 export function publicationOperationFailureFeedback(result: PublicationOperationFailure) {
+  if (result.error === "typography_review_required") {
+    return {
+      title: "Проверь оформление текста",
+      body: "Публикация не создана, черновик сохранён. Открой «Типограф и словарь», примени или явно отклони оставшиеся правки и повтори планирование.",
+    };
+  }
+  if (result.error === "official_access_required") {
+    return {
+      title: "Нужен официальный доступ площадки",
+      body: "Автопубликация не запускалась. Для TenChat скачай пакет в Композиторе и опубликуй его вручную либо запроси официальный партнёрский доступ.",
+    };
+  }
+  if (result.error === "tracking_link_unavailable") {
+    return {
+      title: "Короткая ссылка больше не работает",
+      body: "Публикация не создана, черновик сохранён. Открой раздел «Ссылка и отслеживание», создай новую ссылку и отправь обновлённую версию на согласование.",
+    };
+  }
+  if (result.error === "tracking_snapshot_invalid") {
+    return {
+      title: "Не удалось проверить ссылку",
+      body: "Публикация не создана, черновик сохранён. Пересоздай ссылку в черновике и повтори планирование.",
+    };
+  }
   if (result.result === "worker_unavailable") {
     return result.operationId != null
       ? {

@@ -232,6 +232,7 @@ function BriefInner() {
           >
             <Input
               id="brief-niche"
+              required
               value={brief.niche}
               onChange={(e) => set("niche", e.target.value)}
               placeholder="Например: кофе, обжарка, домашнее заваривание"
@@ -246,6 +247,7 @@ function BriefInner() {
           >
             <Input
               id="brief-audience"
+              required
               value={brief.audience}
               onChange={(e) => set("audience", e.target.value)}
               placeholder="Например: новички, которые варят кофе дома и хотят вкуснее"

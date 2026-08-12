@@ -9,9 +9,11 @@ import { cn } from "@/lib/utils";
 const KIND_LABEL: Record<TypographySuggestion["kind"], string> = {
   brand_term: "Словарь бренда",
   dash: "Тире",
+  hyphen: "Дефис",
   quotes: "Кавычки",
   range: "Диапазон",
   spacing: "Пробел",
+  typo: "Опечатка",
   unbreakable: "Перенос строки",
 };
 
@@ -19,18 +21,28 @@ export function TypographerPanel({
   suggestions,
   selectedIds,
   onSelectionChange,
+  onApplyOne,
   onApplySelected,
   onApplySafe,
+  onRejectAll,
   onUndo,
+  formatQuotes = false,
+  onFormatQuotesChange,
+  reviewed = false,
   canUndo = false,
   busy = false,
 }: {
   suggestions: readonly TypographySuggestion[];
   selectedIds: readonly string[];
   onSelectionChange: (ids: string[]) => void;
+  onApplyOne?: (id: string) => void;
   onApplySelected: () => void;
   onApplySafe: () => void;
+  onRejectAll?: () => void;
   onUndo: () => void;
+  formatQuotes?: boolean;
+  onFormatQuotesChange?: (enabled: boolean) => void;
+  reviewed?: boolean;
   canUndo?: boolean;
   busy?: boolean;
 }) {
@@ -53,8 +65,20 @@ export function TypographerPanel({
             Типограф и словарь
           </h2>
           <p className="mt-1 max-w-[68ch] text-sm leading-relaxed text-text-2">
-            Проверьте каждую замену. Ссылки, номера дел, статьи и точные цитаты остаются без изменений.
+            Проверь каждую замену. Ссылки, номера дел, статьи и точные цитаты остаются без изменений.
           </p>
+          {onFormatQuotesChange && (
+            <label className="mt-3 flex min-h-11 cursor-pointer items-center gap-3 text-sm leading-relaxed text-text-2">
+              <input
+                type="checkbox"
+                checked={formatQuotes}
+                disabled={busy}
+                onChange={(event) => onFormatQuotesChange(event.currentTarget.checked)}
+                className="h-5 w-5 shrink-0 rounded border-line-strong accent-brand focus-visible:ring-4 focus-visible:ring-brand/15"
+              />
+              Предлагать оформление прямых кавычек — каждую такую правку нужно подтвердить отдельно
+            </label>
+          )}
         </div>
         <Button
           type="button"
@@ -71,7 +95,7 @@ export function TypographerPanel({
 
       <p className="sr-only" aria-live="polite">
         {suggestions.length === 0
-          ? "Замены не найдены"
+          ? reviewed ? "Все правки рассмотрены" : "Замены не найдены"
           : `Найдено замен: ${suggestions.length}. Выбрано: ${selectedCount}.`}
       </p>
 
@@ -80,7 +104,10 @@ export function TypographerPanel({
           <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-success-soft text-success-text">
             <Check className="h-5 w-5" aria-hidden />
           </span>
-          <p><span className="font-semibold text-text">Текст оформлен.</span> Безопасных замен не найдено.</p>
+          <p>
+            <span className="font-semibold text-text">{reviewed ? "Все правки рассмотрены." : "Текст оформлен."}</span>{" "}
+            {reviewed ? "Решение сохранено для этой версии текста." : "Безопасных замен не найдено."}
+          </p>
         </div>
       ) : (
         <>
@@ -95,8 +122,9 @@ export function TypographerPanel({
                         id={inputId}
                         type="checkbox"
                         checked={selected.has(item.id)}
+                        disabled={busy}
                         onChange={(event) => toggle(item.id, event.currentTarget.checked)}
-                        className="h-5 w-5 rounded border-line-strong accent-brand focus-visible:ring-4 focus-visible:ring-brand/15"
+                        className="h-5 w-5 rounded border-line-strong accent-brand focus-visible:ring-4 focus-visible:ring-brand/15 disabled:cursor-not-allowed disabled:opacity-50"
                       />
                     </span>
                     <span className="min-w-0 pt-1">
@@ -116,37 +144,66 @@ export function TypographerPanel({
                       </span>
                     </span>
                   </label>
-                  <div className="ml-14 grid min-w-0 gap-2 text-sm leading-relaxed sm:grid-cols-2 md:ml-0 md:w-[min(38rem,42vw)]">
-                    <del className="min-w-0 break-words rounded-xs bg-danger-soft px-3 py-2 text-danger-text decoration-current">
-                      <span className="sr-only">Было: </span>{item.before.replaceAll("\u00a0", " ")}
-                    </del>
-                    <ins className="min-w-0 break-words rounded-xs bg-success-soft px-3 py-2 text-success-text no-underline">
-                      <span className="sr-only">Станет: </span>{item.after.replaceAll("\u00a0", " ")}
-                    </ins>
+                  <div className="ml-14 min-w-0 md:ml-0 md:w-[min(38rem,42vw)]">
+                    <div className="grid min-w-0 gap-2 text-sm leading-relaxed sm:grid-cols-2">
+                      <del className="min-w-0 break-words rounded-xs bg-danger-soft px-3 py-2 text-danger-text decoration-current">
+                        <span className="sr-only">Было: </span>{item.before.replaceAll("\u00a0", " ")}
+                      </del>
+                      <ins className="min-w-0 break-words rounded-xs bg-success-soft px-3 py-2 text-success-text no-underline">
+                        <span className="sr-only">Станет: </span>{item.after.replaceAll("\u00a0", " ")}
+                      </ins>
+                    </div>
+                    {onApplyOne && (
+                      <div className="mt-2 flex justify-end">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          disabled={busy}
+                          onClick={() => onApplyOne(item.id)}
+                        >
+                          Применить эту правку
+                        </Button>
+                      </div>
+                    )}
                   </div>
                 </li>
               );
             })}
           </ul>
 
-          <div className="mt-5 flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <Button
-              type="button"
-              variant="outline"
-              disabled={safeCount === 0 || busy}
-              onClick={onApplySafe}
-              className="w-full sm:w-auto"
-            >
-              Применить безопасные
-              <span className="tabular-nums" aria-hidden>({safeCount})</span>
-            </Button>
+          <div className="mt-5 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex flex-col gap-3 sm:flex-row">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={safeCount === 0 || busy}
+                onClick={onApplySafe}
+                className="w-full sm:w-auto"
+              >
+                Применить безопасные
+                <span className="tabular-nums" aria-hidden>({safeCount})</span>
+              </Button>
+              {onRejectAll && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  disabled={busy}
+                  onClick={onRejectAll}
+                  className="w-full sm:w-auto"
+                >
+                  Отклонить остальные
+                  <span className="tabular-nums" aria-hidden>({suggestions.length})</span>
+                </Button>
+              )}
+            </div>
             <Button
               type="button"
               variant="solid"
               loading={busy}
               disabled={selectedCount === 0}
               onClick={onApplySelected}
-              className={cn("w-full sm:w-auto", selectedCount === 0 && "opacity-50")}
+              className={cn("w-full lg:w-auto", selectedCount === 0 && "opacity-50")}
             >
               Применить выбранные
               <span className="tabular-nums" aria-hidden>({selectedCount})</span>

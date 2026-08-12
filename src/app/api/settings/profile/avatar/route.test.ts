@@ -41,9 +41,11 @@ describe("profile avatar upload", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       ok: true,
-      avatar: "/api/media/assets/91",
+      avatar: "/api/settings/profile/avatar-assets/91",
       mimeType: "image/webp",
     });
+    expect(mocks.query.mock.calls[0]?.[0]).toContain("from user_avatar_assets");
+    expect(mocks.query.mock.calls[1]?.[0]).toContain("insert into user_avatar_assets");
     expect(mocks.query.mock.calls[1]?.[1]?.[0]).toBe(7);
     expect(mocks.query.mock.calls[1]?.[1]?.[3]).toEqual(expect.any(Number));
     expect(Buffer.isBuffer(mocks.query.mock.calls[1]?.[1]?.[4])).toBe(true);

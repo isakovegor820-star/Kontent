@@ -276,8 +276,8 @@ export async function createProject(input: {
       `insert into audit_events (
          project_id, actor_user_id, action, entity_type, entity_id,
          after_version, safe_data, request_id, idempotency_key
-       ) values ($1, $2, 'project.created', 'project', $1::text,
-                 $3, jsonb_build_object('kind', 'team', 'fingerprint', $6::text), $4, $5)`,
+       ) values ($1::bigint, $2::bigint, 'project.created', 'project', ($1::bigint)::text,
+                 $3::bigint, jsonb_build_object('kind', 'team', 'fingerprint', $6::text), $4, $5)`,
       [
         projectId,
         input.actorUserId,

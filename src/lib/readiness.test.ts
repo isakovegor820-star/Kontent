@@ -33,6 +33,7 @@ const healthyDefaults = {
   mailDelivery: "up" as const,
   uploadIngress: "up" as const,
   tokenEncryption: "up" as const,
+  trackingSecrets: "up" as const,
 };
 
 describe("readiness model", () => {
@@ -83,6 +84,7 @@ describe("readiness model", () => {
       mailDelivery: "up",
       uploadIngress: "up",
       tokenEncryption: "up",
+      trackingSecrets: "up",
     });
 
     expect(report).toMatchObject({
@@ -142,6 +144,7 @@ describe("readiness model", () => {
       mailDeliveryReady: false,
       uploadReady: false,
       tokenEncryptionReady: false,
+      trackingReady: false,
     });
   });
 });

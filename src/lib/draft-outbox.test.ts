@@ -6,6 +6,8 @@ import {
   listPendingDrafts,
   pendingDraftStorageKey,
   persistPendingDraft,
+  projectDraftWorkspaceId,
+  removePendingDraft,
   type DraftOutboxStorage,
   type PendingDraftRevision,
 } from "./draft-outbox";
@@ -64,11 +66,45 @@ describe("durable draft outbox", () => {
     expect(listPendingDrafts(7, storage)).toEqual([]);
   });
 
+  it("does not throw when browser storage refuses cleanup after a server success", () => {
+    const storage = memoryStorage();
+    persistPendingDraft(revision(), storage);
+    const blockedStorage: DraftOutboxStorage = {
+      ...storage,
+      removeItem: () => { throw new DOMException("blocked", "SecurityError"); },
+    };
+
+    expect(removePendingDraft(7, "draft_1234567890abcdef", blockedStorage)).toBe(false);
+    expect(listPendingDrafts(7, storage)).toHaveLength(1);
+    expect(removePendingDraft(7, "draft_1234567890abcdef", storage)).toBe(true);
+    expect(listPendingDrafts(7, storage)).toEqual([]);
+  });
+
   it("does not load another account even when draft and client identifiers collide", () => {
     const storage = memoryStorage();
     persistPendingDraft(revision(), storage);
     persistPendingDraft(revision({ userId: 8, workspaceId: "personal:8" }), storage);
     expect(listPendingDrafts(7, storage).map((item) => item.userId)).toEqual([7]);
     expect(listPendingDrafts(8, storage).map((item) => item.userId)).toEqual([8]);
+  });
+
+  it("keeps pending revisions isolated between projects of the same account", () => {
+    const storage = memoryStorage();
+    const projectA = revision({
+      workspaceId: projectDraftWorkspaceId(101),
+      clientKey: "draft_project-a-1234567890",
+      draftId: 51,
+    });
+    const projectB = revision({
+      workspaceId: projectDraftWorkspaceId(202),
+      clientKey: "draft_project-b-1234567890",
+      draftId: 52,
+    });
+    expect(persistPendingDraft(projectA, storage)).toBe(true);
+    expect(persistPendingDraft(projectB, storage)).toBe(true);
+
+    expect(listPendingDrafts(7, storage, "project:101")).toEqual([projectA]);
+    expect(listPendingDrafts(7, storage, "project:202")).toEqual([projectB]);
+    expect(findPendingDraft(7, { draftId: 52 }, storage, "project:101")).toBeNull();
   });
 });

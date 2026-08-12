@@ -456,7 +456,7 @@ export function ProfileBriefSection() {
 
                   <div className="min-w-0 space-y-4">
                     <Field label="Имя" htmlFor={`${uid}-name`} required>
-                      <Input id={`${uid}-name`} name="name" autoComplete="name" value={draft.name} onChange={(event) => update("name", event.target.value)} />
+                      <Input id={`${uid}-name`} name="name" required autoComplete="name" value={draft.name} onChange={(event) => update("name", event.target.value)} />
                     </Field>
 
                     <div>
@@ -551,10 +551,10 @@ export function ProfileBriefSection() {
 
               <div className="grid gap-5 sm:grid-cols-2">
                 <Field label="Ниша" htmlFor={`${uid}-niche`} required hint="О чём канал и в какой предметной области ты работаешь.">
-                  <Textarea id={`${uid}-niche`} rows={3} value={draft.niche} onChange={(event) => update("niche", event.target.value)} placeholder="Например: юридическая безопасность малого бизнеса" />
+                  <Textarea id={`${uid}-niche`} rows={3} required value={draft.niche} onChange={(event) => update("niche", event.target.value)} placeholder="Например: юридическая безопасность малого бизнеса" />
                 </Field>
                 <Field label="Аудитория" htmlFor={`${uid}-audience`} required hint="Роль, контекст и главная потребность читателей.">
-                  <Textarea id={`${uid}-audience`} rows={3} value={draft.audience} onChange={(event) => update("audience", event.target.value)} placeholder="Например: владельцы компаний без штатного юриста" />
+                  <Textarea id={`${uid}-audience`} rows={3} required value={draft.audience} onChange={(event) => update("audience", event.target.value)} placeholder="Например: владельцы компаний без штатного юриста" />
                 </Field>
                 <Field label="Цель" htmlFor={`${uid}-goal`} hint="Какой результат должен поддерживать контент.">
                   <Textarea id={`${uid}-goal`} rows={3} value={draft.goal} onChange={(event) => update("goal", event.target.value)} placeholder="Например: приводить заявки на первичную консультацию" />

@@ -53,6 +53,7 @@ describe("project and team services", () => {
     expect(sql).toContain("insert into project_members");
     expect(sql).toContain("user_project_preferences");
     expect(sql).toContain("'project.created'");
+    expect(sql).toContain("($1::bigint)::text");
     expect(h.query.mock.calls.at(-2)?.[0]).toContain("audit_events");
     expect(h.query.mock.calls.at(-1)?.[0]).toBe("commit");
   });

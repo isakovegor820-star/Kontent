@@ -40,7 +40,10 @@ export function validProfileRequestKey(value: unknown): value is string {
 export function normalizeAvatar(value: unknown): string | null {
   const avatar = clean(value, PROFILE_AVATAR_MAX);
   if (!avatar) return "";
-  if (/^\/api\/media\/assets\/[1-9][0-9]*$/u.test(avatar)) return avatar;
+  if (
+    /^\/api\/media\/assets\/[1-9][0-9]*$/u.test(avatar)
+    || /^\/api\/settings\/profile\/avatar-assets\/[1-9][0-9]*$/u.test(avatar)
+  ) return avatar;
   try {
     const parsed = new URL(avatar);
     return parsed.protocol === "https:" ? parsed.toString().slice(0, PROFILE_AVATAR_MAX) : null;

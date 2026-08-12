@@ -20,6 +20,8 @@ import {
   Bot,
   Check,
   Clock,
+  Download,
+  ExternalLink,
   Link2,
   Lock,
   LogOut,
@@ -28,13 +30,16 @@ import {
   ShieldCheck,
   Sparkles,
   TriangleAlert,
-  Users,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { AppShell } from "@/components/app/shell";
+import { BrandDictionarySection } from "@/components/app/brand-dictionary-section";
 import { ChannelSettingsCenter } from "@/components/app/channel-settings-center";
 import { LegalSourcesSection } from "@/components/app/legal-sources-section";
 import { ProfileBriefSection } from "@/components/app/profile-brief-section";
+import { PublicationBlocksSection } from "@/components/app/publication-blocks-section";
+import { ProjectTeamSection } from "@/components/app/project-team-section";
+import { TrackingSettingsSection } from "@/components/app/tracking-settings-section";
 import { Button } from "@/components/ui/button";
 import {
   Badge,
@@ -60,6 +65,7 @@ import {
   hasComposerPayloadSupport,
   type OAuthProviderCapability,
 } from "@/lib/oauth-capabilities";
+import type { TenChatIntegrationReadiness } from "@/lib/tenchat-integration.mjs";
 
 const EASE = [0.22, 1, 0.36, 1] as const;
 
@@ -357,6 +363,9 @@ function ChannelsSection({ index }: { index: number }) {
       {/* Настоящее подключение VK-сообщества (аналог TG bot-link): ключ доступа сообщества. */}
       <VkConnect />
 
+      {/* TenChat остаётся частью общей системы каналов, но не притворяется live-интеграцией. */}
+      <TenChatIntegration />
+
       {/* Зарубежные сети (YouTube, Instagram, ...) — подключение в один клик через OAuth. */}
       <OAuthNetworks />
 
@@ -480,7 +489,107 @@ function VkConnect() {
   );
 }
 
-/* -------------------------------------------- 1в. ЗАРУБЕЖНЫЕ СЕТИ (OAuth) */
+/* ---------------------------------------- 1в. TENCHAT: OFFICIAL-ACCESS BOUNDARY */
+
+function TenChatIntegration() {
+  const [readiness, setReadiness] = useState<TenChatIntegrationReadiness | null>(null);
+  const [statusError, setStatusError] = useState(false);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch("/api/channels/tenchat", { cache: "no-store", signal: controller.signal })
+      .then(async (response) => {
+        const body = await response.json().catch(() => null) as {
+          provider?: TenChatIntegrationReadiness;
+        } | null;
+        if (!response.ok || !body?.provider) throw new Error("tenchat_readiness_unavailable");
+        setReadiness(body.provider);
+        setStatusError(false);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setStatusError(true);
+      });
+    return () => controller.abort();
+  }, []);
+
+  return (
+    <section
+      aria-labelledby="tenchat-integration-title"
+      className="mt-4 rounded-md border border-fire/25 bg-fire-soft/55 p-4"
+    >
+      <div className="flex flex-wrap items-start gap-3">
+        <span
+          aria-hidden
+          className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-surface text-fire-text"
+        >
+          <Link2 className="h-5 w-5" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 id="tenchat-integration-title" className="text-[15px] font-semibold text-text">
+              TenChat
+            </h3>
+            <Badge tone="fire">Нужен официальный доступ</Badge>
+          </div>
+          <p className="mt-1.5 text-[14px] leading-relaxed text-text-2">
+            Автопубликация выключена: на 12 августа 2026 года в официальных материалах
+            TenChat не найден документированный API для публикации. Аврора не использует
+            скрытые API, пароли или имитацию действий в браузере.
+          </p>
+        </div>
+      </div>
+
+      <dl className="mt-4 grid gap-2 text-[13px] sm:grid-cols-2">
+        <div className="rounded-sm border border-line bg-surface px-3 py-2.5">
+          <dt className="text-text-3">Автопубликация</dt>
+          <dd className="mt-0.5 font-semibold text-text">Недоступна без официального доступа</dd>
+        </div>
+        <div className="rounded-sm border border-line bg-surface px-3 py-2.5">
+          <dt className="text-text-3">Безопасная альтернатива</dt>
+          <dd className="mt-0.5 font-semibold text-text">ZIP-пакет владельцу или публикатору</dd>
+        </div>
+      </dl>
+
+      <p className="mt-3 text-[12px] leading-relaxed text-text-3" aria-live="polite">
+        {statusError
+          ? "Статус сервера не обновился. Автопубликация всё равно остаётся выключенной."
+          : readiness
+            ? `Проверено по официальным источникам: ${readiness.officialAccess.checkedAt.split("-").reverse().join(".")}. Автопубликация не подтверждена.`
+            : "Проверяем серверную готовность…"}
+      </p>
+
+      <div className="mt-4 flex flex-wrap gap-2">
+        <Link
+          href="/app/composer?export=tenchat#tenchat-export"
+          className="inline-flex min-h-11 items-center justify-center gap-2 rounded-[10px] border border-line-strong bg-surface px-3.5 py-2 text-[13px] font-semibold text-text transition-colors hover:bg-surface-inset"
+        >
+          <Download className="h-4 w-4" aria-hidden />
+          Подготовить пакет
+        </Link>
+        <a
+          href="https://tenchat.ru/contacts"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex min-h-11 items-center justify-center gap-2 rounded-[10px] px-3.5 py-2 text-[13px] font-semibold text-text-2 transition-colors hover:bg-surface hover:text-text"
+        >
+          Запросить доступ у TenChat
+          <ExternalLink className="h-4 w-4" aria-hidden />
+        </a>
+      </div>
+      <a
+        href="https://cdn1.tenchat.ru/static/vbc-gostinder/document/921e5418-d917-4e97-bb89-e296418e2a30.pdf"
+        target="_blank"
+        rel="noopener noreferrer"
+        className="mt-2 inline-flex min-h-11 items-center gap-1.5 rounded-sm px-2 text-[12px] font-semibold text-text-3 underline decoration-line-strong underline-offset-4 hover:text-text"
+      >
+        Официальные правила TenChat
+        <ExternalLink className="h-3.5 w-3.5" aria-hidden />
+      </a>
+    </section>
+  );
+}
+
+/* -------------------------------------------- 1г. ЗАРУБЕЖНЫЕ СЕТИ (OAuth) */
 
 /** Человекочитаемая причина сбоя подключения (пришли из колбэка в ?oauth=...). */
 function oauthMessage(code: string, label: string): string {
@@ -859,27 +968,6 @@ function QuietSection({ index }: { index: number }) {
   );
 }
 
-/* ------------------------------------------------ 5. РЕЖИМ РАБОТЫ (ТЗ 5.10) */
-
-function ModeSection({ index }: { index: number }) {
-  return (
-    <Section
-      icon={Users}
-      index={index}
-      title="Режим работы"
-      description="Текущая версия рассчитана на одного владельца аккаунта."
-    >
-      <div className="flex items-start gap-3 rounded-sm bg-surface-inset p-4" role="status">
-        <Users className="mt-0.5 h-5 w-5 shrink-0 text-text-3" strokeWidth={1.75} aria-hidden />
-        <p className="text-[14px] leading-relaxed text-text-2">
-          Командные роли, согласования и комментарии ещё не реализованы. Переключатель появится,
-          когда выбранный режим будет храниться на сервере и реально менять права доступа.
-        </p>
-      </div>
-    </Section>
-  );
-}
-
 /* ------------------------------------------- 6. ИИ И ЛИМИТЫ (честность, ТЗ 6) */
 
 function AiSection({ index }: { index: number }) {
@@ -1094,7 +1182,7 @@ function SettingsContent() {
 
   return (
     <AppShell
-      title="Настройка Авроры"
+      title="Настройки"
       subtitle="Укажи, как Аврора должна писать, планировать и публиковать для каждого канала."
     >
       {!s.ready ? (
@@ -1104,7 +1192,7 @@ function SettingsContent() {
           <nav
             className="grid gap-3 rounded-md border border-line bg-surface/82 p-2 shadow-soft backdrop-blur-xl sm:grid-cols-2"
             role="tablist"
-            aria-label="Разделы настройки Авроры"
+            aria-label="Разделы настроек Авроры"
           >
             <button
               type="button"
@@ -1157,7 +1245,7 @@ function SettingsContent() {
               <span>
                 <span className="block text-[15px] font-extrabold text-text">Общие настройки</span>
                 <span className="mt-1 block text-[12px] leading-relaxed text-text-3">
-                  Подключения, бот, лимиты, режим работы и аккаунт.
+                  Подключения, проекты, команда, лимиты и аккаунт.
                 </span>
               </span>
             </button>
@@ -1169,6 +1257,8 @@ function SettingsContent() {
             aria-labelledby="settings-posts-tab"
             hidden={activeSection !== "posts"}
           >
+            <BrandDictionarySection />
+            <PublicationBlocksSection />
             <ChannelSettingsCenter />
           </section>
 
@@ -1186,6 +1276,9 @@ function SettingsContent() {
                 Технические подключения и аккаунт сохраняются отдельно и сразу.
               </p>
             </div>
+            <div className="mb-5">
+              <TrackingSettingsSection />
+            </div>
             <div className="columns-1 gap-5 lg:columns-2">
               <div className="mb-5 break-inside-avoid">
                 <ChannelsSection index={0} />
@@ -1194,7 +1287,7 @@ function SettingsContent() {
                 <BotSection index={1} />
               </div>
               <div className="mb-5 break-inside-avoid">
-                <ModeSection index={2} />
+                <ProjectTeamSection />
               </div>
               <div className="mb-5 break-inside-avoid">
                 <QuietSection index={3} />
@@ -1219,7 +1312,7 @@ export default function SettingsPage() {
     <Suspense
       fallback={
         <AppShell
-          title="Настройка Авроры"
+          title="Настройки"
           subtitle="Укажи, как Аврора должна писать, планировать и публиковать для каждого канала."
         >
           <SettingsSkeleton />

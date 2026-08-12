@@ -396,7 +396,8 @@ function profanityInstruction(value) {
   if (value === 0) return "мат и грубая лексика полностью запрещены";
   if (value < 34) return "допустимы только лёгкие просторечия без мата";
   if (value < 67) return "редкий мат допустим только со звёздочками и без оскорблений";
-  return "прямой мат допустим как часть голоса бренда, но не в адрес читателя";
+  if (value < 100) return "прямой мат допустим как часть голоса бренда без обязательной цензуры";
+  return "обязательно используй минимум одно прямое матерное выражение без цензуры; верхнего количественного лимита нет. Свяжи мат с конкретным риском, ошибкой, абсурдом, пользой или эмоцией автора так, чтобы из предложения было понятно, что именно и почему так оценивается; не добавляй дежурную фразу ради галочки, не искажай юридические факты и не заменяй слова звёздочками или эвфемизмами";
 }
 
 export function buildQualityPrompt(rawQuality, options = {}) {
@@ -499,6 +500,14 @@ export function validatePostQuality(text, rawQuality, context = {}) {
     addViolation(violations, "address", "Есть обращение на «ты», хотя канал говорит только на «вы»", true, 25);
   if (q.profanity === "forbid" && profanity.test(value))
     addViolation(violations, "profanity", "Обнаружена запрещённая грубая лексика", true, 40);
+  if (q.profanityLevel === 100 && !profanity.test(value))
+    addViolation(
+      violations,
+      "profanity_required",
+      "Добавь прямое матерное выражение без звёздочек в содержательное предложение: должно быть понятно, что именно и почему так оценивается. Не добавляй отдельную фразу ради проверки",
+      true,
+      40,
+    );
 
   for (const phrase of q.forbiddenPhrases) {
     if (value.toLocaleLowerCase("ru").includes(phrase.toLocaleLowerCase("ru")))

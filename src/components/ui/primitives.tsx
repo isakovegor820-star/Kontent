@@ -121,7 +121,7 @@ export function Field({
       {/* Метка всегда видима — не плейсхолдер (a11y) */}
       <label htmlFor={htmlFor} className="block text-[13px] font-semibold text-text-2">
         {label}
-        {required && <span className="ml-1 text-danger">*</span>}
+        {required && <span aria-hidden="true" className="ml-1 text-danger">*</span>}
       </label>
       {children}
       {/* Ошибка — рядом с полем, с ролью alert */}
@@ -226,11 +226,13 @@ export function Checkbox({
   onChange,
   label,
   id,
+  disabled = false,
 }: {
   checked: boolean;
   onChange: (v: boolean) => void;
   label: React.ReactNode;
   id?: string;
+  disabled?: boolean;
 }) {
   return (
     <button
@@ -238,15 +240,19 @@ export function Checkbox({
       type="button"
       role="checkbox"
       aria-checked={checked}
+      disabled={disabled}
       onClick={() => onChange(!checked)}
-      className="group flex min-h-11 min-w-11 cursor-pointer items-center gap-2.5 py-2 text-left"
+      className={cn(
+        "group flex min-h-11 min-w-11 items-center gap-2.5 py-2 text-left",
+        disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer",
+      )}
     >
       <span
         className={cn(
-          "flex h-5 w-5 shrink-0 items-center justify-center rounded-[6px] border transition-all duration-200",
+          "flex h-5 w-5 shrink-0 items-center justify-center rounded-[6px] border transition-[background-color,border-color,color] duration-200 motion-reduce:transition-none",
           checked
             ? "border-transparent bg-brand-gradient text-white"
-            : "border-line-strong bg-surface group-hover:border-brand",
+            : "border-line-strong bg-surface group-enabled:group-hover:border-brand",
         )}
       >
         {checked && <Check className="h-3.5 w-3.5" strokeWidth={3} aria-hidden />}
@@ -309,7 +315,7 @@ export function Tabs<T extends string>({
             onClick={() => onChange(it.value)}
             className={cn(
               "inline-flex min-h-11 cursor-pointer items-center gap-1.5 rounded-[9px] px-3.5 py-2 text-[13px] font-semibold",
-              "transition-all duration-200",
+              "transition-[background-color,color,box-shadow] duration-200 motion-reduce:transition-none",
               active
                 ? "bg-surface text-text shadow-soft"
                 : "text-text-2 hover:text-text",

@@ -34,8 +34,8 @@ function scenesFor(total: LegalVideoDuration): LegalVideoSceneInput[] {
       order: 1,
       role: "hook",
       durationSeconds: hook,
-      voiceOver: "С 15 сентября 2026 года изменился срок ответа.",
-      onScreenText: "Срок ответа изменился",
+      voiceOver: "С 15 сентября 2026 года срок ответа составляет 10 дней.",
+      onScreenText: "С 15 сентября 2026 года — 10 дней",
       visualDirection: "Юрист открывает договор; крупный план документа.",
       sourceClaimIds: ["deadline"],
     },
@@ -44,8 +44,8 @@ function scenesFor(total: LegalVideoDuration): LegalVideoSceneInput[] {
       order: 2,
       role: "body",
       durationSeconds: body,
-      voiceOver: "Срок составляет 10 дней. Неустойка — 10 процентов, но не более 100 000 рублей. Оговорка следует из ст. 446 ГПК РФ и материалов дела № А40-12345/2026.",
-      onScreenText: "10 дней · 10 процентов · до 100 000 рублей",
+      voiceOver: "Срок ответа составляет 10 дней. Неустойка составляет 10 процентов, но не более 100 000 рублей. Согласно ст. 446 ГПК РФ правило применяется с учётом обстоятельств дела № А40-12345/2026.",
+      onScreenText: "Срок ответа — 10 дней. Неустойка — 10 процентов, но не более 100 000 рублей.",
       visualDirection: "Документы и нейтральная инфографика без изображения участников дела.",
       sourceClaimIds: ["deadline", "amount", "legal-reference"],
     },
@@ -95,7 +95,7 @@ function inputFor(durationSeconds: LegalVideoDuration = 30): LegalVideoScriptInp
       {
         id: "legal-reference",
         label: "Правовая оговорка",
-        claim: "Ст. 446 ГПК РФ и дело № А40-12345/2026.",
+        claim: "Согласно ст. 446 ГПК РФ правило применяется с учётом обстоятельств дела № А40-12345/2026.",
         excerpt: "Согласно ст. 446 ГПК РФ правило применяется с учётом обстоятельств дела № А40-12345/2026.",
         source: { kind: "draft", draftId: 42, draftRevision: 7, draftContentHash: contentHash },
       },
@@ -227,6 +227,33 @@ describe("legal video factual marker guard", () => {
       ? { ...scene, visualDirection: "На 5 секунде показать документ." }
       : scene);
     expect(() => createLegalVideoScript(bad)).toThrow(LegalVideoValidationError);
+  });
+
+  it.each([
+    "Суды всегда освобождают директора от ответственности.",
+    "Суды освобождают директора от ответственности.",
+    "Срок ответа не изменился.",
+  ])("blocks a qualitative claim absent from the cited evidence: %s", (voiceOver) => {
+    const current = createLegalVideoScript(inputFor());
+    const edited = current.scenes.map((scene, index) => ({
+      id: scene.id,
+      order: scene.order,
+      role: scene.role,
+      durationSeconds: scene.durationSeconds,
+      voiceOver: index === 1 ? voiceOver : scene.voiceOver,
+      onScreenText: index === 1 ? voiceOver : scene.onScreenText,
+      visualDirection: scene.visualDirection,
+      sourceClaimIds: [...scene.sourceClaimIds],
+    }));
+
+    expect(() => reviseLegalVideoScript(current, { scenes: edited })).toThrow(LegalVideoValidationError);
+    try {
+      reviseLegalVideoScript(current, { scenes: edited });
+    } catch (error) {
+      expect((error as LegalVideoValidationError).issues).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: "unsupported_semantic_claim" }),
+      ]));
+    }
   });
 });
 

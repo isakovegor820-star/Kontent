@@ -4,7 +4,13 @@ type ReconciliationPool = Pick<Pool, "connect">;
 
 export async function reconcileStaleMediaGeneration(
   pool: ReconciliationPool,
-  input: { userId: number; generationId?: number; requestKey?: string; staleAfterMinutes?: number },
+  input: {
+    userId: number;
+    projectId: number;
+    generationId?: number;
+    requestKey?: string;
+    staleAfterMinutes?: number;
+  },
 ) {
   const generationId = input.generationId ?? null;
   const requestKey = input.requestKey ?? null;
@@ -20,13 +26,13 @@ export async function reconcileStaleMediaGeneration(
           set status = 'failed', error_code = 'stale_generation',
               error_message = 'Генерация не получила terminal-событие вовремя. Запусти её ещё раз.',
               updated_at = now(), completed_at = now()
-        where user_id = $1
-          and ($2::bigint is null or id = $2)
-          and ($3::text is null or request_key = $3)
+        where user_id = $1 and project_id = $2
+          and ($3::bigint is null or id = $3)
+          and ($4::text is null or request_key = $4)
           and status in ('queued','submitting','generating','saving')
-          and updated_at < now() - ($4::int * interval '1 minute')
+          and updated_at < now() - ($5::int * interval '1 minute')
       returning id, ai_usage_reservation_id`,
-      [input.userId, generationId, requestKey, staleAfterMinutes],
+      [input.userId, input.projectId, generationId, requestKey, staleAfterMinutes],
     );
     const reservationIds = failed.rows
       .map((row) => Number(row.ai_usage_reservation_id))

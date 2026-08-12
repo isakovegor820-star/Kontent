@@ -48,6 +48,15 @@ describe("shared provider capability registry", () => {
     expect(providerSupportsOperation("tg", "future-operation")).toBe(false);
   });
 
+  it("exposes only the additional operations implemented through official APIs", () => {
+    expect(providerSupportsOperation("tg", "firstComment")).toBe(true);
+    expect(providerSupportsOperation("tg", "pin")).toBe(true);
+    expect(providerSupportsOperation("tg", "commentToggle")).toBe(false);
+    expect(providerSupportsOperation("vk", "firstComment")).toBe(true);
+    expect(providerSupportsOperation("vk", "commentToggle")).toBe(true);
+    expect(providerSupportsOperation("vk", "pin")).toBe(false);
+  });
+
   it("requires proven credentials and permissions for a supported write", () => {
     expect(resolveProviderOperation("tg", "livePublish")).toMatchObject({
       available: false,
@@ -97,12 +106,15 @@ describe("shared provider capability registry", () => {
     expect(PROVIDER_CAPABILITY_REGISTRY.tenchat.officialAccess).toMatchObject({
       verified: false,
       contactUrl: "https://tenchat.ru/contacts",
+      rulesUrl: expect.stringContaining("tenchat.ru"),
     });
   });
 
   it("publishes only media types implemented by the current product path", () => {
     expect(providerSupportsMediaType("tg", "image")).toBe(true);
     expect(providerSupportsMediaType("tg", "video")).toBe(true);
+    expect(providerSupportsMediaType("tg", "carousel")).toBe(true);
+    expect(PROVIDER_CAPABILITY_REGISTRY.tg.limits.mediaPerPost).toBe(10);
     expect(providerSupportsMediaType("vk", "image")).toBe(false);
     expect(providerSupportsMediaType("rss", "text")).toBe(false);
     expect(providerSupportsMediaType("future-network", "text")).toBe(false);

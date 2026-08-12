@@ -91,6 +91,39 @@ describe("project API routes", () => {
     expect(mocks.createProjectInvitation).not.toHaveBeenCalled();
   });
 
+  it("rejects unsupported media, unknown keys and the actual oversized stream", async () => {
+    const unsupported = await createProject(new NextRequest("https://aurora.test/api/projects", {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: JSON.stringify({ name: "Команда" }),
+    }));
+    expect(unsupported.status).toBe(415);
+
+    const unknown = await createProject(request("/api/projects", "POST", {
+      name: "Команда",
+      role: "owner",
+    }));
+    expect(unknown.status).toBe(400);
+
+    const oversized = await createProject(new NextRequest("https://aurora.test/api/projects", {
+      method: "POST",
+      headers: { "content-type": "application/json", "content-length": "2" },
+      body: JSON.stringify({ name: "x".repeat(20_000) }),
+    }));
+    expect(oversized.status).toBe(413);
+    expect(mocks.createProject).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed UTF-8 before project persistence", async () => {
+    const response = await createProject(new NextRequest("https://aurora.test/api/projects", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: new Uint8Array([0x7b, 0x22, 0x6e, 0x61, 0x6d, 0x65, 0x22, 0x3a, 0x22, 0xc3, 0x28, 0x22, 0x7d]),
+    }));
+    expect(response.status).toBe(400);
+    expect(mocks.createProject).not.toHaveBeenCalled();
+  });
+
   it("returns the 32-byte secret only inside the one-time copyable invitation URL", async () => {
     const response = await createInvitation(
       request("/api/projects/2/invitations", "POST", { email: "new@example.com", role: "author" }),

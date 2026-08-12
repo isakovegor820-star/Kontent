@@ -111,7 +111,9 @@ export function resolveLocalSchedule(input: LocalScheduleInput, claimedInstant?:
     if (claimed !== resolved.scheduledAt) throw new ScheduleValidationError("schedule_instant_conflict");
   }
   return {
-    ...resolved,
+    scheduledAt: resolved.scheduledAt,
+    offset: resolved.offset,
+    disambiguation: resolved.disambiguation,
     localDate: input.localDate,
     localTime: input.localTime,
     timezone: input.timezone,

@@ -7,7 +7,7 @@ import { configuredAppUrl } from "@/lib/password-reset";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import { getSessionUser } from "@/lib/session";
 import { createProjectInvitation, listProjectInvitations } from "@/lib/project-team";
-import { positiveRouteId, projectApiError, projectJson, readObjectBody } from "@/app/api/projects/_shared";
+import { positiveRouteId, projectApiError, projectBodyFailure, projectJson, readProjectBody } from "@/app/api/projects/_shared";
 
 export const runtime = "nodejs";
 
@@ -38,8 +38,9 @@ export async function POST(req: NextRequest, { params }: Params) {
   if (!rate.allowed) return rateLimitResponse(rate);
   const projectId = positiveRouteId((await params).projectId);
   if (!projectId) return projectJson({ ok: false, error: "bad_project" }, 400, requestId);
-  const body = await readObjectBody(req);
-  if (!body) return projectJson({ ok: false, error: "bad_request" }, 400, requestId);
+  const parsed = await readProjectBody(req, ["email", "role", "ttlDays"]);
+  if (!parsed.ok) return projectBodyFailure(parsed, requestId);
+  const body = parsed.body;
   try {
     const result = await createProjectInvitation({
       pool: getPool(),

@@ -28,6 +28,18 @@ const validId = (value: unknown) => Number.isSafeInteger(Number(value)) && Numbe
 const validClientKey = (value: unknown): value is string =>
   typeof value === "string" && /^draft_[A-Za-z0-9-]{16,}$/u.test(value);
 
+function validWorkspaceId(value: unknown, userId: number): value is string {
+  if (value === `personal:${userId}`) return true;
+  if (typeof value !== "string") return false;
+  const match = /^project:(\d+)$/u.exec(value);
+  return Boolean(match && validId(match[1]));
+}
+
+export function projectDraftWorkspaceId(projectId: number): string {
+  if (!validId(projectId)) throw new Error("invalid project draft workspace");
+  return `project:${projectId}`;
+}
+
 function storageOrNull(storage?: DraftOutboxStorage | null): DraftOutboxStorage | null {
   if (storage) return storage;
   try {
@@ -46,7 +58,11 @@ function parseRecord(raw: string | null, expectedUserId: number): PendingDraftRe
   if (!raw) return null;
   try {
     const value = JSON.parse(raw) as PendingDraftRevision;
-    if (value?.schema !== 1 || value.userId !== expectedUserId || !validClientKey(value.clientKey)) return null;
+    if (
+      value?.schema !== 1 || value.userId !== expectedUserId
+      || !validClientKey(value.clientKey)
+      || !validWorkspaceId(value.workspaceId, expectedUserId)
+    ) return null;
     if (!validId(value.revision) || (value.draftId !== null && !validId(value.draftId))) return null;
     if (value.baseVersion !== null && !validId(value.baseVersion)) return null;
     if (!value.payload || typeof value.payload.text !== "string" || !Array.isArray(value.payload.channelIds)) return null;
@@ -64,7 +80,7 @@ export function persistPendingDraft(
 ): boolean {
   const target = storageOrNull(storage);
   if (!target) return false;
-  if (record.workspaceId !== `personal:${record.userId}`) return false;
+  if (!validWorkspaceId(record.workspaceId, record.userId)) return false;
   try {
     target.setItem(pendingDraftStorageKey(record.userId, record.clientKey), JSON.stringify(record));
     return true;
@@ -76,6 +92,7 @@ export function persistPendingDraft(
 export function listPendingDrafts(
   userId: number,
   storage?: DraftOutboxStorage | null,
+  workspaceId?: string | null,
 ): PendingDraftRevision[] {
   const target = storageOrNull(storage);
   if (!target || !validId(userId)) return [];
@@ -85,7 +102,7 @@ export function listPendingDrafts(
     const key = target.key(index);
     if (!key?.startsWith(prefix)) continue;
     const record = parseRecord(target.getItem(key), userId);
-    if (record) records.push(record);
+    if (record && (workspaceId == null || record.workspaceId === workspaceId)) records.push(record);
   }
   return records.sort((left, right) => Date.parse(right.writtenAt) - Date.parse(left.writtenAt));
 }
@@ -94,8 +111,9 @@ export function findPendingDraft(
   userId: number,
   selector: { draftId?: number | null; clientKey?: string | null },
   storage?: DraftOutboxStorage | null,
+  workspaceId?: string | null,
 ): PendingDraftRevision | null {
-  const records = listPendingDrafts(userId, storage);
+  const records = listPendingDrafts(userId, storage, workspaceId);
   if (selector.clientKey) {
     return records.find((record) => record.clientKey === selector.clientKey) ?? null;
   }
@@ -125,8 +143,16 @@ export function removePendingDraft(
   userId: number,
   clientKey: string,
   storage?: DraftOutboxStorage | null,
-): void {
+): boolean {
   const target = storageOrNull(storage);
-  if (!target) return;
-  target.removeItem(pendingDraftStorageKey(userId, clientKey));
+  if (!target) return false;
+  try {
+    target.removeItem(pendingDraftStorageKey(userId, clientKey));
+    return true;
+  } catch {
+    // Publication success is server-owned. A private-mode or quota failure while
+    // cleaning a recovery copy must never turn a queued publication into a false
+    // client error or keep the user in the Composer.
+    return false;
+  }
 }

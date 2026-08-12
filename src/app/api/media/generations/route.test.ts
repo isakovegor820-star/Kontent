@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   txRelease: vi.fn(),
   hasMediaWorker: vi.fn(),
   enqueueMediaGeneration: vi.fn(),
+  requireSelectedProjectPermission: vi.fn(),
 }));
 
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
@@ -44,6 +45,10 @@ vi.mock("@/lib/db", () => ({
 vi.mock("@/lib/queue", () => ({
   hasMediaWorker: mocks.hasMediaWorker,
   enqueueMediaGeneration: mocks.enqueueMediaGeneration,
+}));
+vi.mock("@/lib/project-permissions", () => ({
+  ProjectAccessError: class ProjectAccessError extends Error {},
+  requireSelectedProjectPermission: mocks.requireSelectedProjectPermission,
 }));
 
 import { POST } from "./route";
@@ -104,6 +109,12 @@ describe("POST /api/media/generations", () => {
     vi.clearAllMocks();
     vi.stubEnv("NAVYAI_API_KEY", "test-key");
     mocks.getSessionUser.mockResolvedValue({ id: 7 });
+    mocks.requireSelectedProjectPermission.mockResolvedValue({
+      projectId: 23,
+      userId: 7,
+      role: "author",
+      version: 1,
+    });
     mocks.hasTrustedMutationOrigin.mockReturnValue(true);
     mocks.poolQuery.mockResolvedValue({ rows: [], rowCount: 1 });
     mocks.validateMediaInput.mockReturnValue({ ok: true, value: input });
@@ -158,6 +169,14 @@ describe("POST /api/media/generations", () => {
     expect((await response.json()).replayed).toBe(true);
     expect(mocks.acquireAiUsageRequest).not.toHaveBeenCalled();
     expect(mocks.enqueueMediaGeneration).not.toHaveBeenCalled();
+    expect(mocks.reconcileStaleMediaGeneration).toHaveBeenCalledWith(
+      expect.anything(),
+      { userId: 7, projectId: 23, requestKey: "media_retry_1234" },
+    );
+    expect(mocks.poolQuery).toHaveBeenCalledWith(
+      expect.stringContaining("where g.project_id = $1 and g.request_key = $2"),
+      [23, "media_retry_1234"],
+    );
   });
 
   it("releases the shared reservation when Redis cannot accept the job", async () => {
@@ -214,8 +233,13 @@ describe("POST /api/media/generations", () => {
       }),
     );
     const insertion = mocks.txQuery.mock.calls.find(([sql]) => String(sql).includes("insert into media_generations"));
+    expect(insertion?.[1]?.[1]).toBe(23);
     expect(insertion?.[1]).toEqual(expect.arrayContaining(["Правовые технологии", "Деловой"]));
     expect(insertion?.[1]).not.toContain("кофе");
+    expect(mocks.enqueueMediaGeneration).toHaveBeenCalledWith(expect.objectContaining({
+      generationId: 41,
+      projectId: 23,
+    }));
   });
 
   it("fails closed before quota reservation when no media worker is present", async () => {

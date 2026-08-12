@@ -6,6 +6,8 @@ import {
   APP_NAV_GROUPS,
   APP_ROUTES,
   appDraftActionHref,
+  composerReturnTarget,
+  composerSource,
   composerHydrationIdentity,
   getActiveReconTabRouteId,
   isAppRouteActive,
@@ -80,5 +82,25 @@ describe("app action registry", () => {
     expect(identity).toContain("channel:11");
     expect(composerHydrationIdentity({ ...base, draftId: 42 })).not.toBe(identity);
     expect(composerHydrationIdentity({ ...base, channelId: 12 })).not.toBe(identity);
+    expect(composerHydrationIdentity({ ...base, projectId: 8 })).not.toBe(identity);
+  });
+
+  it("keeps every Composer entry point paired with a safe return destination", () => {
+    expect(composerReturnTarget(composerSource("studio"))).toEqual({
+      href: "/app/studio",
+      label: "Вернуться в Студию",
+    });
+    expect(composerReturnTarget(composerSource("autopilot-month"))).toEqual({
+      href: "/app/autopilot/month",
+      label: "Вернуться к плану месяца",
+    });
+    expect(composerReturnTarget(composerSource("studio-visuals"), 41)).toEqual({
+      href: "/app/studio/visuals?draft=41",
+      label: "Вернуться к визуалам",
+    });
+    expect(composerReturnTarget(composerSource("unknown"))).toEqual({
+      href: "/app/calendar",
+      label: "Вернуться в календарь",
+    });
   });
 });

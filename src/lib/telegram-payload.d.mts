@@ -30,3 +30,12 @@ export function buildTelegramPayload(input: {
   entityLength: number;
   parts: TelegramPayloadPart[];
 };
+export function buildTelegramCarouselParts(input: {
+  assetCount: number;
+  text: string;
+}): Array<{
+  index: number;
+  type: "text" | "media";
+  payloadHtml: string | null;
+  entityLength: number | null;
+}>;

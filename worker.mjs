@@ -9,6 +9,7 @@ import { Worker, Queue, UnrecoverableError } from "bullmq";
 import IORedis from "ioredis";
 import pg from "pg";
 import { createHash } from "node:crypto";
+import { Temporal } from "@js-temporal/polyfill";
 // Чистые функции (парсинг, страж фактов, раскладка, разметка) вынесены в отдельный модуль
 // без сайд-эффектов — так их можно тестировать, не поднимая пул/Redis/BullMQ.
 import {
@@ -38,6 +39,15 @@ import {
 } from "./worker/rss-pipeline.mjs";
 import { buildWeeklyReport } from "./worker/weekly-report.mjs";
 import {
+  StatsProjectScopeError,
+  requireStatsJobProjectScope,
+  requireStatsProjectId,
+} from "./worker/stats-project-scope.mjs";
+import {
+  AutopilotProjectScopeError,
+  requireAutopilotPlanJobScope,
+} from "./worker/autopilot-project-scope.mjs";
+import {
   MEDIA_QUEUE,
   assertSafeMediaUrl,
   buildNavyMediaPayload,
@@ -53,10 +63,48 @@ import {
   putMediaObject,
 } from "./src/lib/media-storage.mjs";
 import {
+  enqueueLegalVisualRenderJob,
+  LEGAL_VISUAL_RENDER_QUEUE,
+} from "./src/lib/legal-visual-render-queue.mjs";
+import { reconcileLegalVisualRenderOutbox } from "./src/lib/legal-visual-render-outbox.mjs";
+import {
   executeMediaGenerationJob,
   MediaGenerationAttemptError,
 } from "./worker/media-generation-worker.mjs";
+import { processLegalVisualRender } from "./worker/legal-visual-render-worker.mjs";
 import { createSiteAnalysisWorker } from "./worker/site-analysis-worker.mjs";
+import { createProjectExportWorker } from "./worker/project-export-worker.mjs";
+import { ensureDraftEditorialBootstrap } from "./worker/draft-editorial-bootstrap.mjs";
+import {
+  expireProjectExportArtifacts,
+  reconcileProjectExportOutbox,
+} from "./src/lib/project-export-outbox.mjs";
+import {
+  enqueueProjectExportJob,
+  PROJECT_EXPORT_QUEUE,
+} from "./src/lib/project-export-queue.mjs";
+import {
+  MONTHLY_CAMPAIGN_REGENERATION_QUEUE,
+  monthlyRegenerationJobId,
+  processMonthlyCampaignRegeneration,
+  reconcileMonthlyCampaignRegenerationOutbox,
+  recoverStaleMonthlyCampaignRegenerations,
+} from "./worker/monthly-campaign-regeneration.mjs";
+import {
+  enqueuePublicationExtraJob,
+  PUBLICATION_EXTRA_QUEUE,
+} from "./src/lib/publication-extra-queue.mjs";
+import { createPublicationExtraWorker, observeTelegramDiscussionUpdate } from "./worker/publication-extra-worker.mjs";
+import {
+  reconcilePublicationExtraRuntime,
+  triggerPublicationExtrasAfterPublish,
+} from "./worker/publication-extra-runtime.mjs";
+import {
+  createPublicationReviewReminderWorker,
+  enqueuePublicationReviewReminderJob,
+  processDuePublicationReviews,
+  PUBLICATION_REVIEW_REMINDER_QUEUE,
+} from "./worker/publication-review-reminder.mjs";
 // Шифрование токенов сообществ (VK) и OAuth-сетей (YouTube/Instagram). Крипто НЕ дублируем —
 // один модуль на роуты и воркер. encryptToken нужен для сохранения обновлённого access_token.
 import { decryptToken, encryptToken } from "./src/lib/token-crypto.mjs";
@@ -125,6 +173,7 @@ import {
 } from "./src/lib/autopilot-scheduling.mjs";
 import { publicationSuccessState } from "./worker/publication-state.mjs";
 import { beginProviderCall, claimPublicationLease } from "./worker/publication-lease.mjs";
+import { providerTerminalFailure } from "./worker/provider-terminal-failures.mjs";
 import {
   decideTelegramAggregateReconciliation,
   decideTelegramReconciliation,
@@ -159,6 +208,7 @@ import { reconcilePasswordResetOutbox } from "./worker/password-reset-outbox.mjs
 import { persistCompetitorLibraryAnalytics } from "./worker/library-analytics.mjs";
 import { reconcilePublicationOutbox } from "./src/lib/publication-outbox.mjs";
 import { deliverTelegramParts, telegramPartDefinitions } from "./worker/telegram-multipart.mjs";
+import { deliverTelegramCarousel, telegramCarouselPartDefinitions } from "./worker/telegram-carousel.mjs";
 import {
   classifyOAuthChannelFailure,
   classifyTelegramChannelFailure,
@@ -419,7 +469,7 @@ const MOODS_W = {
   friendly: { p: "Тёплый профиль: понятно, бережно и без дистанции; без сюсюканья, фамильярности и искусственной заботы.", t: 0.58 },
   cheerful: { p: "Энергичный профиль: активные глаголы и быстрый ритм; без капслока, каскада восклицаний и неуместного восторга.", t: 0.66 },
   expert: { p: "Экспертный профиль: ясный тезис, логика и практическая польза; без канцелярита и неподтверждённой уверенности.", t: 0.42 },
-  bold: { p: "Дерзкий профиль: ясная позиция и точный контраст; без хамства, мата, кликбейта и провокации ради провокации.", t: 0.7 },
+  bold: { p: "Дерзкий профиль: ясная позиция и точный контраст; без хамства, кликбейта и провокации ради провокации. Мат регулируется настройкой канала и прямым запросом пользователя; в свободном режиме не цензурируй его.", t: 0.7 },
   inspiring: { p: "Вдохновляющий профиль: реалистичная возможность и конкретный первый шаг; без пустых лозунгов и обещаний лёгкого успеха.", t: 0.62 },
   ironic: { p: "Ироничный профиль: одно-два точных наблюдения, которые усиливают мысль; не шутить над читателем или чужой болью.", t: 0.68 },
   calm: { p: "Спокойный профиль: последовательный и уверенный тон; без давления на страх, надрыва и ложной срочности.", t: 0.4 },
@@ -527,9 +577,52 @@ function startAiUsageHeartbeat(userId, reservationId) {
 
 const connection = new IORedis(REDIS_URL, { maxRetriesPerRequest: null });
 const queue = new Queue("publish", { connection }); // для повторных задач
+const monthlyCampaignRegenerationQueue = MEDIA_ONLY || PUBLICATION_ONLY
+  ? null
+  : new Queue(MONTHLY_CAMPAIGN_REGENERATION_QUEUE, { connection });
+const projectExportQueue = AUTOPILOT_ONLY || MEDIA_ONLY || PUBLICATION_ONLY
+  ? null
+  : new Queue(PROJECT_EXPORT_QUEUE, { connection });
+const projectExportWorker = AUTOPILOT_ONLY || MEDIA_ONLY || PUBLICATION_ONLY
+  ? null
+  : createProjectExportWorker({ connection, pool, concurrency: 1 });
 const siteAnalysisWorker = AUTOPILOT_ONLY || MEDIA_ONLY || PUBLICATION_ONLY
   ? null
   : createSiteAnalysisWorker({ connection, pool, concurrency: 1 });
+const publicationExtraQueue = AUTOPILOT_ONLY || MEDIA_ONLY
+  ? null
+  : new Queue(PUBLICATION_EXTRA_QUEUE, { connection });
+const publicationExtraWorker = AUTOPILOT_ONLY || MEDIA_ONLY
+  ? null
+  : createPublicationExtraWorker({
+      connection,
+      pool,
+      telegramRequest: tg,
+      vkRequest: vkApi,
+      decryptToken,
+      concurrency: 2,
+    });
+const publicationReviewReminderQueue = AUTOPILOT_ONLY || MEDIA_ONLY
+  ? null
+  : new Queue(PUBLICATION_REVIEW_REMINDER_QUEUE, { connection });
+const publicationReviewReminderWorker = AUTOPILOT_ONLY || MEDIA_ONLY
+  ? null
+  : createPublicationReviewReminderWorker({
+      connection,
+      pool,
+      notifyUser,
+      concurrency: 1,
+    });
+
+async function enqueuePublicationExtra(data) {
+  if (!publicationExtraQueue) throw new Error("publication_extra_queue_disabled");
+  return enqueuePublicationExtraJob(data, publicationExtraQueue);
+}
+
+async function enqueuePublicationReviewReminder(data) {
+  if (!publicationReviewReminderQueue) throw new Error("publication_review_reminder_queue_disabled");
+  return enqueuePublicationReviewReminderJob(data, publicationReviewReminderQueue);
+}
 
 // ── Медиагенерация NavyAI ───────────────────────────────────────────────────
 // Видео нельзя держать внутри HTTP-запроса Next: Veo работает до 10 минут. Отдельная
@@ -627,7 +720,7 @@ async function persistMediaResult(generation, outputUrl, lease) {
   });
   const object = storageBackend === "object"
     ? await putMediaObject({
-        userId: generation.user_id,
+        projectId: generation.project_id,
         sha256,
         extension: ext,
         mimeType: mime,
@@ -652,11 +745,12 @@ async function persistMediaResult(generation, outputUrl, lease) {
     }
     const asset = await tx.query(
       `insert into media_assets
-        (user_id, kind, file_name, mime_type, bytes, data, sha256, duration_seconds,
-         storage_backend, object_key, object_etag)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) returning id`,
+        (user_id, project_id, kind, file_name, mime_type, bytes, data, sha256, duration_seconds,
+         storage_backend, object_key, object_etag, origin)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'media_generation') returning id`,
       [
         generation.user_id,
+        generation.project_id,
         generation.kind,
         `aurora-${generation.kind}-${generation.id}.${ext}`,
         mime,
@@ -711,7 +805,7 @@ async function persistMediaResult(generation, outputUrl, lease) {
 const navyMedia = createNavyMediaClient({ apiKey: NAVYAI_KEY, baseUrl: NAVYAI_URL });
 
 const mediaGenerationFields = `
-  g.id, g.user_id, g.kind, g.status, g.prompt, g.negative_prompt, g.model,
+  g.id, g.user_id, g.project_id, g.kind, g.status, g.prompt, g.negative_prompt, g.model,
   g.aspect_ratio, g.quality, g.seconds, g.style, g.provider_job_id,
   g.output_asset_id, g.ai_usage_reservation_id, g.request_id,
   g.request_key, g.provider_request_key, g.prompt_context`;
@@ -727,6 +821,7 @@ const mediaStore = {
           and g.request_key = $2
           and g.request_id = $3::uuid
           and g.provider_request_key = $4
+          and g.project_id = $5
           and g.status = 'queued'
           and g.queue_confirmed_at is not null
           and g.updated_at >= now() - interval '15 minutes'
@@ -735,7 +830,7 @@ const mediaStore = {
           and u.status = 'reserved'
           and u.expires_at > now()
       returning ${mediaGenerationFields}`,
-      [job.generationId, job.requestKey, job.requestId, job.providerRequestKey],
+      [job.generationId, job.requestKey, job.requestId, job.providerRequestKey, job.projectId],
     );
     if (claimed.rows[0]) {
       assertWorkerAiCallPolicy("media-generation", claimed.rows[0].ai_usage_reservation_id);
@@ -749,8 +844,8 @@ const mediaStore = {
                 g.updated_at < now() - interval '15 minutes' as generation_stale
            from media_generations g
            left join ai_usage u on u.id = g.ai_usage_reservation_id and u.user_id = g.user_id
-          where g.id = $1`,
-        [job.generationId],
+          where g.id = $1 and g.project_id = $2`,
+        [job.generationId, job.projectId],
       )
     ).rows[0];
     if (!current) return { state: "skip", reason: "not_found" };
@@ -947,11 +1042,14 @@ const mediaWorker = AUTOPILOT_ONLY || PUBLICATION_ONLY ? null : new Worker(
   MEDIA_QUEUE,
   async (job) => {
     const generationId = Number(job.data.generationId);
+    const projectId = Number(job.data.projectId);
     const requestId = String(job.data.requestId || "");
     const requestKey = String(job.data.requestKey || "");
     const providerRequestKey = String(job.data.providerRequestKey || "");
     const validIdentity = Number.isInteger(generationId)
       && generationId > 0
+      && Number.isSafeInteger(projectId)
+      && projectId > 0
       && /^[0-9a-f]{8}-[0-9a-f-]{27,}$/iu.test(requestId)
       && /^[A-Za-z0-9:_-]{8,96}$/u.test(requestKey)
       && providerRequestKey === `aurora-media-${requestId}`;
@@ -961,6 +1059,7 @@ const mediaWorker = AUTOPILOT_ONLY || PUBLICATION_ONLY ? null : new Worker(
     try {
       const result = await executeMediaGenerationJob({
         generationId,
+        projectId,
         requestId,
         requestKey,
         providerRequestKey,
@@ -1007,6 +1106,36 @@ mediaWorker?.on("failed", (job, error) => console.error("[media] generation fail
 }));
 mediaWorker?.on("error", (error) => console.error("[media-worker]", {
   event: "queue_error",
+  errorName: error?.name || "Error",
+}));
+
+const legalVisualRenderQueue = AUTOPILOT_ONLY || PUBLICATION_ONLY
+  ? null
+  : new Queue(LEGAL_VISUAL_RENDER_QUEUE, { connection });
+const legalVisualRenderWorker = AUTOPILOT_ONLY || PUBLICATION_ONLY ? null : new Worker(
+  LEGAL_VISUAL_RENDER_QUEUE,
+  async (job) => {
+    const result = await processLegalVisualRender({
+      pool,
+      data: job.data,
+      workerAttempt: job.attemptsMade + 1,
+    });
+    if (result?.failed) {
+      const error = new UnrecoverableError(result.errorCode || "legal_visual_render_failed");
+      error.code = result.errorCode || "legal_visual_render_failed";
+      throw error;
+    }
+    return result;
+  },
+  { connection, concurrency: 1 },
+);
+legalVisualRenderWorker?.on("ready", () => console.log("[legal-visual] очередь рендера слушается"));
+legalVisualRenderWorker?.on("failed", (job, error) => console.error("[legal-visual] render failed", {
+  operationId: job?.data?.operationId || job?.id || null,
+  projectId: job?.data?.projectId || null,
+  code: error?.code || error?.name || "render_failed",
+}));
+legalVisualRenderWorker?.on("error", (error) => console.error("[legal-visual] worker error", {
   errorName: error?.name || "Error",
 }));
 
@@ -1066,6 +1195,31 @@ async function tgSendAsset(chatId, asset, captionHtml = null) {
   return response.json().catch(() => ({ ok: false, description: "Telegram не принял файл" }));
 }
 
+async function tgSendMediaGroup(chatId, assets, captionHtml = null) {
+  if (!Array.isArray(assets) || assets.length < 3 || assets.length > 7
+    || assets.some((asset) => asset.kind !== "image")) {
+    return { ok: false, description: "telegram_carousel_assets_invalid" };
+  }
+  const form = new FormData();
+  form.set("chat_id", String(chatId));
+  const media = assets.map((asset, index) => {
+    const field = `photo_${index}`;
+    form.set(field, new Blob([asset.data], { type: asset.mime_type }), asset.file_name);
+    return {
+      type: "photo",
+      media: `attach://${field}`,
+      ...(index === 0 && captionHtml ? { caption: captionHtml, parse_mode: "HTML" } : {}),
+    };
+  });
+  form.set("media", JSON.stringify(media));
+  const response = await fetch(`${TELEGRAM_API_URL}/bot${TOKEN}/sendMediaGroup`, {
+    method: "POST",
+    body: form,
+    signal: AbortSignal.timeout(120_000),
+  });
+  return response.json().catch(() => ({ ok: false, description: "Telegram не принял карусель" }));
+}
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ----------------------------------------------------------------------------
@@ -1123,12 +1277,36 @@ async function vkPostStats(token, groupId, postId) {
  * форматтер-гарант: даже если ИИ или человек дал «простыню», в канал уйдёт структура. */
 async function publishTg(channel, postId, text, media) {
   try {
-    const assetId = Number(media?.assetId);
-    const asset = Number.isInteger(assetId) && assetId > 0
+    const isCarousel = media?.kind === "carousel";
+    const carouselItems = isCarousel && Array.isArray(media.items) ? media.items : [];
+    const carouselAssets = [];
+    if (isCarousel) {
+      if (carouselItems.length < 3 || carouselItems.length > 7) {
+        return { ok: false, reason: "telegram_carousel_assets_invalid", deliveryUnknown: false };
+      }
+      for (const item of carouselItems) {
+        const itemId = Number(item?.assetId);
+        const loaded = Number.isSafeInteger(itemId) && itemId > 0
+          ? await loadMediaAssetBuffer({
+              pool,
+              assetId: itemId,
+              projectId: channel.project_id,
+              maxBytes: MEDIA_VIDEO_MAX_BYTES,
+            })
+          : null;
+        if (!loaded || loaded.kind !== "image" || loaded.mime_type !== item.mimeType
+          || createHash("sha256").update(loaded.data).digest("hex") !== loaded.sha256) {
+          return { ok: false, reason: "telegram_carousel_asset_unavailable", deliveryUnknown: false };
+        }
+        carouselAssets.push(loaded);
+      }
+    }
+    const assetId = Number(!isCarousel ? media?.assetId : null);
+    const asset = !isCarousel && Number.isInteger(assetId) && assetId > 0
       ? await loadMediaAssetBuffer({
           pool,
           assetId,
-          userId: channel.user_id,
+          projectId: channel.project_id,
           maxBytes: MEDIA_VIDEO_MAX_BYTES,
         })
       : null;
@@ -1143,11 +1321,13 @@ async function publishTg(channel, postId, text, media) {
       && part.part_type === "media"
       && ["sending", "sent", "unknown"].includes(part.send_status),
     );
-    const definitions = telegramPartDefinitions({
-      hasAsset: Boolean(asset),
-      text,
-      forceSeparateMedia,
-    });
+    const definitions = isCarousel
+      ? telegramCarouselPartDefinitions({ assets: carouselAssets, text })
+      : telegramPartDefinitions({
+          hasAsset: Boolean(asset),
+          text,
+          forceSeparateMedia,
+        });
     // Unsent legacy plans can be replaced safely. Once any provider call may have
     // happened, existing indexes are fenced and only missing deterministic parts are added.
     if (
@@ -1199,11 +1379,9 @@ async function publishTg(channel, postId, text, media) {
         deliveryUnknown: false,
       };
     }
-    const result = await deliverTelegramParts({
+    const delivery = {
       parts,
-      asset,
       sendText: (value) => tgSendHtml(channel.tg_chat_id, value),
-      sendAsset: (value, caption) => tgSendAsset(channel.tg_chat_id, value, caption),
       markSending: (part) => pool.query(
         `update publication_parts set send_status = 'sending', updated_at = now()
           where id = $1 and send_status in ('pending','failed')`,
@@ -1231,7 +1409,18 @@ async function publishTg(channel, postId, text, media) {
           where id = $1`,
         [part.id],
       ),
-    });
+    };
+    const result = isCarousel
+      ? await deliverTelegramCarousel({
+          ...delivery,
+          assets: carouselAssets,
+          sendGroup: (value, caption) => tgSendMediaGroup(channel.tg_chat_id, value, caption),
+        })
+      : await deliverTelegramParts({
+          ...delivery,
+          asset,
+          sendAsset: (value, caption) => tgSendAsset(channel.tg_chat_id, value, caption),
+        });
     if (!result.ok) {
       const health = classifyTelegramChannelFailure(result);
       return health
@@ -1572,6 +1761,23 @@ const worker = AUTOPILOT_ONLY || MEDIA_ONLY ? null : new Worker(
   "publish",
   async (job) => {
     const postId = job.data.postId;
+    let projectId = Number(job.data.projectId);
+    if (!Number.isSafeInteger(projectId) || projectId <= 0) {
+      const legacyPost = await pool.query(
+        `select project_id from posts where id = $1`,
+        [postId],
+      );
+      projectId = Number(legacyPost.rows[0]?.project_id);
+      if (!Number.isSafeInteger(projectId) || projectId <= 0) {
+        console.warn("[worker] публикация отклонена: project id is missing", { postId });
+        return;
+      }
+      console.info("[publication_event]", {
+        event: "legacy_job_project_resolved",
+        postId,
+        projectId,
+      });
+    }
     const scheduleRevision = duePublicationRevision(job.data);
     if (scheduleRevision == null) {
       console.warn("[worker] публикация отклонена: invalid schedule revision", { postId });
@@ -1585,6 +1791,7 @@ const worker = AUTOPILOT_ONLY || MEDIA_ONLY ? null : new Worker(
     // Так пост никогда не выйдет дважды — даже если задача продублировалась.
     const post = await claimPublicationLease(pool, {
       postId,
+      projectId,
       leaseToken,
       scheduleRevision,
       overdueCutoff: new Date(Date.now() - PUBLICATION_OVERDUE_GRACE_MS),
@@ -1601,11 +1808,57 @@ const worker = AUTOPILOT_ONLY || MEDIA_ONLY ? null : new Worker(
 
     const ch = await pool.query(
       `select id, user_id, network, tg_chat_id, vk_group_id, vk_token, oauth_token_id,
-              instagram_account_id, title, handle, is_active, status
-         from channels where id = $1`,
-      [post.channel_id],
+              instagram_account_id, title, handle, is_active, status, project_id
+         from channels where id = $1 and project_id = $2`,
+      [post.channel_id, projectId],
     );
     const channel = ch.rows[0];
+
+    // Product/API support is checked before any credential lookup or provider-call
+    // marker. TenChat is export-only until written official access and an authorized
+    // adapter exist, so this is a durable terminal outcome with no automatic retry.
+    const terminalProviderFailure = providerTerminalFailure(channel?.network);
+    if (terminalProviderFailure) {
+      const failed = await pool.query(
+        `update posts
+            set status = 'failed', attempts = attempts + 1,
+                last_error = $2, verification_state = 'unverifiable',
+                verification_error_code = $3, verification_error_reason = $2,
+                publish_lease_token = null, next_attempt_at = null,
+                provider_reconciliation_state = 'none',
+                provider_reconciliation_requested_at = null
+          where id = $1 and project_id = $4 and publish_lease_token = $5`,
+        [
+          postId,
+          terminalProviderFailure.reason,
+          terminalProviderFailure.errorCode,
+          projectId,
+          leaseToken,
+        ],
+      );
+      if (failed.rowCount === 1) {
+        console.info("[publication_event]", {
+          event: "provider_write_blocked",
+          operationId: post.publication_operation_id == null ? null : Number(post.publication_operation_id),
+          postId,
+          destinationId: channel?.id == null ? null : Number(channel.id),
+          provider: terminalProviderFailure.providerId,
+          revision: scheduleRevision,
+          status: "failed",
+          errorCode: terminalProviderFailure.errorCode,
+          terminal: true,
+          livePublished: false,
+        });
+        const blockedNotice = terminalProviderFailure.providerId === "tenchat"
+          ? "TenChat не получил публикацию: для автопостинга нужен официальный доступ. В Композиторе можно скачать пакет для ручной публикации."
+          : `Площадка ${terminalProviderFailure.providerId || "назначения"} не получила публикацию: live-операция не поддерживается.`;
+        await notifyUser(
+          post.user_id,
+          blockedNotice,
+        );
+      }
+      return;
+    }
 
     // Канал подключён? Для каждой сети свой обязательный набор полей.
     // OAuth-сети (youtube/instagram/...) публикуют через oauth_tokens — нужен oauth_token_id.
@@ -1632,6 +1885,7 @@ const worker = AUTOPILOT_ONLY || MEDIA_ONLY ? null : new Worker(
     // as started and makes subsequent cancellation return publication_in_progress.
     const providerCallStarted = await beginProviderCall(pool, {
       postId,
+      projectId,
       scheduleRevision,
       leaseToken,
     });
@@ -1770,7 +2024,7 @@ const worker = AUTOPILOT_ONLY || MEDIA_ONLY ? null : new Worker(
           : OAUTH_NETWORKS.includes(channel.network)
             ? "external_post_id"
             : "tg_message_id";
-      await pool.query(
+      const published = await pool.query(
         `update posts set status = 'published', ${idCol} = $2,
                           external_message_id = $3, published_at = now(),
                           attempts = attempts + 1, last_error = null,
@@ -1799,12 +2053,45 @@ const worker = AUTOPILOT_ONLY || MEDIA_ONLY ? null : new Worker(
           leaseToken,
         ],
       );
+      if (published.rowCount !== 1) {
+        console.warn("[publication_event] confirmed provider result lost its database lease", {
+          postId,
+          projectId,
+          provider: channel.network,
+          revision: scheduleRevision,
+        });
+        return;
+      }
       console.log(`[worker] ✅ пост ${postId} вышел (${channel.network} id ${out.externalId})`);
       const okText =
         `✅ Пост вышел${channel.title ? ` в «${channel.title}»` : ""}. Посмотрим, как зайдёт — цифры пришлю позже.`;
       const okBtns = out.postUrl ? [[{ text: "Открыть пост", url: out.postUrl }]] : undefined;
       // Нет привязанного чата — выбор пользователя, владельцу чужой пост не шлём (была утечка).
       await notifyUser(post.user_id, okText, okBtns);
+      try {
+        const extras = await triggerPublicationExtrasAfterPublish({
+          pool,
+          projectId,
+          postId,
+          enqueue: enqueuePublicationExtra,
+        });
+        if (extras.enqueued || extras.failed) {
+          console.info("[publication-extra] main publication follow-up", {
+            postId,
+            projectId,
+            enqueued: extras.enqueued,
+            failed: extras.failed,
+          });
+        }
+      } catch (error) {
+        // The main provider result is already durable. Periodic PostgreSQL recovery will
+        // recreate/dispatch the extra outbox without changing the post to failed.
+        console.error("[publication-extra] activation after publish failed", {
+          postId,
+          projectId,
+          errorName: error instanceof Error ? error.name : "Error",
+        });
+      }
       return;
     }
 
@@ -1831,7 +2118,7 @@ const worker = AUTOPILOT_ONLY || MEDIA_ONLY ? null : new Worker(
       try {
         await queue.add(
           "publish",
-          { postId, scheduleRevision },
+          { postId, projectId, scheduleRevision },
           { delay, jobId: `post-${postId}-r${scheduleRevision}-retry-${attempts}`, removeOnComplete: true, removeOnFail: false },
         );
       } catch (queueError) {
@@ -2053,14 +2340,14 @@ async function fetchPublicStats(handle) {
   }
 }
 
-async function collectStats(userId = null) {
+async function collectStats(projectId) {
+  const scopedProjectId = requireStatsProjectId(projectId, "collect");
   const today = mskToday();
   const chans = (
     await pool.query(
       `select id, tg_chat_id, handle from channels
-        where network = 'tg' and is_active = true
-          and ($1::bigint is null or user_id = $1)`,
-      [userId],
+        where project_id = $1 and network = 'tg' and is_active = true`,
+      [scopedProjectId],
     )
   ).rows;
 
@@ -2070,18 +2357,24 @@ async function collectStats(userId = null) {
     if (subs != null) {
       const prev = (
         await pool.query(
-          `select subscribers from channel_stats where channel_id = $1 and snapshot_date < $2
-           order by snapshot_date desc limit 1`,
-          [ch.id, today],
+          `select stats.subscribers
+             from channel_stats stats
+             join channels channel
+               on channel.id = stats.channel_id and channel.project_id = $3
+            where stats.channel_id = $1 and stats.snapshot_date < $2
+            order by stats.snapshot_date desc limit 1`,
+          [ch.id, today, scopedProjectId],
         )
       ).rows[0];
       const delta = prev ? subs - prev.subscribers : null;
       await pool.query(
         `insert into channel_stats (channel_id, snapshot_date, subscribers, subscribers_delta)
-         values ($1, $2, $3, $4)
+         select channel.id, $2, $3, $4
+           from channels channel
+          where channel.id = $1 and channel.project_id = $5
          on conflict (channel_id, snapshot_date)
          do update set subscribers = $3, subscribers_delta = $4, collected_at = now()`,
-        [ch.id, today, subs, delta],
+        [ch.id, today, subs, delta, scopedProjectId],
       );
     }
 
@@ -2103,10 +2396,11 @@ async function collectStats(userId = null) {
              from posts p
              left join publication_parts pp on pp.post_id = p.id
             where p.channel_id = $1
+              and p.project_id = $2
               and p.status in ('published', 'published_unverified')
               and (p.tg_message_id is not null or pp.external_message_id is not null)
             group by p.id`,
-          [ch.id],
+          [ch.id, scopedProjectId],
         )
       ).rows;
       for (const p of posts) {
@@ -2126,16 +2420,23 @@ async function collectStats(userId = null) {
             await pool.query(
               `update publication_parts
                   set verification_state = 'verified', last_verified_at = now(), updated_at = now()
-                where post_id = $1 and send_status = 'sent'`,
-              [p.id],
+                where post_id = $1 and send_status = 'sent'
+                  and exists (
+                    select 1 from posts project_post
+                     where project_post.id = publication_parts.post_id
+                       and project_post.project_id = $2
+                  )`,
+              [p.id, scopedProjectId],
             );
           }
           await pool.query(
             `insert into post_stats (post_id, snapshot_date, views, reactions)
-             values ($1, $2, $3, $4)
+             select project_post.id, $2, $3, $4
+               from posts project_post
+              where project_post.id = $1 and project_post.project_id = $5
              on conflict (post_id, snapshot_date)
              do update set views = $3, reactions = $4, collected_at = now()`,
-            [p.id, today, decision.metrics.views, decision.metrics.reactions],
+            [p.id, today, decision.metrics.views, decision.metrics.reactions, scopedProjectId],
           );
           await pool.query(
             `update posts
@@ -2144,8 +2445,8 @@ async function collectStats(userId = null) {
                     verification_result = '{"result":"seen","source":"telegram_public_feed"}'::jsonb,
                     verification_error_code = null, verification_error_reason = null,
                     consecutive_missing_checks = 0
-              where id = $1`,
-            [p.id],
+              where id = $1 and project_id = $2`,
+            [p.id, scopedProjectId],
           );
           continue;
         }
@@ -2154,8 +2455,13 @@ async function collectStats(userId = null) {
             await pool.query(
               `update publication_parts
                   set verification_state = 'missing', last_verified_at = now(), updated_at = now()
-                where post_id = $1 and part_index = any($2::int[])`,
-              [p.id, decision.missingPartIndexes],
+                where post_id = $1 and part_index = any($2::int[])
+                  and exists (
+                    select 1 from posts project_post
+                     where project_post.id = publication_parts.post_id
+                       and project_post.project_id = $3
+                  )`,
+              [p.id, decision.missingPartIndexes, scopedProjectId],
             );
           }
           await pool.query(
@@ -2165,11 +2471,12 @@ async function collectStats(userId = null) {
                     verification_result = $2::jsonb,
                     verification_error_code = null, verification_error_reason = null,
                     consecutive_missing_checks = $3
-              where id = $1`,
+              where id = $1 and project_id = $4`,
             [
               p.id,
               JSON.stringify({ result: "confirmed_missing", source: "telegram_public_feed" }),
               decision.missingChecks,
+              scopedProjectId,
             ],
           );
           continue;
@@ -2180,11 +2487,12 @@ async function collectStats(userId = null) {
                 set last_verification_attempt_at = now(), consecutive_missing_checks = $2,
                     verification_result = $3::jsonb,
                     verification_error_code = null, verification_error_reason = null
-              where id = $1`,
+              where id = $1 and project_id = $4`,
             [
               p.id,
               decision.missingChecks,
               JSON.stringify({ result: "suspected_missing", source: "telegram_public_feed" }),
+              scopedProjectId,
             ],
           );
           continue;
@@ -2195,12 +2503,13 @@ async function collectStats(userId = null) {
                 set last_verification_attempt_at = now(), verification_error_code = $2,
                     verification_error_reason = $3,
                     verification_result = $4::jsonb
-              where id = $1`,
+              where id = $1 and project_id = $5`,
             [
               p.id,
               decision.errorCode,
               decision.reason,
               JSON.stringify({ result: "temporary_error" }),
+              scopedProjectId,
             ],
           );
           continue;
@@ -2209,8 +2518,13 @@ async function collectStats(userId = null) {
           `update posts
               set last_verification_attempt_at = now(), verification_result = $2::jsonb,
                   verification_error_code = $3, verification_error_reason = null
-            where id = $1`,
-          [p.id, JSON.stringify({ result: decision.kind }), decision.errorCode || null],
+            where id = $1 and project_id = $4`,
+          [
+            p.id,
+            JSON.stringify({ result: decision.kind }),
+            decision.errorCode || null,
+            scopedProjectId,
+          ],
         );
       }
     } else {
@@ -2222,26 +2536,27 @@ async function collectStats(userId = null) {
                 verification_error_code = 'private_channel',
                 verification_error_reason = 'У канала нет публичного адреса для повторной сверки'
           where channel_id = $1
+            and project_id = $2
             and status in ('published', 'published_unverified')`,
-        [ch.id],
+        [ch.id, scopedProjectId],
       );
     }
   });
-  console.log(`[stats] снимок собран за ${today} (каналов: ${chans.length})`);
+  console.log(`[stats] снимок проекта ${scopedProjectId} собран за ${today} (каналов: ${chans.length})`);
 }
 
 // Суточный снимок аналитики VK-сообществ: подписчики + метрики вышедших постов.
 // Идёт тем же кроном «stats» следом за TG. Лимит VK ~3 rps на токен сообщества,
 // поэтому конкурентность ниже разведочной.
 const VK_CONCURRENCY = 3;
-async function collectVkStats(userId = null) {
+async function collectVkStats(projectId) {
+  const scopedProjectId = requireStatsProjectId(projectId, "collect-vk");
   const today = mskToday();
   const chans = (
     await pool.query(
       `select id, user_id, vk_group_id, vk_token from channels
-        where network = 'vk' and is_active = true
-          and ($1::bigint is null or user_id = $1)`,
-      [userId],
+        where project_id = $1 and network = 'vk' and is_active = true`,
+      [scopedProjectId],
     )
   ).rows;
 
@@ -2258,18 +2573,24 @@ async function collectVkStats(userId = null) {
     if (subs != null) {
       const prev = (
         await pool.query(
-          `select subscribers from channel_stats where channel_id = $1 and snapshot_date < $2
-           order by snapshot_date desc limit 1`,
-          [ch.id, today],
+          `select stats.subscribers
+             from channel_stats stats
+             join channels channel
+               on channel.id = stats.channel_id and channel.project_id = $3
+            where stats.channel_id = $1 and stats.snapshot_date < $2
+            order by stats.snapshot_date desc limit 1`,
+          [ch.id, today, scopedProjectId],
         )
       ).rows[0];
       const delta = prev ? subs - prev.subscribers : null;
       await pool.query(
         `insert into channel_stats (channel_id, snapshot_date, subscribers, subscribers_delta)
-         values ($1, $2, $3, $4)
+         select channel.id, $2, $3, $4
+           from channels channel
+          where channel.id = $1 and channel.project_id = $5
          on conflict (channel_id, snapshot_date)
          do update set subscribers = $3, subscribers_delta = $4, collected_at = now()`,
-        [ch.id, today, subs, delta],
+        [ch.id, today, subs, delta, scopedProjectId],
       );
     }
 
@@ -2278,12 +2599,12 @@ async function collectVkStats(userId = null) {
     const unknownPosts = (await pool.query(
       `select id, text, provider_started_at, provider_operation_id
          from posts
-        where channel_id = $1 and status = 'published_unverified'
+        where channel_id = $1 and project_id = $2 and status = 'published_unverified'
           and provider_reconciliation_state in ('pending','unresolved')
           and provider_started_at is not null
         order by provider_started_at desc
         limit 25`,
-      [ch.id],
+      [ch.id, scopedProjectId],
     )).rows;
     for (const post of unknownPosts) {
       const reconciliation = await reconcileVkWithRequest({
@@ -2304,8 +2625,9 @@ async function collectVkStats(userId = null) {
                   verification_error_code = null, verification_error_reason = null,
                   provider_reconciliation_state = 'confirmed'
             where id = $1 and status = 'published_unverified'
-              and provider_operation_id is not distinct from $3`,
-          [post.id, reconciliation.postId, post.provider_operation_id],
+              and provider_operation_id is not distinct from $3
+              and project_id = $4`,
+          [post.id, reconciliation.postId, post.provider_operation_id, scopedProjectId],
         );
       } else {
         await pool.query(
@@ -2314,8 +2636,12 @@ async function collectVkStats(userId = null) {
                   last_verification_attempt_at = now(),
                   verification_error_code = $2,
                   verification_result = '{"result":"delivery_unknown","source":"vk_wall_reconciliation"}'::jsonb
-            where id = $1 and status = 'published_unverified'`,
-          [post.id, reconciliation.errorCode || reconciliation.code || "vk_reconcile_unresolved"],
+            where id = $1 and status = 'published_unverified' and project_id = $3`,
+          [
+            post.id,
+            reconciliation.errorCode || reconciliation.code || "vk_reconcile_unresolved",
+            scopedProjectId,
+          ],
         );
       }
     }
@@ -2324,9 +2650,9 @@ async function collectVkStats(userId = null) {
     const posts = (
       await pool.query(
         `select id, vk_post_id from posts
-         where channel_id = $1 and status = 'published'
+         where channel_id = $1 and project_id = $2 and status = 'published'
            and verification_state = 'verified' and vk_post_id is not null`,
-        [ch.id],
+        [ch.id, scopedProjectId],
       )
     ).rows;
     for (const p of posts) {
@@ -2334,15 +2660,46 @@ async function collectVkStats(userId = null) {
       if (!st) continue;
       await pool.query(
         `insert into post_stats (post_id, snapshot_date, views, reactions, reposts, comments)
-         values ($1, $2, $3, $4, $5, $6)
+         select project_post.id, $2, $3, $4, $5, $6
+           from posts project_post
+          where project_post.id = $1 and project_post.project_id = $7
          on conflict (post_id, snapshot_date)
          do update set views = $3, reactions = $4, reposts = $5, comments = $6, collected_at = now()`,
-        [p.id, today, st.views, st.reactions, st.reposts, st.comments],
+        [p.id, today, st.views, st.reactions, st.reposts, st.comments, scopedProjectId],
       );
-      await pool.query(`update posts set stats_state = 'ok' where id = $1`, [p.id]);
+      await pool.query(
+        `update posts set stats_state = 'ok' where id = $1 and project_id = $2`,
+        [p.id, scopedProjectId],
+      );
     }
   });
-  if (chans.length) console.log(`[stats] снимок VK собран за ${today} (сообществ: ${chans.length})`);
+  if (chans.length) {
+    console.log(
+      `[stats] снимок VK проекта ${scopedProjectId} собран за ${today} (сообществ: ${chans.length})`,
+    );
+  }
+}
+
+// Cron is a trusted system actor, but each collector invocation still has one explicit
+// tenant boundary. The discovery query reads only project ids; channel/post/stat rows are
+// never processed in one account-wide or global collector pass.
+async function collectAllProjectStats() {
+  const projects = (
+    await pool.query(
+      `select distinct channel.project_id
+         from channels channel
+         join projects project
+           on project.id = channel.project_id and project.is_archived = false
+        where channel.is_active = true and channel.network in ('tg', 'vk')
+        order by channel.project_id`,
+    )
+  ).rows;
+
+  for (const row of projects) {
+    const projectId = requireStatsProjectId(row.project_id, "cron-stats");
+    await collectStats(projectId);
+    await collectVkStats(projectId);
+  }
 }
 
 // ============================================================================
@@ -3570,12 +3927,12 @@ const RUBRICS_W = [
 ];
 
 /** Готовый бриф КАНАЛА или null. null = автопилот запускать нельзя. */
-async function loadBriefW(userId, channelId) {
+async function loadBriefW(projectId, channelId) {
   const b = (
     await pool.query(
       `select niche, audience, rubrics, formats, author_role, goal, cta, taboo, profile_answers, quality, ready
-         from content_brief where user_id = $1 and channel_id = $2`,
-      [userId, channelId],
+         from content_brief where project_id = $1 and channel_id = $2`,
+      [projectId, channelId],
     )
   ).rows[0];
   if (!b || !b.ready) return null;
@@ -3827,18 +4184,128 @@ async function planTopics(
 // это отдельная работа.
 const MAX_WEEKLY_POSTS = 30;
 
+function monthlyCampaignLocalSlot(localDate, hour, timezone) {
+  const [year, month, day] = String(localDate).split("-").map(Number);
+  const zoned = Temporal.ZonedDateTime.from({
+    timeZone: timezone,
+    year,
+    month,
+    day,
+    hour,
+    minute: 0,
+    second: 0,
+  }, { disambiguation: "reject" });
+  return {
+    scheduledAt: new Date(zoned.epochMilliseconds).toISOString(),
+    localDate,
+    localTime: `${String(hour).padStart(2, "0")}:00`,
+    timezone,
+    offset: zoned.offset,
+  };
+}
+
+async function loadMonthlyAutopilotContext(projectId, monthlyPlanId, bestHour) {
+  if (!monthlyPlanId) return null;
+  const plan = (
+    await pool.query(
+      `select plan.id, plan.status, plan.source_brief_hash, plan.source_profile_hash,
+              campaign.id as campaign_id, campaign.brief_hash, campaign.profile_hash,
+              campaign.starts_on::text as starts_on,
+              campaign.ends_on::text as ends_on, campaign.timezone,
+              campaign.posts_per_week, campaign.is_archived
+         from monthly_campaign_plans plan
+         join monthly_campaigns campaign
+           on campaign.id = plan.campaign_id and campaign.project_id = plan.project_id
+        where plan.id = $1 and plan.project_id = $2
+        limit 1`,
+      [monthlyPlanId, projectId],
+    )
+  ).rows[0];
+  if (!plan || plan.status !== "approved" || plan.is_archived === true) {
+    throw Object.assign(new Error("monthly campaign plan is unavailable"), {
+      code: "MONTHLY_PLAN_UNAVAILABLE",
+    });
+  }
+  const profileRows = (
+    await pool.query(
+      `select channel_id, niche, audience, rubrics, formats, author_role, goal, cta, taboo,
+              profile_answers, quality, ready, source, updated_at
+         from content_brief
+        where project_id = $1
+        order by channel_id`,
+      [projectId],
+    )
+  ).rows;
+  const currentProfileHash = createHash("sha256")
+    .update(JSON.stringify(profileRows), "utf8")
+    .digest("hex");
+  if (
+    String(plan.source_brief_hash) !== String(plan.brief_hash)
+    || String(plan.source_profile_hash) !== String(plan.profile_hash)
+    || currentProfileHash !== String(plan.profile_hash)
+  ) {
+    throw Object.assign(new Error("monthly campaign brief changed"), {
+      code: "MONTHLY_PLAN_STALE",
+    });
+  }
+  const nearestWeek = (
+    await pool.query(
+      `select item.id, item.title, item.rubric,
+              item.scheduled_for::text as scheduled_for,
+              item.position, item.content_version, item.approval_status
+         from monthly_campaign_items item
+        where item.plan_id = $1 and item.project_id = $2
+        order by item.scheduled_for, item.position, item.id
+        limit 7`,
+      [monthlyPlanId, projectId],
+    )
+  ).rows;
+  if (!nearestWeek.length || nearestWeek.some((item) => item.approval_status !== "approved")) {
+    throw Object.assign(new Error("monthly campaign week is not approved"), {
+      code: "MONTHLY_WEEK_UNAVAILABLE",
+    });
+  }
+  const count = Math.max(1, Math.min(nearestWeek.length, Number(plan.posts_per_week) || 5));
+  const selected = Array.from({ length: count }, (_, index) =>
+    nearestWeek[Math.min(nearestWeek.length - 1, Math.floor(index * nearestWeek.length / count))],
+  );
+  return {
+    planId: Number(plan.id),
+    campaignId: Number(plan.campaign_id),
+    timezone: String(plan.timezone),
+    topics: selected.map((item) => ({
+      topic: String(item.title),
+      rubric: String(item.rubric),
+      monthlyCampaignItemId: Number(item.id),
+      monthlyCampaignItemVersion: Number(item.content_version),
+      monthlySchedule: monthlyCampaignLocalSlot(
+        String(item.scheduled_for).slice(0, 10),
+        bestHour,
+        String(plan.timezone),
+      ),
+    })),
+  };
+}
+
 // План собирается ДЛЯ КАНАЛА. Раньше здесь стоял `limit 1` без order by: у кого два канала,
 // тот получал посты по брифу одного канала в (случайно выбранный) другой, а второй канал молчал.
-async function buildAutopilotPlan(userId, channelId, expectedPlanId = null, usageReservationId = null) {
+async function buildAutopilotPlan(
+  projectId,
+  userId,
+  channelId,
+  expectedPlanId = null,
+  usageReservationId = null,
+) {
   // A manual build is tied to the placeholder created by the API. Old duplicate jobs used
   // to rebuild the same channel one after another and could overwrite a newer retry. A job
   // whose placeholder is gone or no longer `building` is obsolete and must do no work.
   let expectedPlan = null;
   if (expectedPlanId != null) {
     const expected = await pool.query(
-      `select generation_engine, planning_months, planning_weeks from autopilot_plan
-        where id = $1 and user_id = $2 and channel_id = $3 and status = 'building'`,
-      [expectedPlanId, userId, channelId],
+      `select generation_engine, planning_months, planning_weeks, monthly_campaign_plan_id
+         from autopilot_plan
+        where id = $1 and project_id = $2 and channel_id = $3 and status = 'building'`,
+      [expectedPlanId, projectId, channelId],
     );
     if (!expected.rowCount) {
       console.log(`[auto] plan ${expectedPlanId}: задача устарела — пропускаю`);
@@ -3850,8 +4317,8 @@ async function buildAutopilotPlan(userId, channelId, expectedPlanId = null, usag
   const ch = (
     await pool.query(
       `select id, title from channels
-        where id = $1 and user_id = $2 and network = 'tg' and is_active = true`,
-      [channelId, userId],
+        where id = $1 and project_id = $2 and network = 'tg' and is_active = true`,
+      [channelId, projectId],
     )
   ).rows[0];
   if (!ch) {
@@ -3861,7 +4328,7 @@ async function buildAutopilotPlan(userId, channelId, expectedPlanId = null, usag
 
   // Без брифа ИИ не знает, о чём канал, и напишет наугад. Лучше честно не собрать план,
   // чем выдать пять постов ни о чём (ТЗ Д.9).
-  const brief = await loadBriefW(userId, channelId);
+  const brief = await loadBriefW(projectId, channelId);
   if (!brief) {
     console.log(`[auto] user ${userId}/${channelId}: нет брифа — план не собрать`);
     return { error: "no_brief" };
@@ -3872,17 +4339,16 @@ async function buildAutopilotPlan(userId, channelId, expectedPlanId = null, usag
       `select post_frequency, mode, approvals_streak, generation_engine,
               planning_months, planning_weeks
          from autopilot_settings
-        where user_id = $1 and channel_id = $2`,
-      [userId, channelId],
+        where project_id = $1 and channel_id = $2`,
+      [projectId, channelId],
     )
   ).rows[0];
   const generationEngine = expectedPlan?.generation_engine || st?.generation_engine || "navy-deepseek-pro";
-  const planWeeks = Number(
+  let planWeeks = Number(
     expectedPlan?.planning_weeks || st?.planning_weeks ||
     (expectedPlan?.planning_months || st?.planning_months || 1) * 4,
   );
-  const planningMonths = Math.max(1, Math.min(3, Math.ceil(planWeeks / 4)));
-  const N = plannedPostCountForWeeks(Math.min(MAX_WEEKLY_POSTS, st?.post_frequency || 5), planWeeks);
+  let planningMonths = Math.max(1, Math.min(3, Math.ceil(planWeeks / 4)));
   const engineLabel = AUTOPILOT_ENGINE_OPTIONS.find((option) => option.id === generationEngine)?.label
     || generationEngine;
 
@@ -3890,11 +4356,13 @@ async function buildAutopilotPlan(userId, channelId, expectedPlanId = null, usag
   const published = (
     await pool.query(
       `select p.published_at,
-              (select views from post_stats where post_id = p.id order by snapshot_date desc limit 1) as views
+              (select views from post_stats
+                where post_id = p.id and project_id = $1
+                order by snapshot_date desc limit 1) as views
          from posts p
-        where p.user_id = $1 and p.channel_id = $2
+        where p.project_id = $1 and p.channel_id = $2
           and p.status = 'published' and p.published_at is not null`,
-      [userId, channelId],
+      [projectId, channelId],
     )
   ).rows;
   let bestHour = 19;
@@ -3937,7 +4405,20 @@ async function buildAutopilotPlan(userId, channelId, expectedPlanId = null, usag
       `${st.post_frequency} ${plural(st.post_frequency, "пост", "поста", "постов")} в неделю — это до ${perDay} в день. ` +
       `Развожу их по дню с 9:00 до 21:00 МСК, чтобы подписчик не получал пачку подряд.`;
   }
+  const monthlyContext = await loadMonthlyAutopilotContext(
+    projectId,
+    Number(expectedPlan?.monthly_campaign_plan_id) || null,
+    bestHour,
+  );
+  if (monthlyContext) {
+    planWeeks = 1;
+    planningMonths = 1;
+    rule += " Первая неделя взята из согласованной месячной кампании; темы и даты сохраняют её версию.";
+  }
   rule += ` План на ${planWeeks} ${plural(planWeeks, "неделю", "недели", "недель")}, модель — ${engineLabel}.`;
+  const N = monthlyContext
+    ? monthlyContext.topics.length
+    : plannedPostCountForWeeks(Math.min(MAX_WEEKLY_POSTS, st?.post_frequency || 5), planWeeks);
 
   const quality = brief.quality;
 
@@ -3948,9 +4429,10 @@ async function buildAutopilotPlan(userId, channelId, expectedPlanId = null, usag
         await pool.query(
           `select ci.topic from content_ideas ci
              join competitors c on c.id = ci.competitor_id
-            where ci.user_id = $1 and c.channel_id = $2 and ci.status = 'new' and ci.topic is not null
+             join channels channel on channel.id = c.channel_id and channel.project_id = $1
+            where c.channel_id = $2 and ci.status = 'new' and ci.topic is not null
             order by ci.hit_ratio desc nulls last limit $3`,
-          [userId, channelId, N],
+          [projectId, channelId, N],
         )
       ).rows.map((r) => r.topic)
     : [];
@@ -3965,14 +4447,16 @@ async function buildAutopilotPlan(userId, channelId, expectedPlanId = null, usag
   const full = (st?.mode || "confirm") === "full" && (st?.approvals_streak ?? 0) >= 2;
   const planMood = await userMood(userId); // настроение агента для постов плана
   // Время постов считаем заранее на весь выбранный горизонт: раскладка зависит от их числа.
-  const slots = periodSlots(N, planWeeks, bestHour);
+  const slots = monthlyContext
+    ? monthlyContext.topics.map((item) => item.monthlySchedule.scheduledAt)
+    : periodSlots(N, planWeeks, bestHour);
 
   const recentPlanRows = (
     await pool.query(
       `select items from autopilot_plan
-        where user_id = $1 and channel_id = $2 and status in ('pending', 'approved', 'done')
+        where project_id = $1 and channel_id = $2 and status in ('pending', 'approved', 'done')
         order by created_at desc limit 3`,
-      [userId, channelId],
+      [projectId, channelId],
     )
   ).rows;
   const historicalPlanItems = recentPlanRows
@@ -3982,24 +4466,24 @@ async function buildAutopilotPlan(userId, channelId, expectedPlanId = null, usag
   const recentPublished = (
     await pool.query(
       `select text from posts
-        where user_id = $1 and channel_id = $2 and status in ('published', 'scheduled')
+        where project_id = $1 and channel_id = $2 and status in ('published', 'scheduled')
         order by coalesce(published_at, scheduled_at, created_at) desc limit 60`,
-      [userId, channelId],
+      [projectId, channelId],
     )
   ).rows.map((post) => ({ topic: "", draft: post.text || "" }));
   const historicalTopics = historicalPlanItems.map((item) => item.topic).filter(Boolean);
 
   // Сначала конкретные темы под нишу, только потом тексты.
-  const topics = await planTopics(
-    brief,
-    N,
-    ideaTopics,
-    planMood,
-    channelId,
-    usageReservationId,
-    generationEngine,
-    historicalTopics,
-  );
+  const topics = monthlyContext?.topics ?? await planTopics(
+      brief,
+      N,
+      ideaTopics,
+      planMood,
+      channelId,
+      usageReservationId,
+      generationEngine,
+      historicalTopics,
+    );
   if (!autopilotBuildComplete(N, topics)) {
     console.log(`[auto] user ${userId}: получено тем ${topics.length}/${N} — неполный план не сохраняю`);
     return { error: "ai_unavailable" };
@@ -4152,6 +4636,12 @@ async function buildAutopilotPlan(userId, channelId, expectedPlanId = null, usag
       scheduledAt,
       topic,
       rubric,
+      ...(t.monthlyCampaignItemId
+        ? {
+            monthlyCampaignItemId: t.monthlyCampaignItemId,
+            monthlyCampaignItemVersion: t.monthlyCampaignItemVersion,
+          }
+        : {}),
       draft,
       status: "pending",
       aiReady: !!aiDraft,
@@ -4293,6 +4783,7 @@ async function buildAutopilotPlan(userId, channelId, expectedPlanId = null, usag
   let anyPending = true;
   const scheduledByBuild = [];
   let previousPostIds = [];
+  let removedPreviousPostIds = [];
   let fullApprovalPreview = null;
   let queuePendingReconciliation = 0;
   let usageCommitted = false;
@@ -4302,15 +4793,15 @@ async function buildAutopilotPlan(userId, channelId, expectedPlanId = null, usag
     // It closes the race where an old worker finishes just as the user starts a new build.
     await tx.query(
       `select 1 from autopilot_settings
-        where user_id = $1 and channel_id = $2 for update`,
-      [userId, channelId],
+        where project_id = $1 and channel_id = $2 for update`,
+      [projectId, channelId],
     );
     const building = (
       await tx.query(
         `select id from autopilot_plan
-          where user_id = $1 and channel_id = $2 and status = 'building'
+          where project_id = $1 and channel_id = $2 and status = 'building'
           order by created_at desc limit 1`,
-        [userId, channelId],
+        [projectId, channelId],
       )
     ).rows[0];
     if (
@@ -4329,8 +4820,8 @@ async function buildAutopilotPlan(userId, channelId, expectedPlanId = null, usag
     const previousPlans = (
       await tx.query(
         `select items from autopilot_plan
-          where user_id = $1 and channel_id = $2 and status in ('pending', 'approved')`,
-        [userId, channelId],
+          where project_id = $1 and channel_id = $2 and status in ('pending', 'approved')`,
+        [projectId, channelId],
       )
     ).rows;
     previousPostIds = previousPlans
@@ -4340,9 +4831,21 @@ async function buildAutopilotPlan(userId, channelId, expectedPlanId = null, usag
     if (previousPostIds.length) {
       // Удаление старых scheduled-постов входит в ту же транзакцию, что замена плана.
       // BullMQ job после commit можно удалить best-effort: без DB-строки она всё равно no-op.
-      await tx.query(`delete from posts where id = any($1::bigint[]) and status = 'scheduled'`, [
-        previousPostIds,
-      ]);
+      // Пост, уже связанный с месячным планом, является частью подтверждённой lineage:
+      // новая недельная сборка не имеет права удалить его или снять его BullMQ job.
+      const removedPosts = await tx.query(
+        `delete from posts post
+          where post.id = any($1::bigint[]) and post.project_id = $2
+            and post.status = 'scheduled'
+            and not exists (
+              select 1 from monthly_campaign_items monthly_item
+               where monthly_item.project_id = post.project_id
+                 and monthly_item.post_id = post.id
+            )
+        returning post.id`,
+        [previousPostIds, projectId],
+      );
+      removedPreviousPostIds = removedPosts.rows.map((row) => Number(row.id));
     }
 
     // Generation can take minutes. Re-evaluate every timestamp immediately before any
@@ -4362,9 +4865,11 @@ async function buildAutopilotPlan(userId, channelId, expectedPlanId = null, usag
       const evaluation = evaluateAutopilotItem(item, approvalTime);
       if (item.autoApprove && evaluation.eligible && evaluation.scheduledAt) {
         const post = await tx.query(
-          `insert into posts (user_id, channel_id, text, scheduled_at, status, publication_origin)
-           values ($1, $2, $3, $4, 'scheduled', 'autopilot') returning id, schedule_revision`,
-          [userId, ch.id, item.draft, evaluation.scheduledAt],
+          `insert into posts
+             (project_id, user_id, channel_id, text, scheduled_at, status, publication_origin)
+           values ($1, $2, $3, $4, $5, 'scheduled', 'autopilot')
+           returning id, schedule_revision`,
+          [projectId, userId, ch.id, item.draft, evaluation.scheduledAt],
         );
         item.postId = Number(post.rows[0].id);
         scheduledByBuild.push({
@@ -4385,27 +4890,136 @@ async function buildAutopilotPlan(userId, channelId, expectedPlanId = null, usag
         usedSourceIds,
       ]);
     }
-    await tx.query(`delete from autopilot_plan where user_id = $1 and channel_id = $2`, [
-      userId,
-      channelId,
-    ]);
+    // Monthly plans retain an immutable link to the weekly plan they were derived from.
+    // Keep that historical row (as done) and replace only unreferenced plans. An active
+    // approval lease is also preserved; the newer plan can coexist until recovery closes it.
+    await tx.query(
+      `update autopilot_plan plan
+          set status = 'done', revision = revision + 1
+        where plan.project_id = $1 and plan.channel_id = $2 and plan.status <> 'done'
+          and plan.status <> 'approving'
+          and exists (
+            select 1 from monthly_campaign_items monthly_item
+             where monthly_item.project_id = plan.project_id
+               and monthly_item.weekly_autopilot_plan_id = plan.id
+          )`,
+      [projectId, channelId],
+    );
+    await tx.query(
+      `delete from autopilot_plan plan
+        where plan.project_id = $1 and plan.channel_id = $2 and plan.status <> 'approving'
+          and not exists (
+            select 1 from monthly_campaign_items monthly_item
+             where monthly_item.project_id = plan.project_id
+               and monthly_item.weekly_autopilot_plan_id = plan.id
+          )`,
+      [projectId, channelId],
+    );
     ins = await tx.query(
       `insert into autopilot_plan
-         (user_id, channel_id, week_start, items, rules, status, generation_engine,
-          planning_months, planning_weeks)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9) returning id`,
+         (project_id, user_id, channel_id, week_start, items, rules, status, generation_engine,
+          planning_months, planning_weeks, monthly_campaign_plan_id)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) returning id`,
       [
+        projectId,
         userId,
         channelId,
-        mskDatePlus(1),
+        monthlyContext?.topics[0]?.monthlySchedule.localDate || mskDatePlus(1),
         JSON.stringify(items),
         rule,
         planStatus,
         generationEngine,
         planningMonths,
         planWeeks,
+        monthlyContext?.planId ?? null,
       ],
     );
+    if (monthlyContext) {
+      for (const item of items) {
+        const monthlyItemId = Number(item.monthlyCampaignItemId);
+        const monthlyItemVersion = Number(item.monthlyCampaignItemVersion);
+        if (!Number.isSafeInteger(monthlyItemId) || monthlyItemId <= 0
+            || !Number.isSafeInteger(monthlyItemVersion) || monthlyItemVersion <= 0) {
+          throw new Error("monthly campaign item lineage is invalid");
+        }
+        const schedule = monthlyContext.topics.find(
+          (topic) => topic.monthlyCampaignItemId === monthlyItemId,
+        )?.monthlySchedule;
+        if (!schedule) throw new Error("monthly campaign schedule lineage is missing");
+        const clientKey = `monthly-item:${monthlyItemId}:content:${monthlyItemVersion}`;
+        const createdDraft = await tx.query(
+          `insert into drafts (
+             project_id, user_id, text, scheduled_at, scheduled_timezone,
+             scheduled_local_date, scheduled_local_time, scheduled_offset,
+             scheduled_disambiguation, origin, source_ref, client_key,
+             ai_validation, purpose
+           ) values (
+             $1, $2, $3, $4, $5, $6::date, $7::time, $8, 'reject',
+             'autopilot', $9::jsonb, $10, $11::jsonb, 'needs_review'
+           )
+           on conflict (user_id, client_key) do nothing
+           returning id`,
+          [
+            projectId, userId, item.draft, item.scheduledAt, schedule.timezone,
+            schedule.localDate, schedule.localTime, schedule.offset,
+            JSON.stringify({
+              kind: "monthly_campaign",
+              campaignId: monthlyContext.campaignId,
+              planId: monthlyContext.planId,
+              itemId: monthlyItemId,
+              contentVersion: monthlyItemVersion,
+            }),
+            clientKey,
+            JSON.stringify(item.quality || {}),
+          ],
+        );
+        const draftId = Number(createdDraft.rows[0]?.id || (
+          await tx.query(
+            `select id from drafts
+              where project_id = $1 and user_id = $2 and client_key = $3
+              limit 1`,
+            [projectId, userId, clientKey],
+          )
+        ).rows[0]?.id);
+        if (!Number.isSafeInteger(draftId) || draftId <= 0) {
+          throw new Error("monthly campaign draft was not persisted");
+        }
+        await tx.query(
+          `insert into draft_destinations (draft_id, channel_id)
+           select $1, channel.id from channels channel
+            where channel.id = $2 and channel.project_id = $3
+           on conflict (draft_id, channel_id) do nothing`,
+          [draftId, channelId, projectId],
+        );
+        await ensureDraftEditorialBootstrap(tx, {
+          draftId,
+          actorUserId: userId,
+          projectId,
+        });
+        item.draftId = draftId;
+        const linked = await tx.query(
+          `update monthly_campaign_items
+              set weekly_autopilot_plan_id = $3,
+                  weekly_autopilot_item_index = $4,
+                  draft_id = $5,
+                  post_id = coalesce($6, post_id),
+                  updated_at = now()
+            where id = $1 and project_id = $2 and plan_id = $7
+              and content_version = $8`,
+          [
+            monthlyItemId, projectId, Number(ins.rows[0].id), item.i, draftId,
+            Number(item.postId) || null, monthlyContext.planId, monthlyItemVersion,
+          ],
+        );
+        if (linked.rowCount !== 1) throw new Error("monthly campaign lineage changed during generation");
+      }
+      const savedLineage = await tx.query(
+        `update autopilot_plan set items = $2::jsonb
+          where id = $1 and project_id = $3 and monthly_campaign_plan_id = $4`,
+        [Number(ins.rows[0].id), JSON.stringify(items), projectId, monthlyContext.planId],
+      );
+      if (savedLineage.rowCount !== 1) throw new Error("monthly campaign plan lineage was not persisted");
+    }
     if (full && fullApprovalPreview) {
       fullApprovalPreview.planId = Number(ins.rows[0].id);
       const result = {
@@ -4418,15 +5032,16 @@ async function buildAutopilotPlan(userId, channelId, expectedPlanId = null, usag
       };
       await tx.query(
         `insert into autopilot_approval_operations
-           (user_id, channel_id, plan_id, idempotency_key, actor_type, status,
+           (project_id, user_id, channel_id, plan_id, idempotency_key, actor_type, status,
             request_snapshot, result, http_status, completed_at)
-         values ($1, $2, $3, $4, 'system', 'completed', $5, $6, 200, now())
+         values ($1, $2, $3, $4, $5, 'system', 'completed', $6, $7, 200, now())
          on conflict (user_id, idempotency_key) do nothing`,
         [
+          projectId,
           userId,
           channelId,
           Number(ins.rows[0].id),
-          `system-full-plan-${ins.rows[0].id}`,
+          `project:${projectId}:system-full-plan-${ins.rows[0].id}`,
           JSON.stringify(fullApprovalPreview),
           JSON.stringify(result),
         ],
@@ -4443,14 +5058,14 @@ async function buildAutopilotPlan(userId, channelId, expectedPlanId = null, usag
       }
     }
     await tx.query("commit");
-    await removePublishJobs(previousPostIds);
+    await removePublishJobs(removedPreviousPostIds);
     // Сначала коммитим план и его scheduled-посты как единое целое, затем отражаем их
     // в Redis. Если процесс умрёт в этом месте или Redis недоступен, минутный reconciler
     // восстановит jobs из PostgreSQL; незакоммиченный пост никогда не сможет выйти.
     const queueResults = await Promise.all(
       scheduledByBuild.map(async ({ postId, scheduledAt, scheduleRevision }) => {
         try {
-          await enqueuePublishJob(postId, scheduledAt, scheduleRevision);
+          await enqueuePublishJob(postId, scheduledAt, scheduleRevision, projectId);
           return true;
         } catch (error) {
           console.error(`[auto] post ${postId}: очередь временно недоступна, подберёт reconciler:`, error?.message);
@@ -4465,11 +5080,16 @@ async function buildAutopilotPlan(userId, channelId, expectedPlanId = null, usag
           `update autopilot_approval_operations
               set status = 'partial',
                   result = coalesce(result, '{}'::jsonb) || jsonb_build_object(
-                    'queuePendingReconciliation', $3,
+                    'queuePendingReconciliation', $4,
                     'reconciliationPending', true
                   )
-            where user_id = $1 and idempotency_key = $2`,
-          [userId, `system-full-plan-${ins.rows[0].id}`, queuePendingReconciliation],
+            where project_id = $1 and user_id = $2 and idempotency_key = $3`,
+          [
+            projectId,
+            userId,
+            `project:${projectId}:system-full-plan-${ins.rows[0].id}`,
+            queuePendingReconciliation,
+          ],
         )
         .catch((error) => console.error("[auto] не сохранился partial audit:", error?.message));
     }
@@ -4547,11 +5167,21 @@ async function removePublishJobs(postIds) {
   }
 }
 
-async function enqueuePublishJob(postId, scheduledAt, scheduleRevision = 1) {
+async function enqueuePublishJob(postId, scheduledAt, scheduleRevision = 1, explicitProjectId = null) {
+  let projectId = Number(explicitProjectId);
+  if (!Number.isSafeInteger(projectId) || projectId <= 0) {
+    const post = await pool.query(`select project_id from posts where id = $1`, [postId]);
+    projectId = Number(post.rows[0]?.project_id);
+  }
+  if (!Number.isSafeInteger(projectId) || projectId <= 0) {
+    const error = new Error("publication project is missing");
+    error.code = "PUBLICATION_PROJECT_MISSING";
+    throw error;
+  }
   const delay = Math.max(0, new Date(scheduledAt).getTime() - Date.now());
   await queue.add(
     "publish",
-    { postId, scheduleRevision },
+    { postId, projectId, scheduleRevision },
     { delay, jobId: `post-${postId}-r${scheduleRevision}`, removeOnComplete: true, removeOnFail: false },
   );
 }
@@ -4688,20 +5318,25 @@ async function enqueuePost(userId, channelId, text, scheduledAt, rssContext = nu
 async function weeklyPlans() {
   const targets = (
     await pool.query(
-      `select s.user_id, s.channel_id from autopilot_settings s
-         join channels c on c.id = s.channel_id and c.is_active = true
-        where s.enabled = true order by s.user_id, s.channel_id`,
+      `select s.project_id, s.user_id, s.channel_id from autopilot_settings s
+         join channels c
+           on c.id = s.channel_id and c.project_id = s.project_id and c.is_active = true
+         join project_members member
+           on member.project_id = s.project_id and member.user_id = s.user_id
+          and member.status = 'active' and member.role in ('owner','author','approver')
+        where s.enabled = true order by s.project_id, s.channel_id`,
     )
   ).rows;
   for (const t of targets) {
+    const projectId = Number(t.project_id);
     const userId = Number(t.user_id);
     const channelId = Number(t.channel_id);
     const latestPlan = (
       await pool.query(
         `select items from autopilot_plan
-          where user_id = $1 and channel_id = $2 and status in ('pending', 'approved')
+          where project_id = $1 and channel_id = $2 and status in ('pending', 'approved')
           order by created_at desc limit 1`,
-        [userId, channelId],
+        [projectId, channelId],
       )
     ).rows[0];
     const coverageUntil = (Array.isArray(latestPlan?.items) ? latestPlan.items : [])
@@ -4715,7 +5350,7 @@ async function weeklyPlans() {
       userId,
       kind: "autopilot-plan",
       // The Sunday run and all of its retries share one logical weekly operation.
-      key: workerAiUsageCompositeKey("autopilot-weekly", [channelId, mskPlanningWeek()]),
+      key: workerAiUsageCompositeKey("autopilot-weekly", [projectId, channelId, mskPlanningWeek()]),
     });
     if (usage.state === "committed" || usage.state === "in_progress") continue;
     if (usage.state === "limit") {
@@ -4731,7 +5366,13 @@ async function weeklyPlans() {
     let usageCommitted = false;
     const stopHeartbeat = startAiUsageHeartbeat(userId, usage.reservationId);
     try {
-      const result = await buildAutopilotPlan(userId, channelId, null, usage.reservationId);
+      const result = await buildAutopilotPlan(
+        projectId,
+        userId,
+        channelId,
+        null,
+        usage.reservationId,
+      );
       usageCommitted = result?.usageCommitted === true;
     } catch (err) {
       console.error(`[auto] user ${userId}/канал ${channelId} план упал:`, err?.message);
@@ -4817,8 +5458,13 @@ async function botPlan(userId) {
     await pool.query(
       `select distinct on (p.channel_id) p.id, p.items, p.rules, p.status, c.title
          from autopilot_plan p
-         join channels c on c.id = p.channel_id and c.is_active = true
-        where p.user_id = $1 and p.status in ('pending', 'approved')
+         join channels c
+           on c.id = p.channel_id and c.project_id = p.project_id and c.is_active = true
+         join user_project_preferences preference
+           on preference.user_id = $1 and preference.selected_project_id = p.project_id
+         join project_members member
+           on member.project_id = p.project_id and member.user_id = $1 and member.status = 'active'
+        where p.status in ('pending', 'approved')
         order by p.channel_id, p.created_at desc`,
       [userId],
     )
@@ -4920,29 +5566,33 @@ const botApprovalSemantics = (preview) => JSON.stringify({
   blockers: preview.blockers,
 });
 
-async function finishBotApprovalOperation(id, status, result, httpStatus = 200) {
+async function finishBotApprovalOperation(projectId, userId, id, status, result, httpStatus = 200) {
   await pool.query(
     `update autopilot_approval_operations
-        set status = $2, result = $3, http_status = $4, completed_at = now()
-      where id = $1`,
-    [id, status, JSON.stringify(result), httpStatus],
+        set status = $4, result = $5, http_status = $6, completed_at = now()
+      where id = $1 and project_id = $2 and user_id = $3`,
+    [id, projectId, userId, status, JSON.stringify(result), httpStatus],
   );
 }
 
 /** First click is preview only: channel, exact dates and every server-side blocker. */
 async function botApprovePlan(userId, planId) {
-  await reclaimStaleAutopilotApprovals(pool, { userId });
   const plan = (
     await pool.query(
-      `select p.id, p.items, p.channel_id, p.revision, c.title, c.handle
+      `select p.id, p.project_id, p.items, p.channel_id, p.revision, c.title, c.handle
          from autopilot_plan p
-         join channels c on c.id = p.channel_id and c.user_id = p.user_id
-        where p.id = $1 and p.user_id = $2 and p.status = 'pending'
+         join channels c on c.id = p.channel_id and c.project_id = p.project_id
+         join project_members member
+           on member.project_id = p.project_id and member.user_id = $2
+          and member.status = 'active' and member.role in ('owner','approver')
+        where p.id = $1 and p.status = 'pending'
           and c.network = 'tg' and c.is_active = true`,
       [planId, userId],
     )
   ).rows[0];
   if (!plan) return { text: "Этот план уже обработан или канал отключён." };
+  const projectId = Number(plan.project_id);
+  await reclaimStaleAutopilotApprovals(pool, { projectId, channelId: Number(plan.channel_id) });
 
   const approvalTime = Date.now();
   const preview = buildAutopilotApprovalPreview({
@@ -4976,8 +5626,8 @@ async function botApprovePlan(userId, planId) {
     const safeItems = annotateAutopilotItems(plan.items, approvalTime);
     await pool.query(
       `update autopilot_plan set items = $2, revision = revision + 1
-        where id = $1 and user_id = $3 and channel_id = $4 and status = 'pending'`,
-      [planId, JSON.stringify(safeItems), userId, plan.channel_id],
+        where id = $1 and project_id = $3 and channel_id = $4 and status = 'pending'`,
+      [planId, JSON.stringify(safeItems), projectId, plan.channel_id],
     );
     return { text: `${text}\n\nНичего не поставлено в очередь.` };
   }
@@ -4985,10 +5635,12 @@ async function botApprovePlan(userId, planId) {
   const token = createAutopilotPreviewToken(12);
   await pool.query(
     `insert into autopilot_approval_previews
-       (token_hash, user_id, channel_id, plan_id, plan_revision, preview_hash, snapshot, expires_at)
-     values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)`,
+       (token_hash, project_id, user_id, channel_id, plan_id, plan_revision,
+        preview_hash, snapshot, expires_at)
+     values ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)`,
     [
       hashAutopilotPreviewToken(token),
+      projectId,
       userId,
       plan.channel_id,
       planId,
@@ -5009,22 +5661,31 @@ async function botConfirmPlan(userId, planId, token) {
   if (!/^[A-Za-z0-9_-]{16,64}$/.test(String(token || ""))) {
     return "Подтверждение повреждено. Открой /plan ещё раз.";
   }
-  await reclaimStaleAutopilotApprovals(pool, { userId });
   const previewRecord = (
     await pool.query(
-      `select channel_id, plan_revision, preview_hash, snapshot, expires_at,
-              consumed_at, operation_id
-         from autopilot_approval_previews
-        where token_hash = $1 and user_id = $2 and plan_id = $3`,
+      `select preview.project_id, preview.channel_id, preview.plan_revision,
+              preview.preview_hash, preview.snapshot, preview.expires_at,
+              preview.consumed_at, preview.operation_id
+         from autopilot_approval_previews preview
+         join project_members member
+           on member.project_id = preview.project_id and member.user_id = $2
+          and member.status = 'active' and member.role in ('owner','approver')
+        where preview.token_hash = $1 and preview.user_id = $2 and preview.plan_id = $3`,
       [hashAutopilotPreviewToken(token), userId, planId],
     )
   ).rows[0];
   if (!previewRecord) return "Подтверждение устарело. Открой /plan и проверь план ещё раз.";
+  const projectId = Number(previewRecord.project_id);
+  await reclaimStaleAutopilotApprovals(pool, {
+    projectId,
+    channelId: Number(previewRecord.channel_id),
+  });
   if (previewRecord.operation_id) {
     const replay = (
       await pool.query(
-        `select result from autopilot_approval_operations where id = $1 and user_id = $2`,
-        [previewRecord.operation_id, userId],
+        `select result from autopilot_approval_operations
+          where id = $1 and project_id = $2 and user_id = $3`,
+        [previewRecord.operation_id, projectId, userId],
       )
     ).rows[0];
     return replay?.result?.message || "Это подтверждение уже обрабатывается.";
@@ -5037,10 +5698,13 @@ async function botConfirmPlan(userId, planId, token) {
     await pool.query(
       `select p.items, p.channel_id, p.revision, p.status, c.title, c.handle
          from autopilot_plan p
-         join channels c on c.id = p.channel_id and c.user_id = p.user_id
-        where p.id = $1 and p.user_id = $2
+         join channels c on c.id = p.channel_id and c.project_id = p.project_id
+         join project_members member
+           on member.project_id = p.project_id and member.user_id = $3
+          and member.status = 'active' and member.role in ('owner','approver')
+        where p.id = $1 and p.project_id = $2
           and c.network = 'tg' and c.is_active = true`,
-      [planId, userId],
+      [planId, projectId, userId],
     )
   ).rows[0];
   if (!current || current.status !== "pending") return "Этот план уже обработан или канал отключён.";
@@ -5066,13 +5730,13 @@ async function botConfirmPlan(userId, planId, token) {
   ) {
     return "План изменился. Ничего не поставлено в очередь. Открой /plan и проверь новые даты.";
   }
-  const idempotencyKey = `bot-${planId}-${planRevision}-${currentHash.slice(0, 16)}`;
+  const idempotencyKey = `project:${projectId}:bot-${planId}-${planRevision}-${currentHash.slice(0, 16)}`;
   const replay = (
     await pool.query(
-      `select plan_id, plan_revision, preview_hash, result
+        `select plan_id, plan_revision, preview_hash, result
          from autopilot_approval_operations
-        where user_id = $1 and idempotency_key = $2`,
-      [userId, idempotencyKey],
+        where project_id = $1 and user_id = $2 and idempotency_key = $3`,
+      [projectId, userId, idempotencyKey],
     )
   ).rows[0];
   if (replay) {
@@ -5085,11 +5749,12 @@ async function botConfirmPlan(userId, planId, token) {
 
   const inserted = await pool.query(
     `insert into autopilot_approval_operations
-       (user_id, channel_id, plan_id, plan_revision, preview_hash,
+       (project_id, user_id, channel_id, plan_id, plan_revision, preview_hash,
         idempotency_key, actor_type, status, request_snapshot)
-     values ($1, $2, $3, $4, $5, $6, 'bot', 'processing', $7)
+     values ($1, $2, $3, $4, $5, $6, $7, 'bot', 'processing', $8)
      on conflict (user_id, idempotency_key) do nothing returning id`,
     [
+      projectId,
       userId,
       current.channel_id,
       planId,
@@ -5105,18 +5770,20 @@ async function botConfirmPlan(userId, planId, token) {
   const consumed = await pool.query(
     `update autopilot_approval_previews
         set consumed_at = now(), operation_id = $2
-      where token_hash = $1 and consumed_at is null and expires_at > now()
+      where token_hash = $1 and project_id = $3
+        and consumed_at is null and expires_at > now()
       returning token_hash`,
-    [hashAutopilotPreviewToken(token), operationId],
+    [hashAutopilotPreviewToken(token), operationId, projectId],
   );
   if (!consumed.rowCount) {
     const result = { ok: false, message: "Подтверждение устарело. Ничего не поставлено в очередь." };
-    await finishBotApprovalOperation(operationId, "failed", result, 409);
+    await finishBotApprovalOperation(projectId, userId, operationId, "failed", result, 409);
     return result.message;
   }
 
   const claim = await claimAutopilotPlan(pool, {
     planId,
+    projectId,
     userId,
     channelId: Number(current.channel_id),
     operationId,
@@ -5125,7 +5792,7 @@ async function botConfirmPlan(userId, planId, token) {
   });
   if (!claim) {
     const result = { ok: false, scheduled: 0, message: "План изменился. Ничего не поставлено в очередь. Открой /plan ещё раз." };
-    await finishBotApprovalOperation(operationId, "failed", result, 409);
+    await finishBotApprovalOperation(projectId, userId, operationId, "failed", result, 409);
     return result.message;
   }
 
@@ -5138,10 +5805,11 @@ async function botConfirmPlan(userId, planId, token) {
     planRevision: Number(claim.revision || planRevision + 1),
   });
   const items = annotateAutopilotItems(claim.items, approvalTime);
-  await pool.query(`update autopilot_approval_operations set request_snapshot = $2 where id = $1`, [
-    operationId,
-    JSON.stringify(preview),
-  ]);
+  await pool.query(
+    `update autopilot_approval_operations set request_snapshot = $4
+      where id = $1 and project_id = $2 and user_id = $3`,
+    [operationId, projectId, userId, JSON.stringify(preview)],
+  );
 
   let scheduled = 0;
   let queuePendingReconciliation = 0;
@@ -5151,8 +5819,10 @@ async function botConfirmPlan(userId, planId, token) {
       if (!evaluation.eligible || !evaluation.scheduledAt) continue;
       const checkpoint = await scheduleAutopilotItem({
         pool,
-        enqueue: enqueuePublishJob,
+        enqueue: (scopedProjectId, postId, scheduledAt, scheduleRevision) =>
+          enqueuePublishJob(postId, scheduledAt, scheduleRevision, scopedProjectId),
         planId,
+        projectId,
         userId,
         channelId: Number(current.channel_id),
         operationId,
@@ -5184,6 +5854,7 @@ async function botConfirmPlan(userId, planId, token) {
     await finalizeAutopilotApproval({
       pool,
       planId,
+      projectId,
       userId,
       channelId: Number(current.channel_id),
       operationId,
@@ -5209,6 +5880,7 @@ async function botConfirmPlan(userId, planId, token) {
     await abortAutopilotApproval({
       pool,
       planId,
+      projectId,
       userId,
       channelId: Number(current.channel_id),
       operationId,
@@ -5366,6 +6038,10 @@ async function botIdea(userId, competitorPostId, callbackUpdateId) {
 /** Одно обновление от Telegram. Никогда не бросает: упавший апдейт не должен ронять поллинг. */
 async function handleUpdate(u) {
   try {
+    // Telegram delivers the channel → discussion mapping as an automatic-forward
+    // update, often without user text. Persist it before command routing so the durable
+    // first-comment operation can reply to the exact linked discussion message.
+    await observeTelegramDiscussionUpdate(pool, u);
     if (u.message?.text) {
       const chatId = u.message.chat.id;
       const text = u.message.text.trim();
@@ -5524,25 +6200,233 @@ async function pollUpdates() {
   }
 }
 
+function parseMonthlyCampaignRegenerationJson(value) {
+  const source = String(value || "")
+    .trim()
+    .replace(/^```(?:json)?\s*/iu, "")
+    .replace(/\s*```$/u, "");
+  if (!source) throw new Error("monthly-campaign-regeneration: empty AI response");
+  const parsed = JSON.parse(source);
+  return Array.isArray(parsed) ? parsed : parsed?.items;
+}
+
+async function generateMonthlyCampaignRegeneration(context, usageReservationId) {
+  const campaign = context.campaign;
+  const rubrics = Array.isArray(campaign.rubrics) ? campaign.rubrics : JSON.parse(campaign.rubrics || "[]");
+  const practiceMix = Array.isArray(campaign.practice_mix)
+    ? campaign.practice_mix
+    : JSON.parse(campaign.practice_mix || "[]");
+  const funnels = Array.isArray(campaign.funnel_stages)
+    ? campaign.funnel_stages
+    : JSON.parse(campaign.funnel_stages || "[]");
+  const targetIds = new Set(context.targets.map((item) => Number(item.id)));
+  const system = [
+    "Ты — выпускающий редактор месячного контент-плана.",
+    "Пересобери только указанные элементы, не повторяя исходные и остальные темы плана.",
+    "Не выдумывай факты, события, цифры и кейсы: здесь нужны темы, а не готовые утверждения.",
+    "Верни только JSON-массив без markdown и пояснений.",
+    "Каждый объект: {itemId,title,rubric,practice,funnelStage,state}.",
+    `rubric строго из: ${rubrics.join(" | ")}.`,
+    `practice строго из: ${practiceMix.map((item) => item.name).join(" | ")}.`,
+    `funnelStage строго из: ${funnels.join(" | ")}.`,
+    "state: topic или detailed.",
+    "title: конкретная тема до 240 символов, заметно отличающаяся от всех исключений.",
+  ].join("\n");
+  const user = JSON.stringify({
+    goal: campaign.goal,
+    audience: campaign.audience,
+    dates: [campaign.starts_on, campaign.ends_on],
+    importantDates: campaign.important_dates,
+    ctas: campaign.ctas,
+    targets: context.targets.map((item) => ({
+      itemId: Number(item.id),
+      date: String(item.scheduled_for).slice(0, 10),
+      previousTitle: item.title,
+      previousRubric: item.rubric,
+      previousPractice: item.practice,
+      previousFunnelStage: item.funnel_stage,
+    })),
+    avoidTitles: [
+      ...context.items.map((item) => item.title),
+      ...(Array.isArray(context.historicalTitles) ? context.historicalTitles : []).slice(0, 200),
+    ],
+  });
+  let lastError = null;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const raw = await askAI(
+      "autopilot-plan",
+      usageReservationId,
+      system,
+      attempt === 0 ? user : `${user}\n\nПредыдущий ответ не прошёл JSON-контракт. Верни исправленный полный массив.`,
+      Math.min(2_400, Math.max(600, context.targets.length * 220)),
+      null,
+      0.55,
+    );
+    try {
+      const parsed = parseMonthlyCampaignRegenerationJson(raw);
+      if (!Array.isArray(parsed) || parsed.length !== targetIds.size) {
+        throw new Error("monthly-campaign-regeneration: incomplete AI response");
+      }
+      const ids = new Set(parsed.map((item) => Number(item?.itemId)));
+      if (ids.size !== targetIds.size || [...ids].some((id) => !targetIds.has(id))) {
+        throw new Error("monthly-campaign-regeneration: foreign AI item");
+      }
+      return parsed;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError || new Error("monthly-campaign-regeneration: AI unavailable");
+}
+
+async function enqueueMonthlyCampaignRegeneration(projectId, operationId) {
+  if (!monthlyCampaignRegenerationQueue) throw new Error("monthly regeneration queue is disabled");
+  await monthlyCampaignRegenerationQueue.add(
+    "regenerate",
+    { projectId, operationId },
+    {
+      jobId: monthlyRegenerationJobId(operationId),
+      attempts: 3,
+      backoff: { type: "exponential", delay: 5_000 },
+      removeOnComplete: true,
+      removeOnFail: true,
+    },
+  );
+}
+
+const monthlyCampaignRegenerationWorker = MEDIA_ONLY || PUBLICATION_ONLY
+  ? null
+  : new Worker(
+      MONTHLY_CAMPAIGN_REGENERATION_QUEUE,
+      async (job) => {
+        const projectId = Number(job.data?.projectId);
+        const operationId = Number(job.data?.operationId);
+        if (!Number.isSafeInteger(projectId) || projectId <= 0) {
+          throw new UnrecoverableError("monthly-campaign-regeneration: bad projectId");
+        }
+        if (!Number.isSafeInteger(operationId) || operationId <= 0) {
+          throw new UnrecoverableError("monthly-campaign-regeneration: bad operationId");
+        }
+        const operation = (
+          await pool.query(
+            `select requested_by_user_id, status
+               from monthly_campaign_regeneration_operations
+              where id = $1 and project_id = $2`,
+            [operationId, projectId],
+          )
+        ).rows[0];
+        if (!operation) throw new UnrecoverableError("monthly-campaign-regeneration: project mismatch");
+        if (["completed", "stale", "failed", "cancelled"].includes(operation.status)) {
+          return processMonthlyCampaignRegeneration({
+            pool,
+            projectId,
+            operationId,
+            generate: async () => { throw new Error("terminal operation cannot generate"); },
+          });
+        }
+        const userId = Number(operation.requested_by_user_id);
+        const usage = await acquireWorkerAiUsage(pool, {
+          userId,
+          kind: "autopilot-plan",
+          key: workerAiUsageCompositeKey("monthly-campaign-regeneration", [projectId, operationId]),
+        });
+        if (usage.state === "committed") {
+          return processMonthlyCampaignRegeneration({
+            pool,
+            projectId,
+            operationId,
+            generate: async () => { throw new Error("committed operation cannot regenerate"); },
+          });
+        }
+        if (usage.state === "in_progress") return { state: "in_progress" };
+        if (usage.state === "limit") {
+          const limitError = new Error("monthly campaign regeneration AI usage limit");
+          limitError.code = "ai_usage_limit";
+          await processMonthlyCampaignRegeneration({
+            pool,
+            projectId,
+            operationId,
+            generate: async () => { throw limitError; },
+          }).catch(() => {});
+          await pool.query(
+            `update monthly_campaign_regeneration_outbox
+                set next_attempt_at = now() + interval '6 hours', updated_at = now()
+              where operation_id = $1 and project_id = $2 and status = 'retryable_failed'`,
+            [operationId, projectId],
+          );
+          return { state: "retryable_failed", error: "ai_usage_limit" };
+        }
+
+        let usageCommitted = false;
+        const stopHeartbeat = startAiUsageHeartbeat(userId, usage.reservationId);
+        try {
+          return await processMonthlyCampaignRegeneration({
+            pool,
+            projectId,
+            operationId,
+            generate: (context) => generateMonthlyCampaignRegeneration(context, usage.reservationId),
+            commitUsage: async (tx) => {
+              usageCommitted = await commitWorkerAiUsage(tx, userId, usage.reservationId);
+              return usageCommitted;
+            },
+          });
+        } finally {
+          stopHeartbeat();
+          if (!usageCommitted) {
+            await releaseWorkerAiUsage(pool, userId, usage.reservationId).catch(() => {});
+          }
+        }
+      },
+      { connection, concurrency: 2 },
+    );
+monthlyCampaignRegenerationWorker?.on("error", (error) => {
+  console.error("[monthly-campaign-regeneration] worker error", error?.message);
+});
+monthlyCampaignRegenerationWorker?.on("failed", (job, error) => {
+  console.error("[monthly-campaign-regeneration] job failed", {
+    operationId: job?.data?.operationId,
+    projectId: job?.data?.projectId,
+    errorName: error?.name || "Error",
+    errorCode: error?.code || null,
+    errorMessage: String(error?.message || "monthly regeneration failed").slice(0, 500),
+  });
+});
+
 // Отдельная очередь ручных задач аналитики (кнопка «обновить», недельный отчёт) и разведки.
 const statsWorker = MEDIA_ONLY || AUTOPILOT_ONLY || PUBLICATION_ONLY ? null : new Worker(
   "stats",
   async (job) => {
     if (job.name === "collect") {
-      const userId = Number(job.data.userId);
-      if (!Number.isInteger(userId) || userId <= 0) throw new Error("collect: bad userId");
-      // Ручная кнопка обновляет только данные владельца задания. Суточный cron ниже
-      // по-прежнему вызывает функции без userId и собирает все активные каналы.
-      await collectStats(userId);
-      await collectVkStats(userId);
+      let scope;
+      try {
+        scope = await requireStatsJobProjectScope(pool, job.data, "collect");
+      } catch (error) {
+        if (error instanceof StatsProjectScopeError) {
+          throw new UnrecoverableError(error.message);
+        }
+        throw error;
+      }
+      // userId is the initiating actor; projectId is the only data boundary.
+      await collectStats(scope.projectId);
+      await collectVkStats(scope.projectId);
     } else if (job.name === "report") {
-      const userId = Number(job.data.userId);
-      if (!Number.isInteger(userId) || userId <= 0) throw new Error("report: bad userId");
-      const delivered = await notifyUser(userId, await buildWeeklyReport(pool, userId));
+      let scope;
+      try {
+        scope = await requireStatsJobProjectScope(pool, job.data, "report");
+      } catch (error) {
+        if (error instanceof StatsProjectScopeError) {
+          throw new UnrecoverableError(error.message);
+        }
+        throw error;
+      }
+      const delivered = await notifyUser(
+        scope.userId,
+        await buildWeeklyReport(pool, scope),
+      );
       console.log(
         delivered
-          ? `[stats] недельный отчёт отправлен user ${userId}`
-          : `[stats] недельный отчёт НЕ доставлен user ${userId} — бот не привязан или недоступен`,
+          ? `[stats] недельный отчёт проекта ${scope.projectId} отправлен user ${scope.userId}`
+          : `[stats] недельный отчёт проекта ${scope.projectId} НЕ доставлен user ${scope.userId} — бот не привязан или недоступен`,
       );
       if (!delivered) throw new Error("недельный отчёт не доставлен"); // пусть очередь повторит
     } else if (job.name === "competitor") {
@@ -5584,30 +6468,20 @@ const statsWorker = MEDIA_ONLY || AUTOPILOT_ONLY || PUBLICATION_ONLY ? null : ne
     } else if (job.name === "autopilot-plan") {
       // Пользователь нажал «Собрать план» — строим сейчас (Д.9). При любом сбое переводим
       // застрявший 'building'-план в 'error', чтобы интерфейс не крутил спиннер вечно (ревью).
-      const userId = Number(job.data.userId);
-      const channelId = Number(job.data.channelId);
-      if (!Number.isSafeInteger(userId) || userId <= 0) throw new Error("autopilot-plan: bad userId");
-      if (!Number.isSafeInteger(channelId) || channelId <= 0) throw new Error("autopilot-plan: bad channelId");
-      // Jobs created before planId was introduced are still safe: bind the first processed item
-      // to the current placeholder. Once it succeeds, the remaining duplicates find nothing
-      // and become no-ops instead of rebuilding the channel again.
-      let planId = Number(job.data.planId);
-      if (!Number.isInteger(planId) || planId <= 0) {
-        const current = (
-          await pool.query(
-            `select id from autopilot_plan
-              where user_id = $1 and channel_id = $2 and status = 'building'
-              order by created_at desc limit 1`,
-            [userId, channelId],
-          )
-        ).rows[0];
-        planId = Number(current?.id);
-        if (!Number.isInteger(planId) || planId <= 0) return;
+      let scope;
+      try {
+        scope = await requireAutopilotPlanJobScope(pool, job.data);
+      } catch (error) {
+        if (error instanceof AutopilotProjectScopeError) {
+          throw new UnrecoverableError(error.message);
+        }
+        throw error;
       }
+      const { userId, projectId, channelId, planId } = scope;
       const usage = await acquireWorkerAiUsage(pool, {
         userId,
         kind: "autopilot-plan",
-        key: workerAiUsageKey("autopilot-plan", planId),
+        key: workerAiUsageCompositeKey("autopilot-plan", [projectId, planId]),
       });
       if (usage.state === "committed") return { ok: true, replayed: true, planId };
       if (usage.state === "in_progress") return { ok: true, inProgress: true, planId };
@@ -5615,8 +6489,8 @@ const statsWorker = MEDIA_ONLY || AUTOPILOT_ONLY || PUBLICATION_ONLY ? null : ne
         await pool.query(
           `update autopilot_plan
               set status = 'error', rules = 'ai_usage_limit', revision = revision + 1
-            where id = $1 and user_id = $2 and channel_id = $3 and status = 'building'`,
-          [planId, userId, channelId],
+            where id = $1 and project_id = $2 and channel_id = $3 and status = 'building'`,
+          [planId, projectId, channelId],
         );
         console.warn("[stats] autopilot-plan quota", {
           userId,
@@ -5630,13 +6504,19 @@ const statsWorker = MEDIA_ONLY || AUTOPILOT_ONLY || PUBLICATION_ONLY ? null : ne
       let usageCommitted = false;
       const stopHeartbeat = startAiUsageHeartbeat(userId, usage.reservationId);
       try {
-        const r = await buildAutopilotPlan(userId, channelId, planId, usage.reservationId);
+        const r = await buildAutopilotPlan(
+          projectId,
+          userId,
+          channelId,
+          planId,
+          usage.reservationId,
+        );
         usageCommitted = r?.usageCommitted === true;
         if (r?.error) {
           await pool.query(
             `update autopilot_plan set rules = $4
-              where id = $1 and user_id = $2 and channel_id = $3 and status = 'building'`,
-            [planId, userId, channelId, r.error],
+              where id = $1 and project_id = $2 and channel_id = $3 and status = 'building'`,
+            [planId, projectId, channelId, r.error],
           );
           throw new Error(r.error);
         }
@@ -5651,8 +6531,8 @@ const statsWorker = MEDIA_ONLY || AUTOPILOT_ONLY || PUBLICATION_ONLY ? null : ne
           await pool
             .query(
               `update autopilot_plan set status = 'error', revision = revision + 1
-                where id = $1 and user_id = $2 and channel_id = $3 and status = 'building'`,
-              [planId, userId, channelId],
+                where id = $1 and project_id = $2 and channel_id = $3 and status = 'building'`,
+              [planId, projectId, channelId],
             )
             .catch(() => {});
         }
@@ -5677,18 +6557,20 @@ statsWorker?.on("error", (err) => console.error("[stats] ошибка:", err));
 statsWorker?.on("failed", (job, err) => {
   if (job?.name !== "autopilot-plan") return;
   const planId = Number(job.data?.planId);
+  const projectId = Number(job.data?.projectId);
   const userId = Number(job.data?.userId);
   const channelId = Number(job.data?.channelId);
   if (
     !Number.isSafeInteger(planId) || planId <= 0 ||
+    !Number.isSafeInteger(projectId) || projectId <= 0 ||
     !Number.isSafeInteger(userId) || userId <= 0 ||
     !Number.isSafeInteger(channelId) || channelId <= 0 ||
     !autopilotJobAttemptsExhausted(job.attemptsMade, job.opts?.attempts)
   ) return;
   void pool.query(
     `update autopilot_plan set status = 'error', revision = revision + 1
-      where id = $1 and user_id = $2 and channel_id = $3 and status = 'building'`,
-    [planId, userId, channelId],
+      where id = $1 and project_id = $2 and channel_id = $3 and status = 'building'`,
+    [planId, projectId, channelId],
   ).then(() => {
     console.warn("[stats] autopilot-plan terminal failure", {
       planId,
@@ -5930,6 +6812,90 @@ async function cleanupExpired() {
   );
 }
 
+async function reconcileProjectExports() {
+  const dispatch = await reconcileProjectExportOutbox({
+    pool,
+    enqueue: (data) => enqueueProjectExportJob(data, projectExportQueue),
+    limit: 200,
+  });
+  const cleanup = await expireProjectExportArtifacts(pool, 500);
+  if (dispatch.enqueued || dispatch.failed || cleanup.expiredArtifacts) {
+    console.log("[project-export] reconcile", {
+      enqueued: dispatch.enqueued,
+      failed: dispatch.failed,
+      expiredArtifacts: cleanup.expiredArtifacts,
+    });
+  }
+  return { ...dispatch, ...cleanup };
+}
+
+async function reconcileLegalVisualRenders(operationId = null) {
+  if (!legalVisualRenderQueue) return { scanned: 0, enqueued: 0, failed: 0 };
+  const result = await reconcileLegalVisualRenderOutbox({
+    pool,
+    operationId,
+    enqueue: (data) => enqueueLegalVisualRenderJob(data, legalVisualRenderQueue),
+    limit: operationId == null ? 200 : 1,
+  });
+  if (result.enqueued || result.failed) {
+    console.log("[legal-visual] outbox reconcile", result);
+  }
+  return result;
+}
+
+async function reconcilePublicationExtras() {
+  const result = await reconcilePublicationExtraRuntime({
+    pool,
+    enqueue: enqueuePublicationExtra,
+    limit: 200,
+  });
+  if (result.enqueued || result.failed) {
+    console.log("[publication-extra] reconcile", {
+      candidates: result.candidates,
+      enqueued: result.enqueued,
+      failed: result.failed,
+    });
+  }
+  return result;
+}
+
+async function reconcilePublicationReviews() {
+  const result = await processDuePublicationReviews({
+    pool,
+    enqueue: enqueuePublicationReviewReminder,
+    limit: 100,
+  });
+  if (result.due || result.enqueued || result.failed || result.cancelled || result.recovered) {
+    console.log("[publication-review] reminders", result);
+  }
+  return result;
+}
+
+publicationExtraWorker?.on("completed", () => {
+  reconcilePublicationExtras().catch((error) => {
+    console.error("[publication-extra] post-completion reconcile failed", {
+      errorName: error instanceof Error ? error.name : "Error",
+    });
+  });
+});
+publicationExtraWorker?.on("error", (error) => {
+  console.error("[publication-extra] worker error", {
+    errorName: error instanceof Error ? error.name : "Error",
+  });
+});
+publicationReviewReminderWorker?.on("completed", () => {
+  reconcilePublicationReviews().catch((error) => {
+    console.error("[publication-review] post-completion reconcile failed", {
+      errorName: error instanceof Error ? error.name : "Error",
+    });
+  });
+});
+publicationReviewReminderWorker?.on("error", (error) => {
+  console.error("[publication-review] worker error", {
+    errorName: error instanceof Error ? error.name : "Error",
+  });
+});
+
 const cronQueue = AUTOPILOT_ONLY || MEDIA_ONLY || PUBLICATION_ONLY ? null : new Queue("cron", { connection });
 
 // Расписания в московском времени. trend сдвинут на 15 мин относительно recon, чтобы не
@@ -5943,13 +6909,14 @@ const CRON_SCHEDULES = [
   { name: "cleanup",  pattern: "0 3 * * *" },    // чистка протухших sessions/bot_links, 03:00 МСК
   { name: "rss",      pattern: "*/30 * * * *" }, // RSS-ленты, каждые 30 мин
   { name: "profile",  pattern: "0 5 * * 1" },   // переизвлечение профилей каналов, пн 05:00 МСК
+  { name: "exports",  pattern: "* * * * *" },    // durable outbox и TTL экспортов, каждую минуту
 ];
 
 const cronWorker = AUTOPILOT_ONLY || MEDIA_ONLY || PUBLICATION_ONLY ? null : new Worker(
   "cron",
   async (job) => {
     switch (job.name) {
-      case "stats":    await collectStats(); return collectVkStats();
+      case "stats":    return collectAllProjectStats();
       case "recon":    await collectCompetitors(); return checkNicheAlerts();
       case "trend":    return collectTrendSources();
       case "discover": return discoverAll();
@@ -5957,6 +6924,7 @@ const cronWorker = AUTOPILOT_ONLY || MEDIA_ONLY || PUBLICATION_ONLY ? null : new
       case "cleanup":  return cleanupExpired();
       case "rss":      return collectRss();
       case "profile":  return refreshProfiles();
+      case "exports":  return reconcileProjectExports();
       default:         console.warn(`[cron] неизвестная задача: ${job.name}`);
     }
   },
@@ -6033,7 +7001,8 @@ async function reconcileScheduledPosts() {
   }
   const outbox = await reconcileAutopilotScheduleOutbox({
     pool,
-    enqueue: enqueuePublishJob,
+    enqueue: (projectId, postId, scheduledAt, scheduleRevision) =>
+      enqueuePublishJob(postId, scheduledAt, scheduleRevision, projectId),
     limit: 1000,
   });
   if (outbox.pending) {
@@ -6051,7 +7020,7 @@ async function reconcileScheduledPosts() {
   }
   const rows = (
     await pool.query(
-      `select p.id, p.scheduled_at, p.next_attempt_at, p.status, p.schedule_revision
+      `select p.id, p.project_id, p.scheduled_at, p.next_attempt_at, p.status, p.schedule_revision
          from posts p
         where (
           (p.status = 'scheduled' and p.scheduled_at is not null
@@ -6086,7 +7055,7 @@ async function reconcileScheduledPosts() {
       : `post-${post.id}-r${revision}`;
     await queue.add(
       "publish",
-      { postId: Number(post.id), scheduleRevision: revision },
+      { postId: Number(post.id), projectId: Number(post.project_id), scheduleRevision: revision },
       {
         delay: Math.max(0, at - Date.now()),
         jobId,
@@ -6101,7 +7070,14 @@ async function reconcileScheduledPosts() {
 
 // Graceful shutdown: при деплое (SIGTERM) даём текущей задаче доработать, чтобы не оставлять
 // пост в 'publishing'.
+let shutdownStarted = false;
 async function shutdown(sig) {
+  // A process-group signal reaches this worker directly, while scripts/dev.mjs also
+  // forwards the same signal to its children. Closing the same BullMQ Worker twice
+  // can strand its Redis registration until heartbeat expiry and make a clean
+  // restart look like two live consumers.
+  if (shutdownStarted) return;
+  shutdownStarted = true;
   console.log(`[worker] ${sig} — завершаюсь аккуратно…`);
   // Stop refreshing immediately. The shared key expires naturally within 30s; deleting it
   // here could hide another healthy publication worker using the same readiness key.
@@ -6109,7 +7085,17 @@ async function shutdown(sig) {
   try {
     await worker?.close();
     await mediaWorker?.close();
+    await legalVisualRenderWorker?.close();
+    await legalVisualRenderQueue?.close();
     await siteAnalysisWorker?.close();
+    await projectExportWorker?.close();
+    await projectExportQueue?.close();
+    await publicationExtraWorker?.close();
+    await publicationExtraQueue?.close();
+    await publicationReviewReminderWorker?.close();
+    await publicationReviewReminderQueue?.close();
+    await monthlyCampaignRegenerationWorker?.close();
+    await monthlyCampaignRegenerationQueue?.close();
     await statsWorker?.close();
     await cronWorker?.close();
     await cronQueue?.close();
@@ -6133,8 +7119,83 @@ if (!AUTOPILOT_ONLY && !MEDIA_ONLY && !PUBLICATION_ONLY) {
 // Стартовая свежесть: разовые задачи сразу после запуска, чтобы не ждать первого тика.
 // Идут через ту же очередь (concurrency: 1) — не долбят t.me все разом при старте.
 // weekly НЕ запускаем: планы не должны перестраиваться при каждом рестарте (лечит баг «плана нет»).
-for (const name of AUTOPILOT_ONLY || MEDIA_ONLY || PUBLICATION_ONLY ? [] : ["stats", "recon", "trend", "discover"]) {
+for (const name of AUTOPILOT_ONLY || MEDIA_ONLY || PUBLICATION_ONLY ? [] : ["stats", "recon", "trend", "discover", "exports"]) {
   await cronQueue.add(name, {}, { jobId: `startup-${name}`, removeOnComplete: true }).catch(() => {});
+}
+
+if (monthlyCampaignRegenerationQueue) {
+  await recoverStaleMonthlyCampaignRegenerations({ pool }).catch((error) => {
+    console.error("[monthly-campaign-regeneration] startup recovery failed", error?.message);
+  });
+  await reconcileMonthlyCampaignRegenerationOutbox({
+    pool,
+    enqueue: enqueueMonthlyCampaignRegeneration,
+    limit: 500,
+  }).catch((error) => {
+    console.error("[monthly-campaign-regeneration] startup reconcile failed", error?.message);
+  });
+  const monthlyCampaignRegenerationTimer = setInterval(() => {
+    reconcileMonthlyCampaignRegenerationOutbox({
+      pool,
+      enqueue: enqueueMonthlyCampaignRegeneration,
+      limit: 100,
+    }).catch((error) => {
+      console.error("[monthly-campaign-regeneration] reconcile failed", error?.message);
+    });
+  }, 30_000);
+  monthlyCampaignRegenerationTimer.unref();
+}
+
+if (legalVisualRenderQueue) {
+  await reconcileLegalVisualRenders().catch((error) => {
+    console.error("[legal-visual] startup reconcile failed", {
+      errorName: error instanceof Error ? error.name : "Error",
+    });
+  });
+  const legalVisualRenderTimer = setInterval(() => {
+    reconcileLegalVisualRenders().catch((error) => {
+      console.error("[legal-visual] reconcile failed", {
+        errorName: error instanceof Error ? error.name : "Error",
+      });
+    });
+  }, 30_000);
+  legalVisualRenderTimer.unref();
+  legalVisualRenderWorker?.on("completed", (job) => {
+    reconcileLegalVisualRenders(Number(job.data?.operationId) || null).catch((error) => {
+      console.error("[legal-visual] post-completion reconcile failed", {
+        errorName: error instanceof Error ? error.name : "Error",
+      });
+    });
+  });
+}
+
+if (publicationExtraQueue) {
+  await reconcilePublicationExtras().catch((error) => {
+    console.error("[publication-extra] startup reconcile failed", {
+      errorName: error instanceof Error ? error.name : "Error",
+    });
+  });
+  await reconcilePublicationReviews().catch((error) => {
+    console.error("[publication-review] startup reconcile failed", {
+      errorName: error instanceof Error ? error.name : "Error",
+    });
+  });
+  const publicationExtraReconcileTimer = setInterval(() => {
+    reconcilePublicationExtras().catch((error) => {
+      console.error("[publication-extra] reconcile failed", {
+        errorName: error instanceof Error ? error.name : "Error",
+      });
+    });
+  }, 30_000);
+  publicationExtraReconcileTimer.unref();
+  const publicationReviewTimer = setInterval(() => {
+    reconcilePublicationReviews().catch((error) => {
+      console.error("[publication-review] reconcile failed", {
+        errorName: error instanceof Error ? error.name : "Error",
+      });
+    });
+  }, 60_000);
+  publicationReviewTimer.unref();
 }
 
 // Восстановление постов, застрявших в 'publishing' (разовая проверка при старте, не цикл).

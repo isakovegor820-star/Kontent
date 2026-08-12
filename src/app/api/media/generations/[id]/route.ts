@@ -5,6 +5,10 @@ import { getPool } from "@/lib/db";
 import type { MediaGenerationStatus } from "@/lib/media-generation.mjs";
 import { reconcileStaleMediaGeneration } from "@/lib/media-generation-reconciliation";
 import { getSessionUser } from "@/lib/session";
+import {
+  ProjectAccessError,
+  requireSelectedProjectPermission,
+} from "@/lib/project-permissions";
 
 export const runtime = "nodejs";
 
@@ -27,7 +31,12 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
 
   try {
     const pool = getPool();
-    await reconcileStaleMediaGeneration(pool, { userId: user.id, generationId });
+    const membership = await requireSelectedProjectPermission(pool, user.id, "project.read");
+    await reconcileStaleMediaGeneration(pool, {
+      userId: user.id,
+      projectId: membership.projectId,
+      generationId,
+    });
     const row = (
       await pool.query<{
         id: number;
@@ -59,9 +68,10 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
                 g.seconds, g.style, g.output_asset_id, g.error_code, g.error_message,
                 g.created_at, g.updated_at, g.completed_at, a.mime_type, a.bytes
            from media_generations g
-           left join media_assets a on a.id = g.output_asset_id
-          where g.id = $1 and g.user_id = $2`,
-        [generationId, user.id],
+           left join media_assets a
+             on a.id = g.output_asset_id and a.project_id = g.project_id
+          where g.id = $1 and g.project_id = $2`,
+        [generationId, membership.projectId],
       )
     ).rows[0];
     if (!row) return response(requestId, { error: "not_found" }, 404);
@@ -95,6 +105,9 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
       },
     });
   } catch (error) {
+    if (error instanceof ProjectAccessError) {
+      return response(requestId, { error: "project_access_denied" }, 403);
+    }
     console.error("[media-api]", {
       event: "poll_failed",
       requestId,

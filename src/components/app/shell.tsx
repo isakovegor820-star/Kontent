@@ -32,6 +32,7 @@ import type { LucideIcon } from "lucide-react";
 import { AuroraBackground } from "@/components/aurora-background";
 import { Wordmark } from "@/components/brand";
 import { ProjectSwitcher } from "@/components/app/project-switcher";
+import { ProjectNotificationsInbox } from "@/components/app/project-notifications-inbox";
 import { Button } from "@/components/ui/button";
 import { getAiUsageMetrics } from "@/lib/ai-usage-sync";
 import {
@@ -420,7 +421,9 @@ function ShellSkeleton({ title, subtitle }: { title: string; subtitle?: string }
                 </p>
               )}
             </div>
-            <div className="skeleton h-11 w-40 rounded-xs" />
+            <div className="w-full min-w-0 sm:w-auto sm:shrink-0">
+              <div className="skeleton h-11 w-full rounded-xs sm:w-40" />
+            </div>
           </div>
         </header>
 
@@ -668,7 +671,10 @@ export function AppShell({
                   </p>
                 )}
               </div>
-              {action && <div className="shrink-0">{action}</div>}
+              <div className="flex w-full min-w-0 flex-wrap items-center justify-end gap-2 sm:w-auto sm:shrink-0 sm:flex-nowrap">
+                {action ? <div className="min-w-0 flex-1 sm:flex-none">{action}</div> : null}
+                <ProjectNotificationsInbox />
+              </div>
             </div>
           </header>
 

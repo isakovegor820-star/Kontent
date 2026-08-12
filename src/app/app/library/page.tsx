@@ -423,9 +423,9 @@ function LibraryInner() {
   }
 
   return (
-    <div className="mx-auto w-full max-w-[1180px]">
+    <div className="mx-auto min-w-0 w-full max-w-[1180px]">
       {/* Контекст един для всех разделов: переключили канал — заменились все данные. */}
-      <section className="flex flex-col gap-4 rounded-md border border-line bg-surface px-4 py-4 shadow-soft sm:flex-row sm:items-center sm:justify-between sm:px-5">
+      <section className="flex min-w-0 flex-col gap-4 rounded-md border border-line bg-surface px-4 py-4 shadow-soft sm:flex-row sm:items-center sm:justify-between sm:px-5">
         <div className="min-w-0">
           <p className="flex items-center gap-2 text-[12px] font-bold tracking-wide text-text-3 uppercase">
             <Radio className="h-4 w-4 text-success-text" aria-hidden />
@@ -466,7 +466,7 @@ function LibraryInner() {
       )}
 
       {/* Два назначения одной библиотеки: найти механику и сохранить лучшее. */}
-      <div className="mt-5 grid gap-2 rounded-md border border-line bg-surface p-2 md:grid-cols-2">
+      <div className="mt-5 grid min-w-0 grid-cols-[minmax(0,1fr)] gap-2 rounded-md border border-line bg-surface p-2 md:grid-cols-2">
         {TABS.map((t) => {
           const Icon = t.icon;
           const count = t.key === "hits" ? hits.length : posts.length;
@@ -477,7 +477,7 @@ function LibraryInner() {
               onClick={() => replaceContext({ tab: t.key })}
               aria-current={tab === t.key ? "page" : undefined}
               className={cn(
-                "flex min-h-[72px] items-start gap-3 rounded-sm px-3 py-3 text-left transition-colors",
+                "flex min-h-[72px] min-w-0 w-full items-start gap-3 rounded-sm px-3 py-3 text-left transition-colors",
                 tab === t.key ? "bg-info-soft text-info-text" : "text-text-2 hover:bg-surface-inset hover:text-text",
               )}
             >

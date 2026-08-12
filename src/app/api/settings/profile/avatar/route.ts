@@ -61,8 +61,8 @@ export async function POST(req: NextRequest) {
     const pool = getPool();
     const existing = (
       await pool.query<{ id: string }>(
-        `select id from media_assets
-          where user_id = $1 and kind = 'image' and sha256 = $2 and mime_type = $3
+        `select id from user_avatar_assets
+          where user_id = $1 and sha256 = $2 and mime_type = $3
           order by id limit 1`,
         [user.id, prepared.sha256, prepared.mimeType],
       )
@@ -71,9 +71,9 @@ export async function POST(req: NextRequest) {
       ? Number(existing.id)
       : Number((
           await pool.query<{ id: string }>(
-            `insert into media_assets
-               (user_id, kind, file_name, mime_type, bytes, data, sha256)
-             values ($1, 'image', $2, $3, $4, $5, $6)
+            `insert into user_avatar_assets
+               (user_id, file_name, mime_type, bytes, data, sha256)
+             values ($1, $2, $3, $4, $5, $6)
              returning id`,
             [
               user.id,
@@ -89,7 +89,7 @@ export async function POST(req: NextRequest) {
 
     return response(requestId, {
       ok: true,
-      avatar: `/api/media/assets/${assetId}`,
+      avatar: `/api/settings/profile/avatar-assets/${assetId}`,
       mimeType: prepared.mimeType,
       bytes: prepared.data.byteLength,
     });

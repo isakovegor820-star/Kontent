@@ -4,6 +4,7 @@
 // Тон сообщения — по ТЗ 7.5: что случилось, что мы уже делаем, нужно ли что-то от тебя.
 
 import { AlertTriangle } from "lucide-react";
+import { useEffect } from "react";
 import { Button } from "@/components/ui/button";
 
 export default function ErrorBoundary({
@@ -13,6 +14,10 @@ export default function ErrorBoundary({
   error: Error & { digest?: string };
   unstable_retry: () => void;
 }) {
+  useEffect(() => {
+    console.error("[interface-error-boundary]", error);
+  }, [error]);
+
   return (
     <div className="flex min-h-dvh flex-col items-center justify-center gap-5 px-6 text-center">
       <div className="flex h-14 w-14 items-center justify-center rounded-md bg-danger-soft text-danger">

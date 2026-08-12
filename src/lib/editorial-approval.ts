@@ -1,8 +1,7 @@
-import { createHash } from "node:crypto";
-
 import type { Pool, PoolClient } from "pg";
 
 import { getPool } from "./db";
+import { draftRevisionContentHash } from "./editorial-revision.mjs";
 import {
   requireProjectPermission,
   requireSelectedProjectPermission,
@@ -22,10 +21,16 @@ export type DraftRevision = {
   draftId: number;
   draftVersion: number;
   authorUserId: number;
+  authorName?: string;
   contentHash: string;
   snapshot: Record<string, unknown>;
   createdAt: string;
 };
+
+export type DraftRevisionHistoryItem = Pick<
+  DraftRevision,
+  "id" | "draftId" | "draftVersion" | "authorUserId" | "authorName" | "snapshot" | "createdAt"
+>;
 
 export type EditorialWorkflow = {
   draftId: number;
@@ -44,6 +49,7 @@ export type EditorialRequest = {
   revisionId: number;
   contentHash: string;
   requestedByUserId: number;
+  requestedByName?: string;
   status: "open" | "approved" | "changes_requested" | "superseded";
   version: number;
   requestedAt: string;
@@ -55,7 +61,20 @@ export type EditorialComment = {
   revisionId: number;
   contentHash: string;
   authorUserId: number;
+  authorName?: string;
   body: string;
+  createdAt: string;
+};
+
+export type EditorialDecisionRecord = {
+  id: number;
+  requestId: number;
+  revisionId: number;
+  contentHash: string;
+  actorUserId: number;
+  actorName?: string;
+  decision: EditorialDecision;
+  note: string | null;
   createdAt: string;
 };
 
@@ -64,6 +83,7 @@ export type EditorialSnapshot = {
   currentRevision: DraftRevision;
   request: EditorialRequest | null;
   comments: EditorialComment[];
+  decisions: EditorialDecisionRecord[];
 };
 
 export class EditorialValidationError extends Error {
@@ -156,17 +176,7 @@ export function parseEditorialDecisionInput(value: unknown): DecisionInput {
   };
 }
 
-function canonical(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonical);
-  if (!isRecord(value)) return value;
-  return Object.fromEntries(
-    Object.keys(value).sort().map((key) => [key, canonical(value[key])]),
-  );
-}
-
-export function draftRevisionContentHash(snapshot: Record<string, unknown>): string {
-  return createHash("sha256").update(JSON.stringify(canonical(snapshot)), "utf8").digest("hex");
-}
+export { draftRevisionContentHash } from "./editorial-revision.mjs";
 
 function iso(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
@@ -179,6 +189,7 @@ type DraftSnapshotRow = {
   version: number | string;
   text: string;
   media: unknown;
+  tracking?: unknown;
   origin: string;
   purpose: string;
   source_ref: unknown;
@@ -189,6 +200,7 @@ type DraftSnapshotRow = {
   scheduled_offset: string | null;
   scheduled_disambiguation: string | null;
   channel_ids: unknown;
+  publication_preferences: unknown;
 };
 
 function snapshotFromDraft(row: DraftSnapshotRow): Record<string, unknown> {
@@ -196,9 +208,10 @@ function snapshotFromDraft(row: DraftSnapshotRow): Record<string, unknown> {
     ? row.channel_ids.map(Number).filter(Number.isSafeInteger).sort((left, right) => left - right)
     : [];
   return {
-    schemaVersion: 1,
+    schemaVersion: 3,
     text: row.text,
     media: row.media ?? null,
+    tracking: row.tracking ?? null,
     origin: row.origin,
     purpose: row.purpose,
     sourceRef: row.source_ref ?? null,
@@ -211,6 +224,15 @@ function snapshotFromDraft(row: DraftSnapshotRow): Record<string, unknown> {
       disambiguation: row.scheduled_disambiguation,
     },
     channelIds,
+    publicationPreferences: row.publication_preferences ?? {
+      version: 0,
+      selectedBlocks: [],
+      firstCommentFallback: "skip",
+      commentsMode: "provider_default",
+      pinAfterPublish: false,
+      reviewAt: null,
+      reviewResponsibleUserId: null,
+    },
   };
 }
 
@@ -221,14 +243,50 @@ async function loadDraftSnapshot(
 ): Promise<DraftSnapshotRow | null> {
   const result = await db.query<DraftSnapshotRow>(
     `select draft.id, draft.project_id, draft.user_id, draft.version,
-            draft.text, draft.media, draft.origin, draft.purpose, draft.source_ref,
-            draft.scheduled_at, draft.scheduled_timezone, draft.scheduled_local_date,
-            draft.scheduled_local_time, draft.scheduled_offset, draft.scheduled_disambiguation,
+            draft.text, draft.media, draft.tracking, draft.origin, draft.purpose, draft.source_ref,
+            draft.scheduled_at, draft.scheduled_timezone,
+            to_char(draft.scheduled_local_date, 'YYYY-MM-DD') as scheduled_local_date,
+            to_char(draft.scheduled_local_time, 'HH24:MI') as scheduled_local_time,
+            draft.scheduled_offset, draft.scheduled_disambiguation,
             coalesce((
               select array_agg(destination.channel_id order by destination.channel_id)
                 from draft_destinations destination
                where destination.draft_id = draft.id
-            ), '{}') as channel_ids
+            ), '{}') as channel_ids,
+            coalesce((
+              select jsonb_build_object(
+                'version', preference.version,
+                'selectedBlocks', coalesce((
+                  select jsonb_agg(jsonb_build_object(
+                    'id', block.id,
+                    'kind', block.kind,
+                    'name', block.name,
+                    'text', block.body,
+                    'version', block.version
+                  ) order by selection.position)
+                    from jsonb_array_elements_text(preference.selected_block_ids)
+                         with ordinality as selection(block_id, position)
+                    join project_publication_blocks block
+                      on block.id = selection.block_id::bigint
+                     and block.project_id = preference.project_id
+                ), '[]'::jsonb),
+                'firstCommentFallback', preference.first_comment_fallback,
+                'commentsMode', preference.comments_mode,
+                'pinAfterPublish', preference.pin_after_publish,
+                'reviewAt', preference.review_at,
+                'reviewResponsibleUserId', preference.review_responsible_user_id
+              )
+                from draft_publication_preferences preference
+               where preference.draft_id = draft.id and preference.project_id = draft.project_id
+            ), jsonb_build_object(
+              'version', 0,
+              'selectedBlocks', '[]'::jsonb,
+              'firstCommentFallback', 'skip',
+              'commentsMode', 'provider_default',
+              'pinAfterPublish', false,
+              'reviewAt', null,
+              'reviewResponsibleUserId', null
+            )) as publication_preferences
        from drafts draft
       where draft.id = $1
         and ($2::bigint is null or draft.project_id = $2)
@@ -441,7 +499,11 @@ export async function recordDraftRevisionInTransaction(
     await db.query(
       `update draft_editorial_workflows
           set current_revision_id = $3,
-              state = case when $4 then 'draft' else state end,
+              state = case
+                when $4 and state = 'changes_requested' then 'changes_requested'
+                when $4 then 'draft'
+                else state
+              end,
               submitted_revision_id = case when $4 then null else submitted_revision_id end,
               submitted_by_user_id = case when $4 then null else submitted_by_user_id end,
               submitted_at = case when $4 then null else submitted_at end,
@@ -491,6 +553,53 @@ export async function recordDraftRevisionInTransaction(
   };
 }
 
+/**
+ * Immutable server-side history for the selected project. The project filter is
+ * deliberately repeated on the draft and revision joins so a guessed draft id
+ * can never cross workspace boundaries.
+ */
+export async function listDraftRevisionHistoryForUser(
+  userId: number,
+  draftId: number,
+  db: Queryable = getPool(),
+): Promise<DraftRevisionHistoryItem[]> {
+  if (!Number.isSafeInteger(draftId) || draftId <= 0) throw new EditorialNotFoundError();
+  const membership = await requireSelectedProjectPermission(db, userId, "project.read");
+  const result = await db.query<{
+    id: number | string;
+    draft_id: number | string;
+    draft_version: number | string;
+    author_user_id: number | string;
+    author_name: string | null;
+    snapshot: Record<string, unknown>;
+    created_at: Date | string;
+  }>(
+    `select revision.id, revision.draft_id, revision.draft_version,
+            revision.author_user_id, nullif(trim(author.name), '') as author_name,
+            revision.snapshot, revision.created_at
+       from draft_revisions revision
+       join drafts draft
+         on draft.id = revision.draft_id
+        and draft.project_id = revision.project_id
+       join users author on author.id = revision.author_user_id
+      where revision.project_id = $1
+        and revision.draft_id = $2
+        and draft.project_id = $1
+      order by revision.draft_version desc, revision.id desc
+      limit 50`,
+    [membership.projectId, draftId],
+  );
+  return result.rows.map((row) => ({
+    id: Number(row.id),
+    draftId: Number(row.draft_id),
+    draftVersion: Number(row.draft_version),
+    authorUserId: Number(row.author_user_id),
+    ...(row.author_name ? { authorName: row.author_name } : {}),
+    snapshot: row.snapshot,
+    createdAt: iso(row.created_at),
+  }));
+}
+
 type WorkflowRow = {
   draft_id: number | string;
   project_id: number | string;
@@ -504,6 +613,7 @@ type WorkflowRow = {
   revision_project_id: number | string;
   draft_version: number | string;
   revision_author_user_id: number | string;
+  revision_author_name?: string | null;
   revision_content_hash: string;
   revision_snapshot: Record<string, unknown>;
   revision_created_at: Date | string;
@@ -524,12 +634,14 @@ function mapWorkflow(row: WorkflowRow): EditorialWorkflow {
 }
 
 function mapRevision(row: WorkflowRow): DraftRevision {
+  const authorUserId = Number(row.revision_author_user_id);
   return {
     id: Number(row.current_revision_id),
     projectId: Number(row.revision_project_id),
     draftId: Number(row.draft_id),
     draftVersion: Number(row.draft_version),
-    authorUserId: Number(row.revision_author_user_id),
+    authorUserId,
+    authorName: row.revision_author_name?.trim() || `Участник ${authorUserId}`,
     contentHash: row.revision_content_hash,
     snapshot: row.revision_snapshot,
     createdAt: iso(row.revision_created_at),
@@ -544,6 +656,8 @@ async function loadWorkflow(db: Queryable, projectId: number, draftId: number, l
             workflow.approved_content_hash, workflow.updated_at as workflow_updated_at,
             revision.project_id as revision_project_id, revision.draft_version,
             revision.author_user_id as revision_author_user_id,
+            coalesce(nullif(btrim(revision_author.name), ''), 'Участник ' || revision.author_user_id::text)
+              as revision_author_name,
             revision.content_hash as revision_content_hash,
             revision.snapshot as revision_snapshot, revision.created_at as revision_created_at
        from draft_editorial_workflows workflow
@@ -552,6 +666,7 @@ async function loadWorkflow(db: Queryable, projectId: number, draftId: number, l
         and revision.project_id = workflow.project_id
         and revision.draft_id = workflow.draft_id
        join drafts draft on draft.id = workflow.draft_id and draft.project_id = workflow.project_id
+       left join users revision_author on revision_author.id = revision.author_user_id
       where workflow.project_id = $1 and workflow.draft_id = $2
       ${lock ? "for update of workflow" : ""}`,
     [projectId, draftId],
@@ -604,16 +719,21 @@ export async function getEditorialSnapshotForUser(
     revision_id: number | string;
     content_hash: string;
     requested_by_user_id: number | string;
+    requested_by_name: string;
     status: EditorialRequest["status"];
     version: number | string;
     requested_at: Date | string;
     resolved_at: Date | string | null;
   }>(
-    `select id, revision_id, content_hash, requested_by_user_id, status, version,
-            requested_at, resolved_at
-       from draft_editorial_requests
-      where project_id = $1 and draft_id = $2
-      order by requested_at desc, id desc
+    `select request.id, request.revision_id, request.content_hash,
+            request.requested_by_user_id,
+            coalesce(nullif(btrim(requester.name), ''), 'Участник ' || request.requested_by_user_id::text)
+              as requested_by_name,
+            request.status, request.version, request.requested_at, request.resolved_at
+       from draft_editorial_requests request
+       left join users requester on requester.id = request.requested_by_user_id
+      where request.project_id = $1 and request.draft_id = $2
+      order by request.requested_at desc, request.id desc
       limit 1`,
     [projectId, draftId],
   );
@@ -622,13 +742,41 @@ export async function getEditorialSnapshotForUser(
     revision_id: number | string;
     content_hash: string;
     author_user_id: number | string;
+    author_name: string;
     body: string;
     created_at: Date | string;
   }>(
-    `select id, revision_id, content_hash, author_user_id, body, created_at
-       from draft_editorial_comments
-      where project_id = $1 and draft_id = $2
-      order by created_at, id`,
+    `select comment.id, comment.revision_id, comment.content_hash,
+            comment.author_user_id,
+            coalesce(nullif(btrim(author.name), ''), 'Участник ' || comment.author_user_id::text)
+              as author_name,
+            comment.body, comment.created_at
+       from draft_editorial_comments comment
+       left join users author on author.id = comment.author_user_id
+      where comment.project_id = $1 and comment.draft_id = $2
+      order by comment.created_at, comment.id`,
+    [projectId, draftId],
+  );
+  const decisionsResult = await db.query<{
+    id: number | string;
+    request_id: number | string;
+    revision_id: number | string;
+    content_hash: string;
+    actor_user_id: number | string;
+    actor_name: string;
+    decision: EditorialDecision;
+    note: string | null;
+    created_at: Date | string;
+  }>(
+    `select decision.id, decision.request_id, decision.revision_id,
+            decision.content_hash, decision.actor_user_id,
+            coalesce(nullif(btrim(actor.name), ''), 'Участник ' || decision.actor_user_id::text)
+              as actor_name,
+            decision.decision, decision.note, decision.created_at
+       from draft_editorial_decisions decision
+       left join users actor on actor.id = decision.actor_user_id
+      where decision.project_id = $1 and decision.draft_id = $2
+      order by decision.created_at desc, decision.id desc`,
     [projectId, draftId],
   );
   const requestRow = requestResult.rows[0];
@@ -640,6 +788,7 @@ export async function getEditorialSnapshotForUser(
       revisionId: Number(requestRow.revision_id),
       contentHash: requestRow.content_hash,
       requestedByUserId: Number(requestRow.requested_by_user_id),
+      requestedByName: requestRow.requested_by_name,
       status: requestRow.status,
       version: Number(requestRow.version),
       requestedAt: iso(requestRow.requested_at),
@@ -650,8 +799,20 @@ export async function getEditorialSnapshotForUser(
       revisionId: Number(comment.revision_id),
       contentHash: comment.content_hash,
       authorUserId: Number(comment.author_user_id),
+      authorName: comment.author_name,
       body: comment.body,
       createdAt: iso(comment.created_at),
+    })),
+    decisions: decisionsResult.rows.map((decision) => ({
+      id: Number(decision.id),
+      requestId: Number(decision.request_id),
+      revisionId: Number(decision.revision_id),
+      contentHash: decision.content_hash,
+      actorUserId: Number(decision.actor_user_id),
+      actorName: decision.actor_name,
+      decision: decision.decision,
+      note: decision.note,
+      createdAt: iso(decision.created_at),
     })),
   };
 }
@@ -881,11 +1042,11 @@ export async function decideDraftEditorialRequest(
     );
     await db.query(
       `update draft_editorial_workflows
-          set state = $4, version = $5,
-              approved_revision_id = case when $4 = 'approved' then $3 else null end,
-              approved_content_hash = case when $4 = 'approved' then $6 else null end,
+          set state = $4::text, version = $5::bigint,
+              approved_revision_id = case when $4::text = 'approved' then $3::bigint else null end,
+              approved_content_hash = case when $4::text = 'approved' then $6::char(64) else null end,
               updated_at = now()
-        where project_id = $1 and draft_id = $2 and version = $7`,
+        where project_id = $1::bigint and draft_id = $2::bigint and version = $7::bigint`,
       [projectId, draftId, input.revisionId, nextState, nextWorkflowVersion, input.contentHash, input.workflowVersion],
     );
     await writeAudit(db, {
@@ -914,6 +1075,18 @@ export async function decideDraftEditorialRequest(
       safeData: { requestId: input.requestId, revisionId: input.revisionId },
       idempotencyKey: `editorial-decision:${decisionId}:participants`,
     });
+    if (input.decision === "approve") {
+      await notifyRoles(db, {
+        projectId,
+        actorUserId: userId,
+        roles: ["owner", "publisher"],
+        eventType: "draft_ready_to_publish",
+        entityType: "draft",
+        entityId: draftId,
+        safeData: { requestId: input.requestId, revisionId: input.revisionId },
+        idempotencyKey: `editorial-decision:${decisionId}:publishers`,
+      });
+    }
     return {
       workflow: {
         ...mapWorkflow(workflowRow),
@@ -935,7 +1108,22 @@ export async function requireCurrentDraftApproval(
   projectId: number,
   draftId: number,
 ): Promise<{ revisionId: number; contentHash: string }> {
-  await requireProjectPermission(db, userId, projectId, "content.publish");
+  return requireExactDraftApproval(db, userId, projectId, draftId, "content.publish");
+}
+
+/**
+ * Fails closed unless the current draft is the exact revision/hash approved by an
+ * editor. Consumers such as the legal visual studio use their own least-privilege
+ * permission while publication keeps requiring `content.publish` above.
+ */
+export async function requireExactDraftApproval(
+  db: Queryable,
+  userId: number,
+  projectId: number,
+  draftId: number,
+  permission: ProjectPermission = "content.create",
+): Promise<{ revisionId: number; contentHash: string }> {
+  await requireProjectPermission(db, userId, projectId, permission);
   const workflow = await loadWorkflow(db, projectId, draftId, true);
   if (
     !workflow

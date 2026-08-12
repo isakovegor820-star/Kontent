@@ -52,6 +52,7 @@ type GenerationStatus = "queued" | "submitting" | "generating" | "saving" | "rea
 type GenerationRow = {
   id: number;
   user_id: number;
+  project_id: number;
   request_id: string;
   request_key: string;
   provider_request_key: string;
@@ -88,6 +89,7 @@ type Ledger = {
 };
 
 const USER_ID = 7;
+const PROJECT_ID = 5;
 const CHANNEL_ID = 18;
 const RESERVATION_ID = 91;
 const GENERATION_ID = 41;
@@ -158,20 +160,21 @@ function configureStatefulInfrastructure() {
       ledger.generation = {
         id: GENERATION_ID,
         user_id: Number(values[0]),
-        kind: "image",
-        prompt: String(values[2]),
-        negative_prompt: values[3] == null ? null : String(values[3]),
-        model: String(values[4]),
-        aspect_ratio: String(values[5]),
-        quality: String(values[6]),
+        project_id: Number(values[1]),
+        kind: String(values[2]) as "image",
+        prompt: String(values[3]),
+        negative_prompt: values[4] == null ? null : String(values[4]),
+        model: String(values[5]),
+        aspect_ratio: String(values[6]),
+        quality: String(values[7]),
         seconds: null,
-        style: String(values[8]),
-        request_key: String(values[11]),
-        ai_usage_reservation_id: Number(values[12]),
-        request_id: String(values[13]),
-        provider_request_key: String(values[14]),
+        style: String(values[9]),
+        request_key: String(values[12]),
+        ai_usage_reservation_id: Number(values[13]),
+        request_id: String(values[14]),
+        provider_request_key: String(values[15]),
         provider_job_id: null,
-        prompt_context: values[16] as Record<string, unknown>,
+        prompt_context: values[17] as Record<string, unknown>,
         source_text: "",
         exact_text: "",
         status: "queued",
@@ -190,9 +193,20 @@ function configureStatefulInfrastructure() {
     throw new Error(`unexpected transaction query: ${sql}`);
   });
   mocks.poolQuery.mockImplementation(async (sql: string, params?: unknown[]) => {
-    if (sql.includes("where g.user_id = $1 and g.request_key = $2")) {
+    if (sql.includes("from user_project_preferences preference")) {
+      return {
+        rows: [{
+          project_id: PROJECT_ID,
+          user_id: USER_ID,
+          role: "author",
+          version: 1,
+        }],
+        rowCount: 1,
+      };
+    }
+    if (sql.includes("where g.project_id = $1 and g.request_key = $2")) {
       const matches = ledger.generation
-        && ledger.generation.user_id === Number(params?.[0])
+        && ledger.generation.project_id === Number(params?.[0])
         && ledger.generation.request_key === String(params?.[1]);
       return { rows: matches ? [publicRow(ledger.generation!)] : [], rowCount: matches ? 1 : 0 };
     }
@@ -313,7 +327,11 @@ describe("authenticated media API to worker terminal contract", () => {
     });
     expect(accepted.headers.get("x-request-id")).toBe(acceptedBody.requestId);
     expect(ledger.quota).toBe("reserved");
-    expect(ledger.queuedJob).toMatchObject({ generationId: GENERATION_ID, requestKey });
+    expect(ledger.queuedJob).toMatchObject({
+      generationId: GENERATION_ID,
+      projectId: PROJECT_ID,
+      requestKey,
+    });
 
     const worker = workerHarness(async () => ({
       state: "completed",

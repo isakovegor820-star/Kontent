@@ -2326,6 +2326,627 @@ begin
 end
 $$;
 
+-- Composite project foreign keys used by the feature tables below require the
+-- tenant columns and matching unique keys to exist during a fresh bootstrap.
+-- The later project-context section remains idempotent for legacy backfills.
+alter table channels add column if not exists project_id bigint references projects (id) on delete restrict;
+update channels channel set project_id = project.id from projects project
+ where channel.project_id is null and project.personal_owner_user_id = channel.user_id;
+alter table channels alter column project_id set not null;
+
+alter table drafts add column if not exists project_id bigint references projects (id) on delete restrict;
+update drafts draft set project_id = project.id from projects project
+ where draft.project_id is null and project.personal_owner_user_id = draft.user_id;
+alter table drafts alter column project_id set not null;
+
+alter table posts add column if not exists project_id bigint references projects (id) on delete restrict;
+update posts post set project_id = coalesce(
+  (select channel.project_id from channels channel where channel.id = post.channel_id),
+  (select project.id from projects project where project.personal_owner_user_id = post.user_id)
+) where post.project_id is null;
+alter table posts alter column project_id set not null;
+
+alter table publication_operations add column if not exists project_id bigint references projects (id) on delete restrict;
+update publication_operations operation set project_id = coalesce(
+  (select draft.project_id from drafts draft where draft.id = operation.draft_id),
+  (select project.id from projects project where project.personal_owner_user_id = operation.user_id)
+) where operation.project_id is null;
+alter table publication_operations alter column project_id set not null;
+
+create unique index if not exists channels_id_project_uniq on channels (id, project_id);
+create unique index if not exists drafts_id_project_uniq on drafts (id, project_id);
+create unique index if not exists posts_id_project_uniq on posts (id, project_id);
+create unique index if not exists publication_operations_id_project_uniq
+  on publication_operations (id, project_id);
+
+-- ------------------------------------------------ Publication blocks, follow-up actions and review tasks
+
+create table if not exists project_publication_blocks (
+  id                 bigint generated always as identity primary key,
+  project_id         bigint not null references projects (id) on delete cascade,
+  kind               text not null,
+  name               varchar(120) not null,
+  body               text not null,
+  version            bigint not null default 1,
+  is_enabled         boolean not null default true,
+  created_by_user_id bigint not null references users (id) on delete restrict,
+  updated_by_user_id bigint not null references users (id) on delete restrict,
+  created_at         timestamptz not null default now(),
+  updated_at         timestamptz not null default now(),
+  constraint project_publication_blocks_kind_check check (
+    kind in ('author_signature','contacts','disclaimer','cta','sources','first_comment')
+  ),
+  constraint project_publication_blocks_name_check check (length(btrim(name)) between 1 and 120),
+  constraint project_publication_blocks_body_check check (length(btrim(body)) between 1 and 2000),
+  constraint project_publication_blocks_version_check check (version > 0),
+  unique (id, project_id)
+);
+create index if not exists project_publication_blocks_project_kind_idx
+  on project_publication_blocks (project_id, kind, is_enabled desc, id);
+
+create table if not exists draft_publication_preferences (
+  draft_id                    bigint primary key,
+  project_id                  bigint not null references projects (id) on delete cascade,
+  selected_block_ids          jsonb not null default '[]'::jsonb,
+  first_comment_fallback      text not null default 'skip',
+  comments_mode               text not null default 'provider_default',
+  pin_after_publish           boolean not null default false,
+  review_at                   timestamptz,
+  review_responsible_user_id  bigint references users (id) on delete set null,
+  version                     bigint not null default 1,
+  updated_by_user_id          bigint not null references users (id) on delete restrict,
+  created_at                  timestamptz not null default now(),
+  updated_at                  timestamptz not null default now(),
+  constraint draft_publication_preferences_draft_project_fk foreign key (draft_id, project_id)
+    references drafts (id, project_id) on delete cascade,
+  constraint draft_publication_preferences_blocks_check check (jsonb_typeof(selected_block_ids) = 'array'),
+  constraint draft_publication_preferences_fallback_check check (
+    first_comment_fallback in ('append_to_post','skip')
+  ),
+  constraint draft_publication_preferences_comments_check check (
+    comments_mode in ('provider_default','enabled','disabled')
+  ),
+  constraint draft_publication_preferences_review_check check (
+    (review_at is null and review_responsible_user_id is null)
+    or (review_at is not null and review_responsible_user_id is not null)
+  ),
+  constraint draft_publication_preferences_version_check check (version > 0),
+  unique (draft_id, project_id)
+);
+create index if not exists draft_publication_preferences_project_review_idx
+  on draft_publication_preferences (project_id, review_at, draft_id)
+  where review_at is not null;
+
+create table if not exists publication_extra_operations (
+  id                       bigint generated always as identity primary key,
+  project_id               bigint not null references projects (id) on delete cascade,
+  publication_operation_id bigint references publication_operations (id) on delete cascade,
+  post_id                  bigint not null,
+  channel_id               bigint not null,
+  kind                     text not null,
+  sequence_index           smallint not null,
+  idempotency_key          varchar(160) not null,
+  fingerprint              char(64) not null,
+  request_snapshot         jsonb not null,
+  status                   text not null default 'pending',
+  external_id              text,
+  external_url             text,
+  attempts                 integer not null default 0,
+  next_attempt_at          timestamptz not null default now(),
+  last_error_code          text,
+  last_error_message       text,
+  lease_token              char(64),
+  lease_expires_at         timestamptz,
+  provider_started_at      timestamptz,
+  completed_at             timestamptz,
+  created_at               timestamptz not null default now(),
+  updated_at               timestamptz not null default now(),
+  constraint publication_extra_operations_post_project_fk foreign key (post_id, project_id)
+    references posts (id, project_id) on delete cascade,
+  constraint publication_extra_operations_channel_project_fk foreign key (channel_id, project_id)
+    references channels (id, project_id) on delete cascade,
+  constraint publication_extra_operations_operation_project_fk
+    foreign key (publication_operation_id, project_id)
+    references publication_operations (id, project_id) on delete cascade,
+  constraint publication_extra_operations_kind_check check (
+    kind in ('first_comment','configure_comments','pin','unpin')
+  ),
+  constraint publication_extra_operations_sequence_check check (sequence_index between 1 and 100),
+  constraint publication_extra_operations_fingerprint_check check (fingerprint ~ '^[0-9a-f]{64}$'),
+  constraint publication_extra_operations_snapshot_check check (jsonb_typeof(request_snapshot) = 'object'),
+  constraint publication_extra_operations_status_check check (
+    status in ('pending','dispatching','queued','running','waiting_dependency',
+               'succeeded','failed_retry','failed','skipped','unsupported','cancelled')
+  ),
+  constraint publication_extra_operations_attempts_check check (attempts >= 0),
+  constraint publication_extra_operations_lease_check check (
+    (lease_token is null and lease_expires_at is null)
+    or (lease_token is not null and lease_expires_at is not null)
+  ),
+  unique (project_id, idempotency_key),
+  unique (id, project_id)
+);
+create index if not exists publication_extra_operations_post_idx
+  on publication_extra_operations (project_id, post_id, kind, id);
+create index if not exists publication_extra_operations_due_idx
+  on publication_extra_operations (next_attempt_at, id)
+  where status in ('pending','failed_retry','waiting_dependency');
+
+-- Historical migration 20260816 originally installed this key. Multiple operations
+-- of the same kind may share one dependency position, so the later repair removes it.
+alter table publication_extra_operations
+  drop constraint if exists publication_extra_operations_project_id_post_id_sequence_in_key;
+
+create table if not exists publication_extra_attempts (
+  id              bigint generated always as identity primary key,
+  project_id      bigint not null references projects (id) on delete cascade,
+  operation_id    bigint not null,
+  attempt_number  integer not null,
+  status          text not null,
+  safe_error_code varchar(100),
+  started_at      timestamptz not null default now(),
+  completed_at    timestamptz,
+  constraint publication_extra_attempts_operation_project_fk
+    foreign key (operation_id, project_id)
+    references publication_extra_operations (id, project_id) on delete cascade,
+  constraint publication_extra_attempts_number_check check (attempt_number > 0),
+  constraint publication_extra_attempts_status_check
+    check (status in ('running','succeeded','failed_retry','failed')),
+  constraint publication_extra_attempts_error_check
+    check (safe_error_code is null or safe_error_code ~ '^[a-z0-9_]{1,100}$'),
+  constraint publication_extra_attempts_completion_check check (
+    (status = 'running' and completed_at is null)
+    or (status <> 'running' and completed_at is not null)
+  ),
+  unique (operation_id, attempt_number)
+);
+create index if not exists publication_extra_attempts_project_operation_idx
+  on publication_extra_attempts (project_id, operation_id, attempt_number);
+
+create table if not exists publication_extra_outbox (
+  id                bigint generated always as identity primary key,
+  project_id        bigint not null references projects (id) on delete cascade,
+  operation_id      bigint not null,
+  status            text not null default 'pending',
+  attempts          integer not null default 0,
+  next_attempt_at   timestamptz not null default now(),
+  last_error_code   text,
+  lease_token       char(64),
+  lease_expires_at  timestamptz,
+  enqueued_at       timestamptz,
+  created_at        timestamptz not null default now(),
+  updated_at        timestamptz not null default now(),
+  constraint publication_extra_outbox_operation_project_fk foreign key (operation_id, project_id)
+    references publication_extra_operations (id, project_id) on delete cascade,
+  constraint publication_extra_outbox_status_check check (
+    status in ('pending','dispatching','enqueued','failed','completed','cancelled')
+  ),
+  constraint publication_extra_outbox_attempts_check check (attempts >= 0),
+  constraint publication_extra_outbox_lease_check check (
+    (lease_token is null and lease_expires_at is null)
+    or (lease_token is not null and lease_expires_at is not null)
+  ),
+  unique (project_id, operation_id)
+);
+create index if not exists publication_extra_outbox_due_idx
+  on publication_extra_outbox (next_attempt_at, id)
+  where status in ('pending','failed');
+
+create table if not exists telegram_discussion_messages (
+  id                    bigint generated always as identity primary key,
+  project_id            bigint not null references projects (id) on delete cascade,
+  channel_id            bigint not null,
+  post_id               bigint,
+  origin_chat_id        bigint not null,
+  origin_message_id     bigint not null,
+  discussion_chat_id    bigint not null,
+  discussion_message_id bigint not null,
+  observed_at           timestamptz not null default now(),
+  constraint telegram_discussion_messages_channel_project_fk foreign key (channel_id, project_id)
+    references channels (id, project_id) on delete cascade,
+  constraint telegram_discussion_messages_post_project_fk foreign key (post_id, project_id)
+    references posts (id, project_id) on delete cascade,
+  unique (channel_id, origin_message_id),
+  unique (discussion_chat_id, discussion_message_id)
+);
+create index if not exists telegram_discussion_messages_post_idx
+  on telegram_discussion_messages (project_id, post_id)
+  where post_id is not null;
+
+create table if not exists publication_review_tasks (
+  id                    bigint generated always as identity primary key,
+  project_id            bigint not null references projects (id) on delete cascade,
+  post_id               bigint not null,
+  responsible_user_id   bigint not null references users (id) on delete restrict,
+  review_at             timestamptz not null,
+  timezone              varchar(80) not null,
+  status                text not null default 'scheduled',
+  decision              text,
+  decision_note         text,
+  decided_by_user_id    bigint references users (id) on delete set null,
+  decided_at            timestamptz,
+  reminder_idempotency_key varchar(160) not null,
+  reminder_status       text not null default 'pending',
+  reminder_sent_at      timestamptz,
+  version               bigint not null default 1,
+  created_at            timestamptz not null default now(),
+  updated_at            timestamptz not null default now(),
+  constraint publication_review_tasks_post_project_fk foreign key (post_id, project_id)
+    references posts (id, project_id) on delete cascade,
+  constraint publication_review_tasks_timezone_check check (length(btrim(timezone)) between 1 and 80),
+  constraint publication_review_tasks_status_check check (status in ('scheduled','due','completed','cancelled')),
+  constraint publication_review_tasks_decision_check check (
+    decision is null or decision in ('keep','update','unpin','remove_manually')
+  ),
+  constraint publication_review_tasks_resolution_check check (
+    (status in ('scheduled','due') and decision is null and decided_by_user_id is null and decided_at is null)
+    or (status = 'completed' and decision is not null and decided_by_user_id is not null and decided_at is not null)
+    or (status = 'cancelled' and decision is null and decided_by_user_id is null and decided_at is null)
+  ),
+  constraint publication_review_tasks_reminder_status_check check (
+    reminder_status in ('pending','sending','sent','failed','cancelled')
+  ),
+  constraint publication_review_tasks_version_check check (version > 0),
+  unique (project_id, reminder_idempotency_key),
+  unique (id, project_id)
+);
+create index if not exists publication_review_tasks_due_idx
+  on publication_review_tasks (review_at, id)
+  where status = 'scheduled';
+create index if not exists publication_review_tasks_assignee_idx
+  on publication_review_tasks (project_id, responsible_user_id, status, review_at);
+
+-- ------------------------------------------------ Project tracking and protected exports
+
+-- Project-owned UTM presets. UTM values are validated again in application code;
+-- the database keeps only normalized structured values, never arbitrary query blobs.
+create table if not exists project_utm_templates (
+  id                 bigint generated always as identity primary key,
+  project_id         bigint not null references projects (id) on delete cascade,
+  name               varchar(120) not null,
+  values             jsonb not null default '{}'::jsonb,
+  version            bigint not null default 1,
+  is_archived        boolean not null default false,
+  created_by_user_id bigint not null references users (id) on delete restrict,
+  updated_by_user_id bigint not null references users (id) on delete restrict,
+  created_at         timestamptz not null default now(),
+  updated_at         timestamptz not null default now(),
+  constraint project_utm_templates_name_check check (length(btrim(name)) between 1 and 120),
+  constraint project_utm_templates_values_check check (jsonb_typeof(values) = 'object'),
+  constraint project_utm_templates_version_check check (version > 0),
+  unique (id, project_id)
+);
+create unique index if not exists project_utm_templates_active_name_uniq
+  on project_utm_templates (project_id, lower(btrim(name))) where is_archived = false;
+create index if not exists project_utm_templates_project_idx
+  on project_utm_templates (project_id, is_archived, updated_at desc, id desc);
+
+-- Explicit readiness prevents a real zero from being confused with an absent
+-- first-party tracker. No script token or personal data is stored here.
+create table if not exists project_tracking_settings (
+  project_id             bigint primary key references projects (id) on delete cascade,
+  status                 text not null default 'not_connected',
+  site_origin            text,
+  public_key             varchar(64) unique,
+  attribution_window_days smallint not null default 30,
+  version                bigint not null default 1,
+  updated_by_user_id     bigint references users (id) on delete set null,
+  verified_at            timestamptz,
+  last_ping_at           timestamptz,
+  verification_challenge varchar(160),
+  signal_received_at     timestamptz,
+  verification_checked_at timestamptz,
+  verification_error_code varchar(100),
+  created_at             timestamptz not null default now(),
+  updated_at             timestamptz not null default now(),
+  constraint project_tracking_settings_status_check
+    check (status in ('not_connected','pending_verification','active','paused','verification_failed')),
+  constraint project_tracking_settings_origin_check
+    check (site_origin is null or site_origin ~ '^https?://[^/?#]+$'),
+  constraint project_tracking_settings_public_key_check
+    check (public_key is null or public_key ~ '^[A-Za-z0-9_-]{20,64}$'),
+  constraint project_tracking_settings_window_check check (attribution_window_days between 1 and 90),
+  constraint project_tracking_settings_version_check check (version > 0),
+  constraint project_tracking_settings_challenge_check check (
+    verification_challenge is null
+    or verification_challenge ~ '^aurora-site-verification=[A-Za-z0-9_-]{32,128}$'
+  ),
+  constraint project_tracking_settings_verification_error_check check (
+    verification_error_code is null or verification_error_code ~ '^[a-z0-9_]{1,100}$'
+  ),
+  constraint project_tracking_settings_readiness_check check (
+    (status = 'active' and site_origin is not null and public_key is not null
+      and verification_challenge is not null and verified_at is not null
+      and verification_checked_at is not null and verification_error_code is null)
+    or status <> 'active'
+  )
+);
+
+-- The destination is server-owned after creation. The public redirect resolves a
+-- random slug only; a request can never supply a destination at redirect time.
+create table if not exists short_links (
+  id                 bigint generated always as identity primary key,
+  project_id         bigint not null references projects (id) on delete cascade,
+  created_by_user_id bigint not null references users (id) on delete restrict,
+  request_key        varchar(128) not null,
+  request_hash       char(64) not null,
+  template_id        bigint,
+  slug               varchar(64) not null unique,
+  destination_url    text not null,
+  destination_hash   char(64) not null,
+  utm_values         jsonb not null default '{}'::jsonb,
+  status             text not null default 'active',
+  version            bigint not null default 1,
+  expires_at         timestamptz,
+  revoked_at         timestamptz,
+  created_at         timestamptz not null default now(),
+  updated_at         timestamptz not null default now(),
+  constraint short_links_slug_check check (slug ~ '^[A-Za-z0-9_-]{20,64}$'),
+  constraint short_links_request_key_check check (length(btrim(request_key)) between 8 and 128),
+  constraint short_links_request_hash_check check (request_hash ~ '^[0-9a-f]{64}$'),
+  constraint short_links_destination_check check (destination_url ~ '^https?://'),
+  constraint short_links_destination_hash_check check (destination_hash ~ '^[0-9a-f]{64}$'),
+  constraint short_links_utm_check check (jsonb_typeof(utm_values) = 'object'),
+  constraint short_links_status_check check (status in ('active','revoked','expired')),
+  constraint short_links_version_check check (version > 0),
+  constraint short_links_revocation_check check (
+    (status = 'revoked' and revoked_at is not null)
+    or (status <> 'revoked' and revoked_at is null)
+  ),
+  constraint short_links_template_project_fk foreign key (template_id, project_id)
+    references project_utm_templates (id, project_id) on delete restrict,
+  unique (project_id, created_by_user_id, request_key),
+  unique (id, project_id)
+);
+create index if not exists short_links_project_created_idx
+  on short_links (project_id, created_at desc, id desc);
+create index if not exists short_links_active_expiry_idx
+  on short_links (expires_at, id) where status = 'active';
+
+-- One row per short-link/day fingerprint provides an exact unique denominator
+-- while the click ledger below still records every visit.
+create table if not exists short_link_unique_visitors (
+  project_id      bigint not null references projects (id) on delete cascade,
+  short_link_id   bigint not null references short_links (id) on delete cascade,
+  dedupe_key      char(64) not null,
+  first_seen_at   timestamptz not null default now(),
+  last_seen_at    timestamptz not null default now(),
+  primary key (short_link_id, dedupe_key),
+  constraint short_link_unique_visitors_key_check check (dedupe_key ~ '^[0-9a-f]{64}$'),
+  constraint short_link_unique_visitors_link_project_fk foreign key (short_link_id, project_id)
+    references short_links (id, project_id) on delete cascade
+);
+create index if not exists short_link_unique_visitors_project_idx
+  on short_link_unique_visitors (project_id, first_seen_at desc, short_link_id);
+
+-- No raw IP address or complete user-agent string is retained. visitor_hash and
+-- dedupe_key are keyed hashes produced by the server and cannot be reversed.
+create table if not exists short_link_clicks (
+  id                  uuid primary key default gen_random_uuid(),
+  project_id          bigint not null references projects (id) on delete cascade,
+  short_link_id       bigint not null references short_links (id) on delete cascade,
+  visitor_hash        char(64) not null,
+  dedupe_key          char(64) not null,
+  is_unique           boolean not null,
+  is_likely_bot       boolean not null default false,
+  client_class        varchar(40) not null default 'browser',
+  referrer_host       varchar(253),
+  occurred_at         timestamptz not null default now(),
+  attribution_expires_at timestamptz not null,
+  constraint short_link_clicks_visitor_hash_check check (visitor_hash ~ '^[0-9a-f]{64}$'),
+  constraint short_link_clicks_dedupe_key_check check (dedupe_key ~ '^[0-9a-f]{64}$'),
+  constraint short_link_clicks_client_class_check
+    check (client_class in ('browser','preview','crawler','unknown')),
+  constraint short_link_clicks_referrer_check
+    check (referrer_host is null or length(referrer_host) between 1 and 253),
+  constraint short_link_clicks_attribution_check check (attribution_expires_at > occurred_at),
+  constraint short_link_clicks_link_project_fk foreign key (short_link_id, project_id)
+    references short_links (id, project_id) on delete cascade,
+  unique (id, short_link_id, project_id)
+);
+create index if not exists short_link_clicks_project_time_idx
+  on short_link_clicks (project_id, occurred_at desc, id);
+create index if not exists short_link_clicks_link_time_idx
+  on short_link_clicks (short_link_id, occurred_at desc, id);
+create index if not exists short_link_clicks_human_idx
+  on short_link_clicks (project_id, short_link_id, occurred_at desc)
+  where is_likely_bot = false;
+
+-- Only events with a valid signed attribution token are inserted. Repeating the
+-- same first-party event with one idempotency key returns the stored result.
+create table if not exists conversion_events (
+  id                    uuid primary key default gen_random_uuid(),
+  project_id            bigint not null references projects (id) on delete cascade,
+  short_link_id         bigint not null references short_links (id) on delete cascade,
+  click_id              uuid not null references short_link_clicks (id) on delete restrict,
+  event_type            text not null,
+  idempotency_hash      char(64) not null,
+  request_hash          char(64) not null,
+  attribution_token_hash char(64) not null,
+  occurred_at           timestamptz not null,
+  received_at           timestamptz not null default now(),
+  safe_properties       jsonb not null default '{}'::jsonb,
+  constraint conversion_events_type_check
+    check (event_type in ('form_open','form_submit','consultation_booked')),
+  constraint conversion_events_idempotency_hash_check check (idempotency_hash ~ '^[0-9a-f]{64}$'),
+  constraint conversion_events_request_hash_check check (request_hash ~ '^[0-9a-f]{64}$'),
+  constraint conversion_events_token_hash_check check (attribution_token_hash ~ '^[0-9a-f]{64}$'),
+  constraint conversion_events_properties_check check (jsonb_typeof(safe_properties) = 'object'),
+  constraint conversion_events_clock_check check (occurred_at <= received_at + interval '5 minutes'),
+  constraint conversion_events_link_project_fk foreign key (short_link_id, project_id)
+    references short_links (id, project_id) on delete cascade,
+  constraint conversion_events_click_link_project_fk foreign key (click_id, short_link_id, project_id)
+    references short_link_clicks (id, short_link_id, project_id) on delete restrict,
+  unique (project_id, idempotency_hash)
+);
+create index if not exists conversion_events_project_time_idx
+  on conversion_events (project_id, occurred_at desc, id);
+create index if not exists conversion_events_link_time_idx
+  on conversion_events (short_link_id, occurred_at desc, id);
+
+-- Exact tracking configuration used for one publication revision. It is immutable
+-- application evidence just like publication text/media snapshots.
+create unique index if not exists publication_operations_id_project_uniq
+  on publication_operations (id, project_id);
+create unique index if not exists posts_id_project_uniq on posts (id, project_id);
+create table if not exists publication_tracking_snapshots (
+  id                       bigint generated always as identity primary key,
+  project_id               bigint not null references projects (id) on delete restrict,
+  publication_operation_id bigint not null references publication_operations (id) on delete cascade,
+  post_id                  bigint not null references posts (id) on delete cascade,
+  short_link_id            bigint,
+  placement                varchar(80) not null,
+  destination_url          text not null,
+  short_url_path           varchar(80),
+  utm_values               jsonb not null default '{}'::jsonb,
+  snapshot_hash            char(64) not null,
+  created_at               timestamptz not null default now(),
+  constraint publication_tracking_placement_check check (length(btrim(placement)) between 1 and 80),
+  constraint publication_tracking_destination_check check (destination_url ~ '^https?://'),
+  constraint publication_tracking_short_path_check
+    check (short_url_path is null or short_url_path ~ '^/r/[A-Za-z0-9_-]{20,64}$'),
+  constraint publication_tracking_utm_check check (jsonb_typeof(utm_values) = 'object'),
+  constraint publication_tracking_hash_check check (snapshot_hash ~ '^[0-9a-f]{64}$'),
+  constraint publication_tracking_operation_project_fk foreign key (publication_operation_id, project_id)
+    references publication_operations (id, project_id) on delete cascade,
+  constraint publication_tracking_post_project_fk foreign key (post_id, project_id)
+    references posts (id, project_id) on delete cascade,
+  constraint publication_tracking_link_project_fk foreign key (short_link_id, project_id)
+    references short_links (id, project_id) on delete restrict,
+  unique (post_id, placement)
+);
+create index if not exists publication_tracking_project_idx
+  on publication_tracking_snapshots (project_id, created_at desc, id desc);
+create index if not exists publication_tracking_operation_idx
+  on publication_tracking_snapshots (publication_operation_id, post_id, placement);
+
+-- Composer persists the structured tracking choice with the editable draft. The
+-- editorial revision builder hashes this field, so changing a link invalidates an
+-- earlier approval exactly like changing the text.
+alter table drafts add column if not exists tracking jsonb not null default '{}'::jsonb;
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'drafts_tracking_object_check'
+  ) then
+    alter table drafts add constraint drafts_tracking_object_check
+      check (jsonb_typeof(tracking) = 'object');
+  end if;
+end
+$$;
+
+-- Large project exports use a durable outbox and a short-lived, hashed download
+-- token. The immutable snapshot is shared by CSV, XLSX and PDF renderers.
+create table if not exists project_export_operations (
+  id                 bigint generated always as identity primary key,
+  project_id         bigint not null references projects (id) on delete cascade,
+  requested_by_user_id bigint not null references users (id) on delete restrict,
+  export_kind        text not null,
+  format             text not null,
+  request_key        varchar(128) not null,
+  request_hash       char(64) not null,
+  filters            jsonb not null default '{}'::jsonb,
+  snapshot           jsonb not null,
+  snapshot_hash      char(64) not null,
+  status             text not null default 'pending',
+  error_code         varchar(100),
+  error_message      varchar(500),
+  created_at         timestamptz not null default now(),
+  updated_at         timestamptz not null default now(),
+  completed_at       timestamptz,
+  constraint project_export_operations_kind_check check (export_kind in ('content_plan','analytics')),
+  constraint project_export_operations_format_check check (format in ('csv','xlsx','pdf')),
+  constraint project_export_operations_request_hash_check check (request_hash ~ '^[0-9a-f]{64}$'),
+  constraint project_export_operations_filters_check check (jsonb_typeof(filters) = 'object'),
+  constraint project_export_operations_snapshot_check check (jsonb_typeof(snapshot) = 'object'),
+  constraint project_export_operations_snapshot_hash_check check (snapshot_hash ~ '^[0-9a-f]{64}$'),
+  constraint project_export_operations_status_check
+    check (status in ('pending','queued','rendering','ready','retryable_failed','failed','expired')),
+  unique (project_id, requested_by_user_id, request_key),
+  unique (id, project_id)
+);
+create index if not exists project_export_operations_project_idx
+  on project_export_operations (project_id, created_at desc, id desc);
+create index if not exists project_export_operations_active_idx
+  on project_export_operations (status, updated_at, id)
+  where status in ('pending','queued','rendering','retryable_failed');
+
+create table if not exists project_export_artifacts (
+  id                 bigint generated always as identity primary key,
+  operation_id       bigint not null unique references project_export_operations (id) on delete cascade,
+  project_id         bigint not null references projects (id) on delete cascade,
+  file_name          varchar(240) not null,
+  mime_type          varchar(120) not null,
+  byte_size          bigint not null,
+  sha256             char(64) not null,
+  storage_backend    text not null default 'postgres',
+  data               bytea,
+  object_key         text,
+  object_etag        text,
+  created_at         timestamptz not null default now(),
+  expires_at         timestamptz not null default (now() + interval '24 hours'),
+  constraint project_export_artifacts_size_check check (byte_size >= 0),
+  constraint project_export_artifacts_hash_check check (sha256 ~ '^[0-9a-f]{64}$'),
+  constraint project_export_artifacts_storage_check check (storage_backend in ('postgres','object')),
+  constraint project_export_artifacts_payload_check check (
+    (storage_backend = 'postgres' and data is not null and object_key is null)
+    or (storage_backend = 'object' and data is null and object_key is not null)
+  ),
+  constraint project_export_artifacts_expiry_check check (expires_at > created_at),
+  constraint project_export_artifacts_operation_project_fk foreign key (operation_id, project_id)
+    references project_export_operations (id, project_id) on delete cascade,
+  unique (id, project_id)
+);
+create index if not exists project_export_artifacts_expiry_idx
+  on project_export_artifacts (expires_at, id);
+create unique index if not exists project_export_artifacts_object_key_uniq
+  on project_export_artifacts (object_key) where object_key is not null;
+
+create table if not exists project_export_download_tokens (
+  id                 bigint generated always as identity primary key,
+  project_id         bigint not null references projects (id) on delete cascade,
+  artifact_id        bigint not null references project_export_artifacts (id) on delete cascade,
+  requested_by_user_id bigint not null references users (id) on delete cascade,
+  token_hash         char(64) not null unique,
+  expires_at         timestamptz not null,
+  revoked_at         timestamptz,
+  last_downloaded_at timestamptz,
+  created_at         timestamptz not null default now(),
+  constraint project_export_download_tokens_hash_check check (token_hash ~ '^[0-9a-f]{64}$'),
+  constraint project_export_download_tokens_ttl_check check (expires_at > created_at),
+  constraint project_export_download_tokens_artifact_project_fk foreign key (artifact_id, project_id)
+    references project_export_artifacts (id, project_id) on delete cascade
+);
+create index if not exists project_export_download_tokens_expiry_idx
+  on project_export_download_tokens (expires_at, id) where revoked_at is null;
+
+create table if not exists project_export_outbox (
+  id               bigint generated always as identity primary key,
+  operation_id     bigint not null unique references project_export_operations (id) on delete cascade,
+  project_id       bigint not null references projects (id) on delete cascade,
+  status           text not null default 'pending',
+  attempts         integer not null default 0,
+  next_attempt_at  timestamptz not null default now(),
+  lease_token      varchar(128),
+  lease_expires_at timestamptz,
+  last_error_code  varchar(100),
+  enqueued_at      timestamptz,
+  created_at       timestamptz not null default now(),
+  updated_at       timestamptz not null default now(),
+  constraint project_export_outbox_status_check
+    check (status in ('pending','dispatching','enqueued','retryable_failed','failed','cancelled')),
+  constraint project_export_outbox_attempts_check check (attempts >= 0),
+  constraint project_export_outbox_lease_check check (
+    (lease_token is null and lease_expires_at is null)
+    or (lease_token is not null and lease_expires_at is not null)
+  ),
+  constraint project_export_outbox_operation_project_fk foreign key (operation_id, project_id)
+    references project_export_operations (id, project_id) on delete cascade
+);
+create index if not exists project_export_outbox_due_idx
+  on project_export_outbox (next_attempt_at, id)
+  where status in ('pending','retryable_failed');
+
 -- Immutable editorial evidence and a project-scoped review workflow. Publication
 -- delivery state continues to live in posts/publication_operations.
 create table if not exists draft_revisions (
@@ -2579,3 +3200,1462 @@ begin
   end if;
 end
 $$;
+
+-- ------------------------------------------------ Monthly content campaigns
+-- Monthly campaigns are a project-scoped planning layer above the existing weekly
+-- Autopilot. The existing weekly tables and workers remain the execution path.
+
+-- A monthly item may point at one weekly Autopilot item. Give weekly plans the same
+-- explicit tenant boundary as the rest of the collaboration model while preserving
+-- legacy writers through the established channel-project trigger.
+alter table autopilot_plan
+  add column if not exists project_id bigint references projects (id) on delete restrict;
+update autopilot_plan plan
+   set project_id = coalesce(
+     (select channel.project_id from channels channel where channel.id = plan.channel_id),
+     (select project.id from projects project where project.personal_owner_user_id = plan.user_id)
+   )
+ where plan.project_id is null;
+alter table autopilot_plan alter column project_id set not null;
+create unique index if not exists autopilot_plan_id_project_uniq
+  on autopilot_plan (id, project_id);
+create index if not exists autopilot_plan_project_created_idx
+  on autopilot_plan (project_id, created_at desc, id desc);
+
+do $$
+begin
+  if not exists (select 1 from pg_trigger where tgname = 'autopilot_plan_assign_project_before_insert') then
+    create trigger autopilot_plan_assign_project_before_insert
+      before insert on autopilot_plan for each row
+      execute function aurora_assign_channel_project();
+  end if;
+end
+$$;
+
+-- Analytics snapshots inherit their project from the published post. The composite
+-- keys below prevent a campaign item from pointing at another project's snapshot.
+alter table post_stats
+  add column if not exists project_id bigint references projects (id) on delete restrict;
+update post_stats snapshot
+   set project_id = post.project_id
+  from posts post
+ where snapshot.project_id is null
+   and post.id = snapshot.post_id;
+alter table post_stats alter column project_id set not null;
+create unique index if not exists drafts_id_project_uniq on drafts (id, project_id);
+create unique index if not exists post_stats_id_project_uniq on post_stats (id, project_id);
+create unique index if not exists post_stats_id_post_project_uniq
+  on post_stats (id, post_id, project_id);
+create index if not exists post_stats_project_date_idx
+  on post_stats (project_id, snapshot_date desc, id desc);
+
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'post_stats_post_project_fk') then
+    alter table post_stats add constraint post_stats_post_project_fk
+      foreign key (post_id, project_id) references posts (id, project_id) on delete cascade;
+  end if;
+end
+$$;
+
+create or replace function aurora_assign_post_stats_project()
+returns trigger
+language plpgsql
+as $$
+begin
+  if new.project_id is null then
+    select post.project_id into new.project_id from posts post where post.id = new.post_id;
+  end if;
+  if new.project_id is null then
+    raise exception 'project_context_missing' using errcode = '23514';
+  end if;
+  return new;
+end
+$$;
+
+do $$
+begin
+  if not exists (select 1 from pg_trigger where tgname = 'post_stats_assign_project_before_insert') then
+    create trigger post_stats_assign_project_before_insert
+      before insert on post_stats for each row
+      execute function aurora_assign_post_stats_project();
+  end if;
+end
+$$;
+
+create table if not exists monthly_campaigns (
+  id                         bigint generated always as identity primary key,
+  project_id                 bigint not null references projects (id) on delete cascade,
+  created_by_user_id         bigint not null references users (id) on delete restrict,
+  updated_by_user_id         bigint not null references users (id) on delete restrict,
+  goal                       text not null,
+  starts_on                  date not null,
+  ends_on                    date not null,
+  timezone                   varchar(80) not null,
+  rubrics                    text[] not null,
+  practice_mix               jsonb not null,
+  audience                   text not null,
+  funnel_stages              text[] not null,
+  posts_per_week             smallint not null,
+  important_dates            jsonb not null default '[]'::jsonb,
+  ctas                       text[] not null default '{}',
+  metrics                    text[] not null default '{}',
+  profile_version            bigint not null,
+  content_brief_version      bigint not null,
+  profile_hash               char(64) not null,
+  brief_hash                 char(64) not null,
+  request_key                varchar(128) not null,
+  request_hash               char(64) not null,
+  version                    bigint not null default 1,
+  is_archived                boolean not null default false,
+  created_at                 timestamptz not null default now(),
+  updated_at                 timestamptz not null default now(),
+  constraint monthly_campaigns_goal_check check (length(btrim(goal)) between 1 and 500),
+  constraint monthly_campaigns_period_check check ((ends_on - starts_on + 1) between 28 and 31),
+  constraint monthly_campaigns_timezone_check check (length(btrim(timezone)) between 1 and 80),
+  constraint monthly_campaigns_rubrics_check check (cardinality(rubrics) between 3 and 6),
+  constraint monthly_campaigns_practice_mix_check check (jsonb_typeof(practice_mix) = 'array'),
+  constraint monthly_campaigns_audience_check check (length(btrim(audience)) between 1 and 500),
+  constraint monthly_campaigns_funnel_stages_check check (
+    cardinality(funnel_stages) between 1 and 3
+    and funnel_stages <@ array['awareness','consideration','consultation']::text[]
+  ),
+  constraint monthly_campaigns_frequency_check check (posts_per_week between 1 and 14),
+  constraint monthly_campaigns_important_dates_check check (jsonb_typeof(important_dates) = 'array'),
+  constraint monthly_campaigns_profile_version_check check (profile_version > 0),
+  constraint monthly_campaigns_content_brief_version_check check (content_brief_version > 0),
+  constraint monthly_campaigns_profile_hash_check check (profile_hash ~ '^[0-9a-f]{64}$'),
+  constraint monthly_campaigns_brief_hash_check check (brief_hash ~ '^[0-9a-f]{64}$'),
+  constraint monthly_campaigns_request_key_check check (length(btrim(request_key)) between 8 and 128),
+  constraint monthly_campaigns_request_hash_check check (request_hash ~ '^[0-9a-f]{64}$'),
+  constraint monthly_campaigns_version_check check (version > 0),
+  unique (project_id, request_key),
+  unique (id, project_id)
+);
+create index if not exists monthly_campaigns_project_period_idx
+  on monthly_campaigns (project_id, starts_on desc, ends_on desc, id desc)
+  where is_archived = false;
+
+-- Each plan is an immutable-numbered revision of a campaign brief. Plan.version is
+-- the optimistic-concurrency counter for status, reorder and regeneration markers.
+create table if not exists monthly_campaign_plans (
+  id                            bigint generated always as identity primary key,
+  project_id                    bigint not null references projects (id) on delete cascade,
+  campaign_id                   bigint not null references monthly_campaigns (id) on delete cascade,
+  revision                      bigint not null,
+  status                        text not null default 'draft',
+  source_campaign_version       bigint not null,
+  source_brief_hash             char(64) not null,
+  source_profile_hash           char(64) not null,
+  source_profile_version        bigint not null,
+  source_content_brief_version  bigint not null,
+  request_key                   varchar(128) not null,
+  request_hash                  char(64) not null,
+  version                       bigint not null default 1,
+  created_by_user_id            bigint not null references users (id) on delete restrict,
+  submitted_by_user_id          bigint references users (id) on delete set null,
+  approved_by_user_id           bigint references users (id) on delete set null,
+  submitted_at                  timestamptz,
+  approved_at                   timestamptz,
+  created_at                    timestamptz not null default now(),
+  updated_at                    timestamptz not null default now(),
+  constraint monthly_campaign_plans_status_check check (status in ('draft','in_review','approved')),
+  constraint monthly_campaign_plans_revision_check check (revision > 0),
+  constraint monthly_campaign_plans_source_campaign_version_check check (source_campaign_version > 0),
+  constraint monthly_campaign_plans_source_brief_hash_check check (source_brief_hash ~ '^[0-9a-f]{64}$'),
+  constraint monthly_campaign_plans_source_profile_hash_check check (source_profile_hash ~ '^[0-9a-f]{64}$'),
+  constraint monthly_campaign_plans_source_profile_version_check check (source_profile_version > 0),
+  constraint monthly_campaign_plans_source_content_brief_version_check check (source_content_brief_version > 0),
+  constraint monthly_campaign_plans_request_key_check check (length(btrim(request_key)) between 8 and 128),
+  constraint monthly_campaign_plans_request_hash_check check (request_hash ~ '^[0-9a-f]{64}$'),
+  constraint monthly_campaign_plans_version_check check (version > 0),
+  constraint monthly_campaign_plans_review_check check (
+    (status = 'draft' and submitted_by_user_id is null and submitted_at is null
+      and approved_by_user_id is null and approved_at is null)
+    or (status = 'in_review' and submitted_by_user_id is not null and submitted_at is not null
+      and approved_by_user_id is null and approved_at is null)
+    or (status = 'approved' and submitted_by_user_id is not null and submitted_at is not null
+      and approved_by_user_id is not null and approved_at is not null)
+  ),
+  constraint monthly_campaign_plans_campaign_project_fk foreign key (campaign_id, project_id)
+    references monthly_campaigns (id, project_id) on delete cascade,
+  unique (campaign_id, revision),
+  unique (campaign_id, request_key),
+  unique (id, campaign_id, project_id),
+  unique (id, project_id)
+);
+create index if not exists monthly_campaign_plans_campaign_revision_idx
+  on monthly_campaign_plans (project_id, campaign_id, revision desc, id desc);
+create index if not exists monthly_campaign_plans_review_idx
+  on monthly_campaign_plans (project_id, status, updated_at desc, id desc);
+
+create table if not exists monthly_campaign_items (
+  id                           bigint generated always as identity primary key,
+  project_id                   bigint not null references projects (id) on delete cascade,
+  plan_id                      bigint not null references monthly_campaign_plans (id) on delete cascade,
+  item_key                     varchar(128) not null,
+  scheduled_for                date not null,
+  position                     integer not null,
+  title                        varchar(240) not null,
+  rubric                       varchar(120) not null,
+  practice                     varchar(160) not null,
+  funnel_stage                 text not null,
+  state                        text not null default 'topic',
+  approval_status              text not null default 'draft',
+  content_version              bigint not null default 1,
+  approved_content_version     bigint,
+  source_item_id               bigint,
+  weekly_autopilot_plan_id     bigint,
+  weekly_autopilot_item_index  integer,
+  draft_id                     bigint,
+  post_id                      bigint,
+  latest_post_stats_id         bigint,
+  regeneration_version         bigint not null default 0,
+  regeneration_status          text not null default 'idle',
+  created_at                   timestamptz not null default now(),
+  updated_at                   timestamptz not null default now(),
+  constraint monthly_campaign_items_key_check check (length(btrim(item_key)) between 1 and 128),
+  constraint monthly_campaign_items_position_check check (position between 0 and 30),
+  constraint monthly_campaign_items_title_check check (length(btrim(title)) between 1 and 240),
+  constraint monthly_campaign_items_rubric_check check (length(btrim(rubric)) between 1 and 120),
+  constraint monthly_campaign_items_practice_check check (length(btrim(practice)) between 1 and 160),
+  constraint monthly_campaign_items_funnel_stage_check
+    check (funnel_stage in ('awareness','consideration','consultation')),
+  constraint monthly_campaign_items_state_check check (state in ('topic','detailed')),
+  constraint monthly_campaign_items_approval_status_check
+    check (approval_status in ('draft','in_review','approved')),
+  constraint monthly_campaign_items_content_version_check check (content_version > 0),
+  constraint monthly_campaign_items_approved_version_check check (
+    (approval_status = 'approved' and approved_content_version = content_version)
+    or (approval_status <> 'approved' and approved_content_version is null)
+  ),
+  constraint monthly_campaign_items_weekly_link_check check (
+    (weekly_autopilot_plan_id is null and weekly_autopilot_item_index is null)
+    or (weekly_autopilot_plan_id is not null and weekly_autopilot_item_index is not null
+      and weekly_autopilot_item_index >= 0)
+  ),
+  constraint monthly_campaign_items_analytics_link_check check (
+    latest_post_stats_id is null or post_id is not null
+  ),
+  constraint monthly_campaign_items_regeneration_version_check check (regeneration_version >= 0),
+  constraint monthly_campaign_items_regeneration_status_check
+    check (regeneration_status in ('idle','pending','processing','failed')),
+  constraint monthly_campaign_items_plan_project_fk foreign key (plan_id, project_id)
+    references monthly_campaign_plans (id, project_id) on delete cascade,
+  constraint monthly_campaign_items_source_project_fk foreign key (source_item_id, project_id)
+    references monthly_campaign_items (id, project_id) on delete restrict,
+  constraint monthly_campaign_items_weekly_project_fk foreign key (weekly_autopilot_plan_id, project_id)
+    references autopilot_plan (id, project_id) on delete restrict,
+  constraint monthly_campaign_items_draft_project_fk foreign key (draft_id, project_id)
+    references drafts (id, project_id) on delete restrict,
+  constraint monthly_campaign_items_post_project_fk foreign key (post_id, project_id)
+    references posts (id, project_id) on delete restrict,
+  constraint monthly_campaign_items_stats_post_project_fk foreign key (latest_post_stats_id, post_id, project_id)
+    references post_stats (id, post_id, project_id) on delete restrict,
+  unique (plan_id, item_key),
+  constraint monthly_campaign_items_plan_date_uniq
+    unique (plan_id, scheduled_for) deferrable initially immediate,
+  constraint monthly_campaign_items_plan_position_uniq
+    unique (plan_id, position) deferrable initially immediate,
+  unique (id, project_id)
+);
+create index if not exists monthly_campaign_items_plan_order_idx
+  on monthly_campaign_items (project_id, plan_id, scheduled_for, position, id);
+create index if not exists monthly_campaign_items_lineage_idx
+  on monthly_campaign_items (project_id, weekly_autopilot_plan_id, draft_id, post_id);
+
+-- Regeneration is an honest durable request. Until a worker consumes this outbox,
+-- the existing approved text remains intact and only target markers become pending.
+create table if not exists monthly_campaign_regeneration_operations (
+  id                       bigint generated always as identity primary key,
+  project_id               bigint not null references projects (id) on delete cascade,
+  campaign_id              bigint not null references monthly_campaigns (id) on delete cascade,
+  plan_id                  bigint not null references monthly_campaign_plans (id) on delete cascade,
+  requested_by_user_id     bigint not null references users (id) on delete restrict,
+  scope                    text not null,
+  week_starts_on           date,
+  request_key              varchar(128) not null,
+  request_hash             char(64) not null,
+  base_plan_version        bigint not null,
+  base_brief_hash          char(64) not null,
+  base_profile_hash        char(64) not null,
+  status                   text not null default 'pending',
+  result_plan_id           bigint,
+  error_code               varchar(100),
+  created_at               timestamptz not null default now(),
+  updated_at               timestamptz not null default now(),
+  completed_at             timestamptz,
+  constraint monthly_campaign_regeneration_scope_check check (scope in ('item','week')),
+  constraint monthly_campaign_regeneration_week_check check (
+    (scope = 'item' and week_starts_on is null)
+    or (scope = 'week' and week_starts_on is not null)
+  ),
+  constraint monthly_campaign_regeneration_request_key_check
+    check (length(btrim(request_key)) between 8 and 128),
+  constraint monthly_campaign_regeneration_request_hash_check check (request_hash ~ '^[0-9a-f]{64}$'),
+  constraint monthly_campaign_regeneration_plan_version_check check (base_plan_version > 0),
+  constraint monthly_campaign_regeneration_brief_hash_check check (base_brief_hash ~ '^[0-9a-f]{64}$'),
+  constraint monthly_campaign_regeneration_profile_hash_check check (base_profile_hash ~ '^[0-9a-f]{64}$'),
+  constraint monthly_campaign_regeneration_status_check
+    check (status in ('pending','processing','completed','stale','retryable_failed','failed','cancelled')),
+  constraint monthly_campaign_regeneration_result_check check (
+    (status = 'completed' and result_plan_id is not null and completed_at is not null)
+    or (status <> 'completed' and result_plan_id is null)
+  ),
+  constraint monthly_campaign_regeneration_campaign_project_fk foreign key (campaign_id, project_id)
+    references monthly_campaigns (id, project_id) on delete cascade,
+  constraint monthly_campaign_regeneration_plan_project_fk foreign key (plan_id, campaign_id, project_id)
+    references monthly_campaign_plans (id, campaign_id, project_id) on delete cascade,
+  constraint monthly_campaign_regeneration_result_project_fk foreign key (result_plan_id, campaign_id, project_id)
+    references monthly_campaign_plans (id, campaign_id, project_id) on delete restrict,
+  unique (project_id, request_key),
+  unique (id, project_id)
+);
+create index if not exists monthly_campaign_regeneration_plan_idx
+  on monthly_campaign_regeneration_operations (project_id, plan_id, created_at desc, id desc);
+create index if not exists monthly_campaign_regeneration_pending_idx
+  on monthly_campaign_regeneration_operations (status, updated_at, id)
+  where status in ('pending','retryable_failed');
+
+create table if not exists monthly_campaign_regeneration_targets (
+  operation_id        bigint not null references monthly_campaign_regeneration_operations (id) on delete cascade,
+  project_id          bigint not null references projects (id) on delete cascade,
+  item_id             bigint not null references monthly_campaign_items (id) on delete cascade,
+  item_content_version bigint not null,
+  created_at          timestamptz not null default now(),
+  constraint monthly_campaign_regeneration_targets_version_check check (item_content_version > 0),
+  constraint monthly_campaign_regeneration_targets_operation_project_fk foreign key (operation_id, project_id)
+    references monthly_campaign_regeneration_operations (id, project_id) on delete cascade,
+  constraint monthly_campaign_regeneration_targets_item_project_fk foreign key (item_id, project_id)
+    references monthly_campaign_items (id, project_id) on delete cascade,
+  primary key (operation_id, item_id)
+);
+
+create table if not exists monthly_campaign_regeneration_outbox (
+  id               bigint generated always as identity primary key,
+  operation_id     bigint not null unique references monthly_campaign_regeneration_operations (id) on delete cascade,
+  project_id       bigint not null references projects (id) on delete cascade,
+  status           text not null default 'pending',
+  attempts         integer not null default 0,
+  next_attempt_at  timestamptz not null default now(),
+  lease_token      varchar(128),
+  lease_expires_at timestamptz,
+  last_error_code  varchar(100),
+  enqueued_at      timestamptz,
+  created_at       timestamptz not null default now(),
+  updated_at       timestamptz not null default now(),
+  constraint monthly_campaign_regeneration_outbox_status_check
+    check (status in ('pending','dispatching','enqueued','retryable_failed','failed','cancelled')),
+  constraint monthly_campaign_regeneration_outbox_attempts_check check (attempts >= 0),
+  constraint monthly_campaign_regeneration_outbox_lease_check check (
+    (lease_token is null and lease_expires_at is null)
+    or (lease_token is not null and lease_expires_at is not null)
+  ),
+  constraint monthly_campaign_regeneration_outbox_operation_project_fk foreign key (operation_id, project_id)
+    references monthly_campaign_regeneration_operations (id, project_id) on delete cascade
+);
+create index if not exists monthly_campaign_regeneration_outbox_due_idx
+  on monthly_campaign_regeneration_outbox (next_attempt_at, id)
+  where status in ('pending','retryable_failed');
+-- ------------------------------------------------ Autopilot project boundary
+
+-- Autopilot is shared project state. `user_id` records the actor/creator, but it is
+-- never the tenant boundary. These composite keys make a cross-project relation
+-- impossible even if a future application query forgets one predicate.
+create unique index if not exists channels_id_project_uniq
+  on channels (id, project_id);
+create unique index if not exists autopilot_settings_project_channel_uniq
+  on autopilot_settings (project_id, channel_id);
+create unique index if not exists content_brief_project_channel_uniq
+  on content_brief (project_id, channel_id);
+
+alter table monthly_campaign_regeneration_targets
+  add column if not exists item_regeneration_version bigint;
+update monthly_campaign_regeneration_targets target
+   set item_regeneration_version = item.regeneration_version
+  from monthly_campaign_items item
+ where item.id = target.item_id and item.project_id = target.project_id
+   and target.item_regeneration_version is null;
+alter table monthly_campaign_regeneration_targets
+  alter column item_regeneration_version set not null;
+
+alter table autopilot_approval_operations
+  add column if not exists project_id bigint references projects (id) on delete restrict;
+update autopilot_approval_operations operation
+   set project_id = coalesce(
+     (select plan.project_id from autopilot_plan plan where plan.id = operation.plan_id),
+     (select channel.project_id from channels channel where channel.id = operation.channel_id)
+   )
+ where operation.project_id is null;
+alter table autopilot_approval_operations alter column project_id set not null;
+create unique index if not exists autopilot_approval_operations_id_project_uniq
+  on autopilot_approval_operations (id, project_id);
+create unique index if not exists autopilot_approval_operations_project_actor_key_uniq
+  on autopilot_approval_operations (project_id, user_id, idempotency_key);
+create index if not exists autopilot_approval_operations_project_plan_idx
+  on autopilot_approval_operations (project_id, plan_id, created_at desc, id desc);
+
+alter table autopilot_approval_previews
+  add column if not exists project_id bigint references projects (id) on delete restrict;
+update autopilot_approval_previews preview
+   set project_id = coalesce(
+     (select plan.project_id from autopilot_plan plan where plan.id = preview.plan_id),
+     (select operation.project_id
+        from autopilot_approval_operations operation
+       where operation.id = preview.operation_id),
+     (select channel.project_id from channels channel where channel.id = preview.channel_id)
+   )
+ where preview.project_id is null;
+alter table autopilot_approval_previews alter column project_id set not null;
+
+alter table autopilot_schedule_outbox
+  add column if not exists project_id bigint references projects (id) on delete restrict;
+update autopilot_schedule_outbox outbox
+   set project_id = coalesce(
+     (select plan.project_id from autopilot_plan plan where plan.id = outbox.plan_id),
+     (select post.project_id from posts post where post.id = outbox.post_id),
+     (select channel.project_id from channels channel where channel.id = outbox.channel_id)
+   )
+ where outbox.project_id is null;
+alter table autopilot_schedule_outbox alter column project_id set not null;
+create index if not exists autopilot_schedule_outbox_project_pending_idx
+  on autopilot_schedule_outbox (project_id, updated_at, id)
+  where status = 'pending';
+create index if not exists monthly_campaign_regeneration_outbox_redelivery_idx
+  on monthly_campaign_regeneration_outbox (updated_at, id)
+  where status = 'enqueued';
+
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'autopilot_settings_channel_project_fk') then
+    alter table autopilot_settings add constraint autopilot_settings_channel_project_fk
+      foreign key (channel_id, project_id) references channels (id, project_id) on delete cascade;
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'content_brief_channel_project_fk') then
+    alter table content_brief add constraint content_brief_channel_project_fk
+      foreign key (channel_id, project_id) references channels (id, project_id) on delete cascade;
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'autopilot_plan_channel_project_fk') then
+    alter table autopilot_plan add constraint autopilot_plan_channel_project_fk
+      foreign key (channel_id, project_id) references channels (id, project_id) on delete cascade;
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'autopilot_plan_approval_operation_project_fk') then
+    alter table autopilot_plan add constraint autopilot_plan_approval_operation_project_fk
+      foreign key (approval_operation_id, project_id)
+      references autopilot_approval_operations (id, project_id);
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'posts_channel_project_fk') then
+    alter table posts add constraint posts_channel_project_fk
+      foreign key (channel_id, project_id) references channels (id, project_id) on delete cascade;
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'autopilot_approval_operations_channel_project_fk') then
+    alter table autopilot_approval_operations add constraint autopilot_approval_operations_channel_project_fk
+      foreign key (channel_id, project_id) references channels (id, project_id) on delete cascade;
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'autopilot_approval_operations_plan_project_fk') then
+    alter table autopilot_approval_operations add constraint autopilot_approval_operations_plan_project_fk
+      foreign key (plan_id, project_id) references autopilot_plan (id, project_id) on delete cascade;
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'autopilot_approval_previews_channel_project_fk') then
+    alter table autopilot_approval_previews add constraint autopilot_approval_previews_channel_project_fk
+      foreign key (channel_id, project_id) references channels (id, project_id) on delete cascade;
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'autopilot_approval_previews_plan_project_fk') then
+    alter table autopilot_approval_previews add constraint autopilot_approval_previews_plan_project_fk
+      foreign key (plan_id, project_id) references autopilot_plan (id, project_id) on delete cascade;
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'autopilot_approval_previews_operation_project_fk') then
+    alter table autopilot_approval_previews add constraint autopilot_approval_previews_operation_project_fk
+      foreign key (operation_id, project_id)
+      references autopilot_approval_operations (id, project_id);
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'autopilot_schedule_outbox_plan_project_fk') then
+    alter table autopilot_schedule_outbox add constraint autopilot_schedule_outbox_plan_project_fk
+      foreign key (plan_id, project_id) references autopilot_plan (id, project_id) on delete cascade;
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'autopilot_schedule_outbox_channel_project_fk') then
+    alter table autopilot_schedule_outbox add constraint autopilot_schedule_outbox_channel_project_fk
+      foreign key (channel_id, project_id) references channels (id, project_id) on delete cascade;
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'autopilot_schedule_outbox_operation_project_fk') then
+    alter table autopilot_schedule_outbox add constraint autopilot_schedule_outbox_operation_project_fk
+      foreign key (operation_id, project_id)
+      references autopilot_approval_operations (id, project_id);
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'autopilot_schedule_outbox_post_project_fk') then
+    alter table autopilot_schedule_outbox add constraint autopilot_schedule_outbox_post_project_fk
+      foreign key (post_id, project_id) references posts (id, project_id) on delete cascade;
+  end if;
+end
+$$;
+
+-- Media belongs to the selected project. user_id remains creator/actor metadata only.
+alter table media_assets add column if not exists project_id bigint references projects (id) on delete restrict;
+alter table media_assets add column if not exists origin text not null default 'legacy';
+alter table media_assets add column if not exists width_px integer;
+alter table media_assets add column if not exists height_px integer;
+alter table media_assets add column if not exists metadata jsonb not null default '{}'::jsonb;
+update media_assets asset
+   set project_id = coalesce(
+     (select project.id from projects project where project.personal_owner_user_id = asset.user_id),
+     aurora_selected_project_for_user(asset.user_id)
+   )
+ where asset.project_id is null;
+alter table media_assets alter column project_id set not null;
+-- The immutable 20260817_legal_visuals migration installs the named origin,
+-- dimensions and metadata constraints after this bootstrap snapshot is loaded.
+create unique index if not exists media_assets_id_project_uniq on media_assets (id, project_id);
+create index if not exists media_assets_project_created_idx
+  on media_assets (project_id, created_at desc, id desc);
+create index if not exists media_assets_project_origin_created_idx
+  on media_assets (project_id, origin, created_at desc, id desc);
+
+alter table media_generations add column if not exists project_id bigint references projects (id) on delete restrict;
+alter table media_generations add column if not exists created_at timestamptz not null default now();
+update media_generations generation
+   set project_id = coalesce(
+     (select project.id from projects project where project.personal_owner_user_id = generation.user_id),
+     aurora_selected_project_for_user(generation.user_id)
+   )
+ where generation.project_id is null;
+alter table media_generations alter column project_id set not null;
+create unique index if not exists media_generations_id_project_uniq
+  on media_generations (id, project_id);
+create index if not exists media_generations_project_created_idx
+  on media_generations (project_id, created_at desc, id desc);
+drop index if exists media_generations_user_request_key_uniq;
+create unique index if not exists media_generations_project_request_key_uniq
+  on media_generations (project_id, request_key) where request_key is not null;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+     where conrelid = 'media_generations'::regclass
+       and conname = 'media_generations_output_asset_project_fk'
+  ) then
+    alter table media_generations
+      add constraint media_generations_output_asset_project_fk
+      foreign key (output_asset_id, project_id)
+      references media_assets (id, project_id) on delete no action;
+  end if;
+end
+$$;
+
+-- Account avatars are not project media. Keeping them in a separate table prevents a
+-- project switch from breaking the image and prevents project members from reusing it
+-- as a post asset.
+create table if not exists user_avatar_assets (
+  id         bigint generated always as identity primary key,
+  user_id    bigint not null references users (id) on delete cascade,
+  file_name  text not null,
+  mime_type  text not null check (mime_type in ('image/webp','image/png','image/jpeg')),
+  bytes      integer not null check (bytes > 0 and bytes <= 5242880),
+  data       bytea not null,
+  sha256     char(64) not null check (sha256 ~ '^[0-9a-f]{64}$'),
+  created_at timestamptz not null default now(),
+  unique (user_id, sha256, mime_type)
+);
+create index if not exists user_avatar_assets_user_created_idx
+  on user_avatar_assets (user_id, created_at desc, id desc);
+
+with copied as (
+  insert into user_avatar_assets (user_id, file_name, mime_type, bytes, data, sha256, created_at)
+  select asset.user_id, asset.file_name, asset.mime_type, asset.bytes, asset.data, asset.sha256, asset.created_at
+    from media_assets asset
+    join users user_row on user_row.id = asset.user_id
+   where user_row.avatar = '/api/media/assets/' || asset.id::text
+     and asset.kind = 'image'
+     and asset.storage_backend = 'postgres'
+     and asset.data is not null
+  on conflict (user_id, sha256, mime_type) do update set file_name = excluded.file_name
+  returning id, user_id
+)
+update users user_row
+   set avatar = '/api/settings/profile/avatar-assets/' || copied.id::text
+  from copied
+ where user_row.id = copied.user_id
+   and user_row.avatar like '/api/media/assets/%';
+
+-- Draft revisions already have a globally unique id. The wider key lets every
+-- downstream artefact prove that revision, draft and project belong together.
+-- The immutable 20260817_legal_visuals migration installs the composite revision
+-- lineage constraint after this bootstrap snapshot is loaded. This differently
+-- named bootstrap index is required while the remainder of this monolithic schema
+-- creates composite foreign keys; the migration then records the canonical named
+-- constraint without mutating its already-applied historical SQL.
+create unique index if not exists draft_revisions_lineage_bootstrap_uniq
+  on draft_revisions (id, project_id, draft_id, draft_version);
+
+create table if not exists project_brand_kits (
+  project_id       bigint primary key references projects (id) on delete cascade,
+  name             varchar(100) not null,
+  logo_asset_id    bigint,
+  colors           jsonb not null,
+  allowed_fonts    text[] not null,
+  active_font      text not null,
+  signature        varchar(160) not null default '',
+  version          bigint not null default 1,
+  created_by_user_id bigint not null references users (id) on delete restrict,
+  updated_by_user_id bigint not null references users (id) on delete restrict,
+  created_at       timestamptz not null default now(),
+  updated_at       timestamptz not null default now(),
+  constraint project_brand_kits_name_check check (length(btrim(name)) between 1 and 100),
+  constraint project_brand_kits_colors_check check (
+    jsonb_typeof(colors) = 'object'
+    and colors ?& array['background','surface','text','mutedText','accent','critical']
+    and (colors->>'background') ~ '^#[0-9a-f]{6}$'
+    and (colors->>'surface') ~ '^#[0-9a-f]{6}$'
+    and (colors->>'text') ~ '^#[0-9a-f]{6}$'
+    and (colors->>'mutedText') ~ '^#[0-9a-f]{6}$'
+    and (colors->>'accent') ~ '^#[0-9a-f]{6}$'
+    and (colors->>'critical') ~ '^#[0-9a-f]{6}$'
+  ),
+  constraint project_brand_kits_fonts_check check (
+    cardinality(allowed_fonts) between 1 and 3
+    and allowed_fonts <@ array['aurora-sans','legal-serif','technical-mono']::text[]
+    and active_font = any(allowed_fonts)
+  ),
+  constraint project_brand_kits_signature_check check (length(signature) <= 160),
+  constraint project_brand_kits_version_check check (version > 0),
+  constraint project_brand_kits_logo_project_fk
+    foreign key (logo_asset_id, project_id)
+    references media_assets (id, project_id) on delete restrict
+);
+
+create table if not exists legal_visual_designs (
+  id                 bigint generated always as identity primary key,
+  project_id         bigint not null references projects (id) on delete cascade,
+  created_by_user_id bigint not null references users (id) on delete restrict,
+  updated_by_user_id bigint not null references users (id) on delete restrict,
+  source_draft_id    bigint,
+  source_draft_revision_id bigint,
+  source_draft_version bigint,
+  source_content_hash char(64),
+  name               varchar(160) not null,
+  format             text not null,
+  status             text not null default 'draft',
+  revision           bigint not null default 1,
+  config             jsonb not null,
+  config_hash        char(64) not null,
+  rendered_revision  bigint,
+  request_key        varchar(96) not null,
+  error_code         varchar(100),
+  error_message      varchar(500),
+  created_at         timestamptz not null default now(),
+  updated_at         timestamptz not null default now(),
+  constraint legal_visual_designs_name_check check (length(btrim(name)) between 1 and 160),
+  constraint legal_visual_designs_format_check check (format in ('1:1','4:5','9:16')),
+  constraint legal_visual_designs_status_check
+    check (status in ('draft','render_queued','rendering','ready','render_failed')),
+  constraint legal_visual_designs_revision_check
+    check (revision > 0 and (rendered_revision is null or rendered_revision > 0)),
+  constraint legal_visual_designs_config_check check (jsonb_typeof(config) = 'object'),
+  constraint legal_visual_designs_hash_check check (config_hash ~ '^[0-9a-f]{64}$'),
+  constraint legal_visual_designs_source_hash_check check (
+    source_content_hash is null or source_content_hash ~ '^[0-9a-f]{64}$'
+  ),
+  constraint legal_visual_designs_source_revision_check check (
+    (source_draft_id is null and source_draft_revision_id is null
+      and source_draft_version is null and source_content_hash is null)
+    or (source_draft_id is not null and source_draft_revision_id is not null
+      and source_draft_version > 0 and source_content_hash is not null)
+  ),
+  constraint legal_visual_designs_request_key_check
+    check (request_key ~ '^[A-Za-z0-9:_-]{8,96}$'),
+  constraint legal_visual_designs_source_draft_project_fk
+    foreign key (source_draft_id, project_id)
+    references drafts (id, project_id) on delete restrict,
+  constraint legal_visual_designs_source_revision_project_fk
+    foreign key (source_draft_revision_id, project_id, source_draft_id, source_draft_version)
+    references draft_revisions (id, project_id, draft_id, draft_version) on delete restrict,
+  unique (project_id, request_key),
+  unique (id, project_id)
+);
+create index if not exists legal_visual_designs_project_updated_idx
+  on legal_visual_designs (project_id, updated_at desc, id desc);
+create index if not exists legal_visual_designs_source_draft_idx
+  on legal_visual_designs (project_id, source_draft_id, updated_at desc)
+  where source_draft_id is not null;
+
+create table if not exists legal_visual_source_assets (
+  design_id       bigint not null,
+  project_id      bigint not null,
+  card_id         varchar(128) not null,
+  media_asset_id  bigint not null,
+  role            text not null default 'illustration',
+  created_at      timestamptz not null default now(),
+  primary key (design_id, card_id, media_asset_id),
+  constraint legal_visual_source_assets_design_project_fk
+    foreign key (design_id, project_id)
+    references legal_visual_designs (id, project_id) on delete cascade,
+  constraint legal_visual_source_assets_asset_project_fk
+    foreign key (media_asset_id, project_id)
+    references media_assets (id, project_id) on delete restrict,
+  constraint legal_visual_source_assets_card_check
+    check (length(btrim(card_id)) between 1 and 128),
+  constraint legal_visual_source_assets_role_check
+    check (role in ('illustration','background')),
+  unique (project_id, design_id, card_id)
+);
+create index if not exists legal_visual_source_assets_asset_idx
+  on legal_visual_source_assets (project_id, media_asset_id, design_id);
+
+create table if not exists legal_visual_render_operations (
+  id                 bigint generated always as identity primary key,
+  project_id         bigint not null references projects (id) on delete cascade,
+  design_id          bigint not null,
+  requested_by_user_id bigint not null references users (id) on delete restrict,
+  design_revision    bigint not null,
+  config_snapshot    jsonb not null,
+  config_hash        char(64) not null,
+  status             text not null default 'pending',
+  attempts           integer not null default 0,
+  idempotency_key    varchar(128) not null,
+  error_code         varchar(100),
+  error_message      varchar(500),
+  started_at         timestamptz,
+  completed_at       timestamptz,
+  created_at         timestamptz not null default now(),
+  updated_at         timestamptz not null default now(),
+  constraint legal_visual_render_operations_design_project_fk
+    foreign key (design_id, project_id)
+    references legal_visual_designs (id, project_id) on delete cascade,
+  constraint legal_visual_render_operations_revision_check check (design_revision > 0),
+  constraint legal_visual_render_operations_snapshot_check check (jsonb_typeof(config_snapshot) = 'object'),
+  constraint legal_visual_render_operations_hash_check check (config_hash ~ '^[0-9a-f]{64}$'),
+  constraint legal_visual_render_operations_status_check check (
+    status in ('pending','queued','rendering','ready','retryable_failed','failed')
+  ),
+  constraint legal_visual_render_operations_attempts_check check (attempts >= 0),
+  constraint legal_visual_render_operations_completion_check check (
+    (status in ('ready','failed') and completed_at is not null)
+    or (status not in ('ready','failed') and completed_at is null)
+  ),
+  unique (project_id, idempotency_key),
+  unique (design_id, design_revision, config_hash),
+  unique (id, project_id),
+  unique (id, project_id, design_id)
+);
+create index if not exists legal_visual_render_operations_project_status_idx
+  on legal_visual_render_operations (project_id, status, updated_at desc, id desc);
+
+create table if not exists legal_visual_render_cards (
+  operation_id   bigint not null,
+  project_id     bigint not null,
+  design_id      bigint not null,
+  card_id        varchar(128) not null,
+  card_order     integer not null,
+  media_asset_id bigint not null,
+  sha256         char(64) not null,
+  width          integer not null,
+  height         integer not null,
+  created_at     timestamptz not null default now(),
+  primary key (operation_id, card_order),
+  constraint legal_visual_render_cards_operation_project_fk
+    foreign key (operation_id, project_id, design_id)
+    references legal_visual_render_operations (id, project_id, design_id) on delete cascade,
+  constraint legal_visual_render_cards_asset_project_fk
+    foreign key (media_asset_id, project_id)
+    references media_assets (id, project_id) on delete restrict,
+  constraint legal_visual_render_cards_order_check check (card_order between 1 and 7),
+  constraint legal_visual_render_cards_id_check check (length(btrim(card_id)) between 1 and 128),
+  constraint legal_visual_render_cards_hash_check check (sha256 ~ '^[0-9a-f]{64}$'),
+  constraint legal_visual_render_cards_dimensions_check check (width > 0 and height > 0),
+  unique (project_id, operation_id, card_id),
+  unique (media_asset_id)
+);
+create index if not exists legal_visual_render_cards_design_idx
+  on legal_visual_render_cards (project_id, design_id, operation_id, card_order);
+
+create table if not exists legal_visual_render_outbox (
+  id               bigint generated always as identity primary key,
+  operation_id     bigint not null,
+  project_id       bigint not null,
+  status           text not null default 'pending',
+  attempts         integer not null default 0,
+  next_attempt_at  timestamptz not null default now(),
+  lease_token      uuid,
+  lease_expires_at timestamptz,
+  enqueued_at      timestamptz,
+  last_error_code  varchar(100),
+  created_at       timestamptz not null default now(),
+  updated_at       timestamptz not null default now(),
+  constraint legal_visual_render_outbox_operation_project_fk
+    foreign key (operation_id, project_id)
+    references legal_visual_render_operations (id, project_id) on delete cascade,
+  constraint legal_visual_render_outbox_status_check check (
+    status in ('pending','dispatching','enqueued','retryable_failed','failed','completed','cancelled')
+  ),
+  constraint legal_visual_render_outbox_attempts_check check (attempts >= 0),
+  constraint legal_visual_render_outbox_lease_check check (
+    (status = 'dispatching' and lease_token is not null and lease_expires_at is not null)
+    or (status <> 'dispatching' and lease_token is null and lease_expires_at is null)
+  ),
+  unique (operation_id),
+  unique (project_id, operation_id)
+);
+create index if not exists legal_visual_render_outbox_due_idx
+  on legal_visual_render_outbox (next_attempt_at, id)
+  where status in ('pending','retryable_failed','enqueued');
+
+create table if not exists legal_video_scripts (
+  id                 bigint generated always as identity primary key,
+  project_id         bigint not null references projects (id) on delete cascade,
+  source_draft_id    bigint not null,
+  source_draft_revision_id bigint not null,
+  source_draft_version bigint not null,
+  source_content_hash char(64) not null,
+  created_by_user_id bigint not null references users (id) on delete restrict,
+  updated_by_user_id bigint not null references users (id) on delete restrict,
+  title              varchar(180) not null,
+  duration_seconds   integer not null,
+  revision           bigint not null default 1,
+  revision_hash      char(64) not null,
+  snapshot           jsonb not null,
+  request_key        varchar(96) not null,
+  created_at         timestamptz not null default now(),
+  updated_at         timestamptz not null default now(),
+  constraint legal_video_scripts_source_draft_project_fk
+    foreign key (source_draft_id, project_id)
+    references drafts (id, project_id) on delete restrict,
+  constraint legal_video_scripts_source_revision_project_fk
+    foreign key (source_draft_revision_id, project_id, source_draft_id, source_draft_version)
+    references draft_revisions (id, project_id, draft_id, draft_version) on delete restrict,
+  constraint legal_video_scripts_title_check check (length(btrim(title)) between 1 and 180),
+  constraint legal_video_scripts_duration_check check (duration_seconds in (30,45,60)),
+  constraint legal_video_scripts_revision_check check (revision > 0 and source_draft_version > 0),
+  constraint legal_video_scripts_hash_check check (
+    revision_hash ~ '^[0-9a-f]{64}$' and source_content_hash ~ '^[0-9a-f]{64}$'
+  ),
+  constraint legal_video_scripts_snapshot_check check (jsonb_typeof(snapshot) = 'object'),
+  constraint legal_video_scripts_request_key_check check (request_key ~ '^[A-Za-z0-9:_-]{8,96}$'),
+  unique (project_id, request_key),
+  unique (id, project_id)
+);
+create index if not exists legal_video_scripts_project_updated_idx
+  on legal_video_scripts (project_id, updated_at desc, id desc);
+create index if not exists legal_video_scripts_source_draft_idx
+  on legal_video_scripts (project_id, source_draft_id, updated_at desc, id desc);
+
+create table if not exists legal_video_script_revisions (
+  id             bigint generated always as identity primary key,
+  script_id      bigint not null,
+  project_id     bigint not null,
+  revision       bigint not null,
+  revision_hash  char(64) not null,
+  snapshot       jsonb not null,
+  actor_user_id  bigint not null references users (id) on delete restrict,
+  created_at     timestamptz not null default now(),
+  constraint legal_video_script_revisions_script_project_fk
+    foreign key (script_id, project_id)
+    references legal_video_scripts (id, project_id) on delete cascade,
+  constraint legal_video_script_revisions_revision_check check (revision > 0),
+  constraint legal_video_script_revisions_hash_check check (revision_hash ~ '^[0-9a-f]{64}$'),
+  constraint legal_video_script_revisions_snapshot_check check (jsonb_typeof(snapshot) = 'object'),
+  unique (script_id, revision),
+  unique (project_id, script_id, revision_hash)
+);
+create index if not exists legal_video_script_revisions_project_idx
+  on legal_video_script_revisions (project_id, script_id, revision desc);
+
+create or replace function aurora_reject_legal_video_revision_update()
+returns trigger
+language plpgsql
+as $$
+begin
+  raise exception 'legal_video_revision_immutable' using errcode = '55000';
+end
+$$;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_trigger where tgname = 'legal_video_script_revisions_immutable_update'
+  ) then
+    create trigger legal_video_script_revisions_immutable_update
+      before update on legal_video_script_revisions for each row
+      execute function aurora_reject_legal_video_revision_update();
+  end if;
+end
+$$;
+
+create table if not exists legal_visual_render_attempts (
+  id              bigint generated always as identity primary key,
+  project_id      bigint not null references projects (id) on delete cascade,
+  operation_id    bigint not null,
+  attempt_number  integer not null,
+  status          text not null,
+  safe_error_code varchar(100),
+  started_at      timestamptz not null default now(),
+  completed_at    timestamptz,
+  constraint legal_visual_render_attempts_operation_project_fk
+    foreign key (operation_id, project_id)
+    references legal_visual_render_operations (id, project_id) on delete cascade,
+  constraint legal_visual_render_attempts_number_check check (attempt_number > 0),
+  constraint legal_visual_render_attempts_status_check
+    check (status in ('running','succeeded','failed_retry','failed')),
+  constraint legal_visual_render_attempts_error_check
+    check (safe_error_code is null or safe_error_code ~ '^[a-z0-9_]{1,100}$'),
+  constraint legal_visual_render_attempts_completion_check check (
+    (status = 'running' and completed_at is null)
+    or (status <> 'running' and completed_at is not null)
+  ),
+  unique (operation_id, attempt_number)
+);
+create index if not exists legal_visual_render_attempts_project_operation_idx
+  on legal_visual_render_attempts (project_id, operation_id, attempt_number);
+
+-- One monotonic dictionary version per project. Publication snapshots persist this
+-- version together with the deterministic rules version used for the final recheck.
+create table if not exists project_brand_dictionaries (
+  project_id         bigint primary key references projects (id) on delete cascade,
+  version            bigint not null default 1,
+  created_by_user_id bigint not null references users (id) on delete restrict,
+  updated_by_user_id bigint not null references users (id) on delete restrict,
+  created_at         timestamptz not null default now(),
+  updated_at         timestamptz not null default now(),
+  constraint project_brand_dictionaries_version_check check (version > 0)
+);
+insert into project_brand_dictionaries (
+  project_id, version, created_by_user_id, updated_by_user_id, created_at, updated_at
+)
+select project.id, 1, project.created_by_user_id, project.created_by_user_id,
+       project.created_at, project.updated_at
+  from projects project
+on conflict (project_id) do nothing;
+
+-- Entries are soft-deleted so an audit event and an old publication snapshot can
+-- still identify the exact rule that existed at an earlier dictionary version.
+create table if not exists project_brand_dictionary_entries (
+  id                 bigint generated always as identity primary key,
+  project_id         bigint not null references projects (id) on delete cascade,
+  kind               text not null,
+  term               varchar(240) not null,
+  replacement        varchar(240),
+  expansion          varchar(500),
+  case_sensitive     boolean not null default false,
+  is_active          boolean not null default true,
+  version            bigint not null default 1,
+  created_by_user_id bigint not null references users (id) on delete restrict,
+  updated_by_user_id bigint not null references users (id) on delete restrict,
+  created_at         timestamptz not null default now(),
+  updated_at         timestamptz not null default now(),
+  constraint project_brand_dictionary_entries_kind_check check (
+    kind in ('canonical','allowed','prohibited','exception','abbreviation')
+  ),
+  constraint project_brand_dictionary_entries_term_check check (
+    length(btrim(term)) between 1 and 240 and term = btrim(term)
+  ),
+  constraint project_brand_dictionary_entries_replacement_check check (
+    (
+      kind in ('canonical','prohibited','abbreviation')
+      and replacement is not null
+      and length(btrim(replacement)) between 1 and 240
+      and replacement = btrim(replacement)
+    )
+    or (kind in ('allowed','exception') and replacement is null)
+  ),
+  constraint project_brand_dictionary_entries_expansion_check check (
+    expansion is null or (length(btrim(expansion)) between 1 and 500 and expansion = btrim(expansion))
+  ),
+  constraint project_brand_dictionary_entries_version_check check (version > 0),
+  unique (id, project_id)
+);
+create unique index if not exists project_brand_dictionary_entries_active_term_uniq
+  on project_brand_dictionary_entries (project_id, kind, lower(term))
+  where is_active;
+create index if not exists project_brand_dictionary_entries_project_idx
+  on project_brand_dictionary_entries (project_id, is_active desc, kind, lower(term), id);
+
+-- Every explicit apply/reject is server-rechecked and durable. Source/result text is
+-- bounded to the Composer limit so an accepted run can be undone after a save, while
+-- hashes make publication comparison cheap and deterministic.
+create table if not exists project_typography_runs (
+  id                    bigint generated always as identity primary key,
+  project_id            bigint not null references projects (id) on delete cascade,
+  actor_user_id         bigint not null references users (id) on delete restrict,
+  draft_id              bigint,
+  request_key           varchar(96) not null,
+  rules_version         varchar(80) not null,
+  dictionary_version    bigint not null,
+  source_text           text not null,
+  result_text           text not null,
+  source_text_hash      char(64) not null,
+  result_text_hash      char(64) not null,
+  suggestions           jsonb not null,
+  accepted_suggestion_ids jsonb not null default '[]'::jsonb,
+  rejected_suggestion_ids jsonb not null default '[]'::jsonb,
+  review_complete       boolean not null default false,
+  undone_at             timestamptz,
+  undone_by_user_id     bigint references users (id) on delete restrict,
+  created_at            timestamptz not null default now(),
+  constraint project_typography_runs_draft_project_fk foreign key (draft_id, project_id)
+    references drafts (id, project_id) on delete cascade,
+  constraint project_typography_runs_request_key_check check (length(btrim(request_key)) between 16 and 96),
+  constraint project_typography_runs_rules_version_check check (length(btrim(rules_version)) between 1 and 80),
+  constraint project_typography_runs_dictionary_version_check check (dictionary_version > 0),
+  constraint project_typography_runs_source_length_check check (length(source_text) between 1 and 50000),
+  constraint project_typography_runs_result_length_check check (length(result_text) between 1 and 50000),
+  constraint project_typography_runs_source_hash_check check (source_text_hash ~ '^[0-9a-f]{64}$'),
+  constraint project_typography_runs_result_hash_check check (result_text_hash ~ '^[0-9a-f]{64}$'),
+  constraint project_typography_runs_suggestions_check check (jsonb_typeof(suggestions) = 'array'),
+  constraint project_typography_runs_accepted_check check (jsonb_typeof(accepted_suggestion_ids) = 'array'),
+  constraint project_typography_runs_rejected_check check (jsonb_typeof(rejected_suggestion_ids) = 'array'),
+  constraint project_typography_runs_undo_check check (
+    (undone_at is null and undone_by_user_id is null)
+    or (undone_at is not null and undone_by_user_id is not null)
+  ),
+  unique (project_id, request_key),
+  unique (id, project_id)
+);
+create index if not exists project_typography_runs_draft_created_idx
+  on project_typography_runs (project_id, draft_id, created_at desc, id desc)
+  where draft_id is not null;
+create index if not exists project_typography_runs_review_hash_idx
+  on project_typography_runs
+    (project_id, dictionary_version, rules_version, result_text_hash, created_at desc, id desc)
+  where review_complete and undone_at is null;
+
+-- An Autopilot week may be materialized from one approved monthly plan. The selected
+-- project is part of the FK, so a queued job cannot attach another tenant's campaign.
+alter table autopilot_plan
+  add column if not exists monthly_campaign_plan_id bigint;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+     where conname = 'autopilot_plan_monthly_campaign_project_fk'
+  ) then
+    alter table autopilot_plan
+      add constraint autopilot_plan_monthly_campaign_project_fk
+      foreign key (monthly_campaign_plan_id, project_id)
+      references monthly_campaign_plans (id, project_id)
+      on delete restrict;
+  end if;
+end
+$$;
+
+create index if not exists autopilot_plan_monthly_campaign_idx
+  on autopilot_plan (project_id, monthly_campaign_plan_id, created_at desc, id desc)
+  where monthly_campaign_plan_id is not null;
+
+-- A reusable short link is a campaign asset, while every published destination needs
+-- its own opaque redirect identity. This placement makes post-level attribution exact
+-- without exposing a post, channel or project identifier in the public URL.
+create table if not exists short_link_placements (
+  id                       bigint generated always as identity primary key,
+  project_id               bigint not null references projects (id) on delete cascade,
+  short_link_id            bigint not null references short_links (id) on delete cascade,
+  publication_operation_id bigint,
+  post_id                  bigint,
+  slug                     varchar(64) not null unique,
+  created_at               timestamptz not null default now(),
+  constraint short_link_placements_slug_check check (slug ~ '^[A-Za-z0-9_-]{20,64}$'),
+  constraint short_link_placements_link_project_fk
+    foreign key (short_link_id, project_id)
+    references short_links (id, project_id) on delete cascade,
+  constraint short_link_placements_operation_project_fk
+    foreign key (publication_operation_id, project_id)
+    references publication_operations (id, project_id)
+    on delete set null (publication_operation_id),
+  constraint short_link_placements_post_project_fk
+    foreign key (post_id, project_id)
+    references posts (id, project_id)
+    on delete set null (post_id),
+  unique (post_id),
+  unique (publication_operation_id, post_id),
+  unique (id, short_link_id, project_id)
+);
+create index if not exists short_link_placements_link_idx
+  on short_link_placements (short_link_id, created_at desc, id desc);
+create index if not exists short_link_placements_project_idx
+  on short_link_placements (project_id, created_at desc, id desc);
+
+alter table short_link_clicks
+  add column if not exists placement_id bigint;
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'short_link_clicks_placement_link_project_fk'
+  ) then
+    alter table short_link_clicks
+      add constraint short_link_clicks_placement_link_project_fk
+      foreign key (placement_id, short_link_id, project_id)
+      references short_link_placements (id, short_link_id, project_id)
+      on delete set null (placement_id);
+  end if;
+end
+$$;
+create index if not exists short_link_clicks_placement_time_idx
+  on short_link_clicks (placement_id, occurred_at desc, id)
+  where placement_id is not null;
+
+alter table publication_tracking_snapshots
+  add column if not exists short_link_placement_id bigint;
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'publication_tracking_placement_link_project_fk'
+  ) then
+    alter table publication_tracking_snapshots
+      add constraint publication_tracking_placement_link_project_fk
+      foreign key (short_link_placement_id, short_link_id, project_id)
+      references short_link_placements (id, short_link_id, project_id)
+      on delete set null (short_link_placement_id);
+  end if;
+end
+$$;
+create unique index if not exists publication_tracking_short_placement_uniq
+  on publication_tracking_snapshots (short_link_placement_id)
+  where short_link_placement_id is not null;
+
+-- Legacy publication operations cannot be tied to an immutable editorial approval
+-- reliably. Keep the new lineage nullable for those rows, while requiring every new
+-- approved publication to carry one complete, project-scoped revision identity.
+alter table publication_operations
+  add column if not exists approved_revision_id bigint;
+alter table publication_operations
+  add column if not exists approved_draft_version bigint;
+alter table publication_operations
+  add column if not exists approved_content_hash char(64);
+
+do $$
+begin
+  if not exists (
+    select 1
+      from pg_constraint
+     where conrelid = 'publication_operations'::regclass
+       and conname = 'publication_operations_approved_lineage_check'
+  ) then
+    alter table publication_operations
+      add constraint publication_operations_approved_lineage_check
+      check (
+        (
+          approved_revision_id is null
+          and approved_draft_version is null
+          and approved_content_hash is null
+        )
+        or (
+          approved_revision_id is not null
+          and draft_id is not null
+          and approved_draft_version is not null
+          and approved_draft_version = draft_version
+          and approved_content_hash is not null
+        )
+      );
+  end if;
+end
+$$;
+
+do $$
+begin
+  if not exists (
+    select 1
+      from pg_constraint
+     where conrelid = 'publication_operations'::regclass
+       and conname = 'publication_operations_approved_content_hash_check'
+  ) then
+    alter table publication_operations
+      add constraint publication_operations_approved_content_hash_check
+      check (
+        approved_content_hash is null
+        or approved_content_hash ~ '^[0-9a-f]{64}$'
+      );
+  end if;
+end
+$$;
+
+-- PostgreSQL requires an exact unique key for the wider approval foreign key.
+-- Including the globally unique revision id makes this additive and duplicate-safe.
+do $$
+begin
+  if not exists (
+    select 1
+      from pg_constraint
+     where conrelid = 'draft_revisions'::regclass
+       and conname = 'draft_revisions_approval_lineage_uniq'
+  ) then
+    alter table draft_revisions
+      add constraint draft_revisions_approval_lineage_uniq
+      unique (id, project_id, draft_id, draft_version, content_hash);
+  end if;
+end
+$$;
+
+do $$
+begin
+  if not exists (
+    select 1
+      from pg_constraint
+     where conrelid = 'publication_operations'::regclass
+       and conname = 'publication_operations_approved_revision_fk'
+  ) then
+    alter table publication_operations
+      add constraint publication_operations_approved_revision_fk
+      foreign key (
+        approved_revision_id,
+        project_id,
+        draft_id,
+        approved_draft_version,
+        approved_content_hash
+      )
+      references draft_revisions (
+        id,
+        project_id,
+        draft_id,
+        draft_version,
+        content_hash
+      )
+      on delete restrict;
+  end if;
+end
+$$;
+
+-- Fail closed if a partially managed database already contains conflicting
+-- approved lineages. Never delete or rewrite publication history automatically.
+do $$
+declare
+  duplicate_lineage record;
+begin
+  select project_id, draft_id, approved_revision_id, count(*) as operation_count
+    into duplicate_lineage
+    from publication_operations
+   where approved_revision_id is not null
+   group by project_id, draft_id, approved_revision_id
+  having count(*) > 1
+   limit 1;
+
+  if found then
+    raise exception
+      'publication_approved_revision_duplicate: project_id=%, draft_id=%, approved_revision_id=%, count=%',
+      duplicate_lineage.project_id,
+      duplicate_lineage.draft_id,
+      duplicate_lineage.approved_revision_id,
+      duplicate_lineage.operation_count
+      using errcode = '23505';
+  end if;
+end
+$$;
+
+create unique index if not exists publication_operations_approved_revision_uniq
+  on publication_operations (project_id, draft_id, approved_revision_id)
+  where approved_revision_id is not null;
+
+-- Existing rows predate request fingerprinting and remain readable. Services replay
+-- a legacy key only when the persisted identity proves equivalence; otherwise they
+-- fail closed with an idempotency conflict.
+alter table legal_visual_designs
+  add column if not exists request_hash char(64);
+alter table legal_video_scripts
+  add column if not exists request_hash char(64);
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+     where conrelid = 'legal_visual_designs'::regclass
+       and conname = 'legal_visual_designs_request_hash_check'
+  ) then
+    alter table legal_visual_designs
+      add constraint legal_visual_designs_request_hash_check
+      check (request_hash is null or request_hash ~ '^[0-9a-f]{64}$');
+  end if;
+  if not exists (
+    select 1 from pg_constraint
+     where conrelid = 'legal_video_scripts'::regclass
+       and conname = 'legal_video_scripts_request_hash_check'
+  ) then
+    alter table legal_video_scripts
+      add constraint legal_video_scripts_request_hash_check
+      check (request_hash is null or request_hash ~ '^[0-9a-f]{64}$');
+  end if;
+end
+$$;
+
+-- Existing typography decisions predate full-intent fingerprinting. They remain
+-- readable, but a legacy idempotency key cannot be replayed safely because the
+-- original quote mode and selection intent were not persisted canonically.
+alter table project_typography_runs
+  add column if not exists request_hash char(64);
+
+do $$
+begin
+  if not exists (
+    select 1
+      from pg_constraint
+     where conrelid = 'project_typography_runs'::regclass
+       and conname = 'project_typography_runs_request_hash_check'
+  ) then
+    alter table project_typography_runs
+      add constraint project_typography_runs_request_hash_check
+      check (request_hash is null or request_hash ~ '^[0-9a-f]{64}$');
+  end if;
+end
+$$;
+
+-- A confirmed stats snapshot must become visible from the monthly plan regardless
+-- of which provider collector wrote it. The existing composite foreign key keeps
+-- the link inside one post and project; this trigger only advances to the newest
+-- snapshot and never rewrites campaign content.
+create or replace function aurora_link_monthly_campaign_post_stats()
+returns trigger
+language plpgsql
+as $$
+begin
+  update monthly_campaign_items item
+     set latest_post_stats_id = new.id,
+         updated_at = now()
+   where item.project_id = new.project_id
+     and item.post_id = new.post_id
+     and (
+       item.latest_post_stats_id is null
+       or exists (
+         select 1
+           from post_stats previous
+          where previous.id = item.latest_post_stats_id
+            and (previous.snapshot_date, previous.id) < (new.snapshot_date, new.id)
+       )
+     );
+  return new;
+end
+$$;
+
+drop trigger if exists post_stats_link_monthly_campaign_after_write on post_stats;
+create trigger post_stats_link_monthly_campaign_after_write
+  after insert or update of views, reactions, reposts, comments, collected_at
+  on post_stats
+  for each row
+  execute function aurora_link_monthly_campaign_post_stats();
+
+-- Bring already collected snapshots into the same invariant without deleting or
+-- changing historical statistics.
+with latest as (
+  select distinct on (stats.project_id, stats.post_id)
+         stats.project_id, stats.post_id, stats.id
+    from post_stats stats
+   order by stats.project_id, stats.post_id, stats.snapshot_date desc, stats.id desc
+)
+update monthly_campaign_items item
+   set latest_post_stats_id = latest.id,
+       updated_at = now()
+  from latest
+ where item.project_id = latest.project_id
+   and item.post_id = latest.post_id
+   and item.latest_post_stats_id is distinct from latest.id;
+
+-- ------------------------------------------------ Publication follow-up reliability
+
+alter table publication_extra_operations
+  add column if not exists requested_by_user_id bigint;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+     where conrelid = 'publication_extra_operations'::regclass
+       and conname = 'publication_extra_operations_requested_by_user_id_fkey'
+  ) then
+    alter table publication_extra_operations
+      add constraint publication_extra_operations_requested_by_user_id_fkey
+      foreign key (requested_by_user_id) references users (id) on delete set null;
+  end if;
+end
+$$;
+
+alter table publication_review_tasks
+  add column if not exists update_draft_id bigint;
+alter table publication_review_tasks
+  add column if not exists reminder_attempts integer not null default 0;
+alter table publication_review_tasks
+  add column if not exists reminder_provider_started_at timestamptz;
+alter table publication_review_tasks
+  add column if not exists reminder_last_error_code varchar(100);
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+     where conrelid = 'publication_review_tasks'::regclass
+       and conname = 'publication_review_tasks_update_draft_project_fk'
+  ) then
+    alter table publication_review_tasks
+      add constraint publication_review_tasks_update_draft_project_fk
+      foreign key (update_draft_id, project_id)
+      references drafts (id, project_id) on delete restrict;
+  end if;
+  if not exists (
+    select 1 from pg_constraint
+     where conrelid = 'publication_review_tasks'::regclass
+       and conname = 'publication_review_tasks_reminder_attempts_check'
+  ) then
+    alter table publication_review_tasks
+      add constraint publication_review_tasks_reminder_attempts_check
+      check (reminder_attempts >= 0);
+  end if;
+  if not exists (
+    select 1 from pg_constraint
+     where conrelid = 'publication_review_tasks'::regclass
+       and conname = 'publication_review_tasks_reminder_delivery_check'
+  ) then
+    alter table publication_review_tasks
+      add constraint publication_review_tasks_reminder_delivery_check
+      check (
+        (reminder_status = 'sending' and reminder_provider_started_at is not null)
+        or reminder_status <> 'sending'
+      );
+  end if;
+  if not exists (
+    select 1 from pg_constraint
+     where conrelid = 'publication_review_tasks'::regclass
+       and conname = 'publication_review_tasks_update_draft_check'
+  ) then
+    alter table publication_review_tasks
+      add constraint publication_review_tasks_update_draft_check
+      check (
+        (status = 'completed' and decision = 'update' and update_draft_id is not null)
+        or (not (status = 'completed' and decision = 'update') and update_draft_id is null)
+      ) not valid;
+  end if;
+end
+$$;
+
+create unique index if not exists publication_review_tasks_update_draft_uniq
+  on publication_review_tasks (project_id, update_draft_id)
+  where update_draft_id is not null;
+
+create table if not exists publication_review_reminder_outbox (
+  id                bigint generated always as identity primary key,
+  project_id        bigint not null references projects (id) on delete cascade,
+  review_task_id    bigint not null,
+  recipient_user_id bigint not null references users (id) on delete restrict,
+  job_key           char(64) not null,
+  status            text not null default 'pending',
+  attempts          integer not null default 0,
+  next_attempt_at   timestamptz not null default now(),
+  last_error_code   varchar(100),
+  lease_token       char(64),
+  lease_expires_at  timestamptz,
+  enqueued_at       timestamptz,
+  created_at        timestamptz not null default now(),
+  updated_at        timestamptz not null default now(),
+  constraint publication_review_reminder_outbox_task_project_fk
+    foreign key (review_task_id, project_id)
+    references publication_review_tasks (id, project_id) on delete cascade,
+  constraint publication_review_reminder_outbox_job_key_check
+    check (job_key ~ '^[0-9a-f]{64}$'),
+  constraint publication_review_reminder_outbox_status_check
+    check (status in ('pending','dispatching','enqueued','running','completed','failed','cancelled')),
+  constraint publication_review_reminder_outbox_attempts_check check (attempts >= 0),
+  constraint publication_review_reminder_outbox_lease_check check (
+    (lease_token is null and lease_expires_at is null)
+    or (lease_token is not null and lease_expires_at is not null)
+  ),
+  unique (project_id, review_task_id),
+  unique (job_key)
+);
+
+create index if not exists publication_review_reminder_outbox_due_idx
+  on publication_review_reminder_outbox (next_attempt_at, id)
+  where status in ('pending','failed','enqueued');

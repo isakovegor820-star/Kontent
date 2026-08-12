@@ -6,8 +6,12 @@ const source = await readFile(new URL("../worker.mjs", import.meta.url), "utf8")
 
 describe("worker AI usage integration contract", () => {
   it("binds autopilot jobs to planId and commits inside the plan transaction", () => {
-    expect(source).toContain('key: workerAiUsageKey("autopilot-plan", planId)');
-    expect(source).toContain("buildAutopilotPlan(userId, channelId, planId, usage.reservationId)");
+    expect(source).toContain(
+      'key: workerAiUsageCompositeKey("autopilot-plan", [projectId, planId])',
+    );
+    expect(source).toMatch(
+      /buildAutopilotPlan\(\s*projectId,\s*userId,\s*channelId,\s*planId,\s*usage\.reservationId/u,
+    );
     expect(source).toContain("commitWorkerAiUsage(tx, userId, usageReservationId)");
     expect(source).toContain("releaseWorkerAiUsage(pool, userId, usage.reservationId)");
     expect(source).toContain("set status = 'error', rules = 'ai_usage_limit'");
@@ -44,10 +48,21 @@ describe("worker AI usage integration contract", () => {
 
   it("meters background visible artifacts with deterministic keys and durable outcomes", () => {
     expect(source).toContain('key: workerAiUsageKey("competitor-idea", contentIdeaId)');
-    expect(source).toContain('key: workerAiUsageCompositeKey("autopilot-weekly", [channelId, mskPlanningWeek()])');
+    expect(source).toContain(
+      'key: workerAiUsageCompositeKey("autopilot-weekly", [projectId, channelId, mskPlanningWeek()])',
+    );
+    expect(source).toMatch(
+      /from autopilot_settings s[\s\S]*member\.project_id = s\.project_id[\s\S]*member\.role in \('owner','author','approver'\)/u,
+    );
     expect(source).toContain('key: workerAiUsageCompositeKey("rss-summary", [feed.id, guidHash])');
     expect(source).toContain("commitWorkerAiUsage(tx, comp.user_id, usage.reservationId)");
-    expect(source).toContain("buildAutopilotPlan(userId, channelId, null, usage.reservationId)");
+    expect(source).toMatch(
+      /buildAutopilotPlan\(\s*projectId,\s*userId,\s*channelId,\s*null,\s*usage\.reservationId/u,
+    );
+    expect(source).toContain(
+      'key: workerAiUsageCompositeKey("monthly-campaign-regeneration", [projectId, operationId])',
+    );
+    expect(source).toContain("commitUsage: async (tx)");
     expect(source).toContain("aiUsageCommitted = await commitWorkerAiUsage(tx, userId, rssAiUsageReservationId)");
   });
 });

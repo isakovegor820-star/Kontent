@@ -16,6 +16,7 @@ import {
   plannedPostCountForWeeks,
 } from "@/lib/autopilot-config.mjs";
 import { resolveAiEngineRuntime } from "@/lib/ai-engine-policy.mjs";
+import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/project-permissions";
 
 export const runtime = "nodejs";
 
@@ -28,24 +29,28 @@ export async function POST(req: NextRequest) {
 
   try {
     const pool = getPool();
+    const membership = await requireSelectedProjectPermission(pool, user.id, "content.create");
+    const projectId = membership.projectId;
+    const scope = { actorUserId: user.id, projectId };
     const body = (await req.json().catch(() => ({}))) as {
       channelId?: number;
       generationEngine?: unknown;
       planningMonths?: unknown;
       planningWeeks?: unknown;
+      monthlyCampaignPlanId?: unknown;
     };
-    const channelId = await resolveChannel(user.id, body.channelId ?? null);
+    const channelId = await resolveChannel(scope, body.channelId ?? null);
     if (!channelId) {
       return NextResponse.json({ ok: false, error: "no_channel" }, { status: 422 });
     }
 
     // Без брифа ИИ не знает, о чём канал, и пишет наугад — план не собираем (ТЗ Д.9).
-    const brief = await loadBrief(user.id, channelId);
+    const brief = await loadBrief(scope, channelId);
     if (!brief.ready || !briefComplete(brief)) {
       return NextResponse.json({ ok: false, error: "no_brief" }, { status: 422 });
     }
 
-    const settings = await ensureSettings(user.id, channelId);
+    const settings = await ensureSettings(scope, channelId);
     if (body.generationEngine != null && !isAutopilotEngine(body.generationEngine)) {
       return NextResponse.json({ ok: false, error: "bad_engine" }, { status: 422 });
     }
@@ -54,6 +59,31 @@ export async function POST(req: NextRequest) {
       : isAutopilotEngine(settings.generation_engine)
         ? settings.generation_engine
         : "navy-deepseek-pro";
+    const monthlyCampaignPlanId = body.monthlyCampaignPlanId == null
+      ? null
+      : Number(body.monthlyCampaignPlanId);
+    if (monthlyCampaignPlanId != null
+        && (!Number.isSafeInteger(monthlyCampaignPlanId) || monthlyCampaignPlanId <= 0)) {
+      return NextResponse.json({ ok: false, error: "bad_monthly_plan" }, { status: 422 });
+    }
+    if (monthlyCampaignPlanId != null) {
+      const monthly = await pool.query(
+        `select plan.id
+           from monthly_campaign_plans plan
+           join monthly_campaigns campaign
+             on campaign.id = plan.campaign_id and campaign.project_id = plan.project_id
+          where plan.id = $1 and plan.project_id = $2 and plan.status = 'approved'
+            and campaign.is_archived = false
+          limit 1`,
+        [monthlyCampaignPlanId, projectId],
+      );
+      if (!monthly.rowCount) {
+        return NextResponse.json({ ok: false, error: "monthly_plan_unavailable" }, { status: 409 });
+      }
+      if (body.planningMonths != null || (body.planningWeeks != null && Number(body.planningWeeks) !== 1)) {
+        return NextResponse.json({ ok: false, error: "bad_horizon" }, { status: 422 });
+      }
+    }
     const requestedMonths = Number(body.planningMonths);
     const requestedWeeks = body.planningWeeks != null
       ? Number(body.planningWeeks)
@@ -66,7 +96,9 @@ export async function POST(req: NextRequest) {
     ) {
       return NextResponse.json({ ok: false, error: "bad_horizon" }, { status: 422 });
     }
-    const selectedPlanningWeeks = requestedWeeks ?? settings.planning_weeks ?? settings.planning_months * 4;
+    const selectedPlanningWeeks = monthlyCampaignPlanId != null
+      ? 1
+      : requestedWeeks ?? settings.planning_weeks ?? settings.planning_months * 4;
     if (!isAutopilotPlanningWeeks(selectedPlanningWeeks)) {
       return NextResponse.json({ ok: false, error: "bad_horizon" }, { status: 422 });
     }
@@ -100,8 +132,8 @@ export async function POST(req: NextRequest) {
       // response and four identical jobs accumulated for this incident.
       await tx.query(
         `select 1 from autopilot_settings
-          where user_id = $1 and channel_id = $2 for update`,
-        [user.id, channelId],
+          where project_id = $1 and channel_id = $2 for update`,
+        [projectId, channelId],
       );
       await tx.query(
         `update autopilot_settings
@@ -109,15 +141,16 @@ export async function POST(req: NextRequest) {
                 planning_months = $4,
                 planning_weeks = $5,
                 updated_at = now()
-          where user_id = $1 and channel_id = $2`,
-        [user.id, channelId, generationEngine, planningMonths, planningWeeks],
+          where project_id = $1 and channel_id = $2`,
+        [projectId, channelId, generationEngine, planningMonths, planningWeeks],
       );
       const current = (
         await tx.query(
-          `select id, created_at, planning_months, planning_weeks from autopilot_plan
-            where user_id = $1 and channel_id = $2 and status = 'building'
+          `select id, created_at, planning_months, planning_weeks, monthly_campaign_plan_id
+             from autopilot_plan
+            where project_id = $1 and channel_id = $2 and status = 'building'
             order by created_at desc limit 1`,
-          [user.id, channelId],
+          [projectId, channelId],
         )
       ).rows[0];
 
@@ -127,7 +160,9 @@ export async function POST(req: NextRequest) {
             current.planning_weeks ?? current.planning_months * 4,
           )
         : 0;
-      if (current && !isAutopilotBuildStale(current.created_at, currentPostCount)) {
+      if (current
+          && Number(current.monthly_campaign_plan_id || 0) === Number(monthlyCampaignPlanId || 0)
+          && !isAutopilotBuildStale(current.created_at, currentPostCount)) {
         planId = String(current.id);
         alreadyBuilding = true;
         await tx.query("commit");
@@ -135,8 +170,8 @@ export async function POST(req: NextRequest) {
         if (current) {
           await tx.query(
             `update autopilot_plan set status = 'error', revision = revision + 1
-              where id = $1 and status = 'building'`,
-            [current.id],
+              where id = $1 and project_id = $2 and channel_id = $3 and status = 'building'`,
+            [current.id, projectId, channelId],
           );
         }
         // Готовый pending-план пока сохраняем. Если новый ИИ-запуск упадёт, человек не
@@ -144,15 +179,18 @@ export async function POST(req: NextRequest) {
         // отменит только связанные с ним scheduled-посты. Удаляем лишь старый placeholder.
         await tx.query(
           `delete from autopilot_plan
-            where user_id = $1 and channel_id = $2 and status = 'building'`,
-          [user.id, channelId],
+            where project_id = $1 and channel_id = $2 and status = 'building'`,
+          [projectId, channelId],
         );
         const inserted = await tx.query(
           `insert into autopilot_plan
-             (user_id, channel_id, week_start, status, generation_engine,
-              planning_months, planning_weeks)
-             values ($1, $2, current_date, 'building', $3, $4, $5) returning id`,
-          [user.id, channelId, generationEngine, planningMonths, planningWeeks],
+             (project_id, user_id, channel_id, week_start, status, generation_engine,
+              planning_months, planning_weeks, monthly_campaign_plan_id)
+             values ($1, $2, $3, current_date, 'building', $4, $5, $6, $7) returning id`,
+          [
+            projectId, user.id, channelId, generationEngine, planningMonths, planningWeeks,
+            monthlyCampaignPlanId,
+          ],
         );
         planId = String(inserted.rows[0].id);
         await tx.query("commit");
@@ -170,7 +208,7 @@ export async function POST(req: NextRequest) {
     try {
       await statsQueue.add(
         "autopilot-plan",
-        { userId: user.id, channelId, planId },
+        { projectId, userId: user.id, channelId, planId },
         {
           jobId: `autopilot-plan-${planId}`,
           removeOnComplete: true,
@@ -184,8 +222,8 @@ export async function POST(req: NextRequest) {
       await pool
         .query(
           `update autopilot_plan set status = 'error', revision = revision + 1
-            where id = $1 and user_id = $2 and channel_id = $3 and status = 'building'`,
-          [planId, user.id, channelId],
+            where id = $1 and project_id = $2 and channel_id = $3 and status = 'building'`,
+          [planId, projectId, channelId],
         )
         .catch(() => {});
       console.error("[/api/autopilot/generate] enqueue", err);
@@ -193,6 +231,9 @@ export async function POST(req: NextRequest) {
     }
     return NextResponse.json({ ok: true, planId });
   } catch (err) {
+    if (err instanceof ProjectAccessError) {
+      return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
+    }
     console.error("[/api/autopilot/generate]", err);
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
