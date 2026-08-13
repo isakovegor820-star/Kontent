@@ -105,6 +105,29 @@ describe("shared direct/background AI completion service", () => {
     expect(telemetry).toHaveBeenCalledWith(expect.objectContaining({ type: "fallback" }));
   });
 
+  it("falls back when a background plan contains only an internal think block", async () => {
+    const env = {
+      NAVYAI_API_KEY: "secret",
+      NAVYAI_API_URL: "https://navy.example/v1",
+    };
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(Response.json({
+        choices: [{ message: { content: "<think>private planning" }, finish_reason: "stop" }],
+      }))
+      .mockResolvedValueOnce(Response.json({
+        choices: [{ message: { content: "ГОТОВЫЙ НЕДЕЛЬНЫЙ ПЛАН" }, finish_reason: "stop" }],
+      }));
+
+    const result = await completeAiText({ ...request, engine: "navy-qwen-3-6" }, { env, fetchImpl });
+
+    expect(result).toMatchObject({
+      text: "ГОТОВЫЙ НЕДЕЛЬНЫЙ ПЛАН",
+      engine: "navy-deepseek-flash",
+      fallbackUsed: true,
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
   it("falls through a Navy model-specific 400 before any text exists", async () => {
     const env = {
       NAVYAI_API_KEY: "secret",

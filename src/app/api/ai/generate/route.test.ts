@@ -1211,6 +1211,73 @@ describe("POST /api/ai/generate prerequisites", () => {
     expect(mocks.stageAiUsageResult).toHaveBeenCalled();
   });
 
+  it("never sends or saves Qwen think output and falls back to a finished post", async () => {
+    vi.stubEnv("NAVYAI_API_KEY", "navy-test-key");
+    vi.stubEnv("NAVYAI_API_URL", "https://navy-think-leak.example/v1");
+    mocks.query.mockResolvedValue({
+      rows: [{ ai_mood: null, ai_engine: "navy-qwen-3-6", ai_post_settings: null }],
+      rowCount: 1,
+    });
+    mocks.aiReady.mockImplementation(async (engine) => (
+      engine === "navy-qwen-3-6" || engine === "navy-deepseek-flash"
+    ));
+    const post = "Приказ Рослесхоза изменяет форму проверочного листа. Перед применением важно сверить актуальную редакцию и подтверждённые требования.";
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(
+        'data: {"choices":[{"delta":{"content":"<th"}}]}\n\n'
+        + 'data: {"choices":[{"delta":{"content":"ink>Here is a thinking process: private instructions"}}]}\n\n'
+        + 'data: [DONE]\n\n',
+        { status: 200, headers: { "content-type": "text/event-stream" } },
+      ))
+      .mockResolvedValueOnce(new Response(
+        `data: ${JSON.stringify({ choices: [{ delta: { content: post } }] })}\n\ndata: [DONE]\n\n`,
+        { status: 200, headers: { "content-type": "text/event-stream" } },
+      ));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await POST(new NextRequest("http://localhost/api/ai/generate", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "studio_qwen_think_leak_regression_1",
+      },
+      body: JSON.stringify({
+        command: "write",
+        input: "Создай оригинальный пост строго по теме приказа Рослесхоза от 07.04.2026 N 198",
+        channelId: 42,
+        surface: "studio",
+        postSettings: {
+          qualityMode: "fast",
+          factStrictness: "general",
+          hideCriticalResult: false,
+          length: "custom",
+          customMinChars: 50,
+          customMaxChars: 2000,
+        },
+      }),
+    }));
+    const events = (await response.text()).trim().split("\n").map((line) => JSON.parse(line));
+    const serialized = JSON.stringify(events);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(serialized).not.toContain("<think>");
+    expect(serialized).not.toContain("thinking process");
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "fallback",
+      fromEngine: "navy-qwen-3-6",
+      toEngine: "navy-deepseek-flash",
+      reason: "empty_generation",
+    }));
+    expect(events).toContainEqual(expect.objectContaining({ type: "replace", text: post }));
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "done",
+      engine: "navy-deepseek-flash",
+      requestedEngine: "navy-qwen-3-6",
+      fallbackUsed: true,
+    }));
+    expect(mocks.stageGenerationArtifact).toHaveBeenCalledWith(expect.objectContaining({ text: post }));
+  });
+
   it("uses different provider idempotency keys after an explicitly confirmed engine change", async () => {
     vi.stubEnv("NAVYAI_API_KEY", "navy-test-key");
     vi.stubEnv("NAVYAI_API_URL", "https://navy-engine-change.example/v1");

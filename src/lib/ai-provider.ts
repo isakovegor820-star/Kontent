@@ -3,6 +3,7 @@
 
 import { DEFAULT_ENGINE, getEngine, type EngineId } from "./engines";
 import { configuredServiceEngine } from "./ai-engine-policy.mjs";
+import { createVisibleAiContentFilter } from "./ai-visible-content.mjs";
 import { moodPrompt, moodTemp } from "./moods";
 import {
   buildPostSettingsPrompt,
@@ -980,6 +981,26 @@ export interface GenerateTextOptions {
   requestTimeoutMs?: number | null;
 }
 
+async function* streamVisibleContent(
+  runtime: EngineRuntime,
+  source: AsyncGenerator<string>,
+): AsyncGenerator<string> {
+  const filter = createVisibleAiContentFilter();
+  for await (const chunk of source) {
+    const visible = filter.push(chunk);
+    if (visible) yield visible;
+  }
+  const tail = filter.finish();
+  if (tail) yield tail;
+  if (!filter.hasVisibleContent) {
+    throw new AiProviderError(
+      runtime.id,
+      502,
+      filter.reasoningDetected ? "reasoning_without_content" : "empty_generation",
+    );
+  }
+}
+
 /** Стримит ответ строго через выбранный пользователем движок. */
 export function generateText(
   p: GenerateParams,
@@ -990,7 +1011,10 @@ export function generateText(
   const runtime = resolveEngineRuntime(engineId);
   assertUsable(runtime);
   const requestTimeoutMs = options.requestTimeoutMs === undefined ? 60_000 : options.requestTimeoutMs;
-  if (runtime.protocol === "ollama") return streamOllama(runtime, p, signal, requestTimeoutMs);
-  if (runtime.protocol === "anthropic") return streamAnthropic(runtime, p, signal, requestTimeoutMs);
-  return streamOpenAi(runtime, p, signal, requestTimeoutMs);
+  const source = runtime.protocol === "ollama"
+    ? streamOllama(runtime, p, signal, requestTimeoutMs)
+    : runtime.protocol === "anthropic"
+      ? streamAnthropic(runtime, p, signal, requestTimeoutMs)
+      : streamOpenAi(runtime, p, signal, requestTimeoutMs);
+  return streamVisibleContent(runtime, source);
 }

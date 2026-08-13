@@ -2,6 +2,7 @@ import type { AiCommand } from "./ai";
 import type { ConversationTurn } from "./ai-provider";
 import type { DraftAiValidation } from "./draft-types";
 import type { Post } from "./types";
+import { stripAiReasoning } from "./ai-visible-content.mjs";
 import { normalizePostSettings, type PostSettings, type PostSettingsValidation } from "./post-settings";
 
 export type StudioChatMessage = {
@@ -173,7 +174,9 @@ function safeMessage(value: unknown): StudioChatMessage | null {
   }
 
   const wasStreaming = value.streaming === true;
-  const text = value.text.slice(0, MAX_MESSAGE_LENGTH);
+  const visible = value.role === "ai" ? stripAiReasoning(value.text) : { text: value.text, reasoningDetected: false };
+  const text = visible.text.slice(0, MAX_MESSAGE_LENGTH);
+  if (value.role === "ai" && visible.reasoningDetected && !text.trim()) return null;
   const interruptedPlaceholder = wasStreaming && isStudioGenerationPlaceholder(text);
   return {
     id: value.id,
@@ -219,7 +222,11 @@ function safeMessage(value: unknown): StudioChatMessage | null {
 function safeTurn(value: unknown): ConversationTurn | null {
   if (!isRecord(value)) return null;
   if ((value.role !== "user" && value.role !== "assistant") || typeof value.content !== "string") return null;
-  return { role: value.role, content: value.content.slice(0, MAX_MESSAGE_LENGTH) };
+  const visible = value.role === "assistant"
+    ? stripAiReasoning(value.content)
+    : { text: value.content, reasoningDetected: false };
+  if (value.role === "assistant" && visible.reasoningDetected && !visible.text.trim()) return null;
+  return { role: value.role, content: visible.text.slice(0, MAX_MESSAGE_LENGTH) };
 }
 
 function safeSourceRef(value: unknown): Post["sourceRef"] | undefined {

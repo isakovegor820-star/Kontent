@@ -3,6 +3,7 @@ import {
   configuredServiceEngine,
   resolveAiEngineRuntime,
 } from "./ai-engine-policy.mjs";
+import { stripAiReasoning } from "./ai-visible-content.mjs";
 
 export class AiCompletionError extends Error {
   constructor(engine, code, status = null) {
@@ -17,7 +18,7 @@ export class AiCompletionError extends Error {
 const transient = (error) => error instanceof AiCompletionError && (
   error.status === 408 || error.status === 425 || error.status === 429 ||
   (Number(error.status) >= 500) ||
-  ["provider_timeout", "network_error", "stream_truncated", "empty_generation"].includes(error.code)
+  ["provider_timeout", "network_error", "stream_truncated", "empty_generation", "reasoning_without_content"].includes(error.code)
 );
 
 const canRetryNavyModelRejection = (error, fromEngine, toEngine) => (
@@ -169,7 +170,15 @@ async function oneCompletion(request, runtime, { fetchImpl, signal, timeoutMs })
     terminal = body.done === true && (!body.done_reason || body.done_reason === "stop");
     stoppedAtTokenLimit = body.done === true && body.done_reason === "length";
   }
-  if (!text) throw new AiCompletionError(runtime.id, "empty_generation", 502);
+  const visible = stripAiReasoning(text);
+  text = visible.text.trim();
+  if (!text) {
+    throw new AiCompletionError(
+      runtime.id,
+      visible.reasoningDetected ? "reasoning_without_content" : "empty_generation",
+      502,
+    );
+  }
   // Content-generation callers may preserve a non-empty answer that reached the explicit
   // provider token limit. Their own quality boundary decides whether it is publishable.
   // Unknown/disconnected EOF remains an error, and structured extraction keeps the strict

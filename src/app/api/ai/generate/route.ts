@@ -15,6 +15,7 @@ import {
   type ConversationTurn,
   type GenerateParams,
 } from "@/lib/ai-provider";
+import { stripAiReasoning } from "@/lib/ai-visible-content.mjs";
 import {
   configuredFallbackEngines,
   isTransientAiFailure,
@@ -420,8 +421,15 @@ async function runOrchestratedText(
         if (!send({ requestId, ...telemetry })) failClosed();
       }
     }
-    const result = text.trim();
-    if (!result) throw new AiProviderError(engine, 502, "empty_generation");
+    const visible = stripAiReasoning(text);
+    const result = visible.text.trim();
+    if (!result) {
+      throw new AiProviderError(
+        engine,
+        502,
+        visible.reasoningDetected ? "reasoning_without_content" : "empty_generation",
+      );
+    }
     return { text: result, engine, fallbackUsed, interrupted: false };
   } catch (error) {
     if (activeAttempt) {
@@ -431,7 +439,7 @@ async function runOrchestratedText(
         safeErrorCode: error instanceof AiOperationBudgetError ? error.code : publicAiFailureCode(error),
       }).catch(() => {});
     }
-    const partial = text.trim();
+    const partial = stripAiReasoning(text).text.trim();
     // Once NavyAI has returned user-visible content, a broken EOF/timeout must not erase it.
     // The caller persists it as a review-only terminal draft; publication still fails closed.
     if (partial && !(error instanceof AiOperationBudgetError)) {

@@ -328,6 +328,33 @@ describe("generateText", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it("не выдаёт встроенный think-блок за пост", async () => {
+    vi.stubEnv("NAVYAI_API_KEY", "navy-secret");
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(
+      'data: {"choices":[{"delta":{"content":"\\n<th"}}]}\n\n'
+      + 'data: {"choices":[{"delta":{"content":"ink>Here is a thinking process: private"}}]}\n\n'
+      + 'data: {"choices":[{"delta":{"content":" reasoning"}}]}\n\n'
+      + 'data: [DONE]\n\n',
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    )));
+
+    const error = await collect(generateText(params, "navy-qwen-3-6")).catch((value) => value);
+    expect(error).toBeInstanceOf(AiProviderError);
+    expect(error).toMatchObject({ code: "reasoning_without_content" });
+  });
+
+  it("возвращает только пост после встроенного think-блока", async () => {
+    vi.stubEnv("NAVYAI_API_KEY", "navy-secret");
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(
+      'data: {"choices":[{"delta":{"content":"<think>private"}}]}\n\n'
+      + 'data: {"choices":[{"delta":{"content":" reasoning</think>ГОТОВЫЙ ПОСТ"}}]}\n\n'
+      + 'data: [DONE]\n\n',
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    )));
+
+    await expect(collect(generateText(params, "navy-qwen-3-6"))).resolves.toBe("ГОТОВЫЙ ПОСТ");
+  });
+
   it("повторяет reasoning-only ответ без reasoning и возвращает готовый текст", async () => {
     vi.stubEnv("NAVYAI_API_KEY", "navy-secret");
     const fetchMock = vi

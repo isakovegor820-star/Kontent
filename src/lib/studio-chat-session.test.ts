@@ -37,6 +37,51 @@ describe("studio chat session", () => {
     expect(restored).toMatchObject(session);
   });
 
+  it("удаляет reasoning-only ответ и связанную генерацию из восстановленной истории", () => {
+    const raw = JSON.stringify({
+      version: 2,
+      owner: 17,
+      savedAt: "2026-08-13T00:00:00.000Z",
+      messages: [
+        { id: "user-1", role: "user", text: "Создай пост" },
+        { id: "ai-1", role: "ai", text: "<think>Here is a thinking process: private" },
+      ],
+      draft: "",
+      workspaceMode: "chat",
+      generations: [["ai-1", {
+        cmd: "write",
+        input: "Создай пост",
+        variant: 0,
+        history: [{ role: "assistant", content: "<think>private" }],
+      }]],
+    });
+
+    expect(parseStudioChatSession(raw, 17)).toMatchObject({
+      messages: [{ id: "user-1", role: "user", text: "Создай пост" }],
+      generations: [],
+    });
+  });
+
+  it("оставляет только готовый текст после think-блока в сохранённом ответе", () => {
+    const raw = JSON.stringify({
+      version: 2,
+      owner: 17,
+      savedAt: "2026-08-13T00:00:00.000Z",
+      messages: [
+        { id: "ai-1", role: "ai", text: "<think>private</think>Готовый пост", postable: true },
+      ],
+      draft: "",
+      workspaceMode: "chat",
+      generations: [],
+    });
+
+    expect(parseStudioChatSession(raw, 17)?.messages[0]).toMatchObject({
+      id: "ai-1",
+      text: "Готовый пост",
+      postable: true,
+    });
+  });
+
   it("не отдаёт историю другому аккаунту", () => {
     const raw = serializeStudioChatSession(17, session);
     expect(parseStudioChatSession(raw, 18)).toBeNull();
