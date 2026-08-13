@@ -4,7 +4,6 @@ type AppRouteDefinition = Readonly<{
   href: AppPath;
   label: string;
   mobileLabel?: string;
-  tabLabel?: string;
   activeAliases: readonly AppPath[];
 }>;
 
@@ -44,7 +43,6 @@ export const APP_ROUTES = {
     href: "/app/recon",
     label: "Конкуренты и тренды",
     mobileLabel: "Разведка",
-    tabLabel: "Поиск",
     activeAliases: ["/app/competitors", "/app/trends", "/app/radar"],
   },
   siteAnalysis: {
@@ -112,14 +110,6 @@ export const APP_BOTTOM_NAV_ROUTE_IDS = [
   "analytics",
 ] as const satisfies readonly AppNavRouteId[];
 
-export const RECON_TAB_ROUTE_IDS = [
-  "recon",
-  "competitors",
-  "trends",
-] as const satisfies readonly AppRouteId[];
-
-export type ReconTabRouteId = (typeof RECON_TAB_ROUTE_IDS)[number];
-
 function isPathActive(pathname: string, href: AppPath): boolean {
   return pathname === href || pathname.startsWith(`${href}/`);
 }
@@ -131,18 +121,11 @@ export function isAppRouteActive(pathname: string, routeId: AppRouteId): boolean
 
 export function appRouteLabel(
   routeId: AppRouteId,
-  context: "desktop" | "mobile" | "tab" = "desktop",
+  context: "desktop" | "mobile" = "desktop",
 ): string {
   const route: AppRouteDefinition = APP_ROUTES[routeId];
   if (context === "mobile") return route.mobileLabel ?? route.label;
-  if (context === "tab") return route.tabLabel ?? route.label;
   return route.label;
-}
-
-export function getActiveReconTabRouteId(pathname: string): ReconTabRouteId {
-  if (isPathActive(pathname, APP_ROUTES.competitors.href)) return "competitors";
-  if (isPathActive(pathname, APP_ROUTES.trends.href)) return "trends";
-  return "recon";
 }
 
 type InternalActionDefinition = Readonly<{

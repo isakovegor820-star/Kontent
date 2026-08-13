@@ -2,47 +2,50 @@
    AURORA GLASS — ЕДИНЫЙ ВИЗУАЛЬНЫЙ СЛОЙ ПЛАТФОРМЫ
 
    Платформа и публичный лендинг теперь живут в одном мире:
-   светлая основа, индиго-фиолетовый градиент, прозрачные панели,
+   светлая основа, фирменный синий #2563FF, прозрачные панели,
    мягкие тени и спокойная типографика. Все правила скоупированы под
    .app-v3: функции и публичные страницы они не затрагивают.
    ========================================================================== */
 
 .app-v3 {
   /* Алиасы для старых декоративных классов: теперь они говорят на языке Glass. */
-  --paper: #f8fafc;
+  --paper: #f7faff;
   --sheet: #ffffff;
-  --ink: #0f172a;
-  --ink-2: #475569;
-  --acc: #eef2ff;
-  --acc-deep: #e0e7ff;
+  --ink: #101828;
+  --ink-2: #344054;
+  --acc: #eff4ff;
+  --acc-deep: #dce8ff;
   --red: #ef4444;
   --red-soft: #fef2f2;
   --green: #10b981;
   --green-soft: #ecfdf5;
 
   /* Тот же семантический мост, что на лендинге. */
-  --brand-1: #4f46e5;
-  --brand-2: #7c3aed;
-  --brand-3: #a78bfa;
-  --gradient-brand: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+  --brand-1: #2563ff;
+  --brand-2: #1746e8;
+  --brand-3: #8fb2ff;
+  --brand-hover: #1d4ed8;
+  --brand-active: #173ea8;
+  --gradient-brand: linear-gradient(135deg, #2563ff 0%, #1746e8 100%);
+  --gradient-logo: linear-gradient(145deg, #3b82ff 0%, #2563ff 52%, #1746e8 100%);
 
-  --bg: #f8fafc;
-  --bg-section: #f1f5f9;
+  --bg: #f7faff;
+  --bg-section: #eef4ff;
   --surface: #ffffff;
-  --surface-2: #f8fafc;
-  --surface-inset: #eef2f7;
+  --surface-2: #f8fbff;
+  --surface-inset: #edf3ff;
 
   --glass-bg: rgb(255 255 255 / 0.68);
   --glass-bg-strong: rgb(255 255 255 / 0.9);
   --glass-border: rgb(255 255 255 / 0.78);
   --glass-highlight: rgb(255 255 255 / 0.7);
 
-  --text: #0f172a;
-  --text-2: #475569;
-  --text-3: #64748b;
+  --text: #101828;
+  --text-2: #344054;
+  --text-3: #5d6b82;
 
-  --border: rgb(15 23 42 / 0.09);
-  --border-strong: rgb(15 23 42 / 0.16);
+  --border: rgb(37 99 255 / 0.1);
+  --border-strong: rgb(37 99 255 / 0.18);
 
   --success: #10b981;
   --success-soft: #ecfdf5;
@@ -53,16 +56,16 @@
   --fire: #f59e0b;
   --fire-soft: #fffbeb;
   --fire-text: #b45309;
-  --info: #4f46e5;
-  --info-soft: #eef2ff;
-  --info-text: #4338ca;
+  --info: #2563ff;
+  --info-soft: #eff4ff;
+  --info-text: #1d4ed8;
 
   --shadow-xs: 0 1px 2px rgb(15 23 42 / 0.04);
   --shadow-sm: 0 4px 14px -6px rgb(15 23 42 / 0.16), 0 1px 3px rgb(15 23 42 / 0.05);
   --shadow-md: 0 14px 34px -16px rgb(15 23 42 / 0.22), 0 4px 10px -6px rgb(15 23 42 / 0.09);
-  --shadow-lg: 0 28px 70px -28px rgb(15 23 42 / 0.28), 0 10px 24px -14px rgb(79 70 229 / 0.15);
-  --shadow-brand: 0 12px 32px -10px rgb(79 70 229 / 0.42);
-  --shadow-brand-lg: 0 22px 54px -16px rgb(79 70 229 / 0.5);
+  --shadow-lg: 0 28px 70px -28px rgb(15 23 42 / 0.28), 0 10px 24px -14px rgb(37 99 255 / 0.14);
+  --shadow-brand: 0 12px 32px -10px rgb(37 99 255 / 0.42);
+  --shadow-brand-lg: 0 22px 54px -16px rgb(37 99 255 / 0.48);
 
   --radius-xs: 10px;
   --radius-sm: 12px;
@@ -75,8 +78,8 @@
   color: var(--text);
   background-color: var(--bg);
   background-image:
-    radial-gradient(circle at 4% 0%, rgb(99 102 241 / 0.13), transparent 32rem),
-    radial-gradient(circle at 96% 10%, rgb(139 92 246 / 0.11), transparent 34rem),
+    radial-gradient(circle at 4% 0%, rgb(37 99 255 / 0.13), transparent 32rem),
+    radial-gradient(circle at 96% 10%, rgb(96 165 250 / 0.12), transparent 34rem),
     linear-gradient(to right, rgb(15 23 42 / 0.025) 1px, transparent 1px),
     linear-gradient(to bottom, rgb(15 23 42 / 0.025) 1px, transparent 1px);
   background-size: auto, auto, 72px 72px, 72px 72px;
@@ -87,7 +90,7 @@
 
 .app-v3 ::selection {
   color: var(--text);
-  background: rgb(99 102 241 / 0.22);
+  background: rgb(37 99 255 / 0.22);
 }
 
 .app-v3 :focus-visible {
@@ -204,12 +207,17 @@
 
 .app-v3 button[data-variant="brand"] {
   color: #fff;
+  background: var(--brand-1);
   border-color: rgb(255 255 255 / 0.16);
   box-shadow: var(--shadow-brand);
 }
 
 .app-v3 button[data-variant="brand"]:hover:not(:disabled) {
-  filter: brightness(1.08);
+  background: var(--brand-hover);
+}
+
+.app-v3 button[data-variant="brand"]:active:not(:disabled) {
+  background: var(--brand-active);
 }
 
 .app-v3 button[data-variant="outline"] {
@@ -243,7 +251,7 @@
 .app-v3 select:focus {
   border-color: var(--brand-1);
   outline: none;
-  box-shadow: 0 0 0 4px rgb(79 70 229 / 0.12);
+  box-shadow: 0 0 0 4px rgb(37 99 255 / 0.14);
 }
 
 .app-v3 textarea[data-chat-composer],
@@ -266,9 +274,9 @@
   background: linear-gradient(
     90deg,
     var(--brand-1) 0%,
-    #7c3aed var(--aurora-range-progress, 50%),
-    rgb(99 102 241 / 0.16) var(--aurora-range-progress, 50%),
-    rgb(124 58 237 / 0.12) 100%
+    var(--brand-2) var(--aurora-range-progress, 50%),
+    rgb(37 99 255 / 0.16) var(--aurora-range-progress, 50%),
+    rgb(23 70 232 / 0.12) 100%
   );
   box-shadow: inset 0 1px 2px rgb(15 23 42 / 0.08);
 }
@@ -281,13 +289,13 @@
   border: 4px solid #fff;
   border-radius: 999px;
   background: var(--gradient-brand);
-  box-shadow: 0 4px 14px rgb(79 70 229 / 0.42), 0 0 0 1px rgb(79 70 229 / 0.12);
+  box-shadow: 0 4px 14px rgb(37 99 255 / 0.42), 0 0 0 1px rgb(37 99 255 / 0.12);
   transition: transform 160ms ease, box-shadow 160ms ease;
 }
 
 .app-v3 input[type="range"]:hover::-webkit-slider-thumb {
   transform: scale(1.08);
-  box-shadow: 0 6px 18px rgb(79 70 229 / 0.46), 0 0 0 5px rgb(99 102 241 / 0.1);
+  box-shadow: 0 6px 18px rgb(37 99 255 / 0.46), 0 0 0 5px rgb(37 99 255 / 0.1);
 }
 
 .app-v3 input[type="range"]:focus-visible {
@@ -295,13 +303,13 @@
 }
 
 .app-v3 input[type="range"]:focus-visible::-webkit-slider-thumb {
-  box-shadow: 0 4px 14px rgb(79 70 229 / 0.42), 0 0 0 6px rgb(99 102 241 / 0.16);
+  box-shadow: 0 4px 14px rgb(37 99 255 / 0.42), 0 0 0 6px rgb(37 99 255 / 0.16);
 }
 
 .app-v3 input[type="range"]::-moz-range-track {
   height: 8px;
   border-radius: 999px;
-  background: rgb(99 102 241 / 0.18);
+  background: rgb(37 99 255 / 0.18);
   box-shadow: inset 0 1px 2px rgb(15 23 42 / 0.08);
 }
 
@@ -311,7 +319,7 @@
   border: 4px solid #fff;
   border-radius: 999px;
   background: var(--brand-1);
-  box-shadow: 0 3px 10px rgb(79 70 229 / 0.35);
+  box-shadow: 0 3px 10px rgb(37 99 255 / 0.35);
 }
 
 .app-v3 input[type="range"]::-moz-range-progress {
@@ -442,7 +450,7 @@
   }
 
   .app-v3 .card-plain:hover {
-    border-color: rgb(79 70 229 / 0.16);
+    border-color: rgb(37 99 255 / 0.16);
     box-shadow: var(--shadow-md), inset 0 1px 0 rgb(255 255 255 / 0.9);
   }
 }

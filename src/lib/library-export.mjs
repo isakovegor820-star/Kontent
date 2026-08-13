@@ -305,7 +305,7 @@ export async function renderLibraryPdf(snapshot) {
     document.fontSize(7.5).fillColor("#475569");
     for (const line of libraryPdfItemLines(item)) document.text(line);
     document.fillColor("#0f172a").fontSize(9).text(`Текст: ${String(displayValue(item.text)).slice(0, 1200)}`);
-    if (item.sourceUrl) document.fillColor("#4f46e5").text(`Открыть оригинал: ${String(item.sourceUrl)}`, { link: String(item.sourceUrl), underline: true });
+    if (item.sourceUrl) document.fillColor("#2563ff").text(`Открыть оригинал: ${String(item.sourceUrl)}`, { link: String(item.sourceUrl), underline: true });
     document.fillColor("#0f172a").moveDown(0.7);
   }
   document.end();

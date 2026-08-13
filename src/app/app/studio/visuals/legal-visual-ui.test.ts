@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 import {
   legalVisualFontFamily,
   mediaAssetToVisualReference,
-  nextLegalVisualStudioTab,
   toggleAllowedVisualFont,
 } from "./legal-visual-ui";
 
@@ -67,16 +66,6 @@ describe("legal visual studio client helpers", () => {
       allowedFonts: ["legal-serif", "technical-mono"],
       activeFont: "legal-serif",
     });
-  });
-
-  it("implements the APG horizontal-tab loop with Home and End", () => {
-    expect(nextLegalVisualStudioTab("carousel", "ArrowRight")).toBe("video");
-    expect(nextLegalVisualStudioTab("video", "ArrowRight")).toBe("carousel");
-    expect(nextLegalVisualStudioTab("carousel", "ArrowLeft")).toBe("video");
-    expect(nextLegalVisualStudioTab("video", "ArrowLeft")).toBe("carousel");
-    expect(nextLegalVisualStudioTab("video", "Home")).toBe("carousel");
-    expect(nextLegalVisualStudioTab("carousel", "End")).toBe("video");
-    expect(nextLegalVisualStudioTab("carousel", "Tab")).toBeNull();
   });
 
   it("uses the same three font stacks as the deterministic renderer", () => {

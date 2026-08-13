@@ -5,20 +5,20 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: {
-    default: "Аврора — автопилот для Telegram-каналов",
+    default: "Аврора — SMM-платформа для юридического бизнеса",
     template: "%s · Аврора",
   },
   description:
-    "Аврора находит сильные темы, пишет посты в голосе канала, проверяет и публикует их в Telegram по расписанию.",
+    "Аврора помогает юридическому бизнесу создавать, согласовывать и публиковать контент в социальных сетях.",
   icons: {
     icon: "/icon.svg",
     shortcut: "/icon.svg",
   },
-  keywords: ["автопостинг", "Telegram", "SMM", "ИИ-контент", "разведка конкурентов"],
+  keywords: ["юридический SMM", "автопостинг", "Telegram", "VK", "ИИ-контент"],
   openGraph: {
-    title: "Аврора — автопилот для Telegram-каналов",
+    title: "Аврора — SMM-платформа для юридического бизнеса",
     description:
-      "Темы, материалы в твоём голосе, проверка и публикация с сервера — в одном редакционном цикле.",
+      "Контент, согласование, календарь и публикация для юридических команд — в одном рабочем цикле.",
     locale: "ru_RU",
     type: "website",
   },
@@ -28,8 +28,8 @@ export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   viewportFit: "cover",
-  // Продукт однотонный — кремовая бумага; тёмной темы больше нет
-  themeColor: "#f4f0ea",
+  // Системные панели браузера продолжают фирменный цвет продукта.
+  themeColor: "#2563ff",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

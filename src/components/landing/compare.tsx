@@ -298,7 +298,7 @@ function CompareCards({ reduce }: { reduce: boolean }) {
                         </span>
                         {us && (
                           // Тот же градиент действия, что и в шапке таблицы на десктопе:
-                          // плоский bg-brand в тёмной теме — светлый индиго, и белый текст
+                          // плоский bg-brand в тёмной теме — яркий фирменный синий и белый текст
                           // на нём даёт 2.98:1.
                           <span className="inline-flex items-center rounded-full bg-brand-gradient px-2 py-1 text-[13px] leading-none font-bold text-white">
                             Мы

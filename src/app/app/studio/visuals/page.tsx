@@ -1,12 +1,10 @@
 "use client";
 
-import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
   ArrowDown,
-  ArrowLeft,
   ArrowUp,
   CheckCircle2,
   ChevronDown,
@@ -30,12 +28,10 @@ import {
   LEGAL_VISUAL_FONT_OPTIONS,
   legalVisualFontFamily,
   mediaAssetToVisualReference,
-  nextLegalVisualStudioTab,
   toggleAllowedVisualFont,
   type LegalVisualAssetReference,
   type LegalVisualFont,
   type LegalVisualMediaAsset,
-  type LegalVisualStudioMode,
 } from "./legal-visual-ui";
 
 type Format = "1:1" | "4:5" | "9:16";
@@ -807,7 +803,6 @@ function LegalVisualStudioInner() {
       : params.get("returnTo") === "calendar"
         ? "calendar"
       : null;
-  const [mode, setMode] = useState<LegalVisualStudioMode>("carousel");
   const [designs, setDesigns] = useState<Design[]>([]);
   const [selectedDesignId, setSelectedDesignId] = useState<number | null>(null);
   const [assets, setAssets] = useState<MediaAsset[]>([]);
@@ -815,40 +810,37 @@ function LegalVisualStudioInner() {
   const [brand, setBrand] = useState<{ value: Brand; version: number } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const carouselTabRef = useRef<HTMLButtonElement>(null);
-  const videoTabRef = useRef<HTMLButtonElement>(null);
   const selected = designs.find((item) => item.id === selectedDesignId) ?? null;
-  const activateTab = (next: LegalVisualStudioMode, focus = false) => {
-    setMode(next);
-    if (focus) (next === "carousel" ? carouselTabRef : videoTabRef).current?.focus();
-  };
-  const handleTabKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, current: LegalVisualStudioMode) => {
-    const next = nextLegalVisualStudioTab(current, event.key);
-    if (!next) return;
-    event.preventDefault();
-    activateTab(next, true);
-  };
   useEffect(() => { let cancelled = false; Promise.all([
     json<{ designs: Design[] }>("/api/legal-visuals"),
     json<{ assets: MediaAsset[] }>("/api/media/assets"),
     json<{ scripts: VideoScriptRecord[] }>("/api/legal-video-scripts"),
     json<{ brand: Brand; version: number }>("/api/legal-visuals/brand-kit"),
   ]).then(([visualData, mediaData, videoData, brandData]) => { if (cancelled) return; setDesigns(visualData.designs); setSelectedDesignId(visualData.designs[0]?.id ?? null); setAssets(mediaData.assets); setScripts(videoData.scripts); setBrand({ value: brandData.brand, version: brandData.version }); }).catch((nextError) => { if (!cancelled) setError(errorLabel(nextError)); }).finally(() => { if (!cancelled) setLoading(false); }); return () => { cancelled = true; }; }, []);
-  return <AppShell title="Юридические визуалы" subtitle="Собирайте карусели и сценарии коротких видео из проверяемых материалов." action={<Link href="/app/studio" className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xs px-5 text-[15px] font-semibold text-text-2 transition-colors hover:bg-surface-inset hover:text-text focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15"><ArrowLeft className="h-4 w-4" aria-hidden />В студию</Link>}>
+  return <AppShell title="Карусели и сценарии" subtitle="Собирайте карусели и сценарии коротких видео из проверяемых материалов.">
     <div className="mx-auto w-full max-w-[1500px] space-y-5">
-      <div role="tablist" aria-label="Тип визуального материала" aria-orientation="horizontal" className="grid w-full grid-cols-2 rounded-sm border border-line bg-surface-inset p-1 sm:inline-grid sm:w-auto">
-        <button ref={carouselTabRef} id="carousel-tab" type="button" role="tab" tabIndex={mode === "carousel" ? 0 : -1} aria-selected={mode === "carousel"} aria-controls="carousel-panel" onClick={() => activateTab("carousel")} onKeyDown={(event) => handleTabKeyDown(event, "carousel")} className={cn("inline-flex min-h-11 min-w-0 items-center justify-center gap-2 rounded-xs px-2 text-[14px] font-semibold transition-[background-color,color,box-shadow] motion-reduce:transition-none focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15 sm:px-4", mode === "carousel" ? "bg-surface text-brand shadow-sm" : "text-text-2 hover:text-text")}><Layers3 className="h-4 w-4 shrink-0" aria-hidden /><span className="min-w-0">Карусель</span></button>
-        <button ref={videoTabRef} id="video-tab" type="button" role="tab" tabIndex={mode === "video" ? 0 : -1} aria-selected={mode === "video"} aria-controls="video-panel" onClick={() => activateTab("video")} onKeyDown={(event) => handleTabKeyDown(event, "video")} className={cn("inline-flex min-h-11 min-w-0 items-center justify-center gap-2 rounded-xs px-2 text-[14px] font-semibold transition-[background-color,color,box-shadow] motion-reduce:transition-none focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15 sm:px-4", mode === "video" ? "bg-surface text-brand shadow-sm" : "text-text-2 hover:text-text")}><Clapperboard className="h-4 w-4 shrink-0" aria-hidden /><span className="min-w-0">Сценарий видео</span></button>
-      </div>
       {brand && <BrandKitPanel value={brand.value} version={brand.version} assets={assets} onAssets={setAssets} onSaved={(value, version) => setBrand({ value, version })} />}
       {loading ? <Card className="flex min-h-80 items-center justify-center p-8"><p role="status" className="flex items-center gap-2 text-[14px] text-text-3"><Loader2 className="h-5 w-5 animate-spin motion-reduce:animate-none" aria-hidden />Загружаем визуальную студию…</p></Card> : error ? <Card className="p-8 text-center"><AlertTriangle className="mx-auto h-8 w-8 text-danger-text" aria-hidden /><p role="alert" className="mt-4 font-semibold text-danger-text">{error}</p></Card> : <>
-        <div id="carousel-panel" role="tabpanel" aria-labelledby="carousel-tab" hidden={mode !== "carousel"} className="space-y-5">{designs.length > 0 && <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:flex-wrap sm:items-center"><label htmlFor="existing-design" className="text-[13px] font-semibold text-text-2">Макет</label><select id="existing-design" className={cn(SELECT_CLASS, "min-w-0 sm:max-w-sm")} value={selectedDesignId ?? ""} onChange={(event) => setSelectedDesignId(Number(event.target.value))}>{designs.map((design) => <option key={design.id} value={design.id}>{design.name} · версия {design.revision}</option>)}</select><Button variant="ghost" size="sm" onClick={() => setSelectedDesignId(null)}><Plus className="h-4 w-4" aria-hidden />Новый макет</Button></div>}{selected && brand ? <VisualEditor key={selected.id} design={selected} draftId={draftId} returnTo={returnTo} assets={assets} projectBrand={brand.value} onAssets={setAssets} onDesign={(next) => { setDesigns(designs.map((item) => item.id === next.id ? next : item)); setSelectedDesignId(next.id); }} /> : <EmptyIntro draftId={draftId} onCreated={(next) => { setDesigns([next, ...designs]); setSelectedDesignId(next.id); }} />}</div>
-        <div id="video-panel" role="tabpanel" aria-labelledby="video-tab" hidden={mode !== "video"}><VideoStudio draftId={draftId} scripts={scripts} onScripts={setScripts} /></div>
+        <section aria-labelledby="carousel-heading" className="space-y-5">
+          <div className="flex items-center gap-2">
+            <Layers3 className="h-5 w-5 text-brand" aria-hidden />
+            <h2 id="carousel-heading" className="text-xl font-bold text-text">Карусели</h2>
+          </div>
+          {designs.length > 0 && <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:flex-wrap sm:items-center"><label htmlFor="existing-design" className="text-[13px] font-semibold text-text-2">Макет</label><select id="existing-design" className={cn(SELECT_CLASS, "min-w-0 sm:max-w-sm")} value={selectedDesignId ?? ""} onChange={(event) => setSelectedDesignId(Number(event.target.value))}>{designs.map((design) => <option key={design.id} value={design.id}>{design.name} · версия {design.revision}</option>)}</select><Button variant="ghost" size="sm" onClick={() => setSelectedDesignId(null)}><Plus className="h-4 w-4" aria-hidden />Новый макет</Button></div>}
+          {selected && brand ? <VisualEditor key={selected.id} design={selected} draftId={draftId} returnTo={returnTo} assets={assets} projectBrand={brand.value} onAssets={setAssets} onDesign={(next) => { setDesigns(designs.map((item) => item.id === next.id ? next : item)); setSelectedDesignId(next.id); }} /> : <EmptyIntro draftId={draftId} onCreated={(next) => { setDesigns([next, ...designs]); setSelectedDesignId(next.id); }} />}
+        </section>
+        <section aria-labelledby="video-scripts-heading" className="space-y-5 pt-5">
+          <div className="flex items-center gap-2">
+            <Clapperboard className="h-5 w-5 text-brand" aria-hidden />
+            <h2 id="video-scripts-heading" className="text-xl font-bold text-text">Сценарии видео</h2>
+          </div>
+          <VideoStudio draftId={draftId} scripts={scripts} onScripts={setScripts} />
+        </section>
       </>}
     </div>
   </AppShell>;
 }
 
 export default function LegalVisualStudioPage() {
-  return <Suspense fallback={<AppShell title="Юридические визуалы" subtitle="Загружаем редактор…"><Card className="min-h-80" /></AppShell>}><LegalVisualStudioInner /></Suspense>;
+  return <Suspense fallback={<AppShell title="Карусели и сценарии" subtitle="Загружаем редактор…"><Card className="min-h-80" /></AppShell>}><LegalVisualStudioInner /></Suspense>;
 }

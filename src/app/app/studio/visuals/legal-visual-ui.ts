@@ -25,8 +25,6 @@ export type LegalVisualMediaAsset = {
   metadata: { alt?: string };
 };
 
-export type LegalVisualStudioMode = "carousel" | "video";
-
 const FONT_STACKS: Record<LegalVisualFont, string> = {
   "aurora-sans": "Arial, 'DejaVu Sans', sans-serif",
   "legal-serif": "Georgia, 'DejaVu Serif', serif",
@@ -69,15 +67,4 @@ export function toggleAllowedVisualFont(input: {
     allowedFonts: normalized,
     activeFont: normalized.includes(input.activeFont) ? input.activeFont : normalized[0],
   };
-}
-
-export function nextLegalVisualStudioTab(
-  current: LegalVisualStudioMode,
-  key: string,
-): LegalVisualStudioMode | null {
-  if (key === "Home") return "carousel";
-  if (key === "End") return "video";
-  if (key === "ArrowRight") return current === "carousel" ? "video" : "carousel";
-  if (key === "ArrowLeft") return current === "carousel" ? "video" : "carousel";
-  return null;
 }

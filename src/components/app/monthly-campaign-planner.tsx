@@ -504,18 +504,6 @@ export function MonthlyCampaignPlanner() {
 
   return (
     <div className="space-y-5">
-      <nav aria-label="Режим Автопилота" className="inline-flex min-h-11 rounded-md border border-line bg-surface p-1">
-        <Link
-          href="/app/autopilot"
-          className="inline-flex min-h-11 items-center rounded-sm px-4 text-[14px] font-semibold text-text-2 hover:bg-surface-inset focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15"
-        >
-          Недельный план
-        </Link>
-        <span className="inline-flex min-h-11 items-center rounded-sm bg-text px-4 text-[14px] font-semibold text-bg" aria-current="page">
-          Кампания на месяц
-        </span>
-      </nav>
-
       <ChannelPicker
         channels={tgChannels}
         value={channelId}

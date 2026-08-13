@@ -39,7 +39,7 @@ export function AuroraBackground({
           maxWidth: 900,
           maxHeight: 900,
           background:
-            "radial-gradient(circle at 30% 30%, rgb(99 102 241 / 0.85), rgb(99 102 241 / 0) 68%)",
+            "radial-gradient(circle at 30% 30%, rgb(37 99 255 / 0.84), rgb(37 99 255 / 0) 68%)",
           animation: "aurora-a 26s ease-in-out infinite",
         }}
       />
@@ -54,7 +54,7 @@ export function AuroraBackground({
           maxWidth: 820,
           maxHeight: 820,
           background:
-            "radial-gradient(circle at 60% 40%, rgb(139 92 246 / 0.8), rgb(139 92 246 / 0) 68%)",
+            "radial-gradient(circle at 60% 40%, rgb(96 165 250 / 0.74), rgb(96 165 250 / 0) 68%)",
           animation: "aurora-b 32s ease-in-out infinite",
         }}
       />

@@ -7,11 +7,11 @@ import { cn } from "@/lib/utils";
 type Variant = "brand" | "solid" | "soft" | "ghost" | "outline" | "danger";
 type Size = "sm" | "md" | "lg" | "xl" | "icon";
 
-// Правило ТЗ 7.2: градиент — «магнит», не больше одного на экран.
-// Поэтому variant="brand" применяем только к главному действию.
+// Главный CTA — цельный #2563FF. Градиент остаётся знаком бренда и декором,
+// поэтому кнопка одинаково читается по всей площади.
 const VARIANTS: Record<Variant, string> = {
   brand:
-    "text-white bg-brand-gradient shadow-glow hover:brightness-110 active:brightness-95 border border-white/10",
+    "text-white bg-brand shadow-glow hover:bg-brand-hover active:bg-brand-active border border-white/10",
   solid: "bg-text text-bg hover:opacity-90 active:opacity-80",
   soft: "bg-surface-inset text-text hover:bg-line-strong/20 active:bg-line-strong/30",
   ghost: "text-text-2 hover:bg-surface-inset hover:text-text active:bg-line-strong/20",

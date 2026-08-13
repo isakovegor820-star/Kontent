@@ -11,9 +11,9 @@ import { FinalCta, Footer } from "@/components/landing/final-cta";
 import { StickyCta } from "@/components/landing/sticky-cta";
 
 export const metadata: Metadata = {
-  title: { absolute: "Аврора — Telegram-канал ведётся, даже когда ты занят" },
+  title: { absolute: "Аврора — SMM-платформа для юридического бизнеса" },
   description:
-    "Аврора находит сильные темы, пишет посты в голосе канала, проверяет и публикует их в Telegram по расписанию.",
+    "Создавайте, согласовывайте и публикуйте юридический контент в социальных сетях вместе с Авророй.",
 };
 
 export default function LandingPage() {

@@ -2,7 +2,6 @@
 
 import { RadarInner } from "./radar-inner";
 import { AppShell } from "@/components/app/shell";
-import { ReconTabs } from "@/components/app/recon-tabs";
 
 export default function RadarPage() {
   return (
@@ -10,7 +9,6 @@ export default function RadarPage() {
       title="Поиск по нише"
       subtitle="Ищи реальные Telegram-каналы, публикации и тренды по любой теме."
     >
-      <ReconTabs />
       <RadarInner />
     </AppShell>
   );

@@ -175,7 +175,7 @@ export async function renderSiteAnalysisPdf(snapshot) {
     document.fontSize(8).fillColor("#475569").text(`${answer.status} · ${answer.confidence} · ${answer.questionId}`);
     document.fillColor("#172b4d").fontSize(9).text(answer.shortAnswer);
     document.fontSize(8).text(answer.explanation);
-    for (const url of answer.sourceUrls) document.fillColor("#4f46e5").text(url, { link: url, underline: true });
+    for (const url of answer.sourceUrls) document.fillColor("#2563ff").text(url, { link: url, underline: true });
     document.fillColor("#172b4d");
   }
   document.end();

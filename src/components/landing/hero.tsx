@@ -223,7 +223,7 @@ export function Hero() {
               className="absolute top-1/2 left-1/2 h-[560px] w-[560px] -translate-x-1/2 -translate-y-1/2 rounded-full opacity-70"
               style={{
                 background:
-                  "conic-gradient(from 90deg, rgb(99 102 241 / 0.22), rgb(139 92 246 / 0.14), rgb(245 158 11 / 0.08), transparent 62%, rgb(99 102 241 / 0.2))",
+                  "conic-gradient(from 90deg, rgb(37 99 255 / 0.22), rgb(96 165 250 / 0.14), rgb(245 158 11 / 0.08), transparent 62%, rgb(37 99 255 / 0.2))",
                 filter: "blur(40px)",
                 animation: "orbit 46s linear infinite",
                 willChange: "transform",

@@ -595,17 +595,6 @@ export default function AutopilotPage() {
       title="Автопилот"
       subtitle="Выбери модель и горизонт. ИИ соберёт непохожие посты, а ты проверишь их перед публикацией."
     >
-      <nav aria-label="Режим Автопилота" className="mb-5 inline-flex min-h-11 rounded-md border border-line bg-surface p-1">
-        <span className="inline-flex min-h-11 items-center rounded-sm bg-text px-4 text-[14px] font-semibold text-bg" aria-current="page">
-          Недельный план
-        </span>
-        <Link
-          href="/app/autopilot/month"
-          className="inline-flex min-h-11 items-center rounded-sm px-4 text-[14px] font-semibold text-text-2 hover:bg-surface-inset focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15"
-        >
-          Кампания на месяц
-        </Link>
-      </nav>
       {picker}
       {/* Резюме настроек. Редактирование живёт в одном месте — «Настройке Авроры». */}
       <Card className="mb-5 p-4 sm:p-5">

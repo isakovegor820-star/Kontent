@@ -9,7 +9,6 @@ import {
   composerReturnTarget,
   composerSource,
   composerHydrationIdentity,
-  getActiveReconTabRouteId,
   isAppRouteActive,
 } from "./app-routes";
 
@@ -30,13 +29,6 @@ describe("app route registry", () => {
     expect(isAppRouteActive("/app/radar", "recon")).toBe(true);
     expect(isAppRouteActive("/app/reconnaissance", "recon")).toBe(false);
     expect(isAppRouteActive("/app/site-analysis/41", "siteAnalysis")).toBe(true);
-  });
-
-  it("resolves every reconnaissance alias to one visible tab", () => {
-    expect(getActiveReconTabRouteId("/app/recon")).toBe("recon");
-    expect(getActiveReconTabRouteId("/app/radar")).toBe("recon");
-    expect(getActiveReconTabRouteId("/app/competitors/41")).toBe("competitors");
-    expect(getActiveReconTabRouteId("/app/trends")).toBe("trends");
   });
 });
 

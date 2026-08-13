@@ -5,7 +5,6 @@
 // Главное действие — сгенерировать и отправить в календарь.
 
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
-import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { motion, useReducedMotion } from "motion/react";
 import {
@@ -18,7 +17,6 @@ import {
   Copy,
   FileText,
   ImageIcon,
-  Layers3,
   ListChecks,
   MessageSquareText,
   Plus,
@@ -401,81 +399,6 @@ function StudioSkeleton() {
   );
 }
 
-/* ---------------------------------------------------- РЕЖИМЫ РАБОТЫ */
-
-function WorkspaceModeSwitch({
-  value,
-  onChange,
-}: {
-  value: WorkspaceMode;
-  onChange: (value: WorkspaceMode) => void;
-}) {
-  const modeRefs = useRef<Record<WorkspaceMode, HTMLButtonElement | null>>({
-    chat: null,
-    studio: null,
-  });
-  const modes: { id: WorkspaceMode; label: string; compactLabel?: string; icon: React.ReactNode }[] = [
-    {
-      id: "chat",
-      label: "Чат",
-      icon: <MessageSquareText className="h-4 w-4" strokeWidth={2} aria-hidden />,
-    },
-    {
-      id: "studio",
-      label: "Картинки и видео",
-      compactLabel: "Медиа",
-      icon: <Sparkles className="h-4 w-4" strokeWidth={2} aria-hidden />,
-    },
-  ];
-
-  return (
-    <div
-      role="tablist"
-      aria-label="Режим ИИ-студии"
-      onKeyDown={(event) => {
-        if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
-        event.preventDefault();
-        const next: WorkspaceMode =
-          event.key === "ArrowLeft" || event.key === "Home" ? "chat" : "studio";
-        onChange(next);
-        modeRefs.current[next]?.focus();
-      }}
-      className="grid w-full min-w-0 grid-cols-2 rounded-md border-2 border-line bg-surface p-1 shadow-[3px_3px_0_var(--ink)] sm:w-auto"
-    >
-      {modes.map((mode) => (
-        <button
-          key={mode.id}
-          ref={(element) => {
-            modeRefs.current[mode.id] = element;
-          }}
-          type="button"
-          role="tab"
-          aria-label={mode.label}
-          aria-selected={value === mode.id}
-          tabIndex={value === mode.id ? 0 : -1}
-          aria-controls={`${mode.id}-workspace`}
-          onClick={() => onChange(mode.id)}
-          className={cn(
-            "inline-flex min-h-11 min-w-0 items-center justify-center gap-2 rounded-xs px-2.5 text-[13px] font-extrabold whitespace-nowrap",
-            "transition-colors duration-200 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15 motion-reduce:transition-none sm:min-w-[126px] sm:px-4",
-            value === mode.id
-              ? "bg-brand text-text"
-              : "text-text-2 hover:bg-surface-2 hover:text-text",
-          )}
-        >
-          {mode.icon}
-          <span aria-hidden className={mode.compactLabel ? "hidden sm:inline" : undefined}>
-            {mode.label}
-          </span>
-          {mode.compactLabel && (
-            <span aria-hidden className="sm:hidden">{mode.compactLabel}</span>
-          )}
-        </button>
-      ))}
-    </div>
-  );
-}
-
 /* ------------------------------------------------------------ ДВИЖОК ИИ */
 // Выбор модели-агента. Облачные движки ждут свой ключ, а roadmap-адаптеры отключены.
 // Если выбран движок без ключа, генерация честно откажет (см. /api/ai/generate) — тайком
@@ -771,6 +694,12 @@ function ModelMenu({
 function StudioPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const requestedWorkspaceMode: WorkspaceMode | null =
+    searchParams.get("mode") === "media"
+      ? "studio"
+      : searchParams.get("mode") === "chat"
+        ? "chat"
+        : null;
   const s = useStore();
   const reduce = useReducedMotion() ?? false;
 
@@ -792,6 +721,14 @@ function StudioPageInner() {
   const [postSettingsReady, setPostSettingsReady] = useState(false);
   const [postSettingsSaving, setPostSettingsSaving] = useState(false);
   const [pendingEngineSuggestion, setPendingEngineSuggestion] = useState<EngineInfo | null>(null);
+
+  // Вложенные пункты сайдбара переключают режим через URL. Синхронизируем состояние
+  // без перезагрузки страницы, чтобы история чата и настройки медиа не терялись.
+  useEffect(() => {
+    if (!requestedWorkspaceMode) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- URL является внешним источником состояния навигации
+    setWorkspaceMode((current) => current === requestedWorkspaceMode ? current : requestedWorkspaceMode);
+  }, [requestedWorkspaceMode]);
 
   const feedRef = useRef<HTMLDivElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
@@ -873,7 +810,7 @@ function StudioPageInner() {
       sessionRevisionRef.current = revision;
       setMessages(restored?.messages ?? []);
       setDraft(restored?.draft ?? "");
-      setWorkspaceMode(restored?.workspaceMode ?? "chat");
+      setWorkspaceMode(requestedWorkspaceMode ?? restored?.workspaceMode ?? "chat");
       genRef.current = new Map(restored?.generations ?? []);
       setChatSessionOwner(sessionOwner);
       setChatPersistenceStatus(serverUnavailable ? "local" : localSession ? "saving" : "saved");
@@ -882,7 +819,7 @@ function StudioPageInner() {
     return () => {
       cancelled = true;
     };
-  }, [chatSessionOwner, s.authReady, sessionOwner]);
+  }, [chatSessionOwner, requestedWorkspaceMode, s.authReady, sessionOwner]);
 
   // Локальную копию обновляем сразу, а PostgreSQL — после короткой паузы и строго
   // последовательно. Так streaming не создаёт запрос на каждый токен, но готовый текст
@@ -1961,10 +1898,6 @@ function StudioPageInner() {
         .slice(0, 3)
     : [];
 
-  const changeWorkspace = (next: WorkspaceMode) => {
-    setWorkspaceMode(next);
-  };
-
   return (
     <AppShell
       title="Студия контента"
@@ -1972,22 +1905,6 @@ function StudioPageInner() {
         workspaceMode === "chat"
           ? "Обсуждай идеи и создавай тексты в обычном диалоге."
           : "Опиши идею словами — Аврора создаст визуал прямо в диалоге."
-      }
-      action={
-        <div className="grid w-full min-w-0 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:items-center sm:justify-end">
-          <Link
-            href={contextDraft ? `/app/studio/visuals?draft=${contextDraft.id}` : "/app/studio/visuals"}
-            className={cn(
-              "inline-flex min-h-11 w-full items-center justify-center gap-1.5 rounded-[10px] border border-line-strong bg-surface px-3.5 py-2",
-              "text-[13px] font-semibold whitespace-nowrap text-text transition-colors duration-200 hover:bg-surface-inset active:bg-surface-2",
-              "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15 motion-reduce:transition-none sm:w-auto",
-            )}
-          >
-            <Layers3 className="h-4 w-4" aria-hidden />
-            Карусели и сценарии
-          </Link>
-          <WorkspaceModeSwitch value={workspaceMode} onChange={changeWorkspace} />
-        </div>
       }
     >
       {!s.ready || !s.authReady || !sessionOwner || chatSessionOwner !== sessionOwner ? (
@@ -1998,7 +1915,6 @@ function StudioPageInner() {
               между ними, не теряя черновик сообщения или настройки генерации медиа. */}
           <div
             id="chat-workspace"
-            role="tabpanel"
             aria-label="Режим Чат"
             ref={attachShell}
             className={cn(
@@ -2185,7 +2101,6 @@ function StudioPageInner() {
 
           <div
             id="studio-workspace"
-            role="tabpanel"
             aria-label="Режим Картинки и видео"
             ref={attachDesignShell}
             className={cn(

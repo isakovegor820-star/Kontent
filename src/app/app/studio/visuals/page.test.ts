@@ -28,18 +28,17 @@ describe("legal visual studio brand-kit interface", () => {
     expect(source).toContain("setBrand(result.brand)");
   });
 
-  it("uses roving tabindex and the full horizontal APG key set", () => {
-    expect(source).toContain('role="tablist"');
-    expect(source).toContain('aria-orientation="horizontal"');
-    expect(source).toContain('tabIndex={mode === "carousel" ? 0 : -1}');
-    expect(source).toContain('tabIndex={mode === "video" ? 0 : -1}');
-    expect(source).toContain("nextLegalVisualStudioTab(current, event.key)");
-    expect(source).toContain('hidden={mode !== "carousel"}');
-    expect(source).toContain('hidden={mode !== "video"}');
+  it("shows carousels and video scripts as two native sections without an internal switch", () => {
+    expect(source).toContain('aria-labelledby="carousel-heading"');
+    expect(source).toContain('id="carousel-heading"');
+    expect(source).toContain('aria-labelledby="video-scripts-heading"');
+    expect(source).toContain('id="video-scripts-heading"');
+    expect(source).not.toContain('role="tablist"');
+    expect(source).not.toContain('role="tabpanel"');
+    expect(source).not.toContain('hidden={mode !==');
   });
 
   it("keeps the new controls touch-sized and reflows them at narrow widths", () => {
-    expect(source).toContain('className="grid w-full grid-cols-2');
     expect(source).toContain('className="w-full sm:w-auto">Загрузить логотип</Button>');
     expect(source).toContain('className="w-full sm:w-auto"');
     expect(source).toContain("min-h-11");

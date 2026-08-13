@@ -166,7 +166,7 @@ export function LiveDemo() {
         aria-hidden
         className="absolute -inset-8 -z-10 rounded-[48px] opacity-60 blur-3xl"
         style={{
-          background: "radial-gradient(ellipse at 50% 40%, rgb(139 92 246 / 0.35), transparent 65%)",
+          background: "radial-gradient(ellipse at 50% 40%, rgb(37 99 255 / 0.3), transparent 65%)",
         }}
       />
 

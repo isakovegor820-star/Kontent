@@ -28,7 +28,6 @@ import {
 } from "lucide-react";
 import { AppShell } from "@/components/app/shell";
 import { ChannelPicker, useChannelChoice } from "@/components/app/channel-picker";
-import { ReconTabs } from "@/components/app/recon-tabs";
 import { TrendStatistics } from "@/app/app/trends/trend-statistics";
 import { Button } from "@/components/ui/button";
 import { Badge, Card, Checkbox, EmptyState, Input, Tabs } from "@/components/ui/primitives";
@@ -1245,11 +1244,6 @@ export default function TrendsPage() {
       title="Тренды"
       subtitle="Сравнивай динамику тем и находи публикации, которые набирают интерес."
     >
-      {/* Единый таб-бар «Разведки»: Поиск / Конкуренты / Тренды */}
-      <div className="mb-5">
-        <ReconTabs />
-      </div>
-
       <Tabs
         items={[
           {

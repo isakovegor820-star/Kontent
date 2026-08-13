@@ -385,7 +385,7 @@ function StepCard({ step, active }: { step: Step; active: boolean }) {
         animate={{ opacity: active ? 0.28 : 0 }}
         transition={{ duration: 0.5, ease: EASE }}
       />
-      {/* Градиентная рамка в 1px — стекло над ней даёт лёгкий фиолетовый налив */}
+      {/* Градиентная рамка в 1px — стекло над ней даёт лёгкий синий налив */}
       <motion.span
         aria-hidden
         className="pointer-events-none absolute -inset-px rounded-[21px] bg-brand-gradient"

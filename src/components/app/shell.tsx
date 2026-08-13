@@ -4,13 +4,13 @@
  * КАРКАС РАБОЧИХ ЭКРАНОВ ПЛАТФОРМЫ (Приложение А: экраны А4–А12).
  *
  * Визуальный мир — Aurora Glass с публичного лендинга: светлая основа,
- * фиолетовые акценты, прозрачные панели, мягкие тени и много воздуха.
+ * фирменные синие акценты, прозрачные панели, мягкие тени и много воздуха.
  * Здесь остаётся только структура оболочки; цвета и физика приезжают из app-v3.css.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { AnimatePresence, MotionConfig, motion } from "motion/react";
 import {
   BarChart3,
@@ -49,10 +49,16 @@ import { cn, fmtNum, plural } from "@/lib/utils";
 
 /* ------------------------------------------------------------- НАВИГАЦИЯ */
 
+type NavChild = {
+  href: string;
+  label: string;
+  preserveParams?: readonly string[];
+};
+
 type NavItem = {
   routeId: AppNavRouteId;
   icon: LucideIcon;
-  children?: readonly { href: string; label: string }[];
+  children?: readonly NavChild[];
 };
 
 const NAV_ICONS: Record<AppNavRouteId, LucideIcon> = {
@@ -67,7 +73,25 @@ const NAV_ICONS: Record<AppNavRouteId, LucideIcon> = {
   settings: Settings,
 };
 
-const NAV_CHILDREN: Partial<Record<AppNavRouteId, readonly { href: string; label: string }[]>> = {
+const NAV_CHILDREN: Partial<Record<AppNavRouteId, readonly NavChild[]>> = {
+  studio: [
+    { href: "/app/studio?mode=chat", label: "Чат" },
+    { href: "/app/studio/visuals", label: "Карусели и сценарии" },
+    { href: "/app/studio?mode=media", label: "Картинки и видео" },
+  ],
+  autopilot: [
+    { href: "/app/autopilot", label: "Недельный план" },
+    { href: "/app/autopilot/month", label: "Кампания на месяц" },
+  ],
+  library: [
+    { href: "/app/library?tab=hits", label: "Референсы", preserveParams: ["channel"] },
+    { href: "/app/library?tab=posts", label: "Коллекция", preserveParams: ["channel"] },
+  ],
+  recon: [
+    { href: "/app/recon", label: "Поиск" },
+    { href: "/app/competitors", label: "Конкуренты" },
+    { href: "/app/trends", label: "Тренды" },
+  ],
   settings: [
     { href: "/app/settings?section=posts", label: "Настройки постов" },
     { href: "/app/settings?section=general", label: "Общие настройки" },
@@ -75,7 +99,7 @@ const NAV_CHILDREN: Partial<Record<AppNavRouteId, readonly { href: string; label
 };
 
 // Три группы — ровно порядок формулы продукта: работа → разведка → итоги.
-// Состав, подписи, адреса и aliases общие с мобильной панелью и вкладками разведки.
+// Состав, подписи, адреса и aliases общие с мобильной панелью и вложенными разделами.
 const NAV_GROUPS: { title: string; items: NavItem[] }[] = APP_NAV_GROUPS.map((group) => ({
   title: group.title,
   items: group.routeIds.map((routeId) => ({
@@ -94,6 +118,19 @@ const BOTTOM_NAV: NavItem[] = APP_BOTTOM_NAV_ROUTE_IDS.map((routeId) => ({
 
 function isActive(pathname: string, item: NavItem) {
   return isAppRouteActive(pathname, item.routeId);
+}
+
+function childHref(child: NavChild, searchParams: Pick<URLSearchParams, "get">): string {
+  if (!child.preserveParams?.length) return child.href;
+
+  const [pathname, query = ""] = child.href.split("?");
+  const params = new URLSearchParams(query);
+  child.preserveParams.forEach((key) => {
+    const value = searchParams.get(key);
+    if (value) params.set(key, value);
+  });
+  const suffix = params.toString();
+  return suffix ? `${pathname}?${suffix}` : pathname;
 }
 
 /* --------------------------------------------------------------- БРЕНД */
@@ -236,9 +273,11 @@ function SidebarInner({
   onClose?: () => void;
   closeRef?: React.RefObject<HTMLButtonElement | null>;
 }) {
+  const searchParams = useSearchParams();
   // Сворачиваемые группы навигации: по умолчанию все открыты,
   // группа с активным пунктом не сворачивается.
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const activeItemRef = useRef<HTMLLIElement>(null);
   const toggleGroup = useCallback((title: string) => {
     setCollapsedGroups((prev) => {
       const next = new Set(prev);
@@ -246,6 +285,33 @@ function SidebarInner({
       return next;
     });
   }, []);
+
+  useEffect(() => {
+    const activeItem = activeItemRef.current;
+    const navigation = activeItem?.closest("nav");
+    if (!activeItem || !navigation) return;
+
+    const revealChildren = () => {
+      const itemRect = activeItem.getBoundingClientRect();
+      const navigationRect = navigation.getBoundingClientRect();
+      if (itemRect.bottom > navigationRect.bottom) {
+        navigation.scrollTop += itemRect.bottom - navigationRect.bottom + 8;
+      } else if (itemRect.top < navigationRect.top) {
+        navigation.scrollTop -= navigationRect.top - itemRect.top + 8;
+      }
+    };
+
+    const frame = requestAnimationFrame(revealChildren);
+    const observer = new ResizeObserver(revealChildren);
+    observer.observe(activeItem);
+    observer.observe(navigation);
+
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [pathname]);
+
   return (
     <div className="flex h-full flex-col">
       <div className="flex h-16 shrink-0 items-center justify-between gap-2 px-4">
@@ -304,7 +370,10 @@ function SidebarInner({
                 const Icon = item.icon;
                 const route = APP_ROUTES[item.routeId];
                 return (
-                  <li key={item.routeId}>
+                  <li
+                    key={item.routeId}
+                    ref={active && item.children ? activeItemRef : undefined}
+                  >
                     <Link
                       href={route.href}
                       onClick={onClose}
@@ -338,7 +407,7 @@ function SidebarInner({
                         {item.children.map((child) => (
                           <li key={child.href}>
                             <Link
-                              href={child.href}
+                              href={childHref(child, searchParams)}
                               onClick={onClose}
                               className="flex min-h-9 items-center rounded-xs px-3 text-[13px] font-semibold text-text-3 transition-colors hover:bg-surface-inset hover:text-brand"
                             >

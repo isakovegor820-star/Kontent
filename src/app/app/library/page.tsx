@@ -82,21 +82,6 @@ type Hit = {
 };
 type Tab = "hits" | "posts";
 
-const TABS: { key: Tab; label: string; description: string; icon: typeof Flame }[] = [
-  {
-    key: "hits",
-    label: "Референсы",
-    description: "Что уже сработало в нише и какую механику можно адаптировать без копирования.",
-    icon: Flame,
-  },
-  {
-    key: "posts",
-    label: "Коллекция",
-    description: "Сохранённые референсы и свои сильные тексты этого канала.",
-    icon: Bookmark,
-  },
-];
-
 // Карточки страницы поднимаются при наведении — единый жест рабочих экранов.
 const HOVER =
   "transition-[box-shadow,border-color] duration-200 hover:border-line-strong hover:shadow-soft";
@@ -464,35 +449,6 @@ function LibraryInner() {
           </div>
         </Card>
       )}
-
-      {/* Два назначения одной библиотеки: найти механику и сохранить лучшее. */}
-      <div className="mt-5 grid min-w-0 grid-cols-[minmax(0,1fr)] gap-2 rounded-md border border-line bg-surface p-2 md:grid-cols-2">
-        {TABS.map((t) => {
-          const Icon = t.icon;
-          const count = t.key === "hits" ? hits.length : posts.length;
-          return (
-            <button
-              key={t.key}
-              type="button"
-              onClick={() => replaceContext({ tab: t.key })}
-              aria-current={tab === t.key ? "page" : undefined}
-              className={cn(
-                "flex min-h-[72px] min-w-0 w-full items-start gap-3 rounded-sm px-3 py-3 text-left transition-colors",
-                tab === t.key ? "bg-info-soft text-info-text" : "text-text-2 hover:bg-surface-inset hover:text-text",
-              )}
-            >
-              <Icon className="mt-0.5 h-4 w-4 shrink-0" />
-              <span className="min-w-0 flex-1">
-                <span className="flex items-center justify-between gap-3 text-[13px] font-extrabold">
-                  {t.label}
-                  <span className="text-[11px] font-bold opacity-70">{count}</span>
-                </span>
-                <span className="mt-1 block text-[11px] leading-relaxed opacity-80">{t.description}</span>
-              </span>
-            </button>
-          );
-        })}
-      </div>
 
       {tab === "hits" && ANALYTICAL_REGISTRY_ENABLED && channelId && (
         <LibraryRegistryView key={channelId} channelId={channelId} channelName={selectedChannelName} />
