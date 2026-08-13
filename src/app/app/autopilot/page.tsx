@@ -52,6 +52,7 @@ interface PlanItem {
   rubric?: string | null; // рубрика из брифа — по ней берём иконку
   draft: string;
   status: "pending" | "approved" | "rejected" | "published" | "expired";
+  aiReady?: boolean;
   // На чём основан пост: куски базы знаний. Это доказательство, что цифры не выдуманы,
   // а взяты из материалов автора. Пусто — пост написан без конкретики (её нечем подпереть).
   sources?: { id: number; text: string }[];
@@ -83,7 +84,7 @@ interface State {
     generation_engine: string;
     planning_months: number;
     planning_weeks: number;
-    errorReason?: "timeout" | "quota" | "variety" | "quality";
+    errorReason?: "timeout" | "quota" | "variety" | "quality" | "provider";
   } | null;
   hasChannel: boolean;
   brief: Brief | null;
@@ -100,6 +101,7 @@ const fmtRangeMsk = (iso: string) =>
   new Date(iso).toLocaleDateString("ru-RU", { timeZone: MSK, day: "numeric", month: "short" });
 
 const hasPassedVerifiedQuality = (item: PlanItem) =>
+  item.aiReady !== false &&
   hasVerifiedQualityMetadata(item.quality) &&
   item.quality?.passed === true &&
   item.qualityBlocked !== true;
@@ -692,7 +694,7 @@ export default function AutopilotPage() {
         </div>
         <p className="mt-4 flex items-start gap-2 rounded-md bg-surface-inset p-3 text-[12px] leading-relaxed text-text-3">
           <Check className="mt-0.5 h-4 w-4 shrink-0 text-success" aria-hidden />
-          Аврора переписывает каждый слабый черновик до проходного балла. Посты, которые не прошли проверку, в готовый план не попадут.
+          Если выбранная модель не отвечает, Аврора автоматически пробует резервную. Готовые черновики остаются в плане, а публикация текстов с замечаниями блокируется до ручной правки.
         </p>
       </Card>
 
@@ -728,7 +730,7 @@ export default function AutopilotPage() {
           </p>
         </Card>
       ) : plan?.status === "error" ? (
-        <Card className="p-8 text-center">
+        <Card className="p-8 text-center" role="alert">
           <p className="text-[15px] font-semibold text-text">Не получилось собрать план</p>
           <p className="mx-auto mt-1 max-w-md text-[14px] text-text-3">
             {plan.errorReason === "timeout"
@@ -738,8 +740,10 @@ export default function AutopilotPage() {
                 : plan.errorReason === "variety"
                   ? "Модель несколько раз повторила похожие темы или тексты. Старый план сохранён — выбери другую модель или попробуй снова."
                   : plan.errorReason === "quality"
-                    ? `Аврора автоматически переписала слабые черновики, но модель не достигла порога ${data.brief?.quality.qualityThreshold ?? 85}/100. Эти посты не попали в план. Пересобери план или выбери другую модель.`
-              : "Проверь, что канал подключён и ИИ-движок доступен, и попробуй ещё раз."}
+                    ? `Аврора автоматически переписала слабые черновики, но модель не достигла порога ${data.brief?.quality.qualityThreshold ?? 85}/100. Это старый незавершённый запуск; пересобери план — теперь черновики сохраняются для ручной правки, а публикация остаётся заблокированной.`
+                    : plan.errorReason === "provider"
+                      ? "Ни выбранная, ни резервные модели не вернули ни одного текста. Запрос и настройки сохранены — пересобери план, когда хотя бы один провайдер отвечает."
+                      : "Проверь, что канал подключён и ИИ-движок доступен, и попробуй ещё раз."}
           </p>
           <div className="mt-4">
             <Button variant="solid" onClick={generate} loading={busy} disabled={busy}>
@@ -753,7 +757,7 @@ export default function AutopilotPage() {
           <p className="mt-3 text-[15px] font-semibold text-text">План нужно пересобрать</p>
           <p className="mx-auto mt-1 max-w-md text-[14px] text-text-3">
             Этот план создан до обновления контроля качества. Теперь Аврора автоматически
-            переписывает каждый слабый черновик и показывает только посты, прошедшие проверку.
+            переписывает слабые черновики, показывает замечания и не публикует заблокированные тексты.
           </p>
           <div className="mt-4">
             <Button variant="brand" onClick={generate} loading={busy} disabled={busy}>
@@ -935,6 +939,10 @@ export default function AutopilotPage() {
                         <Badge tone="danger">
                           <Clock className="h-3 w-3" aria-hidden />дата истекла
                         </Badge>
+                      ) : it.aiReady === false ? (
+                        <Badge tone="neutral">
+                          <AlertTriangle className="h-3 w-3" aria-hidden />нужен повтор
+                        </Badge>
                       ) : !it.quality || !hasVerifiedQualityMetadata(it.quality) ? (
                         <Badge tone="neutral">
                           <AlertTriangle className="h-3 w-3" aria-hidden />не проверено
@@ -1026,8 +1034,22 @@ export default function AutopilotPage() {
                         </div>
                       )}
 
+                      {!isEditing && it.status === "pending" && it.aiReady === false && (
+                        <div role="status" className="mt-3 flex items-start gap-2 rounded-sm bg-info-soft p-3">
+                          <AlertTriangle
+                            className="mt-0.5 h-4 w-4 shrink-0 text-info-text"
+                            aria-hidden
+                          />
+                          <p className="text-[13px] leading-snug text-info-text">
+                            <span className="font-semibold">Этот слот не потерял остальные посты.</span>{" "}
+                            Модель не вернула текст именно для этой темы. Пересобери план, чтобы повторить генерацию; готовые черновики уже сохранены.
+                          </p>
+                        </div>
+                      )}
+
                       {!isEditing &&
                         it.status === "pending" &&
+                        it.aiReady !== false &&
                         !hasVerifiedQualityMetadata(it.quality) && (
                         <div className="mt-3 flex items-start gap-2 rounded-sm bg-danger-soft p-3">
                           <AlertTriangle
@@ -1042,6 +1064,7 @@ export default function AutopilotPage() {
                       )}
 
                       {!isEditing &&
+                        it.aiReady !== false &&
                         it.qualityBlocked &&
                         it.quality &&
                         hasVerifiedQualityMetadata(it.quality) && (

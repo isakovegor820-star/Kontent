@@ -48,6 +48,46 @@ describe("AI provider orchestration", () => {
     ]);
   });
 
+  it("tries another Navy model when one route rejects parameters before first text", async () => {
+    const calls: string[] = [];
+    const factory: AiStreamFactory = async function* (_input, engine) {
+      calls.push(engine);
+      if (engine === "navy-deepseek-pro") throw new AiProviderError(engine, 400, "bad_request");
+      yield "готовый пост";
+    };
+
+    const events = await collect(orchestrateText(params, "navy-deepseek-pro", {
+      fallbackEngines: ["navy-qwen-3-6"],
+      streamFactory: factory,
+      circuitBreaker: null,
+    }));
+
+    expect(calls).toEqual(["navy-deepseek-pro", "navy-qwen-3-6"]);
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "fallback",
+      fromEngine: "navy-deepseek-pro",
+      toEngine: "navy-qwen-3-6",
+      reason: "provider_error",
+    }));
+    expect(events).toContainEqual({ type: "delta", engine: "navy-qwen-3-6", text: "готовый пост" });
+  });
+
+  it("does not send a Navy 400 request to a different provider", async () => {
+    const calls: string[] = [];
+    const factory: AiStreamFactory = async function* (_input, engine) {
+      calls.push(engine);
+      throw new AiProviderError(engine, 400, "bad_request");
+    };
+    const run = collect(orchestrateText(params, "navy-deepseek-pro", {
+      fallbackEngines: ["openai"],
+      streamFactory: factory,
+      circuitBreaker: null,
+    }));
+
+    await expect(run).rejects.toMatchObject({ status: 400 });
+    expect(calls).toEqual(["navy-deepseek-pro"]);
+  });
+
   it("uses a stable model-scoped provider key for every fallback attempt", async () => {
     const keys: string[] = [];
     const factory: AiStreamFactory = async function* (input, engine) {
@@ -191,8 +231,26 @@ describe("AI provider orchestration", () => {
 
   it("по умолчанию держит fallback внутри NavyAI и не отправляет local primary в облако", () => {
     const env = { NAVYAI_API_KEY: "test" };
-    expect(configuredFallbackEngines("navy-deepseek-pro", env)).toEqual(["navy-deepseek-flash"]);
+    expect(configuredFallbackEngines("navy-deepseek-pro", env)).toEqual([
+      "navy-deepseek-flash",
+      "navy-gpt-5-4",
+      "navy-qwen-3-6",
+      "navy-minimax-m3",
+    ]);
     expect(configuredFallbackEngines("local", { ...env, AI_FALLBACK_ENGINES: "openai" })).toEqual([]);
+  });
+
+  it("keeps the same-provider safety fleet ahead of a stale explicit fallback list", () => {
+    expect(configuredFallbackEngines("navy-gpt-5-4", {
+      NAVYAI_API_KEY: "test",
+      AI_FALLBACK_ENGINES: "navy-minimax-m3,local",
+    })).toEqual([
+      "navy-deepseek-flash",
+      "navy-deepseek-pro",
+      "navy-qwen-3-6",
+      "navy-minimax-m3",
+      "local",
+    ]);
   });
 
   it("не вызывает primary с открытым circuit и честно отмечает skip перед fallback", async () => {

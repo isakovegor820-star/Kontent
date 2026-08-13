@@ -66,6 +66,10 @@ export function createConfiguredSemanticAdapter(options = {}) {
       }, {
         env,
         signal,
+        // AI_SEMANTIC_ENGINE is an explicitly validated classifier. Quietly switching this
+        // safety decision to a different writing model is both slow and semantically unsafe.
+        // If the classifier is down, callers keep the draft for review and block automation.
+        allowFallback: false,
         timeoutMs: Number(env.AI_SEMANTIC_TIMEOUT_MS || 20_000),
         fetchImpl: options.fetchImpl,
         telemetry: options.telemetry,

@@ -1542,7 +1542,9 @@ function StudioPageInner() {
           }
           setMsg({
             text: completion.text,
-            statusMessage: "Пост готов.",
+            statusMessage: completion.requiresReview
+              ? "Черновик готов и сохранён. Проверка нашла риск: проверь текст перед публикацией."
+              : "Пост готов.",
             progressLabel: undefined,
             streaming: false,
             postable: completion.postable,
@@ -1563,8 +1565,8 @@ function StudioPageInner() {
             replayed,
             generationResultId: acknowledgedGenerationResultId,
           });
-          // Любой подтверждённый terminal-result — готовый пост. Внутренняя оценка может
-          // улучшать текст до `done`, но после успеха не отбирает результат у человека.
+          // Любой подтверждённый terminal-result доступен как черновик. Блокирующая
+          // проверка запрещает тихую автопубликацию, но не отбирает текст у человека.
           if (gen.autoOpenComposer && completion.reviewable) {
             openAsPost(id, completion.text, {
               channelId: generationChannelId,

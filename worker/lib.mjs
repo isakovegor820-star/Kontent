@@ -103,10 +103,42 @@ export function autopilotBuildComplete(expected, topics, items = null) {
     );
 }
 
+// Generation and publication are separate trust boundaries. A complete set of real model
+// drafts is still a useful plan when editorial checks require human review; only missing
+// drafts are a generation failure. Approval remains fail-closed through qualityBlocked and
+// the stored quality receipt on every item.
+export function autopilotDraftsComplete(expected, topics, items) {
+  const count = Number(expected);
+  if (!Number.isInteger(count) || count < 1) return false;
+  if (!Array.isArray(topics) || topics.length !== count) return false;
+  return Array.isArray(items) &&
+    items.length === count &&
+    items.every((item) => item?.aiReady === true && String(item?.draft || "").trim().length > 0);
+}
+
+// A transient failure in one provider call must not erase the other completed posts. The
+// plan remains deliverable when its structure is intact and at least one real AI draft was
+// returned; missing slots stay visibly blocked and can never reach automatic publication.
+export function autopilotDraftsDeliverable(expected, topics, items) {
+  const count = Number(expected);
+  if (!Number.isInteger(count) || count < 1) return false;
+  if (!Array.isArray(topics) || topics.length !== count) return false;
+  if (!Array.isArray(items) || items.length !== count) return false;
+  if (items.some((item) => !String(item?.draft || "").trim())) return false;
+  return items.some((item) => item?.aiReady === true && String(item?.draft || "").trim().length > 0);
+}
+
 export function autopilotJobAttemptsExhausted(attemptsMade, configuredAttempts) {
   const made = Math.max(0, Number(attemptsMade) || 0);
   const allowed = Math.max(1, Number(configuredAttempts) || 1);
   return made >= allowed;
+}
+
+export function autopilotJobTerminalFailure(attemptsMade, configuredAttempts, reason = "") {
+  // BullMQ does not increment attemptsMade when a job is failed by maxStalledCount, even
+  // though that state is terminal. Without this branch the DB placeholder stays `building`.
+  return autopilotJobAttemptsExhausted(attemptsMade, configuredAttempts)
+    || /stalled more than allowable limit/iu.test(String(reason));
 }
 
 // ── Разбор публичной страницы t.me/s/ ────────────────────────────────────────

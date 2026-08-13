@@ -137,6 +137,30 @@ function studioFactCheckOffRequest() {
   });
 }
 
+function studioSparseLegalBriefRequest() {
+  return new NextRequest("http://localhost/api/ai/generate", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "idempotency-key": "studio_sparse_legal_brief_1",
+    },
+    body: JSON.stringify({
+      command: "write",
+      input: "Напиши пост о конференции по банкротству 26 сентября",
+      channelId: 42,
+      surface: "studio",
+      postSettings: {
+        qualityMode: "fast",
+        factStrictness: "verified",
+        hideCriticalResult: true,
+        length: "custom",
+        customMinChars: 1000,
+        customMaxChars: 1600,
+      },
+    }),
+  });
+}
+
 function editorialRequest() {
   return new NextRequest("http://localhost/api/ai/generate", {
     method: "POST",
@@ -440,7 +464,32 @@ describe("POST /api/ai/generate prerequisites", () => {
     expect(mocks.acquireAiUsageRequest).not.toHaveBeenCalled();
   });
 
-  it("releases quota and emits no terminal done when provider EOF lacks done:true", async () => {
+  it("lets Studio generate from a sparse legal brief and reports fact risk after the text", async () => {
+    const fetchMock = vi.fn(async () => new Response(
+      '{"message":{"content":"26 сентября состоится конференция по банкротству. Проверьте дату и программу перед публикацией."},"done":true}\n',
+      { status: 200, headers: { "content-type": "application/x-ndjson" } },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await POST(studioSparseLegalBriefRequest());
+    const events = (await response.text()).trim().split("\n").map((line) => JSON.parse(line));
+
+    expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "replace",
+      text: expect.stringContaining("26 сентября"),
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "validation",
+      status: "blocked",
+      requiresReview: true,
+    }));
+    expect(events.some((event) => event.type === "done")).toBe(true);
+    expect(events.some((event) => event.type === "error")).toBe(false);
+  });
+
+  it("preserves provider text as a review-only Studio draft when EOF lacks done:true", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(
       '{"message":{"content":"ОБОРВАННЫЙ ТЕКСТ"}}\n',
       { status: 200, headers: { "content-type": "application/x-ndjson" } },
@@ -449,10 +498,22 @@ describe("POST /api/ai/generate prerequisites", () => {
     const response = await POST(studioRequest());
     const events = (await response.text()).trim().split("\n").map((line) => JSON.parse(line));
 
-    expect(events.some((event) => event.type === "error" && event.code === "stream_truncated")).toBe(true);
-    expect(events.some((event) => event.type === "done")).toBe(false);
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "validation",
+      status: "blocked",
+      requiresReview: true,
+      blockerCodes: expect.arrayContaining(["provider:stream_truncated"]),
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "replace",
+      text: "оборванный текст",
+    }));
+    expect(events.some((event) => event.type === "done")).toBe(true);
+    expect(events.some((event) => event.type === "error")).toBe(false);
+    expect(mocks.stageGenerationArtifact).toHaveBeenCalledOnce();
+    expect(mocks.stageAiUsageResult).toHaveBeenCalledOnce();
     expect(mocks.commitAiUsageResult).not.toHaveBeenCalled();
-    expect(mocks.releaseAiUsageRequest).toHaveBeenCalledWith(7, 81, response.headers.get("x-ai-request-id"));
+    expect(mocks.releaseAiUsageRequest).not.toHaveBeenCalled();
   });
 
   it("stages a complete reviewable result and sends combined validation before ACK-required done", async () => {
@@ -941,7 +1002,7 @@ describe("POST /api/ai/generate prerequisites", () => {
     expect(mocks.releaseAiUsageRequest).not.toHaveBeenCalled();
   });
 
-  it("returns a reserved Trends generation to the limit when the provider stream breaks", async () => {
+  it("preserves a partial Trends generation instead of discarding it", async () => {
     mocks.channelAiContextFor.mockResolvedValue({
       id: 42,
       title: "Мой канал",
@@ -959,10 +1020,20 @@ describe("POST /api/ai/generate prerequisites", () => {
     const response = await POST(trendsRequest());
     const events = (await response.text()).trim().split("\n").map((line) => JSON.parse(line));
 
-    expect(events.some((event) => event.type === "error" && event.code === "stream_truncated")).toBe(true);
-    expect(events.some((event) => event.type === "done")).toBe(false);
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "replace",
+      text: "Только начало поста",
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "validation",
+      status: "blocked",
+      blockerCodes: expect.arrayContaining(["provider:stream_truncated"]),
+    }));
+    expect(events.some((event) => event.type === "done")).toBe(true);
+    expect(events.some((event) => event.type === "error")).toBe(false);
     expect(mocks.commitAiUsageResult).not.toHaveBeenCalled();
-    expect(mocks.releaseAiUsageRequest).toHaveBeenCalledWith(7, 81, response.headers.get("x-ai-request-id"));
+    expect(mocks.stageAiUsageResult).toHaveBeenCalledOnce();
+    expect(mocks.releaseAiUsageRequest).not.toHaveBeenCalled();
   });
 
   it("replays a durable terminal result for the same key without provider or quota work", async () => {
@@ -1096,7 +1167,7 @@ describe("POST /api/ai/generate prerequisites", () => {
     errorLog.mockRestore();
   });
 
-  it("keeps the selected NavyAI model after a timeout and only suggests one ready alternative", async () => {
+  it("finishes through a same-provider fallback when the selected NavyAI model fails", async () => {
     vi.stubEnv("NAVYAI_API_KEY", "navy-test-key");
     vi.stubEnv("NAVYAI_API_URL", "https://navy-runtime-failure.example/v1");
     mocks.query.mockResolvedValue({
@@ -1106,33 +1177,38 @@ describe("POST /api/ai/generate prerequisites", () => {
     mocks.aiReady.mockImplementation(async (engine) => (
       engine === "navy-deepseek-flash" || engine === "navy-gpt-5-4"
     ));
-    const fetchMock = vi.fn().mockResolvedValueOnce(Response.json(
-      { error: { code: "provider_timeout", message: "private provider detail" } },
-      { status: 503 },
-    ));
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json(
+        { error: { code: "provider_timeout", message: "private provider detail" } },
+        { status: 503 },
+      ))
+      .mockResolvedValueOnce(new Response(
+        'data: {"choices":[{"delta":{"content":"Готовый резервный текст без выдуманных фактов."}}]}\n\ndata: [DONE]\n\n',
+        { status: 200, headers: { "content-type": "text/event-stream" } },
+      ));
     vi.stubGlobal("fetch", fetchMock);
 
     const response = await POST(studioRequest());
     const events = (await response.text()).trim().split("\n").map((line) => JSON.parse(line));
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(events).toContainEqual(expect.objectContaining({
-      type: "error",
-      error: "provider_timeout",
-      engine: "navy-deepseek-flash",
-      suggestedEngine: expect.objectContaining({ id: "navy-gpt-5-4" }),
-      retryable: true,
+      type: "fallback",
+      fromEngine: "navy-deepseek-flash",
+      toEngine: "navy-deepseek-pro",
+      reason: "overall_timeout",
     }));
-    expect(events.some((event) => event.type === "fallback" || event.type === "done")).toBe(false);
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "done",
+      engine: "navy-deepseek-pro",
+      requestedEngine: "navy-deepseek-flash",
+      fallbackUsed: true,
+    }));
     const providerBodies = fetchMock.mock.calls.map((call) => JSON.parse(String(call[1]?.body)));
-    expect(providerBodies.map((body) => body.model)).toEqual(["deepseek-v4-flash"]);
+    expect(providerBodies.map((body) => body.model)).toEqual(["deepseek-v4-flash", "deepseek-v4-pro"]);
     expect(mocks.commitAiUsageResult).not.toHaveBeenCalled();
-    expect(mocks.releaseAiUsageRequest).toHaveBeenCalledWith(
-      7,
-      81,
-      response.headers.get("x-ai-request-id"),
-    );
-    expect(mocks.stageAiUsageResult).not.toHaveBeenCalled();
+    expect(mocks.releaseAiUsageRequest).not.toHaveBeenCalled();
+    expect(mocks.stageAiUsageResult).toHaveBeenCalled();
   });
 
   it("uses different provider idempotency keys after an explicitly confirmed engine change", async () => {
@@ -1165,8 +1241,8 @@ describe("POST /api/ai/generate prerequisites", () => {
     const headers = fetchMock.mock.calls.map((call) => new Headers(call[1]?.headers));
     const keys = headers.map((item) => item.get("idempotency-key"));
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(keys[0]).toMatch(/^[a-f0-9]{64}:reasoning-minimal$/u);
-    expect(keys[1]).toMatch(/^[a-f0-9]{64}:reasoning-minimal$/u);
+    expect(keys[0]).toMatch(/^[a-f0-9]{64}:reasoning-none$/u);
+    expect(keys[1]).toMatch(/^[a-f0-9]{64}:reasoning-none$/u);
     expect(keys[1]).not.toBe(keys[0]);
     expect(headers[1].get("x-request-id")).not.toBe(headers[0].get("x-request-id"));
     expect(mocks.stageAiUsageResult).not.toHaveBeenCalled();

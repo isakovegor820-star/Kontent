@@ -61,6 +61,9 @@ export async function GET(req: NextRequest) {
     if (plan?.status === "error" && plan.rules === "quality_gate_unsatisfied") {
       plan = { ...plan, errorReason: "quality" };
     }
+    if (plan?.status === "error" && plan.rules === "ai_unavailable") {
+      plan = { ...plan, errorReason: "provider" };
+    }
 
     // A queue job can survive while its worker is stopped. Without a deadline that left the
     // page polling `building` forever (the real incident lasted two days). Mark only the exact

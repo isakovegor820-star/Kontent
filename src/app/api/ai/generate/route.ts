@@ -297,6 +297,9 @@ interface OrchestratedText {
   text: string;
   engine: ReturnType<typeof getEngine>["id"];
   fallbackUsed: boolean;
+  /** Провайдер уже отдал полезный текст, но не прислал корректный terminal marker. */
+  interrupted: boolean;
+  interruptionCode?: AiPublicFailureCode;
 }
 
 function paramsForProviderPhase(params: GenerateParams, phase: string): GenerateParams {
@@ -320,6 +323,7 @@ interface CombinedValidation {
   blocked: boolean;
   requiresReview: boolean;
   issues: string[];
+  technicalBlockerCodes: string[];
   errorCode: "post_validation_failed" | "factual_validation_failed" | "topic_alignment_failed";
 }
 
@@ -368,9 +372,10 @@ async function runOrchestratedText(
     };
     for await (const event of orchestrateText(paramsWithUsage, engineId, {
       signal,
-      // Model choice belongs to the user. Runtime failures preserve the selected model
-      // and return one ready suggestion that requires explicit confirmation in the UI.
-      fallbackEngines: [],
+      // The requested model stays visible in the terminal result. Before the first visible
+      // token, a transient/configuration failure may move to the declared safety chain so a
+      // single broken upstream does not discard the user's task.
+      fallbackEngines: configuredFallbackEngines(engineId),
       firstTokenMs: deadlines.firstTokenMs,
       overallMs: deadlines.attemptOverallMs,
       beforeAttempt: (attempt) => attemptTelemetry.beforeAttempt(attempt),
@@ -417,7 +422,7 @@ async function runOrchestratedText(
     }
     const result = text.trim();
     if (!result) throw new AiProviderError(engine, 502, "empty_generation");
-    return { text: result, engine, fallbackUsed };
+    return { text: result, engine, fallbackUsed, interrupted: false };
   } catch (error) {
     if (activeAttempt) {
       await attemptTelemetry.finish({
@@ -425,6 +430,18 @@ async function runOrchestratedText(
         outcome: isClientAbort(error, signal) ? "cancelled" : "failed",
         safeErrorCode: error instanceof AiOperationBudgetError ? error.code : publicAiFailureCode(error),
       }).catch(() => {});
+    }
+    const partial = text.trim();
+    // Once NavyAI has returned user-visible content, a broken EOF/timeout must not erase it.
+    // The caller persists it as a review-only terminal draft; publication still fails closed.
+    if (partial && !(error instanceof AiOperationBudgetError)) {
+      return {
+        text: partial,
+        engine,
+        fallbackUsed,
+        interrupted: true,
+        interruptionCode: publicAiFailureCode(error),
+      };
     }
     throw error;
   }
@@ -654,11 +671,30 @@ function studioStreamResponse(
           // Publication remains fail-closed; the stream itself can still finish durably.
           requiresReview: factual.requiresReview || blocked,
           issues: [...topicIssues, ...factualIssues, ...channelIssues, ...postIssues].slice(0, 16),
+          technicalBlockerCodes: [],
           errorCode: !topicPassed
             ? "topic_alignment_failed"
             : factual.status === "blocked"
               ? "factual_validation_failed"
               : "post_validation_failed",
+        };
+      };
+      const requireTechnicalReview = (
+        validation: CombinedValidation,
+        generated: OrchestratedText,
+      ): CombinedValidation => {
+        if (!generated.interrupted) return validation;
+        const code = generated.interruptionCode ?? "stream_truncated";
+        return {
+          ...validation,
+          passed: false,
+          blocked: true,
+          requiresReview: true,
+          issues: [
+            "Поток модели оборвался после начала ответа. Полученный текст сохранён как черновик и требует проверки.",
+            ...validation.issues,
+          ].slice(0, 16),
+          technicalBlockerCodes: [`provider:${code}`],
         };
       };
       const sendValidation = (validation: CombinedValidation) => {
@@ -679,6 +715,7 @@ function studioStreamResponse(
             ...validation.factual.violations.map((item) => item.code),
             ...channelBlockerCodes,
             ...postBlockerCodes,
+            ...validation.technicalBlockerCodes,
             ...(validation.topic?.status === "failed" ? ["topic:off_topic"] : []),
           ],
           ...(validation.topic
@@ -707,6 +744,7 @@ function studioStreamResponse(
             ...validation.factual.violations.map((item) => item.code),
             ...channelBlockerCodes,
             ...postBlockerCodes,
+            ...validation.technicalBlockerCodes,
             ...(validation.topic?.status === "failed" ? ["topic:off_topic"] : []),
           ],
           ...(validation.topic
@@ -785,7 +823,7 @@ function studioStreamResponse(
           anyFallback ||= generated.fallbackUsed;
           let finalText = finishCandidate(generated.text);
           let finalPipeline: "single" | "editorial" = "single";
-          let validation = await validateResult(finalText);
+          let validation = requireTechnicalReview(await validateResult(finalText), generated);
           if (!deliverGeneratedResult && validation.topic?.status === "failed") {
             if (!send({ type: "phase", requestId, phase: "editing" })) return;
             const repaired = await runOrchestratedText({
@@ -797,7 +835,7 @@ function studioStreamResponse(
             finalEngine = repaired.engine;
             anyFallback ||= repaired.fallbackUsed;
             finalPipeline = "editorial";
-            validation = await validateResult(finalText);
+            validation = requireTechnicalReview(await validateResult(finalText), repaired);
           }
           let repairIndex = 0;
           while (!deliverGeneratedResult && validation.blocked && hasAttemptCapacity()) {
@@ -812,7 +850,7 @@ function studioStreamResponse(
             finalEngine = repaired.engine;
             anyFallback ||= repaired.fallbackUsed;
             finalPipeline = "editorial";
-            validation = await validateResult(finalText);
+            validation = requireTechnicalReview(await validateResult(finalText), repaired);
           }
           if (!sendValidation(validation)) return;
           if (!deliverGeneratedResult && validation.topic?.status === "failed") {
@@ -820,6 +858,9 @@ function studioStreamResponse(
           }
           if (!deliverGeneratedResult && validation.factual?.status === "blocked") {
             throw new PostSettingsValidationError(validation.issues, "factual_validation_failed");
+          }
+          if (!deliverGeneratedResult && validation.technicalBlockerCodes.length) {
+            throw new PostSettingsValidationError(validation.issues);
           }
           if (
             !deliverGeneratedResult
@@ -868,7 +909,7 @@ function studioStreamResponse(
         const draft = finishCandidate(generatedDraft.text);
         finalEngine = generatedDraft.engine;
         anyFallback ||= generatedDraft.fallbackUsed;
-        const draftValidation = await validateResult(draft);
+        const draftValidation = requireTechnicalReview(await validateResult(draft), generatedDraft);
         let topicRepairAttempted = draftValidation.topic?.status === "failed";
         let finalText = draft;
         let validation = draftValidation;
@@ -881,11 +922,16 @@ function studioStreamResponse(
             draft: draft.slice(0, 12_000),
             validationIssues: draftValidation.issues,
           }, finalEngine, pipelineSignal, requestId, deadlines, send, false, attemptContext("edit"));
-          finalText = finishCandidate(edited.text);
-          finalEngine = edited.engine;
-          anyFallback ||= edited.fallbackUsed;
-          validation = await validateResult(finalText);
-          finalPipeline = "editorial";
+          // A complete first draft is safer and more useful than a later editor pass that
+          // broke mid-stream. Preserve the complete draft; partial editor text is never used
+          // to replace a better result already held by the platform.
+          if (!edited.interrupted || generatedDraft.interrupted) {
+            finalText = finishCandidate(edited.text);
+            finalEngine = edited.engine;
+            anyFallback ||= edited.fallbackUsed;
+            validation = requireTechnicalReview(await validateResult(finalText), edited);
+            finalPipeline = "editorial";
+          }
         } catch (error) {
           // Первый готовый текст уже существует. На пользовательской поверхности сбой
           // необязательной шлифовки не уничтожает его и не превращается в ошибку модели.
@@ -902,7 +948,7 @@ function studioStreamResponse(
           finalText = finishCandidate(improved.text);
           finalEngine = improved.engine;
           anyFallback ||= improved.fallbackUsed;
-          validation = await validateResult(finalText);
+          validation = requireTechnicalReview(await validateResult(finalText), improved);
         }
 
         if (!deliverGeneratedResult && validation.topic?.status === "failed" && !topicRepairAttempted) {
@@ -916,7 +962,7 @@ function studioStreamResponse(
           finalText = finishCandidate(repaired.text);
           finalEngine = repaired.engine;
           anyFallback ||= repaired.fallbackUsed;
-          validation = await validateResult(finalText);
+          validation = requireTechnicalReview(await validateResult(finalText), repaired);
         }
 
         let repairIndex = 0;
@@ -931,7 +977,7 @@ function studioStreamResponse(
           finalText = finishCandidate(repaired.text);
           finalEngine = repaired.engine;
           anyFallback ||= repaired.fallbackUsed;
-          validation = await validateResult(finalText);
+          validation = requireTechnicalReview(await validateResult(finalText), repaired);
         }
 
         if (!sendValidation(validation)) return;
@@ -940,6 +986,9 @@ function studioStreamResponse(
         }
         if (!deliverGeneratedResult && validation.factual?.status === "blocked") {
           throw new PostSettingsValidationError(validation.issues, "factual_validation_failed");
+        }
+        if (!deliverGeneratedResult && validation.technicalBlockerCodes.length) {
+          throw new PostSettingsValidationError(validation.issues);
         }
         if (
           !deliverGeneratedResult
@@ -1198,6 +1247,7 @@ export async function POST(req: NextRequest) {
   const kind = fingerprintKind;
   const clientRequestedTask = String(body.input ?? "").trim().slice(0, 8000);
   const interactiveStream = body.surface === "studio" || body.surface === "composer";
+  const deliverGeneratedResult = interactiveStream || body.surface === "trends";
   // Every paid text call below uses the same explicit validation + done + client ACK
   // contract. The legacy plain-text stream cannot prove terminal delivery and is gone.
   const referenceText = interactiveStream ? String(body.referenceText ?? "").trim().slice(0, 4000) : "";
@@ -1272,7 +1322,8 @@ export async function POST(req: NextRequest) {
   // Выбор при этом сохранён: появится ключ — заработает без правок.
   const chosen = isEngineId(me?.ai_engine) ? me.ai_engine : DEFAULT_ENGINE;
   const runtime = resolveEngineRuntime(chosen);
-  if (!runtime.supported) {
+  const fallbacks = configuredFallbackEngines(chosen);
+  if (!runtime.supported && fallbacks.length === 0) {
     const e = getEngine(chosen);
     const suggested = await readyAlternative(chosen);
     return aiJson(
@@ -1288,7 +1339,7 @@ export async function POST(req: NextRequest) {
       { status: 503 },
     );
   }
-  if (!runtime.configured) {
+  if (!runtime.configured && fallbacks.length === 0) {
     const e = getEngine(chosen);
     const suggested = await readyAlternative(chosen);
     return aiJson(
@@ -1304,7 +1355,10 @@ export async function POST(req: NextRequest) {
       { status: 503 },
     );
   }
-  if (!await aiReady(chosen)) {
+  // A catalogue/health probe is advisory: NavyAI can list a model successfully while the
+  // actual completion upstream returns 500. When a declared fallback exists, the real
+  // completion request is the authoritative probe and orchestration advances automatically.
+  if (fallbacks.length === 0 && !await aiReady(chosen)) {
     const e = getEngine(chosen);
     const suggested = await readyAlternative(chosen);
     return aiJson(
@@ -1375,7 +1429,9 @@ export async function POST(req: NextRequest) {
     profile: channel?.profile,
   });
   const factPreflight = preflightFactLedger(factLedger);
-  if (!factPreflight.passed) {
+  // Studio/Composer are drafting surfaces: insufficient evidence may block publication,
+  // but it must never block the model call or hide the requested text from its author.
+  if (!factPreflight.passed && !deliverGeneratedResult) {
     return aiJson(
       requestId,
       { error: "brief_insufficient_facts", issues: factPreflight.issues },
@@ -1465,7 +1521,7 @@ export async function POST(req: NextRequest) {
     editorial,
     factLedger,
     semanticAdapter,
-    interactiveStream || body.surface === "trends",
+    deliverGeneratedResult,
     { providerEngine: chosen, providerModel: runtime.model },
   );
 }

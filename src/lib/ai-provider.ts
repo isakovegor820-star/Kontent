@@ -1,5 +1,5 @@
-// Единый переходник ИИ. Пользовательский выбор движка передаётся сюда явно:
-// молчаливого переключения на другой провайдер при ошибке или отсутствии ключа нет.
+// Единый переходник ИИ. Пользовательский выбор движка передаётся сюда явно, а фактический
+// резервный маршрут оркестратор сообщает клиенту отдельным событием — скрытой подмены нет.
 
 import { DEFAULT_ENGINE, getEngine, type EngineId } from "./engines";
 import { configuredServiceEngine } from "./ai-engine-policy.mjs";
@@ -595,9 +595,17 @@ function ollamaKeepAlive(env: Env = process.env): string {
 }
 
 function assertUsable(runtime: EngineRuntime): asserts runtime is EngineRuntime & { baseUrl: string } {
-  if (!runtime.supported || !runtime.protocol) throw new Error(`engine ${runtime.id} is unsupported`);
-  if (!runtime.configured) throw new Error(`engine ${runtime.id} is not configured`);
-  if (!runtime.baseUrl) throw new Error(`engine ${runtime.id} has no endpoint`);
+  // Configuration failures are provider-attempt failures too. Keeping them typed lets the
+  // orchestrator continue to an explicitly allowed fallback before any response was shown.
+  if (!runtime.supported || !runtime.protocol) {
+    throw new AiProviderError(runtime.id, 503, "engine_unsupported");
+  }
+  if (!runtime.configured) {
+    throw new AiProviderError(runtime.id, 503, "engine_not_connected");
+  }
+  if (!runtime.baseUrl) {
+    throw new AiProviderError(runtime.id, 503, "engine_endpoint_missing");
+  }
 }
 
 function providerRequestHeaders(
@@ -861,13 +869,13 @@ async function* streamOpenAi(
   }
 
   try {
-    // Для SMM-текста достаточно минимального скрытого разбора. 3000 токенов оставляют
-    // модели место и на reasoning, и на видимый пост; прежние 1200 иногда полностью
-    // съедались reasoning-частью, что и произошло в инциденте 31 июля.
+    // NavyAI's DeepSeek routes do not all accept `minimal`; `none` is the compatible
+    // drafting mode already used by background generation. It also prevents the hidden
+    // reasoning phase from consuming the whole visible-answer budget.
     yield* streamOpenAiAttempt(runtime, p, signal, {
       maxTokens: Math.max(3000, outputTokens(p)),
-      reasoningEffort: "minimal",
-      idempotencySuffix: "reasoning-minimal",
+      reasoningEffort: "none",
+      idempotencySuffix: "reasoning-none",
     }, requestTimeoutMs);
   } catch (error) {
     if (
@@ -882,7 +890,7 @@ async function* streamOpenAi(
     yield* streamOpenAiAttempt(runtime, p, signal, {
       maxTokens: Math.max(6000, outputTokens(p)),
       reasoningEffort: "none",
-      idempotencySuffix: "reasoning-none",
+      idempotencySuffix: "reasoning-none-expanded",
     }, requestTimeoutMs);
   }
 }

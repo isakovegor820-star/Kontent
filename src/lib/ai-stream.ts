@@ -158,10 +158,10 @@ export function finalizeAiClientStream(input: {
   return {
     status: "complete",
     text,
-    // Terminal text is a finished user result. Internal validators may influence an
-    // optional editor pass, but they never take the post away after `done`.
-    postable: true,
+    // Terminal text always remains available to its author. A blocked result can be opened
+    // and edited as a draft, but it must not silently become publication-ready.
+    postable: !input.validationBlocked,
     reviewable: true,
-    requiresReview: false,
+    requiresReview: input.validationRequiresReview || input.validationBlocked,
   };
 }

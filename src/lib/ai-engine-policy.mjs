@@ -94,10 +94,24 @@ export function configuredAiFallbacks(primary, env = process.env) {
     .split(",")
     .map((value) => value.trim())
     .filter(isConfiguredEngineId);
-  const defaults = primary.startsWith("navy-")
-    ? primary === "navy-deepseek-flash" ? ["navy-deepseek-pro"] : ["navy-deepseek-flash"]
+  // `/models` only proves that a model is present in the provider catalogue. A concrete
+  // `/chat/completions` call can still fail for one routed upstream while another model on
+  // the same NavyAI endpoint/key is healthy. Keep the whole same-credential fleet available
+  // as an automatic safety net; this neither changes data residency nor sends the prompt to
+  // another vendor. Operator fallbacks (for example local Ollama) remain the final tier.
+  const sameProvider = primary.startsWith("navy-")
+    ? [
+        "navy-deepseek-flash",
+        "navy-deepseek-pro",
+        "navy-gpt-5-4",
+        "navy-qwen-3-6",
+        "navy-minimax-m3",
+      ]
     : [];
-  return [...new Set(explicit.length ? explicit : defaults)]
+  const candidates = env.AI_FALLBACK_STRICT === "1"
+    ? explicit
+    : [...sameProvider, ...explicit];
+  return [...new Set(candidates)]
     .filter((id) => id !== primary)
     .filter((id) => {
       const runtime = resolveAiEngineRuntime(id, env);

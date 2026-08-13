@@ -18,22 +18,20 @@ describe("configured semantic AI adapter", () => {
     })).toBeNull();
   });
 
-  it("uses the shared engine/fallback service and keeps only known source identifiers", async () => {
-    const fetchImpl = vi.fn()
-      .mockResolvedValueOnce(new Response("temporary", { status: 503 }))
-      .mockResolvedValueOnce(Response.json({
-        choices: [{
-          finish_reason: "stop",
-          message: { content: JSON.stringify({
-            verdicts: [{
-              claimId: "claim-1",
-              verdict: "supported",
-              evidenceIds: ["source-1", "invented-source"],
-              reasonCode: "direct_source_support",
-            }],
-          }) },
-        }],
-      }));
+  it("uses the explicitly validated engine and keeps only known source identifiers", async () => {
+    const fetchImpl = vi.fn().mockResolvedValueOnce(Response.json({
+      choices: [{
+        finish_reason: "stop",
+        message: { content: JSON.stringify({
+          verdicts: [{
+            claimId: "claim-1",
+            verdict: "supported",
+            evidenceIds: ["source-1", "invented-source"],
+            reasonCode: "direct_source_support",
+          }],
+        }) },
+      }],
+    }));
     const env = {
       AI_SEMANTIC_ENGINE: "navy-deepseek-pro",
       AI_FALLBACK_ENGINES: "navy-deepseek-flash",
@@ -50,9 +48,26 @@ describe("configured semantic AI adapter", () => {
         reasonCode: "direct_source_support",
       }],
     });
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(fetchImpl.mock.calls[0][0]).toBe("https://navy.example/v1/chat/completions");
-    expect(fetchImpl.mock.calls[1][0]).toBe("https://navy.example/v1/chat/completions");
+  });
+
+  it("does not move a safety verdict to an unvalidated fallback model", async () => {
+    const fetchImpl = vi.fn(async () => new Response("temporary", { status: 503 }));
+    const adapter = createConfiguredSemanticAdapter({
+      env: {
+        AI_SEMANTIC_ENGINE: "navy-deepseek-pro",
+        AI_FALLBACK_ENGINES: "navy-deepseek-flash",
+        NAVYAI_API_KEY: "secret",
+        NAVYAI_API_URL: "https://navy.example/v1",
+      },
+      fetchImpl,
+    });
+
+    await expect(adapter.check({ claims, evidence })).rejects.toMatchObject({
+      code: "provider_error",
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it("treats malformed or non-terminal model output as no semantic proof", async () => {

@@ -27,7 +27,8 @@ import {
   citedShare,
   mapConcurrent,
   autopilotBuildComplete,
-  autopilotJobAttemptsExhausted,
+  autopilotDraftsDeliverable,
+  autopilotJobTerminalFailure,
   formatPost,
   parseTelegramChannelDescription,
   summarizeTelegramPostingActivity,
@@ -236,10 +237,10 @@ const OWNER_CHAT = process.env.TG_CHAT_ID;
 const AUTOPILOT_ONLY = process.env.AURORA_WORKER_MODE === "autopilot";
 const MEDIA_ONLY = process.env.AURORA_WORKER_MODE === "media";
 const PUBLICATION_ONLY = process.env.AURORA_WORKER_MODE === "publication";
-// Настройка retryLimit управляет обычной редактурой, но Автопилот обязан довести каждый
-// собственный пост до проходного балла. Шесть полных переписываний плюс две попытки самой
-// очереди дают модели достаточно шансов, не позволяя недоступному API зациклить воркер.
-const AUTOPILOT_QUALITY_REWRITE_ATTEMPTS = 6;
+// Two editor passes are enough to improve a draft without turning one weekly plan into
+// dozens of provider calls during a partial outage. A remaining quality problem is kept
+// visible for manual review and cannot be auto-published.
+const AUTOPILOT_QUALITY_REWRITE_ATTEMPTS = 2;
 const semanticPublicationAdapter = createConfiguredSemanticAdapter({
   telemetry: (event) => {
     if (event.outcome === "failed" || event.type === "fallback") {
@@ -3563,6 +3564,10 @@ async function askAI(
       engine: configuredServiceEngine(explicitEngine || requestedEngine),
       temperature: temp,
       maxTokens: numPredict,
+      // A post that reaches an explicit provider token cap is still useful work. Autopilot's
+      // quality gate below decides whether it may be published; otherwise the generated text
+      // stays visible for manual editing. Exact JSON/profile surfaces retain strict completion.
+      acceptLengthLimitedOutput: surface === "autopilot-plan",
     }, {
       timeoutMs: WORKER_CLOUD_AI_TIMEOUT_MS,
       localTimeoutMs: WORKER_LOCAL_AI_TIMEOUT_MS,
@@ -4484,9 +4489,12 @@ async function buildAutopilotPlan(
       generationEngine,
       historicalTopics,
     );
-  if (!autopilotBuildComplete(N, topics)) {
-    console.log(`[auto] user ${userId}: получено тем ${topics.length}/${N} — неполный план не сохраняю`);
+  if (!autopilotBuildComplete(topics.length, topics)) {
+    console.log(`[auto] user ${userId}: модель не вернула ни одной пригодной темы`);
     return { error: "ai_unavailable" };
+  }
+  if (topics.length < N) {
+    rule += ` Модель вернула ${topics.length} из ${N} запрошенных тем: готовая часть плана сохранена, а не потеряна целиком.`;
   }
   rule += ` Темы — под твою нишу: ${brief.niche}.`;
 
@@ -4540,6 +4548,18 @@ async function buildAutopilotPlan(
       0.45,
       generationEngine,
     );
+    if (!candidateRaw?.trim()) {
+      candidateRaw = await askAI(
+        "autopilot-plan",
+        usageReservationId,
+        system,
+        `${task}\n\nПовтори генерацию этого конкретного поста. Верни только готовый текст без служебных пояснений.`,
+        outputTokens,
+        null,
+        0.35,
+        generationEngine,
+      );
+    }
     let aiDraft = candidateRaw
       ? applyAutopilotPresentation(
           padDraftToMinimum(stripCites(candidateRaw), quality.minChars, quality.maxChars),
@@ -4676,23 +4696,37 @@ async function buildAutopilotPlan(
     return item;
   });
 
-  if (!autopilotBuildComplete(N, topics, items)) {
-    const passed = items.filter(
-      (item) => item.aiReady && item.quality?.passed === true && item.qualityBlocked !== true,
-    ).length;
+  if (!autopilotDraftsDeliverable(topics.length, topics, items)) {
     console.log(
-      `[auto] user ${userId}: редакционный порог прошли ${passed}/${N} — слабый план пользователю не сохраняю`,
+      `[auto] user ${userId}: модель не вернула ни одного текста для ${topics.length} тем`,
     );
-    return { error: "quality_gate_unsatisfied" };
+    return { error: "ai_unavailable" };
+  }
+  const missingDrafts = items.filter((item) => !item.aiReady).length;
+  if (missingDrafts) {
+    rule += ` ${missingDrafts} ${plural(missingDrafts, "слот не сгенерирован", "слота не сгенерированы", "слотов не сгенерированы")}: остальные готовые посты сохранены; пустые слоты заблокированы до повторной генерации.`;
+  }
+  const initiallyBlocked = items.filter(
+    (item) => item.quality?.passed !== true || item.qualityBlocked === true,
+  ).length;
+  if (initiallyBlocked) {
+    rule += ` ${initiallyBlocked} ${plural(initiallyBlocked, "черновик требует", "черновика требуют", "черновиков требуют")} ручной проверки; они сохранены в плане, но их публикация заблокирована.`;
   }
 
-  // Промпт снижает повторы, но не гарантирует их отсутствие. Финальная граница работает
-  // кодом: сравнивает тему и текст с недавними публикациями и уже принятыми элементами
-  // этого плана. Близкий дубль получает несколько отдельных переписываний; если модель всё
-  // равно повторяется, неполный/дублирующийся план не заменяет хороший старый.
+  // Промпт снижает повторы, но не гарантирует их отсутствие. Финальная граница сравнивает
+  // тему и текст с недавними публикациями и уже принятыми элементами этого плана. Близкий
+  // дубль получает несколько переписываний; если сходство остаётся, черновик сохраняется
+  // для ручной правки, но не может попасть в автопубликацию.
   const acceptedForVariety = [...historicalPlanItems, ...recentPublished];
   for (let index = 0; index < items.length; index++) {
     const item = items[index];
+    if (!item.aiReady) {
+      delete item._support;
+      delete item._system;
+      delete item._task;
+      delete item._outputTokens;
+      continue;
+    }
     let duplicate = findAutopilotNearDuplicate(item, acceptedForVariety);
     let varietyRewritePrompt = null;
     for (
@@ -4758,13 +4792,32 @@ async function buildAutopilotPlan(
       duplicate = findAutopilotNearDuplicate(item, acceptedForVariety);
     }
     if (duplicate) {
-      console.warn("[auto] план остановлен: модель повторила близкий текст", {
+      console.warn("[auto] близкий текст сохранён только для ручной правки", {
         userId,
         channelId,
         item: index,
         score: duplicate.score,
       });
-      return { error: "content_variety_insufficient" };
+      item.qualityBlocked = true;
+      item.quality = {
+        ...item.quality,
+        passed: false,
+        blockers: [
+          ...(Array.isArray(item.quality?.blockers) ? item.quality.blockers : []),
+          "Текст слишком похож на недавний материал. Измени угол и структуру перед публикацией.",
+        ],
+        violations: [
+          ...(Array.isArray(item.quality?.violations) ? item.quality.violations : []),
+          {
+            code: "content_variety_insufficient",
+            message: "Текст слишком похож на недавний материал.",
+            blocker: true,
+            penalty: 50,
+          },
+        ],
+      };
+      delete item.autoApprove;
+      rule += " Один или несколько близких дублей оставлены для ручной правки и не могут быть опубликованы автоматически.";
     }
     acceptedForVariety.push({ topic: item.topic, draft: item.draft });
     delete item._support;
@@ -6565,7 +6618,7 @@ statsWorker?.on("failed", (job, err) => {
     !Number.isSafeInteger(projectId) || projectId <= 0 ||
     !Number.isSafeInteger(userId) || userId <= 0 ||
     !Number.isSafeInteger(channelId) || channelId <= 0 ||
-    !autopilotJobAttemptsExhausted(job.attemptsMade, job.opts?.attempts)
+    !autopilotJobTerminalFailure(job.attemptsMade, job.opts?.attempts, err?.message)
   ) return;
   void pool.query(
     `update autopilot_plan set status = 'error', revision = revision + 1

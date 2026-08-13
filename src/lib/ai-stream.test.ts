@@ -105,7 +105,7 @@ describe("Studio terminal contract", () => {
     })).toEqual({ status: "truncated", partialText: "частичный текст" });
   });
 
-  it("makes every complete terminal text ready for a post", () => {
+  it("keeps blocked terminal text reviewable without marking it publication-ready", () => {
     expect(finalizeAiClientStream({
       text: "готовый черновик",
       failed: false,
@@ -116,9 +116,9 @@ describe("Studio terminal contract", () => {
     })).toEqual({
       status: "complete",
       text: "готовый черновик",
-      postable: true,
+      postable: false,
       reviewable: true,
-      requiresReview: false,
+      requiresReview: true,
     });
   });
 });

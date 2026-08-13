@@ -16,7 +16,10 @@ import {
   citedShare,
   mapConcurrent,
   autopilotBuildComplete,
+  autopilotDraftsComplete,
+  autopilotDraftsDeliverable,
   autopilotJobAttemptsExhausted,
+  autopilotJobTerminalFailure,
   formatPost,
   parseTelegramChannelDescription,
   summarizeTelegramPostingActivity,
@@ -280,11 +283,58 @@ describe("autopilotBuildComplete", () => {
   });
 });
 
+describe("autopilotDraftsComplete", () => {
+  const topics = [{ topic: "Тема 1" }, { topic: "Тема 2" }];
+
+  it("keeps a complete generated plan available for review when quality blocks publication", () => {
+    const items = [
+      { aiReady: true, draft: "Черновик 1", qualityBlocked: false, quality: { passed: true } },
+      { aiReady: true, draft: "Черновик 2", qualityBlocked: true, quality: { passed: false } },
+    ];
+
+    expect(autopilotBuildComplete(2, topics, items)).toBe(false);
+    expect(autopilotDraftsComplete(2, topics, items)).toBe(true);
+  });
+
+  it("still rejects a plan containing a provider placeholder", () => {
+    expect(autopilotDraftsComplete(2, topics, [
+      { aiReady: true, draft: "Черновик 1" },
+      { aiReady: false, draft: "ИИ допишет позже" },
+    ])).toBe(false);
+  });
+});
+
+describe("autopilotDraftsDeliverable", () => {
+  const topics = [{ topic: "Тема 1" }, { topic: "Тема 2" }];
+
+  it("preserves completed posts when one provider slot failed", () => {
+    expect(autopilotDraftsDeliverable(2, topics, [
+      { aiReady: true, draft: "Готовый пост" },
+      { aiReady: false, draft: "ИИ не завершил этот слот" },
+    ])).toBe(true);
+  });
+
+  it("does not call a placeholders-only plan a delivered generation", () => {
+    expect(autopilotDraftsDeliverable(2, topics, [
+      { aiReady: false, draft: "ИИ не завершил первый слот" },
+      { aiReady: false, draft: "ИИ не завершил второй слот" },
+    ])).toBe(false);
+  });
+});
+
 describe("autopilotJobAttemptsExhausted", () => {
   it("only terminalizes an Autopilot placeholder after the final BullMQ attempt", () => {
     expect(autopilotJobAttemptsExhausted(1, 2)).toBe(false);
     expect(autopilotJobAttemptsExhausted(2, 2)).toBe(true);
     expect(autopilotJobAttemptsExhausted(3, 2)).toBe(true);
+  });
+});
+
+describe("autopilotJobTerminalFailure", () => {
+  it("recognizes BullMQ max-stalled failure even when attemptsMade stays at zero", () => {
+    expect(autopilotJobTerminalFailure(0, 2, "job stalled more than allowable limit")).toBe(true);
+    expect(autopilotJobTerminalFailure(0, 2, "temporary provider error")).toBe(false);
+    expect(autopilotJobTerminalFailure(2, 2, "provider error")).toBe(true);
   });
 });
 

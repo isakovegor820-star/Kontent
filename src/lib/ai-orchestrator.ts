@@ -178,6 +178,20 @@ export function isTransientAiFailure(error: unknown): boolean {
   return error instanceof TypeError || (error instanceof Error && error.name === "TimeoutError");
 }
 
+function canRetryNavyModelRejection(
+  error: unknown,
+  fromEngine: EngineId,
+  toEngine: EngineId | undefined,
+): boolean {
+  return Boolean(
+    toEngine
+    && fromEngine.startsWith("navy-")
+    && toEngine.startsWith("navy-")
+    && error instanceof AiProviderError
+    && [400, 404, 422].includes(Number(error.status)),
+  );
+}
+
 /**
  * Резервные движки — операторская policy, а не скрытая эвристика. Без явной env-policy
  * автоматически переключаемся только между моделями одного NavyAI endpoint/key.
@@ -323,7 +337,13 @@ export async function* orchestrateText(
         };
 
         const next = candidates[index + 1];
-        if (!emitted && next && isTransientAiFailure(error) && !options.signal?.aborted && !overallController.signal.aborted) {
+        if (
+          !emitted
+          && next
+          && (isTransientAiFailure(error) || canRetryNavyModelRejection(error, engine, next))
+          && !options.signal?.aborted
+          && !overallController.signal.aborted
+        ) {
           yield { type: "fallback", fromEngine: engine, toEngine: next, reason: code, attempt: attempt + 1 };
           continue;
         }

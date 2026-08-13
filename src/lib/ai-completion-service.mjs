@@ -20,6 +20,13 @@ const transient = (error) => error instanceof AiCompletionError && (
   ["provider_timeout", "network_error", "stream_truncated", "empty_generation"].includes(error.code)
 );
 
+const canRetryNavyModelRejection = (error, fromEngine, toEngine) => (
+  error instanceof AiCompletionError
+  && String(fromEngine).startsWith("navy-")
+  && String(toEngine || "").startsWith("navy-")
+  && [400, 404, 422].includes(Number(error.status))
+);
+
 const bounded = (value, fallback, min, max) => {
   const number = Number(value);
   return Number.isFinite(number) ? Math.min(max, Math.max(min, Math.round(number))) : fallback;
@@ -100,11 +107,23 @@ async function oneCompletion(request, runtime, { fetchImpl, signal, timeoutMs })
         }),
       });
     } else if (runtime.protocol === "openai") {
+      const providerMaxTokens = runtime.id.startsWith("navy-")
+        ? Math.max(3_000, maxTokens)
+        : maxTokens;
       response = await fetchImpl(`${runtime.baseUrl}/chat/completions`, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${runtime.key}`, ...correlationHeaders },
         signal: requestSignal,
-        body: JSON.stringify({ model: runtime.model, temperature, max_tokens: maxTokens, messages }),
+        body: JSON.stringify({
+          model: runtime.model,
+          temperature,
+          max_tokens: providerMaxTokens,
+          // Reasoning-capable Navy models can spend a small output budget before producing
+          // visible content. The larger provider cap above gives them room for both phases;
+          // DeepSeek also supports disabling hidden reasoning for this background path.
+          ...(runtime.id.startsWith("navy-deepseek") ? { reasoning_effort: "none" } : {}),
+          messages,
+        }),
       });
     } else {
       response = await fetchImpl(`${runtime.baseUrl}/api/chat`, {
@@ -136,18 +155,28 @@ async function oneCompletion(request, runtime, { fetchImpl, signal, timeoutMs })
 
   let text = "";
   let terminal = false;
+  let stoppedAtTokenLimit = false;
   if (runtime.protocol === "anthropic") {
     text = (body.content ?? []).filter((part) => part?.type === "text").map((part) => part.text || "").join("").trim();
     terminal = body.stop_reason === "end_turn" || body.stop_reason === "stop_sequence";
+    stoppedAtTokenLimit = body.stop_reason === "max_tokens";
   } else if (runtime.protocol === "openai") {
     text = String(body.choices?.[0]?.message?.content || "").trim();
     terminal = body.choices?.[0]?.finish_reason === "stop";
+    stoppedAtTokenLimit = body.choices?.[0]?.finish_reason === "length";
   } else {
     text = String(body.message?.content || "").trim();
     terminal = body.done === true && (!body.done_reason || body.done_reason === "stop");
+    stoppedAtTokenLimit = body.done === true && body.done_reason === "length";
   }
-  if (!terminal) throw new AiCompletionError(runtime.id, "stream_truncated", 502);
   if (!text) throw new AiCompletionError(runtime.id, "empty_generation", 502);
+  // Content-generation callers may preserve a non-empty answer that reached the explicit
+  // provider token limit. Their own quality boundary decides whether it is publishable.
+  // Unknown/disconnected EOF remains an error, and structured extraction keeps the strict
+  // default so an incomplete JSON object can still fall back to another engine.
+  if (!terminal && !(request.acceptLengthLimitedOutput === true && stoppedAtTokenLimit)) {
+    throw new AiCompletionError(runtime.id, "stream_truncated", 502);
+  }
   return text;
 }
 
@@ -195,7 +224,12 @@ export async function completeAiText(request, options = {}) {
         code: error?.code || "provider_error",
         totalMs: Date.now() - startedAt,
       });
-      if (options.signal?.aborted || !transient(error) || index === candidates.length - 1) throw error;
+      const nextEngine = candidates[index + 1];
+      if (
+        options.signal?.aborted
+        || index === candidates.length - 1
+        || (!transient(error) && !canRetryNavyModelRejection(error, engine, nextEngine))
+      ) throw error;
       telemetry({ type: "fallback", fromEngine: engine, toEngine: candidates[index + 1], attempt: index + 2 });
     }
   }
