@@ -1,38 +1,12 @@
 import type { Metadata } from "next";
-import { LandingNav } from "@/components/landing/nav";
-import { Hero } from "@/components/landing/hero";
-import { Pains } from "@/components/landing/pains";
-import { Cycle } from "@/components/landing/cycle";
-import { HowTo } from "@/components/landing/howto";
-import { ChannelMemory, QualityControl } from "@/components/landing/capabilities";
-import { Compare } from "@/components/landing/compare";
-import { Faq } from "@/components/landing/faq";
-import { FinalCta, Footer } from "@/components/landing/final-cta";
-import { StickyCta } from "@/components/landing/sticky-cta";
+import { ReferenceLanding } from "@/components/landing/reference-landing";
 
 export const metadata: Metadata = {
-  title: { absolute: "Аврора — SMM-платформа для юридического бизнеса" },
+  title: { absolute: "Аврора — центр управления SMM" },
   description:
-    "Создавайте, согласовывайте и публикуйте юридический контент в социальных сетях вместе с Авророй.",
+    "Планируйте контент, управляйте соцсетями, работайте с командой и анализируйте результат в одной SMM-платформе.",
 };
 
 export default function LandingPage() {
-  return (
-    <>
-      <LandingNav />
-      <main id="main">
-        <Hero />
-        <Pains />
-        <Cycle />
-        <HowTo />
-        <ChannelMemory />
-        <QualityControl />
-        <Compare />
-        <Faq />
-        <FinalCta />
-      </main>
-      <Footer />
-      <StickyCta />
-    </>
-  );
+  return <ReferenceLanding />;
 }

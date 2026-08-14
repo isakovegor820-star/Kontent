@@ -11,32 +11,26 @@ vi.mock("next/font/google", () => ({
 }));
 
 describe("production landing page", () => {
-  it("renders the restored Aurora Glass landing with the current product capabilities", () => {
+  it("renders the complete Aurora SMM landing structure", () => {
     const markup = renderToStaticMarkup(
       createElement(StoreProvider, null, createElement(LandingPage)),
     );
 
-    expect(markup).toContain("Канал");
-    expect(markup).toContain("ведётся,");
-    expect(markup).toContain("Запустить первый цикл");
-    expect(markup).toContain("Почта и пароль. Канал подключишь следующим шагом.");
-    expect(markup).toContain("Три причины, по которым соцсети стоят");
-    expect(markup).toContain("Три шага — и дальше автопилот");
-    expect(markup).toContain('id="memory"');
-    expect(markup.indexOf('id="memory"')).toBeLessThan(markup.indexOf('id="quality"'));
-    expect(markup).toContain("Пишет в твоём голосе.");
-    expect(markup).toContain("Три источника памяти");
-    expect(markup).toContain("Активная опора для материала");
-    expect(markup).toContain("В канал проходит");
-    expect(markup).toContain("не каждый текст.");
-    expect(markup).toContain("Материал 0184");
-    expect(markup).toContain("Нужно исправить");
-    expect(markup).toContain("Исправить по стандарту");
-    expect(markup).toContain("Порог публикации: 85");
-    expect(markup).toContain("Ручное подтверждение можно оставить навсегда");
-    expect(markup).toContain("А если пост не выйдет?");
-    expect(markup).toContain('id="compare"');
-    expect(markup).toContain('id="faq"');
-    expect(markup).not.toContain('class="aurora-variants aurora-variant-4"');
+    expect(markup).toContain("Аврора — ваш центр управления контентом");
+    expect(markup).toContain("SMM-платформа нового поколения");
+    expect(markup).toContain("Попробовать бесплатно");
+    expect(markup).toContain("Всё необходимое для эффективного SMM");
+    expect(markup).toContain("Планирование публикаций");
+    expect(markup).toContain("Просто. Удобно. Эффективно.");
+    expect(markup).toContain("Данные, которые помогают расти");
+    expect(markup).toContain("124K");
+    expect(markup).toContain("Отзывы наших клиентов");
+    expect(markup).toContain("Выберите подходящий тариф");
+    expect(markup).toContain("Готовы вывести ваш SMM на новый уровень?");
+    expect(markup).toContain('href="#main-content"');
+    expect(markup).toContain('href="/login"');
+    expect(markup).toContain('href="/register"');
+    expect(markup).toContain('id="pricing"');
+    expect(markup).not.toContain("Три причины, по которым соцсети стоят");
   });
 });
