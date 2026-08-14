@@ -5,7 +5,7 @@ const packageJson = JSON.parse(readFileSync(new URL("../../package.json", import
 const devScript = readFileSync(new URL("../../scripts/dev.mjs", import.meta.url), "utf8");
 const devBootstrap = readFileSync(new URL("../../scripts/dev-bootstrap.mjs", import.meta.url), "utf8");
 const nextConfig = readFileSync(new URL("../../next.config.ts", import.meta.url), "utf8");
-const registerPage = readFileSync(new URL("../app/register/page.tsx", import.meta.url), "utf8");
+const authScreen = readFileSync(new URL("../components/auth/auth-screen.tsx", import.meta.url), "utf8");
 
 describe("local development runtime", () => {
   it("routes normal dev commands through the web + worker orchestrator", () => {
@@ -31,6 +31,6 @@ describe("local development runtime", () => {
   it("allows loopback and local-network dev origins while keeping credentials out of a native GET fallback", () => {
     expect(nextConfig).toContain('new Set(["127.0.0.1", "localhost", ...localNetworkOrigins])');
     expect(nextConfig).toContain("allowedDevOrigins,");
-    expect(registerPage).toMatch(/<motion\.form[\s\S]*?method="post"[\s\S]*?onSubmit=\{submit\}/);
+    expect(authScreen).toMatch(/<form[\s\S]*?method="post"[\s\S]*?onSubmit=\{submit\}/);
   });
 });

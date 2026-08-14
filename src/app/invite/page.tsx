@@ -116,7 +116,7 @@ export default function ProjectInvitePage() {
             <p className="mt-3 text-[15px] leading-relaxed text-text-2">
               Войдите с той почтой, на которую выдано приглашение. Ссылка сохранена только в этой вкладке.
             </p>
-            <Button className="mt-6 w-full" variant="solid" onClick={() => router.push("/register")}>
+            <Button className="mt-6 w-full" variant="solid" onClick={() => router.push("/login")}>
               Войти или создать аккаунт
             </Button>
           </>

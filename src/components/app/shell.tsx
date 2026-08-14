@@ -539,15 +539,15 @@ export function AppShell({
   const burgerRef = useRef<HTMLButtonElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const drawerRef = useRef<HTMLElement>(null);
-  // Выход уводит на лендинг — защита не должна перехватить и увести на /register
+  // Выход уводит на лендинг — защита не должна перехватить и увести на /login
   const leavingRef = useRef(false);
 
-  /* ЗАЩИТА: без входа — на регистрацию, без мастера — в мастер.
+  /* ЗАЩИТА: без входа — на страницу входа, без мастера — в мастер.
      Ждём ответа сервера о сессии (authReady), иначе выкинем вошедшего по ошибке. */
   useEffect(() => {
     if (!ready || !authReady || authError || leavingRef.current) return;
     if (!user) {
-      router.replace("/register");
+      router.replace("/login");
       return;
     }
     if (!user.onboarded && pathname !== "/app/onboarding") {

@@ -1583,7 +1583,7 @@ export default function OnboardingPage() {
   useEffect(() => {
     if (!s.authReady) return;
     if (s.authError) return;
-    if (!s.user) router.replace("/register");
+    if (!s.user) router.replace("/login");
     else if (s.user.onboarded) router.replace("/app/calendar");
   }, [router, s.authReady, s.authError, s.user]);
 

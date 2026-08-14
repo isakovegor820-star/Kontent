@@ -72,7 +72,7 @@ export default function ResetPasswordPage() {
             <p role="status" className="rounded-sm bg-surface-inset p-4 text-[14px] leading-relaxed text-text-2">
               {terminal[state]}
             </p>
-            <Link href={state === "success" ? "/register" : "/forgot-password"}>
+            <Link href={state === "success" ? "/login" : "/forgot-password"}>
               <Button variant="brand" size="lg" className="mt-5 w-full">
                 {state === "success" ? "Войти" : "Запросить новую ссылку"}
               </Button>

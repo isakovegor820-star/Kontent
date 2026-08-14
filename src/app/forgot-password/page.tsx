@@ -46,7 +46,7 @@ export default function ForgotPasswordPage() {
   return (
     <main id="main" className="flex min-h-dvh items-center justify-center bg-bg-section px-5 py-12">
       <Card className="w-full max-w-md p-6 sm:p-8">
-        <Link href="/register" className="inline-flex items-center gap-2 text-[14px] font-semibold text-text-2">
+        <Link href="/login" className="inline-flex items-center gap-2 text-[14px] font-semibold text-text-2">
           <ArrowLeft className="h-4 w-4" aria-hidden />
           Вернуться ко входу
         </Link>
