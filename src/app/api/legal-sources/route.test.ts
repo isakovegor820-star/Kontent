@@ -23,7 +23,7 @@ describe("GET /api/legal-sources", () => {
     });
   });
 
-  it("shows ConsultantPlus and GARANT public RSS under the legal category", async () => {
+  it("shows the curated public RSS sources under the legal category", async () => {
     const response = await GET(new NextRequest("http://localhost/api/legal-sources"));
     expect(response.status).toBe(200);
     expect(response.headers.get("x-request-id")).toBeTruthy();
@@ -32,8 +32,12 @@ describe("GET /api/legal-sources", () => {
       category: "Юридические источники",
       paidIntegrationsStatus: "not_configured",
       publicSources: [
+        { id: "government", access: "public_rss", category: "Юридические источники" },
+        { id: "cbr", access: "public_rss", category: "Юридические источники" },
         { id: "consultant", access: "public_rss", category: "Юридические источники" },
         { id: "garant", access: "public_rss", category: "Юридические источники" },
+        { id: "pravo-ru", access: "public_rss", category: "Юридические источники" },
+        { id: "zakon-ru", access: "public_rss", category: "Юридические источники" },
       ],
       fragmentCounts: { law: 2 },
       requestId: expect.any(String),

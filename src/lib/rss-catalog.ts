@@ -2,9 +2,10 @@
  * Редакционный каталог RSS-источников.
  *
  * Это не пользовательские feeds и не таблица БД: каталог версионируется вместе с
- * приложением, поэтому сломанную ссылку можно заменить одной правкой. Перед добавлением
- * пользователю `/api/rss` всё равно проверяет URL живым запросом — каталог не обходит
- * серверную валидацию и SSRF-защиту.
+ * приложением, поэтому сломанную ссылку можно заменить одной правкой. Ручное добавление
+ * через `/api/rss` проверяет URL живым запросом. Автоматический
+ * bootstrap берёт адреса только из этого закрытого каталога, поэтому пользовательский
+ * URL не может попасть в фоновый запрос в обход SSRF-защиты.
  */
 
 export type RssCatalogCategory =
@@ -168,6 +169,16 @@ const RSS_CATALOG: CatalogRecord[] = [
     tags: ["центробанк", "ставк", "регулятор", "инфляц"],
   },
   {
+    id: "government",
+    title: "Правительство России",
+    url: "http://government.ru/all/rss/",
+    description: "Официальные постановления, распоряжения, законопроекты и решения Правительства.",
+    category: "Право",
+    language: "RU",
+    featured: 10,
+    tags: ["постановлен", "распоряжен", "законопроект", "регулирован", "правительств"],
+  },
+  {
     id: "consultant",
     title: "КонсультантПлюс — горячие документы",
     url: "https://www.consultant.ru/rss/hotdocs.xml",
@@ -180,12 +191,32 @@ const RSS_CATALOG: CatalogRecord[] = [
   {
     id: "garant",
     title: "ГАРАНТ.РУ",
-    url: "https://www.garant.ru/rss/",
+    url: "https://rss.garant.ru/news/",
     description: "Правовые новости, налоги, бухгалтерия и судебная практика.",
     category: "Право",
     language: "RU",
     featured: 9,
     tags: ["бухгалтер", "кадры", "госзакуп", "практик"],
+  },
+  {
+    id: "pravo-ru",
+    title: "Право.ru",
+    url: "https://pravo.ru/rss/",
+    description: "Судебная практика, законодательство и аналитика российского юридического рынка.",
+    category: "Право",
+    language: "RU",
+    featured: 9,
+    tags: ["судебн", "банкрот", "арбитраж", "юридическ", "практик"],
+  },
+  {
+    id: "zakon-ru",
+    title: "Закон.ру",
+    url: "https://zakon.ru/rss/blogsanddiscussions",
+    description: "Профессиональные юридические разборы, мнения и обсуждения правоприменения.",
+    category: "Право",
+    language: "RU",
+    featured: 8,
+    tags: ["правоприменен", "судебн", "договор", "арбитраж", "эксперт"],
   },
   {
     id: "cossa",
@@ -315,8 +346,10 @@ export function rssCatalogSize() {
  * Это не второй источник истины и не попытка получить доступ к закрытым кабинетам.
  */
 export function listPublicLegalRssSources(): PublicLegalRssSource[] {
+  const legalSourceOrder = ["government", "cbr", "consultant", "garant", "pravo-ru", "zakon-ru"];
   return RSS_CATALOG
-    .filter((source) => source.category === "Право" && (source.id === "consultant" || source.id === "garant"))
+    .filter((source) => legalSourceOrder.includes(source.id))
+    .sort((left, right) => legalSourceOrder.indexOf(left.id) - legalSourceOrder.indexOf(right.id))
     .map((source) => ({
       id: source.id,
       title: source.title,

@@ -10,6 +10,7 @@ const RSS_FETCH_TIMEOUT_MS = 15_000;
 const RSS_BATCH_SIZE = 20;
 const POST_DELAY_MS = 5 * 60_000;
 export const RSS_POST_SPACING_MS = 15 * 60_000;
+export const RSS_CHANNEL_MAX_POSTS_PER_DAY = 3;
 export const RSS_IRRELEVANT_MARKER = "__AURORA_RSS_SKIP__";
 
 /**
@@ -55,7 +56,14 @@ export async function collectRssPipeline({
               (select count(*)::int from rss_items i
                 where i.feed_id = f.id
                   and i.fetched_at > now() - interval '24 hours'
-                  and i.status = 'posted') as posted_today
+                  and i.status = 'posted') as posted_today,
+              (select count(*)::int
+                 from rss_items channel_item
+                 join rss_feeds channel_feed on channel_feed.id = channel_item.feed_id
+                where channel_feed.user_id = f.user_id
+                  and channel_feed.channel_id = f.channel_id
+                  and channel_item.fetched_at > now() - interval '24 hours'
+                  and channel_item.status = 'posted') as channel_posted_today
          from rss_feeds f
          join channels c on c.id = f.channel_id and c.user_id = f.user_id
         where ${scopeConditions.join(" and ")}
@@ -81,6 +89,8 @@ export async function collectRssPipeline({
       const items = parseRss(await res.text()).slice(0, RSS_BATCH_SIZE);
 
       for (const item of items) {
+        const scheduleKey = `${feed.user_id}:${feed.channel_id}`;
+        const postsForChannelThisRun = scheduledByChannel.get(scheduleKey) || 0;
         const ins = await pool.query(
           `insert into rss_items (feed_id, guid, title, link, summary, published_at)
            values ($1, $2, $3, $4, $5, $6)
@@ -105,7 +115,10 @@ export async function collectRssPipeline({
           continue;
         }
 
-        if (Number(feed.posted_today) + postedThisRun >= Number(feed.max_per_day)) {
+        if (
+          Number(feed.posted_today) + postedThisRun >= Number(feed.max_per_day)
+          || Number(feed.channel_posted_today || 0) + postsForChannelThisRun >= RSS_CHANNEL_MAX_POSTS_PER_DAY
+        ) {
           await pool.query(
             `update rss_items set status = 'skipped', skip_reason = 'limit' where id = $1`,
             [itemId],
@@ -158,7 +171,6 @@ export async function collectRssPipeline({
 
         // Несколько лент одного канала могут найти новости одновременно. Разносим
         // их, чтобы подписчик не получил пачку публикаций в одну минуту.
-        const scheduleKey = `${feed.user_id}:${feed.channel_id}`;
         const positionInChannel = scheduledByChannel.get(scheduleKey) || 0;
         const scheduledAt = new Date(now() + POST_DELAY_MS + positionInChannel * RSS_POST_SPACING_MS).toISOString();
         let postId;

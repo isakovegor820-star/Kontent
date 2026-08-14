@@ -15,7 +15,8 @@ import { assertFutureProviderAdapter } from "./social-provider-contract.mjs";
 import { providerSupportsOperation } from "./provider-capabilities.mjs";
 import { TENCHAT_ADAPTER } from "./tenchat-adapter.mjs";
 
-const GRAPH_BASE = "https://graph.facebook.com/v19.0";
+const META_GRAPH_VERSION = process.env.META_GRAPH_API_VERSION || "v24.0";
+const GRAPH_BASE = process.env.META_GRAPH_API_BASE || `https://graph.facebook.com/${META_GRAPH_VERSION}`;
 
 /* ------------------------------------------------------------ OAuth-конфиги */
 
@@ -50,11 +51,12 @@ export function getOAuthConfig(network) {
       if (!clientId || !clientSecret) return null;
       return {
         id: "instagram",
-        authEndpoint: "https://www.facebook.com/v19.0/dialog/oauth",
+        authEndpoint: `https://www.facebook.com/${META_GRAPH_VERSION}/dialog/oauth`,
         tokenEndpoint: `${GRAPH_BASE}/oauth/access_token`,
         clientId,
         clientSecret,
         scopes: [
+          "instagram_basic",
           "instagram_content_publish",
           "pages_manage_posts",
           "pages_read_engagement",

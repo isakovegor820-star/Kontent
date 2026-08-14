@@ -464,6 +464,7 @@ describe("server draft transactions", () => {
       id: "88",
       label: "Юридические новости",
       topic: "Новые правила исполнительского производства",
+      factualGrounding: "curated_legal_source",
       provenance: {
         kind: "rss_item",
         id: "88",
@@ -482,6 +483,7 @@ describe("server draft transactions", () => {
             summary: "Разбираем изменения и сроки вступления в силу.",
             link: "https://example.test/news/88",
             feed_title: "Юридические новости",
+            source_kind: "legal_opportunity",
           }],
         };
       }
@@ -507,7 +509,7 @@ describe("server draft transactions", () => {
 
     const result = await createDraftForUser(5, {
       ...input,
-      clientKey: "rss_item_source:88",
+      clientKey: "rss_item_source:88:channel:11:variant:standard",
       origin: "rss",
       text: "CLIENT TEXT MUST NOT WIN",
       sourceRef: { kind: "rss", id: "88", label: "Поддельная подпись" },
@@ -520,6 +522,9 @@ describe("server draft transactions", () => {
     });
     expect(insertedParams?.[2]).toContain("Разбираем изменения");
     expect(insertedParams?.[7]).toBe("source_context");
+    const rssLookup = query.mock.calls.find(([sql]) => String(sql).includes("from rss_items item"));
+    expect(String(rssLookup?.[0])).toContain("source_channel.project_id = destination_channel.project_id");
+    expect(rssLookup?.[1]).toEqual(["88", 5, 11]);
   });
 
   it("returns the existing row for an idempotency-key replay without replacing destinations", async () => {

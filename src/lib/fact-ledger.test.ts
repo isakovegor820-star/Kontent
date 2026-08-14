@@ -261,6 +261,31 @@ describe("fact ledger integration contract", () => {
     ]));
   });
 
+  it("accepts an authenticated curated source as closed-world evidence", () => {
+    const ledger = buildFactLedger({
+      task: "Подготовь юридическую новость",
+      postSettings: { ...DEFAULT_POST_SETTINGS, factStrictness: "verified" },
+      sourceEvidence: [{
+        id: "rss-item-108",
+        text: "Изменения вступают в силу 17 мая 2041 года.",
+        source: "source",
+        countsForCapacity: true,
+      }],
+    });
+
+    expect(ledger.evidence).toEqual([expect.objectContaining({
+      id: "rss-item-108",
+      source: "source",
+    })]);
+    expect(validateFactualOutput(
+      "Изменения вступают в силу 17 мая 2041 года.",
+      ledger,
+      { now: checkedAt },
+    ).violations).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "unsupported_date" }),
+    ]));
+  });
+
   it("строит fail-fast для строгого юридического longread до provider/reservation", () => {
     const task = "Напиши 1600–1900 знаков. Процедура реализации имущества — 6 месяцев. Срок может быть продлён определением арбитражного суда. Единственное пригодное жильё обычно исключено по ст. 446 ГПК РФ. Ипотечное жильё — исключение.";
     const ledger = buildFactLedger({

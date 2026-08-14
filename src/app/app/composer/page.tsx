@@ -32,6 +32,7 @@ import {
   ChevronDown,
   CircleStop,
   Clock,
+  ExternalLink,
   Flame,
   History,
   ImageIcon,
@@ -2411,6 +2412,7 @@ function ComposerInner() {
   const timeParam = params.get("time");
   const channelParam = Number(params.get("channel")) || null;
   const fromMedia = params.get("fromMedia") === "1";
+  const suggestMedia = params.get("suggestMedia") === "1";
   const mediaReturnSource = params.get("from") === "studio-visuals"
     ? composerSource(params.get("returnTo"))
     : null;
@@ -2987,10 +2989,22 @@ function ComposerInner() {
         <EditorSection
           id="composer-media"
           title="Медиа"
-          summary={c.media ? `Добавлено: ${c.media.label}` : "Без изображения или видео"}
+          summary={c.media
+            ? `Добавлено: ${c.media.label}`
+            : suggestMedia
+              ? "Изображение не найдено — можно создать новое с ИИ"
+              : "Без изображения или видео"}
           icon={<ImageIcon className="h-5 w-5" />}
+          defaultOpen={suggestMedia && !c.media}
         >
         <div className="space-y-3">
+
+          {suggestMedia && !c.media && (
+            <div className="rounded-sm bg-info-soft p-3 text-info-text">
+              <p className="type-secondary font-semibold">В исходном инфоповоде нет готового изображения.</p>
+              <p className="type-caption mt-1">Загрузите своё, выберите изображение из медиатеки или создайте новое с ИИ.</p>
+            </div>
+          )}
 
           <div className="flex flex-wrap gap-2">
             <input
@@ -3009,7 +3023,7 @@ function ComposerInner() {
               <ImageIcon className="h-4 w-4" aria-hidden />
               {c.media?.kind === "image" ? "Заменить из медиатеки" : "Выбрать из медиатеки"}
             </Button>
-            <Button variant="outline" size="sm" disabled={!canEditContent} onClick={() => {
+            <Button variant={suggestMedia && !c.media ? "primary" : "outline"} size="sm" disabled={!canEditContent} onClick={() => {
               const returnSource = mediaReturnSource ?? composerSource(params.get("from"));
               const returnSuffix = returnSource ? `&returnTo=${returnSource}` : "";
               router.push(currentDraftId
@@ -3544,8 +3558,9 @@ function ComposerInner() {
 /* ------------------------------------------------------- ПЛАШКА «ИЗ РАЗВЕДКИ» */
 
 function SourcePlate({ source }: { source: NonNullable<Post["sourceRef"]> }) {
+  const isRss = source.kind === "rss";
   const href = source.kind === "rss"
-    ? "/app/rss?view=journal"
+    ? "/app/rss?view=used"
     : source.kind === "competitor"
     ? `/app/competitors/${source.id}`
     : source.kind === "trend"
@@ -3553,18 +3568,44 @@ function SourcePlate({ source }: { source: NonNullable<Post["sourceRef"]> }) {
       : "/app/library";
 
   return (
-    <div className="flex items-center gap-3 rounded-sm bg-fire-soft px-4 py-2.5">
-      <Flame className="h-[18px] w-[18px] shrink-0 text-fire" strokeWidth={2} aria-hidden />
-      <p className="min-w-0 flex-1 truncate text-[14px] font-semibold text-fire-text">
-        Из разведки: {source.label}
+    <div className={cn(
+      "flex items-center gap-3 rounded-sm px-4 py-2.5",
+      isRss ? "bg-info-soft" : "bg-fire-soft",
+    )}>
+      {isRss
+        ? <ExternalLink className="h-[18px] w-[18px] shrink-0 text-brand" strokeWidth={2} aria-hidden />
+        : <Flame className="h-[18px] w-[18px] shrink-0 text-fire" strokeWidth={2} aria-hidden />}
+      <p className={cn(
+        "min-w-0 flex-1 truncate text-[14px] font-semibold",
+        isRss ? "text-info-text" : "text-fire-text",
+      )}>
+        {isRss ? "Источник инфоповода" : "Из разведки"}: {source.label}
       </p>
-      <Link
-        href={href}
-        className="-mx-2 inline-flex min-h-11 shrink-0 items-center gap-1 px-2 text-[13px] font-semibold text-fire-text transition-opacity duration-200 hover:opacity-70"
-      >
-        Открыть
-        <ArrowRight className="h-4 w-4" aria-hidden />
-      </Link>
+      {source.provenance?.url ? (
+        <a
+          href={source.provenance.url}
+          target="_blank"
+          rel="noreferrer"
+          className={cn(
+            "-mx-2 inline-flex min-h-11 shrink-0 items-center gap-1 px-2 text-[13px] font-semibold underline-offset-4 transition-opacity duration-200 hover:underline hover:opacity-75 focus-visible:rounded-xs focus-visible:ring-4 focus-visible:ring-brand/15",
+            isRss ? "text-info-text" : "text-fire-text",
+          )}
+        >
+          Открыть источник
+          <ExternalLink className="h-4 w-4" aria-hidden />
+        </a>
+      ) : (
+        <Link
+          href={href}
+          className={cn(
+            "-mx-2 inline-flex min-h-11 shrink-0 items-center gap-1 px-2 text-[13px] font-semibold transition-opacity duration-200 hover:opacity-70 focus-visible:rounded-xs focus-visible:ring-4 focus-visible:ring-brand/15",
+            isRss ? "text-info-text" : "text-fire-text",
+          )}
+        >
+          Открыть
+          <ArrowRight className="h-4 w-4" aria-hidden />
+        </Link>
+      )}
     </div>
   );
 }

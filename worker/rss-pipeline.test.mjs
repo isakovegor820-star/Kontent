@@ -185,6 +185,26 @@ describe("collectRssPipeline", () => {
     ]);
   });
 
+  it("не ставит в календарь больше трёх RSS-постов канала за сутки", async () => {
+    const feeds = [
+      { id: 1, url: "https://a.test/rss", channel_id: 11, user_id: 1, ai_summarize: false, max_per_day: 3, posted_today: 0, channel_posted_today: 2 },
+      { id: 2, url: "https://b.test/rss", channel_id: 11, user_id: 1, ai_summarize: false, max_per_day: 3, posted_today: 0, channel_posted_today: 2 },
+    ];
+    const h = harness(feeds, {
+      [feeds[0].url]: rss([{ title: "A", link: "https://a.test/1", summary: "Alpha", guid: "a1" }]),
+      [feeds[1].url]: rss([{ title: "B", link: "https://b.test/1", summary: "Beta", guid: "b1" }]),
+    });
+
+    const result = await collectRssPipeline({ ...h });
+
+    expect(result.posts).toBe(1);
+    expect(h.enqueuePost).toHaveBeenCalledOnce();
+    expect(h.queries).toContainEqual({
+      sql: "update rss_items set status = 'skipped', skip_reason = 'limit' where id = $1",
+      params: [101],
+    });
+  });
+
   it("помечает лишние элементы skipped и не ставит их в publish queue", async () => {
     const feed = { id: 1, url: "https://a.test/rss", channel_id: 11, user_id: 1, ai_summarize: false, max_per_day: 1, posted_today: 0 };
     const h = harness([feed], {

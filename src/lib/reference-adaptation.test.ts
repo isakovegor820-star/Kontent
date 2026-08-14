@@ -99,6 +99,34 @@ describe("reference adaptation context", () => {
     expect(sanitizeSemanticIntent(context.sourceText)).not.toMatch(/136|Иван Петров|https/u);
   });
 
+  it("promotes only a server-curated legal RSS source into factual grounding", () => {
+    const context = referenceAdaptationContextFromDraft(draft({
+      origin: "rss",
+      text: "Суд разъяснил порядок применения обеспечительных мер.",
+      source_ref: {
+        kind: "rss",
+        id: "108",
+        label: "Официальные правовые новости",
+        topic: "Обеспечительные меры",
+        factualGrounding: "curated_legal_source",
+        provenance: {
+          kind: "rss_item",
+          id: "108",
+          label: "Официальные правовые новости",
+          url: "https://example.test/legal/108",
+        },
+      },
+    }))!;
+
+    expect(context.factualGrounding).toEqual({
+      id: "108",
+      label: "Официальные правовые новости",
+      text: "Суд разъяснил порядок применения обеспечительных мер.",
+      url: "https://example.test/legal/108",
+    });
+    expect(buildReferenceAdaptationTask(context)).toContain("Используй только факты, прямо указанные");
+  });
+
   it("does not mistake a generic hook for the source subject", () => {
     const context = referenceAdaptationContextFromDraft(draft({
       text: "Вы тоже это делаете?\n\nИсполнительский иммунитет защищает необходимое для жизни имущество должника.",

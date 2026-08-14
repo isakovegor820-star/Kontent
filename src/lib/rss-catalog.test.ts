@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { rankRssCatalog, rssCatalogSize } from "./rss-catalog";
+import { listPublicLegalRssSources, rankRssCatalog, rssCatalogSize } from "./rss-catalog";
 
 describe("RSS catalog", () => {
   it("поднимает право и технологии для смешанной ниши канала", () => {
@@ -26,5 +26,16 @@ describe("RSS catalog", () => {
     const ranked = rankRssCatalog("");
     expect(ranked.filter((source) => source.recommended)).toHaveLength(6);
     expect(ranked).toHaveLength(rssCatalogSize());
+  });
+
+  it("автоматически подключает широкую юридическую подборку в устойчивом порядке", () => {
+    expect(listPublicLegalRssSources().map((source) => source.id)).toEqual([
+      "government",
+      "cbr",
+      "consultant",
+      "garant",
+      "pravo-ru",
+      "zakon-ru",
+    ]);
   });
 });

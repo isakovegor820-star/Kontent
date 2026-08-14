@@ -18,6 +18,13 @@ export type ReferenceAdaptationContext = {
     structure?: string;
     whyItWorked?: string;
   };
+  /** Only a server-curated legal RSS item can opt into factual grounding. */
+  factualGrounding?: {
+    id: string;
+    label: string;
+    text: string;
+    url?: string;
+  };
   mode: "same_topic_original_post";
 };
 
@@ -109,6 +116,17 @@ export function referenceAdaptationContextFromDraft(draft: ServerDraft): Referen
   const hook = cleanText(sourceRef.hook, 600) || undefined;
   const structure = cleanText(sourceRef.structure, 1_200) || undefined;
   const whyItWorked = cleanText(sourceRef.whyItWorked, 800) || undefined;
+  const factualGrounding = sourceRef.factualGrounding === "curated_legal_source"
+    && sourceRef.provenance?.kind === "rss_item"
+    ? {
+        id: cleanText(sourceRef.provenance.id, 200) || String(draft.id),
+        label: cleanText(sourceRef.provenance.label, 400) || cleanText(sourceRef.label, 400) || "Юридический источник",
+        text: sourceText,
+        ...(sourceRef.provenance.url?.trim()
+          ? { url: sourceRef.provenance.url.trim().slice(0, 2_048) }
+          : {}),
+      }
+    : undefined;
 
   return {
     draftId: draft.id,
@@ -122,6 +140,7 @@ export function referenceAdaptationContextFromDraft(draft: ServerDraft): Referen
     ...(hook || structure || whyItWorked
       ? { mechanics: { ...(hook ? { hook } : {}), ...(structure ? { structure } : {}), ...(whyItWorked ? { whyItWorked } : {}) } }
       : {}),
+    ...(factualGrounding ? { factualGrounding } : {}),
     mode: "same_topic_original_post",
   };
 }
@@ -135,7 +154,12 @@ export function buildReferenceAdaptationTask(
     context.readerProblem ? `Проблема читателя: ${context.readerProblem}.` : null,
     context.semanticGoal ? `Смысловая задача: ${context.semanticGoal}.` : null,
     "Сохрани предмет обсуждения и читательскую задачу выбранного материала. Не переключайся на другую тему из профиля, настроек или прошлого диалога.",
-    "Не копируй формулировки и не переноси неподтверждённые цифры, даты, имена, ссылки, реквизиты, цены, обещания, кейсы или проверяемые выводы. Если конкретику нельзя подтвердить, обобщи её внутри той же темы.",
+    context.factualGrounding
+      ? "Собери готовую публикацию: сильная первая строка или заголовок, основная часть, уместный призыв к действию и релевантные хэштеги в конце."
+      : null,
+    context.factualGrounding
+      ? "Используй только факты, прямо указанные в проверенном источнике карточки. Переработай их своими словами, не копируй формулировки и не добавляй отсутствующие выводы, нормы, цифры или обещания."
+      : "Не копируй формулировки и не переноси неподтверждённые цифры, даты, имена, ссылки, реквизиты, цены, обещания, кейсы или проверяемые выводы. Если конкретику нельзя подтвердить, обобщи её внутри той же темы.",
   ].filter(Boolean).join("\n\n");
 }
 

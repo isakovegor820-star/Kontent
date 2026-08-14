@@ -21,7 +21,7 @@ import {
   Menu,
   SearchCode,
   Rocket,
-  Rss,
+  Scale,
   ScanSearch,
   Settings,
   Sparkles,
@@ -44,6 +44,10 @@ import {
   isAppRouteActive,
   type AppNavRouteId,
 } from "@/lib/app-routes";
+import {
+  LEGAL_OPPORTUNITY_UNREAD_EVENT,
+  safeLegalOpportunityUnreadCount,
+} from "@/lib/legal-opportunity-unread";
 import { useStore } from "@/lib/store";
 import type { User } from "@/lib/types";
 import { cn, fmtNum, plural } from "@/lib/utils";
@@ -67,7 +71,7 @@ const NAV_ICONS: Record<AppNavRouteId, LucideIcon> = {
   studio: Sparkles,
   autopilot: Rocket,
   library: Bookmark,
-  rss: Rss,
+  rss: Scale,
   recon: ScanSearch,
   siteAnalysis: SearchCode,
   analytics: BarChart3,
@@ -77,7 +81,7 @@ const NAV_ICONS: Record<AppNavRouteId, LucideIcon> = {
 const NAV_CHILDREN: Partial<Record<AppNavRouteId, readonly NavChild[]>> = {
   studio: [
     { href: "/app/studio?mode=chat", label: "Чат" },
-    { href: "/app/studio/visuals", label: "Карусели и сценарии" },
+    { href: "/app/studio/questions", label: "Запросы аудитории" },
     { href: "/app/studio?mode=media", label: "Картинки и видео" },
   ],
   autopilot: [
@@ -87,6 +91,12 @@ const NAV_CHILDREN: Partial<Record<AppNavRouteId, readonly NavChild[]>> = {
   library: [
     { href: "/app/library?tab=hits", label: "Референсы", preserveParams: ["channel"] },
     { href: "/app/library?tab=posts", label: "Коллекция", preserveParams: ["channel"] },
+  ],
+  rss: [
+    { href: "/app/rss", label: "Для вас", preserveParams: ["channel"] },
+    { href: "/app/rss?view=saved", label: "Сохранённые", preserveParams: ["channel"] },
+    { href: "/app/rss?view=used", label: "Использованные", preserveParams: ["channel"] },
+    { href: "/app/rss?view=hidden", label: "Скрытые", preserveParams: ["channel"] },
   ],
   recon: [
     { href: "/app/recon", label: "Поиск" },
@@ -119,6 +129,46 @@ const BOTTOM_NAV: NavItem[] = APP_BOTTOM_NAV_ROUTE_IDS.map((routeId) => ({
 
 function isActive(pathname: string, item: NavItem) {
   return isAppRouteActive(pathname, item.routeId);
+}
+
+function useLegalOpportunityUnreadCount(userId: number | null) {
+  const [count, setCount] = useState(0);
+
+  const refresh = useCallback(async () => {
+    try {
+      const response = await fetch("/api/rss/items?summary=unread", { cache: "no-store" });
+      if (!response.ok) return;
+      const body = await response.json() as { unreadCount?: unknown };
+      setCount(safeLegalOpportunityUnreadCount(body.unreadCount));
+    } catch {
+      // Сбой фонового badge не должен перекрывать навигацию или старое корректное число.
+    }
+  }, []);
+
+  useEffect(() => {
+    if (userId == null) return;
+
+    const startupTimer = window.setTimeout(() => void refresh(), 0);
+    const interval = window.setInterval(() => void refresh(), 60_000);
+    const handleUnread = (event: Event) => {
+      const detail = (event as CustomEvent<{ count?: unknown }>).detail;
+      setCount(safeLegalOpportunityUnreadCount(detail?.count));
+    };
+    const handleProjectChange = () => {
+      setCount(0);
+      void refresh();
+    };
+    window.addEventListener(LEGAL_OPPORTUNITY_UNREAD_EVENT, handleUnread);
+    window.addEventListener("aurora:project-changed", handleProjectChange);
+    return () => {
+      window.clearTimeout(startupTimer);
+      window.clearInterval(interval);
+      window.removeEventListener(LEGAL_OPPORTUNITY_UNREAD_EVENT, handleUnread);
+      window.removeEventListener("aurora:project-changed", handleProjectChange);
+    };
+  }, [refresh, userId]);
+
+  return count;
 }
 
 function childHref(child: NavChild, searchParams: Pick<URLSearchParams, "get">): string {
@@ -264,12 +314,14 @@ function UserRow({ user, onSignOut }: { user: User; onSignOut: () => void }) {
 function SidebarInner({
   pathname,
   user,
+  opportunityUnreadCount,
   onSignOut,
   onClose,
   closeRef,
 }: {
   pathname: string;
   user: User;
+  opportunityUnreadCount: number;
   onSignOut: () => void;
   onClose?: () => void;
   closeRef?: React.RefObject<HTMLButtonElement | null>;
@@ -380,7 +432,7 @@ function SidebarInner({
                       onClick={onClose}
                       aria-current={active ? "page" : undefined}
                       className={cn(
-                        "group relative flex h-11 items-center gap-3 rounded-xs pr-3 pl-3.5",
+                        "group relative flex min-h-11 items-center gap-3 rounded-xs py-2.5 pr-3 pl-3.5",
                         "text-[15px] font-semibold transition-colors duration-200",
                         active
                           ? "bg-info-soft text-brand"
@@ -401,21 +453,53 @@ function SidebarInner({
                         strokeWidth={active ? 2 : 1.75}
                         aria-hidden
                       />
-                      <span className="truncate">{route.label}</span>
+                      <span className="min-w-0 flex-1 leading-tight">{route.label}</span>
+                      {item.routeId === "rss" && opportunityUnreadCount > 0 ? (
+                        <>
+                          <span
+                            aria-hidden
+                            className="nums min-w-6 shrink-0 rounded-full bg-brand px-1.5 py-1 text-center text-[11px] font-bold leading-none text-white shadow-soft"
+                          >
+                            {opportunityUnreadCount > 99 ? "99+" : opportunityUnreadCount}
+                          </span>
+                          <span className="sr-only">
+                            {`, ${opportunityUnreadCount} ${plural(opportunityUnreadCount, "новый материал", "новых материала", "новых материалов")}`}
+                          </span>
+                        </>
+                      ) : null}
                     </Link>
                     {active && item.children && (
                       <ul className="mt-1 ml-6 space-y-0.5 border-l border-brand/15 pl-3">
-                        {item.children.map((child) => (
+                        {item.children.map((child) => {
+                          const [childPath, childQuery = ""] = child.href.split("?");
+                          const childParams = new URLSearchParams(childQuery);
+                          const siblingKeys = new Set(item.children?.flatMap((entry) => {
+                            const [, query = ""] = entry.href.split("?");
+                            return Array.from(new URLSearchParams(query).keys());
+                          }) ?? []);
+                          const childActive = pathname === childPath && (
+                            childParams.size > 0
+                              ? Array.from(childParams.entries()).every(([key, value]) => searchParams.get(key) === value)
+                              : Array.from(siblingKeys).every((key) => !searchParams.has(key))
+                          );
+                          return (
                           <li key={child.href}>
                             <Link
                               href={childHref(child, searchParams)}
                               onClick={onClose}
-                              className="flex min-h-9 items-center rounded-xs px-3 text-[13px] font-semibold text-text-3 transition-colors hover:bg-surface-inset hover:text-brand"
+                              aria-current={childActive ? "page" : undefined}
+                              className={cn(
+                                "flex min-h-9 items-center rounded-xs px-3 text-[13px] font-semibold transition-colors",
+                                childActive
+                                  ? "bg-surface-inset text-brand"
+                                  : "text-text-3 hover:bg-surface-inset hover:text-brand",
+                              )}
                             >
                               {child.label}
                             </Link>
                           </li>
-                        ))}
+                          );
+                        })}
                       </ul>
                     )}
                   </li>
@@ -535,6 +619,9 @@ export function AppShell({
   const router = useRouter();
   const pathname = usePathname();
   const [menuOpen, setMenuOpen] = useState(false);
+  const opportunityUnreadCount = useLegalOpportunityUnreadCount(
+    ready && authReady && user ? user.id : null,
+  );
 
   const burgerRef = useRef<HTMLButtonElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -662,6 +749,7 @@ export function AppShell({
           <SidebarInner
             pathname={pathname}
             user={user}
+            opportunityUnreadCount={opportunityUnreadCount}
             onSignOut={handleSignOut}
           />
         </aside>
@@ -700,6 +788,7 @@ export function AppShell({
               <SidebarInner
                 pathname={pathname}
                 user={user}
+                opportunityUnreadCount={opportunityUnreadCount}
                 onSignOut={handleSignOut}
                 onClose={closeMenu}
                 closeRef={closeRef}

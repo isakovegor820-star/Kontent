@@ -857,11 +857,16 @@ async function resolveSourceContext(
       summary: string | null;
       link: string | null;
       feed_title: string | null;
+      source_kind: string | null;
     }>(
-      `select item.id, item.title, item.summary, item.link, feed.title as feed_title
+      `select item.id, item.title, item.summary, item.link, feed.title as feed_title,
+              feed.source_kind
          from rss_items item
          join rss_feeds feed on feed.id = item.feed_id
-        where item.id = $1 and feed.user_id = $2 and feed.channel_id = $3`,
+         join channels source_channel on source_channel.id = feed.channel_id
+         join channels destination_channel on destination_channel.id = $3
+        where item.id = $1 and feed.user_id = $2
+          and source_channel.project_id = destination_channel.project_id`,
       [sourceId, userId, channelId],
     )).rows[0];
     const canonicalText = [row?.title, row?.summary].filter(Boolean).join("\n\n").trim();
@@ -875,11 +880,16 @@ async function resolveSourceContext(
         id: String(row.id),
         label,
         topic: row.title?.trim() || topicFromSourceText(canonicalText),
+        ...(row.source_kind === "legal_opportunity"
+          ? { factualGrounding: "curated_legal_source" as const }
+          : {}),
         provenance: {
           kind: "rss_item",
           id: String(row.id),
           label,
-          ...(row.link ? { url: row.link } : {}),
+          ...(row.link && /^https?:\/\//iu.test(row.link.trim())
+            ? { url: row.link.trim().slice(0, 2_048) }
+            : {}),
         },
       },
     };

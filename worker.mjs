@@ -113,6 +113,10 @@ import { decryptToken, encryptToken } from "./src/lib/token-crypto.mjs";
 // Тот же модуль, что используют роуты подключения — ноль дублирования OAuth-логики.
 import { getAdapter, getOAuthConfig } from "./src/lib/social-providers.mjs";
 import { refreshAccessToken } from "./src/lib/oauth.mjs";
+import {
+  fetchInstagramBusinessDiscovery,
+  instagramDiscoveryErrorText,
+} from "./src/lib/instagram-business-discovery.mjs";
 // Профиль канала (невидимая база знаний): промпт извлечения, парсер ответа модели и
 // сборка текста источника — общий чистый модуль с Next-роутами, без дублирования.
 import {
@@ -204,7 +208,11 @@ import {
 import { assertWorkerAiCallPolicy } from "./worker/ai-call-policy.mjs";
 import { loadBotIdeaStyleSamples } from "./worker/bot-idea-context.mjs";
 import { retryFailedPostFromBot } from "./worker/bot-publication-retry.mjs";
-import { COMPETITOR_MECHANIC_ACTION_LABEL } from "./worker/bot-copy.mjs";
+import {
+  BOT_HELP_TEXT,
+  COMPETITOR_MECHANIC_ACTION_LABEL,
+  formatBotToday,
+} from "./worker/bot-copy.mjs";
 import { reconcilePasswordResetOutbox } from "./worker/password-reset-outbox.mjs";
 import { persistCompetitorLibraryAnalytics } from "./worker/library-analytics.mjs";
 import { reconcilePublicationOutbox } from "./src/lib/publication-outbox.mjs";
@@ -2231,11 +2239,27 @@ const BOT_POLL = !AUTOPILOT_ONLY && !MEDIA_ONLY && !PUBLICATION_ONLY && !process
 
 /** Что бот умеет — показывается в меню Telegram по кнопке «/». */
 const BOT_COMMANDS = [
+  { command: "today", description: "Публикации и задачи на сегодня" },
+  { command: "create", description: "Создать новую публикацию" },
   { command: "stats", description: "Цифры канала за неделю" },
   { command: "plan", description: "План недели от автопилота" },
   { command: "trends", description: "Что зашло у конкурентов" },
   { command: "help", description: "Что я умею" },
 ];
+
+function botAppUrl(pathname) {
+  const configured = String(process.env.APP_URL || "").trim();
+  if (!configured) return null;
+  try {
+    const url = new URL(pathname, configured.endsWith("/") ? configured : `${configured}/`);
+    if (url.protocol !== "https:" && !(process.env.NODE_ENV !== "production" && url.protocol === "http:")) {
+      return null;
+    }
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
 
 /** Кто написал. null — чат не привязан ни к кому. */
 async function userByChat(chatId) {
@@ -2274,12 +2298,14 @@ async function handleStart(chatId, code) {
 
   await tgSend(
     chatId,
-    "Готово, теперь пишу сюда. Что будет прилетать:\n\n" +
+    "Готово, теперь пишу сюда. Что будет приходить:\n\n" +
       "• пост вышел или не вышел — сразу, с кнопкой «Отправить снова»\n" +
       `• у конкурента залетело — с кнопкой «${COMPETITOR_MECHANIC_ACTION_LABEL}»\n` +
-      "• план недели от автопилота — с кнопкой «Одобрить всё»\n\n" +
-      "Команды: /stats — цифры, /plan — план недели, /trends — что зашло у соседей.",
+      "• план недели от автопилота — с кнопкой подтверждения\n\n" +
+      "Начнём со сводки на сегодня.",
   );
+  const overview = await botToday(Number(link.user_id));
+  await tgSend(chatId, overview.text, overview.buttons);
   console.log(`[bot] чат ${chatId} привязан к user ${link.user_id}`);
 }
 
@@ -2768,7 +2794,12 @@ async function fetchCompetitorPage(handle) {
 }
 
 // Собрать досье одного конкурента: название + подписчики (Bot API) + посты (страница).
-async function collectCompetitor(comp) {
+async function collectTelegramCompetitor(comp) {
+  await pool.query(
+    `update competitors set status = 'refreshing', sync_started_at = now()
+      where id = $1 and is_active`,
+    [comp.id],
+  );
   const ref = "@" + comp.handle;
   let title = null;
   try {
@@ -2786,7 +2817,8 @@ async function collectCompetitor(comp) {
   // Ничего не собралось — канал закрыт/не существует. Честная ошибка в карточку.
   if (!page.ok && title == null && subscribers == null) {
     await pool.query(
-      `update competitors set status = 'error', last_error = $2, collected_at = now() where id = $1`,
+      `update competitors set status = 'error', last_error = $2, collected_at = now(),
+         sync_requested_at = null, sync_started_at = null where id = $1 and is_active`,
       [comp.id, "Канал не найден или закрыт — досье собирается только по публичным каналам."],
     );
     console.log(`[recon] @${comp.handle}: закрыт/не найден`);
@@ -2799,7 +2831,8 @@ async function collectCompetitor(comp) {
   if (page.posts.length === 0) {
     await pool.query(
       `update competitors set title = coalesce($2, title), subscribers = coalesce($3, subscribers),
-         status = 'no_feed', last_error = $4, collected_at = now() where id = $1`,
+         status = 'no_feed', last_error = $4, collected_at = now(),
+         sync_requested_at = null, sync_started_at = null where id = $1 and is_active`,
       [
         comp.id,
         title,
@@ -2813,13 +2846,25 @@ async function collectCompetitor(comp) {
 
   for (const p of page.posts) {
     await pool.query(
-      `insert into competitor_posts (competitor_id, tg_msg_id, text, views, reactions, media, photo_url, posted_at)
-       values ($1, $2, $3, $4, $5, $6, $7, $8)
+      `insert into competitor_posts
+         (competitor_id, tg_msg_id, external_post_id, permalink, text, views, reactions, media, photo_url, posted_at)
+       values ($1, $2, $2::text, $9, $3, $4, $5, $6, $7, $8)
        on conflict (competitor_id, tg_msg_id) do update set
+         external_post_id = $2::text, permalink = $9,
          text = $3, views = $4, reactions = $5, media = $6,
          photo_url = coalesce($7, competitor_posts.photo_url),
          posted_at = coalesce(competitor_posts.posted_at, $8), collected_at = now()`,
-      [comp.id, p.msgId, p.text, p.views, p.reactions, p.media, p.photoUrl, p.postedAt],
+      [
+        comp.id,
+        p.msgId,
+        p.text,
+        p.views,
+        p.reactions,
+        p.media,
+        p.photoUrl,
+        p.postedAt,
+        `https://t.me/${comp.handle}/${p.msgId}`,
+      ],
     );
   }
 
@@ -2834,7 +2879,8 @@ async function collectCompetitor(comp) {
 
   await pool.query(
     `update competitors set title = coalesce($2, title), subscribers = coalesce($3, subscribers),
-       status = 'ready', last_error = null, collected_at = now() where id = $1`,
+       status = 'ready', last_error = null, collected_at = now(),
+       sync_requested_at = null, sync_started_at = null where id = $1 and is_active`,
     [comp.id, title, subscribers],
   );
   console.log(
@@ -2850,6 +2896,97 @@ async function collectCompetitor(comp) {
     title: title || comp.title,
   }).catch(
     (e) => console.error(`[hits] @${comp.handle}:`, e?.message),
+  );
+}
+
+async function collectInstagramCompetitor(comp) {
+  await pool.query(
+    `update competitors set status = 'refreshing', sync_started_at = now()
+      where id = $1 and is_active`,
+    [comp.id],
+  );
+
+  const authChannel = (
+    await pool.query(
+      `select instagram.id, instagram.user_id, instagram.network, instagram.oauth_token_id
+         from channels anchor
+         join channels instagram on instagram.project_id = anchor.project_id
+        where anchor.id = $1 and instagram.network = 'instagram'
+          and instagram.is_active and instagram.oauth_token_id is not null
+        order by instagram.id
+        limit 1`,
+      [comp.channel_id],
+    )
+  ).rows[0];
+  const token = authChannel ? await loadOAuthToken(authChannel) : null;
+  const result = await fetchInstagramBusinessDiscovery({
+    accessToken: token?.accessToken,
+    ownAccountId: token?.externalId,
+    username: comp.handle,
+  });
+
+  if (!result.ok) {
+    await pool.query(
+      `update competitors set status = 'error', last_error = $2, collected_at = now(),
+         sync_requested_at = null, sync_started_at = null where id = $1 and is_active`,
+      [comp.id, instagramDiscoveryErrorText(result.code)],
+    );
+    return;
+  }
+
+  const profile = result.profile;
+  for (const post of profile.posts) {
+    await pool.query(
+      `insert into competitor_posts
+         (competitor_id, external_post_id, permalink, text, reactions, like_count,
+          comments_count, media, thumbnail_url, photo_url, posted_at)
+       values ($1,$2,$3,$4,$5,$5,$6,$7,$8,$8,$9)
+       on conflict (competitor_id, external_post_id) where external_post_id is not null
+       do update set permalink = excluded.permalink, text = excluded.text,
+         reactions = excluded.reactions, like_count = excluded.like_count,
+         comments_count = excluded.comments_count, media = excluded.media,
+         thumbnail_url = excluded.thumbnail_url,
+         photo_url = coalesce(excluded.photo_url, competitor_posts.photo_url),
+         posted_at = coalesce(excluded.posted_at, competitor_posts.posted_at), collected_at = now()`,
+      [
+        comp.id,
+        post.id,
+        post.permalink,
+        post.text,
+        post.likes,
+        post.comments,
+        post.media,
+        post.thumbnailUrl,
+        post.postedAt,
+      ],
+    );
+  }
+
+  if (profile.followersCount != null) {
+    await pool.query(
+      `insert into competitor_stats (competitor_id, snapshot_date, subscribers) values ($1, $2, $3)
+       on conflict (competitor_id, snapshot_date) do update set subscribers = $3, collected_at = now()`,
+      [comp.id, mskToday(), profile.followersCount],
+    );
+  }
+  await pool.query(
+    `update competitors set external_id = $2, title = coalesce($3, title), avatar_url = $4,
+       subscribers = coalesce($5, subscribers), status = 'ready', last_error = null,
+       collected_at = now(), sync_requested_at = null, sync_started_at = null
+     where id = $1 and is_active`,
+    [comp.id, profile.id, profile.name || `@${profile.username}`, profile.avatarUrl, profile.followersCount],
+  );
+  console.log(`[recon] Instagram @${comp.handle}: ${profile.posts.length} публикаций`);
+}
+
+async function collectCompetitor(comp) {
+  if (!comp?.is_active) return;
+  if (comp.network === "instagram") return collectInstagramCompetitor(comp);
+  if (comp.network === "tg") return collectTelegramCompetitor(comp);
+  await pool.query(
+    `update competitors set status = 'error', last_error = $2,
+       sync_requested_at = null, sync_started_at = null where id = $1`,
+    [comp.id, `Сеть ${comp.network} пока не поддерживается.`],
   );
 }
 
@@ -3783,9 +3920,10 @@ async function detectHits(comp) {
 async function collectCompetitors() {
   const rows = (
     await pool.query(
-      `select id, user_id, channel_id, handle, title from competitors
-        where network = 'tg'
-          and (status = 'pending' or collected_at is null or collected_at < now() - interval '2 hours')`,
+      `select id, user_id, channel_id, network, handle, title, is_active from competitors
+        where network in ('tg','instagram') and is_active
+          and (status in ('pending','refreshing') or collected_at is null
+               or collected_at < now() - interval '2 hours')`,
     )
   ).rows;
   await mapConcurrent(rows, RECON_CONCURRENCY, async (c) => {
@@ -3794,7 +3932,8 @@ async function collectCompetitors() {
     } catch (err) {
       console.error(`[recon] @${c.handle} сбор упал:`, err?.message);
       await pool
-        .query(`update competitors set status = 'error', last_error = $2 where id = $1`, [
+        .query(`update competitors set status = 'error', last_error = $2,
+                  sync_requested_at = null, sync_started_at = null where id = $1 and is_active`, [
           c.id,
           String(err?.message || err).slice(0, 300),
         ])
@@ -5449,6 +5588,121 @@ async function weeklyPlans() {
 // чтобы переиспользовать их функции, а не дублировать логику.
 // ============================================================================
 
+/** Главная мобильная сводка: работа на сегодня и только подтверждённые проблемы. */
+async function botToday(userId) {
+  const project = (
+    await pool.query(
+      `select project.id, project.name, project.timezone
+         from user_project_preferences preference
+         join project_members member
+           on member.project_id = preference.selected_project_id
+          and member.user_id = preference.user_id
+          and member.status = 'active'
+         join projects project
+           on project.id = preference.selected_project_id
+          and project.is_archived = false
+        where preference.user_id = $1
+        limit 1`,
+      [userId],
+    )
+  ).rows[0];
+
+  if (!project) {
+    return {
+      text: "Текущий проект не выбран. Открой Аврору, выбери проект и повтори /today.",
+      buttons: undefined,
+    };
+  }
+
+  const projectId = Number(project.id);
+  const timezone = String(project.timezone || "UTC");
+  const metrics = (
+    await pool.query(
+      `with bounds as (
+         select date_trunc('day', now() at time zone $2) at time zone $2 as day_start
+       )
+       select
+         count(*) filter (
+           where post.status = 'scheduled'
+             and post.scheduled_at >= bounds.day_start
+             and post.scheduled_at < bounds.day_start + interval '1 day'
+         )::int as scheduled_today,
+         count(*) filter (
+           where post.status = 'scheduled' and post.scheduled_at >= now()
+         )::int as scheduled_future,
+         count(*) filter (
+           where post.status = 'published' and post.published_at >= now() - interval '24 hours'
+         )::int as published_24h,
+         count(*) filter (
+           where post.status = 'failed'
+             and coalesce(post.scheduled_at, post.created_at) >= now() - interval '7 days'
+         )::int as failed
+         from posts post cross join bounds
+        where post.project_id = $1`,
+      [projectId, timezone],
+    )
+  ).rows[0] || {};
+  const reconnect = Number((
+    await pool.query(
+      `select count(*)::int as count
+         from channels channel
+        where channel.project_id = $1
+          and channel.is_active = true
+          and channel.status <> 'active'`,
+      [projectId],
+    )
+  ).rows[0]?.count || 0);
+  const upcoming = (
+    await pool.query(
+      `select post.scheduled_at, channel.network,
+              coalesce(nullif(btrim(channel.title), ''), nullif(btrim(channel.handle), ''), 'Канал') as channel
+         from posts post
+         join channels channel
+           on channel.id = post.channel_id and channel.project_id = post.project_id
+        where post.project_id = $1
+          and post.status = 'scheduled'
+          and post.scheduled_at >= now()
+        order by post.scheduled_at, post.id
+        limit 4`,
+      [projectId],
+    )
+  ).rows.map((row) => ({
+    scheduledAt: row.scheduled_at,
+    network: row.network,
+    channel: row.channel,
+  }));
+  const calendarUrl = botAppUrl("/app/calendar");
+  const createUrl = botAppUrl("/app/studio?intent=create");
+  const buttonRow = [
+    calendarUrl ? { text: "Открыть календарь", url: calendarUrl } : null,
+    createUrl ? { text: "Создать пост", url: createUrl } : null,
+  ].filter(Boolean);
+
+  return {
+    text: formatBotToday({
+      projectName: project.name,
+      timezone,
+      scheduledToday: metrics.scheduled_today,
+      scheduledFuture: metrics.scheduled_future,
+      published24h: metrics.published_24h,
+      failed: metrics.failed,
+      reconnect,
+      upcoming,
+    }),
+    buttons: buttonRow.length ? [buttonRow] : undefined,
+  };
+}
+
+function botCreateEntry() {
+  const createUrl = botAppUrl("/app/studio?intent=create");
+  return {
+    text: createUrl
+      ? "Начни с темы или черновой мысли. Студия Авроры подготовит текст, а затем покажет каналы, дату и часовой пояс до подтверждения."
+      : "Открой в Авроре «Студию контента» и выбери «Создать». Перед публикацией увидишь каналы, дату и часовой пояс.",
+    buttons: createUrl ? [[{ text: "Создать пост", url: createUrl }]] : undefined,
+  };
+}
+
 /** Короткая сводка по каналу — то же, что видно в «Аналитике», но за 2 секунды в телефоне. */
 async function botStats(userId) {
   const chans = (
@@ -6107,6 +6361,14 @@ async function handleUpdate(u) {
         return;
       }
 
+      if (text.startsWith("/today")) {
+        const overview = await botToday(userId);
+        return void (await tgSend(chatId, overview.text, overview.buttons));
+      }
+      if (text.startsWith("/create")) {
+        const entry = botCreateEntry();
+        return void (await tgSend(chatId, entry.text, entry.buttons));
+      }
       if (text.startsWith("/stats")) return void (await tgSend(chatId, await botStats(userId)));
       if (text.startsWith("/plan")) {
         const p = await botPlan(userId);
@@ -6117,12 +6379,7 @@ async function handleUpdate(u) {
         return void (await tgSend(chatId, t.text, t.buttons));
       }
       if (text.startsWith("/help")) {
-        return void (await tgSend(
-          chatId,
-          "Я слежу за твоим каналом и приношу новости:\n\n" +
-            "/stats — цифры за неделю\n/plan — план недели, с кнопкой одобрения\n/trends — что зашло у соседей\n\n" +
-            "Сам напишу, когда пост выйдет, упадёт или у конкурента что-то залетит.",
-        ));
+        return void (await tgSend(chatId, BOT_HELP_TEXT));
       }
       // Свободный текст без команды — скорее всего ответ на gap-вопрос (ИИ спросил
       // о пробеле в знаниях). Короткое «ок» фактом не считаем: пользы с двух букв нет.
@@ -6485,7 +6742,11 @@ const statsWorker = MEDIA_ONLY || AUTOPILOT_ONLY || PUBLICATION_ONLY ? null : ne
     } else if (job.name === "competitor") {
       // Первичный сбор сразу после добавления — досье готово за секунды, а не за час.
       const c = (
-        await pool.query(`select id, user_id, channel_id, handle, title from competitors where id = $1`, [job.data.id])
+        await pool.query(
+          `select id, user_id, channel_id, network, handle, title, is_active
+             from competitors where id = $1`,
+          [job.data.id],
+        )
       ).rows[0];
       if (c) await collectCompetitor(c);
     } else if (job.name === "trend-now") {

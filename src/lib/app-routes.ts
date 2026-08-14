@@ -36,7 +36,8 @@ export const APP_ROUTES = {
   },
   rss: {
     href: "/app/rss",
-    label: "Источники контента",
+    label: "Юридические инфоповоды",
+    mobileLabel: "Инфоповоды",
     activeAliases: [],
   },
   recon: {

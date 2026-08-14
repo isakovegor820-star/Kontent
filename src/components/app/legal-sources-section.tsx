@@ -259,8 +259,8 @@ export function LegalSourcesSection({ className }: { className?: string }) {
           <div>
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
               <div>
-                <h3 className="text-[15px] font-bold text-text">Публичные RSS</h3>
-                <p className="mt-1 text-[13px] text-text-3">Без паролей, данных браузерной сессии и доступа к закрытому кабинету.</p>
+                <h3 className="text-[15px] font-bold text-text">Открытые юридические источники</h3>
+                <p className="mt-1 text-[13px] text-text-3">Аврора использует только публично доступные материалы без паролей и доступа к закрытым кабинетам.</p>
               </div>
               <Badge tone="success"><Rss className="h-3.5 w-3.5" aria-hidden />Публичный доступ</Badge>
             </div>
@@ -284,13 +284,13 @@ export function LegalSourcesSection({ className }: { className?: string }) {
                             rel="noreferrer"
                             className="inline-flex min-h-11 items-center gap-1.5 text-[13px] font-semibold text-brand underline-offset-4 hover:underline focus-visible:rounded-xs focus-visible:ring-4 focus-visible:ring-brand/15"
                           >
-                            Открыть публичный RSS <ExternalLink className="h-3.5 w-3.5" aria-hidden />
+                            Открыть источник <ExternalLink className="h-3.5 w-3.5" aria-hidden />
                           </a>
                           <Link
-                            href={`/app/rss?source=${source.id}`}
+                            href="/app/rss"
                             className="inline-flex min-h-11 items-center text-[13px] font-semibold text-text-2 underline-offset-4 hover:text-text hover:underline focus-visible:rounded-xs focus-visible:ring-4 focus-visible:ring-brand/15"
                           >
-                            Настроить в RSS
+                            Открыть инфоповоды
                           </Link>
                         </div>
                       </div>
@@ -299,7 +299,7 @@ export function LegalSourcesSection({ className }: { className?: string }) {
                 ))}
               </ul>
             ) : (
-              <p className="text-[14px] text-text-2">Публичные юридические RSS временно недоступны.</p>
+              <p className="text-[14px] text-text-2">Открытые юридические источники временно недоступны.</p>
             )}
           </div>
 

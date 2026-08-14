@@ -29,13 +29,13 @@ import {
 
 import { AppShell } from "@/components/app/shell";
 import { Button } from "@/components/ui/button";
-import { Badge, Card, TelegramIcon } from "@/components/ui/primitives";
+import { Badge, Card, InstagramIcon, TelegramIcon } from "@/components/ui/primitives";
 import { cn, fmtCompact, fmtNum, plural, weekdayShort } from "@/lib/utils";
 
 const EASE = [0.22, 1, 0.36, 1] as const;
 
 interface DossierPost {
-  msgId: number;
+  msgId: number | string;
   text: string | null;
   views: number | null;
   media: string;
@@ -52,6 +52,7 @@ interface Bucket {
 interface Dossier {
   competitor: {
     id: number;
+    network: "tg" | "instagram";
     handle: string;
     title: string | null;
     subscribers: number | null;
@@ -59,6 +60,7 @@ interface Dossier {
     lastError: string | null;
     collectedAt: string | null;
     link: string;
+    avatarUrl: string | null;
   };
   stats: {
     postsCount: number;
@@ -89,6 +91,7 @@ interface Dossier {
   } | null;
   subscriberSeries: { date: string; subscribers: number }[];
   topPosts: DossierPost[];
+  posts: DossierPost[];
   available: { views: boolean; reactions: boolean; reposts: boolean; comments: boolean };
   aiInsight: string | null;
 }
@@ -229,6 +232,8 @@ export default function DossierPage() {
 
   const { competitor: c, stats: s, rhythm, mediaMix, lengthBuckets, hitAnatomy, available } = d;
   const dead = c.status === "error" || c.status === "no_feed";
+  const isInstagram = c.network === "instagram";
+  const SourceIcon = isInstagram ? InstagramIcon : TelegramIcon;
 
   const maxWeekday = Math.max(...rhythm.byWeekday.map((x) => x.posts), 1);
   const maxHour = Math.max(...rhythm.byHour.map((x) => x.posts), 1);
@@ -240,7 +245,9 @@ export default function DossierPage() {
   return (
     <AppShell
       title={c.title || `@${c.handle}`}
-      subtitle="Разведка по открытым данным Telegram: что у него работает и что с этим делать."
+      subtitle={isInstagram
+        ? "Публичные публикации Business/Creator-профиля через официальный Meta API."
+        : "Разведка по открытым данным Telegram: что у него работает и что с этим делать."}
       action={
         <Link href="/app/competitors">
           <Button variant="ghost" size="sm">
@@ -256,10 +263,10 @@ export default function DossierPage() {
         transition={{ duration: 0.3, ease: EASE }}
         className="space-y-5"
       >
-        {/* Шапка канала */}
+        {/* Шапка источника */}
         <Card className="flex flex-wrap items-center justify-between gap-3 p-4">
           <div className="flex min-w-0 items-center gap-2 text-text-3">
-            <TelegramIcon className="h-4 w-4" />
+            <SourceIcon className="h-4 w-4" />
             <span className="truncate text-[13px] font-semibold">@{c.handle}</span>
             {c.collectedAt && (
               <span className="text-[12px] text-text-3">
@@ -276,7 +283,7 @@ export default function DossierPage() {
           <a href={c.link} target="_blank" rel="noopener noreferrer">
             <Button variant="ghost" size="sm">
               <ExternalLink className="h-4 w-4" aria-hidden />
-              Открыть канал
+              {isInstagram ? "Открыть профиль" : "Открыть канал"}
             </Button>
           </a>
         </Card>
@@ -287,9 +294,52 @@ export default function DossierPage() {
             <TriangleAlert className="mx-auto h-7 w-7 text-danger" aria-hidden />
             <p className="mt-3 text-[15px] font-semibold text-text">Досье собрать не из чего</p>
             <p className="mx-auto mt-1 max-w-md text-[14px] leading-relaxed text-text-3">
-              {c.lastError || "Канал не отдаёт посты публично."}
+              {c.lastError || "Источник не отдаёт публикации через доступный официальный API."}
             </p>
           </Card>
+        ) : isInstagram ? (
+          <>
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
+              <Tile
+                icon={<Users className="h-3.5 w-3.5" aria-hidden />}
+                label="Подписчики"
+                value={c.subscribers != null ? fmtCompact(c.subscribers) : "—"}
+                sub="по данным Meta"
+              />
+              <Tile
+                icon={<Radar className="h-3.5 w-3.5" aria-hidden />}
+                label="Публикации"
+                value={fmtNum(s.postsCount)}
+                sub="в локальной выборке"
+              />
+              <Tile
+                icon={<TrendingUp className="h-3.5 w-3.5" aria-hidden />}
+                label="Постов в неделю"
+                value={s.perWeek != null ? s.perWeek : "—"}
+                sub="по доступным публикациям"
+              />
+            </div>
+            <Section title="Последние публикации" hint="Свежие материалы, доступные через Meta Business Discovery.">
+              <ul className="space-y-2">
+                {d.posts.slice(0, 12).map((post) => (
+                  <li key={String(post.msgId)}>
+                    <a
+                      href={post.link}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex min-h-11 items-center gap-3 rounded-sm bg-surface-inset p-3 hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+                    >
+                      <span className="type-body-sm line-clamp-2 flex-1 text-text-2">
+                        {post.text || "Публикация без подписи"}
+                      </span>
+                      <ExternalLink className="h-4 w-4 shrink-0 text-text-3" aria-hidden />
+                    </a>
+                  </li>
+                ))}
+                {d.posts.length === 0 && <li className="type-body-sm text-text-3">Публикации пока не собраны.</li>}
+              </ul>
+            </Section>
+          </>
         ) : (
           <>
             {/* ЧЕСТНОСТЬ ПЕРВЫМ ДЕЛОМ: на мелкой выборке всё ниже — шум */}
@@ -535,19 +585,21 @@ export default function DossierPage() {
           <div className="text-[13px] leading-relaxed text-text-3">
             <p>
               <span className="font-semibold text-text-2">Собираем только открытое: </span>
-              текст постов, просмотры, время выхода, тип вложения, подписчиков.
+              {isInstagram
+                ? "публичные подписи, время выхода, тип медиа, лайки, комментарии и число подписчиков профессионального профиля."
+                : "текст постов, просмотры, время выхода, тип вложения, подписчиков."}
             </p>
             <p className="mt-1">
-              <span className="font-semibold text-text-2">Не даёт Telegram: </span>
-              {!available.reactions && "реакции (в публичной ленте их нет), "}
-              пересылки, комментарии, охват, демографию аудитории и расходы на рекламу. Мы этого не
-              показываем — не потому что не собрали, а потому что таких данных нет.
+              <span className="font-semibold text-text-2">Не получаем: </span>
+              {isInstagram
+                ? "личные и закрытые профили, демографию аудитории, расходы на рекламу и недоступные Meta метрики."
+                : `${!available.reactions ? "реакции, " : ""}пересылки, комментарии, охват, демографию аудитории и расходы на рекламу.`}
             </p>
           </div>
         </div>
 
         {/* Словесный разбор ИИ живёт в «Трендах» (Д.7: идея публикации) */}
-        {d.aiInsight === null && !dead && (
+        {d.aiInsight === null && !dead && !isInstagram && (
           <div className="flex items-start gap-3 rounded-lg bg-info-soft p-4">
             <Radar className="mt-0.5 h-5 w-5 shrink-0 text-brand" aria-hidden />
             <p className="text-[13px] leading-relaxed text-text-2">

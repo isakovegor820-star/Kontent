@@ -13,9 +13,14 @@ export async function GET(req: NextRequest) {
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
+  const sourceKind = req.nextUrl.searchParams.get("sourceKind");
+  if (sourceKind !== null && sourceKind !== "manual" && sourceKind !== "legal_opportunity") {
+    return NextResponse.json({ error: "bad_source_kind" }, { status: 400 });
+  }
+
   try {
     const r = await getPool().query(
-      `select f.id, f.url, f.title, f.channel_id, f.is_active, f.ai_summarize,
+      `select f.id, f.url, f.title, f.channel_id, f.is_active, f.ai_summarize, f.source_kind,
               f.publish_existing, f.max_per_day,
               f.last_fetched_at, f.created_at, c.title as channel_title,
               coalesce(activity.items_24h, 0) as items_24h,
@@ -40,8 +45,9 @@ export async function GET(req: NextRequest) {
               and i.fetched_at > now() - interval '24 hours'
          ) activity on true
         where f.user_id = $1
+          and ($2::text is null or f.source_kind = $2)
         order by f.created_at desc`,
-      [user.id],
+      [user.id, sourceKind],
     );
     return NextResponse.json({
       feeds: r.rows.map((feed) => ({
@@ -130,15 +136,16 @@ export async function POST(req: NextRequest) {
     const r = await getPool().query(
       `insert into rss_feeds (
          user_id, channel_id, url, title, is_active, ai_summarize, publish_existing,
-         max_per_day, last_fetched_at
+         source_kind, max_per_day, last_fetched_at
        )
-       values ($1, $2, $3, $4, false, $5, $6, $7, null)
+       values ($1, $2, $3, $4, false, $5, $6, 'manual', $7, null)
        on conflict (user_id, url) do update set
          is_active = false,
          channel_id = excluded.channel_id,
          title = excluded.title,
          ai_summarize = excluded.ai_summarize,
          publish_existing = excluded.publish_existing,
+         source_kind = 'manual',
          max_per_day = excluded.max_per_day,
          last_fetched_at = null
        returning id, is_active`,

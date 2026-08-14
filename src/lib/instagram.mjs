@@ -19,7 +19,8 @@ import {
   PROVIDER_DELIVERY_OUTCOMES,
 } from "./social-provider-contract.mjs";
 
-const GRAPH_BASE = "https://graph.facebook.com/v19.0";
+const META_GRAPH_VERSION = process.env.META_GRAPH_API_VERSION || "v24.0";
+const GRAPH_BASE = process.env.META_GRAPH_API_BASE || `https://graph.facebook.com/${META_GRAPH_VERSION}`;
 const TIMEOUT_MS = 30_000;
 
 /* ------------------------------------------------------------------ чистые */

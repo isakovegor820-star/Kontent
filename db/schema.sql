@@ -934,12 +934,16 @@ create table if not exists rss_feeds (
   is_active       boolean     not null default false,
   ai_summarize    boolean     not null default true,
   publish_existing boolean    not null default false,
+  source_kind     text        not null default 'manual'
+                              check (source_kind in ('manual', 'legal_opportunity')),
   max_per_day     int         not null default 3,
   last_fetched_at timestamptz,
   created_at      timestamptz not null default now(),
   unique (user_id, url)
 );
 create index if not exists rss_feeds_user_idx on rss_feeds (user_id);
+create index if not exists rss_feeds_user_source_kind_idx
+  on rss_feeds (user_id, source_kind, channel_id, is_active);
 alter table rss_feeds add column if not exists publish_existing boolean not null default false;
 
 create table if not exists rss_items (
@@ -957,6 +961,29 @@ create table if not exists rss_items (
   unique (feed_id, guid)
 );
 create index if not exists rss_items_feed_idx on rss_items (feed_id, fetched_at desc);
+
+create table if not exists legal_opportunity_states (
+  user_id      bigint      not null references users (id) on delete cascade,
+  rss_item_id  bigint      not null references rss_items (id) on delete cascade,
+  state        text        not null check (state in ('saved', 'dismissed', 'used')),
+  updated_at   timestamptz not null default now(),
+  primary key (user_id, rss_item_id)
+);
+create index if not exists legal_opportunity_states_user_state_idx
+  on legal_opportunity_states (user_id, state, updated_at desc);
+
+-- Непрочитанность считается отдельно для каждого пользователя и выбранного проекта.
+-- Это состояние ортогонально saved/dismissed/used и сохраняется между сессиями.
+create table if not exists legal_opportunity_reads (
+  user_id      bigint      not null references users (id) on delete cascade,
+  project_id   bigint      not null references projects (id) on delete cascade,
+  rss_item_id  bigint      not null references rss_items (id) on delete cascade,
+  read_at      timestamptz not null default now(),
+  primary key (user_id, project_id, rss_item_id)
+);
+create index if not exists legal_opportunity_reads_scope_idx
+  on legal_opportunity_reads (user_id, project_id, read_at desc);
+
 alter table rss_feeds alter column is_active set default false;
 alter table rss_items add column if not exists skip_reason text;
 alter table rss_items drop constraint if exists rss_items_skip_reason_check;
@@ -1341,6 +1368,69 @@ create index if not exists drafts_user_scheduled_idx
   where scheduled_at is not null;
 create index if not exists draft_destinations_channel_idx
   on draft_destinations (channel_id, draft_id);
+
+-- Реальные вопросы аудитории как редакционный спрос: одинаковые вопросы внутри
+-- проекта накапливают частоту, а не размножаются карточками. Отдельные появления
+-- сохраняют источник и контекст, чтобы ответ можно было проверить и закрыть.
+create table if not exists audience_questions (
+  id                     bigint generated always as identity primary key,
+  project_id             bigint       not null references projects (id) on delete cascade,
+  created_by_user_id     bigint       not null references users (id) on delete restrict,
+  question               text         not null constraint audience_questions_question_length_check
+                                      check (char_length(question) between 3 and 600),
+  question_fingerprint   char(64)     not null constraint audience_questions_fingerprint_check
+                                      check (question_fingerprint ~ '^[0-9a-f]{64}$'),
+  topic                  varchar(160),
+  priority               smallint     not null default 2 constraint audience_questions_priority_check
+                                      check (priority between 1 and 3),
+  occurrences            integer      not null default 1 constraint audience_questions_occurrences_check
+                                      check (occurrences between 1 and 1000000),
+  status                 text         not null default 'new'
+                                      constraint audience_questions_status_check
+                                      check (status in ('new','drafting','planned','answered','dismissed')),
+  generation_request_key varchar(128),
+  draft_client_key       varchar(160),
+  answer_draft_id        bigint references drafts (id) on delete set null,
+  version                bigint       not null default 1 constraint audience_questions_version_check
+                                      check (version > 0),
+  first_seen_at          timestamptz  not null default now(),
+  last_seen_at           timestamptz  not null default now(),
+  answered_at            timestamptz,
+  created_at             timestamptz  not null default now(),
+  updated_at             timestamptz  not null default now(),
+  constraint audience_questions_project_fingerprint_key unique (project_id, question_fingerprint),
+  constraint audience_questions_generation_keys_check
+    check ((generation_request_key is null) = (draft_client_key is null)),
+  constraint audience_questions_answered_at_check
+    check ((status = 'answered') = (answered_at is not null))
+);
+create index if not exists audience_questions_project_queue_idx
+  on audience_questions (project_id, status, priority desc, occurrences desc, last_seen_at desc);
+create index if not exists audience_questions_project_topic_idx
+  on audience_questions (project_id, topic, last_seen_at desc)
+  where topic is not null;
+
+create table if not exists audience_question_occurrences (
+  id                   bigint generated always as identity primary key,
+  project_id           bigint       not null references projects (id) on delete cascade,
+  question_id          bigint       not null references audience_questions (id) on delete cascade,
+  submitted_by_user_id bigint       not null references users (id) on delete restrict,
+  request_key          varchar(128) not null,
+  source_type          text         not null
+                                    constraint audience_question_occurrences_source_type_check
+                                    check (source_type in ('manual','comment','direct_message','support','sales','search','other')),
+  source_label         varchar(200),
+  source_url           text,
+  context              text,
+  occurrence_count     integer      not null default 1
+                                    constraint audience_question_occurrences_count_check
+                                    check (occurrence_count between 1 and 10000),
+  occurred_at          timestamptz  not null default now(),
+  created_at           timestamptz  not null default now(),
+  constraint audience_question_occurrences_project_request_key unique (project_id, request_key)
+);
+create index if not exists audience_question_occurrences_question_idx
+  on audience_question_occurrences (question_id, occurred_at desc, id desc);
 
 -- Immutable server-owned lineage for paid text generation. The editable draft points to
 -- a result, never the other way around, so changing a draft cannot mutate provider output.
@@ -4659,3 +4749,34 @@ create table if not exists publication_review_reminder_outbox (
 create index if not exists publication_review_reminder_outbox_due_idx
   on publication_review_reminder_outbox (next_attempt_at, id)
   where status in ('pending','failed','enqueued');
+
+-- ------------------------------------------------ Universal competitor sources
+
+alter table competitors drop constraint if exists competitors_network_check;
+alter table competitors drop constraint if exists competitors_status_check;
+alter table competitors add column if not exists custom_title varchar(120);
+alter table competitors add column if not exists avatar_url text;
+alter table competitors add column if not exists external_id text;
+alter table competitors add column if not exists connection_method text;
+alter table competitors add column if not exists is_active boolean not null default true;
+alter table competitors add column if not exists sync_requested_at timestamptz;
+alter table competitors add column if not exists sync_started_at timestamptz;
+alter table competitors
+  add constraint competitors_status_check
+  check (status in ('pending','refreshing','ready','error','no_feed','paused')) not valid;
+alter table competitors validate constraint competitors_status_check;
+
+alter table competitor_posts alter column tg_msg_id drop not null;
+alter table competitor_posts add column if not exists external_post_id text;
+alter table competitor_posts add column if not exists permalink text;
+alter table competitor_posts add column if not exists like_count integer;
+alter table competitor_posts add column if not exists comments_count integer;
+alter table competitor_posts add column if not exists thumbnail_url text;
+update competitor_posts
+   set external_post_id = tg_msg_id::text
+ where external_post_id is null and tg_msg_id is not null;
+create unique index if not exists competitor_posts_external_key
+  on competitor_posts (competitor_id, external_post_id)
+  where external_post_id is not null;
+create index if not exists competitors_channel_active_idx
+  on competitors (channel_id, is_active, network, collected_at);

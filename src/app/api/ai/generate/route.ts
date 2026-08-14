@@ -1434,6 +1434,12 @@ export async function POST(req: NextRequest) {
     task,
     postSettings: effectivePostSettings,
     knownFacts: channel?.facts,
+    sourceEvidence: referenceContext?.factualGrounding ? [{
+      id: `rss-item-${referenceContext.factualGrounding.id}`,
+      text: referenceContext.factualGrounding.text,
+      source: "source",
+      countsForCapacity: true,
+    }] : undefined,
     profile: channel?.profile,
   });
   const factPreflight = preflightFactLedger(factLedger);

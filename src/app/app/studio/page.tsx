@@ -54,6 +54,11 @@ import {
 } from "@/lib/draft-client";
 import type { ServerDraft } from "@/lib/draft-types";
 import { buildLibraryAdaptation } from "@/lib/library";
+import {
+  legalOpportunityPostSettings,
+  legalOpportunityVariantFromClientKey,
+  type LegalOpportunityPostVariant,
+} from "@/lib/legal-opportunity-post";
 import { studioReferenceGenerationIdentity } from "@/lib/studio-reference-generation";
 import {
   DEFAULT_POST_SETTINGS,
@@ -92,6 +97,10 @@ type Msg = StudioChatMessage;
 type Gen = StudioChatGeneration & {
   autoOpenComposer?: boolean;
   resultClientKey?: string;
+  audienceQuestionId?: number;
+  audienceQuestionVersion?: number;
+  audienceQuestionGenerationKey?: string;
+  suggestMedia?: boolean;
 };
 type AskOptions = {
   cmd?: AiCommand;
@@ -102,8 +111,13 @@ type AskOptions = {
   referenceDraftId?: number;
   referenceDraftVersion?: number;
   resultClientKey?: string;
+  audienceQuestionId?: number;
+  audienceQuestionVersion?: number;
+  audienceQuestionGenerationKey?: string;
   /** Source-bound destination survives reload before the global channel store is ready. */
   channelId?: number | null;
+  postSettings?: PostSettings;
+  suggestMedia?: boolean;
 };
 type PendingBrief = { text: string; opts?: Omit<AskOptions, "skipBrief"> };
 type PendingLibraryReference = { text: string; source?: string; topic?: string };
@@ -114,6 +128,16 @@ type PendingReferenceGeneration = {
   requestKey: string;
   resultClientKey: string;
   channelId: number;
+  network: RealChannel["network"];
+  variant?: LegalOpportunityPostVariant;
+  suggestMedia?: boolean;
+};
+type PendingAudienceQuestionGeneration = {
+  questionId: number;
+  questionVersion: number;
+  prompt: string;
+  requestKey: string;
+  resultClientKey: string;
 };
 
 type WorkspaceMode = "chat" | "studio";
@@ -701,6 +725,7 @@ function StudioPageInner() {
         ? "chat"
         : null;
   const s = useStore();
+  const showToast = s.toast;
   const reduce = useReducedMotion() ?? false;
 
   const [messages, setMessages] = useState<Msg[]>([]);
@@ -718,6 +743,7 @@ function StudioPageInner() {
   const [pendingLibraryReference, setPendingLibraryReference] = useState<PendingLibraryReference | null>(null);
   const [contextDraft, setContextDraft] = useState<ServerDraft | null>(null);
   const [pendingReferenceGeneration, setPendingReferenceGeneration] = useState<PendingReferenceGeneration | null>(null);
+  const [pendingAudienceQuestionGeneration, setPendingAudienceQuestionGeneration] = useState<PendingAudienceQuestionGeneration | null>(null);
   const [postSettingsReady, setPostSettingsReady] = useState(false);
   const [postSettingsSaving, setPostSettingsSaving] = useState(false);
   const [pendingEngineSuggestion, setPendingEngineSuggestion] = useState<EngineInfo | null>(null);
@@ -743,6 +769,7 @@ function StudioPageInner() {
     keys: new Map(),
   });
   const startedReferenceDraftsRef = useRef<Set<number>>(new Set());
+  const startedAudienceQuestionsRef = useRef<Set<string>>(new Set());
   const sessionRevisionRef = useRef(0);
   const sessionSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sessionSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
@@ -1027,6 +1054,11 @@ function StudioPageInner() {
             topic: serverDraft.source_ref.topic,
           });
           const identity = studioReferenceGenerationIdentity(serverDraft.id, serverDraft.version);
+          const isLegalOpportunity = serverDraft.origin === "rss"
+            && serverDraft.source_ref.factualGrounding === "curated_legal_source";
+          const variant = isLegalOpportunity
+            ? legalOpportunityVariantFromClientKey(serverDraft.client_key)
+            : undefined;
           setWorkspaceMode("chat");
           setDraft(adaptation.prompt);
           setPendingReferenceGeneration({
@@ -1034,6 +1066,8 @@ function StudioPageInner() {
             version: serverDraft.version,
             prompt: adaptation.prompt,
             channelId: destination.channel_id,
+            network: destination.network,
+            ...(variant ? { variant, suggestMedia: true } : {}),
             ...identity,
           });
         }
@@ -1045,6 +1079,58 @@ function StudioPageInner() {
       });
     return () => controller.abort();
   }, [chatSessionOwner, searchParams, sessionOwner]);
+
+  // A question URL carries only a project-owned id. The server returns the exact
+  // editorial prompt and stable request keys created by the explicit "Создать ответ"
+  // action, so refresh safely replays the same generation instead of spending twice.
+  useEffect(() => {
+    if (chatSessionOwner !== sessionOwner || sessionOwner == null) return;
+    const questionId = Number(searchParams.get("audienceQuestion"));
+    if (
+      searchParams.get("intent") !== "create"
+      || !Number.isSafeInteger(questionId)
+      || questionId <= 0
+    ) return;
+    const controller = new AbortController();
+    void fetch(`/api/audience-questions/${questionId}`, { cache: "no-store", signal: controller.signal })
+      .then(async (response) => {
+        const body = await response.json().catch(() => null) as {
+          question?: {
+            id: number;
+            version: number;
+            status: string;
+            generationRequestKey: string | null;
+            draftClientKey: string | null;
+          };
+          generationPrompt?: string;
+        } | null;
+        if (!response.ok || !body?.question || typeof body.generationPrompt !== "string") {
+          throw new Error("question_load_failed");
+        }
+        if (
+          body.question.status !== "drafting"
+          || !body.question.generationRequestKey
+          || !body.question.draftClientKey
+        ) throw new Error("question_not_started");
+        setWorkspaceMode("chat");
+        setPendingAudienceQuestionGeneration({
+          questionId: body.question.id,
+          questionVersion: body.question.version,
+          prompt: body.generationPrompt,
+          requestKey: body.question.generationRequestKey,
+          resultClientKey: body.question.draftClientKey,
+        });
+      })
+      .catch((error) => {
+        if ((error as Error)?.name === "AbortError") return;
+        showToast({
+          kind: "danger",
+          title: "Не удалось открыть вопрос",
+          body: "Вернитесь в запросы аудитории и повторите создание ответа.",
+        });
+      });
+    return () => controller.abort();
+  }, [chatSessionOwner, searchParams, sessionOwner, showToast]);
 
   // Технические параметры генерации загружаются из базы; голос канала приходит
   // в серверный контекст из единого поканального профиля Авроры.
@@ -1233,6 +1319,26 @@ function StudioPageInner() {
           generationResultId,
           clientKey,
         });
+        if (generation?.audienceQuestionId && generation.audienceQuestionVersion) {
+          try {
+            const linkResponse = await fetch(`/api/audience-questions/${generation.audienceQuestionId}/draft`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                generationRequestKey: generation.audienceQuestionGenerationKey,
+                answerDraftId: result.draft.id,
+              }),
+            });
+            if (!linkResponse.ok) throw new Error("question_link_failed");
+          } catch {
+            s.toast({
+              kind: "info",
+              title: "Пост создан, но связь с вопросом не обновилась",
+              body: "Черновик сохранён. В запросах аудитории вопрос можно отметить отвеченным вручную.",
+            });
+          }
+          window.history.replaceState(null, "", "/app/studio?mode=chat");
+        }
         s.toast({
           kind: "success",
           title: "Пост создан",
@@ -1243,7 +1349,8 @@ function StudioPageInner() {
           // has a durable, idempotent draft. Back returns to Studio without starting again.
           window.history.replaceState(null, "", `/app/studio?draft=${generation.referenceDraftId}`);
         }
-        router.push(`/app/composer?draft=${result.draft.id}&from=studio`);
+        const suggestMedia = generation?.suggestMedia ? "&suggestMedia=1" : "";
+        router.push(`/app/composer?draft=${result.draft.id}&from=studio${suggestMedia}`);
       } catch (error) {
         s.toast({
           kind: "danger",
@@ -1671,9 +1778,13 @@ function StudioPageInner() {
       referenceDraftVersion: opts?.referenceDraftVersion ?? contextDraft?.version,
       referenceIntent: opts?.autoOpenComposer ? "create" : contextDraft ? "discuss" : undefined,
       channelId: opts?.channelId ?? channelId,
-      postSettings,
+      postSettings: opts?.postSettings ?? postSettings,
       autoOpenComposer: opts?.autoOpenComposer,
       resultClientKey: opts?.resultClientKey,
+      audienceQuestionId: opts?.audienceQuestionId,
+      audienceQuestionVersion: opts?.audienceQuestionVersion,
+      audienceQuestionGenerationKey: opts?.audienceQuestionGenerationKey,
+      suggestMedia: opts?.suggestMedia,
     };
     const aiId = uid("m");
 
@@ -1722,10 +1833,42 @@ function StudioPageInner() {
       referenceDraftVersion: pending.version,
       resultClientKey: pending.resultClientKey,
       channelId: pending.channelId,
+      postSettings: pending.variant
+        ? legalOpportunityPostSettings(postSettings, pending.variant, pending.network)
+        : undefined,
+      suggestMedia: pending.suggestMedia,
     });
     // `ask` intentionally consumes the reference/context captured by this render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [contextDraft, enginesLoading, pendingLibraryReference, pendingReferenceGeneration, postSettingsReady]);
+
+  useEffect(() => {
+    const pending = pendingAudienceQuestionGeneration;
+    const identity = pending ? `${pending.questionId}:${pending.questionVersion}` : "";
+    if (
+      !pending
+      || !postSettingsReady
+      || enginesLoading
+      || !channelId
+      || startedAudienceQuestionsRef.current.has(identity)
+    ) return;
+    startedAudienceQuestionsRef.current.add(identity);
+    setPendingAudienceQuestionGeneration(null);
+    ask(pending.prompt, {
+      cmd: "write",
+      input: pending.prompt,
+      skipBrief: true,
+      requestKey: pending.requestKey,
+      autoOpenComposer: true,
+      resultClientKey: pending.resultClientKey,
+      audienceQuestionId: pending.questionId,
+      audienceQuestionVersion: pending.questionVersion,
+      audienceQuestionGenerationKey: pending.requestKey,
+      channelId,
+    });
+    // `ask` intentionally captures the selected channel and current post settings.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [channelId, enginesLoading, pendingAudienceQuestionGeneration, postSettingsReady]);
 
   const stop = () => {
     const stopped = abortStudioStream(streamRef.current);

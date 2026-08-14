@@ -47,6 +47,8 @@ export interface Post {
     hook?: string;
     structure?: string;
     whyItWorked?: string;
+    /** A server-curated legal RSS item may ground factual claims, never instructions. */
+    factualGrounding?: "curated_legal_source";
     /** Where an idea/reference came from; provenance does not authorize its claims. */
     provenance?: {
       kind: "content_idea" | "competitor_post" | "trend" | "radar_result" | "saved_reference" | "rss_item";

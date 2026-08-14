@@ -13,12 +13,21 @@ import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
+import { getStatsQueue } from "@/lib/queue";
+import {
+  competitorPostUrl,
+  competitorProfileUrl,
+  isCompetitorNetwork,
+  type CompetitorNetwork,
+} from "@/lib/competitors";
 
 export const runtime = "nodejs";
 
 interface PostRow {
   id: number;
-  tg_msg_id: number;
+  tg_msg_id: number | null;
+  external_post_id: string | null;
+  permalink: string | null;
   text: string | null;
   views: number | null;
   reactions: number | null;
@@ -63,16 +72,21 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
     const pool = getPool();
     const comp = (
       await pool.query(
-        `select id, handle, title, subscribers, status, last_error, collected_at, added_at
-           from competitors where id = $1 and user_id = $2 and network = 'tg'`,
+        `select id, network, handle, title, custom_title, avatar_url, subscribers, status,
+                last_error, collected_at, added_at, is_active, connection_method
+           from competitors where id = $1 and user_id = $2`,
         [cid, user.id],
       )
     ).rows[0];
     if (!comp) return NextResponse.json({ error: "not_found" }, { status: 404 });
+    if (!isCompetitorNetwork(comp.network)) {
+      return NextResponse.json({ error: "unsupported_network" }, { status: 422 });
+    }
 
     const posts = (
       await pool.query<PostRow>(
-        `select id, tg_msg_id, text, views, reactions, media, posted_at, is_hit, hit_ratio
+        `select id, tg_msg_id, external_post_id, permalink, text, views, reactions, media,
+                posted_at, is_hit, hit_ratio
            from competitor_posts where competitor_id = $1
           order by posted_at desc nulls last`,
         [cid],
@@ -222,15 +236,16 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
     const growth =
       subSeries.length >= 2 ? subSeries[subSeries.length - 1].subscribers - subSeries[0].subscribers : null;
 
+    const network = comp.network as CompetitorNetwork;
     const withLink = (p: PostRow) => ({
-      msgId: p.tg_msg_id,
+      msgId: p.external_post_id ?? p.tg_msg_id,
       text: p.text,
       views: p.views,
       media: p.media ?? "text",
       isHit: p.is_hit,
       ratio: p.hit_ratio ? Number(p.hit_ratio) : null,
       postedAt: p.posted_at,
-      link: `https://t.me/${comp.handle}/${p.tg_msg_id}`,
+      link: competitorPostUrl(network, comp.handle, p.external_post_id ?? p.tg_msg_id, p.permalink),
     });
 
     const topPosts = [...withViews]
@@ -241,14 +256,19 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
     return NextResponse.json({
       competitor: {
         id: comp.id,
+        network,
         handle: comp.handle,
-        title: comp.title,
+        title: comp.custom_title || comp.title,
+        providerTitle: comp.title,
+        avatarUrl: comp.avatar_url,
         subscribers: comp.subscribers,
         status: comp.status,
         lastError: comp.last_error,
         collectedAt: comp.collected_at,
         addedAt: comp.added_at,
-        link: `https://t.me/${comp.handle}`,
+        link: competitorProfileUrl(network, comp.handle),
+        isActive: comp.is_active,
+        connectionMethod: comp.connection_method,
       },
       stats: {
         postsCount: posts.length,
@@ -275,16 +295,87 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
       posts: posts.slice(0, 20).map(withLink),
       // Честность: что открытые данные дают, а что нет. reactions — ПО ФАКТУ, не декларацией.
       available: {
-        views: true,
-        reactions: reactionsAvailable,
+        views: network === "tg",
+        reactions: network === "instagram" || reactionsAvailable,
         reposts: false,
-        comments: false,
+        comments: network === "instagram",
       },
       aiInsight: null,
     });
   } catch (err) {
     console.error("[/api/competitors/[id]]", err);
     return NextResponse.json({ error: "server" }, { status: 500 });
+  }
+}
+
+export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+  if (!hasTrustedMutationOrigin(req)) {
+    return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
+  }
+  const user = await getSessionUser(req);
+  if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
+
+  const cid = Number((await ctx.params).id);
+  if (!Number.isInteger(cid) || cid <= 0) {
+    return NextResponse.json({ ok: false, error: "not_found" }, { status: 404 });
+  }
+
+  let body: { action?: unknown };
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ ok: false, error: "bad_request" }, { status: 400 });
+  }
+  const action = body.action;
+  if (action !== "refresh" && action !== "pause" && action !== "resume") {
+    return NextResponse.json({ ok: false, error: "bad_action" }, { status: 422 });
+  }
+
+  try {
+    const pool = getPool();
+    const source = (
+      await pool.query<{ id: number; is_active: boolean }>(
+        `select id, is_active from competitors where id = $1 and user_id = $2`,
+        [cid, user.id],
+      )
+    ).rows[0];
+    if (!source) return NextResponse.json({ ok: false, error: "not_found" }, { status: 404 });
+
+    if (action === "pause") {
+      await pool.query(
+        `update competitors
+            set is_active = false, status = 'paused', last_error = null,
+                sync_requested_at = null, sync_started_at = null
+          where id = $1 and user_id = $2`,
+        [cid, user.id],
+      );
+      return NextResponse.json({ ok: true, status: "paused", isActive: false });
+    }
+
+    await pool.query(
+      `update competitors
+          set is_active = true, status = 'refreshing', last_error = null,
+              sync_requested_at = now()
+        where id = $1 and user_id = $2`,
+      [cid, user.id],
+    );
+    try {
+      await getStatsQueue().add(
+        "competitor",
+        { id: cid },
+        { removeOnComplete: true, attempts: 2, backoff: { type: "fixed", delay: 15000 } },
+      );
+    } catch (error) {
+      await pool.query(
+        `update competitors set status = 'error', last_error = $2 where id = $1`,
+        [cid, "Не удалось запустить обновление. Попробуй ещё раз."],
+      );
+      throw error;
+    }
+    return NextResponse.json({ ok: true, status: "refreshing", isActive: true });
+  } catch (err) {
+    console.error("[/api/competitors/[id]] PATCH", err);
+    return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
 }
 

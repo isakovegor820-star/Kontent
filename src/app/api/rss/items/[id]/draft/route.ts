@@ -2,6 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import {
+  legalOpportunitySourceClientKey,
+  parseLegalOpportunityPostVariant,
+} from "@/lib/legal-opportunity-post";
+import {
   createDraftForUser,
   DraftValidationError,
 } from "@/lib/server-drafts";
@@ -22,20 +26,27 @@ export async function POST(req: NextRequest, { params }: Context) {
   if (!Number.isSafeInteger(itemId) || itemId <= 0) {
     return NextResponse.json({ ok: false, error: "bad_item" }, { status: 400 });
   }
-  const body = (await req.json().catch(() => null)) as { channelId?: unknown } | null;
+  const body = (await req.json().catch(() => null)) as {
+    channelId?: unknown;
+    variant?: unknown;
+  } | null;
   const channelId = body?.channelId;
   if (typeof channelId !== "number" || !Number.isSafeInteger(channelId) || channelId <= 0) {
     return NextResponse.json({ ok: false, error: "bad_channel" }, { status: 422 });
   }
+  const variant = parseLegalOpportunityPostVariant(body?.variant);
+  if (body?.variant !== undefined && body.variant !== variant) {
+    return NextResponse.json({ ok: false, error: "bad_variant" }, { status: 422 });
+  }
 
   try {
     const result = await createDraftForUser(user.id, {
-      clientKey: `rss_item_source:${itemId}`,
-      text: "RSS source context",
+      clientKey: legalOpportunitySourceClientKey(itemId, channelId, variant),
+      text: "Legal opportunity source context",
       media: null,
       scheduledAt: null,
       origin: "rss",
-      sourceRef: { kind: "rss", id: String(itemId), label: "RSS-источник" },
+      sourceRef: { kind: "rss", id: String(itemId), label: "Юридический инфоповод" },
       channelIds: [channelId],
       aiValidation: null,
       generationResultId: null,

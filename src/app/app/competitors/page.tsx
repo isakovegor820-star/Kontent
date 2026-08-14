@@ -15,9 +15,13 @@ import {
   ExternalLink,
   Eye,
   FileText,
+  Heart,
   Loader2,
+  Pause,
+  Play,
   Plus,
   Radar,
+  RefreshCw,
   Sparkles,
   Trash2,
   TriangleAlert,
@@ -28,8 +32,22 @@ import {
 import { AppShell } from "@/components/app/shell";
 import { ChannelPicker, useChannelChoice } from "@/components/app/channel-picker";
 import { Button } from "@/components/ui/button";
-import { Badge, Card, EmptyState, Field, GlassCard, Input, TelegramIcon } from "@/components/ui/primitives";
+import {
+  Badge,
+  Card,
+  EmptyState,
+  Field,
+  GlassCard,
+  Input,
+  InstagramIcon,
+  TelegramIcon,
+} from "@/components/ui/primitives";
 import { useStore } from "@/lib/store";
+import {
+  COMPETITOR_PROVIDERS,
+  sourceErrorText,
+  type CompetitorNetwork,
+} from "@/lib/competitors";
 import { cn, fmtCompact, fmtNum, plural } from "@/lib/utils";
 
 const EASE = [0.22, 1, 0.36, 1] as const;
@@ -37,11 +55,19 @@ const MAX = 20;
 
 interface Competitor {
   id: number | string;
+  network: CompetitorNetwork;
   handle: string;
   title: string | null;
+  custom_title?: string | null;
+  display_title: string;
+  avatar_url?: string | null;
+  profile_url: string;
   subscribers: number | null;
   // no_feed — канал отвечает, но ленту публично не показывает: досье собрать не из чего.
-  status: "pending" | "ready" | "error" | "no_feed";
+  status: "pending" | "refreshing" | "ready" | "error" | "no_feed" | "paused";
+  is_active: boolean;
+  collected_at?: string | null;
+  connection_method?: string | null;
   last_error: string | null;
   posts_count: number;
   avg_views: number | null;
@@ -50,23 +76,46 @@ interface Competitor {
   thin_data?: boolean; // данных мало — цифрам верить нельзя
   /** Добавлен разведкой на холодном старте, а не человеком. Обязан быть виден. */
   auto_added?: boolean;
+  avg_interactions?: number | null;
+  latest_posts?: Array<{
+    id: number | string;
+    text: string | null;
+    posted_at: string | null;
+    link: string;
+    views: number | null;
+    likes: number | null;
+    comments_count: number | null;
+  }>;
 }
 
-function addErrorText(error?: string, limit = MAX): string {
+function addErrorText(error?: string, limit = MAX, network: CompetitorNetwork = "tg"): string {
+  if (error === "empty" || error === "private" || error === "bad") {
+    return sourceErrorText(network, error);
+  }
   switch (error) {
-    case "empty":
-      return "Вставь ссылку на Telegram-канал — например, t.me/durov или @durov.";
-    case "private":
-      return "Это приватная ссылка. Досье собирается только по публичным каналам.";
-    case "bad":
-      return "Не похоже на адрес канала. Нужен t.me/имя_канала или @имя_канала.";
     case "duplicate":
-      return "Этот канал уже в списке.";
+      return "Этот источник уже в списке.";
     case "limit":
       return `Лимит — ${limit} конкурентов. Удали кого-то, чтобы добавить нового.`;
+    case "bad_title":
+      return "Укажи название конкурента — от 2 до 120 символов.";
+    case "unsupported_network":
+      return "Эта социальная сеть пока не поддерживается.";
     default:
       return "Не получилось добавить. Попробуй ещё раз.";
   }
+}
+
+function syncTimeLabel(value?: string | null): string {
+  if (!value) return "Ещё не обновлялся";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Дата неизвестна";
+  return `Обновлено ${date.toLocaleString("ru-RU", {
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  })}`;
 }
 
 /* --------------------------------------------------------------- КАРТОЧКА */
@@ -74,52 +123,106 @@ function addErrorText(error?: string, limit = MAX): string {
 function CompetitorCard({
   c,
   confirming,
+  busy,
   onAskDelete,
   onCancelDelete,
   onDelete,
+  onAction,
 }: {
   c: Competitor;
   confirming: boolean;
+  busy: "refresh" | "pause" | "resume" | null;
   onAskDelete: () => void;
   onCancelDelete: () => void;
   onDelete: () => void;
+  onAction: (action: "refresh" | "pause" | "resume") => void;
 }) {
+  const confirmTitleId = useId();
+  const confirmDeleteRef = useRef<HTMLButtonElement>(null);
+  const deleteButtonRef = useRef<HTMLButtonElement>(null);
+  const [failedAvatarUrl, setFailedAvatarUrl] = useState<string | null>(null);
+  const isUpdating = c.status === "pending" || c.status === "refreshing";
+  const isPaused = !c.is_active || c.status === "paused";
+  const status = isPaused
+    ? { label: "Отключён", tone: "neutral" as const }
+    : isUpdating
+      ? { label: "Обновляется", tone: "brand" as const }
+      : c.status === "ready"
+        ? { label: "Работает", tone: "success" as const }
+        : { label: "Ошибка", tone: "danger" as const };
+  const SourceIcon = c.network === "instagram" ? InstagramIcon : TelegramIcon;
+  const latest = c.latest_posts ?? [];
+
+  useEffect(() => {
+    if (confirming) confirmDeleteRef.current?.focus();
+  }, [confirming]);
+
+  if (confirming) {
+    return (
+      <Card
+        className="flex min-h-64 h-full flex-col items-center justify-center gap-4 p-5 text-center"
+        role="alertdialog"
+        aria-labelledby={confirmTitleId}
+      >
+        <TriangleAlert className="h-6 w-6 text-danger-text" aria-hidden />
+        <p id={confirmTitleId} className="type-body-sm font-semibold text-text">
+          Удалить «{c.display_title}»?
+        </p>
+        <p className="type-caption max-w-xs text-text-3">
+          Источник и собранные публикации исчезнут. Добавить его снова можно будет по той же ссылке.
+        </p>
+        <div className="flex flex-wrap justify-center gap-2">
+          <Button ref={confirmDeleteRef} size="sm" variant="danger" onClick={onDelete}>
+            Удалить
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => {
+              onCancelDelete();
+              requestAnimationFrame(() => deleteButtonRef.current?.focus());
+            }}
+          >
+            Отмена
+          </Button>
+        </div>
+      </Card>
+    );
+  }
+
   return (
     <Card className="relative flex h-full flex-col p-5">
-      {/* Удаление — свободно (анти-урок Metricool). Поверх ссылки, не открывает досье. */}
-      {confirming ? (
-        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 rounded-[inherit] bg-surface/95 p-5 text-center backdrop-blur-sm">
-          <p className="text-[14px] font-semibold text-text">Удалить «{c.title || "@" + c.handle}»?</p>
-          <div className="flex gap-2">
-            <Button size="sm" variant="danger" onClick={onDelete}>
-              Удалить
-            </Button>
-            <Button size="sm" variant="ghost" onClick={onCancelDelete}>
-              Отмена
-            </Button>
+      <div className="flex items-start gap-3 pr-1">
+        <span className="grid h-12 w-12 shrink-0 place-items-center overflow-hidden rounded-full bg-info-soft text-info-text">
+          {c.avatar_url && c.avatar_url !== failedAvatarUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element -- provider CDN URL is not known at build time
+            <img
+              src={c.avatar_url}
+              alt=""
+              className="h-full w-full object-cover"
+              onError={() => setFailedAvatarUrl(c.avatar_url ?? null)}
+            />
+          ) : (
+            <SourceIcon className="h-5 w-5" />
+          )}
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="type-caption inline-flex items-center gap-1.5 font-semibold text-text-3">
+              <SourceIcon className="h-3.5 w-3.5" />
+              {COMPETITOR_PROVIDERS[c.network].label}
+            </span>
+            <Badge tone={status.tone} aria-live="polite">
+              {isUpdating && <Loader2 className="h-3 w-3 animate-spin motion-reduce:animate-none" aria-hidden />}
+              {status.label}
+            </Badge>
           </div>
+          <Link href={`/app/competitors/${c.id}`} className="mt-1 block rounded-xs focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
+            <h2 className="type-h3 line-clamp-2 pr-1 text-text">{c.display_title}</h2>
+            <p className="type-caption mt-0.5 truncate text-text-3">@{c.handle}</p>
+          </Link>
         </div>
-      ) : (
-        <Button
-          type="button"
-          variant="danger"
-          size="icon"
-          onClick={onAskDelete}
-          aria-label="Удалить конкурента"
-          className="absolute top-2 right-2 z-10 rounded-full shadow-none"
-        >
-          <Trash2 className="h-4 w-4" strokeWidth={2} aria-hidden />
-        </Button>
-      )}
-
-      <Link href={`/app/competitors/${c.id}`} className="flex flex-1 flex-col">
-        <div className="flex items-center gap-2 text-text-3">
-          <TelegramIcon className="h-4 w-4" />
-          <span className="truncate text-[13px] font-semibold">@{c.handle}</span>
-        </div>
-        <h2 className="mt-1.5 line-clamp-2 pr-12 text-[17px] leading-snug font-bold text-text">
-          {c.title || "@" + c.handle}
-        </h2>
+      </div>
 
         {/* Автоматика обязана быть подписана. Человек должен понимать, откуда взялся канал,
             которого он не добавлял, — иначе это сюрприз, а не помощь. */}
@@ -130,59 +233,75 @@ function CompetitorCard({
           </span>
         )}
 
-        {c.status === "pending" ? (
-          <p className="mt-4 inline-flex items-center gap-2 text-[14px] text-text-2">
-            <Loader2 className="h-4 w-4 animate-spin text-brand" aria-hidden />
-            Собираем досье…
-          </p>
-        ) : c.status === "error" || c.status === "no_feed" ? (
-          <p className="mt-4 inline-flex items-start gap-2 text-[13px] leading-snug text-danger-text">
+        {c.status === "error" || c.status === "no_feed" ? (
+          <p className="type-caption mt-4 inline-flex items-start gap-2 text-danger-text">
             <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-            {c.last_error || "Не удалось собрать — проверь, что канал публичный."}
+            {c.last_error || "Не удалось подключить источник. Проверь адрес и доступ."}
           </p>
-        ) : (
-          <>
-            <div className="mt-4 grid grid-cols-2 gap-3">
-              <div>
-                <p className="flex items-center gap-1.5 text-[12px] font-semibold text-text-3">
-                  <Users className="h-3.5 w-3.5" aria-hidden />
-                  Подписчики
-                </p>
-                <p className="nums mt-0.5 text-[20px] leading-none font-extrabold text-text">
-                  {c.subscribers != null ? fmtCompact(c.subscribers) : "—"}
-                </p>
-              </div>
-              <div>
-                <p className="flex items-center gap-1.5 text-[12px] font-semibold text-text-3">
-                  <Eye className="h-3.5 w-3.5" aria-hidden />
-                  Ср. просмотры
-                </p>
-                <p className="nums mt-0.5 text-[20px] leading-none font-extrabold text-text">
-                  {c.avg_views != null ? fmtCompact(c.avg_views) : "—"}
-                </p>
-              </div>
-            </div>
+        ) : null}
 
-            {/* Честность: на мелкой выборке цифры выше — шум. Не даём принять их за правду. */}
-            {c.thin_data && (
-              <p className="mt-3 inline-flex items-start gap-1.5 rounded-md bg-surface-inset px-2 py-1.5 text-[12px] leading-snug text-text-3">
-                <TriangleAlert className="mt-px h-3.5 w-3.5 shrink-0" aria-hidden />
-                Данных мало — выводам верить рано
-              </p>
-            )}
-          </>
-        )}
+      <dl className="mt-4 grid grid-cols-2 gap-3 rounded-sm bg-surface-inset p-3">
+        <div>
+          <dt className="type-caption flex items-center gap-1.5 font-semibold text-text-3">
+            <Users className="h-3.5 w-3.5" aria-hidden /> Подписчики
+          </dt>
+          <dd className="nums mt-1 text-[18px] leading-none font-extrabold text-text">
+            {c.subscribers != null ? fmtCompact(c.subscribers) : "—"}
+          </dd>
+        </div>
+        <div>
+          <dt className="type-caption flex items-center gap-1.5 font-semibold text-text-3">
+            {c.network === "instagram" ? <Heart className="h-3.5 w-3.5" aria-hidden /> : <Eye className="h-3.5 w-3.5" aria-hidden />}
+            {c.network === "instagram" ? "Ср. реакции" : "Ср. просмотры"}
+          </dt>
+          <dd className="nums mt-1 text-[18px] leading-none font-extrabold text-text">
+            {c.network === "instagram"
+              ? c.avg_interactions != null ? fmtCompact(c.avg_interactions) : "—"
+              : c.avg_views != null ? fmtCompact(c.avg_views) : "—"}
+          </dd>
+        </div>
+      </dl>
 
-        <div className="mt-auto flex items-center justify-between gap-2 pt-4">
-          <span className="text-[13px] text-text-3">
-            {c.status === "ready" ? `${fmtNum(c.posts_count)} ${plural(c.posts_count, "пост", "поста", "постов")} собрано` : " "}
-          </span>
-          <span className="flex items-center gap-1.5">
-            {c.status === "ready" && !!c.hits_count && <Badge tone="fire">🔥 {c.hits_count}</Badge>}
-            {c.status === "ready" && <Badge tone="neutral">Досье →</Badge>}
+      <div className="mt-4">
+        <div className="flex items-center justify-between gap-2">
+          <h3 className="type-label text-text">Последние публикации</h3>
+          <span className="type-caption text-text-3">
+            {fmtNum(c.posts_count)} {plural(c.posts_count, "пост", "поста", "постов")}
           </span>
         </div>
-      </Link>
+        {latest.length ? (
+          <ul className="mt-2 space-y-1.5">
+            {latest.slice(0, 2).map((post) => (
+              <li key={post.id}>
+                <a href={post.link} target="_blank" rel="noopener noreferrer" className="group flex min-h-11 items-center gap-2 rounded-xs px-2 py-1.5 text-start hover:bg-surface-inset focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
+                  <FileText className="h-4 w-4 shrink-0 text-text-3" aria-hidden />
+                  <span className="type-caption line-clamp-2 flex-1 text-text-2 group-hover:text-text">
+                    {post.text || "Публикация без подписи"}
+                  </span>
+                  <ExternalLink className="h-3.5 w-3.5 shrink-0 text-text-3" aria-hidden />
+                </a>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="type-caption mt-2 text-text-3">Публикации появятся после первой синхронизации.</p>
+        )}
+      </div>
+
+      <p className="type-caption mt-4 text-text-3">{syncTimeLabel(c.collected_at)}</p>
+
+      <div className="mt-auto flex flex-wrap gap-2 border-t border-line pt-4">
+        <Button size="sm" variant="secondary" loading={busy === "refresh"} disabled={isPaused || isUpdating || Boolean(busy)} onClick={() => onAction("refresh")}>
+          <RefreshCw className="h-4 w-4" aria-hidden /> Обновить
+        </Button>
+        <Button size="sm" variant="ghost" loading={busy === "pause" || busy === "resume"} disabled={Boolean(busy) || isUpdating} onClick={() => onAction(isPaused ? "resume" : "pause")}>
+          {isPaused ? <Play className="h-4 w-4" aria-hidden /> : <Pause className="h-4 w-4" aria-hidden />}
+          {isPaused ? "Включить" : "Отключить"}
+        </Button>
+        <Button ref={deleteButtonRef} size="icon" variant="danger" onClick={onAskDelete} disabled={Boolean(busy)} aria-label={`Удалить источник «${c.display_title}»`} className="ml-auto shadow-none">
+          <Trash2 className="h-4 w-4" aria-hidden />
+        </Button>
+      </div>
     </Card>
   );
 }
@@ -637,11 +756,17 @@ export default function CompetitorsPage() {
   const [list, setList] = useState<Competitor[]>([]);
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
+  const [network, setNetwork] = useState<CompetitorNetwork>("tg");
   const [value, setValue] = useState("");
+  const [competitorName, setCompetitorName] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [titleError, setTitleError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [sourceBusy, setSourceBusy] = useState<{ id: string; action: "refresh" | "pause" | "resume" } | null>(null);
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const [picked, setPicked] = useState<number | null>(null);
+  const competitorNameRef = useRef<HTMLInputElement>(null);
+  const competitorLinkRef = useRef<HTMLInputElement>(null);
 
   // Конкуренты живут НА КАНАЛЕ: у кофейного канала и юридического соседи разные.
   // Сервер это уже умеет (`?channel=`), но страница параметр не слала — и человек с тремя
@@ -670,7 +795,7 @@ export default function CompetitorsPage() {
   }, [load]);
 
   // Пока кто-то собирается — обновляем список, чтобы «Собираем…» сменилось на цифры.
-  const hasPending = list.some((c) => c.status === "pending");
+  const hasPending = list.some((c) => c.status === "pending" || c.status === "refreshing");
   useEffect(() => {
     if (!hasPending) return;
     const t = setInterval(load, 4000);
@@ -683,33 +808,48 @@ export default function CompetitorsPage() {
   const submit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (submitting) return;
+    const name = competitorName.trim();
+    if (name.length < 2 || name.length > 120) {
+      setTitleError(addErrorText("bad_title", MAX, network));
+      requestAnimationFrame(() => competitorNameRef.current?.focus());
+      return;
+    }
     const raw = value.trim();
     if (!raw) {
-      setError(addErrorText("empty"));
+      setError(addErrorText("empty", MAX, network));
+      requestAnimationFrame(() => competitorLinkRef.current?.focus());
       return;
     }
     setSubmitting(true);
     setError(null);
+    setTitleError(null);
     try {
       const res = await fetch("/api/competitors/add", {
         method: "POST",
         headers: { "content-type": "application/json" },
         // Без channelId сервер подставит первый канал — и конкурент кофейни молча уехал бы
         // в юридический.
-        body: JSON.stringify({ url: raw, channelId }),
+        body: JSON.stringify({ url: raw, title: name, network, channelId }),
       });
       const data = (await res.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
       if (res.ok && data?.ok) {
         setValue("");
+        setCompetitorName("");
         setOpen(false);
         s.toast({
           kind: "success",
-          title: "Добавлен — собираю досье",
-          body: "Открытая статистика его постов появится через пару минут.",
+          title: `${COMPETITOR_PROVIDERS[network].label} добавлен`,
+          body: "Запустила первую синхронизацию. Статус и публикации появятся на карточке.",
         });
         await load();
       } else {
-        setError(addErrorText(data?.error));
+        if (data?.error === "bad_title") {
+          setTitleError(addErrorText(data.error, MAX, network));
+          requestAnimationFrame(() => competitorNameRef.current?.focus());
+        } else {
+          setError(addErrorText(data?.error, MAX, network));
+          requestAnimationFrame(() => competitorLinkRef.current?.focus());
+        }
       }
     } catch {
       setError("Сервер не ответил. Попробуй ещё раз.");
@@ -718,8 +858,35 @@ export default function CompetitorsPage() {
     }
   };
 
+  const actOnSource = async (id: string, action: "refresh" | "pause" | "resume") => {
+    if (sourceBusy) return;
+    setSourceBusy({ id, action });
+    try {
+      const response = await fetch(`/api/competitors/${id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      const data = (await response.json().catch(() => null)) as { ok?: boolean } | null;
+      if (!response.ok || !data?.ok) throw new Error("source_action_failed");
+      await load();
+      s.toast({
+        kind: action === "pause" ? "info" : "success",
+        title: action === "pause" ? "Источник отключён" : action === "resume" ? "Источник включён" : "Обновление запущено",
+        body: action === "pause"
+          ? "Автоматическая синхронизация приостановлена. Источник можно включить в любой момент."
+          : "Новые публикации и показатели появятся на карточке после синхронизации.",
+      });
+    } catch {
+      s.toast({ kind: "danger", title: "Действие не выполнено", body: "Проверь соединение и попробуй ещё раз." });
+      await load();
+    } finally {
+      setSourceBusy(null);
+    }
+  };
+
   const remove = async (id: string) => {
-    const name = list.find((c) => String(c.id) === id)?.title ?? "Конкурент";
+    const name = list.find((c) => String(c.id) === id)?.display_title ?? "Конкурент";
     setConfirmId(null);
     setList((prev) => prev.filter((c) => String(c.id) !== id));
     try {
@@ -734,7 +901,7 @@ export default function CompetitorsPage() {
   return (
     <AppShell
       title="Конкуренты"
-      subtitle="Только открытые данные Telegram. Добавляй и удаляй свободно — досье собирается автоматически."
+      subtitle="Telegram и Instagram в одном списке: статус подключения, свежие публикации и ручное обновление."
       action={
         <Button variant="brand" onClick={() => setOpen((v) => !v)} disabled={atLimit}>
           <Plus className="h-[18px] w-[18px]" strokeWidth={2.25} aria-hidden />
@@ -786,26 +953,93 @@ export default function CompetitorsPage() {
           >
             <GlassCard className="p-5 sm:p-6">
               <form onSubmit={submit} noValidate className="space-y-4">
+                <fieldset>
+                  <legend className="type-label mb-2 text-text-2">Социальная сеть</legend>
+                  <div className="grid grid-cols-2 gap-2 sm:max-w-md">
+                    {(["tg", "instagram"] as const).map((item) => {
+                      const Icon = item === "instagram" ? InstagramIcon : TelegramIcon;
+                      return (
+                        <label
+                          key={item}
+                          className={cn(
+                            "type-button flex min-h-11 cursor-pointer items-center justify-center gap-2 rounded-xs border px-4 transition-colors focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-brand",
+                            network === item
+                              ? "border-brand bg-info-soft text-info-text"
+                              : "border-line bg-surface text-text-2 hover:border-line-strong",
+                          )}
+                        >
+                          <input
+                            type="radio"
+                            name="competitor-network"
+                            value={item}
+                            checked={network === item}
+                            onChange={() => {
+                              setNetwork(item);
+                              setValue("");
+                              setError(null);
+                            }}
+                            className="sr-only"
+                          />
+                          <Icon className="h-4 w-4" />
+                          {COMPETITOR_PROVIDERS[item].label}
+                        </label>
+                      );
+                    })}
+                  </div>
+                </fieldset>
                 <Field
-                  label="Ссылка на Telegram-канал"
-                  hint="Например: t.me/durov или @durov. Только публичные каналы."
-                  htmlFor="competitor-link"
-                  error={error ?? undefined}
+                  label="Название конкурента"
+                  hint="Так источник будет называться в Авроре. Название можно отличать от имени аккаунта."
+                  htmlFor="competitor-name"
+                  required
+                  error={titleError ?? undefined}
+                  messageId="competitor-name-message"
                 >
                   <Input
+                    ref={competitorNameRef}
+                    id="competitor-name"
+                    value={competitorName}
+                    onChange={(event) => {
+                      setCompetitorName(event.target.value);
+                      if (titleError) setTitleError(null);
+                    }}
+                    placeholder="Например, Главный конкурент"
+                    maxLength={120}
+                    autoComplete="organization"
+                    aria-invalid={Boolean(titleError)}
+                    aria-describedby="competitor-name-message"
+                  />
+                </Field>
+                <Field
+                  label={COMPETITOR_PROVIDERS[network].inputLabel}
+                  hint={COMPETITOR_PROVIDERS[network].hint}
+                  htmlFor="competitor-link"
+                  required
+                  error={error ?? undefined}
+                  messageId="competitor-link-message"
+                >
+                  <Input
+                    ref={competitorLinkRef}
                     id="competitor-link"
                     value={value}
                     onChange={(e) => {
                       setValue(e.target.value);
                       if (error) setError(null);
                     }}
-                    placeholder="t.me/durov"
-                    inputMode="url"
+                    placeholder={COMPETITOR_PROVIDERS[network].placeholder}
+                    inputMode="text"
                     autoComplete="off"
                     spellCheck={false}
                     aria-invalid={Boolean(error)}
+                    aria-describedby="competitor-link-message"
                   />
                 </Field>
+                {network === "instagram" && (
+                  <p className="type-caption rounded-sm bg-info-soft p-3 text-info-text">
+                    Для синхронизации подключи свой Instagram Business/Creator в настройках каналов.
+                    Meta не даёт официальный доступ к личным и закрытым профилям конкурентов.
+                  </p>
+                )}
                 <div className="flex flex-wrap items-center gap-2">
                   <Button type="submit" variant="solid" loading={submitting}>
                     Добавить
@@ -869,9 +1103,11 @@ export default function CompetitorsPage() {
                 <CompetitorCard
                   c={c}
                   confirming={confirmId === String(c.id)}
+                  busy={sourceBusy?.id === String(c.id) ? sourceBusy.action : null}
                   onAskDelete={() => setConfirmId(String(c.id))}
                   onCancelDelete={() => setConfirmId(null)}
                   onDelete={() => remove(String(c.id))}
+                  onAction={(action) => void actOnSource(String(c.id), action)}
                 />
               </motion.li>
             ))}
@@ -884,9 +1120,9 @@ export default function CompetitorsPage() {
         <div className={cn("mt-6 flex items-start gap-2.5 text-[13px] leading-relaxed text-text-3")}>
           <span aria-hidden>🔒</span>
           <p>
-            Собираем только открытые данные: тексты постов, просмотры, время выхода, тип вложения,
-            подписчиков. Реакций, пересылок и комментариев публичная лента Telegram не отдаёт —
-            поэтому их тут нет. Закрытого — демографии аудитории, расходов на рекламу — не собираем.
+            Telegram читаем по публичной веб-ленте и метаданным Bot API. Instagram — через
+            официальный Meta API для Business/Creator-аккаунтов. Личные, закрытые профили и
+            демографию аудитории не собираем.
           </p>
         </div>
       )}

@@ -6,7 +6,7 @@ export type FactDomain = "general" | "legal" | "event" | "technology";
 export interface FactEvidence {
   id: string;
   text: string;
-  source: "brief" | "knowledge" | "required_fact" | "proof" | "profile";
+  source: "brief" | "knowledge" | "required_fact" | "proof" | "profile" | "source";
   /** Инструктивный текст разрешает сущности, но не раздувает оценку доступного материала. */
   countsForCapacity?: boolean;
 }
@@ -258,6 +258,7 @@ export function buildFactLedger(input: {
   task: string;
   postSettings?: unknown;
   knownFacts?: string[];
+  sourceEvidence?: FactEvidence[];
   profile?: string;
 }): FactLedger {
   const settings = normalizePostSettings(input.postSettings);
@@ -279,9 +280,10 @@ export function buildFactLedger(input: {
   })));
   // `task` is semantic intent, not evidence. In particular, a name, date, amount or
   // legal citation typed into the free-form prompt must not authorise itself. Only
-  // server-owned channel facts and fields the user explicitly saved as required
-  // facts/proofs enter the factual allow-list.
+  // server-owned channel facts, curated source evidence and fields the user explicitly
+  // saved as required facts/proofs enter the factual allow-list.
   const evidence: FactEvidence[] = [
+    ...(input.sourceEvidence ?? []),
     ...(input.knownFacts ?? []).map((text, index) => ({
       id: `knowledge-${index + 1}`,
       text,
