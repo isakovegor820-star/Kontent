@@ -16,6 +16,7 @@
 
 # next.js
 /.next/
+/.next-*/
 /.next-e2e-real/
 /out/
 
@@ -46,4 +47,8 @@ next-env.d.ts
 # QA-скриншоты (вывод playwright-проверок)
 .app-v3-shots/
 .v3-shots/
+/review-artifacts/
 /tmp/
+
+# Blender backup files; keep authored .blend sources and exported web assets.
+*.blend1

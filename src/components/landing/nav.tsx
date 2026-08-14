@@ -9,7 +9,7 @@ import Link from "next/link";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { BookOpen, CircleHelp, Menu, Route, ShieldCheck, X } from "lucide-react";
 import { Wordmark } from "@/components/brand";
-import { Button } from "@/components/ui/button";
+import { Button, buttonClassName } from "@/components/ui/button";
 import { Divider, GlassCard } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
 
@@ -233,10 +233,15 @@ export function LandingNav() {
             {/* Единственный градиент в навигации (ТЗ 7.2).
                 На узком экране он живёт в выпадающем меню — чтобы магнит на странице
                 всегда оставался ровно один. */}
-            <Link href="/register" className="hidden rounded-xs sm:inline-flex">
-              <Button variant="brand" size="md" tabIndex={-1}>
-                Забрать ранний доступ
-              </Button>
+            <Link
+              href="/register"
+              className={buttonClassName({
+                variant: "brand",
+                size: "md",
+                className: "hidden sm:inline-flex",
+              })}
+            >
+              Забрать ранний доступ
             </Link>
 
             <Button
@@ -340,11 +345,13 @@ export function LandingNav() {
                   <Link
                     href="/register"
                     onClick={() => setOpen(false)}
-                    className="block rounded-xs"
+                    className={buttonClassName({
+                      variant: "brand",
+                      size: "md",
+                      className: "w-full",
+                    })}
                   >
-                    <Button variant="brand" size="md" tabIndex={-1} className="w-full">
-                      Забрать ранний доступ
-                    </Button>
+                    Забрать ранний доступ
                   </Link>
                 </div>
               </GlassCard>

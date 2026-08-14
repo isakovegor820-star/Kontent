@@ -1,276 +1,136 @@
 "use client";
 
-// СЕКЦИЯ 1 ТЗ 8.1 — HERO. Первый экран лендинга.
-// Слева — обещание одной фразой и ОДНО главное действие (ТЗ 6: «один главный экран,
-// одно главное действие»; ТЗ 7.2: градиент-магнит на экране ровно один).
-// Справа — живое демо (ТЗ 7.4, уровень 3) в лёгком 3D-параллаксе (уровень 4).
-// Параллакс — только мышь: на тач-устройствах и при prefers-reduced-motion он выключен.
+// Первый экран «Воздушная Аврора».
+// Светлая композиция сохраняет узнаваемый синий язык продукта, а многослойная
+// CSS-волна создаёт глубину без изображений, canvas и тяжёлого WebGL.
 
-import { useEffect, useSyncExternalStore } from "react";
 import Link from "next/link";
-import {
-  animate,
-  motion,
-  useMotionTemplate,
-  useMotionValue,
-  useReducedMotion,
-  useSpring,
-  useTransform,
-} from "motion/react";
-import { ArrowRight, ChevronDown } from "lucide-react";
-import { AuroraBackground } from "@/components/aurora-background";
-import { LiveDemo } from "@/components/landing/live-demo";
-import { Button } from "@/components/ui/button";
+import { motion, useReducedMotion } from "motion/react";
+import { ArrowRight, Check, PlayCircle } from "lucide-react";
+import { Logo } from "@/components/brand";
+import { AirWave } from "@/components/landing/air-wave";
+import { buttonClassName } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 const EASE = [0.22, 1, 0.36, 1] as const;
 
-// Заголовок разбит на слова: каждое выезжает из-под маски со сдвигом в 60 мс.
-// Последнее слово забирает градиент — на нём весь смысл обещания.
-const TITLE_WORDS = ["Канал", "ведётся,", "даже", "когда", "ты", "занят"] as const;
+const TRUST_SIGNALS = [
+  "Ручное подтверждение",
+  "Telegram и VK",
+  "Пауза в любой момент",
+] as const;
 
-// Мягкий, чуть «тяжёлый» отклик — панель не дёргается за курсором, а плывёт.
-const TILT_SPRING = { stiffness: 90, damping: 18, mass: 0.6 } as const;
-
-// Параллакс включаем только там, где есть настоящий курсор. Тач его не получает (ТЗ 7.4).
-const FINE_POINTER = "(hover: hover) and (pointer: fine)";
-
-function subscribePointer(onChange: () => void) {
-  const mq = window.matchMedia(FINE_POINTER);
-  mq.addEventListener("change", onChange);
-  return () => mq.removeEventListener("change", onChange);
-}
-
-const readPointer = () => window.matchMedia(FINE_POINTER).matches;
-const readPointerOnServer = () => false;
-
-/* --------------------------------------------------------------- СЧЁТЧИК */
-// Цифры дотикивают до значения при появлении (ТЗ 7.4, уровень 2 — «счётчики цифр»).
-// MotionValue как ребёнок motion-компонента: текст обновляется напрямую в DOM,
-// без единого ререндера React. Первый кадр — 0 и на сервере, и на клиенте.
-
-function CountUp({ to, delay = 0 }: { to: number; delay?: number }) {
-  const reduce = useReducedMotion();
-  const count = useMotionValue(0);
-  const rounded = useTransform(count, (v: number) => Math.round(v));
-
-  useEffect(() => {
-    if (reduce) {
-      count.set(to);
-      return;
-    }
-    const controls = animate(count, to, { duration: 1, delay, ease: EASE });
-    return () => controls.stop();
-  }, [to, delay, reduce, count]);
-
-  return <motion.span>{rounded}</motion.span>;
-}
-
-/* ----------------------------------------------------------- МИНИ-ФАКТЫ */
-// Три коротких опоры из текущего продуктового сценария: время контроля, память и серверная публикация.
-
-function Fact({ value, caption }: { value: React.ReactNode; caption: string }) {
+function HeroLink({
+  href,
+  children,
+  primary = false,
+  className,
+}: {
+  href: string;
+  children: React.ReactNode;
+  primary?: boolean;
+  className?: string;
+}) {
   return (
-    <div className="min-w-0">
-      <p className="nums text-[24px] leading-none font-extrabold -tracking-[0.03em] text-text sm:text-[28px]">
-        {value}
-      </p>
-      <p className="mt-1.5 text-[13px] leading-tight text-text-2">{caption}</p>
-    </div>
+    <Link
+      href={href}
+      className={cn(
+        buttonClassName({ variant: primary ? "brand" : "outline", size: "xl" }),
+        "group w-full sm:w-auto",
+        primary ? "hover:shadow-[var(--shadow-brand-lg)]" : "bg-white/82 backdrop-blur-xl",
+        className,
+      )}
+    >
+      {children}
+    </Link>
   );
 }
 
-function FactDivider() {
-  return <span aria-hidden className="h-10 w-px shrink-0 bg-line" />;
-}
-
-/* ------------------------------------------------------------------ HERO */
-
 export function Hero() {
   const reduce = useReducedMotion();
-  const finePointer = useSyncExternalStore(subscribePointer, readPointer, readPointerOnServer);
 
-  const tilt = finePointer && !reduce;
-
-  // Курсор → наклон панели. Только transform, никаких перерисовок макета.
-  const pointerX = useMotionValue(0);
-  const pointerY = useMotionValue(0);
-  const smoothX = useSpring(pointerX, TILT_SPRING);
-  const smoothY = useSpring(pointerY, TILT_SPRING);
-  const rotateY = useTransform(smoothX, [-0.5, 0.5], [-6, 6]);
-  const rotateX = useTransform(smoothY, [-0.5, 0.5], [6, -6]);
-  const tiltTransform = useMotionTemplate`perspective(1200px) rotateX(${rotateX}deg) rotateY(${rotateY}deg)`;
-
-  const handlePointerMove = (event: React.PointerEvent<HTMLElement>) => {
-    if (!tilt || event.pointerType !== "mouse") return;
-    const rect = event.currentTarget.getBoundingClientRect();
-    pointerX.set((event.clientX - rect.left) / rect.width - 0.5);
-    pointerY.set((event.clientY - rect.top) / rect.height - 0.5);
-  };
-
-  const handlePointerLeave = () => {
-    pointerX.set(0);
-    pointerY.set(0);
-  };
-
-  // Общее появление: 550 мс, ease [0.22, 1, 0.36, 1], лесенкой сверху вниз
-  const rise = (delay: number) => ({
-    initial: reduce ? false : { opacity: 0, y: 18 },
+  const rise = (delay: number, distance = 18) => ({
+    initial: reduce ? false : { opacity: 0, y: distance },
     animate: { opacity: 1, y: 0 },
-    transition: { duration: 0.55, delay: reduce ? 0 : delay, ease: EASE },
+    transition: { duration: 0.65, delay: reduce ? 0 : delay, ease: EASE },
   });
 
   return (
-    <section
-      onPointerMove={handlePointerMove}
-      onPointerLeave={handlePointerLeave}
-      className="relative flex min-h-dvh items-center overflow-hidden pt-24 pb-16"
-    >
-      <AuroraBackground intensity="hero" grid grain />
+    <section className="relative isolate flex min-h-[100svh] items-center overflow-hidden bg-white pt-24 pb-18 sm:pt-28 sm:pb-24 lg:pt-30 lg:pb-20">
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_12%_18%,rgb(219_234_254_/_0.7),transparent_28%),linear-gradient(180deg,#ffffff_0%,#fbfdff_58%,#f5f9ff_100%)]"
+      />
+      <AirWave />
 
-      <div className="relative mx-auto grid w-full max-w-6xl grid-cols-1 items-center gap-14 px-5 sm:px-8 lg:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)] lg:gap-14 xl:gap-20">
-        {/* ═══════════════════════════════════════════════ ЛЕВО: обещание */}
-        <div className="flex flex-col items-start">
-          {/* Плашка: что, почём и откуда — три честных факта до единой строчки текста.
-              Живая точка не декоративная: доступ действительно открыт, кнопка ведёт в продукт. */}
-          <motion.p
-            {...rise(0)}
-            className="glass inline-flex items-center gap-2.5 rounded-full py-2 pr-4 pl-3 text-[13px] font-semibold text-text-2"
-          >
-            <span className="relative flex h-2 w-2 shrink-0" aria-hidden>
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-70" />
-              <span className="relative inline-flex h-2 w-2 rounded-full bg-success" />
+      <div className="relative z-10 mx-auto flex w-full max-w-[1180px] items-center px-5 sm:px-8">
+        <div className="flex min-w-0 max-w-[760px] flex-col items-start">
+          <motion.div {...rise(0)} className="flex items-center gap-4 sm:gap-5">
+            <span className="air-logo-shell flex h-[68px] w-[68px] shrink-0 items-center justify-center rounded-[22px] sm:h-[76px] sm:w-[76px] sm:rounded-[24px]">
+              <Logo size={58} decorative className="h-[58px] w-[58px] sm:h-16 sm:w-16" />
             </span>
-            Продукт работает · Ручной контроль · Публикация с сервера
+            <span className="text-[clamp(2.25rem,5.4vw,4.25rem)] leading-none font-extrabold tracking-[-0.055em] text-text">
+              Аврора
+            </span>
+          </motion.div>
+
+          <motion.p
+            {...rise(0.08)}
+            className="mt-7 text-[13px] font-bold tracking-[0.12em] text-brand uppercase sm:text-[14px]"
+          >
+            SMM-платформа для юридического бизнеса
           </motion.p>
 
-          {/* Заголовок — слова выезжают из-под маски, stagger 60 мс */}
-          <h1 className="display mt-7 flex flex-wrap gap-x-[0.22em] gap-y-[0.04em] text-[clamp(2.6rem,7vw,5.5rem)] text-text">
-            {TITLE_WORDS.map((word, i) => (
-              // pb — чтобы маска не срезала хвосты «ц» и запятую
-              <span key={word} className="inline-block overflow-hidden pb-[0.12em]">
-                <motion.span
-                  initial={reduce ? false : { y: "125%" }}
-                  animate={{ y: "0%" }}
-                  transition={{
-                    duration: 0.6,
-                    delay: reduce ? 0 : 0.1 + i * 0.06,
-                    ease: EASE,
-                  }}
-                  className={cn(
-                    "inline-block",
-                    i === TITLE_WORDS.length - 1 && "text-gradient",
-                  )}
-                >
-                  {word}
-                </motion.span>
-              </span>
-            ))}
+          <h1 className="display mt-4 max-w-[720px] text-[clamp(2.75rem,6.6vw,5.8rem)] text-text text-balance">
+            <motion.span {...rise(0.14)} className="block">
+              Контент выходит
+            </motion.span>
+            <motion.span {...rise(0.2)} className="block text-gradient pb-[0.08em]">
+              вовремя.
+            </motion.span>
           </h1>
 
-          {/* Подзаголовок — весь продукт одним предложением (требование ТЗ 8.1) */}
           <motion.p
-            {...rise(0.44)}
-            className="mt-6 max-w-xl text-lg leading-relaxed text-text-2 sm:text-xl"
+            {...rise(0.3)}
+            className="mt-5 max-w-[610px] text-[17px] leading-[1.6] text-text-2 text-pretty sm:text-[19px]"
           >
-            Аврора находит сильные темы, пишет посты в твоём голосе, проверяет факты
-            и публикует по расписанию. Правила и последнее слово остаются за тобой.
+            Аврора находит сильные темы, пишет в твоём голосе, проверяет факты и
+            публикует по расписанию. Ты сохраняешь контроль на каждом шаге.
           </motion.p>
 
-          {/* Действия. Градиент ровно один — это и есть «магнит» (ТЗ 7.2) */}
           <motion.div
-            {...rise(0.52)}
-            className="mt-9 flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:items-center sm:gap-4"
+            {...rise(0.38)}
+            className="mt-8 flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:items-center"
           >
-            <Link href="/register" className="w-full sm:w-auto">
-              <Button variant="brand" size="xl" className="glow-pulse group w-full">
-                Запустить первый цикл
-                <ArrowRight
-                  className="h-5 w-5 transition-transform duration-200 ease-[var(--ease-soft)] group-hover:translate-x-0.5"
-                  strokeWidth={2}
-                  aria-hidden
-                />
-              </Button>
-            </Link>
-
-            <Link href="#how" className="w-full sm:w-auto">
-              <Button variant="outline" size="xl" className="w-full">
-                Как это работает
-              </Button>
-            </Link>
+            <HeroLink href="/register" primary>
+              Запустить первый цикл
+              <ArrowRight
+                className="h-5 w-5 transition-transform duration-200 group-hover:translate-x-0.5 motion-reduce:transform-none"
+                strokeWidth={2}
+                aria-hidden="true"
+              />
+            </HeroLink>
+            <HeroLink href="#how">
+              <PlayCircle className="h-5 w-5 text-brand" strokeWidth={1.8} aria-hidden="true" />
+              Посмотреть работу Авроры
+            </HeroLink>
           </motion.div>
 
-          {/* Честно объясняем следующий шаг и возможность остановить автопилот. */}
-          <motion.p {...rise(0.58)} className="mt-4 text-[13px] leading-relaxed text-text-2">
-            Почта и пароль. Канал подключишь следующим шагом. Пауза — в любой момент.
-          </motion.p>
-
-          {/* Три цифры, за которыми стоят живые тесты и разведка, а не обещания */}
-          <motion.div {...rise(0.64)} className="mt-9 flex items-center gap-5 sm:gap-7">
-            <Fact value={<CountUp to={15} delay={0.82} />} caption="минут контроля в неделю" />
-            <FactDivider />
-            <Fact value={<CountUp to={3} delay={0.92} />} caption="источника памяти" />
-            <FactDivider />
-            <Fact value="24/7" caption="публикация с сервера" />
-          </motion.div>
-        </div>
-
-        {/* ═════════════════════════════════════════════ ПРАВО: живое демо */}
-        <div className="relative">
-          {/* Медленная орбита за стеклом — объём без единого килобайта 3D (ТЗ 7.4, уровень 4) */}
-          <div aria-hidden className="pointer-events-none absolute inset-0 z-0 hidden lg:block">
-            <div
-              className="absolute top-1/2 left-1/2 h-[560px] w-[560px] -translate-x-1/2 -translate-y-1/2 rounded-full opacity-70"
-              style={{
-                background:
-                  "conic-gradient(from 90deg, rgb(37 99 255 / 0.22), rgb(96 165 250 / 0.14), rgb(245 158 11 / 0.08), transparent 62%, rgb(37 99 255 / 0.2))",
-                filter: "blur(40px)",
-                animation: "orbit 46s linear infinite",
-                willChange: "transform",
-              }}
-            />
-          </div>
-
-          {/* Появление панели */}
-          <motion.div
-            initial={reduce ? false : { opacity: 0, y: 28, scale: 0.97 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            transition={{ duration: 0.6, delay: reduce ? 0 : 0.28, ease: EASE }}
-            className="relative z-10"
+          <motion.ul
+            {...rise(0.46)}
+            className="mt-6 flex max-w-[620px] flex-wrap gap-x-5 gap-y-2.5 text-[13px] font-semibold text-text-2 sm:text-[14px]"
           >
-            {/* Наклон за курсором: ±6°, пружина, только transform */}
-            <motion.div
-              style={tilt ? { transform: tiltTransform } : undefined}
-              className="will-change-transform"
-            >
-              <LiveDemo />
-            </motion.div>
-          </motion.div>
+            {TRUST_SIGNALS.map((signal) => (
+              <li key={signal} className="flex items-center gap-2">
+                <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-info-soft text-info-text">
+                  <Check className="h-3 w-3" strokeWidth={2.6} aria-hidden="true" />
+                </span>
+                {signal}
+              </li>
+            ))}
+          </motion.ul>
         </div>
       </div>
-
-      {/* Подсказка «здесь есть что листать» — тихая, декоративная */}
-      <motion.div
-        aria-hidden
-        initial={reduce ? false : { opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ duration: 0.6, delay: reduce ? 0 : 1.1, ease: EASE }}
-        className="pointer-events-none absolute inset-x-0 bottom-7 hidden justify-center lg:flex"
-      >
-        <motion.div
-          animate={reduce ? undefined : { y: [0, 7, 0], opacity: [0.55, 1, 0.55] }}
-          transition={
-            reduce ? undefined : { duration: 2.4, repeat: Infinity, ease: "easeInOut" }
-          }
-          className="flex flex-col items-center gap-2"
-        >
-          <span
-            className="h-12 w-px"
-            style={{ background: "linear-gradient(to bottom, transparent, var(--border-strong))" }}
-          />
-          <ChevronDown className="h-4 w-4 text-text-3" strokeWidth={2} />
-        </motion.div>
-      </motion.div>
     </section>
   );
 }

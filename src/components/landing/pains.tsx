@@ -1,306 +1,151 @@
 "use client";
 
-// Секция 2 ТЗ 8.1 — «Боль → решение».
-// Три карточки-боли, каждая переворачивается в решение при скролле (3D по оси Y, ТЗ 7.4 уровень 4).
-// Лицевая грань — приглушённая, как сама проблема. Обратная — стекло и градиент:
-// «яркость появляется в моменты ценности» (ТЗ 7.1).
-// Тон — ТЗ 7.5: просто и дружелюбно, на «ты», без жаргона.
-
-import { useId, useSyncExternalStore } from "react";
-import { motion } from "motion/react";
-import {
-  ArrowDown,
-  Clock,
-  HelpCircle,
-  Lightbulb,
-  Radar,
-  TrendingDown,
-  Zap,
-} from "lucide-react";
-import { AuroraBackground } from "@/components/aurora-background";
-import { Badge } from "@/components/ui/primitives";
-import { cn } from "@/lib/utils";
+import { useId } from "react";
+import { motion, useReducedMotion } from "motion/react";
+import { Lightbulb, Radar, Zap } from "lucide-react";
+import { AirWave } from "@/components/landing/air-wave";
 
 const EASE = [0.22, 1, 0.36, 1] as const;
 
-/* -------------------------------------------------- PREFERS-REDUCED-MOTION */
-// useReducedMotion() из motion/react читает медиазапрос синхронно: на сервере — null,
-// при гидрации — уже true. Для пропсов анимации это норма, но здесь от него зависит
-// САМА РАЗМЕТКА (переворот против стопки) — разметка бы разъехалась при гидрации.
-// useSyncExternalStore решает это штатно: сервер и гидрация видят одно, клиент
-// перерисовывается сразу после. Бонусом переключение настройки ОС ловится вживую.
+type IslandIcon = React.ComponentType<{
+  className?: string;
+  strokeWidth?: number;
+  "aria-hidden"?: boolean;
+}>;
 
-const REDUCE_QUERY = "(prefers-reduced-motion: reduce)";
-
-function subscribeReduced(onChange: () => void) {
-  const mq = window.matchMedia(REDUCE_QUERY);
-  mq.addEventListener("change", onChange);
-  return () => mq.removeEventListener("change", onChange);
-}
-
-function usePrefersReducedMotion(): boolean {
-  return useSyncExternalStore(
-    subscribeReduced,
-    () => window.matchMedia(REDUCE_QUERY).matches,
-    () => false,
-  );
-}
-
-/* ------------------------------------------------------------------ ДАННЫЕ */
-
-type PainIcon = React.ComponentType<{ className?: string; strokeWidth?: number }>;
-
-type PainItem = {
+type Island = {
   id: string;
-  painIcon: PainIcon;
-  solutionIcon: PainIcon;
-  /** Боль — заголовок лицевой грани */
-  pain: string;
-  /** Как она выглядит изнутри — подпись под болью */
-  painNote: string;
-  /** Раздел платформы, который её закрывает */
   feature: string;
-  /** Обещание — заголовок обратной грани */
-  solutionTitle: string;
-  /** Механика — чем именно закрываем */
-  solution: string;
+  title: string;
+  description: string;
+  icon: IslandIcon;
 };
 
-const ITEMS: PainItem[] = [
+const ISLANDS: Island[] = [
   {
-    id: "time",
-    painIcon: Clock,
-    solutionIcon: Zap,
-    pain: "Нет времени постить",
-    painNote: "Открываешь редактор — и закрываешь. Каждый день.",
+    id: "autopilot",
     feature: "Автопилот",
-    solutionTitle: "Неделя за 15 минут",
-    solution:
-      "Автопилот собирает план на неделю. Ты жмёшь одну кнопку — 7 постов уходят сами.",
+    title: "Неделя за 15 минут",
+    description:
+      "Аврора собирает план на неделю. Ты подтверждаешь его — публикации выходят по расписанию.",
+    icon: Zap,
   },
   {
-    id: "ideas",
-    painIcon: HelpCircle,
-    solutionIcon: Lightbulb,
-    pain: "Не знаю, что снимать",
-    painNote: "Идей нет, а лента ждёт.",
+    id: "trends",
     feature: "Тренды",
-    solutionTitle: "Идеи приходят сами",
-    solution:
-      "Лента идей: готовые карточки со сценарием и хуком. Один клик — черновик.",
+    title: "Идеи приходят сами",
+    description:
+      "Готовые темы, сценарии и хуки появляются в ленте идей. Один выбор — и черновик готов.",
+    icon: Lightbulb,
   },
   {
-    id: "rivals",
-    painIcon: TrendingDown,
-    solutionIcon: Radar,
-    pain: "Конкуренты растут — не понимаю почему",
-    painNote: "Видишь цифры, но не видишь причину.",
+    id: "reconnaissance",
     feature: "Разведка",
-    solutionTitle: "Видно, что у них работает",
-    solution:
-      "Полное досье на каждого: какие темы и форматы дают им результат — человеческим языком.",
+    title: "Видно, что работает",
+    description:
+      "Аврора показывает сильные темы и форматы конкурентов — понятно, без таблиц и догадок.",
+    icon: Radar,
   },
 ];
 
-/* ------------------------------------------------------------------ ГРАНИ */
-
-// Обе грани — одна и та же геометрия. Иначе переворот «дёрнется» на стыке.
-const FACE = "flex h-full flex-col rounded-lg p-7 sm:p-8";
-const CIRCLE = "flex h-14 w-14 shrink-0 items-center justify-center rounded-full";
-const TITLE = "text-[21px] leading-tight font-extrabold -tracking-[0.02em]";
-
-// Мягкое свечение внутри решения. Через color-mix от токенов — значит, живёт и в тёмной теме.
-const SOLUTION_GLOW =
-  "radial-gradient(125% 90% at 50% 0%, color-mix(in oklab, var(--brand-2) 20%, transparent) 0%, color-mix(in oklab, var(--brand-1) 8%, transparent) 45%, transparent 72%)";
-
-/** Лицевая грань: боль. Приглушённая — цвета вполсилы, иконка в сером круге. */
-function PainFace({ item, index }: { item: PainItem; index: number }) {
-  const Icon = item.painIcon;
+function GlassIsland({
+  island,
+  index,
+  reduceMotion,
+}: {
+  island: Island;
+  index: number;
+  reduceMotion: boolean;
+}) {
+  const Icon = island.icon;
 
   return (
-    <div className={cn(FACE, "card-plain min-h-[280px]")}>
-      <div className="flex items-start justify-between gap-4">
-        <span className={cn(CIRCLE, "bg-surface-inset text-text-3")}>
-          <Icon className="h-6 w-6" strokeWidth={1.75} />
+    <motion.li
+      className="glass-island"
+      data-island={island.id}
+      initial={reduceMotion ? false : { opacity: 0, y: 12 }}
+      whileInView={{ opacity: 1, y: 0 }}
+      viewport={{ once: true, margin: "-90px" }}
+      transition={{
+        duration: reduceMotion ? 0 : 0.55,
+        delay: reduceMotion ? 0 : index * 0.1,
+        ease: EASE,
+      }}
+    >
+      <span className="glass-island__sheen" aria-hidden="true" />
+
+      <div className="glass-island__topline">
+        <span className="glass-island__icon" aria-hidden="true">
+          <Icon className="h-7 w-7" strokeWidth={1.8} aria-hidden={true} />
         </span>
-        <span className="nums text-[13px] font-bold tracking-[0.14em] text-text-3">
+        <span className="glass-island__number nums" aria-hidden="true">
           0{index + 1}
         </span>
       </div>
 
-      <div className="mt-auto pt-8">
-        <h3 className={cn(TITLE, "text-text-2")}>{item.pain}</h3>
-        <p className="mt-3 text-[15px] leading-relaxed text-text-3">{item.painNote}</p>
+      <div className="glass-island__content">
+        <span className="glass-island__label">{island.feature}</span>
+        <h3>{island.title}</h3>
+        <p>{island.description}</p>
       </div>
-    </div>
+    </motion.li>
   );
 }
-
-/** Обратная грань: решение. Стекло, градиентная иконка, свечение — «момент ценности». */
-function SolutionFace({ item }: { item: PainItem }) {
-  const Icon = item.solutionIcon;
-
-  return (
-    <div className={cn(FACE, "glass relative overflow-hidden")}>
-      <span
-        aria-hidden
-        className="pointer-events-none absolute inset-0"
-        style={{ background: SOLUTION_GLOW }}
-      />
-
-      <div className="relative flex items-start justify-between gap-4">
-        <span className={cn(CIRCLE, "bg-brand-gradient text-white shadow-glow")}>
-          <Icon className="h-6 w-6" strokeWidth={2} />
-        </span>
-        <Badge tone="brand">{item.feature}</Badge>
-      </div>
-
-      <div className="relative mt-auto pt-8">
-        <p className={cn(TITLE, "text-text")}>{item.solutionTitle}</p>
-        <p className="mt-3 text-[15px] leading-relaxed text-text-2">{item.solution}</p>
-      </div>
-    </div>
-  );
-}
-
-/* --------------------------------------------------------------- КАРТОЧКИ */
-
-/**
- * Переворот боль → решение при скролле.
- *
- * Намеренно НЕ используем backface-visibility: у Chrome есть давний баг —
- * при анимированном preserve-3d обе грrazи схлопываются ровно на 180°, и
- * карточка становится пустой. Поэтому «переворот» собран из двух граней с
- * кроссфейдом по opacity + поворотом rotateY: боль уезжает к ребру и гаснет,
- * решение приходит от ребра и проявляется. Только transform/opacity — GPU.
- */
-function FlipCard({ item, index }: { item: PainItem; index: number }) {
-  const delay = index * 0.12;
-  const viewport = { once: true, margin: "-120px" } as const;
-
-  return (
-    <li className="relative h-full [perspective:1400px]">
-      {/* Решение держит высоту карточки — оно в потоке, боль лежит поверх */}
-      <motion.div
-        className="h-full"
-        style={{ transformOrigin: "center" }}
-        initial={{ rotateY: -90, opacity: 0 }}
-        whileInView={{ rotateY: 0, opacity: 1 }}
-        viewport={viewport}
-        transition={{ duration: 0.5, ease: EASE, delay: delay + 0.44 }}
-      >
-        <SolutionFace item={item} />
-      </motion.div>
-
-      <motion.div
-        className="absolute inset-0"
-        style={{ transformOrigin: "center" }}
-        initial={{ rotateY: 0, opacity: 1 }}
-        whileInView={{ rotateY: 90, opacity: 0 }}
-        viewport={viewport}
-        transition={{ duration: 0.46, ease: EASE, delay }}
-      >
-        <PainFace item={item} index={index} />
-      </motion.div>
-    </li>
-  );
-}
-
-/** prefers-reduced-motion: ничего не крутим. Боль зачёркнута сверху, решение — снизу. */
-function StackedCard({ item }: { item: PainItem }) {
-  const PIcon = item.painIcon;
-  const SIcon = item.solutionIcon;
-
-  return (
-    <li>
-      <div className={cn(FACE, "card-plain min-h-[280px]")}>
-        <div className="flex items-start gap-4">
-          <span className={cn(CIRCLE, "bg-surface-inset text-text-3")}>
-            <PIcon className="h-6 w-6" strokeWidth={1.75} />
-          </span>
-          <div className="min-w-0 pt-1">
-            <h3 className={cn(TITLE, "text-text-3 line-through decoration-2")}>{item.pain}</h3>
-            <p className="mt-2 text-[15px] leading-relaxed text-text-3">{item.painNote}</p>
-          </div>
-        </div>
-
-        <div className="my-7 flex items-center gap-3" aria-hidden>
-          <span className="h-px flex-1 bg-line" />
-          <span className="flex h-8 w-8 items-center justify-center rounded-full bg-surface-inset text-text-3">
-            <ArrowDown className="h-4 w-4" strokeWidth={2} />
-          </span>
-          <span className="h-px flex-1 bg-line" />
-        </div>
-
-        <div className="flex items-start gap-4">
-          <span className={cn(CIRCLE, "bg-brand-gradient text-white shadow-glow")}>
-            <SIcon className="h-6 w-6" strokeWidth={2} />
-          </span>
-          <div className="min-w-0 pt-1">
-            <p className={cn(TITLE, "text-text")}>{item.solutionTitle}</p>
-            <p className="mt-2 text-[15px] leading-relaxed text-text-2">{item.solution}</p>
-          </div>
-        </div>
-      </div>
-    </li>
-  );
-}
-
-/* ---------------------------------------------------------------- СЕКЦИЯ */
 
 export function Pains() {
   const uid = useId();
-
-  // Человек просил меньше движения — карточки не крутятся, а лежат стопкой.
-  const stacked = usePrefersReducedMotion();
+  const reduceMotion = useReducedMotion() ?? false;
 
   return (
     <section
       aria-labelledby={`${uid}-title`}
-      className="relative isolate overflow-hidden bg-bg-section py-24 sm:py-32"
+      className="glass-islands-section relative isolate overflow-hidden py-24 sm:py-32"
     >
-      <AuroraBackground intensity="section" grid={false} />
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_8%,rgb(255_255_255_/_0.94),transparent_38%),linear-gradient(180deg,#f5f9ff_0%,#fbfdff_52%,#f3f8ff_100%)]"
+      />
+      <AirWave className="glass-islands-wave" />
+      <span className="glass-islands-light-path" aria-hidden="true" />
 
-      <div className="relative mx-auto w-full max-w-6xl px-5 sm:px-8">
-        {/* ------------------------------------------------------ ЗАГОЛОВОК */}
-        <motion.div
-          initial={{ opacity: 0, y: 22 }}
+      <div className="relative z-10 mx-auto w-full max-w-[1180px] px-5 sm:px-8">
+        <motion.header
+          initial={reduceMotion ? false : { opacity: 0, y: 18 }}
           whileInView={{ opacity: 1, y: 0 }}
           viewport={{ once: true, margin: "-80px" }}
-          transition={{ duration: stacked ? 0 : 0.55, ease: EASE }}
-          className="mx-auto max-w-2xl text-center"
+          transition={{ duration: reduceMotion ? 0 : 0.58, ease: EASE }}
+          className="mx-auto max-w-[790px] text-center"
         >
-          <p className="text-[13px] font-bold tracking-[0.18em] text-brand uppercase">Знакомо?</p>
+          <p className="text-[13px] font-bold tracking-[0.18em] text-brand uppercase">
+            Знакомо?
+          </p>
 
           <h2
             id={`${uid}-title`}
-            className="display mt-5 text-[clamp(2rem,4.5vw,3.4rem)] text-text"
+            className="display mt-5 text-[clamp(2.15rem,5vw,4rem)] text-text text-balance"
           >
             Три причины, по которым соцсети стоят
           </h2>
 
-          <p className="mx-auto mt-6 max-w-lg text-[16px] leading-relaxed text-text-2">
-            Каждую из них платформа закрывает не советом, а работой, которую берёт на себя.
+          <p className="mx-auto mt-6 max-w-[610px] text-[16px] leading-[1.6] text-text-2 text-pretty sm:text-[17px]">
+            План, идеи и разведку Аврора берёт на себя. Тебе остаётся выбрать и
+            подтвердить.
           </p>
-        </motion.div>
+        </motion.header>
 
-        {/* -------------------------------------------------------- КАРТОЧКИ */}
-        <ul className="mt-14 grid gap-5 sm:mt-16 md:grid-cols-3 md:gap-6">
-          {ITEMS.map((item, i) =>
-            stacked ? (
-              <StackedCard key={item.id} item={item} />
-            ) : (
-              <FlipCard key={item.id} item={item} index={i} />
-            ),
-          )}
-        </ul>
-
-        {/* Подсказка честна только там, где карточки действительно крутятся */}
-        {!stacked && (
-          <p className="mt-8 text-center text-[13px] text-text-3">
-            Карточки переворачиваются сами — прокрути до конца.
-          </p>
-        )}
+        <ol
+          className="glass-islands-list mt-14 sm:mt-16"
+          aria-label="Что Аврора берёт на себя"
+        >
+          {ISLANDS.map((island, index) => (
+            <GlassIsland
+              key={island.id}
+              island={island}
+              index={index}
+              reduceMotion={reduceMotion}
+            />
+          ))}
+        </ol>
       </div>
     </section>
   );
