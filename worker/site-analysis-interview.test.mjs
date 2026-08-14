@@ -80,7 +80,7 @@ describe("site analysis AI interview worker", () => {
     });
 
     expect(acquireUsage).toHaveBeenCalledTimes(1);
-    expect(completeAiText.mock.calls.every(([, options]) => options.allowFallback === false)).toBe(true);
+    expect(completeAiText.mock.calls.every(([, options]) => options.allowFallback === true)).toBe(true);
     expect(completeAiText.mock.calls.every(([request, options]) => (
       JSON.parse(request.user).questions.length <= SITE_INTERVIEW_EXECUTION_LIMITS.maxQuestionsPerBatch
       && request.maxTokens === SITE_INTERVIEW_EXECUTION_LIMITS.maxTokens
@@ -92,6 +92,52 @@ describe("site analysis AI interview worker", () => {
     expect(result.report.answers).toHaveLength(51);
     expect(result.reservationId).toBe(91);
     expect(releaseUsage).not.toHaveBeenCalled();
+  });
+
+  it("runs independent AI batches concurrently and keeps the final answer order stable", async () => {
+    const h = harness();
+    let active = 0;
+    let peakActive = 0;
+    const completedBatchIds = [];
+    const completeAiText = vi.fn(async (request) => {
+      const body = JSON.parse(request.user);
+      active += 1;
+      peakActive = Math.max(peakActive, active);
+      await new Promise((resolve) => setTimeout(resolve, body.outputContract.batchId === "batch-001" ? 15 : 2));
+      active -= 1;
+      completedBatchIds.push(body.outputContract.batchId);
+      return {
+        engine: "navy-deepseek-pro",
+        text: JSON.stringify({
+          batchId: body.outputContract.batchId,
+          reportStatus: "complete",
+          answers: body.questions.map(answerFor),
+        }),
+      };
+    });
+
+    const result = await runSiteInterview(h.pool, {
+      analysisId: 41,
+      runRevision: 2,
+      userId: 7,
+      requestId: "req-41",
+      snapshot: snapshot(),
+      engine: "navy-deepseek-pro",
+    }, {
+      acquireUsage: vi.fn(async () => ({ state: "acquired", reservationId: 91 })),
+      releaseUsage: vi.fn(async () => true),
+      heartbeatUsage: vi.fn(async () => true),
+      completeAiText,
+      batchConcurrency: 4,
+    });
+
+    expect(peakActive).toBeGreaterThan(1);
+    expect(completedBatchIds[0]).not.toBe("batch-001");
+    expect(result.report.answers.map((answer) => answer.questionId)).toEqual(
+      result.report.answers.map((answer) => answer.questionId).sort((left, right) => (
+        Number(left.replace(/\D/gu, "")) - Number(right.replace(/\D/gu, ""))
+      )),
+    );
   });
 
   it("replays durable ready batches without a second paid provider call", async () => {
@@ -192,6 +238,7 @@ describe("site analysis AI interview worker", () => {
       releaseUsage: vi.fn(async () => true),
       heartbeatUsage: vi.fn(async () => true),
       completeAiText,
+      batchConcurrency: 1,
     });
     expect(result.report.answers).toHaveLength(51);
     expect(completeAiText).toHaveBeenCalledTimes(27);

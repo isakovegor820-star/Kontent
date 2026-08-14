@@ -158,6 +158,9 @@ type Analysis = {
   error: { code: string; message: string } | null;
   attempts: number;
   runRevision: number;
+  startedAt: string | null;
+  serverNow: string | null;
+  clientReceivedAt?: number;
   createdAt: string | null;
   updatedAt: string | null;
   completedAt: string | null;
@@ -207,6 +210,42 @@ const STAGE_LABELS: Record<string, string> = {
   failed: "Остановлено",
 };
 
+const PIPELINE_STAGES = [
+  "Сбор основной информации",
+  "Анализ страниц сайта",
+  "Поиск социальных сетей и контактов",
+  "SEO/GEO-анализ",
+  "Формирование итогового отчёта",
+] as const;
+
+const PIPELINE_STAGE_INDEX: Record<string, number> = {
+  queued: 0,
+  robots: 0,
+  sitemap: 0,
+  crawling: 1,
+  extracting: 2,
+  resolving_entities: 2,
+  researching_external: 2,
+  analyzing: 3,
+  answering: 3,
+  validating: 3,
+  planning: 4,
+  saving: 4,
+};
+
+function pipelineStageIndex(analysis: Analysis) {
+  if (analysis.status === "ready") return PIPELINE_STAGES.length;
+  if (analysis.status === "failed") return -1;
+  return PIPELINE_STAGE_INDEX[analysis.stage] ?? PIPELINE_STAGE_INDEX[analysis.status] ?? 0;
+}
+
+function analysisStatusTitle(analysis: Analysis) {
+  if (analysis.status === "ready") return "Анализ готов";
+  if (analysis.status === "failed") return "Анализ остановлен";
+  if (analysis.status === "queued") return "Анализ поставлен в очередь";
+  return "Проверяем сайт";
+}
+
 function confidenceLabel(value?: string) {
   if (value === "high") return "высокая";
   if (value === "medium") return "средняя";
@@ -243,13 +282,34 @@ function inputDomain(value: string): string {
   }
 }
 
-function elapsedLabel(startedAt: string | null, endedAt: string | null, now: number) {
+function withClientReceipt(analysis: Analysis): Analysis {
+  return { ...analysis, clientReceivedAt: Date.now() };
+}
+
+function elapsedLabel(
+  startedAt: string | null,
+  endedAt: string | null,
+  serverNow: string | null,
+  clientReceivedAt: number | undefined,
+  now: number,
+) {
   if (!startedAt) return "—";
   const start = new Date(startedAt).getTime();
-  const end = endedAt ? new Date(endedAt).getTime() : now;
+  if (Number.isNaN(start)) return "—";
+  const serverTimestamp = serverNow ? new Date(serverNow).getTime() : Number.NaN;
+  const end = endedAt
+    ? new Date(endedAt).getTime()
+    : Number.isNaN(serverTimestamp) || !clientReceivedAt
+      ? now
+      : serverTimestamp + Math.max(0, now - clientReceivedAt);
+  if (Number.isNaN(end)) return "—";
   const seconds = Math.max(0, Math.floor((end - start) / 1000));
+  const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor(seconds / 60);
-  return minutes ? `${minutes} мин ${seconds % 60} с` : `${seconds} с`;
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return hours
+    ? `${hours}:${pad(minutes % 60)}:${pad(seconds % 60)}`
+    : `${pad(minutes)}:${pad(seconds % 60)}`;
 }
 
 function EvidenceLinks({ items }: { items?: Evidence[] }) {
@@ -798,7 +858,7 @@ export default function SiteAnalysisPage() {
       const response = await fetch("/api/site-analysis", { cache: "no-store" });
       const body = await response.json() as { analyses?: Analysis[]; requestId?: string; error?: string };
       if (!response.ok) throw Object.assign(new Error("list_failed"), { requestId: body.requestId });
-      setAnalyses(body.analyses || []);
+      setAnalyses((body.analyses || []).map(withClientReceipt));
     } catch (error) {
       setPageError({ message: "Не удалось загрузить историю анализов.", requestId: (error as { requestId?: string }).requestId });
     } finally {
@@ -813,6 +873,7 @@ export default function SiteAnalysisPage() {
       const body = await response.json() as { analysis?: Analysis; requestId?: string; error?: string };
       if (!response.ok || !body.analysis) throw Object.assign(new Error(body.error || "poll_failed"), { requestId: body.requestId });
       if (sequence !== requestSequence.current) return null;
+      body.analysis = withClientReceipt(body.analysis);
       setComparison(null);
       setCurrent(body.analysis);
       availableSessionStorage()?.setItem(SELECTED_ANALYSIS_SLOT, String(body.analysis.id));
@@ -871,11 +932,17 @@ export default function SiteAnalysisPage() {
 
   const canSubmit = Boolean(url.trim() && domain.trim() && consent && !submitting);
   const elapsed = useMemo(
-    () => elapsedLabel(current?.createdAt || null, current?.completedAt || null, now),
-    [current?.createdAt, current?.completedAt, now],
+    () => elapsedLabel(
+      current?.startedAt || current?.createdAt || null,
+      current?.completedAt || null,
+      current?.serverNow || null,
+      current?.clientReceivedAt,
+      now,
+    ),
+    [current?.startedAt, current?.createdAt, current?.completedAt, current?.serverNow, current?.clientReceivedAt, now],
   );
   const liveStatus = current
-    ? `${STAGE_LABELS[current.stage] || current.stage}. ${current.progress} процентов. ${current.detail || ""}`
+    ? `${analysisStatusTitle(current)}. Текущий этап: ${current.detail || STAGE_LABELS[current.stage] || current.stage}.`
     : loading ? "Загружаем историю анализов" : "";
 
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -900,6 +967,7 @@ export default function SiteAnalysisPage() {
         body: JSON.stringify({ url: normalizedInputUrl(url), confirmedDomain: domain.trim(), consent: true }),
       });
       const body = await response.json() as { analysis?: Analysis; requestId?: string; error?: string };
+      if (body.analysis) body.analysis = withClientReceipt(body.analysis);
       if (body.analysis) {
         createKeyRef.current = bindStableSiteAnalysisKey(
           availableSessionStorage(),
@@ -952,6 +1020,7 @@ export default function SiteAnalysisPage() {
         body: JSON.stringify({ clientKey: keyRecord.key }),
       });
       const body = await response.json() as { analysis?: Analysis; requestId?: string; error?: string };
+      if (body.analysis) body.analysis = withClientReceipt(body.analysis);
       if (body.analysis) {
         retryKeyRef.current = bindStableSiteAnalysisKey(
           availableSessionStorage(),
@@ -1053,35 +1122,72 @@ export default function SiteAnalysisPage() {
           )}
 
           {current && (
-            <Card className="overflow-hidden" aria-busy={!TERMINAL.has(current.status)}>
+            <Card
+              className="overflow-hidden"
+              aria-busy={!TERMINAL.has(current.status)}
+              aria-labelledby="analysis-status-title"
+            >
               <div className="border-b border-line px-5 py-5 sm:px-7">
                 <div className="flex flex-wrap items-start justify-between gap-4">
                   <div className="min-w-0">
-                    <p className="truncate text-[15px] font-extrabold text-text">{current.targetUrl}</p>
+                    <h2 id="analysis-status-title" className="text-[18px] font-black text-text">
+                      {analysisStatusTitle(current)}
+                    </h2>
+                    <p className="mt-1 truncate text-[13px] text-text-2">{current.targetUrl}</p>
                     <p className="nums mt-1 text-[11px] text-text-3">Номер запроса: {current.requestId}</p>
                   </div>
                   <Badge tone={current.status === "ready" ? "success" : current.status === "failed" ? "danger" : "brand"}>
                     {STAGE_LABELS[current.stage] || current.stage}
                   </Badge>
                 </div>
-                <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 text-[12px] text-text-3">
-                  <span className="flex items-center gap-1.5"><Clock3 className="h-3.5 w-3.5" aria-hidden /> {elapsed}</span>
-                  <span>{current.progress}%</span>
-                  <span>{current.detail || STAGE_LABELS[current.stage]}</span>
-                </div>
-                <div
-                  className="mt-3 h-2 overflow-hidden rounded-full bg-surface-inset"
-                  role="progressbar"
-                  aria-label="Прогресс анализа сайта"
-                  aria-valuemin={0}
-                  aria-valuemax={100}
-                  aria-valuenow={current.progress}
-                >
-                  <div
-                    className={cn("h-full origin-left bg-brand-gradient transition-transform duration-500 motion-reduce:transition-none", current.status === "failed" && "bg-danger")}
-                    style={{ transform: `scaleX(${Math.max(0, Math.min(100, current.progress)) / 100})` }}
-                  />
-                </div>
+                <dl className="mt-4 grid gap-3 rounded-sm border border-line bg-surface-2 p-4 sm:grid-cols-[180px_minmax(0,1fr)]">
+                  <div>
+                    <dt className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-text-3">
+                      <Clock3 className="h-3.5 w-3.5" aria-hidden /> Прошло времени
+                    </dt>
+                    <dd className="nums mt-1 text-[18px] font-black tabular-nums text-text">{elapsed}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-[11px] font-bold uppercase tracking-wide text-text-3">Текущий этап</dt>
+                    <dd className="mt-1 text-[13px] font-bold leading-relaxed text-text">
+                      {current.detail || STAGE_LABELS[current.stage] || current.stage}
+                    </dd>
+                  </div>
+                </dl>
+                {current.status !== "failed" && (
+                  <ol className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-5" aria-label="Этапы проверки сайта">
+                    {PIPELINE_STAGES.map((label, index) => {
+                      const currentIndex = pipelineStageIndex(current);
+                      const complete = current.status === "ready" || index < currentIndex;
+                      const active = current.status !== "ready" && index === currentIndex;
+                      return (
+                        <li
+                          key={label}
+                          aria-current={active ? "step" : undefined}
+                          className={cn(
+                            "flex min-h-14 items-center gap-2 rounded-sm border px-3 py-2 sm:min-h-24 sm:flex-col sm:items-start",
+                            complete && "border-success/30 bg-success-soft",
+                            active && "border-brand/35 bg-info-soft",
+                            !complete && !active && "border-line bg-surface-2",
+                          )}
+                        >
+                          <span className={cn(
+                            "grid h-6 w-6 shrink-0 place-items-center rounded-full text-[11px] font-black",
+                            complete && "bg-success text-white",
+                            active && "bg-brand text-white",
+                            !complete && !active && "border border-line bg-surface text-text-3",
+                          )}>
+                            {complete ? <CheckCircle2 className="h-4 w-4" aria-hidden /> : index + 1}
+                          </span>
+                          <span className={cn(
+                            "text-[11px] font-bold leading-snug",
+                            (complete || active) ? "text-text" : "text-text-3",
+                          )}>{label}</span>
+                        </li>
+                      );
+                    })}
+                  </ol>
+                )}
                 {current.status === "failed" && (
                   <div className="mt-4 flex flex-wrap items-center gap-3 rounded-sm bg-danger-soft p-4">
                     <AlertTriangle className="h-5 w-5 shrink-0 text-danger-text" aria-hidden />
@@ -1152,7 +1258,7 @@ export default function SiteAnalysisPage() {
                       {analysis.status === "ready" ? <CheckCircle2 className="h-4 w-4 shrink-0 text-success-text" aria-hidden /> : analysis.status === "failed" ? <AlertTriangle className="h-4 w-4 shrink-0 text-danger-text" aria-hidden /> : <Sparkles className="h-4 w-4 shrink-0 text-brand" aria-hidden />}
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-[12px] font-bold text-text">{analysis.confirmedDomain}</span>
-                        <span className="mt-0.5 block text-[11px] text-text-3">{STAGE_LABELS[analysis.stage] || analysis.stage} · {analysis.progress}%</span>
+                        <span className="mt-0.5 block text-[11px] text-text-3">{STAGE_LABELS[analysis.stage] || analysis.stage}</span>
                       </span>
                       <ChevronRight className="h-4 w-4 shrink-0 text-text-3" aria-hidden />
                     </button>

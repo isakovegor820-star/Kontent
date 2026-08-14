@@ -9,6 +9,7 @@ import {
 } from "../src/lib/site-analysis/interview.mjs";
 import { siteEvidenceHash } from "../src/lib/site-analysis/evidence.mjs";
 import { SITE_INTERVIEW_QUESTIONS } from "../src/lib/site-analysis/questions.data.mjs";
+import { configuredAiConcurrency } from "../src/lib/ai-engine-policy.mjs";
 import { assertWorkerAiCallPolicy } from "./ai-call-policy.mjs";
 import {
   WORKER_AI_RESERVATION_TTL_MS,
@@ -35,6 +36,7 @@ export const SITE_INTERVIEW_EXECUTION_LIMITS = Object.freeze({
   maxTokens: 2_400,
   timeoutMs: 90_000,
   providerAttempts: 2,
+  maxConcurrentBatches: 4,
 });
 
 function safeProviderCode(error) {
@@ -166,15 +168,47 @@ export async function runSiteInterview(pool, input, dependencies = {}) {
       SITE_INTERVIEW_QUESTIONS,
       dependencies.maxQuestionsPerBatch ?? SITE_INTERVIEW_EXECUTION_LIMITS.maxQuestionsPerBatch,
     );
-    const completed = [];
-    for (const [index, batch] of batches.entries()) {
-      await onProgress({
+    const completed = new Array(batches.length);
+    const configuredConcurrency = dependencies.batchConcurrency == null
+      ? configuredAiConcurrency(
+          input.engine,
+          dependencies.env || process.env,
+          dependencies.maxConcurrentBatches ?? SITE_INTERVIEW_EXECUTION_LIMITS.maxConcurrentBatches,
+        )
+      : Number(dependencies.batchConcurrency);
+    const batchConcurrency = Math.min(
+      batches.length,
+      8,
+      Math.max(1, Math.round(configuredConcurrency) || 1),
+    );
+    const interviewAbort = new AbortController();
+    const completionSignal = dependencies.signal
+      ? AbortSignal.any([dependencies.signal, interviewAbort.signal])
+      : interviewAbort.signal;
+    let completedCount = 0;
+    let progressChain = Promise.resolve();
+    const reportProgress = (batch) => {
+      completedCount += 1;
+      const current = completedCount;
+      progressChain = progressChain.then(() => onProgress({
         batchId: batch.id,
-        current: index + 1,
+        current,
         total: batches.length,
-        progress: 66 + Math.round(((index + 1) / batches.length) * 22),
-        detail: `Интервью: блок ${index + 1} из ${batches.length}`,
-      });
+        progress: 66 + Math.round((current / batches.length) * 22),
+        detail: `ИИ-анализ: готово ${current} из ${batches.length}`,
+      }));
+      return progressChain;
+    };
+
+    await onProgress({
+      batchId: null,
+      current: 0,
+      total: batches.length,
+      progress: 66,
+      detail: `ИИ-анализ: обрабатываем ${batches.length} блоков`,
+    });
+
+    const runBatch = async (batch) => {
       const prompt = buildSiteInterviewPrompt({
         snapshot: input.snapshot,
         questions: batch.questions,
@@ -205,8 +239,7 @@ export async function runSiteInterview(pool, input, dependencies = {}) {
           entityIds: prompt.entityIds,
         });
         if (!replay.ok) throw new SiteInterviewWorkerError("stored_batch_invalid", "Сохранённый этап анализа не прошёл проверку.", { details: replay.errors });
-        completed.push(replay.value);
-        continue;
+        return replay.value;
       }
       await claimBatch(pool, identity);
       let completion;
@@ -224,8 +257,8 @@ export async function runSiteInterview(pool, input, dependencies = {}) {
             providerRequestKey,
             providerRequestId: input.requestId,
           }, {
-            signal: dependencies.signal,
-            allowFallback: false,
+            signal: completionSignal,
+            allowFallback: dependencies.allowFallback !== false,
             timeoutMs: dependencies.timeoutMs ?? SITE_INTERVIEW_EXECUTION_LIMITS.timeoutMs,
             telemetry: (event) => dependencies.telemetry?.({
               ...event,
@@ -262,7 +295,34 @@ export async function runSiteInterview(pool, input, dependencies = {}) {
         throw new SiteInterviewWorkerError("schema_invalid", "Ответ аналитика не прошёл формальную проверку.", { details: validated.errors });
       }
       await saveBatch(pool, { ...identity, engine: completion.engine, payload: validated.value });
-      completed.push(validated.value);
+      return validated.value;
+    };
+
+    let nextBatchIndex = 0;
+    let firstFailure = null;
+    const runWorker = async () => {
+      while (!firstFailure) {
+        const index = nextBatchIndex;
+        nextBatchIndex += 1;
+        if (index >= batches.length) return;
+        try {
+          completed[index] = await runBatch(batches[index]);
+          await reportProgress(batches[index]);
+        } catch (error) {
+          if (!firstFailure) {
+            firstFailure = error;
+            interviewAbort.abort(error);
+          }
+          return;
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: batchConcurrency }, () => runWorker()));
+    await progressChain;
+    if (firstFailure) throw firstFailure;
+
+    if (completed.some((batch) => !batch)) {
+      throw new SiteInterviewWorkerError("batch_incomplete", "Не все этапы анализа были завершены.", { retryable: true });
     }
     const report = aggregateSiteInterviewReport({
       questions: SITE_INTERVIEW_QUESTIONS,

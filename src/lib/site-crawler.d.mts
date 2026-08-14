@@ -17,6 +17,7 @@ export class SiteCrawlerError extends Error {
 
 export const SITE_ANALYSIS_POLICY_VERSION: string;
 export const SITE_CRAWLER_USER_AGENT: string;
+export const DEFAULT_SITE_CRAWL_CONCURRENCY: number;
 export const DEFAULT_SITE_CRAWL_LIMITS: Readonly<SiteCrawlLimits>;
 export function normalizeSiteLimits(value?: Partial<SiteCrawlLimits>): Readonly<SiteCrawlLimits>;
 export function upgradeLegacySiteLimits(value?: Partial<SiteCrawlLimits>): Readonly<SiteCrawlLimits>;
@@ -30,5 +31,5 @@ export function extractSitePage(html: unknown, value: URL | string, status?: num
 export function buildSiteAnalysisReport(targetUrl: URL | string, pages: Array<Record<string, unknown>>, limits?: SiteCrawlLimits): Record<string, unknown>;
 export function crawlSite(
   input: { targetUrl: unknown; confirmedDomain: unknown; consent: unknown; limits?: Partial<SiteCrawlLimits> },
-  dependencies?: { fetchText?: (url: string, options: Record<string, unknown>) => Promise<unknown>; onProgress?: (event: { stage: SiteCrawlStage; progress: number; detail: string }) => unknown },
+  dependencies?: { concurrency?: number; fetchText?: (url: string, options: Record<string, unknown>) => Promise<unknown>; onProgress?: (event: { stage: SiteCrawlStage; progress: number; detail: string }) => unknown },
 ): Promise<{ report: Record<string, unknown>; pages: Array<Record<string, unknown>>; totalBytes: number; robots: { sitemaps: string[] } }>;

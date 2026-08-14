@@ -47,6 +47,7 @@ export type SiteAnalysisRow = {
   attempts: string | number;
   run_revision: string | number;
   queue_confirmed_at: Date | string | null;
+  server_now?: Date | string | null;
   created_at: Date | string;
   updated_at: Date | string;
   completed_at: Date | string | null;
@@ -75,6 +76,8 @@ export function serializeSiteAnalysis(row: SiteAnalysisRow, includeResult = fals
     attempts: Number(row.attempts),
     runRevision: Number(row.run_revision),
     queueConfirmedAt: iso(row.queue_confirmed_at),
+    startedAt: iso(row.queue_confirmed_at) || iso(row.created_at),
+    serverNow: iso(row.server_now) || new Date().toISOString(),
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
     completedAt: iso(row.completed_at),

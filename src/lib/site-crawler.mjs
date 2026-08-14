@@ -2,6 +2,7 @@ import { fetchPublicText, parsePublicHttpUrl } from "./safe-http.mjs";
 
 export const SITE_ANALYSIS_POLICY_VERSION = "aurora-site-analysis-v1";
 export const SITE_CRAWLER_USER_AGENT = "AuroraSiteAnalyzer";
+export const DEFAULT_SITE_CRAWL_CONCURRENCY = 4;
 const LEGACY_DEFAULT_SITE_CRAWL_LIMITS = Object.freeze({
   maxPageBytes: 1_000_000,
   maxTotalBytes: 6_000_000,
@@ -824,6 +825,12 @@ export async function crawlSite(input, dependencies = {}) {
   const limits = normalizeSiteLimits(input.limits);
   const fetchText = dependencies.fetchText || fetchPublicText;
   const onProgress = dependencies.onProgress || (() => undefined);
+  const crawlConcurrency = boundedInteger(
+    dependencies.concurrency,
+    DEFAULT_SITE_CRAWL_CONCURRENCY,
+    1,
+    8,
+  );
   const emit = async (stage, progress, detail) => onProgress({ stage, progress, detail });
   let totalBytes = 0;
   const remainingBytes = () => {
@@ -963,60 +970,80 @@ export async function crawlSite(input, dependencies = {}) {
   const pages = [];
   const finalUrls = new Set();
   while (pending.length && pages.length < limits.maxPages) {
-    const url = pending.shift();
+    const pageSlots = limits.maxPages - pages.length;
+    // Reserve a complete per-page byte allowance for every concurrent request. Near the
+    // total crawl limit the batch automatically shrinks instead of letting several
+    // in-flight responses collectively overshoot the configured safety boundary.
+    const budgetedConcurrency = Math.max(1, Math.floor(remainingBytes() / limits.maxPageBytes));
+    const batchSize = Math.min(crawlConcurrency, budgetedConcurrency, pageSlots, pending.length);
+    const batch = pending.splice(0, batchSize);
+    const firstPage = pages.length + 1;
+    const lastPage = Math.min(limits.maxPages, pages.length + batch.length);
     await emit(
       "crawling",
       15 + Math.round((pages.length / limits.maxPages) * 55),
-      `Страница ${pages.length + 1} из ${limits.maxPages}`,
+      batch.length > 1
+        ? `Загружаем страницы ${firstPage}–${lastPage} из ${limits.maxPages}`
+        : `Загружаем страницу ${firstPage} из ${limits.maxPages}`,
     );
-    let response;
-    try {
-      response = await fetchCrawlerResource(
-        fetchText,
-        url,
-        limits,
-        boundedResourceBytes(limits.maxPageBytes),
-        robots,
-      );
-    } catch (error) {
-      consumeFailure(error);
-      if (error?.code === "too_large") {
-        throw new SiteCrawlerError("crawl_too_large", "Сайт превысил безопасный лимит размера анализа");
+    const fetched = await Promise.all(batch.map(async (url) => {
+      try {
+        const response = await fetchCrawlerResource(
+          fetchText,
+          url,
+          limits,
+          boundedResourceBytes(limits.maxPageBytes),
+          robots,
+        );
+        return { url, response, error: null };
+      } catch (error) {
+        return { url, response: null, error };
       }
-      if (error instanceof SiteCrawlerError && error.code === "robots_denied") {
-        if (url.toString() === target.toString()) throw error;
+    }));
+
+    // Process the completed batch in queue order so reports and stored evidence remain
+    // deterministic even when network responses settle in a different order.
+    for (const { url, response, error } of fetched) {
+      if (error) {
+        consumeFailure(error);
+        if (error?.code === "too_large") {
+          throw new SiteCrawlerError("crawl_too_large", "Сайт превысил безопасный лимит размера анализа");
+        }
+        if (error instanceof SiteCrawlerError && error.code === "robots_denied") {
+          if (url.toString() === target.toString()) throw error;
+          continue;
+        }
+        pages.push({
+          ...extractSitePage("", url, 0),
+          fetchError: "unavailable",
+        });
         continue;
       }
-      pages.push({
-        ...extractSitePage("", url, 0),
-        fetchError: "unavailable",
-      });
-      continue;
-    }
-    const finalUrl = normalizedCrawlUrl(response.url || url, target);
-    if (!finalUrl) throw new SiteCrawlerError("redirect_forbidden", "Страница перенаправила анализ на другой домен");
-    if (!robotsAllows(robots, finalUrl)) {
-      if (url.toString() === target.toString()) {
-        throw new SiteCrawlerError("robots_denied", "Правила сайта запрещают перенаправление на эту страницу");
+      const finalUrl = normalizedCrawlUrl(response.url || url, target);
+      if (!finalUrl) throw new SiteCrawlerError("redirect_forbidden", "Страница перенаправила анализ на другой домен");
+      if (!robotsAllows(robots, finalUrl)) {
+        if (url.toString() === target.toString()) {
+          throw new SiteCrawlerError("robots_denied", "Правила сайта запрещают перенаправление на эту страницу");
+        }
+        continue;
       }
-      continue;
+      const finalKey = finalUrl.toString();
+      if (finalUrls.has(finalKey)) {
+        await consumeResponse(response, false);
+        continue;
+      }
+      finalUrls.add(finalKey);
+      const contentType = String(response.headers?.["content-type"] || response.headers?.get?.("content-type") || "").toLowerCase();
+      const supportedHtml = !contentType || contentType.includes("html") || contentType.includes("xhtml");
+      const html = await consumeResponse(response, response.ok && supportedHtml);
+      if (!response.ok || (contentType && !contentType.includes("html") && !contentType.includes("xhtml"))) {
+        pages.push({ ...extractSitePage("", finalUrl, response.status), fetchError: response.ok ? "unsupported_content" : "http_error" });
+        continue;
+      }
+      const page = extractSitePage(html, finalUrl, response.status);
+      pages.push(page);
+      page.links.filter((link) => link.kind === "internal").forEach((link) => enqueue(link.url));
     }
-    const finalKey = finalUrl.toString();
-    if (finalUrls.has(finalKey)) {
-      await consumeResponse(response, false);
-      continue;
-    }
-    finalUrls.add(finalKey);
-    const contentType = String(response.headers?.["content-type"] || response.headers?.get?.("content-type") || "").toLowerCase();
-    const supportedHtml = !contentType || contentType.includes("html") || contentType.includes("xhtml");
-    const html = await consumeResponse(response, response.ok && supportedHtml);
-    if (!response.ok || (contentType && !contentType.includes("html") && !contentType.includes("xhtml"))) {
-      pages.push({ ...extractSitePage("", finalUrl, response.status), fetchError: response.ok ? "unsupported_content" : "http_error" });
-      continue;
-    }
-    const page = extractSitePage(html, finalUrl, response.status);
-    pages.push(page);
-    page.links.filter((link) => link.kind === "internal").forEach((link) => enqueue(link.url));
   }
 
   if (!pages.some((page) => page.status >= 200 && page.status < 400)) {

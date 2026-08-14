@@ -32,6 +32,7 @@
     "tokens:reencrypt": "node --env-file-if-exists=.env.local scripts/reencrypt-token-envelopes.mjs",
     "media:cleanup-orphans": "node --env-file-if-exists=.env.local scripts/cleanup-media-orphans.mjs",
     "worker": "node --env-file=.env.local worker.mjs",
+    "worker:site-analysis": "node --env-file=.env.local scripts/site-analysis-worker.mjs",
     "worker:media": "AURORA_WORKER_MODE=media node --env-file=.env.local worker.mjs",
     "worker:publication": "AURORA_WORKER_MODE=publication node --env-file=.env.local worker.mjs"
   },

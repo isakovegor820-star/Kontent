@@ -170,7 +170,7 @@ describe("site crawler security and extraction", () => {
     ).toString()).toBe("https://example.com/?keep=1");
   });
 
-  it("crawls sequentially, sends redirect boundary, reports progress and evidence", async () => {
+  it("crawls in deterministic batches, sends redirect boundary, reports progress and evidence", async () => {
     const calls = [];
     const fetchText = vi.fn(async (url, options) => {
       calls.push({ url, options });
@@ -203,6 +203,37 @@ describe("site crawler security and extraction", () => {
       ...result.report.themes,
     ];
     expect(conclusions.every((item) => Array.isArray(item.evidence) && item.evidence.length > 0)).toBe(true);
+  });
+
+  it("loads independent pages concurrently while preserving queue order", async () => {
+    let inFlight = 0;
+    let peakInFlight = 0;
+    const fetchText = vi.fn(async (url) => {
+      if (url.endsWith("/robots.txt")) return response(url, "User-agent: *\nAllow: /", 200, "text/plain");
+      if (url.endsWith("/sitemap.xml")) {
+        return response(url, "<urlset><url><loc>https://example.com/a</loc></url><url><loc>https://example.com/b</loc></url><url><loc>https://example.com/c</loc></url></urlset>", 200, "application/xml");
+      }
+      inFlight += 1;
+      peakInFlight = Math.max(peakInFlight, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, url.endsWith("/a") ? 15 : 5));
+      inFlight -= 1;
+      return response(url, `<html><body><main><h1>${new URL(url).pathname}</h1></main></body></html>`);
+    });
+
+    const result = await crawlSite({
+      targetUrl: "https://example.com/",
+      confirmedDomain: "example.com",
+      consent: true,
+      limits: { maxPages: 4 },
+    }, { fetchText, concurrency: 4 });
+
+    expect(peakInFlight).toBeGreaterThan(1);
+    expect(result.pages.map((page) => page.url)).toEqual([
+      "https://example.com/",
+      "https://example.com/a",
+      "https://example.com/b",
+      "https://example.com/c",
+    ]);
   });
 
   it("fails closed when robots is unavailable or denies the page", async () => {
