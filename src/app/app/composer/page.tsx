@@ -74,6 +74,7 @@ import {
   Textarea,
   VkIcon,
 } from "@/components/ui/primitives";
+import { H2, HelperText } from "@/components/ui/typography";
 import { parseAiStreamBuffer, type AiStreamEvent } from "@/lib/ai-stream";
 import {
   aiDraftPhaseLabel,
@@ -2779,8 +2780,8 @@ function ComposerInner() {
 
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h2 className="text-[18px] font-bold text-text">Текст поста</h2>
-            <p className="mt-0.5 text-[13px] text-text-3">Пиши сам или подготовь отдельный вариант с ИИ.</p>
+            <H2>Текст поста</H2>
+            <HelperText className="mt-0.5">Пиши сам или подготовь отдельный вариант с ИИ.</HelperText>
           </div>
           <div className="flex items-center gap-1">
             <Button variant="ghost" size="icon" disabled={!c.canUndo || !canEditContent} onClick={c.undoText} aria-label="Отменить изменение">
@@ -3402,7 +3403,7 @@ function ComposerInner() {
             {canEditContent && (
               <>
             <Button
-              variant="outline"
+              variant="primary"
               onClick={c.saveDraft}
               loading={c.draftSaveState === "saving"}
               disabled={c.saving || c.typing}

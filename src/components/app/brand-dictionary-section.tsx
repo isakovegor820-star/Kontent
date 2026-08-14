@@ -530,7 +530,7 @@ export function BrandDictionarySection() {
                                 <Pencil className="h-4 w-4" aria-hidden />
                                 Изменить
                               </Button>
-                              <Button type="button" variant="ghost" size="sm" onClick={() => setDeleting(entry)} disabled={busy != null}>
+                              <Button type="button" variant="danger" size="sm" onClick={() => setDeleting(entry)} disabled={busy != null}>
                                 <Trash2 className="h-4 w-4" aria-hidden />
                                 Удалить
                               </Button>

@@ -48,7 +48,7 @@ export function Badge({
       // Хук для скоуп-скинов (app-v3 рисует чипы-штампы, не трогая лендинг)
       data-tone={tone}
       className={cn(
-        "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] leading-none font-semibold",
+        "type-caption inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 font-semibold",
         TONES[tone],
         className,
       )}
@@ -67,7 +67,7 @@ export const Input = forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTML
       <input
         ref={ref}
         className={cn(
-          "h-12 w-full rounded-xs border border-line bg-surface px-4 text-base text-text sm:text-[15px]",
+          "type-input h-12 w-full rounded-xs border border-line bg-surface px-4 text-text",
           "placeholder:text-text-3 transition-colors duration-200",
           "hover:border-line-strong focus:border-brand focus:outline-none",
           "focus-visible:ring-4 focus-visible:ring-brand/15",
@@ -88,7 +88,7 @@ export const Textarea = forwardRef<
     <textarea
       ref={ref}
       className={cn(
-        "w-full resize-none rounded-sm border border-line bg-surface p-4 text-base leading-relaxed text-text sm:text-[15px]",
+        "type-input w-full resize-none rounded-sm border border-line bg-surface p-4 text-text",
         "placeholder:text-text-3 transition-colors duration-200",
         "hover:border-line-strong focus:border-brand focus:outline-none",
         "focus-visible:ring-4 focus-visible:ring-brand/15",
@@ -119,18 +119,18 @@ export function Field({
   return (
     <div className="space-y-2">
       {/* Метка всегда видима — не плейсхолдер (a11y) */}
-      <label htmlFor={htmlFor} className="block text-[13px] font-semibold text-text-2">
+      <label htmlFor={htmlFor} className="type-label block text-text-2">
         {label}
         {required && <span aria-hidden="true" className="ml-1 text-danger">*</span>}
       </label>
       {children}
       {/* Ошибка — рядом с полем, с ролью alert */}
       {error ? (
-        <p id={messageId} role="alert" className="text-[13px] font-medium text-danger-text">
+        <p id={messageId} role="alert" className="type-caption font-medium text-danger-text">
           {error}
         </p>
       ) : hint ? (
-        <p id={messageId} className="text-[13px] text-text-3">{hint}</p>
+        <p id={messageId} className="type-caption text-text-3">{hint}</p>
       ) : null}
     </div>
   );
@@ -209,10 +209,10 @@ export function Toggle({
   return (
     <div className="flex items-start justify-between gap-6">
       <div className="min-w-0">
-        <label htmlFor={id} className={cn("block text-[15px] font-semibold text-text", disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer")}>
+        <label htmlFor={id} className={cn("type-body-strong block text-text", disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer")}>
           {label}
         </label>
-        {description && <p className="mt-1 text-[13px] leading-relaxed text-text-2">{description}</p>}
+        {description && <p className="type-secondary mt-1 text-text-2">{description}</p>}
       </div>
       <span className="mt-0.5">
         <Switch checked={checked} onChange={onChange} label={label} id={id} disabled={disabled} />
@@ -257,7 +257,7 @@ export function Checkbox({
       >
         {checked && <Check className="h-3.5 w-3.5" strokeWidth={3} aria-hidden />}
       </span>
-      <span className="text-[14px] font-medium text-text">{label}</span>
+      <span className="type-secondary font-medium text-text">{label}</span>
     </button>
   );
 }
@@ -314,7 +314,7 @@ export function Tabs<T extends string>({
             tabIndex={active ? 0 : -1}
             onClick={() => onChange(it.value)}
             className={cn(
-              "inline-flex min-h-11 cursor-pointer items-center gap-1.5 rounded-[9px] px-3.5 py-2 text-[13px] font-semibold",
+              "type-button inline-flex min-h-11 cursor-pointer items-center gap-1.5 rounded-[9px] px-3.5 py-2",
               "transition-[background-color,color,box-shadow] duration-200 motion-reduce:transition-none",
               active
                 ? "bg-surface text-text shadow-soft"
@@ -416,8 +416,8 @@ export function EmptyState({
         </div>
       )}
       <div>
-        <p className="text-[15px] font-semibold text-text">{title}</p>
-        {body && <p className="mx-auto mt-1 max-w-sm text-[14px] leading-relaxed text-text-2">{body}</p>}
+        <p className="type-body-strong text-text">{title}</p>
+        {body && <p className="type-secondary mx-auto mt-1 max-w-sm text-text-2 text-pretty">{body}</p>}
       </div>
       {action}
     </div>

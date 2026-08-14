@@ -53,9 +53,9 @@ export function Toaster() {
             >
               <Icon className={cn("mt-0.5 h-5 w-5 shrink-0", ACCENT[t.kind])} aria-hidden />
               <div className="min-w-0 flex-1">
-                <p className="text-[14px] leading-snug font-semibold text-text">{t.title}</p>
+                <p className="type-body-strong text-text">{t.title}</p>
                 {t.body && (
-                  <p className="mt-0.5 text-[13px] leading-relaxed text-text-2">{t.body}</p>
+                  <p className="type-secondary mt-0.5 text-text-2 text-pretty">{t.body}</p>
                 )}
               </div>
               <button

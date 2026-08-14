@@ -1081,9 +1081,8 @@ export function TrackingSettingsSection() {
                                 </Button>
                                 <Button
                                   type="button"
-                                  variant="ghost"
+                                  variant="danger"
                                   size="sm"
-                                  className="text-danger-text"
                                   disabled={Boolean(busyKey) || projects.switching}
                                   onClick={() => setDeleteTemplate(template)}
                                 >
@@ -1195,7 +1194,7 @@ export function TrackingSettingsSection() {
                     <div className="mt-5 flex flex-wrap gap-2">
                       <Button
                         type="submit"
-                        variant="outline"
+                        variant="primary"
                         loading={busyKey === "template-create" || busyKey?.startsWith("template-update-")}
                         disabled={Boolean(busyKey) || projects.switching}
                       >

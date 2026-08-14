@@ -586,7 +586,7 @@ function LibraryInner() {
                     </div>
                     <div className="mt-3 flex flex-wrap items-center gap-1.5 border-t border-line pt-3">
                       <Button
-                        variant={referenceSaved ? "ghost" : "solid"}
+                        variant="secondary"
                         size="sm"
                         onClick={() => saveReference(h)}
                         loading={savingReferenceId === h.id}
@@ -596,7 +596,7 @@ function LibraryInner() {
                         {referenceSaved ? "В коллекции" : "Сохранить"}
                       </Button>
                       <Button
-                        variant="soft"
+                        variant="primary"
                         size="sm"
                         onClick={() => openDraftAction("create", cardId, h.text, reference)}
                         loading={draftActionBusy === createActionKey}
@@ -760,7 +760,7 @@ function LibraryInner() {
                   )}
                   <div className="mt-3 flex flex-wrap items-center gap-1.5 border-t border-line pt-3">
                     <Button
-                      variant="soft"
+                      variant="primary"
                       size="sm"
                       onClick={() => openDraftAction(action, cardId, p.text, reference)}
                       loading={draftActionBusy === primaryActionKey}
@@ -805,10 +805,9 @@ function LibraryInner() {
                     </Button>
                     <span className="ml-auto text-[12px] text-text-3">{fmtAgo(p.created_at)}</span>
                     <Button
-                      variant="ghost"
+                      variant="danger"
                       size="sm"
                       onClick={() => deletePost(p.id)}
-                      className="text-danger-text"
                       aria-label="Удалить запись"
                       title="Удалить запись"
                     >

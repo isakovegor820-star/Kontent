@@ -100,14 +100,16 @@ function CompetitorCard({
           </div>
         </div>
       ) : (
-        <button
+        <Button
           type="button"
+          variant="danger"
+          size="icon"
           onClick={onAskDelete}
           aria-label="Удалить конкурента"
-          className="absolute top-3 right-3 z-10 flex h-8 w-8 cursor-pointer items-center justify-center rounded-full text-text-3 transition-colors hover:bg-surface-inset hover:text-danger"
+          className="absolute top-2 right-2 z-10 rounded-full shadow-none"
         >
           <Trash2 className="h-4 w-4" strokeWidth={2} aria-hidden />
-        </button>
+        </Button>
       )}
 
       <Link href={`/app/competitors/${c.id}`} className="flex flex-1 flex-col">
@@ -115,7 +117,7 @@ function CompetitorCard({
           <TelegramIcon className="h-4 w-4" />
           <span className="truncate text-[13px] font-semibold">@{c.handle}</span>
         </div>
-        <h2 className="mt-1.5 line-clamp-2 pr-8 text-[17px] leading-snug font-bold text-text">
+        <h2 className="mt-1.5 line-clamp-2 pr-12 text-[17px] leading-snug font-bold text-text">
           {c.title || "@" + c.handle}
         </h2>
 

@@ -623,9 +623,8 @@ export function ProjectTeamSection() {
                               </select>
                               <Button
                                 type="button"
-                                variant="ghost"
+                                variant="danger"
                                 size="sm"
-                                className="text-danger-text"
                                 disabled={Boolean(savingKey)}
                                 aria-label={`Удалить участника ${label}`}
                                 onClick={() => setConfirmation({ kind: "member", member })}

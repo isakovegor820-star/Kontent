@@ -1551,7 +1551,7 @@ export default function TrendsPage() {
                   ) : period === "hits" ? (
                     <Button variant="soft" onClick={() => switchPeriod("today")}>Показать свежие</Button>
                   ) : global ? undefined : (
-                    <Button variant="soft" onClick={() => router.push("/app/competitors")}>Добавить источники</Button>
+                    <Button variant="primary" onClick={() => router.push("/app/competitors")}>Добавить источники</Button>
                   )
                 }
               />

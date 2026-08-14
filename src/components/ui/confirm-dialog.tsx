@@ -3,6 +3,7 @@
 import { useEffect, useId, useRef } from "react";
 
 import { Button } from "@/components/ui/button";
+import { H2, SecondaryText } from "@/components/ui/typography";
 
 export interface ConfirmDialogProps {
   open: boolean;
@@ -91,12 +92,12 @@ export function ConfirmDialog({
           }
         }}
       >
-        <h2 id={titleId} className="text-[18px] font-extrabold text-text">
+        <H2 id={titleId}>
           {title}
-        </h2>
-        <p id={descriptionId} className="mt-2 text-[14px] leading-relaxed text-text-2">
+        </H2>
+        <SecondaryText id={descriptionId} className="mt-2 text-pretty">
           {description}
-        </p>
+        </SecondaryText>
         <div className="mt-5 flex flex-wrap justify-end gap-2">
           <Button ref={cancelRef} variant="ghost" disabled={busy} onClick={onCancel}>
             {cancelLabel}

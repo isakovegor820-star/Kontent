@@ -359,7 +359,7 @@ export function LegalSourcesSection({ className }: { className?: string }) {
                     />
                   </Field>
                 </div>
-                <Button type="submit" variant="outline" loading={busy === "connect"}>
+                <Button type="submit" variant="primary" loading={busy === "connect"}>
                   <KeyRound className="h-4 w-4" aria-hidden />
                   Подключить официальный сервис
                 </Button>

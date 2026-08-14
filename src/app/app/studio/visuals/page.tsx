@@ -441,7 +441,7 @@ function VisualEditor({
                   Применить стиль проекта
                 </Button>
               )}
-              <Button variant="outline" onClick={() => void save()} loading={busy === "save"} disabled={!dirty}><Save className="h-4 w-4" aria-hidden />Сохранить</Button>
+              <Button variant="primary" onClick={() => void save()} loading={busy === "save"} disabled={!dirty}><Save className="h-4 w-4" aria-hidden />Сохранить</Button>
               <Button variant="brand" onClick={() => void renderNow()} loading={busy === "render"}><WandSparkles className="h-4 w-4" aria-hidden />Собрать PNG</Button>
             </div>
           </div>
@@ -776,7 +776,7 @@ function BrandKitPanel({
         </fieldset>
 
         <div className="mt-6 flex flex-col items-start gap-3 sm:flex-row sm:items-center">
-          <Button variant="outline" loading={busy === "save"} onClick={() => void saveBrand()} className="w-full sm:w-auto">
+          <Button variant="primary" loading={busy === "save"} onClick={() => void saveBrand()} className="w-full sm:w-auto">
             <Save className="h-4 w-4" aria-hidden />
             Сохранить фирменный стиль
           </Button>

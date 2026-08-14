@@ -291,7 +291,7 @@ export function PublicationSettingsPanel({
             Сначала сохраните черновик. После этого можно выбрать подпись, первый комментарий,
             закрепление и дату пересмотра — текст на экране не пропадёт.
           </p>
-          <Button type="button" variant="outline" onClick={() => void onSaveDraft()} disabled={disabled}>
+          <Button type="button" variant="primary" onClick={() => void onSaveDraft()} disabled={disabled}>
             Сохранить черновик
           </Button>
         </div>

@@ -6,6 +6,7 @@ import { CalendarClock, Pencil, Trash2 } from "lucide-react";
 import { PublicationFollowupSection } from "@/components/app/publication-followup-section";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/primitives";
+import { BodyText, H2, H3, HelperText, SecondaryText } from "@/components/ui/typography";
 import { fmtDateTime } from "@/lib/utils";
 import {
   inspectLocalSchedule,
@@ -157,26 +158,26 @@ export function PublicationActionsDialog({
           }
         }}
       >
-        <h2 id={titleId} className="text-[18px] font-extrabold text-text">
+        <H2 id={titleId}>
           Управление публикацией
-        </h2>
-        <p id={descriptionId} className="mt-2 text-[14px] leading-relaxed text-text-2">
+        </H2>
+        <SecondaryText id={descriptionId} className="mt-2 text-pretty">
           {cancelled
             ? "Публикация отменена и больше не будет отправлена старой задачей. Её можно перенести или вернуть в редактор."
             : publicationSettled
               ? "Основная отправка завершена или требует внешней сверки. Дополнительные действия показаны отдельно ниже."
               : `Запланировано на ${fmtDateTime(target.scheduledAt)}. Действия применяются ко всем каналам этой публикации.`}
-        </p>
-        <p className="mt-3 line-clamp-3 rounded-sm bg-surface-2 p-3 text-[14px] leading-relaxed text-text">
+        </SecondaryText>
+        <BodyText className="mt-3 line-clamp-3 rounded-sm bg-surface-2 p-3">
           {target.text}
-        </p>
+        </BodyText>
 
         {!publicationSettled && canManageSchedule && <div className="mt-5 grid gap-3">
           <div className="rounded-sm border border-line p-3">
-            <h3 className="text-[14px] font-bold text-text">Редактировать</h3>
-            <p className="mt-1 text-[13px] leading-relaxed text-text-2">
+            <H3>Редактировать</H3>
+            <SecondaryText className="mt-1 text-pretty">
               Аврора сначала отменит запланированную отправку, а затем создаст новый черновик с тем же текстом и медиа.
-            </p>
+            </SecondaryText>
             <Button
               ref={firstActionRef}
               variant="soft"
@@ -190,12 +191,12 @@ export function PublicationActionsDialog({
           </div>
 
           <div className="rounded-sm border border-line p-3">
-            <label htmlFor={`${titleId}-when`} className="text-[14px] font-bold text-text">
+            <label htmlFor={`${titleId}-when`} className="type-label text-text">
               Перенести
             </label>
-            <p className="mt-1 text-[13px] leading-relaxed text-text-2">
+            <SecondaryText className="mt-1 text-pretty">
               Предыдущая дата перестанет действовать. Публикация отправится только в новое время.
-            </p>
+            </SecondaryText>
             <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-end">
               <Input
                 id={`${titleId}-when`}
@@ -231,24 +232,24 @@ export function PublicationActionsDialog({
                 Перенести
               </Button>
             </div>
-            <p className="mt-2 text-[12px] text-text-2">
+            <HelperText className="mt-2 text-text-2">
               Часовой пояс: <span className="font-semibold text-text">{target.timezone}</span>
-            </p>
+            </HelperText>
             {scheduleInspection?.kind === "nonexistent" && (
-              <p role="alert" className="mt-2 text-[13px] font-semibold text-danger-text">
+              <HelperText role="alert" tone="danger" className="mt-2 font-semibold">
                 Такого местного времени нет из-за перехода на летнее время. Выберите другое.
-              </p>
+              </HelperText>
             )}
             {scheduleInspection?.kind === "ambiguous" && (
               <fieldset className="mt-3 rounded-sm border border-line p-3">
-                <legend className="px-1 text-[13px] font-semibold text-text">
+                <legend className="type-label px-1 text-text">
                   Это время повторяется дважды
                 </legend>
-                <p className="mb-2 text-[12px] leading-relaxed text-text-2">
+                <HelperText className="mb-2 text-text-2">
                   Выберите нужное смещение — сервер не станет угадывать.
-                </p>
+                </HelperText>
                 {(["earlier", "later"] as const).map((value) => (
-                  <label key={value} className="flex min-h-11 cursor-pointer items-center gap-2 text-[13px] text-text">
+                  <label key={value} className="type-label flex min-h-11 cursor-pointer items-center gap-2 text-text">
                     <input
                       type="radio"
                       name={`${titleId}-disambiguation`}
@@ -269,10 +270,10 @@ export function PublicationActionsDialog({
             <div className="rounded-sm border border-danger/30 bg-danger-soft p-3">
               {confirmCancel ? (
                 <>
-                  <h3 className="text-[14px] font-bold text-danger-text">Точно отменить?</h3>
-                  <p className="mt-1 text-[13px] leading-relaxed text-danger-text">
+                  <H3 tone="danger">Точно отменить?</H3>
+                  <HelperText tone="danger" className="mt-1">
                     Сервер остановит все ещё не начавшиеся назначения этой операции.
-                  </p>
+                  </HelperText>
                   <div className="mt-3 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
                     <Button variant="ghost" disabled={busy} onClick={() => setConfirmCancel(false)}>
                       Оставить запланированной
@@ -297,9 +298,9 @@ export function PublicationActionsDialog({
           )}
 
           {inProgress && (
-            <p role="status" className="rounded-sm bg-fire-soft p-3 text-[13px] font-semibold text-fire-text">
+            <HelperText role="status" tone="warning" className="rounded-sm bg-fire-soft p-3 font-semibold">
               Публикация уже готовится к отправке. Если запрос в социальную сеть начался, Аврора сообщит, что отменить его уже нельзя.
-            </p>
+            </HelperText>
           )}
         </div>}
 

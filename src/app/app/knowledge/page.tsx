@@ -551,15 +551,17 @@ function SourceList({
               )}
             </p>
           </div>
-          <button
+          <Button
             type="button"
+            variant="danger"
+            size="icon"
             disabled={deletingId != null}
             onClick={() => void del(s.id, s.title)}
-            className="shrink-0 rounded-xs p-2 text-text-3 transition-colors hover:bg-danger-soft hover:text-danger-text"
+            className="shrink-0"
             aria-label={`Убрать «${s.title}»`}
           >
             <Trash2 className="h-4 w-4" aria-hidden />
-          </button>
+          </Button>
         </div>
       ))}
     </Card>

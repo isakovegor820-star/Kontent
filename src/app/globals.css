@@ -91,18 +91,64 @@
   --grain-opacity: 0.038;
 }
 
-/* Build-safe typography. `next/font/google` downloads font metadata during every
-   production build, which made deploys depend on an external host and left Turbopack
-   waiting indefinitely when DNS/network access was unavailable. These stacks need no
-   network request, preserve Cyrillic coverage, and keep the existing CSS variable API. */
+/* Единая типографика Авроры. Helvetica подключается как системный стек: файлы шрифта
+   не загружаются, поэтому сборка не зависит от сети и не требует лицензии на webfont.
+   --font-golos сохранён как совместимый алиас для существующих экранов. */
 :root,
 .aurora-system-fonts {
-  --font-golos: "Avenir Next", "Segoe UI", Arial, system-ui, sans-serif;
+  --font-interface: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --font-golos: var(--font-interface);
   --font-jetbrains: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+
+  /* Семантическая шкала: размер / межстрочный интервал / толщина / цвет. */
+  --type-h1-size: clamp(1.75rem, 1.55rem + 0.8vw, 2rem);
+  --type-h1-line: 1.15;
+  --type-h1-weight: 700;
+  --type-h1-color: var(--text);
+
+  --type-h2-size: 1.375rem;
+  --type-h2-line: 1.2;
+  --type-h2-weight: 700;
+  --type-h2-color: var(--text);
+
+  --type-h3-size: 1.125rem;
+  --type-h3-line: 1.3;
+  --type-h3-weight: 700;
+  --type-h3-color: var(--text);
+
+  --type-body-size: 0.9375rem;
+  --type-body-line: 1.55;
+  --type-body-weight: 400;
+  --type-body-color: var(--text);
+
+  --type-secondary-size: 0.875rem;
+  --type-secondary-line: 1.5;
+  --type-secondary-weight: 400;
+  --type-secondary-color: var(--text-2);
+
+  --type-caption-size: 0.8125rem;
+  --type-caption-line: 1.45;
+  --type-caption-weight: 400;
+  --type-caption-color: var(--text-3);
+
+  --type-label-size: 0.8125rem;
+  --type-label-line: 1.4;
+  --type-label-weight: 600;
+  --type-label-color: var(--text-2);
+
+  --type-button-size: 0.9375rem;
+  --type-button-line: 1.2;
+  --type-button-weight: 600;
+
+  /* 16px на мобильных предотвращает автоматический zoom Safari. */
+  --type-input-size: 1rem;
+  --type-input-line: 1.5;
+  --type-input-weight: 400;
+  --type-input-color: var(--text);
 }
 
 .aurora-v2-display {
-  --v2-display: Georgia, "Times New Roman", serif;
+  --v2-display: var(--font-interface);
 }
 
 .aurora-v2-mono {
@@ -110,7 +156,7 @@
 }
 
 .aurora-v3-display {
-  --v3-display: "Arial Black", "Arial Narrow", Arial, system-ui, sans-serif;
+  --v3-display: var(--font-interface);
 }
 
 .aurora-v3-mono {
@@ -118,12 +164,12 @@
 }
 
 .aurora-v3-kinetic {
-  --v3-kinetic: "Arial Black", "Arial Narrow", Arial, system-ui, sans-serif;
+  --v3-kinetic: var(--font-interface);
 }
 
 /* --------------------------------------- МОСТ ТОКЕН → TAILWIND-УТИЛИТЫ */
 @theme inline {
-  --font-sans: var(--font-golos), system-ui, -apple-system, sans-serif;
+  --font-sans: var(--font-interface);
   --font-mono: var(--font-jetbrains), ui-monospace, monospace;
 
   --color-bg: var(--bg);
@@ -185,8 +231,50 @@ body {
   color: var(--text);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
   overflow-x: clip;
+}
+
+/* Нативные form controls не везде наследуют гарнитуру автоматически. */
+:where(button, input, textarea, select, option, table) {
+  font-family: inherit;
+}
+
+/* Без дополнительных классов семантические заголовки получают предсказуемый fallback.
+   Внутри платформы app-v3 закрепляет эту шкалу поверх старых случайных размеров. */
+:where(h1) {
+  color: var(--type-h1-color);
+  font-size: var(--type-h1-size);
+  font-weight: var(--type-h1-weight);
+  line-height: var(--type-h1-line);
+  letter-spacing: -0.025em;
+  text-wrap: balance;
+}
+
+:where(h2) {
+  color: var(--type-h2-color);
+  font-size: var(--type-h2-size);
+  font-weight: var(--type-h2-weight);
+  line-height: var(--type-h2-line);
+  letter-spacing: -0.018em;
+  text-wrap: balance;
+}
+
+:where(h3) {
+  color: var(--type-h3-color);
+  font-size: var(--type-h3-size);
+  font-weight: var(--type-h3-weight);
+  line-height: var(--type-h3-line);
+  letter-spacing: -0.01em;
+  text-wrap: balance;
+}
+
+@media (min-width: 40rem) {
+  :root,
+  .aurora-system-fonts {
+    --type-input-size: 0.9375rem;
+  }
 }
 
 ::selection {
@@ -228,6 +316,74 @@ summary {
 }
 
 /* --------------------------------------------------------------- УТИЛИТЫ */
+
+/* Готовые роли типографики. Цвет роли задан отдельным semantic utility в
+   компоненте, чтобы warning/error/success могли безопасно его переопределять. */
+.type-h1 {
+  font-size: var(--type-h1-size);
+  font-weight: var(--type-h1-weight);
+  line-height: var(--type-h1-line);
+  letter-spacing: -0.025em;
+  text-wrap: balance;
+}
+
+.type-h2 {
+  font-size: var(--type-h2-size);
+  font-weight: var(--type-h2-weight);
+  line-height: var(--type-h2-line);
+  letter-spacing: -0.018em;
+  text-wrap: balance;
+}
+
+.type-h3 {
+  font-size: var(--type-h3-size);
+  font-weight: var(--type-h3-weight);
+  line-height: var(--type-h3-line);
+  letter-spacing: -0.01em;
+  text-wrap: balance;
+}
+
+.type-body {
+  font-size: var(--type-body-size);
+  font-weight: var(--type-body-weight);
+  line-height: var(--type-body-line);
+}
+
+.type-body-strong {
+  font-size: var(--type-body-size);
+  font-weight: 600;
+  line-height: var(--type-body-line);
+}
+
+.type-secondary {
+  font-size: var(--type-secondary-size);
+  font-weight: var(--type-secondary-weight);
+  line-height: var(--type-secondary-line);
+}
+
+.type-caption {
+  font-size: var(--type-caption-size);
+  font-weight: var(--type-caption-weight);
+  line-height: var(--type-caption-line);
+}
+
+.type-label {
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+}
+
+.type-button {
+  font-size: var(--type-button-size);
+  font-weight: var(--type-button-weight);
+  line-height: var(--type-button-line);
+}
+
+.type-input {
+  font-size: var(--type-input-size);
+  font-weight: var(--type-input-weight);
+  line-height: var(--type-input-line);
+}
 
 /* Стекло — «жидкое стекло» для плавающих слоёв над авророй */
 @utility glass {

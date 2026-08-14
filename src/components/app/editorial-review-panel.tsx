@@ -337,7 +337,7 @@ export function EditorialReviewPanel({
               Сохранить и подтвердить пост
             </Button>
           ) : capabilities.canSubmit && (
-            <Button type="button" variant="outline" size="sm" className="mt-3" loading={busy === "save"} disabled={disabled} onClick={() => void saveOnly()}>
+            <Button type="button" variant="primary" size="sm" className="mt-3" loading={busy === "save"} disabled={disabled} onClick={() => void saveOnly()}>
               <Send className="h-4 w-4" aria-hidden />
               Сохранить черновик
             </Button>

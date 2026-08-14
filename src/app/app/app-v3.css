@@ -84,7 +84,7 @@
     linear-gradient(to bottom, rgb(15 23 42 / 0.025) 1px, transparent 1px);
   background-size: auto, auto, 72px 72px, 72px 72px;
   background-attachment: fixed;
-  font-family: var(--font-golos), system-ui, -apple-system, sans-serif;
+  font-family: var(--font-interface);
   -webkit-font-smoothing: antialiased;
 }
 
@@ -98,6 +98,122 @@
   outline-offset: 2px;
 }
 
+/* ---------- Единая типографика платформы ---------- */
+
+.app-v3,
+[role="dialog"],
+.v3-toast {
+  font-family: var(--font-interface);
+}
+
+/* Семантика элемента задаёт роль; старые локальные text-[…] больше не меняют
+   визуальную иерархию заголовков, в том числе в portaled-модальных окнах. */
+.app-v3 h1,
+[role="dialog"] h1 {
+  font-size: var(--type-h1-size) !important;
+  font-weight: var(--type-h1-weight) !important;
+  line-height: var(--type-h1-line) !important;
+  letter-spacing: -0.025em !important;
+  text-wrap: balance;
+}
+
+.app-v3 h2,
+[role="dialog"] h2 {
+  font-size: var(--type-h2-size) !important;
+  font-weight: var(--type-h2-weight) !important;
+  line-height: var(--type-h2-line) !important;
+  letter-spacing: -0.018em !important;
+  text-wrap: balance;
+}
+
+.app-v3 h3,
+[role="dialog"] h3 {
+  font-size: var(--type-h3-size) !important;
+  font-weight: var(--type-h3-weight) !important;
+  line-height: var(--type-h3-line) !important;
+  letter-spacing: -0.01em !important;
+  text-wrap: balance;
+}
+
+.app-v3 button,
+[role="dialog"] button {
+  font-family: var(--font-interface) !important;
+  font-size: var(--type-button-size) !important;
+  font-weight: var(--type-button-weight) !important;
+  line-height: var(--type-button-line) !important;
+}
+
+.app-v3 label,
+.app-v3 legend,
+[role="dialog"] label,
+[role="dialog"] legend {
+  font-size: var(--type-label-size) !important;
+  font-weight: var(--type-label-weight) !important;
+  line-height: var(--type-label-line) !important;
+}
+
+.app-v3 :is(
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="hidden"]):not([type="color"]),
+  textarea,
+  select,
+  [contenteditable="true"]
+),
+[role="dialog"] :is(input, textarea, select, [contenteditable="true"]) {
+  color: var(--type-input-color);
+  font-family: var(--font-interface) !important;
+  font-size: var(--type-input-size) !important;
+  font-weight: var(--type-input-weight) !important;
+  line-height: var(--type-input-line) !important;
+}
+
+.app-v3 table,
+[role="dialog"] table {
+  color: var(--type-secondary-color);
+  font-size: var(--type-secondary-size);
+  font-weight: var(--type-secondary-weight);
+  line-height: var(--type-secondary-line);
+}
+
+.app-v3 th,
+[role="dialog"] th {
+  color: var(--type-label-color);
+  font-size: var(--type-label-size);
+  font-weight: var(--type-label-weight);
+  line-height: var(--type-label-line);
+}
+
+/* Переходный мост для старой разметки: десятки произвольных пиксельных значений
+   сводятся к semantic scale, пока экран за экраном переходит на type-* роли. */
+.app-v3 :is(.text-\[10px\], .text-\[11px\], .text-\[12px\], .text-\[13px\]) {
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+}
+
+.app-v3 .text-\[14px\] {
+  font-size: var(--type-secondary-size);
+  line-height: var(--type-secondary-line);
+}
+
+.app-v3 :is(.text-\[15px\], .text-\[16px\]) {
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+}
+
+.app-v3 :is(.text-\[17px\], .text-\[18px\]) {
+  font-size: var(--type-h3-size);
+  line-height: var(--type-h3-line);
+}
+
+.app-v3 :is(.text-\[19px\], .text-\[20px\], .text-\[22px\]) {
+  font-size: var(--type-h2-size);
+  line-height: var(--type-h2-line);
+}
+
+.app-v3 :is(.text-\[23px\], .text-\[24px\], .text-\[26px\], .text-\[28px\], .text-\[32px\], .text-\[40px\]) {
+  font-size: var(--type-h1-size);
+  line-height: var(--type-h1-line);
+}
+
 /* ---------- Мост от прежних v3-имён к типографике лендинга ---------- */
 
 .app-v3 .v3-paper {
@@ -105,7 +221,7 @@
 }
 
 .app-v3 .v3-display {
-  font-family: var(--font-golos), system-ui, sans-serif;
+  font-family: var(--font-interface);
   font-weight: 800;
   letter-spacing: -0.035em;
   text-wrap: pretty;
@@ -116,7 +232,7 @@
 }
 
 .app-v3 [class*="font-[family-name:var(--v3-display)]"] {
-  font-family: var(--font-golos), system-ui, sans-serif !important;
+  font-family: var(--font-interface) !important;
 }
 
 /* ---------- Поверхности ---------- */
@@ -205,22 +321,22 @@
   box-shadow: none;
 }
 
-.app-v3 button[data-variant="brand"] {
+.app-v3 button[data-variant="primary"] {
   color: #fff;
   background: var(--brand-1);
   border-color: rgb(255 255 255 / 0.16);
   box-shadow: var(--shadow-brand);
 }
 
-.app-v3 button[data-variant="brand"]:hover:not(:disabled) {
+.app-v3 button[data-variant="primary"]:hover:not(:disabled) {
   background: var(--brand-hover);
 }
 
-.app-v3 button[data-variant="brand"]:active:not(:disabled) {
+.app-v3 button[data-variant="primary"]:active:not(:disabled) {
   background: var(--brand-active);
 }
 
-.app-v3 button[data-variant="outline"] {
+.app-v3 button[data-variant="secondary"] {
   background: rgb(255 255 255 / 0.82);
   -webkit-backdrop-filter: blur(14px);
   backdrop-filter: blur(14px);

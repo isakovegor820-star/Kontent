@@ -1622,7 +1622,7 @@ export default function CalendarPage() {
                             </Button>
                             {canEdit && (
                               <Button
-                                variant="ghost"
+                                variant="danger"
                                 size="sm"
                                 className="w-11 px-0"
                                 aria-label="Удалить черновик"

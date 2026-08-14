@@ -476,7 +476,7 @@ export function ProfileBriefSection() {
                           />
                         </label>
                         {avatarSrc && (
-                          <Button type="button" variant="ghost" size="sm" onClick={removeAvatar} disabled={avatarUploading}>
+                          <Button type="button" variant="danger" size="sm" onClick={removeAvatar} disabled={avatarUploading}>
                             <Trash2 className="h-4 w-4" aria-hidden />
                             Удалить
                           </Button>

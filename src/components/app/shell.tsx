@@ -34,6 +34,7 @@ import { Wordmark } from "@/components/brand";
 import { ProjectSwitcher } from "@/components/app/project-switcher";
 import { ProjectNotificationsInbox } from "@/components/app/project-notifications-inbox";
 import { Button } from "@/components/ui/button";
+import { H1, SecondaryText } from "@/components/ui/typography";
 import { getAiUsageMetrics } from "@/lib/ai-usage-sync";
 import {
   APP_BOTTOM_NAV_ROUTE_IDS,
@@ -481,13 +482,13 @@ function ShellSkeleton({ title, subtitle }: { title: string; subtitle?: string }
         <header className="sticky top-14 z-20 border-b border-line bg-surface/70 backdrop-blur-xl lg:top-0">
           <div className="mx-auto flex max-w-[1400px] flex-wrap items-end justify-between gap-x-6 gap-y-3 px-4 py-4 sm:px-6 sm:py-5 lg:px-8">
             <div className="min-w-0">
-              <h1 className="text-2xl font-extrabold tracking-tight text-text sm:text-3xl">
+              <H1>
                 {title}
-              </h1>
+              </H1>
               {subtitle && (
-                <p className="mt-1.5 max-w-2xl text-[15px] leading-relaxed text-text-2">
+                <SecondaryText className="mt-1.5 max-w-2xl text-pretty">
                   {subtitle}
-                </p>
+                </SecondaryText>
               )}
             </div>
             <div className="w-full min-w-0 sm:w-auto sm:shrink-0">
@@ -630,11 +631,11 @@ export function AppShell({
           className="w-full max-w-lg rounded-md border border-line bg-surface/90 p-6 shadow-card backdrop-blur-xl"
         >
           <TriangleAlert className="h-7 w-7 text-fire" aria-hidden />
-          <h1 className="display mt-4 text-[26px] text-text">Не удалось проверить вход</h1>
-          <p className="mt-3 text-[15px] leading-relaxed text-text-2">
+          <H1 className="mt-4">Не удалось проверить вход</H1>
+          <SecondaryText className="mt-3 text-pretty">
             Сервер сессий временно недоступен. Мы не считаем тебя вышедшим и ничего не
             удаляем — попробуй ещё раз.
-          </p>
+          </SecondaryText>
           <Button className="mt-5" variant="brand" onClick={() => void refreshAuth()}>
             Повторить проверку
           </Button>
@@ -731,13 +732,13 @@ export function AppShell({
           <header className="sticky top-14 z-20 border-b border-line bg-surface/70 backdrop-blur-xl lg:top-0">
             <div className="mx-auto flex max-w-[1400px] flex-wrap items-end justify-between gap-x-6 gap-y-3 px-4 py-4 sm:px-6 sm:py-5 lg:px-8">
               <div className="min-w-0">
-                <h1 className="text-2xl font-extrabold tracking-tight text-text sm:text-3xl">
+                <H1>
                   {title}
-                </h1>
+                </H1>
                 {subtitle && (
-                  <p className="mt-1.5 max-w-2xl text-[15px] leading-relaxed text-text-2">
+                  <SecondaryText className="mt-1.5 max-w-2xl text-pretty">
                     {subtitle}
-                  </p>
+                  </SecondaryText>
                 )}
               </div>
               <div className="flex w-full min-w-0 flex-wrap items-center justify-end gap-2 sm:w-auto sm:shrink-0 sm:flex-nowrap">
