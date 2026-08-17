@@ -1172,6 +1172,8 @@ describe("POST /api/ai/generate prerequisites", () => {
   });
 
   it("keeps an unavailable selected model and proposes exactly one ready alternative before quota", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "");
+    vi.stubEnv("AI_API_KEY", "");
     mocks.query.mockResolvedValue({
       rows: [{ ai_mood: null, ai_engine: "openai", ai_post_settings: null }],
       rowCount: 1,
