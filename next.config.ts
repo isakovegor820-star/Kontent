@@ -17,24 +17,6 @@ const localNetworkOrigins = Object.values(networkInterfaces())
 const allowedDevOrigins = Array.from(
   new Set(["127.0.0.1", "localhost", ...localNetworkOrigins]),
 );
-const productionContentSecurityPolicy = [
-  "default-src 'self'",
-  "base-uri 'self'",
-  "object-src 'none'",
-  "frame-ancestors 'none'",
-  "frame-src 'none'",
-  "form-action 'self'",
-  "script-src 'self' 'unsafe-inline' https://telegram.org",
-  "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data: blob: https:",
-  "media-src 'self' blob: https:",
-  "font-src 'self' data:",
-  "connect-src 'self'",
-  "worker-src 'self' blob:",
-  "manifest-src 'self'",
-  "upgrade-insecure-requests",
-].join("; ");
-
 const nextConfig: NextConfig = {
   poweredByHeader: false,
   // Browser E2E runs the same full `npm run dev` runtime alongside a developer's server.
@@ -83,10 +65,8 @@ const nextConfig: NextConfig = {
     return routes;
   },
 
-  // Next and Motion currently require inline framework scripts/styles, so production
-  // enforces a compatibility CSP that still closes external script injection, framing,
-  // object/embed, base-tag and cross-origin form/connect surfaces. A nonce-only policy
-  // remains a later rendering-architecture change, not an unsafe one-step toggle.
+  // A per-request nonce CSP is emitted by src/proxy.ts. These invariant headers remain
+  // centralized here for both HTML and API responses.
   async headers() {
     return [
       {
@@ -98,9 +78,6 @@ const nextConfig: NextConfig = {
           { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=(), payment=()" },
           { key: "Strict-Transport-Security", value: "max-age=63072000; includeSubDomains; preload" },
           { key: "X-DNS-Prefetch-Control", value: "on" },
-          ...(process.env.NODE_ENV === "production"
-            ? [{ key: "Content-Security-Policy", value: productionContentSecurityPolicy }]
-            : []),
         ],
       },
     ];

@@ -115,6 +115,10 @@ import {
 // Шифрование токенов сообществ (VK) и OAuth-сетей (YouTube/Instagram). Крипто НЕ дублируем —
 // один модуль на роуты и воркер. encryptToken нужен для сохранения обновлённого access_token.
 import { decryptToken, encryptToken } from "./src/lib/token-crypto.mjs";
+import {
+  emitOperationalSignal,
+  OPERATIONAL_SIGNAL_EVENTS,
+} from "./src/lib/operational-signal.mjs";
 // Реестр провайдеров соцсетей (адаптеры публикации + OAuth-конфиги для рефреша токенов).
 // Тот же модуль, что используют роуты подключения — ноль дублирования OAuth-логики.
 import { getAdapter, getOAuthConfig } from "./src/lib/social-providers.mjs";
@@ -6993,8 +6997,8 @@ async function recoverStaleAudienceDeliveries(projectId) {
     [projectId, AUDIENCE_DELIVERY_LEASE_SECONDS],
   );
   if (recovered.rowCount) {
-    console.warn("[audience_delivery_event]", {
-      event: AUDIENCE_DELIVERY_ERROR_CODES.unknown,
+    emitOperationalSignal({
+      event: OPERATIONAL_SIGNAL_EVENTS.deliveryUnknown,
       projectId,
       count: recovered.rowCount,
       surface: "lease_recovery",
@@ -7009,8 +7013,8 @@ async function recoverAllStaleAudienceDeliveries() {
     [AUDIENCE_DELIVERY_LEASE_SECONDS, 500],
   );
   if (recovered.rowCount) {
-    console.warn("[audience_delivery_event]", {
-      event: AUDIENCE_DELIVERY_ERROR_CODES.unknown,
+    emitOperationalSignal({
+      event: OPERATIONAL_SIGNAL_EVENTS.deliveryUnknown,
       count: recovered.rowCount,
       surface: "worker_recovery",
     });
@@ -7199,10 +7203,12 @@ async function botFailClientDelivery(userId, inquiryId, projectId, requestKey, c
     [inquiryId, projectId, requestKey, code, userId, "bot"],
   );
   if (failed.rowCount) {
-    console.warn("[audience_delivery_event]", {
-      event: code,
+    emitOperationalSignal({
+      event: code === AUDIENCE_DELIVERY_ERROR_CODES.rejected
+        ? OPERATIONAL_SIGNAL_EVENTS.telegramRejected
+        : OPERATIONAL_SIGNAL_EVENTS.deliveryUnknown,
       projectId,
-      inquiryId,
+      entityId: inquiryId,
       surface: "bot",
     });
   }
@@ -9954,15 +9960,17 @@ if (!AUTOPILOT_ONLY && !MEDIA_ONLY) {
 // Приём команд и кнопок. Бесконечный цикл — не ждём его, он живёт сам по себе.
 if (!AUTOPILOT_ONLY && !MEDIA_ONLY && !PUBLICATION_ONLY) {
   await recoverAllStaleAudienceDeliveries().catch((error) => {
-    console.error("[audience_delivery_event]", {
-      event: "recovery_failed",
+    emitOperationalSignal({
+      event: OPERATIONAL_SIGNAL_EVENTS.recoveryFailed,
+      surface: "worker_startup",
       errorName: error instanceof Error ? error.name : "Error",
     });
   });
   const audienceDeliveryRecoveryTimer = setInterval(() => {
     recoverAllStaleAudienceDeliveries().catch((error) => {
-      console.error("[audience_delivery_event]", {
-        event: "recovery_failed",
+      emitOperationalSignal({
+        event: OPERATIONAL_SIGNAL_EVENTS.recoveryFailed,
+        surface: "worker_timer",
         errorName: error instanceof Error ? error.name : "Error",
       });
     });

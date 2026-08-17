@@ -12,6 +12,7 @@ import { checkRateLimit, rateLimitResponse } from "@/lib/rate-limit";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import { getSessionUser } from "@/lib/session";
 import { inspectUploadedImage, InvalidUploadedImageError } from "@/lib/uploaded-image";
+import { emitOperationalSignal, OPERATIONAL_SIGNAL_EVENTS } from "@/lib/operational-signal.mjs";
 import { legalStudioJson } from "../../legal-visuals/_shared";
 
 export const runtime = "nodejs";
@@ -140,6 +141,12 @@ export async function POST(request: NextRequest) {
     if (error instanceof ProjectAccessError) return accessError(error, requestId);
     if (error instanceof BoundedBodyError) {
       if (error.code === "upload_busy") {
+        emitOperationalSignal({
+          event: OPERATIONAL_SIGNAL_EVENTS.uploadBusy,
+          surface: "media_assets_api",
+          requestId,
+          retryAfterSeconds: 2,
+        });
         const response = legalStudioJson({ ok: false, error: "upload_busy" }, 503, requestId);
         response.headers.set("Retry-After", "2");
         return response;

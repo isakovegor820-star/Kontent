@@ -11,6 +11,7 @@ import {
   classifyAudienceTelegramResponse,
 } from "./audience-delivery-contract.mjs";
 import { getPool } from "./db";
+import { emitOperationalSignal, OPERATIONAL_SIGNAL_EVENTS } from "./operational-signal.mjs";
 import {
   ProjectAccessError,
   requireSelectedProjectPermission,
@@ -186,10 +187,18 @@ function nullableIso(value: unknown): string | null {
 }
 
 async function recoverStaleAudienceDeliveries(db: Queryable, projectId: number) {
-  await db.query(
+  const recovered = await db.query(
     AUDIENCE_STALE_PROJECT_DELIVERIES_SQL,
     [projectId, AUDIENCE_DELIVERY_LEASE_SECONDS],
   );
+  if (recovered.rowCount) {
+    emitOperationalSignal({
+      event: OPERATIONAL_SIGNAL_EVENTS.deliveryUnknown,
+      surface: "web_recovery",
+      projectId,
+      count: recovered.rowCount,
+    });
+  }
 }
 
 function mapInquiry(row: InquiryRow, canDeliverReply = false): AudienceInquiryRecord {
@@ -570,10 +579,20 @@ async function failAudienceDelivery(input: {
   requestKey: string;
   code: "delivery_unknown" | "telegram_rejected";
 }) {
-  await input.pool.query(
+  const failed = await input.pool.query(
     AUDIENCE_FAIL_DELIVERY_SQL,
     [input.inquiryId, input.projectId, input.requestKey, input.code, input.actorUserId, "web"],
   );
+  if (failed.rowCount) {
+    emitOperationalSignal({
+      event: input.code === AUDIENCE_DELIVERY_ERROR_CODES.rejected
+        ? OPERATIONAL_SIGNAL_EVENTS.telegramRejected
+        : OPERATIONAL_SIGNAL_EVENTS.deliveryUnknown,
+      surface: "web",
+      projectId: input.projectId,
+      entityId: input.inquiryId,
+    });
+  }
 }
 
 export async function deliverAudienceReply(input: {

@@ -241,4 +241,48 @@ describe.sequential("audience delivery on disposable PostgreSQL", () => {
     expect(telegramRequest).not.toHaveBeenCalled();
     expect(await deliveryState(inquiryId)).toMatchObject({ status: "reply_ready", version: "1" });
   });
+
+  it("recovers 1,200 abandoned deliveries exactly once under concurrent worker sweeps", async () => {
+    const auditBefore = Number((await pool.query<{ count: string }>(
+      `select count(*) as count from audit_events
+        where project_id = $1 and action = 'audience.reply.delivery_failed'
+          and safe_data->>'surface' = 'worker_recovery'`,
+      [projectId],
+    )).rows[0].count);
+    const inserted = (await pool.query<{ id: string }>(
+      `insert into bot_client_inquiries (
+         project_id, external_chat_id, external_message_id, incoming_text,
+         suggested_reply, source_type, status, delivery_request_key, provider_started_at
+       )
+       select $1, -1004442502121, 100000 + item,
+              'Load recovery question ' || item::text, 'Load recovery reply',
+              'comment', 'approved', 'audience-load-recovery:' || item::text,
+              now() - interval '3 minutes'
+         from generate_series(1, 1200) item
+       returning id`,
+      [projectId],
+    )).rows.map((row) => Number(row.id));
+
+    const sweeps = await Promise.all(Array.from({ length: 4 }, () => pool.query<{ id: string }>(
+      AUDIENCE_STALE_ALL_DELIVERIES_SQL,
+      [AUDIENCE_DELIVERY_LEASE_SECONDS, 500],
+    )));
+    const recoveredIds = sweeps.flatMap((result) => result.rows.map((row) => Number(row.id)));
+
+    expect(recoveredIds).toHaveLength(1200);
+    expect(new Set(recoveredIds)).toEqual(new Set(inserted));
+    const states = (await pool.query<{ status: string; count: string }>(
+      `select status, count(*) as count from bot_client_inquiries
+        where id = any($1::bigint[]) group by status`,
+      [inserted],
+    )).rows;
+    expect(states).toEqual([{ status: "failed", count: "1200" }]);
+    const auditAfter = Number((await pool.query<{ count: string }>(
+      `select count(*) as count from audit_events
+        where project_id = $1 and action = 'audience.reply.delivery_failed'
+          and safe_data->>'surface' = 'worker_recovery'`,
+      [projectId],
+    )).rows[0].count);
+    expect(auditAfter - auditBefore).toBe(1200);
+  });
 });

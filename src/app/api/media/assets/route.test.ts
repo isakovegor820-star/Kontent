@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -33,6 +33,8 @@ import {
   MAX_CONCURRENT_MEDIA_ASSET_BODIES,
 } from "@/lib/bounded-request-body";
 import { POST } from "./route";
+
+afterEach(() => vi.restoreAllMocks());
 
 function multipartRequest(headers: HeadersInit = {}) {
   return new NextRequest("http://localhost/api/media/assets", {
@@ -90,6 +92,7 @@ describe("POST /api/media/assets", () => {
   });
 
   it("rejects excess concurrent image decodes before buffering the body", async () => {
+    const operationalLog = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const releases = Array.from(
       { length: MAX_CONCURRENT_MEDIA_ASSET_BODIES },
       () => acquireMediaAssetBodySlot(),
@@ -100,6 +103,9 @@ describe("POST /api/media/assets", () => {
       expect(response.status).toBe(503);
       expect(response.headers.get("retry-after")).toBe("2");
       await expect(response.json()).resolves.toMatchObject({ error: "upload_busy" });
+      expect(operationalLog).toHaveBeenCalledWith(
+        expect.stringContaining('"event":"upload_busy"'),
+      );
       expect(mocks.readRequestBodyLimited).not.toHaveBeenCalled();
       expect(mocks.inspectUploadedImage).not.toHaveBeenCalled();
     } finally {

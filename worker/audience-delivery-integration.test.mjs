@@ -50,6 +50,7 @@ describe("Telegram audience delivery integration", () => {
     expect(source).toContain("AUDIENCE_FAIL_DELIVERY_SQL");
     expect(contractSource).toContain("audience.reply.delivery_failed");
     expect(source).toContain("audience.reply.delivery_resolved");
-    expect(source).toContain("[audience_delivery_event]");
+    expect(source).toContain("emitOperationalSignal");
+    expect(source).toContain("OPERATIONAL_SIGNAL_EVENTS.deliveryUnknown");
   });
 });

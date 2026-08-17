@@ -21,6 +21,8 @@
     "test:semantic-publication:integration": "node scripts/test-semantic-publication-integration.mjs",
     "test:ai-orchestration:integration": "vitest run --config vitest.integration.config.ts src/e2e/ai-orchestration.integration.ts",
     "test:audience-delivery:integration": "vitest run --config vitest.integration.config.ts src/e2e/audience-delivery.integration.ts",
+    "test:telegram-sandbox": "node --env-file-if-exists=.env.local scripts/telegram-sandbox-smoke.mjs",
+    "test:deployment-smoke": "node --env-file-if-exists=.env.local scripts/deployment-smoke.mjs",
     "test:publication-operation:integration": "vitest run --config vitest.integration.config.ts src/e2e/publication-operation.integration.ts",
     "test:publication-lifecycle:integration": "vitest run --config vitest.integration.config.ts src/e2e/publication-lifecycle.integration.ts",
     "test:project-collaboration:integration": "vitest run --config vitest.integration.config.ts src/e2e/project-collaboration.integration.ts",

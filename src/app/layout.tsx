@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import { connection } from "next/server";
 import { StoreProvider } from "@/lib/store";
 import { Toaster } from "@/components/ui/toaster";
 import "./globals.css";
@@ -32,7 +33,11 @@ export const viewport: Viewport = {
   themeColor: "#2563ff",
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  // A fresh CSP nonce is generated per document request. Waiting for the request here
+  // keeps framework scripts and styles nonce-bound instead of serving a static shell
+  // whose build-time markup cannot carry that nonce.
+  await connection();
   return (
     <html
       lang="ru"

@@ -1,0 +1,39 @@
+name: Telegram sandbox smoke
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: telegram-sandbox-smoke
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: telegram-sandbox
+    env:
+      AURORA_ALLOW_TELEGRAM_SANDBOX_SEND: I_UNDERSTAND_THIS_SENDS_A_REAL_TELEGRAM_MESSAGE
+      TG_SANDBOX_BOT_TOKEN: ${{ secrets.TG_SANDBOX_BOT_TOKEN }}
+      TG_SANDBOX_CHAT_ID: ${{ secrets.TG_SANDBOX_CHAT_ID }}
+      TG_SANDBOX_EXPECTED_BOT_USERNAME: ${{ vars.TG_SANDBOX_EXPECTED_BOT_USERNAME }}
+      TG_SANDBOX_BUSINESS_CONNECTION_ID: ${{ secrets.TG_SANDBOX_BUSINESS_CONNECTION_ID }}
+      TG_SANDBOX_EXPECTED_BUSINESS_USER_ID: ${{ secrets.TG_SANDBOX_EXPECTED_BUSINESS_USER_ID }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify Telegram sandbox delivery
+        run: npm run test:telegram-sandbox

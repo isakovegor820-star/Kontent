@@ -46,6 +46,11 @@ chunked multipart потоково с тем же пределом, не дов�
 внедрены самой платформой. Serverless-хостинг вроде Vercel подходит для web-процесса,
 но воркер публикаций нужно держать на отдельном постоянно работающем сервисе.
 
+Все HTML-страницы рендерятся динамически: `src/proxy.ts` создаёт новый CSP nonce для
+каждого document request, а root layout привязывает к нему framework scripts. Поэтому
+CDN/ISR-кеширование HTML намеренно отключено; capacity planning web-процесса должен
+исходить из server-side rendering, а не из статической раздачи лендинга.
+
 Для изолированной обработки только адресных Telegram-публикаций используй
 `npm run worker:publication`. Этот режим не запускает RSS, cron, Autopilot, сбор
 статистики, media jobs или bot polling и поэтому подходит для контролируемого smoke-test.
@@ -69,6 +74,41 @@ fail-closed отклоняет другие targets, пересоздаёт сх
 AI/Telegram, QA-пользователя и каналы, проверяет критический browser journey и удаляет
 созданные данные. Команда не использует live secrets и не публикует в Telegram.
 Mocked contract suite сохранён отдельно как `npm run test:contracts`; он не считается E2E.
+
+После deployment запусти удалённый production gate:
+
+```bash
+AURORA_DEPLOYMENT_SMOKE_BASE_URL='https://app.example.com' \
+npm run test:deployment-smoke
+```
+
+Профиль `full` по умолчанию требует свежие liveness/readiness, готовность web, схемы,
+publication worker, AI, почты, uploads, token keyring и tracking. Он также проверяет
+security headers и привязку всех framework scripts/styles к response-specific CSP nonce
+на `/` и `/bot`. Скрипт не следует redirect, принимает только публичный HTTPS origin без
+credentials/query/hash и ограничивает размер ответов. В GitHub Actions тот же gate
+запускается вручную workflow `Production deployment smoke`: защищаемое environment
+`production` должно содержать variable `PRODUCTION_BASE_URL`.
+
+Live Telegram smoke запускается отдельно и никогда не использует обычные
+`TG_BOT_TOKEN`/`TG_CHAT_ID`. Для него нужны выделенные sandbox-бот и чат:
+
+```bash
+TG_SANDBOX_BOT_TOKEN='...' \
+TG_SANDBOX_CHAT_ID='...' \
+TG_SANDBOX_EXPECTED_BOT_USERNAME='sandbox_bot' \
+AURORA_TELEGRAM_SANDBOX_SEND='I_UNDERSTAND_THIS_SENDS_A_REAL_TELEGRAM_MESSAGE' \
+npm run test:telegram-sandbox
+```
+
+Для Telegram Business также задаются `TG_SANDBOX_BUSINESS_CONNECTION_ID` и
+`TG_SANDBOX_EXPECTED_BUSINESS_USER_ID`: smoke сначала проверит владельца connection,
+затем отправит ровно одно silent-сообщение с маркером `[AURORA SANDBOX]`. Команда
+аварийно завершается до отправки, если отсутствует явное подтверждение, sandbox-токен
+или chat ID совпадает с доступной процессу обычной конфигурацией либо identity бота не
+совпала с `TG_SANDBOX_EXPECTED_BOT_USERNAME`. В GitHub Actions тот же сценарий доступен
+только вручную через workflow `Telegram sandbox smoke` и защищаемое environment
+`telegram-sandbox`.
 
 ## Что внутри
 
