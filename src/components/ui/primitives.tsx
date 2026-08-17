@@ -151,12 +151,14 @@ export function Switch({
   onChange,
   label,
   id,
+  descriptionId,
   disabled = false,
 }: {
   checked: boolean;
   onChange: (v: boolean) => void;
   label: string;
   id?: string;
+  descriptionId?: string;
   disabled?: boolean;
 }) {
   return (
@@ -166,6 +168,7 @@ export function Switch({
       role="switch"
       aria-checked={checked}
       aria-label={label}
+      aria-describedby={descriptionId}
       disabled={disabled}
       onClick={() => onChange(!checked)}
       className={cn(
@@ -175,14 +178,14 @@ export function Switch({
     >
       <span
         className={cn(
-          "flex h-7 w-12 items-center rounded-full border p-0.5 transition-colors duration-200",
+          "flex h-7 w-12 items-center rounded-full border p-0.5 transition-colors duration-200 motion-reduce:transition-none",
           checked ? "border-transparent bg-brand-gradient" : "border-line bg-surface-inset",
         )}
       >
         {/* дорожка 48 − 2 (рамка) − 4 (padding) = 42; кружок 20 ⇒ ход ровно 22px */}
         <span
           className={cn(
-            "h-5 w-5 rounded-full bg-white shadow-sm transition-transform duration-200 ease-[var(--ease-spring)]",
+            "h-5 w-5 rounded-full bg-white shadow-sm transition-transform duration-200 ease-[var(--ease-spring)] motion-reduce:transition-none",
             checked ? "translate-x-[22px]" : "translate-x-0",
           )}
         />
@@ -206,16 +209,24 @@ export function Toggle({
   id?: string;
   disabled?: boolean;
 }) {
+  const descriptionId = id && description ? `${id}-description` : undefined;
   return (
     <div className="flex items-start justify-between gap-6">
       <div className="min-w-0">
         <label htmlFor={id} className={cn("type-body-strong block text-text", disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer")}>
           {label}
         </label>
-        {description && <p className="type-secondary mt-1 text-text-2">{description}</p>}
+        {description && <p id={descriptionId} className="type-secondary mt-1 text-text-2">{description}</p>}
       </div>
       <span className="mt-0.5">
-        <Switch checked={checked} onChange={onChange} label={label} id={id} disabled={disabled} />
+        <Switch
+          checked={checked}
+          onChange={onChange}
+          label={label}
+          id={id}
+          descriptionId={descriptionId}
+          disabled={disabled}
+        />
       </span>
     </div>
   );

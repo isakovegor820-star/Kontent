@@ -5,7 +5,7 @@
  */
 export const SCHEMA_MANIFEST = Object.freeze({
   manifestVersion: 1,
-  schemaVersion: "2026-09-09.80",
+  schemaVersion: "2026-09-10.81",
   migrations: Object.freeze([
     ["20260801_account_onboarding.sql", "ac0e1f10046cf620185570ab5f40437991d08513473f67d4e93bdafa07b86614"],
     ["20260801_ai_usage_reservations.sql", "991c3a92dce16df55011d9df52fb65af1a7f4310b27f61dc519705f05528d7a0"],
@@ -86,6 +86,7 @@ export const SCHEMA_MANIFEST = Object.freeze({
     ["20260907_radar_content_directory.sql", "1e943e9b25d73f6a056dde91e6d121f51c0af1076d7aa8b2a3334de215123de4"],
     ["20260908_competitor_posts_fulltext.sql", "204f1f1bb3ee327e4ccafd4ab12adf35c63b4d4e2027ad974af172ca66d5b590"],
     ["20260909_audience_delivery_recovery_index.sql", "88288a632753a5599a848acba0fd8d5cd723e948156e90d0a11d8ab1fbc06e83"],
+    ["20260910_rss_explicit_auto_publish.sql", "6afcee0090d7ca2c99e0c17cb6a2acc8f69bfcef88e5564ceff1b9d4cc880bfd"],
   ].map(([name, checksum]) => Object.freeze({ name, checksum }))),
   capabilities: Object.freeze({
     tables: Object.freeze([
@@ -316,6 +317,7 @@ export const SCHEMA_MANIFEST = Object.freeze({
       "rss_items.skip_reason",
       "rss_feeds.publish_existing",
       "rss_feeds.source_kind",
+      "rss_feeds.auto_publish_enabled",
       "legal_opportunity_states.user_id",
       "legal_opportunity_states.rss_item_id",
       "legal_opportunity_states.state",

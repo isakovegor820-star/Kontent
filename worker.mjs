@@ -5917,7 +5917,9 @@ async function enqueuePost(userId, channelId, text, scheduledAt, rssContext = nu
            from rss_feeds f
            join rss_items i on i.feed_id = f.id
           where f.id = $1 and i.id = $2 and f.user_id = $3 and f.channel_id = $4
-            and f.is_active = true and i.status = 'new'
+            and f.is_active = true
+            and (f.source_kind <> 'legal_opportunity' or f.auto_publish_enabled = true)
+            and i.status = 'new'
           for update of f, i`,
         [feedId, rssItemId, userId, channelId],
       );

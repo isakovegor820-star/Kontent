@@ -12,7 +12,11 @@ export async function claimPublicationLease(pool, input) {
           select 1
             from rss_items ri
             join rss_feeds rf on rf.id = ri.feed_id
-           where ri.post_id = p.id and rf.is_active = false
+           where ri.post_id = p.id
+             and (
+               rf.is_active = false
+               or (rf.source_kind = 'legal_opportunity' and rf.auto_publish_enabled = false)
+             )
         )
       returning p.id, p.project_id, p.user_id, p.channel_id, p.text, p.media, p.attempts,
                 p.publication_operation_id`,
@@ -28,6 +32,16 @@ export async function claimPublicationLease(pool, input) {
         and p.project_id = $4
         and p.next_attempt_at is not null
         and p.next_attempt_at <= now() + interval '30 seconds'
+        and not exists (
+          select 1
+            from rss_items ri
+            join rss_feeds rf on rf.id = ri.feed_id
+           where ri.post_id = p.id
+             and (
+               rf.is_active = false
+               or (rf.source_kind = 'legal_opportunity' and rf.auto_publish_enabled = false)
+             )
+        )
       returning p.id, p.project_id, p.user_id, p.channel_id, p.text, p.media, p.attempts,
                 p.publication_operation_id`,
     [input.postId, input.leaseToken, input.scheduleRevision, input.projectId],
@@ -49,6 +63,16 @@ export async function beginProviderCall(pool, input) {
         and publish_lease_token = $3
         and project_id = $4
         and provider_started_at is null
+        and not exists (
+          select 1
+            from rss_items ri
+            join rss_feeds rf on rf.id = ri.feed_id
+           where ri.post_id = posts.id
+             and (
+               rf.is_active = false
+               or (rf.source_kind = 'legal_opportunity' and rf.auto_publish_enabled = false)
+             )
+        )
       returning id`,
     [input.postId, input.scheduleRevision, input.leaseToken, input.projectId],
   );

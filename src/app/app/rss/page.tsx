@@ -29,7 +29,7 @@ import {
   type OpportunityPostDialogTarget,
 } from "@/components/app/opportunity-post-dialog";
 import { Button } from "@/components/ui/button";
-import { Badge, Card, EmptyState } from "@/components/ui/primitives";
+import { Badge, Card, EmptyState, Toggle } from "@/components/ui/primitives";
 import {
   isLegalOpportunityPostNetwork,
   type LegalOpportunityPostVariant,
@@ -66,6 +66,7 @@ type Feed = {
   id: number;
   channel_id: number;
   is_active: boolean;
+  auto_publish_enabled: boolean;
   last_fetched_at: string | null;
 };
 
@@ -305,6 +306,7 @@ function LegalOpportunitiesScreen() {
   const [loadError, setLoadError] = useState(false);
   const [automationError, setAutomationError] = useState(false);
   const [preparing, setPreparing] = useState(false);
+  const [autoPublishSaving, setAutoPublishSaving] = useState(false);
   const [creatingItemId, setCreatingItemId] = useState<number | null>(null);
   const [postDialogItem, setPostDialogItem] = useState<EnrichedItem | null>(null);
   const [stateItemId, setStateItemId] = useState<number | null>(null);
@@ -488,6 +490,63 @@ function LegalOpportunitiesScreen() {
     router.replace(`/app/rss?${params.toString()}`);
     void startAutomaticMonitoring(nextChannelId);
     refreshInterval.current = setInterval(() => void loadData(nextChannelId), 30_000);
+  };
+
+  const changeAutoPublish = async (enabled: boolean) => {
+    if (channelId == null || autoPublishSaving) return;
+    setAutoPublishSaving(true);
+    try {
+      const response = await fetch("/api/rss/auto-publish", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ channelId, enabled }),
+      });
+      const result = await response.json().catch(() => null) as {
+        ok?: boolean;
+        error?: string;
+        cancelled?: number;
+        publishingNow?: number;
+      } | null;
+      if (!response.ok || !result?.ok) throw new Error(result?.error || "save_failed");
+
+      setFeeds((current) => current.map((feed) => (
+        feed.channel_id === channelId && feed.is_active
+          ? { ...feed, auto_publish_enabled: enabled }
+          : feed
+      )));
+      await loadData(channelId);
+
+      if (enabled) {
+        store.toast({
+          kind: "success",
+          title: "Автопубликация включена",
+          body: "Аврора будет публиковать только новые инфоповоды, найденные после включения.",
+        });
+      } else {
+        const cancelled = Number(result.cancelled || 0);
+        const publishingNow = Number(result.publishingNow || 0);
+        store.toast({
+          kind: publishingNow > 0 ? "info" : "success",
+          title: "Автопубликация выключена",
+          body: publishingNow > 0
+            ? "Новые публикации остановлены. Одна публикация уже отправлялась в канал в момент выключения."
+            : cancelled > 0
+              ? `${cancelled} ${plural(cancelled, "запланированный пост снят", "запланированных поста сняты", "запланированных постов сняты")} с публикации.`
+              : "Новые материалы останутся в подборке, пока вы сами не создадите пост.",
+        });
+      }
+    } catch (error) {
+      const accessDenied = error instanceof Error && error.message === "access_denied";
+      store.toast({
+        kind: "danger",
+        title: "Настройка не сохранена",
+        body: accessDenied
+          ? "Включать автопубликацию может владелец или издатель проекта."
+          : "Проверьте соединение и попробуйте ещё раз.",
+      });
+    } finally {
+      setAutoPublishSaving(false);
+    }
   };
 
   const updateState = async (item: LegalItem, nextState: OpportunityState) => {
@@ -704,6 +763,8 @@ function LegalOpportunitiesScreen() {
   }, [markViewed, viewItems]);
 
   const activeFeeds = feeds.filter((feed) => feed.channel_id === channelId && feed.is_active);
+  const autoPublishEnabled = activeFeeds.length > 0
+    && activeFeeds.every((feed) => feed.auto_publish_enabled);
   const updatingFeeds = activeFeeds.filter((feed) => Boolean(feed.last_fetched_at));
   const readyItems = enriched.filter((item) => item.post_id != null || item.opportunity_state === "used");
   const lastFetchedAt = activeFeeds
@@ -717,7 +778,7 @@ function LegalOpportunitiesScreen() {
     <>
     <AppShell
       title="Юридические инфоповоды"
-      subtitle="Аврора следит за изменениями в праве и автоматически готовит актуальный контент для вашего проекта."
+      subtitle="Аврора собирает изменения в праве. Вы сами решаете, какие материалы превращать в посты и публиковать."
     >
       <div className="space-y-6">
         {loadError && (
@@ -749,21 +810,21 @@ function LegalOpportunitiesScreen() {
         ) : (
           <>
             <Card as="section" className="overflow-hidden bg-info-soft/70" aria-labelledby="automation-title">
-              <div className="grid gap-5 p-5 sm:p-6 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+              <div className="grid gap-5 p-5 sm:p-6 lg:grid-cols-[minmax(0,1fr)_minmax(280px,360px)] lg:items-center">
                 <div className="flex items-start gap-4">
                   <span className="grid h-12 w-12 shrink-0 place-items-center rounded-sm bg-brand text-white shadow-glow" aria-hidden>
                     <Sparkles className="h-6 w-6" strokeWidth={2} />
                   </span>
                   <div>
                     <div className="flex flex-wrap items-center gap-2">
-                      <h2 id="automation-title" className="text-[18px] font-black text-text sm:text-[20px]">Аврора уже работает</h2>
+                      <h2 id="automation-title" className="text-[18px] font-black text-text sm:text-[20px]">Мониторинг инфоповодов</h2>
                       <Badge tone={automationError ? "fire" : "success"}>
                         {automationError ? <RefreshCw className="h-3.5 w-3.5" aria-hidden /> : <CheckCircle2 className="h-3.5 w-3.5" aria-hidden />}
                         {automationError ? "Обновление задерживается" : "Мониторинг включён"}
                       </Badge>
                     </div>
                     <p className="mt-1.5 max-w-2xl text-pretty text-[14px] leading-relaxed text-text-2">
-                      Источники подключаются автоматически. Аврора убирает повторы, отмечает статус события и готовит лучший материал под выбранный канал.
+                      Источники подключаются автоматически. Аврора собирает события и убирает повторы, но ничего не публикует без отдельного разрешения.
                     </p>
                     <p role="status" aria-live="polite" className="nums mt-3 text-[12px] font-semibold text-text-3">
                       {preparing
@@ -773,18 +834,42 @@ function LegalOpportunitiesScreen() {
                   </div>
                 </div>
 
-                {monitorChannels.length > 1 && (
-                  <label className="flex min-w-0 flex-col gap-1.5 text-[12px] font-bold text-text sm:min-w-64">
-                    Канал для готового контента
-                    <select
-                      value={channelId ?? ""}
-                      onChange={(event) => changeChannel(Number(event.target.value))}
-                      className="h-11 w-full rounded-xs border border-line bg-surface px-3 text-base font-semibold text-text focus:border-brand focus:outline-none focus-visible:ring-4 focus-visible:ring-brand/15 sm:text-[14px]"
-                    >
-                      {monitorChannels.map((channel) => <option key={channel.id} value={channel.id}>{channel.title}</option>)}
-                    </select>
-                  </label>
-                )}
+                <div className="grid gap-3">
+                  {monitorChannels.length > 1 && (
+                    <label className="flex min-w-0 flex-col gap-1.5 text-[12px] font-bold text-text">
+                      Канал для готового контента
+                      <select
+                        value={channelId ?? ""}
+                        onChange={(event) => changeChannel(Number(event.target.value))}
+                        className="h-11 w-full rounded-xs border border-line bg-surface px-3 text-base font-semibold text-text focus:border-brand focus:outline-none focus-visible:ring-4 focus-visible:ring-brand/15 sm:text-[14px]"
+                      >
+                        {monitorChannels.map((channel) => <option key={channel.id} value={channel.id}>{channel.title}</option>)}
+                      </select>
+                    </label>
+                  )}
+                  <div
+                    className="rounded-sm border border-brand/15 bg-surface p-4 shadow-sm"
+                    aria-busy={autoPublishSaving || undefined}
+                  >
+                    <Toggle
+                      id="legal-opportunity-auto-publish"
+                      checked={autoPublishEnabled}
+                      onChange={(next) => void changeAutoPublish(next)}
+                      label="Публиковать новые инфоповоды автоматически"
+                      description="Когда функция включена, Аврора адаптирует только новые материалы и ставит их в выбранный канал."
+                      disabled={preparing || autoPublishSaving || activeFeeds.length === 0}
+                    />
+                    <p className="mt-3" role="status" aria-live="polite">
+                      <Badge tone={autoPublishEnabled ? "success" : "neutral"}>
+                        {autoPublishSaving
+                          ? "Сохраняем настройку…"
+                          : autoPublishEnabled
+                            ? "Автопубликация включена"
+                            : "Автопубликация выключена"}
+                      </Badge>
+                    </p>
+                  </div>
+                </div>
               </div>
 
               <div className="grid border-t border-brand/10 bg-surface/55 sm:grid-cols-3">

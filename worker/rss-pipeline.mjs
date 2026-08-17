@@ -43,7 +43,7 @@ export async function collectRssPipeline({
   const feeds = (
     await pool.query(
       `select f.id, f.url, f.title, f.channel_id, f.user_id, f.ai_summarize, f.max_per_day,
-              f.last_fetched_at, f.publish_existing,
+              f.last_fetched_at, f.publish_existing, f.source_kind, f.auto_publish_enabled,
               c.title as channel_title,
               (select b.niche from content_brief b
                 where b.user_id = f.user_id and b.channel_id = f.channel_id
@@ -112,6 +112,12 @@ export async function collectRssPipeline({
             `update rss_items set status = 'skipped', skip_reason = 'baseline' where id = $1`,
             [itemId],
           );
+          continue;
+        }
+
+        // Юридический мониторинг всегда собирает новые материалы в подборку, но не
+        // получает права публиковать их, пока человек явно не включит эту функцию.
+        if (feed.source_kind === "legal_opportunity" && feed.auto_publish_enabled !== true) {
           continue;
         }
 

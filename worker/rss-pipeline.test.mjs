@@ -35,6 +35,35 @@ function harness(feeds, xmlByUrl) {
 }
 
 describe("collectRssPipeline", () => {
+  it("собирает юридический инфоповод, но не публикует его без явного разрешения", async () => {
+    const feed = {
+      id: 1,
+      url: "https://a.test/rss",
+      channel_id: 11,
+      user_id: 1,
+      source_kind: "legal_opportunity",
+      auto_publish_enabled: false,
+      ai_summarize: true,
+      max_per_day: 3,
+      posted_today: 0,
+    };
+    const h = harness([feed], {
+      [feed.url]: rss([{ title: "Новая норма", link: "https://a.test/1", summary: "Факты", guid: "a1" }]),
+    });
+    const summarize = vi.fn();
+
+    const result = await collectRssPipeline({ ...h, summarize });
+
+    expect(result).toEqual({ feeds: 1, posts: 0 });
+    expect(summarize).not.toHaveBeenCalled();
+    expect(h.enqueuePost).not.toHaveBeenCalled();
+    expect(h.queries[0].sql).toContain("f.auto_publish_enabled");
+    expect(h.queries).toContainEqual({
+      sql: "update rss_feeds set last_fetched_at = now() where id = $1",
+      params: [1],
+    });
+  });
+
   it("первый сбор запоминает текущую историю и ничего не публикует", async () => {
     const feed = {
       id: 1,

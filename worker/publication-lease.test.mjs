@@ -18,6 +18,7 @@ describe("project-scoped publication lease", () => {
     })).resolves.toMatchObject({ id: "81", project_id: "23" });
 
     expect(String(query.mock.calls[0][0])).toContain("p.project_id = $5");
+    expect(String(query.mock.calls[0][0])).toContain("rf.auto_publish_enabled = false");
     expect(query.mock.calls[0][1]).toEqual([
       81,
       "lease-token",
@@ -38,6 +39,7 @@ describe("project-scoped publication lease", () => {
     })).resolves.toBe(true);
 
     expect(String(query.mock.calls[0][0])).toContain("project_id = $4");
+    expect(String(query.mock.calls[0][0])).toContain("rf.auto_publish_enabled = false");
     expect(query.mock.calls[0][1]).toEqual([81, 2, "lease-token", 23]);
   });
 });

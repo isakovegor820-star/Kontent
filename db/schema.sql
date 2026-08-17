@@ -934,8 +934,9 @@ create table if not exists rss_feeds (
   channel_id      bigint      not null references channels (id) on delete cascade,
   url             text        not null,
   title           text,
-  -- Подключение источника не запускает публикацию без отдельного подтверждения.
+  -- Активный источник собирает материалы. Публикация разрешается отдельно.
   is_active       boolean     not null default false,
+  auto_publish_enabled boolean not null default false,
   ai_summarize    boolean     not null default true,
   publish_existing boolean    not null default false,
   source_kind     text        not null default 'manual'
@@ -949,6 +950,7 @@ create index if not exists rss_feeds_user_idx on rss_feeds (user_id);
 create index if not exists rss_feeds_user_source_kind_idx
   on rss_feeds (user_id, source_kind, channel_id, is_active);
 alter table rss_feeds add column if not exists publish_existing boolean not null default false;
+alter table rss_feeds add column if not exists auto_publish_enabled boolean not null default false;
 
 create table if not exists rss_items (
   id           bigint generated always as identity primary key,

@@ -20,7 +20,8 @@ export async function GET(req: NextRequest) {
 
   try {
     const r = await getPool().query(
-      `select f.id, f.url, f.title, f.channel_id, f.is_active, f.ai_summarize, f.source_kind,
+      `select f.id, f.url, f.title, f.channel_id, f.is_active, f.auto_publish_enabled,
+              f.ai_summarize, f.source_kind,
               f.publish_existing, f.max_per_day,
               f.last_fetched_at, f.created_at, c.title as channel_title,
               coalesce(activity.items_24h, 0) as items_24h,
