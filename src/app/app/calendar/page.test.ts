@@ -62,6 +62,17 @@ describe("calendar role-aware interface", () => {
     expect(source).toContain('role="status" aria-live="polite"');
   });
 
+  it("supports long-press pointer dragging on touch screens without breaking scroll", () => {
+    expect(source).toContain("createCalendarLongPressDrag");
+    expect(source).toContain("onPointerDown={(event) =>");
+    expect(source).toContain("onPointerMove={(event) =>");
+    expect(source).toContain("onPointerCancel={(event) =>");
+    expect(source).toContain('window.addEventListener("touchmove", blocker, { passive: false })');
+    expect(source).toContain('document.elementFromPoint(point.clientX, point.clientY)');
+    expect(source).toContain("calendarDragAutoScrollDelta");
+    expect(source).toContain("Удерживайте карточку до подсветки");
+  });
+
   it("only makes scheduled publications draggable", () => {
     expect(source).toContain('post.status === "scheduled"');
     expect(source).toContain("canManageCalendarMove(post)");

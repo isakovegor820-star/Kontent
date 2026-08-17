@@ -10,6 +10,7 @@ import {
   useRef,
   useState,
   type DragEvent,
+  type PointerEvent as ReactPointerEvent,
 } from "react";
 import { useRouter } from "next/navigation";
 import { motion, useReducedMotion } from "motion/react";
@@ -71,6 +72,11 @@ import {
 } from "@/lib/calendar-team-filters";
 import type { ClientProjectRole } from "@/lib/project-client";
 import { resolveCalendarDayMove } from "@/lib/calendar-drag-reschedule";
+import {
+  calendarDragAutoScrollDelta,
+  createCalendarLongPressDrag,
+  type CalendarDragPoint,
+} from "@/lib/calendar-long-press-drag";
 import {
   calendarDateKey,
   calendarDateKeyForInstant,
@@ -375,8 +381,13 @@ function PostCard({
   onReschedule,
   canMove = false,
   moving = false,
+  dragging = false,
   onDragStart,
   onDragEnd,
+  onLongPressDragStart,
+  onLongPressDragMove,
+  onLongPressDragEnd,
+  onLongPressDragCancel,
   calendarTimezone,
 }: {
   post: DatedPost;
@@ -385,8 +396,13 @@ function PostCard({
   onReschedule?: () => void;
   canMove?: boolean;
   moving?: boolean;
+  dragging?: boolean;
   onDragStart?: (event: DragEvent<HTMLElement>) => void;
   onDragEnd?: () => void;
+  onLongPressDragStart?: (post: DatedPost) => boolean;
+  onLongPressDragMove?: (post: DatedPost, point: CalendarDragPoint) => void;
+  onLongPressDragEnd?: (post: DatedPost, point: CalendarDragPoint) => void;
+  onLongPressDragCancel?: () => void;
   calendarTimezone: string;
 }) {
   // Метка канала нужна только при мультиканальности. Считаем здесь, а не прокидываем
@@ -404,18 +420,88 @@ function PostCard({
   const unverified = post.status === "published_unverified";
   const cancelled = post.status === "cancelled";
   const visibleStatus = calendarRecordStatus(post);
+  const touchMoveBlockerRef = useRef<((event: TouchEvent) => void) | null>(null);
+  const suppressOpenUntilRef = useRef(0);
+
+  const unlockTouchScroll = useCallback(() => {
+    const blocker = touchMoveBlockerRef.current;
+    if (!blocker) return;
+    window.removeEventListener("touchmove", blocker);
+    touchMoveBlockerRef.current = null;
+  }, []);
+
+  const lockTouchScroll = useCallback(() => {
+    if (touchMoveBlockerRef.current) return;
+    const blocker = (event: TouchEvent) => event.preventDefault();
+    touchMoveBlockerRef.current = blocker;
+    window.addEventListener("touchmove", blocker, { passive: false });
+  }, []);
+
+  const pointerDragRef = useRef<ReturnType<typeof createCalendarLongPressDrag> | null>(null);
+
+  useEffect(() => {
+    const pointerDrag = createCalendarLongPressDrag({
+      onActivate: () => {
+        if (!canMove || onLongPressDragStart?.(post) !== true) return false;
+        lockTouchScroll();
+        return true;
+      },
+      onMove: (point) => onLongPressDragMove?.(post, point),
+      onDrop: (point) => {
+        unlockTouchScroll();
+        onLongPressDragEnd?.(post, point);
+      },
+      onCancel: () => {
+        unlockTouchScroll();
+        onLongPressDragCancel?.();
+      },
+    });
+    pointerDragRef.current = pointerDrag;
+
+    return () => {
+      pointerDrag.dispose();
+      if (pointerDragRef.current === pointerDrag) pointerDragRef.current = null;
+      unlockTouchScroll();
+    };
+  }, [
+    canMove,
+    lockTouchScroll,
+    onLongPressDragCancel,
+    onLongPressDragEnd,
+    onLongPressDragMove,
+    onLongPressDragStart,
+    post,
+    unlockTouchScroll,
+  ]);
+
+  useEffect(() => {
+    const pointerDrag = pointerDragRef.current;
+    if (!dragging && pointerDrag?.isActive()) pointerDrag.cancel();
+  }, [dragging]);
+
+  const pointerPoint = (event: ReactPointerEvent<HTMLElement>): CalendarDragPoint => ({
+    clientX: event.clientX,
+    clientY: event.clientY,
+  });
+
+  const releasePointer = (event: ReactPointerEvent<HTMLElement>) => {
+    if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+    event.currentTarget.releasePointerCapture(event.pointerId);
+  };
 
   return (
     <article
       id={`calendar-${post.id}`}
       tabIndex={-1}
       data-calendar-draggable={canMove && !moving ? "true" : undefined}
+      data-calendar-dragging={dragging ? "true" : undefined}
       aria-busy={moving || undefined}
       className={cn(
         "relative min-w-0 rounded-sm border-l-2 shadow-soft ring-1 ring-line",
         "transition-[transform,box-shadow,opacity] duration-200 ease-[var(--ease-soft)]",
         "hover:-translate-y-0.5 hover:shadow-card",
         canMove && !moving && "cursor-grab select-none active:cursor-grabbing",
+        dragging && "opacity-70 ring-2 ring-brand/60",
         moving && "pointer-events-none opacity-55",
         failed || missing || quarantined
           ? "border-danger bg-danger-soft"
@@ -431,10 +517,62 @@ function PostCard({
       {/* Клик по всей карточке → редактор. Кнопка снизу, контент сверху — без вложенных кнопок */}
       <button
         type="button"
-        onClick={onOpen}
+        onClick={(event) => {
+          if (Date.now() < suppressOpenUntilRef.current) {
+            event.preventDefault();
+            event.stopPropagation();
+            return;
+          }
+          onOpen();
+        }}
         draggable={canMove && !moving}
-        onDragStart={onDragStart}
+        onDragStart={(event) => {
+          if (pointerDragRef.current?.hasSession()) {
+            event.preventDefault();
+            return;
+          }
+          onDragStart?.(event);
+        }}
         onDragEnd={onDragEnd}
+        onPointerDown={(event) => {
+          if (!canMove || moving || event.button !== 0) return;
+          const started = pointerDragRef.current?.pointerDown({
+            pointerId: event.pointerId,
+            pointerType: event.pointerType,
+            isPrimary: event.isPrimary,
+            point: pointerPoint(event),
+          });
+          if (started) event.currentTarget.setPointerCapture(event.pointerId);
+        }}
+        onPointerMove={(event) => {
+          const result = pointerDragRef.current?.pointerMove({
+            pointerId: event.pointerId,
+            point: pointerPoint(event),
+          });
+          if (result === "dragging") event.preventDefault();
+          if (result === "cancelled") releasePointer(event);
+        }}
+        onPointerUp={(event) => {
+          const dragged = pointerDragRef.current?.pointerUp({
+            pointerId: event.pointerId,
+            point: pointerPoint(event),
+          }) === true;
+          if (dragged) {
+            suppressOpenUntilRef.current = Date.now() + 700;
+            event.preventDefault();
+          }
+          releasePointer(event);
+        }}
+        onPointerCancel={(event) => {
+          pointerDragRef.current?.pointerCancel(event.pointerId);
+          releasePointer(event);
+        }}
+        onLostPointerCapture={(event) => {
+          pointerDragRef.current?.pointerCancel(event.pointerId);
+        }}
+        onContextMenu={(event) => {
+          if (pointerDragRef.current?.isActive()) event.preventDefault();
+        }}
         aria-label={`Открыть публикацию: ${post.text.slice(0, 60)}`}
         aria-describedby={canMove ? CALENDAR_DRAG_HELP_ID : undefined}
         className={cn(
@@ -622,11 +760,16 @@ function DayColumn({
   onReschedule,
   canMovePost,
   movingPostId,
+  draggedPostId,
   dragging,
   dropActive,
   dropAllowed,
   onPostDragStart,
   onPostDragEnd,
+  onPostLongPressDragStart,
+  onPostLongPressDragMove,
+  onPostLongPressDragEnd,
+  onPostLongPressDragCancel,
   onDayDragEnter,
   onDayDragOver,
   onDayDragLeave,
@@ -644,11 +787,16 @@ function DayColumn({
   onReschedule?: (post: DatedPost) => void;
   canMovePost: (post: DatedPost) => boolean;
   movingPostId: string | null;
+  draggedPostId: string | null;
   dragging: boolean;
   dropActive: boolean;
   dropAllowed: boolean;
   onPostDragStart: (event: DragEvent<HTMLElement>, post: DatedPost) => void;
   onPostDragEnd: () => void;
+  onPostLongPressDragStart: (post: DatedPost) => boolean;
+  onPostLongPressDragMove: (post: DatedPost, point: CalendarDragPoint) => void;
+  onPostLongPressDragEnd: (post: DatedPost, point: CalendarDragPoint) => void;
+  onPostLongPressDragCancel: () => void;
   onDayDragEnter: (event: DragEvent<HTMLDivElement>) => void;
   onDayDragOver: (event: DragEvent<HTMLDivElement>) => void;
   onDayDragLeave: (event: DragEvent<HTMLDivElement>) => void;
@@ -715,8 +863,13 @@ function DayColumn({
             onReschedule={onReschedule ? () => onReschedule(p) : undefined}
             canMove={canMovePost(p)}
             moving={movingPostId === p.id}
+            dragging={draggedPostId === p.id}
             onDragStart={(event) => onPostDragStart(event, p)}
             onDragEnd={onPostDragEnd}
+            onLongPressDragStart={onPostLongPressDragStart}
+            onLongPressDragMove={onPostLongPressDragMove}
+            onLongPressDragEnd={onPostLongPressDragEnd}
+            onLongPressDragCancel={onPostLongPressDragCancel}
             calendarTimezone={calendarTimezone}
           />
         ))}
@@ -1401,14 +1554,69 @@ export default function CalendarPage() {
     setDragOverDay(null);
   }, []);
 
+  const canDropPostOn = useCallback((post: DatedPost, day: Date) => (
+    day.getTime() >= today.getTime()
+    && calendarDateKeyForInstant(
+      post.scheduledAt,
+      post.scheduleTimezone ?? calendarTimezone,
+    ) !== dayKey(day)
+  ), [calendarTimezone, today]);
+
   const canDropDraggedPostOn = useCallback((day: Date) => Boolean(
     draggedPost
-    && day.getTime() >= today.getTime()
-    && calendarDateKeyForInstant(
-      draggedPost.scheduledAt,
-      draggedPost.scheduleTimezone ?? calendarTimezone,
-    ) !== dayKey(day)
-  ), [calendarTimezone, draggedPost, today]);
+    && canDropPostOn(draggedPost, day)
+  ), [canDropPostOn, draggedPost]);
+
+  const pointerDayAt = useCallback((point: CalendarDragPoint) => {
+    const target = document.elementFromPoint(point.clientX, point.clientY);
+    const key = target?.closest<HTMLElement>("[data-calendar-day]")?.dataset.calendarDay;
+    return key ? weekDays.find((day) => dayKey(day) === key) ?? null : null;
+  }, [weekDays]);
+
+  const startPostLongPressDrag = useCallback((post: DatedPost) => {
+    if (!canStartCalendarMove(post)) return false;
+    setDraggedPostId(post.id);
+    setDragOverDay(null);
+    setMoveAnnouncement(
+      `Перенос публикации начат. Ведите карточку к другому дню и отпустите.`,
+    );
+    return true;
+  }, [canStartCalendarMove]);
+
+  const movePostLongPressDrag = useCallback((post: DatedPost, point: CalendarDragPoint) => {
+    const scrollDelta = calendarDragAutoScrollDelta(point.clientY, window.innerHeight);
+    if (scrollDelta !== 0) window.scrollBy({ top: scrollDelta, behavior: "auto" });
+    const day = pointerDayAt(point);
+    setDragOverDay(day && canDropPostOn(post, day) ? dayKey(day) : null);
+  }, [canDropPostOn, pointerDayAt]);
+
+  const cancelPostLongPressDrag = useCallback(() => {
+    setDraggedPostId(null);
+    setDragOverDay(null);
+    setMoveAnnouncement("Перенос публикации отменён.");
+  }, []);
+
+  const endPostLongPressDrag = useCallback((post: DatedPost, point: CalendarDragPoint) => {
+    const day = pointerDayAt(point);
+    setDraggedPostId(null);
+    setDragOverDay(null);
+    if (!day || !canDropPostOn(post, day)) {
+      setMoveAnnouncement("Перенос публикации отменён. Выберите другой будущий день.");
+      return;
+    }
+    void moveCalendarPost(post, day);
+  }, [canDropPostOn, moveCalendarPost, pointerDayAt]);
+
+  useEffect(() => {
+    if (!draggedPostId) return;
+    const cancelWithEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      cancelPostLongPressDrag();
+    };
+    window.addEventListener("keydown", cancelWithEscape);
+    return () => window.removeEventListener("keydown", cancelWithEscape);
+  }, [cancelPostLongPressDrag, draggedPostId]);
 
   const cancelTargetPublication = useCallback(async () => {
     const target = publicationTarget;
@@ -1802,12 +2010,12 @@ export default function CalendarPage() {
                   </p>
                   <div
                     aria-hidden
-                    className="mb-3 hidden min-h-11 items-center gap-2 rounded-sm bg-brand/10 px-3 py-2 text-sm text-text-2 md:flex"
+                    className="mb-3 flex min-h-11 items-center gap-2 rounded-sm bg-brand/10 px-3 py-2 text-sm text-text-2"
                   >
                     <GripVertical className="h-4 w-4 shrink-0 text-brand" strokeWidth={2} />
                     <p>
                       <span className="font-semibold text-text">Переносите публикации между днями.</span>{" "}
-                      Зажмите карточку и перетащите её на новую дату — время сохранится.
+                      Удерживайте карточку до подсветки, затем перенесите её на новую дату — время сохранится.
                     </p>
                   </div>
                 </>
@@ -1841,11 +2049,16 @@ export default function CalendarPage() {
                           onReschedule={canPublish ? retryCalendarPost : undefined}
                           canMovePost={canStartCalendarMove}
                           movingPostId={movingPostId}
+                          draggedPostId={draggedPostId}
                           dragging={draggedPost != null}
                           dropActive={dragOverDay === key}
                           dropAllowed={dropAllowed}
                           onPostDragStart={startPostDrag}
                           onPostDragEnd={endPostDrag}
+                          onPostLongPressDragStart={startPostLongPressDrag}
+                          onPostLongPressDragMove={movePostLongPressDrag}
+                          onPostLongPressDragEnd={endPostLongPressDrag}
+                          onPostLongPressDragCancel={cancelPostLongPressDrag}
                           calendarTimezone={calendarTimezone}
                           onDayDragEnter={(event) => {
                             if (!dropAllowed) return;
