@@ -526,7 +526,15 @@ function SidebarInner({
 // Заголовок страницы известен сразу, поэтому показываем его настоящим —
 // когда данные придут, ничего не дёрнется.
 
-function ShellSkeleton({ title, subtitle }: { title: string; subtitle?: string }) {
+function ShellSkeleton({
+  title,
+  subtitle,
+  stickyHeaderOnMobile = true,
+}: {
+  title: string;
+  subtitle?: string;
+  stickyHeaderOnMobile?: boolean;
+}) {
   return (
     <div className="relative isolate min-h-dvh bg-bg" role="status" aria-busy="true">
       <span className="sr-only">Открываем платформу</span>
@@ -563,7 +571,10 @@ function ShellSkeleton({ title, subtitle }: { title: string; subtitle?: string }
           <div className="skeleton h-9 w-9 rounded-xs" />
         </div>
 
-        <header className="sticky top-14 z-20 border-b border-line bg-surface/70 backdrop-blur-xl lg:top-0">
+        <header className={cn(
+          "z-20 border-b border-line bg-surface/70 backdrop-blur-xl lg:sticky lg:top-0",
+          stickyHeaderOnMobile ? "sticky top-14" : "relative",
+        )}>
           <div className="mx-auto flex max-w-[1400px] flex-wrap items-end justify-between gap-x-6 gap-y-3 px-4 py-4 sm:px-6 sm:py-5 lg:px-8">
             <div className="min-w-0">
               <H1>
@@ -609,11 +620,13 @@ export function AppShell({
   title,
   subtitle,
   action,
+  stickyHeaderOnMobile = true,
 }: {
   children: React.ReactNode;
   title: string;
   subtitle?: string;
   action?: React.ReactNode;
+  stickyHeaderOnMobile?: boolean;
 }) {
   const { ready, authReady, authError, user, signOut, refreshAuth } = useStore();
   const router = useRouter();
@@ -733,7 +746,13 @@ export function AppShell({
 
   // Данных ещё нет, сессия не проверена или пользователю здесь не место — каркас, а не пустота
   if (!ready || !authReady || !user || (!user.onboarded && pathname !== "/app/onboarding")) {
-    return <ShellSkeleton title={title} subtitle={subtitle} />;
+    return (
+      <ShellSkeleton
+        title={title}
+        subtitle={subtitle}
+        stickyHeaderOnMobile={stickyHeaderOnMobile}
+      />
+    );
   }
 
   return (
@@ -818,7 +837,10 @@ export function AppShell({
           </div>
 
           {/* ШАПКА КОНТЕНТА: заголовок, подзаголовок и главное действие страницы */}
-          <header className="sticky top-14 z-20 border-b border-line bg-surface/70 backdrop-blur-xl lg:top-0">
+          <header className={cn(
+            "z-20 border-b border-line bg-surface/70 backdrop-blur-xl lg:sticky lg:top-0",
+            stickyHeaderOnMobile ? "sticky top-14" : "relative",
+          )}>
             <div className="mx-auto flex max-w-[1400px] flex-wrap items-end justify-between gap-x-6 gap-y-3 px-4 py-4 sm:px-6 sm:py-5 lg:px-8">
               <div className="min-w-0">
                 <H1>

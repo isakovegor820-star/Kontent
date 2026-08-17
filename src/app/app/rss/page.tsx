@@ -30,6 +30,7 @@ import {
 } from "@/components/app/opportunity-post-dialog";
 import { Button } from "@/components/ui/button";
 import { Badge, Card, EmptyState, Toggle } from "@/components/ui/primitives";
+import { Caption, H2, H3, SecondaryText } from "@/components/ui/typography";
 import {
   isLegalOpportunityPostNetwork,
   type LegalOpportunityPostVariant,
@@ -170,88 +171,97 @@ function OpportunityCard({
       data-opportunity-state={visualState}
       className={cn(
         "overflow-hidden transition-[background-color,box-shadow,opacity] duration-150 motion-reduce:transition-none",
-        visualState === "new" && "bg-info-soft/25 ring-2 ring-brand/20",
+        visualState === "new" && "bg-surface ring-1 ring-brand/15",
         hidden && "bg-surface-inset/65",
       )}
     >
-      <div className="p-5 sm:p-6">
-        <div className="flex flex-wrap items-center gap-2">
-          <Badge tone={visualCopy.tone} className="nums">
-            {visualState === "new" ? <Sparkles className="h-3.5 w-3.5" aria-hidden /> : null}
-            {visualState === "viewed" ? <Eye className="h-3.5 w-3.5" aria-hidden /> : null}
-            {visualState === "used" ? <CheckCircle2 className="h-3.5 w-3.5" aria-hidden /> : null}
-            {visualState === "hidden" ? <EyeOff className="h-3.5 w-3.5" aria-hidden /> : null}
-            {visualCopy.label}
-          </Badge>
-          <Badge tone={priorityTone(item.insight.priority)}>
-            {item.insight.priority === "high" ? <Clock3 className="h-3.5 w-3.5" aria-hidden /> : <Lightbulb className="h-3.5 w-3.5" aria-hidden />}
-            {item.insight.priorityLabel}
-          </Badge>
-          <Badge tone="brand"><Scale className="h-3.5 w-3.5" aria-hidden />{item.insight.status}</Badge>
-          <Badge tone="neutral">{item.insight.practice}</Badge>
-          {ready && <Badge tone="success"><CheckCircle2 className="h-3.5 w-3.5" aria-hidden />Материал готов</Badge>}
+      <div className="p-5 sm:p-7 lg:p-8">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge tone={visualCopy.tone} className="nums">
+              {visualState === "new" ? <Sparkles className="h-3.5 w-3.5" aria-hidden /> : null}
+              {visualState === "viewed" ? <Eye className="h-3.5 w-3.5" aria-hidden /> : null}
+              {visualState === "used" ? <CheckCircle2 className="h-3.5 w-3.5" aria-hidden /> : null}
+              {visualState === "hidden" ? <EyeOff className="h-3.5 w-3.5" aria-hidden /> : null}
+              {visualCopy.label}
+            </Badge>
+            <Badge tone={priorityTone(item.insight.priority)}>
+              {item.insight.priority === "high" ? <Clock3 className="h-3.5 w-3.5" aria-hidden /> : <Lightbulb className="h-3.5 w-3.5" aria-hidden />}
+              {item.insight.priorityLabel}
+            </Badge>
+            {ready && <Badge tone="success"><CheckCircle2 className="h-3.5 w-3.5" aria-hidden />Материал готов</Badge>}
+          </div>
+          <Caption className="nums shrink-0 text-text-3">
+            {fmtAgo(item.published_at || item.fetched_at)}
+          </Caption>
         </div>
 
-        <h3 className="mt-4 max-w-3xl text-balance text-[20px] font-black leading-[1.2] text-text sm:text-[23px]">
-          {item.insight.title}
-        </h3>
-        <p className="mt-3 max-w-3xl text-pretty text-[14px] leading-relaxed text-text-2 sm:text-[15px]">
-          {item.insight.summary}
-        </p>
+        <div className="mt-5 flex flex-wrap items-center gap-x-4 gap-y-2 text-text-3">
+          <Caption as="span" className="inline-flex items-center gap-1.5 font-semibold">
+            <Scale className="h-3.5 w-3.5 text-brand" strokeWidth={2} aria-hidden />
+            {item.insight.status}
+          </Caption>
+          <Caption as="span">{item.insight.practice}</Caption>
+        </div>
 
-        <div className="mt-5 grid gap-3 md:grid-cols-2">
-          <div className="rounded-sm bg-info-soft p-4">
+        <H3 className="mt-3 max-w-[70ch] line-clamp-5 text-balance" title={item.insight.title}>
+          {item.insight.title}
+        </H3>
+        <SecondaryText className="mt-3 max-w-[72ch] line-clamp-4 text-pretty" title={item.insight.summary}>
+          {item.insight.summary}
+        </SecondaryText>
+
+        <div className="mt-6 grid gap-4 md:grid-cols-2">
+          <div className="rounded-sm bg-info-soft/65 p-4 sm:p-5">
             <div className="flex items-center gap-2 text-info-text">
               <Target className="h-4 w-4 shrink-0" strokeWidth={2} aria-hidden />
-              <p className="text-[12px] font-bold tracking-[0.08em] uppercase">Почему это важно</p>
+              <Caption className="font-bold tracking-[0.06em] uppercase">Почему это важно</Caption>
             </div>
-            <p className="mt-2 text-[13px] leading-relaxed text-text-2">{item.insight.whyImportant}</p>
+            <SecondaryText className="mt-2 text-pretty">{item.insight.whyImportant}</SecondaryText>
           </div>
-          <div className="rounded-sm bg-surface-inset p-4">
+          <div className="rounded-sm bg-surface-inset/75 p-4 sm:p-5">
             <div className="flex items-center gap-2 text-text-2">
               <BriefcaseBusiness className="h-4 w-4 shrink-0" strokeWidth={2} aria-hidden />
-              <p className="text-[12px] font-bold tracking-[0.08em] uppercase">Кого касается</p>
+              <Caption className="font-bold tracking-[0.06em] uppercase">Кого касается</Caption>
             </div>
-            <p className="mt-2 text-[13px] leading-relaxed text-text-2">{item.insight.audience}</p>
+            <SecondaryText className="mt-2 text-pretty">{item.insight.audience}</SecondaryText>
           </div>
         </div>
 
         <details
-          className="group mt-4 rounded-sm bg-surface-2 px-4 py-3"
+          className="group mt-5 border-t border-line pt-2"
           onToggle={(event) => {
             if (event.currentTarget.open) onViewed(item.id);
           }}
         >
-          <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 text-[13px] font-bold text-text marker:hidden">
+          <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 rounded-xs px-1 type-label text-text-2 marker:hidden hover:text-text focus-visible:ring-4 focus-visible:ring-brand/15">
             Подробнее о событии
             <ArrowRight className="h-4 w-4 shrink-0 transition-transform duration-200 group-open:rotate-90 motion-reduce:transition-none" aria-hidden />
           </summary>
-          <div className="border-t border-line pt-3 pb-1">
-            <p className="text-[12px] font-bold tracking-[0.08em] text-text-3 uppercase">Идея подачи</p>
-            <p className="mt-1.5 text-[13px] leading-relaxed text-text-2">{item.insight.contentAngle}</p>
-            <p className="mt-3 text-[12px] leading-relaxed text-text-3">
+          <div className="pb-2 pl-1">
+            <Caption className="font-bold tracking-[0.06em] text-text-3 uppercase">Идея подачи</Caption>
+            <SecondaryText className="mt-1.5 text-pretty">{item.insight.contentAngle}</SecondaryText>
+            <Caption className="mt-3 max-w-[72ch] text-pretty text-text-3">
               Перед публикацией Аврора повторно передаст модели заголовок, описание и ссылку на этот материал. Юридический статус показан по формулировкам источника.
-            </p>
+            </Caption>
           </div>
         </details>
 
-        <div className="mt-4 flex flex-col gap-3 border-t border-line pt-4 sm:flex-row sm:items-center sm:justify-between">
-          <div className="min-w-0 text-[12px] leading-relaxed text-text-3">
+        <div className="mt-5 flex flex-col gap-4 border-t border-line pt-5 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
             <a
               href={item.link || item.feed_url}
               target="_blank"
               rel="noreferrer"
-              className="inline-flex min-h-11 max-w-full items-center gap-1.5 font-semibold text-text-2 underline-offset-4 hover:text-brand hover:underline focus-visible:rounded-xs focus-visible:ring-4 focus-visible:ring-brand/15"
+              className="type-caption inline-flex min-h-11 max-w-full items-center gap-1.5 font-semibold text-text-2 underline-offset-4 hover:text-brand hover:underline focus-visible:rounded-xs focus-visible:ring-4 focus-visible:ring-brand/15"
               aria-label={`Открыть источник: ${item.insight.sourceLabel}`}
             >
               <span className="truncate">{item.insight.sourceLabel}</span>
               <ExternalLink className="h-3.5 w-3.5 shrink-0" aria-hidden />
             </a>
-            <span aria-hidden className="mx-2">·</span>
-            <span className="nums whitespace-nowrap">{fmtAgo(item.published_at || item.fetched_at)}</span>
           </div>
 
-          <div className="flex flex-wrap gap-2">
+          <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:justify-end">
             <Button
               type="button"
               variant={saved ? "soft" : "ghost"}
@@ -260,6 +270,7 @@ function OpportunityCard({
               disabled={stateBusy || busy}
               onClick={() => onState(item, saved ? null : "saved")}
               aria-pressed={saved}
+              className="w-full sm:w-auto"
             >
               {saved ? <BookmarkCheck className="h-4 w-4" aria-hidden /> : <Bookmark className="h-4 w-4" aria-hidden />}
               {saved ? "Сохранено" : "Сохранить"}
@@ -270,6 +281,7 @@ function OpportunityCard({
               size="sm"
               disabled={stateBusy || busy}
               onClick={() => onState(item, hidden ? null : "dismissed")}
+              className="w-full sm:w-auto"
             >
               {hidden ? <Eye className="h-4 w-4" aria-hidden /> : <EyeOff className="h-4 w-4" aria-hidden />}
               {hidden ? "Вернуть в подборку" : "Скрыть"}
@@ -281,6 +293,7 @@ function OpportunityCard({
               loading={busy}
               disabled={stateBusy}
               onClick={() => onCreate(item)}
+              className="col-span-2 w-full sm:w-auto"
             >
               {item.post_id ? <CalendarCheck2 className="h-4 w-4" aria-hidden /> : <Sparkles className="h-4 w-4" aria-hidden />}
               {item.post_id ? "Открыть в календаре" : "Создать пост"}
@@ -767,6 +780,9 @@ function LegalOpportunitiesScreen() {
     && activeFeeds.every((feed) => feed.auto_publish_enabled);
   const updatingFeeds = activeFeeds.filter((feed) => Boolean(feed.last_fetched_at));
   const readyItems = enriched.filter((item) => item.post_id != null || item.opportunity_state === "used");
+  const readyItemsHref = channelId
+    ? `/app/rss?view=used&channel=${channelId}`
+    : "/app/rss?view=used";
   const lastFetchedAt = activeFeeds
     .map((feed) => feed.last_fetched_at)
     .filter((value): value is string => Boolean(value))
@@ -778,9 +794,10 @@ function LegalOpportunitiesScreen() {
     <>
     <AppShell
       title="Юридические инфоповоды"
-      subtitle="Аврора собирает изменения в праве. Вы сами решаете, какие материалы превращать в посты и публиковать."
+      subtitle="Важные изменения в праве — вы выбираете, что превратить в пост."
+      stickyHeaderOnMobile={false}
     >
-      <div className="space-y-6">
+      <div className="space-y-8">
         {loadError && (
           <Card className="flex flex-col gap-4 bg-danger-soft p-5 sm:flex-row sm:items-center sm:justify-between" role="alert">
             <div>
@@ -809,95 +826,120 @@ function LegalOpportunitiesScreen() {
           </Card>
         ) : (
           <>
-            <Card as="section" className="overflow-hidden bg-info-soft/70" aria-labelledby="automation-title">
-              <div className="grid gap-5 p-5 sm:p-6 lg:grid-cols-[minmax(0,1fr)_minmax(280px,360px)] lg:items-center">
-                <div className="flex items-start gap-4">
-                  <span className="grid h-12 w-12 shrink-0 place-items-center rounded-sm bg-brand text-white shadow-glow" aria-hidden>
-                    <Sparkles className="h-6 w-6" strokeWidth={2} />
-                  </span>
-                  <div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <h2 id="automation-title" className="text-[18px] font-black text-text sm:text-[20px]">Мониторинг инфоповодов</h2>
-                      <Badge tone={automationError ? "fire" : "success"}>
-                        {automationError ? <RefreshCw className="h-3.5 w-3.5" aria-hidden /> : <CheckCircle2 className="h-3.5 w-3.5" aria-hidden />}
-                        {automationError ? "Обновление задерживается" : "Мониторинг включён"}
-                      </Badge>
+            <Card as="section" className="overflow-hidden" aria-labelledby="automation-title">
+              <div className="grid gap-7 p-5 sm:p-7 lg:grid-cols-[minmax(0,1fr)_minmax(300px,380px)] lg:items-start lg:gap-10">
+                <div className="min-w-0">
+                  <div className="flex items-start gap-4">
+                    <span className="grid h-11 w-11 shrink-0 place-items-center rounded-sm bg-info-soft text-brand" aria-hidden>
+                      <Sparkles className="h-5 w-5" strokeWidth={2} />
+                    </span>
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2.5">
+                        <H2 id="automation-title">Мониторинг инфоповодов</H2>
+                        <Badge tone={automationError ? "fire" : "success"}>
+                          {automationError ? <RefreshCw className="h-3.5 w-3.5" aria-hidden /> : <CheckCircle2 className="h-3.5 w-3.5" aria-hidden />}
+                          {automationError ? "Обновление задерживается" : "Работает"}
+                        </Badge>
+                      </div>
+                      <SecondaryText className="mt-2 max-w-2xl text-pretty">
+                        Аврора собирает события из проверенных источников и убирает повторы. Без вашего разрешения ничего не публикуется.
+                      </SecondaryText>
+                      <Caption role="status" aria-live="polite" className="nums mt-3 font-semibold text-text-3">
+                        {preparing
+                          ? "Проверяем свежие юридические события…"
+                          : `${activeFeeds.length} ${plural(activeFeeds.length, "источник подключён", "источника подключены", "источников подключены")} · ${updatingFeeds.length} ${plural(updatingFeeds.length, "обновляется", "обновляются", "обновляются")} · ${enriched.length} ${plural(enriched.length, "инфоповод", "инфоповода", "инфоповодов")} в подборке`}
+                      </Caption>
                     </div>
-                    <p className="mt-1.5 max-w-2xl text-pretty text-[14px] leading-relaxed text-text-2">
-                      Источники подключаются автоматически. Аврора собирает события и убирает повторы, но ничего не публикует без отдельного разрешения.
-                    </p>
-                    <p role="status" aria-live="polite" className="nums mt-3 text-[12px] font-semibold text-text-3">
-                      {preparing
-                        ? "Проверяем свежие юридические события…"
-                        : `${activeFeeds.length} ${plural(activeFeeds.length, "источник подключён", "источника подключены", "источников подключены")} · ${updatingFeeds.length} ${plural(updatingFeeds.length, "обновляется", "обновляются", "обновляются")} · ${enriched.length} ${plural(enriched.length, "инфоповод", "инфоповода", "инфоповодов")} в подборке`}
-                    </p>
                   </div>
+
+                  <dl className="mt-7 grid grid-cols-2 gap-x-6 gap-y-5 sm:grid-cols-3">
+                    <div>
+                      <dt className="type-caption font-semibold text-text-3">Новых для вас</dt>
+                      <dd className="nums mt-1 type-h3 text-text">{unreadCount}</dd>
+                    </div>
+                    <div>
+                      <dt className="type-caption font-semibold text-text-3">Готовых материалов</dt>
+                      <dd className="mt-1 flex min-h-11 flex-wrap items-center gap-x-3">
+                        <span className="nums type-h3 text-text">{readyItems.length}</span>
+                        {readyItems.length > 0 ? (
+                          <Link
+                            href={readyItemsHref}
+                            className="type-caption inline-flex min-h-11 items-center gap-1 font-semibold text-brand underline-offset-4 hover:underline focus-visible:rounded-xs focus-visible:ring-4 focus-visible:ring-brand/15"
+                          >
+                            Открыть готовые
+                            <ArrowRight className="h-3.5 w-3.5" aria-hidden />
+                          </Link>
+                        ) : null}
+                      </dd>
+                    </div>
+                    <div className="col-span-2 sm:col-span-1">
+                      <dt className="type-caption font-semibold text-text-3">Последняя проверка</dt>
+                      <dd className="nums mt-1 type-body-strong text-text">
+                        {lastFetchedAt ? fmtAgo(lastFetchedAt) : lastUpdatedAt ? fmtAgo(lastUpdatedAt.toISOString()) : "Запускается"}
+                      </dd>
+                    </div>
+                  </dl>
                 </div>
 
-                <div className="grid gap-3">
-                  {monitorChannels.length > 1 && (
-                    <label className="flex min-w-0 flex-col gap-1.5 text-[12px] font-bold text-text">
+                <div
+                  className="rounded-md bg-surface-inset/65 p-4 sm:p-5"
+                  aria-busy={autoPublishSaving || undefined}
+                >
+                  {monitorChannels.length > 1 ? (
+                    <label className="flex min-w-0 flex-col gap-1.5 type-label text-text-2">
                       Канал для готового контента
                       <select
                         value={channelId ?? ""}
                         onChange={(event) => changeChannel(Number(event.target.value))}
-                        className="h-11 w-full rounded-xs border border-line bg-surface px-3 text-base font-semibold text-text focus:border-brand focus:outline-none focus-visible:ring-4 focus-visible:ring-brand/15 sm:text-[14px]"
+                        className="h-11 w-full rounded-xs border border-line bg-surface px-3 text-base text-text focus:border-brand focus:outline-none focus-visible:ring-4 focus-visible:ring-brand/15 sm:text-[14px]"
                       >
                         {monitorChannels.map((channel) => <option key={channel.id} value={channel.id}>{channel.title}</option>)}
                       </select>
                     </label>
+                  ) : (
+                    <div>
+                      <Caption className="font-semibold text-text-3">Канал для готового контента</Caption>
+                      <p className="mt-1 type-body-strong text-text">{selectedChannel?.title || "Канал не выбран"}</p>
+                    </div>
                   )}
-                  <div
-                    className="rounded-sm border border-brand/15 bg-surface p-4 shadow-sm"
-                    aria-busy={autoPublishSaving || undefined}
+
+                  <Link
+                    href="/app/settings?section=posts"
+                    className="type-caption mt-2 inline-flex min-h-11 items-center gap-1.5 font-semibold text-brand underline-offset-4 hover:underline focus-visible:rounded-xs focus-visible:ring-4 focus-visible:ring-brand/15"
                   >
+                    Настроить профиль контента
+                    <ArrowRight className="h-3.5 w-3.5" aria-hidden />
+                  </Link>
+
+                  <div className="mt-4 border-t border-line pt-5">
                     <Toggle
                       id="legal-opportunity-auto-publish"
                       checked={autoPublishEnabled}
                       onChange={(next) => void changeAutoPublish(next)}
-                      label="Публиковать новые инфоповоды автоматически"
-                      description="Когда функция включена, Аврора адаптирует только новые материалы и ставит их в выбранный канал."
+                      label="Публиковать новые события автоматически"
+                      description="Только материалы, найденные после включения."
                       disabled={preparing || autoPublishSaving || activeFeeds.length === 0}
                     />
-                    <p className="mt-3" role="status" aria-live="polite">
-                      <Badge tone={autoPublishEnabled ? "success" : "neutral"}>
-                        {autoPublishSaving
-                          ? "Сохраняем настройку…"
-                          : autoPublishEnabled
-                            ? "Автопубликация включена"
-                            : "Автопубликация выключена"}
-                      </Badge>
-                    </p>
+                    <Caption className="mt-3 text-pretty" role="status" aria-live="polite">
+                      {autoPublishSaving
+                        ? "Сохраняем настройку…"
+                        : autoPublishEnabled
+                          ? "Включено — новые материалы будут подготовлены и опубликованы."
+                          : "Выключено — материалы остаются только в подборке."}
+                    </Caption>
                   </div>
-                </div>
-              </div>
-
-              <div className="grid border-t border-brand/10 bg-surface/55 sm:grid-cols-3">
-                <div className="p-4 sm:border-r sm:border-brand/10">
-                  <p className="text-[12px] font-bold tracking-[0.08em] text-text-3 uppercase">Новых для вас</p>
-                  <p className="nums mt-1 text-[24px] font-black text-text">{unreadCount}</p>
-                </div>
-                <div className="border-t border-brand/10 p-4 sm:border-t-0 sm:border-r">
-                  <p className="text-[12px] font-bold tracking-[0.08em] text-text-3 uppercase">Материалов готово</p>
-                  <p className="nums mt-1 text-[24px] font-black text-text">{readyItems.length}</p>
-                </div>
-                <div className="border-t border-brand/10 p-4 sm:border-t-0">
-                  <p className="text-[12px] font-bold tracking-[0.08em] text-text-3 uppercase">Последняя проверка</p>
-                  <p className="nums mt-1 text-[16px] font-black text-text">
-                    {lastFetchedAt ? fmtAgo(lastFetchedAt) : lastUpdatedAt ? fmtAgo(lastUpdatedAt.toISOString()) : "Запускается"}
-                  </p>
                 </div>
               </div>
             </Card>
 
-            <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_320px] xl:items-start">
-              <section aria-labelledby="opportunities-title" className="min-w-0 space-y-4">
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-                  <div>
-                    <h2 id="opportunities-title" className="text-[20px] font-black text-text sm:text-[22px]">{copy.title}</h2>
-                    <p className="mt-1 max-w-2xl text-pretty text-[13px] leading-relaxed text-text-3">{copy.body}</p>
+            <div>
+              <section aria-labelledby="opportunities-title" className="min-w-0 space-y-5">
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+                  <div className="min-w-0">
+                    <H2 id="opportunities-title">{copy.title}</H2>
+                    <SecondaryText className="mt-1.5 max-w-2xl text-pretty text-text-3">{copy.body}</SecondaryText>
                   </div>
-                  <div className="flex flex-wrap items-end gap-2 sm:justify-end">
+                  <div className="flex flex-wrap items-end gap-3 sm:justify-end">
                     {unreadCount > 0 ? (
                       <Button
                         type="button"
@@ -964,63 +1006,6 @@ function LegalOpportunitiesScreen() {
                   </div>
                 )}
               </section>
-
-              <aside className="space-y-4 xl:sticky xl:top-6" aria-label="Готовые материалы и параметры подборки">
-                <Card className="p-5">
-                  <div className="flex items-center gap-3">
-                    <span className="grid h-10 w-10 shrink-0 place-items-center rounded-sm bg-success-soft text-success-text">
-                      <CalendarCheck2 className="h-5 w-5" aria-hidden />
-                    </span>
-                    <div>
-                      <h2 className="text-[15px] font-black text-text">Готово к работе</h2>
-                      <p className="mt-0.5 text-[12px] text-text-3">Посты из найденных событий</p>
-                    </div>
-                  </div>
-
-                  {readyItems.length ? (
-                    <ul className="mt-4 space-y-2">
-                      {readyItems.slice(0, 4).map((item) => (
-                        <li key={item.id}>
-                          <button
-                            type="button"
-                            onClick={() => openCreatePost(item)}
-                            className="group flex min-h-11 w-full items-center gap-3 rounded-xs px-2 py-2 text-left transition-colors duration-150 hover:bg-surface-inset focus-visible:ring-4 focus-visible:ring-brand/15"
-                          >
-                            <CheckCircle2 className="h-4 w-4 shrink-0 text-success-text" aria-hidden />
-                            <span className="min-w-0 flex-1 line-clamp-2 text-[12px] font-semibold leading-snug text-text-2 group-hover:text-text">
-                              {item.insight.title}
-                            </span>
-                            <ArrowRight className="h-3.5 w-3.5 shrink-0 text-text-3" aria-hidden />
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="mt-4 text-[13px] leading-relaxed text-text-3">
-                      Аврора автоматически добавит сюда материалы после обработки свежих событий.
-                    </p>
-                  )}
-                </Card>
-
-                <Card className="p-5">
-                  <div className="flex items-center gap-2 text-text-2">
-                    <Target className="h-4 w-4" aria-hidden />
-                    <h2 className="text-[14px] font-black text-text">Подборка для проекта</h2>
-                  </div>
-                  <p className="mt-3 text-[13px] leading-relaxed text-text-2">
-                    {selectedChannel
-                      ? `Аврора адаптирует найденные события под канал «${selectedChannel.title}» и его аудиторию.`
-                      : "Аврора использует профиль проекта и аудиторию подключённого канала."}
-                  </p>
-                  <Link
-                    href="/app/settings?section=posts"
-                    className="mt-3 inline-flex min-h-11 items-center gap-1.5 text-[13px] font-semibold text-brand underline-offset-4 hover:underline focus-visible:rounded-xs focus-visible:ring-4 focus-visible:ring-brand/15"
-                  >
-                    Настроить профиль контента
-                    <ArrowRight className="h-3.5 w-3.5" aria-hidden />
-                  </Link>
-                </Card>
-              </aside>
             </div>
           </>
         )}
@@ -1050,7 +1035,8 @@ function LegalOpportunitiesFallback() {
   return (
     <AppShell
       title="Юридические инфоповоды"
-      subtitle="Аврора следит за изменениями в праве и автоматически готовит актуальный контент для вашего проекта."
+      subtitle="Важные изменения в праве — вы выбираете, что превратить в пост."
+      stickyHeaderOnMobile={false}
     >
       <div className="space-y-6" aria-busy="true" aria-label="Загружаем юридические инфоповоды">
         <Card className="overflow-hidden">
