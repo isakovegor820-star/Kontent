@@ -70,6 +70,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Install PDF verification utilities
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes poppler-utils
+
       - name: Create disposable integration databases
         run: |
           for database in \

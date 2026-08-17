@@ -11,7 +11,14 @@ vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
 vi.mock("@/lib/db", () => ({ getPool: () => ({ query: mocks.query }) }));
 vi.mock("@/lib/ai-provider", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/ai-provider")>();
-  return { ...actual, aiReady: mocks.aiReady };
+  return {
+    ...actual,
+    aiReady: mocks.aiReady,
+    resolveEngineRuntime: (engineId: string) => ({
+      supported: true,
+      configured: engineId === "local",
+    }),
+  };
 });
 
 import { GET, POST } from "./route";
