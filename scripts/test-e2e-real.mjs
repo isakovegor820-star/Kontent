@@ -38,6 +38,7 @@ if (!['127.0.0.1', 'localhost'].includes(redisTarget.hostname) || redisTarget.pa
 
 const webPort = Number(process.env.E2E_WEB_PORT || 43190);
 const fakePort = Number(process.env.E2E_FAKE_PORT || 43191);
+const UI_WAIT_TIMEOUT_MS = 30_000;
 const baseUrl = `http://127.0.0.1:${webPort}`;
 const fakeBase = `http://127.0.0.1:${fakePort}`;
 const trackedDestination = "https://example.com/consultation";
@@ -781,7 +782,7 @@ async function publishJobsForPost(postId) {
 }
 
 async function tabTo(targetPage, target, label, { reverse = false, limit = 100 } = {}) {
-  await target.waitFor({ state: "visible", timeout: 10_000 });
+  await target.waitFor({ state: "visible", timeout: UI_WAIT_TIMEOUT_MS });
   for (let index = 0; index <= limit; index += 1) {
     if (await target.evaluate((element) => element === document.activeElement)) return index;
     await targetPage.keyboard.press(reverse ? "Shift+Tab" : "Tab");
@@ -799,10 +800,10 @@ async function captureViewportEvidence(targetPage) {
   ];
   const evidence = [];
   await targetPage.goto("/app/calendar");
-  await targetPage.getByRole("heading", { name: "Календарь", exact: true }).waitFor({ timeout: 12_000 });
+  await targetPage.getByRole("heading", { name: "Календарь", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await targetPage.locator('main article[id^="calendar-"]').first().waitFor({
     state: "visible",
-    timeout: 12_000,
+    timeout: UI_WAIT_TIMEOUT_MS,
   });
   for (const viewport of viewports) {
     await targetPage.setViewportSize({ width: viewport.width, height: viewport.height });
@@ -819,7 +820,7 @@ async function captureViewportEvidence(targetPage) {
 async function runKeyboardOnlyCriticalPass(targetPage) {
   await targetPage.setViewportSize({ width: 390, height: 844 });
   await targetPage.goto("/app/calendar");
-  await targetPage.getByRole("heading", { name: "Календарь", exact: true }).waitFor({ timeout: 12_000 });
+  await targetPage.getByRole("heading", { name: "Календарь", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await targetPage.evaluate(() => {
     document.body.setAttribute("tabindex", "-1");
     document.body.focus();
@@ -831,7 +832,7 @@ async function runKeyboardOnlyCriticalPass(targetPage) {
   assert(await menuTrigger.evaluate((element) => element === document.activeElement), "Tab did not focus the mobile menu trigger");
   await targetPage.keyboard.press("Enter");
   const menuDialog = targetPage.getByRole("dialog", { name: "Меню платформы", exact: true });
-  await menuDialog.waitFor({ timeout: 8_000 });
+  await menuDialog.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await waitFor(
     async () => menuDialog.evaluate((element) => element.contains(document.activeElement)),
     "Enter did not move focus into the mobile menu",
@@ -843,7 +844,7 @@ async function runKeyboardOnlyCriticalPass(targetPage) {
     "Shift+Tab escaped the mobile menu focus scope",
   );
   await targetPage.keyboard.press("Escape");
-  await menuDialog.waitFor({ state: "hidden", timeout: 5_000 });
+  await menuDialog.waitFor({ state: "hidden", timeout: UI_WAIT_TIMEOUT_MS });
   assert(await menuTrigger.evaluate((element) => element === document.activeElement), "mobile menu did not restore trigger focus");
 
   const exportTrigger = targetPage.getByRole("button", { name: "Экспортировать", exact: true });
@@ -851,7 +852,7 @@ async function runKeyboardOnlyCriticalPass(targetPage) {
   assert(await exportTrigger.evaluate((element) => element === document.activeElement), "Tab did not focus the export trigger");
   await targetPage.keyboard.press("Space");
   const exportDialog = targetPage.getByRole("dialog", { name: "Экспортировать данные", exact: true });
-  await exportDialog.waitFor({ timeout: 8_000 });
+  await exportDialog.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await waitFor(
     async () => exportDialog.evaluate((element) => element.contains(document.activeElement)),
     "Space did not move focus into the export dialog",
@@ -863,7 +864,7 @@ async function runKeyboardOnlyCriticalPass(targetPage) {
     "Tab escaped the export dialog focus scope",
   );
   await targetPage.keyboard.press("Escape");
-  await exportDialog.waitFor({ state: "hidden", timeout: 5_000 });
+  await exportDialog.waitFor({ state: "hidden", timeout: UI_WAIT_TIMEOUT_MS });
   assert(await exportTrigger.evaluate((element) => element === document.activeElement), "export dialog did not restore trigger focus");
   return { menuTabs, exportTabs, keys: ["Tab", "Shift+Tab", "Enter", "Space"] };
 }
@@ -890,7 +891,7 @@ async function waitForResponsiveLayout(targetPage) {
     if (!shell) return true;
     const desktop = matchMedia("(min-width: 64rem)").matches;
     return getComputedStyle(shell).paddingLeft === (desktop ? "260px" : "0px");
-  }, undefined, { timeout: 5_000 });
+  }, undefined, { timeout: UI_WAIT_TIMEOUT_MS });
 }
 
 async function assertNoHorizontalOverflow(targetPage, label) {
@@ -1140,8 +1141,11 @@ try {
     return reviewBody.run;
   };
 
-  await page.goto("/register");
-  await page.waitForLoadState("domcontentloaded");
+  // CI starts from a cold Next.js dev cache. Waiting for the full load event here gives
+  // framework chunks the default 30-second navigation budget and flakes before the first
+  // assertion on slower runners. DOMContentLoaded is the contract needed by the form checks;
+  // keep a bounded but explicit cold-compilation budget instead of weakening assertions.
+  await page.goto("/register", { waitUntil: "domcontentloaded", timeout: 90_000 });
   await assertTouch(page.locator('input[type="email"]').first(), "auth email");
   await assertTouch(page.locator('input[type="password"]').first(), "auth password");
   await assertTouch(page.locator('button[type="submit"]').first(), "auth submit");
@@ -1195,7 +1199,7 @@ try {
   // durability proof and must recover the exact pending text.
   await page.getByText(/изменения сохранены в браузере/iu).waitFor({
     state: "attached",
-    timeout: 12_000,
+    timeout: UI_WAIT_TIMEOUT_MS,
   });
   await page.reload();
   await composerText.waitFor();
@@ -1445,7 +1449,7 @@ try {
 
   const libraryContentId = `library-registry-text-reference-${libraryReferenceId}`;
   const libraryText = page.locator(`#${libraryContentId}`);
-  await libraryText.waitFor({ timeout: 10_000 });
+  await libraryText.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const expand = page.locator(`button[aria-controls="${libraryContentId}"]`);
   const libraryUrlBeforeExpand = page.url();
   assert(await expand.getAttribute("aria-expanded") === "false", "closed Library card has wrong aria-expanded");
@@ -1469,7 +1473,7 @@ try {
     "keyboard activation did not open Library filters",
   );
   await page.getByRole("button", { name: "Экспорт текущего среза", exact: true }).click();
-  await page.getByText(/Один срез данных · 1 запис/u).waitFor({ timeout: 10_000 });
+  await page.getByText(/Один срез данных · 1 запис/u).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const exportLinks = page.locator('a[download][href^="/api/library/exports/"]');
   assert(await exportLinks.count() === 6, "filtered Library export did not expose six formats");
   const exportHrefs = await exportLinks.evaluateAll((links) => links.map((link) => link.getAttribute("href")));
@@ -1648,7 +1652,7 @@ try {
 
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto("/app/settings?section=general");
-  await page.getByRole("heading", { name: "Профиль и исходный бриф", exact: true }).waitFor({ timeout: 10_000 });
+  await page.getByRole("heading", { name: "Профиль и исходный бриф", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await page.getByRole("textbox", { name: /^Имя/u }).fill("Анна E2E");
   await page.getByRole("textbox", { name: /^Ниша/u }).fill("Юридическая безопасность бизнеса");
   await page.getByRole("textbox", { name: /^Аудитория/u }).fill("Владельцы компаний и legal operations");
@@ -1658,7 +1662,7 @@ try {
   await page.getByLabel("Форматы", { exact: true }).fill("Текст, Видео");
   await page.getByText("Есть несохранённые изменения", { exact: true }).waitFor();
   await page.getByRole("button", { name: "Сохранить профиль", exact: true }).click();
-  await page.getByText("Профиль и исходный бриф сохранены.", { exact: true }).waitFor({ timeout: 10_000 });
+  await page.getByText("Профиль и исходный бриф сохранены.", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const persistedProfile = (await pool.query(
     `select u.name, brief.niche, brief.audience, brief.goal, brief.rubrics,
             brief.formats, brief.author_role, brief.source
@@ -1672,7 +1676,7 @@ try {
   assert(persistedProfile?.author_role === "Управляющий партнёр и автор", "profile author role was not persisted");
   assert(persistedProfile?.source === "manual", "profile edit did not update the existing brief authority");
   await page.reload();
-  await page.getByRole("heading", { name: "Профиль и исходный бриф", exact: true }).waitFor({ timeout: 10_000 });
+  await page.getByRole("heading", { name: "Профиль и исходный бриф", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   assert(await page.getByRole("textbox", { name: /^Имя/u }).inputValue() === "Анна E2E", "profile name did not survive reload");
   assert(await page.getByRole("textbox", { name: /^Ниша/u }).inputValue() === "Юридическая безопасность бизнеса", "profile brief did not survive reload");
   assert(await page.getByLabel("Форматы", { exact: true }).inputValue() === "Текст, Видео", "profile formats did not survive reload");
@@ -1840,7 +1844,7 @@ try {
   )).rows[0].id);
 
   await page.goto("/app/site-analysis");
-  await page.getByText(`${SITE_INTERVIEW_QUESTIONS.length} вопросов`, { exact: true }).waitFor({ timeout: 10_000 });
+  await page.getByText(`${SITE_INTERVIEW_QUESTIONS.length} вопросов`, { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await page.getByText(`Показано ответов: ${SITE_INTERVIEW_QUESTIONS.length} из ${SITE_INTERVIEW_QUESTIONS.length}`, { exact: true }).waitFor();
   const firstEvidenceDisclosure = page.getByRole("button", { name: /доказательства/u }).first();
   assert(await firstEvidenceDisclosure.getAttribute("aria-expanded") === "false", "site answer starts expanded without user action");
@@ -1863,7 +1867,7 @@ try {
     assert(downloaded.status() === 200, `site analysis export failed: ${href}`);
   }
   await page.reload();
-  await page.getByText(`${SITE_INTERVIEW_QUESTIONS.length} вопросов`, { exact: true }).waitFor({ timeout: 10_000 });
+  await page.getByText(`${SITE_INTERVIEW_QUESTIONS.length} вопросов`, { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await page.setViewportSize({ width: 390, height: 844 });
   await assertNoHorizontalOverflow(page, "site analysis mobile");
   await page.setViewportSize({ width: 1280, height: 900 });
@@ -2397,7 +2401,7 @@ try {
   await assertTouch(page.getByRole("button", { name: "Создать проект", exact: true }), "create project");
   await projectNameInput.focus();
   await page.keyboard.press("Enter");
-  await page.getByText(`Проект «${criticalProjectName}» создан и выбран.`, { exact: true }).waitFor({ timeout: 12_000 });
+  await page.getByText(`Проект «${criticalProjectName}» создан и выбран.`, { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const sharedProjectId = Number((await pool.query(
     "select selected_project_id from user_project_preferences where user_id = $1",
     [userId],
@@ -2469,14 +2473,14 @@ try {
   );
 
   const trackingOriginInput = page.getByRole("textbox", { name: "Адрес сайта", exact: true });
-  await trackingOriginInput.waitFor({ timeout: 12_000 });
+  await trackingOriginInput.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await trackingOriginInput.fill(fakeBase);
   const saveTrackingConnection = page.getByRole("button", { name: "Сохранить подключение", exact: true });
   await assertTouch(saveTrackingConnection, "save tracking connection");
   await saveTrackingConnection.click();
-  await page.getByText("Настройки сохранены. Размести проверочный файл на сайте и подтверди домен.", { exact: true }).waitFor({ timeout: 12_000 });
+  await page.getByText("Настройки сохранены. Размести проверочный файл на сайте и подтверди домен.", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const verificationFileInput = page.getByLabel("Содержимое проверочного файла", { exact: true });
-  await verificationFileInput.waitFor({ timeout: 12_000 });
+  await verificationFileInput.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const trackingBeforeVerifyResponse = await authenticatedRequest("/api/tracking/settings");
   assert(trackingBeforeVerifyResponse.status === 200, "tracking settings are unavailable to the project owner");
   const trackingConfigured = JSON.parse(trackingBeforeVerifyResponse.text).tracking;
@@ -2503,7 +2507,7 @@ try {
   const verifyTrackingDomain = page.getByRole("button", { name: "Подтвердить домен", exact: true });
   await assertTouch(verifyTrackingDomain, "verify tracking domain");
   await verifyTrackingDomain.click();
-  await page.getByText("Домен подтверждён. События заявок можно учитывать в аналитике.", { exact: true }).waitFor({ timeout: 12_000 });
+  await page.getByText("Домен подтверждён. События заявок можно учитывать в аналитике.", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const trackingVerifiedResponse = await authenticatedRequest("/api/tracking/settings");
   const trackingVerified = JSON.parse(trackingVerifiedResponse.text).tracking;
   assert(
@@ -2518,7 +2522,7 @@ try {
   await assertTouch(createInviteButton, "create project invitation");
   await createInviteButton.click();
   const inviteLinkInput = page.getByLabel("Одноразовая ссылка приглашения", { exact: true });
-  await inviteLinkInput.waitFor({ timeout: 10_000 });
+  await inviteLinkInput.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const inviteUrl = await inviteLinkInput.inputValue();
   const inviteToken = new URL(inviteUrl).hash.replace(/^#token=/u, "");
   assert(inviteToken.length >= 32, "one-time invitation URL omitted its raw token");
@@ -2565,7 +2569,7 @@ try {
   await assertTouch(acceptInvitation, "accept project invitation");
   await acceptInvitation.focus();
   await reviewerPage.keyboard.press("Enter");
-  await reviewerPage.getByText("Приглашение принято", { exact: true }).waitFor({ timeout: 10_000 });
+  await reviewerPage.getByText("Приглашение принято", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const openAcceptedProject = reviewerPage.getByRole("button", { name: "Открыть проект", exact: true });
   await assertTouch(openAcceptedProject, "open accepted project");
   await openAcceptedProject.click();
@@ -2593,7 +2597,7 @@ try {
     const createButton = publicationBlocksSection.getByRole("button", { name: "Создать блок", exact: true });
     await assertTouch(createButton, `create ${kind} block`);
     await createButton.click();
-    await publicationBlocksSection.getByText(name, { exact: true }).waitFor({ timeout: 8_000 });
+    await publicationBlocksSection.getByText(name, { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   };
   await createPublicationBlock("author_signature", "Подпись команды QA", "Команда «Аврора» — редакция legal-tech проекта.");
   await createPublicationBlock("first_comment", "Первый комментарий QA", "Материалы и запись на консультацию доступны по ссылке в публикации.");
@@ -2609,14 +2613,14 @@ try {
   assert(signatureBlockId > 0 && firstCommentBlockId > 0, "publication block kinds were not preserved");
 
   const brandDictionary = page.locator("section").filter({ has: page.getByRole("heading", { name: "Словарь бренда", exact: true }) }).first();
-  await brandDictionary.getByRole("form", { name: "Новое правило словаря", exact: true }).waitFor({ timeout: 10_000 });
+  await brandDictionary.getByRole("form", { name: "Новое правило словаря", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await brandDictionary.locator("#brand-dictionary-kind").selectOption("prohibited");
   await brandDictionary.locator("#brand-dictionary-term").fill("легалтех");
   await brandDictionary.locator("#brand-dictionary-replacement").fill("LegalTech");
   const addBrandRule = brandDictionary.getByRole("button", { name: "Добавить правило", exact: true });
   await assertTouch(addBrandRule, "add prohibited brand dictionary rule");
   await addBrandRule.click();
-  await brandDictionary.getByText("Правило добавлено в словарь проекта.", { exact: true }).waitFor({ timeout: 12_000 });
+  await brandDictionary.getByText("Правило добавлено в словарь проекта.", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const brandRuleEvidence = (await pool.query(
     `select dictionary.version as dictionary_version, entry.kind, entry.term, entry.replacement, entry.is_active
        from project_brand_dictionaries dictionary
@@ -2635,7 +2639,7 @@ try {
   );
 
   await page.goto("/app/autopilot/month");
-  await page.getByRole("heading", { name: "Собери редакционную сетку на месяц", exact: true }).waitFor({ timeout: 12_000 });
+  await page.getByRole("heading", { name: "Собери редакционную сетку на месяц", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const monthDate = new Date();
   monthDate.setUTCMonth(monthDate.getUTCMonth() + 1, 1);
   const campaignMonth = `${monthDate.getUTCFullYear()}-${String(monthDate.getUTCMonth() + 1).padStart(2, "0")}`;
@@ -2649,7 +2653,7 @@ try {
   const assembleMonth = page.getByRole("button", { name: "Собрать месяц", exact: true });
   await assertTouch(assembleMonth, "assemble monthly campaign");
   await assembleMonth.click();
-  await page.getByText("Кампания создана. Проверь темы и отправь план на согласование.", { exact: true }).waitFor({ timeout: 20_000 });
+  await page.getByText("Кампания создана. Проверь темы и отправь план на согласование.", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const monthlyCampaign = (await pool.query(
     `select campaign.id, campaign.project_id, campaign.posts_per_week, plan.id as plan_id, plan.status
        from monthly_campaigns campaign
@@ -2707,7 +2711,7 @@ try {
   await assertTouch(moveLater, "move monthly item later");
   await moveLater.focus();
   await page.keyboard.press("Enter");
-  await page.getByText(/Материал перенесён на/u).waitFor({ timeout: 12_000 });
+  await page.getByText(/Материал перенесён на/u).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const monthlyAfterMove = (await pool.query(
     `select id, scheduled_for::text as scheduled_for, position
        from monthly_campaign_items
@@ -2748,7 +2752,7 @@ try {
   });
   await assertTouch(regenerateOnlyMoved, "selective monthly regeneration");
   await regenerateOnlyMoved.click();
-  await page.getByText("Пересобираю только выбранную тему.", { exact: true }).waitFor({ timeout: 12_000 });
+  await page.getByText("Пересобираю только выбранную тему.", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const completedRegeneration = await waitFor(async () => {
     const result = await pool.query(
       `select operation.id, operation.status, operation.result_plan_id
@@ -2811,7 +2815,7 @@ try {
   );
   const activeMonthlyPlanId = regeneratedPlanId;
 
-  await page.getByText(rebuiltTarget.title, { exact: true }).waitFor({ timeout: 12_000 });
+  await page.getByText(rebuiltTarget.title, { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await waitFor(async () => {
     const submit = page.getByRole("button", { name: "Отправить на согласование", exact: true });
     return await submit.isEnabled().catch(() => false);
@@ -2820,13 +2824,13 @@ try {
   const submitMonthlyPlan = page.getByRole("button", { name: "Отправить на согласование", exact: true });
   await submitMonthlyPlan.click();
   const approveMonthlyPlan = page.getByRole("button", { name: "Согласовать план", exact: true });
-  await approveMonthlyPlan.waitFor({ timeout: 10_000 });
+  await approveMonthlyPlan.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await approveMonthlyPlan.click();
   const prepareFirstWeek = page.getByRole("button", { name: "Подготовить первую неделю", exact: true });
-  await prepareFirstWeek.waitFor({ timeout: 10_000 });
+  await prepareFirstWeek.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await assertTouch(prepareFirstWeek, "prepare first monthly week");
   await prepareFirstWeek.click();
-  await page.getByText(/Готовлю тексты первой недели в фоне/u).waitFor({ timeout: 10_000 });
+  await page.getByText(/Готовлю тексты первой недели в фоне/u).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
 
   const preparedMonthlyItems = await waitFor(async () => {
     const result = await pool.query(
@@ -2858,7 +2862,7 @@ try {
 
   await page.reload();
   const openMonthlyDraft = page.locator(`a[href="/app/composer?draft=${monthlyDraftId}&from=autopilot-month"]`);
-  await openMonthlyDraft.waitFor({ timeout: 15_000 });
+  await openMonthlyDraft.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   assert(await openMonthlyDraft.count() === 1, "monthly plan did not expose one exact Composer link for its first material");
   await page.setViewportSize({ width: 320, height: 780 });
   await assertNoHorizontalOverflow(page, "monthly campaign at 320px");
@@ -2867,7 +2871,7 @@ try {
   await page.waitForURL(new RegExp(`/app/composer\\?draft=${monthlyDraftId}(?:&|$)`, "u"));
 
   const criticalComposerText = page.locator("#composer-text");
-  await criticalComposerText.waitFor({ timeout: 12_000 });
+  await criticalComposerText.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const autopilotText = await criticalComposerText.inputValue();
   assert(autopilotText === monthlyDraft.text, "Composer did not open the exact first monthly material");
   await criticalComposerText.fill(
@@ -2968,7 +2972,7 @@ try {
     `tracking was not bound to the draft: ${trackedDraftResponse.status}:${trackedDraftResponse.text}`,
   );
   await page.reload();
-  await criticalComposerText.waitFor({ timeout: 12_000 });
+  await criticalComposerText.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   assert(await criticalComposerText.inputValue() === draftBeforeTracking.text, "tracking binding changed the visible post text");
 
   const loadEditorial = async (targetPage) => {
@@ -2982,7 +2986,7 @@ try {
   await assertTouch(submitVisualSourceReview, "submit initial editorial revision");
   await submitVisualSourceReview.click();
   try {
-    await page.getByText("Материал отправлен на согласование.", { exact: true }).waitFor({ timeout: 15_000 });
+    await page.getByText("Материал отправлен на согласование.", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   } catch (error) {
     const draftState = (await pool.query(
       "select version from drafts where id = $1 and project_id = $2",
@@ -2996,7 +3000,7 @@ try {
     })}`);
   }
   await reviewerPage.goto(`/app/composer?draft=${monthlyDraftId}`);
-  await reviewerPage.getByRole("heading", { name: "Согласование материала", exact: true }).waitFor({ timeout: 12_000 });
+  await reviewerPage.getByRole("heading", { name: "Согласование материала", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const reviewerFirstEditorial = await loadEditorial(reviewerPage);
   assert(
     reviewerFirstEditorial.workflow.state === "in_review"
@@ -3010,7 +3014,7 @@ try {
   const addEditorialComment = reviewerPage.getByRole("button", { name: "Добавить комментарий", exact: true });
   await assertTouch(addEditorialComment, "add editorial version comment");
   await addEditorialComment.click();
-  await reviewerPage.getByText("Комментарий добавлен к этой версии.", { exact: true }).waitFor({ timeout: 12_000 });
+  await reviewerPage.getByText("Комментарий добавлен к этой версии.", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await reviewerPage.getByLabel("Комментарий к решению", { exact: true }).fill(
     "Нужен конкретный следующий шаг и чистая типографика.",
   );
@@ -3020,10 +3024,10 @@ try {
   await waitFor(async () => (
     (await loadEditorial(reviewerPage)).workflow.state === "changes_requested"
   ), "editorial change request did not become durable", 12_000);
-  await reviewerPage.getByText("Нужны правки", { exact: true }).waitFor({ timeout: 12_000 });
+  await reviewerPage.getByText("Нужны правки", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
 
   await page.goto(`/app/composer?draft=${monthlyDraftId}&from=autopilot-month`);
-  await criticalComposerText.waitFor({ timeout: 12_000 });
+  await criticalComposerText.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const finalEditorialText = `${await criticalComposerText.inputValue()}\n\nВ общем, во-первых, легалтех помогает обсудить следующий шаг с редакцией без спешки.`;
   await criticalComposerText.fill(finalEditorialText);
   assert(
@@ -3036,7 +3040,7 @@ try {
   );
   await saveCriticalDraft();
   await page.reload();
-  await criticalComposerText.waitFor({ timeout: 12_000 });
+  await criticalComposerText.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   assert(await criticalComposerText.inputValue() === finalEditorialText, "reload lost the corrected editorial text");
 
   const changedEditorial = await loadEditorial(page);
@@ -3062,9 +3066,9 @@ try {
   const submitCorrectedSource = page.getByRole("button", { name: "Сохранить и отправить повторно", exact: true });
   await assertTouch(submitCorrectedSource, "submit corrected source revision");
   await submitCorrectedSource.click();
-  await page.getByText("Материал отправлен на согласование.", { exact: true }).waitFor({ timeout: 15_000 });
+  await page.getByText("Материал отправлен на согласование.", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await reviewerPage.reload();
-  await reviewerPage.getByRole("heading", { name: "Согласование материала", exact: true }).waitFor({ timeout: 12_000 });
+  await reviewerPage.getByRole("heading", { name: "Согласование материала", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const correctedSourceEditorial = await loadEditorial(reviewerPage);
   assert(
     correctedSourceEditorial.workflow.state === "in_review"
@@ -3078,7 +3082,7 @@ try {
   const approveVisualSource = reviewerPage.getByRole("button", { name: "Согласовать версию", exact: true });
   await assertTouch(approveVisualSource, "approve exact corrected visual source revision");
   await approveVisualSource.click();
-  await reviewerPage.getByText("Согласован", { exact: true }).waitFor({ timeout: 12_000 });
+  await reviewerPage.getByText("Согласован", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const approvedVisualSource = (await loadEditorial(reviewerPage)).workflow;
   assert(
     approvedVisualSource.state === "approved"
@@ -3087,7 +3091,7 @@ try {
     "visual source approval is not bound to the exact revision and hash",
   );
   await page.reload();
-  await criticalComposerText.waitFor({ timeout: 12_000 });
+  await criticalComposerText.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   assert(await criticalComposerText.inputValue() === finalEditorialText, "source approval changed the corrected Composer text");
 
   const composerMedia = await openComposerSection(page, "composer-media");
@@ -3112,7 +3116,7 @@ try {
   await assertTouch(uploadBrandLogo, "upload project brand logo");
   expectedBrowserConsoleScopes.add("main");
   await uploadBrandLogo.click();
-  await brandKit.getByText("Выберите изображение PNG, JPEG или WebP размером до 10 МБ.", { exact: true }).waitFor({ timeout: 12_000 });
+  await brandKit.getByText("Выберите изображение PNG, JPEG или WebP размером до 10 МБ.", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   expectedBrowserConsoleScopes.delete("main");
   assert(
     Number((await pool.query(
@@ -3123,11 +3127,11 @@ try {
   );
   await brandLogoInput.setInputFiles(brandLogoPath);
   await uploadBrandLogo.click();
-  await brandKit.getByText("Логотип загружен. Сохраните фирменный стиль.", { exact: true }).waitFor({ timeout: 12_000 });
+  await brandKit.getByText("Логотип загружен. Сохраните фирменный стиль.", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const saveBrandKit = brandKit.getByRole("button", { name: "Сохранить фирменный стиль", exact: true });
   await assertTouch(saveBrandKit, "save project brand kit");
   await saveBrandKit.click();
-  await brandKit.getByText("Фирменный стиль сохранён", { exact: true }).waitFor({ timeout: 12_000 });
+  await brandKit.getByText("Фирменный стиль сохранён", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const brandKitEvidence = (await pool.query(
     `select name, signature, colors, logo_asset_id, allowed_fonts, active_font, version
        from project_brand_kits where project_id = $1`,
@@ -3170,17 +3174,17 @@ try {
   const activeCardTitle = page.locator("#card-title");
   await activeCardTitle.focus();
   await page.keyboard.press("Alt+ArrowUp");
-  await page.getByText("Карточка перемещена на позицию 1", { exact: true }).waitFor({ timeout: 8_000 });
+  await page.getByText("Карточка перемещена на позицию 1", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await page.keyboard.press("Alt+ArrowDown");
-  await page.getByText("Карточка перемещена на позицию 2", { exact: true }).waitFor({ timeout: 8_000 });
+  await page.getByText("Карточка перемещена на позицию 2", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const renderCarousel = page.getByRole("button", { name: "Собрать PNG", exact: true });
   await assertTouch(renderCarousel, "render legal carousel");
   expectedBrowserConsoleScopes.add("main");
   await renderCarousel.click();
-  await page.getByText("Текст не помещается в безопасную область. Сократите отмеченные поля.", { exact: true }).waitFor({ timeout: 12_000 });
+  await page.getByText("Текст не помещается в безопасную область. Сократите отмеченные поля.", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   expectedBrowserConsoleScopes.delete("main");
   const layoutIssue = page.getByRole("button", { name: /Карточка \d+ · (Заголовок|Тезисы):/u }).first();
-  await layoutIssue.waitFor({ timeout: 8_000 });
+  await layoutIssue.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await assertTouch(layoutIssue, "open legal carousel layout issue");
   await layoutIssue.click();
   await waitFor(async () => (await page.locator(":focus").getAttribute("aria-invalid")) === "true", "layout issue did not focus its invalid field", 5_000);
@@ -3193,7 +3197,7 @@ try {
     }
   }
   await renderCarousel.click();
-  await page.getByText("Готово: 5 карточек сохранено в медиатеке", { exact: true }).waitFor({ timeout: 30_000 });
+  await page.getByText("Готово: 5 карточек сохранено в медиатеке", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const legalRenderEvidence = (await pool.query(
     `select operation.id, operation.status, operation.project_id, count(card.card_id)::int as cards,
             design.source_draft_revision_id, design.source_draft_version,
@@ -3239,14 +3243,14 @@ try {
   const createVideoScript = page.getByRole("button", { name: "Новый сценарий", exact: true });
   await assertTouch(createVideoScript, "create 45-second video script");
   await createVideoScript.click();
-  await page.getByText("Сценарий создан из зафиксированной версии черновика", { exact: true }).waitFor({ timeout: 12_000 });
+  await page.getByText("Сценарий создан из зафиксированной версии черновика", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await page.locator("#script-title").fill("Сценарий для короткого разбора legal-tech практики");
   const hookVisual = page.locator("#visual-scene-hook");
   await hookVisual.fill("Покажите исходный материал и фирменную карточку без новых утверждений.");
   const saveVideoScript = videoEditor.getByRole("button", { name: "Сохранить", exact: true });
   await assertTouch(saveVideoScript, "save edited video script");
   await saveVideoScript.click();
-  await page.getByText("Сценарий сохранён", { exact: true }).waitFor({ timeout: 12_000 });
+  await page.getByText("Сценарий сохранён", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const videoScriptEvidence = (await pool.query(
     `select id, project_id, source_draft_id, source_draft_revision_id,
             source_draft_version, source_content_hash,
@@ -3267,7 +3271,7 @@ try {
       && videoScriptEvidence?.title === "Сценарий для короткого разбора legal-tech практики",
     "edited 45-second video script lost exact draft lineage or revision",
   );
-  const briefDownload = page.waitForEvent("download", { timeout: 15_000 });
+  const briefDownload = page.waitForEvent("download", { timeout: UI_WAIT_TIMEOUT_MS });
   await page.getByRole("link", { name: "Скачать техзадание", exact: true }).click();
   const videoBriefDownload = await briefDownload;
   const videoBriefPath = resolve(artifactDir, "critical-video-production-brief.txt");
@@ -3285,9 +3289,9 @@ try {
   await assertTouch(addCarouselToPost, "add entire carousel to post");
   await addCarouselToPost.click();
   await page.waitForURL(new RegExp(`/app/composer\\?draft=${monthlyDraftId}&fromMedia=1&from=studio-visuals&returnTo=autopilot-month$`, "u"));
-  await criticalComposerText.waitFor({ timeout: 12_000 });
+  await criticalComposerText.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   assert(await criticalComposerText.inputValue() === finalEditorialText, "returning from Legal Visuals changed the approved source text");
-  await page.getByText("Критическая legal-карусель QA", { exact: false }).first().waitFor({ timeout: 10_000 });
+  await page.getByText("Критическая legal-карусель QA", { exact: false }).first().waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await saveCriticalDraft();
 
   let publicationAt = new Date();
@@ -3316,7 +3320,7 @@ try {
     `publication preferences were not saved: ${savePreferencesResponse.status}:${savePreferencesResponse.text}`,
   );
   await page.reload();
-  await criticalComposerText.waitFor({ timeout: 12_000 });
+  await criticalComposerText.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   assert(await criticalComposerText.inputValue() === finalEditorialText, "publication preferences changed the visible post text");
   await openComposerSection(page, "publication-time");
   await page.getByLabel("Дата публикации", { exact: true }).fill(publicationDate);
@@ -3401,9 +3405,9 @@ try {
   const submitSecondReview = page.getByRole("button", { name: "Сохранить и отправить на согласование", exact: true });
   await assertTouch(submitSecondReview, "submit final media-bearing revision");
   await submitSecondReview.click();
-  await page.getByText("Материал отправлен на согласование.", { exact: true }).waitFor({ timeout: 15_000 });
+  await page.getByText("Материал отправлен на согласование.", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await reviewerPage.reload();
-  await reviewerPage.getByRole("heading", { name: "Согласование материала", exact: true }).waitFor({ timeout: 12_000 });
+  await reviewerPage.getByRole("heading", { name: "Согласование материала", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const reviewerSecondEditorial = await loadEditorial(reviewerPage);
   assert(
     reviewerSecondEditorial.workflow.state === "in_review"
@@ -3417,7 +3421,7 @@ try {
   const approveFinalRevision = reviewerPage.getByRole("button", { name: "Согласовать версию", exact: true });
   await assertTouch(approveFinalRevision, "approve exact final revision");
   await approveFinalRevision.click();
-  await reviewerPage.getByText("Согласован", { exact: true }).waitFor({ timeout: 12_000 });
+  await reviewerPage.getByText("Согласован", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const approvedWorkflow = (await loadEditorial(reviewerPage)).workflow;
   assert(
     approvedWorkflow?.state === "approved"
@@ -3454,9 +3458,9 @@ try {
 
   await page.goto("/app/settings?section=general");
   const reviewerRoleSelect = page.getByLabel(`Роль участника ${reviewerName}`, { exact: true });
-  await reviewerRoleSelect.waitFor({ timeout: 12_000 });
+  await reviewerRoleSelect.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await reviewerRoleSelect.selectOption("publisher");
-  await page.getByText("Роль участника изменена: публикатор.", { exact: true }).waitFor({ timeout: 10_000 });
+  await page.getByText("Роль участника изменена: публикатор.", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   assert((await pool.query(
     "select role from project_members where project_id = $1 and user_id = $2",
     [sharedProjectId, reviewerUserId],
@@ -3464,7 +3468,7 @@ try {
 
   await reviewerPage.setViewportSize({ width: 320, height: 780 });
   await reviewerPage.goto(`/app/composer?draft=${monthlyDraftId}`);
-  await reviewerPage.locator("#composer-text").waitFor({ timeout: 12_000 });
+  await reviewerPage.locator("#composer-text").waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   assert(await reviewerPage.locator("#composer-text").inputValue() === finalEditorialText, "publisher did not receive the approved text revision");
   await assertNoHorizontalOverflow(reviewerPage, "publisher Composer at 320px");
   await reviewerPage.setViewportSize({ width: 1280, height: 900 });
@@ -3504,9 +3508,9 @@ try {
     await reviewerPage.waitForFunction(
       () => globalThis.location.pathname === "/app/calendar",
       undefined,
-      { timeout: 20_000 },
+      { timeout: UI_WAIT_TIMEOUT_MS },
     );
-    await reviewerPage.getByRole("heading", { name: "Календарь", exact: true }).waitFor({ timeout: 20_000 });
+    await reviewerPage.getByRole("heading", { name: "Календарь", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   } catch (error) {
     throw new Error(`publisher schedule failed: ${JSON.stringify({
       response: publicationResponse,
@@ -3610,8 +3614,8 @@ try {
   );
   await reloadAfterRuntimeRestart(page, "main page");
   await reloadAfterRuntimeRestart(reviewerPage, "reviewer page");
-  await page.getByRole("heading", { name: "Настройки", exact: true }).waitFor({ timeout: 30_000 });
-  await reviewerPage.getByRole("heading", { name: "Календарь", exact: true }).waitFor({ timeout: 30_000 });
+  await page.getByRole("heading", { name: "Настройки", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  await reviewerPage.getByRole("heading", { name: "Календарь", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   expectedBrowserConsoleScopes.delete("main");
   expectedBrowserConsoleScopes.delete("reviewer");
   interfaceEvidence.runtimeRestart = {
@@ -3762,7 +3766,7 @@ try {
 
   await reviewerPage.goto("/app/calendar");
   const notificationTrigger = reviewerPage.getByRole("button", { name: /^Уведомления:/u });
-  await notificationTrigger.waitFor({ timeout: 12_000 });
+  await notificationTrigger.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const notificationCount = (label) => label.includes("новых нет")
     ? 0
     : Number(label.match(/\d+/u)?.[0] ?? Number.NaN);
@@ -3773,15 +3777,15 @@ try {
   await assertTouch(notificationTrigger, "open project notifications");
   await notificationTrigger.click();
   const notificationDialog = reviewerPage.getByRole("dialog", { name: "Уведомления", exact: true });
-  await notificationDialog.waitFor({ timeout: 12_000 });
+  await notificationDialog.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const reminderNotification = notificationDialog.getByRole("listitem")
     .filter({ hasText: "Пора проверить публикацию" })
     .first();
-  await reminderNotification.waitFor({ timeout: 12_000 });
+  await reminderNotification.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const markReminderRead = reminderNotification.getByRole("button", { name: "Отметить прочитанным", exact: true });
   await assertTouch(markReminderRead, "mark publication review reminder read");
   await markReminderRead.click();
-  await reminderNotification.getByText("Прочитано", { exact: true }).waitFor({ timeout: 12_000 });
+  await reminderNotification.getByText("Прочитано", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await waitFor(async () => (
     notificationCount(String(await notificationTrigger.getAttribute("aria-label") || "")) === unreadBeforeMark - 1
   ), "reading one notification did not decrement the unread count", 12_000);
@@ -3800,19 +3804,19 @@ try {
 
   await reviewerPage.reload();
   const publishedCalendarCard = reviewerPage.locator(`#calendar-real-${criticalPostId}`);
-  await publishedCalendarCard.waitFor({ timeout: 15_000 });
+  await publishedCalendarCard.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await publishedCalendarCard.getByRole("button", { name: /^Открыть публикацию:/u }).click();
   const publicationDialog = reviewerPage.getByRole("dialog", { name: "Управление публикацией", exact: true });
-  await publicationDialog.waitFor({ timeout: 12_000 });
+  await publicationDialog.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const unpinDecision = publicationDialog.getByRole("button", { name: "Открепить", exact: true });
-  await unpinDecision.waitFor({ timeout: 12_000 });
+  await unpinDecision.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await assertTouch(unpinDecision, "decide to unpin a reviewed publication");
   await unpinDecision.click();
   await publicationDialog.getByText(
     "Решение сохранено. Открепление выполняется отдельно от основной публикации.",
     { exact: true },
-  ).waitFor({ timeout: 12_000 });
-  await publicationDialog.getByText("Запрошено открепление", { exact: true }).waitFor({ timeout: 12_000 });
+  ).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  await publicationDialog.getByText("Запрошено открепление", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const unpinDecisionEvidence = await waitFor(async () => {
     const task = (await pool.query(
       `select status, decision, decided_by_user_id, version
@@ -3870,7 +3874,7 @@ try {
   );
   await publicationDialog.getByRole("button", { name: "Обновить", exact: true }).click();
   const unpinFollowup = publicationDialog.locator("li").filter({ hasText: "Открепление" }).last();
-  await unpinFollowup.getByText("Выполнено", { exact: true }).waitFor({ timeout: 12_000 });
+  await unpinFollowup.getByText("Выполнено", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
 
   const monthlyPublishedLineage = (await pool.query(
     `select draft_id, post_id from monthly_campaign_items where id = $1 and project_id = $2`,
@@ -3960,8 +3964,8 @@ try {
 
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto("/app/analytics");
-  await page.getByRole("heading", { name: "Результаты", exact: true }).waitFor({ timeout: 12_000 });
-  await page.getByRole("heading", { name: "Переходы и заявки", exact: true }).waitFor({ timeout: 12_000 });
+  await page.getByRole("heading", { name: "Результаты", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  await page.getByRole("heading", { name: "Переходы и заявки", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const trackingFunnel = page.locator('ol[aria-label="Воронка переходов и заявок"]');
   const trackingMetric = (label) => trackingFunnel.locator("li").filter({ hasText: label }).locator("p.nums");
   await waitFor(async () => {
@@ -3983,7 +3987,7 @@ try {
     exact: true,
   });
   const trackingUiRow = trackingTableRegion.locator("tbody tr").filter({ hasText: criticalShortPath });
-  await trackingUiRow.waitFor({ timeout: 12_000 });
+  await trackingUiRow.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const trackingUiNumericCells = (await trackingUiRow.locator("td.nums").allTextContents())
     .map((value) => String(value).trim());
   assert(
@@ -4013,7 +4017,7 @@ try {
   await page.getByRole("heading", { name: "Календарь", exact: true }).waitFor();
   await assertNoHorizontalOverflow(page, "calendar export entry at 320px");
   const exportTrigger = page.getByRole("button", { name: "Экспортировать", exact: true });
-  await exportTrigger.waitFor({ state: "visible", timeout: 12_000 });
+  await exportTrigger.waitFor({ state: "visible", timeout: UI_WAIT_TIMEOUT_MS });
   assert(await exportTrigger.count() === 1, "calendar exposed an ambiguous project export trigger");
   await assertTouch(exportTrigger, "open project export");
   await exportTrigger.click();
@@ -4031,8 +4035,8 @@ try {
   const previewExport = exportDialog.getByRole("button", { name: "Проверить выборку", exact: true });
   await assertTouch(previewExport, "preview project export");
   await previewExport.click();
-  await exportDialog.getByRole("heading", { name: "Предварительная выборка", exact: true }).waitFor({ timeout: 12_000 });
-  await exportDialog.getByText(monthlyItemTitle, { exact: true }).waitFor({ timeout: 10_000 });
+  await exportDialog.getByRole("heading", { name: "Предварительная выборка", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  await exportDialog.getByText(monthlyItemTitle, { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const previewRowCountText = await exportDialog.getByText(/Найдено строк:/u).textContent();
   const previewRowCount = Number(String(previewRowCountText).replace(/\D/gu, ""));
   assert(previewRowCount === 1, `project export preview expected one published row, received ${previewRowCount}`);
@@ -4042,7 +4046,7 @@ try {
     await exportDialog
       .locator(`label:has(input[name="project-export-format"][value="${format}"])`)
       .click();
-    const downloadPromise = page.waitForEvent("download", { timeout: 20_000 });
+    const downloadPromise = page.waitForEvent("download", { timeout: UI_WAIT_TIMEOUT_MS });
     await exportDialog.getByRole("button", { name: "Сформировать файл", exact: true }).click();
     const download = await downloadPromise;
     const target = resolve(artifactDir, `critical-project-export.${format}`);

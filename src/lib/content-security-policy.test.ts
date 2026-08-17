@@ -16,10 +16,14 @@ describe("strict content security policy", () => {
     expect(policy).not.toContain("unsafe-eval");
   });
 
-  it("opens eval only for the React development runtime", () => {
-    expect(buildContentSecurityPolicy(nonce, true)).toMatch(
+  it("opens eval and devtool styles only for the development runtime", () => {
+    const policy = buildContentSecurityPolicy(nonce, true);
+
+    expect(policy).toMatch(
       /script-src[^;]*'unsafe-eval'/u,
     );
+    expect(policy).toContain("style-src 'self' 'unsafe-inline'");
+    expect(policy).not.toMatch(/style-src(?!-attr)[^;]*'nonce-/u);
   });
 
   it("rejects values that could inject another directive", () => {
