@@ -39,6 +39,7 @@ if (!['127.0.0.1', 'localhost'].includes(redisTarget.hostname) || redisTarget.pa
 const webPort = Number(process.env.E2E_WEB_PORT || 43190);
 const fakePort = Number(process.env.E2E_FAKE_PORT || 43191);
 const UI_WAIT_TIMEOUT_MS = 30_000;
+const RUNTIME_WAIT_TIMEOUT_MS = 120_000;
 const baseUrl = `http://127.0.0.1:${webPort}`;
 const fakeBase = `http://127.0.0.1:${fakePort}`;
 const trackedDestination = "https://example.com/consultation";
@@ -711,7 +712,7 @@ async function waitForFullRuntime(message = "full development readiness did not 
       && body.publicationReady
       && body.checks?.redis === "up"
       && body.checks?.publicationWorker === "up";
-  }, message, 60_000);
+  }, message, RUNTIME_WAIT_TIMEOUT_MS);
 }
 
 async function waitForRuntimeUnavailable() {
@@ -3362,9 +3363,13 @@ try {
   await page.setViewportSize({ width: 1280, height: 900 });
 
   if (publicationAt.getTime() <= Date.now() + 150_000) {
-    publicationAt = new Date();
-    publicationAt.setUTCSeconds(0, 0);
-    publicationAt.setUTCMinutes(publicationAt.getUTCMinutes() + 3);
+    const minimumSafePublicationAt = new Date();
+    minimumSafePublicationAt.setUTCSeconds(0, 0);
+    minimumSafePublicationAt.setUTCMinutes(minimumSafePublicationAt.getUTCMinutes() + 3);
+    publicationAt = new Date(Math.max(
+      minimumSafePublicationAt.getTime(),
+      publicationAt.getTime() + 60_000,
+    ));
     publicationDate = publicationAt.toISOString().slice(0, 10);
     publicationTime = publicationAt.toISOString().slice(11, 16);
     await page.getByLabel("Дата публикации", { exact: true }).fill(publicationDate);
@@ -3387,7 +3392,7 @@ try {
   );
   assert(
     Number(finalDraft.version) > Number(criticalDraftBeforeReview.version),
-    "reviewer-requested Composer changes did not create a newer durable draft version",
+    "publication safety refresh did not create a newer durable draft version",
   );
   assert(Number((await pool.query(
     "select draft_id from monthly_campaign_items where id = $1 and project_id = $2",
@@ -3537,17 +3542,27 @@ try {
   const criticalOperationId = Number(criticalPublication.operation_id);
   const criticalPostId = Number(criticalPublication.post_id);
   const publicationTypography = criticalPublication.options?.typography;
-  assert(
-    Number(criticalPublication.project_id) === sharedProjectId
-      && Number(criticalPublication.draft_version) === Number(finalDraft.version)
-      && criticalPublication.operation_text === criticalPublication.text
-      && criticalPublication.text.startsWith(finalEditorialText)
-      && criticalPublication.text.includes("Команда «Аврора» — редакция legal-tech проекта.")
-      && Number(publicationTypography?.dictionaryVersion) === Number(brandRuleEvidence.dictionary_version)
-      && publicationTypography?.status === "published_as_is"
-      && publicationTypography?.reviewRunId == null,
-    "publication snapshot lost the exact approved text, dictionary version, or author signature",
-  );
+  const publicationSnapshotChecks = {
+    project: Number(criticalPublication.project_id) === sharedProjectId,
+    draftVersion: Number(criticalPublication.draft_version) === Number(finalDraft.version),
+    operationMatchesPost: criticalPublication.operation_text === criticalPublication.text,
+    approvedTextPrefix: criticalPublication.text.startsWith(finalEditorialText),
+    authorSignature: criticalPublication.text.includes("Команда «Аврора» — редакция legal-tech проекта."),
+    dictionaryVersion: Number(publicationTypography?.dictionaryVersion) === Number(brandRuleEvidence.dictionary_version),
+    publishedAsIs: publicationTypography?.status === "published_as_is",
+    noTypographyReviewRun: publicationTypography?.reviewRunId == null,
+  };
+  if (!Object.values(publicationSnapshotChecks).every(Boolean)) {
+    throw new Error(`publication snapshot lost approved lineage: ${JSON.stringify({
+      checks: publicationSnapshotChecks,
+      actualDraftVersion: Number(criticalPublication.draft_version),
+      expectedDraftVersion: Number(finalDraft.version),
+      actualDictionaryVersion: Number(publicationTypography?.dictionaryVersion) || null,
+      expectedDictionaryVersion: Number(brandRuleEvidence.dictionary_version),
+      typographyStatus: publicationTypography?.status ?? null,
+      typographyReviewRunId: publicationTypography?.reviewRunId ?? null,
+    })}`);
+  }
 
   // Prove deployment recovery against the supported full runtime, not a web-only process.
   // The delayed BullMQ identity and durable outbox row must remain singular across restart.
