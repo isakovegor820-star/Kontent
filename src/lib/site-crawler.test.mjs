@@ -131,7 +131,13 @@ describe("site crawler security and extraction", () => {
     expect(page.ctas).toContain("Получить консультацию");
     expect(page.forms[0]).toMatchObject({ method: "POST", fields: ["email"] });
     expect(page.publicComments).toEqual(["Публичный отзыв клиента"]);
-    expect(page.technical).toMatchObject({ canonical: "https://example.com/practice", h1Count: 1 });
+    expect(page.technical).toMatchObject({
+      canonical: "https://example.com/practice",
+      h1Count: 1,
+      headingOrderValid: true,
+      imageCount: 0,
+      missingImageAlt: 0,
+    });
   });
 
   it("removes database-incompatible control characters from every extracted field", () => {
@@ -196,6 +202,11 @@ describe("site crawler security and extraction", () => {
     expect(result.report.inventory).toHaveLength(2);
     expect(result.report.marketingPlan.measurement).toEqual(expect.arrayContaining([
       expect.objectContaining({ sourceNeeded: expect.stringContaining("Google Search Console") }),
+    ]));
+    expect(result.report.optimization.seo.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "robots", status: "passed" }),
+      expect.objectContaining({ id: "sitemap", status: "passed" }),
+      expect.objectContaining({ id: "speed", status: "not_checked" }),
     ]));
     const conclusions = [
       ...result.report.seoAudit,
@@ -355,6 +366,81 @@ describe("site crawler security and extraction", () => {
     const report = buildSiteAnalysisReport("https://example.com/", [page]);
     expect(report.themes.find((theme) => theme.theme === "криптография")?.evidence)
       .toEqual([{ url: "https://example.com/", label: "Упоминание «криптография»" }]);
+  });
+
+  it("builds separate evidence-based SEO and GEO scores, checks and prioritized tasks", () => {
+    const longCopy = Array.from({ length: 130 }, (_, index) => `факт${index}`).join(" ");
+    const page = extractSitePage(`<!doctype html><html lang="ru"><head>
+      <title>Компания Аврора — юридический консалтинг</title>
+      <meta name="description" content="Юридический консалтинг для компаний в Москве: договоры, риски и проверяемые рекомендации экспертов.">
+      <meta name="viewport" content="width=device-width"><link rel="canonical" href="/">
+      <script type="application/ld+json">{
+        "@context":"https://schema.org","@graph":[
+          {"@type":"Organization","name":"Аврора"},
+          {"@type":"Service","name":"Юридический аудит"},
+          {"@type":"Person","name":"Анна Иванова","jobTitle":"Эксперт"},
+          {"@type":"FAQPage","name":"Ответы на вопросы"}
+        ]
+      }</script></head><body><main>
+      <h1>Юридический консалтинг в Москве</h1><h2>Почему выбирают Аврору?</h2>
+      <p>15 лет опыта и 98% проверенных договоров. ${longCopy}</p>
+      <h2>Как проходит аудит?</h2><p>Эксперт отвечает прямо и ссылается на первоисточник.</p>
+      <a href="https://publication.pravo.gov.ru/">Официальный источник</a>
+      <img src="team.jpg" alt="Команда юридических экспертов">
+      </main></body></html>`, "https://example.com/");
+    const report = buildSiteAnalysisReport(
+      "https://example.com/",
+      [page],
+      DEFAULT_SITE_CRAWL_LIMITS,
+      { robotsStatus: 200, sitemapAvailable: true, sitemapUrlCount: 1 },
+    );
+
+    expect(report.optimization).toMatchObject({
+      version: "aurora-seo-geo-mvp-v1",
+      geoDefinition: { term: "Generative Engine Optimization" },
+      seo: { score: expect.any(Number) },
+      geo: { score: expect.any(Number) },
+    });
+    expect(report.optimization.seo.checks).toHaveLength(15);
+    expect(report.optimization.geo.checks).toHaveLength(9);
+    expect(report.optimization.seo.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "images", status: "passed" }),
+      expect.objectContaining({ id: "speed", status: "not_checked" }),
+    ]));
+    expect(report.optimization.geo.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "experts", status: "passed" }),
+      expect.objectContaining({ id: "facts", status: "passed" }),
+      expect.objectContaining({ id: "faq", status: "passed" }),
+      expect.objectContaining({ id: "geography", status: "passed" }),
+    ]));
+    expect(report.optimization.seo.score).toBeGreaterThanOrEqual(85);
+    expect(report.optimization.geo.score).toBeGreaterThanOrEqual(85);
+  });
+
+  it("turns observable SEO failures into critical checks without inventing speed data", () => {
+    const page = extractSitePage(`<!doctype html><html><head>
+      <meta name="robots" content="noindex">
+    </head><body><main><h1>Коротко</h1><h3>Детали</h3><img src="proof.jpg"></main></body></html>`, "http://example.com/");
+    const broken = extractSitePage("", "http://example.com/missing", 404);
+    const report = buildSiteAnalysisReport(
+      "http://example.com/",
+      [page, broken],
+      DEFAULT_SITE_CRAWL_LIMITS,
+      { robotsStatus: 404, sitemapAvailable: false, sitemapUrlCount: 0 },
+    );
+
+    expect(report.optimization.seo.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "title", status: "critical" }),
+      expect.objectContaining({ id: "indexing", status: "critical" }),
+      expect.objectContaining({ id: "links", status: "critical" }),
+      expect.objectContaining({ id: "images", status: "warning" }),
+      expect.objectContaining({ id: "robots", status: "warning" }),
+      expect.objectContaining({ id: "sitemap", status: "warning" }),
+      expect.objectContaining({ id: "speed", status: "not_checked", confidence: "requires_integration" }),
+    ]));
+    expect(report.optimization.seo.summary.critical).toBeGreaterThanOrEqual(3);
+    expect(report.optimization.seo.tasks[0]).toMatchObject({ priority: "P0" });
+    expect(report.limitations.join(" ")).toMatch(/Core Web Vitals/i);
   });
 
   it("never presents public crawl as traffic or hidden-comment data", () => {

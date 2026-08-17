@@ -16,6 +16,7 @@ interface TgChat {
   title?: string;
   username?: string;
   type?: string;
+  linked_chat_id?: number;
 }
 
 async function tg<T>(method: string, params: Record<string, string>): Promise<T | null> {
@@ -87,8 +88,11 @@ export async function POST(req: NextRequest) {
     );
     if (existing.rowCount) {
       await pool.query(
-        `update channels set title = $2, handle = $3, updated_at = now() where id = $1`,
-        [existing.rows[0].id, chat.title ?? null, chat.username ?? handle],
+        `update channels
+            set title = $2, handle = $3, tg_discussion_chat_id = $4, updated_at = now()
+          where id = $1`,
+        [existing.rows[0].id, chat.title ?? null, chat.username ?? handle,
+          Number.isSafeInteger(chat.linked_chat_id) ? chat.linked_chat_id : null],
       );
       await transitionChannelHealth(pool, {
         channelId: existing.rows[0].id,
@@ -100,9 +104,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true, channelId: existing.rows[0].id, title: chat.title });
     }
     const ins = await pool.query<{ id: number }>(
-      `insert into channels (user_id, network, tg_chat_id, title, handle)
-       values ($1, 'tg', $2, $3, $4) returning id`,
-      [user.id, chat.id, chat.title ?? null, chat.username ?? handle],
+      `insert into channels (user_id, network, tg_chat_id, title, handle, tg_discussion_chat_id)
+       values ($1, 'tg', $2, $3, $4, $5) returning id`,
+      [user.id, chat.id, chat.title ?? null, chat.username ?? handle,
+        Number.isSafeInteger(chat.linked_chat_id) ? chat.linked_chat_id : null],
     );
     await pool.query(
       `insert into channel_events (channel_id, actor_user_id, action, from_status, to_status)

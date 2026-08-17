@@ -62,18 +62,38 @@ export function isoDay(d: Date) {
   return (d.getDay() + 6) % 7;
 }
 
-export function fmtDate(iso: string) {
-  const d = new Date(iso);
-  return `${d.getDate()} ${MONTHS[d.getMonth()]}`;
+function dateTimePart(iso: string, timeZone: string, type: Intl.DateTimeFormatPartTypes): string {
+  const part = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(new Date(iso)).find((candidate) => candidate.type === type)?.value;
+  if (!part) throw new RangeError("invalid date or timezone");
+  return part;
 }
 
-export function fmtTime(iso: string) {
+export function fmtDate(iso: string, timeZone?: string) {
   const d = new Date(iso);
+  if (!timeZone) return `${d.getDate()} ${MONTHS[d.getMonth()]}`;
+  const day = Number(dateTimePart(iso, timeZone, "day"));
+  const month = Number(dateTimePart(iso, timeZone, "month"));
+  return `${day} ${MONTHS[month - 1]}`;
+}
+
+export function fmtTime(iso: string, timeZone?: string) {
+  const d = new Date(iso);
+  if (timeZone) {
+    return `${dateTimePart(iso, timeZone, "hour")}:${dateTimePart(iso, timeZone, "minute")}`;
+  }
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
-export function fmtDateTime(iso: string) {
-  return `${fmtDate(iso)}, ${fmtTime(iso)}`;
+export function fmtDateTime(iso: string, timeZone?: string) {
+  return `${fmtDate(iso, timeZone)}, ${fmtTime(iso, timeZone)}`;
 }
 
 /** «2 часа назад», «вчера» — человеческий язык, как требует ТЗ 7.5 */

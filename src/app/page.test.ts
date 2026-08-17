@@ -11,26 +11,34 @@ vi.mock("next/font/google", () => ({
 }));
 
 describe("production landing page", () => {
-  it("renders the complete Aurora SMM landing structure", () => {
+  it("renders the factual Aurora landing for legal content", () => {
     const markup = renderToStaticMarkup(
       createElement(StoreProvider, null, createElement(LandingPage)),
     );
 
-    expect(markup).toContain("Аврора — ваш центр управления контентом");
-    expect(markup).toContain("SMM-платформа нового поколения");
-    expect(markup).toContain("Попробовать бесплатно");
-    expect(markup).toContain("Всё необходимое для эффективного SMM");
+    expect(markup).toContain("Юридический контент с проверкой рисков и доказательств");
+    expect(markup).toContain("SMM-платформа для юридического контента");
+    expect(markup).toContain("Создать первый материал");
+    expect(markup).toContain("Рабочий контур для юридической редакции");
     expect(markup).toContain("Планирование публикаций");
-    expect(markup).toContain("Просто. Удобно. Эффективно.");
-    expect(markup).toContain("Данные, которые помогают расти");
-    expect(markup).toContain("124K");
-    expect(markup).toContain("Отзывы наших клиентов");
-    expect(markup).toContain("Выберите подходящий тариф");
-    expect(markup).toContain("Готовы вывести ваш SMM на новый уровень?");
-    expect(markup).toContain('href="#main-content"');
+    expect(markup).toContain("От идеи до согласованной публикации");
+    expect(markup).toContain("Проверяйте риски и доказательства до публикации");
+    expect(markup).toContain("Пример проверки материала");
+    expect(markup).toContain("Что уже есть для юридического редактора");
+    expect(markup).toContain("Фактический статус рабочих контуров");
+    expect(markup).toContain("Начните с проверяемого материала");
+    expect(markup).toContain('<main id="main">');
+    expect(markup).toContain('aria-controls="landing-mobile-menu"');
     expect(markup).toContain('href="/login"');
     expect(markup).toContain('href="/register"');
-    expect(markup).toContain('id="pricing"');
-    expect(markup).not.toContain("Три причины, по которым соцсети стоят");
+    expect(markup).toContain('id="access"');
+    expect(markup).not.toContain("Все соцсети");
+    expect(markup).not.toContain("Instagram");
+    expect(markup).not.toContain("YouTube");
+    expect(markup).not.toContain("Отзывы наших клиентов");
+    expect(markup).not.toContain("Мария Иванова");
+    expect(markup).not.toContain("990 ₽");
+    expect(markup).not.toContain("14 дней бесплатно");
+    expect(markup).not.toContain("Поддержка 24/7");
   });
 });

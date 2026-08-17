@@ -33,6 +33,7 @@ import {
   type QualityResult,
 } from "@/lib/post-quality.mjs";
 import type { ApprovalBlocker, AutopilotApprovalPreview } from "@/lib/autopilot-approval.mjs";
+import { autopilotPlanNeedsQualityRebuild } from "@/lib/autopilot-plan-visibility.mjs";
 import { cn, plural } from "@/lib/utils";
 import { ChannelPicker, useChannelChoice } from "@/components/app/channel-picker";
 import {
@@ -567,7 +568,7 @@ export default function AutopilotPage() {
   const items = plan?.items ?? [];
   const pending = items.filter((it) => it.status === "pending");
   const blocked = pending.filter((it) => !hasPassedVerifiedQuality(it));
-  const hasLegacyAutomaticBlock = blocked.some((it) => it.qualityOrigin === "automatic");
+  const planNeedsQualityRebuild = autopilotPlanNeedsQualityRebuild(items);
   const readyPending = pending.filter(hasPassedVerifiedQuality);
   const expired = items.filter((it) => it.status === "expired");
   const approved = items.filter((it) => it.status === "approved" || it.status === "published");
@@ -751,7 +752,7 @@ export default function AutopilotPage() {
             </Button>
           </div>
         </Card>
-      ) : hasLegacyAutomaticBlock ? (
+      ) : planNeedsQualityRebuild ? (
         <Card className="p-8 text-center">
           <AlertTriangle className="mx-auto h-7 w-7 text-brand" aria-hidden />
           <p className="mt-3 text-[15px] font-semibold text-text">План нужно пересобрать</p>
@@ -785,10 +786,16 @@ export default function AutopilotPage() {
                 <p className="mt-0.5 text-[13px] text-text-3">
                   {visible.length} {plural(visible.length, "пост", "поста", "постов")}
                   {rangeLabel && <> · {rangeLabel}</>}
-                  {pending.length > 0 && (
+                  {readyPending.length > 0 && (
                     <>
                       {" "}
-                      · {pending.length} {plural(pending.length, "ждёт", "ждут", "ждут")} тебя
+                      · {readyPending.length} {plural(readyPending.length, "готов", "готовы", "готовы")} к одобрению
+                    </>
+                  )}
+                  {blocked.length > 0 && (
+                    <>
+                      {" "}
+                      · {blocked.length} {plural(blocked.length, "требует", "требуют", "требуют")} правки
                     </>
                   )}
                   {expired.length > 0 && <> · {expired.length} с истёкшей датой</>}

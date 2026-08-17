@@ -72,4 +72,17 @@ describe("POST /api/competitors/add", () => {
     const insert = mocks.query.mock.calls.find(([sql]) => String(sql).includes("insert into competitors"));
     expect(insert?.[1]).toEqual([7, 11, "tg", "durov", "@durov", "telegram_public_web"]);
   });
+
+  it("adds a Telegram URL to the channel selected in onboarding", async () => {
+    const response = await POST(request({
+      network: "tg",
+      url: "https://t.me/Durov",
+      channelId: 42,
+    }));
+
+    expect(response.status).toBe(200);
+    expect(mocks.resolveChannel).toHaveBeenCalledWith(7, 42);
+    const insert = mocks.query.mock.calls.find(([sql]) => String(sql).includes("insert into competitors"));
+    expect(insert?.[1]).toEqual([7, 11, "tg", "durov", "@durov", "telegram_public_web"]);
+  });
 });

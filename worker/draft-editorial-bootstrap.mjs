@@ -53,7 +53,7 @@ export async function ensureDraftEditorialBootstrap(db, input) {
       limit 1`,
     [input.projectId, input.actorUserId],
   );
-  if (!membership.rows[0]) throw new Error("monthly campaign actor cannot edit project content");
+  if (!membership.rows[0]) throw new Error("draft actor cannot edit project content");
 
   const draftResult = await db.query(
     `select draft.id, draft.project_id, draft.user_id, draft.version,
@@ -107,7 +107,7 @@ export async function ensureDraftEditorialBootstrap(db, input) {
     [input.draftId, input.projectId],
   );
   const draft = draftResult.rows[0];
-  if (!draft) throw new Error("monthly campaign draft disappeared before editorial bootstrap");
+  if (!draft) throw new Error("draft disappeared before editorial bootstrap");
 
   const draftVersion = Number(draft.version);
   const snapshot = snapshotFromDraft(draft);
@@ -129,18 +129,42 @@ export async function ensureDraftEditorialBootstrap(db, input) {
       [input.projectId, input.draftId, draftVersion],
     );
     if (!existing.rows[0] || existing.rows[0].content_hash !== contentHash) {
-      throw new Error("monthly campaign draft revision conflicts with persisted content");
+      throw new Error("draft revision conflicts with persisted content");
     }
     revisionId = Number(existing.rows[0].id);
   }
 
-  await db.query(
+  const workflow = await db.query(
     `insert into draft_editorial_workflows (
        draft_id, project_id, state, version, current_revision_id
      ) values ($1, $2, 'draft', 1, $3)
-     on conflict (draft_id) do nothing`,
+     on conflict (draft_id) do nothing
+     returning draft_id`,
     [input.draftId, input.projectId, revisionId],
   );
+  if (!workflow.rowCount) {
+    await db.query(
+      `update draft_editorial_requests
+          set status = 'superseded', version = version + 1, resolved_at = now()
+        where project_id = $1 and draft_id = $2 and status = 'open'
+          and revision_id <> $3`,
+      [input.projectId, input.draftId, revisionId],
+    );
+    await db.query(
+      `update draft_editorial_workflows
+          set current_revision_id = $3,
+              state = case when current_revision_id = $3 then state else 'draft' end,
+              submitted_revision_id = case when current_revision_id = $3 then submitted_revision_id else null end,
+              submitted_by_user_id = case when current_revision_id = $3 then submitted_by_user_id else null end,
+              submitted_at = case when current_revision_id = $3 then submitted_at else null end,
+              approved_revision_id = case when current_revision_id = $3 then approved_revision_id else null end,
+              approved_content_hash = case when current_revision_id = $3 then approved_content_hash else null end,
+              version = case when current_revision_id = $3 then version else version + 1 end,
+              updated_at = now()
+        where project_id = $1 and draft_id = $2`,
+      [input.projectId, input.draftId, revisionId],
+    );
+  }
   await db.query(
     `insert into audit_events (
        project_id, actor_user_id, action, entity_type, entity_id,

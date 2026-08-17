@@ -192,7 +192,14 @@ async function reloadAfterRuntimeRestart(targetPage, label) {
     } catch (error) {
       lastError = error;
       const message = String(error?.message || error);
-      if (!message.includes("ERR_ABORTED") || attempt === 3) throw error;
+      if (!message.includes("ERR_ABORTED")) throw error;
+      const recovered = await waitFor(
+        async () => targetPage.evaluate(() => document.readyState === "interactive" || document.readyState === "complete"),
+        `${label} did not settle after an aborted reload`,
+        10_000,
+      ).then(() => true).catch(() => false);
+      if (recovered) return;
+      if (attempt === 3) throw error;
       await new Promise((resolve) => setTimeout(resolve, attempt * 250));
     }
   }
@@ -1138,9 +1145,7 @@ try {
   await assertTouch(page.locator('input[type="email"]').first(), "auth email");
   await assertTouch(page.locator('input[type="password"]').first(), "auth password");
   await assertTouch(page.locator('button[type="submit"]').first(), "auth submit");
-  await assertTouch(page.getByRole("tab", { name: "Регистрация", exact: true }), "auth registration tab");
-  await assertTouch(page.getByRole("tab", { name: "Вход", exact: true }), "auth login tab");
-  await assertTouch(page.getByRole("button", { name: "Войти", exact: true }), "auth secondary login");
+  await assertTouch(page.getByRole("link", { name: "Войти", exact: true }), "auth login link");
 
   const registration = await context.request.post("/api/auth/register", {
     headers: { origin: baseUrl },
@@ -1676,7 +1681,10 @@ try {
   await page.getByText("Есть несохранённые изменения", { exact: true }).waitFor();
   await page.getByLabel("Цель", { exact: true }).fill(savedGoal);
   await page.getByText("Есть несохранённые изменения", { exact: true }).waitFor({ state: "detached" });
-  assert((await desktopSidebar.locator('a[aria-current="page"]').textContent())?.includes("Настройки"), "desktop Settings item is not active");
+  assert(
+    await desktopSidebar.getByRole("link", { name: "Настройки", exact: true }).getAttribute("aria-current") === "page",
+    "desktop Settings item is not active",
+  );
 
   const siteEvidenceId = "evidence:e2e-owned-about";
   const siteSourceId = "source:e2e-owned-about";
@@ -1894,32 +1902,48 @@ try {
     .filter(Boolean)
     .map((line) => { try { return JSON.parse(line); } catch { return null; } })
     .filter(Boolean);
-  const truncatedError = truncatedEvents.find((event) => event.type === "error");
+  const truncatedDone = truncatedEvents.find((event) => event.type === "done");
+  const truncatedValidation = truncatedEvents.find((event) => event.type === "validation");
   assert(truncated.status === 200, `truncated AI request failed before streaming (${truncated.status})`);
   assert(truncated.headers.contentType?.startsWith("application/x-ndjson"), "chat did not use the confirmed NDJSON contract");
-  assert(!truncatedEvents.some((event) => event.type === "done"), "truncated provider stream became done/postable");
-  assert(truncatedError?.requestId === truncated.headers.requestId, "truncated chat error omitted its request ID");
+  assert(
+    truncatedValidation?.status === "blocked"
+      && truncatedValidation?.requiresReview === true
+      && truncatedValidation?.blockerCodes?.includes("provider:stream_truncated"),
+    "truncated provider stream was not preserved as a blocked review draft",
+  );
+  assert(
+    truncatedDone?.requestId === truncated.headers.requestId && truncatedDone?.ackRequired === true,
+    "truncated review draft omitted its durable ACK-required terminal event",
+  );
+  assert(!truncatedEvents.some((event) => event.type === "error"), "truncated review draft emitted an error terminal event");
   assert(
     fakeState.ai.providerIdentityOk
       && fakeState.ai.identities.find((identity) => identity.kind === "truncated")?.requestId === truncated.headers.requestId,
     "truncated chat provider call omitted its idempotency or correlation identity",
   );
-  await waitFor(async () => {
-    const row = (await pool.query("select status from ai_usage where reservation_key = 'web:e2e_truncated_ai_1'")).rows[0];
-    return row?.status === "released";
-  }, "truncated AI reservation was not refunded", 8_000);
+  const stagedTruncatedUsage = (await pool.query(
+    "select status, result_payload from ai_usage where reservation_key = 'web:e2e_truncated_ai_1'",
+  )).rows[0];
+  assert(
+    stagedTruncatedUsage?.status === "reserved"
+      && stagedTruncatedUsage?.result_payload?.validation?.blockerCodes?.includes("provider:stream_truncated"),
+    "truncated review draft was not durably staged with its technical blocker",
+  );
   const truncatedAck = await authenticatedRequestViaContext(context.request, "/api/ai/generate/ack", {
     method: "POST",
     headers: { "idempotency-key": "e2e_truncated_ai_1" },
   });
   const truncatedAckBody = JSON.parse(truncatedAck.text);
   assert(
-    truncatedAck.status === 409 && truncatedAckBody.error === "terminal_ack_unavailable",
-    "a truncated chat could be acknowledged and charged",
+    truncatedAck.status === 200
+      && truncatedAckBody.ok === true
+      && truncatedAckBody.status === "committed",
+    "truncated review draft could not be acknowledged after durable delivery",
   );
   assert(
-    (await pool.query("select status from ai_usage where reservation_key = 'web:e2e_truncated_ai_1'")).rows[0]?.status === "released",
-    "failed terminal acknowledgement changed a released chat reservation",
+    (await pool.query("select status from ai_usage where reservation_key = 'web:e2e_truncated_ai_1'")).rows[0]?.status === "committed",
+    "acknowledged truncated review draft did not commit exactly one quota reservation",
   );
 
   const successfulChatPayload = {
@@ -3207,10 +3231,10 @@ try {
   await assertNoHorizontalOverflow(page, "legal visual editor at 200% desktop zoom equivalent");
   await page.setViewportSize({ width: 1280, height: 900 });
 
-  const videoTab = page.getByRole("tab", { name: "Сценарий видео", exact: true });
-  await videoTab.focus();
-  await page.keyboard.press("Enter");
-  await page.getByRole("region", { name: "Редактор сценария" }).waitFor().catch(() => {});
+  const videoHeading = page.getByRole("heading", { name: "Сценарии видео", exact: true });
+  await videoHeading.scrollIntoViewIfNeeded();
+  const videoEditor = page.getByRole("region", { name: "Редактор сценария" });
+  await videoEditor.waitFor();
   await page.locator("#new-video-duration").selectOption("45");
   const createVideoScript = page.getByRole("button", { name: "Новый сценарий", exact: true });
   await assertTouch(createVideoScript, "create 45-second video script");
@@ -3219,7 +3243,7 @@ try {
   await page.locator("#script-title").fill("Сценарий для короткого разбора legal-tech практики");
   const hookVisual = page.locator("#visual-scene-hook");
   await hookVisual.fill("Покажите исходный материал и фирменную карточку без новых утверждений.");
-  const saveVideoScript = page.getByRole("button", { name: "Сохранить", exact: true });
+  const saveVideoScript = videoEditor.getByRole("button", { name: "Сохранить", exact: true });
   await assertTouch(saveVideoScript, "save edited video script");
   await saveVideoScript.click();
   await page.getByText("Сценарий сохранён", { exact: true }).waitFor({ timeout: 12_000 });
@@ -3255,9 +3279,7 @@ try {
       && videoBrief.includes(String(monthlyDraftId)),
     "video production brief omitted timing or exact source draft",
   );
-  const carouselTab = page.getByRole("tab", { name: "Карусель", exact: true });
-  await carouselTab.focus();
-  await page.keyboard.press("Enter");
+  await page.getByRole("heading", { name: "Карусели", exact: true }).scrollIntoViewIfNeeded();
 
   const addCarouselToPost = page.getByRole("button", { name: "Добавить всю карусель в пост", exact: true });
   await assertTouch(addCarouselToPost, "add entire carousel to post");
@@ -4138,7 +4160,8 @@ try {
       exportFormats: ["csv", "html", "json", "markdown", "pdf", "xlsx"],
     },
     chat: {
-      truncatedReleased: true,
+      truncatedReviewDraft: true,
+      truncatedAckCommitted: true,
       terminalDone: true,
       quotaReservedUntilAck: true,
       ackCommitted: true,

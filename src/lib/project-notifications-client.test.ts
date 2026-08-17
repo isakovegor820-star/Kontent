@@ -95,5 +95,24 @@ describe("project notification client contract", () => {
     expect(projectNotificationDestination({ ...notification, entityId: "javascript:alert(1)" })).toBeNull();
     expect(projectNotificationErrorMessage(new ProjectNotificationRequestError("rate_limited", 429)))
       .toContain("Подождите");
+
+    const inquiry = {
+      ...notification,
+      actor: null,
+      eventType: "client_inquiry_received",
+      entityType: "bot_client_inquiry",
+      entityId: "91",
+    };
+    expect(projectNotificationCopy(inquiry)).toEqual({
+      title: "Новое сообщение от аудитории",
+      description: "Аврора добавила его во входящие и поможет подготовить ответ.",
+    });
+    expect(projectNotificationDestination(inquiry)).toBe("/app/studio/questions?inquiry=91");
+
+    const telegramComment = { ...inquiry, eventType: "audience_comment_received" };
+    expect(projectNotificationCopy(telegramComment)).toEqual({
+      title: "Новый комментарий в Telegram",
+      description: "Аврора добавила комментарий во входящие и поможет подготовить ответ.",
+    });
   });
 });

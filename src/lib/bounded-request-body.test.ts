@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   acquireAvatarBodySlot,
+  acquireMediaAssetBodySlot,
   BoundedBodyError,
   MAX_CONCURRENT_AVATAR_BODIES,
+  MAX_CONCURRENT_MEDIA_ASSET_BODIES,
   readRequestBodyLimited,
 } from "./bounded-request-body";
 
@@ -31,6 +33,18 @@ describe("bounded multipart body", () => {
     expect(() => acquireAvatarBodySlot()).toThrowError(expect.objectContaining({ code: "upload_busy" }));
     for (const release of releases) release();
     const finalRelease = acquireAvatarBodySlot();
+    finalRelease();
+  });
+
+  it("uses a stricter concurrency budget for large media assets", () => {
+    const releases = Array.from(
+      { length: MAX_CONCURRENT_MEDIA_ASSET_BODIES },
+      () => acquireMediaAssetBodySlot(),
+    );
+    expect(() => acquireMediaAssetBodySlot())
+      .toThrowError(expect.objectContaining({ code: "upload_busy" }));
+    for (const release of releases) release();
+    const finalRelease = acquireMediaAssetBodySlot();
     finalRelease();
   });
 });

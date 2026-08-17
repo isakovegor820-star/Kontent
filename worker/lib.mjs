@@ -57,12 +57,16 @@ export function splitChunks(raw) {
 // Единая реализация также используется Composer preview и server-side preflight.
 export { formatPost, toTelegramHtml } from "../src/lib/telegram-format.mjs";
 
-/** buttons — массив рядов: [[{ text, data }|{ text, url }]]. */
+/** buttons — массив рядов: callback, URL или Telegram Mini App. */
 export function keyboard(buttons) {
   if (!buttons?.length) return undefined;
   return {
     inline_keyboard: buttons.map((row) =>
-      row.map((b) => (b.url ? { text: b.text, url: b.url } : { text: b.text, callback_data: b.data })),
+      row.map((b) => b.webApp
+        ? { text: b.text, web_app: { url: b.webApp } }
+        : b.url
+          ? { text: b.text, url: b.url }
+          : { text: b.text, callback_data: b.data }),
     ),
   };
 }

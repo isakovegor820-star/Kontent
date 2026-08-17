@@ -41,6 +41,7 @@ import {
   PROFILE_FIELDS,
   type ChannelProfile,
 } from "@/lib/channel-profile.mjs";
+import { handleErrorText, parseHandle } from "@/lib/competitors";
 import { cn, initials, weekdayShort } from "@/lib/utils";
 import { RUBRICS } from "@/lib/brief";
 import { PROFILE_FORMAT_OPTIONS } from "@/lib/profile";
@@ -61,39 +62,6 @@ const TONES = [
   { id: "humor", label: "С юмором и самоиронией" },
   { id: "short", label: "Короткий и по делу" },
 ] as const;
-
-/* ---------------------------------------------------------------- ССЫЛКИ */
-
-const HOST = /^(t\.me|telegram\.me|telegram\.org|vk\.com|vk\.ru|m\.vk\.com)$/i;
-
-/** Грубо достаём канал из ссылки: последний сегмент после «/» или «@». */
-function parseLink(raw: string): { name: string; handle: string; network: Network } | null {
-  const value = raw.trim();
-  if (!value) return null;
-
-  const network: Network = /vk\.(com|ru)/i.test(value) ? "vk" : "tg";
-  const path = value.replace(/^https?:\/\//i, "").split("?")[0].split("#")[0];
-  const slug = path
-    .split(/[^\w.-]+/)
-    .filter(Boolean)
-    .reverse()
-    .find((part) => !HOST.test(part));
-  if (!slug) return null;
-
-  // svaril_sam → Svaril Sam. Настоящее имя подтянется вместе с досье.
-  const name = slug
-    .replace(/[._-]+/g, " ")
-    .split(" ")
-    .filter(Boolean)
-    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-    .join(" ");
-
-  return {
-    name: name || slug,
-    handle: network === "vk" ? `vk.com/${slug}` : `@${slug}`,
-    network,
-  };
-}
 
 /** Один и тот же канал вставляют десятком способов — сравниваем по сути. */
 function normHandle(handle: string) {
@@ -1097,58 +1065,113 @@ function StepProfile({
 /* ------------------------------------------------ ШАГ 4: КОНКУРЕНТЫ (5.4) */
 
 function StepCompetitors({
+  channelId,
   onBack,
   onNext,
   onSkip,
 }: {
+  channelId: number | null;
   onBack: () => void;
   onNext: () => void;
   onSkip: () => void;
 }) {
   const uid = useId();
   const linkId = `${uid}-link`;
+  const messageId = `${uid}-link-message`;
+  const linkRef = useRef<HTMLInputElement>(null);
 
   const [link, setLink] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
   const [added, setAdded] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (!channelId) return;
+    const controller = new AbortController();
+
+    void fetch(`/api/competitors?channel=${channelId}`, { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) return null;
+        return (await response.json().catch(() => null)) as {
+          competitors?: Array<{ network?: string; handle?: string }>;
+        } | null;
+      })
+      .then((body) => {
+        const handles = (body?.competitors ?? [])
+          .filter((competitor) => competitor.network === "tg" && competitor.handle)
+          .map((competitor) => String(competitor.handle));
+        if (handles.length > 0) {
+          setAdded((current) => Array.from(new Set([...current, ...handles])));
+        }
+      })
+      .catch((requestError: unknown) => {
+        if (requestError instanceof DOMException && requestError.name === "AbortError") return;
+      });
+
+    return () => controller.abort();
+  }, [channelId]);
 
   // Раньше здесь стоял s.addCompetitor — он клал объект с нулями в localStorage и писал
   // «Собираем досье», хотя никто ничего не собирал: до платформы канал не доезжал вообще.
   // Человек проходил онбординг, добавлял конкурентов и получал пустой экран.
   const add = async () => {
-    const parsed = parseLink(link);
-    if (!parsed) {
-      setError("Вставь ссылку на канал — например, t.me/имя_канала.");
+    const parsed = parseHandle(link);
+    const handle = parsed.handle;
+    if (!handle) {
+      setError(handleErrorText(parsed.error));
+      setStatus("");
+      linkRef.current?.focus();
       return;
     }
-    if (added.some((h) => normHandle(h) === normHandle(parsed.handle))) {
+    if (!channelId) {
+      setError("Сначала подключи свой Telegram-канал на предыдущем шаге.");
+      setStatus("");
+      linkRef.current?.focus();
+      return;
+    }
+    if (added.some((h) => normHandle(h) === normHandle(handle))) {
       setError("Этот канал уже в списке — он ниже. Добавь другой.");
+      setStatus("");
+      linkRef.current?.focus();
       return;
     }
     setBusy(true);
+    setStatus("");
     try {
       const r = await fetch("/api/competitors/add", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ handle: parsed.handle }),
+        body: JSON.stringify({ url: link, network: "tg", channelId }),
       });
       const d = (await r.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
       if (!d?.ok) {
         const why: Record<string, string> = {
-          duplicate: "Этот канал уже добавлен.",
           limit: "Больше не помещается — остальных добавишь потом.",
-          private_link: "Это приглашение в закрытый канал. Нужен публичный.",
-          bad: "Не похоже на ссылку канала. Например: t.me/имя_канала",
+          private: "Это ссылка-приглашение в закрытый канал. Открой описание канала и вставь его публичный @адрес.",
+          bad: "Проверь адрес: нужна ссылка вида t.me/имя_канала или @имя_канала.",
+          no_channel: "Сначала подключи свой Telegram-канал на предыдущем шаге.",
+          unauthorized: "Сессия завершилась. Обнови страницу и войди снова.",
+          forbidden_origin: "Не удалось подтвердить страницу. Обнови её и повтори добавление.",
         };
+        if (d?.error === "duplicate") {
+          setAdded((current) => [handle, ...current]);
+          setLink("");
+          setError(null);
+          setStatus("Канал уже был добавлен — можно продолжать.");
+          return;
+        }
         setError(why[d?.error ?? ""] ?? "Не вышло добавить — попробуй ещё раз.");
+        linkRef.current?.focus();
         return;
       }
-      setAdded((prev) => [parsed.handle, ...prev]);
+      setAdded((prev) => [handle, ...prev]);
       setLink("");
       setError(null);
+      setStatus(`Канал @${handle} добавлен. Аврора уже собирает досье.`);
     } catch {
       setError("Нет связи с сервером. Попробуй ещё раз.");
+      linkRef.current?.focus();
     } finally {
       setBusy(false);
     }
@@ -1174,31 +1197,43 @@ function StepCompetitors({
         }}
       >
         <Field
-          label="Ссылка на чужой канал"
+          label="Ссылка на публичный Telegram-канал"
           htmlFor={linkId}
           error={error ?? undefined}
-          hint="Ссылка на канал конкурента: Telegram (t.me/...) или VK (vk.com/...). Можно вставить прямо из адресной строки."
+          hint="Вставь t.me/имя_канала или @имя_канала. Канал должен открываться без вступления."
+          messageId={messageId}
         >
-          <div className="flex gap-2">
+          <div className="flex flex-col gap-2 sm:flex-row">
             <Input
+              ref={linkRef}
               id={linkId}
               value={link}
               onChange={(e) => {
                 setLink(e.target.value);
                 if (error) setError(null);
+                if (status) setStatus("");
               }}
               placeholder="t.me/имя_канала"
               autoComplete="off"
               spellCheck={false}
               inputMode="url"
               aria-invalid={error ? true : undefined}
+              aria-describedby={messageId}
             />
-            <Button variant="solid" className="h-12! shrink-0" loading={busy} disabled={busy}>
+            <Button
+              type="submit"
+              variant={added.length === 0 ? "solid" : "secondary"}
+              className="h-12! w-full shrink-0 sm:w-auto"
+              loading={busy}
+            >
               <Plus className="h-4 w-4" strokeWidth={2.5} aria-hidden />
-              Добавить
+              Добавить канал
             </Button>
           </div>
         </Field>
+        <p role="status" aria-live="polite" className="mt-2 min-h-5 text-[13px] font-medium text-success-text">
+          {status}
+        </p>
       </form>
 
       {/* Здесь стояло «Не знаешь, с кого начать — вот трое из твоей ниши» с зашитыми
@@ -1224,7 +1259,12 @@ function StepCompetitors({
                 className="flex items-center gap-2.5 rounded-sm border border-line bg-surface-2 p-3"
               >
                 <Check className="h-4 w-4 shrink-0 text-success-text" strokeWidth={3} aria-hidden />
-                <span className="truncate text-[14px] font-semibold text-text">@{normHandle(h)}</span>
+                <span
+                  className="truncate text-[14px] font-semibold text-text"
+                  title={`@${normHandle(h)}`}
+                >
+                  @{normHandle(h)}
+                </span>
                 <span className="ml-auto shrink-0 text-[12px] text-text-3">собираю досье</span>
               </li>
             ))}
@@ -1514,6 +1554,7 @@ function Wizard({ userId }: { userId: number }) {
             )}
             {step === 4 && (
               <StepCompetitors
+                channelId={effectiveChannelId}
                 onBack={() => setStep(3)}
                 onNext={() => setStep(5)}
                 onSkip={() => setStep(5)}

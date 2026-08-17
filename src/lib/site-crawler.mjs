@@ -1,6 +1,6 @@
 import { fetchPublicText, parsePublicHttpUrl } from "./safe-http.mjs";
 
-export const SITE_ANALYSIS_POLICY_VERSION = "aurora-site-analysis-v1";
+export const SITE_ANALYSIS_POLICY_VERSION = "aurora-site-analysis-v2";
 export const SITE_CRAWLER_USER_AGENT = "AuroraSiteAnalyzer";
 export const DEFAULT_SITE_CRAWL_CONCURRENCY = 4;
 const LEGACY_DEFAULT_SITE_CRAWL_LIMITS = Object.freeze({
@@ -411,6 +411,30 @@ function pageLinks(html, baseUrl) {
   return result;
 }
 
+function imageSignals(html) {
+  let total = 0;
+  let missingAlt = 0;
+  let emptyAlt = 0;
+  for (const match of String(html).matchAll(/<img\b([^>]*)>/gi)) {
+    total += 1;
+    const attrs = attributes(match[1]);
+    if (!("alt" in attrs)) missingAlt += 1;
+    else if (!String(attrs.alt).trim()) emptyAlt += 1;
+  }
+  return { total, missingAlt, emptyAlt };
+}
+
+function hasValidHeadingOrder(headings) {
+  let previous = 0;
+  for (const heading of Array.isArray(headings) ? headings : []) {
+    const level = Number(heading?.level || 0);
+    if (!level) continue;
+    if (previous && level > previous + 1) return false;
+    previous = level;
+  }
+  return true;
+}
+
 const CTA_PATTERN = /(?:купить|заказать|оставить|получить|связаться|записаться|начать|попробовать|скачать|подписаться|консультац|демо|buy|book|contact|request|get started|subscribe|download|try)/iu;
 
 function pageCtas(html) {
@@ -505,6 +529,7 @@ export function extractSitePage(html, value, status = 200) {
       }
     })(),
   };
+  const images = imageSignals(source);
 
   return sanitizeExtractedValue({
     url: url.toString(),
@@ -534,7 +559,11 @@ export function extractSitePage(html, value, status = 200) {
       titleLength: title.length,
       descriptionLength: description.length,
       h1Count: headings.filter((heading) => heading.level === 1).length,
+      headingOrderValid: hasValidHeadingOrder(headings),
       wordCount,
+      imageCount: images.total,
+      missingImageAlt: images.missingAlt,
+      emptyImageAlt: images.emptyAlt,
     },
   });
 }
@@ -615,19 +644,314 @@ function finding(code, severity, title, description, url, confidence = "high") {
   return { code, severity, title, description, evidence: evidence(url, title), confidence };
 }
 
-export function buildSiteAnalysisReport(targetUrl, pages, limits = DEFAULT_SITE_CRAWL_LIMITS) {
+function auditCheck({ id, label, status, detail, recommendation, evidence: items = [], confidence = "high", weight = 1 }) {
+  return { id, label, status, detail, recommendation, evidence: items, confidence, weight };
+}
+
+function evidenceForPages(pages, predicate, label, limit = 3) {
+  return pages
+    .filter(predicate)
+    .slice(0, limit)
+    .map((page) => ({ url: page.url, label }));
+}
+
+function optimizationSection(kind, checks) {
+  const measured = checks.filter((check) => check.status !== "not_checked");
+  const possible = measured.reduce((sum, check) => sum + check.weight, 0);
+  const earned = measured.reduce((sum, check) => {
+    if (check.status === "passed") return sum + check.weight;
+    if (check.status === "warning") return sum + check.weight * 0.5;
+    return sum;
+  }, 0);
+  const score = possible ? Math.round((earned / possible) * 100) : null;
+  const summary = {
+    critical: checks.filter((check) => check.status === "critical").length,
+    warnings: checks.filter((check) => check.status === "warning").length,
+    passed: checks.filter((check) => check.status === "passed").length,
+    notChecked: checks.filter((check) => check.status === "not_checked").length,
+    total: checks.length,
+  };
+  const tasks = checks
+    .filter((check) => check.status === "critical" || check.status === "warning")
+    .map((check, index) => ({
+      id: `${kind}-${check.id}`,
+      title: check.recommendation,
+      rationale: check.detail,
+      priority: check.status === "critical" ? "P0" : "P1",
+      dueDays: check.status === "critical" ? 3 + index : 7 + index * 2,
+      sources: check.evidence,
+      confidence: check.confidence,
+    }));
+  return {
+    score,
+    status: summary.critical ? "critical" : score !== null && score >= 85 ? "strong" : "needs_work",
+    summary,
+    checks: checks.map((check) => ({
+      id: check.id,
+      label: check.label,
+      status: check.status,
+      detail: check.detail,
+      recommendation: check.recommendation,
+      evidence: check.evidence,
+      confidence: check.confidence,
+    })),
+    tasks,
+  };
+}
+
+function buildOptimizationReport(target, goodPages, pages, crawlSignals = {}) {
+  const pageText = (page) => `${page.title || ""} ${page.description || ""} ${(page.headings || []).map((heading) => heading.text).join(" ")} ${page.mainContent || ""}`;
+  const missingTitles = goodPages.filter((page) => !page.title);
+  const weakTitles = goodPages.filter((page) => page.title && (page.technical.titleLength < 15 || page.technical.titleLength > 65));
+  const missingDescriptions = goodPages.filter((page) => !page.description);
+  const weakDescriptions = goodPages.filter((page) => page.description && (page.technical.descriptionLength < 50 || page.technical.descriptionLength > 170));
+  const badHeadings = goodPages.filter((page) => page.technical.h1Count !== 1 || page.technical.headingOrderValid === false);
+  const missingCanonical = goodPages.filter((page) => !page.technical.canonical);
+  const nonIndexable = goodPages.filter((page) => !page.technical.indexable);
+  const insecure = goodPages.filter((page) => !page.technical.https);
+  const failedPages = pages.filter((page) => page.status === 0 || page.status >= 400);
+  const redirectedPages = goodPages.filter((page) => page.redirectedFrom);
+  const missingViewport = goodPages.filter((page) => !page.technical.viewport);
+  const noSchema = goodPages.filter((page) => !page.schemaTypes.length);
+  const thinPages = goodPages.filter((page) => page.technical.wordCount < 120);
+  const pagesWithImages = goodPages.filter((page) => page.technical.imageCount > 0);
+  const missingAlt = goodPages.filter((page) => page.technical.missingImageAlt > 0);
+
+  const titleGroups = new Map();
+  const contentGroups = new Map();
+  for (const page of goodPages) {
+    const titleKey = String(page.title || "").trim().toLocaleLowerCase("ru-RU");
+    if (titleKey) titleGroups.set(titleKey, [...(titleGroups.get(titleKey) || []), page]);
+    const contentKey = String(page.mainContent || "").replace(/\s+/gu, " ").trim().toLocaleLowerCase("ru-RU");
+    if (contentKey.length >= 200) contentGroups.set(contentKey, [...(contentGroups.get(contentKey) || []), page]);
+  }
+  const duplicatePages = [...titleGroups.values(), ...contentGroups.values()]
+    .filter((group) => group.length > 1)
+    .flat();
+
+  const statusFromIssues = (critical, warning) => critical ? "critical" : warning ? "warning" : "passed";
+  const checkedPagesLabel = `${goodPages.length} ${goodPages.length === 1 ? "страница" : "страниц"}`;
+  const seoChecks = [
+    auditCheck({
+      id: "title",
+      label: "Title страниц",
+      status: statusFromIssues(missingTitles.length, weakTitles.length),
+      detail: missingTitles.length
+        ? `Без title: ${missingTitles.length} из ${goodPages.length}.`
+        : weakTitles.length
+          ? `За рекомендуемыми границами 15–65 знаков: ${weakTitles.length} из ${goodPages.length}.`
+          : `У всех проверенных страниц есть содержательный title (${checkedPagesLabel}).`,
+      recommendation: missingTitles.length ? "Добавить уникальные title всем страницам" : "Уточнить длину и смысл title",
+      evidence: evidenceForPages([...missingTitles, ...weakTitles], () => true, "Проблема с title"),
+      weight: 1.2,
+    }),
+    auditCheck({
+      id: "description",
+      label: "Meta description",
+      status: statusFromIssues(0, missingDescriptions.length + weakDescriptions.length),
+      detail: missingDescriptions.length
+        ? `Без description: ${missingDescriptions.length} из ${goodPages.length}.`
+        : weakDescriptions.length
+          ? `За рекомендуемыми границами 50–170 знаков: ${weakDescriptions.length} из ${goodPages.length}.`
+          : `Description заполнен и имеет рабочую длину на всех проверенных страницах.`,
+      recommendation: missingDescriptions.length ? "Добавить description отсутствующим страницам" : "Переписать слишком короткие или длинные description",
+      evidence: evidenceForPages([...missingDescriptions, ...weakDescriptions], () => true, "Проблема с description"),
+    }),
+    auditCheck({
+      id: "headings",
+      label: "H1 и структура заголовков",
+      status: statusFromIssues(0, badHeadings.length),
+      detail: badHeadings.length ? `Нарушения найдены на ${badHeadings.length} из ${goodPages.length} страниц.` : "На проверенных страницах один H1, уровни заголовков не перескакивают.",
+      recommendation: "Исправить H1 и последовательность H2–H6",
+      evidence: evidenceForPages(badHeadings, () => true, "Нарушена структура заголовков"),
+      weight: 1.1,
+    }),
+    auditCheck({
+      id: "canonical",
+      label: "Canonical",
+      status: statusFromIssues(0, missingCanonical.length),
+      detail: missingCanonical.length ? `Canonical не указан на ${missingCanonical.length} из ${goodPages.length} страниц.` : "Canonical указан на всех проверенных страницах.",
+      recommendation: "Указать canonical для индексируемых страниц",
+      evidence: evidenceForPages(missingCanonical, () => true, "Canonical не указан"),
+    }),
+    auditCheck({
+      id: "indexing",
+      label: "HTTPS и индексируемость",
+      status: statusFromIssues(nonIndexable.length + insecure.length, 0),
+      detail: nonIndexable.length || insecure.length
+        ? `Неиндексируемых страниц: ${nonIndexable.length}; страниц без HTTPS: ${insecure.length}.`
+        : "Проверенные страницы доступны по HTTPS и не содержат noindex.",
+      recommendation: "Устранить запрет индексации и перевести страницы на HTTPS",
+      evidence: [
+        ...evidenceForPages(nonIndexable, () => true, "Страница закрыта от индексации"),
+        ...evidenceForPages(insecure, () => true, "Страница без HTTPS"),
+      ].slice(0, 3),
+      weight: 1.2,
+    }),
+    auditCheck({
+      id: "robots",
+      label: "robots.txt",
+      status: Number.isFinite(Number(crawlSignals.robotsStatus))
+        ? Number(crawlSignals.robotsStatus) === 200 ? "passed" : "warning"
+        : "not_checked",
+      detail: Number.isFinite(Number(crawlSignals.robotsStatus))
+        ? Number(crawlSignals.robotsStatus) === 200
+          ? "robots.txt найден, правила доступа соблюдены при обходе."
+          : `robots.txt не найден (HTTP ${Number(crawlSignals.robotsStatus)}); обход выполнен по стандартным правилам.`
+        : "Состояние robots.txt не сохранено в этом анализе.",
+      recommendation: "Добавить корректный robots.txt",
+      evidence: Number.isFinite(Number(crawlSignals.robotsStatus)) ? evidence(target.toString(), "Проверка robots.txt") : [],
+    }),
+    auditCheck({
+      id: "sitemap",
+      label: "sitemap.xml",
+      status: typeof crawlSignals.sitemapAvailable === "boolean"
+        ? crawlSignals.sitemapAvailable ? "passed" : "warning"
+        : "not_checked",
+      detail: typeof crawlSignals.sitemapAvailable === "boolean"
+        ? crawlSignals.sitemapAvailable
+          ? `Карта сайта найдена; обнаружено URL: ${Number(crawlSignals.sitemapUrlCount || 0)}.`
+          : "Доступная карта сайта не найдена."
+        : "Состояние sitemap.xml не сохранено в этом анализе.",
+      recommendation: "Создать и подключить актуальный sitemap.xml",
+      evidence: typeof crawlSignals.sitemapAvailable === "boolean" ? evidence(target.toString(), "Проверка sitemap.xml") : [],
+    }),
+    auditCheck({
+      id: "links",
+      label: "Битые ссылки и коды ответов",
+      status: statusFromIssues(failedPages.length, 0),
+      detail: failedPages.length ? `Недоступных страниц в проверенном срезе: ${failedPages.length}.` : `Ошибочных кодов ответа в проверенном срезе не найдено (${pages.length} URL).`,
+      recommendation: "Исправить или удалить недоступные внутренние ссылки",
+      evidence: evidenceForPages(failedPages, () => true, "Недоступная страница"),
+      weight: 1.2,
+    }),
+    auditCheck({
+      id: "redirects",
+      label: "Редиректы",
+      status: statusFromIssues(0, redirectedPages.length),
+      detail: redirectedPages.length ? `Редиректы обнаружены у ${redirectedPages.length} URL; проверь цепочки и внутренние ссылки.` : "Редиректы в проверенном срезе не обнаружены.",
+      recommendation: "Заменить внутренние ссылки на конечные URL",
+      evidence: evidenceForPages(redirectedPages, () => true, "URL перенаправляет на другую страницу"),
+    }),
+    auditCheck({
+      id: "images",
+      label: "Alt у изображений",
+      status: pagesWithImages.length ? statusFromIssues(0, missingAlt.length) : "not_checked",
+      detail: pagesWithImages.length
+        ? missingAlt.length
+          ? `Изображения без атрибута alt найдены на ${missingAlt.length} страницах.`
+          : "У всех найденных изображений присутствует атрибут alt; пустые alt могут обозначать декор."
+        : "В проверенном HTML изображения не найдены.",
+      recommendation: "Добавить содержательные alt информационным изображениям",
+      evidence: evidenceForPages(missingAlt, () => true, "Есть изображения без alt"),
+    }),
+    auditCheck({
+      id: "schema",
+      label: "Микроразметка",
+      status: statusFromIssues(0, noSchema.length === goodPages.length ? noSchema.length : 0),
+      detail: noSchema.length === goodPages.length
+        ? "Структурированные данные JSON-LD не найдены в проверенном срезе."
+        : noSchema.length
+          ? `JSON-LD найден на ${goodPages.length - noSchema.length} из ${goodPages.length} страниц; подробные сигналы показывают страницы без разметки.`
+          : "На всех проверенных страницах найдены структурированные данные JSON-LD.",
+      recommendation: "Добавить подходящую Schema.org-разметку",
+      evidence: evidenceForPages(noSchema, () => true, "Структурированные данные не найдены"),
+    }),
+    auditCheck({
+      id: "mobile",
+      label: "Мобильная адаптация",
+      status: statusFromIssues(0, missingViewport.length),
+      detail: missingViewport.length ? `Viewport meta отсутствует на ${missingViewport.length} страницах.` : "Viewport meta присутствует на всех проверенных страницах.",
+      recommendation: "Добавить viewport и проверить адаптивную вёрстку",
+      evidence: evidenceForPages(missingViewport, () => true, "Viewport meta отсутствует"),
+      confidence: "medium",
+    }),
+    auditCheck({
+      id: "speed",
+      label: "Скорость загрузки",
+      status: "not_checked",
+      detail: "HTML-обход не измеряет Core Web Vitals. Нужен отдельный запуск Lighthouse или данные CrUX.",
+      recommendation: "Измерить Core Web Vitals через Lighthouse или CrUX",
+      confidence: "requires_integration",
+    }),
+    auditCheck({
+      id: "duplicates",
+      label: "Дубли страниц",
+      status: statusFromIssues(0, duplicatePages.length),
+      detail: duplicatePages.length ? "В проверенном срезе найдены одинаковые title или идентичный основной текст." : "Одинаковые title и идентичный основной текст в проверенном срезе не найдены.",
+      recommendation: "Объединить дубли или настроить canonical и редиректы",
+      evidence: evidenceForPages(duplicatePages, () => true, "Возможный дубль страницы"),
+    }),
+    auditCheck({
+      id: "content",
+      label: "Качество текстового контента",
+      status: statusFromIssues(0, thinPages.length),
+      detail: thinPages.length ? `Менее 120 слов основного текста на ${thinPages.length} из ${goodPages.length} страниц.` : "На проверенных страницах достаточно текста для базовой содержательной оценки.",
+      recommendation: "Расширить короткие страницы полезным самостоятельным содержанием",
+      evidence: evidenceForPages(thinPages, () => true, "Мало основного текста"),
+      confidence: "medium",
+    }),
+  ];
+
+  const combined = goodPages.map(pageText).join(" ");
+  const hasOrganization = goodPages.some((page) => page.schemaTypes.some((type) => ["Organization", "Corporation", "LocalBusiness"].includes(type)));
+  const hasCompanyPage = goodPages.some((page) => /(?:^|\/)(?:about|company|o-nas|o-kompanii)/iu.test(new URL(page.url).pathname));
+  const hasOffer = goodPages.some((page) => page.schemaTypes.some((type) => ["Product", "Service"].includes(type)) || /(?:услуг|продукт|решени|service|product)/iu.test(pageText(page)));
+  const hasExpert = goodPages.some((page) => (page.metadata?.authors || []).length || page.schemaTypes.includes("Person") || /(?:эксперт|автор|команд|специалист|team|author|expert)/iu.test(pageText(page)));
+  const hasFactsAndSources = goodPages.some((page) => /\b\d+(?:[.,]\d+)?\s*(?:%|₽|руб|лет|год|км|ч|час|дн|шт)?\b/iu.test(pageText(page)) && page.links.some((link) => link.kind === "external"));
+  const hasFaq = goodPages.some((page) => page.schemaTypes.includes("FAQPage") || page.headings.some((heading) => /\?|^(?:как|что|когда|где|почему|сколько|можно ли|how|what|why|when)\b/iu.test(heading.text)));
+  const hasStructuredEntities = goodPages.some((page) => (page.metadata?.structuredEntities || []).length);
+  const hasGeography = /(?:адрес|город|регион|область|росси[яи]|москв[а-яё]*|санкт-петербург|\blocation\b|\bcity\b|\bregion\b|\bcountry\b)/iu.test(combined)
+    || goodPages.some((page) => page.schemaTypes.includes("LocalBusiness"));
+  const hasAdvantages = /(?:преимуществ|почему выбирают|результат|кейс|опыт|гарант|benefit|advantage|case stud|track record)/iu.test(combined);
+  const commonTitleTheme = meaningfulWords(goodPages.map((page) => page.title).join(" "))
+    .some(([, occurrences]) => occurrences >= Math.max(2, Math.ceil(goodPages.length / 2)));
+  const consistencyStatus = goodPages.length < 2 ? "not_checked" : hasOrganization || commonTitleTheme ? "passed" : "warning";
+  const geoEvidence = evidence(goodPages[0]?.url || target.toString(), "Проверенный публичный контент");
+  const geoChecks = [
+    auditCheck({ id: "company", label: "Понятное описание компании", status: hasOrganization || hasCompanyPage ? "passed" : "warning", detail: hasOrganization || hasCompanyPage ? "Найдены явные сигналы о компании или отдельная страница о ней." : "Не найдено явной Organization-разметки или страницы о компании.", recommendation: "Добавить ясное описание компании, её роли и аудитории", evidence: geoEvidence, confidence: "medium", weight: 1.2 }),
+    auditCheck({ id: "offers", label: "Услуги и продукты", status: hasOffer ? "passed" : "warning", detail: hasOffer ? "Услуги или продукты распознаются по тексту либо структурированным данным." : "Услуги и продукты не выделены достаточно явно.", recommendation: "Описать каждую услугу или продукт отдельным проверяемым блоком", evidence: geoEvidence, confidence: "medium", weight: 1.2 }),
+    auditCheck({ id: "experts", label: "Авторы и эксперты", status: hasExpert ? "passed" : "warning", detail: hasExpert ? "Найдены авторы, эксперты или страницы команды." : "Не найдено явных авторов, экспертов или страниц команды.", recommendation: "Добавить авторов, экспертов, должности и подтверждение компетенций", evidence: geoEvidence, confidence: "medium" }),
+    auditCheck({ id: "facts", label: "Факты, цифры и источники", status: hasFactsAndSources ? "passed" : "warning", detail: hasFactsAndSources ? "Есть страницы, где числовые утверждения соседствуют со ссылками на внешние источники." : "Не найдено сочетания конкретных цифр и внешних источников.", recommendation: "Подкрепить ключевые утверждения фактами, датами и ссылками на первоисточники", evidence: geoEvidence, confidence: "medium", weight: 1.1 }),
+    auditCheck({ id: "faq", label: "FAQ и короткие прямые ответы", status: hasFaq ? "passed" : "warning", detail: hasFaq ? "Найдены вопросы в заголовках или FAQPage-разметка." : "FAQPage и явные вопросные заголовки не найдены.", recommendation: "Добавить FAQ с короткими прямыми ответами", evidence: geoEvidence, confidence: "medium" }),
+    auditCheck({ id: "structure", label: "Структурированная информация", status: hasStructuredEntities ? "passed" : "warning", detail: hasStructuredEntities ? "JSON-LD содержит распознаваемые сущности." : "Структурированные сущности Organization, Person, Product или Service не найдены.", recommendation: "Разметить организацию, экспертов, услуги и продукты через Schema.org", evidence: geoEvidence, weight: 1.2 }),
+    auditCheck({ id: "entities", label: "Сущности и преимущества", status: hasStructuredEntities && hasAdvantages ? "passed" : "warning", detail: hasStructuredEntities && hasAdvantages ? "Сущности и преимущества компании выражены в наблюдаемых данных." : "Не хватает связки между сущностями компании и конкретными преимуществами.", recommendation: "Связать компанию, услуги и преимущества ясными фактологическими блоками", evidence: geoEvidence, confidence: "medium" }),
+    auditCheck({ id: "geography", label: "География работы", status: hasGeography ? "passed" : "warning", detail: hasGeography ? "В контенте или разметке найдены географические сигналы." : "География обслуживания или присутствия не выражена явно.", recommendation: "Указать регионы работы и адреса в тексте и структурированных данных", evidence: geoEvidence, confidence: "medium" }),
+    auditCheck({ id: "consistency", label: "Согласованность между страницами", status: consistencyStatus, detail: goodPages.length < 2 ? "Для сравнения нужна как минимум вторая страница." : consistencyStatus === "passed" ? "На страницах повторяется общая сущность или устойчивая тема бренда." : "Автоматическая проверка не нашла устойчивой общей сущности между страницами.", recommendation: "Согласовать название, описание, услуги и факты на всех ключевых страницах", evidence: geoEvidence, confidence: "low", weight: 1.1 }),
+  ];
+
+  return {
+    version: "aurora-seo-geo-mvp-v1",
+    geoDefinition: {
+      term: "Generative Engine Optimization",
+      description: "Оптимизация ясности, доказательности и структуры контента для генеративных поисковых систем и ассистентов.",
+    },
+    seo: optimizationSection("seo", seoChecks),
+    geo: optimizationSection("geo", geoChecks),
+  };
+}
+
+export function buildSiteAnalysisReport(targetUrl, pages, limits = DEFAULT_SITE_CRAWL_LIMITS, crawlSignals = {}) {
   const target = targetUrl instanceof URL ? targetUrl : new URL(String(targetUrl));
   const goodPages = pages.filter((page) => page.status >= 200 && page.status < 400);
   const seo = [];
   const geo = [];
   for (const page of goodPages) {
     if (!page.title) seo.push(finding("missing_title", "high", "Нет заголовка страницы", "Добавь уникальный заголовок страницы.", page.url));
+    if (page.title && (page.technical.titleLength < 15 || page.technical.titleLength > 65)) seo.push(finding("title_length", "low", "Неудачная длина title", `Длина title: ${page.technical.titleLength} знаков; рабочий ориентир — 15–65.`, page.url, "medium"));
     if (!page.description) seo.push(finding("missing_description", "medium", "Нет описания страницы", "Добавь краткое описание содержания страницы.", page.url));
+    if (page.description && (page.technical.descriptionLength < 50 || page.technical.descriptionLength > 170)) seo.push(finding("description_length", "low", "Неудачная длина description", `Длина description: ${page.technical.descriptionLength} знаков; рабочий ориентир — 50–170.`, page.url, "medium"));
     if (page.technical.h1Count !== 1) seo.push(finding("h1_count", "medium", "Нарушена структура главного заголовка", `Найдено главных заголовков: ${page.technical.h1Count}.`, page.url));
+    if (page.technical.headingOrderValid === false) seo.push(finding("heading_order", "medium", "Пропущен уровень заголовка", "Выстрой уровни H1–H6 последовательно, без перескоков.", page.url));
     if (!page.technical.https) seo.push(finding("http_page", "high", "Страница открыта без защищённого соединения", "Включи защищённое соединение для страницы и внутренних ссылок.", page.url));
+    if (!page.technical.indexable) seo.push(finding("noindex", "high", "Страница закрыта от индексации", "Проверь, должен ли robots meta содержать noindex.", page.url));
     if (!page.technical.viewport) seo.push(finding("missing_viewport", "medium", "Не настроено отображение на телефонах", "Проверь адаптивное отображение страницы.", page.url));
     if (!page.technical.canonical) seo.push(finding("missing_canonical", "low", "Не указан основной адрес страницы", "Укажи основной адрес, если у страницы есть дубли.", page.url, "medium"));
-    if (!page.schemaTypes.length) geo.push(finding("missing_schema", "medium", "Нет структурированных данных", "Добавь подходящую структурированную разметку и проверяемые сущности.", page.url));
+    if (page.technical.missingImageAlt > 0) seo.push(finding("missing_image_alt", "medium", "У изображений отсутствует alt", `Изображений без атрибута alt: ${page.technical.missingImageAlt}.`, page.url));
+    if (!page.schemaTypes.length) {
+      seo.push(finding("missing_schema_seo", "low", "Нет микроразметки", "Добавь подходящую Schema.org-разметку в формате JSON-LD.", page.url, "medium"));
+      geo.push(finding("missing_schema", "medium", "Нет структурированных данных", "Добавь подходящую структурированную разметку и проверяемые сущности.", page.url));
+    }
     if (page.technical.wordCount < 120) geo.push(finding("thin_content", "medium", "Мало объясняющего контента", "Добавь самостоятельное объяснение темы, определения и ответы на вопросы.", page.url, "medium"));
     if (!page.headings.some((heading) => heading.level === 2)) geo.push(finding("weak_answer_structure", "low", "Нет подзаголовков ответа", "Разбей материал на ясные вопросы и смысловые блоки.", page.url, "medium"));
   }
@@ -698,20 +1022,9 @@ export function buildSiteAnalysisReport(targetUrl, pages, limits = DEFAULT_SITE_
       confidence: "medium",
     },
   ];
-  const seoTasks = seo.slice(0, 12).map((item, index) => ({
-    title: item.title,
-    priority: item.severity === "high" ? "P0" : item.severity === "medium" ? "P1" : "P2",
-    dueDays: 7 + index * 2,
-    sources: item.evidence,
-    confidence: item.confidence,
-  }));
-  const geoTasks = geo.slice(0, 12).map((item, index) => ({
-    title: item.title,
-    priority: item.severity === "high" ? "P0" : "P1",
-    dueDays: 10 + index * 2,
-    sources: item.evidence,
-    confidence: item.confidence,
-  }));
+  const optimization = buildOptimizationReport(target, goodPages, pages, crawlSignals);
+  const seoTasks = optimization.seo.tasks;
+  const geoTasks = optimization.geo.tasks;
 
   return Object.freeze({
     policyVersion: SITE_ANALYSIS_POLICY_VERSION,
@@ -729,9 +1042,11 @@ export function buildSiteAnalysisReport(targetUrl, pages, limits = DEFAULT_SITE_
       ctaCount: page.ctas.length,
       formCount: page.forms.length,
       publicCommentCount: page.publicComments.length,
+      redirectedFrom: page.redirectedFrom || null,
     })),
     seoAudit: seo,
     geoAudit: geo,
+    optimization,
     themes,
     intents,
     internalLinking: {
@@ -772,6 +1087,7 @@ export function buildSiteAnalysisReport(targetUrl, pages, limits = DEFAULT_SITE_
       "Комментарии учитываются только тогда, когда они публично присутствуют в коде страницы или структурированных данных.",
       "Динамический контент, закрытые кабинеты и данные за авторизацией не открываются.",
       "Текущая версия читает страницы в современной кодировке; сайты в старых кодировках могут потребовать повторного анализа.",
+      "Оценки SEO и GEO относятся только к проверенному публичному срезу; Core Web Vitals, позиции и видимость в ответах генеративных систем требуют отдельных источников данных.",
       "Выводы о целевой аудитории и позиционировании являются гипотезами до проверки аналитикой и интервью.",
     ],
   });
@@ -903,6 +1219,7 @@ export async function crawlSite(input, dependencies = {}) {
   const seenSitemaps = new Set();
   const sitemapUrls = [];
   const seenSitemapPages = new Set();
+  let sitemapAvailable = false;
   while (
     sitemapPending.length
     && seenSitemaps.size < limits.maxSitemaps
@@ -924,6 +1241,7 @@ export async function crawlSite(input, dependencies = {}) {
       );
       const sitemapText = await consumeResponse(response, response.ok);
       if (!response.ok) continue;
+      sitemapAvailable = true;
       const document = extractSitemapDocument(
         sitemapText,
         target,
@@ -1036,12 +1354,17 @@ export async function crawlSite(input, dependencies = {}) {
       const contentType = String(response.headers?.["content-type"] || response.headers?.get?.("content-type") || "").toLowerCase();
       const supportedHtml = !contentType || contentType.includes("html") || contentType.includes("xhtml");
       const html = await consumeResponse(response, response.ok && supportedHtml);
+      const redirectedFrom = finalKey === url.toString() ? null : url.toString();
       if (!response.ok || (contentType && !contentType.includes("html") && !contentType.includes("xhtml"))) {
-        pages.push({ ...extractSitePage("", finalUrl, response.status), fetchError: response.ok ? "unsupported_content" : "http_error" });
+        pages.push({
+          ...extractSitePage("", finalUrl, response.status),
+          redirectedFrom,
+          fetchError: response.ok ? "unsupported_content" : "http_error",
+        });
         continue;
       }
       const page = extractSitePage(html, finalUrl, response.status);
-      pages.push(page);
+      pages.push({ ...page, redirectedFrom });
       page.links.filter((link) => link.kind === "internal").forEach((link) => enqueue(link.url));
     }
   }
@@ -1050,7 +1373,11 @@ export async function crawlSite(input, dependencies = {}) {
     throw new SiteCrawlerError("no_pages", "Не удалось получить ни одной открытой страницы сайта");
   }
   await emit("analyzing", 78, "Собираем поисковый аудит и доказательства");
-  const report = buildSiteAnalysisReport(target, pages, limits);
+  const report = buildSiteAnalysisReport(target, pages, limits, {
+    robotsStatus: robotsResponse.status,
+    sitemapAvailable,
+    sitemapUrlCount: sitemapUrls.length,
+  });
   await emit("planning", 92, "Формируем маркетинговый план");
   await emit("ready", 100, "Анализ готов");
   return { report, pages, totalBytes, robots: { sitemaps: [...seenSitemaps] } };

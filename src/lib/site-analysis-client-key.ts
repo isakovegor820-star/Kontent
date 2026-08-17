@@ -1,3 +1,5 @@
+import { createClientUuid } from "./client-uuid";
+
 export type StableSiteAnalysisKey = {
   fingerprint: string;
   key: string;
@@ -5,8 +7,9 @@ export type StableSiteAnalysisKey = {
 };
 
 type StorageLike = Pick<Storage, "getItem" | "setItem" | "removeItem">;
-
 const SENSITIVE_QUERY_PARAM = /^(?:access[_-]?token|auth(?:orization)?|api[_-]?key|client[_-]?secret|code|cookie|credential|jwt|password|passwd|refresh[_-]?token|session(?:id)?|sid|signature|token|utm_.+|fbclid|gclid)$/iu;
+
+export const createSiteAnalysisUuid = createClientUuid;
 
 export function siteAnalysisIntentFingerprint(urlValue: string, confirmedDomain: string): string {
   try {

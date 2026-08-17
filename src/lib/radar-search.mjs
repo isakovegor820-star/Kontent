@@ -3,8 +3,9 @@
 // а внешний источник можно заменить, не меняя API, воркер и интерфейс.
 
 export const RADAR_SEARCH_CACHE_MS = 24 * 60 * 60 * 1000;
-export const RADAR_SEARCH_RESULT_LIMIT = 36;
-export const RADAR_SEARCH_CANDIDATE_LIMIT = 24;
+export const RADAR_SEARCH_RESULT_LIMIT = 60;
+export const RADAR_SEARCH_CANDIDATE_LIMIT = 72;
+export const RADAR_SEARCH_QUERY_LIMIT = 6;
 
 const TELEGRAM_HANDLE = /^[a-z][a-z0-9_]{3,31}$/u;
 const TELEGRAM_STOP_HANDLES = new Set([
@@ -24,15 +25,33 @@ const TELEGRAM_STOP_HANDLES = new Set([
 ]);
 const QUERY_STOP_WORDS = new Set([
   "без",
+  "где",
+  "дай",
   "для",
   "или",
+  "информация",
+  "информации",
+  "информацию",
+  "ищи",
+  "ищу",
   "как",
   "канал",
   "каналы",
+  "мне",
   "найди",
+  "найти",
+  "обсуждают",
+  "покажи",
+  "пишет",
+  "пишут",
   "пост",
   "посты",
   "про",
+  "расскажи",
+  "рассказывают",
+  "тема",
+  "теме",
+  "темы",
   "телеграм",
   "telegram",
   "что",
@@ -86,6 +105,45 @@ export function radarQueryTokens(value) {
     .map(tokenStem)
     .filter((token) => token.length >= 3);
   return [...new Set(tokens)].slice(0, 12);
+}
+
+/**
+ * Полнотекстовая ветка ищет слова через ИЛИ, а точность затем проверяет кодовое
+ * ранжирование. Это важно для живых вопросов: PostgreSQL `plainto_tsquery` связывает
+ * все слова через И и теряет канал, если в одном посте есть «строительство», а в другом
+ * «загородные дома».
+ */
+export function radarTsQuery(value) {
+  const normalized = normalizeRadarQuery(value);
+  const tokens = normalized
+    .split(/\s+/u)
+    .map((token) => token.replace(/[^\p{L}\p{N}]/gu, ""))
+    .filter((token) => token.length >= 2 && !QUERY_STOP_WORDS.has(token));
+  return [...new Set(tokens)].slice(0, 12).join(" | ");
+}
+
+function radarDiscoveryPhrase(value) {
+  return normalizeRadarQuery(value)
+    .split(/\s+/u)
+    .map((token) => token.replace(/[^\p{L}\p{N}_@+.-]/gu, ""))
+    .filter((token) => token.length >= 2 && !QUERY_STOP_WORDS.has(token))
+    .slice(0, 12)
+    .join(" ");
+}
+
+/**
+ * Keep the user's wording for intent, then add a compact content query and bounded
+ * semantic formulations. This lets natural requests work even when AI expansion is
+ * unavailable: «найди мне каналы про строительство» also searches «строительство».
+ */
+export function buildRadarDiscoveryQueries(query, expanded = []) {
+  const source = [query, ...(Array.isArray(expanded) ? expanded : [])];
+  const values = source.flatMap((value) => {
+    const normalized = normalizeRadarQuery(value);
+    const compact = radarDiscoveryPhrase(value);
+    return compact && compact !== normalized ? [normalized, compact] : [normalized];
+  }).filter((value) => value.length >= 2);
+  return [...new Set(values)].slice(0, RADAR_SEARCH_QUERY_LIMIT);
 }
 
 function decodeHtml(value) {
@@ -202,7 +260,9 @@ export function createSearxngTelegramProvider({ endpoint, fetchImpl = fetch } = 
     async search(query) {
       const url = new URL(base);
       if (!/\/search\/?$/u.test(url.pathname)) url.pathname = `${url.pathname.replace(/\/$/u, "")}/search`;
-      url.searchParams.set("q", `site:t.me ${query} Telegram канал`);
+      // /s/ указывает поисковику на публичные страницы с текстами постов. Название
+      // канала намеренно не добавляем в запрос: ищем содержание, а не вывеску.
+      url.searchParams.set("q", `site:t.me/s ${query}`);
       url.searchParams.set("format", "json");
       url.searchParams.set("language", "ru-RU");
       const response = await fetchImpl(url, providerRequest(url).init);
@@ -222,7 +282,10 @@ export function createBingRssTelegramProvider({ fetchImpl = fetch } = {}) {
     async search(query) {
       const url = new URL("https://www.bing.com/search");
       url.searchParams.set("format", "rss");
-      url.searchParams.set("q", `site:t.me/s ${query} Telegram канал`);
+      // Bing часто игнорирует site:t.me для русскоязычной RSS-выдачи. Широкая
+      // формулировка находит также каталоги и подборки, а ниже мы всё равно принимаем
+      // только реальные t.me-ссылки и отдельно проверяем сам публичный канал.
+      url.searchParams.set("q", `${query} Telegram каналы`);
       const payload = await readSearchResponse(fetchImpl, providerRequest(url), "bing_rss");
       return parseTelegramCandidates(payload, "bing-rss");
     },
@@ -234,7 +297,7 @@ export function createDuckDuckGoTelegramProvider({ fetchImpl = fetch } = {}) {
     name: "duckduckgo-html",
     async search(query) {
       const url = new URL("https://html.duckduckgo.com/html/");
-      url.searchParams.set("q", `site:t.me ${query} Telegram канал`);
+      url.searchParams.set("q", `${query} Telegram каналы`);
       const payload = await readSearchResponse(fetchImpl, providerRequest(url), "duckduckgo");
       return parseTelegramCandidates(payload, "duckduckgo-html");
     },
@@ -254,25 +317,44 @@ export async function discoverTelegramCandidates(query, options = {}) {
   const found = new Map();
   const failures = [];
   let completed = 0;
-  for (const provider of providers) {
-    try {
-      const candidates = await provider.search(normalized);
+  const discoveryQueries = buildRadarDiscoveryQueries(normalized, options.expandedQueries);
+  for (const discoveryQuery of discoveryQueries) {
+    if (found.size >= RADAR_SEARCH_CANDIDATE_LIMIT) break;
+    const settled = await Promise.allSettled(
+      providers.map(async (provider) => ({ provider, candidates: await provider.search(discoveryQuery) })),
+    );
+    for (const result of settled) {
+      if (result.status === "rejected") {
+        failures.push(result.reason?.code || result.reason?.message || "provider_failed");
+        continue;
+      }
       completed += 1;
-      for (const candidate of candidates || []) {
+      for (const candidate of result.value.candidates || []) {
         if (!candidate?.handle) continue;
-        found.set(candidate.handle, candidate);
+        const current = found.get(candidate.handle);
+        found.set(candidate.handle, {
+          ...(current || candidate),
+          ...candidate,
+          matchedQuery: discoveryQuery,
+          matchedQueries: [...new Set([...(current?.matchedQueries || []), discoveryQuery])],
+          providers: [...new Set([...(current?.providers || []), candidate.provider || result.value.provider.name])],
+        });
         if (found.size >= RADAR_SEARCH_CANDIDATE_LIMIT) break;
       }
-      // Первый бесплатный источник с достаточной выборкой экономит лишний внешний запрос.
-      if (found.size >= 12) break;
-    } catch (error) {
-      failures.push(error?.code || error?.message || provider.name);
     }
   }
   if (completed === 0) {
     throw new RadarDiscoveryError("all_providers_unavailable", failures.join(", "));
   }
   return [...found.values()].slice(0, RADAR_SEARCH_CANDIDATE_LIMIT);
+}
+
+export function scoreRadarSemanticSimilarity(value) {
+  const similarity = Number(value);
+  if (!Number.isFinite(similarity) || similarity < 0.42) return 0;
+  // На русских bge-m3-векторах 0.45 — нижняя граница тематической связи, 0.70+
+  // означает почти прямое совпадение. Растягиваем измеренный рабочий диапазон на 0–100.
+  return Math.round(Math.max(0, Math.min(100, ((similarity - 0.42) / 0.28) * 100)));
 }
 
 function searchableText(value) {
@@ -369,7 +451,9 @@ export function radarSpamPenalty(query, input = {}) {
 
 export function rankVerifiedTelegramSource(query, source, now = Date.now()) {
   const activity = source.activity || {};
-  const relevance = scoreRadarRelevance(query, source);
+  const lexicalRelevance = scoreRadarRelevance(query, source);
+  const semanticRelevance = scoreRadarSemanticSimilarity(source.semanticSimilarity);
+  const relevance = Math.max(lexicalRelevance, semanticRelevance);
   const freshness = scoreRadarFreshness(activity.lastPostAt || source.lastPostAt, now);
   const activityScore = scoreRadarActivity(activity.postsPerWeek ?? source.postsPerWeek);
   const trust = source.ok && Array.isArray(source.posts) && source.posts.length > 0 ? 100 : 0;
@@ -384,7 +468,9 @@ export function rankVerifiedTelegramSource(query, source, now = Date.now()) {
     (post) => scoreRadarRelevance(query, { posts: [post] }) >= 35,
   ).length;
   const reasonParts = [];
-  if (relevance >= 75) reasonParts.push("тема явно совпадает с запросом");
+  if (semanticRelevance > lexicalRelevance && semanticRelevance >= 35) {
+    reasonParts.push("тематика публикаций совпадает с запросом по смыслу");
+  } else if (relevance >= 75) reasonParts.push("тема явно совпадает с запросом");
   else if (relevance >= 45) reasonParts.push("в публикациях встречается нужная тема");
   if (freshness >= 72) reasonParts.push("канал публиковался недавно");
   if (activityScore >= 82) reasonParts.push("канал активен");
@@ -393,6 +479,8 @@ export function rankVerifiedTelegramSource(query, source, now = Date.now()) {
   return {
     score,
     relevance,
+    lexicalRelevance,
+    semanticRelevance,
     freshness,
     activity: activityScore,
     trust,
@@ -406,6 +494,26 @@ export function rankVerifiedTelegramSource(query, source, now = Date.now()) {
       && !(freshness <= 25 && activityScore <= 55),
     reason: reasonParts.slice(0, 3).join("; ") || "публичный источник проверен",
   };
+}
+
+export function rankVerifiedTelegramSourceAcrossQueries(query, expandedQueries, source, now = Date.now()) {
+  const original = normalizeRadarQuery(query);
+  const queries = buildRadarDiscoveryQueries(original, expandedQueries);
+  let strongest = null;
+  for (const candidateQuery of queries) {
+    const rank = rankVerifiedTelegramSource(candidateQuery, source, now);
+    if (!strongest || rank.score > strongest.score) {
+      strongest = { ...rank, matchedQuery: candidateQuery };
+    }
+  }
+  const selected = strongest || { ...rankVerifiedTelegramSource(original, source, now), matchedQuery: original };
+  if (selected.accepted && selected.matchedQuery && selected.matchedQuery !== original) {
+    return {
+      ...selected,
+      reason: `найдено по близкой формулировке «${selected.matchedQuery}»; ${selected.reason}`,
+    };
+  }
+  return selected;
 }
 
 export function rankVerifiedTelegramPost(query, post, channelRank, now = Date.now()) {

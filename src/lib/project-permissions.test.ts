@@ -13,8 +13,11 @@ describe("project role permissions", () => {
     expect(roleAllows("author", "content.approve")).toBe(false);
     expect(roleAllows("approver", "content.approve")).toBe(true);
     expect(roleAllows("approver", "content.publish")).toBe(false);
+    expect(roleAllows("approver", "audience.reply.send")).toBe(true);
     expect(roleAllows("publisher", "content.publish")).toBe(true);
+    expect(roleAllows("publisher", "audience.reply.send")).toBe(true);
     expect(roleAllows("publisher", "content.approve")).toBe(false);
+    expect(roleAllows("author", "audience.reply.send")).toBe(false);
     expect(roleAllows("owner", "members.manage")).toBe(true);
   });
 

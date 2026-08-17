@@ -269,11 +269,17 @@ export function Tabs<T extends string>({
   onChange,
   items,
   className,
+  ariaLabel = "Переключатель представления",
+  idPrefix,
+  controls,
 }: {
   value: T;
   onChange: (v: T) => void;
   items: { value: T; label: string; icon?: React.ReactNode }[];
   className?: string;
+  ariaLabel?: string;
+  idPrefix?: string;
+  controls?: string;
 }) {
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const activeIndex = Math.max(0, items.findIndex((item) => item.value === value));
@@ -293,7 +299,7 @@ export function Tabs<T extends string>({
   return (
     <div
       role="tablist"
-      aria-label="Переключатель представления"
+      aria-label={ariaLabel}
       onKeyDown={onKeyDown}
       className={cn(
         "inline-flex gap-1 rounded-sm border border-line bg-surface-inset p-1",
@@ -310,6 +316,8 @@ export function Tabs<T extends string>({
             }}
             type="button"
             role="tab"
+            id={idPrefix ? `${idPrefix}-${it.value}` : undefined}
+            aria-controls={controls}
             aria-selected={active}
             tabIndex={active ? 0 : -1}
             onClick={() => onChange(it.value)}

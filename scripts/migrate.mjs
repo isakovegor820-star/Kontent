@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Pool } from "pg";
 import { migrationBody, prepareMigrationSet } from "./migration-policy.mjs";
+import { SCHEMA_MANIFEST } from "../src/lib/schema-manifest.mjs";
 
 const LOCK_ID = 1_972_475_321;
 const STATEMENT_TIMEOUT_MS = 300_000;
@@ -73,6 +74,87 @@ async function migrationsFrom(directory) {
   );
 }
 
+/**
+ * Record the exact migration set represented by the current monolithic bootstrap.
+ * Call this only in the same transaction that applies db/schema.sql to a proven-empty
+ * database. An existing ledger fails closed instead of being overwritten.
+ */
+export async function recordBootstrapMigrations(client, options = {}) {
+  const directory = options.directory || resolve(process.cwd(), "db/migrations");
+  const inputMigrations = options.migrations || (await migrationsFrom(directory));
+  const migrations = prepareMigrationSet(inputMigrations);
+  await client.query(`create table if not exists schema_migrations (
+    name text primary key,
+    checksum char(64) not null,
+    applied_at timestamptz not null default now()
+  )`);
+  const existing = Number((await client.query(
+    "select count(*)::integer as count from schema_migrations",
+  )).rows[0]?.count ?? 0);
+  if (existing !== 0) {
+    throw new Error("bootstrap migration ledger must be empty");
+  }
+  if (migrations.length === 0) return;
+  await client.query(
+    `insert into schema_migrations (name, checksum)
+     select entry.name, entry.checksum
+       from unnest($1::text[], $2::text[]) as entry(name, checksum)`,
+    [migrations.map((migration) => migration.name), migrations.map((migration) => migrationChecksum(migration.sql))],
+  );
+}
+
+async function databaseMatchesBootstrapSnapshot(client, manifest = SCHEMA_MANIFEST) {
+  const tables = await client.query(
+    `select count(*)::integer as missing
+       from unnest($1::text[]) as expected(name)
+      where to_regclass('public.' || quote_ident(expected.name)) is null`,
+    [manifest.capabilities.tables],
+  );
+  const columns = await client.query(
+    `select count(*)::integer as missing
+       from unnest($1::text[]) as expected(name)
+      where not exists (
+        select 1 from information_schema.columns column_info
+         where column_info.table_schema = 'public'
+           and column_info.table_name = split_part(expected.name, '.', 1)
+           and column_info.column_name = split_part(expected.name, '.', 2)
+      )`,
+    [manifest.capabilities.columns],
+  );
+  const constraints = await client.query(
+    `select count(*)::integer as missing
+       from unnest($1::text[]) as expected(name)
+      where not exists (
+        select 1
+          from pg_constraint constraint_info
+          join pg_class table_info on table_info.oid = constraint_info.conrelid
+          join pg_namespace schema_info on schema_info.oid = table_info.relnamespace
+         where schema_info.nspname = 'public'
+           and table_info.relname = split_part(expected.name, '.', 1)
+           and constraint_info.conname = split_part(expected.name, '.', 2)
+      )`,
+    [manifest.capabilities.constraints],
+  );
+  const indexes = await client.query(
+    `select count(*)::integer as missing
+       from unnest($1::text[]) as expected(name)
+      where not exists (
+        select 1
+          from pg_index index_info
+          join pg_class table_info on table_info.oid = index_info.indrelid
+          join pg_class index_relation on index_relation.oid = index_info.indexrelid
+          join pg_namespace schema_info on schema_info.oid = table_info.relnamespace
+         where schema_info.nspname = 'public'
+           and table_info.relname = split_part(expected.name, '.', 1)
+           and index_relation.relname = split_part(expected.name, '.', 2)
+      )`,
+    [manifest.capabilities.indexes],
+  );
+  return [tables, columns, constraints, indexes].every(
+    (result) => Number(result.rows[0]?.missing ?? 0) === 0,
+  );
+}
+
 export async function migrate(options = {}) {
   const env = options.env || process.env;
   const directory = options.directory || resolve(process.cwd(), "db/migrations");
@@ -107,6 +189,13 @@ export async function migrate(options = {}) {
       checksum char(64) not null,
       applied_at timestamptz not null default now()
     )`);
+
+    const ledgerCount = Number((await client.query(
+      "select count(*)::integer as count from schema_migrations",
+    )).rows[0]?.count ?? 0);
+    if (ledgerCount === 0 && await databaseMatchesBootstrapSnapshot(client)) {
+      await recordBootstrapMigrations(client, { migrations: inputMigrations });
+    }
 
     for (const migration of migrations) {
       const checksum = migrationChecksum(migration.sql);

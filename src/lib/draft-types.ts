@@ -98,4 +98,10 @@ export interface DraftUpdateInput extends DraftWriteInput {
   version: number;
 }
 
+export interface DraftScheduleUpdateInput {
+  version: number;
+  scheduledAt: string;
+  schedule: LocalScheduleInput;
+}
+
 export type DraftSaveState = "idle" | "pending" | "saving" | "saved" | "failed" | "offline" | "conflict";

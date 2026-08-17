@@ -380,13 +380,18 @@ export async function processPublicationExtraOperation({
 
 export async function observeTelegramDiscussionUpdate(pool, update) {
   const message = update?.message;
-  const origin = message?.forward_origin;
+  const forwardedMessage = message?.is_automatic_forward === true
+    ? message
+    : message?.reply_to_message?.is_automatic_forward === true
+      ? message.reply_to_message
+      : null;
+  const origin = forwardedMessage?.forward_origin;
   const originChatId = Number(origin?.chat?.id);
   const originMessageId = Number(origin?.message_id);
   const discussionChatId = Number(message?.chat?.id);
-  const discussionMessageId = Number(message?.message_id);
+  const discussionMessageId = Number(forwardedMessage?.message_id);
   if (
-    message?.is_automatic_forward !== true
+    !forwardedMessage
     || origin?.type !== "channel"
     || ![originChatId, originMessageId, discussionChatId, discussionMessageId]
       .every((value) => Number.isSafeInteger(value) && value !== 0)
@@ -399,6 +404,12 @@ export async function observeTelegramDiscussionUpdate(pool, update) {
     [originChatId],
   )).rows[0];
   if (!channel) return { observed: false };
+  await pool.query(
+    `update channels
+        set tg_discussion_chat_id = $2, updated_at = now()
+      where id = $1 and project_id = $3 and network = 'tg'`,
+    [channel.id, discussionChatId, channel.project_id],
+  );
   const post = (await pool.query(
     `select post.id
        from posts post
@@ -439,6 +450,157 @@ export async function observeTelegramDiscussionUpdate(pool, update) {
     [channel.project_id, channel.id],
   );
   return { observed: true, postId: post?.id == null ? null : Number(post.id) };
+}
+
+export async function syncTelegramDiscussionChats(pool, telegramRequest) {
+  const channels = (await pool.query(
+    `select id, project_id, tg_chat_id
+       from channels
+      where network = 'tg' and is_active = true and status = 'active'
+        and tg_chat_id is not null
+      order by id`,
+  )).rows;
+  let synchronized = 0;
+  for (const channel of channels) {
+    try {
+      const response = await telegramRequest("getChat", { chat_id: Number(channel.tg_chat_id) });
+      if (response?.ok !== true) continue;
+      const discussionChatId = Number(response?.result?.linked_chat_id);
+      await pool.query(
+        `update channels
+            set tg_discussion_chat_id = $2, updated_at = now()
+          where id = $1 and project_id = $3`,
+        [channel.id, Number.isSafeInteger(discussionChatId) ? discussionChatId : null, channel.project_id],
+      );
+      synchronized += 1;
+    } catch {
+      // A temporary Telegram failure must not clear a previously verified binding.
+    }
+  }
+  return { synchronized, total: channels.length };
+}
+
+function telegramAuthorName(message) {
+  const person = [message?.from?.first_name, message?.from?.last_name]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean)
+    .join(" ");
+  if (person) return person.slice(0, 200);
+  const username = String(message?.from?.username || "").replace(/^@/u, "").trim();
+  if (username) return `@${username.slice(0, 198)}`;
+  const senderChat = String(message?.sender_chat?.title || "").trim();
+  return senderChat ? senderChat.slice(0, 200) : null;
+}
+
+/**
+ * Saves an ordinary Telegram channel comment in the audience assistant inbox.
+ * The bot must be present in the linked discussion supergroup to receive it.
+ */
+export async function captureTelegramAudienceComment(pool, update) {
+  const message = update?.message;
+  const discussionChatId = Number(message?.chat?.id);
+  const messageId = Number(message?.message_id);
+  const incoming = String(message?.text || message?.caption || "").trim();
+  if (
+    !message
+    || !["group", "supergroup"].includes(String(message?.chat?.type || ""))
+    || message.is_automatic_forward === true
+    || message?.from?.is_bot === true
+    || !Number.isSafeInteger(discussionChatId)
+    || !Number.isSafeInteger(messageId)
+    || !incoming
+  ) return { captured: false };
+
+  const rootMessageIds = [
+    Number(message?.message_thread_id),
+    Number(message?.reply_to_message?.message_id),
+    Number(message?.reply_to_message?.message_thread_id),
+  ].filter((value, index, values) => (
+    Number.isSafeInteger(value) && value > 0 && values.indexOf(value) === index
+  ));
+  let mapping = rootMessageIds.length > 0 ? (await pool.query(
+    `select mapping.project_id, mapping.channel_id, mapping.origin_message_id,
+            channel.title, channel.handle
+       from telegram_discussion_messages mapping
+       join channels channel
+         on channel.id = mapping.channel_id and channel.project_id = mapping.project_id
+      where mapping.discussion_chat_id = $1
+        and mapping.discussion_message_id = any($2::bigint[])
+        and channel.network = 'tg' and channel.is_active = true
+      order by mapping.observed_at desc limit 1`,
+    [discussionChatId, rootMessageIds],
+  )).rows[0] : null;
+  if (!mapping) {
+    mapping = (await pool.query(
+      `select channel.project_id, channel.id as channel_id, null::bigint as origin_message_id,
+              channel.title, channel.handle
+         from channels channel
+        where channel.network = 'tg' and channel.is_active = true and channel.status = 'active'
+          and channel.tg_discussion_chat_id = $1
+        order by channel.id limit 1`,
+      [discussionChatId],
+    )).rows[0];
+  }
+  if (!mapping) return { captured: false };
+
+  const channelTitle = String(mapping.title || "Telegram").trim().slice(0, 160) || "Telegram";
+  const handle = String(mapping.handle || "").replace(/^@/u, "").trim();
+  const originMessageId = Number(mapping.origin_message_id);
+  const sourceUrl = /^[A-Za-z0-9_]{5,32}$/u.test(handle)
+    && Number.isSafeInteger(originMessageId) && originMessageId > 0
+    ? `https://t.me/${handle}/${originMessageId}?comment=${messageId}`
+    : String(discussionChatId).startsWith("-100")
+      ? `https://t.me/c/${String(discussionChatId).slice(4)}/${messageId}`
+      : null;
+  const requestKey = `telegram-comment:${discussionChatId}:${messageId}`;
+  const authorName = telegramAuthorName(message);
+  const senderExternalId = Number(message?.from?.id);
+  let inquiry = (await pool.query(
+    `insert into bot_client_inquiries (
+       project_id, request_key, source_type, source_label, source_url,
+       author_name, incoming_text, context, external_chat_id,
+       external_message_id, sender_external_id
+     ) values ($1, $2, 'comment', $3, $4, $5, $6, $7, $8, $9, $10)
+     on conflict (project_id, request_key) where request_key is not null do nothing
+     returning id`,
+    [
+      mapping.project_id,
+      requestKey,
+      `Telegram · ${channelTitle}`.slice(0, 200),
+      sourceUrl,
+      authorName,
+      incoming.slice(0, 8000),
+      (Number.isSafeInteger(originMessageId) && originMessageId > 0
+        ? `Комментарий к публикации в канале «${channelTitle}».`
+        : `Сообщение в группе обсуждений канала «${channelTitle}».`).slice(0, 4000),
+      discussionChatId,
+      messageId,
+      Number.isSafeInteger(senderExternalId) ? senderExternalId : null,
+    ],
+  )).rows[0];
+  if (!inquiry) {
+    inquiry = (await pool.query(
+      `select id from bot_client_inquiries where project_id = $1 and request_key = $2`,
+      [mapping.project_id, requestKey],
+    )).rows[0];
+  }
+  if (!inquiry) return { captured: true, inquiryId: null };
+
+  await pool.query(
+    `insert into project_notifications (
+       project_id, recipient_user_id, event_type, entity_type, entity_id,
+       safe_data, idempotency_key
+     )
+     select $1, member.user_id, 'audience_comment_received', 'bot_client_inquiry', $2::text,
+            jsonb_build_object('source', 'telegram_comment'), $3 || member.user_id::text
+       from project_members member
+      where member.project_id = $1 and member.status = 'active'
+        and member.role in ('owner','author','approver')
+     on conflict (project_id, recipient_user_id, idempotency_key)
+       where idempotency_key is not null do nothing`,
+    [mapping.project_id, inquiry.id, `audience-comment:${inquiry.id}:`],
+  );
+  return { captured: true, inquiryId: Number(inquiry.id) };
 }
 
 export function createPublicationExtraWorker({

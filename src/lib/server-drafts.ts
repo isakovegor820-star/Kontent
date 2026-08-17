@@ -4,6 +4,7 @@ import { getPool } from "./db";
 import type {
   DraftCreateInput,
   DraftDestination,
+  DraftScheduleUpdateInput,
   DraftTrackingSelection,
   DraftUpdateInput,
   DraftWriteInput,
@@ -470,6 +471,23 @@ export function parseDraftUpdateInput(value: unknown): DraftUpdateInput {
     ...parsed,
     origin: editableAiWithoutResult ? "ai" : parsed.origin,
     version,
+  };
+}
+
+export function parseDraftScheduleUpdateInput(value: unknown): DraftScheduleUpdateInput {
+  if (!isRecord(value)) throw new DraftValidationError("bad_request");
+  const version = Number(value.version);
+  if (!Number.isSafeInteger(version) || version <= 0) {
+    throw new DraftValidationError("bad_version");
+  }
+  const resolved = schedule(value);
+  if (resolved.scheduledAt == null || resolved.schedule == null) {
+    throw new DraftValidationError("schedule_instant_required");
+  }
+  return {
+    version,
+    scheduledAt: resolved.scheduledAt,
+    schedule: resolved.schedule,
   };
 }
 
@@ -1182,6 +1200,78 @@ export async function updateDraftForUser(
     });
     const draft = await selectDraft(tx, projectId, draftId);
     if (!draft) throw new Error("updated draft lookup failed");
+    await tx.query("commit");
+    return draft;
+  } catch (error) {
+    await tx.query("rollback").catch(() => {});
+    throw error;
+  } finally {
+    tx.release();
+  }
+}
+
+/** Меняет только календарную дату, не превращая перенос в редактирование текста или происхождения. */
+export async function rescheduleDraftForUser(
+  userId: number,
+  draftId: number,
+  input: DraftScheduleUpdateInput,
+  pool: TransactionPool = getPool(),
+): Promise<ServerDraft> {
+  const tx = await pool.connect();
+  try {
+    await tx.query("begin");
+    const membership = await requireSelectedProjectPermission(tx, userId, "content.edit");
+    const projectId = membership.projectId;
+    const selected = await tx.query<DraftRow>(
+      `${DRAFT_SELECT} where d.id = $1 and d.project_id = $2 for update of d`,
+      [draftId, projectId],
+    );
+    if (!selected.rows[0]) throw new DraftNotFoundError();
+    const current = mapDraft(selected.rows[0]);
+    if (current.version !== input.version) throw new DraftConflictError(current);
+    if (current.purpose === "source_context") {
+      throw new DraftValidationError("source_context_immutable");
+    }
+
+    const updated = await tx.query<{ id: number | string }>(
+      `update drafts
+          set scheduled_at = $3,
+              scheduled_timezone = $4,
+              scheduled_local_date = $5,
+              scheduled_local_time = $6,
+              scheduled_offset = $7,
+              scheduled_disambiguation = $8,
+              human_reviewed_version = null,
+              human_reviewed_at = null,
+              version = version + 1,
+              updated_at = now()
+        where id = $1 and project_id = $2 and version = $9
+        returning id`,
+      [
+        draftId,
+        projectId,
+        input.scheduledAt,
+        input.schedule.timezone,
+        input.schedule.localDate,
+        input.schedule.localTime,
+        input.schedule.offset ?? null,
+        input.schedule.disambiguation,
+        input.version,
+      ],
+    );
+    if (updated.rowCount !== 1) {
+      const latest = await selectDraft(tx, projectId, draftId);
+      if (!latest) throw new DraftNotFoundError();
+      throw new DraftConflictError(latest);
+    }
+
+    await recordDraftRevisionInTransaction(tx, {
+      draftId,
+      actorUserId: userId,
+      projectId,
+    });
+    const draft = await selectDraft(tx, projectId, draftId);
+    if (!draft) throw new Error("rescheduled draft lookup failed");
     await tx.query("commit");
     return draft;
   } catch (error) {

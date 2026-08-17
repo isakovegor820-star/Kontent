@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import IORedis from "ioredis";
 import { Pool } from "pg";
-import { migrate } from "./migrate.mjs";
+import { migrate, recordBootstrapMigrations } from "./migrate.mjs";
 import { assertRuntimeSchemaReady } from "./runtime-schema-preflight.mjs";
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
@@ -220,6 +220,7 @@ async function bootstrapEmptyLocalDatabase(connectionString, env, logger) {
     await client.query("begin");
     try {
       await client.query(schema);
+      await recordBootstrapMigrations(client);
       await client.query("commit");
     } catch (error) {
       await client.query("rollback").catch(() => {});

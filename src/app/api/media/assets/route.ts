@@ -1,7 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { NextRequest } from "next/server";
 
-import { BoundedBodyError, readRequestBodyLimited } from "@/lib/bounded-request-body";
+import {
+  acquireMediaAssetBodySlot,
+  BoundedBodyError,
+  readRequestBodyLimited,
+} from "@/lib/bounded-request-body";
 import { getPool } from "@/lib/db";
 import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/project-permissions";
 import { checkRateLimit, rateLimitResponse } from "@/lib/rate-limit";
@@ -74,6 +78,7 @@ export async function POST(request: NextRequest) {
   if (!hasTrustedMutationOrigin(request)) return legalStudioJson({ ok: false, error: "forbidden_origin" }, 403, requestId);
   const user = await getSessionUser(request);
   if (!user) return legalStudioJson({ ok: false, error: "unauthorized" }, 401, requestId);
+  let releaseBodySlot: (() => void) | null = null;
   try {
     const pool = getPool();
     const membership = await requireSelectedProjectPermission(pool, user.id, "content.create");
@@ -92,6 +97,7 @@ export async function POST(request: NextRequest) {
     if (Number.isFinite(contentLength) && contentLength > MAX_MULTIPART_BYTES) {
       return legalStudioJson({ ok: false, error: "payload_too_large" }, 413, requestId);
     }
+    releaseBodySlot = acquireMediaAssetBodySlot();
     const body = await readRequestBodyLimited(request.body, MAX_MULTIPART_BYTES);
     const form = await new Response(body.buffer as ArrayBuffer, {
       headers: { "content-type": contentType },
@@ -133,6 +139,11 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     if (error instanceof ProjectAccessError) return accessError(error, requestId);
     if (error instanceof BoundedBodyError) {
+      if (error.code === "upload_busy") {
+        const response = legalStudioJson({ ok: false, error: "upload_busy" }, 503, requestId);
+        response.headers.set("Retry-After", "2");
+        return response;
+      }
       return legalStudioJson(
         { ok: false, error: error.code === "too_large" ? "payload_too_large" : "bad_multipart" },
         error.code === "too_large" ? 413 : 422,
@@ -143,5 +154,7 @@ export async function POST(request: NextRequest) {
       return legalStudioJson({ ok: false, error: "invalid_image" }, 422, requestId);
     }
     return accessError(error, requestId);
+  } finally {
+    releaseBodySlot?.();
   }
 }

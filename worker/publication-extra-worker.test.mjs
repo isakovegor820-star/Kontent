@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  captureTelegramAudienceComment,
   observeTelegramDiscussionUpdate,
   processPublicationExtraOperation,
+  syncTelegramDiscussionChats,
 } from "./publication-extra-worker.mjs";
 
 const fingerprint = "a".repeat(64);
@@ -200,6 +202,7 @@ describe("publication extra worker", () => {
     const query = vi.fn(async (sql) => {
       if (sql.includes("from channels")) return { rows: [{ id: "17", project_id: "7" }] };
       if (sql.includes("from posts post")) return { rows: [{ id: "13" }] };
+      if (sql.includes("update channels")) return { rows: [] };
       if (sql.includes("insert into telegram_discussion_messages")) return { rows: [] };
       if (sql.includes("update publication_extra_operations")) return { rows: [] };
       throw new Error(`unexpected query: ${sql}`);
@@ -218,5 +221,159 @@ describe("publication extra worker", () => {
     expect(String(postLookup?.[0])).toContain("post.tg_message_id::text = $3::text");
     expect(String(postLookup?.[0])).toContain("post.external_message_id = $3::text");
     expect(postLookup?.[1]).toEqual(["7", "17", 66]);
+  });
+
+  it("discovers the discussion mapping from the first user comment reply", async () => {
+    const query = vi.fn(async (sql) => {
+      if (sql.includes("from channels")) return { rows: [{ id: "17", project_id: "7" }] };
+      if (sql.includes("from posts post")) return { rows: [{ id: "13" }] };
+      if (sql.includes("update channels")) return { rows: [] };
+      if (sql.includes("insert into telegram_discussion_messages")) return { rows: [] };
+      if (sql.includes("update publication_extra_operations")) return { rows: [] };
+      throw new Error(`unexpected query: ${sql}`);
+    });
+    const result = await observeTelegramDiscussionUpdate({ query }, {
+      message: {
+        message_id: 71,
+        text: "А можно подробнее?",
+        chat: { id: -100800, type: "supergroup" },
+        reply_to_message: {
+          message_id: 70,
+          is_automatic_forward: true,
+          forward_origin: { type: "channel", chat: { id: -100900 }, message_id: 66 },
+        },
+      },
+    });
+    expect(result).toEqual({ observed: true, postId: 13 });
+    const mappingInsert = query.mock.calls.find(([sql]) => String(sql).includes("insert into telegram_discussion_messages"));
+    expect(mappingInsert?.[1]).toEqual(["7", "17", "13", -100900, 66, -100800, 70]);
+  });
+
+  it("captures a mapped user comment in the audience inbox and notifies project editors", async () => {
+    const query = vi.fn(async (sql, values) => {
+      if (sql.includes("from telegram_discussion_messages mapping")) {
+        expect(values).toEqual([-100800, [70]]);
+        return {
+          rows: [{
+            project_id: "7",
+            channel_id: "17",
+            origin_message_id: "66",
+            title: "ТехнологИИ Права",
+            handle: "TexPravoAI",
+          }],
+        };
+      }
+      if (sql.includes("insert into bot_client_inquiries")) return { rows: [{ id: "91" }] };
+      if (sql.includes("insert into project_notifications")) return { rows: [] };
+      throw new Error(`unexpected query: ${sql}`);
+    });
+    const result = await captureTelegramAudienceComment({ query }, {
+      message: {
+        message_id: 71,
+        text: "А можно подробнее?",
+        chat: { id: -100800, type: "supergroup" },
+        from: { id: 8001, first_name: "Анна", username: "anna" },
+        reply_to_message: { message_id: 70 },
+      },
+    });
+    expect(result).toEqual({ captured: true, inquiryId: 91 });
+    const inboxInsert = query.mock.calls.find(([sql]) => String(sql).includes("insert into bot_client_inquiries"));
+    expect(inboxInsert?.[1]).toEqual([
+      "7",
+      "telegram-comment:-100800:71",
+      "Telegram · ТехнологИИ Права",
+      "https://t.me/TexPravoAI/66?comment=71",
+      "Анна",
+      "А можно подробнее?",
+      "Комментарий к публикации в канале «ТехнологИИ Права».",
+      -100800,
+      71,
+      8001,
+    ]);
+    const notificationInsert = query.mock.calls.find(([sql]) => String(sql).includes("insert into project_notifications"));
+    expect(String(notificationInsert?.[0])).toContain("'audience_comment_received'");
+    expect(String(notificationInsert?.[0])).not.toContain("А можно подробнее");
+  });
+
+  it("keeps unrelated group messages and Telegram service forwards out of the audience inbox", async () => {
+    const query = vi.fn(async () => ({ rows: [] }));
+    await expect(captureTelegramAudienceComment({ query }, {
+      message: {
+        message_id: 70,
+        is_automatic_forward: true,
+        chat: { id: -100800, type: "supergroup" },
+        text: "Опубликованный пост",
+      },
+    })).resolves.toEqual({ captured: false });
+    await expect(captureTelegramAudienceComment({ query }, {
+      message: {
+        message_id: 71,
+        chat: { id: -100800, type: "supergroup" },
+        from: { is_bot: true },
+        text: "Служебное сообщение",
+        reply_to_message: { message_id: 70 },
+      },
+    })).resolves.toEqual({ captured: false });
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  it("synchronizes linked discussion groups from Telegram channel metadata", async () => {
+    const query = vi.fn(async (sql) => {
+      if (sql.includes("select id, project_id, tg_chat_id")) {
+        return { rows: [{ id: "17", project_id: "7", tg_chat_id: "-100900" }] };
+      }
+      if (sql.includes("update channels")) return { rows: [], rowCount: 1 };
+      throw new Error(`unexpected query: ${sql}`);
+    });
+    const telegramRequest = vi.fn(async () => ({
+      ok: true,
+      result: { id: -100900, linked_chat_id: -100800 },
+    }));
+    await expect(syncTelegramDiscussionChats({ query }, telegramRequest))
+      .resolves.toEqual({ synchronized: 1, total: 1 });
+    expect(telegramRequest).toHaveBeenCalledWith("getChat", { chat_id: -100900 });
+    expect(query).toHaveBeenCalledWith(expect.stringContaining("tg_discussion_chat_id = $2"), ["17", -100800, "7"]);
+  });
+
+  it("captures an ordinary message from a linked Telegram discussion group", async () => {
+    const query = vi.fn(async (sql, values) => {
+      if (sql.includes("channel.tg_discussion_chat_id = $1")) {
+        expect(values).toEqual([-100800]);
+        return {
+          rows: [{
+            project_id: "7",
+            channel_id: "17",
+            origin_message_id: null,
+            title: "ТехнологИИ Права",
+            handle: "TexPravoAI",
+          }],
+        };
+      }
+      if (sql.includes("insert into bot_client_inquiries")) return { rows: [{ id: "92" }] };
+      if (sql.includes("insert into project_notifications")) return { rows: [] };
+      throw new Error(`unexpected query: ${sql}`);
+    });
+    const result = await captureTelegramAudienceComment({ query }, {
+      message: {
+        message_id: 81,
+        text: "Подскажите, с чего начать?",
+        chat: { id: -100800, type: "supergroup" },
+        from: { id: 8002, first_name: "Егор" },
+      },
+    });
+    expect(result).toEqual({ captured: true, inquiryId: 92 });
+    const insert = query.mock.calls.find(([sql]) => String(sql).includes("insert into bot_client_inquiries"));
+    expect(insert?.[1]).toEqual([
+      "7",
+      "telegram-comment:-100800:81",
+      "Telegram · ТехнологИИ Права",
+      "https://t.me/c/800/81",
+      "Егор",
+      "Подскажите, с чего начать?",
+      "Сообщение в группе обсуждений канала «ТехнологИИ Права».",
+      -100800,
+      81,
+      8002,
+    ]);
   });
 });

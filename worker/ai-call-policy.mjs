@@ -14,11 +14,14 @@ export const WORKER_AI_SURFACES = Object.freeze({
   "competitor-niche-classifier": Object.freeze({ billing: "system", purpose: "internal_classification" }),
   "competitor-reader-classifier": Object.freeze({ billing: "system", purpose: "internal_classification" }),
   "profile-refresh": Object.freeze({ billing: "system", purpose: "background_context_maintenance" }),
+  "radar-query-expansion": Object.freeze({ billing: "system", purpose: "search_query_expansion" }),
 
   "competitor-idea": Object.freeze({ billing: "user", purpose: "visible_content_idea" }),
   "rss-summary": Object.freeze({ billing: "user", purpose: "scheduled_user_post" }),
   "autopilot-plan": Object.freeze({ billing: "user", purpose: "visible_content_plan" }),
   "bot-idea": Object.freeze({ billing: "user", purpose: "visible_draft" }),
+  "bot-intake": Object.freeze({ billing: "user", purpose: "visible_draft" }),
+  "bot-client-reply": Object.freeze({ billing: "user", purpose: "visible_client_reply" }),
   "media-generation": Object.freeze({ billing: "user", purpose: "visible_media_asset" }),
   "site-analysis-interview": Object.freeze({ billing: "user", purpose: "visible_osint_report" }),
 });

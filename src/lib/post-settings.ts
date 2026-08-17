@@ -41,7 +41,7 @@ export type PostLength = "auto" | "short" | "medium" | "long" | "custom";
 export type Formality = "auto" | "casual" | "neutral" | "formal";
 export type Energy = "auto" | "calm" | "balanced" | "high";
 export type Humor = "auto" | "none" | "light" | "bold";
-export type ProfanityMode = "auto" | "forbid" | "masked" | "allow";
+export type ProfanityMode = "auto" | "forbid" | "allow" | "masked" | "required_direct";
 export type Address = "auto" | "ты" | "вы" | "neutral";
 export type EmojiMode = "auto" | "none" | "few" | "moderate" | "many" | "custom";
 export type EmojiPlacement = "auto" | "inline" | "line_end" | "bullets";
@@ -578,8 +578,8 @@ export const DEFAULT_POST_SETTINGS: Readonly<PostSettings> = Object.freeze({
   styleMatch: "recognizable",
   outputParts: ["main"] as OutputPart[],
   variantChange: "full",
-  qualityMode: "balanced",
-  autoImprove: true,
+  qualityMode: "fast",
+  autoImprove: false,
   qualityThreshold: 8,
   hideCriticalResult: true,
 });
@@ -692,7 +692,7 @@ export function normalizePostSettings(raw: unknown): PostSettings {
     formality: oneOf(source.formality, ["auto", "casual", "neutral", "formal"] as const, DEFAULT_POST_SETTINGS.formality),
     energy: oneOf(source.energy, ["auto", "calm", "balanced", "high"] as const, DEFAULT_POST_SETTINGS.energy),
     humor: oneOf(source.humor, ["auto", "none", "light", "bold"] as const, DEFAULT_POST_SETTINGS.humor),
-    profanityMode: oneOf(source.profanityMode, ["auto", "forbid", "masked", "allow"] as const, DEFAULT_POST_SETTINGS.profanityMode),
+    profanityMode: oneOf(source.profanityMode, ["auto", "forbid", "allow", "masked", "required_direct"] as const, DEFAULT_POST_SETTINGS.profanityMode),
     address: oneOf(source.address, ["auto", "ты", "вы", "neutral"] as const, DEFAULT_POST_SETTINGS.address),
     emojiMode,
     emojiMax,
@@ -919,12 +919,16 @@ export function resolvePostProfanityMode(raw: unknown, task?: string): Profanity
     || /(?:цензурированн\p{L}*\s+мат|запика(?:й|нн)\p{L}*)/u.test(value)
   ) return "masked";
   if (
+    /мат(?:ом|а)?\s+(?:допустим\p{L}*|разреш[её]н\p{L}*|не\s+обязател\p{L}*)/u.test(value)
+    || /(?:можно|можешь)\s+(?:писать|сделать|использовать|добавить)?\s*(?:с\s+)?мат(?:ом|а)?(?!\p{L})/u.test(value)
+  ) return "allow";
+  if (
     /(?:без\s+цензур\p{L}*|не\s+(?:цензурируй|маскируй)(?:\s+\p{L}+){0,3}\s+мат)/u.test(value)
-    || /(?:с|добавь|используй|можно)\s+мат(?:ом|а)?(?!\p{L})/u.test(value)
+    || /(?:с|добавь|используй)\s+мат(?:ом|а)?(?!\p{L})/u.test(value)
     || /(?:много|побольше|больше)\s+мата/u.test(value)
     || /мат(?:ом|а)?\s+без\s+(?:цензур\p{L}*|ограничен\p{L}*|лимит\p{L}*)/u.test(value)
     || /(?:прям\p{L}*\s+мат|матерн\p{L}*\s+(?:пост|лексик\p{L}*|слов\p{L}*))/u.test(value)
-  ) return "allow";
+  ) return "required_direct";
   return "auto";
 }
 
@@ -1077,6 +1081,8 @@ export function buildPostSettingsPrompt(raw: unknown, context: { network?: strin
       ? "мат регулируется постоянной настройкой выбранного канала; если она отсутствует и пользователь прямо не просил мат, не добавляй его"
       : profanityMode === "forbid"
       ? "мат и замаскированная обсценная лексика полностью запрещены"
+      : profanityMode === "allow"
+        ? "мат допустим, но не обязателен: используй его только если он естественно усиливает конкретную мысль или сохраняет авторскую подачу; не добавляй мат механически ради настройки, не искажай юридический факт, название или цитату и не оскорбляй читателя"
       : profanityMode === "masked"
         ? "ОБЯЗАТЕЛЬНО используй ровно одно уместное матерное выражение с частичной цензурой звёздочками; прямой мат запрещён; не оскорбляй читателя"
         : "ОБЯЗАТЕЛЬНО используй в готовом посте минимум одно прямое матерное выражение без цензуры; верхнего количественного лимита нет. Мат должен усиливать конкретную мысль: из того же предложения должно быть понятно, какой риск, ошибка, абсурд, польза или эмоция автора так оценивается и почему. Не вставляй отдельную дежурную фразу ради выполнения правила, не искажай матерным словом юридический факт, название или цитату, не оскорбляй читателя и не заменяй мат звёздочками или нейтральными эвфемизмами",
@@ -1177,7 +1183,7 @@ export function buildPostSettingsSummary(raw: unknown, network?: string | null):
     settings.objection ? `Закрываем возражение: ${settings.objection}.` : "",
     settings.proofs.length ? `Используем доказательств: ${settings.proofs.length}.` : "",
     `Формат: ${target.label}.`,
-    `Мат: ${settings.profanityMode === "auto" ? "по настройке канала или прямому запросу" : settings.profanityMode === "forbid" ? "запрещён" : settings.profanityMode === "masked" ? "одно выражение со звёздочками" : "разрешён без цензуры и лимита"}.`,
+    `Мат: ${settings.profanityMode === "auto" ? "по настройке канала или прямому запросу" : settings.profanityMode === "forbid" ? "запрещён" : settings.profanityMode === "allow" ? "допустим, но не обязателен" : settings.profanityMode === "masked" ? "одно обязательное выражение со звёздочками" : "обязателен без цензуры и лимита"}.`,
     `Действие: ${settings.readerAction || LABELS.cta[settings.cta]}.`,
     `Качество: ${settings.qualityMode === "fast" ? "быстро" : settings.qualityMode === "maximum" ? "максимальное" : "сбалансированно"}.`,
   ].filter(Boolean);
@@ -1219,7 +1225,7 @@ export function postSettingsQualityOverrides(
       ? {}
       : {
           profanity: profanityMode === "forbid" ? "forbid" : "allow",
-          profanityLevel: profanityMode === "forbid" ? 0 : profanityMode === "masked" ? 50 : 100,
+          profanityLevel: profanityMode === "forbid" ? 0 : profanityMode === "allow" ? 70 : profanityMode === "masked" ? 50 : 100,
         }),
     emojiPolicy: settings.emojiMode === "none" ? "none" : "restrained",
     maxEmojis,
@@ -1411,7 +1417,7 @@ export function validatePostSettingsResult(
   } else if (profanityMode === "masked") {
     if (directProfanityCount > 0) add("profanity_direct", "Прямой мат запрещён: оставь ровно одно выражение со звёздочками");
     if (maskedProfanityCount !== 1) add("profanity_required", `Нужно ровно одно цензурированное матерное выражение, сейчас ${maskedProfanityCount}`);
-  } else if (profanityMode === "allow" && directProfanityCount === 0) {
+  } else if (profanityMode === "required_direct" && directProfanityCount === 0) {
     add(
       "profanity_required",
       "Добавь минимум одно прямое матерное выражение без звёздочек внутрь содержательного предложения: должно быть понятно, какой конкретный риск, ошибка, абсурд, польза или эмоция так оценивается и почему. Не добавляй отдельную дежурную фразу ради проверки",
@@ -1569,9 +1575,9 @@ function normalizeRequiredProfanity(text: string, mode: ProfanityMode): string {
     });
     return kept ? value : appendBeforeHashtags(value, "Скажу прямо: это, бл***, действительно важно.");
   }
-  // В свободном режиме наличие прямого мата обязательно проверяет semantic repair-loop.
+  // В обязательном прямом режиме наличие мата проверяет semantic repair-loop.
   // Детерминированно вставлять слово сюда нельзя: без понимания смысла оно почти наверняка
-  // окажется механической припиской. Здесь только сохраняем всю выбранную моделью лексику.
+  // окажется механической припиской. В допустимом режиме также сохраняем выбор модели.
   return value;
 }
 

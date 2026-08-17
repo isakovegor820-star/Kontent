@@ -14,7 +14,7 @@ jobs:
 
     services:
       postgres:
-        image: postgres:17
+        image: pgvector/pgvector:pg17
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -79,6 +79,7 @@ jobs:
             aurora_autopilot_cas_test \
             aurora_semantic_gate_test \
             aurora_ai_gate_test \
+            aurora_audience_gate_test \
             aurora_password_gate_test \
             aurora_tracking_gate_test
           do
@@ -126,6 +127,11 @@ jobs:
         run: npm run test:ai-orchestration:integration
         env:
           MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_ai_gate_test"
+
+      - name: Test audience reply delivery and recovery
+        run: npm run test:audience-delivery:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_audience_gate_test"
 
       - name: Test immutable publication operations and outbox
         run: npm run test:publication-operation:integration

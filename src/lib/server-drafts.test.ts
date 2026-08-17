@@ -34,7 +34,9 @@ import {
   getDraftForUser,
   listDraftsForUser,
   parseDraftCreateInput,
+  parseDraftScheduleUpdateInput,
   parseDraftUpdateInput,
+  rescheduleDraftForUser,
   updateDraftForUser,
 } from "./server-drafts";
 
@@ -142,6 +144,32 @@ describe("draft input boundary", () => {
     expect(() => parseDraftUpdateInput({ ...input, version: 0 })).toThrowError(
       new DraftValidationError("bad_version"),
     );
+  });
+
+  it("accepts a strict versioned schedule-only update", () => {
+    expect(parseDraftScheduleUpdateInput({
+      version: 3,
+      scheduledAt: "2026-08-21T08:30:00.000Z",
+      schedule: {
+        localDate: "2026-08-21",
+        localTime: "10:30",
+        timezone: "Europe/Amsterdam",
+        disambiguation: "reject",
+        offset: "+02:00",
+      },
+    })).toEqual({
+      version: 3,
+      scheduledAt: "2026-08-21T08:30:00.000Z",
+      schedule: {
+        localDate: "2026-08-21",
+        localTime: "10:30",
+        timezone: "Europe/Amsterdam",
+        disambiguation: "reject",
+        offset: "+02:00",
+      },
+    });
+    expect(() => parseDraftScheduleUpdateInput({ version: 3, scheduledAt: null }))
+      .toThrowError(new DraftValidationError("schedule_instant_required"));
   });
 
   it("adopts a server-created autopilot draft as a human-editable manual revision", () => {
@@ -798,6 +826,71 @@ describe("server draft transactions", () => {
     expect(editorialMocks.recordDraftRevisionInTransaction).toHaveBeenCalledWith(
       expect.anything(),
       { draftId: 41, actorUserId: 19, projectId: 7 },
+    );
+  });
+
+  it("moves a draft without rewriting its text, origin or destinations", async () => {
+    let selected = 0;
+    let updatedParams: unknown[] | undefined;
+    const query = vi.fn(async (sql: string, params?: unknown[]) => {
+      if (sql.includes("select d.id")) {
+        selected += 1;
+        return {
+          rowCount: 1,
+          rows: [{
+            ...row,
+            version: selected === 1 ? "3" : "4",
+            scheduled_at: selected === 1
+              ? "2026-08-20T08:30:00.000Z"
+              : "2026-08-21T08:30:00.000Z",
+            scheduled_local_date: selected === 1 ? "2026-08-20" : "2026-08-21",
+            scheduled_local_time: "10:30",
+          }],
+        };
+      }
+      if (sql.includes("update drafts")) {
+        updatedParams = params;
+        return { rowCount: 1, rows: [{ id: "41" }] };
+      }
+      return { rowCount: 1, rows: [] };
+    });
+    const { pool } = fakePool(query);
+
+    const updated = await rescheduleDraftForUser(5, 41, {
+      version: 3,
+      scheduledAt: "2026-08-21T08:30:00.000Z",
+      schedule: {
+        localDate: "2026-08-21",
+        localTime: "10:30",
+        timezone: "Europe/Amsterdam",
+        disambiguation: "reject",
+        offset: "+02:00",
+      },
+    }, pool as never);
+
+    expect(updated).toMatchObject({
+      id: 41,
+      version: 4,
+      text: input.text,
+      origin: "manual",
+      scheduled_at: "2026-08-21T08:30:00.000Z",
+    });
+    expect(updatedParams).toEqual([
+      41,
+      7,
+      "2026-08-21T08:30:00.000Z",
+      "Europe/Amsterdam",
+      "2026-08-21",
+      "10:30",
+      "+02:00",
+      "reject",
+      3,
+    ]);
+    expect(query.mock.calls.some(([sql]) => String(sql).includes("delete from draft_destinations"))).toBe(false);
+    expect(query.mock.calls.some(([sql]) => String(sql).includes("insert into draft_destinations"))).toBe(false);
+    expect(editorialMocks.recordDraftRevisionInTransaction).toHaveBeenCalledWith(
+      expect.anything(),
+      { draftId: 41, actorUserId: 5, projectId: 7 },
     );
   });
 

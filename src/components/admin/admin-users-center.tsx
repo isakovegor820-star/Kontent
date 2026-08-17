@@ -203,7 +203,7 @@ function AuthMethods({ auth }: { auth: AdminUserListItem["auth"] | AdminUserDeta
 
 function SummaryCard({ label, value, helper, icon: Icon }: { label: string; value: number; helper: string; icon: LucideIcon }) {
   return (
-    <article className="rounded-sm bg-surface-inset p-4">
+    <article className="min-w-0 rounded-sm bg-surface-inset p-4">
       <div className="flex items-start justify-between gap-3">
         <p className="type-caption text-text-3">{label}</p>
         <Icon className="h-4 w-4 shrink-0 text-brand" strokeWidth={1.8} aria-hidden />
@@ -218,7 +218,7 @@ function RegistrationBars({ data }: { data: Array<{ date: string; registrations:
   const maximum = Math.max(1, ...data.map((item) => item.registrations));
   const total = data.reduce((sum, item) => sum + item.registrations, 0);
   return (
-    <section className="rounded-md border border-line bg-surface p-5" aria-labelledby="registrations-chart-title">
+    <section className="min-w-0 max-w-full rounded-md border border-line bg-surface p-5" aria-labelledby="registrations-chart-title">
       <div>
         <p className="type-label text-brand">Динамика</p>
         <h3 id="registrations-chart-title" className="mt-2 text-text">Новые регистрации</h3>
@@ -250,7 +250,7 @@ function AccountMaturity({ summary }: { summary: AdminUsersResponse["summary"] }
     { label: "Подключили Telegram-бота", value: summary.botLinked, color: "bg-info-text" },
   ];
   return (
-    <section className="rounded-md border border-line bg-surface p-5" aria-labelledby="accounts-depth-title">
+    <section className="min-w-0 max-w-full rounded-md border border-line bg-surface p-5" aria-labelledby="accounts-depth-title">
       <p className="type-label text-brand">Глубина активации</p>
       <h3 id="accounts-depth-title" className="mt-2 text-text">Что сделали после регистрации</h3>
       <ul className="mt-5 space-y-4">
@@ -666,7 +666,7 @@ export function AdminUsersCenter({
 
       {data ? (
         <>
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
+          <div className="grid min-w-0 max-w-full gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
             <SummaryCard label="Все аккаунты" value={data.summary.accounts} helper="Зарегистрированы в Авроре" icon={Users} />
             <SummaryCard label="Новые" value={data.summary.newAccounts} helper={`За ${data.periodDays} дней`} icon={UserCheck} />
             <SummaryCard label="Активные" value={data.summary.activeAccounts} helper="Есть живая сессия" icon={Activity} />
@@ -674,7 +674,7 @@ export function AdminUsersCenter({
             <SummaryCard label="С каналами" value={data.summary.withChannels} helper="Подключили хотя бы один" icon={Radio} />
             <SummaryCard label="Подключили бота" value={data.summary.botLinked} helper="Получают команды в Telegram" icon={Bot} />
           </div>
-          <div className="mt-5 grid gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(20rem,0.65fr)]">
+          <div className="mt-5 grid min-w-0 max-w-full gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(20rem,0.65fr)]">
             <RegistrationBars data={registrations} />
             <AccountMaturity summary={data.summary} />
           </div>
@@ -745,7 +745,7 @@ export function AdminUsersCenter({
       ) : null}
 
       {data ? (
-        <div className="mt-5 overflow-hidden rounded-md border border-line bg-surface shadow-soft" aria-busy={listState === "loading" || undefined}>
+        <div className="mt-5 min-w-0 max-w-full overflow-hidden rounded-md border border-line bg-surface shadow-soft" aria-busy={listState === "loading" || undefined}>
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-4 sm:px-5">
             <div>
               <h3 className="text-text">Аккаунты</h3>
@@ -761,10 +761,10 @@ export function AdminUsersCenter({
             </div>
           ) : (
             <>
-              <div className="hidden overflow-x-auto lg:block">
+              <div className="hidden max-w-full overflow-x-auto lg:block">
                 <table className="w-full min-w-[1120px] text-start">
                   <thead className="bg-surface-2">
-                    <tr><th className="px-5 py-3 text-start">Аккаунт</th><th className="px-5 py-3 text-start">Регистрация и вход</th><th className="px-5 py-3 text-start">Проекты и каналы</th><th className="px-5 py-3 text-start">Публикации</th><th className="px-5 py-3 text-start">AI</th><th className="px-5 py-3 text-start">Состояние</th><th className="px-5 py-3"><span className="sr-only">Действие</span></th></tr>
+                    <tr><th className="px-5 py-3 text-start">Аккаунт</th><th className="px-5 py-3 text-start">Регистрация и вход</th><th className="px-5 py-3 text-start">Проекты и каналы</th><th className="px-5 py-3 text-start">Публикации</th><th className="px-5 py-3 text-start">AI</th><th className="px-5 py-3 text-start">Состояние</th><th className="px-5 py-3" aria-label="Действие" /></tr>
                   </thead>
                   <tbody className="divide-y divide-line">
                     {data.users.map((user) => {

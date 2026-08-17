@@ -1,13 +1,18 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  buildRadarDiscoveryQueries,
+  createBingRssTelegramProvider,
+  createDuckDuckGoTelegramProvider,
   createSearxngTelegramProvider,
   discoverTelegramCandidates,
   normalizeRadarQuery,
   normalizeTelegramCandidate,
   parseTelegramCandidates,
   rankVerifiedTelegramSource,
+  rankVerifiedTelegramSourceAcrossQueries,
   scoreRadarRelevance,
+  scoreRadarSemanticSimilarity,
 } from "./radar-search.mjs";
 
 describe("radar hybrid-search core", () => {
@@ -44,6 +49,21 @@ describe("radar hybrid-search core", () => {
     expect(String(fetchImpl.mock.calls[0][0])).toContain("format=json");
   });
 
+  it("uses broad channel wording when a search engine ignores site:t.me", async () => {
+    const response = {
+      ok: true,
+      text: async () => '<a href="https://t.me/russiabuild">Строительство</a>',
+    };
+    const bingFetch = vi.fn().mockResolvedValue(response);
+    const duckFetch = vi.fn().mockResolvedValue(response);
+    await expect(createBingRssTelegramProvider({ fetchImpl: bingFetch }).search("строительство"))
+      .resolves.toMatchObject([{ handle: "russiabuild" }]);
+    await expect(createDuckDuckGoTelegramProvider({ fetchImpl: duckFetch }).search("строительство"))
+      .resolves.toMatchObject([{ handle: "russiabuild" }]);
+    expect(String(bingFetch.mock.calls[0][0])).toContain("Telegram+%D0%BA%D0%B0%D0%BD%D0%B0%D0%BB%D1%8B");
+    expect(String(duckFetch.mock.calls[0][0])).toContain("Telegram+%D0%BA%D0%B0%D0%BD%D0%B0%D0%BB%D1%8B");
+  });
+
   it("falls back to another free provider without inventing a handle", async () => {
     const failed = { name: "failed", search: vi.fn().mockRejectedValue(new Error("offline")) };
     const working = { name: "working", search: vi.fn().mockResolvedValue([
@@ -51,6 +71,65 @@ describe("radar hybrid-search core", () => {
     ]) };
     await expect(discoverTelegramCandidates("садоводство", { providers: [failed, working] }))
       .resolves.toMatchObject([{ handle: "garden_people" }]);
+  });
+
+  it("searches every bounded semantic formulation and merges providers", async () => {
+    const provider = {
+      name: "search",
+      search: vi.fn(async (query) => query.includes("девелопмент")
+        ? [{ ...normalizeTelegramCandidate("https://t.me/block_media"), provider: "search" }]
+        : []),
+    };
+    const results = await discoverTelegramCandidates("строительство", {
+      providers: [provider],
+      expandedQueries: ["девелопмент", "жилые комплексы", "девелопмент"],
+    });
+    expect(provider.search).toHaveBeenCalledTimes(3);
+    expect(results).toMatchObject([{
+      handle: "block_media",
+      matchedQuery: "девелопмент",
+      matchedQueries: ["девелопмент"],
+    }]);
+    expect(buildRadarDiscoveryQueries("Строительство", ["Девелопмент", "строительство"]))
+      .toEqual(["строительство", "девелопмент"]);
+  });
+
+  it("turns a natural-language request into a compact content query without AI", () => {
+    expect(buildRadarDiscoveryQueries("Найди мне каналы, где пишут про строительство"))
+      .toEqual([
+        "найди мне каналы где пишут про строительство",
+        "строительство",
+      ]);
+  });
+
+  it("accepts a verified source through a transparent close formulation", () => {
+    const now = Date.parse("2026-08-06T10:00:00.000Z");
+    const rank = rankVerifiedTelegramSourceAcrossQueries("строительство", ["девелопмент"], {
+      ok: true,
+      title: "Блок",
+      description: "Девелопмент и городская среда",
+      subscribers: 9000,
+      posts: [{ text: "Новости девелопмента", postedAt: "2026-08-05T10:00:00.000Z" }],
+      activity: { lastPostAt: "2026-08-05T10:00:00.000Z", postsPerWeek: 4 },
+    }, now);
+    expect(rank).toMatchObject({ accepted: true, matchedQuery: "девелопмент" });
+    expect(rank.reason).toContain("близкой формулировке");
+  });
+
+  it("accepts a channel whose post corpus matches the query semantically", () => {
+    const now = Date.parse("2026-08-06T10:00:00.000Z");
+    expect(scoreRadarSemanticSimilarity(0.65)).toBeGreaterThan(75);
+    const rank = rankVerifiedTelegramSource("строительство", {
+      ok: true,
+      title: "Блок",
+      description: "Авторский журнал",
+      subscribers: 9000,
+      posts: [{ text: "Новые жилые комплексы и работа девелоперов", postedAt: "2026-08-05T10:00:00.000Z" }],
+      activity: { lastPostAt: "2026-08-05T10:00:00.000Z", postsPerWeek: 4 },
+      semanticSimilarity: 0.65,
+    }, now);
+    expect(rank).toMatchObject({ accepted: true });
+    expect(rank.reason).toContain("по смыслу");
   });
 
   it("rejects a live but irrelevant channel and rewards fresh matching posts", () => {

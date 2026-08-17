@@ -18,10 +18,12 @@ import {
   FileText,
   ImageIcon,
   ListChecks,
+  LoaderCircle,
   MessageSquareText,
   Plus,
   RefreshCw,
   Sparkles,
+  Timer,
   Video,
 } from "lucide-react";
 
@@ -234,6 +236,83 @@ function lexicalSimilarity(left: string, right: string): number {
 // Нейтральные по нише — конкретика приедет из настроек и разведки, выдумывать её не надо.
 /* ------------------------------------------------------------- СООБЩЕНИЕ */
 
+function formatGenerationTime(elapsedSeconds: number): string {
+  const safeSeconds = Math.max(0, Math.floor(elapsedSeconds));
+  const minutes = Math.floor(safeSeconds / 60);
+  const seconds = safeSeconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+function GenerationStatus({
+  progressLabel,
+  onStop,
+}: {
+  progressLabel?: string;
+  onStop: () => void;
+}) {
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+
+  useEffect(() => {
+    const startedAt = Date.now();
+    const updateElapsed = () => {
+      setElapsedSeconds(Math.floor((Date.now() - startedAt) / 1_000));
+    };
+
+    updateElapsed();
+    const timerId = window.setInterval(updateElapsed, 1_000);
+    return () => window.clearInterval(timerId);
+  }, []);
+
+  const formattedTime = formatGenerationTime(elapsedSeconds);
+
+  return (
+    <div className="mt-3 max-w-[72ch] rounded-md border border-brand/25 bg-info-soft p-4 shadow-sm">
+      <div className="flex items-start gap-3">
+        <span
+          className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-brand-gradient text-white shadow-glow"
+          aria-hidden
+        >
+          <LoaderCircle className="h-5 w-5 motion-safe:animate-spin" strokeWidth={2} />
+        </span>
+
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            <p className="text-[14px] leading-snug font-bold text-text">Генерация идёт</p>
+            <span className="inline-flex items-center gap-1.5 text-[11px] leading-none font-semibold text-info-text">
+              <Timer className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />
+              <span>Прошло</span>
+              <time className="tabular-nums" dateTime={`PT${elapsedSeconds}S`} aria-label={`Прошло времени: ${formattedTime}`}>
+                {formattedTime}
+              </time>
+            </span>
+          </div>
+          <p className="mt-1 text-[12px] leading-relaxed font-medium text-info-text">
+            {progressLabel ?? "Аврора создаёт материал…"}
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-3 flex flex-col items-stretch justify-between gap-3 border-t border-brand/15 pt-3 sm:flex-row sm:items-center">
+        <p className="text-[11px] leading-relaxed text-text-3">
+          Готовые фрагменты появляются в ответе сразу.
+        </p>
+        <Button
+          type="button"
+          variant="danger"
+          size="sm"
+          className="w-full border border-danger-text/20 px-4 shadow-sm sm:w-auto"
+          onClick={onStop}
+          aria-label="Остановить генерацию"
+          title="Остановить генерацию"
+        >
+          <CircleStop className="h-4 w-4" strokeWidth={2} aria-hidden />
+          Остановить
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function MessageRow({
   msg,
   reduce,
@@ -242,6 +321,7 @@ function MessageRow({
   onCopy,
   onRegenerate,
   onRetry,
+  onImprove,
   onShorten,
   creatingPost,
 }: {
@@ -252,6 +332,7 @@ function MessageRow({
   onCopy: () => void;
   onRegenerate: () => void;
   onRetry: () => void;
+  onImprove: () => void;
   onShorten: () => void;
   creatingPost: boolean;
 }) {
@@ -276,22 +357,30 @@ function MessageRow({
   // ИИ — обычный читаемый текст без ещё одной карточки вокруг карточки.
   return (
     <motion.div {...appear} className="w-full shrink-0">
-      <div className="min-w-0">
+      <div className="min-w-0" aria-busy={msg.streaming || undefined}>
         <p className="mb-2 flex items-center gap-2 text-[11px] font-bold tracking-wide text-text-3 uppercase">
-          <span className="h-1.5 w-1.5 rounded-full bg-success-text" aria-hidden />
+          <span
+            className={cn(
+              "h-1.5 w-1.5 rounded-full",
+              msg.streaming ? "bg-brand" : "bg-success-text",
+            )}
+            aria-hidden
+          />
           Аврора
         </p>
         {msg.text.trim() && (
           <p className="max-w-[72ch] text-[15px] leading-[1.7] whitespace-pre-wrap text-text">
             {msg.text}
+            {msg.streaming && (
+              <span
+                className="ml-1 inline-block h-[1em] w-0.5 translate-y-[0.12em] rounded-full bg-brand-gradient motion-safe:animate-pulse"
+                aria-hidden
+              />
+            )}
           </p>
         )}
 
-        {msg.streaming && msg.progressLabel && (
-          <p role="status" aria-live="polite" className="mt-2 text-[12px] font-semibold text-info-text">
-            {msg.progressLabel}
-          </p>
-        )}
+        {msg.streaming && <GenerationStatus progressLabel={msg.progressLabel} onStop={onStop} />}
 
         {msg.errorMessage && (
           <div role="alert" className="mt-3 max-w-[72ch] rounded-sm border border-danger-text/25 bg-danger-soft px-3 py-2 text-[12px] leading-relaxed text-danger-text">
@@ -301,8 +390,6 @@ function MessageRow({
 
         {msg.statusMessage && (
           <p
-            role="status"
-            aria-live="polite"
             className="mt-3 max-w-[72ch] rounded-sm border border-line bg-surface-inset px-3 py-2 text-[12px] leading-relaxed text-text-2"
           >
             {msg.statusMessage}
@@ -314,24 +401,6 @@ function MessageRow({
             Запрошенная модель: {msg.requestedEngine}. Итоговый проход: {msg.effectiveEngine}.
             В ходе генерации использовался резервный маршрут; выбор в настройках не менялся.
           </p>
-        )}
-
-        {/* Печатает — можно остановить. Анимация никогда не держит человека (ТЗ 7.4) */}
-        {msg.streaming && (
-          <div className="mt-3">
-            <Button
-              type="button"
-              variant="danger"
-              size="sm"
-              className="border border-danger-text/20 px-4 shadow-sm"
-              onClick={onStop}
-              aria-label="Остановить генерацию"
-              title="Остановить генерацию"
-            >
-              <CircleStop className="h-4 w-4" strokeWidth={2} aria-hidden />
-              Остановить
-            </Button>
-          </div>
         )}
 
         {!msg.streaming && msg.retryable && (
@@ -369,6 +438,10 @@ function MessageRow({
             <Button variant="ghost" size="sm" className="h-8 px-2.5 text-[12px]" onClick={onRegenerate}>
               <RefreshCw className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />
               Ещё вариант
+            </Button>
+            <Button variant="ghost" size="sm" className="h-8 px-2.5 text-[12px]" onClick={onImprove}>
+              <Sparkles className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />
+              Улучшить
             </Button>
             <Button variant="ghost" size="sm" className="h-8 px-2.5 text-[12px]" onClick={onShorten}>
               Короче
@@ -1529,8 +1602,16 @@ function StudioPageInner() {
             });
           } else if (event.type === "delta") {
             projection = projectAiDraftEvent(projection, event);
+            setMsg({
+              text: projection.visibleText,
+              requestId: event.requestId,
+            });
           } else if (event.type === "replace") {
             projection = projectAiDraftEvent(projection, event);
+            setMsg({
+              text: projection.visibleText,
+              requestId: event.requestId,
+            });
           } else if (event.type === "fallback") {
             fallbackUsed = true;
             requestedEngineId = event.fromEngine;
@@ -1607,8 +1688,10 @@ function StudioPageInner() {
         });
         if (completion.status === "truncated") {
           setMsg({
-            text: previousText,
-            errorMessage: "Ответ оборвался до подтверждения завершения. Повтори тот же запрос: сохранённый результат будет восстановлен без двойного списания, а незавершённый — безопасно запущен снова.",
+            text: previousText || completion.partialText,
+            errorMessage: completion.partialText
+              ? "Ответ оборвался до подтверждения завершения. Частичный текст сохранён — его можно скопировать или безопасно повторить запрос."
+              : "Ответ оборвался до подтверждения завершения. Повтори тот же запрос: сохранённый результат будет восстановлен без двойного списания.",
             progressLabel: undefined,
             requestId: terminalRequestId,
             streaming: false,
@@ -1796,7 +1879,7 @@ function StudioPageInner() {
         id: aiId,
         role: "ai",
         text: "",
-        progressLabel: "Готовлю текст по выбранным настройкам…",
+        progressLabel: "Начинаю писать — текст появится сразу…",
         streaming: true,
         postable: false,
       },
@@ -1945,6 +2028,19 @@ function StudioPageInner() {
     void startStream(id, gen);
   };
 
+  const improve = () => {
+    ask("Улучшить последний текст", {
+      cmd: "rewrite",
+      input: "Отредактируй последний ответ: сделай текст яснее, сильнее и естественнее. Сохрани смысл, подтверждённые факты и требования выбранной площадки.",
+      skipBrief: true,
+      postSettings: normalizePostSettings({
+        ...postSettings,
+        qualityMode: "maximum",
+        autoImprove: true,
+      }),
+    });
+  };
+
   const copy = async (text: string) => {
     try {
       await navigator.clipboard.writeText(text);
@@ -2032,6 +2128,12 @@ function StudioPageInner() {
   const briefConflicts = validatePostSettingsConflicts(postSettings);
   const briefBlockers = briefConflicts.filter((item) => item.severity === "error");
   const briefSummary = buildPostSettingsSummary(postSettings, selectedNetwork);
+  const latestAiStatus = [...messages]
+    .reverse()
+    .find((message) => message.role === "ai");
+  const generationAnnouncement = latestAiStatus?.streaming
+    ? latestAiStatus.progressLabel ?? "Генерация продолжается"
+    : latestAiStatus?.statusMessage ?? "";
   const originalityLimit = postSettings.originalityDepth === "all" ? 200 : Number(postSettings.originalityDepth);
   const similarPosts = pendingBrief && postSettings.showSimilarPosts
     ? s.realPosts
@@ -2056,6 +2158,10 @@ function StudioPageInner() {
         <StudioSkeleton />
       ) : (
         <>
+          {/* Stable live region: updates are announced reliably without reading every token. */}
+          <div role="status" className="sr-only">
+            {generationAnnouncement}
+          </div>
           {/* Чат и Студия остаются смонтированы: можно переключаться
               между ними, не теряя черновик сообщения или настройки генерации медиа. */}
           <div
@@ -2088,6 +2194,7 @@ function StudioPageInner() {
                       onCopy={() => void copy(message.text)}
                       onRegenerate={() => regenerate(message.id)}
                       onRetry={() => retryGeneration(message.id)}
+                      onImprove={improve}
                       onShorten={() => ask("Сделай короче")}
                       creatingPost={creatingPostId === message.id}
                     />

@@ -824,7 +824,7 @@ function studioStreamResponse(
             requestId,
             deadlines,
             send,
-            false,
+            true,
             attemptContext("draft"),
           );
           finalEngine = generated.engine;
@@ -911,7 +911,7 @@ function studioStreamResponse(
           requestId,
           deadlines,
           send,
-          false,
+          true,
           attemptContext("draft"),
         );
         const draft = finishCandidate(generatedDraft.text);
@@ -1520,8 +1520,11 @@ export async function POST(req: NextRequest) {
     return aiJson(requestId, { error: code, retryable: status === 503 }, { status });
   }
 
+  // Studio stays responsive in its everyday modes: one strong pass plus deterministic
+  // validation. A second full provider pass is reserved for an explicit maximum-quality
+  // request (including the separate "Improve" action in the client).
   const editorial = interactiveStream
-    && effectivePostSettings.qualityMode !== "fast"
+    && effectivePostSettings.qualityMode === "maximum"
     && EDITORIAL_KINDS.includes(kind)
     && role !== "critic";
   return studioStreamResponse(

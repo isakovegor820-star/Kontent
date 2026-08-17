@@ -184,6 +184,12 @@
   text-decoration: none;
 }
 
+.passwordLabel a {
+  min-height: 2.75rem;
+  display: inline-flex;
+  align-items: center;
+}
+
 .passwordLabel a:hover,
 .switchCopy a:hover {
   text-decoration: underline;
@@ -255,8 +261,10 @@
 
 .switchCopy a {
   display: inline-flex;
+  min-width: 2.75rem;
   min-height: 2.75rem;
   align-items: center;
+  justify-content: center;
   font-weight: 740;
 }
 

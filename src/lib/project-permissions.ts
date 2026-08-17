@@ -13,6 +13,7 @@ export const PROJECT_PERMISSIONS = [
   "content.review",
   "content.approve",
   "content.publish",
+  "audience.reply.send",
   "audit.read",
 ] as const;
 export type ProjectPermission = (typeof PROJECT_PERMISSIONS)[number];
@@ -41,10 +42,12 @@ const ROLE_PERMISSIONS: Readonly<Record<ProjectRole, ReadonlySet<ProjectPermissi
     "content.submit",
     "content.review",
     "content.approve",
+    "audience.reply.send",
   ]),
   publisher: new Set([
     "project.read",
     "content.publish",
+    "audience.reply.send",
   ]),
 };
 

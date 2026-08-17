@@ -13,6 +13,7 @@ import {
   isRecoverableLegacyDraft,
   isUnownedLegacyDraftCandidate,
   reusableAcknowledgedDraft,
+  rescheduleServerDraft,
   resolveAcknowledgedDraftRevision,
   runSingleDraftSave,
   scheduleDraftAutosave,
@@ -91,6 +92,35 @@ describe("draft client coordination", () => {
     expect(new URL(String(requestUrl), "https://aurora.test").search).toBe("");
     expect(JSON.parse(String(init?.body))).toEqual(input);
     expect(String(requestUrl)).not.toContain(text);
+  });
+
+  it("PATCHes only the versioned schedule when a calendar card moves", async () => {
+    const input = {
+      version: 3,
+      scheduledAt: "2026-08-21T08:30:00.000Z",
+      schedule: {
+        localDate: "2026-08-21",
+        localTime: "10:30",
+        timezone: "Europe/Amsterdam",
+        disambiguation: "reject" as const,
+        offset: "+02:00",
+      },
+    };
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      ok: true,
+      draft: { id: 41, version: 4, scheduled_at: input.scheduledAt },
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(rescheduleServerDraft(41, input)).resolves.toMatchObject({
+      id: 41,
+      version: 4,
+      scheduled_at: input.scheduledAt,
+    });
+    expect(fetchMock).toHaveBeenCalledWith("/api/drafts/41/schedule", expect.objectContaining({
+      method: "PATCH",
+      body: JSON.stringify(input),
+    }));
   });
 
   it("keeps only account-owned recovery copies and excludes demo or unowned legacy", () => {

@@ -28,6 +28,10 @@ vi.mock("@/lib/bounded-request-body", async () => {
 vi.mock("@/lib/uploaded-image", () => ({ inspectUploadedImage: mocks.inspectUploadedImage }));
 
 import { ProjectAccessError } from "@/lib/project-permissions";
+import {
+  acquireMediaAssetBodySlot,
+  MAX_CONCURRENT_MEDIA_ASSET_BODIES,
+} from "@/lib/bounded-request-body";
 import { POST } from "./route";
 
 function multipartRequest(headers: HeadersInit = {}) {
@@ -83,5 +87,23 @@ describe("POST /api/media/assets", () => {
     expect(mocks.checkRateLimit).toHaveBeenCalledTimes(2);
     expect(mocks.readRequestBodyLimited).not.toHaveBeenCalled();
     expect(mocks.inspectUploadedImage).not.toHaveBeenCalled();
+  });
+
+  it("rejects excess concurrent image decodes before buffering the body", async () => {
+    const releases = Array.from(
+      { length: MAX_CONCURRENT_MEDIA_ASSET_BODIES },
+      () => acquireMediaAssetBodySlot(),
+    );
+    try {
+      const response = await POST(multipartRequest());
+
+      expect(response.status).toBe(503);
+      expect(response.headers.get("retry-after")).toBe("2");
+      await expect(response.json()).resolves.toMatchObject({ error: "upload_busy" });
+      expect(mocks.readRequestBodyLimited).not.toHaveBeenCalled();
+      expect(mocks.inspectUploadedImage).not.toHaveBeenCalled();
+    } finally {
+      for (const release of releases) release();
+    }
   });
 });

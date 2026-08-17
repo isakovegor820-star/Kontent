@@ -15,6 +15,7 @@ import {
   SearchCode,
   ShieldCheck,
   Sparkles,
+  XCircle,
 } from "lucide-react";
 
 import { AppShell } from "@/components/app/shell";
@@ -24,6 +25,7 @@ import { siteAnalysisErrorMessage, type SiteAnalysisStatus } from "@/lib/site-an
 import {
   acquireStableSiteAnalysisKey,
   bindStableSiteAnalysisKey,
+  createSiteAnalysisUuid,
   releaseStableSiteAnalysisKey,
   siteAnalysisIntentFingerprint,
   type StableSiteAnalysisKey,
@@ -39,6 +41,30 @@ type Finding = {
   description?: string;
   evidence?: Evidence[];
   confidence?: string;
+};
+type AuditCheckStatus = "passed" | "warning" | "critical" | "not_checked";
+type AuditCheck = {
+  id: string;
+  label: string;
+  status: AuditCheckStatus;
+  detail: string;
+  recommendation: string;
+  evidence?: Evidence[];
+  confidence?: string;
+};
+type AuditSummary = {
+  critical: number;
+  warnings: number;
+  passed: number;
+  notChecked: number;
+  total: number;
+};
+type OptimizationArea = {
+  score?: number | null;
+  status?: "critical" | "needs_work" | "strong";
+  summary?: AuditSummary;
+  checks?: AuditCheck[];
+  tasks?: PlanTask[];
 };
 type PlanTask = {
   title?: string;
@@ -67,6 +93,12 @@ type SiteReport = {
   inventory?: Array<{ url: string; status: number; title?: string; words?: number; schemaTypes?: string[] }>;
   seoAudit?: Finding[];
   geoAudit?: Finding[];
+  optimization?: {
+    version?: string;
+    geoDefinition?: { term?: string; description?: string };
+    seo?: OptimizationArea;
+    geo?: OptimizationArea;
+  };
   themes?: Array<{ theme: string; occurrences: number; evidence?: Evidence[]; confidence?: string }>;
   intents?: Array<{ id: string; label: string; pages: number; evidence?: Evidence[]; confidence?: string }>;
   internalLinking?: { totalLinks?: number; orphanCandidates?: Array<{ url: string }> };
@@ -333,29 +365,291 @@ function EvidenceLinks({ items }: { items?: Evidence[] }) {
   );
 }
 
-function FindingList({ title, items, empty }: { title: string; items?: Finding[]; empty: string }) {
+const AUDIT_STATUS: Record<AuditCheckStatus, { label: string; className: string }> = {
+  critical: { label: "Критично", className: "bg-danger-soft text-danger-text" },
+  warning: { label: "Предупреждение", className: "bg-fire-soft text-fire-text" },
+  passed: { label: "Пройдено", className: "bg-success-soft text-success-text" },
+  not_checked: { label: "Не проверено", className: "bg-surface-inset text-text-2" },
+};
+
+function auditSummary(area?: OptimizationArea): AuditSummary {
+  if (area?.summary) return area.summary;
+  const checks = area?.checks || [];
+  return {
+    critical: checks.filter((check) => check.status === "critical").length,
+    warnings: checks.filter((check) => check.status === "warning").length,
+    passed: checks.filter((check) => check.status === "passed").length,
+    notChecked: checks.filter((check) => check.status === "not_checked").length,
+    total: checks.length,
+  };
+}
+
+function AuditStatusIcon({ status }: { status: AuditCheckStatus }) {
+  if (status === "passed") return <CheckCircle2 className="h-5 w-5" aria-hidden />;
+  if (status === "critical") return <XCircle className="h-5 w-5" aria-hidden />;
+  if (status === "warning") return <AlertTriangle className="h-5 w-5" aria-hidden />;
+  return <Clock3 className="h-5 w-5" aria-hidden />;
+}
+
+function AuditSignalGroup({ title, items, empty }: { title: string; items: AuditCheck[]; empty: string }) {
   return (
-    <section>
-      <h3 className="text-[16px] font-extrabold text-text">{title}</h3>
-      {!items?.length ? (
-        <p className="mt-3 rounded-sm bg-success-soft p-3 text-[13px] text-success-text">{empty}</p>
-      ) : (
-        <ul className="mt-3 space-y-3">
-          {items.map((item, index) => (
-            <li key={`${item.code || item.title}-${index}`} className="rounded-sm border border-line bg-surface-2 p-4">
-              <div className="flex flex-wrap items-center gap-2">
-                <p className="font-bold text-text">{item.title}</p>
-                <Badge tone={item.severity === "high" ? "danger" : item.severity === "medium" ? "fire" : "neutral"}>
-                  {item.severity === "high" ? "Высокий" : item.severity === "medium" ? "Средний" : "Низкий"}
-                </Badge>
-                {item.confidence && <span className="text-[11px] text-text-3">Точность: {confidenceLabel(item.confidence)}</span>}
+    <section aria-labelledby={`audit-${title.replace(/\s+/gu, "-").toLocaleLowerCase("ru-RU")}`}>
+      <h5 id={`audit-${title.replace(/\s+/gu, "-").toLocaleLowerCase("ru-RU")}`} className="type-body-strong text-text">{title}</h5>
+      {items.length ? (
+        <ul className="mt-3 space-y-2">
+          {items.map((item) => (
+            <li key={item.id} className={cn("rounded-sm p-3", AUDIT_STATUS[item.status].className)}>
+              <div className="flex items-start gap-3">
+                <span className="mt-0.5 shrink-0"><AuditStatusIcon status={item.status} /></span>
+                <div className="min-w-0">
+                  <p className="type-label text-current">{item.label}</p>
+                  <p className="type-caption mt-1 text-current opacity-90">{item.detail}</p>
+                </div>
               </div>
-              {item.description && <p className="mt-1.5 text-[13px] leading-relaxed text-text-2">{item.description}</p>}
-              <EvidenceLinks items={item.evidence} />
             </li>
           ))}
         </ul>
+      ) : (
+        <p className="type-secondary mt-3 rounded-sm bg-success-soft p-3 text-success-text">{empty}</p>
       )}
+    </section>
+  );
+}
+
+function DetailedFindings({ items }: { items?: Finding[] }) {
+  if (!items?.length) return null;
+  return (
+    <details className="rounded-sm border border-line bg-surface-2 p-4">
+      <summary className="type-body-strong min-h-11 cursor-pointer py-3 text-text focus-visible:rounded-xs focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15">
+        Подробные сигналы по страницам · {items.length}
+      </summary>
+      <ul className="mt-4 space-y-3">
+        {items.map((item, index) => (
+          <li key={`${item.code || item.title}-${index}`} className="rounded-sm bg-surface-inset p-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="type-body-strong text-text">{item.title}</p>
+              <Badge tone={item.severity === "high" ? "danger" : item.severity === "medium" ? "fire" : "neutral"}>
+                {item.severity === "high" ? "Высокий" : item.severity === "medium" ? "Средний" : "Низкий"}
+              </Badge>
+              {item.confidence && <span className="type-caption text-text-3">Точность: {confidenceLabel(item.confidence)}</span>}
+            </div>
+            {item.description && <p className="type-secondary mt-1.5 text-text-2">{item.description}</p>}
+            <EvidenceLinks items={item.evidence} />
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
+function OptimizationPanel({
+  kind,
+  area,
+  findings,
+  geoDefinition,
+}: {
+  kind: "seo" | "geo";
+  area?: OptimizationArea;
+  findings?: Finding[];
+  geoDefinition?: { term?: string; description?: string };
+}) {
+  const checks = area?.checks || [];
+  const summary = auditSummary(area);
+  const critical = checks.filter((check) => check.status === "critical");
+  const warnings = checks.filter((check) => check.status === "warning");
+  const score = typeof area?.score === "number" ? area.score : null;
+  const hasChecks = checks.length > 0;
+  const metrics: Array<[string, number | string, string]> = [
+    ["Критично", hasChecks ? summary.critical : "—", "text-danger-text"],
+    ["Предупреждения", hasChecks ? summary.warnings : "—", "text-fire-text"],
+    ["Пройдено", hasChecks ? summary.passed : "—", "text-success-text"],
+    ["Не проверено", hasChecks ? summary.notChecked : "—", "text-text-2"],
+  ];
+  const title = kind === "seo" ? "SEO-анализ" : "GEO-анализ";
+  const description = kind === "seo"
+    ? "Технические и контентные сигналы, которые можно подтвердить по проверенному публичному срезу сайта."
+    : geoDefinition?.description || "Оценка ясности, доказательности и структуры контента для генеративных поисковых систем.";
+
+  return (
+    <div className="space-y-6">
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_12rem]">
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <h4 className="type-h3 text-text">{title}</h4>
+            {kind === "geo" && <Badge tone="brand">{geoDefinition?.term || "Generative Engine Optimization"}</Badge>}
+          </div>
+          <p className="type-secondary mt-2 max-w-2xl text-pretty text-text-2">{description}</p>
+        </div>
+        <div className="rounded-md bg-info-soft p-4 text-info-text" aria-label={score === null ? "Оценка не рассчитана" : `Оценка ${score} из 100`}>
+          <p className="type-caption font-semibold text-current">Оценка проверенного среза</p>
+          <p className="nums mt-1 text-3xl font-black tabular-nums text-current">{score === null ? "—" : score}<span className="type-secondary font-semibold text-current"> / 100</span></p>
+          <p className="type-caption mt-1 text-current opacity-85">Без позиций, трафика и выдуманных метрик.</p>
+        </div>
+      </div>
+
+      <dl className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        {metrics.map(([label, value, tone]) => (
+          <div key={String(label)} className="rounded-sm bg-surface-inset p-3">
+            <dt className="type-caption text-text-3">{label}</dt>
+            <dd className={cn("nums mt-1 text-2xl font-black tabular-nums", tone)}>{value}</dd>
+          </div>
+        ))}
+      </dl>
+
+      {!hasChecks && (
+        <p className="type-secondary rounded-sm bg-surface-inset p-4 text-text-2">
+          Этот отчёт создан до появления SEO/GEO-модуля. Запусти новый анализ, чтобы получить оценку и чек-лист.
+        </p>
+      )}
+
+      {hasChecks && (
+        <section>
+          <h5 className="type-body-strong text-text">Проверки</h5>
+          <ul className="mt-3 grid gap-3 lg:grid-cols-2">
+            {checks.map((check) => (
+              <li key={check.id} className="rounded-sm border border-line bg-surface-2 p-4">
+                <div className="flex items-start gap-3">
+                  <span className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-full", AUDIT_STATUS[check.status].className)}>
+                    <AuditStatusIcon status={check.status} />
+                  </span>
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="type-body-strong text-text">{check.label}</p>
+                      <span className={cn("type-caption rounded-full px-2 py-0.5 font-semibold", AUDIT_STATUS[check.status].className)}>{AUDIT_STATUS[check.status].label}</span>
+                    </div>
+                    <p className="type-caption mt-1 text-text-2">{check.detail}</p>
+                    {check.confidence && <p className="type-caption mt-1 text-text-3">Точность: {confidenceLabel(check.confidence)}</p>}
+                    <EvidenceLinks items={check.evidence} />
+                  </div>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      <div className="grid gap-6 xl:grid-cols-2">
+        <AuditSignalGroup title="Критические ошибки" items={critical} empty="Критических ошибок в проверенном срезе не найдено." />
+        <AuditSignalGroup title="Предупреждения" items={warnings} empty="Предупреждений в проверенном срезе не найдено." />
+      </div>
+
+      <section>
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h5 className="type-body-strong text-text">Задачи по приоритету</h5>
+            <p className="type-caption mt-1 text-text-3">Сначала критические проблемы, затем улучшения с самым широким эффектом.</p>
+          </div>
+          <Badge tone="neutral">{area?.tasks?.length || 0} задач</Badge>
+        </div>
+        {area?.tasks?.length ? (
+          <ol className="mt-3 grid gap-3 lg:grid-cols-2">
+            {area.tasks.map((task, index) => (
+              <li key={`${task.title}-${index}`} className="rounded-sm border border-line bg-surface-2 p-4">
+                <div className="flex items-center gap-2">
+                  <Badge tone={task.priority === "P0" ? "danger" : "brand"}>{task.priority}</Badge>
+                  {task.dueDays && <span className="type-caption text-text-3">Ориентир: {task.dueDays} дней</span>}
+                </div>
+                <p className="type-body-strong mt-2 text-text">{task.title}</p>
+                {task.rationale && <p className="type-caption mt-1 text-text-2">{task.rationale}</p>}
+                <EvidenceLinks items={task.sources} />
+              </li>
+            ))}
+          </ol>
+        ) : (
+          <p className="type-secondary mt-3 rounded-sm bg-success-soft p-3 text-success-text">Новых задач по проверенным сигналам нет.</p>
+        )}
+      </section>
+
+      <DetailedFindings items={findings} />
+
+      <p className="type-caption rounded-sm bg-surface-inset p-3 text-text-3">
+        Следующая версия: генерация исправленных title, description, FAQ и текстовых блоков. В MVP доступны анализ и рекомендации.
+      </p>
+    </div>
+  );
+}
+
+function OptimizationAudit({ report, analysisId }: { report: SiteReport; analysisId: number }) {
+  const [activeTab, setActiveTab] = useState<"seo" | "geo">("seo");
+  const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const tabs = [
+    { id: "seo" as const, label: "SEO-анализ", area: report.optimization?.seo },
+    { id: "geo" as const, label: "GEO-анализ", area: report.optimization?.geo },
+  ];
+  const activeIndex = tabs.findIndex((tab) => tab.id === activeTab);
+  const moveToTab = (index: number) => {
+    const nextIndex = (index + tabs.length) % tabs.length;
+    setActiveTab(tabs[nextIndex].id);
+    tabRefs.current[nextIndex]?.focus();
+  };
+  const handleTabKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
+    if (event.key === "ArrowRight") {
+      event.preventDefault();
+      moveToTab(index + 1);
+    } else if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      moveToTab(index - 1);
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      moveToTab(0);
+    } else if (event.key === "End") {
+      event.preventDefault();
+      moveToTab(tabs.length - 1);
+    }
+  };
+
+  return (
+    <section className="rounded-md border border-line bg-surface p-4 shadow-soft sm:p-6" aria-labelledby={`optimization-title-${analysisId}`}>
+      <div>
+        <h3 id={`optimization-title-${analysisId}`} className="type-h2 text-text">SEO и GEO</h3>
+        <p className="type-secondary mt-2 max-w-3xl text-pretty text-text-2">
+          Две независимые оценки: техническая готовность к поиску и понятность контента для генеративных систем.
+        </p>
+      </div>
+      <div className="mt-5">
+        <div role="tablist" aria-label="Разделы SEO и GEO" className="flex w-full gap-1 rounded-sm bg-surface-inset p-1 sm:w-fit">
+          {tabs.map((tab, index) => {
+            const selected = activeTab === tab.id;
+            const score = typeof tab.area?.score === "number" ? tab.area.score : null;
+            return (
+              <button
+                key={tab.id}
+                ref={(node) => { tabRefs.current[index] = node; }}
+                id={`optimization-tab-${tab.id}-${analysisId}`}
+                type="button"
+                role="tab"
+                aria-selected={selected}
+                aria-controls={`optimization-panel-${tab.id}-${analysisId}`}
+                tabIndex={selected ? 0 : -1}
+                onClick={() => setActiveTab(tab.id)}
+                onKeyDown={(event) => handleTabKeyDown(event, index)}
+                className={cn(
+                  "type-button flex min-h-11 min-w-0 flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-xs px-2.5 transition-[background-color,color,box-shadow] duration-150 motion-reduce:transition-none sm:flex-none sm:gap-2 sm:px-4",
+                  "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15",
+                  selected ? "bg-surface text-brand shadow-soft" : "text-text-2 hover:bg-surface/70 hover:text-text",
+                )}
+              >
+                {tab.label}
+                <span className={cn("nums rounded-full px-2 py-0.5 text-[12px] font-bold tabular-nums", selected ? "bg-info-soft text-info-text" : "bg-surface text-text-3")}>{score === null ? "—" : score}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      <div
+        id={`optimization-panel-${activeTab}-${analysisId}`}
+        role="tabpanel"
+        aria-labelledby={`optimization-tab-${activeTab}-${analysisId}`}
+        tabIndex={0}
+        className="mt-6 rounded-xs focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15"
+      >
+        {activeTab === "seo" ? (
+          <OptimizationPanel kind="seo" area={report.optimization?.seo} findings={report.seoAudit} />
+        ) : (
+          <OptimizationPanel kind="geo" area={report.optimization?.geo} findings={report.geoAudit} geoDefinition={report.optimization?.geoDefinition} />
+        )}
+      </div>
+      <span className="sr-only" aria-live="polite">Открыта вкладка {tabs[activeIndex]?.label}</span>
     </section>
   );
 }
@@ -692,10 +986,7 @@ function ReportView({ report, analysisId }: { report: SiteReport; analysisId: nu
         </div>
       </div>
 
-      <div className="grid gap-6 xl:grid-cols-2">
-        <FindingList title="Технический поисковый аудит" items={report.seoAudit} empty="Критичных поисковых проблем в проверенном срезе не найдено." />
-        <FindingList title="Аудит для поиска с ИИ" items={report.geoAudit} empty="Критичных проблем для поиска с ИИ в проверенном срезе не найдено." />
-      </div>
+      <OptimizationAudit report={report} analysisId={analysisId} />
 
       <section>
         <h3 className="text-[16px] font-extrabold text-text">Темы и интенты</h3>
@@ -957,7 +1248,7 @@ export default function SiteAnalysisPage() {
         CREATE_KEY_SLOT,
         fingerprint,
         "site-analysis",
-        () => crypto.randomUUID(),
+        createSiteAnalysisUuid,
         createKeyRef.current,
       );
       createKeyRef.current = keyRecord;
@@ -1010,7 +1301,7 @@ export default function SiteAnalysisPage() {
         slot,
         `${current.id}:r${current.runRevision}`,
         "site-analysis-retry",
-        () => crypto.randomUUID(),
+        createSiteAnalysisUuid,
         retryKeyRef.current,
       );
       retryKeyRef.current = keyRecord;

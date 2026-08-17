@@ -20,6 +20,7 @@
     "test:autopilot-confirmation:integration": "node scripts/test-autopilot-confirmation-integration.mjs",
     "test:semantic-publication:integration": "node scripts/test-semantic-publication-integration.mjs",
     "test:ai-orchestration:integration": "vitest run --config vitest.integration.config.ts src/e2e/ai-orchestration.integration.ts",
+    "test:audience-delivery:integration": "vitest run --config vitest.integration.config.ts src/e2e/audience-delivery.integration.ts",
     "test:publication-operation:integration": "vitest run --config vitest.integration.config.ts src/e2e/publication-operation.integration.ts",
     "test:publication-lifecycle:integration": "vitest run --config vitest.integration.config.ts src/e2e/publication-lifecycle.integration.ts",
     "test:project-collaboration:integration": "vitest run --config vitest.integration.config.ts src/e2e/project-collaboration.integration.ts",
@@ -65,8 +66,17 @@
     "vitest": "^4.1.10"
   },
   "overrides": {
+    "js-yaml": "4.3.1",
+    "nanoid": "3.3.18",
+    "postcss": "8.5.26",
+    "minimatch@3.1.5": {
+      "brace-expansion": "1.1.18"
+    },
+    "minimatch@10.2.5": {
+      "brace-expansion": "5.0.9"
+    },
     "next": {
-      "postcss": "8.5.24",
+      "postcss": "8.5.26",
       "sharp": "0.35.3"
     }
   }

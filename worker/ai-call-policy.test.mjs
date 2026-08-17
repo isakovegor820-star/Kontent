@@ -8,7 +8,9 @@ describe("worker AI call policy", () => {
       .map(([surface]) => surface)
       .sort()).toEqual([
       "autopilot-plan",
+      "bot-client-reply",
       "bot-idea",
+      "bot-intake",
       "competitor-idea",
       "media-generation",
       "rss-summary",
@@ -30,6 +32,7 @@ describe("worker AI call policy", () => {
       "competitor-reader-classifier",
       "knowledge-embedding",
       "profile-refresh",
+      "radar-query-expansion",
     ]);
     expect(assertWorkerAiCallPolicy("profile-refresh")).toMatchObject({ billing: "system" });
     expect(() => assertWorkerAiCallPolicy("profile-refresh", 12)).toThrow(/non-billable/u);

@@ -2806,7 +2806,7 @@ function ComposerInner() {
           <Badge>{c.postSettings.length === "short" ? "Короткий" : c.postSettings.length === "long" ? "Длинный" : "Средний"}</Badge>
           <Badge>{c.postSettings.formality === "formal" ? "Официально" : c.postSettings.formality === "casual" ? "Неформально" : "Спокойный тон"}</Badge>
           <Badge>{c.postSettings.emojiMode === "none" ? "Без эмодзи" : "С эмодзи"}</Badge>
-          <Badge>{c.postSettings.profanityMode === "allow" ? "Мат разрешён" : c.postSettings.profanityMode === "masked" ? "Мат со звёздочками" : c.postSettings.profanityMode === "forbid" ? "Без мата" : "Мат — автоматически"}</Badge>
+          <Badge>{c.postSettings.profanityMode === "allow" ? "Мат допустим" : c.postSettings.profanityMode === "masked" ? "Мат обязателен со звёздочками" : c.postSettings.profanityMode === "required_direct" ? "Мат обязателен без цензуры" : c.postSettings.profanityMode === "forbid" ? "Без мата" : "Мат — автоматически"}</Badge>
         </div>
 
         <Field label="Текст публикации" htmlFor="composer-text" error={c.errors.text}>

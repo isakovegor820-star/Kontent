@@ -9,6 +9,7 @@ import { resolveChannel } from "@/lib/autopilot";
 import { getPool } from "@/lib/db";
 import {
   normalizeRadarQuery,
+  radarTsQuery,
   RADAR_SEARCH_RESULT_LIMIT,
   scoreRadarActivity,
   scoreRadarFreshness,
@@ -88,16 +89,16 @@ function serializeResult(row: Record<string, unknown>) {
     postsPerWeek: row.posts_per_week == null ? null : Number(row.posts_per_week),
     views: row.views == null ? null : Number(row.views),
     reactions: row.reactions == null ? null : Number(row.reactions),
+    indexedPostsCount: row.indexed_posts_count == null ? null : Number(row.indexed_posts_count),
     score: Number(row.quality_score ?? row.score ?? 55),
     reason: row.reason ?? "Найдено в уже собранных данных",
     verified: row.verified == null ? origin !== "web-cache" : Boolean(row.verified),
   };
 }
 
-function deduplicateResults(rows: Record<string, unknown>[]) {
+function deduplicateSerializedResults(items: ReturnType<typeof serializeResult>[]) {
   const results = new Map<string, ReturnType<typeof serializeResult>>();
-  for (const row of rows) {
-    const item = serializeResult(row);
+  for (const item of items) {
     const canonicalUrl = typeof item.url === "string"
       ? item.url
         .toLowerCase()
@@ -125,12 +126,26 @@ function deduplicateResults(rows: Record<string, unknown>[]) {
     .slice(0, RADAR_SEARCH_RESULT_LIMIT);
 }
 
+function deduplicateResults(rows: Record<string, unknown>[]) {
+  return deduplicateSerializedResults(rows.map(serializeResult));
+}
+
 function isFocusedResult(row: Record<string, unknown>, query: string) {
+  if (
+    String(row.match_mode || "") === "semantic_content"
+    && Number(row.relevance_score) >= 35
+  ) {
+    if (String(row.kind || row.result_type) !== "channel") return true;
+    return !(
+      scoreRadarFreshness(row.last_post_at) <= 25
+      && scoreRadarActivity(row.posts_per_week) <= 55
+    );
+  }
   const relevance = scoreRadarRelevance(query, {
     title: row.title,
     handle: row.handle,
     description: row.description,
-    posts: row.text ? [{ text: row.text }] : [],
+    posts: row.text || row.search_text ? [{ text: row.text || row.search_text }] : [],
   });
   if (relevance < 35) return false;
   if (String(row.kind || row.result_type) !== "channel") return true;
@@ -143,6 +158,8 @@ function isFocusedResult(row: Record<string, unknown>, query: string) {
 async function searchLocal(pool: Db, userId: number, channelId: number | null, query: string) {
   const ownerId = channelId ?? userId;
   const ownerColumn = channelId ? "competitor.channel_id" : "competitor.user_id";
+  const textQuery = radarTsQuery(query);
+  if (!textQuery) return [];
 
   const [competitors, trends, directory, cached] = await Promise.all([
     pool.query(
@@ -152,16 +169,16 @@ async function searchLocal(pool: Db, userId: number, channelId: number | null, q
                    else 'https://t.me/' || competitor.handle || '/' || post.tg_msg_id end as url,
               'post' as kind, 'competitor' as origin,
               'competitor-post:' || post.id as result_key,
-              least(95, 55 + round(ts_rank(post.tsv, plainto_tsquery('russian', $2)) * 100))::int as quality_score,
+              least(95, 55 + round(ts_rank(post.tsv, to_tsquery('russian', $2)) * 100))::int as quality_score,
               'Совпадение в постах добавленного конкурента' as reason,
               true as verified
          from competitor_posts post
          join competitors competitor on competitor.id = post.competitor_id
         where ${ownerColumn} = $1
-          and post.tsv @@ plainto_tsquery('russian', $2)
-        order by ts_rank(post.tsv, plainto_tsquery('russian', $2)) desc, post.posted_at desc nulls last
+          and post.tsv @@ to_tsquery('russian', $2)
+        order by ts_rank(post.tsv, to_tsquery('russian', $2)) desc, post.posted_at desc nulls last
         limit 20`,
-      [ownerId, query],
+      [ownerId, textQuery],
     ),
     pool.query(
       `select post.id, post.text, post.views, post.reactions, post.posted_at,
@@ -169,48 +186,55 @@ async function searchLocal(pool: Db, userId: number, channelId: number | null, q
               'https://t.me/' || source.handle || '/' || post.tg_msg_id as url,
               'trend' as kind, 'trend' as origin,
               'trend-post:' || post.id as result_key,
-              least(95, 55 + round(ts_rank(to_tsvector('russian', coalesce(post.text, '')), plainto_tsquery('russian', $1)) * 100))::int as quality_score,
+              least(95, 55 + round(ts_rank(to_tsvector('russian', coalesce(post.text, '')), to_tsquery('russian', $1)) * 100))::int as quality_score,
               'Совпадение в редакционной ленте трендов' as reason,
               true as verified
          from trend_posts post
          join trend_sources source on source.id = post.source_id and source.enabled = true
-        where to_tsvector('russian', coalesce(post.text, '')) @@ plainto_tsquery('russian', $1)
-        order by ts_rank(to_tsvector('russian', coalesce(post.text, '')), plainto_tsquery('russian', $1)) desc,
+        where to_tsvector('russian', coalesce(post.text, '')) @@ to_tsquery('russian', $1)
+        order by ts_rank(to_tsvector('russian', coalesce(post.text, '')), to_tsquery('russian', $1)) desc,
                  post.posted_at desc nulls last
         limit 16`,
-      [query],
+      [textQuery],
     ),
     pool.query(
       `select source.id, source.title, source.handle, source.description,
               source.canonical_url as url, source.subscribers, source.last_post_at,
-              source.posts_per_week, source.verified_at,
+              source.posts_per_week, source.verified_at, source.indexed_posts_count,
+              source.content_sample as search_text,
               'channel' as kind, 'directory' as origin,
               'directory:' || source.id as result_key,
-              least(92, 50 + round(ts_rank(source.tsv, plainto_tsquery('russian', $1)) * 100))::int as quality_score,
-              'Проверенный публичный канал уже есть в справочнике' as reason,
+              least(96, 50 + round(ts_rank(source.content_tsv, to_tsquery('russian', $1)) * 100))::int as quality_score,
+              case
+                when source.tsv @@ to_tsquery('russian', $1)
+                  then 'Тема совпала с названием или описанием проверенного канала'
+                else 'Тема найдена в ' || source.indexed_posts_count || ' публичных публикациях канала'
+              end as reason,
               true as verified
          from discovered_sources source
         where source.verification_status = 'verified' and source.is_public = true
-          and source.tsv @@ plainto_tsquery('russian', $1)
-        order by ts_rank(source.tsv, plainto_tsquery('russian', $1)) desc, source.verified_at desc
-        limit 12`,
-      [query],
+          and source.content_tsv @@ to_tsquery('russian', $1)
+        order by ts_rank(source.content_tsv, to_tsquery('russian', $1)) desc, source.verified_at desc
+        limit 30`,
+      [textQuery],
     ),
     pool.query(
       `select result.id, result.result_type as kind, result.provider as origin,
               result.title, result.handle, result.description, result.text, result.url,
               result.posted_at, result.last_post_at, result.verified_at,
               result.subscribers, result.posts_per_week, result.views, result.reactions,
+              nullif(result.raw_data->>'indexedPostsCount', '')::integer as indexed_posts_count,
+              result.raw_data->>'matchMode' as match_mode, result.relevance_score,
               result.quality_score, result.reason, result.id as action_id,
               'radar-result:' || result.id as result_key, true as verified
          from radar_search_results result
          join radar_search_runs run on run.id = result.run_id and run.user_id = $1
-        where result.user_id = $1 and result.tsv @@ plainto_tsquery('russian', $2)
+        where result.user_id = $1 and result.tsv @@ to_tsquery('russian', $2)
           and result.verification_status = 'verified'
           and result.created_at >= now() - interval '30 days'
         order by result.quality_score desc, result.created_at desc
         limit 20`,
-      [userId, query],
+      [userId, textQuery],
     ),
   ]);
 
@@ -220,7 +244,8 @@ async function searchLocal(pool: Db, userId: number, channelId: number | null, q
       quality_score: scoreRadarRelevance(query, {
         title: row.title,
         handle: row.handle,
-        posts: [{ text: row.text }],
+        description: row.description,
+        posts: [{ text: row.text || row.search_text }],
       }),
     }))
     .filter((row) => Number(row.quality_score) >= 35);
@@ -248,7 +273,10 @@ async function loadRunResults(pool: Db, userId: number, runId: number) {
   const results = await pool.query(
     `select id, id as action_id, result_type as kind, provider as origin, title, handle,
             description, text, url, posted_at, last_post_at, verified_at, subscribers,
-            posts_per_week, views, reactions, quality_score, reason,
+            posts_per_week, views, reactions,
+            nullif(raw_data->>'indexedPostsCount', '')::integer as indexed_posts_count,
+            raw_data->>'matchMode' as match_mode, relevance_score,
+            quality_score, reason,
             'radar-result:' || id as result_key, true as verified
        from radar_search_results
       where run_id = $1 and user_id = $2 and verification_status = 'verified'
@@ -300,16 +328,23 @@ export async function GET(req: NextRequest) {
         [user.id, channelId, query],
       )
     ).rows[0];
+    const latestPayload = latest ? await loadRunResults(pool, user.id, Number(latest.id)) : null;
+    const combinedResults = deduplicateSerializedResults([
+      ...results,
+      ...(latestPayload?.results ?? []),
+    ]);
     return json({
       channelId,
       query,
-      results,
-      run: serializeRun(latest),
-      shouldExpand: results.length < 8 && !latest,
+      results: combinedResults,
+      run: latestPayload?.run ?? serializeRun(latest),
+      // Внешний слой теперь не запасной. Он всегда расширяет локальную базу, потому что
+      // несколько знакомых каналов не означают, что вся ниша уже найдена.
+      shouldExpand: !latest,
       groups: {
-        channels: results.filter((item) => item.kind === "channel").length,
-        posts: results.filter((item) => item.kind === "post").length,
-        trends: results.filter((item) => item.kind === "trend").length,
+        channels: combinedResults.filter((item) => item.kind === "channel").length,
+        posts: combinedResults.filter((item) => item.kind === "post").length,
+        trends: combinedResults.filter((item) => item.kind === "trend").length,
       },
     });
   } catch (error) {

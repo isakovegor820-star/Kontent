@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { AlertTriangle, Check, ChevronDown, ChevronRight, Plus, SlidersHorizontal, Sparkles, Trash2, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -63,9 +64,10 @@ const CTAS = [
 
 const PROFANITY_MODES = [
   ["auto", "Как в настройках канала"],
-  ["forbid", "Без мата"],
-  ["masked", "Одно слово со звёздочками"],
-  ["allow", "Без цензуры и лимита"],
+  ["forbid", "Запрещён"],
+  ["allow", "Допустим, но не обязателен"],
+  ["masked", "Обязателен, со звёздочками"],
+  ["required_direct", "Обязателен, без цензуры"],
 ] as const;
 
 const AUDIENCE_PRESETS = [
@@ -274,13 +276,37 @@ export function PostSettingsMenu({
         ?.focus();
     });
     const onPointer = (event: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(event.target as Node)) setOpen(false);
+      const target = event.target as Node;
+      if (
+        rootRef.current
+        && !rootRef.current.contains(target)
+        && !panelRef.current?.contains(target)
+      ) {
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
     };
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
         setOpen(false);
         triggerRef.current?.focus();
+        return;
+      }
+      if (event.key === "Tab" && panelRef.current) {
+        const focusable = Array.from(panelRef.current.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), select:not([disabled]), input:not([disabled]), textarea:not([disabled]), a[href]',
+        ));
+        const first = focusable[0];
+        const last = focusable.at(-1);
+        if (!first || !last) return;
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
       }
     };
     document.addEventListener("mousedown", onPointer);
@@ -353,8 +379,8 @@ export function PostSettingsMenu({
       cta: "auto",
       similarityLevel: "moderate",
       requireNewAngle: true,
-      qualityMode: "balanced",
-      autoImprove: true,
+      qualityMode: "fast",
+      autoImprove: false,
       qualityThreshold: 8,
     }));
   };
@@ -388,13 +414,13 @@ export function PostSettingsMenu({
         {saving ? <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-brand" aria-label="Сохраняю" /> : null}
       </button>
 
-      {open && (
+      {open && typeof document !== "undefined" && createPortal(
         <div
           ref={panelRef}
           id={panelId}
           role="dialog"
           aria-label="Настройки публикации"
-          className="fixed inset-x-3 bottom-[calc(env(safe-area-inset-bottom)+5.5rem)] z-50 w-auto overflow-hidden rounded-lg border border-line-strong bg-surface-2 shadow-lift sm:absolute sm:inset-x-auto sm:right-0 sm:bottom-[calc(100%+8px)] sm:w-[540px] sm:max-w-[calc(100vw-1.5rem)]"
+          className="fixed inset-x-3 top-3 bottom-[calc(env(safe-area-inset-bottom)+5.5rem)] z-50 flex w-auto flex-col overflow-hidden rounded-lg border border-line-strong bg-surface-2 shadow-lift sm:inset-x-auto sm:right-4 sm:top-1/2 sm:bottom-auto sm:max-h-[calc(100dvh-2rem)] sm:w-[540px] sm:max-w-[calc(100vw-1.5rem)] sm:-translate-y-1/2"
         >
           <div className="flex items-start justify-between gap-4 border-b border-line px-4 py-3.5">
             <div>
@@ -439,7 +465,7 @@ export function PostSettingsMenu({
             ))}
           </div>
 
-          <div className="max-h-[min(52dvh,540px)] overflow-y-auto overscroll-contain px-4 py-4">
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4 sm:max-h-[min(52dvh,540px)]">
             {tab === "quick" ? (
               <div className="grid gap-4">
                 <div className="flex flex-col gap-3 rounded-md bg-surface-inset px-3.5 py-3 sm:flex-row sm:items-center sm:justify-between">
@@ -503,12 +529,12 @@ export function PostSettingsMenu({
                   <SelectField label="Призыв к действию" value={settings.cta} onChange={(next) => update({ cta: next as PostSettings["cta"] })} options={CTAS} />
                   <SelectField label="Похожесть с прошлыми постами" value={settings.similarityLevel} onChange={(next) => update({ similarityLevel: next as PostSettings["similarityLevel"], requireNewAngle: next !== "allow" })} options={[["strict", "Не допускать похожие"], ["moderate", "Избегать повторов"], ["allow", "Повторы допустимы"]]} />
                   <div className="sm:col-span-2">
-                    <SelectField label="Качество" value={settings.qualityMode} onChange={(next) => update({ qualityMode: next as PostSettings["qualityMode"] })} options={[["fast", "Быстро + обязательная проверка"], ["balanced", "Черновик и редактура"], ["maximum", "Максимум доступных исправлений"]]} />
+                    <SelectField label="Качество" value={settings.qualityMode} onChange={(next) => update({ qualityMode: next as PostSettings["qualityMode"] })} options={[["fast", "Быстро — один проход + проверка"], ["balanced", "Качественно — один сильный проход"], ["maximum", "Максимум — черновик и редактура"]]} />
                   </div>
                 </QuickGroup>
 
                 <p className="text-[11px] leading-relaxed text-text-3">
-                  Готово: здесь всё выбирается из списка. Перед показом Аврора проверит выбранные правила и сама исправит нарушения. Свои формулировки, точные числа и доказательства доступны во вкладке «Расширенно».
+                  Готово: здесь всё выбирается из списка. Аврора всегда проверит выбранные правила. В быстрых режимах она отметит риск, а в режиме «Максимум» дополнительно отредактирует текст. Свои формулировки, точные числа и доказательства доступны во вкладке «Расширенно».
                 </p>
 
                 <div className="rounded-sm bg-surface-inset px-3 py-2.5 text-[11px] leading-relaxed text-text-3">
@@ -705,9 +731,11 @@ export function PostSettingsMenu({
                 </Section>
 
                 <Section title="Комплектация и качество">
-                  <SelectField label="Режим качества" value={settings.qualityMode} onChange={(next) => update({ qualityMode: next as PostSettings["qualityMode"] })} options={[["fast", "Быстро + обязательная проверка"], ["balanced", "Черновик и редактура"], ["maximum", "Максимум доступных исправлений"]]} />
+                  <SelectField label="Режим качества" value={settings.qualityMode} onChange={(next) => update({ qualityMode: next as PostSettings["qualityMode"] })} options={[["fast", "Быстро — один проход + проверка"], ["balanced", "Качественно — один сильный проход"], ["maximum", "Максимум — черновик и редактура"]]} />
                   <SelectField label="Минимальная оценка" value={String(settings.qualityThreshold)} onChange={(next) => update({ qualityThreshold: Number(next) as PostSettings["qualityThreshold"] })} options={[["7", "7/10"], ["8", "8/10"], ["9", "9/10"]]} />
-                  <ToggleField label="Дополнительно улучшать слабый текст" checked={settings.autoImprove} onChange={(next) => update({ autoImprove: next })} hint="Обязательные правила проверяются всегда." />
+                  <p className="rounded-sm bg-surface-inset px-3 py-2.5 text-[11px] leading-relaxed text-text-3 sm:col-span-2">
+                    «Быстро» и «Качественно» возвращают результат за один проход. «Максимум» запускает отдельную редактуру после готового черновика.
+                  </p>
                   <SelectField label="Для «Ещё вариант»" value={settings.variantChange} onChange={(next) => update({ variantChange: next as PostSettings["variantChange"] })} options={[["full", "Полностью другая концепция"], ["hook", "Новое начало"], ["sales_angle", "Новый угол продажи"], ["structure", "Новая структура"], ["emotional", "Более эмоциональный"], ["expert", "Более экспертный"], ["native", "Более естественный"]]} />
                   <div className="sm:col-span-2">
                     <p className="mb-2 text-[12px] font-bold text-text">Что получить вместе с постом</p>
@@ -797,7 +825,8 @@ export function PostSettingsMenu({
               </Button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

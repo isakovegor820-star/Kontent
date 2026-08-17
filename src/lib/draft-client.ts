@@ -1,6 +1,7 @@
 import type {
   DraftCreateInput,
   DraftSaveState,
+  DraftScheduleUpdateInput,
   DraftTrackingSelection,
   DraftWriteInput,
   DraftUpdateInput,
@@ -345,6 +346,17 @@ export async function createServerDraft(
 
 export async function updateServerDraft(id: number, input: DraftUpdateInput): Promise<ServerDraft> {
   return checked(await request(`/api/drafts/${id}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  }));
+}
+
+export async function rescheduleServerDraft(
+  id: number,
+  input: DraftScheduleUpdateInput,
+): Promise<ServerDraft> {
+  return checked(await request(`/api/drafts/${id}/schedule`, {
     method: "PATCH",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(input),

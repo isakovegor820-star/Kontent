@@ -96,6 +96,7 @@ create table if not exists channels (
   user_id     bigint      not null references users (id) on delete cascade,
   network     text        not null default 'tg' check (network in ('tg', 'vk')),
   tg_chat_id  bigint,          -- id канала/чата в Telegram (для network='tg')
+  tg_discussion_chat_id bigint, -- linked Telegram discussion group for comments and inbox
   vk_group_id bigint,          -- id сообщества VK (для network='vk')
   vk_token    text,            -- токен сообщества VK в виде AES-GCM-конверта (см. src/lib/token-crypto.mjs), никогда не plaintext
   title       text,
@@ -122,6 +123,9 @@ create index if not exists channels_user_idx on channels (user_id);
 create unique index if not exists channels_tg_chat_active_uniq
   on channels (tg_chat_id)
   where tg_chat_id is not null and is_active;
+create unique index if not exists channels_tg_discussion_chat_active_uniq
+  on channels (tg_discussion_chat_id)
+  where network = 'tg' and is_active and tg_discussion_chat_id is not null;
 
 create unique index if not exists channels_vk_group_active_uniq
   on channels (vk_group_id)
@@ -971,6 +975,23 @@ create table if not exists legal_opportunity_states (
 );
 create index if not exists legal_opportunity_states_user_state_idx
   on legal_opportunity_states (user_id, state, updated_at desc);
+
+-- Project is a forward dependency for read state and editorial demand below. Define the
+-- tenant root before those tables; membership and collaboration tables are added later.
+create table if not exists projects (
+  id                     bigint generated always as identity primary key,
+  name                   varchar(160) not null,
+  timezone               varchar(80) not null default 'UTC',
+  created_by_user_id     bigint references users (id) on delete set null,
+  personal_owner_user_id bigint unique references users (id) on delete cascade,
+  is_archived            boolean not null default false,
+  version                bigint not null default 1,
+  created_at             timestamptz not null default now(),
+  updated_at             timestamptz not null default now(),
+  constraint projects_name_check check (length(btrim(name)) between 1 and 160),
+  constraint projects_timezone_check check (length(btrim(timezone)) between 1 and 80),
+  constraint projects_version_check check (version > 0)
+);
 
 -- Непрочитанность считается отдельно для каждого пользователя и выбранного проекта.
 -- Это состояние ортогонально saved/dismissed/used и сохраняется между сессиями.
@@ -2162,6 +2183,24 @@ create table if not exists discovered_sources (
 create index if not exists discovered_sources_tsv_idx on discovered_sources using gin (tsv);
 create index if not exists discovered_sources_cache_idx on discovered_sources (verification_status, cache_expires_at, verified_at desc);
 
+-- Поиск темы по реальному содержанию публичных постов, а не только по вывеске канала.
+alter table discovered_sources add column if not exists content_sample text;
+alter table discovered_sources add column if not exists content_embedding vector(1024);
+alter table discovered_sources add column if not exists indexed_posts_count integer not null default 0;
+alter table discovered_sources add column if not exists content_indexed_at timestamptz;
+alter table discovered_sources add column if not exists content_tsv tsvector
+  generated always as (
+    to_tsvector('russian', coalesce(title, '') || ' ' || coalesce(description, '') || ' '
+      || coalesce(handle, '') || ' ' || coalesce(content_sample, ''))
+  ) stored;
+alter table discovered_sources drop constraint if exists discovered_sources_indexed_posts_count_check;
+alter table discovered_sources add constraint discovered_sources_indexed_posts_count_check
+  check (indexed_posts_count >= 0) not valid;
+alter table discovered_sources validate constraint discovered_sources_indexed_posts_count_check;
+create index if not exists discovered_sources_content_tsv_idx on discovered_sources using gin (content_tsv);
+create index if not exists discovered_sources_content_embedding_idx
+  on discovered_sources using hnsw (content_embedding vector_cosine_ops);
+
 create table if not exists radar_search_runs (
   id                bigint generated always as identity primary key,
   user_id           bigint not null references users (id) on delete cascade,
@@ -2265,21 +2304,6 @@ create unique index if not exists saved_posts_discovery_source_uniq
 
 -- ------------------------------------------------ Project workspaces and RBAC
 -- Project is the collaboration/tenant boundary. user_id remains actor attribution.
-create table if not exists projects (
-  id                     bigint generated always as identity primary key,
-  name                   varchar(160) not null,
-  timezone               varchar(80) not null default 'UTC',
-  created_by_user_id     bigint references users (id) on delete set null,
-  personal_owner_user_id bigint unique references users (id) on delete cascade,
-  is_archived            boolean not null default false,
-  version                bigint not null default 1,
-  created_at             timestamptz not null default now(),
-  updated_at             timestamptz not null default now(),
-  constraint projects_name_check check (length(btrim(name)) between 1 and 160),
-  constraint projects_timezone_check check (length(btrim(timezone)) between 1 and 80),
-  constraint projects_version_check check (version > 0)
-);
-
 create table if not exists project_members (
   project_id bigint not null references projects (id) on delete cascade,
   user_id    bigint not null references users (id) on delete cascade,
@@ -2340,6 +2364,202 @@ create table if not exists user_project_preferences (
 );
 create index if not exists user_project_preferences_project_idx
   on user_project_preferences (selected_project_id, user_id);
+
+-- Project-scoped Telegram preferences. Rows are created lazily when a linked person
+-- opens the bot menu, so existing accounts are not opted into digests by a deployment.
+create table if not exists bot_notification_preferences (
+  project_id                    bigint not null references projects (id) on delete cascade,
+  user_id                       bigint not null references users (id) on delete cascade,
+  publication_success_enabled  boolean not null default true,
+  publication_failure_enabled  boolean not null default true,
+  content_opportunities_enabled boolean not null default true,
+  daily_digest_enabled         boolean not null default true,
+  daily_digest_hour            smallint not null default 9 check (daily_digest_hour between 0 and 23),
+  weekly_digest_enabled        boolean not null default true,
+  last_daily_digest_date       date,
+  last_weekly_digest_date      date,
+  created_at                    timestamptz not null default now(),
+  updated_at                    timestamptz not null default now(),
+  primary key (project_id, user_id),
+  foreign key (project_id, user_id)
+    references project_members (project_id, user_id) on delete cascade
+);
+create index if not exists bot_notification_preferences_daily_idx
+  on bot_notification_preferences (daily_digest_enabled, daily_digest_hour, project_id, user_id);
+
+alter table bot_notification_preferences
+  add column if not exists post_results_enabled boolean not null default true,
+  add column if not exists review_reminders_enabled boolean not null default true,
+  add column if not exists problem_digest_enabled boolean not null default true;
+
+create table if not exists bot_post_result_notifications (
+  post_id       bigint not null references posts (id) on delete cascade,
+  project_id    bigint not null references projects (id) on delete cascade,
+  user_id       bigint not null references users (id) on delete cascade,
+  window_hours  smallint not null default 24 check (window_hours between 24 and 168),
+  delivered_at  timestamptz,
+  created_at    timestamptz not null default now(),
+  primary key (post_id, user_id, window_hours),
+  foreign key (project_id, user_id)
+    references project_members (project_id, user_id) on delete cascade
+);
+create index if not exists bot_post_result_notifications_pending_idx
+  on bot_post_result_notifications (created_at, post_id) where delivered_at is null;
+
+create table if not exists bot_client_assistant_preferences (
+  project_id        bigint primary key references projects (id) on delete cascade,
+  business_connection_id text unique,
+  enabled           boolean not null default false,
+  require_approval  boolean not null default true check (require_approval = true),
+  welcome_text      text,
+  created_at        timestamptz not null default now(),
+  updated_at        timestamptz not null default now(),
+  constraint bot_client_assistant_welcome_check
+    check (welcome_text is null or length(btrim(welcome_text)) between 1 and 1200)
+);
+
+create table if not exists bot_client_inquiries (
+  id                              bigint generated always as identity primary key,
+  project_id                      bigint not null references projects (id) on delete cascade,
+  business_connection_id          text,
+  external_chat_id                bigint,
+  external_message_id             bigint,
+  sender_external_id              bigint,
+  incoming_text                   text not null,
+  suggested_reply                 text,
+  request_key                     varchar(128),
+  source_type                     text not null default 'telegram_business',
+  source_label                    varchar(200),
+  source_url                      text,
+  context                         text,
+  author_name                     varchar(200),
+  reply_guidance                  text,
+  tone                            text,
+  risk_level                      text,
+  created_by_user_id              bigint references users (id) on delete set null,
+  version                         bigint not null default 1,
+  delivery_request_key            varchar(128),
+  provider_started_at             timestamptz,
+  sent_external_message_id        bigint,
+  delivery_error_code             varchar(80),
+  status                          text not null default 'pending',
+  resolved_by_user_id             bigint references users (id) on delete set null,
+  resolved_at                     timestamptz,
+  created_at                      timestamptz not null default now(),
+  updated_at                      timestamptz not null default now(),
+  constraint bot_client_inquiries_text_check check (length(btrim(incoming_text)) between 1 and 8000),
+  constraint bot_client_inquiries_reply_check check (suggested_reply is null or length(btrim(suggested_reply)) between 1 and 8000),
+  constraint bot_client_inquiries_status_check
+    check (status in ('pending','reply_ready','approved','sent','dismissed','failed')),
+  constraint bot_client_inquiries_source_type_check
+    check (source_type in ('telegram_business','comment','direct_message','support','review','other')),
+  constraint bot_client_inquiries_request_key_check
+    check (request_key is null or length(btrim(request_key)) between 16 and 128),
+  constraint bot_client_inquiries_source_label_check
+    check (source_label is null or length(btrim(source_label)) between 1 and 200),
+  constraint bot_client_inquiries_context_check
+    check (context is null or length(btrim(context)) between 1 and 4000),
+  constraint bot_client_inquiries_author_name_check
+    check (author_name is null or length(btrim(author_name)) between 1 and 200),
+  constraint bot_client_inquiries_guidance_check
+    check (reply_guidance is null or length(btrim(reply_guidance)) between 1 and 2000),
+  constraint bot_client_inquiries_tone_check
+    check (tone is null or tone in ('positive','neutral','negative','aggressive')),
+  constraint bot_client_inquiries_risk_check
+    check (risk_level is null or risk_level in ('low','medium','high')),
+  constraint bot_client_inquiries_version_check check (version > 0),
+  constraint bot_client_inquiries_delivery_coordinates_check check (
+    source_type <> 'telegram_business'
+    or (business_connection_id is not null and external_chat_id is not null and external_message_id is not null)
+  ),
+  constraint bot_client_inquiries_delivery_request_key_check
+    check (delivery_request_key is null or length(btrim(delivery_request_key)) between 16 and 128),
+  constraint bot_client_inquiries_delivery_error_code_check
+    check (delivery_error_code is null or length(btrim(delivery_error_code)) between 1 and 80),
+  unique (business_connection_id, external_chat_id, external_message_id)
+);
+create index if not exists bot_client_inquiries_project_status_idx
+  on bot_client_inquiries (project_id, status, created_at, id);
+create unique index if not exists bot_client_inquiries_project_request_key_uniq
+  on bot_client_inquiries (project_id, request_key) where request_key is not null;
+create index if not exists bot_client_inquiries_project_updated_idx
+  on bot_client_inquiries (project_id, updated_at desc, id desc);
+create unique index if not exists bot_client_inquiries_project_delivery_request_uniq
+  on bot_client_inquiries (project_id, delivery_request_key)
+  where delivery_request_key is not null;
+create index if not exists bot_client_inquiries_stale_delivery_idx
+  on bot_client_inquiries (provider_started_at, id)
+  where status = 'approved';
+
+create table if not exists bot_user_controls (
+  user_id             bigint primary key references users (id) on delete cascade,
+  enabled             boolean not null default true,
+  disabled_reason     varchar(500),
+  updated_by_user_id  bigint references users (id) on delete set null,
+  created_at          timestamptz not null default now(),
+  updated_at          timestamptz not null default now(),
+  constraint bot_user_controls_reason_check check (
+    (enabled = true and disabled_reason is null)
+    or (enabled = false and length(btrim(disabled_reason)) between 3 and 500)
+  )
+);
+
+create table if not exists bot_project_controls (
+  project_id          bigint primary key references projects (id) on delete cascade,
+  enabled             boolean not null default true,
+  disabled_reason     varchar(500),
+  updated_by_user_id  bigint references users (id) on delete set null,
+  created_at          timestamptz not null default now(),
+  updated_at          timestamptz not null default now(),
+  constraint bot_project_controls_reason_check check (
+    (enabled = true and disabled_reason is null)
+    or (enabled = false and length(btrim(disabled_reason)) between 3 and 500)
+  )
+);
+
+create table if not exists bot_delivery_events (
+  id                   bigint generated always as identity primary key,
+  user_id              bigint references users (id) on delete set null,
+  project_id           bigint references projects (id) on delete set null,
+  chat_id              bigint,
+  method               varchar(64) not null,
+  source               varchar(80) not null default 'assistant',
+  ok                   boolean not null,
+  telegram_error_code  integer,
+  error_code           varchar(100),
+  error_description    varchar(500),
+  created_at           timestamptz not null default now(),
+  constraint bot_delivery_events_method_check check (length(btrim(method)) between 1 and 64),
+  constraint bot_delivery_events_source_check check (length(btrim(source)) between 1 and 80),
+  constraint bot_delivery_events_error_check check (
+    (ok = true and error_code is null and error_description is null) or ok = false
+  )
+);
+create index if not exists bot_delivery_events_created_idx
+  on bot_delivery_events (created_at desc, id desc);
+create index if not exists bot_delivery_events_failure_idx
+  on bot_delivery_events (created_at desc, id desc) where ok = false;
+create index if not exists bot_delivery_events_user_idx
+  on bot_delivery_events (user_id, created_at desc, id desc) where user_id is not null;
+
+create table if not exists bot_admin_action_events (
+  id             bigint generated always as identity primary key,
+  actor_user_id  bigint references users (id) on delete set null,
+  action         varchar(100) not null,
+  target_type    varchar(40) not null,
+  target_id      bigint,
+  safe_data      jsonb not null default '{}'::jsonb,
+  created_at     timestamptz not null default now(),
+  constraint bot_admin_action_events_action_check check (length(btrim(action)) between 1 and 100),
+  constraint bot_admin_action_events_target_check check (target_type in ('user','project','runtime')),
+  constraint bot_admin_action_events_target_id_check check (
+    (target_type = 'runtime' and target_id is null)
+    or (target_type in ('user','project') and target_id > 0)
+  ),
+  constraint bot_admin_action_events_safe_data_check check (jsonb_typeof(safe_data) = 'object')
+);
+create index if not exists bot_admin_action_events_created_idx
+  on bot_admin_action_events (created_at desc, id desc);
 
 create table if not exists audit_events (
   id              bigint generated always as identity primary key,
@@ -2448,6 +2668,28 @@ create unique index if not exists drafts_id_project_uniq on drafts (id, project_
 create unique index if not exists posts_id_project_uniq on posts (id, project_id);
 create unique index if not exists publication_operations_id_project_uniq
   on publication_operations (id, project_id);
+
+-- Durable one-at-a-time Telegram composer. Its composite tenant keys require the
+-- project columns and unique keys above to exist first on a fresh bootstrap.
+create table if not exists bot_conversations (
+  id          bigint generated always as identity primary key,
+  user_id     bigint not null unique references users (id) on delete cascade,
+  project_id  bigint not null references projects (id) on delete cascade,
+  channel_id  bigint,
+  draft_id    bigint,
+  state       text not null check (
+    state in ('choosing_channel','waiting_text','preview','improving','publishing','review_changes','completed','cancelled')
+  ),
+  token       varchar(24) not null check (token ~ '^[A-Za-z0-9_-]{16,24}$'),
+  data        jsonb not null default '{}'::jsonb check (jsonb_typeof(data) = 'object'),
+  expires_at  timestamptz not null default (now() + interval '24 hours'),
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now(),
+  foreign key (channel_id, project_id) references channels (id, project_id) on delete cascade,
+  foreign key (draft_id, project_id) references drafts (id, project_id) on delete cascade
+);
+create index if not exists bot_conversations_expiry_idx
+  on bot_conversations (expires_at, id);
 
 -- ------------------------------------------------ Publication blocks, follow-up actions and review tasks
 
@@ -3057,6 +3299,14 @@ create index if not exists draft_revisions_project_draft_idx
   on draft_revisions (project_id, draft_id, draft_version desc);
 create index if not exists draft_revisions_hash_idx
   on draft_revisions (project_id, draft_id, content_hash);
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'draft_revisions_lineage_uniq') then
+    alter table draft_revisions add constraint draft_revisions_lineage_uniq
+      unique (id, project_id, draft_id, draft_version);
+  end if;
+end
+$$;
 
 create table if not exists draft_editorial_workflows (
   draft_id              bigint primary key references drafts (id) on delete cascade,
@@ -3792,8 +4042,24 @@ update media_assets asset
    )
  where asset.project_id is null;
 alter table media_assets alter column project_id set not null;
--- The immutable 20260817_legal_visuals migration installs the named origin,
--- dimensions and metadata constraints after this bootstrap snapshot is loaded.
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'media_assets_origin_check') then
+    alter table media_assets add constraint media_assets_origin_check
+      check (origin in ('legacy','upload','media_generation','legal_visual_render'));
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'media_assets_dimensions_check') then
+    alter table media_assets add constraint media_assets_dimensions_check check (
+      (width_px is null and height_px is null)
+      or (width_px > 0 and height_px > 0)
+    );
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'media_assets_metadata_check') then
+    alter table media_assets add constraint media_assets_metadata_check
+      check (jsonb_typeof(metadata) = 'object');
+  end if;
+end
+$$;
 create unique index if not exists media_assets_id_project_uniq on media_assets (id, project_id);
 create index if not exists media_assets_project_created_idx
   on media_assets (project_id, created_at desc, id desc);

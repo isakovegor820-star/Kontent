@@ -43,6 +43,7 @@ type SearchResult = {
   postsPerWeek: number | null;
   views: number | null;
   reactions: number | null;
+  indexedPostsCount: number | null;
   score: number;
   reason: string;
   verified: boolean;
@@ -103,13 +104,13 @@ function runMessage(run: SearchRun) {
   if (run.status === "failed") return run.errorMessage || "Не удалось расширить поиск. Локальные результаты сохранены.";
   if (run.status === "ready") {
     return run.externalCount > 0
-      ? `Проверено: ${run.externalCount} ${plural(run.externalCount, "результат", "результата", "результатов")} из интернета.`
-      : "Публичные источники проверены, но новых совпадений не найдено.";
+      ? `Расширенный поиск добавил ${run.externalCount} ${plural(run.externalCount, "проверенный результат", "проверенных результата", "проверенных результатов")}.`
+      : "Общая база и публичные источники проверены, новых совпадений нет.";
   }
-  if (run.stage === "verifying") return "Проверяю найденные каналы и публикации…";
+  if (run.stage === "verifying") return "Проверяю найденные каналы и читаю их публикации…";
   if (run.stage === "ranking") return "Убираю дубли и ранжирую результаты…";
-  if (run.stage === "discovering") return "Расширяю поиск по публичному Telegram…";
-  return "Запускаю поиск в интернете…";
+  if (run.stage === "discovering") return "Проверяю исходный запрос и близкие формулировки в текстах публичных постов…";
+  return "Запускаю расширенный поиск…";
 }
 
 function ResultCard({
@@ -129,7 +130,7 @@ function ResultCard({
   const canAct = Boolean(item.actionId && channelId);
   const date = item.postedAt || item.lastPostAt;
   return (
-    <Card as="article" className="flex h-full flex-col p-4 sm:p-5">
+    <Card as="article" className="flex h-full min-w-0 flex-col p-4 sm:p-5">
       <div className="flex flex-wrap items-center gap-2">
         <Badge tone={item.kind === "trend" ? "fire" : item.kind === "channel" ? "brand" : "neutral"}>
           {KIND_LABELS[item.kind]}
@@ -148,13 +149,13 @@ function ResultCard({
       <h3 className="mt-3 line-clamp-2 text-[16px] leading-snug font-bold text-text">
         {item.title || (item.handle ? `@${item.handle}` : "Telegram")}
       </h3>
-      {item.handle && <p className="mt-0.5 text-[13px] text-text-3">@{item.handle}</p>}
+      {item.handle && <p className="mt-0.5 break-all text-[13px] text-text-3">@{item.handle}</p>}
 
       {item.description && item.kind === "channel" && (
-        <p className="mt-3 line-clamp-3 text-[14px] leading-relaxed text-text-2">{item.description}</p>
+        <p className="mt-3 line-clamp-3 break-words text-[14px] leading-relaxed text-text-2">{item.description}</p>
       )}
       {item.text && item.kind !== "channel" && (
-        <p className="mt-3 line-clamp-5 whitespace-pre-wrap text-[14px] leading-relaxed text-text">
+        <p className="mt-3 line-clamp-5 break-words whitespace-pre-wrap text-[14px] leading-relaxed text-text">
           {item.text}
         </p>
       )}
@@ -162,6 +163,9 @@ function ResultCard({
       <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[12px] text-text-3">
         {item.subscribers != null && <span>{fmtCompact(item.subscribers)} подписчиков</span>}
         {item.postsPerWeek != null && <span>≈ {item.postsPerWeek.toLocaleString("ru-RU")} поста/нед.</span>}
+        {item.kind === "channel" && item.indexedPostsCount != null && item.indexedPostsCount > 0 && (
+          <span>{item.indexedPostsCount} {plural(item.indexedPostsCount, "пост изучен", "поста изучено", "постов изучено")}</span>
+        )}
         {item.views != null && (
           <span className="inline-flex items-center gap-1">
             <Eye className="h-3.5 w-3.5" aria-hidden />
@@ -177,9 +181,9 @@ function ResultCard({
         {date && <span>{fmtAgo(date)}</span>}
       </div>
 
-      <p className="mt-3 flex items-start gap-2 rounded-xs bg-surface-inset px-3 py-2 text-[12px] leading-relaxed text-text-2">
+      <p className="mt-3 flex min-w-0 items-start gap-2 rounded-xs bg-surface-inset px-3 py-2 text-[12px] leading-relaxed text-text-2">
         <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-success-text" aria-hidden />
-        <span>{item.reason}</span>
+        <span className="min-w-0 break-words">{item.reason}</span>
       </p>
 
       <div className="mt-auto flex flex-wrap items-center gap-2 pt-4">
@@ -230,6 +234,7 @@ export function RadarInner() {
   const [searched, setSearched] = useState(false);
   const [run, setRun] = useState<SearchRun | null>(null);
   const [searchError, setSearchError] = useState<string | null>(null);
+  const [queryError, setQueryError] = useState<string | null>(null);
   const [picked, setPicked] = useState<number | null>(null);
   const { tgChannels, channelId } = useChannelChoice(store.realChannels, picked);
 
@@ -294,7 +299,12 @@ export function RadarInner() {
   const doSearch = async (event?: React.FormEvent<HTMLFormElement>) => {
     event?.preventDefault();
     const value = query.trim();
-    if (value.length < 2 || searchingLocal) return;
+    if (searchingLocal) return;
+    if (value.length < 2) {
+      setQueryError("Введи тему минимум из двух символов.");
+      return;
+    }
+    setQueryError(null);
     setSearchingLocal(true);
     setSearched(true);
     setSubmittedQuery(value);
@@ -380,63 +390,80 @@ export function RadarInner() {
         <form onSubmit={doSearch} className="flex flex-col gap-3 sm:flex-row sm:items-end">
           <div className="min-w-0 flex-1">
             <label htmlFor="radar-query" className="mb-2 block text-[13px] font-semibold text-text-2">
-              Тема, канал или вопрос
+              Что найти
             </label>
             <div className="relative">
               <Search className="pointer-events-none absolute top-1/2 left-3.5 h-4 w-4 -translate-y-1/2 text-text-3" aria-hidden />
               <Input
                 id="radar-query"
                 value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder="Например: рыбалка, садоводство или банкротство"
+                onChange={(event) => {
+                  setQuery(event.target.value);
+                  if (queryError) setQueryError(null);
+                }}
+                placeholder="Например: где искать клиентов юристу, строительство или @канал"
                 className="pl-10"
                 autoComplete="off"
                 enterKeyHint="search"
+                aria-invalid={queryError ? true : undefined}
+                aria-describedby="radar-query-help"
               />
             </div>
           </div>
-          <Button type="submit" variant="brand" loading={searchingLocal} disabled={query.trim().length < 2}>
+          <Button type="submit" variant="brand" loading={searchingLocal}>
             <Search className="h-4 w-4" aria-hidden />
             Найти
           </Button>
         </form>
-        <p className="mt-3 text-[12px] leading-relaxed text-text-3">
-          Сначала проверяем собственную базу. Если совпадений мало, ищем публичные Telegram-источники и проверяем каждую ссылку.
+        <p
+          id="radar-query-help"
+          aria-live="polite"
+          className={cn("mt-3 text-[12px] leading-relaxed", queryError ? "font-medium text-danger-text" : "text-text-3")}
+        >
+          {queryError || "Пиши обычными словами. Аврора выделит тему, проверит близкие формулировки, тексты постов и публичные Telegram-каналы."}
         </p>
       </Card>
 
       {searched && (
         <section aria-labelledby="radar-results-title" className="mt-5">
           <div className="flex flex-wrap items-center gap-3">
-            <div>
-              <h2 id="radar-results-title" className="text-[16px] font-bold text-text">
+            <div className="min-w-0 flex-1">
+              <h2 id="radar-results-title" className="break-words text-[16px] font-bold text-text">
                 Результаты по запросу «{submittedQuery}»
               </h2>
               <p className="mt-0.5 text-[13px] text-text-3">
                 {results.length} {plural(results.length, "совпадение", "совпадения", "совпадений")}
               </p>
             </div>
-            <Tabs value={tab} onChange={setTab} items={RESULT_TABS} className="ml-auto" />
+            <Tabs
+              value={tab}
+              onChange={setTab}
+              items={RESULT_TABS}
+              ariaLabel="Фильтр результатов поиска"
+              idPrefix="radar-results-tab"
+              controls="radar-results-panel"
+              className="ml-auto max-w-full overflow-x-auto"
+            />
           </div>
 
-          {run && (
-            <div
-              role="status"
-              aria-live="polite"
-              className={cn(
-                "mt-4 flex items-center gap-3 rounded-md px-4 py-3 text-[13px] font-medium",
-                run.status === "failed" || run.status === "partial"
-                  ? "bg-fire-soft text-fire-text"
-                  : run.status === "ready"
-                    ? "bg-success-soft text-success-text"
-                    : "bg-info-soft text-info-text",
-              )}
-            >
-              {running ? <RefreshCw className="h-4 w-4 shrink-0 animate-spin" aria-hidden /> : <ShieldCheck className="h-4 w-4 shrink-0" aria-hidden />}
-              <span>{runMessage(run)}</span>
-              {running && <span className="nums ml-auto shrink-0">{run.progress}%</span>}
-            </div>
-          )}
+          <div role="status" aria-live="polite" aria-atomic="true">
+            {run && (
+              <div
+                className={cn(
+                  "mt-4 flex items-center gap-3 rounded-md px-4 py-3 text-[13px] font-medium",
+                  run.status === "failed" || run.status === "partial"
+                    ? "bg-fire-soft text-fire-text"
+                    : run.status === "ready"
+                      ? "bg-success-soft text-success-text"
+                      : "bg-info-soft text-info-text",
+                )}
+              >
+                {running ? <RefreshCw className="h-4 w-4 shrink-0 animate-spin motion-reduce:animate-none" aria-hidden /> : <ShieldCheck className="h-4 w-4 shrink-0" aria-hidden />}
+                <span>{runMessage(run)}</span>
+                {running && <span className="nums ml-auto shrink-0">{run.progress}%</span>}
+              </div>
+            )}
+          </div>
 
           {searchError && !running && (
             <div role="alert" className="mt-4 flex flex-wrap items-center gap-3 rounded-md bg-danger-soft px-4 py-3">
@@ -448,49 +475,47 @@ export function RadarInner() {
             </div>
           )}
 
-          {searchingLocal && results.length === 0 ? (
-            <div className="mt-4 grid gap-4 lg:grid-cols-2" aria-hidden>
-              {[0, 1, 2, 3].map((item) => <div key={item} className="skeleton h-52 rounded-md" />)}
-            </div>
-          ) : filtered.length === 0 && !running ? (
-            <Card className="mt-4">
-              <EmptyState
-                icon={<Search className="h-5 w-5" aria-hidden />}
-                title={results.length ? "В этой категории совпадений нет" : `По запросу «${submittedQuery}» ничего не найдено`}
-                body={results.length
-                  ? "Выбери вкладку «Все», чтобы вернуться к полной выдаче."
-                  : "Попробуй более широкую формулировку или запусти повторную проверку публичных источников."}
-                action={!results.length ? (
-                  <Button variant="solid" onClick={() => void startExternal(submittedQuery, true)}>
-                    <Sparkles className="h-4 w-4" aria-hidden />
-                    Искать в интернете ещё раз
-                  </Button>
-                ) : undefined}
-              />
-            </Card>
-          ) : (
-            <div className="mt-4 grid gap-4 lg:grid-cols-2">
-              {filtered.map((item) => (
-                <ResultCard
-                  key={item.id}
-                  item={item}
-                  channelId={channelId}
-                  acting={actingId === item.actionId}
-                  completedAction={Boolean(item.actionId && completedActions.has(item.actionId))}
-                  onAction={actOnResult}
+          <div
+            id="radar-results-panel"
+            role="tabpanel"
+            aria-labelledby={`radar-results-tab-${tab}`}
+          >
+            {searchingLocal && results.length === 0 ? (
+              <div className="mt-4 grid gap-4 lg:grid-cols-2" aria-hidden>
+                {[0, 1, 2, 3].map((item) => <div key={item} className="skeleton h-52 rounded-md" />)}
+              </div>
+            ) : filtered.length === 0 && !running ? (
+              <Card className="mt-4">
+                <EmptyState
+                  icon={<Search className="h-5 w-5" aria-hidden />}
+                  title={results.length ? "В этой категории совпадений нет" : `По запросу «${submittedQuery}» ничего не найдено`}
+                  body={results.length
+                    ? "Выбери вкладку «Все», чтобы вернуться к полной выдаче."
+                    : "Аврора уже проверила исходный запрос и близкие формулировки. Можно уточнить тему или повторить проверку публичных источников."}
+                  action={!results.length ? (
+                    <Button variant="solid" onClick={() => void startExternal(submittedQuery, true)}>
+                      <Sparkles className="h-4 w-4" aria-hidden />
+                      Проверить публичные источники ещё раз
+                    </Button>
+                  ) : undefined}
                 />
-              ))}
-            </div>
-          )}
+              </Card>
+            ) : (
+              <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                {filtered.map((item) => (
+                  <ResultCard
+                    key={item.id}
+                    item={item}
+                    channelId={channelId}
+                    acting={actingId === item.actionId}
+                    completedAction={Boolean(item.actionId && completedActions.has(item.actionId))}
+                    onAction={actOnResult}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
 
-          {!running && results.length >= 8 && !run && (
-            <div className="mt-4 flex justify-center">
-              <Button variant="outline" onClick={() => void startExternal(submittedQuery)}>
-                <Sparkles className="h-4 w-4" aria-hidden />
-                Расширить поиск в интернете
-              </Button>
-            </div>
-          )}
         </section>
       )}
 

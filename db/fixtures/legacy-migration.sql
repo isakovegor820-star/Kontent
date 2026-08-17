@@ -98,9 +98,61 @@ create table hashtag_sets (
   unique (user_id, name)
 );
 
+-- Competitor intelligence was already part of the accepted pre-journal baseline.
+-- Keep its original Telegram shape so later provider-neutral migrations exercise a
+-- real additive upgrade instead of failing because the fixture omitted a core table.
+create table competitors (
+  id bigint generated always as identity primary key,
+  user_id bigint not null references users (id) on delete cascade,
+  channel_id bigint not null references channels (id) on delete cascade,
+  network text not null default 'tg' check (network in ('tg', 'vk')),
+  handle text not null,
+  title text,
+  subscribers integer,
+  status text not null default 'pending' check (status in ('pending', 'ready', 'error')),
+  last_error text,
+  added_at timestamptz not null default now(),
+  collected_at timestamptz,
+  unique (channel_id, network, handle)
+);
+
 create table competitor_posts (
   id bigint generated always as identity primary key,
-  text text
+  competitor_id bigint not null references competitors (id) on delete cascade,
+  tg_msg_id bigint not null,
+  text text,
+  views integer,
+  reactions integer,
+  posted_at timestamptz,
+  collected_at timestamptz not null default now(),
+  unique (competitor_id, tg_msg_id)
+);
+
+create table trend_sources (
+  id bigint generated always as identity primary key,
+  handle text not null unique,
+  title text,
+  category text not null default 'ниша' check (category in ('ниша', 'блог', 'отрасль')),
+  subscribers integer,
+  enabled boolean not null default true,
+  status text not null default 'pending' check (status in ('pending', 'ready', 'error', 'no_feed')),
+  last_error text,
+  collected_at timestamptz,
+  added_at timestamptz not null default now()
+);
+
+create table trend_posts (
+  id bigint generated always as identity primary key,
+  source_id bigint not null references trend_sources (id) on delete cascade,
+  tg_msg_id bigint not null,
+  text text,
+  views integer,
+  reactions integer,
+  photo_url text,
+  media text,
+  posted_at timestamptz,
+  collected_at timestamptz not null default now(),
+  unique (source_id, tg_msg_id)
 );
 
 create table rss_feeds (

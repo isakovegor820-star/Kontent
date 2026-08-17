@@ -900,9 +900,9 @@ export function ChannelSettingsCenter() {
                   min={0}
                   max={100}
                   value={draft.brief.quality.profanityLevel}
-                  valueLabel={scaleLabel(draft.brief.quality.profanityLevel, ["полный запрет", "просторечия", "мат со звёздочками", "прямой мат", "без ограничений"])}
+                  valueLabel={scaleLabel(draft.brief.quality.profanityLevel, ["полный запрет", "просторечия", "мат со звёздочками", "прямой мат допустим", "прямой мат обязателен"])}
                   startLabel="без мата"
-                  endLabel="без ограничений"
+                  endLabel="мат обязателен"
                   onChange={(value) => setQualityPatch({ profanityLevel: value, profanity: value === 0 ? "forbid" : "allow" })}
                 />
                 <Field label="Роль / персона автора" htmlFor="channel-persona">

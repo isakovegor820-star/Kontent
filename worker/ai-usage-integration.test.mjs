@@ -34,10 +34,13 @@ describe("worker AI usage integration contract", () => {
     expect(new Set(calls.map((call) => call.surface))).toEqual(new Set([
       "autopilot-plan",
       "bot-idea",
+      "bot-client-reply",
+      "bot-intake",
       "competitor-idea",
       "competitor-niche-classifier",
       "competitor-reader-classifier",
       "profile-refresh",
+      "radar-query-expansion",
       "rss-summary",
     ]));
     for (const call of calls) {

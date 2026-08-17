@@ -3,7 +3,14 @@
 // А4. Календарь — ГЛАВНЫЙ экран платформы (ТЗ 5.3, Приложение А).
 // Одно главное действие: создать пост кликом в день. Публикует сервер.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type DragEvent,
+} from "react";
 import { useRouter } from "next/navigation";
 import { motion, useReducedMotion } from "motion/react";
 import {
@@ -17,6 +24,7 @@ import {
   EyeOff,
   ExternalLink,
   Flame,
+  GripVertical,
   Inbox,
   LayoutGrid,
   Plus,
@@ -53,6 +61,7 @@ import {
   isRecoverableLegacyDraft,
   isUnownedLegacyDraftCandidate,
   listServerDrafts,
+  rescheduleServerDraft,
 } from "@/lib/draft-client";
 import type { ServerDraft } from "@/lib/draft-types";
 import {
@@ -61,6 +70,12 @@ import {
   calendarRecordStatus,
 } from "@/lib/calendar-team-filters";
 import type { ClientProjectRole } from "@/lib/project-client";
+import { resolveCalendarDayMove } from "@/lib/calendar-drag-reschedule";
+import {
+  calendarDateKey,
+  calendarDateKeyForInstant,
+  calendarDayForInstant,
+} from "@/lib/calendar-timezone";
 import { useStore } from "@/lib/store";
 import {
   cancelPublication,
@@ -68,6 +83,7 @@ import {
   restorePublicationToDraft,
 } from "@/lib/publication-lifecycle-client";
 import type { Network, Post, RealPost, Trend, User } from "@/lib/types";
+import { ScheduleValidationError } from "@/lib/timezone-schedule";
 import {
   addDays,
   channelHue,
@@ -130,6 +146,8 @@ const GRID_STATUSES: Post["status"][] = [
 
 const DEFAULT_TIME = "10:00";
 const EASE_SOFT: [number, number, number, number] = [0.22, 1, 0.36, 1];
+const CALENDAR_DRAG_MIME = "application/x-aurora-calendar-post";
+const CALENDAR_DRAG_HELP_ID = "calendar-drag-help";
 
 const CALENDAR_STATUS_LABEL: Record<string, string> = {
   draft: "Черновик",
@@ -249,6 +267,9 @@ function serverDraftToPost(draft: ServerDraft): CalendarPost {
     createdAt: draft.created_at,
     serverDraftId: draft.id,
     draftVersion: draft.version,
+    scheduleTimezone: draft.scheduled_timezone ?? undefined,
+    scheduledOffset: draft.scheduled_offset,
+    scheduleDisambiguation: draft.scheduled_disambiguation ?? undefined,
     destinationIds: draft.destinations.map((destination) => destination.channel_id),
     channelId: draft.destinations.length === 1 ? draft.destinations[0].channel_id : undefined,
     channelTitle:
@@ -261,11 +282,11 @@ function serverDraftToPost(draft: ServerDraft): CalendarPost {
 /** Достаём числовой id настоящего поста из «real-N». */
 const realId = (id: string) => Number(id.replace(/^real-/, ""));
 
-const dayKey = (d: Date) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+const dayKey = calendarDateKey;
 
 /** Новый пост на конкретный день: сразу отдаём редактору дату и время */
 const composerForDay = (day: Date) => {
-  const localDate = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
+  const localDate = calendarDateKey(day);
   return `/app/composer?date=${localDate}&time=${DEFAULT_TIME}`;
 };
 
@@ -352,11 +373,21 @@ function PostCard({
   onOpen,
   onRetry,
   onReschedule,
+  canMove = false,
+  moving = false,
+  onDragStart,
+  onDragEnd,
+  calendarTimezone,
 }: {
   post: DatedPost;
   onOpen: () => void;
   onRetry?: () => void;
   onReschedule?: () => void;
+  canMove?: boolean;
+  moving?: boolean;
+  onDragStart?: (event: DragEvent<HTMLElement>) => void;
+  onDragEnd?: () => void;
+  calendarTimezone: string;
 }) {
   // Метка канала нужна только при мультиканальности. Считаем здесь, а не прокидываем
   // пропом через календарь → неделю → день → карточку: стор всё равно контекст.
@@ -378,10 +409,14 @@ function PostCard({
     <article
       id={`calendar-${post.id}`}
       tabIndex={-1}
+      data-calendar-draggable={canMove && !moving ? "true" : undefined}
+      aria-busy={moving || undefined}
       className={cn(
         "relative min-w-0 rounded-sm border-l-2 shadow-soft ring-1 ring-line",
-        "transition-[transform,box-shadow] duration-200 ease-[var(--ease-soft)]",
+        "transition-[transform,box-shadow,opacity] duration-200 ease-[var(--ease-soft)]",
         "hover:-translate-y-0.5 hover:shadow-card",
+        canMove && !moving && "cursor-grab select-none active:cursor-grabbing",
+        moving && "pointer-events-none opacity-55",
         failed || missing || quarantined
           ? "border-danger bg-danger-soft"
           : cancelled
@@ -397,8 +432,15 @@ function PostCard({
       <button
         type="button"
         onClick={onOpen}
+        draggable={canMove && !moving}
+        onDragStart={onDragStart}
+        onDragEnd={onDragEnd}
         aria-label={`Открыть публикацию: ${post.text.slice(0, 60)}`}
-        className="absolute inset-0 z-0 min-h-11 cursor-pointer rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+        aria-describedby={canMove ? CALENDAR_DRAG_HELP_ID : undefined}
+        className={cn(
+          "absolute inset-0 z-0 min-h-11 rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand",
+          canMove ? "cursor-grab active:cursor-grabbing" : "cursor-pointer",
+        )}
       />
 
       <div className="pointer-events-none relative z-10 flex min-w-0 flex-col gap-1.5 p-2.5">
@@ -428,9 +470,25 @@ function PostCard({
                 aria-hidden
               />
             )}
-            <span className="nums text-[13px] font-bold text-text">{fmtTime(post.scheduledAt)}</span>
+            <span className="nums text-[13px] font-bold text-text">
+              {fmtTime(post.scheduledAt, post.scheduleTimezone ?? calendarTimezone)}
+            </span>
           </span>
-          <NetworkChips networks={post.networks} />
+          <span className="flex items-center gap-1">
+            <NetworkChips networks={post.networks} />
+            {canMove && (
+              <span
+                className="flex h-6 w-6 items-center justify-center rounded-xs text-text-3"
+                title="Перетащить на другой день"
+                aria-hidden
+              >
+                <GripVertical className="h-4 w-4" strokeWidth={2} />
+              </span>
+            )}
+            {moving && (
+              <RotateCw className="h-3.5 w-3.5 animate-spin text-brand" strokeWidth={2} aria-hidden />
+            )}
+          </span>
         </div>
 
         <Badge
@@ -562,6 +620,18 @@ function DayColumn({
   onOpen,
   onRetry,
   onReschedule,
+  canMovePost,
+  movingPostId,
+  dragging,
+  dropActive,
+  dropAllowed,
+  onPostDragStart,
+  onPostDragEnd,
+  onDayDragEnter,
+  onDayDragOver,
+  onDayDragLeave,
+  onDayDrop,
+  calendarTimezone,
 }: {
   day: Date;
   index: number;
@@ -572,13 +642,33 @@ function DayColumn({
   onOpen: (post: DatedPost) => void;
   onRetry?: (post: DatedPost) => void;
   onReschedule?: (post: DatedPost) => void;
+  canMovePost: (post: DatedPost) => boolean;
+  movingPostId: string | null;
+  dragging: boolean;
+  dropActive: boolean;
+  dropAllowed: boolean;
+  onPostDragStart: (event: DragEvent<HTMLElement>, post: DatedPost) => void;
+  onPostDragEnd: () => void;
+  onDayDragEnter: (event: DragEvent<HTMLDivElement>) => void;
+  onDayDragOver: (event: DragEvent<HTMLDivElement>) => void;
+  onDayDragLeave: (event: DragEvent<HTMLDivElement>) => void;
+  onDayDrop: (event: DragEvent<HTMLDivElement>) => void;
+  calendarTimezone: string;
 }) {
   return (
     <div
+      data-calendar-day={dayKey(day)}
+      onDragEnter={onDayDragEnter}
+      onDragOver={onDayDragOver}
+      onDragLeave={onDayDragLeave}
+      onDrop={onDayDrop}
       className={cn(
-        "group/day min-w-0 flex flex-col rounded-md ring-1 transition-colors duration-200",
+        "group/day min-w-0 flex flex-col rounded-md ring-1",
+        "transition-[background-color,box-shadow] duration-150 ease-out",
         isToday ? "bg-surface ring-brand/35" : "ring-line",
         !isToday && isPast ? "bg-surface-2/60" : "bg-surface",
+        dragging && dropAllowed && !dropActive && "ring-brand/25",
+        dropActive && dropAllowed && "bg-brand/10 shadow-card ring-2 ring-brand",
       )}
     >
       <div className="flex items-center gap-2 px-2.5 pt-2.5 pb-1.5 md:justify-between">
@@ -607,6 +697,15 @@ function DayColumn({
       </div>
 
       <div className="flex min-h-[88px] min-w-0 flex-1 flex-col gap-1.5 p-1.5 pt-0 xl:min-h-[180px]">
+        {dropActive && dropAllowed && (
+          <div
+            className="pointer-events-none flex min-h-11 items-center justify-center gap-1 rounded-sm border border-dashed border-brand bg-surface px-2 text-center text-[13px] font-semibold text-brand"
+            aria-hidden
+          >
+            <GripVertical className="h-4 w-4 shrink-0" strokeWidth={2} />
+            Перенести сюда
+          </div>
+        )}
         {posts.map((p) => (
           <PostCard
             key={p.id}
@@ -614,6 +713,11 @@ function DayColumn({
             onOpen={() => onOpen(p)}
             onRetry={onRetry ? () => onRetry(p) : undefined}
             onReschedule={onReschedule ? () => onReschedule(p) : undefined}
+            canMove={canMovePost(p)}
+            moving={movingPostId === p.id}
+            onDragStart={(event) => onPostDragStart(event, p)}
+            onDragEnd={onPostDragEnd}
+            calendarTimezone={calendarTimezone}
           />
         ))}
 
@@ -658,12 +762,14 @@ function MonthCell({
   inMonth,
   isToday,
   onPick,
+  calendarTimezone,
 }: {
   day: Date;
   posts: DatedPost[];
   inMonth: boolean;
   isToday: boolean;
   onPick: () => void;
+  calendarTimezone: string;
 }) {
   const shown = posts.slice(0, 3);
   const rest = posts.length - shown.length;
@@ -727,7 +833,7 @@ function MonthCell({
           >
             <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", dot(p))} />
             <span className="nums shrink-0 text-[13px] font-semibold text-text">
-              {fmtTime(p.scheduledAt)}
+              {fmtTime(p.scheduledAt, p.scheduleTimezone ?? calendarTimezone)}
             </span>
             <span className="truncate text-[13px] text-text-2">{p.text}</span>
           </span>
@@ -775,13 +881,21 @@ export default function CalendarPage() {
   const s = useStore();
   const projects = useProjects();
   const reduce = useReducedMotion();
+  const currentProjectId = projects.current?.id;
   const currentRole = projects.current?.role;
+  const currentProjectTimezone = projects.current?.timezone;
+  const calendarTimezone = currentProjectTimezone
+    ?? Intl.DateTimeFormat().resolvedOptions().timeZone
+    ?? "UTC";
   const { canEdit, canPublish } = calendarRoleCapabilities(currentRole);
   const canInspectPublication = currentRole != null;
 
   const [view, setView] = useState<View>("week");
   const [dir, setDir] = useState(0);
-  const [anchor, setAnchor] = useState<Date>(() => new Date());
+  const [anchor, setAnchor] = useState<Date>(() => calendarDayForInstant(
+    new Date().toISOString(),
+    calendarTimezone,
+  ));
   const [serverDrafts, setServerDrafts] = useState<ServerDraft[]>([]);
   const [draftOwner, setDraftOwner] = useState<User | null>(null);
   const [draftsReady, setDraftsReady] = useState(false);
@@ -790,10 +904,15 @@ export default function CalendarPage() {
   const [draftDeleteTarget, setDraftDeleteTarget] = useState<DraftDeleteTarget | null>(null);
   const [publicationTarget, setPublicationTarget] = useState<PublicationActionTarget | null>(null);
   const [publicationBusy, setPublicationBusy] = useState(false);
+  const [draggedPostId, setDraggedPostId] = useState<string | null>(null);
+  const [dragOverDay, setDragOverDay] = useState<string | null>(null);
+  const [movingPostId, setMovingPostId] = useState<string | null>(null);
+  const [moveAnnouncement, setMoveAnnouncement] = useState("");
   const [showLocalRecovery, setShowLocalRecovery] = useState(false);
   const [showUnownedRecovery, setShowUnownedRecovery] = useState(false);
   const draftQueueHeadingRef = useRef<HTMLHeadingElement>(null);
   const focusedPostRef = useRef<string | null>(null);
+  const anchoredProjectRef = useRef<string | null>(null);
 
   const hasUser = Boolean(s.user);
   const refreshDrafts = useCallback(async (owner: User, signal?: AbortSignal) => {
@@ -837,21 +956,31 @@ export default function CalendarPage() {
     if (!post?.scheduled_at) return;
     focusedPostRef.current = `calendar-real-${post.id}`;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- focused deep link selects its exact week
-    setAnchor(new Date(post.scheduled_at));
+    setAnchor(calendarDayForInstant(
+      post.scheduled_at,
+      post.scheduled_timezone ?? calendarTimezone,
+    ));
     setView("week");
     requestAnimationFrame(() => requestAnimationFrame(() => {
       const element = document.getElementById(focusedPostRef.current ?? "");
       element?.focus({ preventScroll: true });
       element?.scrollIntoView({ behavior: "smooth", block: "center" });
     }));
-  }, [s.ready, s.realPosts]);
+  }, [calendarTimezone, s.ready, s.realPosts]);
 
   // Полночь сегодняшнего дня. Считается на клиенте — до s.ready ничего датозависимого не рисуем
-  const today = useMemo(() => {
-    const d = new Date();
-    d.setHours(0, 0, 0, 0);
-    return d;
-  }, []);
+  const today = useMemo(
+    () => calendarDayForInstant(new Date().toISOString(), calendarTimezone),
+    [calendarTimezone],
+  );
+
+  useEffect(() => {
+    if (!currentProjectId) return;
+    const projectKey = `${currentProjectId}:${calendarTimezone}`;
+    if (anchoredProjectRef.current === projectKey) return;
+    anchoredProjectRef.current = projectKey;
+    setAnchor(today);
+  }, [calendarTimezone, currentProjectId, today]);
 
   const weekStart = useMemo(() => startOfWeek(anchor), [anchor]);
   const exportPeriod = useMemo(
@@ -948,12 +1077,48 @@ export default function CalendarPage() {
     );
   }, [allCalendarPosts, hidden, matchesTeamFilters]);
 
+  const canManageCalendarMove = useCallback((post: CalendarPost) => {
+    if (post.serverDraftId != null) {
+      const draft = serverDrafts.find((candidate) => candidate.id === post.serverDraftId);
+      return canEdit && post.draftVersion != null && draft?.purpose !== "source_context";
+    }
+    return canPublish
+      && post.status === "scheduled"
+      && post.publicationOperationId != null
+      && post.operationScheduleRevision != null
+      && Boolean(post.operationStatus)
+      && Boolean(post.scheduleTimezone);
+  }, [canEdit, canPublish, serverDrafts]);
+
+  const canStartCalendarMove = useCallback(
+    (post: CalendarPost) => (
+      movingPostId == null
+      && !publicationBusy
+      && canManageCalendarMove(post)
+    ),
+    [canManageCalendarMove, movingPostId, publicationBusy],
+  );
+
+  const draggedPost = useMemo(() => {
+    if (!draggedPostId) return null;
+    const post = gridPosts.find((candidate) => candidate.id === draggedPostId);
+    return post && isOnGrid(post) ? post : null;
+  }, [draggedPostId, gridPosts]);
+
+  const hasMovablePosts = useMemo(
+    () => gridPosts.some((post) => isOnGrid(post) && canManageCalendarMove(post)),
+    [canManageCalendarMove, gridPosts],
+  );
+
   // Посты по дням — один проход вместо фильтра на каждую ячейку
   const postsByDay = useMemo(() => {
     const map = new Map<string, DatedPost[]>();
     for (const p of gridPosts) {
       if (!isOnGrid(p)) continue;
-      const key = dayKey(new Date(p.scheduledAt));
+      const key = calendarDateKeyForInstant(
+        p.scheduledAt,
+        p.scheduleTimezone ?? calendarTimezone,
+      );
       const list = map.get(key);
       if (list) list.push(p);
       else map.set(key, [p]);
@@ -962,7 +1127,7 @@ export default function CalendarPage() {
       list.sort((a, b) => new Date(a.scheduledAt).getTime() - new Date(b.scheduledAt).getTime());
     }
     return map;
-  }, [gridPosts]);
+  }, [calendarTimezone, gridPosts]);
 
   const dayPosts = (d: Date) => postsByDay.get(dayKey(d)) ?? [];
 
@@ -1065,7 +1230,7 @@ export default function CalendarPage() {
           : post.status === "published_unverified"
             ? "Сеть могла принять публикацию, но не вернула подтверждение. Автоматический повтор остановлен, чтобы не создать дубль; Аврора сверяет внешний канал."
           : post.scheduledAt
-            ? `${fmtDateTime(post.scheduledAt)}. Публикует сервер.`
+            ? `${fmtDateTime(post.scheduledAt, post.scheduleTimezone ?? calendarTimezone)}. Публикует сервер.`
             : "",
     });
   };
@@ -1095,6 +1260,155 @@ export default function CalendarPage() {
           : "Сервер не подтвердил изменение. Запланированная публикация оставлена в прежнем состоянии.",
     });
   }, [s]);
+
+  const moveCalendarPost = useCallback(async (post: DatedPost, targetDay: Date) => {
+    if (
+      movingPostId != null
+      || !canManageCalendarMove(post)
+      || calendarDateKeyForInstant(
+        post.scheduledAt,
+        post.scheduleTimezone ?? calendarTimezone,
+      ) === dayKey(targetDay)
+    ) return;
+
+    setMovingPostId(post.id);
+    try {
+      const draft = post.serverDraftId == null
+        ? null
+        : serverDrafts.find((candidate) => candidate.id === post.serverDraftId) ?? null;
+      const timezone = draft?.scheduled_timezone
+        ?? post.scheduleTimezone
+        ?? currentProjectTimezone
+        ?? Intl.DateTimeFormat().resolvedOptions().timeZone
+        ?? "UTC";
+      const moved = resolveCalendarDayMove({
+        scheduledAt: post.scheduledAt,
+        targetDay,
+        timezone,
+        disambiguation: draft?.scheduled_disambiguation ?? post.scheduleDisambiguation,
+        offset: draft?.scheduled_offset ?? post.scheduledOffset,
+      });
+      if (new Date(moved.scheduledAt).getTime() <= Date.now() + 30_000) {
+        throw new ScheduleValidationError("past_time");
+      }
+
+      if (draft && post.serverDraftId != null) {
+        const updated = await rescheduleServerDraft(post.serverDraftId, {
+          version: draft.version,
+          scheduledAt: moved.scheduledAt,
+          schedule: {
+            localDate: moved.localDate,
+            localTime: moved.localTime,
+            timezone: moved.timezone,
+            disambiguation: moved.disambiguation,
+            offset: moved.offset,
+          },
+        });
+        setServerDrafts((current) => current.map((candidate) => (
+          candidate.id === updated.id ? updated : candidate
+        )));
+      } else if (
+        post.publicationOperationId != null
+        && post.operationScheduleRevision != null
+        && post.operationStatus
+      ) {
+        const result = await reschedulePublication({
+          operationId: post.publicationOperationId,
+          expectedScheduleRevision: post.operationScheduleRevision,
+          expectedStatus: post.operationStatus,
+          idempotencyKey: crypto.randomUUID(),
+          scheduledAt: moved.scheduledAt,
+          localDate: moved.localDate,
+          localTime: moved.localTime,
+          timezone: moved.timezone,
+          disambiguation: moved.disambiguation,
+          offset: moved.offset,
+        });
+        if (!result.ok) {
+          publicationFailure(result.error);
+          await s.refreshReal();
+          return;
+        }
+        await s.refreshReal();
+      } else {
+        throw new Error("calendar_move_not_supported");
+      }
+
+      const successBody = `${fmtDateTime(moved.scheduledAt, moved.timezone)}. Время публикации сохранено.`;
+      setMoveAnnouncement(
+        `Публикация перенесена на ${moved.localDate}, ${moved.localTime}.`,
+      );
+      s.toast({ kind: "success", title: "Публикация перенесена", body: successBody });
+    } catch (error) {
+      const scheduleError = error instanceof ScheduleValidationError ? error.code : null;
+      const conflict = error instanceof DraftRequestError && error.kind === "conflict";
+      const offline = error instanceof DraftRequestError && error.kind === "offline";
+      const title = scheduleError === "past_time"
+        ? "Нужна будущая дата"
+        : scheduleError === "nonexistent_local_time" || scheduleError === "ambiguous_local_time"
+          ? "Нужно уточнить время"
+          : conflict
+            ? "Черновик уже изменён"
+            : "Публикация не перенесена";
+      const body = scheduleError === "past_time"
+        ? "На выбранном дне это время уже прошло. Перетащите карточку на будущий день."
+        : scheduleError === "nonexistent_local_time" || scheduleError === "ambiguous_local_time"
+          ? "Из-за перехода часового пояса это время отсутствует или повторяется. Откройте публикацию и выберите время вручную."
+          : conflict
+            ? "Дата изменилась в другой вкладке. Календарь обновлён — повторите перенос с актуальной карточкой."
+            : offline
+              ? "Нет соединения с сервером. Старая дата сохранена; повторите перенос после восстановления сети."
+              : "Сервер не подтвердил новую дату. Публикация осталась на прежнем месте.";
+      setMoveAnnouncement(`${title}. ${body}`);
+      s.toast({ kind: "danger", title, body });
+      if (post.serverDraftId != null && s.user) await refreshDrafts(s.user);
+    } finally {
+      setMovingPostId(null);
+      setDraggedPostId(null);
+      setDragOverDay(null);
+    }
+  }, [
+    canManageCalendarMove,
+    calendarTimezone,
+    movingPostId,
+    currentProjectTimezone,
+    publicationFailure,
+    refreshDrafts,
+    s,
+    serverDrafts,
+  ]);
+
+  const startPostDrag = useCallback((event: DragEvent<HTMLElement>, post: DatedPost) => {
+    if (!canStartCalendarMove(post)) {
+      event.preventDefault();
+      return;
+    }
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData(CALENDAR_DRAG_MIME, post.id);
+    event.dataTransfer.setData("text/plain", post.id);
+    setDraggedPostId(post.id);
+    setDragOverDay(null);
+    setMoveAnnouncement(
+      `Перенос публикации начат. Выберите другой день для ${fmtTime(
+        post.scheduledAt,
+        post.scheduleTimezone ?? calendarTimezone,
+      )}.`,
+    );
+  }, [calendarTimezone, canStartCalendarMove]);
+
+  const endPostDrag = useCallback(() => {
+    setDraggedPostId(null);
+    setDragOverDay(null);
+  }, []);
+
+  const canDropDraggedPostOn = useCallback((day: Date) => Boolean(
+    draggedPost
+    && day.getTime() >= today.getTime()
+    && calendarDateKeyForInstant(
+      draggedPost.scheduledAt,
+      draggedPost.scheduleTimezone ?? calendarTimezone,
+    ) !== dayKey(day)
+  ), [calendarTimezone, draggedPost, today]);
 
   const cancelTargetPublication = useCallback(async () => {
     const target = publicationTarget;
@@ -1152,7 +1466,7 @@ export default function CalendarPage() {
         kind: result.ok ? "success" : "info",
         title: result.ok ? "Публикация перенесена" : "Дата сохранена, очередь восстанавливается",
         body: result.scheduledAt
-          ? `${fmtDateTime(result.scheduledAt)}. Предыдущая дата больше не действует.`
+          ? `${fmtDateTime(result.scheduledAt, schedule.timezone)}. Предыдущая дата больше не действует.`
           : "Новая дата сохранена; сервис планирования восстановит очередь.",
       });
     } finally {
@@ -1331,9 +1645,14 @@ export default function CalendarPage() {
                     <ChevronLeft className="h-5 w-5" strokeWidth={2} aria-hidden />
                   </Button>
 
-                  <p className="min-w-[150px] text-center text-[17px] font-extrabold -tracking-[0.02em] text-text sm:text-left">
-                    {view === "week" ? weekRangeLabel(weekStart) : monthTitle(anchor)}
-                  </p>
+                  <div className="min-w-[150px] text-center sm:text-left">
+                    <p className="text-[17px] font-extrabold -tracking-[0.02em] text-text">
+                      {view === "week" ? weekRangeLabel(weekStart) : monthTitle(anchor)}
+                    </p>
+                    <p className="type-caption mt-0.5 text-text-3">
+                      Время проекта: <bdi>{calendarTimezone}</bdi>
+                    </p>
+                  </div>
 
                   <Button
                     variant="ghost"
@@ -1476,6 +1795,27 @@ export default function CalendarPage() {
                 </div>
               )}
 
+              {view === "week" && hasMovablePosts && (
+                <>
+                  <p id={CALENDAR_DRAG_HELP_ID} className="sr-only">
+                    Карточку можно перенести на другой день. С клавиатуры откройте публикацию и измените дату в форме.
+                  </p>
+                  <div
+                    aria-hidden
+                    className="mb-3 hidden min-h-11 items-center gap-2 rounded-sm bg-brand/10 px-3 py-2 text-sm text-text-2 md:flex"
+                  >
+                    <GripVertical className="h-4 w-4 shrink-0 text-brand" strokeWidth={2} />
+                    <p>
+                      <span className="font-semibold text-text">Переносите публикации между днями.</span>{" "}
+                      Зажмите карточку и перетащите её на новую дату — время сохранится.
+                    </p>
+                  </div>
+                </>
+              )}
+              <p className="sr-only" role="status" aria-live="polite">
+                {moveAnnouncement}
+              </p>
+
               <motion.div
                 key={periodKey}
                 initial={reduce ? false : { opacity: 0, x: dir * 10 }}
@@ -1484,20 +1824,58 @@ export default function CalendarPage() {
               >
                 {view === "week" ? (
                   <div className="grid min-w-0 gap-2 xl:grid-cols-7">
-                    {weekDays.map((day, i) => (
-                      <DayColumn
-                        key={day.toISOString()}
-                        day={day}
-                        index={i}
-                        posts={dayPosts(day)}
-                        isToday={sameDay(day, today)}
-                        isPast={day.getTime() < today.getTime()}
-                        onAdd={canEdit ? () => addPostOn(day) : undefined}
-                        onOpen={openPost}
-                        onRetry={canPublish ? retryCalendarPost : undefined}
-                        onReschedule={canPublish ? retryCalendarPost : undefined}
-                      />
-                    ))}
+                    {weekDays.map((day, i) => {
+                      const key = dayKey(day);
+                      const dropAllowed = canDropDraggedPostOn(day);
+                      return (
+                        <DayColumn
+                          key={day.toISOString()}
+                          day={day}
+                          index={i}
+                          posts={dayPosts(day)}
+                          isToday={sameDay(day, today)}
+                          isPast={day.getTime() < today.getTime()}
+                          onAdd={canEdit ? () => addPostOn(day) : undefined}
+                          onOpen={openPost}
+                          onRetry={canPublish ? retryCalendarPost : undefined}
+                          onReschedule={canPublish ? retryCalendarPost : undefined}
+                          canMovePost={canStartCalendarMove}
+                          movingPostId={movingPostId}
+                          dragging={draggedPost != null}
+                          dropActive={dragOverDay === key}
+                          dropAllowed={dropAllowed}
+                          onPostDragStart={startPostDrag}
+                          onPostDragEnd={endPostDrag}
+                          calendarTimezone={calendarTimezone}
+                          onDayDragEnter={(event) => {
+                            if (!dropAllowed) return;
+                            event.preventDefault();
+                            setDragOverDay(key);
+                          }}
+                          onDayDragOver={(event) => {
+                            if (!dropAllowed) return;
+                            event.preventDefault();
+                            event.dataTransfer.dropEffect = "move";
+                            if (dragOverDay !== key) setDragOverDay(key);
+                          }}
+                          onDayDragLeave={(event) => {
+                            const next = event.relatedTarget;
+                            if (next instanceof Node && event.currentTarget.contains(next)) return;
+                            if (dragOverDay === key) setDragOverDay(null);
+                          }}
+                          onDayDrop={(event) => {
+                            if (!dropAllowed || !draggedPost) return;
+                            event.preventDefault();
+                            const transferredId = event.dataTransfer.getData(CALENDAR_DRAG_MIME)
+                              || event.dataTransfer.getData("text/plain");
+                            if (transferredId && transferredId !== draggedPost.id) return;
+                            setDragOverDay(null);
+                            setDraggedPostId(null);
+                            void moveCalendarPost(draggedPost, day);
+                          }}
+                        />
+                      );
+                    })}
                   </div>
                 ) : (
                   <div>
@@ -1519,6 +1897,7 @@ export default function CalendarPage() {
                           posts={dayPosts(day)}
                           inMonth={day.getMonth() === anchor.getMonth()}
                           isToday={sameDay(day, today)}
+                          calendarTimezone={calendarTimezone}
                           onPick={() => {
                             setDir(0);
                             setAnchor(day);

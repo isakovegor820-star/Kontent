@@ -3,6 +3,7 @@ import {
   CalendarDays,
   Check,
   ChevronDown,
+  FileCheck2,
   FileText,
   LayoutDashboard,
   MessageCircle,
@@ -37,7 +38,7 @@ export function HeroProductScene() {
             <Logo size={25} decorative />
           </span>
           <span className={styles.productProject}>
-            Кофе и код
+            Юридическая практика
             <ChevronDown />
           </span>
           <span className={styles.productTeam}>
@@ -77,7 +78,7 @@ export function HeroProductScene() {
                     {index === 0 ? <Check /> : index === 2 ? <Plus /> : <Sparkles />}
                     <span>{item.status}</span>
                   </div>
-                  {index === 1 ? <i className={styles.calendarSecondPost}>Reels</i> : null}
+                  {index === 1 ? <i className={styles.calendarSecondPost}>Разбор</i> : null}
                 </article>
               ))}
             </div>
@@ -103,28 +104,19 @@ export function HeroProductScene() {
 
       <article className={styles.metricCard}>
         <header>
-          <span><BarChart3 />Охват за неделю</span>
-          <b>+28%</b>
+          <span><FileCheck2 />Доказательства</span>
+          <b>3 из 4</b>
         </header>
-        <svg viewBox="0 0 220 64" role="presentation">
-          <defs>
-            <linearGradient id="hero-metric-fill" x1="0" y1="0" x2="0" y2="1">
-              <stop stopColor="#2563ff" stopOpacity=".2" />
-              <stop offset="1" stopColor="#2563ff" stopOpacity="0" />
-            </linearGradient>
-          </defs>
-          <path className={styles.metricFill} d="M2 58 C28 54 34 38 55 42 S84 20 108 28 137 45 160 25 193 24 218 8 V64 H2Z" />
-          <path className={styles.metricLine} d="M2 58 C28 54 34 38 55 42 S84 20 108 28 137 45 160 25 193 24 218 8" />
-        </svg>
-        <footer><span>12 авг.</span><span>Сегодня</span></footer>
+        <div className={styles.proofProgress}>
+          <span /><span /><span /><span />
+        </div>
+        <footer><span>Источник указан</span><span>Решение ожидается</span></footer>
       </article>
 
       <div className={styles.socialRail}>
-        <span className={styles.socialInstagram}>IG</span>
-        <span className={styles.socialVk}>VK</span>
         <span className={styles.socialTelegram}>TG</span>
-        <span className={styles.socialYoutube}>YT</span>
-        <b>4 канала подключено</b>
+        <span className={styles.socialVk}>VK</span>
+        <b>Telegram · VK после настройки</b>
       </div>
     </div>
   );

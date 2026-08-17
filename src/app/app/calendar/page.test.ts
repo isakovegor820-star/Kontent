@@ -49,4 +49,21 @@ describe("calendar role-aware interface", () => {
     expect(source).toContain('"relative min-w-0 rounded-sm border-l-2');
     expect(source).toContain('className="grid min-w-0 gap-2 xl:grid-cols-7"');
   });
+
+  it("moves eligible weekly cards between future days and persists the new date", () => {
+    expect(source).toContain('data-calendar-draggable={canMove && !moving ? "true" : undefined}');
+    expect(source).toContain('draggable={canMove && !moving}');
+    expect(source).toContain('const CALENDAR_DRAG_MIME = "application/x-aurora-calendar-post"');
+    expect(source).toContain("resolveCalendarDayMove");
+    expect(source).toContain("rescheduleServerDraft");
+    expect(source).toContain("reschedulePublication");
+    expect(source).toContain("Перенести сюда");
+    expect(source).toContain("Время публикации сохранено");
+    expect(source).toContain('role="status" aria-live="polite"');
+  });
+
+  it("only makes scheduled publications draggable", () => {
+    expect(source).toContain('post.status === "scheduled"');
+    expect(source).toContain("canManageCalendarMove(post)");
+  });
 });

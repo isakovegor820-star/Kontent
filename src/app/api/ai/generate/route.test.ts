@@ -174,10 +174,34 @@ function editorialRequest() {
       channelId: 42,
       surface: "studio",
       postSettings: {
-        qualityMode: "balanced",
+        qualityMode: "maximum",
         factStrictness: "general",
         hideCriticalResult: false,
         autoImprove: false,
+        length: "custom",
+        customMinChars: 20,
+        customMaxChars: 2000,
+      },
+    }),
+  });
+}
+
+function balancedStudioRequest() {
+  return new NextRequest("http://localhost/api/ai/generate", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "idempotency-key": "balanced_single_pass_test_1",
+    },
+    body: JSON.stringify({
+      command: "write",
+      input: "Подготовь качественный пост одним сильным проходом",
+      channelId: 42,
+      surface: "studio",
+      postSettings: {
+        qualityMode: "balanced",
+        factStrictness: "general",
+        hideCriticalResult: false,
         length: "custom",
         customMinChars: 20,
         customMaxChars: 2000,
@@ -225,7 +249,7 @@ function reviewableBlockedEditorialRequest() {
       channelId: 42,
       surface: "composer",
       postSettings: {
-        qualityMode: "balanced",
+        qualityMode: "maximum",
         factStrictness: "general",
         hideCriticalResult: true,
         autoImprove: false,
@@ -535,7 +559,10 @@ describe("POST /api/ai/generate prerequisites", () => {
     expect(validationIndex).toBeGreaterThan(-1);
     expect(doneIndex).toBeGreaterThan(validationIndex);
     expect(events[doneIndex]).toMatchObject({ ackRequired: true });
-    expect(events.some((event) => event.type === "delta")).toBe(false);
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "delta",
+      text: "Полный содержательный ответ объясняет идею спокойно, точно и без лишних обещаний.",
+    }));
     expect(events.filter((event) => event.type === "replace")).toEqual([
       expect.objectContaining({
         text: "Полный содержательный ответ объясняет идею спокойно, точно и без лишних обещаний.",
@@ -548,6 +575,25 @@ describe("POST /api/ai/generate prerequisites", () => {
     }));
     expect(mocks.commitAiUsageResult).not.toHaveBeenCalled();
     expect(mocks.releaseAiUsageRequest).not.toHaveBeenCalled();
+  });
+
+  it("keeps balanced Studio generation to one streamed provider pass", async () => {
+    const fetchMock = vi.fn(async () => new Response(
+      '{"message":{"content":"Качественный пост готов за один проход."},"done":true}\n',
+      { status: 200, headers: { "content-type": "application/x-ndjson" } },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await POST(balancedStudioRequest());
+    const events = (await response.text()).trim().split("\n").map((line) => JSON.parse(line));
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(response.headers.get("x-ai-pipeline")).toBe("single-pass-stream");
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "delta",
+      text: "Качественный пост готов за один проход.",
+    }));
+    expect(events).toContainEqual(expect.objectContaining({ type: "done", pipeline: "single" }));
   });
 
   it("does not block a dated post when factual validation is explicitly disabled", async () => {

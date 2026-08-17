@@ -197,6 +197,9 @@ export function projectNotificationDestination(
     return `/app/composer?draft=${entityId}`;
   }
   if (notification.entityType === "publication_review_task") return "/app/calendar";
+  if (notification.entityType === "bot_client_inquiry" && entityId != null) {
+    return `/app/studio/questions?inquiry=${entityId}`;
+  }
   return null;
 }
 
@@ -236,6 +239,16 @@ export function projectNotificationCopy(notification: ClientProjectNotification)
       return {
         title: "Пора проверить публикацию",
         description: "Проверьте, остаётся ли публикация актуальной.",
+      };
+    case "client_inquiry_received":
+      return {
+        title: "Новое сообщение от аудитории",
+        description: "Аврора добавила его во входящие и поможет подготовить ответ.",
+      };
+    case "audience_comment_received":
+      return {
+        title: "Новый комментарий в Telegram",
+        description: "Аврора добавила комментарий во входящие и поможет подготовить ответ.",
       };
     default:
       return {

@@ -61,6 +61,80 @@ describe("hybrid radar search route", () => {
     expect(mocks.enqueue).not.toHaveBeenCalled();
   });
 
+  it("finds a channel by public post content when its title is unrelated", async () => {
+    mocks.query.mockImplementation(async (sql: string) => {
+      if (sql.includes("from discovered_sources source")) {
+        return { rowCount: 1, rows: [{
+          id: "44",
+          kind: "channel",
+          origin: "directory",
+          result_key: "directory:44",
+          title: "Блок",
+          handle: "block_media",
+          description: "Авторский журнал",
+          search_text: "Строительство жилых комплексов и работа девелоперов",
+          last_post_at: "2026-08-15T10:00:00.000Z",
+          posts_per_week: 4,
+          url: "https://t.me/block_media",
+          quality_score: 72,
+          reason: "Тема найдена в 40 публичных публикациях канала",
+          indexed_posts_count: 40,
+          verified: true,
+        }] };
+      }
+      return { rowCount: 0, rows: [] };
+    });
+    const response = await GET(new NextRequest("http://localhost/api/radar/search?q=строительство&channel=11"));
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      results: [{
+        kind: "channel",
+        title: "Блок",
+        handle: "block_media",
+        indexedPostsCount: 40,
+      }],
+      shouldExpand: true,
+    });
+    expect(mocks.query.mock.calls.some(([sql]) => String(sql).includes("source.content_tsv"))).toBe(true);
+  });
+
+  it("returns the completed expanded run together with immediate local results", async () => {
+    const readyRun = { ...queuedRun, status: "ready", stage: "ready", progress: 100, external_count: 1 };
+    mocks.query.mockImplementation(async (sql: string) => {
+      if (sql.includes("from radar_search_runs") && sql.includes("normalized_query = $3")) {
+        return { rowCount: 1, rows: [readyRun] };
+      }
+      if (sql.includes("from radar_search_runs where id")) return { rowCount: 1, rows: [readyRun] };
+      if (sql.includes("from radar_search_results")) {
+        return { rowCount: 1, rows: [{
+          id: "301",
+          action_id: "301",
+          kind: "channel",
+          provider: "web",
+          title: "Блок",
+          handle: "block_media",
+          description: "Девелопмент и городская среда",
+          url: "https://t.me/block_media",
+          quality_score: 82,
+          relevance_score: 82,
+          match_mode: "semantic_content",
+          reason: "Тематика публикаций совпадает с запросом по смыслу",
+          last_post_at: "2026-08-15T10:00:00.000Z",
+          posts_per_week: 4,
+          verified: true,
+        }] };
+      }
+      return { rowCount: 0, rows: [] };
+    });
+    const response = await GET(new NextRequest("http://localhost/api/radar/search?q=строительство&channel=11"));
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      run: { status: "ready", externalCount: 1 },
+      results: [{ title: "Блок", actionId: 301 }],
+      shouldExpand: false,
+    });
+  });
+
   it("creates a user-scoped background run and returns immediately", async () => {
     const response = await POST(new NextRequest("http://localhost/api/radar/search", {
       method: "POST",

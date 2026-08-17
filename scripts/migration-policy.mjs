@@ -33,6 +33,7 @@ const APPROVED_REPLACED_CONSTRAINTS = new Set([
   "publication_extra_operations_project_id_post_id_sequence_in_key",
   "competitors_network_check",
   "competitors_status_check",
+  "bot_conversations_state_check",
 ]);
 
 function withoutSqlComments(sql) {

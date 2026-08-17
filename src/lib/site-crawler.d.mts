@@ -28,7 +28,12 @@ export function extractSitemapUrls(xml: unknown, baseUrl: URL | string, maxUrls?
 export function extractSitemapDocument(xml: unknown, baseUrl: URL | string, maxUrls?: number): Readonly<{ kind: "index" | "urlset"; urls: string[] }>;
 export function stratifySitemapUrls(values: string[], maxUrls?: number): string[];
 export function extractSitePage(html: unknown, value: URL | string, status?: number): Record<string, unknown>;
-export function buildSiteAnalysisReport(targetUrl: URL | string, pages: Array<Record<string, unknown>>, limits?: SiteCrawlLimits): Record<string, unknown>;
+export function buildSiteAnalysisReport(
+  targetUrl: URL | string,
+  pages: Array<Record<string, unknown>>,
+  limits?: SiteCrawlLimits,
+  crawlSignals?: { robotsStatus?: number; sitemapAvailable?: boolean; sitemapUrlCount?: number },
+): Record<string, unknown>;
 export function crawlSite(
   input: { targetUrl: unknown; confirmedDomain: unknown; consent: unknown; limits?: Partial<SiteCrawlLimits> },
   dependencies?: { concurrency?: number; fetchText?: (url: string, options: Record<string, unknown>) => Promise<unknown>; onProgress?: (event: { stage: SiteCrawlStage; progress: number; detail: string }) => unknown },

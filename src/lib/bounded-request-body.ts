@@ -6,7 +6,9 @@ export class BoundedBodyError extends Error {
 }
 
 let activeAvatarBodies = 0;
+let activeMediaAssetBodies = 0;
 export const MAX_CONCURRENT_AVATAR_BODIES = 4;
+export const MAX_CONCURRENT_MEDIA_ASSET_BODIES = 2;
 
 export function acquireAvatarBodySlot() {
   if (activeAvatarBodies >= MAX_CONCURRENT_AVATAR_BODIES) {
@@ -18,6 +20,20 @@ export function acquireAvatarBodySlot() {
     if (released) return;
     released = true;
     activeAvatarBodies = Math.max(0, activeAvatarBodies - 1);
+  };
+}
+
+/** Media images can decode to tens of millions of pixels, so their budget is stricter. */
+export function acquireMediaAssetBodySlot() {
+  if (activeMediaAssetBodies >= MAX_CONCURRENT_MEDIA_ASSET_BODIES) {
+    throw new BoundedBodyError("upload_busy");
+  }
+  activeMediaAssetBodies += 1;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    activeMediaAssetBodies = Math.max(0, activeMediaAssetBodies - 1);
   };
 }
 

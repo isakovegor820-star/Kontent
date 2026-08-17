@@ -1,0 +1,59 @@
+.shell {
+  min-height: 100dvh;
+  padding: max(1rem, env(safe-area-inset-top)) 1rem max(2rem, env(safe-area-inset-bottom));
+  color: #101828;
+  background:
+    radial-gradient(circle at 12% 0%, rgb(37 99 255 / 0.18), transparent 36%),
+    radial-gradient(circle at 92% 18%, rgb(89 179 255 / 0.15), transparent 32%),
+    #f4f7fb;
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+}
+
+.header, .sectionHeading, .hero, .list button, .primary { display: flex; align-items: center; }
+.header { gap: .75rem; max-width: 42rem; margin: 0 auto 1rem; }
+.header h1, .hero h2, .section h2, .state h1 { margin: 0; text-wrap: balance; }
+.header h1 { font-size: 1.35rem; }
+.eyebrow { margin: 0 0 .25rem; color: #52647f; font-size: .75rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.mark { display: grid; width: 2.75rem; height: 2.75rem; place-items: center; color: white; border-radius: 1rem; background: linear-gradient(145deg, #3b82ff, #1746e8); box-shadow: 0 12px 28px -12px rgb(37 99 255 / .7); }
+.mark svg { width: 1.35rem; }
+
+.hero, .section, .state { max-width: 42rem; margin: 0 auto 1rem; border: 1px solid rgb(37 99 255 / .1); border-radius: 1.5rem; background: rgb(255 255 255 / .9); box-shadow: 0 18px 48px -30px rgb(15 23 42 / .38); }
+.hero { position: relative; flex-wrap: wrap; justify-content: space-between; gap: 1rem; padding: 1.25rem; overflow: hidden; }
+.hero > svg { width: 2rem; color: #047857; }
+.hero h2, .section h2 { font-size: 1.25rem; }
+.metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .5rem; width: 100%; }
+.metrics article { min-width: 0; padding: .85rem; border-radius: 1rem; background: #eff4ff; }
+.metrics strong, .metrics span { display: block; }
+.metrics strong { font-size: 1.45rem; font-variant-numeric: tabular-nums; }
+.metrics span { margin-top: .2rem; color: #52647f; font-size: .75rem; line-height: 1.25; }
+.metrics .attention { background: #fff7ed; }
+
+.section { padding: 1.25rem; }
+.sectionHeading { justify-content: space-between; margin-bottom: 1rem; }
+.sectionHeading > svg { width: 1.4rem; color: #2563ff; }
+.list { display: grid; gap: .5rem; }
+.list button { width: 100%; min-height: 3.25rem; gap: .65rem; padding: .75rem .9rem; color: #101828; text-align: left; border: 0; border-radius: .9rem; background: #f7faff; cursor: pointer; }
+.list button span { flex: 1; font-weight: 650; }
+.list button b { font-variant-numeric: tabular-nums; }
+.list button svg { width: 1rem; color: #52647f; }
+.empty { margin: 0; color: #52647f; line-height: 1.5; }
+
+.schedule { display: grid; gap: .75rem; margin: 0; padding: 0; list-style: none; }
+.schedule li { display: grid; grid-template-columns: 5.2rem 1fr; gap: .8rem; padding-bottom: .75rem; border-bottom: 1px solid rgb(37 99 255 / .09); }
+.schedule time { color: #1746e8; font-size: .8rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.schedule strong { font-size: .9rem; }
+.schedule p { display: -webkit-box; margin: .25rem 0 0; overflow: hidden; color: #52647f; font-size: .82rem; line-height: 1.4; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.primary { justify-content: center; gap: .5rem; width: 100%; min-height: 3.25rem; margin-top: 1rem; color: white; font-size: .94rem; font-weight: 700; border: 0; border-radius: 1rem; background: #2563ff; cursor: pointer; }
+.primary svg { width: 1rem; }
+.list button:focus-visible, .primary:focus-visible { outline: 3px solid rgb(37 99 255 / .35); outline-offset: 2px; }
+.list button:active, .primary:active { transform: translateY(1px); }
+
+.state { display: grid; min-height: 18rem; padding: 2rem; place-items: center; align-content: center; text-align: center; }
+.state > svg { width: 2rem; color: #2563ff; }
+.state p { max-width: 30rem; color: #52647f; line-height: 1.5; }
+.spinner { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+@media (hover: hover) { .list button:hover { background: #eef4ff; } .primary:hover { background: #1d4ed8; } }
+@media (max-width: 360px) { .metrics { grid-template-columns: 1fr; } .schedule li { grid-template-columns: 1fr; } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2s; } .list button, .primary { transition: none; } }

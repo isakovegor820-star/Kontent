@@ -17,8 +17,26 @@ const localNetworkOrigins = Object.values(networkInterfaces())
 const allowedDevOrigins = Array.from(
   new Set(["127.0.0.1", "localhost", ...localNetworkOrigins]),
 );
+const productionContentSecurityPolicy = [
+  "default-src 'self'",
+  "base-uri 'self'",
+  "object-src 'none'",
+  "frame-ancestors 'none'",
+  "frame-src 'none'",
+  "form-action 'self'",
+  "script-src 'self' 'unsafe-inline' https://telegram.org",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob: https:",
+  "media-src 'self' blob: https:",
+  "font-src 'self' data:",
+  "connect-src 'self'",
+  "worker-src 'self' blob:",
+  "manifest-src 'self'",
+  "upgrade-insecure-requests",
+].join("; ");
 
 const nextConfig: NextConfig = {
+  poweredByHeader: false,
   // Browser E2E runs the same full `npm run dev` runtime alongside a developer's server.
   // A separate dist directory prevents both Next instances from sharing a dev lock/cache.
   ...(isolatedDistDir ? { distDir: isolatedDistDir } : {}),
@@ -56,14 +74,19 @@ const nextConfig: NextConfig = {
         { source: "/finale/:path*", destination: "/", permanent: false },
         { source: "/footer/:path*", destination: "/", permanent: false },
         { source: "/reasons/:path*", destination: "/", permanent: false },
+        { source: "/memory/:path*", destination: "/", permanent: false },
+        { source: "/quality/:path*", destination: "/", permanent: false },
+        { source: "/how/:path*", destination: "/", permanent: false },
+        { source: "/cycle/:path*", destination: "/", permanent: false },
       );
     }
     return routes;
   },
 
-  // Защитные HTTP-заголовки на все маршруты. Раньше их не было вовсе.
-  // CSP намеренно НЕ ставим: приложение живёт на инлайн-стилях/скриптах (Next, Motion),
-  // и жёсткий CSP без nonce-механики просто сломает рендер. Это отдельная аккуратная задача.
+  // Next and Motion currently require inline framework scripts/styles, so production
+  // enforces a compatibility CSP that still closes external script injection, framing,
+  // object/embed, base-tag and cross-origin form/connect surfaces. A nonce-only policy
+  // remains a later rendering-architecture change, not an unsafe one-step toggle.
   async headers() {
     return [
       {
@@ -75,6 +98,9 @@ const nextConfig: NextConfig = {
           { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=(), payment=()" },
           { key: "Strict-Transport-Security", value: "max-age=63072000; includeSubDomains; preload" },
           { key: "X-DNS-Prefetch-Control", value: "on" },
+          ...(process.env.NODE_ENV === "production"
+            ? [{ key: "Content-Security-Policy", value: productionContentSecurityPolicy }]
+            : []),
         ],
       },
     ];

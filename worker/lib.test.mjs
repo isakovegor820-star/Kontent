@@ -377,6 +377,9 @@ describe("keyboard", () => {
     expect(keyboard([[{ text: "Открыть", url: "https://x" }]])).toEqual({
       inline_keyboard: [[{ text: "Открыть", url: "https://x" }]],
     });
+    expect(keyboard([[{ text: "Кабинет", webApp: "https://app.example/bot" }]])).toEqual({
+      inline_keyboard: [[{ text: "Кабинет", web_app: { url: "https://app.example/bot" } }]],
+    });
   });
 });
 

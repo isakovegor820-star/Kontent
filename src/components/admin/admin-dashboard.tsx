@@ -22,9 +22,10 @@ import {
   XCircle,
   type LucideIcon,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Wordmark } from "@/components/brand";
+import { AdminBotCenter } from "@/components/admin/admin-bot-center";
 import { AdminUsersCenter } from "@/components/admin/admin-users-center";
 import { Button, buttonClassName } from "@/components/ui/button";
 import type { AdminDashboardData, AdminPeriodDays } from "@/lib/admin-dashboard";
@@ -33,12 +34,20 @@ import { cn, fmtAgo, fmtNum, NETWORK_LABEL, plural } from "@/lib/utils";
 type LoadError = "unauthorized" | "access_denied" | "unavailable";
 
 const NAVIGATION = [
-  { href: "#overview", label: "Обзор", icon: Activity },
-  { href: "#publications", label: "Публикации", icon: Send },
-  { href: "#users", label: "Пользователи", icon: Users },
-  { href: "#system", label: "Система", icon: Server },
-  { href: "#audit", label: "Журнал действий", icon: History },
+  { id: "overview", href: "#overview", label: "Обзор", icon: Activity },
+  { id: "publications", href: "#publications", label: "Публикации", icon: Send },
+  { id: "users", href: "#users", label: "Пользователи", icon: Users },
+  { id: "bot-control", href: "#bot-control", label: "Управление ботом", icon: Bot },
+  { id: "system", href: "#system", label: "Система", icon: Server },
+  { id: "audit", href: "#audit", label: "Журнал действий", icon: History },
 ] as const;
+
+type AdminSection = (typeof NAVIGATION)[number]["id"];
+
+function adminSectionFromHash(hash: string): AdminSection {
+  const candidate = hash.replace(/^#/, "");
+  return NAVIGATION.some(({ id }) => id === candidate) ? candidate as AdminSection : "overview";
+}
 
 const ATTENTION_LABEL: Record<AdminDashboardData["attention"][number]["status"], string> = {
   failed: "Ошибка отправки",
@@ -180,7 +189,7 @@ function AdminError({ error }: { error: LoadError }) {
 function DailyBars({ data }: { data: AdminDashboardData["daily"] }) {
   const maximum = Math.max(1, ...data.map((item) => item.publications));
   return (
-    <div className="card-plain rounded-md p-5 sm:p-6">
+    <div className="card-plain min-w-0 max-w-full rounded-md p-5 sm:p-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h3 className="text-text">Поток публикаций</h3>
@@ -284,11 +293,20 @@ function dependencyState(value: AdminDashboardData["system"]["database"]): "heal
 }
 
 export function AdminDashboard() {
+  const mobileNavigationRef = useRef<HTMLElement>(null);
+  const [activeSection, setActiveSection] = useState<AdminSection>("overview");
   const [period, setPeriod] = useState<AdminPeriodDays>(7);
   const [data, setData] = useState<AdminDashboardData | null>(null);
   const [error, setError] = useState<LoadError | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
+
+  useEffect(() => {
+    const syncSection = () => setActiveSection(adminSectionFromHash(window.location.hash));
+    syncSection();
+    window.addEventListener("hashchange", syncSection);
+    return () => window.removeEventListener("hashchange", syncSection);
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -310,6 +328,24 @@ export function AdminDashboard() {
       });
     return () => controller.abort();
   }, [period, refreshKey]);
+
+  const dashboardReady = data !== null;
+  useEffect(() => {
+    if (!dashboardReady) return;
+    const frame = window.requestAnimationFrame(() => {
+      const desktopNavigation = window.matchMedia("(min-width: 64rem)").matches;
+      document.getElementById(desktopNavigation ? "main" : activeSection)?.scrollIntoView({ block: "start" });
+      const navigation = mobileNavigationRef.current;
+      const activeLink = navigation?.querySelector<HTMLElement>(`a[href="#${activeSection}"]`);
+      if (navigation && activeLink) {
+        navigation.scrollTo({
+          left: Math.max(0, activeLink.offsetLeft - (navigation.clientWidth - activeLink.offsetWidth) / 2),
+          behavior: "auto",
+        });
+      }
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeSection, dashboardReady]);
 
   const pulse = useMemo(() => {
     if (!data) return null;
@@ -348,11 +384,21 @@ export function AdminDashboard() {
             В кабинет
           </Link>
         </div>
-        <nav aria-label="Разделы админ-панели" className="mt-4 overflow-x-auto lg:mt-10 lg:overflow-visible">
-          <ul className="flex min-w-max gap-2 lg:min-w-0 lg:flex-col">
-            {NAVIGATION.map(({ href, label, icon: Icon }) => (
+        <nav aria-label="Разделы админ-панели" className="mt-10 hidden lg:block">
+          <ul className="flex flex-col gap-2">
+            {NAVIGATION.map(({ id, href, label, icon: Icon }) => (
               <li key={href}>
-                <a href={href} className="type-button flex min-h-11 items-center gap-3 rounded-sm px-3.5 text-text-2 transition-[background-color,color,transform] duration-150 hover:bg-surface-inset hover:text-text active:scale-[0.96] motion-reduce:transform-none motion-reduce:transition-none">
+                <a
+                  href={href}
+                  aria-current={activeSection === id ? "page" : undefined}
+                  onClick={() => setActiveSection(id)}
+                  className={cn(
+                    "type-button flex min-h-11 items-center gap-3 rounded-sm px-3.5 transition-[background-color,color,transform] duration-150 active:scale-[0.96] motion-reduce:transform-none motion-reduce:transition-none",
+                    activeSection === id
+                      ? "bg-info-soft text-info-text shadow-soft"
+                      : "text-text-2 hover:bg-surface-inset hover:text-text",
+                  )}
+                >
                   <Icon className="h-[18px] w-[18px]" strokeWidth={1.8} aria-hidden />
                   {label}
                 </a>
@@ -374,6 +420,31 @@ export function AdminDashboard() {
       </aside>
 
       <main id="main" className="min-w-0 px-4 py-6 sm:px-6 lg:px-10 lg:py-9">
+        <span role="status" aria-live="polite" className="sr-only">
+          Открыт раздел «{NAVIGATION.find(({ id }) => id === activeSection)?.label}».
+        </span>
+        <nav ref={mobileNavigationRef} aria-label="Разделы админ-панели" className="sticky top-0 z-20 -mx-4 -mt-6 mb-6 overflow-x-auto border-y border-line bg-surface/95 px-4 py-2 backdrop-blur-xl sm:-mx-6 sm:px-6 lg:hidden">
+          <ul className="flex min-w-max gap-2">
+            {NAVIGATION.map(({ id, href, label, icon: Icon }) => (
+              <li key={href}>
+                <a
+                  href={href}
+                  aria-current={activeSection === id ? "page" : undefined}
+                  onClick={() => setActiveSection(id)}
+                  className={cn(
+                    "type-button flex min-h-11 items-center gap-2.5 rounded-sm px-3.5 transition-[background-color,color,transform] duration-150 active:scale-[0.96] motion-reduce:transform-none motion-reduce:transition-none",
+                    activeSection === id
+                      ? "bg-info-soft text-info-text shadow-soft"
+                      : "text-text-2 hover:bg-surface-inset hover:text-text",
+                  )}
+                >
+                  <Icon className="h-[18px] w-[18px]" strokeWidth={1.8} aria-hidden />
+                  {label}
+                </a>
+              </li>
+            ))}
+          </ul>
+        </nav>
         <header className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
           <div>
             <p className="type-label text-brand">Пульс Авроры</p>
@@ -392,7 +463,7 @@ export function AdminDashboard() {
                     type="button"
                     aria-pressed={period === days}
                     className={cn(
-                      "type-button min-h-10 rounded-xs px-3.5 transition-[background-color,color,transform] duration-150 active:scale-[0.96] motion-reduce:transform-none motion-reduce:transition-none",
+                      "type-button min-h-11 rounded-xs px-3.5 transition-[background-color,color,transform] duration-150 active:scale-[0.96] motion-reduce:transform-none motion-reduce:transition-none",
                       period === days ? "bg-text text-white" : "text-text-2 hover:bg-surface-inset hover:text-text",
                     )}
                     onClick={() => {
@@ -428,7 +499,8 @@ export function AdminDashboard() {
           </p>
         )}
 
-        <section id="overview" className="scroll-mt-6 pt-8" aria-labelledby="pulse-title">
+        {activeSection === "overview" ? (
+        <section id="overview" className="scroll-mt-16 pt-8 pb-12" aria-labelledby="pulse-title">
           <div className={cn(
             "relative overflow-hidden rounded-lg border p-6 shadow-soft sm:p-7",
             pulse.state === "healthy" ? "border-success/20 bg-success-soft" : pulse.state === "down" ? "border-danger/20 bg-danger-soft" : "border-fire/25 bg-fire-soft",
@@ -459,9 +531,9 @@ export function AdminDashboard() {
             <MetricCard label="Нужно переподключение" value={data.summary.authAttention} helper="Активные каналы с ошибкой доступа" icon={Radio} tone={data.summary.authAttention > 0 ? "danger" : "neutral"} />
           </div>
 
-          <div className="mt-5 grid gap-5 xl:grid-cols-[minmax(0,1.55fr)_minmax(20rem,0.8fr)]">
+          <div className="mt-5 grid min-w-0 max-w-full gap-5 xl:grid-cols-[minmax(0,1.55fr)_minmax(20rem,0.8fr)]">
             <DailyBars data={data.daily} />
-            <div className="card-plain rounded-md p-5 sm:p-6">
+            <div className="card-plain min-w-0 max-w-full rounded-md p-5 sm:p-6">
               <h3 className="text-text">Подключённые соцсети</h3>
               <p className="type-caption mt-1 text-text-3">Состояние реальных подключений</p>
               <ul className="mt-5 space-y-3">
@@ -480,8 +552,10 @@ export function AdminDashboard() {
             </div>
           </div>
         </section>
+        ) : null}
 
-        <section id="publications" className="scroll-mt-6 pt-16" aria-labelledby="publications-title">
+        {activeSection === "publications" ? (
+        <section id="publications" className="scroll-mt-16 pt-8 pb-12" aria-labelledby="publications-title">
           <SectionHeading
             id="publications-title"
             eyebrow="Операции"
@@ -499,8 +573,10 @@ export function AdminDashboard() {
             <p className="type-caption mt-3 text-text-3">Показаны первые {maxAttentionPreview.length} из {fmtNum(data.attention.length)} задач.</p>
           )}
         </section>
+        ) : null}
 
-        <section id="users" className="scroll-mt-6 pt-16" aria-labelledby="users-title">
+        {activeSection === "users" ? (
+        <section id="users" className="scroll-mt-16 pt-8 pb-12" aria-labelledby="users-title">
           <SectionHeading
             id="users-title"
             eyebrow="Аккаунты"
@@ -515,8 +591,24 @@ export function AdminDashboard() {
             />
           </div>
         </section>
+        ) : null}
 
-        <section id="system" className="scroll-mt-6 pt-16" aria-labelledby="system-title">
+        {activeSection === "bot-control" ? (
+        <section id="bot-control" className="scroll-mt-16 pt-8 pb-12" aria-labelledby="bot-control-title">
+          <SectionHeading
+            id="bot-control-title"
+            eyebrow="Telegram"
+            title="Управление ботом"
+            description="Состояние основного бота, подключённые аккаунты, активность, доставка, уведомления и Telegram Business — с обратимыми bot-only действиями администратора."
+          />
+          <div className="mt-6">
+            <AdminBotCenter key={period} period={period} />
+          </div>
+        </section>
+        ) : null}
+
+        {activeSection === "system" ? (
+        <section id="system" className="scroll-mt-16 pt-8 pb-12" aria-labelledby="system-title">
           <SectionHeading
             id="system-title"
             eyebrow="Платформа"
@@ -544,8 +636,10 @@ export function AdminDashboard() {
             ))}
           </div>
         </section>
+        ) : null}
 
-        <section id="audit" className="scroll-mt-6 pt-16 pb-12" aria-labelledby="audit-title">
+        {activeSection === "audit" ? (
+        <section id="audit" className="scroll-mt-16 pt-8 pb-12" aria-labelledby="audit-title">
           <SectionHeading
             id="audit-title"
             eyebrow="Контроль"
@@ -569,6 +663,7 @@ export function AdminDashboard() {
             ))}
           </ol>
         </section>
+        ) : null}
       </main>
     </div>
   );
