@@ -377,6 +377,50 @@
   box-shadow: none;
 }
 
+.app-v3 .rich-text-editor[data-empty="true"]::before {
+  color: var(--text-3);
+  content: attr(data-placeholder);
+  pointer-events: none;
+}
+
+.app-v3 .rich-text-editor a {
+  color: var(--info-text);
+  cursor: pointer;
+  text-decoration-line: underline;
+  text-decoration-skip-ink: auto;
+  text-decoration-thickness: from-font;
+  text-underline-offset: 0.16em;
+}
+
+.app-v3 .rich-text-editor blockquote {
+  border-inline-start: 3px solid var(--brand-1);
+  margin-block: 0.5rem;
+  padding-inline-start: 0.75rem;
+}
+
+.app-v3 .rich-text-editor code {
+  border-radius: var(--radius-xs);
+  background: var(--surface-inset);
+  padding: 0.08em 0.28em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.92em;
+}
+
+.app-v3 .rich-text-editor tg-spoiler {
+  border-radius: 0.22em;
+  background: var(--text-2);
+  color: transparent;
+  cursor: help;
+  padding-inline: 0.08em;
+}
+
+.app-v3 .rich-text-editor tg-spoiler:hover,
+.app-v3 .rich-text-editor:focus tg-spoiler,
+.app-v3 .rich-text-editor tg-spoiler:focus-within {
+  background: var(--surface-inset);
+  color: var(--text);
+}
+
 .app-v3 input[type="range"] {
   appearance: none;
   border: 0;

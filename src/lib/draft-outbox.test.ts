@@ -35,6 +35,7 @@ function revision(overrides: Partial<PendingDraftRevision> = {}): PendingDraftRe
     writtenAt: "2026-08-02T10:00:00.000Z",
     payload: {
       text: "Локальная версия\nс переносом 🔒 https://example.test",
+      formatting: [{ type: "bold", offset: 0, length: 9 }],
       media: { kind: "image", label: "Фото", hue: 12 },
       scheduledAt: "2026-08-03T10:00:00.000Z",
       origin: "manual",
@@ -55,6 +56,7 @@ describe("durable draft outbox", () => {
     expect(findPendingDraft(7, { draftId: 41 }, storage)).toEqual(pending);
     expect(findPendingDraft(8, { draftId: 41 }, storage)).toBeNull();
     expect(storage.getItem(pendingDraftStorageKey(7, pending.clientKey))).toContain("Локальная версия");
+    expect(storage.getItem(pendingDraftStorageKey(7, pending.clientKey))).toContain('"formatting"');
   });
 
   it("keeps the newest revision when an older request ACK arrives", () => {

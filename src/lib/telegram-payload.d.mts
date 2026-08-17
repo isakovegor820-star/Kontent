@@ -12,7 +12,12 @@ export function parseTelegramHtml(html: string): Array<{
   html: string;
   text: string;
   length: number;
-  styles: Array<"b" | "spoiler">;
+  styles: Array<{
+    type: "bold" | "italic" | "underline" | "strikethrough" | "code" | "blockquote" | "spoiler" | "link";
+    key: string;
+    open: string;
+    close: string;
+  }>;
 }>;
 export function telegramEntityLength(html: string): number;
 export function splitTelegramHtml(
@@ -22,6 +27,7 @@ export function splitTelegramHtml(
 export function telegramHtmlToText(html: string): string;
 export function buildTelegramPayload(input: {
   text: string;
+  entities?: import("./rich-text.mjs").RichTextEntity[];
   hasAsset?: boolean;
   forceSeparateMedia?: boolean;
 }): {
@@ -33,6 +39,7 @@ export function buildTelegramPayload(input: {
 export function buildTelegramCarouselParts(input: {
   assetCount: number;
   text: string;
+  entities?: import("./rich-text.mjs").RichTextEntity[];
 }): Array<{
   index: number;
   type: "text" | "media";

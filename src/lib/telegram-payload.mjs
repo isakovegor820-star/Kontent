@@ -3,15 +3,32 @@ import { formatPost, toTelegramHtml } from "./telegram-format.mjs";
 export const TELEGRAM_TEXT_LIMIT = 4096;
 export const TELEGRAM_CAPTION_LIMIT = 1024;
 
-const OPEN_TAG = Object.freeze({ b: "<b>", spoiler: "<tg-spoiler>" });
-const CLOSE_TAG = Object.freeze({ b: "</b>", spoiler: "</tg-spoiler>" });
 const ENTITY_TEXT = Object.freeze({ "&amp;": "&", "&lt;": "<", "&gt;": ">" });
-const TOKEN_RE = /<b>|<\/b>|<tg-spoiler>|<\/tg-spoiler>|&amp;|&lt;|&gt;|[\s\S]/gu;
+const TOKEN_RE = /<a href="[^"]*">|<\/a>|<b>|<\/b>|<i>|<\/i>|<u>|<\/u>|<s>|<\/s>|<code>|<\/code>|<blockquote>|<\/blockquote>|<tg-spoiler>|<\/tg-spoiler>|&amp;|&lt;|&gt;|[\s\S]/gu;
 
-function tokenStyle(token) {
-  if (token === "<b>" || token === "</b>") return "b";
-  if (token === "<tg-spoiler>" || token === "</tg-spoiler>") return "spoiler";
+function openingStyle(token) {
+  if (token === "<b>") return { type: "bold", key: "bold", open: token, close: "</b>" };
+  if (token === "<i>") return { type: "italic", key: "italic", open: token, close: "</i>" };
+  if (token === "<u>") return { type: "underline", key: "underline", open: token, close: "</u>" };
+  if (token === "<s>") return { type: "strikethrough", key: "strikethrough", open: token, close: "</s>" };
+  if (token === "<code>") return { type: "code", key: "code", open: token, close: "</code>" };
+  if (token === "<blockquote>") return { type: "blockquote", key: "blockquote", open: token, close: "</blockquote>" };
+  if (token === "<tg-spoiler>") return { type: "spoiler", key: "spoiler", open: token, close: "</tg-spoiler>" };
+  if (token.startsWith("<a href=")) return { type: "link", key: token, open: token, close: "</a>" };
   return null;
+}
+
+function closingType(token) {
+  return ({
+    "</b>": "bold",
+    "</i>": "italic",
+    "</u>": "underline",
+    "</s>": "strikethrough",
+    "</code>": "code",
+    "</blockquote>": "blockquote",
+    "</tg-spoiler>": "spoiler",
+    "</a>": "link",
+  })[token] || null;
 }
 
 /**
@@ -24,13 +41,14 @@ export function parseTelegramHtml(html) {
   const atoms = [];
   for (const match of String(html || "").matchAll(TOKEN_RE)) {
     const token = match[0];
-    const style = tokenStyle(token);
-    if (token === "<b>" || token === "<tg-spoiler>") {
+    const style = openingStyle(token);
+    if (style) {
       active.push(style);
       continue;
     }
-    if (token === "</b>" || token === "</tg-spoiler>") {
-      const index = active.lastIndexOf(style);
+    const closing = closingType(token);
+    if (closing) {
+      const index = active.findLastIndex((candidate) => candidate.type === closing);
       if (index >= 0) active.splice(index, 1);
       continue;
     }
@@ -54,13 +72,15 @@ function renderAtoms(atoms) {
   let html = "";
   let active = [];
   for (const atom of atoms) {
-    const common = commonPrefixLength(active, atom.styles);
-    for (let index = active.length - 1; index >= common; index -= 1) html += CLOSE_TAG[active[index]];
-    for (let index = common; index < atom.styles.length; index += 1) html += OPEN_TAG[atom.styles[index]];
+    const activeKeys = active.map((style) => style.key);
+    const nextKeys = atom.styles.map((style) => style.key);
+    const common = commonPrefixLength(activeKeys, nextKeys);
+    for (let index = active.length - 1; index >= common; index -= 1) html += active[index].close;
+    for (let index = common; index < atom.styles.length; index += 1) html += atom.styles[index].open;
     active = [...atom.styles];
     html += atom.html;
   }
-  for (let index = active.length - 1; index >= 0; index -= 1) html += CLOSE_TAG[active[index]];
+  for (let index = active.length - 1; index >= 0; index -= 1) html += active[index].close;
   return html;
 }
 
@@ -123,9 +143,9 @@ export function telegramHtmlToText(html) {
  * A media post above the caption limit sends media first and deterministic text chunks;
  * every chunk remains independently valid Telegram HTML.
  */
-export function buildTelegramPayload({ text, hasAsset = false, forceSeparateMedia = false }) {
-  const formattedText = formatPost(text);
-  const formattedHtml = toTelegramHtml(formattedText);
+export function buildTelegramPayload({ text, entities, hasAsset = false, forceSeparateMedia = false }) {
+  const formattedText = entities === undefined ? formatPost(text) : String(text || "");
+  const formattedHtml = toTelegramHtml(formattedText, entities);
   const entityLength = telegramEntityLength(formattedHtml);
   let parts;
   if (hasAsset && entityLength <= TELEGRAM_CAPTION_LIMIT && !forceSeparateMedia) {
@@ -156,11 +176,11 @@ export function buildTelegramPayload({ text, hasAsset = false, forceSeparateMedi
  * persisted when publication is scheduled, so the worker must derive the same
  * indexes after a restart instead of replacing a generic single-media plan.
  */
-export function buildTelegramCarouselParts({ assetCount, text }) {
+export function buildTelegramCarouselParts({ assetCount, text, entities }) {
   if (!Number.isInteger(assetCount) || assetCount < 3 || assetCount > 7) {
     throw new Error("telegram_carousel_asset_count_invalid");
   }
-  const payload = buildTelegramPayload({ hasAsset: true, text });
+  const payload = buildTelegramPayload({ hasAsset: true, text, entities });
   const captionPart = payload.parts[0]?.type === "media_caption" ? payload.parts[0] : null;
   const mediaParts = Array.from({ length: assetCount }, (_unused, index) => ({
     index,

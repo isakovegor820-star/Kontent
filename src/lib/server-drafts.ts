@@ -30,6 +30,7 @@ import {
   UTM_FIELDS,
   type UtmValues,
 } from "./utm";
+import { normalizeRichTextEntities } from "./rich-text.mjs";
 
 type Queryable = Pick<Pool | PoolClient, "query">;
 type TransactionPool = Pick<Pool, "connect">;
@@ -41,6 +42,7 @@ type DraftRow = {
   author_name?: string | null;
   editorial_state?: "draft" | "in_review" | "changes_requested" | "approved" | null;
   text: string;
+  formatting: unknown;
   media: unknown;
   tracking: unknown;
   scheduled_at: Date | string | null;
@@ -84,7 +86,7 @@ const DRAFT_SELECT = `
   select d.id, d.project_id, d.user_id as author_user_id,
          coalesce(nullif(btrim(draft_author.name), ''), 'Участник ' || d.user_id::text) as author_name,
          coalesce(editorial_workflow.state, 'draft') as editorial_state,
-         d.text, d.media, d.tracking, d.scheduled_at,
+         d.text, d.formatting, d.media, d.tracking, d.scheduled_at,
          d.scheduled_timezone, d.scheduled_local_date::text as scheduled_local_date,
          d.scheduled_local_time::text as scheduled_local_time,
          d.scheduled_offset, d.scheduled_disambiguation,
@@ -152,6 +154,22 @@ function draftText(value: unknown): string {
     throw new DraftValidationError("empty_text");
   }
   return value;
+}
+
+function draftFormatting(text: string, value: unknown) {
+  try {
+    return normalizeRichTextEntities(text, value);
+  } catch {
+    throw new DraftValidationError("bad_formatting");
+  }
+}
+
+function storedDraftFormatting(text: string, value: unknown) {
+  try {
+    return normalizeRichTextEntities(text, value);
+  } catch {
+    return [];
+  }
 }
 
 function nullableMedia(value: unknown): Post["media"] {
@@ -424,8 +442,9 @@ export function parseDraftWriteInput(value: unknown): DraftWriteInput {
     throw new DraftValidationError(origin === "ai" ? "generation_result_required" : "generation_result_unexpected");
   }
   const resolvedSchedule = schedule(value);
+  const text = draftText(value.text);
   const parsed: DraftWriteInput = {
-    text: draftText(value.text),
+    text,
     media: nullableMedia(value.media),
     scheduledAt: resolvedSchedule.scheduledAt,
     schedule: resolvedSchedule.schedule,
@@ -439,6 +458,7 @@ export function parseDraftWriteInput(value: unknown): DraftWriteInput {
     aiValidation: null,
     generationResultId,
   };
+  if (Object.hasOwn(value, "formatting")) parsed.formatting = draftFormatting(text, value.formatting);
   if (Object.hasOwn(value, "tracking")) parsed.tracking = trackingSelection(value.tracking);
   return parsed;
 }
@@ -552,6 +572,7 @@ function mapDraft(row: DraftRow): ServerDraft {
         ? row.editorial_state
         : "draft",
     text: row.text,
+    formatting: storedDraftFormatting(row.text, row.formatting),
     media: (row.media ?? null) as Post["media"],
     tracking: storedTrackingSelection(row.tracking),
     scheduled_at: row.scheduled_at == null ? null : toIso(row.scheduled_at),
@@ -723,6 +744,7 @@ async function resolveSourceContext(
       return {
         ...input,
         text: canonicalText,
+        formatting: [],
         sourceRef: {
           kind: "trend",
           id: String(row.id),
@@ -752,6 +774,7 @@ async function resolveSourceContext(
       return {
         ...input,
         text: row.text,
+        formatting: [],
         sourceRef: {
           kind: "trend",
           id: String(row.id),
@@ -779,6 +802,7 @@ async function resolveSourceContext(
     return {
       ...input,
       text: row.text,
+      formatting: [],
       sourceRef: {
         kind: "trend",
         id: String(row.id),
@@ -815,6 +839,7 @@ async function resolveSourceContext(
     return {
       ...input,
       text: canonicalText,
+      formatting: [],
       sourceRef: {
         kind: "idea",
         id: String(row.id),
@@ -852,6 +877,7 @@ async function resolveSourceContext(
     return {
       ...input,
       text: row.text,
+      formatting: [],
       sourceRef: {
         kind: "reference",
         id: String(row.id),
@@ -893,6 +919,7 @@ async function resolveSourceContext(
     return {
       ...input,
       text: canonicalText,
+      formatting: [],
       sourceRef: {
         kind: "rss",
         id: String(row.id),
@@ -1017,9 +1044,9 @@ export async function createDraftForUser(
          (user_id, project_id, text, media, tracking, scheduled_at, origin, purpose, source_ref, client_key,
           review_policy_version, ai_validation, generation_result_id,
           scheduled_timezone, scheduled_local_date, scheduled_local_time,
-          scheduled_offset, scheduled_disambiguation)
+          scheduled_offset, scheduled_disambiguation, formatting)
        values ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, $9::jsonb, $10, $11, $12::jsonb, $13,
-               $14, $15, $16, $17, $18)
+               $14, $15, $16, $17, $18, $19::jsonb)
        on conflict (user_id, client_key) do nothing
        returning id, project_id`,
       [
@@ -1041,6 +1068,7 @@ export async function createDraftForUser(
         trusted.schedule?.localTime ?? null,
         trusted.schedule?.offset ?? null,
         trusted.schedule?.disambiguation ?? null,
+        JSON.stringify(trusted.formatting ?? []),
       ],
     );
     const created = inserted.rowCount === 1;
@@ -1096,6 +1124,9 @@ export async function updateDraftForUser(
       throw new DraftValidationError("source_context_immutable");
     }
     let trustedText = input.text;
+    let trustedFormatting = input.formatting === undefined
+      ? (input.text === current.text ? current.formatting ?? [] : [])
+      : input.formatting;
     let trustedOrigin: Post["origin"] = current.origin === "ai" ? "ai" : "manual";
     let trustedPurpose: ServerDraft["purpose"] = current.origin === "ai"
       ? (input.text === current.text ? current.purpose : "needs_review")
@@ -1127,6 +1158,7 @@ export async function updateDraftForUser(
         throw new DraftValidationError("generation_result_channel_conflict");
       }
       trustedText = result.text;
+      trustedFormatting = input.formatting ?? [];
       trustedOrigin = "ai";
       trustedPurpose = result.purpose;
       trustedSourceRef = result.sourceRef ?? current.source_ref;
@@ -1158,6 +1190,7 @@ export async function updateDraftForUser(
               scheduled_offset = $16,
               scheduled_disambiguation = $17,
               tracking = $18::jsonb,
+              formatting = $19::jsonb,
               human_reviewed_version = null,
               human_reviewed_at = null,
               version = version + 1,
@@ -1183,6 +1216,7 @@ export async function updateDraftForUser(
         input.schedule?.offset ?? null,
         input.schedule?.disambiguation ?? null,
         JSON.stringify(trustedTracking ?? {}),
+        JSON.stringify(trustedFormatting),
       ],
     );
 

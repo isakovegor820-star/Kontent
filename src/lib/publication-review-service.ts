@@ -143,8 +143,9 @@ async function createReviewUpdateDraft(
   );
 
   const snapshot = {
-    schemaVersion: 3,
+    schemaVersion: 4,
     text: input.text,
+    formatting: [],
     media: input.media ?? null,
     tracking: null,
     origin: "manual",

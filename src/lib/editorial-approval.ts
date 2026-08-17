@@ -188,6 +188,7 @@ type DraftSnapshotRow = {
   user_id: number | string;
   version: number | string;
   text: string;
+  formatting: unknown;
   media: unknown;
   tracking?: unknown;
   origin: string;
@@ -208,8 +209,9 @@ function snapshotFromDraft(row: DraftSnapshotRow): Record<string, unknown> {
     ? row.channel_ids.map(Number).filter(Number.isSafeInteger).sort((left, right) => left - right)
     : [];
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     text: row.text,
+    formatting: Array.isArray(row.formatting) ? row.formatting : [],
     media: row.media ?? null,
     tracking: row.tracking ?? null,
     origin: row.origin,
@@ -243,7 +245,7 @@ async function loadDraftSnapshot(
 ): Promise<DraftSnapshotRow | null> {
   const result = await db.query<DraftSnapshotRow>(
     `select draft.id, draft.project_id, draft.user_id, draft.version,
-            draft.text, draft.media, draft.tracking, draft.origin, draft.purpose, draft.source_ref,
+            draft.text, draft.formatting, draft.media, draft.tracking, draft.origin, draft.purpose, draft.source_ref,
             draft.scheduled_at, draft.scheduled_timezone,
             to_char(draft.scheduled_local_date, 'YYYY-MM-DD') as scheduled_local_date,
             to_char(draft.scheduled_local_time, 'HH24:MI') as scheduled_local_time,

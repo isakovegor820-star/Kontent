@@ -35,6 +35,45 @@ describe("Telegram final payload", () => {
     expect(payload.entityLength).toBe("<tag> & value".length);
   });
 
+  it("renders the full editor formatting set as safe Telegram HTML", () => {
+    const text = "bold italic under strike code secret quote link";
+    const ranges = (needle, type, extra = {}) => ({
+      type,
+      offset: text.indexOf(needle),
+      length: needle.length,
+      ...extra,
+    });
+    const payload = buildTelegramPayload({
+      text,
+      entities: [
+        ranges("bold", "bold"),
+        ranges("italic", "italic"),
+        ranges("under", "underline"),
+        ranges("strike", "strikethrough"),
+        ranges("code", "code"),
+        ranges("secret", "spoiler"),
+        ranges("quote", "blockquote"),
+        ranges("link", "link", { url: "https://example.com/?a=1&b=2" }),
+      ],
+    });
+    expect(payload.formattedHtml).toBe(
+      '<b>bold</b> <i>italic</i> <u>under</u> <s>strike</s> <code>code</code> '
+      + '<tg-spoiler>secret</tg-spoiler> <blockquote>quote</blockquote> '
+      + '<a href="https://example.com/?a=1&amp;b=2">link</a>',
+    );
+    expect(telegramHtmlToText(payload.formattedHtml)).toBe(text);
+  });
+
+  it("closes and reopens links and nested styles at a split boundary", () => {
+    const text = "x".repeat(30);
+    const [first, second] = splitTelegramHtml(
+      '<a href="https://example.com"><b>' + text + "</b></a>",
+      16,
+    );
+    expect(first.html).toBe('<a href="https://example.com"><b>' + "x".repeat(16) + "</b></a>");
+    expect(second.html).toBe('<a href="https://example.com"><b>' + "x".repeat(14) + "</b></a>");
+  });
+
   it("never splits surrogate pairs or loses combining Unicode sequences", () => {
     const text = `${"x".repeat(4094)}👩‍💻e\u0301`;
     const payload = buildTelegramPayload({ text });

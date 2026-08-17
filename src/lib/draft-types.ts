@@ -2,6 +2,7 @@ import type { Network, Post } from "./types";
 import type { FactualValidationProvenance } from "./fact-ledger";
 import type { LocalScheduleInput } from "./timezone-schedule";
 import type { UtmValues } from "./utm";
+import type { RichTextEntity } from "./rich-text.mjs";
 
 export interface DraftAiValidation {
   version: 1;
@@ -51,6 +52,8 @@ export interface ServerDraft {
   author_name?: string;
   editorial_state?: "draft" | "in_review" | "changes_requested" | "approved";
   text: string;
+  /** Optional only for cached/pre-migration payloads; new API responses always include it. */
+  formatting?: RichTextEntity[];
   media: Post["media"];
   /** Optional only for compatibility with cached/pre-migration API payloads. */
   tracking?: DraftTrackingSelection | null;
@@ -78,6 +81,8 @@ export interface ServerDraft {
 
 export interface DraftWriteInput {
   text: string;
+  /** Optional only for compatibility with older offline outbox records and callers. */
+  formatting?: RichTextEntity[];
   media: Post["media"];
   scheduledAt: string | null;
   schedule?: LocalScheduleInput | null;

@@ -1355,6 +1355,9 @@ create table if not exists drafts (
   id            bigint generated always as identity primary key,
   user_id       bigint      not null references users (id) on delete cascade,
   text          text        not null default '',
+  formatting    jsonb       not null default '[]'::jsonb
+                            constraint drafts_formatting_array_check
+                            check (jsonb_typeof(formatting) = 'array'),
   media         jsonb,
   scheduled_at  timestamptz,
   scheduled_timezone varchar(80),

@@ -5,7 +5,7 @@
  */
 export const SCHEMA_MANIFEST = Object.freeze({
   manifestVersion: 1,
-  schemaVersion: "2026-09-10.81",
+  schemaVersion: "2026-09-11.82",
   migrations: Object.freeze([
     ["20260801_account_onboarding.sql", "ac0e1f10046cf620185570ab5f40437991d08513473f67d4e93bdafa07b86614"],
     ["20260801_ai_usage_reservations.sql", "991c3a92dce16df55011d9df52fb65af1a7f4310b27f61dc519705f05528d7a0"],
@@ -87,6 +87,7 @@ export const SCHEMA_MANIFEST = Object.freeze({
     ["20260908_competitor_posts_fulltext.sql", "204f1f1bb3ee327e4ccafd4ab12adf35c63b4d4e2027ad974af172ca66d5b590"],
     ["20260909_audience_delivery_recovery_index.sql", "88288a632753a5599a848acba0fd8d5cd723e948156e90d0a11d8ab1fbc06e83"],
     ["20260910_rss_explicit_auto_publish.sql", "6afcee0090d7ca2c99e0c17cb6a2acc8f69bfcef88e5564ceff1b9d4cc880bfd"],
+    ["20260911_rich_text_formatting.sql", "3acf0d2a9bfd159d8c7680d0ff27b5df0818454a936b96c426ee159ead3aa32e"],
   ].map(([name, checksum]) => Object.freeze({ name, checksum }))),
   capabilities: Object.freeze({
     tables: Object.freeze([
@@ -243,6 +244,7 @@ export const SCHEMA_MANIFEST = Object.freeze({
       "channels.updated_at",
       "channels.tg_discussion_chat_id",
       "drafts.scheduled_timezone",
+      "drafts.formatting",
       "bot_notification_preferences.post_results_enabled",
       "bot_notification_preferences.review_reminders_enabled",
       "bot_notification_preferences.problem_digest_enabled",
@@ -499,6 +501,7 @@ export const SCHEMA_MANIFEST = Object.freeze({
       "posts.posts_provider_reconciliation_state_check",
       "drafts.drafts_origin_check",
       "drafts.drafts_purpose_check",
+      "drafts.drafts_formatting_array_check",
       "publication_operations.publication_operations_status_check",
       "publication_operations.publication_operations_schedule_revision_check",
       "publication_outbox.publication_outbox_status_check",

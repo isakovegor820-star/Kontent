@@ -146,6 +146,29 @@ describe("draft input boundary", () => {
     );
   });
 
+  it("accepts canonical rich-text ranges and rejects unsafe formatting", () => {
+    expect(parseDraftCreateInput({
+      ...input,
+      formatting: [
+        { type: "bold", offset: 0, length: 4 },
+        { type: "link", offset: 5, length: 4, url: "example.com" },
+      ],
+    })).toMatchObject({
+      formatting: [
+        { type: "bold", offset: 0, length: 4 },
+        { type: "link", offset: 5, length: 4, url: "https://example.com/" },
+      ],
+    });
+    expect(() => parseDraftCreateInput({
+      ...input,
+      formatting: [{ type: "link", offset: 0, length: 4, url: "javascript:alert(1)" }],
+    })).toThrowError(new DraftValidationError("bad_formatting"));
+    expect(() => parseDraftCreateInput({
+      ...input,
+      formatting: [{ type: "bold", offset: input.text.length - 1, length: 10 }],
+    })).toThrowError(new DraftValidationError("bad_formatting"));
+  });
+
   it("accepts a strict versioned schedule-only update", () => {
     expect(parseDraftScheduleUpdateInput({
       version: 3,

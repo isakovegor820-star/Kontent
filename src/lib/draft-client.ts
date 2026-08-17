@@ -244,6 +244,7 @@ export function draftWriteMismatchFields(draft: ServerDraft, input: DraftWriteIn
   const expectedIds = [...input.channelIds].sort((a, b) => a - b);
   const fields: string[] = [];
   if (draft.text !== input.text) fields.push("text");
+  if (JSON.stringify(draft.formatting ?? []) !== JSON.stringify(input.formatting ?? [])) fields.push("formatting");
   if (draft.scheduled_at !== input.scheduledAt) fields.push("scheduledAt");
   if (input.scheduledAt == null) {
     if (draft.scheduled_timezone != null) fields.push("schedule");

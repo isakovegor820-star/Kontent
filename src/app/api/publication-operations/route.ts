@@ -39,6 +39,7 @@ import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import { getSessionUser } from "@/lib/session";
 import { createShortLinkSlug } from "@/lib/tracked-links";
 import { buildTelegramCarouselParts, buildTelegramPayload } from "@/lib/telegram-payload.mjs";
+import { normalizeRichTextEntities, trimRichTextContent } from "@/lib/rich-text.mjs";
 import { resolveLocalSchedule, ScheduleValidationError } from "@/lib/timezone-schedule";
 import {
   recheckTypographyForPublication,
@@ -132,7 +133,8 @@ const PUBLICATION_ORIGINS = new Set([
 const PUBLICATION_PURPOSES = new Set(["source_context", "publishable", "needs_review"]);
 
 function approvedPublicationSnapshot(value: unknown) {
-  if (!isRecord(value) || Number(value.schemaVersion) !== 3 || !isRecord(value.schedule)) {
+  const schemaVersion = isRecord(value) ? Number(value.schemaVersion) : 0;
+  if (!isRecord(value) || ![3, 4].includes(schemaVersion) || !isRecord(value.schedule)) {
     throw new Error("approved_publication_snapshot_invalid");
   }
   if (
@@ -148,6 +150,14 @@ function approvedPublicationSnapshot(value: unknown) {
     throw new Error("approved_publication_snapshot_invalid");
   }
   const schedule = value.schedule;
+  let formatting;
+  try {
+    formatting = schemaVersion >= 4
+      ? normalizeRichTextEntities(value.text, value.formatting)
+      : [];
+  } catch {
+    throw new Error("approved_publication_snapshot_invalid");
+  }
   const nullableString = (field: string) => {
     const fieldValue = schedule[field];
     if (fieldValue == null) return null;
@@ -156,6 +166,7 @@ function approvedPublicationSnapshot(value: unknown) {
   };
   return {
     text: value.text,
+    formatting,
     media: value.media ?? null,
     tracking: value.tracking ?? null,
     origin: value.origin as "manual" | "ai" | "trend" | "idea" | "competitor" | "rss" | "autopilot",
@@ -930,14 +941,20 @@ export async function POST(req: NextRequest) {
       .filter((destination) => destination.network === "tg")
       .map((destination) => destinationRenders.get(Number(destination.channel_id)))
       .find((render): render is DestinationPublicationRender => render != null);
+    const approvedRichText = trimRichTextContent(
+      approvedSnapshot.text,
+      approvedSnapshot.formatting,
+    );
     const telegramParts = (telegramRender
       ? carouselAssets.length > 0
-        ? buildTelegramCarouselParts({
+          ? buildTelegramCarouselParts({
             assetCount: carouselAssets.length,
             text: telegramRender.mainText,
+            entities: approvedRichText.entities,
           })
         : buildTelegramPayload({
             text: telegramRender.mainText,
+            entities: approvedRichText.entities,
             hasAsset: Number.isSafeInteger(Number(media?.assetId)) && Number(media?.assetId) > 0,
           }).parts
       : []).map((part) => ({

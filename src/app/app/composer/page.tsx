@@ -63,6 +63,7 @@ import {
   type ComposerTrackingValue,
 } from "@/components/app/tracking-builder";
 import { Button } from "@/components/ui/button";
+import { RichTextEditor } from "@/components/ui/rich-text-editor";
 import {
   Badge,
   Card,
@@ -72,7 +73,6 @@ import {
   Field,
   Input,
   TelegramIcon,
-  Textarea,
   VkIcon,
 } from "@/components/ui/primitives";
 import { H2, HelperText } from "@/components/ui/typography";
@@ -141,6 +141,7 @@ import {
   type PostSettings,
 } from "@/lib/post-settings";
 import { buildTelegramPayload } from "@/lib/telegram-payload.mjs";
+import type { RichTextEntity } from "@/lib/rich-text.mjs";
 import {
   nextMoscowPublishingSlot,
   type BestPublishingTime,
@@ -270,6 +271,7 @@ type PublicationSuccess = {
   scheduledAt: string;
 };
 type ResolvedComposerSchedule = NonNullable<ReturnType<typeof resolveComposerSchedule>>;
+type ComposerTextSnapshot = { text: string; formatting: RichTextEntity[] };
 type ComposerAiPreview = {
   text: string;
   phase: AiDraftPhase | null;
@@ -305,7 +307,8 @@ interface ComposerValue {
   canChangeSchedule: boolean;
   setDraftVersionFromPublicationSettings: (version: number) => void;
   text: string;
-  setText: (v: string) => void;
+  formatting: RichTextEntity[];
+  setContent: (value: ComposerTextSnapshot) => void;
   networks: Network[];
   setNetworks: (value: Network[]) => void;
   toggleNetwork: (n: Network, on: boolean) => void;
@@ -408,6 +411,7 @@ export default function ComposerPage() {
   const [editorialState, setEditorialState] = useState<ClientEditorialState>("draft");
   const [legacyId, setLegacyId] = useState<string | null>(null);
   const [text, setText] = useState("");
+  const [formatting, setFormatting] = useState<RichTextEntity[]>([]);
   const [networks, setNetworks] = useState<Network[]>([]);
   const [pickedIds, setPickedIds] = useState<number[] | null>(null);
   const [pickedVkIds, setPickedVkIds] = useState<number[] | null>(null);
@@ -440,10 +444,10 @@ export default function ComposerPage() {
   const [draftSavedAt, setDraftSavedAt] = useState<string | null>(null);
   const [postSettings, setPostSettings] = useState<PostSettings>(() => DEFAULT_POST_SETTINGS);
   const [postSettingsSaving, setPostSettingsSaving] = useState(false);
-  const [undoStack, setUndoStack] = useState<string[]>([]);
-  const [redoStack, setRedoStack] = useState<string[]>([]);
-  const undoStackRef = useRef<string[]>([]);
-  const redoStackRef = useRef<string[]>([]);
+  const [undoStack, setUndoStack] = useState<ComposerTextSnapshot[]>([]);
+  const [redoStack, setRedoStack] = useState<ComposerTextSnapshot[]>([]);
+  const undoStackRef = useRef<ComposerTextSnapshot[]>([]);
+  const redoStackRef = useRef<ComposerTextSnapshot[]>([]);
   const [publicationMode, setPublicationMode] = useState<PublicationMode | null>(null);
   const [publicationSuccess, setPublicationSuccess] = useState<PublicationSuccess | null>(null);
   const [draftRevision, setDraftRevision] = useState(0);
@@ -602,6 +606,7 @@ export default function ComposerPage() {
     setPickedIds(pending ? pendingTgIds : draft ? draftTgIds : null);
     setPickedVkIds(pending ? pendingVkIds : draft ? draftVkIds : null);
     setText(pending?.payload.text ?? post?.text ?? "");
+    setFormatting(pending?.payload.formatting ?? draft?.formatting ?? []);
     undoStackRef.current = [];
     redoStackRef.current = [];
     setUndoStack([]);
@@ -684,6 +689,7 @@ export default function ComposerPage() {
     setDraftVersion(null);
     setEditorialState("draft");
     setText("");
+    setFormatting([]);
     undoStackRef.current = [];
     redoStackRef.current = [];
     setUndoStack([]);
@@ -725,6 +731,7 @@ export default function ComposerPage() {
       : resolveComposerSchedule(date, time, scheduleTimezone, timeDisambiguation);
     return {
       text,
+      formatting,
       media: media ?? null,
       scheduledAt: schedule?.scheduledAt ?? null,
       schedule: schedule
@@ -749,6 +756,7 @@ export default function ComposerPage() {
   }, [
     channelIds,
     date,
+    formatting,
     generationResultId,
     media,
     networks,
@@ -794,18 +802,22 @@ export default function ComposerPage() {
     [canEditContent, markDraftDirty, networks],
   );
 
-  const changeText = useCallback((value: string) => {
-    if (!canEditContent || value === text) return;
+  const changeContent = useCallback((value: ComposerTextSnapshot) => {
+    if (
+      !canEditContent
+      || (value.text === text && JSON.stringify(value.formatting) === JSON.stringify(formatting))
+    ) return;
     const now = Date.now();
     if (now - textHistoryAtRef.current > 800) {
-      const nextUndo = [...undoStackRef.current.slice(-49), text];
+      const nextUndo = [...undoStackRef.current.slice(-49), { text, formatting }];
       undoStackRef.current = nextUndo;
       setUndoStack(nextUndo);
     }
     textHistoryAtRef.current = now;
     redoStackRef.current = [];
     setRedoStack([]);
-    setText(value);
+    setText(value.text);
+    setFormatting(value.formatting);
     if (origin === "ai") {
       setAiValidation(null);
       setAiReview("required");
@@ -813,18 +825,19 @@ export default function ComposerPage() {
       setSourceRef(undefined);
     }
     markDraftDirty();
-  }, [canEditContent, markDraftDirty, origin, text]);
+  }, [canEditContent, formatting, markDraftDirty, origin, text]);
 
   const undoText = useCallback(() => {
     if (!canEditContent || typing || undoStackRef.current.length === 0) return;
     const previous = undoStackRef.current[undoStackRef.current.length - 1];
     const nextUndo = undoStackRef.current.slice(0, -1);
-    const nextRedo = [...redoStackRef.current.slice(-49), text];
+    const nextRedo = [...redoStackRef.current.slice(-49), { text, formatting }];
     undoStackRef.current = nextUndo;
     redoStackRef.current = nextRedo;
     setUndoStack(nextUndo);
     setRedoStack(nextRedo);
-    setText(previous);
+    setText(previous.text);
+    setFormatting(previous.formatting);
     setOrigin("manual");
     setSourceRef(undefined);
     setAiValidation(null);
@@ -832,18 +845,19 @@ export default function ComposerPage() {
     setGenerationResultId(null);
     textHistoryAtRef.current = 0;
     markDraftDirty();
-  }, [canEditContent, markDraftDirty, text, typing]);
+  }, [canEditContent, formatting, markDraftDirty, text, typing]);
 
   const redoText = useCallback(() => {
     if (!canEditContent || typing || redoStackRef.current.length === 0) return;
     const next = redoStackRef.current[redoStackRef.current.length - 1];
     const nextRedo = redoStackRef.current.slice(0, -1);
-    const nextUndo = [...undoStackRef.current.slice(-49), text];
+    const nextUndo = [...undoStackRef.current.slice(-49), { text, formatting }];
     redoStackRef.current = nextRedo;
     undoStackRef.current = nextUndo;
     setRedoStack(nextRedo);
     setUndoStack(nextUndo);
-    setText(next);
+    setText(next.text);
+    setFormatting(next.formatting);
     setOrigin("manual");
     setSourceRef(undefined);
     setAiValidation(null);
@@ -851,11 +865,14 @@ export default function ComposerPage() {
     setGenerationResultId(null);
     textHistoryAtRef.current = 0;
     markDraftDirty();
-  }, [canEditContent, markDraftDirty, text, typing]);
+  }, [canEditContent, formatting, markDraftDirty, text, typing]);
 
   const restoreRevision = useCallback((snapshot: Record<string, unknown>) => {
     if (!canEditContent) return;
     const restoredText = typeof snapshot.text === "string" ? snapshot.text : "";
+    const restoredFormatting = Array.isArray(snapshot.formatting)
+      ? snapshot.formatting as RichTextEntity[]
+      : [];
     if (!restoredText.trim()) return;
     const restoredChannelIds = Array.isArray(snapshot.channelIds)
       ? snapshot.channelIds.map(Number).filter((id) => Number.isSafeInteger(id) && id > 0)
@@ -869,12 +886,13 @@ export default function ComposerPage() {
     const restoredSchedule = snapshot.schedule && typeof snapshot.schedule === "object"
       ? snapshot.schedule as Record<string, unknown>
       : null;
-    const nextUndo = [...undoStackRef.current.slice(-49), text];
+    const nextUndo = [...undoStackRef.current.slice(-49), { text, formatting }];
     undoStackRef.current = nextUndo;
     redoStackRef.current = [];
     setUndoStack(nextUndo);
     setRedoStack([]);
     setText(restoredText);
+    setFormatting(restoredFormatting);
     setMedia((snapshot.media ?? null) as Post["media"]);
     setTracking(composerTrackingFromDraft(snapshot.tracking as DraftTrackingSelection | null));
     setPickedIds(restoredTgIds);
@@ -905,7 +923,7 @@ export default function ComposerPage() {
       title: "Версия восстановлена",
       body: "Она стала новым изменением. Старые версии остались в истории.",
     });
-  }, [canEditContent, markDraftDirty, s, text]);
+  }, [canEditContent, formatting, markDraftDirty, s, text]);
   const changeNetworks = useCallback((value: Network[]) => {
     if (
       !canEditContent
@@ -1225,12 +1243,13 @@ export default function ComposerPage() {
     const hasTrustedGeneration = aiPreview.status === "ready"
       && generationResultId != null
       && aiPreview.inputDraftVersion === draftVersion;
-    const nextUndo = [...undoStackRef.current.slice(-49), text];
+    const nextUndo = [...undoStackRef.current.slice(-49), { text, formatting }];
     undoStackRef.current = nextUndo;
     redoStackRef.current = [];
     setUndoStack(nextUndo);
     setRedoStack([]);
     setText(aiPreview.text);
+    setFormatting([]);
     setOrigin(hasTrustedGeneration ? "ai" : "manual");
     setAiValidation(hasTrustedGeneration ? aiPreview.validation ?? null : null);
     setAiReview(hasTrustedGeneration ? aiPreview.review ?? "required" : "none");
@@ -1238,7 +1257,7 @@ export default function ComposerPage() {
     setAiPreview(null);
     textHistoryAtRef.current = 0;
     markDraftDirty();
-  }, [aiPreview, canEditContent, draftVersion, generationResultId, markDraftDirty, text]);
+  }, [aiPreview, canEditContent, draftVersion, formatting, generationResultId, markDraftDirty, text]);
 
   const dismissAiPreview = useCallback(() => {
     if (typing) return;
@@ -1632,6 +1651,7 @@ export default function ComposerPage() {
       writtenAt: new Date().toISOString(),
       payload: {
         text,
+        formatting,
         media: media ?? null,
         scheduledAt: currentSchedule?.scheduledAt ?? null,
         schedule: currentSchedule
@@ -1668,6 +1688,7 @@ export default function ComposerPage() {
     draftRevision,
     draftVersion,
     draftWorkspaceId,
+    formatting,
     hydrated,
     lastSavedRevision,
     media,
@@ -1979,7 +2000,8 @@ export default function ComposerPage() {
       canPublish,
       canChangeSchedule,
       text,
-      setText: changeText,
+      formatting,
+      setContent: changeContent,
       networks,
       setNetworks: changeNetworks,
       toggleNetwork,
@@ -2064,7 +2086,7 @@ export default function ComposerPage() {
       changeTracking,
       changeNetworks,
       changeNoDate,
-      changeText,
+      changeContent,
       changeTime,
       changeTimeDisambiguation,
       changeVkChannelId,
@@ -2091,6 +2113,7 @@ export default function ComposerPage() {
       editingId,
       errors,
       failHydration,
+      formatting,
       hydrate,
       hydrated,
       draftLoadError,
@@ -2434,7 +2457,7 @@ function ComposerInner() {
     setVkChannelId: setComposerVkChannelId,
     setNetworks: setComposerNetworks,
   } = c;
-  const taRef = useRef<HTMLTextAreaElement>(null);
+  const taRef = useRef<HTMLDivElement>(null);
   const topicRef = useRef<HTMLInputElement>(null);
   const loadedKey = useRef<string | null>(null);
   const storeReady = s.ready;
@@ -2668,6 +2691,7 @@ function ComposerInner() {
   const over = vkOn && vkPublicationPreview.mainText.length > VK_LIMIT;
   const telegramPreviewPayload = buildTelegramPayload({
     text: telegramPublicationPreview.mainText,
+    entities: c.formatting,
     hasAsset: Boolean(c.media),
   });
   const telegramMessageCount = telegramPreviewPayload.parts.filter(
@@ -2745,7 +2769,7 @@ function ComposerInner() {
     }
   };
 
-  const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+  const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     if (c.canPublish && (e.metaKey || e.ctrlKey) && e.key === "Enter") {
       e.preventDefault();
       c.schedule();
@@ -2809,23 +2833,25 @@ function ComposerInner() {
           <Badge>{c.postSettings.profanityMode === "allow" ? "Мат допустим" : c.postSettings.profanityMode === "masked" ? "Мат обязателен со звёздочками" : c.postSettings.profanityMode === "required_direct" ? "Мат обязателен без цензуры" : c.postSettings.profanityMode === "forbid" ? "Без мата" : "Мат — автоматически"}</Badge>
         </div>
 
-        <Field label="Текст публикации" htmlFor="composer-text" error={c.errors.text}>
+        <Field
+          label="Текст публикации"
+          htmlFor="composer-text"
+          error={c.errors.text}
+          messageId="composer-text-error"
+        >
           <div>
-            <Textarea
+            <RichTextEditor
               id="composer-text"
-              ref={taRef}
-              rows={7}
+              editorRef={taRef}
               value={text}
+              formatting={c.formatting}
               readOnly={typing || !canEditContent}
-              aria-busy={typing || undefined}
-              onChange={(e) => c.setText(e.target.value)}
+              busy={typing}
+              invalid={Boolean(c.errors.text)}
+              ariaDescribedBy={c.errors.text ? "composer-text-error" : undefined}
+              onChange={c.setContent}
               onKeyDown={onKeyDown}
               placeholder="Пиши как обычно — или нажми «Написать», и ИИ подготовит вариант."
-              className={cn(
-                "min-h-[180px] sm:min-h-[280px]",
-                typing && "cursor-progress",
-                !canEditContent && "cursor-default bg-surface-inset",
-              )}
             />
 
             {!canEditContent && (
