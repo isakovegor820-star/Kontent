@@ -1,10 +1,5 @@
 begin;
 
--- The content directory is the first incremental migration that stores embeddings.
--- Install the extension here as well as in the monolithic bootstrap so an upgraded
--- database and a freshly bootstrapped database converge on the same contract.
-create extension if not exists vector;
-
 -- Название канала не описывает его тему надёжно. Храним ограниченный срез только
 -- публичных постов рядом с карточкой проверенного источника и ищем по нему так же,
 -- как по названию и описанию. Вектор необязателен: если движок эмбеддингов недоступен,
