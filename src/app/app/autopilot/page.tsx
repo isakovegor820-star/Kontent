@@ -695,7 +695,7 @@ export default function AutopilotPage() {
         </div>
         <p className="mt-4 flex items-start gap-2 rounded-md bg-surface-inset p-3 text-[12px] leading-relaxed text-text-3">
           <Check className="mt-0.5 h-4 w-4 shrink-0 text-success" aria-hidden />
-          Если выбранная модель не отвечает, Аврора автоматически пробует резервную. Готовые черновики остаются в плане, а публикация текстов с замечаниями блокируется до ручной правки.
+          Аврора автоматически переписывает слабый текст и пробует резервную модель при сбое. План появится только после того, как каждый пост пройдёт проверку качества.
         </p>
       </Card>
 
@@ -741,13 +741,13 @@ export default function AutopilotPage() {
                 : plan.errorReason === "variety"
                   ? "Модель несколько раз повторила похожие темы или тексты. Старый план сохранён — выбери другую модель или попробуй снова."
                   : plan.errorReason === "quality"
-                    ? `Аврора автоматически переписала слабые черновики, но модель не достигла порога ${data.brief?.quality.qualityThreshold ?? 85}/100. Это старый незавершённый запуск; пересобери план — теперь черновики сохраняются для ручной правки, а публикация остаётся заблокированной.`
+                    ? `Модель не смогла довести все посты до порога ${data.brief?.quality.qualityThreshold ?? 85}/100. Сырые тексты не сохранены. Выбери другую модель или пересобери план.`
                     : plan.errorReason === "provider"
                       ? "Ни выбранная, ни резервные модели не вернули ни одного текста. Запрос и настройки сохранены — пересобери план, когда хотя бы один провайдер отвечает."
                       : "Проверь, что канал подключён и ИИ-движок доступен, и попробуй ещё раз."}
           </p>
           <div className="mt-4">
-            <Button variant="solid" onClick={generate} loading={busy} disabled={busy}>
+            <Button variant="brand" onClick={generate} loading={busy} disabled={busy}>
               Пересобрать план
             </Button>
           </div>
@@ -757,8 +757,8 @@ export default function AutopilotPage() {
           <AlertTriangle className="mx-auto h-7 w-7 text-brand" aria-hidden />
           <p className="mt-3 text-[15px] font-semibold text-text">План нужно пересобрать</p>
           <p className="mx-auto mt-1 max-w-md text-[14px] text-text-3">
-            Этот план создан до обновления контроля качества. Теперь Аврора автоматически
-            переписывает слабые черновики, показывает замечания и не публикует заблокированные тексты.
+            В этом плане есть незавершённые или не прошедшие проверку тексты. Пересобери его:
+            Аврора заменит план только полностью готовой версией.
           </p>
           <div className="mt-4">
             <Button variant="brand" onClick={generate} loading={busy} disabled={busy}>
@@ -834,6 +834,7 @@ export default function AutopilotPage() {
                     type="button"
                     onClick={() => setExpanded(active ? null : it.i)}
                     aria-pressed={active}
+                    aria-label={`${active ? "Свернуть" : "Открыть"} пост «${it.topic}»`}
                     className={cn(
                       "flex min-w-[84px] flex-1 flex-col items-center gap-1 rounded-lg border px-2 py-3 text-center transition-colors",
                       active
@@ -919,6 +920,8 @@ export default function AutopilotPage() {
                     <button
                       type="button"
                       onClick={() => !isEditing && setExpanded(isOpen ? null : it.i)}
+                      aria-expanded={isOpen}
+                      aria-label={`${isOpen ? "Свернуть" : "Открыть"} пост «${it.topic}»`}
                       className="flex w-full items-center gap-3 p-4 text-left"
                     >
                       <span

@@ -16,8 +16,6 @@ import {
   citedShare,
   mapConcurrent,
   autopilotBuildComplete,
-  autopilotDraftsComplete,
-  autopilotDraftsDeliverable,
   autopilotJobAttemptsExhausted,
   autopilotJobTerminalFailure,
   formatPost,
@@ -280,45 +278,6 @@ describe("autopilotBuildComplete", () => {
       quality: { passed: false, score: 65, threshold: 95 },
     };
     expect(autopilotBuildComplete(2, topics, [items[0], blocked])).toBe(false);
-  });
-});
-
-describe("autopilotDraftsComplete", () => {
-  const topics = [{ topic: "Тема 1" }, { topic: "Тема 2" }];
-
-  it("keeps a complete generated plan available for review when quality blocks publication", () => {
-    const items = [
-      { aiReady: true, draft: "Черновик 1", qualityBlocked: false, quality: { passed: true } },
-      { aiReady: true, draft: "Черновик 2", qualityBlocked: true, quality: { passed: false } },
-    ];
-
-    expect(autopilotBuildComplete(2, topics, items)).toBe(false);
-    expect(autopilotDraftsComplete(2, topics, items)).toBe(true);
-  });
-
-  it("still rejects a plan containing a provider placeholder", () => {
-    expect(autopilotDraftsComplete(2, topics, [
-      { aiReady: true, draft: "Черновик 1" },
-      { aiReady: false, draft: "ИИ допишет позже" },
-    ])).toBe(false);
-  });
-});
-
-describe("autopilotDraftsDeliverable", () => {
-  const topics = [{ topic: "Тема 1" }, { topic: "Тема 2" }];
-
-  it("preserves completed posts when one provider slot failed", () => {
-    expect(autopilotDraftsDeliverable(2, topics, [
-      { aiReady: true, draft: "Готовый пост" },
-      { aiReady: false, draft: "ИИ не завершил этот слот" },
-    ])).toBe(true);
-  });
-
-  it("does not call a placeholders-only plan a delivered generation", () => {
-    expect(autopilotDraftsDeliverable(2, topics, [
-      { aiReady: false, draft: "ИИ не завершил первый слот" },
-      { aiReady: false, draft: "ИИ не завершил второй слот" },
-    ])).toBe(false);
   });
 });
 

@@ -28,7 +28,7 @@ const planItem = (overrides = {}) => ({
 });
 
 describe("Autopilot plan visibility", () => {
-  it("keeps a modern mixed-quality plan visible for inspection and editing", () => {
+  it("requires a rebuild instead of presenting a mixed-quality plan as ready", () => {
     const ready = Array.from({ length: 12 }, () => planItem());
     const blocked = Array.from({ length: 16 }, () =>
       planItem({
@@ -41,7 +41,20 @@ describe("Autopilot plan visibility", () => {
       }),
     );
 
-    expect(autopilotPlanNeedsQualityRebuild([...ready, ...blocked])).toBe(false);
+    expect(autopilotPlanNeedsQualityRebuild([...ready, ...blocked])).toBe(true);
+  });
+
+  it("requires a rebuild when a provider returned only a placeholder", () => {
+    expect(autopilotPlanNeedsQualityRebuild([
+      planItem({ aiReady: false, draft: "ИИ допишет позже" }),
+    ])).toBe(true);
+  });
+
+  it("keeps a fully verified automatic plan visible", () => {
+    expect(autopilotPlanNeedsQualityRebuild([
+      planItem({ aiReady: true, qualityBlocked: false }),
+      planItem({ aiReady: true, qualityBlocked: false }),
+    ])).toBe(false);
   });
 
   it("requires a rebuild for a pending legacy automatic draft without verified metadata", () => {
