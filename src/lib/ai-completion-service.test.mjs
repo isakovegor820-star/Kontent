@@ -54,7 +54,7 @@ describe("shared direct/background AI completion service", () => {
     expect(headers.get("x-request-id")).toBe("req-site-analysis-41");
   });
 
-  it("reserves visible-output budget for every reasoning-capable Navy engine", async () => {
+  it("keeps a bounded output budget for fast Navy engines", async () => {
     const fetchImpl = vi.fn(async () => Response.json({
       choices: [{ message: { content: "DONE" }, finish_reason: "stop" }],
     }));
@@ -66,8 +66,54 @@ describe("shared direct/background AI completion service", () => {
 
     expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toMatchObject({
       model: "minimax-m3",
-      max_tokens: 3_000,
+      max_tokens: 1_200,
     });
+  });
+
+  it("uses a surface-specific fallback fleet instead of an unhealthy local override", async () => {
+    const env = {
+      NAVYAI_API_KEY: "secret",
+      AI_FALLBACK_ENGINES: "local",
+      AI_FALLBACK_STRICT: "1",
+    };
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new Response("unavailable", { status: 503 }))
+      .mockResolvedValueOnce(Response.json({
+        choices: [{ message: { content: "FAST FALLBACK" }, finish_reason: "stop" }],
+      }));
+
+    await expect(completeAiText({ ...request, engine: "navy-gpt-5-4" }, {
+      env,
+      fetchImpl,
+      fallbackEngines: ["navy-minimax-m3"],
+      circuitFailureThreshold: 20,
+    })).resolves.toMatchObject({ engine: "navy-minimax-m3", text: "FAST FALLBACK" });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl.mock.calls[1][0]).toContain("api.navy");
+  });
+
+  it("reserves overall time for a fallback after the primary attempt times out", async () => {
+    const env = { NAVYAI_API_KEY: "secret" };
+    const fetchImpl = vi.fn((_url, init) => {
+      if (fetchImpl.mock.calls.length === 1) {
+        return new Promise((_resolve, reject) => {
+          init.signal.addEventListener("abort", () => reject(init.signal.reason), { once: true });
+        });
+      }
+      return Promise.resolve(Response.json({
+        choices: [{ message: { content: "RECOVERED" }, finish_reason: "stop" }],
+      }));
+    });
+
+    await expect(completeAiText({ ...request, engine: "navy-gpt-5-4" }, {
+      env,
+      fetchImpl,
+      fallbackEngines: ["navy-minimax-m3"],
+      timeoutMs: 100,
+      overallTimeoutMs: 500,
+      circuitFailureThreshold: 20,
+    })).resolves.toMatchObject({ engine: "navy-minimax-m3", text: "RECOVERED" });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
   it("can disable provider fallback for one evidence-sensitive request", async () => {
@@ -77,7 +123,12 @@ describe("shared direct/background AI completion service", () => {
       AI_FALLBACK_ENGINES: "navy-deepseek-flash",
     };
     const fetchImpl = vi.fn(async () => new Response("unavailable", { status: 503 }));
-    await expect(completeAiText(request, { env, fetchImpl, allowFallback: false }))
+    await expect(completeAiText(request, {
+      env,
+      fetchImpl,
+      allowFallback: false,
+      circuitFailureThreshold: 20,
+    }))
       .rejects.toMatchObject({ code: "provider_error", status: 503 });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });

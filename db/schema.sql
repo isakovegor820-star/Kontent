@@ -109,7 +109,9 @@ create table if not exists channels (
   last_auth_error_at timestamptz,
   disconnected_at timestamptz,
   created_at  timestamptz not null default now(),
-  updated_at  timestamptz not null default now()
+  updated_at  timestamptz not null default now(),
+  constraint channels_active_telegram_chat_check
+    check (network <> 'tg' or status <> 'active' or (is_active = true and tg_chat_id is not null))
 );
 create index if not exists channels_user_idx on channels (user_id);
 

@@ -136,9 +136,9 @@ try {
   )).rows[0].id);
   const projectId = await ensurePersonalProject(pool, userId);
   const channels = (await pool.query(
-    `insert into channels (project_id, user_id, network, title, handle, is_active)
-     values ($1, $2, 'tg', 'QA active', 'qa_active', true),
-            ($1, $2, 'tg', 'QA inactive RSS', 'qa_inactive', true)
+    `insert into channels (project_id, user_id, network, tg_chat_id, title, handle, is_active)
+     values ($1, $2, 'tg', -100910000011, 'QA active', 'qa_active', true),
+            ($1, $2, 'tg', -100910000012, 'QA inactive RSS', 'qa_inactive', true)
      returning id`,
     [projectId, userId],
   )).rows.map((row) => Number(row.id));

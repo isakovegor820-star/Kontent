@@ -163,6 +163,7 @@ import {
 } from "./src/lib/ai-engine-policy.mjs";
 import {
   AUTOPILOT_ENGINE_OPTIONS,
+  DEFAULT_AUTOPILOT_ENGINE,
   applyAutopilotPresentation,
   autopilotPresentationVariant,
   findAutopilotNearDuplicate,
@@ -310,6 +311,8 @@ import {
 import { reconcilePasswordResetOutbox } from "./worker/password-reset-outbox.mjs";
 import { persistCompetitorLibraryAnalytics } from "./worker/library-analytics.mjs";
 import { reconcilePublicationOutbox } from "./src/lib/publication-outbox.mjs";
+import { TELEGRAM_BOT_COMMANDS } from "./src/lib/telegram-bot-commands.mjs";
+import { resolveTranscriptionRuntime } from "./src/lib/transcription-runtime.mjs";
 import { deliverTelegramParts, telegramPartDefinitions } from "./worker/telegram-multipart.mjs";
 import { deliverTelegramCarousel, telegramCarouselPartDefinitions } from "./worker/telegram-carousel.mjs";
 import {
@@ -342,15 +345,40 @@ const PUBLICATION_ONLY = process.env.AURORA_WORKER_MODE === "publication";
 // Редакторские нарушения обычно исправляются за одну-две попытки. Дальнейшие переписывания
 // при недоступной semantic-проверке или пустой базе знаний только умножают одинаковые вызовы.
 const AUTOPILOT_QUALITY_REWRITE_ATTEMPTS = 2;
+const AUTOPILOT_AI_ATTEMPT_TIMEOUT_MS = Math.min(
+  30_000,
+  Math.max(5_000, Number(process.env.AUTOPILOT_AI_ATTEMPT_TIMEOUT_MS) || 15_000),
+);
+const AUTOPILOT_AI_OVERALL_TIMEOUT_MS = Math.min(
+  60_000,
+  Math.max(
+    AUTOPILOT_AI_ATTEMPT_TIMEOUT_MS * 2,
+    Number(process.env.AUTOPILOT_AI_OVERALL_TIMEOUT_MS) || 40_000,
+  ),
+);
+const AUTOPILOT_AI_CIRCUIT_OPEN_MS = Math.min(
+  15 * 60_000,
+  Math.max(60_000, Number(process.env.AUTOPILOT_AI_CIRCUIT_OPEN_MS) || 5 * 60_000),
+);
+const AUTOPILOT_FAST_FALLBACK_FLEET = Object.freeze([
+  "navy-minimax-m3",
+  "navy-deepseek-flash",
+  "navy-gpt-5-4",
+  "navy-qwen-3-6",
+]);
+const autopilotFallbackEngines = (primary) => AUTOPILOT_FAST_FALLBACK_FLEET
+  .filter((engine) => engine !== primary);
 const AUTOPILOT_SEMANTIC_TIMEOUT_MS = Math.min(
   30_000,
   Math.max(5_000, Number(process.env.AUTOPILOT_SEMANTIC_TIMEOUT_MS) || 20_000),
 );
 const semanticPublicationAdapter = createConfiguredSemanticAdapter({
+  engine: process.env.AUTOPILOT_SEMANTIC_ENGINE || DEFAULT_AUTOPILOT_ENGINE,
   env: {
     ...process.env,
     AI_SEMANTIC_TIMEOUT_MS: String(AUTOPILOT_SEMANTIC_TIMEOUT_MS),
   },
+  fallbackEngines: ["navy-deepseek-flash", "navy-gpt-5-4"],
   telemetry: (event) => {
     if (event.outcome === "failed" || event.type === "fallback") {
       console.warn("[semantic ai]", {
@@ -2529,27 +2557,6 @@ async function waitForTelegramPollingConflict(cooldownMs) {
   }
 }
 
-/** Что бот умеет — показывается в меню Telegram по кнопке «/». */
-const BOT_COMMANDS = [
-  { command: "menu", description: "Открыть главный экран" },
-  { command: "status", description: "Проверить подключение" },
-  { command: "connect", description: "Подключить аккаунт Авроры" },
-  { command: "projects", description: "Выбрать текущий проект" },
-  { command: "today", description: "Публикации и задачи на сегодня" },
-  { command: "create", description: "Создать новую публикацию" },
-  { command: "approvals", description: "Тексты на согласовании" },
-  { command: "problems", description: "Что требует внимания" },
-  { command: "results", description: "Результаты последних постов" },
-  { command: "calendar", description: "Ближайшие публикации" },
-  { command: "stats", description: "Цифры канала за неделю" },
-  { command: "plan", description: "План недели от автопилота" },
-  { command: "trends", description: "Что зашло у конкурентов" },
-  { command: "notifications", description: "Настроить уведомления" },
-  { command: "disconnect", description: "Отключить этот чат" },
-  { command: "cancel", description: "Закрыть текущий диалог" },
-  { command: "help", description: "Что я умею" },
-];
-
 async function botProject(userId, explicitProjectId = null) {
   const projectId = Number(explicitProjectId);
   const useExplicit = Number.isSafeInteger(projectId) && projectId > 0;
@@ -4548,16 +4555,25 @@ async function askAI(
         )
       ).rows[0]?.ai_engine ?? null;
     }
+    const selectedEngine = configuredServiceEngine(explicitEngine || requestedEngine);
     const completed = await completeAiText({
       messages,
-      engine: configuredServiceEngine(explicitEngine || requestedEngine),
+      engine: selectedEngine,
       temperature: temp,
       maxTokens: numPredict,
     }, {
-      timeoutMs: WORKER_CLOUD_AI_TIMEOUT_MS,
+      timeoutMs: surface === "autopilot-plan"
+        ? AUTOPILOT_AI_ATTEMPT_TIMEOUT_MS
+        : WORKER_CLOUD_AI_TIMEOUT_MS,
       localTimeoutMs: WORKER_LOCAL_AI_TIMEOUT_MS,
       ...(surface === "autopilot-plan"
-        ? { maxAttempts: 3, overallTimeoutMs: 45_000 }
+        ? {
+            maxAttempts: 3,
+            overallTimeoutMs: AUTOPILOT_AI_OVERALL_TIMEOUT_MS,
+            circuitFailureThreshold: 1,
+            circuitOpenMs: AUTOPILOT_AI_CIRCUIT_OPEN_MS,
+            fallbackEngines: autopilotFallbackEngines(selectedEngine),
+          }
         : {}),
       telemetry: (event) => {
         if (event.outcome === "failed" || event.outcome === "skipped" || event.type === "fallback") {
@@ -5357,7 +5373,7 @@ async function buildAutopilotPlan(
       [projectId, channelId],
     )
   ).rows[0];
-  const generationEngine = expectedPlan?.generation_engine || st?.generation_engine || "navy-gpt-5-4";
+  const generationEngine = expectedPlan?.generation_engine || st?.generation_engine || DEFAULT_AUTOPILOT_ENGINE;
   const generationPostFrequency = Math.min(
     MAX_WEEKLY_POSTS,
     Math.max(1, Math.round(Number(
@@ -5557,7 +5573,11 @@ async function buildAutopilotPlan(
   // ретрай. Последовательно 30 постов собирались до 45 минут и всё это время держали крон-очередь
   // (concurrency: 1), простаивая разведку и аналитику. Параллелим через mapConcurrent — порядок
   // элементов сохраняется по индексу, поэтому slots[i] и нумерация карточек не разъезжаются.
-  const autopilotConcurrency = configuredAiConcurrency(generationEngine);
+  const autopilotConcurrency = configuredAiConcurrency(
+    generationEngine,
+    process.env,
+    generationEngine === "navy-minimax-m3" ? 4 : 3,
+  );
   const items = await mapConcurrent(topics, autopilotConcurrency, async (t, i) => {
     const { topic, rubric } = t;
     if (reusableAutopilotCheckpoint(checkpointItems[i], t, slots[i])) {
@@ -7748,8 +7768,8 @@ async function botTranscribeVoice(message) {
   const voice = message?.voice;
   if (!voice?.file_id) return { error: "Голосовое сообщение не найдено." };
   if (Number(voice.duration) > 600) return { error: "Голосовое длиннее 10 минут. Пришли более короткую запись или раздели её на части." };
-  const apiKey = String(process.env.OPENAI_API_KEY || process.env.AI_API_KEY || "").trim();
-  if (!apiKey) {
+  const transcription = resolveTranscriptionRuntime(process.env);
+  if (!transcription) {
     return { error: "Распознавание голоса пока не подключено. Пришли ту же идею текстом — остальные шаги уже работают." };
   }
   const fileInfo = await tg("getFile", { file_id: voice.file_id });
@@ -7764,13 +7784,12 @@ async function botTranscribeVoice(message) {
   const bytes = await download.arrayBuffer();
   if (!bytes.byteLength || bytes.byteLength > 20 * 1024 * 1024) return { error: "Голосовое пустое или слишком большое." };
   const form = new FormData();
-  form.set("model", process.env.OPENAI_TRANSCRIPTION_MODEL || "whisper-1");
+  form.set("model", transcription.model);
   form.set("language", "ru");
   form.set("file", new Blob([bytes], { type: voice.mime_type || "audio/ogg" }), "voice.ogg");
-  const baseUrl = String(process.env.OPENAI_API_URL || process.env.AI_API_URL || "https://api.openai.com/v1").replace(/\/+$/u, "");
-  const response = await fetch(`${baseUrl}/audio/transcriptions`, {
+  const response = await fetch(`${transcription.baseUrl}/audio/transcriptions`, {
     method: "POST",
-    headers: { authorization: `Bearer ${apiKey}` },
+    headers: { authorization: `Bearer ${transcription.apiKey}` },
     body: form,
     signal: AbortSignal.timeout(60_000),
   });
@@ -9383,9 +9402,15 @@ async function pollUpdates() {
     return null;
   });
   if (discussionSync) {
-    console.log(`[bot] группы обсуждений сверены: ${discussionSync.synchronized}/${discussionSync.total}`);
+    console.log(
+      `[bot] Telegram-каналы сверены: ${discussionSync.synchronized}/${discussionSync.total}`
+      + (discussionSync.attention ? `, требуют внимания: ${discussionSync.attention}` : ""),
+    );
   }
-  await tg("setMyCommands", { commands: BOT_COMMANDS }).catch(() => {});
+  const commandSetup = await tg("setMyCommands", { commands: TELEGRAM_BOT_COMMANDS }).catch(() => null);
+  if (commandSetup?.ok !== true) {
+    console.error("[bot] не удалось обновить меню команд Telegram");
+  }
   console.log("[bot] готов принять lease для команд (long polling, webhook не нужен)");
   const updateFailures = new Map();
   let consecutivePollingConflicts = 0;

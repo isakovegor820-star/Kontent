@@ -4,6 +4,7 @@ import { NextRequest } from "next/server";
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
   hasAuroraAdminAccess: vi.fn(),
+  repairAdminTelegramConfiguration: vi.fn(),
   sendAdminBotTest: vi.fn(),
   setAdminBotAccess: vi.fn(),
   setAdminBusinessAssistant: vi.fn(),
@@ -12,6 +13,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
 vi.mock("@/lib/admin-access", () => ({ hasAuroraAdminAccess: mocks.hasAuroraAdminAccess }));
 vi.mock("@/lib/admin-bot", () => ({
+  repairAdminTelegramConfiguration: mocks.repairAdminTelegramConfiguration,
   sendAdminBotTest: mocks.sendAdminBotTest,
   setAdminBotAccess: mocks.setAdminBotAccess,
   setAdminBusinessAssistant: mocks.setAdminBusinessAssistant,
@@ -49,6 +51,13 @@ describe("POST /api/admin/bot/actions", () => {
     expect(mocks.sendAdminBotTest).toHaveBeenCalledWith(expect.anything(), { actorUserId: 3, targetUserId: 5 });
     const invalid = await POST(request({ action: "test_delivery", targetUserId: "nope" }));
     expect(invalid.status).toBe(400);
+  });
+
+  it("repairs the long-polling Telegram configuration without dropping pending updates", async () => {
+    mocks.repairAdminTelegramConfiguration.mockResolvedValue({ status: "repaired" });
+    const response = await POST(request({ action: "repair_telegram_configuration" }));
+    expect(response.status).toBe(200);
+    expect(mocks.repairAdminTelegramConfiguration).toHaveBeenCalledWith(expect.anything(), { actorUserId: 3 });
   });
 
   it("applies reversible bot-only access changes", async () => {

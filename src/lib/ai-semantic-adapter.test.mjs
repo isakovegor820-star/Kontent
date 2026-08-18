@@ -47,6 +47,7 @@ describe("configured semantic AI adapter", () => {
         evidenceIds: ["source-1"],
         reasonCode: "direct_source_support",
       }],
+      model: "deepseek-v4-pro",
     });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(fetchImpl.mock.calls[0][0]).toBe("https://navy.example/v1/chat/completions");
@@ -70,6 +71,39 @@ describe("configured semantic AI adapter", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
+  it("uses only an explicitly validated semantic fallback and reports its real model", async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new Response("temporary", { status: 503 }))
+      .mockResolvedValueOnce(Response.json({
+        choices: [{
+          finish_reason: "stop",
+          message: { content: JSON.stringify({
+            verdicts: [{
+              claimId: "claim-1",
+              verdict: "supported",
+              evidenceIds: ["source-1"],
+              reasonCode: "direct_source_support",
+            }],
+          }) },
+        }],
+      }));
+    const adapter = createConfiguredSemanticAdapter({
+      env: {
+        AI_SEMANTIC_ENGINE: "navy-gpt-5-4",
+        NAVYAI_API_KEY: "secret",
+      },
+      fallbackEngines: ["navy-minimax-m3"],
+      circuitFailureThreshold: 20,
+      fetchImpl,
+    });
+
+    await expect(adapter.check({ claims, evidence })).resolves.toMatchObject({
+      model: "minimax-m3",
+      verdicts: [{ verdict: "supported", evidenceIds: ["source-1"] }],
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
   it("treats malformed or non-terminal model output as no semantic proof", async () => {
     const env = {
       AI_SEMANTIC_ENGINE: "openai",
@@ -82,10 +116,14 @@ describe("configured semantic AI adapter", () => {
         choices: [{ finish_reason: "stop", message: { content: "not-json" } }],
       })),
     });
-    await expect(malformed.check({ claims, evidence })).resolves.toEqual({ verdicts: [] });
+    await expect(malformed.check({ claims, evidence })).resolves.toEqual({
+      verdicts: [],
+      model: "gpt-4o-mini",
+    });
 
     const truncated = createConfiguredSemanticAdapter({
       env,
+      circuitFailureThreshold: 20,
       fetchImpl: vi.fn(async () => Response.json({
         choices: [{ finish_reason: null, message: { content: "{}" } }],
       })),
@@ -125,6 +163,7 @@ describe("configured semantic AI adapter", () => {
         evidenceIds: ["source-1"],
         reasonCode: "section_heading",
       }],
+      model: "gpt-4o-mini",
     });
   });
 });

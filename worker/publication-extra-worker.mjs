@@ -1,6 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import { UnrecoverableError, Worker } from "bullmq";
 
+import {
+  classifyTelegramChannelFailure,
+  transitionChannelHealth,
+} from "../src/lib/channel-health.mjs";
 import { activateNextPublicationExtra } from "../src/lib/publication-extra-operations.mjs";
 import { PUBLICATION_EXTRA_QUEUE } from "../src/lib/publication-extra-queue.mjs";
 
@@ -452,19 +456,45 @@ export async function observeTelegramDiscussionUpdate(pool, update) {
   return { observed: true, postId: post?.id == null ? null : Number(post.id) };
 }
 
-export async function syncTelegramDiscussionChats(pool, telegramRequest) {
+export async function syncTelegramDiscussionChats(pool, telegramRequest, options = {}) {
+  const transitionHealth = options.transitionChannelHealth || transitionChannelHealth;
   const channels = (await pool.query(
     `select id, project_id, tg_chat_id
        from channels
       where network = 'tg' and is_active = true and status = 'active'
-        and tg_chat_id is not null
       order by id`,
   )).rows;
   let synchronized = 0;
+  let attention = 0;
   for (const channel of channels) {
+    if (channel.tg_chat_id == null) {
+      await transitionHealth(pool, {
+        channelId: Number(channel.id),
+        status: "needs_reconnect",
+        errorCode: "telegram_chat_id_missing",
+        action: "telegram_health_reconciliation",
+      });
+      attention += 1;
+      continue;
+    }
     try {
       const response = await telegramRequest("getChat", { chat_id: Number(channel.tg_chat_id) });
-      if (response?.ok !== true) continue;
+      if (response?.ok !== true) {
+        const failure = classifyTelegramChannelFailure({
+          providerErrorCode: response?.error_code,
+          reason: response?.description,
+        });
+        if (failure) {
+          await transitionHealth(pool, {
+            channelId: Number(channel.id),
+            status: failure.status,
+            errorCode: failure.errorCode,
+            action: "telegram_health_reconciliation",
+          });
+          attention += 1;
+        }
+        continue;
+      }
       const discussionChatId = Number(response?.result?.linked_chat_id);
       await pool.query(
         `update channels
@@ -477,7 +507,7 @@ export async function syncTelegramDiscussionChats(pool, telegramRequest) {
       // A temporary Telegram failure must not clear a previously verified binding.
     }
   }
-  return { synchronized, total: channels.length };
+  return { synchronized, attention, total: channels.length };
 }
 
 function telegramAuthorName(message) {

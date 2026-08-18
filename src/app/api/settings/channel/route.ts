@@ -10,6 +10,7 @@ import { MAX_WEEKLY_POSTS, briefComplete, normalizeBrief } from "@/lib/brief";
 import { ensureSettings, loadBrief, resolveChannel } from "@/lib/autopilot";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import type { AutopilotSettings } from "@/lib/autopilot";
+import { DEFAULT_AUTOPILOT_ENGINE } from "@/lib/autopilot-config.mjs";
 
 export const runtime = "nodejs";
 
@@ -111,10 +112,10 @@ export async function POST(req: NextRequest) {
   try {
     await client.query("begin");
     await client.query(
-      `insert into autopilot_settings (user_id, channel_id)
-       values ($1, $2)
+      `insert into autopilot_settings (user_id, channel_id, generation_engine)
+       values ($1, $2, $3)
        on conflict (user_id, channel_id) do nothing`,
-      [user.id, channelId],
+      [user.id, channelId, DEFAULT_AUTOPILOT_ENGINE],
     );
     const current = await client.query<AutopilotSettings>(
       `select enabled, mode, post_frequency, approvals_streak, generation_engine,

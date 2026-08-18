@@ -15,6 +15,9 @@ export function classifyTelegramChannelFailure({ providerErrorCode, reason }) {
   const code = Number(providerErrorCode);
   const message = String(reason || "").toLowerCase();
   if (code === 401) return { status: "revoked", errorCode: "telegram_bot_token_revoked" };
+  if (code === 400 && /chat not found/iu.test(message)) {
+    return { status: "needs_reconnect", errorCode: "telegram_chat_not_found" };
+  }
   if (code === 403 && /kicked|blocked|deactivated|chat not found/iu.test(message)) {
     return { status: "revoked", errorCode: "telegram_bot_removed" };
   }
@@ -63,11 +66,11 @@ export async function transitionChannelHealth(pool, input) {
       : safeChannelErrorCode(input.errorCode, "provider_auth_failed");
     await client.query(
       `update channels
-          set status = $2,
-              is_active = ($2 = 'active'),
-              last_auth_error_code = $3,
-              last_auth_error_at = case when $3 is null then null else now() end,
-              disconnected_at = case when $2 = 'disconnected' then now() else null end,
+          set status = $2::text,
+              is_active = ($2::text = 'active'),
+              last_auth_error_code = $3::text,
+              last_auth_error_at = case when $3::text is null then null else now() end,
+              disconnected_at = case when $2::text = 'disconnected' then now() else null end,
               updated_at = now()
         where id = $1`,
       [channelId, input.status, errorCode],

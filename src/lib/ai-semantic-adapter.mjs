@@ -44,6 +44,15 @@ export function createConfiguredSemanticAdapter(options = {}) {
   if (!isConfiguredEngineId(engine)) return null;
   const runtime = resolveAiEngineRuntime(engine, env);
   if (!runtime.supported || !runtime.configured) return null;
+  const fallbackEngines = (Array.isArray(options.fallbackEngines)
+    ? options.fallbackEngines
+    : String(env.AI_SEMANTIC_FALLBACK_ENGINES || "").split(","))
+    .map((candidate) => String(candidate || "").trim())
+    .filter((candidate) => candidate !== engine && isConfiguredEngineId(candidate))
+    .filter((candidate) => {
+      const candidateRuntime = resolveAiEngineRuntime(candidate, env);
+      return candidateRuntime.supported && candidateRuntime.configured;
+    });
   return {
     id: "aurora-semantic-ai-v1",
     model: String(runtime.model).toLowerCase().replace(/[^a-z0-9._-]+/gu, "-").slice(0, 64),
@@ -66,20 +75,33 @@ export function createConfiguredSemanticAdapter(options = {}) {
       }, {
         env,
         signal,
-        // AI_SEMANTIC_ENGINE is an explicitly validated classifier. Quietly switching this
-        // safety decision to a different writing model is both slow and semantically unsafe.
-        // If the classifier is down, callers keep the draft for review and block automation.
-        allowFallback: false,
-        timeoutMs: Number(env.AI_SEMANTIC_TIMEOUT_MS || 20_000),
+        // Fallback classifiers are opt-in. Malformed or incomplete JSON still yields no
+        // semantic proof, so this path remains fail-closed even during provider incidents.
+        allowFallback: fallbackEngines.length > 0,
+        fallbackEngines,
+        maxAttempts: 1 + fallbackEngines.length,
+        timeoutMs: Number(env.AI_SEMANTIC_ATTEMPT_TIMEOUT_MS || 12_000),
+        overallTimeoutMs: Number(env.AI_SEMANTIC_TIMEOUT_MS || 24_000),
+        circuitFailureThreshold: Number(
+          options.circuitFailureThreshold ?? env.AI_SEMANTIC_CIRCUIT_FAILURE_THRESHOLD ?? 1,
+        ),
+        circuitOpenMs: Number(
+          options.circuitOpenMs ?? env.AI_SEMANTIC_CIRCUIT_OPEN_MS ?? 5 * 60_000,
+        ),
         fetchImpl: options.fetchImpl,
         telemetry: options.telemetry,
       });
+      const completedRuntime = resolveAiEngineRuntime(completed.engine, env);
       return {
         verdicts: parseVerdicts(
           completed.text,
           claims,
           evidence.map((item) => item.id),
         ),
+        model: String(completedRuntime.model || "")
+          .toLowerCase()
+          .replace(/[^a-z0-9._-]+/gu, "-")
+          .slice(0, 64),
       };
     },
   };

@@ -41,6 +41,8 @@ const ACTION_LABEL: Record<string, string> = {
   "bot.business.disabled": "Помощник клиентам выключен",
   "bot.test.delivered": "Тестовое сообщение доставлено",
   "bot.test.failed": "Тестовое сообщение не доставлено",
+  "bot.telegram.repaired": "Настройки Telegram восстановлены",
+  "bot.telegram.repair_failed": "Настройки Telegram не восстановлены",
   "draft.saved_from_bot": "Черновик создан в боте",
   "publication.scheduled_from_bot": "Публикация поставлена из бота",
   "editorial.submitted_from_bot": "Материал отправлен на согласование",
@@ -346,9 +348,38 @@ export function AdminBotCenter({ period }: { period: AdminPeriodDays }) {
 
   const runtimeState = useMemo(() => {
     if (!data) return "neutral" as const;
-    if (data.runtime.state === "healthy" && data.workerState === "up") return "healthy" as const;
-    if (data.runtime.state === "not_configured" || data.workerState === "unknown") return "warning" as const;
-    return "danger" as const;
+    if (
+      data.runtime.state !== "healthy"
+      || data.workerState === "down"
+      || data.workerState === "conflict"
+      || data.publicationWorkerState === "down"
+      || data.runtime.webhookClear === false
+    ) return "danger" as const;
+    if (
+      data.workerState !== "up"
+      || data.publicationWorkerState !== "up"
+      || data.runtime.commandsReady !== true
+      || !data.runtime.miniAppReady
+      || !data.runtime.voiceReady
+      || !data.runtime.businessReady
+      || data.summary.telegramChannelsAttention > 0
+    ) return "warning" as const;
+    return "healthy" as const;
+  }, [data]);
+
+  const runtimeIssues = useMemo(() => {
+    if (!data) return [];
+    const issues: string[] = [];
+    if (data.workerState === "conflict") issues.push("Другой процесс читает обновления этого токена. Остановите старый worker или замените токен через BotFather.");
+    else if (data.workerState !== "up") issues.push("Приём команд не подтверждён. Перезапустите основной worker и повторите проверку.");
+    if (data.publicationWorkerState !== "up") issues.push("Worker публикаций не подтвердил готовность.");
+    if (data.runtime.webhookClear === false) issues.push("В Telegram остался webhook, несовместимый с текущим long polling.");
+    if (data.runtime.commandsReady === false) issues.push("Нативное меню Telegram отличается от актуального набора команд.");
+    if (!data.runtime.miniAppReady) issues.push("Для Mini App нужен постоянный публичный APP_URL с HTTPS.");
+    if (!data.runtime.voiceReady) issues.push("Для голосовых сообщений не настроен совместимый сервис распознавания.");
+    if (!data.runtime.businessReady) issues.push("Текущий бот не разрешён для Telegram Business. Включите Business mode через BotFather.");
+    if (data.summary.telegramChannelsAttention > 0) issues.push(`${numberLabel(data.summary.telegramChannelsAttention, "канал требует", "канала требуют", "каналов требуют")} повторного подключения.`);
+    return issues;
   }, [data]);
 
   async function performAction(payload: Record<string, unknown>, key: string, successMessage: string) {
@@ -410,14 +441,16 @@ export function AdminBotCenter({ period }: { period: AdminPeriodDays }) {
             <StatusPill
               state={runtimeState}
               label={runtimeState === "healthy"
-                ? "Бот принимает сообщения"
+                ? "Бот работает во всех проверенных контурах"
                 : data.runtime.state === "not_configured"
                   ? "Токен не подключён"
-                  : data.runtime.state === "healthy"
-                    ? data.workerState === "conflict"
+                  : data.runtime.state !== "healthy"
+                    ? "Telegram API недоступен"
+                    : data.workerState === "conflict"
                       ? "Найден второй воркер"
-                      : "Приём сообщений остановлен"
-                    : "Telegram API недоступен"}
+                      : runtimeState === "danger"
+                        ? "Критичный контур бота остановлен"
+                        : "Бот работает, но нужна настройка"}
             />
             <h3 className="mt-4 text-text">{data.runtime.botName || "Telegram-бот Авроры"}</h3>
             <p className="type-secondary mt-2 max-w-2xl text-pretty text-text-2">
@@ -444,7 +477,24 @@ export function AdminBotCenter({ period }: { period: AdminPeriodDays }) {
               <StatusPill state={data.publicationWorkerState === "up" ? "healthy" : data.publicationWorkerState === "unknown" ? "warning" : "danger"} label={data.publicationWorkerState === "up" ? "Публикации работают" : "Публикации не подтверждены"} />
               <StatusPill state={data.runtime.miniAppReady ? "healthy" : "warning"} label={data.runtime.miniAppReady ? "Mini App готов" : "Mini App ждёт HTTPS"} />
               <StatusPill state={data.runtime.voiceReady ? "healthy" : "warning"} label={data.runtime.voiceReady ? "Голос доступен" : "Распознавание не настроено"} />
+              <StatusPill
+                state={data.runtime.webhookClear === true ? "healthy" : data.runtime.webhookClear === false ? "danger" : "warning"}
+                label={data.runtime.webhookClear === true ? "Webhook не мешает polling" : data.runtime.webhookClear === false ? "Webhook мешает polling" : "Webhook не проверен"}
+              />
+              <StatusPill
+                state={data.runtime.commandsReady === true ? "healthy" : "warning"}
+                label={data.runtime.commandsReady === true ? "Меню команд актуально" : "Меню команд требует проверки"}
+              />
+              <StatusPill state={data.runtime.businessReady ? "healthy" : "warning"} label={data.runtime.businessReady ? "Telegram Business разрешён" : "Business mode не включён"} />
             </div>
+            {runtimeIssues.length ? (
+              <div className="mt-4 max-w-3xl rounded-md bg-surface p-4 shadow-soft">
+                <p className="type-label text-text">Что требует внимания</p>
+                <ul className="mt-2 space-y-2 text-pretty text-sm leading-relaxed text-text-2">
+                  {runtimeIssues.map((issue) => <li key={issue} className="flex gap-2"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-fire-text" aria-hidden /><span>{issue}</span></li>)}
+                </ul>
+              </div>
+            ) : null}
             <p className="type-caption mt-3 text-text-3">
               Проверено {fmtAgo(data.checkedAt)}
               {data.summary.lastInteractionAt ? ` · последнее действие ${fmtAgo(data.summary.lastInteractionAt)}` : " · действий после включения журнала ещё не было"}
@@ -465,6 +515,19 @@ export function AdminBotCenter({ period }: { period: AdminPeriodDays }) {
               <RefreshCw className="h-4 w-4" aria-hidden />
               Обновить состояние
             </Button>
+            <Button
+              variant="secondary"
+              loading={actionKey === "repair-runtime"}
+              disabled={!data.runtime.configured}
+              onClick={() => void performAction(
+                { action: "repair_telegram_configuration" },
+                "repair-runtime",
+                "Webhook очищен без удаления обновлений, меню команд восстановлено.",
+              )}
+            >
+              <Settings2 className="h-4 w-4" aria-hidden />
+              Восстановить настройки Telegram
+            </Button>
           </div>
         </div>
       </div>
@@ -478,6 +541,7 @@ export function AdminBotCenter({ period }: { period: AdminPeriodDays }) {
         <BotMetric label="Черновики из бота" value={data.summary.draftsCreated} helper={`За последние ${period} дней`} icon={Sparkles} />
         <BotMetric label="Поставлено в очередь" value={data.summary.publicationsScheduled} helper={`${fmtNum(data.summary.publicationsPublished)} уже опубликовано`} icon={Send} />
         <BotMetric label="Ошибки доставки" value={data.summary.deliveryFailures} helper={`За последние ${period} дней`} icon={AlertTriangle} danger={data.summary.deliveryFailures > 0} />
+        <BotMetric label="Каналы готовы" value={data.summary.telegramChannelsReady} helper={`${fmtNum(data.summary.telegramChannelsAttention)} требуют повторного подключения`} icon={Send} danger={data.summary.telegramChannelsAttention > 0} />
         <BotMetric label="Активные проекты" value={data.summary.activeProjects} helper={`${fmtNum(data.summary.disabledProjects)} приостановлено только в боте`} icon={BriefcaseBusiness} />
         <BotMetric label="Ожидают результат" value={data.summary.pendingResults} helper="Уведомления о результатах постов" icon={Clock3} />
         <BotMetric label="Telegram Business" value={data.summary.businessEnabled} helper={`${fmtNum(data.summary.businessConnected)} подключено`} icon={Headphones} />

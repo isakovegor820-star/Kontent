@@ -1,6 +1,8 @@
 import type { Pool } from "pg";
 
 import type { AdminPeriodDays } from "./admin-dashboard";
+import { TELEGRAM_BOT_COMMANDS, telegramBotCommandsReady } from "./telegram-bot-commands.mjs";
+import { resolveTranscriptionRuntime } from "./transcription-runtime.mjs";
 
 type Queryable = Pick<Pool, "query">;
 type Transactional = Pick<Pool, "query" | "connect">;
@@ -17,6 +19,10 @@ export interface AdminBotRuntime {
   botId: string | null;
   miniAppReady: boolean;
   voiceReady: boolean;
+  voiceProvider: "openai" | "navy" | null;
+  webhookClear: boolean | null;
+  commandsReady: boolean | null;
+  businessReady: boolean;
   checkedAt: string;
 }
 
@@ -35,6 +41,8 @@ export interface AdminBotData {
     publicationsScheduled: number;
     publicationsPublished: number;
     deliveryFailures: number;
+    telegramChannelsReady: number;
+    telegramChannelsAttention: number;
     pendingResults: number;
     businessConnected: number;
     businessEnabled: number;
@@ -157,10 +165,15 @@ export async function probeAdminTelegramBot(
   const token = String(env.TG_BOT_TOKEN || "").trim();
   const appUrl = String(env.APP_URL || "").trim();
   const baseUrl = String(env.TG_API_URL || "https://api.telegram.org").replace(/\/+$/u, "");
+  const transcription = resolveTranscriptionRuntime(env);
   const base = {
     configured: Boolean(token),
     miniAppReady: /^https:\/\//iu.test(appUrl),
-    voiceReady: Boolean(env.OPENAI_API_KEY || env.AI_API_KEY),
+    voiceReady: Boolean(transcription),
+    voiceProvider: transcription?.provider || null,
+    webhookClear: null,
+    commandsReady: null,
+    businessReady: false,
     checkedAt: new Date().toISOString(),
   };
   if (!token) {
@@ -174,21 +187,107 @@ export async function probeAdminTelegramBot(
     });
     const payload = await response.json().catch(() => null) as {
       ok?: boolean;
-      result?: { id?: number | string; first_name?: string; username?: string };
+      result?: {
+        id?: number | string;
+        first_name?: string;
+        username?: string;
+        can_connect_to_business?: boolean;
+      };
     } | null;
     if (!response.ok || !payload?.ok || !payload.result) {
       return { ...base, state: "down", botName: null, username: null, botId: null };
     }
+    const safeTelegramProbe = async (method: "getWebhookInfo" | "getMyCommands") => {
+      try {
+        const probe = await fetcher(`${baseUrl}/bot${token}/${method}`, {
+          method: "GET",
+          cache: "no-store",
+          signal: AbortSignal.timeout(4_000),
+        });
+        if (!probe.ok) return null;
+        const body = await probe.json().catch(() => null) as { ok?: boolean; result?: unknown } | null;
+        return body?.ok ? body.result : null;
+      } catch {
+        return null;
+      }
+    };
+    const [webhook, commands] = await Promise.all([
+      safeTelegramProbe("getWebhookInfo"),
+      safeTelegramProbe("getMyCommands"),
+    ]);
     return {
       ...base,
       state: "healthy",
       botName: String(payload.result.first_name || "Telegram-бот"),
       username: payload.result.username ? String(payload.result.username) : null,
       botId: payload.result.id == null ? null : String(payload.result.id),
+      webhookClear: webhook == null ? null : !String((webhook as { url?: unknown }).url || "").trim(),
+      commandsReady: commands == null ? null : telegramBotCommandsReady(commands),
+      businessReady: payload.result.can_connect_to_business === true,
     };
   } catch {
     return { ...base, state: "down", botName: null, username: null, botId: null };
   }
+}
+
+export async function repairAdminTelegramConfiguration(db: Queryable, input: {
+  actorUserId: number;
+  env?: AdminBotEnv;
+  fetcher?: typeof fetch;
+}) {
+  const env = input.env || process.env;
+  const token = String(env.TG_BOT_TOKEN || "").trim();
+  if (!token) return { status: "not_configured" as const };
+  const baseUrl = String(env.TG_API_URL || "https://api.telegram.org").replace(/\/+$/u, "");
+  const fetcher = input.fetcher || fetch;
+  const call = async (method: "deleteWebhook" | "setMyCommands", body: Record<string, unknown>) => {
+    try {
+      const response = await fetcher(`${baseUrl}/bot${token}/${method}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(8_000),
+      });
+      const payload = await response.json().catch(() => null) as {
+        ok?: boolean;
+        error_code?: number;
+        description?: string;
+      } | null;
+      return {
+        ok: response.ok && payload?.ok === true,
+        errorCode: payload?.error_code || null,
+        description: String(payload?.description || "").slice(0, 200),
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        errorCode: null,
+        description: error instanceof Error ? error.name : "network_error",
+      };
+    }
+  };
+
+  const webhook = await call("deleteWebhook", { drop_pending_updates: false });
+  const commands = await call("setMyCommands", { commands: TELEGRAM_BOT_COMMANDS });
+  const ok = webhook.ok && commands.ok;
+  await db.query(
+    `insert into bot_admin_action_events (actor_user_id, action, target_type, target_id, safe_data)
+     values ($1, $2, 'runtime', null, $3::jsonb)`,
+    [input.actorUserId, ok ? "bot.telegram.repaired" : "bot.telegram.repair_failed", JSON.stringify({
+      webhookCleared: webhook.ok,
+      commandsConfigured: commands.ok,
+      ...(webhook.errorCode ? { webhookErrorCode: webhook.errorCode } : {}),
+      ...(commands.errorCode ? { commandsErrorCode: commands.errorCode } : {}),
+    })],
+  );
+  return ok
+    ? { status: "repaired" as const, webhookCleared: true, commandsConfigured: true }
+    : {
+        status: "failed" as const,
+        webhookCleared: webhook.ok,
+        commandsConfigured: commands.ok,
+        description: commands.description || webhook.description || "Telegram не принял настройки",
+      };
 }
 
 export async function loadAdminBotData(
@@ -225,6 +324,13 @@ export async function loadAdminBotData(
           and post.published_at >= now() - make_interval(days => $1::int)) as publications_published,
       (select count(*) from bot_delivery_events event
         where event.ok = false and event.created_at >= now() - make_interval(days => $1::int)) as delivery_failures,
+      (select count(*) from channels channel
+        where channel.network = 'tg' and channel.status = 'active'
+          and channel.is_active = true and channel.tg_chat_id is not null) as telegram_channels_ready,
+      (select count(*) from channels channel
+        where channel.network = 'tg'
+          and (channel.status in ('needs_reconnect','permission_lost','revoked')
+            or (channel.status = 'active' and (channel.is_active = false or channel.tg_chat_id is null)))) as telegram_channels_attention,
       (select count(*) from bot_post_result_notifications where delivered_at is null) as pending_results,
       (select count(*) from bot_client_assistant_preferences where business_connection_id is not null) as business_connected,
       (select count(*) from bot_client_assistant_preferences where business_connection_id is not null and enabled = true) as business_enabled,
@@ -414,6 +520,8 @@ export async function loadAdminBotData(
       activeProjects: count(h.active_projects), disabledProjects: count(h.disabled_projects),
       draftsCreated: count(h.drafts_created), publicationsScheduled: count(h.publications_scheduled),
       publicationsPublished: count(h.publications_published), deliveryFailures: count(h.delivery_failures),
+      telegramChannelsReady: count(h.telegram_channels_ready),
+      telegramChannelsAttention: count(h.telegram_channels_attention),
       pendingResults: count(h.pending_results), businessConnected: count(h.business_connected),
       businessEnabled: count(h.business_enabled), openClientInquiries: count(h.open_client_inquiries),
       interactions: count(h.interactions), activeUsers: count(h.active_users),

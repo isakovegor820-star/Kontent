@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_AUTOPILOT_ENGINE,
   applyAutopilotPresentation,
   autopilotPresentationVariant,
   autopilotTextSimilarity,
@@ -11,6 +12,10 @@ import {
 } from "./autopilot-config.mjs";
 
 describe("autopilot planning config", () => {
+  it("uses the fast healthy engine for new plans", () => {
+    expect(DEFAULT_AUTOPILOT_ENGINE).toBe("navy-minimax-m3");
+  });
+
   it("maps 1–3 months to four-week planning blocks and caps oversized plans", () => {
     expect(planningWeeks(1)).toBe(4);
     expect(planningWeeks(2)).toBe(8);

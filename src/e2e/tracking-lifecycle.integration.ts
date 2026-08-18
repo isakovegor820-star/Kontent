@@ -89,8 +89,8 @@ describe("tracking lifecycle with exact publication placement", () => {
     });
 
     const channelId = Number((await pool.query(
-      `insert into channels (project_id, user_id, network, title, handle, is_active)
-       values ($1, $2, 'tg', 'Tracking channel', 'tracking_channel', true) returning id`,
+      `insert into channels (project_id, user_id, network, tg_chat_id, title, handle, is_active)
+       values ($1, $2, 'tg', -100910000041, 'Tracking channel', 'tracking_channel', true) returning id`,
       [projectId, ownerId],
     )).rows[0].id);
 

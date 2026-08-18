@@ -86,6 +86,10 @@ describe("POST /api/settings/channel", () => {
     });
     const statements = mocks.query.mock.calls.map(([sql]) => String(sql).trim());
     expect(statements[0]).toBe("begin");
+    expect(mocks.query).toHaveBeenCalledWith(
+      expect.stringContaining("generation_engine"),
+      [7, 21, "navy-minimax-m3"],
+    );
     expect(statements.some((sql) => sql.includes("insert into content_brief"))).toBe(true);
     expect(statements.some((sql) => sql.includes("update autopilot_settings"))).toBe(true);
     expect(statements.at(-1)).toBe("commit");

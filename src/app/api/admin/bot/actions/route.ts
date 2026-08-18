@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { hasAuroraAdminAccess } from "@/lib/admin-access";
-import { sendAdminBotTest, setAdminBotAccess, setAdminBusinessAssistant } from "@/lib/admin-bot";
+import {
+  repairAdminTelegramConfiguration,
+  sendAdminBotTest,
+  setAdminBotAccess,
+  setAdminBusinessAssistant,
+} from "@/lib/admin-bot";
 import { getPool } from "@/lib/db";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import { getSessionUser } from "@/lib/session";
@@ -29,6 +34,12 @@ export async function POST(req: NextRequest) {
   }
 
   try {
+    if (body.action === "repair_telegram_configuration") {
+      const result = await repairAdminTelegramConfiguration(getPool(), { actorUserId: user.id });
+      const status = result.status === "not_configured" ? 409 : result.status === "failed" ? 502 : 200;
+      return NextResponse.json(result, { status, headers: { "Cache-Control": "no-store" } });
+    }
+
     if (body.action === "test_delivery") {
       const targetUserId = positiveId(body.targetUserId);
       if (!targetUserId) return NextResponse.json({ error: "invalid_user_id" }, { status: 400 });

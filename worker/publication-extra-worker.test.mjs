@@ -330,9 +330,43 @@ describe("publication extra worker", () => {
       result: { id: -100900, linked_chat_id: -100800 },
     }));
     await expect(syncTelegramDiscussionChats({ query }, telegramRequest))
-      .resolves.toEqual({ synchronized: 1, total: 1 });
+      .resolves.toEqual({ synchronized: 1, attention: 0, total: 1 });
     expect(telegramRequest).toHaveBeenCalledWith("getChat", { chat_id: -100900 });
     expect(query).toHaveBeenCalledWith(expect.stringContaining("tg_discussion_chat_id = $2"), ["17", -100800, "7"]);
+  });
+
+  it("quarantines active Telegram channels that cannot be addressed anymore", async () => {
+    const query = vi.fn(async (sql) => {
+      if (sql.includes("select id, project_id, tg_chat_id")) {
+        return { rows: [
+          { id: "17", project_id: "7", tg_chat_id: null },
+          { id: "18", project_id: "7", tg_chat_id: "-100901" },
+        ] };
+      }
+      throw new Error(`unexpected query: ${sql}`);
+    });
+    const telegramRequest = vi.fn(async () => ({
+      ok: false,
+      error_code: 400,
+      description: "Bad Request: chat not found",
+    }));
+    const transition = vi.fn(async () => ({}));
+
+    await expect(syncTelegramDiscussionChats(
+      { query },
+      telegramRequest,
+      { transitionChannelHealth: transition },
+    )).resolves.toEqual({ synchronized: 0, attention: 2, total: 2 });
+    expect(transition).toHaveBeenNthCalledWith(1, { query }, expect.objectContaining({
+      channelId: 17,
+      status: "needs_reconnect",
+      errorCode: "telegram_chat_id_missing",
+    }));
+    expect(transition).toHaveBeenNthCalledWith(2, { query }, expect.objectContaining({
+      channelId: 18,
+      status: "needs_reconnect",
+      errorCode: "telegram_chat_not_found",
+    }));
   });
 
   it("captures an ordinary message from a linked Telegram discussion group", async () => {

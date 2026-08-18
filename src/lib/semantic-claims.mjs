@@ -136,6 +136,9 @@ export async function validateSemanticClaims(
         },
         { signal },
       );
+      if (SAFE_ID.test(String(response?.model || "").toLowerCase())) {
+        adapterModel = String(response.model).toLowerCase();
+      }
       if (!response || !Array.isArray(response.verdicts)) adapterFailed = true;
       else {
         for (const verdict of response.verdicts) {

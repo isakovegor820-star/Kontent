@@ -131,9 +131,9 @@ beforeAll(async () => {
     [userId, projectId],
   );
   channels = (await Promise.all(["A", "B"].map(async (title) => Number((await pool.query(
-    `insert into channels (project_id, user_id, network, title, handle, is_active)
-     values ($1, $2, 'tg', $3, $4, true) returning id`,
-    [projectId, userId, `QA ${title}`, `qa_gate6_${title.toLowerCase()}`],
+    `insert into channels (project_id, user_id, network, tg_chat_id, title, handle, is_active)
+     values ($1, $2, 'tg', $5, $3, $4, true) returning id`,
+    [projectId, userId, `QA ${title}`, `qa_gate6_${title.toLowerCase()}`, title === "A" ? -100910000051 : -100910000052],
   )).rows[0].id))));
 });
 

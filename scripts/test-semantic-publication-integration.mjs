@@ -69,8 +69,8 @@ try {
   )).rows[0].id);
   const projectId = await ensurePersonalProject(pool, userId);
   const channelId = Number((await pool.query(
-    `insert into channels (project_id, user_id, network, title, handle, is_active)
-     values ($1, $2, 'tg', 'QA semantic channel', 'qa_semantic', true) returning id`,
+    `insert into channels (project_id, user_id, network, tg_chat_id, title, handle, is_active)
+     values ($1, $2, 'tg', -100910000001, 'QA semantic channel', 'qa_semantic', true) returning id`,
     [projectId, userId],
   )).rows[0].id);
   const source = {

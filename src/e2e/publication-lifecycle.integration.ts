@@ -124,8 +124,8 @@ beforeAll(async () => {
     [userId, projectId, otherUserId, otherProjectId],
   );
   channelId = Number((await pool.query(
-    `insert into channels (project_id, user_id, network, title, handle, is_active)
-     values ($1, $2, 'tg', 'Lifecycle', 'qa_lifecycle', true) returning id`,
+    `insert into channels (project_id, user_id, network, tg_chat_id, title, handle, is_active)
+     values ($1, $2, 'tg', -100910000031, 'Lifecycle', 'qa_lifecycle', true) returning id`,
     [projectId, userId],
   )).rows[0].id);
 });

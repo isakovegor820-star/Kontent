@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { loadAdminBotData, probeAdminTelegramBot, sendAdminBotTest } from "./admin-bot";
+import {
+  loadAdminBotData,
+  probeAdminTelegramBot,
+  repairAdminTelegramConfiguration,
+  sendAdminBotTest,
+} from "./admin-bot";
+import { TELEGRAM_BOT_COMMANDS } from "./telegram-bot-commands.mjs";
 
 describe("admin Telegram runtime probe", () => {
   it("reports missing configuration without making a network request", async () => {
@@ -10,22 +16,66 @@ describe("admin Telegram runtime probe", () => {
       configured: false,
       miniAppReady: false,
       voiceReady: false,
+      businessReady: false,
     });
     expect(fetcher).not.toHaveBeenCalled();
   });
 
   it("returns only safe bot identity fields", async () => {
-    const fetcher = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ ok: true, result: { id: 77, first_name: "Аврора", username: "aurora_bot" } }),
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const value = String(url);
+      const result = value.endsWith("/getMe")
+        ? { id: 77, first_name: "Аврора", username: "aurora_bot", can_connect_to_business: true }
+        : value.endsWith("/getWebhookInfo")
+          ? { url: "" }
+          : TELEGRAM_BOT_COMMANDS;
+      return new Response(JSON.stringify({ ok: true, result }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
     });
     const result = await probeAdminTelegramBot({
       TG_BOT_TOKEN: "secret-token",
       APP_URL: "https://aurora.example",
       OPENAI_API_KEY: "configured",
-    }, fetcher);
-    expect(result).toMatchObject({ state: "healthy", botName: "Аврора", username: "aurora_bot", botId: "77", miniAppReady: true, voiceReady: true });
+    }, fetchMock as unknown as typeof fetch);
+    expect(result).toMatchObject({
+      state: "healthy",
+      botName: "Аврора",
+      username: "aurora_bot",
+      botId: "77",
+      miniAppReady: true,
+      voiceReady: true,
+      voiceProvider: "openai",
+      webhookClear: true,
+      commandsReady: true,
+      businessReady: true,
+    });
     expect(JSON.stringify(result)).not.toContain("secret-token");
+  });
+});
+
+describe("admin Telegram configuration repair", () => {
+  it("clears only webhook configuration, restores commands and writes a secret-free audit event", async () => {
+    const query = vi.fn(async () => ({ rows: [], rowCount: 1 }));
+    const fetchMock = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => {
+      void _url;
+      void _init;
+      return new Response(JSON.stringify({ ok: true, result: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    const result = await repairAdminTelegramConfiguration({ query } as never, {
+      actorUserId: 7,
+      env: { TG_BOT_TOKEN: "secret-token" },
+      fetcher: fetchMock as unknown as typeof fetch,
+    });
+    expect(result).toEqual({ status: "repaired", webhookCleared: true, commandsConfigured: true });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({ drop_pending_updates: false });
+    expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toEqual({ commands: TELEGRAM_BOT_COMMANDS });
+    expect(JSON.stringify(query.mock.calls)).not.toContain("secret-token");
   });
 });
 

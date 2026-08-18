@@ -30,7 +30,9 @@ export const AUTOPILOT_ENGINE_OPTIONS = Object.freeze([
   },
 ]);
 
-export const DEFAULT_AUTOPILOT_ENGINE = "navy-gpt-5-4";
+// Fast default for high-volume plans. GPT-5.4 remains selectable for deliberately complex
+// work, but its upstream currently returns intermittent HTTP 500/timeouts under load.
+export const DEFAULT_AUTOPILOT_ENGINE = "navy-minimax-m3";
 export const AUTOPILOT_PLANNING_MONTHS = Object.freeze([1, 2, 3]);
 export const AUTOPILOT_WEEKS_PER_MONTH = 4;
 export const MIN_AUTOPILOT_PLANNING_WEEKS = 1;

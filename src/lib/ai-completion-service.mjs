@@ -153,8 +153,10 @@ async function oneCompletion(request, runtime, { fetchImpl, signal, timeoutMs })
         }),
       });
     } else if (runtime.protocol === "openai") {
-      const providerMaxTokens = runtime.id.startsWith("navy-")
+      const providerMaxTokens = runtime.id === "navy-gpt-5-4" || runtime.id === "navy-deepseek-pro"
         ? Math.max(3_000, maxTokens)
+        : runtime.id.startsWith("navy-")
+          ? Math.max(1_200, maxTokens)
         : maxTokens;
       response = await fetchImpl(`${runtime.baseUrl}/chat/completions`, {
         method: "POST",
@@ -238,9 +240,17 @@ async function oneCompletion(request, runtime, { fetchImpl, signal, timeoutMs })
 export async function completeAiText(request, options = {}) {
   const env = options.env || process.env;
   const primary = configuredServiceEngine(request.engine, env);
+  const fallbackCandidates = Array.isArray(options.fallbackEngines)
+    ? options.fallbackEngines
+        .filter((engine) => typeof engine === "string" && engine !== primary)
+        .filter((engine) => {
+          const runtime = resolveAiEngineRuntime(engine, env);
+          return runtime.supported && runtime.configured;
+        })
+    : configuredAiFallbacks(primary, env);
   const configuredCandidates = options.allowFallback === false
     ? [primary]
-    : [primary, ...configuredAiFallbacks(primary, env)];
+    : [primary, ...new Set(fallbackCandidates)];
   const fetchImpl = options.fetchImpl || fetch;
   const timeoutMs = bounded(options.timeoutMs, 60_000, 100, 300_000);
   const localTimeoutMs = bounded(options.localTimeoutMs, timeoutMs, 100, 300_000);
