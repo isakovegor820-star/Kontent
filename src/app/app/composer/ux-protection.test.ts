@@ -30,6 +30,8 @@ describe("composer UX protection contract", () => {
     expect(source).toContain("Поставить в очередь");
     expect(source).toContain("Добавить в календарь");
     expect(source).toContain("setPublicationSuccess({");
+    expect(source).toContain('className="h-72 sm:h-44 lg:h-28"');
+    expect(source).toContain("scroll-mb-72");
   });
 
   it("provides recovery, upload, and multi-destination controls", () => {

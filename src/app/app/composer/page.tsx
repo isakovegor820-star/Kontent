@@ -2202,7 +2202,7 @@ function EditorSection({
         if (!error) setOpen(event.currentTarget.open);
       }}
       className={cn(
-        "group scroll-mt-24 overflow-hidden rounded-sm border bg-surface",
+        "group scroll-mt-24 scroll-mb-72 overflow-hidden rounded-sm border bg-surface lg:scroll-mb-32",
         error ? "border-danger/40" : "border-line",
       )}
     >
@@ -3567,7 +3567,7 @@ function ComposerInner() {
       </Card>
 
       <ComposerActionBar />
-      <div aria-hidden className="h-40 sm:h-28" />
+      <div aria-hidden className="h-72 sm:h-44 lg:h-28" />
 
       {canEditContent && (
         <ConfirmDialog
