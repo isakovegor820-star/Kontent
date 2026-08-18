@@ -34,6 +34,10 @@ import {
 } from "@/lib/post-quality.mjs";
 import type { ApprovalBlocker, AutopilotApprovalPreview } from "@/lib/autopilot-approval.mjs";
 import { autopilotPlanNeedsQualityRebuild } from "@/lib/autopilot-plan-visibility.mjs";
+import {
+  estimateAutopilotBuildMinutes,
+  type AutopilotBuildMinuteEstimate,
+} from "@/lib/autopilot-build-progress.mjs";
 import { cn, plural } from "@/lib/utils";
 import { ChannelPicker, useChannelChoice } from "@/components/app/channel-picker";
 import {
@@ -109,6 +113,14 @@ const fmtTimeMsk = (iso: string) =>
   new Date(iso).toLocaleTimeString("ru-RU", { timeZone: MSK, hour: "2-digit", minute: "2-digit" });
 const fmtRangeMsk = (iso: string) =>
   new Date(iso).toLocaleDateString("ru-RU", { timeZone: MSK, day: "numeric", month: "short" });
+
+const fmtBuildEstimate = ({ min, max }: AutopilotBuildMinuteEstimate) => {
+  if (max <= 0) return "меньше минуты";
+  if (min === max) {
+    return max === 1 ? "около минуты" : `около ${max} минут`;
+  }
+  return `примерно ${min}–${max} ${plural(max, "минута", "минуты", "минут")}`;
+};
 
 const hasPassedVerifiedQuality = (item: PlanItem) =>
   item.aiReady !== false &&
@@ -267,10 +279,11 @@ export default function AutopilotPage() {
       const d = (await r.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
       if (d?.ok) {
         const count = plannedPostCountForWeeks(data?.settings?.post_frequency ?? 5, planningWeeks);
+        const duration = fmtBuildEstimate(estimateAutopilotBuildMinutes(count));
         s.toast({
           kind: "info",
           title: "Собираю контент-план",
-          body: `${count} ${plural(count, "пост", "поста", "постов")} на ${planningWeeks} ${plural(planningWeeks, "неделю", "недели", "недель")}. Можно продолжать работу — сборка идёт в фоне.`,
+          body: `${count} ${plural(count, "пост", "поста", "постов")} на ${planningWeeks} ${plural(planningWeeks, "неделю", "недели", "недель")}. Сборка займёт ${duration}; можно продолжать работу в других разделах.`,
         });
         await load();
       } else {
@@ -674,6 +687,12 @@ export default function AutopilotPage() {
       : "";
   const allApproved = pending.length === 0 && expired.length === 0 && approved.length > 0;
   const plannedCount = plannedPostCountForWeeks(st.post_frequency, planningWeeks);
+  const plannedDuration = fmtBuildEstimate(estimateAutopilotBuildMinutes(plannedCount));
+  const buildCompleted = plan?.buildProgress?.completed ?? 0;
+  const buildTotal = plan?.buildProgress?.total ?? plannedCount;
+  const remainingBuildDuration = fmtBuildEstimate(
+    estimateAutopilotBuildMinutes(buildTotal, buildCompleted),
+  );
   const countCapped = planCountWasCappedForWeeks(st.post_frequency, planningWeeks);
   const selectedEngine = AUTOPILOT_ENGINE_OPTIONS.find((option) => option.id === generationEngine)
     ?? AUTOPILOT_ENGINE_OPTIONS[0];
@@ -769,6 +788,7 @@ export default function AutopilotPage() {
             <p className="mt-1.5 text-[12px] text-text-3" aria-live="polite">
               До {planEndLabel} · {plannedCount} {plural(plannedCount, "пост", "поста", "постов")}
               {countCapped && " · максимум 90 за один запуск"}
+              {` · сборка — ${plannedDuration}`}
             </p>
           </div>
 
@@ -813,19 +833,24 @@ export default function AutopilotPage() {
 
       {/* Состояние плана */}
       {building ? (
-        <Card className="p-8 text-center" aria-live="polite" aria-busy="true">
+        <Card className="p-8 text-center" aria-busy="true">
           <Loader2 className={cn("mx-auto h-7 w-7 text-brand", !reduce && "animate-spin")} aria-hidden />
           <p className="mt-3 text-[15px] font-semibold text-text">Собираю контент-план…</p>
-          <p className="mt-1 text-[14px] text-text-3">
-            {plan?.buildProgress?.completed ?? 0} из {plan?.buildProgress?.total ?? plannedCount} {plural(plan?.buildProgress?.total ?? plannedCount, "поста", "постов", "постов")} готовы. Можно уйти со страницы — прогресс сохранится.
+          <p
+            className="mt-1 text-[14px] tabular-nums text-text-3"
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+          >
+            {buildCompleted} из {buildTotal} {plural(buildTotal, "пост", "поста", "постов")} готовы. Осталось {remainingBuildDuration}. Можно уйти со страницы — прогресс сохранится.
           </p>
           <div
             className="mx-auto mt-4 h-2 max-w-md overflow-hidden rounded-full bg-surface-inset"
             role="progressbar"
             aria-label="Прогресс сборки контент-плана"
             aria-valuemin={0}
-            aria-valuemax={plan?.buildProgress?.total ?? plannedCount}
-            aria-valuenow={plan?.buildProgress?.completed ?? 0}
+            aria-valuemax={buildTotal}
+            aria-valuenow={buildCompleted}
           >
             <div
               className="h-full rounded-full bg-brand"

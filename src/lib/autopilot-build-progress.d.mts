@@ -6,6 +6,16 @@ export interface AutopilotBuildProgress {
   stage: "preparing" | "generating" | "finalizing";
 }
 
+export interface AutopilotBuildMinuteEstimate {
+  min: number;
+  max: number;
+}
+
+export function estimateAutopilotBuildMinutes(
+  total: unknown,
+  completed?: unknown,
+): AutopilotBuildMinuteEstimate;
+
 export function autopilotTopicCheckpoints(
   topics: Record<string, unknown>[],
   slots: unknown[],

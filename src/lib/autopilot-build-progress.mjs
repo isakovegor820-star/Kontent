@@ -8,6 +8,26 @@ const PRIVATE_ITEM_KEYS = new Set([
   "autoApprove",
 ]);
 
+// Production load checks currently put a completed post in the 6–8 second range when
+// several drafts are generated in parallel. Keep a range instead of showing a precise
+// countdown: provider load and fallback attempts can legitimately move the finish time.
+const AUTOPILOT_BUILD_SECONDS_PER_POST = Object.freeze({ min: 6, max: 8 });
+
+export function estimateAutopilotBuildMinutes(total, completed = 0) {
+  const safeTotal = Math.max(0, Math.floor(Number(total) || 0));
+  const safeCompleted = Math.min(
+    safeTotal,
+    Math.max(0, Math.floor(Number(completed) || 0)),
+  );
+  const remaining = safeTotal - safeCompleted;
+  if (!remaining) return { min: 0, max: 0 };
+
+  return {
+    min: Math.max(1, Math.ceil(remaining * AUTOPILOT_BUILD_SECONDS_PER_POST.min / 60)),
+    max: Math.max(1, Math.ceil(remaining * AUTOPILOT_BUILD_SECONDS_PER_POST.max / 60)),
+  };
+}
+
 export function autopilotTopicCheckpoints(topics, slots, now = () => new Date()) {
   const checkpointedAt = now().toISOString();
   return (Array.isArray(topics) ? topics : []).map((topic, index) => ({

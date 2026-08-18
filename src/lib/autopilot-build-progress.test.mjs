@@ -5,6 +5,7 @@ import {
   autopilotBuildProgress,
   autopilotCheckpointItem,
   autopilotTopicCheckpoints,
+  estimateAutopilotBuildMinutes,
   reusableAutopilotCheckpoint,
 } from "./autopilot-build-progress.mjs";
 
@@ -55,5 +56,13 @@ describe("Autopilot durable build progress", () => {
     });
     expect(autopilotBuildActivityAt("2026-08-18T07:55:00.000Z", items).toISOString())
       .toBe("2026-08-18T08:02:00.000Z");
+  });
+
+  it("shows a conservative duration range that shrinks with completed posts", () => {
+    expect(estimateAutopilotBuildMinutes(5)).toEqual({ min: 1, max: 1 });
+    expect(estimateAutopilotBuildMinutes(30)).toEqual({ min: 3, max: 4 });
+    expect(estimateAutopilotBuildMinutes(30, 15)).toEqual({ min: 2, max: 2 });
+    expect(estimateAutopilotBuildMinutes(30, 30)).toEqual({ min: 0, max: 0 });
+    expect(estimateAutopilotBuildMinutes(90)).toEqual({ min: 9, max: 12 });
   });
 });
