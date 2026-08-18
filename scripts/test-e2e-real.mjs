@@ -1705,7 +1705,7 @@ try {
   const mobileDrawerActive = mobileDrawer.locator('a[aria-current="page"]');
   assert((await mobileDrawerActive.textContent())?.includes("Идеи и примеры"), "mobile drawer lost active Library item");
   await mobileDrawer.getByRole("button", { name: "Закрыть меню", exact: true }).click();
-  await page.locator('nav[aria-label="Основные разделы"]').getByRole("link", { name: "Студия", exact: true }).click();
+  await page.locator('nav[aria-label="Основные разделы"]').getByRole("link", { name: "Студия контента", exact: true }).click();
   await page.waitForURL((url) => url.pathname === "/app/studio");
   assert((await page.locator('nav[aria-label="Основные разделы"] a[aria-current="page"]').textContent())?.includes("Студия"), "mobile Studio item is not active");
   await page.goBack();
