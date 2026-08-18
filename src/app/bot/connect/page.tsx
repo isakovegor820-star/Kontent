@@ -55,16 +55,12 @@ export default function BotConnectPage() {
 
   const inspect = useCallback(async () => {
     const token = tokenRef.current;
-    if (!token) {
-      setView("invalid");
-      return;
-    }
     setView("loading");
     try {
       const response = await fetch("/api/bot/connect", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ action: "inspect", token }),
+        body: JSON.stringify({ action: "inspect", token: token || "" }),
       });
       const body = await response.json().catch(() => null) as Inspection | null;
       if (!response.ok || !body?.ok) {

@@ -11,6 +11,11 @@ describe("Telegram connection confirmation screen", () => {
     expect(page).toContain('"/login?next=%2Fbot%2Fconnect"');
   });
 
+  it("asks the API for the configured bot even when the link token is missing", () => {
+    expect(page).toContain('token: token || ""');
+    expect(page).not.toContain('if (!token) {\n      setView("invalid")');
+  });
+
   it("uses explicit action and consequence labels", () => {
     expect(page).toContain("Подключить этот чат");
     expect(page).toContain("Перенести подключение");
