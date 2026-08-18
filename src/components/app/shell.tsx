@@ -25,7 +25,6 @@ import {
   ScanSearch,
   Settings,
   Sparkles,
-  SunMedium,
   TriangleAlert,
   X,
 } from "lucide-react";
@@ -68,7 +67,6 @@ type NavItem = {
 };
 
 const NAV_ICONS: Record<AppNavRouteId, LucideIcon> = {
-  today: SunMedium,
   calendar: Calendar,
   studio: Sparkles,
   autopilot: Rocket,
@@ -371,7 +369,7 @@ function SidebarInner({
     <div className="flex h-full flex-col">
       <div className="flex h-16 shrink-0 items-center justify-between gap-2 px-4">
         <Link
-          href="/app/today"
+          href="/app/calendar"
           onClick={onClose}
           aria-label="Аврора — на главный экран"
           className="transition-transform duration-150 hover:-translate-y-0.5"
@@ -874,7 +872,7 @@ export function AppShell({
           </main>
         </div>
 
-        {/* НИЖНЯЯ НАВИГАЦИЯ — телефон, пять пунктов, безопасная зона снизу.
+        {/* НИЖНЯЯ НАВИГАЦИЯ — телефон, четыре пункта, безопасная зона снизу.
             Та же бумажная панель, что сайдбар и шапка, — система выглядит едино. */}
         <nav
           aria-label="Основные разделы"

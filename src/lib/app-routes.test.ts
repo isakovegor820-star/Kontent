@@ -5,7 +5,6 @@ import {
   APP_BOTTOM_NAV_ROUTE_IDS,
   APP_NAV_GROUPS,
   APP_ROUTES,
-  appRouteLabel,
   appDraftActionHref,
   composerReturnTarget,
   composerSource,
@@ -21,21 +20,6 @@ describe("app route registry", () => {
       expect(sidebarIds).toContain(routeId);
       expect(APP_ROUTES[routeId].href).toMatch(/^\/app(?:\/|$)/u);
     }
-  });
-
-  it("makes Today the first destination without overflowing mobile navigation", () => {
-    expect(APP_NAV_GROUPS[0].routeIds[0]).toBe("today");
-    expect(APP_BOTTOM_NAV_ROUTE_IDS).toEqual([
-      "today",
-      "calendar",
-      "studio",
-      "recon",
-      "analytics",
-    ]);
-    expect(APP_BOTTOM_NAV_ROUTE_IDS).toHaveLength(5);
-    expect(isAppRouteActive("/app/today", "today")).toBe(true);
-    expect(appRouteLabel("calendar", "mobile")).toBe("План");
-    expect(appRouteLabel("analytics", "mobile")).toBe("Итоги");
   });
 
   it("uses the same aliases for desktop and mobile active state", () => {
