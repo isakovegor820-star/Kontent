@@ -73,6 +73,17 @@ describe("calendar role-aware interface", () => {
     expect(source).toContain("Удерживайте карточку до подсветки");
   });
 
+  it("deletes dated server drafts from the card only after confirmation and server ACK", () => {
+    expect(source).toContain('aria-label="Удалить черновик"');
+    expect(source).toContain('<Trash2 className="h-4 w-4"');
+    expect(source).toContain("onDeleteDraft && p.serverDraftId != null && p.draftVersion != null");
+    expect(source).toContain("requestDraftDeletion(post, `calendar-add-${key}`)");
+    expect(source).toContain("await deleteDraftAfterAck(target.id, target.version");
+    expect(source).toContain('title="Удалить черновик?"');
+    expect(source).toContain('confirmLabel="Удалить черновик"');
+    expect(source).toContain('id={`calendar-add-${dayKey(day)}`}');
+  });
+
   it("only makes scheduled publications draggable", () => {
     expect(source).toContain('post.status === "scheduled"');
     expect(source).toContain("canManageCalendarMove(post)");

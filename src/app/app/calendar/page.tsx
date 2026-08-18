@@ -31,6 +31,7 @@ import {
   Plus,
   RotateCw,
   Sparkles,
+  Trash2,
   X,
 } from "lucide-react";
 
@@ -114,6 +115,7 @@ type View = "week" | "month";
 type DraftDeleteTarget = {
   id: number;
   version: number;
+  focusAfterDeleteId?: string;
 };
 
 type CalendarPost = Post & {
@@ -382,8 +384,10 @@ function PostCard({
   canMove = false,
   moving = false,
   dragging = false,
+  deleting = false,
   onDragStart,
   onDragEnd,
+  onDelete,
   onLongPressDragStart,
   onLongPressDragMove,
   onLongPressDragEnd,
@@ -397,8 +401,10 @@ function PostCard({
   canMove?: boolean;
   moving?: boolean;
   dragging?: boolean;
+  deleting?: boolean;
   onDragStart?: (event: DragEvent<HTMLElement>) => void;
   onDragEnd?: () => void;
+  onDelete?: () => void;
   onLongPressDragStart?: (post: DatedPost) => boolean;
   onLongPressDragMove?: (post: DatedPost, point: CalendarDragPoint) => void;
   onLongPressDragEnd?: (post: DatedPost, point: CalendarDragPoint) => void;
@@ -495,7 +501,7 @@ function PostCard({
       tabIndex={-1}
       data-calendar-draggable={canMove && !moving ? "true" : undefined}
       data-calendar-dragging={dragging ? "true" : undefined}
-      aria-busy={moving || undefined}
+      aria-busy={moving || deleting || undefined}
       className={cn(
         "relative min-w-0 rounded-sm border-l-2 shadow-soft ring-1 ring-line",
         "transition-[transform,box-shadow,opacity] duration-200 ease-[var(--ease-soft)]",
@@ -582,7 +588,7 @@ function PostCard({
       />
 
       <div className="pointer-events-none relative z-10 flex min-w-0 flex-col gap-1.5 p-2.5">
-        <div className="flex items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center justify-between gap-1.5">
           <span className="flex items-center gap-1">
             {published && (
               <Check className="h-3.5 w-3.5 shrink-0 text-success" strokeWidth={2.5} aria-hidden />
@@ -612,8 +618,25 @@ function PostCard({
               {fmtTime(post.scheduledAt, post.scheduleTimezone ?? calendarTimezone)}
             </span>
           </span>
-          <span className="flex items-center gap-1">
+          <span className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-1">
             <NetworkChips networks={post.networks} />
+            {onDelete && (
+              <Button
+                variant="danger"
+                size="icon"
+                className="pointer-events-auto relative z-20 shrink-0"
+                aria-label="Удалить черновик"
+                aria-haspopup="dialog"
+                title="Удалить черновик"
+                loading={deleting}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onDelete();
+                }}
+              >
+                {!deleting && <Trash2 className="h-4 w-4" strokeWidth={2} aria-hidden />}
+              </Button>
+            )}
             {canMove && (
               <span
                 className="flex h-6 w-6 items-center justify-center rounded-xs text-text-3"
@@ -760,12 +783,14 @@ function DayColumn({
   onReschedule,
   canMovePost,
   movingPostId,
+  deletingDraftId,
   draggedPostId,
   dragging,
   dropActive,
   dropAllowed,
   onPostDragStart,
   onPostDragEnd,
+  onDeleteDraft,
   onPostLongPressDragStart,
   onPostLongPressDragMove,
   onPostLongPressDragEnd,
@@ -787,12 +812,14 @@ function DayColumn({
   onReschedule?: (post: DatedPost) => void;
   canMovePost: (post: DatedPost) => boolean;
   movingPostId: string | null;
+  deletingDraftId: number | null;
   draggedPostId: string | null;
   dragging: boolean;
   dropActive: boolean;
   dropAllowed: boolean;
   onPostDragStart: (event: DragEvent<HTMLElement>, post: DatedPost) => void;
   onPostDragEnd: () => void;
+  onDeleteDraft?: (post: DatedPost) => void;
   onPostLongPressDragStart: (post: DatedPost) => boolean;
   onPostLongPressDragMove: (post: DatedPost, point: CalendarDragPoint) => void;
   onPostLongPressDragEnd: (post: DatedPost, point: CalendarDragPoint) => void;
@@ -864,8 +891,14 @@ function DayColumn({
             canMove={canMovePost(p)}
             moving={movingPostId === p.id}
             dragging={draggedPostId === p.id}
+            deleting={p.serverDraftId != null && deletingDraftId === p.serverDraftId}
             onDragStart={(event) => onPostDragStart(event, p)}
             onDragEnd={onPostDragEnd}
+            onDelete={
+              onDeleteDraft && p.serverDraftId != null && p.draftVersion != null
+                ? () => onDeleteDraft(p)
+                : undefined
+            }
             onLongPressDragStart={onPostLongPressDragStart}
             onLongPressDragMove={onPostLongPressDragMove}
             onLongPressDragEnd={onPostLongPressDragEnd}
@@ -877,6 +910,7 @@ function DayColumn({
         {/* Пустое место в дне — и есть кнопка «создать пост» (главное действие) */}
         {onAdd && (
           <button
+            id={`calendar-add-${dayKey(day)}`}
             type="button"
             onClick={onAdd}
             aria-label={`Создать пост: ${weekdayFull(index)}, ${fmtDate(day.toISOString())}, ${DEFAULT_TIME}`}
@@ -1730,6 +1764,15 @@ export default function CalendarPage() {
     }
   }, [publicationBusy, publicationFailure, publicationTarget, router, s]);
 
+  const requestDraftDeletion = useCallback((post: CalendarPost, focusAfterDeleteId?: string) => {
+    if (post.serverDraftId == null || post.draftVersion == null) return;
+    setDraftDeleteTarget({
+      id: post.serverDraftId,
+      version: post.draftVersion,
+      focusAfterDeleteId,
+    });
+  }, []);
+
   const removeDraft = async () => {
     const target = draftDeleteTarget;
     if (!target || deletingDraftId != null) return;
@@ -1740,7 +1783,12 @@ export default function CalendarPage() {
       });
       s.toast({ kind: "success", title: "Черновик удалён" });
       setDraftDeleteTarget(null);
-      requestAnimationFrame(() => draftQueueHeadingRef.current?.focus());
+      requestAnimationFrame(() => {
+        const focusTarget = target.focusAfterDeleteId
+          ? document.getElementById(target.focusAfterDeleteId)
+          : draftQueueHeadingRef.current;
+        focusTarget?.focus();
+      });
     } catch (error) {
       s.toast({
         kind: "danger",
@@ -2049,12 +2097,16 @@ export default function CalendarPage() {
                           onReschedule={canPublish ? retryCalendarPost : undefined}
                           canMovePost={canStartCalendarMove}
                           movingPostId={movingPostId}
+                          deletingDraftId={deletingDraftId}
                           draggedPostId={draggedPostId}
                           dragging={draggedPost != null}
                           dropActive={dragOverDay === key}
                           dropAllowed={dropAllowed}
                           onPostDragStart={startPostDrag}
                           onPostDragEnd={endPostDrag}
+                          onDeleteDraft={canEdit
+                            ? (post) => requestDraftDeletion(post, `calendar-add-${key}`)
+                            : undefined}
                           onPostLongPressDragStart={startPostLongPressDrag}
                           onPostLongPressDragMove={movePostLongPressDrag}
                           onPostLongPressDragEnd={endPostLongPressDrag}
@@ -2221,15 +2273,11 @@ export default function CalendarPage() {
                                 aria-haspopup="dialog"
                                 loading={deletingDraftId === p.serverDraftId}
                                 onClick={() => {
-                                  if (p.serverDraftId == null || p.draftVersion == null) return;
-                                  setDraftDeleteTarget({
-                                    id: p.serverDraftId,
-                                    version: p.draftVersion,
-                                  });
+                                  requestDraftDeletion(p);
                                 }}
                               >
                                 {deletingDraftId !== p.serverDraftId && (
-                                  <X className="h-4 w-4" strokeWidth={2} aria-hidden />
+                                  <Trash2 className="h-4 w-4" strokeWidth={2} aria-hidden />
                                 )}
                               </Button>
                             )}
@@ -2430,7 +2478,7 @@ export default function CalendarPage() {
         <ConfirmDialog
           open={draftDeleteTarget != null}
           title="Удалить черновик?"
-          description="Черновик исчезнет из списка только после подтверждения сервера. Это действие не управляет уже запланированными публикациями. Восстановить удалённую версию автоматически нельзя."
+          description="Черновик будет удалён только после подтверждения сервера. Если по нему уже создана публикация, её расписание не изменится. Восстановить черновик автоматически нельзя."
           confirmLabel="Удалить черновик"
           cancelLabel="Оставить"
           busy={deletingDraftId != null}
