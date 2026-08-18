@@ -41,7 +41,16 @@ describe("calendar role-aware interface", () => {
     expect(source).toContain("CALENDAR_STATUS_LABEL[visibleStatus]");
     expect(source).toContain("CALENDAR_STATUS_LABEL[editorialStatus]");
     expect(source).toContain("onClick={() => openPost(p)}");
-    expect(source).toContain("Открыть публикацию:");
+    expect(source).toContain("Показать действия с черновиком:");
+  });
+
+  it("opens a draft preview with explicit edit and delete actions instead of navigating immediately", () => {
+    expect(source).toContain("setDraftActionTarget({");
+    expect(source).toContain("<CalendarDraftActionsDialog");
+    expect(source).toContain("router.push(`/app/composer?draft=${draftId}&from=calendar`)");
+    expect(source).toContain("focusAfterDeleteId: draftActionTarget.focusAfterDeleteId");
+    expect(source).toContain('id={`calendar-open-${post.id}`}');
+    expect(source).toContain("focusAfterCancelId: draftActionTarget.focusAfterCancelId");
   });
 
   it("allows weekly cards to shrink inside a narrow mobile viewport", () => {

@@ -42,6 +42,10 @@ import {
   ProjectExportButton,
 } from "@/components/app/project-export-button";
 import {
+  CalendarDraftActionsDialog,
+  type CalendarDraftActionTarget,
+} from "@/components/app/calendar-draft-actions-dialog";
+import {
   PublicationActionsDialog,
   type PublicationActionTarget,
   type PublicationRescheduleInput,
@@ -116,6 +120,7 @@ type DraftDeleteTarget = {
   id: number;
   version: number;
   focusAfterDeleteId?: string;
+  focusAfterCancelId?: string;
 };
 
 type CalendarPost = Post & {
@@ -520,8 +525,9 @@ function PostCard({
             : "border-brand bg-surface",
       )}
     >
-      {/* Клик по всей карточке → редактор. Кнопка снизу, контент сверху — без вложенных кнопок */}
+      {/* Клик по всей карточке открывает действия. Контент сверху — без вложенных кнопок. */}
       <button
+        id={`calendar-open-${post.id}`}
         type="button"
         onClick={(event) => {
           if (Date.now() < suppressOpenUntilRef.current) {
@@ -579,7 +585,9 @@ function PostCard({
         onContextMenu={(event) => {
           if (pointerDragRef.current?.isActive()) event.preventDefault();
         }}
-        aria-label={`Открыть публикацию: ${post.text.slice(0, 60)}`}
+        aria-label={post.serverDraftId != null
+          ? `Показать действия с черновиком: ${post.text.slice(0, 60)}`
+          : `Открыть публикацию: ${post.text.slice(0, 60)}`}
         aria-describedby={canMove ? CALENDAR_DRAG_HELP_ID : undefined}
         className={cn(
           "absolute inset-0 z-0 min-h-11 rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand",
@@ -1089,6 +1097,7 @@ export default function CalendarPage() {
   const [draftsError, setDraftsError] = useState(false);
   const [deletingDraftId, setDeletingDraftId] = useState<number | null>(null);
   const [draftDeleteTarget, setDraftDeleteTarget] = useState<DraftDeleteTarget | null>(null);
+  const [draftActionTarget, setDraftActionTarget] = useState<CalendarDraftActionTarget | null>(null);
   const [publicationTarget, setPublicationTarget] = useState<PublicationActionTarget | null>(null);
   const [publicationBusy, setPublicationBusy] = useState(false);
   const [draggedPostId, setDraggedPostId] = useState<string | null>(null);
@@ -1359,8 +1368,24 @@ export default function CalendarPage() {
   };
 
   const openPost = (post: CalendarPost) => {
-    if (post.serverDraftId != null) {
-      router.push(`/app/composer?draft=${post.serverDraftId}&from=calendar`);
+    if (post.serverDraftId != null && post.draftVersion != null) {
+      setDraftActionTarget({
+        id: post.serverDraftId,
+        version: post.draftVersion,
+        text: post.text,
+        scheduledAt: post.scheduledAt ?? undefined,
+        timezone: post.scheduleTimezone ?? calendarTimezone,
+        statusLabel: CALENDAR_STATUS_LABEL[calendarRecordStatus(post)] ?? calendarRecordStatus(post),
+        networkLabels: post.networks.map((network) => NETWORK_LABEL[network]),
+        channelTitle: post.channelTitle,
+        focusAfterDeleteId: post.scheduledAt
+          ? `calendar-add-${calendarDateKeyForInstant(
+              post.scheduledAt,
+              post.scheduleTimezone ?? calendarTimezone,
+            )}`
+          : undefined,
+        focusAfterCancelId: `calendar-open-${post.id}`,
+      });
       return;
     }
     if ((post.status === "draft" || post.status === "queued") && !post.id.startsWith("real-")) {
@@ -2474,6 +2499,31 @@ export default function CalendarPage() {
         />
       )}
 
+      <CalendarDraftActionsDialog
+        key={draftActionTarget
+          ? `${draftActionTarget.id}:${draftActionTarget.version}`
+          : "closed-draft-actions"}
+        target={draftActionTarget}
+        canEdit={canEdit}
+        onClose={() => setDraftActionTarget(null)}
+        onEdit={() => {
+          if (!draftActionTarget) return;
+          const draftId = draftActionTarget.id;
+          setDraftActionTarget(null);
+          router.push(`/app/composer?draft=${draftId}&from=calendar`);
+        }}
+        onDelete={() => {
+          if (!draftActionTarget) return;
+          setDraftDeleteTarget({
+            id: draftActionTarget.id,
+            version: draftActionTarget.version,
+            focusAfterDeleteId: draftActionTarget.focusAfterDeleteId,
+            focusAfterCancelId: draftActionTarget.focusAfterCancelId,
+          });
+          setDraftActionTarget(null);
+        }}
+      />
+
       {canEdit && (
         <ConfirmDialog
           open={draftDeleteTarget != null}
@@ -2483,7 +2533,12 @@ export default function CalendarPage() {
           cancelLabel="Оставить"
           busy={deletingDraftId != null}
           onCancel={() => {
-            if (deletingDraftId == null) setDraftDeleteTarget(null);
+            if (deletingDraftId != null) return;
+            const focusAfterCancelId = draftDeleteTarget?.focusAfterCancelId;
+            setDraftDeleteTarget(null);
+            if (focusAfterCancelId) {
+              requestAnimationFrame(() => document.getElementById(focusAfterCancelId)?.focus());
+            }
           }}
           onConfirm={() => void removeDraft()}
         />
