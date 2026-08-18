@@ -31,7 +31,6 @@ import {
   Plus,
   RotateCw,
   Sparkles,
-  Trash2,
   X,
 } from "lucide-react";
 
@@ -42,16 +41,11 @@ import {
   ProjectExportButton,
 } from "@/components/app/project-export-button";
 import {
-  CalendarDraftActionsDialog,
-  type CalendarDraftActionTarget,
-} from "@/components/app/calendar-draft-actions-dialog";
-import {
   PublicationActionsDialog,
   type PublicationActionTarget,
   type PublicationRescheduleInput,
 } from "@/components/app/publication-actions-dialog";
 import { Button } from "@/components/ui/button";
-import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
   Badge,
   Card,
@@ -62,7 +56,6 @@ import {
 } from "@/components/ui/primitives";
 import {
   claimUnownedLegacyDraft,
-  deleteDraftAfterAck,
   DraftRequestError,
   isRecoverableLegacyDraft,
   isUnownedLegacyDraftCandidate,
@@ -115,13 +108,6 @@ import {
 /* ------------------------------------------------------------- ОСНОВЫ */
 
 type View = "week" | "month";
-
-type DraftDeleteTarget = {
-  id: number;
-  version: number;
-  focusAfterDeleteId?: string;
-  focusAfterCancelId?: string;
-};
 
 type CalendarPost = Post & {
   authorUserId?: number;
@@ -389,10 +375,8 @@ function PostCard({
   canMove = false,
   moving = false,
   dragging = false,
-  deleting = false,
   onDragStart,
   onDragEnd,
-  onDelete,
   onLongPressDragStart,
   onLongPressDragMove,
   onLongPressDragEnd,
@@ -406,10 +390,8 @@ function PostCard({
   canMove?: boolean;
   moving?: boolean;
   dragging?: boolean;
-  deleting?: boolean;
   onDragStart?: (event: DragEvent<HTMLElement>) => void;
   onDragEnd?: () => void;
-  onDelete?: () => void;
   onLongPressDragStart?: (post: DatedPost) => boolean;
   onLongPressDragMove?: (post: DatedPost, point: CalendarDragPoint) => void;
   onLongPressDragEnd?: (post: DatedPost, point: CalendarDragPoint) => void;
@@ -506,7 +488,7 @@ function PostCard({
       tabIndex={-1}
       data-calendar-draggable={canMove && !moving ? "true" : undefined}
       data-calendar-dragging={dragging ? "true" : undefined}
-      aria-busy={moving || deleting || undefined}
+      aria-busy={moving || undefined}
       className={cn(
         "relative min-w-0 rounded-sm border-l-2 shadow-soft ring-1 ring-line",
         "transition-[transform,box-shadow,opacity] duration-200 ease-[var(--ease-soft)]",
@@ -525,7 +507,7 @@ function PostCard({
             : "border-brand bg-surface",
       )}
     >
-      {/* Клик по всей карточке открывает действия. Контент сверху — без вложенных кнопок. */}
+      {/* Клик по всей карточке открывает публикацию или черновик в редакторе. */}
       <button
         id={`calendar-open-${post.id}`}
         type="button"
@@ -586,7 +568,7 @@ function PostCard({
           if (pointerDragRef.current?.isActive()) event.preventDefault();
         }}
         aria-label={post.serverDraftId != null
-          ? `Показать действия с черновиком: ${post.text.slice(0, 60)}`
+          ? `Открыть черновик в редакторе: ${post.text.slice(0, 60)}`
           : `Открыть публикацию: ${post.text.slice(0, 60)}`}
         aria-describedby={canMove ? CALENDAR_DRAG_HELP_ID : undefined}
         className={cn(
@@ -628,23 +610,6 @@ function PostCard({
           </span>
           <span className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-1">
             <NetworkChips networks={post.networks} />
-            {onDelete && (
-              <Button
-                variant="danger"
-                size="icon"
-                className="pointer-events-auto relative z-20 shrink-0"
-                aria-label="Удалить черновик"
-                aria-haspopup="dialog"
-                title="Удалить черновик"
-                loading={deleting}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onDelete();
-                }}
-              >
-                {!deleting && <Trash2 className="h-4 w-4" strokeWidth={2} aria-hidden />}
-              </Button>
-            )}
             {canMove && (
               <span
                 className="flex h-6 w-6 items-center justify-center rounded-xs text-text-3"
@@ -791,14 +756,12 @@ function DayColumn({
   onReschedule,
   canMovePost,
   movingPostId,
-  deletingDraftId,
   draggedPostId,
   dragging,
   dropActive,
   dropAllowed,
   onPostDragStart,
   onPostDragEnd,
-  onDeleteDraft,
   onPostLongPressDragStart,
   onPostLongPressDragMove,
   onPostLongPressDragEnd,
@@ -820,14 +783,12 @@ function DayColumn({
   onReschedule?: (post: DatedPost) => void;
   canMovePost: (post: DatedPost) => boolean;
   movingPostId: string | null;
-  deletingDraftId: number | null;
   draggedPostId: string | null;
   dragging: boolean;
   dropActive: boolean;
   dropAllowed: boolean;
   onPostDragStart: (event: DragEvent<HTMLElement>, post: DatedPost) => void;
   onPostDragEnd: () => void;
-  onDeleteDraft?: (post: DatedPost) => void;
   onPostLongPressDragStart: (post: DatedPost) => boolean;
   onPostLongPressDragMove: (post: DatedPost, point: CalendarDragPoint) => void;
   onPostLongPressDragEnd: (post: DatedPost, point: CalendarDragPoint) => void;
@@ -899,14 +860,8 @@ function DayColumn({
             canMove={canMovePost(p)}
             moving={movingPostId === p.id}
             dragging={draggedPostId === p.id}
-            deleting={p.serverDraftId != null && deletingDraftId === p.serverDraftId}
             onDragStart={(event) => onPostDragStart(event, p)}
             onDragEnd={onPostDragEnd}
-            onDelete={
-              onDeleteDraft && p.serverDraftId != null && p.draftVersion != null
-                ? () => onDeleteDraft(p)
-                : undefined
-            }
             onLongPressDragStart={onPostLongPressDragStart}
             onLongPressDragMove={onPostLongPressDragMove}
             onLongPressDragEnd={onPostLongPressDragEnd}
@@ -1095,9 +1050,6 @@ export default function CalendarPage() {
   const [draftOwner, setDraftOwner] = useState<User | null>(null);
   const [draftsReady, setDraftsReady] = useState(false);
   const [draftsError, setDraftsError] = useState(false);
-  const [deletingDraftId, setDeletingDraftId] = useState<number | null>(null);
-  const [draftDeleteTarget, setDraftDeleteTarget] = useState<DraftDeleteTarget | null>(null);
-  const [draftActionTarget, setDraftActionTarget] = useState<CalendarDraftActionTarget | null>(null);
   const [publicationTarget, setPublicationTarget] = useState<PublicationActionTarget | null>(null);
   const [publicationBusy, setPublicationBusy] = useState(false);
   const [draggedPostId, setDraggedPostId] = useState<string | null>(null);
@@ -1368,24 +1320,8 @@ export default function CalendarPage() {
   };
 
   const openPost = (post: CalendarPost) => {
-    if (post.serverDraftId != null && post.draftVersion != null) {
-      setDraftActionTarget({
-        id: post.serverDraftId,
-        version: post.draftVersion,
-        text: post.text,
-        scheduledAt: post.scheduledAt ?? undefined,
-        timezone: post.scheduleTimezone ?? calendarTimezone,
-        statusLabel: CALENDAR_STATUS_LABEL[calendarRecordStatus(post)] ?? calendarRecordStatus(post),
-        networkLabels: post.networks.map((network) => NETWORK_LABEL[network]),
-        channelTitle: post.channelTitle,
-        focusAfterDeleteId: post.scheduledAt
-          ? `calendar-add-${calendarDateKeyForInstant(
-              post.scheduledAt,
-              post.scheduleTimezone ?? calendarTimezone,
-            )}`
-          : undefined,
-        focusAfterCancelId: `calendar-open-${post.id}`,
-      });
+    if (post.serverDraftId != null) {
+      router.push(`/app/composer?draft=${post.serverDraftId}&from=calendar`);
       return;
     }
     if ((post.status === "draft" || post.status === "queued") && !post.id.startsWith("real-")) {
@@ -1789,47 +1725,6 @@ export default function CalendarPage() {
     }
   }, [publicationBusy, publicationFailure, publicationTarget, router, s]);
 
-  const requestDraftDeletion = useCallback((post: CalendarPost, focusAfterDeleteId?: string) => {
-    if (post.serverDraftId == null || post.draftVersion == null) return;
-    setDraftDeleteTarget({
-      id: post.serverDraftId,
-      version: post.draftVersion,
-      focusAfterDeleteId,
-    });
-  }, []);
-
-  const removeDraft = async () => {
-    const target = draftDeleteTarget;
-    if (!target || deletingDraftId != null) return;
-    setDeletingDraftId(target.id);
-    try {
-      await deleteDraftAfterAck(target.id, target.version, (acknowledgedId) => {
-        setServerDrafts((drafts) => drafts.filter((draft) => draft.id !== acknowledgedId));
-      });
-      s.toast({ kind: "success", title: "Черновик удалён" });
-      setDraftDeleteTarget(null);
-      requestAnimationFrame(() => {
-        const focusTarget = target.focusAfterDeleteId
-          ? document.getElementById(target.focusAfterDeleteId)
-          : draftQueueHeadingRef.current;
-        focusTarget?.focus();
-      });
-    } catch (error) {
-      s.toast({
-        kind: "danger",
-        title: "Черновик не удалён",
-        body:
-          error instanceof DraftRequestError && error.kind === "conflict"
-            ? "Его уже изменили в другой вкладке. Обновили список — проверь актуальную версию."
-            : "Сервер не подтвердил удаление. Попробуй ещё раз.",
-      });
-      if (s.user) await refreshDrafts(s.user);
-      setDraftDeleteTarget(null);
-    } finally {
-      setDeletingDraftId(null);
-    }
-  };
-
   const removeLocalRecovery = (post: Post) => {
     s.removePost(post.id);
     s.toast({ kind: "info", title: "Локальная копия удалена из этого браузера" });
@@ -2122,16 +2017,12 @@ export default function CalendarPage() {
                           onReschedule={canPublish ? retryCalendarPost : undefined}
                           canMovePost={canStartCalendarMove}
                           movingPostId={movingPostId}
-                          deletingDraftId={deletingDraftId}
                           draggedPostId={draggedPostId}
                           dragging={draggedPost != null}
                           dropActive={dragOverDay === key}
                           dropAllowed={dropAllowed}
                           onPostDragStart={startPostDrag}
                           onPostDragEnd={endPostDrag}
-                          onDeleteDraft={canEdit
-                            ? (post) => requestDraftDeletion(post, `calendar-add-${key}`)
-                            : undefined}
                           onPostLongPressDragStart={startPostLongPressDrag}
                           onPostLongPressDragMove={movePostLongPressDrag}
                           onPostLongPressDragEnd={endPostLongPressDrag}
@@ -2289,23 +2180,6 @@ export default function CalendarPage() {
                               )}
                               {action.label}
                             </Button>
-                            {canEdit && (
-                              <Button
-                                variant="danger"
-                                size="sm"
-                                className="w-11 px-0"
-                                aria-label="Удалить черновик"
-                                aria-haspopup="dialog"
-                                loading={deletingDraftId === p.serverDraftId}
-                                onClick={() => {
-                                  requestDraftDeletion(p);
-                                }}
-                              >
-                                {deletingDraftId !== p.serverDraftId && (
-                                  <Trash2 className="h-4 w-4" strokeWidth={2} aria-hidden />
-                                )}
-                              </Button>
-                            )}
                           </div>
                         </li>
                       );
@@ -2499,50 +2373,6 @@ export default function CalendarPage() {
         />
       )}
 
-      <CalendarDraftActionsDialog
-        key={draftActionTarget
-          ? `${draftActionTarget.id}:${draftActionTarget.version}`
-          : "closed-draft-actions"}
-        target={draftActionTarget}
-        canEdit={canEdit}
-        onClose={() => setDraftActionTarget(null)}
-        onEdit={() => {
-          if (!draftActionTarget) return;
-          const draftId = draftActionTarget.id;
-          setDraftActionTarget(null);
-          router.push(`/app/composer?draft=${draftId}&from=calendar`);
-        }}
-        onDelete={() => {
-          if (!draftActionTarget) return;
-          setDraftDeleteTarget({
-            id: draftActionTarget.id,
-            version: draftActionTarget.version,
-            focusAfterDeleteId: draftActionTarget.focusAfterDeleteId,
-            focusAfterCancelId: draftActionTarget.focusAfterCancelId,
-          });
-          setDraftActionTarget(null);
-        }}
-      />
-
-      {canEdit && (
-        <ConfirmDialog
-          open={draftDeleteTarget != null}
-          title="Удалить черновик?"
-          description="Черновик будет удалён только после подтверждения сервера. Если по нему уже создана публикация, её расписание не изменится. Восстановить черновик автоматически нельзя."
-          confirmLabel="Удалить черновик"
-          cancelLabel="Оставить"
-          busy={deletingDraftId != null}
-          onCancel={() => {
-            if (deletingDraftId != null) return;
-            const focusAfterCancelId = draftDeleteTarget?.focusAfterCancelId;
-            setDraftDeleteTarget(null);
-            if (focusAfterCancelId) {
-              requestAnimationFrame(() => document.getElementById(focusAfterCancelId)?.focus());
-            }
-          }}
-          onConfirm={() => void removeDraft()}
-        />
-      )}
     </AppShell>
   );
 }

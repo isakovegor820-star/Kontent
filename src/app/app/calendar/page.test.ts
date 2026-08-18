@@ -24,7 +24,7 @@ describe("calendar role-aware interface", () => {
     expect(source).toContain('return { kind: "open", label: "Открыть" }');
   });
 
-  it("keeps edit, destructive and active-publication controls behind role gates", () => {
+  it("keeps editing and active-publication controls behind role gates", () => {
     expect(source).toContain("{canEdit && (");
     expect(source).toContain("onAdd={canEdit ? () => addPostOn(day) : undefined}");
     expect(source).toContain("onRetry={canPublish");
@@ -32,7 +32,6 @@ describe("calendar role-aware interface", () => {
     expect(source).toContain("{canInspectPublication && (");
     expect(source).toContain("<PublicationActionsDialog");
     expect(source).toContain("canManageSchedule={canPublish}");
-    expect(source).toContain('className="w-11 px-0"');
     expect(source).not.toContain('className="w-9 px-0"');
   });
 
@@ -41,16 +40,15 @@ describe("calendar role-aware interface", () => {
     expect(source).toContain("CALENDAR_STATUS_LABEL[visibleStatus]");
     expect(source).toContain("CALENDAR_STATUS_LABEL[editorialStatus]");
     expect(source).toContain("onClick={() => openPost(p)}");
-    expect(source).toContain("Показать действия с черновиком:");
+    expect(source).toContain("Открыть черновик в редакторе:");
   });
 
-  it("opens a draft preview with explicit edit and delete actions instead of navigating immediately", () => {
-    expect(source).toContain("setDraftActionTarget({");
-    expect(source).toContain("<CalendarDraftActionsDialog");
-    expect(source).toContain("router.push(`/app/composer?draft=${draftId}&from=calendar`)");
-    expect(source).toContain("focusAfterDeleteId: draftActionTarget.focusAfterDeleteId");
+  it("opens server drafts directly in the editor and keeps deletion out of the calendar", () => {
+    expect(source).toContain("router.push(`/app/composer?draft=${post.serverDraftId}&from=calendar`)");
     expect(source).toContain('id={`calendar-open-${post.id}`}');
-    expect(source).toContain("focusAfterCancelId: draftActionTarget.focusAfterCancelId");
+    expect(source).not.toContain("CalendarDraftActionsDialog");
+    expect(source).not.toContain('aria-label="Удалить черновик"');
+    expect(source).not.toContain("deleteDraftAfterAck");
   });
 
   it("allows weekly cards to shrink inside a narrow mobile viewport", () => {
@@ -80,17 +78,6 @@ describe("calendar role-aware interface", () => {
     expect(source).toContain('document.elementFromPoint(point.clientX, point.clientY)');
     expect(source).toContain("calendarDragAutoScrollDelta");
     expect(source).toContain("Удерживайте карточку до подсветки");
-  });
-
-  it("deletes dated server drafts from the card only after confirmation and server ACK", () => {
-    expect(source).toContain('aria-label="Удалить черновик"');
-    expect(source).toContain('<Trash2 className="h-4 w-4"');
-    expect(source).toContain("onDeleteDraft && p.serverDraftId != null && p.draftVersion != null");
-    expect(source).toContain("requestDraftDeletion(post, `calendar-add-${key}`)");
-    expect(source).toContain("await deleteDraftAfterAck(target.id, target.version");
-    expect(source).toContain('title="Удалить черновик?"');
-    expect(source).toContain('confirmLabel="Удалить черновик"');
-    expect(source).toContain('id={`calendar-add-${dayKey(day)}`}');
   });
 
   it("only makes scheduled publications draggable", () => {

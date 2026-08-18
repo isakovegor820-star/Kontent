@@ -41,4 +41,15 @@ describe("composer UX protection contract", () => {
     expect(source).toContain("c.toggleChannelId(ch.id)");
     expect(source).toContain("c.toggleVkChannelId(ch.id)");
   });
+
+  it("deletes an existing calendar draft from a visible editor action", () => {
+    expect(source).toContain("Удалить из календаря");
+    expect(source).toContain("<ConfirmDialog");
+    expect(source).toContain('title="Удалить черновик из календаря?"');
+    expect(source).toContain('confirmLabel="Удалить из календаря"');
+    expect(source).toContain("draftDeleteRequestRef");
+    expect(source).toContain("await deleteServerDraft(draftId, draftVersion)");
+    expect(source).toContain('router.push("/app/calendar")');
+    expect(source).not.toContain("Да, удалить");
+  });
 });

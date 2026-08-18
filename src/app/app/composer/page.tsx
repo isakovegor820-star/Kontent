@@ -63,6 +63,7 @@ import {
   type ComposerTrackingValue,
 } from "@/components/app/tracking-builder";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { RichTextEditor } from "@/components/ui/rich-text-editor";
 import {
   Badge,
@@ -461,6 +462,7 @@ export default function ComposerPage() {
   const aiRequestRef = useRef<AiClientRequestIdentity | null>(null);
   const draftClientKeyRef = useRef<string | null>(null);
   const draftRequestRef = useRef<Promise<ServerDraft | null> | null>(null);
+  const draftDeleteRequestRef = useRef<Promise<void> | null>(null);
   const autosaveCancelRef = useRef<(() => void) | null>(null);
   const acknowledgedDraftRef = useRef<ServerDraft | null>(null);
   const scheduleRequestRef = useRef(false);
@@ -1951,41 +1953,48 @@ export default function ComposerPage() {
     setPublicationSuccess(null);
   }, []);
 
-  const removeCurrent = useCallback(async () => {
-    if (!canEditContent || !editingId) return;
-    if (draftId != null && draftVersion != null) {
-      setDraftSaveState("saving");
-      try {
-        await deleteServerDraft(draftId, draftVersion);
-        acknowledgedDraftRef.current = null;
-        if (composerUserId != null && draftClientKeyRef.current) {
-          removePendingDraft(composerUserId, draftClientKeyRef.current);
+  const removeCurrent = useCallback(() => runSingleDraftSave(
+    draftDeleteRequestRef,
+    async () => {
+      if (!canEditContent || !editingId) return;
+      autosaveCancelRef.current?.();
+      autosaveCancelRef.current = null;
+      if (draftId != null && draftVersion != null) {
+        setDraftSaveState("saving");
+        try {
+          await deleteServerDraft(draftId, draftVersion);
+          acknowledgedDraftRef.current = null;
+          if (composerUserId != null && draftClientKeyRef.current) {
+            removePendingDraft(composerUserId, draftClientKeyRef.current);
+          }
+        } catch (error) {
+          setDraftSaveState(
+            error instanceof DraftRequestError && error.kind === "offline"
+              ? "offline"
+              : error instanceof DraftRequestError && error.kind === "conflict"
+                ? "conflict"
+                : "failed",
+          );
+          setConfirmDelete(false);
+          s.toast({
+            kind: "danger",
+            title: "Черновик не удалён из календаря",
+            body:
+              error instanceof DraftRequestError && error.kind === "conflict"
+                ? "Его изменили в другой вкладке. Более свежую версию не удалили."
+                : "Сервер не подтвердил удаление. Обнови страницу и попробуй ещё раз.",
+          });
+          return;
         }
-      } catch (error) {
-        setDraftSaveState(
-          error instanceof DraftRequestError && error.kind === "offline"
-            ? "offline"
-            : error instanceof DraftRequestError && error.kind === "conflict"
-              ? "conflict"
-              : "failed",
-        );
-        s.toast({
-          kind: "danger",
-          title: "Черновик не удалён",
-          body:
-            error instanceof DraftRequestError && error.kind === "conflict"
-              ? "Его изменили в другой вкладке. Более свежую версию не удалили."
-              : "Сервер не подтвердил удаление. Обнови страницу и попробуй ещё раз.",
-        });
-        return;
+      } else if (legacyId) {
+        // Только явное подтверждение пользователя удаляет локальную recovery-копию.
+        s.removePost(legacyId);
       }
-    } else if (legacyId) {
-      // Только явное подтверждение пользователя удаляет локальную recovery-копию.
-      s.removePost(legacyId);
-    }
-    s.toast({ kind: "info", title: "Черновик удалён" });
-    router.push("/app/calendar");
-  }, [canEditContent, composerUserId, draftId, draftVersion, editingId, legacyId, router, s]);
+      setConfirmDelete(false);
+      s.toast({ kind: "success", title: "Черновик удалён из календаря" });
+      router.push("/app/calendar");
+    },
+  ), [canEditContent, composerUserId, draftId, draftVersion, editingId, legacyId, router, s]);
 
   const value = useMemo<ComposerValue>(
     () => ({
@@ -2785,7 +2794,10 @@ function ComposerInner() {
 
   return (
     <>
-      <nav aria-label="Возврат к предыдущему шагу">
+      <nav
+        aria-label="Действия с черновиком"
+        className="mx-auto flex w-full max-w-5xl flex-wrap items-center justify-between gap-2"
+      >
         <Link
           href={returnTarget.href}
           className={cn(
@@ -2797,6 +2809,18 @@ function ComposerInner() {
           <ArrowLeft className="h-4 w-4" aria-hidden />
           {returnTarget.label}
         </Link>
+        {canEditContent && c.editingId && (
+          <Button
+            variant="danger"
+            size="sm"
+            aria-haspopup="dialog"
+            disabled={c.draftSaveState === "saving" || c.saving || c.typing}
+            onClick={() => c.setConfirmDelete(true)}
+          >
+            <Trash2 className="h-4 w-4" aria-hidden />
+            Удалить из календаря
+          </Button>
+        )}
       </nav>
 
       <Card
@@ -3480,16 +3504,6 @@ function ComposerInner() {
             </Button>
               </>
             )}
-            {canEditContent && c.editingId && (
-              <Button
-                variant="danger"
-                disabled={c.draftSaveState === "saving" || c.saving || c.typing}
-                onClick={() => c.setConfirmDelete(true)}
-              >
-                <Trash2 className="h-[18px] w-[18px]" aria-hidden />
-                Удалить
-              </Button>
-            )}
           </div>
           <div className="text-right text-[13px]" aria-live="polite">
             {!canEditContent ? (
@@ -3547,35 +3561,27 @@ function ComposerInner() {
           </div>
         )}
 
-        <AnimatePresence initial={false}>
-          {canEditContent && c.confirmDelete && (
-            <motion.div key="confirm" {...fade}>
-              <div className="rounded-sm border border-danger/30 bg-danger-soft p-4">
-                <p className="text-[15px] font-bold text-danger-text">
-                  Удалить пост? Это нельзя отменить.
-                </p>
-                <p className="mt-1 text-[14px] leading-relaxed text-danger-text/80">
-                  Он исчезнет и из календаря, и из очереди. Восстановить не получится.
-                </p>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <Button variant="danger" onClick={c.removeCurrent}>
-                    <Trash2 className="h-[18px] w-[18px]" aria-hidden />
-                    Да, удалить
-                  </Button>
-                  <Button variant="ghost" onClick={() => c.setConfirmDelete(false)}>
-                    Оставить
-                  </Button>
-                </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
         </div>
         </EditorSection>
       </Card>
 
       <ComposerActionBar />
       <div aria-hidden className="h-40 sm:h-28" />
+
+      {canEditContent && (
+        <ConfirmDialog
+          open={c.confirmDelete}
+          title="Удалить черновик из календаря?"
+          description="Черновик исчезнет из календаря и будет удалён без возможности восстановления."
+          confirmLabel="Удалить из календаря"
+          cancelLabel="Оставить"
+          busy={c.draftSaveState === "saving" || c.saving}
+          onCancel={() => {
+            if (c.draftSaveState !== "saving" && !c.saving) c.setConfirmDelete(false);
+          }}
+          onConfirm={() => void c.removeCurrent()}
+        />
+      )}
 
     </>
   );
