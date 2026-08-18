@@ -226,6 +226,7 @@ import {
 } from "./worker/telegram-polling-lease.mjs";
 import {
   nextTelegramUpdateFailure,
+  requireInteractiveTelegramDelivery,
   telegramRetryAfterMs,
 } from "./worker/telegram-update-retry.mjs";
 import {
@@ -1269,16 +1270,9 @@ async function tg(method, body, timeoutMs = 20_000) {
         ],
       ).catch(() => {});
     }
-    const retryAfterMs = telegramRetryAfterMs(result);
-    if (retryAfterMs !== null) {
-      const error = new Error(`Telegram ${method} temporarily rejected the request`);
-      error.code = "telegram_retryable";
-      error.retryAfterMs = retryAfterMs;
-      throw error;
-    }
     return result;
   } catch (error) {
-    if (recordsDelivery && error?.code !== "telegram_retryable") {
+    if (recordsDelivery) {
       await pool.query(
         `insert into bot_delivery_events
           (user_id, chat_id, method, source, ok, error_code, error_description)
@@ -1291,23 +1285,25 @@ async function tg(method, body, timeoutMs = 20_000) {
 }
 
 async function tgSend(chatId, text, buttons) {
-  return tg("sendMessage", {
+  const result = await tg("sendMessage", {
     chat_id: chatId,
     text: toTelegramHtml(text),
     parse_mode: "HTML",
     disable_web_page_preview: true,
     reply_markup: keyboard(buttons),
   }); // { ok, result: { message_id }, description }
+  return requireInteractiveTelegramDelivery(result, "sendMessage");
 }
 
 async function tgSendReplyMenu(chatId, text) {
-  return tg("sendMessage", {
+  const result = await tg("sendMessage", {
     chat_id: chatId,
     text: toTelegramHtml(text),
     parse_mode: "HTML",
     disable_web_page_preview: true,
     reply_markup: botReplyKeyboard(),
   });
+  return requireInteractiveTelegramDelivery(result, "sendMessage");
 }
 
 async function tgReplaceOrSend(chatId, messageId, text, buttons) {
@@ -9204,7 +9200,7 @@ async function pollUpdates() {
           });
           await waitForTelegramPollingConflict(cooldownMs);
         } else {
-          await sleep(5_000);
+          await sleep(telegramRetryAfterMs(r) ?? 5_000);
         }
         continue;
       }
@@ -9246,12 +9242,7 @@ async function pollUpdates() {
       }
     } catch (err) {
       // Таймаут длинного опроса — это норма, а не ошибка: молча идём на следующий круг.
-      if (err?.code === "telegram_retryable") {
-        console.warn("[bot] Telegram временно отклонил polling-запрос", {
-          retryAfterMs: Number(err.retryAfterMs) || 1_500,
-        });
-        await sleep(Math.min(30_000, Math.max(250, Number(err.retryAfterMs) || 1_500)));
-      } else if (!/timeout|aborted/i.test(err?.message || "")) {
+      if (!/timeout|aborted/i.test(err?.message || "")) {
         console.error("[bot] поллинг:", err?.message);
         await sleep(5_000);
       }

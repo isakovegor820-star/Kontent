@@ -24,3 +24,12 @@ export function telegramRetryAfterMs(response) {
     ? Math.min(30_000, Math.ceil(retryAfterSeconds * 1_000))
     : 1_500;
 }
+
+export function requireInteractiveTelegramDelivery(response, method = "request") {
+  const retryAfterMs = telegramRetryAfterMs(response);
+  if (retryAfterMs === null) return response;
+  const error = new Error(`Telegram ${method} temporarily rejected the request`);
+  error.code = "telegram_retryable";
+  error.retryAfterMs = retryAfterMs;
+  throw error;
+}

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   nextTelegramUpdateFailure,
+  requireInteractiveTelegramDelivery,
   telegramRetryAfterMs,
 } from "./telegram-update-retry.mjs";
 
@@ -27,5 +28,18 @@ describe("Telegram update retries", () => {
   it("caps provider-requested delays so polling remains observable", () => {
     expect(telegramRetryAfterMs({ ok: false, error_code: 429, parameters: { retry_after: 300 } }))
       .toBe(30_000);
+  });
+
+  it("throws retry signals only when an interactive caller opts in", () => {
+    const response = { ok: false, error_code: 429, parameters: { retry_after: 2 } };
+    expect(() => requireInteractiveTelegramDelivery(response, "sendMessage"))
+      .toThrow("Telegram sendMessage temporarily rejected the request");
+    try {
+      requireInteractiveTelegramDelivery(response, "sendMessage");
+    } catch (error) {
+      expect(error).toMatchObject({ code: "telegram_retryable", retryAfterMs: 2_000 });
+    }
+    expect(requireInteractiveTelegramDelivery({ ok: false, error_code: 400 }, "sendMessage"))
+      .toEqual({ ok: false, error_code: 400 });
   });
 });
