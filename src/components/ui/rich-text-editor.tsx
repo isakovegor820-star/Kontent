@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { serializeEditableText } from "@/lib/editable-text.mjs";
 import {
   normalizeRichTextEntities,
   normalizeRichTextUrl,
@@ -83,25 +84,9 @@ function elementFormats(element: HTMLElement): Array<Exclude<RichTextEntityType,
 }
 
 function serializeEditor(root: HTMLElement): RichTextValue {
-  let text = "";
   const formatting: RichTextEntity[] = [];
-  const appendBreak = () => {
-    if (text && !text.endsWith("\n")) text += "\n";
-  };
-  const walk = (node: Node, isLast: boolean) => {
-    if (node.nodeType === Node.TEXT_NODE) {
-      text += (node.nodeValue ?? "").replace(/\u00a0/gu, " ");
-      return;
-    }
+  const cleanText = serializeEditableText(root, (node, start, end) => {
     if (!(node instanceof HTMLElement)) return;
-    if (node.tagName === "BR") {
-      text += "\n";
-      return;
-    }
-    const start = text.length;
-    const children = [...node.childNodes];
-    children.forEach((child, index) => walk(child, index === children.length - 1));
-    const end = text.length;
     if (end > start) {
       for (const type of elementFormats(node)) {
         formatting.push({ type, offset: start, length: end - start });
@@ -119,11 +104,7 @@ function serializeEditor(root: HTMLElement): RichTextValue {
         }
       }
     }
-    if (isBlock(node) && !isLast) appendBreak();
-  };
-  const children = [...root.childNodes];
-  children.forEach((child, index) => walk(child, index === children.length - 1));
-  const cleanText = text.replace(/\n+$/u, "");
+  });
   return {
     text: cleanText,
     formatting: normalizeRichTextEntities(

@@ -87,7 +87,30 @@ async function readEditableText(locator) {
     ) {
       return element.value;
     }
-    return element.innerText || element.textContent || "";
+
+    let text = "";
+    const appendBreak = () => {
+      if (text && !text.endsWith("\n")) text += "\n";
+    };
+    const walk = (node, isLast) => {
+      if (node.nodeType === Node.TEXT_NODE) {
+        text += String(node.nodeValue || "").replace(/\u00a0/gu, " ");
+        return;
+      }
+      if (!(node instanceof HTMLElement)) return;
+      if (node.tagName === "BR") {
+        text += "\n";
+        return;
+      }
+      const block = ["DIV", "P", "LI"].includes(node.tagName);
+      if (block) appendBreak();
+      const children = [...node.childNodes];
+      children.forEach((child, index) => walk(child, index === children.length - 1));
+      if (block && !isLast) appendBreak();
+    };
+    const children = [...element.childNodes];
+    children.forEach((child, index) => walk(child, index === children.length - 1));
+    return text.replace(/\n+$/u, "");
   });
 }
 
