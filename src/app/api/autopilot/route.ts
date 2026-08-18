@@ -10,6 +10,10 @@ import { getSessionUser } from "@/lib/session";
 import { ensureSettings, loadBrief, resolveChannel } from "@/lib/autopilot";
 import { briefComplete } from "@/lib/brief";
 import { isAutopilotBuildStale } from "@/lib/autopilot-build";
+import {
+  autopilotBuildActivityAt,
+  autopilotBuildProgress,
+} from "@/lib/autopilot-build-progress.mjs";
 import { plannedPostCountForWeeks } from "@/lib/autopilot-config.mjs";
 import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/project-permissions";
 
@@ -46,7 +50,9 @@ export async function GET(req: NextRequest) {
       (
         await pool.query(
           `select id, week_start, items, rules, status, revision, created_at,
-                  generation_engine, planning_months, planning_weeks
+                  build_activity_at,
+                  generation_engine, generation_post_frequency, expected_post_count,
+                  planning_months, planning_weeks
              from autopilot_plan where project_id = $1 and channel_id = $2
              order by created_at desc limit 1`,
           [membership.projectId, channelId],
@@ -64,6 +70,21 @@ export async function GET(req: NextRequest) {
     if (plan?.status === "error" && plan.rules === "ai_unavailable") {
       plan = { ...plan, errorReason: "provider" };
     }
+    if (plan?.status === "error" && plan.rules === "cancelled") {
+      plan = { ...plan, errorReason: "cancelled" };
+    }
+    const expectedPostCount = plan
+      ? Number(plan.expected_post_count) || plannedPostCountForWeeks(
+          settings.post_frequency,
+          plan.planning_weeks ?? plan.planning_months * 4,
+        )
+      : 0;
+    if (plan?.status === "building") {
+      plan = {
+        ...plan,
+        buildProgress: autopilotBuildProgress(plan.items, expectedPostCount),
+      };
+    }
 
     // A queue job can survive while its worker is stopped. Without a deadline that left the
     // page polling `building` forever (the real incident lasted two days). Mark only the exact
@@ -71,11 +92,8 @@ export async function GET(req: NextRequest) {
     if (
       plan?.status === "building" &&
       isAutopilotBuildStale(
-        plan.created_at,
-        plannedPostCountForWeeks(
-          settings.post_frequency,
-          plan.planning_weeks ?? plan.planning_months * 4,
-        ),
+        plan.build_activity_at || autopilotBuildActivityAt(plan.created_at, plan.items),
+        expectedPostCount,
       )
     ) {
       const expired = await pool.query(
@@ -102,6 +120,6 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ ...empty, error: "access_denied" }, { status: 403 });
     }
     console.error("[/api/autopilot]", err);
-    return NextResponse.json(empty);
+    return NextResponse.json({ ...empty, error: "server" }, { status: 500 });
   }
 }

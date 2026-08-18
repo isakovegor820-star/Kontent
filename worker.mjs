@@ -27,7 +27,9 @@ import {
   citedShare,
   mapConcurrent,
   autopilotBuildComplete,
+  autopilotDraftsDeliverable,
   autopilotJobTerminalFailure,
+  boundedAutopilotRewriteAttempts,
   formatPost,
   parseTelegramChannelDescription,
   summarizeTelegramPostingActivity,
@@ -144,10 +146,16 @@ import {
 import { authorProfileContext } from "./src/lib/author-profile.mjs";
 import {
   assessAutopilotDraft,
+  autopilotQualityFailureKind,
   padDraftToMinimum,
   removeUnverifiedSemanticClaims,
 } from "./src/lib/autopilot-quality.mjs";
 import { completeAiText } from "./src/lib/ai-completion-service.mjs";
+import {
+  autopilotCheckpointItem,
+  autopilotTopicCheckpoints,
+  reusableAutopilotCheckpoint,
+} from "./src/lib/autopilot-build-progress.mjs";
 import { createConfiguredSemanticAdapter } from "./src/lib/ai-semantic-adapter.mjs";
 import {
   configuredAiConcurrency,
@@ -255,6 +263,11 @@ import {
 } from "./src/lib/bot-connection.mjs";
 import { parseTelegramBotCommand } from "./worker/bot-command.mjs";
 import {
+  botCallbackInteraction,
+  botMessageInteraction,
+  recordBotInteraction,
+} from "./worker/bot-interaction.mjs";
+import {
   decideBotApproval,
   listBotApprovalItems,
   submitBotDraftReview,
@@ -326,11 +339,18 @@ const OWNER_CHAT = process.env.TG_CHAT_ID;
 const AUTOPILOT_ONLY = process.env.AURORA_WORKER_MODE === "autopilot";
 const MEDIA_ONLY = process.env.AURORA_WORKER_MODE === "media";
 const PUBLICATION_ONLY = process.env.AURORA_WORKER_MODE === "publication";
-// Автопилот обязан отдать готовый план, а не перекладывать редактуру своих обрывков на
-// пользователя. Шесть полных переписываний плюс повтор BullMQ дают модели достаточно
-// шансов исправиться, но всё ещё ограничивают число запросов при сбое провайдера.
-const AUTOPILOT_QUALITY_REWRITE_ATTEMPTS = 6;
+// Редакторские нарушения обычно исправляются за одну-две попытки. Дальнейшие переписывания
+// при недоступной semantic-проверке или пустой базе знаний только умножают одинаковые вызовы.
+const AUTOPILOT_QUALITY_REWRITE_ATTEMPTS = 2;
+const AUTOPILOT_SEMANTIC_TIMEOUT_MS = Math.min(
+  30_000,
+  Math.max(5_000, Number(process.env.AUTOPILOT_SEMANTIC_TIMEOUT_MS) || 20_000),
+);
 const semanticPublicationAdapter = createConfiguredSemanticAdapter({
+  env: {
+    ...process.env,
+    AI_SEMANTIC_TIMEOUT_MS: String(AUTOPILOT_SEMANTIC_TIMEOUT_MS),
+  },
   telemetry: (event) => {
     if (event.outcome === "failed" || event.type === "fallback") {
       console.warn("[semantic ai]", {
@@ -663,6 +683,36 @@ function startAiUsageHeartbeat(userId, reservationId) {
   }, intervalMs);
   timer.unref?.();
   return () => clearInterval(timer);
+}
+
+const AUTOPILOT_BUILD_HEARTBEAT_INTERVAL_MS = 60_000;
+
+function startAutopilotBuildHeartbeat(planId, projectId, channelId) {
+  let heartbeatInFlight = null;
+  const heartbeat = () => {
+    if (heartbeatInFlight) return heartbeatInFlight;
+    heartbeatInFlight = pool.query(
+      `update autopilot_plan
+          set build_activity_at = now()
+        where id = $1 and project_id = $2 and channel_id = $3 and status = 'building'`,
+      [planId, projectId, channelId],
+    ).catch((error) => {
+      console.error("[autopilot] build heartbeat failed", {
+        planId,
+        errorName: error?.name || "Error",
+      });
+    }).finally(() => {
+      heartbeatInFlight = null;
+    });
+    return heartbeatInFlight;
+  };
+  void heartbeat();
+  const timer = setInterval(() => { void heartbeat(); }, AUTOPILOT_BUILD_HEARTBEAT_INTERVAL_MS);
+  timer.unref?.();
+  return async () => {
+    clearInterval(timer);
+    await heartbeatInFlight;
+  };
 }
 
 const connection = new IORedis(REDIS_URL, { maxRetriesPerRequest: null });
@@ -4506,14 +4556,20 @@ async function askAI(
     }, {
       timeoutMs: WORKER_CLOUD_AI_TIMEOUT_MS,
       localTimeoutMs: WORKER_LOCAL_AI_TIMEOUT_MS,
+      ...(surface === "autopilot-plan"
+        ? { maxAttempts: 3, overallTimeoutMs: 45_000 }
+        : {}),
       telemetry: (event) => {
-        if (event.outcome === "failed" || event.type === "fallback") {
+        if (event.outcome === "failed" || event.outcome === "skipped" || event.type === "fallback") {
           console.warn("[worker ai]", {
             surface,
             event: event.type,
             engine: event.engine,
+            fromEngine: event.fromEngine,
+            toEngine: event.toEngine,
             code: event.code,
             attempt: event.attempt,
+            totalMs: event.totalMs,
           });
         }
       },
@@ -5028,33 +5084,42 @@ async function planTopics(
       "Брать можно ТОЛЬКО то, что есть в факте: не добавляй цифр, дат и случаев.",
       "Выдай ровно один заголовок и больше ничего.",
     ].join("\n");
-    for (const seed of seeds) {
+    const seedCandidates = await mapConcurrent(
+      seeds,
+      configuredAiConcurrency(generationEngine),
+      async (seed) => {
+        const safe = fallbackTopicFromSeed(seed.text);
+        let topic = safe;
+        // For unfamiliar structures the model may produce a clearer title, but all seed
+        // titles are independent and therefore generated with the same bounded concurrency
+        // as posts instead of serially blocking the whole plan.
+        if (safe.startsWith("Практический разбор:")) {
+          const raw = await askAI(
+            "autopilot-plan",
+            usageReservationId,
+            titleSystem,
+            `Факт: ${seed.text}`,
+            60,
+            mood,
+            0.25,
+            generationEngine,
+          );
+          const candidate = String(raw || "")
+            .split("\n")[0]
+            .replace(/^\s*[-–—•*\d.)\s]+/, "")
+            .replace(/^[\"«]+|[\"».]+$/g, "")
+            .trim();
+          if (validateTopicQuality(candidate, seed.text).passed) topic = candidate;
+        }
+        const checked = validateTopicQuality(topic, seed.text);
+        return checked.passed
+          ? { topic: checked.value, rubric: null, seed: seed.id }
+          : null;
+      },
+    );
+    for (const candidate of seedCandidates) {
       if (out.length >= need) break;
-      const safe = fallbackTopicFromSeed(seed.text);
-      let topic = safe;
-      // Для знакомых конструкций детерминированный заголовок точнее и быстрее слабой
-      // локальной модели. На неизвестной нише даём модели шанс, но принимаем ответ только
-      // после отдельной проверки темы; иначе остаётся нейтральный безопасный fallback.
-      if (safe.startsWith("Практический разбор:")) {
-        const raw = await askAI(
-          "autopilot-plan",
-          usageReservationId,
-          titleSystem,
-          `Факт: ${seed.text}`,
-          60,
-          mood,
-          0.25,
-          generationEngine,
-        );
-        const candidate = String(raw || "")
-          .split("\n")[0]
-          .replace(/^\s*[-–—•*\d.)\s]+/, "")
-          .replace(/^["«]+|["».]+$/g, "")
-          .trim();
-        if (validateTopicQuality(candidate, seed.text).passed) topic = candidate;
-      }
-      const checked = validateTopicQuality(topic, seed.text);
-      if (checked.passed) pushUnique({ topic: checked.value, rubric: null, seed: seed.id });
+      if (candidate) pushUnique(candidate);
     }
     // A weekly frequency can be one item higher than the number of unique chunks. Reuse one
     // real chunk with a visibly different editorial angle instead of asking the model for an
@@ -5250,7 +5315,8 @@ async function buildAutopilotPlan(
   let expectedPlan = null;
   if (expectedPlanId != null) {
     const expected = await pool.query(
-      `select generation_engine, planning_months, planning_weeks, monthly_campaign_plan_id
+      `select generation_engine, generation_post_frequency, expected_post_count,
+              planning_months, planning_weeks, monthly_campaign_plan_id, items
          from autopilot_plan
         where id = $1 and project_id = $2 and channel_id = $3 and status = 'building'`,
       [expectedPlanId, projectId, channelId],
@@ -5291,7 +5357,13 @@ async function buildAutopilotPlan(
       [projectId, channelId],
     )
   ).rows[0];
-  const generationEngine = expectedPlan?.generation_engine || st?.generation_engine || "navy-deepseek-pro";
+  const generationEngine = expectedPlan?.generation_engine || st?.generation_engine || "navy-gpt-5-4";
+  const generationPostFrequency = Math.min(
+    MAX_WEEKLY_POSTS,
+    Math.max(1, Math.round(Number(
+      expectedPlan?.generation_post_frequency ?? st?.post_frequency ?? 5,
+    ) || 5)),
+  );
   let planWeeks = Number(
     expectedPlan?.planning_weeks || st?.planning_weeks ||
     (expectedPlan?.planning_months || st?.planning_months || 1) * 4,
@@ -5347,10 +5419,10 @@ async function buildAutopilotPlan(
 
   // Больше семи в неделю — значит несколько в день, и «ставлю на 19:00» перестаёт быть правдой.
   // Объясняем, что на самом деле произойдёт, а не оставляем прежний текст.
-  if (st?.post_frequency > 7) {
-    const perDay = Math.ceil(st.post_frequency / 7);
+  if (generationPostFrequency > 7) {
+    const perDay = Math.ceil(generationPostFrequency / 7);
     rule =
-      `${st.post_frequency} ${plural(st.post_frequency, "пост", "поста", "постов")} в неделю — это до ${perDay} в день. ` +
+      `${generationPostFrequency} ${plural(generationPostFrequency, "пост", "поста", "постов")} в неделю — это до ${perDay} в день. ` +
       `Развожу их по дню с 9:00 до 21:00 МСК, чтобы подписчик не получал пачку подряд.`;
   }
   const monthlyContext = await loadMonthlyAutopilotContext(
@@ -5366,7 +5438,8 @@ async function buildAutopilotPlan(
   rule += ` План на ${planWeeks} ${plural(planWeeks, "неделю", "недели", "недель")}, модель — ${engineLabel}.`;
   const N = monthlyContext
     ? monthlyContext.topics.length
-    : plannedPostCountForWeeks(Math.min(MAX_WEEKLY_POSTS, st?.post_frequency || 5), planWeeks);
+    : Number(expectedPlan?.expected_post_count)
+      || plannedPostCountForWeeks(generationPostFrequency, planWeeks);
 
   const quality = brief.quality;
 
@@ -5395,9 +5468,16 @@ async function buildAutopilotPlan(
   const full = (st?.mode || "confirm") === "full" && (st?.approvals_streak ?? 0) >= 2;
   const planMood = await userMood(userId); // настроение агента для постов плана
   // Время постов считаем заранее на весь выбранный горизонт: раскладка зависит от их числа.
-  const slots = monthlyContext
+  let slots = monthlyContext
     ? monthlyContext.topics.map((item) => item.monthlySchedule.scheduledAt)
     : periodSlots(N, planWeeks, bestHour);
+  let checkpointItems = Array.isArray(expectedPlan?.items) ? expectedPlan.items : [];
+  const hasCheckpointedTopics = expectedPlanId != null &&
+    checkpointItems.length === N &&
+    checkpointItems.every((item, index) =>
+      Number(item?.i) === index && String(item?.topic || "").trim() && item?.scheduledAt,
+    );
+  if (hasCheckpointedTopics) slots = checkpointItems.map((item) => item.scheduledAt);
 
   const recentPlanRows = (
     await pool.query(
@@ -5422,19 +5502,42 @@ async function buildAutopilotPlan(
   const historicalTopics = historicalPlanItems.map((item) => item.topic).filter(Boolean);
 
   // Сначала конкретные темы под нишу, только потом тексты.
-  const topics = monthlyContext?.topics ?? await planTopics(
-      brief,
-      N,
-      ideaTopics,
-      planMood,
-      channelId,
-      usageReservationId,
-      generationEngine,
-      historicalTopics,
-    );
+  const topics = hasCheckpointedTopics
+    ? checkpointItems.map((item) => ({
+        topic: item.topic,
+        rubric: item.rubric,
+        ...(item.seed ? { seed: item.seed } : {}),
+        ...(item.monthlyCampaignItemId
+          ? {
+              monthlyCampaignItemId: item.monthlyCampaignItemId,
+              monthlyCampaignItemVersion: item.monthlyCampaignItemVersion,
+            }
+          : {}),
+      }))
+    : monthlyContext?.topics ?? await planTopics(
+        brief,
+        N,
+        ideaTopics,
+        planMood,
+        channelId,
+        usageReservationId,
+        generationEngine,
+        historicalTopics,
+      );
   if (!autopilotBuildComplete(N, topics)) {
     console.log(`[auto] user ${userId}: получено тем ${topics.length}/${N} — неполный план не сохраняю`);
     return { error: "ai_unavailable" };
+  }
+  if (expectedPlanId != null && !hasCheckpointedTopics) {
+    checkpointItems = autopilotTopicCheckpoints(topics, slots);
+    const checkpointed = await pool.query(
+      `update autopilot_plan
+          set items = $4::jsonb, build_activity_at = now(), revision = revision + 1
+        where id = $1 and project_id = $2 and channel_id = $3 and status = 'building'
+        returning id`,
+      [expectedPlanId, projectId, channelId, JSON.stringify(checkpointItems)],
+    );
+    if (!checkpointed.rowCount) return { superseded: true };
   }
   rule += ` Темы — под твою нишу: ${brief.niche}.`;
 
@@ -5457,6 +5560,16 @@ async function buildAutopilotPlan(
   const autopilotConcurrency = configuredAiConcurrency(generationEngine);
   const items = await mapConcurrent(topics, autopilotConcurrency, async (t, i) => {
     const { topic, rubric } = t;
+    if (reusableAutopilotCheckpoint(checkpointItems[i], t, slots[i])) {
+      console.log(`[auto]   «${topic.slice(0, 40)}»: восстановлен из checkpoint`);
+      const restoredItem = { ...checkpointItems[i] };
+      if (
+        full && restoredItem.aiReady === true && restoredItem.quality?.passed === true
+        && restoredItem.qualityBlocked !== true
+      ) restoredItem.autoApprove = true;
+      else delete restoredItem.autoApprove;
+      return restoredItem;
+    }
     // Опора под КАЖДУЮ тему. В строгом профиле пустая опора — блокер, а не разрешение
     // модели заполнить пробел убедительно звучащей выдумкой.
     let support = await findSupport(channelId, topic);
@@ -5488,18 +5601,6 @@ async function buildAutopilotPlan(
       0.45,
       generationEngine,
     );
-    if (!candidateRaw?.trim()) {
-      candidateRaw = await askAI(
-        "autopilot-plan",
-        usageReservationId,
-        system,
-        `${task}\n\nПовтори генерацию этого конкретного поста. Верни только готовый текст без служебных пояснений.`,
-        outputTokens,
-        null,
-        0.35,
-        generationEngine,
-      );
-    }
     let aiDraft = candidateRaw
       ? applyAutopilotPresentation(
           padDraftToMinimum(stripCites(candidateRaw), quality.minChars, quality.maxChars),
@@ -5523,15 +5624,15 @@ async function buildAutopilotPlan(
     });
 
     // Модель получает замечания выпускающего редактора и переписывает весь текст. После
-    // каждой попытки работает тот же программный валидатор. Для Автопилота не используем
-    // маленький пользовательский retryLimit как повод показать человеку слабый пост:
-    // дожимаем до прохода, а при техническом исчерпании попыток бракуем всю сборку.
-    const rewriteAttempts = Math.max(quality.retryLimit, AUTOPILOT_QUALITY_REWRITE_ATTEMPTS);
+    // каждой попытки работает тот же программный валидатор. Повторы ограничены двумя:
+    // отсутствие источников или semantic-провайдера переписыванием не исправить, а черновик
+    // в режиме подтверждения безопаснее сразу показать заблокированным для ручной проверки.
+    const rewriteAttempts = Math.min(
+      AUTOPILOT_QUALITY_REWRITE_ATTEMPTS,
+      boundedAutopilotRewriteAttempts(quality.retryLimit),
+    );
     for (let attempt = 0; attempt < rewriteAttempts && !qualityResult.passed; attempt++) {
-      if (
-        qualityResult.semantic?.status === "not_checked" ||
-        qualityResult.violations.some((v) => v.code === "no_sources")
-      ) break;
+      if (autopilotQualityFailureKind(qualityResult) !== "rewriteable") break;
       console.log(
         `[auto]   «${topic.slice(0, 40)}»: ${qualityResult.score}/100 — редактура ${attempt + 1}/${rewriteAttempts}`,
       );
@@ -5572,6 +5673,7 @@ async function buildAutopilotPlan(
     // rewrite. Delete exactly the claims rejected by the semantic validator, then run the
     // complete quality boundary once more. No new model text or unverified fact is introduced.
     for (let cleanup = 0; cleanup < 2 && !qualityResult.passed && aiDraft; cleanup++) {
+      if (autopilotQualityFailureKind(qualityResult) !== "rewriteable") break;
       if (!["blocked", "not_checked"].includes(qualityResult.semantic?.status)) break;
       const cleanedDraft = removeUnverifiedSemanticClaims(aiDraft, qualityResult.semantic);
       if (!cleanedDraft || cleanedDraft === aiDraft) break;
@@ -5591,6 +5693,7 @@ async function buildAutopilotPlan(
 
     const draft = aiDraft || `Черновик на тему «${topic}» — ИИ допишет, когда движок будет доступен.`;
     const scheduledAt = slots[i];
+    const qualityFailureKind = autopilotQualityFailureKind(qualityResult);
     const item = {
       i,
       scheduledAt,
@@ -5613,6 +5716,8 @@ async function buildAutopilotPlan(
       // а автопубликация для такого поста закрыта.
       invented: invented.length ? invented : undefined,
       qualityBlocked: !aiDraft || !qualityResult.passed,
+      reviewRequired: Boolean(aiDraft && !qualityResult.passed),
+      reviewReason: aiDraft && !qualityResult.passed ? qualityFailureKind : undefined,
       quality: qualityResult,
       qualityOrigin: "automatic",
       presentation: presentation.name,
@@ -5633,10 +5738,29 @@ async function buildAutopilotPlan(
       // superseded — уже запланированные публикации при этом никуда не исчезали.
       item.autoApprove = true;
     }
+    if (expectedPlanId != null) {
+      const durableItem = autopilotCheckpointItem(item);
+      const checkpointed = await pool.query(
+        `update autopilot_plan
+            set items = jsonb_set(items, array[$4::text], $5::jsonb, false),
+                build_activity_at = now(),
+                revision = revision + 1
+          where id = $1 and project_id = $2 and channel_id = $3 and status = 'building'
+          returning id`,
+        [expectedPlanId, projectId, channelId, i, JSON.stringify(durableItem)],
+      );
+      if (!checkpointed.rowCount) {
+        throw new UnrecoverableError("autopilot-plan: superseded");
+      }
+      checkpointItems[i] = durableItem;
+    }
     return item;
   });
 
-  if (!autopilotBuildComplete(N, topics, items)) {
+  const planIsDeliverable = full
+    ? autopilotBuildComplete(N, topics, items)
+    : autopilotDraftsDeliverable(N, topics, items);
+  if (!planIsDeliverable) {
     const missing = items.filter((item) => !item.aiReady).length;
     const passed = items.filter(
       (item) => item.aiReady && item.quality?.passed === true && item.qualityBlocked !== true,
@@ -5644,16 +5768,26 @@ async function buildAutopilotPlan(
     console.log(
       missing
         ? `[auto] user ${userId}: модель не завершила ${missing}/${N} постов — неполный план не сохраняю`
-        : `[auto] user ${userId}: редакционный порог прошли ${passed}/${N} — слабый план не сохраняю`,
+        : `[auto] user ${userId}: редакционный порог прошли ${passed}/${N} — план нельзя безопасно показать`,
     );
     return { error: missing ? "ai_unavailable" : "quality_gate_unsatisfied" };
   }
 
   // Промпт снижает повторы, но не гарантирует их отсутствие. Финальная граница работает
   // кодом: близкий дубль получает отдельные переписывания. Если сходство осталось, новый
-  // план не заменяет предыдущий готовый результат и не показывается как законченный.
+  // полный режим останавливается; в режиме подтверждения оставшийся дубль показывается
+  // заблокированным для обязательной ручной правки.
   const acceptedForVariety = [...historicalPlanItems, ...recentPublished];
   for (let index = 0; index < items.length; index++) {
+    if (expectedPlanId != null) {
+      const activeBuild = await pool.query(
+        `update autopilot_plan set build_activity_at = now()
+          where id = $1 and project_id = $2 and channel_id = $3 and status = 'building'
+          returning id`,
+        [expectedPlanId, projectId, channelId],
+      );
+      if (!activeBuild.rowCount) throw new UnrecoverableError("autopilot-plan: superseded");
+    }
     const item = items[index];
     let duplicate = findAutopilotNearDuplicate(item, acceptedForVariety);
     let varietyRewritePrompt = null;
@@ -5664,7 +5798,22 @@ async function buildAutopilotPlan(
     ) {
       const duplicateItem = acceptedForVariety[duplicate.index];
       const presentation = autopilotPresentationVariant(index + (attempt + 1) * 5, quality);
-      const support = item._support || [];
+      let support = item._support || [];
+      if (!support.length && Array.isArray(item.sources) && item.sources.length) {
+        const sourceIds = item.sources
+          .map((source) => Number(source?.id))
+          .filter((id) => Number.isSafeInteger(id) && id > 0);
+        if (sourceIds.length) {
+          support = (
+            await pool.query(
+              `select id, text, kind, source_id
+                 from knowledge_chunks
+                where channel_id = $1 and id = any($2::bigint[]) and kind <> 'voice'`,
+              [channelId, sourceIds],
+            )
+          ).rows;
+        }
+      }
       const system = postSystem(samples, brief, support, quality, index, presentation);
       const raw = await askAI(
         "autopilot-plan",
@@ -5726,7 +5875,28 @@ async function buildAutopilotPlan(
         item: index,
         score: duplicate.score,
       });
-      return { error: "content_variety_insufficient" };
+      if (full) return { error: "content_variety_insufficient" };
+      item.qualityBlocked = true;
+      item.reviewRequired = true;
+      item.reviewReason = "content_variety";
+      item.quality = {
+        ...item.quality,
+        passed: false,
+        blockers: [
+          ...(Array.isArray(item.quality?.blockers) ? item.quality.blockers : []),
+          "Текст похож на недавнюю публикацию. Проверь и отредактируй перед подтверждением.",
+        ],
+        violations: [
+          ...(Array.isArray(item.quality?.violations) ? item.quality.violations : []),
+          {
+            code: "near_duplicate",
+            message: "Текст похож на недавнюю публикацию.",
+            blocker: true,
+            penalty: 0,
+          },
+        ],
+      };
+      delete item.autoApprove;
     }
     acceptedForVariety.push({ topic: item.topic, draft: item.draft });
     delete item._support;
@@ -5735,7 +5905,9 @@ async function buildAutopilotPlan(
     delete item._outputTokens;
   }
 
-  if (!autopilotBuildComplete(N, topics, items)) {
+  if (!(full
+    ? autopilotBuildComplete(N, topics, items)
+    : autopilotDraftsDeliverable(N, topics, items))) {
     console.warn(`[auto] user ${userId}: финальная граница качества отклонила план`);
     return { error: "quality_gate_unsatisfied" };
   }
@@ -5754,15 +5926,23 @@ async function buildAutopilotPlan(
   let fullApprovalPreview = null;
   let queuePendingReconciliation = 0;
   let usageCommitted = false;
+  let fullAtCommit = false;
   try {
     await tx.query("begin");
     // The settings row is the per-channel mutex also used by POST /api/autopilot/generate.
     // It closes the race where an old worker finishes just as the user starts a new build.
-    await tx.query(
-      `select 1 from autopilot_settings
+    // Read the publication controls under that lock: a mode change made during generation
+    // must take effect before any scheduled post is created.
+    const lockedSettings = (
+      await tx.query(
+      `select enabled, mode, approvals_streak from autopilot_settings
         where project_id = $1 and channel_id = $2 for update`,
       [projectId, channelId],
-    );
+      )
+    ).rows[0];
+    fullAtCommit = lockedSettings?.enabled === true
+      && lockedSettings?.mode === "full"
+      && Number(lockedSettings?.approvals_streak || 0) >= 2;
     const building = (
       await tx.query(
         `select id from autopilot_plan
@@ -5818,7 +5998,7 @@ async function buildAutopilotPlan(
     // Generation can take minutes. Re-evaluate every timestamp immediately before any
     // full-mode post is created; stale slots become explicit expired drafts.
     const approvalTime = Date.now();
-    if (full) {
+    if (fullAtCommit) {
       fullApprovalPreview = buildAutopilotApprovalPreview({
         items,
         nowMs: approvalTime,
@@ -5830,7 +6010,7 @@ async function buildAutopilotPlan(
     items.splice(0, items.length, ...safeItems);
     for (const item of items) {
       const evaluation = evaluateAutopilotItem(item, approvalTime);
-      if (item.autoApprove && evaluation.eligible && evaluation.scheduledAt) {
+      if (fullAtCommit && item.autoApprove && evaluation.eligible && evaluation.scheduledAt) {
         const post = await tx.query(
           `insert into posts
              (project_id, user_id, channel_id, text, scheduled_at, status, publication_origin)
@@ -5849,7 +6029,7 @@ async function buildAutopilotPlan(
       delete item.autoApprove;
     }
     anyPending = items.some((item) => item.status === "pending" || item.status === "expired");
-    planStatus = full && !anyPending ? "approved" : "pending";
+    planStatus = fullAtCommit && !anyPending ? "approved" : "pending";
 
     const usedSourceIds = [...new Set(items.flatMap((item) => item.sources?.map((source) => source.id) ?? []))];
     if (usedSourceIds.length) {
@@ -5885,8 +6065,9 @@ async function buildAutopilotPlan(
     ins = await tx.query(
       `insert into autopilot_plan
          (project_id, user_id, channel_id, week_start, items, rules, status, generation_engine,
-          planning_months, planning_weeks, monthly_campaign_plan_id)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) returning id`,
+          generation_post_frequency, expected_post_count, planning_months, planning_weeks,
+          monthly_campaign_plan_id)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) returning id`,
       [
         projectId,
         userId,
@@ -5896,6 +6077,8 @@ async function buildAutopilotPlan(
         rule,
         planStatus,
         generationEngine,
+        generationPostFrequency,
+        N,
         planningMonths,
         planWeeks,
         monthlyContext?.planId ?? null,
@@ -5987,7 +6170,7 @@ async function buildAutopilotPlan(
       );
       if (savedLineage.rowCount !== 1) throw new Error("monthly campaign plan lineage was not persisted");
     }
-    if (full && fullApprovalPreview) {
+    if (fullAtCommit && fullApprovalPreview) {
       fullApprovalPreview.planId = Number(ins.rows[0].id);
       const result = {
         ok: true,
@@ -8735,6 +8918,19 @@ async function botIdea(userId, competitorPostId, callbackUpdateId) {
   }
 }
 
+async function observeBotInteraction(update, userId, interaction) {
+  try {
+    await recordBotInteraction(pool, {
+      telegramUpdateId: update?.update_id,
+      userId,
+      ...interaction,
+    });
+  } catch (error) {
+    // Observability must never become a new failure mode for the interactive bot.
+    console.error("[bot] interaction telemetry", { errorName: error?.name || "Error" });
+  }
+}
+
 /** Одно обновление от Telegram. Ошибка превращается в retry-сигнал и не роняет polling. */
 async function handleUpdate(u) {
   try {
@@ -8755,12 +8951,23 @@ async function handleUpdate(u) {
       const chatId = u.message.chat.id;
       const text = String(u.message.text || u.message.caption || "").trim();
       const command = parseTelegramBotCommand(text, process.env.TG_BOT_USERNAME);
+      const replyAction = botReplyAction(text);
+      const interaction = botMessageInteraction({
+        command: command?.command,
+        replyAction,
+        hasVoice: Boolean(u.message.voice),
+        hasAttachment: Boolean(u.message.photo || u.message.document),
+      });
 
       if (command?.command === "start") {
-        return handleStart(chatId, u.message.from, command.args.split(/\s+/u)[0] || null);
+        const result = await handleStart(chatId, u.message.from, command.args.split(/\s+/u)[0] || null);
+        const linkedUser = await userByChat(chatId);
+        await observeBotInteraction(u, Number(linkedUser?.id || 0) || null, interaction);
+        return result;
       }
 
       const botUser = await userByChat(chatId);
+      await observeBotInteraction(u, Number(botUser?.id || 0) || null, interaction);
       if (!botUser) {
         return void (await botSendConnectionOnboarding(chatId, u.message.from));
       }
@@ -8772,7 +8979,6 @@ async function handleUpdate(u) {
 
       // Нижние кнопки обрабатываются до свободного текста: во время создания поста их
       // подписи не должны случайно попасть в черновик как содержимое публикации.
-      const replyAction = botReplyAction(text);
       if (replyAction) return void (await botSendPrimaryAction(chatId, userId, replyAction));
 
       if (command?.command === "menu") return void (await botSendPrimaryAction(chatId, userId, "menu"));
@@ -8853,6 +9059,11 @@ async function handleUpdate(u) {
       const chatId = cb.message?.chat?.id;
       const botUser = chatId ? await userByChat(chatId) : null;
       const userId = botUser?.enabled === false ? null : Number(botUser?.id || 0) || null;
+      await observeBotInteraction(
+        u,
+        Number(botUser?.id || 0) || null,
+        botCallbackInteraction(cb.data),
+      );
       // Кнопка «Одобрить всё» публикует в живой канал — принимаем только от привязанного чата.
       if (!userId) return void (await answerCb(cb.id, botUser ? "Доступ к боту приостановлен" : "Чат не привязан к аккаунту"));
 
@@ -9442,6 +9653,134 @@ monthlyCampaignRegenerationWorker?.on("failed", (job, error) => {
   });
 });
 
+const AUTOPILOT_QUEUE = "autopilot-plans";
+const NON_RETRYABLE_AUTOPILOT_ERRORS = new Set([
+  "quality_gate_unsatisfied",
+  "content_variety_insufficient",
+  "no_brief",
+  "no_channel",
+]);
+
+async function processAutopilotPlanJob(job) {
+  let scope;
+  try {
+    scope = await requireAutopilotPlanJobScope(pool, job.data);
+  } catch (error) {
+    if (error instanceof AutopilotProjectScopeError) {
+      throw new UnrecoverableError(error.message);
+    }
+    throw error;
+  }
+  const { userId, projectId, channelId, planId } = scope;
+  const usage = await acquireWorkerAiUsage(pool, {
+    userId,
+    kind: "autopilot-plan",
+    key: workerAiUsageCompositeKey("autopilot-plan", [projectId, planId]),
+  });
+  if (usage.state === "committed") return { ok: true, replayed: true, planId };
+  if (usage.state === "in_progress") return { ok: true, inProgress: true, planId };
+  if (usage.state === "limit") {
+    await pool.query(
+      `update autopilot_plan
+          set status = 'error', rules = 'ai_usage_limit', revision = revision + 1
+        where id = $1 and project_id = $2 and channel_id = $3 and status = 'building'`,
+      [planId, projectId, channelId],
+    );
+    console.warn("[autopilot] quota", { userId, planId, used: usage.used, limit: usage.limit });
+    return { ok: false, error: "ai_usage_limit", used: usage.used, limit: usage.limit };
+  }
+
+  let usageCommitted = false;
+  const stopHeartbeat = startAiUsageHeartbeat(userId, usage.reservationId);
+  const stopBuildHeartbeat = startAutopilotBuildHeartbeat(planId, projectId, channelId);
+  try {
+    const result = await buildAutopilotPlan(
+      projectId,
+      userId,
+      channelId,
+      planId,
+      usage.reservationId,
+    );
+    usageCommitted = result?.usageCommitted === true;
+    if (result?.error) {
+      const nonRetryable = NON_RETRYABLE_AUTOPILOT_ERRORS.has(result.error);
+      await pool.query(
+        `update autopilot_plan
+            set rules = $4,
+                status = case when $5::boolean then 'error' else status end,
+                revision = revision + 1
+          where id = $1 and project_id = $2 and channel_id = $3 and status = 'building'`,
+        [planId, projectId, channelId, result.error, nonRetryable],
+      );
+      if (nonRetryable) throw new UnrecoverableError(result.error);
+      throw new Error(result.error);
+    }
+    return result;
+  } catch (error) {
+    const attempts = Math.max(1, Number(job.opts.attempts || 1));
+    const finalAttempt = error instanceof UnrecoverableError || job.attemptsMade + 1 >= attempts;
+    if (finalAttempt) {
+      await pool.query(
+        `update autopilot_plan set status = 'error', revision = revision + 1
+          where id = $1 and project_id = $2 and channel_id = $3 and status = 'building'`,
+        [planId, projectId, channelId],
+      ).catch(() => {});
+    }
+    throw error;
+  } finally {
+    stopHeartbeat();
+    await stopBuildHeartbeat();
+    if (!usageCommitted) {
+      await releaseWorkerAiUsage(pool, userId, usage.reservationId).catch((error) => {
+        console.error("[autopilot] quota release", {
+          userId,
+          planId,
+          errorName: error?.name || "Error",
+        });
+      });
+    }
+  }
+}
+
+function recoverFailedAutopilotPlan(job, error) {
+  if (job?.name !== "autopilot-plan") return;
+  const planId = Number(job.data?.planId);
+  const projectId = Number(job.data?.projectId);
+  const userId = Number(job.data?.userId);
+  const channelId = Number(job.data?.channelId);
+  if (
+    !Number.isSafeInteger(planId) || planId <= 0 ||
+    !Number.isSafeInteger(projectId) || projectId <= 0 ||
+    !Number.isSafeInteger(userId) || userId <= 0 ||
+    !Number.isSafeInteger(channelId) || channelId <= 0 ||
+    (
+      !(error instanceof UnrecoverableError) &&
+      !autopilotJobTerminalFailure(job.attemptsMade, job.opts?.attempts, error?.message)
+    )
+  ) return;
+  void pool.query(
+    `update autopilot_plan set status = 'error', revision = revision + 1
+      where id = $1 and project_id = $2 and channel_id = $3 and status = 'building'`,
+    [planId, projectId, channelId],
+  ).then(() => {
+    console.warn("[autopilot] terminal failure", {
+      planId,
+      error: error?.message || "worker_failed",
+    });
+  }).catch((updateError) => {
+    console.error("[autopilot] status recovery failed", {
+      planId,
+      errorName: updateError?.name || "Error",
+    });
+  });
+}
+
+const autopilotWorker = MEDIA_ONLY || PUBLICATION_ONLY
+  ? null
+  : new Worker(AUTOPILOT_QUEUE, processAutopilotPlanJob, { connection, concurrency: 2 });
+autopilotWorker?.on("error", (error) => console.error("[autopilot] worker error", error?.message));
+autopilotWorker?.on("failed", recoverFailedAutopilotPlan);
+
 // Отдельная очередь ручных задач аналитики (кнопка «обновить», недельный отчёт) и разведки.
 const statsWorker = MEDIA_ONLY || AUTOPILOT_ONLY || PUBLICATION_ONLY ? null : new Worker(
   "stats",
@@ -9520,123 +9859,14 @@ const statsWorker = MEDIA_ONLY || AUTOPILOT_ONLY || PUBLICATION_ONLY ? null : ne
       if (!Number.isSafeInteger(userId) || userId <= 0) throw new Error("radar-search: bad userId");
       await runRadarSearch(runId, userId);
     } else if (job.name === "autopilot-plan") {
-      // Пользователь нажал «Собрать план» — строим сейчас (Д.9). При любом сбое переводим
-      // застрявший 'building'-план в 'error', чтобы интерфейс не крутил спиннер вечно (ревью).
-      let scope;
-      try {
-        scope = await requireAutopilotPlanJobScope(pool, job.data);
-      } catch (error) {
-        if (error instanceof AutopilotProjectScopeError) {
-          throw new UnrecoverableError(error.message);
-        }
-        throw error;
-      }
-      const { userId, projectId, channelId, planId } = scope;
-      const usage = await acquireWorkerAiUsage(pool, {
-        userId,
-        kind: "autopilot-plan",
-        key: workerAiUsageCompositeKey("autopilot-plan", [projectId, planId]),
-      });
-      if (usage.state === "committed") return { ok: true, replayed: true, planId };
-      if (usage.state === "in_progress") return { ok: true, inProgress: true, planId };
-      if (usage.state === "limit") {
-        await pool.query(
-          `update autopilot_plan
-              set status = 'error', rules = 'ai_usage_limit', revision = revision + 1
-            where id = $1 and project_id = $2 and channel_id = $3 and status = 'building'`,
-          [planId, projectId, channelId],
-        );
-        console.warn("[stats] autopilot-plan quota", {
-          userId,
-          planId,
-          used: usage.used,
-          limit: usage.limit,
-        });
-        return { ok: false, error: "ai_usage_limit", used: usage.used, limit: usage.limit };
-      }
-
-      let usageCommitted = false;
-      const stopHeartbeat = startAiUsageHeartbeat(userId, usage.reservationId);
-      try {
-        const r = await buildAutopilotPlan(
-          projectId,
-          userId,
-          channelId,
-          planId,
-          usage.reservationId,
-        );
-        usageCommitted = r?.usageCommitted === true;
-        if (r?.error) {
-          await pool.query(
-            `update autopilot_plan set rules = $4
-              where id = $1 and project_id = $2 and channel_id = $3 and status = 'building'`,
-            [planId, projectId, channelId, r.error],
-          );
-          throw new Error(r.error);
-        }
-        return r;
-      } catch (err) {
-        // Only the placeholder owned by this job. An older failed job must never turn a newer
-        // retry for the same channel into `error`. Keep it building while BullMQ still has
-        // an attempt left; the next attempt reuses the released deterministic reservation.
-        const attempts = Math.max(1, Number(job.opts.attempts || 1));
-        const finalAttempt = job.attemptsMade + 1 >= attempts;
-        if (finalAttempt) {
-          await pool
-            .query(
-              `update autopilot_plan set status = 'error', revision = revision + 1
-                where id = $1 and project_id = $2 and channel_id = $3 and status = 'building'`,
-              [planId, projectId, channelId],
-            )
-            .catch(() => {});
-        }
-        throw err;
-      } finally {
-        stopHeartbeat();
-        if (!usageCommitted) {
-          await releaseWorkerAiUsage(pool, userId, usage.reservationId).catch((error) => {
-            console.error("[stats] autopilot-plan quota release", {
-              userId,
-              planId,
-              errorName: error?.name || "Error",
-            });
-          });
-        }
-      }
+      // Compatibility drain for jobs created by an older web process during deployment.
+      return processAutopilotPlanJob(job);
     }
   },
   { connection },
 );
 statsWorker?.on("error", (err) => console.error("[stats] ошибка:", err));
-statsWorker?.on("failed", (job, err) => {
-  if (job?.name !== "autopilot-plan") return;
-  const planId = Number(job.data?.planId);
-  const projectId = Number(job.data?.projectId);
-  const userId = Number(job.data?.userId);
-  const channelId = Number(job.data?.channelId);
-  if (
-    !Number.isSafeInteger(planId) || planId <= 0 ||
-    !Number.isSafeInteger(projectId) || projectId <= 0 ||
-    !Number.isSafeInteger(userId) || userId <= 0 ||
-    !Number.isSafeInteger(channelId) || channelId <= 0 ||
-    !autopilotJobTerminalFailure(job.attemptsMade, job.opts?.attempts, err?.message)
-  ) return;
-  void pool.query(
-    `update autopilot_plan set status = 'error', revision = revision + 1
-      where id = $1 and project_id = $2 and channel_id = $3 and status = 'building'`,
-    [planId, projectId, channelId],
-  ).then(() => {
-    console.warn("[stats] autopilot-plan terminal failure", {
-      planId,
-      error: err?.message || "worker_failed",
-    });
-  }).catch((updateError) => {
-    console.error("[stats] autopilot-plan status recovery failed", {
-      planId,
-      errorName: updateError?.name || "Error",
-    });
-  });
-});
+statsWorker?.on("failed", recoverFailedAutopilotPlan);
 
 // ----------------------------------------------------------------------------
 // Крон на BullMQ-планировщиках (заменил setInterval). Таймеры в памяти процесса не
@@ -10168,6 +10398,7 @@ async function shutdown(sig) {
     await publicationReviewReminderQueue?.close();
     await monthlyCampaignRegenerationWorker?.close();
     await monthlyCampaignRegenerationQueue?.close();
+    await autopilotWorker?.close();
     await statsWorker?.close();
     await cronWorker?.close();
     await cronQueue?.close();

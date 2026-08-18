@@ -342,6 +342,112 @@
   transform-origin: center;
 }
 
+.adminPreview {
+  width: min(100%, 35rem);
+  margin-inline: auto;
+  padding: clamp(2rem, 5vw, 3.5rem);
+  border: 1px solid rgb(37 99 255 / 0.12);
+  border-radius: 2.25rem;
+  color: #fff;
+  background:
+    radial-gradient(circle at 85% 0%, rgb(111 151 255 / 0.42), transparent 18rem),
+    linear-gradient(145deg, #0b1730 0%, #122b5e 58%, #1746e8 140%);
+  box-shadow: 0 30px 80px -42px rgb(10 31 80 / 0.72);
+}
+
+.adminPulse {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  color: rgb(255 255 255 / 0.8);
+  font-size: 0.75rem;
+  font-weight: 720;
+  letter-spacing: 0.02em;
+}
+
+.adminPulse > span {
+  width: 0.58rem;
+  height: 0.58rem;
+  border: 2px solid rgb(255 255 255 / 0.3);
+  border-radius: 50%;
+  background: #31d894;
+  box-shadow: 0 0 0 0.32rem rgb(49 216 148 / 0.12);
+}
+
+.adminPreview h2 {
+  max-width: 11ch;
+  margin: 1.2rem 0 0;
+  color: #fff;
+  font-size: clamp(2.2rem, 4vw, 3.7rem);
+  font-weight: 820;
+  letter-spacing: -0.052em;
+  line-height: 1.02;
+  text-wrap: balance;
+}
+
+.adminPreview > p {
+  max-width: 34rem;
+  margin: 1.15rem 0 0;
+  color: rgb(255 255 255 / 0.72);
+  font-size: 1rem;
+  line-height: 1.6;
+  text-wrap: pretty;
+}
+
+.adminFeatures {
+  display: grid;
+  gap: 0.75rem;
+  margin: 2rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.adminFeatures li {
+  display: grid;
+  grid-template-columns: 2.75rem minmax(0, 1fr);
+  align-items: center;
+  gap: 0.85rem;
+  min-height: 4.25rem;
+  padding: 0.75rem;
+  border: 1px solid rgb(255 255 255 / 0.08);
+  border-radius: 1.2rem;
+  background: rgb(255 255 255 / 0.07);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.05);
+}
+
+.adminFeatureIcon {
+  display: grid;
+  width: 2.75rem;
+  height: 2.75rem;
+  place-items: center;
+  border-radius: 0.85rem;
+  color: #b8ccff;
+  background: rgb(255 255 255 / 0.09);
+}
+
+.adminFeatureIcon svg {
+  width: 1.2rem;
+  height: 1.2rem;
+  stroke-width: 1.8;
+}
+
+.adminFeatures li > span:last-child {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.adminFeatures strong {
+  font-size: 0.9rem;
+  font-weight: 720;
+}
+
+.adminFeatures small {
+  color: rgb(255 255 255 / 0.62);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
 @media (max-width: 64rem) {
   .shell {
     grid-template-columns: 1fr;
@@ -360,6 +466,10 @@
 
   .previewCopy > span {
     justify-content: center;
+  }
+
+  .adminPreview {
+    width: min(100%, 38rem);
   }
 }
 
@@ -417,6 +527,10 @@
 
   .previewScene {
     animation: authSceneEnter 560ms 140ms cubic-bezier(0.2, 0, 0, 1) both;
+  }
+
+  .adminPreview {
+    animation: authPreviewEnter 560ms 100ms cubic-bezier(0.2, 0, 0, 1) both;
   }
 }
 

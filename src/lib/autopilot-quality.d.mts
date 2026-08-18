@@ -1,6 +1,10 @@
 import type { PostQuality, QualityCheckTrigger, QualityResult } from "./post-quality.mjs";
 import type { SemanticClaimAdapter } from "./semantic-claims.mjs";
 
+export function autopilotQualityFailureKind(
+  result: QualityResult | null | undefined,
+): "passed" | "missing_evidence" | "semantic_unavailable" | "rewriteable";
+
 export function padDraftToMinimum(text: string, minChars: number, maxChars: number): string;
 
 export function removeUnverifiedSemanticClaims(

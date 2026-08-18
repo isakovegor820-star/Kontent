@@ -5,6 +5,10 @@ import { getPool } from "./db";
 import { getPublishQueue, jobIdForPostRevision } from "./queue";
 import { EMPTY_BRIEF, normalizeBrief, type Brief } from "./brief";
 import { requireSelectedProjectPermission } from "./project-permissions";
+import {
+  DEFAULT_AUTOPILOT_ENGINE,
+  DEFAULT_AUTOPILOT_PLANNING_WEEKS,
+} from "./autopilot-config.mjs";
 
 export interface AutopilotSettings {
   enabled: boolean;
@@ -125,14 +129,21 @@ export async function ensureSettings(
     if (existing.rows[0]) return existing.rows[0];
 
     await pool.query(
-      `insert into autopilot_settings (project_id, user_id, channel_id)
-       select $1, $2, $3
+      `insert into autopilot_settings
+         (project_id, user_id, channel_id, generation_engine, planning_months, planning_weeks)
+       select $1, $2, $3, $4, 1, $5
         where exists (
           select 1 from channels
            where id = $3 and project_id = $1 and network = 'tg' and is_active = true
         )
        on conflict (project_id, channel_id) do nothing`,
-      [scopeOrUserId.projectId, scopeOrUserId.actorUserId, channelId],
+      [
+        scopeOrUserId.projectId,
+        scopeOrUserId.actorUserId,
+        channelId,
+        DEFAULT_AUTOPILOT_ENGINE,
+        DEFAULT_AUTOPILOT_PLANNING_WEEKS,
+      ],
     );
     const created = await pool.query<AutopilotSettings>(
       `select enabled, mode, post_frequency, approvals_streak, generation_engine,

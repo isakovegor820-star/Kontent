@@ -2,14 +2,18 @@
 
 import Link from "next/link";
 import {
+  Activity,
   AlertTriangle,
   BotOff,
   BriefcaseBusiness,
   CheckCircle2,
   Clock3,
+  Command,
   ExternalLink,
   Headphones,
+  MessageSquareText,
   MessageCircleQuestion,
+  MousePointerClick,
   RefreshCw,
   Send,
   Settings2,
@@ -48,6 +52,51 @@ const DELIVERY_SOURCE: Record<string, string> = {
   admin_test: "Проверка администратора",
   telegram_channel: "Публикация в канал",
 };
+
+const BOT_ACTION_LABEL: Record<string, string> = {
+  start: "Запуск и подключение",
+  menu: "Главное меню",
+  status: "Статус подключения",
+  connect: "Подключение аккаунта",
+  projects: "Выбор проекта",
+  today: "Сводка на сегодня",
+  create: "Создание публикации",
+  approvals: "Согласования",
+  problems: "Проблемы",
+  results: "Результаты публикаций",
+  calendar: "Календарь",
+  stats: "Статистика",
+  plan: "План недели",
+  trends: "Тренды",
+  notifications: "Настройки уведомлений",
+  disconnect: "Отключение чата",
+  cancel: "Отмена действия",
+  help: "Справка",
+  free_text: "Свободный текст",
+  voice_message: "Голосовое сообщение",
+  media_attachment: "Файл или фотография",
+  "connection:status": "Проверка подключения",
+  "connection:projects": "Список проектов",
+  "connection:project": "Выбор проекта",
+  "connection:disconnect": "Отключение чата",
+  "connection:disconnect_confirm": "Подтверждение отключения",
+};
+
+const INTERACTION_TYPE_LABEL: Record<string, string> = {
+  command: "Команда",
+  reply_button: "Кнопка меню",
+  callback: "Кнопка в сообщении",
+  message: "Сообщение",
+  voice: "Голос",
+  attachment: "Вложение",
+};
+
+function botActionLabel(type: string, action: string) {
+  const known = BOT_ACTION_LABEL[action];
+  if (known) return known;
+  if (type === "command") return `/${action}`;
+  return action.replace(/[_:]+/gu, " ");
+}
 
 function numberLabel(value: number, one: string, few: string, many: string) {
   return `${fmtNum(value)} ${plural(value, one, few, many)}`;
@@ -103,7 +152,7 @@ function BotMetric({
 }
 
 function ActivityChart({ data }: { data: AdminBotData["daily"] }) {
-  const maximum = Math.max(1, ...data.flatMap((item) => [item.drafts, item.scheduled, item.published, item.failures]));
+  const maximum = Math.max(1, ...data.flatMap((item) => [item.interactions, item.drafts, item.scheduled, item.published, item.failures]));
   return (
     <section className="card-plain min-w-0 max-w-full rounded-md p-5 sm:p-6" aria-labelledby="bot-activity-title">
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -112,6 +161,7 @@ function ActivityChart({ data }: { data: AdminBotData["daily"] }) {
           <p className="type-caption mt-1 text-text-3">Путь от черновика до подтверждённой публикации</p>
         </div>
         <div className="type-caption flex flex-wrap gap-3 text-text-2" aria-label="Легенда графика">
+          <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-sm bg-info" />Действия</span>
           <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-sm bg-brand" />Черновики</span>
           <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-sm bg-fire" />В очередь</span>
           <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-sm bg-success" />Опубликовано</span>
@@ -124,15 +174,16 @@ function ActivityChart({ data }: { data: AdminBotData["daily"] }) {
             const date = new Date(`${item.date}T12:00:00Z`).toLocaleDateString("ru-RU", { day: "numeric", month: "short" });
             const showDate = data.length <= 7 || index % 5 === 0 || index === data.length - 1;
             return (
-              <li key={item.date} className="flex w-14 shrink-0 flex-col items-center gap-1" aria-label={`${date}: черновики ${item.drafts}, в очередь ${item.scheduled}, опубликовано ${item.published}, ошибки ${item.failures}`}>
+              <li key={item.date} className="flex w-14 shrink-0 flex-col items-center gap-1" aria-label={`${date}: действия ${item.interactions}, черновики ${item.drafts}, в очередь ${item.scheduled}, опубликовано ${item.published}, ошибки ${item.failures}`}>
                 <div className="flex h-36 items-end gap-0.5" aria-hidden>
                   {[
+                    { value: item.interactions, className: "bg-info" },
                     { value: item.drafts, className: "bg-brand" },
                     { value: item.scheduled, className: "bg-fire" },
                     { value: item.published, className: "bg-success" },
                     { value: item.failures, className: "bg-danger" },
                   ].map((bar, barIndex) => (
-                    <span key={barIndex} className={cn("w-3 rounded-t-sm", bar.className)} style={{ height: Math.max(bar.value > 0 ? 7 : 2, (bar.value / maximum) * 132) }} />
+                    <span key={barIndex} className={cn("w-2 rounded-t-sm", bar.className)} style={{ height: Math.max(bar.value > 0 ? 7 : 2, (bar.value / maximum) * 132) }} />
                   ))}
                 </div>
                 <span className="type-caption h-4 whitespace-nowrap text-text-3" aria-hidden>{showDate ? date : ""}</span>
@@ -188,6 +239,73 @@ function NotificationCoverage({ data }: { data: AdminBotData["notifications"] })
   );
 }
 
+function UsageOverview({ data }: { data: AdminBotData }) {
+  const categories = [
+    { label: "Команды", value: data.summary.commandInteractions, icon: Command },
+    { label: "Кнопки", value: data.summary.buttonInteractions, icon: MousePointerClick },
+    { label: "Текст, голос и файлы", value: data.summary.messageInteractions, icon: MessageSquareText },
+  ] as const;
+  const maximum = Math.max(1, data.summary.interactions);
+
+  return (
+    <section className="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]" aria-labelledby="bot-usage-title">
+      <div className="card-plain rounded-md p-5 sm:p-6">
+        <p className="type-label text-brand">Использование</p>
+        <h3 id="bot-usage-title" className="mt-2 text-text">Как работают с ботом</h3>
+        <p className="type-caption mt-1 max-w-xl text-pretty text-text-3">Считаются только тип действия и раздел. Тексты сообщений, идентификаторы кнопок и токены не сохраняются.</p>
+        <ul className="mt-6 space-y-5">
+          {categories.map(({ label, value, icon: Icon }) => {
+            const percentage = Math.round((value / maximum) * 100);
+            return (
+              <li key={label}>
+                <div className="flex items-center gap-3">
+                  <span className="grid h-10 w-10 shrink-0 place-items-center rounded-sm bg-info-soft text-info-text">
+                    <Icon className="h-5 w-5" strokeWidth={1.8} aria-hidden />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="type-caption flex items-center justify-between gap-3 text-text-2">
+                      <span>{label}</span>
+                      <span className="nums shrink-0 font-semibold text-text">{fmtNum(value)} · {percentage}%</span>
+                    </div>
+                    <div className="mt-2 h-2 overflow-hidden rounded-full bg-surface-inset" role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={maximum} aria-valuenow={value}>
+                      <span className="block h-full rounded-full bg-info" style={{ width: `${percentage}%` }} aria-hidden />
+                    </div>
+                  </div>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+
+      <div className="card-plain rounded-md p-5 sm:p-6">
+        <h3 className="text-text">Популярные действия</h3>
+        <p className="type-caption mt-1 text-text-3">Что открывали и запускали за выбранный период</p>
+        {data.topActions.length === 0 ? (
+          <div className="mt-5 rounded-sm bg-surface-inset p-5 text-center">
+            <Activity className="mx-auto h-7 w-7 text-text-3" aria-hidden />
+            <p className="type-body-strong mt-3 text-text">Новых действий пока нет</p>
+            <p className="type-caption mt-1 text-text-3">Они появятся после следующей команды или нажатия в Telegram.</p>
+          </div>
+        ) : (
+          <ol className="mt-5 grid gap-3 sm:grid-cols-2">
+            {data.topActions.slice(0, 10).map((item, index) => (
+              <li key={`${item.type}:${item.action}`} className="flex items-center gap-3 rounded-sm bg-surface-inset p-3">
+                <span className="nums grid h-8 w-8 shrink-0 place-items-center rounded-full bg-surface text-text-2" aria-hidden>{index + 1}</span>
+                <div className="min-w-0 flex-1">
+                  <p className="type-secondary truncate font-semibold text-text">{botActionLabel(item.type, item.action)}</p>
+                  <p className="type-caption mt-0.5 text-text-3">{INTERACTION_TYPE_LABEL[item.type] || "Действие"}</p>
+                </div>
+                <span className="nums shrink-0 font-semibold text-text">{fmtNum(item.count)}</span>
+              </li>
+            ))}
+          </ol>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function BotCenterLoading() {
   return (
     <div className="space-y-5" aria-busy="true">
@@ -229,7 +347,7 @@ export function AdminBotCenter({ period }: { period: AdminPeriodDays }) {
   const runtimeState = useMemo(() => {
     if (!data) return "neutral" as const;
     if (data.runtime.state === "healthy" && data.workerState === "up") return "healthy" as const;
-    if (data.runtime.state === "not_configured") return "warning" as const;
+    if (data.runtime.state === "not_configured" || data.workerState === "unknown") return "warning" as const;
     return "danger" as const;
   }, [data]);
 
@@ -314,17 +432,23 @@ export function AdminBotCenter({ period }: { period: AdminPeriodDays }) {
             <div className="mt-4 flex flex-wrap gap-2">
               <StatusPill state={data.runtime.state === "healthy" ? "healthy" : "danger"} label={data.runtime.state === "healthy" ? "Telegram API доступен" : "Telegram API недоступен"} />
               <StatusPill
-                state={data.workerState === "up" ? "healthy" : "danger"}
+                state={data.workerState === "up" ? "healthy" : data.workerState === "unknown" ? "warning" : "danger"}
                 label={data.workerState === "up"
                   ? "Приём сообщений работает"
                   : data.workerState === "conflict"
                     ? "Конфликт двух воркеров"
-                    : "Приём сообщений остановлен"}
+                    : data.workerState === "unknown"
+                      ? "Состояние приёма не подтверждено"
+                      : "Приём сообщений остановлен"}
               />
-              <StatusPill state={data.publicationWorkerState === "up" ? "healthy" : "danger"} label={data.publicationWorkerState === "up" ? "Публикации работают" : "Публикации не подтверждены"} />
+              <StatusPill state={data.publicationWorkerState === "up" ? "healthy" : data.publicationWorkerState === "unknown" ? "warning" : "danger"} label={data.publicationWorkerState === "up" ? "Публикации работают" : "Публикации не подтверждены"} />
               <StatusPill state={data.runtime.miniAppReady ? "healthy" : "warning"} label={data.runtime.miniAppReady ? "Mini App готов" : "Mini App ждёт HTTPS"} />
               <StatusPill state={data.runtime.voiceReady ? "healthy" : "warning"} label={data.runtime.voiceReady ? "Голос доступен" : "Распознавание не настроено"} />
             </div>
+            <p className="type-caption mt-3 text-text-3">
+              Проверено {fmtAgo(data.checkedAt)}
+              {data.summary.lastInteractionAt ? ` · последнее действие ${fmtAgo(data.summary.lastInteractionAt)}` : " · действий после включения журнала ещё не было"}
+            </p>
           </div>
           <div className="flex flex-col gap-3 sm:flex-row lg:flex-col">
             {data.runtime.username ? (
@@ -346,6 +470,10 @@ export function AdminBotCenter({ period }: { period: AdminPeriodDays }) {
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <BotMetric label="Активны в боте" value={data.summary.activeUsers} helper={`За последние ${period} дней`} icon={Users} />
+        <BotMetric label="Действия в боте" value={data.summary.interactions} helper="Команды, кнопки, сообщения и голос" icon={Activity} />
+        <BotMetric label="Команды" value={data.summary.commandInteractions} helper="Команды из меню Telegram" icon={Command} />
+        <BotMetric label="Нажатия кнопок" value={data.summary.buttonInteractions} helper="Меню и кнопки под сообщениями" icon={MousePointerClick} />
         <BotMetric label="Подключили бота" value={data.summary.linkedUsers} helper={`${fmtNum(data.summary.disabledUsers)} с приостановленным доступом`} icon={Users} />
         <BotMetric label="Черновики из бота" value={data.summary.draftsCreated} helper={`За последние ${period} дней`} icon={Sparkles} />
         <BotMetric label="Поставлено в очередь" value={data.summary.publicationsScheduled} helper={`${fmtNum(data.summary.publicationsPublished)} уже опубликовано`} icon={Send} />
@@ -360,6 +488,8 @@ export function AdminBotCenter({ period }: { period: AdminPeriodDays }) {
         <ActivityChart data={data.daily} />
         <NotificationCoverage data={data.notifications} />
       </div>
+
+      <UsageOverview data={data} />
 
       <section aria-labelledby="bot-users-title">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
@@ -391,13 +521,16 @@ export function AdminBotCenter({ period }: { period: AdminPeriodDays }) {
                 <dl className="mt-4 grid grid-cols-2 gap-3 rounded-sm bg-surface-inset p-4 sm:grid-cols-4">
                   {[
                     ["Проекты", user.projects], ["Профили", user.notificationProfiles],
+                    ["Действия", user.interactions], ["Команды", user.commands],
+                    ["Кнопки", user.buttons], ["Сообщения", user.messages],
                     ["Черновики", user.draftsCreated], ["В очередь", user.publicationsScheduled],
                   ].map(([label, value]) => (
                     <div key={String(label)}><dt className="type-caption text-text-3">{label}</dt><dd className="nums mt-1 font-semibold text-text">{fmtNum(Number(value))}</dd></div>
                   ))}
                 </dl>
                 <div className="type-caption mt-4 flex flex-wrap gap-x-5 gap-y-2 text-text-3">
-                  <span>Активность: {user.lastActivityAt ? fmtAgo(user.lastActivityAt) : "ещё не было"}</span>
+                  <span>В боте: {user.lastInteractionAt ? fmtAgo(user.lastInteractionAt) : "ещё не работал"}</span>
+                  <span>Результативное действие: {user.lastActivityAt ? fmtAgo(user.lastActivityAt) : "ещё не было"}</span>
                   <span>Доставка: {user.lastDeliveryAt ? `${user.lastDeliveryOk ? "успешно" : "ошибка"}, ${fmtAgo(user.lastDeliveryAt)}` : "не проверялась"}</span>
                 </div>
                 <div className="mt-4 flex flex-wrap gap-3">
@@ -447,7 +580,7 @@ export function AdminBotCenter({ period }: { period: AdminPeriodDays }) {
                     <tr key={project.id} className="align-top">
                       <td className="px-5 py-4"><p className="type-body-strong text-text">{project.name}</p><p className="type-caption mt-1 text-text-3">{numberLabel(project.linkedMembers, "участник", "участника", "участников")} · {numberLabel(project.telegramChannels, "канал", "канала", "каналов")}</p></td>
                       <td className="px-5 py-4"><StatusPill state={project.enabled ? "healthy" : "danger"} label={project.enabled ? "Доступен в боте" : "Приостановлен"} />{project.disabledReason ? <p className="type-caption mt-2 max-w-xs text-danger-text">{project.disabledReason}</p> : null}</td>
-                      <td className="px-5 py-4"><p className="type-caption text-text-2">{numberLabel(project.draftsCreated, "черновик", "черновика", "черновиков")} · {fmtNum(project.publicationsScheduled)} в очереди</p><p className="type-caption mt-1 text-text-3">{project.lastActivityAt ? fmtAgo(project.lastActivityAt) : "Активности ещё не было"}</p></td>
+                      <td className="px-5 py-4"><p className="type-caption text-text-2">{numberLabel(project.interactions, "действие", "действия", "действий")} · {numberLabel(project.draftsCreated, "черновик", "черновика", "черновиков")} · {fmtNum(project.publicationsScheduled)} в очереди</p><p className="type-caption mt-1 text-text-3">{project.lastActivityAt ? fmtAgo(project.lastActivityAt) : "Активности ещё не было"}</p></td>
                       <td className="px-5 py-4"><StatusPill state={project.businessEnabled ? "healthy" : project.businessConnected ? "warning" : "neutral"} label={project.businessEnabled ? "Помощник включён" : project.businessConnected ? "Подключён, но выключен" : "Не подключён"} /><p className="type-caption mt-2 text-text-3">Ожидают решения: {numberLabel(project.openClientInquiries, "вопрос", "вопроса", "вопросов")}</p></td>
                       <td className="px-5 py-4"><div className="flex flex-col items-start gap-2">
                         {project.enabled ? <Button variant="danger" size="sm" onClick={() => setConfirmTarget({ type: "project", id: project.id, name: project.name })}>Приостановить в боте</Button> : <Button variant="secondary" size="sm" loading={actionKey === `enable-project-${project.id}`} onClick={() => void performAction({ action: "set_access", targetType: "project", targetId: project.id, enabled: true }, `enable-project-${project.id}`, `Проект «${project.name}» снова доступен в боте.`)}>Включить проект</Button>}
@@ -462,7 +595,7 @@ export function AdminBotCenter({ period }: { period: AdminPeriodDays }) {
               {data.projects.map((project) => (
                 <li key={project.id} className="p-4 sm:p-5">
                   <div className="flex flex-wrap items-start justify-between gap-3"><div><h4 className="text-text">{project.name}</h4><p className="type-caption mt-1 text-text-3">{numberLabel(project.linkedMembers, "участник", "участника", "участников")} · {numberLabel(project.telegramChannels, "канал", "канала", "каналов")}</p></div><StatusPill state={project.enabled ? "healthy" : "danger"} label={project.enabled ? "Доступен" : "Приостановлен"} /></div>
-                  <div className="mt-4 rounded-sm bg-surface-inset p-4"><StatusPill state={project.businessEnabled ? "healthy" : project.businessConnected ? "warning" : "neutral"} label={project.businessEnabled ? "Business включён" : project.businessConnected ? "Business выключен" : "Business не подключён"} /><p className="type-caption mt-2 text-text-3">{numberLabel(project.draftsCreated, "черновик", "черновика", "черновиков")} · {fmtNum(project.publicationsScheduled)} в очереди · {numberLabel(project.openClientInquiries, "вопрос", "вопроса", "вопросов")}</p></div>
+                  <div className="mt-4 rounded-sm bg-surface-inset p-4"><StatusPill state={project.businessEnabled ? "healthy" : project.businessConnected ? "warning" : "neutral"} label={project.businessEnabled ? "Business включён" : project.businessConnected ? "Business выключен" : "Business не подключён"} /><p className="type-caption mt-2 text-text-3">{numberLabel(project.interactions, "действие", "действия", "действий")} · {numberLabel(project.draftsCreated, "черновик", "черновика", "черновиков")} · {fmtNum(project.publicationsScheduled)} в очереди · {numberLabel(project.openClientInquiries, "вопрос", "вопроса", "вопросов")}</p></div>
                   <div className="mt-4 flex flex-wrap gap-3">
                     {project.enabled ? <Button variant="danger" size="sm" onClick={() => setConfirmTarget({ type: "project", id: project.id, name: project.name })}>Приостановить в боте</Button> : <Button variant="secondary" size="sm" loading={actionKey === `enable-project-${project.id}`} onClick={() => void performAction({ action: "set_access", targetType: "project", targetId: project.id, enabled: true }, `enable-project-${project.id}`, `Проект «${project.name}» снова доступен в боте.`)}>Включить проект</Button>}
                     <Button variant="ghost" size="sm" disabled={!project.businessConnected || !project.enabled} loading={actionKey === `business-${project.id}`} onClick={() => void performAction({ action: "set_business", projectId: project.id, enabled: !project.businessEnabled }, `business-${project.id}`, project.businessEnabled ? `Клиентский помощник проекта «${project.name}» выключен.` : `Клиентский помощник проекта «${project.name}» включён с обязательным подтверждением.`)}>{project.businessEnabled ? "Выключить помощника" : "Включить помощника"}</Button>
@@ -471,6 +604,49 @@ export function AdminBotCenter({ period }: { period: AdminPeriodDays }) {
               ))}
             </ul>
           </div>
+        )}
+      </section>
+
+      <section aria-labelledby="bot-interactions-title">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <p className="type-label text-brand">Живая активность</p>
+            <h3 id="bot-interactions-title" className="mt-2 text-text">Кто и как использует бот</h3>
+            <p className="type-secondary mt-2 max-w-2xl text-pretty text-text-2">Последние команды, кнопки и типы сообщений без сохранения их содержимого.</p>
+          </div>
+          <span className="type-caption text-text-3">Последние {fmtNum(Math.min(data.interactions.length, 16))}</span>
+        </div>
+        {data.interactions.length === 0 ? (
+          <div className="card-plain mt-5 rounded-md p-8 text-center">
+            <Activity className="mx-auto h-8 w-8 text-text-3" aria-hidden />
+            <h4 className="mt-3 text-text">Журнал взаимодействий пока пуст</h4>
+            <p className="type-secondary mt-2 text-text-2">Новая команда или нажатие появятся здесь после следующего обновления данных.</p>
+          </div>
+        ) : (
+          <ol className="mt-5 grid gap-3 xl:grid-cols-2">
+            {data.interactions.slice(0, 16).map((interaction) => {
+              const InteractionIcon = interaction.type === "command"
+                ? Command
+                : interaction.type === "callback" || interaction.type === "reply_button"
+                  ? MousePointerClick
+                  : MessageSquareText;
+              return (
+                <li key={interaction.id} className="card-plain flex min-w-0 gap-3 rounded-md p-4">
+                  <span className="grid h-10 w-10 shrink-0 place-items-center rounded-sm bg-info-soft text-info-text">
+                    <InteractionIcon className="h-5 w-5" strokeWidth={1.8} aria-hidden />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-1">
+                      <p className="type-secondary min-w-0 font-semibold text-text">{interaction.user || "Непривязанный чат"}</p>
+                      <time className="type-caption shrink-0 text-text-3" dateTime={interaction.createdAt}>{fmtAgo(interaction.createdAt)}</time>
+                    </div>
+                    <p className="type-caption mt-1 break-words text-text-2">{botActionLabel(interaction.type, interaction.action)}</p>
+                    <p className="type-caption mt-1 truncate text-text-3">{INTERACTION_TYPE_LABEL[interaction.type] || "Действие"}{interaction.project ? ` · ${interaction.project}` : ""}</p>
+                  </div>
+                </li>
+              );
+            })}
+          </ol>
         )}
       </section>
 

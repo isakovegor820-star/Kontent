@@ -18,13 +18,12 @@ export class AiCompletionError extends Error {
 const transient = (error) => error instanceof AiCompletionError && (
   error.status === 408 || error.status === 425 || error.status === 429 ||
   (Number(error.status) >= 500) ||
-  ["provider_timeout", "network_error", "stream_truncated", "empty_generation", "reasoning_without_content"].includes(error.code)
+  ["provider_timeout", "overall_timeout", "network_error", "stream_truncated", "empty_generation", "reasoning_without_content"].includes(error.code)
 );
 
-const canRetryNavyModelRejection = (error, fromEngine, toEngine) => (
+const canRetryNavyModelRejection = (error, fromEngine) => (
   error instanceof AiCompletionError
   && String(fromEngine).startsWith("navy-")
-  && String(toEngine || "").startsWith("navy-")
   && [400, 404, 422].includes(Number(error.status))
 );
 
@@ -37,16 +36,62 @@ const bounded = (value, fallback, min, max) => {
 // Keep one FIFO per model for the whole process so background reconnaissance cannot starve
 // an Autopilot build (and vice versa). Cloud engines stay fully concurrent.
 const localCompletionTails = new Map();
+const completionCircuits = new Map();
 
-async function serializedLocalCompletion(runtime, task) {
+function circuitState(engine, now) {
+  const state = completionCircuits.get(engine);
+  if (!state) return null;
+  if (state.openUntil > now) return state;
+  // Keep sub-threshold failures during the same recovery window so a threshold greater
+  // than one can actually be reached across calls. Once an opened/quiet window expires,
+  // start from a clean slate.
+  if (state.resetAt > now && state.openUntil === 0) return null;
+  completionCircuits.delete(engine);
+  return null;
+}
+
+function recordCircuitSuccess(engine) {
+  completionCircuits.delete(engine);
+}
+
+function recordCircuitFailure(engine, error, now, threshold, openMs) {
+  if (!transient(error)) return;
+  const previous = completionCircuits.get(engine);
+  const failures = (previous?.resetAt > now ? previous.failures : 0) + 1;
+  completionCircuits.set(engine, {
+    failures,
+    openUntil: failures >= threshold ? now + openMs : 0,
+    resetAt: now + openMs,
+  });
+}
+
+async function waitForLocalCompletionTurn(previous, signal) {
+  if (!signal) {
+    await previous.catch(() => {});
+    return;
+  }
+  if (signal.aborted) throw signal.reason;
+  let onAbort;
+  const aborted = new Promise((_, reject) => {
+    onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    await Promise.race([previous.catch(() => {}), aborted]);
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
+}
+
+async function serializedLocalCompletion(runtime, task, signal) {
   const key = `${runtime.baseUrl}/${runtime.model}`;
   const previous = localCompletionTails.get(key) || Promise.resolve();
   let release;
   const gate = new Promise((resolve) => { release = resolve; });
   const tail = previous.catch(() => {}).then(() => gate);
   localCompletionTails.set(key, tail);
-  await previous.catch(() => {});
   try {
+    await waitForLocalCompletionTurn(previous, signal);
     return await task();
   } finally {
     release();
@@ -193,53 +238,145 @@ async function oneCompletion(request, runtime, { fetchImpl, signal, timeoutMs })
 export async function completeAiText(request, options = {}) {
   const env = options.env || process.env;
   const primary = configuredServiceEngine(request.engine, env);
-  const candidates = options.allowFallback === false
+  const configuredCandidates = options.allowFallback === false
     ? [primary]
     : [primary, ...configuredAiFallbacks(primary, env)];
   const fetchImpl = options.fetchImpl || fetch;
   const timeoutMs = bounded(options.timeoutMs, 60_000, 100, 300_000);
   const localTimeoutMs = bounded(options.localTimeoutMs, timeoutMs, 100, 300_000);
+  const maxAttempts = bounded(
+    options.maxAttempts ?? env.AI_MAX_FALLBACK_ATTEMPTS,
+    3,
+    1,
+    10,
+  );
+  // Open circuits do not issue provider requests, so they must not consume the actual
+  // attempt budget or hide a healthy candidate later in the configured fallback list.
+  const candidates = configuredCandidates;
+  const overallTimeoutMs = bounded(
+    options.overallTimeoutMs,
+    Math.min(300_000, Math.max(timeoutMs, timeoutMs * maxAttempts)),
+    100,
+    300_000,
+  );
+  const circuitFailureThreshold = bounded(
+    options.circuitFailureThreshold ?? env.AI_CIRCUIT_FAILURE_THRESHOLD,
+    2,
+    1,
+    20,
+  );
+  const circuitOpenMs = bounded(
+    options.circuitOpenMs ?? env.AI_CIRCUIT_OPEN_MS,
+    30_000,
+    100,
+    10 * 60_000,
+  );
   const telemetry = typeof options.telemetry === "function" ? options.telemetry : () => {};
+  const now = typeof options.now === "function" ? options.now : Date.now;
+  const started = now();
+  const deadlineSignal = AbortSignal.timeout(overallTimeoutMs);
+  const signal = options.signal
+    ? AbortSignal.any([options.signal, deadlineSignal])
+    : deadlineSignal;
   let lastError;
+  let attempts = 0;
+  let restrictFallbackToNavy = false;
   for (let index = 0; index < candidates.length; index++) {
+    if (attempts >= maxAttempts) break;
     const engine = candidates[index];
+    if (restrictFallbackToNavy && !engine.startsWith("navy-")) {
+      telemetry({
+        type: "attempt",
+        engine,
+        attempt: attempts + 1,
+        outcome: "skipped",
+        code: "provider_boundary",
+      });
+      continue;
+    }
+    const openCircuit = circuitState(engine, now());
+    if (openCircuit) {
+      telemetry({
+        type: "attempt",
+        engine,
+        attempt: attempts + 1,
+        outcome: "skipped",
+        code: "circuit_open",
+        retryAfterMs: Math.max(0, openCircuit.openUntil - now()),
+      });
+      continue;
+    }
     const runtime = resolveAiEngineRuntime(engine, env);
-    const startedAt = Date.now();
-    telemetry({ type: "attempt", engine, attempt: index + 1, outcome: "started" });
+    const startedAt = now();
+    attempts += 1;
+    telemetry({ type: "attempt", engine, attempt: attempts, outcome: "started" });
     try {
+      const remainingMs = Math.max(100, overallTimeoutMs - (now() - started));
       const run = () => oneCompletion(request, runtime, {
         fetchImpl,
-        signal: options.signal,
-        timeoutMs: runtime.protocol === "ollama" ? localTimeoutMs : timeoutMs,
+        signal,
+        timeoutMs: Math.min(
+          runtime.protocol === "ollama" ? localTimeoutMs : timeoutMs,
+          remainingMs,
+        ),
       });
       const text = runtime.protocol === "ollama"
-        ? await serializedLocalCompletion(runtime, run)
+        ? await serializedLocalCompletion(runtime, run, signal)
         : await run();
+      recordCircuitSuccess(engine);
       telemetry({
         type: "attempt",
         engine,
-        attempt: index + 1,
+        attempt: attempts,
         outcome: "succeeded",
-        totalMs: Date.now() - startedAt,
+        totalMs: now() - startedAt,
       });
-      return { text, engine, fallbackUsed: index > 0, attempts: index + 1 };
+      return { text, engine, fallbackUsed: engine !== primary, attempts };
     } catch (error) {
-      lastError = error;
+      const normalizedError = deadlineSignal.aborted && !options.signal?.aborted
+        ? new AiCompletionError(engine, "overall_timeout", 504)
+        : error;
+      lastError = normalizedError;
+      recordCircuitFailure(
+        engine,
+        normalizedError,
+        now(),
+        circuitFailureThreshold,
+        circuitOpenMs,
+      );
       telemetry({
         type: "attempt",
         engine,
-        attempt: index + 1,
+        attempt: attempts,
         outcome: "failed",
-        code: error?.code || "provider_error",
-        totalMs: Date.now() - startedAt,
+        code: normalizedError?.code || "provider_error",
+        totalMs: now() - startedAt,
       });
+      if (options.signal?.aborted || deadlineSignal.aborted || attempts >= maxAttempts) {
+        throw normalizedError;
+      }
+      if (!transient(normalizedError)) {
+        if (!canRetryNavyModelRejection(normalizedError, engine)) throw normalizedError;
+        restrictFallbackToNavy = true;
+        const nextNavyIndex = candidates.findIndex(
+          (candidate, candidateIndex) => candidateIndex > index && candidate.startsWith("navy-"),
+        );
+        if (nextNavyIndex < 0) throw normalizedError;
+        telemetry({
+          type: "fallback",
+          fromEngine: engine,
+          toEngine: candidates[nextNavyIndex],
+          attempt: attempts + 1,
+        });
+        // A provider-specific model rejection must stay inside Navy. Explicit fallbacks from
+        // another vendor can appear before the automatic same-provider fleet, so jump over
+        // them without leaking the prompt or spending an attempt.
+        index = nextNavyIndex - 1;
+        continue;
+      }
       const nextEngine = candidates[index + 1];
-      if (
-        options.signal?.aborted
-        || index === candidates.length - 1
-        || (!transient(error) && !canRetryNavyModelRejection(error, engine, nextEngine))
-      ) throw error;
-      telemetry({ type: "fallback", fromEngine: engine, toEngine: candidates[index + 1], attempt: index + 2 });
+      if (!nextEngine) throw normalizedError;
+      telemetry({ type: "fallback", fromEngine: engine, toEngine: nextEngine, attempt: attempts + 1 });
     }
   }
   throw lastError || new AiCompletionError(primary, "provider_unavailable", 503);

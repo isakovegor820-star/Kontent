@@ -30,12 +30,12 @@ export const AUTOPILOT_ENGINE_OPTIONS = Object.freeze([
   },
 ]);
 
-export const DEFAULT_AUTOPILOT_ENGINE = "navy-deepseek-pro";
+export const DEFAULT_AUTOPILOT_ENGINE = "navy-gpt-5-4";
 export const AUTOPILOT_PLANNING_MONTHS = Object.freeze([1, 2, 3]);
 export const AUTOPILOT_WEEKS_PER_MONTH = 4;
 export const MIN_AUTOPILOT_PLANNING_WEEKS = 1;
 export const MAX_AUTOPILOT_PLANNING_WEEKS = 12;
-export const DEFAULT_AUTOPILOT_PLANNING_WEEKS = 4;
+export const DEFAULT_AUTOPILOT_PLANNING_WEEKS = 1;
 export const MAX_AUTOPILOT_PLAN_POSTS = 90;
 export const AUTOPILOT_SIMILARITY_THRESHOLD = 0.62;
 

@@ -7,6 +7,24 @@ const SAFE_LENGTH_QUESTIONS = [
   "Какой из этих пунктов сейчас важнее для твоей ситуации и что стоит разобрать подробнее в следующем посте?",
 ];
 
+/**
+ * Classify a failed gate before spending another model call. Missing evidence and an
+ * unavailable semantic checker cannot be repaired by rewriting the same text. They need
+ * human review (and remain ineligible for automatic publication).
+ */
+export function autopilotQualityFailureKind(result) {
+  if (result?.passed === true) return "passed";
+  const codes = new Set(
+    (Array.isArray(result?.violations) ? result.violations : [])
+      .map((violation) => String(violation?.code || "")),
+  );
+  if (codes.has("no_sources")) return "missing_evidence";
+  if (result?.semantic?.status === "not_checked" || codes.has("semantic_review_required")) {
+    return "semantic_unavailable";
+  }
+  return "rewriteable";
+}
+
 /** Fill only a small length miss with a non-factual question, never with invented facts. */
 export function padDraftToMinimum(text, minChars, maxChars) {
   const value = String(text || "").trim();

@@ -25,18 +25,17 @@ describe("shared direct/background AI completion service", () => {
     const fetchImpl = vi.fn(async () => Response.json({
       choices: [{ message: { content: "DONE" }, finish_reason: "stop" }],
     }));
-    expect(configuredServiceEngine(null, env)).toBe("navy-deepseek-pro");
+    expect(configuredServiceEngine(null, env)).toBe("navy-gpt-5-4");
     const result = await completeAiText(request, { env, fetchImpl });
 
-    expect(result).toMatchObject({ text: "DONE", engine: "navy-deepseek-pro", fallbackUsed: false });
+    expect(result).toMatchObject({ text: "DONE", engine: "navy-gpt-5-4", fallbackUsed: false });
     expect(fetchImpl).toHaveBeenCalledWith(
       "https://navy.example/v1/chat/completions",
       expect.objectContaining({ method: "POST" }),
     );
     expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toMatchObject({
-      model: "deepseek-v4-pro",
+      model: "gpt-5.4",
       max_tokens: 3_000,
-      reasoning_effort: "none",
     });
   });
 
@@ -105,6 +104,59 @@ describe("shared direct/background AI completion service", () => {
     expect(telemetry).toHaveBeenCalledWith(expect.objectContaining({ type: "fallback" }));
   });
 
+  it("opens a circuit after repeated provider failure and skips the broken model", async () => {
+    const env = {
+      NAVYAI_API_KEY: "secret",
+      AI_FALLBACK_ENGINES: "navy-minimax-m3",
+      AI_FALLBACK_STRICT: "1",
+    };
+    const firstFetch = vi.fn()
+      .mockResolvedValueOnce(new Response("unavailable", { status: 503 }))
+      .mockResolvedValueOnce(Response.json({
+        choices: [{ message: { content: "FALLBACK" }, finish_reason: "stop" }],
+      }));
+    await completeAiText({ ...request, engine: "navy-deepseek-flash" }, {
+      env,
+      fetchImpl: firstFetch,
+      circuitFailureThreshold: 1,
+      circuitOpenMs: 30_000,
+    });
+
+    const telemetry = vi.fn();
+    const secondFetch = vi.fn(async () => Response.json({
+      choices: [{ message: { content: "HEALTHY" }, finish_reason: "stop" }],
+    }));
+    const result = await completeAiText({ ...request, engine: "navy-deepseek-flash" }, {
+      env,
+      fetchImpl: secondFetch,
+      telemetry,
+      circuitFailureThreshold: 1,
+      circuitOpenMs: 30_000,
+    });
+
+    expect(result).toMatchObject({ engine: "navy-minimax-m3", attempts: 1, fallbackUsed: true });
+    expect(secondFetch).toHaveBeenCalledTimes(1);
+    expect(telemetry).toHaveBeenCalledWith(expect.objectContaining({
+      engine: "navy-deepseek-flash",
+      outcome: "skipped",
+      code: "circuit_open",
+    }));
+  });
+
+  it("stops all fallbacks at the overall deadline", async () => {
+    const fetchImpl = vi.fn((_url, init) => new Promise((_resolve, reject) => {
+      init.signal.addEventListener("abort", () => reject(init.signal.reason), { once: true });
+    }));
+    await expect(completeAiText({ ...request, engine: "openai" }, {
+      env: { OPENAI_API_KEY: "secret" },
+      fetchImpl,
+      timeoutMs: 1_000,
+      overallTimeoutMs: 100,
+      circuitFailureThreshold: 20,
+    })).rejects.toMatchObject({ code: "overall_timeout", status: 504 });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it("falls back when a background plan contains only an internal think block", async () => {
     const env = {
       NAVYAI_API_KEY: "secret",
@@ -122,7 +174,7 @@ describe("shared direct/background AI completion service", () => {
 
     expect(result).toMatchObject({
       text: "ГОТОВЫЙ НЕДЕЛЬНЫЙ ПЛАН",
-      engine: "navy-deepseek-flash",
+      engine: "navy-gpt-5-4",
       fallbackUsed: true,
     });
     expect(fetchImpl).toHaveBeenCalledTimes(2);
@@ -146,7 +198,7 @@ describe("shared direct/background AI completion service", () => {
 
     expect(result).toMatchObject({
       text: "FALLBACK POST",
-      engine: "navy-deepseek-flash",
+      engine: "navy-gpt-5-4",
       fallbackUsed: true,
     });
     expect(fetchImpl).toHaveBeenCalledTimes(2);
@@ -166,6 +218,31 @@ describe("shared direct/background AI completion service", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
+  it("skips an explicit cross-provider fallback after a Navy model rejection and reaches the next Navy model", async () => {
+    const env = {
+      NAVYAI_API_KEY: "secret",
+      OPENAI_API_KEY: "other-secret",
+      AI_FALLBACK_ENGINES: "openai",
+    };
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new Response("bad model parameters", { status: 400 }))
+      .mockResolvedValueOnce(Response.json({
+        choices: [{ message: { content: "NAVY FALLBACK" }, finish_reason: "stop" }],
+      }));
+
+    const result = await completeAiText({ ...request, engine: "navy-deepseek-pro" }, {
+      env,
+      fetchImpl,
+    });
+
+    expect(result).toMatchObject({
+      text: "NAVY FALLBACK",
+      engine: "navy-gpt-5-4",
+      attempts: 2,
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
   it.each([
     ["openai", { OPENAI_API_KEY: "secret" }, { choices: [{ message: { content: "PARTIAL" }, finish_reason: null }] }],
     ["claude", { ANTHROPIC_API_KEY: "secret" }, { content: [{ type: "text", text: "PARTIAL" }], stop_reason: null }],
@@ -174,6 +251,7 @@ describe("shared direct/background AI completion service", () => {
     const error = await completeAiText({ ...request, engine }, {
       env,
       fetchImpl: vi.fn(async () => Response.json(body)),
+      circuitFailureThreshold: 20,
     }).catch((value) => value);
     expect(error).toBeInstanceOf(AiCompletionError);
     expect(error).toMatchObject({ code: "stream_truncated" });
@@ -240,6 +318,115 @@ describe("shared direct/background AI completion service", () => {
 
     expect(result).toMatchObject({ text: "LOCAL", engine: "local", fallbackUsed: true });
     expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("lets the overall deadline abort a request waiting in the local FIFO", async () => {
+    const fetchImpl = vi.fn((_url, init) => new Promise((resolve, reject) => {
+      const timer = setTimeout(() => resolve(Response.json({
+        message: { content: "LOCAL" },
+        done: true,
+        done_reason: "stop",
+      })), 250);
+      init.signal.addEventListener("abort", () => {
+        clearTimeout(timer);
+        reject(init.signal.reason);
+      }, { once: true });
+    }));
+    const first = completeAiText({ ...request, engine: "local" }, {
+      env: {},
+      fetchImpl,
+      overallTimeoutMs: 1_000,
+      localTimeoutMs: 1_000,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const startedAt = Date.now();
+
+    await expect(completeAiText({ ...request, engine: "local" }, {
+      env: {},
+      fetchImpl,
+      overallTimeoutMs: 100,
+      localTimeoutMs: 1_000,
+    })).rejects.toMatchObject({ code: "overall_timeout", status: 504 });
+    expect(Date.now() - startedAt).toBeLessThan(220);
+    await first;
+  });
+
+  it("does not spend the attempt budget on open circuits", async () => {
+    const env = {
+      NAVYAI_API_KEY: "secret",
+      AI_FALLBACK_ENGINES: "navy-gpt-5-4,navy-minimax-m3,navy-qwen-3-6",
+      AI_FALLBACK_STRICT: "1",
+    };
+    const enginesToOpen = ["navy-deepseek-pro", "navy-gpt-5-4", "navy-minimax-m3"];
+    for (const engine of enginesToOpen) {
+      await expect(completeAiText({ ...request, engine }, {
+        env,
+        fetchImpl: vi.fn(async () => new Response("unavailable", { status: 503 })),
+        allowFallback: false,
+        circuitFailureThreshold: 1,
+        circuitOpenMs: 100,
+      })).rejects.toMatchObject({ status: 503 });
+    }
+
+    const fetchImpl = vi.fn(async () => Response.json({
+      choices: [{ message: { content: "HEALTHY FOURTH" }, finish_reason: "stop" }],
+    }));
+    const result = await completeAiText({ ...request, engine: "navy-deepseek-pro" }, {
+      env,
+      fetchImpl,
+      maxAttempts: 3,
+      circuitOpenMs: 100,
+    });
+
+    expect(result).toMatchObject({ engine: "navy-qwen-3-6", attempts: 1 });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    await new Promise((resolve) => setTimeout(resolve, 110));
+  });
+
+  it("opens a circuit after the configured number of failures across requests", async () => {
+    const env = {
+      OPENAI_API_KEY: "secret",
+      ANTHROPIC_API_KEY: "fallback-secret",
+      AI_FALLBACK_ENGINES: "claude",
+      AI_FALLBACK_STRICT: "1",
+    };
+    const failingPrimary = vi.fn(async (url) => {
+      if (String(url).includes("api.openai.com")) {
+        return new Response("unavailable", { status: 503 });
+      }
+      return Response.json({
+        content: [{ type: "text", text: "CLAUDE FALLBACK" }],
+        stop_reason: "end_turn",
+      });
+    });
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await expect(completeAiText({ ...request, engine: "openai" }, {
+        env,
+        fetchImpl: failingPrimary,
+        circuitFailureThreshold: 2,
+        circuitOpenMs: 100,
+      })).resolves.toMatchObject({ engine: "claude" });
+    }
+
+    const telemetry = vi.fn();
+    const recoveryFetch = vi.fn(async () => Response.json({
+      content: [{ type: "text", text: "HEALTHY FALLBACK" }],
+      stop_reason: "end_turn",
+    }));
+    await expect(completeAiText({ ...request, engine: "openai" }, {
+      env,
+      fetchImpl: recoveryFetch,
+      telemetry,
+      circuitFailureThreshold: 2,
+      circuitOpenMs: 100,
+    })).resolves.toMatchObject({ engine: "claude", attempts: 1 });
+    expect(recoveryFetch).toHaveBeenCalledTimes(1);
+    expect(telemetry).toHaveBeenCalledWith(expect.objectContaining({
+      engine: "openai",
+      outcome: "skipped",
+      code: "circuit_open",
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 110));
   });
 
   it("never silently substitutes an unsupported account engine", async () => {

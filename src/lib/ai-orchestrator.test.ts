@@ -232,24 +232,24 @@ describe("AI provider orchestration", () => {
   it("по умолчанию держит fallback внутри NavyAI и не отправляет local primary в облако", () => {
     const env = { NAVYAI_API_KEY: "test" };
     expect(configuredFallbackEngines("navy-deepseek-pro", env)).toEqual([
-      "navy-deepseek-flash",
       "navy-gpt-5-4",
-      "navy-qwen-3-6",
       "navy-minimax-m3",
+      "navy-deepseek-flash",
+      "navy-qwen-3-6",
     ]);
     expect(configuredFallbackEngines("local", { ...env, AI_FALLBACK_ENGINES: "openai" })).toEqual([]);
   });
 
-  it("keeps the same-provider safety fleet ahead of a stale explicit fallback list", () => {
+  it("honors the explicit healthy fallback order before the automatic safety fleet", () => {
     expect(configuredFallbackEngines("navy-gpt-5-4", {
       NAVYAI_API_KEY: "test",
       AI_FALLBACK_ENGINES: "navy-minimax-m3,local",
     })).toEqual([
-      "navy-deepseek-flash",
-      "navy-deepseek-pro",
-      "navy-qwen-3-6",
       "navy-minimax-m3",
       "local",
+      "navy-deepseek-flash",
+      "navy-qwen-3-6",
+      "navy-deepseek-pro",
     ]);
   });
 

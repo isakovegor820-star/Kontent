@@ -64,6 +64,8 @@ interface PlanItem {
   quality?: QualityResult;
   qualityOrigin?: string;
   approvalBlockers?: ApprovalBlocker[];
+  reviewRequired?: boolean;
+  reviewReason?: string;
 }
 interface Settings {
   enabled: boolean;
@@ -85,7 +87,14 @@ interface State {
     generation_engine: string;
     planning_months: number;
     planning_weeks: number;
-    errorReason?: "timeout" | "quota" | "variety" | "quality" | "provider";
+    buildProgress?: {
+      completed: number;
+      total: number;
+      reviewRequired: number;
+      percent: number;
+      stage: "preparing" | "generating" | "finalizing";
+    };
+    errorReason?: "timeout" | "quota" | "variety" | "quality" | "provider" | "cancelled";
   } | null;
   hasChannel: boolean;
   brief: Brief | null;
@@ -132,6 +141,7 @@ export default function AutopilotPage() {
   const reduce = useReducedMotion();
   const [data, setData] = useState<State | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState<{
     channelId: number;
@@ -171,9 +181,11 @@ export default function AutopilotPage() {
         cache: "no-store",
         signal: controller.signal,
       });
-      const d = (await r.json()) as State;
+      const d = (await r.json().catch(() => null)) as (State & { error?: string }) | null;
+      if (!r.ok || !d) throw new Error(d?.error || `http_${r.status}`);
       if (sequence !== loadSequence.current || controller.signal.aborted) return;
       if (requestedChannelId != null && d.channelId !== requestedChannelId) return;
+      setLoadError(null);
       setData(d);
       if (d.settings) {
         setGenerationEngine(
@@ -195,7 +207,9 @@ export default function AutopilotPage() {
       activePlanIdentity.current = nextPlanIdentity;
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
-      /* сеть */
+      if (sequence === loadSequence.current) {
+        setLoadError("Не удалось загрузить Автопилот. Проверь подключение и повтори.");
+      }
     } finally {
       if (sequence === loadSequence.current) setLoading(false);
     }
@@ -207,6 +221,7 @@ export default function AutopilotPage() {
       if (cancelled) return;
       setLoading(true);
       setData(null);
+      setLoadError(null);
       setEditing(null);
       setEditText("");
       setExpanded(null);
@@ -223,8 +238,17 @@ export default function AutopilotPage() {
   const building = data?.plan?.status === "building";
   useEffect(() => {
     if (!building) return;
-    const t = setInterval(load, 3000);
-    return () => clearInterval(t);
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const poll = async () => {
+      await load();
+      if (!cancelled) timer = setTimeout(poll, 3000);
+    };
+    timer = setTimeout(poll, 3000);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
   }, [building, load]);
 
   const generate = async () => {
@@ -266,6 +290,53 @@ export default function AutopilotPage() {
         });
         await load();
       }
+    } catch {
+      s.toast({
+        kind: "danger",
+        title: "Не удалось запустить сборку",
+        body: "Проверь подключение и попробуй ещё раз. Текущий план не изменён.",
+      });
+      await load();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const cancelBuild = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const response = await fetch("/api/autopilot/generate", {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ channelId: chId }),
+      });
+      const result = (await response.json().catch(() => null)) as
+        | { ok?: boolean; cancelled?: boolean }
+        | null;
+      if (response.ok && result?.ok) {
+        s.toast({
+          kind: "info",
+          title: result.cancelled ? "Сборка остановлена" : "Сборка уже завершилась",
+          body: result.cancelled
+            ? "Готовые публикации не затронуты. Можно выбрать другой период и запустить снова."
+            : "Обновляю актуальное состояние плана.",
+        });
+      } else {
+        s.toast({
+          kind: "danger",
+          title: "Не удалось остановить сборку",
+          body: "Обнови страницу и повтори. Готовые публикации не затронуты.",
+        });
+      }
+      await load();
+    } catch {
+      s.toast({
+        kind: "danger",
+        title: "Не удалось остановить сборку",
+        body: "Проверь подключение и повтори. Готовые публикации не затронуты.",
+      });
+      await load();
     } finally {
       setBusy(false);
     }
@@ -493,13 +564,32 @@ export default function AutopilotPage() {
     await load();
   };
 
-  if (loading || !data) {
+  if (loading) {
     return (
       <AppShell title="Автопилот">
         <div className="space-y-4">
           <div className="skeleton h-24 rounded-lg" />
           <div className="skeleton h-64 rounded-lg" />
         </div>
+      </AppShell>
+    );
+  }
+
+  if (!data) {
+    return (
+      <AppShell title="Автопилот">
+        <Card className="p-8 text-center" role="alert">
+          <AlertTriangle className="mx-auto h-7 w-7 text-brand" aria-hidden />
+          <p className="mt-3 text-[15px] font-semibold text-text">Не удалось загрузить Автопилот</p>
+          <p className="mx-auto mt-1 max-w-md text-[14px] leading-relaxed text-text-3">
+            {loadError ?? "Проверь подключение и повтори."}
+          </p>
+          <div className="mt-4">
+            <Button variant="brand" onClick={() => void load()}>
+              Повторить загрузку
+            </Button>
+          </div>
+        </Card>
       </AppShell>
     );
   }
@@ -695,7 +785,7 @@ export default function AutopilotPage() {
         </div>
         <p className="mt-4 flex items-start gap-2 rounded-md bg-surface-inset p-3 text-[12px] leading-relaxed text-text-3">
           <Check className="mt-0.5 h-4 w-4 shrink-0 text-success" aria-hidden />
-          Аврора автоматически переписывает слабый текст и пробует резервную модель при сбое. План появится только после того, как каждый пост пройдёт проверку качества.
+          Аврора пробует резервную модель при сбое. Посты, которые не удалось проверить автоматически, останутся заблокированными до твоей ручной проверки.
         </p>
       </Card>
 
@@ -724,11 +814,35 @@ export default function AutopilotPage() {
       {/* Состояние плана */}
       {building ? (
         <Card className="p-8 text-center" aria-live="polite" aria-busy="true">
-          <Loader2 className="mx-auto h-7 w-7 animate-spin text-brand" aria-hidden />
+          <Loader2 className={cn("mx-auto h-7 w-7 text-brand", !reduce && "animate-spin")} aria-hidden />
           <p className="mt-3 text-[15px] font-semibold text-text">Собираю контент-план…</p>
           <p className="mt-1 text-[14px] text-text-3">
-            ИИ пишет и проверяет {plannedCount} {plural(plannedCount, "пост", "поста", "постов")}. Большой план может занять несколько минут.
+            {plan?.buildProgress?.completed ?? 0} из {plan?.buildProgress?.total ?? plannedCount} {plural(plan?.buildProgress?.total ?? plannedCount, "поста", "постов", "постов")} готовы. Можно уйти со страницы — прогресс сохранится.
           </p>
+          <div
+            className="mx-auto mt-4 h-2 max-w-md overflow-hidden rounded-full bg-surface-inset"
+            role="progressbar"
+            aria-label="Прогресс сборки контент-плана"
+            aria-valuemin={0}
+            aria-valuemax={plan?.buildProgress?.total ?? plannedCount}
+            aria-valuenow={plan?.buildProgress?.completed ?? 0}
+          >
+            <div
+              className="h-full rounded-full bg-brand"
+              style={{ width: `${plan?.buildProgress?.percent ?? 0}%` }}
+            />
+          </div>
+          {loadError && (
+            <p className="mx-auto mt-4 max-w-md text-[13px] text-danger" role="status">
+              Прогресс временно не обновляется. Повторю автоматически.
+            </p>
+          )}
+          <div className="mt-5">
+            <Button variant="outline" onClick={cancelBuild} loading={busy} disabled={busy}>
+              <X className="h-4 w-4" aria-hidden />
+              Остановить сборку
+            </Button>
+          </div>
         </Card>
       ) : plan?.status === "error" ? (
         <Card className="p-8 text-center" role="alert">
@@ -736,6 +850,8 @@ export default function AutopilotPage() {
           <p className="mx-auto mt-1 max-w-md text-[14px] text-text-3">
             {plan.errorReason === "timeout"
               ? "Сборка не была обработана вовремя. Перезапусти приложение и попробуй ещё раз."
+              : plan.errorReason === "cancelled"
+                ? "Сборка остановлена. Готовые планы и запланированные публикации не изменились."
               : plan.errorReason === "quota"
                 ? "Дневной лимит ИИ исчерпан. Он обновится завтра; текущий план и настройки сохранены."
                 : plan.errorReason === "variety"

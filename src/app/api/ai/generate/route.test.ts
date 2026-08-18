@@ -1243,17 +1243,17 @@ describe("POST /api/ai/generate prerequisites", () => {
     expect(events).toContainEqual(expect.objectContaining({
       type: "fallback",
       fromEngine: "navy-deepseek-flash",
-      toEngine: "navy-deepseek-pro",
+      toEngine: "navy-gpt-5-4",
       reason: "overall_timeout",
     }));
     expect(events).toContainEqual(expect.objectContaining({
       type: "done",
-      engine: "navy-deepseek-pro",
+      engine: "navy-gpt-5-4",
       requestedEngine: "navy-deepseek-flash",
       fallbackUsed: true,
     }));
     const providerBodies = fetchMock.mock.calls.map((call) => JSON.parse(String(call[1]?.body)));
-    expect(providerBodies.map((body) => body.model)).toEqual(["deepseek-v4-flash", "deepseek-v4-pro"]);
+    expect(providerBodies.map((body) => body.model)).toEqual(["deepseek-v4-flash", "gpt-5.4"]);
     expect(mocks.commitAiUsageResult).not.toHaveBeenCalled();
     expect(mocks.releaseAiUsageRequest).not.toHaveBeenCalled();
     expect(mocks.stageAiUsageResult).toHaveBeenCalled();
@@ -1313,13 +1313,13 @@ describe("POST /api/ai/generate prerequisites", () => {
     expect(events).toContainEqual(expect.objectContaining({
       type: "fallback",
       fromEngine: "navy-qwen-3-6",
-      toEngine: "navy-deepseek-flash",
+      toEngine: "navy-gpt-5-4",
       reason: "empty_generation",
     }));
     expect(events).toContainEqual(expect.objectContaining({ type: "replace", text: post }));
     expect(events).toContainEqual(expect.objectContaining({
       type: "done",
-      engine: "navy-deepseek-flash",
+      engine: "navy-gpt-5-4",
       requestedEngine: "navy-qwen-3-6",
       fallbackUsed: true,
     }));

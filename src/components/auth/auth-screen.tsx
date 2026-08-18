@@ -3,7 +3,17 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, ArrowRight, Check, Eye, EyeOff, ShieldCheck } from "lucide-react";
+import {
+  Activity,
+  ArrowLeft,
+  ArrowRight,
+  Bot,
+  Check,
+  Eye,
+  EyeOff,
+  ShieldCheck,
+  UsersRound,
+} from "lucide-react";
 import { Logo } from "@/components/brand";
 import { HeroProductScene } from "@/components/landing/hero-product-scene";
 import { Button } from "@/components/ui/button";
@@ -13,6 +23,7 @@ import { useStore } from "@/lib/store";
 import styles from "./auth-screen.module.css";
 
 export type AuthMode = "register" | "login";
+export type AuthIntent = "platform" | "admin";
 
 const PASSWORD_MIN = 8;
 
@@ -25,7 +36,8 @@ function validateEmail(raw: string): string | undefined {
   return undefined;
 }
 
-function signedInDestination() {
+function signedInDestination(intent: AuthIntent) {
+  if (intent === "admin") return "/admin#overview";
   if (hasPendingProjectInvite(typeof window === "undefined" ? null : window.sessionStorage)) {
     return "/invite";
   }
@@ -36,7 +48,7 @@ function signedInDestination() {
   return "/app/calendar";
 }
 
-export function AuthScreen({ mode }: { mode: AuthMode }) {
+export function AuthScreen({ mode, intent = "platform" }: { mode: AuthMode; intent?: AuthIntent }) {
   const store = useStore();
   const router = useRouter();
   const nameRef = useRef<HTMLInputElement>(null);
@@ -54,10 +66,11 @@ export function AuthScreen({ mode }: { mode: AuthMode }) {
   const [pending, setPending] = useState(false);
 
   const isRegistration = mode === "register";
+  const isAdmin = intent === "admin";
 
   useEffect(() => {
-    if (store.authReady && store.user) router.replace(signedInDestination());
-  }, [router, store.authReady, store.user]);
+    if (store.authReady && store.user) router.replace(signedInDestination(intent));
+  }, [intent, router, store.authReady, store.user]);
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -115,9 +128,9 @@ export function AuthScreen({ mode }: { mode: AuthMode }) {
         store.toast({
           kind: "success",
           title: isRegistration ? "Аккаунт создан" : "Вход выполнен",
-          body: "Открываем платформу.",
+          body: isAdmin ? "Открываем центр управления." : "Открываем платформу.",
         });
-        router.replace(signedInDestination());
+        router.replace(signedInDestination(intent));
         return;
       }
 
@@ -165,10 +178,16 @@ export function AuthScreen({ mode }: { mode: AuthMode }) {
 
       <div className={styles.shell}>
         <section className={styles.formPanel} aria-labelledby="auth-title">
-          <p className={styles.eyebrow}>{isRegistration ? "14 дней бесплатно" : "Личный кабинет"}</p>
-          <h1 id="auth-title">{isRegistration ? "Создайте аккаунт" : "С возвращением"}</h1>
+          <p className={styles.eyebrow}>
+            {isAdmin ? "Защищённый контур" : isRegistration ? "14 дней бесплатно" : "Личный кабинет"}
+          </p>
+          <h1 id="auth-title">
+            {isAdmin ? "Вход в центр управления" : isRegistration ? "Создайте аккаунт" : "С возвращением"}
+          </h1>
           <p className={styles.lead}>
-            {isRegistration
+            {isAdmin
+              ? "Только для администраторов Авроры. После входа доступ будет проверен сервером."
+              : isRegistration
               ? "Начните управлять контентом в одном окне. Карта для регистрации не нужна."
               : "Войдите, чтобы продолжить работу с контентом, командой и аналитикой."}
           </p>
@@ -227,7 +246,7 @@ export function AuthScreen({ mode }: { mode: AuthMode }) {
             <div className={styles.field}>
               <div className={styles.passwordLabel}>
                 <label htmlFor="password">Пароль</label>
-                {!isRegistration ? <Link href="/forgot-password">Восстановить</Link> : null}
+                {!isRegistration && !isAdmin ? <Link href="/forgot-password">Восстановить</Link> : null}
               </div>
               <div className={styles.passwordWrap}>
                 <Input
@@ -274,42 +293,90 @@ export function AuthScreen({ mode }: { mode: AuthMode }) {
               className={styles.submitButton}
               loading={pending}
             >
-              {isRegistration ? "Создать аккаунт" : "Войти в платформу"}
+              {isAdmin ? "Войти в админ-панель" : isRegistration ? "Создать аккаунт" : "Войти в платформу"}
               {!pending ? <ArrowRight aria-hidden="true" /> : null}
             </Button>
           </form>
 
-          <p className={styles.switchCopy}>
-            {isRegistration ? "Уже есть аккаунт?" : "Ещё нет аккаунта?"}{" "}
-            <Link href={isRegistration ? "/login" : "/register"}>
-              {isRegistration ? "Войти" : "Зарегистрироваться"}
-            </Link>
-          </p>
+          {!isAdmin ? (
+            <p className={styles.switchCopy}>
+              {isRegistration ? "Уже есть аккаунт?" : "Ещё нет аккаунта?"}{" "}
+              <Link href={isRegistration ? "/login" : "/register"}>
+                {isRegistration ? "Войти" : "Зарегистрироваться"}
+              </Link>
+            </p>
+          ) : null}
 
           <p className={styles.securityNote}>
             <ShieldCheck aria-hidden="true" />
-            Пароль защищён и не хранится в открытом виде.
+            {isAdmin
+              ? "Доступ получают только аккаунты из серверного списка администраторов."
+              : "Пароль защищён и не хранится в открытом виде."}
           </p>
         </section>
 
-        <aside className={styles.previewPanel} aria-label="Возможности платформы">
-          <div className={styles.previewCopy}>
-            <span><Check aria-hidden="true" />Всё готово к работе</span>
-            <h2>
-              {isRegistration
-                ? "Из регистрации — сразу в рабочий календарь"
-                : "Всё на месте — продолжайте с календаря"}
-            </h2>
-            <p>
-              {isRegistration
-                ? "Подключите каналы, соберите первую неделю и опубликуйте пост без лишних настроек."
-                : "Вернитесь к контент-плану, согласованиям и аналитике без повторной настройки."}
-            </p>
-          </div>
-          <div className={styles.previewScene}>
-            <HeroProductScene />
-          </div>
-        </aside>
+        {isAdmin ? (
+          <aside className={styles.previewPanel} aria-label="Возможности центра управления">
+            <div className={styles.adminPreview}>
+              <div className={styles.adminPulse}>
+                <span aria-hidden="true" />
+                Защищённое подключение
+              </div>
+              <h2>Вся Аврора — под контролем</h2>
+              <p>
+                Состояние платформы, пользователи, каналы, публикации и бот собраны в одном центре.
+              </p>
+              <ul className={styles.adminFeatures}>
+                <li>
+                  <span className={styles.adminFeatureIcon}>
+                    <Activity aria-hidden="true" />
+                  </span>
+                  <span>
+                    <strong>Пульс системы</strong>
+                    <small>Сервисы, очереди и ошибки в реальном времени</small>
+                  </span>
+                </li>
+                <li>
+                  <span className={styles.adminFeatureIcon}>
+                    <UsersRound aria-hidden="true" />
+                  </span>
+                  <span>
+                    <strong>Пользователи и каналы</strong>
+                    <small>Аккаунты, подключения и активность проектов</small>
+                  </span>
+                </li>
+                <li>
+                  <span className={styles.adminFeatureIcon}>
+                    <Bot aria-hidden="true" />
+                  </span>
+                  <span>
+                    <strong>Центр Telegram-бота</strong>
+                    <small>Доставки, доступы и проверка уведомлений</small>
+                  </span>
+                </li>
+              </ul>
+            </div>
+          </aside>
+        ) : (
+          <aside className={styles.previewPanel} aria-label="Возможности платформы">
+            <div className={styles.previewCopy}>
+              <span><Check aria-hidden="true" />Всё готово к работе</span>
+              <h2>
+                {isRegistration
+                  ? "Из регистрации — сразу в рабочий календарь"
+                  : "Всё на месте — продолжайте с календаря"}
+              </h2>
+              <p>
+                {isRegistration
+                  ? "Подключите каналы, соберите первую неделю и опубликуйте пост без лишних настроек."
+                  : "Вернитесь к контент-плану, согласованиям и аналитике без повторной настройки."}
+              </p>
+            </div>
+            <div className={styles.previewScene}>
+              <HeroProductScene />
+            </div>
+          </aside>
+        )}
       </div>
     </main>
   );

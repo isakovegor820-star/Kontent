@@ -39,8 +39,14 @@ export interface AdminBotData {
     businessConnected: number;
     businessEnabled: number;
     openClientInquiries: number;
+    interactions: number;
+    activeUsers: number;
+    commandInteractions: number;
+    buttonInteractions: number;
+    messageInteractions: number;
+    lastInteractionAt: string | null;
   };
-  daily: Array<{ date: string; drafts: number; scheduled: number; published: number; failures: number }>;
+  daily: Array<{ date: string; drafts: number; scheduled: number; published: number; failures: number; interactions: number }>;
   notifications: {
     recipients: number;
     publicationSuccess: number;
@@ -63,7 +69,12 @@ export interface AdminBotData {
     notificationProfiles: number;
     draftsCreated: number;
     publicationsScheduled: number;
+    interactions: number;
+    commands: number;
+    buttons: number;
+    messages: number;
     lastActivityAt: string | null;
+    lastInteractionAt: string | null;
     lastDeliveryAt: string | null;
     lastDeliveryOk: boolean | null;
   }>;
@@ -76,6 +87,7 @@ export interface AdminBotData {
     telegramChannels: number;
     draftsCreated: number;
     publicationsScheduled: number;
+    interactions: number;
     businessConnected: boolean;
     businessEnabled: boolean;
     openClientInquiries: number;
@@ -90,6 +102,19 @@ export interface AdminBotData {
     ok: boolean;
     errorCode: string | null;
     description: string | null;
+    createdAt: string;
+  }>;
+  topActions: Array<{
+    type: string;
+    action: string;
+    count: number;
+  }>;
+  interactions: Array<{
+    id: number;
+    user: string | null;
+    project: string | null;
+    type: string;
+    action: string;
     createdAt: string;
   }>;
   audit: Array<{
@@ -170,7 +195,17 @@ export async function loadAdminBotData(
   db: Queryable,
   periodDays: AdminPeriodDays,
 ): Promise<Omit<AdminBotData, "checkedAt" | "runtime" | "workerState" | "publicationWorkerState">> {
-  const [headline, daily, notificationRows, userRows, projectRows, deliveryRows, auditRows] = await Promise.all([
+  const [
+    headline,
+    daily,
+    notificationRows,
+    userRows,
+    projectRows,
+    deliveryRows,
+    topActionRows,
+    interactionRows,
+    auditRows,
+  ] = await Promise.all([
     db.query(`select
       (select count(*) from users where tg_chat_id is not null) as linked_users,
       (select count(*) from bot_user_controls where enabled = false) as disabled_users,
@@ -193,7 +228,22 @@ export async function loadAdminBotData(
       (select count(*) from bot_post_result_notifications where delivered_at is null) as pending_results,
       (select count(*) from bot_client_assistant_preferences where business_connection_id is not null) as business_connected,
       (select count(*) from bot_client_assistant_preferences where business_connection_id is not null and enabled = true) as business_enabled,
-      (select count(*) from bot_client_inquiries where status in ('pending','reply_ready','approved','failed')) as open_client_inquiries`,
+      (select count(*) from bot_client_inquiries where status in ('pending','reply_ready','approved','failed')) as open_client_inquiries,
+      (select count(*) from bot_interaction_events event
+        where event.created_at >= now() - make_interval(days => $1::int)) as interactions,
+      (select count(distinct event.user_id) from bot_interaction_events event
+        where event.user_id is not null
+          and event.created_at >= now() - make_interval(days => $1::int)) as active_users,
+      (select count(*) from bot_interaction_events event
+        where event.interaction_type = 'command'
+          and event.created_at >= now() - make_interval(days => $1::int)) as command_interactions,
+      (select count(*) from bot_interaction_events event
+        where event.interaction_type in ('reply_button','callback')
+          and event.created_at >= now() - make_interval(days => $1::int)) as button_interactions,
+      (select count(*) from bot_interaction_events event
+        where event.interaction_type in ('message','voice','attachment')
+          and event.created_at >= now() - make_interval(days => $1::int)) as message_interactions,
+      (select max(event.created_at) from bot_interaction_events event) as last_interaction_at`,
     [periodDays]),
     db.query(`with days as (
       select generate_series(current_date - ($1::int - 1), current_date, interval '1 day')::date as day
@@ -204,7 +254,8 @@ export async function loadAdminBotData(
       (select count(*) from audit_events event
         join posts post on event.entity_id ~ '^[0-9]+$' and post.id = event.entity_id::bigint
         where event.action = 'publication.scheduled_from_bot' and post.status = 'published' and post.published_at::date = days.day) as published,
-      (select count(*) from bot_delivery_events event where event.ok = false and event.created_at::date = days.day) as failures
+      (select count(*) from bot_delivery_events event where event.ok = false and event.created_at::date = days.day) as failures,
+      (select count(*) from bot_interaction_events event where event.created_at::date = days.day) as interactions
     from days order by days.day`, [periodDays]),
     db.query(`select
       count(*) as recipients,
@@ -226,6 +277,17 @@ export async function loadAdminBotData(
       where event.action in ('draft.saved_from_bot','publication.scheduled_from_bot')
         and event.created_at >= now() - make_interval(days => $1::int)
       group by event.actor_user_id
+    ), usage as (
+      select event.user_id,
+        count(*) as interactions,
+        count(*) filter (where event.interaction_type = 'command') as commands,
+        count(*) filter (where event.interaction_type in ('reply_button','callback')) as buttons,
+        count(*) filter (where event.interaction_type in ('message','voice','attachment')) as messages,
+        max(event.created_at) as last_interaction_at
+      from bot_interaction_events event
+      where event.user_id is not null
+        and event.created_at >= now() - make_interval(days => $1::int)
+      group by event.user_id
     ), last_delivery as (
       select distinct on (event.user_id) event.user_id, event.created_at, event.ok
       from bot_delivery_events event where event.user_id is not null
@@ -239,13 +301,23 @@ export async function loadAdminBotData(
       (select count(*) from bot_notification_preferences preference where preference.user_id = app_user.id) as notification_profiles,
       coalesce(activity.drafts_created, 0) as drafts_created,
       coalesce(activity.publications_scheduled, 0) as publications_scheduled,
-      activity.last_activity_at, last_delivery.created_at as last_delivery_at, last_delivery.ok as last_delivery_ok
+      coalesce(usage.interactions, 0) as interactions,
+      coalesce(usage.commands, 0) as commands,
+      coalesce(usage.buttons, 0) as buttons,
+      coalesce(usage.messages, 0) as messages,
+      greatest(activity.last_activity_at, usage.last_interaction_at) as last_activity_at,
+      usage.last_interaction_at,
+      last_delivery.created_at as last_delivery_at, last_delivery.ok as last_delivery_ok
     from users app_user
     left join bot_user_controls control on control.user_id = app_user.id
     left join activity on activity.user_id = app_user.id
+    left join usage on usage.user_id = app_user.id
     left join last_delivery on last_delivery.user_id = app_user.id
-    where app_user.tg_chat_id is not null or control.user_id is not null or activity.user_id is not null
-    order by app_user.tg_chat_id is not null desc, activity.last_activity_at desc nulls last, app_user.id desc
+    where app_user.tg_chat_id is not null or control.user_id is not null
+      or activity.user_id is not null or usage.user_id is not null
+    order by app_user.tg_chat_id is not null desc,
+      greatest(activity.last_activity_at, usage.last_interaction_at) desc nulls last,
+      app_user.id desc
     limit 60`, [periodDays]),
     db.query(`with activity as (
       select event.project_id,
@@ -256,6 +328,12 @@ export async function loadAdminBotData(
       where event.action in ('draft.saved_from_bot','publication.scheduled_from_bot')
         and event.created_at >= now() - make_interval(days => $1::int)
       group by event.project_id
+    ), usage as (
+      select event.project_id, count(*) as interactions, max(event.created_at) as last_interaction_at
+      from bot_interaction_events event
+      where event.project_id is not null
+        and event.created_at >= now() - make_interval(days => $1::int)
+      group by event.project_id
     )
     select project.id, project.name, coalesce(control.enabled, true) as enabled, control.disabled_reason,
       (select count(distinct member.user_id) from project_members member join users app_user on app_user.id = member.user_id
@@ -264,22 +342,26 @@ export async function loadAdminBotData(
         and channel.is_active = true and channel.status = 'active') as telegram_channels,
       coalesce(activity.drafts_created, 0) as drafts_created,
       coalesce(activity.publications_scheduled, 0) as publications_scheduled,
+      coalesce(usage.interactions, 0) as interactions,
       business.business_connection_id is not null as business_connected,
       coalesce(business.enabled, false) as business_enabled,
       (select count(*) from bot_client_inquiries inquiry where inquiry.project_id = project.id
         and inquiry.status in ('pending','reply_ready','approved','failed')) as open_client_inquiries,
-      activity.last_activity_at
+      greatest(activity.last_activity_at, usage.last_interaction_at) as last_activity_at
     from projects project
     left join bot_project_controls control on control.project_id = project.id
     left join activity on activity.project_id = project.id
+    left join usage on usage.project_id = project.id
     left join bot_client_assistant_preferences business on business.project_id = project.id
     where project.is_archived = false and (
-      control.project_id is not null or activity.project_id is not null or business.project_id is not null
+      control.project_id is not null or activity.project_id is not null or usage.project_id is not null
+      or business.project_id is not null
       or exists (select 1 from channels channel where channel.project_id = project.id and channel.network = 'tg')
       or exists (select 1 from project_members member join users app_user on app_user.id = member.user_id
         where member.project_id = project.id and member.status = 'active' and app_user.tg_chat_id is not null)
     )
-    order by coalesce(activity.last_activity_at, project.created_at) desc, project.id desc
+    order by coalesce(greatest(activity.last_activity_at, usage.last_interaction_at), project.created_at) desc,
+      project.id desc
     limit 60`, [periodDays]),
     db.query(`select event.id, event.method, event.source, event.ok,
       coalesce(event.error_code, case when event.telegram_error_code is not null then 'telegram_' || event.telegram_error_code::text end) as error_code,
@@ -287,6 +369,19 @@ export async function loadAdminBotData(
       coalesce(nullif(btrim(app_user.name), ''), app_user.email) as user_name,
       project.name as project_name
     from bot_delivery_events event
+    left join users app_user on app_user.id = event.user_id
+    left join projects project on project.id = event.project_id
+    order by event.created_at desc, event.id desc limit 40`),
+    db.query(`select event.interaction_type, event.action, count(*) as count
+      from bot_interaction_events event
+      where event.created_at >= now() - make_interval(days => $1::int)
+      group by event.interaction_type, event.action
+      order by count(*) desc, event.interaction_type, event.action
+      limit 12`, [periodDays]),
+    db.query(`select event.id, event.interaction_type, event.action, event.created_at,
+      coalesce(nullif(btrim(app_user.name), ''), app_user.email) as user_name,
+      project.name as project_name
+    from bot_interaction_events event
     left join users app_user on app_user.id = event.user_id
     left join projects project on project.id = event.project_id
     order by event.created_at desc, event.id desc limit 40`),
@@ -321,10 +416,13 @@ export async function loadAdminBotData(
       publicationsPublished: count(h.publications_published), deliveryFailures: count(h.delivery_failures),
       pendingResults: count(h.pending_results), businessConnected: count(h.business_connected),
       businessEnabled: count(h.business_enabled), openClientInquiries: count(h.open_client_inquiries),
+      interactions: count(h.interactions), activeUsers: count(h.active_users),
+      commandInteractions: count(h.command_interactions), buttonInteractions: count(h.button_interactions),
+      messageInteractions: count(h.message_interactions), lastInteractionAt: nullableIso(h.last_interaction_at),
     },
     daily: daily.rows.map((row) => ({
       date: iso(row.day).slice(0, 10), drafts: count(row.drafts), scheduled: count(row.scheduled),
-      published: count(row.published), failures: count(row.failures),
+      published: count(row.published), failures: count(row.failures), interactions: count(row.interactions),
     })),
     notifications: {
       recipients: count(n.recipients), publicationSuccess: count(n.publication_success),
@@ -338,7 +436,9 @@ export async function loadAdminBotData(
       disabledReason: row.disabled_reason ? String(row.disabled_reason) : null,
       projects: count(row.projects), notificationProfiles: count(row.notification_profiles),
       draftsCreated: count(row.drafts_created), publicationsScheduled: count(row.publications_scheduled),
-      lastActivityAt: nullableIso(row.last_activity_at), lastDeliveryAt: nullableIso(row.last_delivery_at),
+      interactions: count(row.interactions), commands: count(row.commands), buttons: count(row.buttons),
+      messages: count(row.messages), lastActivityAt: nullableIso(row.last_activity_at),
+      lastInteractionAt: nullableIso(row.last_interaction_at), lastDeliveryAt: nullableIso(row.last_delivery_at),
       lastDeliveryOk: row.last_delivery_ok == null ? null : row.last_delivery_ok === true,
     })),
     projects: projectRows.rows.map((row) => ({
@@ -346,6 +446,7 @@ export async function loadAdminBotData(
       disabledReason: row.disabled_reason ? String(row.disabled_reason) : null,
       linkedMembers: count(row.linked_members), telegramChannels: count(row.telegram_channels),
       draftsCreated: count(row.drafts_created), publicationsScheduled: count(row.publications_scheduled),
+      interactions: count(row.interactions),
       businessConnected: row.business_connected === true, businessEnabled: row.business_enabled === true,
       openClientInquiries: count(row.open_client_inquiries), lastActivityAt: nullableIso(row.last_activity_at),
     })),
@@ -355,6 +456,16 @@ export async function loadAdminBotData(
       source: String(row.source || "assistant"), ok: row.ok === true,
       errorCode: row.error_code ? String(row.error_code) : null,
       description: row.error_description ? String(row.error_description) : null,
+      createdAt: iso(row.created_at),
+    })),
+    topActions: topActionRows.rows.map((row) => ({
+      type: String(row.interaction_type || "message"), action: String(row.action || "unknown"),
+      count: count(row.count),
+    })),
+    interactions: interactionRows.rows.map((row) => ({
+      id: positiveId(row.id), user: row.user_name ? String(row.user_name) : null,
+      project: row.project_name ? String(row.project_name) : null,
+      type: String(row.interaction_type || "message"), action: String(row.action || "unknown"),
       createdAt: iso(row.created_at),
     })),
     audit: auditRows.rows.map((row) => ({

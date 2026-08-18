@@ -81,7 +81,7 @@ export function resolveAiEngineRuntime(engineId, env = process.env) {
 export function configuredServiceEngine(requested = null, env = process.env) {
   if (isConfiguredEngineId(requested)) return requested;
   if (isConfiguredEngineId(env.AI_SERVICE_ENGINE)) return env.AI_SERVICE_ENGINE;
-  if (env.NAVYAI_API_KEY) return "navy-deepseek-pro";
+  if (env.NAVYAI_API_KEY) return "navy-gpt-5-4";
   if (env.OPENAI_API_KEY || env.AI_API_KEY) return "openai";
   if (env.ANTHROPIC_API_KEY) return "claude";
   if (env.GEMINI_API_KEY) return "gemini";
@@ -98,19 +98,20 @@ export function configuredAiFallbacks(primary, env = process.env) {
   // `/chat/completions` call can still fail for one routed upstream while another model on
   // the same NavyAI endpoint/key is healthy. Keep the whole same-credential fleet available
   // as an automatic safety net; this neither changes data residency nor sends the prompt to
-  // another vendor. Operator fallbacks (for example local Ollama) remain the final tier.
+  // another vendor. Explicit operator fallbacks are attempted first because they encode the
+  // latest observed provider health; the remaining same-provider fleet is the final tier.
   const sameProvider = primary.startsWith("navy-")
     ? [
-        "navy-deepseek-flash",
-        "navy-deepseek-pro",
         "navy-gpt-5-4",
-        "navy-qwen-3-6",
         "navy-minimax-m3",
+        "navy-deepseek-flash",
+        "navy-qwen-3-6",
+        "navy-deepseek-pro",
       ]
     : [];
   const candidates = env.AI_FALLBACK_STRICT === "1"
     ? explicit
-    : [...sameProvider, ...explicit];
+    : [...explicit, ...sameProvider];
   return [...new Set(candidates)]
     .filter((id) => id !== primary)
     .filter((id) => {

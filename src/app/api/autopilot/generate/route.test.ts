@@ -7,6 +7,8 @@ const mocks = vi.hoisted(() => ({
   ensureSettings: vi.fn(),
   loadBrief: vi.fn(),
   getWorkersCount: vi.fn(),
+  getJob: vi.fn(),
+  removeJob: vi.fn(),
   add: vi.fn(),
   clientQuery: vi.fn(),
   release: vi.fn(),
@@ -23,7 +25,11 @@ vi.mock("@/lib/autopilot", () => ({
 }));
 vi.mock("@/lib/brief", () => ({ briefComplete: () => true }));
 vi.mock("@/lib/queue", () => ({
-  getStatsQueue: () => ({ getWorkersCount: mocks.getWorkersCount, add: mocks.add }),
+  getAutopilotQueue: () => ({
+    getWorkersCount: mocks.getWorkersCount,
+    add: mocks.add,
+    getJob: mocks.getJob,
+  }),
 }));
 vi.mock("@/lib/db", () => ({
   getPool: () => ({
@@ -39,11 +45,11 @@ vi.mock("@/lib/project-permissions", async (importOriginal) => {
   return { ...actual, requireSelectedProjectPermission: mocks.requireSelectedProjectPermission };
 });
 
-import { POST } from "./route";
+import { DELETE, POST } from "./route";
 
-function request(body: Record<string, unknown>) {
+function request(body: Record<string, unknown>, method = "POST") {
   return new NextRequest("http://localhost/api/autopilot/generate", {
-    method: "POST",
+    method,
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
@@ -78,6 +84,7 @@ describe("POST /api/autopilot/generate", () => {
       return { rows: [], rowCount: 1 };
     });
     mocks.add.mockResolvedValue({ id: "autopilot-plan-91" });
+    mocks.getJob.mockResolvedValue({ remove: mocks.removeJob });
   });
 
   it("rejects an unknown model before creating a plan", async () => {
@@ -107,13 +114,33 @@ describe("POST /api/autopilot/generate", () => {
     );
     expect(mocks.clientQuery).toHaveBeenCalledWith(
       expect.stringContaining("insert into autopilot_plan"),
-      [88, 4, 22, "navy-gpt-5-4", 2, 7, null],
+      [88, 4, 22, "navy-gpt-5-4", 7, 49, 2, 7, null],
     );
     expect(mocks.add).toHaveBeenCalledWith(
       "autopilot-plan",
       { projectId: 88, userId: 4, channelId: 22, planId: "91" },
       expect.objectContaining({ jobId: "autopilot-plan-91" }),
     );
+  });
+
+  it("cancels the exact building plan and removes its queued job", async () => {
+    mocks.clientQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("set status = 'error', rules = 'cancelled'")) {
+        return { rows: [{ id: "91" }], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 1 };
+    });
+
+    const response = await DELETE(request({ channelId: 22 }, "DELETE"));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ ok: true, cancelled: true, planId: "91" });
+    expect(mocks.clientQuery).toHaveBeenCalledWith(
+      expect.stringContaining("rules = 'cancelled'"),
+      [88, 22],
+    );
+    expect(mocks.getJob).toHaveBeenCalledWith("autopilot-plan-91");
+    expect(mocks.removeJob).toHaveBeenCalledOnce();
   });
 
   it("does not create a plan for a project A channel while project B is selected", async () => {
@@ -145,7 +172,7 @@ describe("POST /api/autopilot/generate", () => {
   });
 
   it("accepts only an approved monthly plan from the selected project and forces one week", async () => {
-    mocks.poolQuery.mockResolvedValueOnce({ rows: [{ id: 73 }], rowCount: 1 });
+    mocks.poolQuery.mockResolvedValueOnce({ rows: [{ id: 73, posts_per_week: 6 }], rowCount: 1 });
 
     const response = await POST(request({
       channelId: 22,
@@ -160,7 +187,68 @@ describe("POST /api/autopilot/generate", () => {
     );
     expect(mocks.clientQuery).toHaveBeenCalledWith(
       expect.stringContaining("monthly_campaign_plan_id"),
-      [88, 4, 22, "navy-deepseek-pro", 1, 1, 73],
+      [88, 4, 22, "navy-deepseek-pro", 6, 6, 1, 1, 73],
+    );
+  });
+
+  it("reuses only a fresh build with the exact same immutable inputs", async () => {
+    mocks.clientQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("from autopilot_plan") && sql.includes("status = 'building'")) {
+        return {
+          rows: [{
+            id: "91",
+            created_at: new Date().toISOString(),
+            build_activity_at: new Date().toISOString(),
+            items: [],
+            generation_engine: "navy-deepseek-pro",
+            generation_post_frequency: 7,
+            expected_post_count: 28,
+            planning_months: 1,
+            planning_weeks: 4,
+            monthly_campaign_plan_id: null,
+          }],
+          rowCount: 1,
+        };
+      }
+      return { rows: [], rowCount: 1 };
+    });
+
+    const response = await POST(request({ channelId: 22 }));
+
+    await expect(response.json()).resolves.toEqual({ ok: true, building: true, planId: "91" });
+    expect(mocks.add).not.toHaveBeenCalled();
+  });
+
+  it("supersedes a fresh build when the requested model differs", async () => {
+    mocks.clientQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("from autopilot_plan") && sql.includes("status = 'building'")) {
+        return {
+          rows: [{
+            id: "91",
+            created_at: new Date().toISOString(),
+            build_activity_at: new Date().toISOString(),
+            items: [],
+            generation_engine: "navy-deepseek-pro",
+            generation_post_frequency: 7,
+            expected_post_count: 28,
+            planning_months: 1,
+            planning_weeks: 4,
+            monthly_campaign_plan_id: null,
+          }],
+          rowCount: 1,
+        };
+      }
+      if (sql.includes("insert into autopilot_plan")) return { rows: [{ id: "92" }], rowCount: 1 };
+      return { rows: [], rowCount: 1 };
+    });
+
+    const response = await POST(request({ channelId: 22, generationEngine: "navy-gpt-5-4" }));
+
+    await expect(response.json()).resolves.toEqual({ ok: true, planId: "92" });
+    expect(mocks.add).toHaveBeenCalledWith(
+      "autopilot-plan",
+      expect.objectContaining({ planId: "92" }),
+      expect.objectContaining({ jobId: "autopilot-plan-92" }),
     );
   });
 

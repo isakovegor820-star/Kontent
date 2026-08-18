@@ -16,8 +16,10 @@ import {
   citedShare,
   mapConcurrent,
   autopilotBuildComplete,
+  autopilotDraftsDeliverable,
   autopilotJobAttemptsExhausted,
   autopilotJobTerminalFailure,
+  boundedAutopilotRewriteAttempts,
   formatPost,
   parseTelegramChannelDescription,
   summarizeTelegramPostingActivity,
@@ -279,6 +281,22 @@ describe("autopilotBuildComplete", () => {
     };
     expect(autopilotBuildComplete(2, topics, [items[0], blocked])).toBe(false);
   });
+
+  it("shows review-required drafts only through the confirmation-mode boundary", () => {
+    const blocked = {
+      aiReady: true,
+      draft: "Черновик для ручной проверки",
+      qualityBlocked: true,
+      reviewRequired: true,
+      quality: { passed: false },
+    };
+    expect(autopilotBuildComplete(2, topics, [items[0], blocked])).toBe(false);
+    expect(autopilotDraftsDeliverable(2, topics, [items[0], blocked])).toBe(true);
+    expect(autopilotDraftsDeliverable(2, topics, [items[0], {
+      ...blocked,
+      reviewRequired: false,
+    }])).toBe(false);
+  });
 });
 
 describe("autopilotJobAttemptsExhausted", () => {
@@ -294,6 +312,15 @@ describe("autopilotJobTerminalFailure", () => {
     expect(autopilotJobTerminalFailure(0, 2, "job stalled more than allowable limit")).toBe(true);
     expect(autopilotJobTerminalFailure(0, 2, "temporary provider error")).toBe(false);
     expect(autopilotJobTerminalFailure(2, 2, "provider error")).toBe(true);
+  });
+});
+
+describe("boundedAutopilotRewriteAttempts", () => {
+  it("preserves an explicit zero and caps excessive rewrites", () => {
+    expect(boundedAutopilotRewriteAttempts(0)).toBe(0);
+    expect(boundedAutopilotRewriteAttempts(1)).toBe(1);
+    expect(boundedAutopilotRewriteAttempts(3)).toBe(2);
+    expect(boundedAutopilotRewriteAttempts(undefined)).toBe(1);
   });
 });
 

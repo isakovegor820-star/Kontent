@@ -107,6 +107,26 @@ export function autopilotBuildComplete(expected, topics, items = null) {
     );
 }
 
+// Confirmation mode may safely expose a complete AI draft that still needs a person to
+// verify evidence. Such items are explicitly blocked from auto-publication. Full-auto keeps
+// using autopilotBuildComplete and therefore never crosses this relaxed delivery boundary.
+export function autopilotDraftsDeliverable(expected, topics, items = null) {
+  const count = Number(expected);
+  if (!Number.isInteger(count) || count < 1) return false;
+  if (!Array.isArray(topics) || topics.length !== count) return false;
+  if (items == null) return true;
+  return Array.isArray(items) &&
+    items.length === count &&
+    items.every((item) =>
+      item?.aiReady === true &&
+      String(item?.draft || "").trim().length > 0 &&
+      (
+        (item?.qualityBlocked !== true && item?.quality?.passed === true) ||
+        (item?.qualityBlocked === true && item?.reviewRequired === true)
+      ),
+    );
+}
+
 export function autopilotJobAttemptsExhausted(attemptsMade, configuredAttempts) {
   const made = Math.max(0, Number(attemptsMade) || 0);
   const allowed = Math.max(1, Number(configuredAttempts) || 1);
@@ -118,6 +138,13 @@ export function autopilotJobTerminalFailure(attemptsMade, configuredAttempts, re
   // though that state is terminal. Without this branch the DB placeholder stays `building`.
   return autopilotJobAttemptsExhausted(attemptsMade, configuredAttempts)
     || /stalled more than allowable limit/iu.test(String(reason));
+}
+
+export function boundedAutopilotRewriteAttempts(value) {
+  const attempts = Number(value);
+  return Number.isFinite(attempts)
+    ? Math.min(2, Math.max(0, Math.round(attempts)))
+    : 1;
 }
 
 // ── Разбор публичной страницы t.me/s/ ────────────────────────────────────────

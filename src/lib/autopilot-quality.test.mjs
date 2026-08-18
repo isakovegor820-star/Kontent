@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   assessAutopilotDraft,
+  autopilotQualityFailureKind,
   padDraftToMinimum,
   removeUnverifiedSemanticClaims,
 } from "./autopilot-quality.mjs";
@@ -53,6 +54,23 @@ const supportingAdapter = {
 };
 
 describe("production Autopilot semantic quality", () => {
+  it("does not spend rewrites on missing evidence or an unavailable semantic checker", () => {
+    expect(autopilotQualityFailureKind({
+      passed: false,
+      violations: [{ code: "no_sources" }],
+      semantic: { status: "blocked" },
+    })).toBe("missing_evidence");
+    expect(autopilotQualityFailureKind({
+      passed: false,
+      violations: [{ code: "semantic_review_required" }],
+      semantic: { status: "not_checked" },
+    })).toBe("semantic_unavailable");
+    expect(autopilotQualityFailureKind({
+      passed: false,
+      violations: [{ code: "too_short" }],
+      semantic: { status: "blocked" },
+    })).toBe("rewriteable");
+  });
   it("fills a small length miss only with a non-factual reader question", () => {
     const draft = "Подтверждённый текст".padEnd(278, ".");
     const padded = padDraftToMinimum(draft, 300, 400);

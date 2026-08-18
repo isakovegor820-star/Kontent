@@ -57,6 +57,18 @@ describe("Autopilot plan visibility", () => {
     ])).toBe(false);
   });
 
+  it("keeps an explicit review-required AI draft visible but blocked", () => {
+    expect(autopilotPlanNeedsQualityRebuild([
+      planItem({
+        aiReady: true,
+        draft: "Черновик для ручной проверки",
+        qualityBlocked: true,
+        reviewRequired: true,
+        quality: { ...verifiedQuality, passed: false },
+      }),
+    ])).toBe(false);
+  });
+
   it("requires a rebuild for a pending legacy automatic draft without verified metadata", () => {
     const legacyQuality = { ...verifiedQuality };
     delete legacyQuality.metadata;

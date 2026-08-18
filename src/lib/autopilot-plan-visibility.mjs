@@ -12,9 +12,14 @@ export function autopilotPlanNeedsQualityRebuild(items) {
       item?.qualityOrigin === "automatic" &&
       (
         item?.aiReady === false ||
-        item?.qualityBlocked === true ||
-        item?.quality?.passed !== true ||
-        !hasVerifiedQualityMetadata(item?.quality)
+        (
+          item?.reviewRequired !== true &&
+          (
+            item?.qualityBlocked === true ||
+            item?.quality?.passed !== true ||
+            !hasVerifiedQualityMetadata(item?.quality)
+          )
+        )
       ),
   );
 }

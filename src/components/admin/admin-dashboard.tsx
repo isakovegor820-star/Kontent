@@ -173,7 +173,7 @@ function AdminError({ error }: { error: LoadError }) {
         </p>
         <div className="mt-6 flex flex-col justify-center gap-3 sm:flex-row">
           {unauthorized ? (
-            <Link href="/login" className={buttonClassName({ variant: "primary" })}>Войти</Link>
+            <Link href="/admin/login" className={buttonClassName({ variant: "primary" })}>Войти как администратор</Link>
           ) : (
             <Link href="/app/calendar" className={buttonClassName({ variant: "secondary" })}>Вернуться в кабинет</Link>
           )}

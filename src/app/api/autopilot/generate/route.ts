@@ -4,13 +4,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
-import { getStatsQueue } from "@/lib/queue";
+import { getAutopilotQueue } from "@/lib/queue";
 import { ensureSettings, loadBrief, resolveChannel } from "@/lib/autopilot";
 import { briefComplete } from "@/lib/brief";
 import { isAutopilotBuildStale } from "@/lib/autopilot-build";
+import { autopilotBuildActivityAt } from "@/lib/autopilot-build-progress.mjs";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import {
   AUTOPILOT_PLANNING_MONTHS,
+  DEFAULT_AUTOPILOT_ENGINE,
   isAutopilotEngine,
   isAutopilotPlanningWeeks,
   plannedPostCountForWeeks,
@@ -58,17 +60,18 @@ export async function POST(req: NextRequest) {
       ? body.generationEngine
       : isAutopilotEngine(settings.generation_engine)
         ? settings.generation_engine
-        : "navy-deepseek-pro";
+        : DEFAULT_AUTOPILOT_ENGINE;
     const monthlyCampaignPlanId = body.monthlyCampaignPlanId == null
       ? null
       : Number(body.monthlyCampaignPlanId);
+    let monthlyPostFrequency: number | null = null;
     if (monthlyCampaignPlanId != null
         && (!Number.isSafeInteger(monthlyCampaignPlanId) || monthlyCampaignPlanId <= 0)) {
       return NextResponse.json({ ok: false, error: "bad_monthly_plan" }, { status: 422 });
     }
     if (monthlyCampaignPlanId != null) {
       const monthly = await pool.query(
-        `select plan.id
+        `select plan.id, campaign.posts_per_week
            from monthly_campaign_plans plan
            join monthly_campaigns campaign
              on campaign.id = plan.campaign_id and campaign.project_id = plan.project_id
@@ -80,6 +83,10 @@ export async function POST(req: NextRequest) {
       if (!monthly.rowCount) {
         return NextResponse.json({ ok: false, error: "monthly_plan_unavailable" }, { status: 409 });
       }
+      monthlyPostFrequency = Math.max(
+        1,
+        Math.min(7, Math.round(Number(monthly.rows[0]?.posts_per_week) || 1)),
+      );
       if (body.planningMonths != null || (body.planningWeeks != null && Number(body.planningWeeks) !== 1)) {
         return NextResponse.json({ ok: false, error: "bad_horizon" }, { status: 422 });
       }
@@ -104,15 +111,20 @@ export async function POST(req: NextRequest) {
     }
     const planningWeeks = Number(selectedPlanningWeeks);
     const planningMonths = Math.max(1, Math.min(3, Math.ceil(planningWeeks / 4)));
+    const generationPostFrequency = monthlyPostFrequency ?? Math.max(
+      1,
+      Math.min(30, Math.round(Number(settings.post_frequency) || 5)),
+    );
+    const expectedPostCount = plannedPostCountForWeeks(generationPostFrequency, planningWeeks);
     const engineRuntime = resolveAiEngineRuntime(generationEngine);
     if (!engineRuntime.supported || !engineRuntime.configured) {
       return NextResponse.json({ ok: false, error: "engine_unavailable" }, { status: 422 });
     }
-    const statsQueue = getStatsQueue();
+    const autopilotQueue = getAutopilotQueue();
 
     // Next.js only enqueues this work; worker.mjs executes it. Previously we returned `ok`
     // even when no worker existed, creating a perfectly valid job that nobody would ever take.
-    if ((await statsQueue.getWorkersCount()) === 0) {
+    if ((await autopilotQueue.getWorkersCount()) === 0) {
       return NextResponse.json(
         { ok: false, error: "worker_unavailable" },
         { status: 503 },
@@ -146,7 +158,9 @@ export async function POST(req: NextRequest) {
       );
       const current = (
         await tx.query(
-          `select id, created_at, planning_months, planning_weeks, monthly_campaign_plan_id
+          `select id, created_at, build_activity_at, items, generation_engine,
+                  generation_post_frequency, expected_post_count, planning_months,
+                  planning_weeks, monthly_campaign_plan_id
              from autopilot_plan
             where project_id = $1 and channel_id = $2 and status = 'building'
             order by created_at desc limit 1`,
@@ -154,15 +168,19 @@ export async function POST(req: NextRequest) {
         )
       ).rows[0];
 
-      const currentPostCount = current
-        ? plannedPostCountForWeeks(
-            settings.post_frequency,
-            current.planning_weeks ?? current.planning_months * 4,
-          )
-        : 0;
+      const currentPostCount = Number(current?.expected_post_count) || 0;
       if (current
           && Number(current.monthly_campaign_plan_id || 0) === Number(monthlyCampaignPlanId || 0)
-          && !isAutopilotBuildStale(current.created_at, currentPostCount)) {
+          && current.generation_engine === generationEngine
+          && Number(current.generation_post_frequency) === generationPostFrequency
+          && Number(current.expected_post_count) === expectedPostCount
+          && Number(current.planning_months) === planningMonths
+          && Number(current.planning_weeks) === planningWeeks
+          && !isAutopilotBuildStale(
+            current.build_activity_at
+              || autopilotBuildActivityAt(current.created_at, current.items),
+            currentPostCount,
+          )) {
         planId = String(current.id);
         alreadyBuilding = true;
         await tx.query("commit");
@@ -184,12 +202,14 @@ export async function POST(req: NextRequest) {
         );
         const inserted = await tx.query(
           `insert into autopilot_plan
-             (project_id, user_id, channel_id, week_start, status, generation_engine,
-              planning_months, planning_weeks, monthly_campaign_plan_id)
-             values ($1, $2, $3, current_date, 'building', $4, $5, $6, $7) returning id`,
+              (project_id, user_id, channel_id, week_start, status, generation_engine,
+              generation_post_frequency, expected_post_count, planning_months, planning_weeks,
+              monthly_campaign_plan_id, build_activity_at)
+             values ($1, $2, $3, current_date, 'building', $4, $5, $6, $7, $8, $9, now())
+             returning id`,
           [
-            projectId, user.id, channelId, generationEngine, planningMonths, planningWeeks,
-            monthlyCampaignPlanId,
+            projectId, user.id, channelId, generationEngine, generationPostFrequency,
+            expectedPostCount, planningMonths, planningWeeks, monthlyCampaignPlanId,
           ],
         );
         planId = String(inserted.rows[0].id);
@@ -206,7 +226,7 @@ export async function POST(req: NextRequest) {
     if (!planId) throw new Error("autopilot placeholder was not created");
 
     try {
-      await statsQueue.add(
+      await autopilotQueue.add(
         "autopilot-plan",
         { projectId, userId: user.id, channelId, planId },
         {
@@ -235,6 +255,79 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
     }
     console.error("[/api/autopilot/generate]", err);
+    return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
+  }
+}
+
+export async function DELETE(req: NextRequest) {
+  if (!hasTrustedMutationOrigin(req)) {
+    return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
+  }
+  const user = await getSessionUser(req);
+  if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
+
+  try {
+    const pool = getPool();
+    const membership = await requireSelectedProjectPermission(pool, user.id, "content.create");
+    const projectId = membership.projectId;
+    const body = (await req.json().catch(() => ({}))) as { channelId?: number };
+    const channelId = await resolveChannel(
+      { actorUserId: user.id, projectId },
+      body.channelId ?? null,
+    );
+    if (!channelId) {
+      return NextResponse.json({ ok: false, error: "no_channel" }, { status: 422 });
+    }
+
+    const tx = await pool.connect();
+    let planId: string | null = null;
+    try {
+      await tx.query("begin");
+      await tx.query(
+        `select 1 from autopilot_settings
+          where project_id = $1 and channel_id = $2 for update`,
+        [projectId, channelId],
+      );
+      const cancelled = await tx.query(
+        `update autopilot_plan
+            set status = 'error', rules = 'cancelled', revision = revision + 1
+          where id = (
+            select id from autopilot_plan
+             where project_id = $1 and channel_id = $2 and status = 'building'
+             order by created_at desc limit 1
+             for update
+          )
+          returning id`,
+        [projectId, channelId],
+      );
+      planId = cancelled.rows[0]?.id ? String(cancelled.rows[0].id) : null;
+      await tx.query("commit");
+    } catch (error) {
+      await tx.query("rollback").catch(() => {});
+      throw error;
+    } finally {
+      tx.release();
+    }
+
+    if (planId) {
+      try {
+        const job = await getAutopilotQueue().getJob(`autopilot-plan-${planId}`);
+        await job?.remove();
+      } catch (error) {
+        // The DB status is the authority. An active worker will fail its next guarded
+        // checkpoint/finalization even if BullMQ cannot remove the locked job immediately.
+        console.warn("[/api/autopilot/generate] cancel queue", {
+          planId,
+          errorName: error instanceof Error ? error.name : "Error",
+        });
+      }
+    }
+    return NextResponse.json({ ok: true, cancelled: Boolean(planId), planId });
+  } catch (error) {
+    if (error instanceof ProjectAccessError) {
+      return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
+    }
+    console.error("[/api/autopilot/generate] DELETE", error);
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
 }

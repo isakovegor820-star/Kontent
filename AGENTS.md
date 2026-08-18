@@ -12,4 +12,5 @@ This version has breaking changes — APIs, conventions, and file structure may 
   RSS, analytics, reconnaissance, media jobs, and scheduled publications require the worker.
 - `npm run dev:web-only` is reserved for explicitly requested isolated UI work. Never use it
   as the normal local dev command.
-- Before testing Autopilot, verify that the BullMQ `stats` queue reports at least one worker.
+- Before testing Autopilot, verify that the dedicated BullMQ `autopilot-plans` queue reports
+  at least one worker. The `stats` queue is no longer its execution path.

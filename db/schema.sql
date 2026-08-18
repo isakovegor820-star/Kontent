@@ -461,6 +461,9 @@ create table if not exists autopilot_plan (
                          check (generation_engine in ('navy-deepseek-pro', 'navy-deepseek-flash', 'navy-gpt-5-4', 'navy-qwen-3-6', 'navy-minimax-m3')),
   planning_months smallint not null default 1 check (planning_months in (1, 2, 3)),
   planning_weeks smallint not null default 4 check (planning_weeks between 1 and 12),
+  generation_post_frequency smallint not null default 5,
+  expected_post_count smallint not null default 5,
+  build_activity_at timestamptz not null default now(),
   status     text        not null default 'building'
                          check (status in ('building', 'pending', 'approving', 'approved', 'done', 'error')),
   created_at timestamptz not null default now()
@@ -2580,6 +2583,27 @@ create index if not exists bot_delivery_events_failure_idx
   on bot_delivery_events (created_at desc, id desc) where ok = false;
 create index if not exists bot_delivery_events_user_idx
   on bot_delivery_events (user_id, created_at desc, id desc) where user_id is not null;
+
+create table if not exists bot_interaction_events (
+  id                  bigint generated always as identity primary key,
+  telegram_update_id  bigint not null unique,
+  user_id             bigint references users (id) on delete set null,
+  project_id          bigint references projects (id) on delete set null,
+  interaction_type    varchar(24) not null,
+  action              varchar(100) not null,
+  created_at          timestamptz not null default now(),
+  constraint bot_interaction_events_update_check check (telegram_update_id >= 0),
+  constraint bot_interaction_events_type_check check (
+    interaction_type in ('command','reply_button','callback','message','voice','attachment')
+  ),
+  constraint bot_interaction_events_action_check check (length(btrim(action)) between 1 and 100)
+);
+create index if not exists bot_interaction_events_created_idx
+  on bot_interaction_events (created_at desc, id desc);
+create index if not exists bot_interaction_events_user_idx
+  on bot_interaction_events (user_id, created_at desc, id desc) where user_id is not null;
+create index if not exists bot_interaction_events_project_idx
+  on bot_interaction_events (project_id, created_at desc, id desc) where project_id is not null;
 
 create table if not exists bot_admin_action_events (
   id             bigint generated always as identity primary key,
@@ -5085,3 +5109,57 @@ create unique index if not exists competitor_posts_external_key
   where external_post_id is not null;
 create index if not exists competitors_channel_active_idx
   on competitors (channel_id, is_active, network, collected_at);
+
+-- ------------------------------------------------ Immutable Autopilot build inputs
+
+alter table autopilot_plan add column if not exists generation_post_frequency smallint;
+alter table autopilot_plan add column if not exists expected_post_count smallint;
+alter table autopilot_plan add column if not exists build_activity_at timestamptz;
+update autopilot_plan plan
+   set generation_post_frequency = coalesce(
+         (
+           select least(30, greatest(1, settings.post_frequency))::smallint
+             from autopilot_settings settings
+            where settings.project_id = plan.project_id
+              and settings.channel_id = plan.channel_id
+            limit 1
+         ),
+         5
+       )
+ where generation_post_frequency is null;
+update autopilot_plan
+   set expected_post_count = least(
+         90,
+         greatest(1, generation_post_frequency) * greatest(1, planning_weeks)
+       )::smallint
+ where expected_post_count is null;
+alter table autopilot_plan alter column generation_post_frequency set default 5;
+alter table autopilot_plan alter column generation_post_frequency set not null;
+alter table autopilot_plan alter column expected_post_count set default 5;
+alter table autopilot_plan alter column expected_post_count set not null;
+update autopilot_plan set build_activity_at = created_at where build_activity_at is null;
+alter table autopilot_plan alter column build_activity_at set default now();
+alter table autopilot_plan alter column build_activity_at set not null;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+     where conrelid = 'autopilot_plan'::regclass
+       and conname = 'autopilot_plan_generation_post_frequency_check'
+  ) then
+    alter table autopilot_plan
+      add constraint autopilot_plan_generation_post_frequency_check
+      check (generation_post_frequency between 1 and 30);
+  end if;
+  if not exists (
+    select 1 from pg_constraint
+     where conrelid = 'autopilot_plan'::regclass
+       and conname = 'autopilot_plan_expected_post_count_check'
+  ) then
+    alter table autopilot_plan
+      add constraint autopilot_plan_expected_post_count_check
+      check (expected_post_count between 1 and 90);
+  end if;
+end
+$$;
