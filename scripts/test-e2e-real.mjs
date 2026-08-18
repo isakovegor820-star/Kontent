@@ -78,6 +78,19 @@ function assert(value, message) {
   if (!value) throw new Error(message);
 }
 
+async function readEditableText(locator) {
+  return locator.evaluate((element) => {
+    if (
+      element instanceof HTMLInputElement
+      || element instanceof HTMLTextAreaElement
+      || element instanceof HTMLSelectElement
+    ) {
+      return element.value;
+    }
+    return element.innerText || element.textContent || "";
+  });
+}
+
 function child(label, command, args, env) {
   const subprocess = spawn(command, args, {
     cwd: globalThis.process.cwd(),
@@ -1204,7 +1217,7 @@ try {
   });
   await page.reload();
   await composerText.waitFor();
-  assert(await composerText.inputValue() === "Локальная несинхронизированная версия E2E", "hard reload lost pending draft text");
+  assert(await readEditableText(composerText) === "Локальная несинхронизированная версия E2E", "hard reload lost pending draft text");
   await page.unroute(`**/api/drafts/${draftId}`);
   await page.evaluate(() => window.dispatchEvent(new Event("online")));
   await waitFor(async () => (await pool.query("select text from drafts where id = $1", [draftId])).rows[0]?.text === "Локальная несинхронизированная версия E2E", "pending draft did not synchronize", 12_000);
@@ -1542,7 +1555,7 @@ try {
   const libraryComposerDraftId = Number(composerDraftUrl.searchParams.get("draft"));
   const libraryComposerText = page.locator("#composer-text");
   await libraryComposerText.waitFor();
-  assert(await libraryComposerText.inputValue() === libraryComposerResult, "Composer did not hydrate the terminal Studio result");
+  assert(await readEditableText(libraryComposerText) === libraryComposerResult, "Composer did not hydrate the terminal Studio result");
   const generatedDraft = (await pool.query(
     "select text, origin, source_ref from drafts where id = $1 and user_id = $2",
     [libraryComposerDraftId, userId],
@@ -2873,7 +2886,7 @@ try {
 
   const criticalComposerText = page.locator("#composer-text");
   await criticalComposerText.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
-  const autopilotText = await criticalComposerText.inputValue();
+  const autopilotText = await readEditableText(criticalComposerText);
   assert(autopilotText === monthlyDraft.text, "Composer did not open the exact first monthly material");
   await criticalComposerText.fill(
     `${autopilotText}\n\nВ общем, кто-то решил, во-первых, участвовать в обсуждении.`,
@@ -2889,7 +2902,7 @@ try {
         "select text from drafts where id = $1 and project_id = $2",
         [monthlyDraftId, sharedProjectId],
       )).rows[0];
-      const currentText = await targetPage.locator("#composer-text").inputValue().catch(() => "");
+      const currentText = await readEditableText(targetPage.locator("#composer-text")).catch(() => "");
       return row?.text === currentText;
     }, "Composer save button did not acknowledge the visible text", 12_000);
   };
@@ -2899,7 +2912,7 @@ try {
       "select text from drafts where id = $1 and project_id = $2",
       [monthlyDraftId, sharedProjectId],
     )).rows[0];
-    return row?.text === await criticalComposerText.inputValue();
+    return row?.text === await readEditableText(criticalComposerText);
   }, "Composer did not durably save the edited text", 15_000);
 
   // Link tracking remains a project service, but it is no longer configured inside
@@ -2974,7 +2987,7 @@ try {
   );
   await page.reload();
   await criticalComposerText.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
-  assert(await criticalComposerText.inputValue() === draftBeforeTracking.text, "tracking binding changed the visible post text");
+  assert(await readEditableText(criticalComposerText) === draftBeforeTracking.text, "tracking binding changed the visible post text");
 
   const loadEditorial = async (targetPage) => {
     const response = await authenticatedRequestFrom(targetPage, `/api/drafts/${monthlyDraftId}/editorial`);
@@ -3029,7 +3042,7 @@ try {
 
   await page.goto(`/app/composer?draft=${monthlyDraftId}&from=autopilot-month`);
   await criticalComposerText.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
-  const finalEditorialText = `${await criticalComposerText.inputValue()}\n\nВ общем, во-первых, легалтех помогает обсудить следующий шаг с редакцией без спешки.`;
+  const finalEditorialText = `${await readEditableText(criticalComposerText)}\n\nВ общем, во-первых, легалтех помогает обсудить следующий шаг с редакцией без спешки.`;
   await criticalComposerText.fill(finalEditorialText);
   assert(
     finalEditorialText.includes("В общем")
@@ -3042,7 +3055,7 @@ try {
   await saveCriticalDraft();
   await page.reload();
   await criticalComposerText.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
-  assert(await criticalComposerText.inputValue() === finalEditorialText, "reload lost the corrected editorial text");
+  assert(await readEditableText(criticalComposerText) === finalEditorialText, "reload lost the corrected editorial text");
 
   const changedEditorial = await loadEditorial(page);
   if (
@@ -3093,7 +3106,7 @@ try {
   );
   await page.reload();
   await criticalComposerText.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
-  assert(await criticalComposerText.inputValue() === finalEditorialText, "source approval changed the corrected Composer text");
+  assert(await readEditableText(criticalComposerText) === finalEditorialText, "source approval changed the corrected Composer text");
 
   const composerMedia = await openComposerSection(page, "composer-media");
   const openVisualStudio = composerMedia.getByRole("button", { name: "Создать с ИИ", exact: true });
@@ -3291,7 +3304,7 @@ try {
   await addCarouselToPost.click();
   await page.waitForURL(new RegExp(`/app/composer\\?draft=${monthlyDraftId}&fromMedia=1&from=studio-visuals&returnTo=autopilot-month$`, "u"));
   await criticalComposerText.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
-  assert(await criticalComposerText.inputValue() === finalEditorialText, "returning from Legal Visuals changed the approved source text");
+  assert(await readEditableText(criticalComposerText) === finalEditorialText, "returning from Legal Visuals changed the approved source text");
   await page.getByText("Критическая legal-карусель QA", { exact: false }).first().waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await saveCriticalDraft();
 
@@ -3322,7 +3335,7 @@ try {
   );
   await page.reload();
   await criticalComposerText.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
-  assert(await criticalComposerText.inputValue() === finalEditorialText, "publication preferences changed the visible post text");
+  assert(await readEditableText(criticalComposerText) === finalEditorialText, "publication preferences changed the visible post text");
   await openComposerSection(page, "publication-time");
   await page.getByLabel("Дата публикации", { exact: true }).fill(publicationDate);
   await page.getByLabel("Время публикации", { exact: true }).fill(publicationTime);
@@ -3474,7 +3487,7 @@ try {
   await reviewerPage.setViewportSize({ width: 320, height: 780 });
   await reviewerPage.goto(`/app/composer?draft=${monthlyDraftId}`);
   await reviewerPage.locator("#composer-text").waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
-  assert(await reviewerPage.locator("#composer-text").inputValue() === finalEditorialText, "publisher did not receive the approved text revision");
+  assert(await readEditableText(reviewerPage.locator("#composer-text")) === finalEditorialText, "publisher did not receive the approved text revision");
   await assertNoHorizontalOverflow(reviewerPage, "publisher Composer at 320px");
   await reviewerPage.setViewportSize({ width: 1280, height: 900 });
   const publisherSchedule = reviewerPage.getByRole("button", { name: "Добавить в календарь", exact: true }).first();
