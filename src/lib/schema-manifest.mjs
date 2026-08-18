@@ -5,7 +5,7 @@
  */
 export const SCHEMA_MANIFEST = Object.freeze({
   manifestVersion: 1,
-  schemaVersion: "2026-09-11.82",
+  schemaVersion: "2026-09-12.83",
   migrations: Object.freeze([
     ["20260801_account_onboarding.sql", "ac0e1f10046cf620185570ab5f40437991d08513473f67d4e93bdafa07b86614"],
     ["20260801_ai_usage_reservations.sql", "991c3a92dce16df55011d9df52fb65af1a7f4310b27f61dc519705f05528d7a0"],
@@ -83,6 +83,7 @@ export const SCHEMA_MANIFEST = Object.freeze({
     ["20260904_admin_bot_control.sql", "3fe772529ef0be93384c7dc5fc8b93ca05efb43a423920a05cc4fdee0689ae97"],
     ["20260905_audience_reply_assistant.sql", "d84719ab567189761d263a16506d2026ddca9f53b7710ff1e3e945c711c22e3c"],
     ["20260906_audience_reply_delivery.sql", "3526cb5cd878a0907a0235ec5b307fd0e0f74508cbe3c7b1b44b995b9505a8e2"],
+    ["20260906_pgvector_prerequisite.sql", "eaa634a906bf42b4e678620d656029725a63863a5447d599a62bbe659d606c4a"],
     ["20260907_radar_content_directory.sql", "1e943e9b25d73f6a056dde91e6d121f51c0af1076d7aa8b2a3334de215123de4"],
     ["20260908_competitor_posts_fulltext.sql", "204f1f1bb3ee327e4ccafd4ab12adf35c63b4d4e2027ad974af172ca66d5b590"],
     ["20260909_audience_delivery_recovery_index.sql", "88288a632753a5599a848acba0fd8d5cd723e948156e90d0a11d8ab1fbc06e83"],
