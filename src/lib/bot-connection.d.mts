@@ -3,10 +3,29 @@ import type { Pool } from "pg";
 export const BOT_CONNECTION_TOKEN_BYTES: number;
 export const BOT_CONNECTION_TOKEN_PATTERN: RegExp;
 export const BOT_CONNECTION_TTL_MINUTES: number;
+export const LEGACY_BOT_LINK_CODE_PATTERN: RegExp;
 
 export function createBotConnectionToken(): string;
 export function hashBotConnectionToken(rawToken: unknown): string | null;
 export function maskBotAccountEmail(value: unknown): string;
+export function normalizeTelegramBotUsername(value: unknown): string | null;
+
+export function createLegacyBotLink(pool: Pool, input: {
+  userId: number;
+}): Promise<{
+  code: string;
+  expiresInMinutes: number;
+}>;
+
+export function consumeLegacyBotLink(pool: Pool, input: {
+  code: unknown;
+  telegramChatId: number;
+}): Promise<{
+  state: "invalid" | "account_disabled" | "connected";
+  userId?: number;
+  telegramChatId?: number;
+  moved?: boolean;
+}>;
 
 export interface BotConnectionTelegramIdentity {
   userId: number;

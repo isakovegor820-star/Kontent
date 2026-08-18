@@ -3,6 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 export const BOT_CONNECTION_TOKEN_BYTES = 32;
 export const BOT_CONNECTION_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
 export const BOT_CONNECTION_TTL_MINUTES = 15;
+export const LEGACY_BOT_LINK_CODE_PATTERN = /^[a-f0-9]{32}$/u;
 
 export function createBotConnectionToken() {
   return randomBytes(BOT_CONNECTION_TOKEN_BYTES).toString("base64url");
@@ -21,6 +22,131 @@ export function maskBotAccountEmail(value) {
   const local = email.slice(0, at);
   const visible = local.slice(0, Math.min(2, local.length));
   return `${visible}${local.length > visible.length ? "***" : ""}${email.slice(at)}`;
+}
+
+function safeUserId(value) {
+  const id = Number(value);
+  if (!Number.isSafeInteger(id) || id <= 0) {
+    throw new TypeError("userId must be a positive safe integer");
+  }
+  return id;
+}
+
+export function normalizeTelegramBotUsername(value) {
+  const username = String(value || "").replace(/^@/u, "").trim();
+  return /^[A-Za-z0-9_]{5,32}$/u.test(username) ? username : null;
+}
+
+export async function createLegacyBotLink(pool, input) {
+  const userId = safeUserId(input?.userId);
+  const code = randomBytes(16).toString("hex");
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    await client.query(
+      `select pg_advisory_xact_lock(hashtextextended($1::text, 0))`,
+      [`legacy_bot_link:user:${userId}`],
+    );
+    await client.query(
+      `delete from bot_links where user_id = $1 and used_at is null`,
+      [userId],
+    );
+    await client.query(
+      `insert into bot_links (code, user_id, expires_at)
+       values ($1, $2, now() + make_interval(mins => $3))`,
+      [code, userId, BOT_CONNECTION_TTL_MINUTES],
+    );
+    await client.query("commit");
+    return { code, expiresInMinutes: BOT_CONNECTION_TTL_MINUTES };
+  } catch (error) {
+    await client.query("rollback").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function consumeLegacyBotLink(pool, input) {
+  const code = String(input?.code || "").trim().toLowerCase();
+  if (!LEGACY_BOT_LINK_CODE_PATTERN.test(code)) return { state: "invalid" };
+  const telegramChatId = safeTelegramId(input?.telegramChatId, "telegramChatId");
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const candidate = (
+      await client.query(
+        `select user_id from bot_links
+          where code = $1 and used_at is null and expires_at > now()`,
+        [code],
+      )
+    ).rows[0];
+    if (!candidate) {
+      await client.query("rollback");
+      return { state: "invalid" };
+    }
+
+    const userId = Number(candidate.user_id);
+    await client.query(
+      `select pg_advisory_xact_lock(hashtextextended($1::text, 0))`,
+      [`legacy_bot_link:user:${userId}`],
+    );
+    const link = (
+      await client.query(
+        `select user_id from bot_links
+          where code = $1 and user_id = $2
+            and used_at is null and expires_at > now()
+          for update`,
+        [code, userId],
+      )
+    ).rows[0];
+    if (!link) {
+      await client.query("rollback");
+      return { state: "invalid" };
+    }
+    await client.query("select pg_advisory_xact_lock($1::bigint)", [telegramChatId]);
+    const account = (
+      await client.query(
+        `select app_user.id, app_user.tg_chat_id, coalesce(control.enabled, true) as enabled
+           from users app_user
+           left join bot_user_controls control on control.user_id = app_user.id
+          where app_user.id = $1
+          for update of app_user`,
+        [userId],
+      )
+    ).rows[0];
+    if (!account || account.enabled === false) {
+      await client.query("rollback");
+      return { state: "account_disabled" };
+    }
+
+    const linked = (
+      await client.query(
+        `select id from users where tg_chat_id = $1 and id <> $2 for update`,
+        [telegramChatId, userId],
+      )
+    ).rows;
+    const previousChatId = account.tg_chat_id == null ? null : Number(account.tg_chat_id);
+    const moved = linked.length > 0
+      || (previousChatId !== null && previousChatId !== telegramChatId);
+    await client.query(
+      `update users
+          set tg_chat_id = case when id = $1 then $2 else null end
+        where id = $1 or tg_chat_id = $2`,
+      [userId, telegramChatId],
+    );
+    await client.query(
+      `update bot_links set used_at = now()
+        where code = $1 and used_at is null`,
+      [code],
+    );
+    await client.query("commit");
+    return { state: "connected", userId, telegramChatId, moved };
+  } catch (error) {
+    await client.query("rollback").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 function telegramDisplayName(input) {

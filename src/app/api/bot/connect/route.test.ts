@@ -14,6 +14,10 @@ vi.mock("@/lib/bot-connection.mjs", () => ({
   inspectBotConnectionSession: mocks.inspect,
   confirmBotConnectionSession: mocks.confirm,
   maskBotAccountEmail: (value: string) => `masked:${value}`,
+  normalizeTelegramBotUsername: (value: unknown) => {
+    const username = String(value || "").replace(/^@/u, "").trim();
+    return /^[A-Za-z0-9_]{5,32}$/u.test(username) ? username : null;
+  },
 }));
 
 import { POST } from "./route";
@@ -38,7 +42,10 @@ describe("POST /api/bot/connect", () => {
     });
   });
 
-  afterEach(() => vi.unstubAllEnvs());
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
 
   it("inspects a secret without requiring login or exposing account data", async () => {
     mocks.inspect.mockResolvedValue({
@@ -85,6 +92,23 @@ describe("POST /api/bot/connect", () => {
     const response = await POST(request({ action: "confirm", token: "a".repeat(43), allowMove: false }));
     expect(response.status).toBe(409);
     await expect(response.json()).resolves.toMatchObject({ ok: false, error: "move_required" });
+  });
+
+  it("sends the confirmation through the configured Telegram API without blocking success", async () => {
+    const fetcher = vi.fn().mockResolvedValue(Response.json({ ok: true }));
+    vi.stubGlobal("fetch", fetcher);
+    vi.stubEnv("TG_BOT_TOKEN", "telegram-test-token");
+    vi.stubEnv("TG_API_URL", "https://telegram-gateway.example/");
+    mocks.getSessionUser.mockResolvedValue({ id: 7, name: "Егор", email: "egor@example.com" });
+    mocks.confirm.mockResolvedValue({ state: "connected", telegramChatId: 123, moved: false });
+
+    const response = await POST(request({ action: "confirm", token: "a".repeat(43) }));
+
+    expect(response.status).toBe(200);
+    expect(fetcher).toHaveBeenCalledWith(
+      "https://telegram-gateway.example/bottelegram-test-token/sendMessage",
+      expect.objectContaining({ method: "POST", signal: expect.any(AbortSignal) }),
+    );
   });
 
   it("rejects a cross-site browser mutation before reading the session", async () => {

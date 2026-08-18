@@ -6,7 +6,10 @@
 // которая публикует посты в живой канал. Валяться такому нельзя.
 
 import { NextRequest, NextResponse } from "next/server";
-import { randomBytes } from "node:crypto";
+import {
+  createLegacyBotLink,
+  normalizeTelegramBotUsername,
+} from "@/lib/bot-connection.mjs";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
@@ -14,11 +17,9 @@ import { probeRedisAndPublicationWorker } from "@/lib/readiness-probes";
 
 export const runtime = "nodejs";
 
-const LINK_TTL_MIN = 15;
-
 /** Имя бота из токена не достать — берём из env, иначе ссылку не собрать. */
 function botUsername(): string | null {
-  return process.env.TG_BOT_USERNAME || null;
+  return normalizeTelegramBotUsername(process.env.TG_BOT_USERNAME);
 }
 
 export async function GET(req: NextRequest) {
@@ -63,21 +64,14 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const pool = getPool();
-    // Старые коды этого человека гасим: активный код должен быть один.
-    await pool.query(`delete from bot_links where user_id = $1 and used_at is null`, [user.id]);
-
-    const code = randomBytes(16).toString("hex");
-    await pool.query(
-      `insert into bot_links (code, user_id, expires_at)
-       values ($1, $2, now() + make_interval(mins => $3))`,
-      [code, user.id, LINK_TTL_MIN],
-    );
+    // Замена старого кода и выпуск нового происходят одной транзакцией: при сбое
+    // предыдущая рабочая ссылка не исчезнет без новой ссылки на замену.
+    const link = await createLegacyBotLink(getPool(), { userId: user.id });
 
     return NextResponse.json({
       ok: true,
-      url: `https://t.me/${bot}?start=${code}`,
-      expiresInMin: LINK_TTL_MIN,
+      url: `https://t.me/${bot}?start=${link.code}`,
+      expiresInMin: link.expiresInMinutes,
     });
   } catch (err) {
     console.error("[/api/bot/link] POST", err);

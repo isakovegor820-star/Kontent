@@ -216,6 +216,7 @@ import {
   parseTelegramPollingHeartbeat,
   telegramPollingHeartbeatWrite,
 } from "./worker/telegram-polling-heartbeat.mjs";
+import { telegramPollingConflictCooldownMs } from "./worker/telegram-polling-conflict.mjs";
 import {
   TELEGRAM_POLLING_LEASE_RENEW_MS,
   acquireTelegramPollingLease,
@@ -223,6 +224,10 @@ import {
   releaseTelegramPollingLease,
   renewTelegramPollingLease,
 } from "./worker/telegram-polling-lease.mjs";
+import {
+  nextTelegramUpdateFailure,
+  telegramRetryAfterMs,
+} from "./worker/telegram-update-retry.mjs";
 import {
   duePublicationRevision,
   publicationGraceMs,
@@ -242,10 +247,12 @@ import { assertWorkerAiCallPolicy } from "./worker/ai-call-policy.mjs";
 import { loadBotIdeaStyleSamples } from "./worker/bot-idea-context.mjs";
 import { retryFailedPostFromBot } from "./worker/bot-publication-retry.mjs";
 import {
+  consumeLegacyBotLink,
   createBotConnectionSession,
   disconnectBotChat,
   maskBotAccountEmail,
 } from "./src/lib/bot-connection.mjs";
+import { parseTelegramBotCommand } from "./worker/bot-command.mjs";
 import {
   decideBotApproval,
   listBotApprovalItems,
@@ -1239,7 +1246,12 @@ async function tg(method, body, timeoutMs = 20_000) {
       signal: AbortSignal.timeout(timeoutMs), // без таймаута зависший запрос блокирует очередь (ревью)
       body: JSON.stringify(body),
     });
-    const result = await r.json().catch(() => ({ ok: false, description: `HTTP ${r.status}` }));
+    const parsed = await r.json().catch(() => ({ ok: false, description: `HTTP ${r.status}` }));
+    const result = parsed?.ok !== true
+      && !Number.isInteger(Number(parsed?.error_code))
+      && r.status >= 400
+      ? { ...parsed, error_code: r.status }
+      : parsed;
     if (recordsDelivery) {
       await pool.query(
         `insert into bot_delivery_events (
@@ -1257,9 +1269,16 @@ async function tg(method, body, timeoutMs = 20_000) {
         ],
       ).catch(() => {});
     }
+    const retryAfterMs = telegramRetryAfterMs(result);
+    if (retryAfterMs !== null) {
+      const error = new Error(`Telegram ${method} temporarily rejected the request`);
+      error.code = "telegram_retryable";
+      error.retryAfterMs = retryAfterMs;
+      throw error;
+    }
     return result;
   } catch (error) {
-    if (recordsDelivery) {
+    if (recordsDelivery && error?.code !== "telegram_retryable") {
       await pool.query(
         `insert into bot_delivery_events
           (user_id, chat_id, method, source, ok, error_code, error_description)
@@ -2454,6 +2473,16 @@ async function refreshTelegramPollingHeartbeat(state = "up") {
   await connection.set(write.key, write.value, "EX", write.ttlSeconds);
 }
 
+async function waitForTelegramPollingConflict(cooldownMs) {
+  const deadline = Date.now() + cooldownMs;
+  while (!shutdownStarted && Date.now() < deadline) {
+    await sleep(Math.min(30_000, Math.max(0, deadline - Date.now())));
+    if (!shutdownStarted && Date.now() < deadline) {
+      await refreshTelegramPollingHeartbeat("conflict").catch(() => {});
+    }
+  }
+}
+
 /** Что бот умеет — показывается в меню Telegram по кнопке «/». */
 const BOT_COMMANDS = [
   { command: "menu", description: "Открыть главный экран" },
@@ -2814,35 +2843,21 @@ async function handleStart(chatId, from, code) {
     return botSendConnectionOnboarding(chatId, from);
   }
 
-  const link = (
-    await pool.query(
-      `update bot_links set used_at = now()
-        where code = $1 and used_at is null and expires_at > now()
-        returning user_id`,
-      [code],
-    )
-  ).rows[0];
+  const link = await consumeLegacyBotLink(pool, {
+    code,
+    telegramChatId: Number(chatId),
+  });
 
-  if (!link) {
+  if (link.state === "invalid") {
     // Не говорим «неверный код» — код мог просто протухнуть, человек не виноват.
     await tgSend(chatId, "Ссылка устарела — они живут 15 минут. Открой «Настройки» в Авроре и нажми «Подключить бота» ещё раз.");
     return;
   }
 
-  const access = (await pool.query(
-    `select coalesce(control.enabled, true) as enabled
-       from users app_user left join bot_user_controls control on control.user_id = app_user.id
-      where app_user.id = $1`,
-    [link.user_id],
-  )).rows[0];
-  if (access?.enabled === false) {
+  if (link.state === "account_disabled") {
     await tgSend(chatId, "Доступ к боту временно приостановлен администратором Авроры. Данные аккаунта и проекты сохранены.");
     return;
   }
-
-  // Чат мог быть привязан к другому аккаунту — отвязываем, иначе уведомления раздвоятся.
-  await pool.query(`update users set tg_chat_id = null where tg_chat_id = $1`, [chatId]);
-  await pool.query(`update users set tg_chat_id = $2 where id = $1`, [link.user_id, chatId]);
 
   await tgSend(
     chatId,
@@ -2852,10 +2867,10 @@ async function handleStart(chatId, from, code) {
       "• план недели от автопилота — с кнопкой подтверждения\n\n" +
       "Начнём со сводки на сегодня.",
   );
-  const overview = await botToday(Number(link.user_id));
+  const overview = await botToday(Number(link.userId));
   await tgSend(chatId, overview.text, overview.buttons);
-  await botSendMenu(chatId, Number(link.user_id));
-  console.log(`[bot] чат ${chatId} привязан к user ${link.user_id}`);
+  await botSendMenu(chatId, Number(link.userId));
+  console.log(`[bot] чат ${chatId} привязан к user ${link.userId}`);
 }
 
 /** Ответ на нажатие: Telegram ждёт его в пределах ~10 секунд, иначе кнопка «залипает». */
@@ -8724,7 +8739,7 @@ async function botIdea(userId, competitorPostId, callbackUpdateId) {
   }
 }
 
-/** Одно обновление от Telegram. Никогда не бросает: упавший апдейт не должен ронять поллинг. */
+/** Одно обновление от Telegram. Ошибка превращается в retry-сигнал и не роняет polling. */
 async function handleUpdate(u) {
   try {
     if (u.business_message) {
@@ -8743,9 +8758,10 @@ async function handleUpdate(u) {
       if (u.message.chat?.type !== "private") return;
       const chatId = u.message.chat.id;
       const text = String(u.message.text || u.message.caption || "").trim();
+      const command = parseTelegramBotCommand(text, process.env.TG_BOT_USERNAME);
 
-      if (text.startsWith("/start")) {
-        return handleStart(chatId, u.message.from, text.split(/\s+/)[1] || null);
+      if (command?.command === "start") {
+        return handleStart(chatId, u.message.from, command.args.split(/\s+/u)[0] || null);
       }
 
       const botUser = await userByChat(chatId);
@@ -8763,38 +8779,38 @@ async function handleUpdate(u) {
       const replyAction = botReplyAction(text);
       if (replyAction) return void (await botSendPrimaryAction(chatId, userId, replyAction));
 
-      if (text.startsWith("/menu")) return void (await botSendPrimaryAction(chatId, userId, "menu"));
-      if (text.startsWith("/status") || text.startsWith("/connect")) {
+      if (command?.command === "menu") return void (await botSendPrimaryAction(chatId, userId, "menu"));
+      if (command?.command === "status" || command?.command === "connect") {
         return void (await botSendPrimaryAction(chatId, userId, "connection"));
       }
-      if (text.startsWith("/projects")) {
+      if (command?.command === "projects") {
         const projects = await botProjects(userId);
         return void (await tgSend(chatId, projects.text, projects.buttons));
       }
-      if (text.startsWith("/today")) return void (await botSendPrimaryAction(chatId, userId, "today"));
-      if (text.startsWith("/create")) return void (await botSendPrimaryAction(chatId, userId, "create"));
-      if (text.startsWith("/approvals")) return void (await botSendPrimaryAction(chatId, userId, "approvals"));
-      if (text.startsWith("/problems")) return void (await botSendPrimaryAction(chatId, userId, "problems"));
-      if (text.startsWith("/results")) return void (await botSendPrimaryAction(chatId, userId, "results"));
-      if (text.startsWith("/calendar")) return void (await botSendPrimaryAction(chatId, userId, "calendar"));
-      if (text.startsWith("/stats")) return void (await botSendPrimaryAction(chatId, userId, "stats"));
-      if (text.startsWith("/plan")) return void (await botSendPrimaryAction(chatId, userId, "plan"));
-      if (text.startsWith("/trends")) return void (await botSendPrimaryAction(chatId, userId, "trends"));
-      if (text.startsWith("/notifications")) {
+      if (command?.command === "today") return void (await botSendPrimaryAction(chatId, userId, "today"));
+      if (command?.command === "create") return void (await botSendPrimaryAction(chatId, userId, "create"));
+      if (command?.command === "approvals") return void (await botSendPrimaryAction(chatId, userId, "approvals"));
+      if (command?.command === "problems") return void (await botSendPrimaryAction(chatId, userId, "problems"));
+      if (command?.command === "results") return void (await botSendPrimaryAction(chatId, userId, "results"));
+      if (command?.command === "calendar") return void (await botSendPrimaryAction(chatId, userId, "calendar"));
+      if (command?.command === "stats") return void (await botSendPrimaryAction(chatId, userId, "stats"));
+      if (command?.command === "plan") return void (await botSendPrimaryAction(chatId, userId, "plan"));
+      if (command?.command === "trends") return void (await botSendPrimaryAction(chatId, userId, "trends"));
+      if (command?.command === "notifications") {
         return void (await botSendPrimaryAction(chatId, userId, "notifications"));
       }
-      if (text.startsWith("/disconnect")) {
+      if (command?.command === "disconnect") {
         return void (await tgSend(chatId, formatBotDisconnectConfirmation(), [
           [{ text: "Отключить этот чат", data: "connection:disconnect_confirm" }],
           [{ text: "Отмена", data: "connection:disconnect_cancel" }],
         ]));
       }
-      if (text.startsWith("/cancel")) {
+      if (command?.command === "cancel") {
         return void (await tgSend(chatId, await botCancelActiveConversation(userId), [
           [{ text: "Вернуться в меню", data: "menu:home" }],
         ]));
       }
-      if (text.startsWith("/help")) {
+      if (command?.command === "help") {
         return void (await botSendPrimaryAction(chatId, userId, "help"));
       }
       if (u.message.voice) {
@@ -9144,6 +9160,11 @@ async function handleUpdate(u) {
     }
   } catch (err) {
     console.error("[bot] обновление упало:", err?.message);
+    return {
+      retry: true,
+      retryAfterMs: Number(err?.retryAfterMs) || 1_500,
+      errorCode: String(err?.code || err?.name || "bot_update_failed"),
+    };
   }
 }
 
@@ -9159,6 +9180,8 @@ async function pollUpdates() {
   }
   await tg("setMyCommands", { commands: BOT_COMMANDS }).catch(() => {});
   console.log("[bot] готов принять lease для команд (long polling, webhook не нужен)");
+  const updateFailures = new Map();
+  let consecutivePollingConflicts = 0;
 
   for (; !shutdownStarted;) {
     try {
@@ -9172,14 +9195,20 @@ async function pollUpdates() {
       const r = await tg("getUpdates", { offset, timeout: 30 }, 40_000);
       if (!r?.ok) {
         if (/conflict/i.test(r?.description || "")) {
+          consecutivePollingConflicts += 1;
+          const cooldownMs = telegramPollingConflictCooldownMs(consecutivePollingConflicts);
           await refreshTelegramPollingHeartbeat("conflict");
-          console.error("[bot] конфликт: кто-то ещё слушает этого бота (webhook или второй воркер). Пауза 60с.");
-          await sleep(60_000);
+          console.error("[bot] конфликт: Telegram-команды получает другой polling-процесс", {
+            consecutiveConflicts: consecutivePollingConflicts,
+            nextCheckSeconds: cooldownMs / 1_000,
+          });
+          await waitForTelegramPollingConflict(cooldownMs);
         } else {
           await sleep(5_000);
         }
         continue;
       }
+      consecutivePollingConflicts = 0;
       // If the Redis lease expired while Telegram was answering, do not acknowledge or
       // execute this batch. The durable offset stays unchanged, so the elected poller
       // receives the same updates on its next request.
@@ -9190,18 +9219,39 @@ async function pollUpdates() {
       for (const u of r.result) {
         const outcome = await handleUpdate(u);
         if (outcome?.retry) {
-          // Do not advance the durable offset. The same callback is replayed after a short
-          // lease/recovery delay, without another quota charge or provider call after commit.
-          await sleep(1_500);
-          break;
+          const failure = nextTelegramUpdateFailure(updateFailures.get(u.update_id));
+          if (failure.retry) {
+            updateFailures.set(u.update_id, failure.attempts);
+            console.warn("[bot] повторяю Telegram update после временной ошибки", {
+              updateId: u.update_id,
+              attempt: failure.attempts,
+              errorCode: outcome.errorCode || "retry_requested",
+            });
+            // Do not advance the durable offset. The same update is replayed after a short
+            // delay; critical side effects use CAS/idempotency guards.
+            await sleep(Math.min(30_000, Math.max(250, Number(outcome.retryAfterMs) || 1_500)));
+            break;
+          }
+          updateFailures.delete(u.update_id);
+          console.error("[bot] Telegram update пропущен после исчерпания повторов", {
+            updateId: u.update_id,
+            attempts: failure.attempts,
+            errorCode: outcome.errorCode || "retry_exhausted",
+          });
         }
         await pool.query(`update bot_state set last_update = $1, updated_at = now() where id = 1`, [
           u.update_id,
         ]);
+        updateFailures.delete(u.update_id);
       }
     } catch (err) {
       // Таймаут длинного опроса — это норма, а не ошибка: молча идём на следующий круг.
-      if (!/timeout|aborted/i.test(err?.message || "")) {
+      if (err?.code === "telegram_retryable") {
+        console.warn("[bot] Telegram временно отклонил polling-запрос", {
+          retryAfterMs: Number(err.retryAfterMs) || 1_500,
+        });
+        await sleep(Math.min(30_000, Math.max(250, Number(err.retryAfterMs) || 1_500)));
+      } else if (!/timeout|aborted/i.test(err?.message || "")) {
         console.error("[bot] поллинг:", err?.message);
         await sleep(5_000);
       }

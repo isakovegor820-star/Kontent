@@ -4,6 +4,7 @@ import {
   confirmBotConnectionSession,
   inspectBotConnectionSession,
   maskBotAccountEmail,
+  normalizeTelegramBotUsername,
 } from "@/lib/bot-connection.mjs";
 import { getPool } from "@/lib/db";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
@@ -18,8 +19,7 @@ type ConnectBody = {
 };
 
 function botUsername(): string | null {
-  const value = String(process.env.TG_BOT_USERNAME || "").replace(/^@/u, "").trim();
-  return /^[A-Za-z0-9_]{5,32}$/u.test(value) ? value : null;
+  return normalizeTelegramBotUsername(process.env.TG_BOT_USERNAME);
 }
 
 async function readBody(req: NextRequest): Promise<ConnectBody | null> {
@@ -37,7 +37,8 @@ async function notifyConnectedChat(chatId: number): Promise<void> {
   const token = String(process.env.TG_BOT_TOKEN || "").trim();
   if (!token) return;
   try {
-    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    const apiUrl = String(process.env.TG_API_URL || "https://api.telegram.org").replace(/\/+$/u, "");
+    await fetch(`${apiUrl}/bot${token}/sendMessage`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({

@@ -76,6 +76,8 @@ describe("Telegram connection center copy", () => {
     expect(message).toContain("Публикации: работают");
     expect(message).toContain("Каналы: подключено — 2; нужно переподключить — 1");
     expect(message).toContain("Уведомления: включены частично");
+    expect(message).toContain("остановить старый worker или заменить токен бота");
+    expect(message).toContain("переподключать чат не нужно");
   });
 
   it("explains linking and disconnection consequences without relying on color", () => {

@@ -4,9 +4,12 @@ import {
   BOT_CONNECTION_TOKEN_PATTERN,
   confirmBotConnectionSession,
   createBotConnectionSession,
+  createLegacyBotLink,
+  consumeLegacyBotLink,
   hashBotConnectionToken,
   inspectBotConnectionSession,
   maskBotAccountEmail,
+  normalizeTelegramBotUsername,
 } from "./bot-connection.mjs";
 
 const NOW = Date.parse("2026-08-18T12:00:00.000Z");
@@ -114,5 +117,115 @@ describe("Telegram account labels", () => {
     expect(maskBotAccountEmail("egor@example.com")).toBe("eg***@example.com");
     expect(maskBotAccountEmail("a@example.com")).toBe("a@example.com");
     expect(maskBotAccountEmail("not-an-email")).toBe("аккаунт Авроры");
+  });
+
+  it("accepts only Telegram-compatible bot usernames", () => {
+    expect(normalizeTelegramBotUsername("@Aurora_bot")).toBe("Aurora_bot");
+    expect(normalizeTelegramBotUsername("https://t.me/aurora_bot")).toBeNull();
+    expect(normalizeTelegramBotUsername("bot")).toBeNull();
+  });
+});
+
+describe("legacy Telegram connection links", () => {
+  it("replaces an old link and creates the new link in one transaction", async () => {
+    const queries = [];
+    const client = {
+      query: vi.fn(async (sql, params) => {
+        queries.push({ sql: String(sql), params });
+        return { rows: [], rowCount: 0 };
+      }),
+      release: vi.fn(),
+    };
+
+    const link = await createLegacyBotLink({ connect: async () => client }, { userId: 7 });
+
+    expect(link.code).toMatch(/^[a-f0-9]{32}$/u);
+    expect(queries.map((entry) => entry.sql.trim())).toEqual(expect.arrayContaining([
+      "begin",
+      "commit",
+    ]));
+    expect(queries.find((entry) => entry.sql.includes("insert into bot_links")).params)
+      .toEqual([link.code, 7, 15]);
+    expect(queries.at(-1).sql).toBe("commit");
+    expect(client.release).toHaveBeenCalledOnce();
+  });
+
+  it("rolls back link replacement when the new link cannot be stored", async () => {
+    const queries = [];
+    const client = {
+      query: vi.fn(async (sql) => {
+        const text = String(sql);
+        queries.push(text);
+        if (text.includes("insert into bot_links")) throw new Error("database unavailable");
+        return { rows: [], rowCount: 0 };
+      }),
+      release: vi.fn(),
+    };
+
+    await expect(createLegacyBotLink({ connect: async () => client }, { userId: 7 }))
+      .rejects.toThrow("database unavailable");
+    expect(queries.at(-1)).toBe("rollback");
+    expect(client.release).toHaveBeenCalledOnce();
+  });
+
+  it("does not consume a link while bot access is disabled", async () => {
+    const code = "b".repeat(32);
+    const queries = [];
+    const client = {
+      query: vi.fn(async (sql) => {
+        const text = String(sql);
+        queries.push(text);
+        if (text.includes("select user_id from bot_links")) return { rows: [{ user_id: "7" }] };
+        if (text.includes("from users app_user")) {
+          return { rows: [{ id: "7", tg_chat_id: null, enabled: false }] };
+        }
+        return { rows: [], rowCount: 0 };
+      }),
+      release: vi.fn(),
+    };
+
+    const result = await consumeLegacyBotLink({ connect: async () => client }, {
+      code,
+      telegramChatId: 123,
+    });
+
+    expect(result).toEqual({ state: "account_disabled" });
+    expect(queries.at(-1)).toBe("rollback");
+    expect(queries.some((sql) => sql.includes("update bot_links set used_at"))).toBe(false);
+  });
+
+  it("moves the chat and consumes the link in the same transaction", async () => {
+    const code = "c".repeat(32);
+    const queries = [];
+    const client = {
+      query: vi.fn(async (sql, params) => {
+        const text = String(sql);
+        queries.push({ sql: text, params });
+        if (text.includes("select user_id from bot_links")) return { rows: [{ user_id: "7" }] };
+        if (text.includes("from users app_user")) {
+          return { rows: [{ id: "7", tg_chat_id: "999", enabled: true }] };
+        }
+        if (text.includes("select id from users")) return { rows: [{ id: "8" }] };
+        return { rows: [], rowCount: text.startsWith("update") ? 1 : 0 };
+      }),
+      release: vi.fn(),
+    };
+
+    const result = await consumeLegacyBotLink({ connect: async () => client }, {
+      code,
+      telegramChatId: 123,
+    });
+
+    expect(result).toEqual({
+      state: "connected",
+      userId: 7,
+      telegramChatId: 123,
+      moved: true,
+    });
+    const accountUpdate = queries.find((entry) => entry.sql.includes("set tg_chat_id = case"));
+    const linkUpdate = queries.find((entry) => entry.sql.includes("update bot_links set used_at"));
+    expect(accountUpdate.params).toEqual([7, 123]);
+    expect(linkUpdate.params).toEqual([code]);
+    expect(queries.at(-1).sql).toBe("commit");
   });
 });
