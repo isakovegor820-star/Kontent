@@ -2397,6 +2397,19 @@ function ComposerActionBar() {
                 <span className="sm:hidden">В очередь</span>
                 <span className="hidden sm:inline">Поставить в очередь</span>
               </Button>
+              {c.canEditContent && c.editingId && (
+                <Button
+                  variant="danger"
+                  size="sm"
+                  className="col-span-2"
+                  aria-haspopup="dialog"
+                  disabled={unavailable}
+                  onClick={() => c.setConfirmDelete(true)}
+                >
+                  <Trash2 className="h-4 w-4" aria-hidden />
+                  Удалить из календаря
+                </Button>
+              )}
             </div>
           </div>
         )}
@@ -2809,18 +2822,6 @@ function ComposerInner() {
           <ArrowLeft className="h-4 w-4" aria-hidden />
           {returnTarget.label}
         </Link>
-        {canEditContent && c.editingId && (
-          <Button
-            variant="danger"
-            size="sm"
-            aria-haspopup="dialog"
-            disabled={c.draftSaveState === "saving" || c.saving || c.typing}
-            onClick={() => c.setConfirmDelete(true)}
-          >
-            <Trash2 className="h-4 w-4" aria-hidden />
-            Удалить из календаря
-          </Button>
-        )}
       </nav>
 
       <Card

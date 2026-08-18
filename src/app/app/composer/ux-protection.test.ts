@@ -43,6 +43,14 @@ describe("composer UX protection contract", () => {
   });
 
   it("deletes an existing calendar draft from a visible editor action", () => {
+    const actionBar = source.slice(
+      source.indexOf("function ComposerActionBar"),
+      source.indexOf("/* ---------------------------------------------------------------- РЕДАКТОР */"),
+    );
+
+    expect(actionBar).toContain("c.canEditContent && c.editingId");
+    expect(actionBar).toContain('variant="danger"');
+    expect(actionBar).toContain("c.setConfirmDelete(true)");
     expect(source).toContain("Удалить из календаря");
     expect(source).toContain("<ConfirmDialog");
     expect(source).toContain('title="Удалить черновик из календаря?"');
