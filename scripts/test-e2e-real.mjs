@@ -1495,6 +1495,7 @@ try {
 
   const libraryReferenceText =
     `E2E_LIBRARY_REFERENCE: договор и проверяемые условия. ${"Полный абзац нужен для независимого раскрытия карточки. ".repeat(18)}`;
+  const libraryReferenceTopic = "Договор и проверяемые условия";
   const libraryReferenceId = Number((await pool.query(
     `insert into competitor_posts
        (competitor_id, tg_msg_id, text, views, reactions, posted_at, media, is_hit, hit_ratio)
@@ -1502,6 +1503,12 @@ try {
      returning id`,
     [competitorIds[0], libraryReferenceText],
   )).rows[0].id);
+  await pool.query(
+    `insert into content_ideas
+       (user_id, competitor_id, source_post_id, topic, ai_status)
+     values ($1, $2, $3, $4, 'ready')`,
+    [userId, competitorIds[0], libraryReferenceId, libraryReferenceTopic],
+  );
 
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto(`/app/library?channel=${channels[0]}`);
@@ -1596,7 +1603,8 @@ try {
   assert(referenceDraft?.text === libraryReferenceText, "Studio reference draft lost the full Library text");
   assert(referenceDraft?.origin === "competitor", "Studio reference draft lost provenance");
   assert(Number(referenceDraft?.channel_id) === channels[0], "Studio reference draft lost selected channel id");
-  assert(String(referenceDraft?.source_ref?.id) === String(competitorIds[0]), "Studio reference draft lost source id");
+  assert(String(referenceDraft?.source_ref?.id) === String(libraryReferenceId), "Studio reference draft lost source post id");
+  assert(referenceDraft?.source_ref?.topic === libraryReferenceTopic, "Studio reference draft lost the server-owned topic");
   // A reload while the provider is running must replay the same paid operation. The
   // create intent remains until the terminal result has been persisted as a server draft.
   await page.reload();
