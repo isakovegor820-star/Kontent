@@ -885,10 +885,12 @@ export function AppShell({
               const active = isActive(pathname, item);
               const Icon = item.icon;
               const route = APP_ROUTES[item.routeId];
+              const mobileLabel = appRouteLabel(item.routeId, "mobile");
               return (
                 <li key={item.routeId} className="min-w-0 flex-1">
                   <Link
                     href={route.href}
+                    aria-label={mobileLabel !== route.label ? route.label : undefined}
                     aria-current={active ? "page" : undefined}
                     className={cn(
                       "relative flex h-14 flex-col items-center justify-center gap-1 px-1",
@@ -909,7 +911,7 @@ export function AppShell({
                       />
                     </span>
                     <span className="w-full truncate text-center text-[13px] leading-none font-semibold">
-                      {appRouteLabel(item.routeId, "mobile")}
+                      {mobileLabel}
                     </span>
                   </Link>
                 </li>

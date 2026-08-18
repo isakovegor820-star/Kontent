@@ -16,6 +16,7 @@ export const APP_ROUTES = {
   calendar: {
     href: "/app/calendar",
     label: "Календарь",
+    mobileLabel: "План",
     activeAliases: ["/app/composer"],
   },
   composer: {
@@ -74,6 +75,7 @@ export const APP_ROUTES = {
   analytics: {
     href: "/app/analytics",
     label: "Результаты",
+    mobileLabel: "Итоги",
     activeAliases: [],
   },
   settings: {

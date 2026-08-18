@@ -5,6 +5,7 @@ import {
   APP_BOTTOM_NAV_ROUTE_IDS,
   APP_NAV_GROUPS,
   APP_ROUTES,
+  appRouteLabel,
   appDraftActionHref,
   composerReturnTarget,
   composerSource,
@@ -33,6 +34,8 @@ describe("app route registry", () => {
     ]);
     expect(APP_BOTTOM_NAV_ROUTE_IDS).toHaveLength(5);
     expect(isAppRouteActive("/app/today", "today")).toBe(true);
+    expect(appRouteLabel("calendar", "mobile")).toBe("План");
+    expect(appRouteLabel("analytics", "mobile")).toBe("Итоги");
   });
 
   it("uses the same aliases for desktop and mobile active state", () => {
