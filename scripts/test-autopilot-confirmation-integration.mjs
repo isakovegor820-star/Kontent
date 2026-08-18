@@ -250,7 +250,7 @@ try {
         idempotency_key, actor_type, status, request_snapshot)
      values ($1, $2, $3, $4, 1, $5, 'project:' || ($1::bigint)::text || ':qa-same-idempotency-key',
              'web', 'processing', '{}'::jsonb)
-     on conflict (user_id, idempotency_key) do nothing returning id`,
+     on conflict do nothing returning id`,
     [projectId, userId, channelA, crossChannelPlan, "0".repeat(64)],
   )));
   assert.equal(duplicateKeyResults.reduce((sum, result) => sum + Number(result.rowCount), 0), 1);
