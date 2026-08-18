@@ -3398,6 +3398,7 @@ try {
   await assertNoHorizontalOverflow(page, "critical Composer at 200% desktop zoom equivalent");
   await page.setViewportSize({ width: 1280, height: 900 });
 
+  let publicationSafetyRefreshed = false;
   if (publicationAt.getTime() <= Date.now() + 150_000) {
     const minimumSafePublicationAt = new Date();
     minimumSafePublicationAt.setUTCSeconds(0, 0);
@@ -3410,6 +3411,7 @@ try {
     publicationTime = publicationAt.toISOString().slice(11, 16);
     await page.getByLabel("Дата публикации", { exact: true }).fill(publicationDate);
     await page.getByLabel("Время публикации", { exact: true }).fill(publicationTime);
+    publicationSafetyRefreshed = true;
   }
   await saveCriticalDraft();
   const finalDraft = await waitFor(async () => {
@@ -3427,8 +3429,12 @@ try {
     "human adoption lost media/tracking or retained untrusted Autopilot source attribution",
   );
   assert(
-    Number(finalDraft.version) > Number(criticalDraftBeforeReview.version),
-    "publication safety refresh did not create a newer durable draft version",
+    publicationSafetyRefreshed
+      ? Number(finalDraft.version) > Number(criticalDraftBeforeReview.version)
+      : Number(finalDraft.version) === Number(criticalDraftBeforeReview.version),
+    publicationSafetyRefreshed
+      ? "publication safety refresh did not create a newer durable draft version"
+      : "idempotent publication save unexpectedly created a newer draft version",
   );
   assert(Number((await pool.query(
     "select draft_id from monthly_campaign_items where id = $1 and project_id = $2",
