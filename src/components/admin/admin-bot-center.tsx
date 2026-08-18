@@ -291,18 +291,39 @@ export function AdminBotCenter({ period }: { period: AdminPeriodDays }) {
           <div className="min-w-0">
             <StatusPill
               state={runtimeState}
-              label={runtimeState === "healthy" ? "Бот и воркер работают" : data.runtime.state === "not_configured" ? "Токен не подключён" : "Нужна проверка подключения"}
+              label={runtimeState === "healthy"
+                ? "Бот принимает сообщения"
+                : data.runtime.state === "not_configured"
+                  ? "Токен не подключён"
+                  : data.runtime.state === "healthy"
+                    ? data.workerState === "conflict"
+                      ? "Найден второй воркер"
+                      : "Приём сообщений остановлен"
+                    : "Telegram API недоступен"}
             />
             <h3 className="mt-4 text-text">{data.runtime.botName || "Telegram-бот Авроры"}</h3>
             <p className="type-secondary mt-2 max-w-2xl text-pretty text-text-2">
               {data.runtime.username
-                ? `@${data.runtime.username} принимает кнопки, уведомления и редакционные действия.`
+                ? data.workerState === "up"
+                  ? `@${data.runtime.username} принимает кнопки, уведомления и редакционные действия.`
+                  : data.workerState === "conflict"
+                    ? `@${data.runtime.username} одновременно слушает второй процесс. Остановите его или замените токен.`
+                    : `@${data.runtime.username} зарегистрирован, но входящие сообщения сейчас не обрабатываются.`
                 : "Имя бота появится после успешной проверки токена через Telegram."}
             </p>
             <div className="mt-4 flex flex-wrap gap-2">
+              <StatusPill state={data.runtime.state === "healthy" ? "healthy" : "danger"} label={data.runtime.state === "healthy" ? "Telegram API доступен" : "Telegram API недоступен"} />
+              <StatusPill
+                state={data.workerState === "up" ? "healthy" : "danger"}
+                label={data.workerState === "up"
+                  ? "Приём сообщений работает"
+                  : data.workerState === "conflict"
+                    ? "Конфликт двух воркеров"
+                    : "Приём сообщений остановлен"}
+              />
+              <StatusPill state={data.publicationWorkerState === "up" ? "healthy" : "danger"} label={data.publicationWorkerState === "up" ? "Публикации работают" : "Публикации не подтверждены"} />
               <StatusPill state={data.runtime.miniAppReady ? "healthy" : "warning"} label={data.runtime.miniAppReady ? "Mini App готов" : "Mini App ждёт HTTPS"} />
               <StatusPill state={data.runtime.voiceReady ? "healthy" : "warning"} label={data.runtime.voiceReady ? "Голос доступен" : "Распознавание не настроено"} />
-              <StatusPill state={data.workerState === "up" ? "healthy" : "danger"} label={data.workerState === "up" ? "Воркер в сети" : "Воркер не подтверждён"} />
             </div>
           </div>
           <div className="flex flex-col gap-3 sm:flex-row lg:flex-col">

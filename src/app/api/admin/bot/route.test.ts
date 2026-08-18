@@ -25,7 +25,11 @@ describe("GET /api/admin/bot", () => {
     vi.clearAllMocks();
     mocks.loadAdminBotData.mockResolvedValue({ periodDays: 7, summary: {}, daily: [], users: [], projects: [], deliveries: [], audit: [] });
     mocks.probeAdminTelegramBot.mockResolvedValue({ state: "healthy", configured: true });
-    mocks.probeRedisAndPublicationWorker.mockResolvedValue({ redis: "up", publicationWorker: "up" });
+    mocks.probeRedisAndPublicationWorker.mockResolvedValue({
+      redis: "up",
+      publicationWorker: "up",
+      telegramPolling: "up",
+    });
   });
 
   it("requires a live administrator session", async () => {
@@ -55,6 +59,7 @@ describe("GET /api/admin/bot", () => {
       summary: { linkedUsers: 4 },
       runtime: { state: "healthy" },
       workerState: "up",
+      publicationWorkerState: "up",
     });
     expect(mocks.loadAdminBotData).toHaveBeenCalledWith(expect.anything(), 30);
   });

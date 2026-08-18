@@ -247,7 +247,7 @@ function AccountMaturity({ summary }: { summary: AdminUsersResponse["summary"] }
     { label: "Завершили первичную настройку", value: summary.onboardingComplete, color: "bg-success" },
     { label: "Подключили хотя бы один канал", value: summary.withChannels, color: "bg-brand" },
     { label: "Имеют активную сессию", value: summary.activeAccounts, color: "bg-fire" },
-    { label: "Подключили Telegram-бота", value: summary.botLinked, color: "bg-info-text" },
+    { label: "Привязали Telegram-чат", value: summary.botLinked, color: "bg-info-text" },
   ];
   return (
     <section className="min-w-0 max-w-full rounded-md border border-line bg-surface p-5" aria-labelledby="accounts-depth-title">
@@ -351,7 +351,7 @@ function DetailContent({ detail }: { detail: AdminUserDetail }) {
             <div><dt className="type-caption text-text-3">Регистрация</dt><dd className="type-secondary mt-1 text-text"><time dateTime={user.createdAt}>{fullDate(user.createdAt)}</time></dd></div>
             <div><dt className="type-caption text-text-3">Последняя активность</dt><dd className="type-secondary mt-1 text-text"><time dateTime={user.lastActivityAt}>{fullDate(user.lastActivityAt)}</time></dd></div>
             <div><dt className="type-caption text-text-3">Первичная настройка</dt><dd className="mt-1"><StatusPill label={user.onboardingCompletedAt ? "Завершена" : "Не завершена"} tone={user.onboardingCompletedAt ? "success" : "warning"} icon={user.onboardingCompletedAt ? CheckCircle2 : Clock3} /></dd></div>
-            <div><dt className="type-caption text-text-3">Telegram-бот</dt><dd className="mt-1"><StatusPill label={user.botLinked ? "Подключён" : "Не подключён"} tone={user.botLinked ? "success" : "neutral"} icon={Bot} /></dd></div>
+            <div><dt className="type-caption text-text-3">Telegram-чат</dt><dd className="mt-1"><StatusPill label={user.botLinked ? "Привязан" : "Не привязан"} tone={user.botLinked ? "success" : "neutral"} icon={Bot} /></dd></div>
             <div className="sm:col-span-2"><dt className="type-caption text-text-3">Выбранный AI-движок</dt><dd className="type-secondary mt-1 break-words text-text">{user.aiEngine || "Используется настройка платформы"}</dd></div>
           </dl>
         </div>
@@ -672,7 +672,7 @@ export function AdminUsersCenter({
             <SummaryCard label="Активные" value={data.summary.activeAccounts} helper="Есть живая сессия" icon={Activity} />
             <SummaryCard label="Завершили настройку" value={data.summary.onboardingComplete} helper="Прошли первичную настройку" icon={CheckCircle2} />
             <SummaryCard label="С каналами" value={data.summary.withChannels} helper="Подключили хотя бы один" icon={Radio} />
-            <SummaryCard label="Подключили бота" value={data.summary.botLinked} helper="Получают команды в Telegram" icon={Bot} />
+            <SummaryCard label="Привязали чат" value={data.summary.botLinked} helper="Сохранили связь с Telegram" icon={Bot} />
           </div>
           <div className="mt-5 grid min-w-0 max-w-full gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(20rem,0.65fr)]">
             <RegistrationBars data={registrations} />
@@ -781,7 +781,7 @@ export function AdminUsersCenter({
                           <td className="px-5 py-4"><p className="nums type-secondary font-semibold text-text">{numberLabel(user.projects, "проект", "проекта", "проектов")} · {numberLabel(user.channels, "канал", "канала", "каналов")}</p><div className="mt-2 flex flex-wrap gap-1.5">{user.networks.length === 0 ? <span className="type-caption text-text-3">Нет подключений</span> : user.networks.map((network) => <StatusPill key={network} label={NETWORK_LABEL[network] || network} tone="neutral" />)}</div>{user.channelAttention > 0 ? <p className="type-caption mt-2 text-danger-text">Проблемных каналов: {user.channelAttention}</p> : null}</td>
                           <td className="px-5 py-4"><p className="nums type-secondary font-semibold text-text">{user.postsPeriod} за период</p><p className="type-caption mt-1 text-text-3">{user.publishedPeriod} вышло · {user.scheduled} в плане</p>{user.failedPeriod > 0 ? <p className="type-caption mt-1 text-danger-text">Ошибок: {user.failedPeriod}</p> : null}</td>
                           <td className="px-5 py-4"><p className="nums type-secondary font-semibold text-text">{user.aiPeriod} за период</p><p className="type-caption mt-1 text-text-3">{user.aiTotal} всего</p></td>
-                          <td className="px-5 py-4"><StatusPill {...state} /><p className="type-caption mt-2 text-text-3">{user.onboardingCompleted ? "Настройка завершена" : "Нужен onboarding"} · {user.botLinked ? "бот подключён" : "без бота"}</p></td>
+                          <td className="px-5 py-4"><StatusPill {...state} /><p className="type-caption mt-2 text-text-3">{user.onboardingCompleted ? "Настройка завершена" : "Нужен onboarding"} · {user.botLinked ? "чат привязан" : "чат не привязан"}</p></td>
                           <td className="px-5 py-4 text-end"><Button variant="secondary" size="sm" onClick={(event) => openDetail(user, event.currentTarget)}>Открыть аккаунт</Button></td>
                         </tr>
                       );

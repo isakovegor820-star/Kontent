@@ -209,6 +209,7 @@ import {
   publicationHeartbeatWrite,
   workerModeHasPublication,
 } from "./worker/publication-heartbeat.mjs";
+import { telegramPollingHeartbeatWrite } from "./worker/telegram-polling-heartbeat.mjs";
 import {
   duePublicationRevision,
   publicationGraceMs,
@@ -2378,11 +2379,24 @@ worker?.on("failed", (job, err) =>
 // числе с localhost — проверено. Воркер и так всегда включён, а это ровно то, что нужно
 // поллингу. Поэтому интерактивный бот не ждёт домена и деплоя.
 //
-// ВАЖНО: getUpdates и webhook взаимоисключающи. На деплое ставим TG_WEBHOOK_URL — поллинг
-// сам отключится, и приём переедет на webhook без переписывания обработчиков.
+// Webhook ingress в приложении не реализован. Одна только переменная TG_WEBHOOK_URL не
+// должна молча выключать единственный рабочий транспорт и оставлять интерфейс зелёным.
 // ============================================================================
 
-const BOT_POLL = !AUTOPILOT_ONLY && !MEDIA_ONLY && !PUBLICATION_ONLY && !process.env.TG_WEBHOOK_URL;
+const BOT_POLL = !AUTOPILOT_ONLY && !MEDIA_ONLY && !PUBLICATION_ONLY;
+if (BOT_POLL && process.env.TG_WEBHOOK_URL) {
+  console.warn("[bot] TG_WEBHOOK_URL игнорируется: webhook ingress не реализован, продолжаю long polling");
+}
+
+async function refreshTelegramPollingHeartbeat(state = "up") {
+  const write = telegramPollingHeartbeatWrite({
+    mode: process.env.AURORA_WORKER_MODE,
+    token: TOKEN,
+    state,
+  });
+  if (!write) return;
+  await connection.set(write.key, write.value, "EX", write.ttlSeconds);
+}
 
 /** Что бот умеет — показывается в меню Telegram по кнопке «/». */
 const BOT_COMMANDS = [
@@ -8855,6 +8869,7 @@ async function pollUpdates() {
       const r = await tg("getUpdates", { offset, timeout: 30 }, 40_000);
       if (!r?.ok) {
         if (/conflict/i.test(r?.description || "")) {
+          await refreshTelegramPollingHeartbeat("conflict");
           console.error("[bot] конфликт: кто-то ещё слушает этого бота (webhook или второй воркер). Пауза 60с.");
           await sleep(60_000);
         } else {
@@ -8862,6 +8877,9 @@ async function pollUpdates() {
         }
         continue;
       }
+      // Only a successful getUpdates round-trip proves that this exact process is reading
+      // incoming commands. Publication readiness and getMe cannot establish that fact.
+      await refreshTelegramPollingHeartbeat();
       for (const u of r.result) {
         const outcome = await handleUpdate(u);
         if (outcome?.retry) {

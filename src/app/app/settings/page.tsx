@@ -102,6 +102,7 @@ function ReliabilitySection({ index }: { index: number }) {
   const capabilities = [
     { label: "Серверные черновики", ready: report?.webReady, detail: "сохранение и загрузка" },
     { label: "Публикация", ready: report?.publicationReady, detail: "очередь и фоновый worker" },
+    { label: "Telegram-бот", ready: report?.telegramBotReady, detail: "приём команд и кнопок" },
     { label: "Генерация ИИ", ready: report?.aiReady, detail: "проверенный ответ провайдера" },
     { label: "Восстановление пароля", ready: report?.mailDeliveryReady, detail: "доставка письма" },
   ];
@@ -761,6 +762,7 @@ function BotLink() {
   const [phase, setPhase] = useState<"loading" | "ready" | "error">("loading");
   const [linked, setLinked] = useState(false);
   const [bot, setBot] = useState<string | null>(null);
+  const [botStatus, setBotStatus] = useState<"up" | "down" | "not_configured" | "conflict">("not_configured");
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const pollTimers = useRef<number[]>([]);
@@ -774,6 +776,7 @@ function BotLink() {
       if (seq !== requestSeq.current) return;
       setLinked(status.linked);
       setBot(status.bot);
+      setBotStatus(status.botStatus);
       setActionError(null);
       setPhase("ready");
     } catch {
@@ -798,7 +801,7 @@ function BotLink() {
   };
 
   const connect = async () => {
-    if (busy) return;
+    if (busy || botStatus !== "up") return;
     requestSeq.current += 1;
     setActionError(null);
     setBusy(true);
@@ -892,44 +895,99 @@ function BotLink() {
     );
   }
 
+  const botAvailable = botStatus === "up";
+
   return linked ? (
-    <div className="rounded-md bg-surface-inset p-4">
-      <p className="flex items-center gap-2 text-[15px] font-semibold text-text">
-        <span className="h-2 w-2 rounded-full bg-success-text" aria-hidden />
-        Бот подключён
+    <div
+      role="status"
+      aria-live="polite"
+      className={cn(
+        "rounded-md border p-4",
+        botAvailable ? "border-success/20 bg-success-soft" : "border-danger/20 bg-danger-soft",
+      )}
+    >
+      <p className={cn(
+        "flex items-center gap-2 text-[15px] font-semibold",
+        botAvailable ? "text-success-text" : "text-danger-text",
+      )}>
+        {botAvailable
+          ? <Check className="h-5 w-5 shrink-0" aria-hidden />
+          : <TriangleAlert className="h-5 w-5 shrink-0" aria-hidden />}
+        {botAvailable
+          ? "Бот на связи"
+          : botStatus === "conflict"
+            ? "Бота слушает второй процесс"
+            : "Чат привязан, бот не отвечает"}
       </p>
       <p className="mt-1.5 text-[14px] leading-relaxed text-text-2">
-        Пишет, когда пост вышел или упал, когда у конкурента залетело и когда готов план недели —
-        с кнопками, чтобы не открывать сайт. Команды: /stats, /plan, /trends.
+        {botAvailable
+          ? "Принимает команды и кнопки, сообщает о публикациях, залётах и готовом плане недели. Команды: /stats, /plan, /trends."
+          : botStatus === "not_configured"
+            ? "Связь с аккаунтом сохранена, но Telegram-бот не настроен на сервере. Переподключать чат не нужно."
+            : botStatus === "conflict"
+              ? "Связь с аккаунтом сохранена. Останови второй воркер или замени токен бота — переподключать чат не нужно."
+            : "Связь с аккаунтом сохранена. Переподключать чат не нужно — приём сообщений временно остановлен."}
       </p>
       {actionError && (
         <p role="alert" className="mt-3 text-[13px] leading-relaxed font-medium text-danger-text">
           {actionError}
         </p>
       )}
-      <Button size="sm" variant="ghost" onClick={disconnect} loading={busy} className="mt-3">
-        Отвязать
-      </Button>
+      <div className="mt-3 flex flex-wrap gap-2">
+        {!botAvailable ? (
+          <Button size="sm" variant="outline" onClick={retryLoad} loading={busy}>
+            Проверить снова
+          </Button>
+        ) : null}
+        <Button size="sm" variant="ghost" onClick={disconnect} loading={busy}>
+          Отвязать чат
+        </Button>
+      </div>
     </div>
   ) : (
-    <div className="rounded-md bg-surface-inset p-4">
-      <p className="text-[15px] font-semibold text-text">Бот не подключён</p>
+    <div
+      role="status"
+      aria-live="polite"
+      className={cn(
+        "rounded-md border p-4",
+        botStatus === "conflict"
+          ? "border-danger/20 bg-danger-soft"
+          : "border-transparent bg-surface-inset",
+      )}
+    >
+      <p className={cn(
+        "flex items-center gap-2 text-[15px] font-semibold",
+        botStatus === "conflict" ? "text-danger-text" : "text-text",
+      )}>
+        {botStatus === "conflict" ? (
+          <TriangleAlert className="h-5 w-5 shrink-0" aria-hidden />
+        ) : null}
+        {botStatus === "conflict" ? "Найден второй воркер" : "Бот не подключён"}
+      </p>
       <p className="mt-1.5 text-[14px] leading-relaxed text-text-2">
-        {bot
+        {botAvailable
           ? "Посты выходят по расписанию и без него, но о сбоях и залётах ты узнаешь только здесь, на сайте."
-          : "Бот ещё не настроен на сервере — подключить пока нечего."}
+          : botStatus === "conflict"
+            ? "Этого бота одновременно слушает другой процесс. Подключение откроется после остановки второго воркера или замены токена."
+          : bot
+            ? "Бот настроен, но сейчас не принимает сообщения. Подключение станет доступно после восстановления связи."
+            : "Бот ещё не настроен на сервере — подключить пока нечего."}
       </p>
       {actionError && (
         <p role="alert" className="mt-3 text-[13px] leading-relaxed font-medium text-danger-text">
           {actionError}
         </p>
       )}
-      {bot && (
+      {botAvailable && bot ? (
         <Button size="sm" variant="brand" onClick={connect} loading={busy} className="mt-3">
           <Bot className="h-4 w-4" aria-hidden />
           Подключить бота
         </Button>
-      )}
+      ) : bot ? (
+        <Button size="sm" variant="outline" onClick={retryLoad} loading={busy} className="mt-3">
+          Проверить снова
+        </Button>
+      ) : null}
     </div>
   );
 }

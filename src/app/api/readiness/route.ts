@@ -22,6 +22,7 @@ export async function GET() {
     schema: database.schema,
     redis: queue.redis,
     publicationWorker: queue.publicationWorker,
+    telegramPolling: queue.telegramPolling,
     aiProviders: aiProviderHealthSnapshot(),
     aiConfigured: probeAiConfiguration(),
     mailDelivery: probeMailDeliveryConfiguration(),

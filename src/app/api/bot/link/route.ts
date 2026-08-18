@@ -10,6 +10,7 @@ import { randomBytes } from "node:crypto";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
+import { probeRedisAndPublicationWorker } from "@/lib/readiness-probes";
 
 export const runtime = "nodejs";
 
@@ -25,15 +26,18 @@ export async function GET(req: NextRequest) {
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
   try {
-    const row = (
-      await getPool().query<{ tg_chat_id: string | null }>(
+    const [result, runtime] = await Promise.all([
+      getPool().query<{ tg_chat_id: string | null }>(
         `select tg_chat_id from users where id = $1`,
         [user.id],
-      )
-    ).rows[0];
+      ),
+      probeRedisAndPublicationWorker(),
+    ]);
+    const row = result.rows[0];
     return NextResponse.json({
       linked: !!row?.tg_chat_id,
       bot: botUsername(),
+      botStatus: runtime.telegramPolling,
     });
   } catch (err) {
     console.error("[/api/bot/link] GET", err);

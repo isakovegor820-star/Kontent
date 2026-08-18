@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   evaluateReadiness,
   isFreshPublicationHeartbeat,
+  isFreshTelegramPollingHeartbeat,
   readinessRequestFailure,
+  telegramPollingHeartbeatState,
 } from "./readiness";
 
 const provider = {
@@ -34,6 +36,7 @@ const healthyDefaults = {
   uploadIngress: "up" as const,
   tokenEncryption: "up" as const,
   trackingSecrets: "up" as const,
+  telegramPolling: "up" as const,
 };
 
 describe("readiness model", () => {
@@ -50,7 +53,40 @@ describe("readiness model", () => {
       status: "degraded",
       webReady: true,
       publicationReady: false,
+      telegramBotReady: true,
       aiReady: true,
+    });
+  });
+
+  it("does not mistake a publication-only worker for a live Telegram bot", () => {
+    expect(evaluateReadiness({
+      ...healthyDefaults,
+      database: "up",
+      redis: "up",
+      publicationWorker: "up",
+      telegramPolling: "down",
+      aiProviders: [provider],
+    })).toMatchObject({
+      status: "degraded",
+      publicationReady: true,
+      telegramBotReady: false,
+      reasons: expect.arrayContaining(["telegram_polling_unavailable"]),
+    });
+  });
+
+  it("reports a second Telegram poller as a distinct degraded state", () => {
+    expect(evaluateReadiness({
+      ...healthyDefaults,
+      database: "up",
+      redis: "up",
+      publicationWorker: "up",
+      telegramPolling: "conflict",
+      aiProviders: [provider],
+    })).toMatchObject({
+      status: "degraded",
+      telegramBotReady: false,
+      reasons: expect.arrayContaining(["telegram_polling_conflict"]),
+      checks: { telegramPolling: "conflict" },
     });
   });
 
@@ -79,6 +115,7 @@ describe("readiness model", () => {
       },
       redis: "up",
       publicationWorker: "up",
+      telegramPolling: "up",
       aiProviders: [provider],
       aiConfigured: true,
       mailDelivery: "up",
@@ -91,6 +128,7 @@ describe("readiness model", () => {
       status: "not_ready",
       webReady: false,
       publicationReady: false,
+      telegramBotReady: false,
       schemaReady: false,
       reasons: ["capability_missing:table:drafts"],
     });
@@ -139,6 +177,7 @@ describe("readiness model", () => {
     expect(readinessRequestFailure()).toEqual({
       webReady: false,
       publicationReady: false,
+      telegramBotReady: false,
       aiReady: false,
       schemaReady: false,
       mailDeliveryReady: false,
@@ -172,5 +211,35 @@ describe("publication heartbeat", () => {
       at: "2026-08-01T11:59:00.000Z",
     }), now)).toBe(false);
     expect(isFreshPublicationHeartbeat("not-json", now)).toBe(false);
+  });
+});
+
+describe("Telegram polling heartbeat", () => {
+  const now = new Date("2026-08-01T12:01:15Z").getTime();
+
+  it("requires a fresh telegram_polling role", () => {
+    expect(isFreshTelegramPollingHeartbeat(JSON.stringify({
+      version: 1,
+      role: "telegram_polling",
+      state: "up",
+      at: "2026-08-01T12:00:01.000Z",
+    }), now)).toBe(true);
+    expect(isFreshTelegramPollingHeartbeat(JSON.stringify({
+      version: 1,
+      role: "publication",
+      state: "up",
+      at: "2026-08-01T12:01:14.000Z",
+    }), now)).toBe(false);
+  });
+
+  it("keeps a polling conflict fresh but unhealthy", () => {
+    const raw = JSON.stringify({
+      version: 1,
+      role: "telegram_polling",
+      state: "conflict",
+      at: "2026-08-01T12:01:14.000Z",
+    });
+    expect(telegramPollingHeartbeatState(raw, now)).toBe("conflict");
+    expect(isFreshTelegramPollingHeartbeat(raw, now)).toBe(false);
   });
 });

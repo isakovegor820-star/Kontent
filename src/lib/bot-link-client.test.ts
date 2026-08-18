@@ -5,9 +5,14 @@ describe("bot link client responses", () => {
   it("accepts only a successful, explicit link status", async () => {
     await expect(
       parseBotLinkStatusResponse(
-        Response.json({ linked: true, bot: "aurora_bot" }, { status: 200 }),
+        Response.json({ linked: true, bot: "aurora_bot", botStatus: "up" }, { status: 200 }),
       ),
-    ).resolves.toEqual({ linked: true, bot: "aurora_bot" });
+    ).resolves.toEqual({ linked: true, bot: "aurora_bot", botStatus: "up" });
+    await expect(
+      parseBotLinkStatusResponse(
+        Response.json({ linked: true, bot: "aurora_bot", botStatus: "conflict" }, { status: 200 }),
+      ),
+    ).resolves.toEqual({ linked: true, bot: "aurora_bot", botStatus: "conflict" });
 
     await expect(
       parseBotLinkStatusResponse(Response.json({ error: "server" }, { status: 500 })),
@@ -18,6 +23,9 @@ describe("bot link client responses", () => {
     await expect(
       parseBotLinkStatusResponse(Response.json({ linked: "false" }, { status: 200 })),
     ).rejects.toThrow("bot_link_status_unavailable");
+    await expect(
+      parseBotLinkStatusResponse(Response.json({ linked: true, bot: "aurora_bot", botStatus: "unknown" })),
+    ).rejects.toThrow("bot_link_status_invalid");
   });
 
   it("confirms unlinking only from an HTTP success with ok true", async () => {

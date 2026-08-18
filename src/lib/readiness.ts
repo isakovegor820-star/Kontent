@@ -4,11 +4,18 @@ import {
   PUBLICATION_HEARTBEAT_KEY,
   PUBLICATION_HEARTBEAT_TTL_SECONDS,
 } from "../../worker/publication-heartbeat.mjs";
+import {
+  parseTelegramPollingHeartbeat,
+  TELEGRAM_POLLING_HEARTBEAT_KEY,
+  TELEGRAM_POLLING_HEARTBEAT_TTL_SECONDS,
+} from "../../worker/telegram-polling-heartbeat.mjs";
 
 export const PUBLICATION_WORKER_HEARTBEAT_KEY = PUBLICATION_HEARTBEAT_KEY;
 export const PUBLICATION_WORKER_HEARTBEAT_MAX_AGE_MS = PUBLICATION_HEARTBEAT_TTL_SECONDS * 1_000;
+export const TELEGRAM_POLLING_WORKER_HEARTBEAT_KEY = TELEGRAM_POLLING_HEARTBEAT_KEY;
+export const TELEGRAM_POLLING_WORKER_HEARTBEAT_MAX_AGE_MS = TELEGRAM_POLLING_HEARTBEAT_TTL_SECONDS * 1_000;
 
-export type DependencyState = "up" | "down" | "not_configured";
+export type DependencyState = "up" | "down" | "not_configured" | "conflict";
 
 export interface SchemaReadinessState {
   ready: boolean;
@@ -24,6 +31,7 @@ export interface ReadinessInput {
   schema: SchemaReadinessState;
   redis: DependencyState;
   publicationWorker: DependencyState;
+  telegramPolling: DependencyState;
   aiProviders: ProviderHealthSnapshot[];
   aiConfigured: boolean;
   mailDelivery: DependencyState;
@@ -40,6 +48,7 @@ export interface ReadinessReport {
   schemaReady: boolean;
   webReady: boolean;
   publicationReady: boolean;
+  telegramBotReady: boolean;
   aiReady: boolean;
   mailDeliveryReady: boolean;
   uploadReady: boolean;
@@ -53,6 +62,7 @@ export interface ReadinessReport {
     schema: SchemaReadinessState;
     redis: DependencyState;
     publicationWorker: DependencyState;
+    telegramPolling: DependencyState;
     aiProviders: ProviderHealthSnapshot[];
     aiConfigured: boolean;
     mailDelivery: DependencyState;
@@ -64,7 +74,7 @@ export interface ReadinessReport {
 
 export type ServiceReadiness = Pick<
   ReadinessReport,
-  "webReady" | "publicationReady" | "aiReady" | "schemaReady" | "mailDeliveryReady"
+  "webReady" | "publicationReady" | "telegramBotReady" | "aiReady" | "schemaReady" | "mailDeliveryReady"
   | "uploadReady"
   | "tokenEncryptionReady"
   | "trackingReady"
@@ -75,6 +85,7 @@ export function readinessRequestFailure(): ServiceReadiness {
   return {
     webReady: false,
     publicationReady: false,
+    telegramBotReady: false,
     aiReady: false,
     schemaReady: false,
     mailDeliveryReady: false,
@@ -93,6 +104,9 @@ export function evaluateReadiness(input: ReadinessInput): ReadinessReport {
     && input.redis === "up"
     && input.publicationWorker === "up"
     && input.tokenEncryption === "up";
+  const telegramBotReady = webReady
+    && input.redis === "up"
+    && input.telegramPolling === "up";
   // A configured but never-observed provider is not production evidence. The first
   // successful bounded provider call will populate the shared health snapshot.
   const aiReady = input.aiConfigured
@@ -112,6 +126,9 @@ export function evaluateReadiness(input: ReadinessInput): ReadinessReport {
     input.redis === "down" ? "redis_unreachable" : null,
     input.publicationWorker === "not_configured" ? "publication_worker_not_configured" : null,
     input.publicationWorker === "down" ? "publication_worker_unavailable" : null,
+    input.telegramPolling === "not_configured" ? "telegram_bot_not_configured" : null,
+    input.telegramPolling === "down" ? "telegram_polling_unavailable" : null,
+    input.telegramPolling === "conflict" ? "telegram_polling_conflict" : null,
     !input.aiConfigured ? "ai_not_configured" : null,
     input.aiConfigured && input.aiProviders.length === 0 ? "ai_unobserved" : null,
     input.aiProviders.some((provider) => provider.state === "open") ? "ai_circuit_open" : null,
@@ -128,7 +145,7 @@ export function evaluateReadiness(input: ReadinessInput): ReadinessReport {
     input.trackingSecrets === "not_configured" ? "tracking_secrets_not_configured" : null,
     input.trackingSecrets === "down" ? "tracking_secrets_invalid" : null,
   ].filter((reason): reason is string => Boolean(reason));
-  const degraded = !publicationReady || !aiReady || !mailDeliveryReady || !trackingReady;
+  const degraded = !publicationReady || !telegramBotReady || !aiReady || !mailDeliveryReady || !trackingReady;
 
   return {
     status: !webReady ? "not_ready" : degraded ? "degraded" : "ready",
@@ -137,6 +154,7 @@ export function evaluateReadiness(input: ReadinessInput): ReadinessReport {
     schemaReady,
     webReady,
     publicationReady,
+    telegramBotReady,
     aiReady,
     mailDeliveryReady,
     uploadReady,
@@ -150,6 +168,7 @@ export function evaluateReadiness(input: ReadinessInput): ReadinessReport {
       schema: input.schema,
       redis: input.redis,
       publicationWorker: input.publicationWorker,
+      telegramPolling: input.telegramPolling,
       aiProviders: input.aiProviders,
       aiConfigured: input.aiConfigured,
       mailDelivery: input.mailDelivery,
@@ -165,4 +184,18 @@ export function isFreshPublicationHeartbeat(raw: string | null, now = Date.now()
     nowMs: now,
     maxAgeMs: PUBLICATION_WORKER_HEARTBEAT_MAX_AGE_MS,
   }));
+}
+
+export function isFreshTelegramPollingHeartbeat(raw: string | null, now = Date.now()): boolean {
+  return telegramPollingHeartbeatState(raw, now) === "up";
+}
+
+export function telegramPollingHeartbeatState(
+  raw: string | null,
+  now = Date.now(),
+): "up" | "conflict" | null {
+  return parseTelegramPollingHeartbeat(raw, {
+    nowMs: now,
+    maxAgeMs: TELEGRAM_POLLING_WORKER_HEARTBEAT_MAX_AGE_MS,
+  })?.state ?? null;
 }

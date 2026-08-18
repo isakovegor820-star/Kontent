@@ -2,7 +2,9 @@ import Redis from "ioredis";
 import { getPool } from "./db";
 import {
   isFreshPublicationHeartbeat,
+  telegramPollingHeartbeatState,
   PUBLICATION_WORKER_HEARTBEAT_KEY,
+  TELEGRAM_POLLING_WORKER_HEARTBEAT_KEY,
   type DependencyState,
   type SchemaReadinessState,
 } from "./readiness";
@@ -111,9 +113,17 @@ export function probeTrackingSecretsConfiguration(
 export async function probeRedisAndPublicationWorker(): Promise<{
   redis: DependencyState;
   publicationWorker: DependencyState;
+  telegramPolling: DependencyState;
 }> {
   const url = String(process.env.REDIS_URL || "").trim();
-  if (!url) return { redis: "not_configured", publicationWorker: "not_configured" };
+  const telegramConfigured = Boolean(String(process.env.TG_BOT_TOKEN || "").trim());
+  if (!url) {
+    return {
+      redis: "not_configured",
+      publicationWorker: "not_configured",
+      telegramPolling: telegramConfigured ? "down" : "not_configured",
+    };
+  }
 
   const client = new Redis(url, {
     lazyConnect: true,
@@ -126,13 +136,23 @@ export async function probeRedisAndPublicationWorker(): Promise<{
   try {
     await client.connect();
     await client.ping();
-    const heartbeat = await client.get(PUBLICATION_WORKER_HEARTBEAT_KEY);
+    const [publicationHeartbeat, telegramPollingHeartbeat] = await client.mget(
+      PUBLICATION_WORKER_HEARTBEAT_KEY,
+      TELEGRAM_POLLING_WORKER_HEARTBEAT_KEY,
+    );
     return {
       redis: "up",
-      publicationWorker: isFreshPublicationHeartbeat(heartbeat) ? "up" : "down",
+      publicationWorker: isFreshPublicationHeartbeat(publicationHeartbeat) ? "up" : "down",
+      telegramPolling: !telegramConfigured
+        ? "not_configured"
+        : telegramPollingHeartbeatState(telegramPollingHeartbeat) ?? "down",
     };
   } catch {
-    return { redis: "down", publicationWorker: "down" };
+    return {
+      redis: "down",
+      publicationWorker: "down",
+      telegramPolling: telegramConfigured ? "down" : "not_configured",
+    };
   } finally {
     client.disconnect(false);
   }

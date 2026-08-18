@@ -1,6 +1,7 @@
 export interface BotLinkStatus {
   linked: boolean;
   bot: string | null;
+  botStatus: "up" | "down" | "not_configured" | "conflict";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -19,7 +20,17 @@ export async function parseBotLinkStatusResponse(response: Response): Promise<Bo
   if (body.bot != null && typeof body.bot !== "string") {
     throw new Error("bot_link_status_invalid");
   }
-  return { linked: body.linked, bot: body.bot ?? null };
+  if (
+    typeof body.botStatus !== "string"
+    || !new Set(["up", "down", "not_configured", "conflict"]).has(body.botStatus)
+  ) {
+    throw new Error("bot_link_status_invalid");
+  }
+  return {
+    linked: body.linked,
+    bot: body.bot ?? null,
+    botStatus: body.botStatus as BotLinkStatus["botStatus"],
+  };
 }
 
 export async function requireBotUnlinkSuccess(response: Response): Promise<void> {

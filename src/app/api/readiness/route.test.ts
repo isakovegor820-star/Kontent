@@ -42,6 +42,7 @@ describe("GET /api/readiness", () => {
     mocks.probeRedisAndPublicationWorker.mockResolvedValue({
       redis: "up",
       publicationWorker: "up",
+      telegramPolling: "up",
     });
     mocks.probeAiConfiguration.mockReturnValue(true);
     mocks.probeMailDeliveryConfiguration.mockReturnValue("up");
@@ -65,6 +66,7 @@ describe("GET /api/readiness", () => {
     mocks.probeRedisAndPublicationWorker.mockResolvedValue({
       redis: "up",
       publicationWorker: "down",
+      telegramPolling: "up",
     });
     const response = await GET();
     expect(response.status).toBe(200);
@@ -72,6 +74,7 @@ describe("GET /api/readiness", () => {
       status: "degraded",
       webReady: true,
       publicationReady: false,
+      telegramBotReady: true,
     });
   });
 

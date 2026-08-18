@@ -24,7 +24,8 @@ export interface AdminBotData {
   periodDays: AdminPeriodDays;
   checkedAt: string;
   runtime: AdminBotRuntime;
-  workerState: "up" | "down" | "unknown";
+  workerState: "up" | "down" | "conflict" | "unknown";
+  publicationWorkerState: "up" | "down" | "unknown";
   summary: {
     linkedUsers: number;
     disabledUsers: number;
@@ -168,7 +169,7 @@ export async function probeAdminTelegramBot(
 export async function loadAdminBotData(
   db: Queryable,
   periodDays: AdminPeriodDays,
-): Promise<Omit<AdminBotData, "checkedAt" | "runtime" | "workerState">> {
+): Promise<Omit<AdminBotData, "checkedAt" | "runtime" | "workerState" | "publicationWorkerState">> {
   const [headline, daily, notificationRows, userRows, projectRows, deliveryRows, auditRows] = await Promise.all([
     db.query(`select
       (select count(*) from users where tg_chat_id is not null) as linked_users,

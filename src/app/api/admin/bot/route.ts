@@ -27,7 +27,8 @@ export async function GET(req: NextRequest) {
       ...data,
       checkedAt: new Date().toISOString(),
       runtime: runtimeState,
-      workerState: queue.publicationWorker,
+      workerState: queue.telegramPolling,
+      publicationWorkerState: queue.publicationWorker,
     }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     console.error("[/api/admin/bot]", { errorName: error instanceof Error ? error.name : "Error" });
