@@ -79,6 +79,17 @@ describe("publisher scheduling overlay contract", () => {
     expect(hydrate).not.toContain("draft?.generation_binding_valid ? draft.generation_result_id");
   });
 
+  it("persists editor formatting and explains the VK limitation", () => {
+    const persist = section(source, "const persistDraft = useCallback", "const saveDraft = useCallback");
+    expect(persist).toMatch(/const common = \{\s*text,\s*formatting,/);
+
+    const dependencies = persist.slice(persist.lastIndexOf("[\n      canEditContent,"));
+    expect(dependencies).toContain("\n      formatting,");
+
+    expect(source).toContain("Форматирование применится в Telegram. VK опубликует обычный текст.");
+    expect(source).toContain("один текст, оформление — только для Telegram");
+  });
+
   it("keeps removed advanced panels out of the composer", () => {
     for (const removed of [
       "Семантическая проверка недоступна",

@@ -1441,6 +1441,7 @@ export default function ComposerPage() {
           const trackingSelection = composerTrackingDraftSelection(tracking).selection;
           const common = {
             text,
+            formatting,
             media: media ?? null,
             scheduledAt,
             schedule: resolvedSchedule
@@ -1587,6 +1588,7 @@ export default function ComposerPage() {
       date,
       draftId,
       draftVersion,
+      formatting,
       generationResultId,
       legacyId,
       media,
@@ -2885,6 +2887,14 @@ function ComposerInner() {
               </p>
             )}
 
+            {vkOn && (
+              <p className="mt-2 text-[13px] leading-relaxed text-text-2">
+                {tgOn
+                  ? "Форматирование применится в Telegram. VK опубликует обычный текст."
+                  : "VK опубликует обычный текст: жирный, курсив и другие стили в посте не поддерживаются."}
+              </p>
+            )}
+
             <div className="mt-2 flex items-start justify-between gap-4">
               {over ? (
                 <p className="text-[13px] font-medium text-danger">
@@ -2919,7 +2929,7 @@ function ComposerInner() {
           {aiContextDestination && (
             <p className="text-[12px] leading-relaxed text-text-3">
               Контекст ИИ: {aiContextDestination.title ?? aiContextDestination.handle ?? `канал #${aiContextDestination.id}`}
-              {tgOn && vkOn ? " · единый текст для Telegram и VK" : ""}
+              {tgOn && vkOn ? " · один текст, оформление — только для Telegram" : ""}
             </p>
           )}
 
