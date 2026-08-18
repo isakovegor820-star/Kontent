@@ -53,7 +53,7 @@ describe("POST /api/admin/bot/actions", () => {
     expect(invalid.status).toBe(400);
   });
 
-  it("repairs the long-polling Telegram configuration without dropping pending updates", async () => {
+  it("repairs the guarded Telegram queue without dropping pending updates", async () => {
     mocks.repairAdminTelegramConfiguration.mockResolvedValue({ status: "repaired" });
     const response = await POST(request({ action: "repair_telegram_configuration" }));
     expect(response.status).toBe(200);

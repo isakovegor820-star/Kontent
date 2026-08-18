@@ -76,12 +76,14 @@ describe("Telegram connection center copy", () => {
     expect(message).toContain("Публикации: работают");
     expect(message).toContain("Каналы: подключено — 2; нужно переподключить — 1");
     expect(message).toContain("Уведомления: включены частично");
-    expect(message).toContain("остановить старый worker или заменить токен бота");
+    expect(message).toContain("Защищённая очередь автоматически восстанавливает приём команд");
     expect(message).toContain("переподключать чат не нужно");
   });
 
   it("explains linking and disconnection consequences without relying on color", () => {
     expect(formatBotConnectionOnboarding({ available: true })).toContain("Ссылка действует 15 минут");
+    expect(formatBotConnectionOnboarding({ available: true, localLink: true }))
+      .toContain("на компьютере, где запущена Аврора");
     expect(formatBotConnectionOnboarding({ disconnected: true })).toContain("Проекты и публикации сохранены");
     expect(formatBotDisconnectConfirmation()).toContain("Команды и уведомления в Telegram остановятся");
   });

@@ -227,6 +227,14 @@ import {
 } from "./worker/telegram-polling-heartbeat.mjs";
 import { telegramPollingConflictCooldownMs } from "./worker/telegram-polling-conflict.mjs";
 import {
+  TELEGRAM_POLLING_GUARD_CHECK_INTERVAL_MS,
+  TELEGRAM_POLLING_GUARD_RETRY_MS,
+  telegramPollingGuardConfiguration,
+  telegramPollingGuardMatches,
+  telegramPollingGuardPendingCount,
+} from "./worker/telegram-polling-guard.mjs";
+import { telegramSafeErrorDescription } from "./worker/telegram-safe-error.mjs";
+import {
   TELEGRAM_POLLING_LEASE_RENEW_MS,
   acquireTelegramPollingLease,
   createTelegramPollingLeaseOwner,
@@ -1344,7 +1352,9 @@ async function tg(method, body, timeoutMs = 20_000) {
           Number(body.chat_id), method, result?.ok === true,
           Number.isInteger(Number(result?.error_code)) ? Number(result.error_code) : null,
           result?.ok === true ? null : "telegram_rejected",
-          result?.ok === true ? null : String(result?.description || `HTTP ${r.status}`).slice(0, 500),
+          result?.ok === true
+            ? null
+            : telegramSafeErrorDescription(result?.description || `HTTP ${r.status}`),
         ],
       ).catch(() => {});
     }
@@ -2490,16 +2500,17 @@ worker?.on("failed", (job, err) =>
 // ============================================================================
 // БОТ: приём команд и кнопок.
 //
-// Публичный webhook НЕ НУЖЕН: getUpdates с длинным опросом работает откуда угодно, в том
-// числе с localhost — проверено. Воркер и так всегда включён, а это ровно то, что нужно
-// поллингу. Поэтому интерактивный бот не ждёт домена и деплоя.
-//
-// Webhook ingress в приложении не реализован. Одна только переменная TG_WEBHOOK_URL не
-// должна молча выключать единственный рабочий транспорт и оставлять интерфейс зелёным.
+// Команды остаются в очереди Telegram за внутренним guard-webhook. Основной worker на
+// короткое время открывает очередь, забирает накопившийся batch через getUpdates и сразу
+// закрывает её снова. Это не требует публичного домена и не даёт забытому внешнему poller
+// перехватывать пользовательские команды.
 // ============================================================================
 
 const BOT_POLL = !AUTOPILOT_ONLY && !MEDIA_ONLY && !PUBLICATION_ONLY;
 const TELEGRAM_POLLING_OWNER = BOT_POLL ? createTelegramPollingLeaseOwner() : null;
+const TELEGRAM_POLLING_GUARD = BOT_POLL && TOKEN
+  ? telegramPollingGuardConfiguration(TOKEN)
+  : null;
 let telegramPollingLeaseHeld = false;
 let telegramPollingLeaseTimer = null;
 if (BOT_POLL && process.env.TG_WEBHOOK_URL) {
@@ -2555,6 +2566,49 @@ async function waitForTelegramPollingConflict(cooldownMs) {
       await refreshTelegramPollingHeartbeat("conflict").catch(() => {});
     }
   }
+}
+
+async function enableTelegramPollingGuard() {
+  if (!TELEGRAM_POLLING_GUARD) return false;
+  const response = await tg("setWebhook", TELEGRAM_POLLING_GUARD, 10_000).catch(() => null);
+  return response?.ok === true;
+}
+
+async function readTelegramPollingGuard() {
+  const response = await tg("getWebhookInfo", {}, 8_000).catch(() => null);
+  if (response?.ok !== true) return null;
+  return {
+    active: telegramPollingGuardMatches(response.result, TOKEN),
+    pending: telegramPollingGuardPendingCount(response.result),
+  };
+}
+
+async function drainTelegramPollingGuard(offset) {
+  // Re-arm immediately before opening the queue. This forces any in-flight getUpdates
+  // request from a forgotten process to fail before our bounded drain begins.
+  if (!(await enableTelegramPollingGuard())) {
+    return { response: null, guardRestored: false };
+  }
+  const opened = await tg("deleteWebhook", { drop_pending_updates: false }, 10_000).catch(() => null);
+  if (opened?.ok !== true) return { response: opened, guardRestored: false };
+
+  let response = null;
+  try {
+    response = await tg("getUpdates", { offset, timeout: 0, limit: 100 }, 8_000);
+  } catch {
+    response = null;
+  }
+  // Restore the gate before processing. If the worker dies while handling the batch,
+  // Telegram retains the unconfirmed updates and the durable DB offset replays them.
+  let guardRestored = false;
+  for (let attempt = 0; attempt < 3 && !guardRestored; attempt += 1) {
+    guardRestored = await enableTelegramPollingGuard();
+    if (!guardRestored && attempt < 2) await sleep(250 * (attempt + 1));
+  }
+  if (!guardRestored) {
+    console.error("[bot] не удалось закрыть очередь Telegram после чтения");
+  }
+  return { response, guardRestored };
 }
 
 async function botProject(userId, explicitProjectId = null) {
@@ -2693,14 +2747,16 @@ async function botSendPrimaryAction(chatId, userId, action) {
   return null;
 }
 
-function botAppUrl(pathname) {
+function botAppUrl(pathname, options = {}) {
   const configured = String(process.env.APP_URL || "").trim();
   if (!configured) return null;
   try {
     const url = new URL(pathname, configured.endsWith("/") ? configured : `${configured}/`);
-    if (url.protocol !== "https:" && !(process.env.NODE_ENV !== "production" && url.protocol === "http:")) {
-      return null;
-    }
+    const localHttp = options.allowLocalHttp === true
+      && process.env.NODE_ENV !== "production"
+      && url.protocol === "http:"
+      && new Set(["localhost", "127.0.0.1", "::1"]).has(url.hostname);
+    if (url.protocol !== "https:" && !localHttp) return null;
     return url.toString();
   } catch {
     return null;
@@ -2848,7 +2904,7 @@ function telegramSenderIdentity(from) {
 }
 
 async function botConnectionOnboarding(chatId, from, options = {}) {
-  const connectBase = botAppUrl("/bot/connect");
+  const connectBase = botAppUrl("/bot/connect", { allowLocalHttp: true });
   if (!connectBase) {
     return {
       text: formatBotConnectionOnboarding({ available: false, disconnected: options.disconnected }),
@@ -2862,9 +2918,17 @@ async function botConnectionOnboarding(chatId, from, options = {}) {
     });
     const url = new URL(connectBase);
     url.hash = `token=${session.token}`;
+    const inlineButtonReady = url.protocol === "https:";
     return {
-      text: formatBotConnectionOnboarding({ available: true, disconnected: options.disconnected }),
-      buttons: [[{ text: "Подключить аккаунт", url: url.toString() }]],
+      text: [
+        formatBotConnectionOnboarding({
+          available: true,
+          localLink: !inlineButtonReady,
+          disconnected: options.disconnected,
+        }),
+        ...(!inlineButtonReady ? ["", url.toString()] : []),
+      ].join("\n"),
+      buttons: inlineButtonReady ? [[{ text: "Подключить аккаунт", url: url.toString() }]] : [],
     };
   } catch (error) {
     console.error("[bot] connection session", { errorName: error?.name || "Error" });
@@ -9394,9 +9458,13 @@ async function handleUpdate(u) {
   }
 }
 
-/** Длинный опрос. Смещение — в базе: после рестарта Telegram отдал бы старые нажатия заново. */
+/** Защищённый опрос. Смещение — в базе: после рестарта незавершённые нажатия повторяются. */
 async function pollUpdates() {
   if (!TOKEN || !BOT_POLL) return;
+  const initialGuard = await enableTelegramPollingGuard();
+  if (!initialGuard) {
+    console.error("[bot] очередь Telegram пока не защищена, повторю настройку в фоне");
+  }
   const discussionSync = await syncTelegramDiscussionChats(pool, tg).catch((error) => {
     console.error("[bot] не удалось сверить группы обсуждений:", error?.message);
     return null;
@@ -9411,7 +9479,7 @@ async function pollUpdates() {
   if (commandSetup?.ok !== true) {
     console.error("[bot] не удалось обновить меню команд Telegram");
   }
-  console.log("[bot] готов принять lease для команд (long polling, webhook не нужен)");
+  console.log("[bot] готов принять lease для команд (защищённая очередь Telegram)");
   const updateFailures = new Map();
   let consecutivePollingConflicts = 0;
 
@@ -9421,10 +9489,32 @@ async function pollUpdates() {
         await sleep(5_000);
         continue;
       }
+      let guard = await readTelegramPollingGuard();
+      if (!guard?.active) {
+        const guarded = await enableTelegramPollingGuard();
+        if (!guarded) {
+          await sleep(TELEGRAM_POLLING_GUARD_RETRY_MS);
+          continue;
+        }
+        guard = await readTelegramPollingGuard();
+        if (!guard?.active) {
+          await sleep(TELEGRAM_POLLING_GUARD_RETRY_MS);
+          continue;
+        }
+      }
+
+      // A successful guard probe proves that this process owns the receive mode and is
+      // watching Telegram. Incoming updates stay queued until the guarded drain below.
+      await refreshTelegramPollingHeartbeat();
+      if (guard.pending <= 0) {
+        await sleep(TELEGRAM_POLLING_GUARD_CHECK_INTERVAL_MS);
+        continue;
+      }
+
       const offset =
         Number((await pool.query(`select last_update from bot_state where id = 1`)).rows[0]?.last_update ?? 0) + 1;
-      // timeout=30 — соединение висит и ждёт события: это не «опрос раз в секунду», а push.
-      const r = await tg("getUpdates", { offset, timeout: 30 }, 40_000);
+      const drained = await drainTelegramPollingGuard(offset);
+      const r = drained.response;
       if (!r?.ok) {
         if (/conflict/i.test(r?.description || "")) {
           consecutivePollingConflicts += 1;
@@ -9441,13 +9531,9 @@ async function pollUpdates() {
         continue;
       }
       consecutivePollingConflicts = 0;
-      // If the Redis lease expired while Telegram was answering, do not acknowledge or
-      // execute this batch. The durable offset stays unchanged, so the elected poller
-      // receives the same updates on its next request.
+      // If the Redis lease expired while Telegram was answering, do not execute the batch.
+      // The durable offset stays unchanged and the guard keeps it queued for the next owner.
       if (!telegramPollingLeaseHeld) continue;
-      // Only a successful getUpdates round-trip proves that this exact process is reading
-      // incoming commands. Publication readiness and getMe cannot establish that fact.
-      await refreshTelegramPollingHeartbeat();
       for (const u of r.result) {
         const outcome = await handleUpdate(u);
         if (outcome?.retry) {

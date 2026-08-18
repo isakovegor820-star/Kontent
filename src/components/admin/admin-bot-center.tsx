@@ -353,15 +353,12 @@ export function AdminBotCenter({ period }: { period: AdminPeriodDays }) {
       || data.workerState === "down"
       || data.workerState === "conflict"
       || data.publicationWorkerState === "down"
-      || data.runtime.webhookClear === false
+      || (data.runtime.webhookClear === false && data.runtime.webhookGuarded !== true)
     ) return "danger" as const;
     if (
       data.workerState !== "up"
       || data.publicationWorkerState !== "up"
       || data.runtime.commandsReady !== true
-      || !data.runtime.miniAppReady
-      || !data.runtime.voiceReady
-      || !data.runtime.businessReady
       || data.summary.telegramChannelsAttention > 0
     ) return "warning" as const;
     return "healthy" as const;
@@ -370,14 +367,11 @@ export function AdminBotCenter({ period }: { period: AdminPeriodDays }) {
   const runtimeIssues = useMemo(() => {
     if (!data) return [];
     const issues: string[] = [];
-    if (data.workerState === "conflict") issues.push("Другой процесс читает обновления этого токена. Остановите старый worker или замените токен через BotFather.");
+    if (data.workerState === "conflict") issues.push("Другой процесс попытался читать обновления. Восстановите настройки Telegram — очередь команд останется сохранена.");
     else if (data.workerState !== "up") issues.push("Приём команд не подтверждён. Перезапустите основной worker и повторите проверку.");
     if (data.publicationWorkerState !== "up") issues.push("Worker публикаций не подтвердил готовность.");
-    if (data.runtime.webhookClear === false) issues.push("В Telegram остался webhook, несовместимый с текущим long polling.");
+    if (data.runtime.webhookClear === false && data.runtime.webhookGuarded !== true) issues.push("Приём команд перенаправлен на посторонний адрес. Восстановите настройки Telegram.");
     if (data.runtime.commandsReady === false) issues.push("Нативное меню Telegram отличается от актуального набора команд.");
-    if (!data.runtime.miniAppReady) issues.push("Для Mini App нужен постоянный публичный APP_URL с HTTPS.");
-    if (!data.runtime.voiceReady) issues.push("Для голосовых сообщений не настроен совместимый сервис распознавания.");
-    if (!data.runtime.businessReady) issues.push("Текущий бот не разрешён для Telegram Business. Включите Business mode через BotFather.");
     if (data.summary.telegramChannelsAttention > 0) issues.push(`${numberLabel(data.summary.telegramChannelsAttention, "канал требует", "канала требуют", "каналов требуют")} повторного подключения.`);
     return issues;
   }, [data]);
@@ -441,7 +435,7 @@ export function AdminBotCenter({ period }: { period: AdminPeriodDays }) {
             <StatusPill
               state={runtimeState}
               label={runtimeState === "healthy"
-                ? "Бот работает во всех проверенных контурах"
+                ? "Бот работает: команды и публикации доступны"
                 : data.runtime.state === "not_configured"
                   ? "Токен не подключён"
                   : data.runtime.state !== "healthy"
@@ -458,7 +452,7 @@ export function AdminBotCenter({ period }: { period: AdminPeriodDays }) {
                 ? data.workerState === "up"
                   ? `@${data.runtime.username} принимает кнопки, уведомления и редакционные действия.`
                   : data.workerState === "conflict"
-                    ? `@${data.runtime.username} одновременно слушает второй процесс. Остановите его или замените токен.`
+                    ? `@${data.runtime.username} восстанавливает защищённый приём команд после конфликта процессов.`
                     : `@${data.runtime.username} зарегистрирован, но входящие сообщения сейчас не обрабатываются.`
                 : "Имя бота появится после успешной проверки токена через Telegram."}
             </p>
@@ -478,8 +472,8 @@ export function AdminBotCenter({ period }: { period: AdminPeriodDays }) {
               <StatusPill state={data.runtime.miniAppReady ? "healthy" : "warning"} label={data.runtime.miniAppReady ? "Mini App готов" : "Mini App ждёт HTTPS"} />
               <StatusPill state={data.runtime.voiceReady ? "healthy" : "warning"} label={data.runtime.voiceReady ? "Голос доступен" : "Распознавание не настроено"} />
               <StatusPill
-                state={data.runtime.webhookClear === true ? "healthy" : data.runtime.webhookClear === false ? "danger" : "warning"}
-                label={data.runtime.webhookClear === true ? "Webhook не мешает polling" : data.runtime.webhookClear === false ? "Webhook мешает polling" : "Webhook не проверен"}
+                state={data.runtime.webhookClear === true || data.runtime.webhookGuarded === true ? "healthy" : data.runtime.webhookClear === false ? "danger" : "warning"}
+                label={data.runtime.webhookGuarded === true ? "Очередь команд защищена" : data.runtime.webhookClear === true ? "Приём команд настроен" : data.runtime.webhookClear === false ? "Приём команд перенаправлен" : "Приём команд не проверен"}
               />
               <StatusPill
                 state={data.runtime.commandsReady === true ? "healthy" : "warning"}
@@ -522,7 +516,7 @@ export function AdminBotCenter({ period }: { period: AdminPeriodDays }) {
               onClick={() => void performAction(
                 { action: "repair_telegram_configuration" },
                 "repair-runtime",
-                "Webhook очищен без удаления обновлений, меню команд восстановлено.",
+                "Приём команд и меню Telegram восстановлены без потери обновлений.",
               )}
             >
               <Settings2 className="h-4 w-4" aria-hidden />

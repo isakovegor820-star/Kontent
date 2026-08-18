@@ -5,7 +5,7 @@ const source = readFileSync(new URL("./admin-bot-center.tsx", import.meta.url), 
 
 describe("AdminBotCenter interface contract", () => {
   it("shows live connection, usage and per-user observability", () => {
-    expect(source).toContain("Бот работает во всех проверенных контурах");
+    expect(source).toContain("Бот работает: команды и публикации доступны");
     expect(source).toContain("Кто и как использует бот");
     expect(source).toContain("Как работают с ботом");
     expect(source).toContain("Последние команды, кнопки и типы сообщений");
@@ -25,7 +25,7 @@ describe("AdminBotCenter interface contract", () => {
     expect(source).toContain("state === \"healthy\" ? CheckCircle2");
     expect(source).toContain("Приём сообщений работает");
     expect(source).toContain("Восстановить настройки Telegram");
-    expect(source).toContain("Webhook не мешает polling");
+    expect(source).toContain("Очередь команд защищена");
     expect(source).toContain("Business mode не включён");
   });
 });

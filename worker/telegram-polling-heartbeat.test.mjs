@@ -64,22 +64,33 @@ describe("telegram polling heartbeat", () => {
     expect(parseTelegramPollingHeartbeat("not-json", { nowMs: NOW })).toBeNull();
   });
 
-  it("is refreshed only after Telegram accepts a getUpdates request", () => {
+  it("is refreshed only while the guarded Telegram queue is owned", () => {
     const source = readFileSync(new URL("../worker.mjs", import.meta.url), "utf8");
     const polling = source.slice(
       source.indexOf("async function pollUpdates()"),
       source.indexOf("function parseMonthlyCampaignRegenerationJson"),
     );
-    expect(polling).toContain('const r = await tg("getUpdates"');
-    expect(polling.indexOf("ensureTelegramPollingLease()")).toBeLessThan(
-      polling.indexOf('const r = await tg("getUpdates"'),
+    const drain = source.slice(
+      source.indexOf("async function drainTelegramPollingGuard"),
+      source.indexOf("async function botProject"),
     );
-    expect(polling.indexOf("if (!r?.ok)")).toBeLessThan(
+    expect(polling).toContain("readTelegramPollingGuard()");
+    expect(polling.indexOf("ensureTelegramPollingLease()")).toBeLessThan(
+      polling.indexOf("readTelegramPollingGuard()"),
+    );
+    expect(polling.indexOf("if (!guard?.active)")).toBeLessThan(
       polling.indexOf("await refreshTelegramPollingHeartbeat();"),
     );
     expect(polling).toContain('await refreshTelegramPollingHeartbeat("conflict")');
     expect(polling.indexOf("await refreshTelegramPollingHeartbeat();")).toBeLessThan(
-      polling.indexOf("for (const u of r.result)"),
+      polling.indexOf("if (guard.pending <= 0)"),
+    );
+    expect(drain.indexOf('tg("deleteWebhook"')).toBeLessThan(
+      drain.indexOf('tg("getUpdates"'),
+    );
+    const getUpdatesIndex = drain.indexOf('tg("getUpdates"');
+    expect(getUpdatesIndex).toBeLessThan(
+      drain.indexOf("enableTelegramPollingGuard()", getUpdatesIndex),
     );
   });
 });

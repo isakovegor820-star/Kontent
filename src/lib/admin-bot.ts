@@ -3,6 +3,10 @@ import type { Pool } from "pg";
 import type { AdminPeriodDays } from "./admin-dashboard";
 import { TELEGRAM_BOT_COMMANDS, telegramBotCommandsReady } from "./telegram-bot-commands.mjs";
 import { resolveTranscriptionRuntime } from "./transcription-runtime.mjs";
+import {
+  telegramPollingGuardConfiguration,
+  telegramPollingGuardMatches,
+} from "../../worker/telegram-polling-guard.mjs";
 
 type Queryable = Pick<Pool, "query">;
 type Transactional = Pick<Pool, "query" | "connect">;
@@ -21,6 +25,7 @@ export interface AdminBotRuntime {
   voiceReady: boolean;
   voiceProvider: "openai" | "navy" | null;
   webhookClear: boolean | null;
+  webhookGuarded: boolean | null;
   commandsReady: boolean | null;
   businessReady: boolean;
   checkedAt: string;
@@ -172,6 +177,7 @@ export async function probeAdminTelegramBot(
     voiceReady: Boolean(transcription),
     voiceProvider: transcription?.provider || null,
     webhookClear: null,
+    webhookGuarded: null,
     commandsReady: null,
     businessReady: false,
     checkedAt: new Date().toISOString(),
@@ -215,13 +221,17 @@ export async function probeAdminTelegramBot(
       safeTelegramProbe("getWebhookInfo"),
       safeTelegramProbe("getMyCommands"),
     ]);
+    const webhookUrl = webhook == null
+      ? null
+      : String((webhook as { url?: unknown }).url || "").trim();
     return {
       ...base,
       state: "healthy",
       botName: String(payload.result.first_name || "Telegram-бот"),
       username: payload.result.username ? String(payload.result.username) : null,
       botId: payload.result.id == null ? null : String(payload.result.id),
-      webhookClear: webhook == null ? null : !String((webhook as { url?: unknown }).url || "").trim(),
+      webhookClear: webhookUrl == null ? null : webhookUrl.length === 0,
+      webhookGuarded: webhookUrl == null ? null : telegramPollingGuardMatches(webhook, token),
       commandsReady: commands == null ? null : telegramBotCommandsReady(commands),
       businessReady: payload.result.can_connect_to_business === true,
     };
@@ -240,7 +250,7 @@ export async function repairAdminTelegramConfiguration(db: Queryable, input: {
   if (!token) return { status: "not_configured" as const };
   const baseUrl = String(env.TG_API_URL || "https://api.telegram.org").replace(/\/+$/u, "");
   const fetcher = input.fetcher || fetch;
-  const call = async (method: "deleteWebhook" | "setMyCommands", body: Record<string, unknown>) => {
+  const call = async (method: "setWebhook" | "setMyCommands", body: object) => {
     try {
       const response = await fetcher(`${baseUrl}/bot${token}/${method}`, {
         method: "POST",
@@ -267,24 +277,24 @@ export async function repairAdminTelegramConfiguration(db: Queryable, input: {
     }
   };
 
-  const webhook = await call("deleteWebhook", { drop_pending_updates: false });
+  const webhook = await call("setWebhook", telegramPollingGuardConfiguration(token));
   const commands = await call("setMyCommands", { commands: TELEGRAM_BOT_COMMANDS });
   const ok = webhook.ok && commands.ok;
   await db.query(
     `insert into bot_admin_action_events (actor_user_id, action, target_type, target_id, safe_data)
      values ($1, $2, 'runtime', null, $3::jsonb)`,
     [input.actorUserId, ok ? "bot.telegram.repaired" : "bot.telegram.repair_failed", JSON.stringify({
-      webhookCleared: webhook.ok,
+      queueGuardConfigured: webhook.ok,
       commandsConfigured: commands.ok,
       ...(webhook.errorCode ? { webhookErrorCode: webhook.errorCode } : {}),
       ...(commands.errorCode ? { commandsErrorCode: commands.errorCode } : {}),
     })],
   );
   return ok
-    ? { status: "repaired" as const, webhookCleared: true, commandsConfigured: true }
+    ? { status: "repaired" as const, queueGuardConfigured: true, commandsConfigured: true }
     : {
         status: "failed" as const,
-        webhookCleared: webhook.ok,
+        queueGuardConfigured: webhook.ok,
         commandsConfigured: commands.ok,
         description: commands.description || webhook.description || "Telegram не принял настройки",
       };

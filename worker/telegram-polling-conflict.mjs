@@ -1,8 +1,8 @@
 const TELEGRAM_POLLING_CONFLICT_DELAYS_MS = Object.freeze([
-  60_000,
-  120_000,
-  300_000,
-  600_000,
+  1_000,
+  2_000,
+  5_000,
+  10_000,
 ]);
 
 export function telegramPollingConflictCooldownMs(consecutiveConflicts) {

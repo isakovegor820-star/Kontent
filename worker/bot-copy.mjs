@@ -93,7 +93,7 @@ export function formatBotConnectionStatus(input) {
     `Последняя проверка: ${String(input?.checkedAt || "только что")}`,
     "",
     input?.commandState === "conflict"
-      ? "Связь с аккаунтом сохранена. Администратору нужно остановить старый worker или заменить токен бота; переподключать чат не нужно."
+      ? "Связь с аккаунтом сохранена. Защищённая очередь автоматически восстанавливает приём команд; переподключать чат не нужно."
       : "Выбери действие ниже.",
   ].join("\n");
 }
@@ -101,6 +101,7 @@ export function formatBotConnectionStatus(input) {
 export function formatBotConnectionOnboarding(input) {
   const disconnected = input?.disconnected === true;
   const available = input?.available !== false;
+  const localLink = input?.localLink === true;
   return [
     disconnected ? "Чат отключён от Авроры" : "✦ Подключение к Авроре",
     "",
@@ -109,7 +110,9 @@ export function formatBotConnectionOnboarding(input) {
       : "Этот чат пока не связан с аккаунтом Авроры.",
     "",
     available
-      ? "Нажми «Подключить аккаунт», войди в Аврору и подтверди этот чат. Ссылка действует 15 минут."
+      ? localLink
+        ? "Открой ссылку ниже на компьютере, где запущена Аврора, войди и подтверди этот чат. Ссылка действует 15 минут."
+        : "Нажми «Подключить аккаунт», войди в Аврору и подтверди этот чат. Ссылка действует 15 минут."
       : "Подключение из Telegram пока недоступно. Открой настройки Авроры и выбери «Подключить бота».",
   ].join("\n");
 }
