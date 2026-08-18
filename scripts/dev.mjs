@@ -49,7 +49,7 @@ try {
 // Local development is always a complete runtime. Explicitly override an inherited
 // publication-only/media-only mode: otherwise the website opens normally while Autopilot,
 // RSS and analytics silently have no BullMQ consumer.
-start("worker", process.execPath, ["--env-file=.env.local", "worker.mjs"], {
+start("worker", process.execPath, ["--env-file-if-exists=.env.local", "worker.mjs"], {
   ...process.env,
   AURORA_WORKER_MODE: "full",
 });

@@ -16,6 +16,8 @@ describe("local development runtime", () => {
 
   it("forces the full worker even when the parent environment is restricted", () => {
     expect(devScript).toContain('AURORA_WORKER_MODE: "full"');
+    expect(devScript).toContain('--env-file-if-exists=.env.local');
+    expect(devScript).not.toContain('["--env-file=.env.local", "worker.mjs"]');
     expect(devScript).toContain('start("worker"');
     expect(devScript).toContain('start("web"');
   });
