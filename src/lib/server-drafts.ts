@@ -1,4 +1,5 @@
 import type { Pool, PoolClient } from "pg";
+import { isDeepStrictEqual } from "node:util";
 
 import { getPool } from "./db";
 import type {
@@ -955,6 +956,51 @@ async function replaceDestinations(
   );
 }
 
+function sameDestinationIds(
+  destinations: DraftDestination[],
+  channelIds: number[],
+): boolean {
+  const current = destinations.map((destination) => destination.channel_id).sort((a, b) => a - b);
+  const requested = [...channelIds].sort((a, b) => a - b);
+  return current.length === requested.length
+    && current.every((channelId, index) => channelId === requested[index]);
+}
+
+function draftUpdateIsNoop(input: {
+  current: ServerDraft;
+  text: string;
+  formatting: ServerDraft["formatting"];
+  media: Post["media"];
+  tracking: DraftTrackingSelection | null;
+  scheduledAt: string | null;
+  schedule: DraftUpdateInput["schedule"];
+  origin: Post["origin"];
+  purpose: ServerDraft["purpose"];
+  sourceRef: Post["sourceRef"] | null;
+  aiValidation: ServerDraft["ai_validation"];
+  generationResultId: number | null;
+  channelIds: number[];
+}): boolean {
+  const { current } = input;
+  return current.text === input.text
+    && isDeepStrictEqual(current.formatting ?? [], input.formatting ?? [])
+    && isDeepStrictEqual(current.media, input.media)
+    && isDeepStrictEqual(current.tracking ?? null, input.tracking)
+    && current.scheduled_at === input.scheduledAt
+    && current.scheduled_timezone === (input.schedule?.timezone ?? null)
+    && current.scheduled_local_date === (input.schedule?.localDate ?? null)
+    && current.scheduled_local_time === (input.schedule?.localTime ?? null)
+    && current.scheduled_offset === (input.schedule?.offset ?? null)
+    && current.scheduled_disambiguation === (input.schedule?.disambiguation ?? null)
+    && current.origin === input.origin
+    && current.purpose === input.purpose
+    && isDeepStrictEqual(current.source_ref, input.sourceRef)
+    && current.review_policy_version === DRAFT_REVIEW_POLICY_VERSION
+    && isDeepStrictEqual(current.ai_validation, input.aiValidation)
+    && current.generation_result_id === input.generationResultId
+    && sameDestinationIds(current.destinations, input.channelIds);
+}
+
 export async function listDraftsForUser(
   userId: number,
   db: Queryable = getPool(),
@@ -1173,6 +1219,26 @@ export async function updateDraftForUser(
       projectId,
       input.tracking === undefined ? current.tracking : input.tracking,
     );
+
+    if (draftUpdateIsNoop({
+      current,
+      text: trustedText,
+      formatting: trustedFormatting,
+      media: input.media,
+      tracking: trustedTracking,
+      scheduledAt: input.scheduledAt,
+      schedule: input.schedule,
+      origin: trustedOrigin,
+      purpose: trustedPurpose,
+      sourceRef: trustedSourceRef,
+      aiValidation: trustedValidation,
+      generationResultId: trustedGenerationResultId,
+      channelIds: input.channelIds,
+    })) {
+      await tx.query("commit");
+      return current;
+    }
+
     const updated = await tx.query<{ id: number | string }>(
       `update drafts
           set text = $3,

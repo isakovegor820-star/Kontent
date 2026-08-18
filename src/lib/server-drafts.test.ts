@@ -717,6 +717,26 @@ describe("server draft transactions", () => {
     expect(query.mock.calls.some(([sql]) => String(sql).includes("delete from draft_destinations"))).toBe(false);
   });
 
+  it("returns the current revision for an identical PATCH without invalidating approval", async () => {
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes("select d.id")) return { rowCount: 1, rows: [row] };
+      if (sql.includes("select id from channels")) return { rowCount: 1, rows: [{ id: "11" }] };
+      return { rowCount: 1, rows: [] };
+    });
+    const { pool } = fakePool(query);
+
+    const unchanged = await updateDraftForUser(5, 41, {
+      ...input,
+      version: 3,
+    }, pool as never);
+
+    expect(unchanged).toMatchObject({ id: 41, version: 3, text: input.text });
+    expect(query).toHaveBeenCalledWith("commit");
+    expect(query.mock.calls.some(([sql]) => String(sql).includes("update drafts"))).toBe(false);
+    expect(query.mock.calls.some(([sql]) => String(sql).includes("delete from draft_destinations"))).toBe(false);
+    expect(editorialMocks.recordDraftRevisionInTransaction).not.toHaveBeenCalled();
+  });
+
   it("detaches visible provenance after a human changes AI-generated text", async () => {
     let selected = 0;
     let updatedParams: unknown[] | undefined;
@@ -810,7 +830,7 @@ describe("server draft transactions", () => {
     );
   });
 
-  it("preserves tracking for a legacy PATCH that omits the field and records the new revision", async () => {
+  it("preserves tracking for an identical legacy PATCH without minting a revision", async () => {
     const existingTracking = {
       shortLinkId: null,
       shortUrlPath: null,
@@ -818,21 +838,14 @@ describe("server draft transactions", () => {
       utmValues: { utm_source: "telegram" },
       placement: "post",
     } as const;
-    let selected = 0;
-    let updatedParams: unknown[] | undefined;
-    const query = vi.fn(async (sql: string, params?: unknown[]) => {
+    const query = vi.fn(async (sql: string) => {
       if (sql.includes("select d.id")) {
-        selected += 1;
         return {
           rowCount: 1,
-          rows: [{ ...row, version: selected === 1 ? "3" : "4", tracking: existingTracking }],
+          rows: [{ ...row, version: "3", tracking: existingTracking }],
         };
       }
       if (sql.includes("select id from channels")) return { rowCount: 1, rows: [{ id: "11" }] };
-      if (sql.includes("update drafts")) {
-        updatedParams = params;
-        return { rowCount: 1, rows: [{ id: "41" }] };
-      }
       return { rowCount: 1, rows: [] };
     });
     const { pool } = fakePool(query);
@@ -845,11 +858,9 @@ describe("server draft transactions", () => {
     }, pool as never);
 
     expect(updated.tracking).toEqual(existingTracking);
-    expect(JSON.parse(String(updatedParams?.[17]))).toEqual(existingTracking);
-    expect(editorialMocks.recordDraftRevisionInTransaction).toHaveBeenCalledWith(
-      expect.anything(),
-      { draftId: 41, actorUserId: 19, projectId: 7 },
-    );
+    expect(updated.version).toBe(3);
+    expect(query.mock.calls.some(([sql]) => String(sql).includes("update drafts"))).toBe(false);
+    expect(editorialMocks.recordDraftRevisionInTransaction).not.toHaveBeenCalled();
   });
 
   it("moves a draft without rewriting its text, origin or destinations", async () => {
