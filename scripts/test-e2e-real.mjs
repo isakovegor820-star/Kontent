@@ -278,6 +278,7 @@ const fakeState = {
     pinnedMessageId: null,
     unpinnedMessageId: null,
     discussionUpdateDelivered: false,
+    webhookUrl: "",
     requests: [],
   },
   ai: {
@@ -641,6 +642,33 @@ function fakeProvider() {
     if (/\/bot[^/]+\/setMyCommands$/u.test(req.url || "")) {
       res.setHeader("content-type", "application/json");
       res.end(JSON.stringify({ ok: true, result: [] }));
+      return;
+    }
+    if (/\/bot[^/]+\/setWebhook$/u.test(req.url || "")) {
+      let body = {};
+      try { body = JSON.parse(raw); } catch {}
+      fakeState.telegram.webhookUrl = String(body?.url || "");
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ ok: true, result: true }));
+      return;
+    }
+    if (/\/bot[^/]+\/deleteWebhook$/u.test(req.url || "")) {
+      fakeState.telegram.webhookUrl = "";
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ ok: true, result: true }));
+      return;
+    }
+    if (/\/bot[^/]+\/getWebhookInfo$/u.test(req.url || "")) {
+      const hasPendingDiscussionUpdate = fakeState.telegram.albumMessageIds.length > 0
+        && !fakeState.telegram.discussionUpdateDelivered;
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({
+        ok: true,
+        result: {
+          url: fakeState.telegram.webhookUrl,
+          pending_update_count: hasPendingDiscussionUpdate ? 1 : 0,
+        },
+      }));
       return;
     }
     if (/\/bot[^/]+\/getUpdates$/u.test(req.url || "")) {
