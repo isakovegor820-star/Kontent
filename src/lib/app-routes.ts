@@ -8,6 +8,11 @@ type AppRouteDefinition = Readonly<{
 }>;
 
 export const APP_ROUTES = {
+  today: {
+    href: "/app/today",
+    label: "Сегодня",
+    activeAliases: [],
+  },
   calendar: {
     href: "/app/calendar",
     label: "Календарь",
@@ -84,7 +89,7 @@ export const APP_NAV_GROUPS = [
   {
     id: "work",
     title: "Работа",
-    routeIds: ["calendar", "studio", "autopilot", "library", "rss"],
+    routeIds: ["today", "calendar", "studio", "autopilot", "library", "rss"],
   },
   {
     id: "market",
@@ -105,6 +110,7 @@ export const APP_NAV_GROUPS = [
 export type AppNavRouteId = (typeof APP_NAV_GROUPS)[number]["routeIds"][number];
 
 export const APP_BOTTOM_NAV_ROUTE_IDS = [
+  "today",
   "calendar",
   "studio",
   "recon",

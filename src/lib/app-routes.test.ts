@@ -22,6 +22,19 @@ describe("app route registry", () => {
     }
   });
 
+  it("makes Today the first destination without overflowing mobile navigation", () => {
+    expect(APP_NAV_GROUPS[0].routeIds[0]).toBe("today");
+    expect(APP_BOTTOM_NAV_ROUTE_IDS).toEqual([
+      "today",
+      "calendar",
+      "studio",
+      "recon",
+      "analytics",
+    ]);
+    expect(APP_BOTTOM_NAV_ROUTE_IDS).toHaveLength(5);
+    expect(isAppRouteActive("/app/today", "today")).toBe(true);
+  });
+
   it("uses the same aliases for desktop and mobile active state", () => {
     expect(isAppRouteActive("/app/composer", "calendar")).toBe(true);
     expect(isAppRouteActive("/app/competitors/41", "recon")).toBe(true);
