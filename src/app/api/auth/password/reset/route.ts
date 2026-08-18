@@ -9,7 +9,7 @@ import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 export const runtime = "nodejs";
 
 export async function POST(req: NextRequest) {
-  if (!hasTrustedMutationOrigin(req)) {
+  if (!hasTrustedMutationOrigin(req, { requireBrowserOrigin: true })) {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
   const limit = await checkRateLimit(

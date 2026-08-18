@@ -46,10 +46,11 @@ describe("POST /api/auth/vk logging", () => {
 
   it("never logs the provider response body or access token on exchange failure", async () => {
     const secret = "provider-access-token-must-not-be-logged";
-    vi.stubGlobal("fetch", vi.fn(async () => Response.json(
+    const fetchMock = vi.fn(async () => Response.json(
       { access_token: secret, error: "malformed_response" },
       { status: 400 },
-    )));
+    ));
+    vi.stubGlobal("fetch", fetchMock);
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const response = await POST(request());
@@ -61,5 +62,25 @@ describe("POST /api/auth/vk logging", () => {
     );
     expect(JSON.stringify(log.mock.calls)).not.toContain(secret);
     expect(JSON.stringify(log.mock.calls)).not.toContain("malformed_response");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://id.vk.com/oauth2/auth",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
+  it("bounds provider latency and returns a stable gateway timeout", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      throw new DOMException("timed out", "TimeoutError");
+    }));
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const response = await POST(request());
+
+    expect(response.status).toBe(504);
+    await expect(response.json()).resolves.toMatchObject({ error: "vk_exchange_timeout" });
+    expect(log).toHaveBeenCalledWith(
+      "[/api/auth/vk] request timed out",
+      { code: "vk_exchange_timeout" },
+    );
   });
 });

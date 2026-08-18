@@ -26,7 +26,7 @@ function json(requestId: string, body: Record<string, unknown>, status = 200) {
 
 export async function POST(req: NextRequest) {
   const requestId = randomUUID();
-  if (!hasTrustedMutationOrigin(req)) {
+  if (!hasTrustedMutationOrigin(req, { requireBrowserOrigin: true })) {
     return json(requestId, { ok: false, error: "forbidden_origin" }, 403);
   }
   const user = await getSessionUser(req);

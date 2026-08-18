@@ -8,9 +8,9 @@
 // Считаем атомарно одним Lua-скриптом (INCR + условный EXPIRE + TTL): без скрипта между
 // INCR и EXPIRE есть гонка, и ключ мог бы остаться без срока жизни навсегда.
 //
-// По умолчанию Redis outage остаётся fail-open ради доступности обычного входа. Для flows,
-// которые сами создают внешний side effect (например reset-email), caller выбирает
-// fail-closed: отсутствие limiter не должно превращаться в неограниченную рассылку.
+// По умолчанию Redis outage остаётся fail-open только для явно best-effort callers.
+// Authentication и flows с внешним side effect передают failureMode: "closed": отсутствие
+// limiter не должно превращаться в unlimited brute force или рассылку.
 
 import Redis from "ioredis";
 import { isIP } from "node:net";

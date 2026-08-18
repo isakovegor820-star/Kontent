@@ -61,6 +61,12 @@ try {
        (select count(*)::int from rss_items where skip_reason = 'limit') as rss_labeled,
        (select count(*)::int from ai_usage where status = 'committed') as usage_preserved,
        (select count(*)::int from content_brief where source = 'quiz') as quiz_briefs,
+       (select count(*)::int from sessions
+         where token_hash = encode(digest('live-legacy-cookie', 'sha256'), 'hex')
+           and expires_at <= now()) as invalidated_hashed_sessions,
+       (select count(*)::int from information_schema.columns
+         where table_schema = 'public' and table_name = 'sessions' and column_name = 'token')
+         as plaintext_session_columns,
        (select count(*)::int from information_schema.columns
          where table_schema = 'public' and table_name = 'competitor_suggestions'
            and column_name in ('channel_id','description','last_post_at','posts_per_week','on_topic'))
@@ -75,6 +81,8 @@ try {
     || Number(summary.rss_labeled) !== 1
     || Number(summary.usage_preserved) !== 1
     || Number(summary.quiz_briefs) !== 1
+    || Number(summary.invalidated_hashed_sessions) !== 1
+    || Number(summary.plaintext_session_columns) !== 0
     || Number(summary.suggestion_columns) !== 5
     || byId.get(101)?.external_message_id !== "77"
     || byId.get(102)?.external_message_id !== null

@@ -29,7 +29,7 @@ export async function POST(req: NextRequest) {
     if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, remaining));
     return accepted();
   };
-  if (!hasTrustedMutationOrigin(req)) {
+  if (!hasTrustedMutationOrigin(req, { requireBrowserOrigin: true })) {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
   const ip = clientIp(req);

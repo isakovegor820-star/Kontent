@@ -19,6 +19,12 @@ export function hashSessionToken(token: string): string {
   return createHash("sha256").update(token, "utf8").digest("hex");
 }
 
+/** Returns the database verifier for the session presented by this request, if any. */
+export function sessionTokenHashFromRequest(req: NextRequest): string | null {
+  const token = req.cookies.get(COOKIE)?.value;
+  return token ? hashSessionToken(token) : null;
+}
+
 export interface SessionUser {
   id: number;
   tg_id: number | null;
@@ -58,11 +64,11 @@ export async function createSession(
   const token = randomBytes(32).toString("base64url");
   const tokenHash = hashSessionToken(token);
   const inserted = await getPool().query(
-    `insert into sessions (token, user_id, expires_at, device, credential_epoch)
+    `insert into sessions (token_hash, user_id, expires_at, device, credential_epoch)
      select $1, u.id, $3, $4, u.credential_epoch
        from users u
       where u.id = $2 and ($5::bigint is null or u.credential_epoch = $5)
-     returning token`,
+     returning token_hash`,
     [
       tokenHash,
       userId,
@@ -100,7 +106,7 @@ export async function getSessionUser(req: NextRequest): Promise<SessionUser | nu
             ) as has_project_context
        from sessions s
        join users u on u.id = s.user_id
-      where s.token = $1 and s.expires_at > now()
+      where s.token_hash = $1 and s.expires_at > now()
         and s.credential_epoch = u.credential_epoch`,
     [tokenHash],
   );
@@ -122,7 +128,7 @@ export async function getSessionUser(req: NextRequest): Promise<SessionUser | nu
   }
   const leftMs = new Date(expires_at).getTime() - Date.now();
   if (leftMs < RENEW_WHEN_LEFT_S * 1000) {
-    await pool.query(`update sessions set expires_at = $1 where token = $2`, [
+    await pool.query(`update sessions set expires_at = $1 where token_hash = $2`, [
       expiryFromNow(),
       tokenHash,
     ]);
@@ -138,7 +144,7 @@ export async function destroySession(req: NextRequest, res: NextResponse): Promi
   const token = req.cookies.get(COOKIE)?.value;
   try {
     if (token) {
-      await getPool().query(`delete from sessions where token = $1`, [hashSessionToken(token)]);
+      await getPool().query(`delete from sessions where token_hash = $1`, [hashSessionToken(token)]);
     }
   } finally {
     // Local logout must not depend on PostgreSQL availability. The server-side row may

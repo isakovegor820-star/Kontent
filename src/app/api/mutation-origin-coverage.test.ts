@@ -38,7 +38,7 @@ function requestParameterName(parameters: string): string | null {
 function beginsWithInlineOriginGuard(body: string, requestName: string): boolean {
   const request = escapeRegExp(requestName);
   return new RegExp(
-    `^\\s*${REQUEST_ID_PREFIX}if\\s*\\(\\s*!hasTrustedMutationOrigin\\(\\s*${request}\\s*\\)\\s*\\)\\s*(?:\\{|return\\b)`,
+    `^\\s*${REQUEST_ID_PREFIX}if\\s*\\(\\s*!hasTrustedMutationOrigin\\(\\s*${request}\\s*(?:,\\s*\\{\\s*requireBrowserOrigin:\\s*true\\s*\\})?\\s*\\)\\s*\\)\\s*(?:\\{|return\\b)`,
   ).test(body);
 }
 
@@ -125,6 +125,12 @@ describe("authenticated browser mutation origin coverage", () => {
     expect(mutationStartsWithOriginGate(
       "",
       "\n const requestId = randomUUID();\n if (!hasTrustedMutationOrigin(request)) return forbidden();",
+      "request: NextRequest",
+    )).toBe(true);
+
+    expect(mutationStartsWithOriginGate(
+      "",
+      "\n if (!hasTrustedMutationOrigin(request, { requireBrowserOrigin: true })) return forbidden();",
       "request: NextRequest",
     )).toBe(true);
 

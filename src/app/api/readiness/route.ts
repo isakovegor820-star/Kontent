@@ -12,6 +12,7 @@ import {
   probeUploadIngressConfiguration,
 } from "@/lib/readiness-probes";
 import { evaluateReadiness } from "@/lib/readiness";
+import { clientIp } from "@/lib/rate-limit";
 import { getSessionUser } from "@/lib/session";
 
 export const runtime = "nodejs";
@@ -26,36 +27,36 @@ function validOperatorBearer(req: NextRequest): boolean {
   );
 }
 
-function capabilityReport(report: ReturnType<typeof evaluateReadiness>) {
-  return {
-    status: report.status,
-    webReady: report.webReady,
-    publicationReady: report.publicationReady,
-    telegramBotReady: report.telegramBotReady,
-    aiReady: report.aiReady,
-    mailDeliveryReady: report.mailDeliveryReady,
-    uploadReady: report.uploadReady,
-    passwordRecoveryReady: report.passwordRecoveryReady,
-    checkedAt: report.checkedAt,
-  };
+function isLoopback(value: string): boolean {
+  const normalized = value.toLowerCase().replace(/^\[|\]$/gu, "");
+  return normalized === "localhost"
+    || normalized === "127.0.0.1"
+    || normalized === "::1"
+    || normalized === "::ffff:127.0.0.1";
+}
+
+function isLoopbackProbe(req: NextRequest): boolean {
+  if (!isLoopback(req.nextUrl.hostname)) return false;
+  const hasForwardedClient = req.headers.has("x-forwarded-for")
+    || (process.env.AURORA_TRUST_X_REAL_IP === "true" && req.headers.has("x-real-ip"));
+  return !hasForwardedClient || isLoopback(clientIp(req));
 }
 
 export async function GET(req: NextRequest) {
-  let privileged = validOperatorBearer(req);
-  let user: Awaited<ReturnType<typeof getSessionUser>> = null;
-  if (!privileged) {
+  let authorized = validOperatorBearer(req) || isLoopbackProbe(req);
+  if (!authorized) {
     try {
-      user = await getSessionUser(req);
+      const user = await getSessionUser(req);
+      authorized = Boolean(user && hasAuroraAdminAccess(user));
     } catch {
       // Do not turn a database outage into an unauthenticated dependency oracle.
     }
-    if (!user) {
-      return NextResponse.json({ error: "unauthorized" }, {
-        status: 401,
-        headers: { "Cache-Control": "no-store" },
-      });
-    }
-    privileged = hasAuroraAdminAccess(user);
+  }
+  if (!authorized) {
+    return NextResponse.json({ error: "unauthorized" }, {
+      status: 401,
+      headers: { "Cache-Control": "no-store" },
+    });
   }
 
   const [database, queue] = await Promise.all([
@@ -75,7 +76,7 @@ export async function GET(req: NextRequest) {
     tokenEncryption: database.tokenEncryption,
     trackingSecrets: probeTrackingSecretsConfiguration(),
   });
-  return NextResponse.json(privileged ? report : capabilityReport(report), {
+  return NextResponse.json(report, {
     status: report.webReady ? 200 : 503,
     headers: { "Cache-Control": "no-store" },
   });

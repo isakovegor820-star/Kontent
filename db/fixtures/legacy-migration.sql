@@ -190,6 +190,8 @@ create table autopilot_plan (
 
 insert into users (id, email) overriding system value
 values (1, 'legacy@example.test');
+insert into sessions (token, user_id, expires_at, device)
+values ('live-legacy-cookie', 1, now() + interval '30 days', 'legacy-browser');
 insert into channels (id, user_id, title, handle) overriding system value
 values (10, 1, 'Brand A', 'brand_a'), (20, 1, 'Brand B', 'brand_b');
 insert into content_brief (user_id, channel_id, niche, audience, source, ready)

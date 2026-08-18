@@ -34,6 +34,11 @@ runner заранее проверяет additive policy и транзакцио
 Миграции запускай отдельным release-step до старта web/worker; при ошибке деплой нужно
 остановить, а не продолжать со старой схемой.
 
+Миграция `20260916_session_token_hashes.sql` переименовывает verifier в
+`sessions.token_hash`, хеширует и инвалидирует старые строки. Это одноразовый общий logout,
+не ручная ротация пользователей; после миграции в cookie остаётся сырой bearer, а в БД —
+только SHA-256 verifier.
+
 Ingress/reverse proxy обязан жёстко ограничивать body запроса аватара до значения
 `AURORA_AVATAR_BODY_LIMIT_BYTES` (от 5 242 880 до 5 767 168 байт) и закрывать соединение
 до передачи превышения в Next.js. В production переменная обязательна: startup/readiness
@@ -45,6 +50,10 @@ Ingress также обязан добавлять клиентский адре
 считает от правого края цепочки; для нескольких доверенных proxy задай точное
 `AURORA_TRUSTED_PROXY_HOPS`. `X-Real-IP` игнорируется, пока оператор явно не включит его и
 не гарантирует перезапись заголовка на ingress.
+
+`APP_URL` — единственный доверенный origin для browser mutations. Cookie POST без `Origin`
+принимается только с браузерным `Sec-Fetch-Site: same-origin`; cookie-less worker/service
+requests проходят собственную route-аутентификацию и не зависят от CSRF-заголовков.
 
 На платформе с отдельными типами процессов запускай `npm run start:web` для HTTP и
 `npm run start:worker` для фонового воркера. Все production-переменные должны быть
@@ -223,18 +232,17 @@ and required capabilities live in `src/lib/schema-manifest.mjs`. Production sche
 never applied from a request or worker startup path; run the separately controlled migration
 command during deployment.
 
-Authenticated `GET /api/readiness` distinguishes process liveness, PostgreSQL reachability, exact schema
+Protected `GET /api/readiness` distinguishes process liveness, PostgreSQL reachability, exact schema
 compatibility, Redis, publication worker heartbeat, observed AI provider health and password
 reset delivery. A reachable legacy database returns HTTP 503. Missing mail configuration does
 not stop draft/web work, but the response remains `degraded` and
 `passwordRecoveryReady=false`; production must not claim password recovery is available until
 `APP_URL`, a delivery key and a sender are configured.
 
-Подробный отчёт доступен только глобальному администратору или с
-`Authorization: Bearer $AURORA_READINESS_TOKEN`; публичный запрос получает 401 до запуска
-dependency probes. Обычный вошедший пользователь видит только продуктовые capability-флаги,
-без схемы, Redis/worker state, keyring и внутренних причин. Post-deploy smoke использует тот
-же operator token.
+Отчёт доступен только прямому loopback probe, глобальному администратору или с
+`Authorization: Bearer $AURORA_READINESS_TOKEN`; любой другой внешний запрос получает 401
+до запуска dependency probes. Снаружи без авторизации открыт только `/api/health`.
+Post-deploy smoke использует тот же operator token.
 
 Readiness также проверяет, что каждый сохранённый `v1` token envelope ссылается на key ID,
 доступный в текущем write/read keyring. Неизвестный ID блокирует publication readiness до

@@ -151,7 +151,7 @@ export async function createEmailChangeOutboxRequest(
 export type ConsumeEmailChangeResult = "ok" | "already_confirmed" | "invalid" | "expired" | "used" | "email_taken";
 
 export async function consumeEmailChange(
-  input: { token: string; now?: Date },
+  input: { token: string; currentSessionTokenHash?: string | null; now?: Date },
   pool: Pick<Pool, "connect">,
 ): Promise<ConsumeEmailChangeResult> {
   const tokenHash = hashEmailChangeToken(input.token);
@@ -202,13 +202,41 @@ export async function consumeEmailChange(
 
     try {
       // Email participates in authentication and in the global admin allowlist. Rotate
-      // the credential epoch in the same transaction so no session authenticated under
-      // the previous identity survives the change.
-      await client.query(
+      // the credential epoch in the same transaction; all other sessions are revoked and
+      // only the verifier presented by this confirmation may move to the new epoch.
+      const updatedUser = await client.query<{ credential_epoch: string }>(
         `update users
             set email = $2, credential_epoch = credential_epoch + 1
-          where id = $1`,
+          where id = $1
+          returning credential_epoch`,
         [request.user_id, request.target_email],
+      );
+      const credentialEpoch = Number(updatedUser.rows[0]?.credential_epoch);
+      if (!Number.isSafeInteger(credentialEpoch) || credentialEpoch < 0) {
+        throw new Error("email_change_credential_epoch_missing");
+      }
+
+      const currentSessionTokenHash = input.currentSessionTokenHash || null;
+      let preservedSessionTokenHash: string | null = null;
+      if (currentSessionTokenHash) {
+        // Keeping the current row is not enough: the epoch bump would otherwise make it
+        // unusable. Move it only when it is live and belonged to the immediately previous
+        // epoch; a stale/revoked verifier must never be revived by an email-change token.
+        const updatedSession = await client.query(
+          `update sessions
+              set credential_epoch = $3
+            where user_id = $1 and token_hash = $2
+              and credential_epoch = $3::bigint - 1
+              and expires_at > $4`,
+          [request.user_id, currentSessionTokenHash, credentialEpoch, now],
+        );
+        if (updatedSession.rowCount === 1) preservedSessionTokenHash = currentSessionTokenHash;
+      }
+      await client.query(
+        `delete from sessions
+          where user_id = $1
+            and ($2::text is null or token_hash <> $2)`,
+        [request.user_id, preservedSessionTokenHash],
       );
     } catch (error) {
       if ((error as { code?: unknown })?.code === "23505") {
@@ -217,7 +245,6 @@ export async function consumeEmailChange(
       }
       throw error;
     }
-    await client.query(`delete from sessions where user_id = $1`, [request.user_id]);
     await client.query(
       `update email_change_requests set confirmed_at = $2, updated_at = now() where id = $1`,
       [request.id, now],

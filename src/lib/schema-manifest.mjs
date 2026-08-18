@@ -5,7 +5,7 @@
  */
 export const SCHEMA_MANIFEST = Object.freeze({
   manifestVersion: 1,
-  schemaVersion: "2026-09-17.89",
+  schemaVersion: "2026-09-17.90",
   migrations: Object.freeze([
     ["20260801_account_onboarding.sql", "ac0e1f10046cf620185570ab5f40437991d08513473f67d4e93bdafa07b86614"],
     ["20260801_ai_usage_reservations.sql", "991c3a92dce16df55011d9df52fb65af1a7f4310b27f61dc519705f05528d7a0"],
@@ -94,7 +94,7 @@ export const SCHEMA_MANIFEST = Object.freeze({
     ["20260913_bot_interaction_observability.sql", "865889876da8ddc1443a17b92030b91b6b8bd4c637595f0d90bdaa8695af3d15"],
     ["20260914_autopilot_build_activity.sql", "1d78e008683181f1447b9d2d7ccb209c9b81978ef937901a6af712d794d7ff49"],
     ["20260915_telegram_channel_health.sql", "752ff6947418daeee099d0f068551ab2d80647a1d45ca4d0debaec2bee4c3f74"],
-    ["20260916_session_token_hashes.sql", "30c7987f372e4259b23fdc2d8bbee7257009b92e85385828741807c3c6f814ec"],
+    ["20260916_session_token_hashes.sql", "434acde2cee9f9a90112e5ed6083c0438a64bc596e6ffdbf8a0ff4c173adfc2c"],
   ].map(([name, checksum]) => Object.freeze({ name, checksum }))),
   capabilities: Object.freeze({
     tables: Object.freeze([
@@ -308,6 +308,7 @@ export const SCHEMA_MANIFEST = Object.freeze({
       "publication_parts.entity_length",
       "users.credential_epoch",
       "users.password_reset_generation",
+      "sessions.token_hash",
       "sessions.credential_epoch",
       "password_reset_tokens.generation",
       "saved_posts.kind",

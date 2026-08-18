@@ -82,8 +82,8 @@ describe("POST /api/auth/telegram", () => {
     );
   });
 
-  it("rejects a replay older than five minutes even with a valid signature", async () => {
-    const stale = signedBody(Math.floor(Date.now() / 1_000) - 301);
+  it("rejects a replay older than ten minutes even with a valid signature", async () => {
+    const stale = signedBody(Math.floor(Date.now() / 1_000) - 601);
     const response = await POST(request(stale));
     expect(response.status).toBe(401);
     await expect(response.json()).resolves.toMatchObject({ error: "stale" });

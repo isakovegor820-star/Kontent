@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   probeUploadIngressConfiguration: vi.fn(),
   probeTrackingSecretsConfiguration: vi.fn(),
   aiProviderHealthSnapshot: vi.fn(),
+  getSessionUser: vi.fn(),
 }));
 
 vi.mock("@/lib/readiness-probes", () => ({
@@ -22,7 +23,7 @@ vi.mock("@/lib/readiness-probes", () => ({
 vi.mock("@/lib/ai-provider-health", () => ({
   aiProviderHealthSnapshot: mocks.aiProviderHealthSnapshot,
 }));
-vi.mock("@/lib/session", () => ({ getSessionUser: vi.fn(async () => null) }));
+vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
 
 import { GET } from "./route";
 
@@ -34,6 +35,7 @@ describe("GET /api/readiness", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.stubEnv("AURORA_READINESS_TOKEN", "r".repeat(32));
+    mocks.getSessionUser.mockResolvedValue(null);
     mocks.probeDatabaseAndSchema.mockResolvedValue({
       database: "up",
       tokenEncryption: "up",
@@ -68,6 +70,8 @@ describe("GET /api/readiness", () => {
       retryAt: null,
     }]);
   });
+
+  afterEach(() => vi.unstubAllEnvs());
 
   it("returns 200 for a usable web even when publication is degraded", async () => {
     mocks.probeRedisAndPublicationWorker.mockResolvedValue({
@@ -144,11 +148,46 @@ describe("GET /api/readiness", () => {
     });
   });
 
+  it("allows a direct loopback probe", async () => {
+    const response = await GET(new NextRequest("http://127.0.0.1/api/readiness"));
+    expect(response.status).toBe(200);
+    expect(mocks.getSessionUser).not.toHaveBeenCalled();
+    expect(mocks.probeDatabaseAndSchema).toHaveBeenCalledOnce();
+  });
+
   it("does not run dependency probes for a public request", async () => {
-    const response = await GET(new NextRequest("http://localhost/api/readiness"));
+    const response = await GET(new NextRequest("https://aurora.example/api/readiness"));
     expect(response.status).toBe(401);
     await expect(response.json()).resolves.toEqual({ error: "unauthorized" });
     expect(mocks.probeDatabaseAndSchema).not.toHaveBeenCalled();
     expect(mocks.probeRedisAndPublicationWorker).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-admin session without exposing capability flags", async () => {
+    mocks.getSessionUser.mockResolvedValue({ id: 7, email: "user@example.test" });
+    const response = await GET(new NextRequest("https://aurora.example/api/readiness", {
+      headers: { cookie: "sid=user-session" },
+    }));
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toEqual({ error: "unauthorized" });
+    expect(mocks.probeDatabaseAndSchema).not.toHaveBeenCalled();
+  });
+
+  it("allows a global administrator session", async () => {
+    vi.stubEnv("AURORA_ADMIN_EMAILS", "admin@example.test");
+    mocks.getSessionUser.mockResolvedValue({ id: 9, email: "admin@example.test" });
+    const response = await GET(new NextRequest("https://aurora.example/api/readiness", {
+      headers: { cookie: "sid=admin-session" },
+    }));
+    expect(response.status).toBe(200);
+    expect(mocks.probeDatabaseAndSchema).toHaveBeenCalledOnce();
+  });
+
+  it("does not trust a loopback Host when the trusted client hop is external", async () => {
+    const response = await GET(new NextRequest("http://127.0.0.1/api/readiness", {
+      headers: { "x-forwarded-for": "203.0.113.8" },
+    }));
+    expect(response.status).toBe(401);
+    expect(mocks.probeDatabaseAndSchema).not.toHaveBeenCalled();
   });
 });

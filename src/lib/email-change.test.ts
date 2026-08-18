@@ -69,13 +69,18 @@ describe("consumeEmailChange", () => {
         cancelled_at: null,
         email_change_generation: "2",
       }] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ credential_epoch: "4" }] })
       .mockResolvedValueOnce({ rowCount: 1 })
       .mockResolvedValueOnce({ rowCount: 1 })
       .mockResolvedValueOnce({ rowCount: 1 })
       .mockResolvedValueOnce({});
 
     await expect(consumeEmailChange(
-      { token: "x".repeat(32), now: new Date("2026-08-05T13:00:00Z") },
+      {
+        token: "x".repeat(32),
+        currentSessionTokenHash: "a".repeat(64),
+        now: new Date("2026-08-05T13:00:00Z"),
+      },
       pool as never,
     )).resolves.toBe("ok");
     expect(query.mock.calls.some(([sql, params]) => (
@@ -83,10 +88,52 @@ describe("consumeEmailChange", () => {
       && params[1] === "new@example.test"
     ))).toBe(true);
     expect(query.mock.calls.some(([sql, params]) => (
-      String(sql).includes("delete from sessions where user_id = $1")
+      String(sql).includes("update sessions")
+      && String(sql).includes("credential_epoch = $3")
+      && String(sql).includes("expires_at > $4")
+      && params[1] === "a".repeat(64)
+      && params[2] === 4
+      && params[3] instanceof Date
+    ))).toBe(true);
+    expect(query.mock.calls.some(([sql, params]) => (
+      String(sql).includes("delete from sessions")
+      && String(sql).includes("token_hash <> $2")
       && params[0] === "3"
+      && params[1] === "a".repeat(64)
     ))).toBe(true);
     expect(release).toHaveBeenCalled();
+  });
+
+  it("does not revive a stale presented session after the epoch bump", async () => {
+    query
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ rows: [{
+        id: "8",
+        user_id: "3",
+        target_email: "new@example.test",
+        generation: "2",
+        expires_at: "2026-08-05T13:30:00Z",
+        confirmed_at: null,
+        cancelled_at: null,
+        email_change_generation: "2",
+      }] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ credential_epoch: "4" }] })
+      .mockResolvedValueOnce({ rowCount: 0 })
+      .mockResolvedValueOnce({ rowCount: 3 })
+      .mockResolvedValueOnce({ rowCount: 1 })
+      .mockResolvedValueOnce({});
+
+    await expect(consumeEmailChange(
+      {
+        token: "x".repeat(32),
+        currentSessionTokenHash: "b".repeat(64),
+        now: new Date("2026-08-05T13:00:00Z"),
+      },
+      pool as never,
+    )).resolves.toBe("ok");
+    expect(query.mock.calls.some(([sql, params]) => (
+      String(sql).includes("delete from sessions") && params[1] === null
+    ))).toBe(true);
   });
 
   it("does not update users when the request is superseded", async () => {

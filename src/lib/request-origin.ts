@@ -1,42 +1,49 @@
 import type { NextRequest } from "next/server";
 
+export interface MutationOriginOptions {
+  /** Session-creating and token-consuming browser flows may not use the service-client exception. */
+  requireBrowserOrigin?: boolean;
+}
+
 /**
- * Browser mutations require an explicit Origin and compare it with a server-owned
- * allowlist. X-Forwarded-* and Host are request metadata, not trust anchors. Non-browser
- * clients must use dedicated authenticated endpoints instead of bypassing CSRF checks.
+ * Browser mutations compare Origin with the server-owned APP_URL. When a browser omits
+ * Origin, Sec-Fetch-Site: same-origin is acceptable evidence because scripts cannot forge
+ * that header. Cookie-bearing requests without either signal fail closed. Cookie-less
+ * service clients remain eligible for their route-specific authentication.
  */
-export function hasTrustedMutationOrigin(req: NextRequest): boolean {
+export function hasTrustedMutationOrigin(
+  req: NextRequest,
+  options: MutationOriginOptions = {},
+): boolean {
   const fetchSite = req.headers.get("sec-fetch-site")?.toLowerCase();
   if (fetchSite === "cross-site") return false;
 
   const supplied = req.headers.get("origin");
   if (!supplied || supplied === "null") {
-    // Keep local CLI/dev tooling usable without weakening deployed browser mutations.
-    // Production never gets this exception, even if an attacker forges Host/forwarded data.
-    const localHost = ["localhost", "127.0.0.1", "::1"].includes(req.nextUrl.hostname);
-    return process.env.NODE_ENV !== "production" && localHost;
+    if (supplied === "null") return false;
+    if (fetchSite === "same-origin") return true;
+    if (fetchSite || options.requireBrowserOrigin) return false;
+    // CSRF is relevant only when ambient browser credentials are present. Worker/service
+    // endpoints authenticate cookie-less calls independently (for example with a bearer).
+    return !req.headers.has("cookie");
   }
 
   try {
     const origin = new URL(supplied).origin;
-    const configured = [
-      process.env.APP_URL,
-      process.env.NEXT_PUBLIC_APP_URL,
-      ...String(process.env.AURORA_ALLOWED_ORIGINS || "").split(","),
-    ].flatMap((value) => {
-      try {
-        const candidate = new URL(String(value || "").trim());
-        if (process.env.NODE_ENV === "production" && candidate.protocol !== "https:") return [];
-        return [candidate.origin];
-      } catch {
-        return [];
-      }
-    });
-    // Local/test requests can use their actual URL. Production requires an explicit
-    // deployment origin so an attacker-controlled Host cannot define the expected value.
-    if (process.env.NODE_ENV !== "production") configured.push(req.nextUrl.origin);
-    return new Set(configured).has(origin);
+    const configured = new URL(String(process.env.APP_URL || "").trim());
+    if (process.env.NODE_ENV === "production" && configured.protocol !== "https:") return false;
+    return origin === configured.origin;
   } catch {
-    return false;
+    // Tests and local development still have a deterministic expected origin even before
+    // APP_URL is configured. Production never derives trust from Host/request metadata.
+    return process.env.NODE_ENV !== "production" && originFromRequest(req) === supplied;
+  }
+}
+
+function originFromRequest(req: NextRequest): string {
+  try {
+    return new URL(req.url).origin;
+  } catch {
+    return "";
   }
 }

@@ -9,7 +9,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("./db", () => ({ getPool: () => ({ query: mocks.query }) }));
 vi.mock("next/headers", () => ({ cookies: mocks.cookies }));
 
-import { destroySession, getSessionUser, hashSessionToken } from "./session";
+import { createSession, destroySession, getSessionUser, hashSessionToken } from "./session";
 
 describe("destroySession", () => {
   beforeEach(() => vi.clearAllMocks());
@@ -24,7 +24,7 @@ describe("destroySession", () => {
     await expect(destroySession(request, response)).rejects.toThrow("database unavailable");
 
     expect(mocks.query).toHaveBeenCalledWith(
-      "delete from sessions where token = $1",
+      "delete from sessions where token_hash = $1",
       [hashSessionToken("opaque-session-token")],
     );
 
@@ -67,6 +67,22 @@ describe("getSessionUser", () => {
 });
 
 describe("session token storage", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("stores only token_hash while returning the raw bearer in the cookie", async () => {
+    mocks.query.mockResolvedValueOnce({ rowCount: 1, rows: [{ token_hash: "stored" }] });
+    const response = NextResponse.json({ ok: true });
+
+    await expect(createSession(response, 17, "test-device")).resolves.toBe(true);
+
+    const [sql, params] = mocks.query.mock.calls[0];
+    expect(String(sql)).toContain("insert into sessions (token_hash,");
+    const rawCookie = response.headers.get("set-cookie")?.match(/sid=([^;]+)/u)?.[1];
+    expect(rawCookie).toBeTruthy();
+    expect(params[0]).toBe(hashSessionToken(String(rawCookie)));
+    expect(params[0]).not.toBe(rawCookie);
+  });
+
   it("uses a one-way verifier instead of the browser bearer", () => {
     const raw = "live-browser-cookie";
     expect(hashSessionToken(raw)).toMatch(/^[a-f0-9]{64}$/u);

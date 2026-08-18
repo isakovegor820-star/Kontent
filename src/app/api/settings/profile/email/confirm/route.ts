@@ -6,12 +6,13 @@ import { consumeEmailChange, emailChangeRateKey } from "@/lib/email-change";
 import { getPool } from "@/lib/db";
 import { checkRateLimit, clientIp, rateLimitResponse } from "@/lib/rate-limit";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
+import { sessionTokenHashFromRequest } from "@/lib/session";
 
 export const runtime = "nodejs";
 
 export async function POST(req: NextRequest) {
   const requestId = randomUUID();
-  if (!hasTrustedMutationOrigin(req)) {
+  if (!hasTrustedMutationOrigin(req, { requireBrowserOrigin: true })) {
     return NextResponse.json({ ok: false, error: "forbidden_origin", requestId }, { status: 403 });
   }
   const limit = await checkRateLimit(
@@ -28,7 +29,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "invalid", requestId }, { status: 422 });
   }
   try {
-    const result = await consumeEmailChange({ token }, getPool());
+    const result = await consumeEmailChange({
+      token,
+      currentSessionTokenHash: sessionTokenHashFromRequest(req),
+    }, getPool());
     if (result === "ok" || result === "already_confirmed") {
       return NextResponse.json({
         ok: true,

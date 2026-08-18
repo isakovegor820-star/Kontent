@@ -28,7 +28,7 @@ import { POST } from "./route";
 function request(email: string) {
   return new NextRequest("http://localhost/api/auth/password/forgot", {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", origin: "http://localhost" },
     body: JSON.stringify({ email }),
   });
 }

@@ -15,8 +15,10 @@ import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 
 export const runtime = "nodejs";
 
+const VK_TOKEN_EXCHANGE_TIMEOUT_MS = 8_000;
+
 export async function POST(req: NextRequest) {
-  if (!hasTrustedMutationOrigin(req)) {
+  if (!hasTrustedMutationOrigin(req, { requireBrowserOrigin: true })) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
   }
   const ipLimit = await checkRateLimit(
@@ -62,6 +64,7 @@ export async function POST(req: NextRequest) {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
       body: params,
+      signal: AbortSignal.timeout(VK_TOKEN_EXCHANGE_TIMEOUT_MS),
     });
     const tokenData = (await tokenRes.json().catch(() => null)) as {
       access_token?: string;
@@ -95,6 +98,10 @@ export async function POST(req: NextRequest) {
     }
     return res;
   } catch (err) {
+    if (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError")) {
+      console.error("[/api/auth/vk] request timed out", { code: "vk_exchange_timeout" });
+      return NextResponse.json({ ok: false, error: "vk_exchange_timeout" }, { status: 504 });
+    }
     console.error("[/api/auth/vk] request failed", {
       name: err instanceof Error ? err.name : "error",
     });

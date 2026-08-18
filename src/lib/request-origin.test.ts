@@ -34,11 +34,44 @@ describe("hasTrustedMutationOrigin", () => {
   });
 
   it("rejects requests without Origin and cannot be opened with forwarded metadata", () => {
-    expect(hasTrustedMutationOrigin(request({}))).toBe(false);
+    expect(hasTrustedMutationOrigin(request({ cookie: "sid=ambient" }))).toBe(false);
     expect(hasTrustedMutationOrigin(request({
       origin: "https://evil.example",
       "x-forwarded-host": "evil.example",
       "x-forwarded-proto": "https",
     }))).toBe(false);
+  });
+
+  it("accepts same-origin Fetch Metadata when Origin is omitted", () => {
+    expect(hasTrustedMutationOrigin(request({
+      cookie: "sid=ambient",
+      "sec-fetch-site": "same-origin",
+    }))).toBe(true);
+  });
+
+  it("leaves cookie-less service calls to route authentication but keeps browser-only flows strict", () => {
+    expect(hasTrustedMutationOrigin(request({ authorization: "Bearer service-token" }))).toBe(true);
+    expect(hasTrustedMutationOrigin(
+      request({ authorization: "Bearer service-token" }),
+      { requireBrowserOrigin: true },
+    )).toBe(false);
+  });
+
+  it("uses APP_URL as the only production origin trust anchor", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("APP_URL", "https://aurora.example");
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://public.example");
+    vi.stubEnv("AURORA_ALLOWED_ORIGINS", "https://extra.example");
+    expect(hasTrustedMutationOrigin(request({ origin: "https://aurora.example" }))).toBe(true);
+    expect(hasTrustedMutationOrigin(request({ origin: "https://public.example" }))).toBe(false);
+    expect(hasTrustedMutationOrigin(request({ origin: "https://extra.example" }))).toBe(false);
+  });
+
+  it("fails closed in production when APP_URL is absent or non-HTTPS", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("APP_URL", "");
+    expect(hasTrustedMutationOrigin(request({ origin: "https://aurora.example" }))).toBe(false);
+    vi.stubEnv("APP_URL", "http://aurora.example");
+    expect(hasTrustedMutationOrigin(request({ origin: "http://aurora.example" }))).toBe(false);
   });
 });

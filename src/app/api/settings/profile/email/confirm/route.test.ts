@@ -14,11 +14,16 @@ vi.mock("@/lib/rate-limit", () => ({
 }));
 
 import { POST } from "./route";
+import { hashSessionToken } from "@/lib/session";
 
-function request(token = "x".repeat(32)) {
+function request(token = "x".repeat(32), sessionToken?: string) {
   return new NextRequest("http://localhost/api/settings/profile/email/confirm", {
     method: "POST",
-    headers: { origin: "http://localhost", "content-type": "application/json" },
+    headers: {
+      origin: "http://localhost",
+      "content-type": "application/json",
+      ...(sessionToken ? { cookie: `sid=${sessionToken}` } : {}),
+    },
     body: JSON.stringify({ token }),
   });
 }
@@ -42,5 +47,19 @@ describe("email change confirmation route", () => {
     const response = await POST(request());
     expect(response.status).toBe(409);
     await expect(response.json()).resolves.toMatchObject({ error: "email_taken", requestId: expect.any(String) });
+  });
+
+  it("passes only the current session verifier to the transactional consumer", async () => {
+    mocks.consume.mockResolvedValue("ok");
+    const response = await POST(request("x".repeat(32), "current-session-bearer"));
+
+    expect(response.status).toBe(200);
+    expect(mocks.consume).toHaveBeenCalledWith(
+      {
+        token: "x".repeat(32),
+        currentSessionTokenHash: hashSessionToken("current-session-bearer"),
+      },
+      expect.anything(),
+    );
   });
 });

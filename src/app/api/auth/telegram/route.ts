@@ -12,11 +12,11 @@ import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 
 export const runtime = "nodejs";
 
-const TELEGRAM_AUTH_MAX_AGE_SECONDS = 5 * 60;
+const TELEGRAM_AUTH_MAX_AGE_SECONDS = 10 * 60;
 const CLOCK_SKEW_SECONDS = 30;
 
 export async function POST(req: NextRequest) {
-  if (!hasTrustedMutationOrigin(req)) {
+  if (!hasTrustedMutationOrigin(req, { requireBrowserOrigin: true })) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
   }
   const ipLimit = await checkRateLimit(
