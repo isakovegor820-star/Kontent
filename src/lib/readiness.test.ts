@@ -145,6 +145,8 @@ describe("readiness model", () => {
     })).toMatchObject({
       status: "not_ready",
       webReady: false,
+      publicationReady: true,
+      telegramBotReady: true,
       uploadReady: false,
       tokenEncryptionReady: true,
       reasons: expect.arrayContaining(["avatar_ingress_limit_not_configured"]),

@@ -100,11 +100,16 @@ export function evaluateReadiness(input: ReadinessInput): ReadinessReport {
   const schemaReady = databaseReady && input.schema.ready;
   const uploadReady = input.uploadIngress === "up";
   const webReady = databaseReady && schemaReady && uploadReady;
-  const publicationReady = webReady
+  // Upload ingress protects new HTTP uploads, but it does not own queued publications or
+  // Telegram command handling. Keep those runtime signals honest when that optional web
+  // configuration is absent.
+  const publicationReady = databaseReady
+    && schemaReady
     && input.redis === "up"
     && input.publicationWorker === "up"
     && input.tokenEncryption === "up";
-  const telegramBotReady = webReady
+  const telegramBotReady = databaseReady
+    && schemaReady
     && input.redis === "up"
     && input.telegramPolling === "up";
   // A configured but never-observed provider is not production evidence. The first
