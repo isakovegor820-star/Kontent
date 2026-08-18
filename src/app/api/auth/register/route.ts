@@ -38,7 +38,12 @@ export async function POST(req: NextRequest) {
   }
 
   // Режем массовое создание аккаунтов: не больше 5 регистраций с одного IP в час.
-  const byIp = await checkRateLimit(`register:ip:${clientIp(req)}`, 5, 3600);
+  const byIp = await checkRateLimit(
+    `register:ip:${clientIp(req)}`,
+    5,
+    3600,
+    { failureMode: "closed" },
+  );
   if (!byIp.allowed) return rateLimitResponse(byIp);
 
   if (!process.env.DATABASE_URL) {

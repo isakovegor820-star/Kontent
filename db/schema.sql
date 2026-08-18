@@ -73,9 +73,10 @@ alter table users add column if not exists ai_mood text;
 alter table users add column if not exists ai_post_settings jsonb not null default '{}'::jsonb;
 
 -- Активные сессии. Выход = удаление строки (не только cookie).
--- Токен — случайная строка в cookie sid; срок 30 дней, продлевается при активности.
+-- В cookie sid лежит случайный bearer, а в БД — только его SHA-256 verifier.
+-- Срок 30 дней, продлевается при активности.
 create table if not exists sessions (
-  token       text        primary key,
+  token       text        primary key check (token ~ '^[a-f0-9]{64}$'),
   user_id     bigint      not null references users (id) on delete cascade,
   expires_at  timestamptz not null,
   device      text,

@@ -1,8 +1,9 @@
 // Сессии Д.2. Без паролей: после подтверждения личности выдаём случайный токен,
-// кладём его в cookie sid (HttpOnly + Secure + SameSite=Lax) и в таблицу sessions.
+// кладём его в cookie sid (HttpOnly + Secure + SameSite=Lax), а в sessions сохраняем
+// только SHA-256 verifier.
 // Срок 30 дней, продлевается при активности. Выход = удаление строки в базе.
 
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import type { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { getPool } from "./db";
@@ -12,6 +13,11 @@ const COOKIE = "sid";
 const THIRTY_DAYS_S = 60 * 60 * 24 * 30;
 // Продлеваем срок, только если осталось меньше этого — чтобы не писать в базу на каждый запрос.
 const RENEW_WHEN_LEFT_S = 60 * 60 * 24 * 25;
+
+/** The bearer cookie is never persisted; a database dump contains only this verifier. */
+export function hashSessionToken(token: string): string {
+  return createHash("sha256").update(token, "utf8").digest("hex");
+}
 
 export interface SessionUser {
   id: number;
@@ -49,7 +55,8 @@ export async function createSession(
   device: string | null,
   expectedCredentialEpoch?: number,
 ): Promise<boolean> {
-  const token = randomBytes(32).toString("hex");
+  const token = randomBytes(32).toString("base64url");
+  const tokenHash = hashSessionToken(token);
   const inserted = await getPool().query(
     `insert into sessions (token, user_id, expires_at, device, credential_epoch)
      select $1, u.id, $3, $4, u.credential_epoch
@@ -57,7 +64,7 @@ export async function createSession(
       where u.id = $2 and ($5::bigint is null or u.credential_epoch = $5)
      returning token`,
     [
-      token,
+      tokenHash,
       userId,
       expiryFromNow(),
       device?.slice(0, 200) ?? null,
@@ -73,6 +80,7 @@ export async function createSession(
 export async function getSessionUser(req: NextRequest): Promise<SessionUser | null> {
   const token = req.cookies.get(COOKIE)?.value;
   if (!token) return null;
+  const tokenHash = hashSessionToken(token);
 
   const pool = getPool();
   const rows = await pool.query<SessionUser & { expires_at: string; has_project_context: boolean }>(
@@ -94,7 +102,7 @@ export async function getSessionUser(req: NextRequest): Promise<SessionUser | nu
        join users u on u.id = s.user_id
       where s.token = $1 and s.expires_at > now()
         and s.credential_epoch = u.credential_epoch`,
-    [token],
+    [tokenHash],
   );
   if (rows.rowCount === 0) return null;
 
@@ -116,7 +124,7 @@ export async function getSessionUser(req: NextRequest): Promise<SessionUser | nu
   if (leftMs < RENEW_WHEN_LEFT_S * 1000) {
     await pool.query(`update sessions set expires_at = $1 where token = $2`, [
       expiryFromNow(),
-      token,
+      tokenHash,
     ]);
     // Sliding session обязана продлевать и серверную строку, и браузерную cookie.
     // Иначе БД жила ещё 30 дней, а cookie исчезала по первоначальному сроку.
@@ -130,7 +138,7 @@ export async function destroySession(req: NextRequest, res: NextResponse): Promi
   const token = req.cookies.get(COOKIE)?.value;
   try {
     if (token) {
-      await getPool().query(`delete from sessions where token = $1`, [token]);
+      await getPool().query(`delete from sessions where token = $1`, [hashSessionToken(token)]);
     }
   } finally {
     // Local logout must not depend on PostgreSQL availability. The server-side row may

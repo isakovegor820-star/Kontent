@@ -772,9 +772,8 @@ export async function POST(req: NextRequest) {
     if (review === "blocked") {
       return operationError("ai_draft_blocked", 422);
     }
-    // The immutable revision reached this point through exact editorial approval.
-    // Internal AI quality checks may guide generation, but they do not take a
-    // generated post away from the user after the post is ready.
+    // Exact editorial approval can satisfy a review-required/not-checked result, but an
+    // explicit AI blocker remains quarantined and has already returned above.
     let typographySnapshot;
     try {
       typographySnapshot = await recheckTypographyForPublication({

@@ -32,9 +32,9 @@ export async function POST(req: NextRequest) {
   // Два потолка сразу: по IP (режем брутфорс с одного источника) и по аккаунту
   // (режем распределённую атаку на одну почту с разных IP). Окно 15 минут.
   const ip = clientIp(req);
-  const byIp = await checkRateLimit(`login:ip:${ip}`, 10, 900);
+  const byIp = await checkRateLimit(`login:ip:${ip}`, 10, 900, { failureMode: "closed" });
   if (!byIp.allowed) return rateLimitResponse(byIp);
-  const byAccount = await checkRateLimit(`login:acct:${email}`, 5, 900);
+  const byAccount = await checkRateLimit(`login:acct:${email}`, 5, 900, { failureMode: "closed" });
   if (!byAccount.allowed) return rateLimitResponse(byAccount);
 
   if (!process.env.DATABASE_URL) {

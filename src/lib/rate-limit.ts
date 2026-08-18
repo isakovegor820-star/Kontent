@@ -13,6 +13,7 @@
 // fail-closed: отсутствие limiter не должно превращаться в неограниченную рассылку.
 
 import Redis from "ioredis";
+import { isIP } from "node:net";
 import { NextResponse } from "next/server";
 
 const globalForRedis = globalThis as unknown as { auroraRateRedis?: Redis };
@@ -111,12 +112,38 @@ export async function checkRateLimit(
   }
 }
 
-/** IP клиента. Vercel кладёт цепочку в x-forwarded-for — берём первый (реальный клиент).
- *  Принимаем базовый Request: подходит и NextRequest (вход/регистрация), и Request (lead). */
+function normalizedIp(value: string): string | null {
+  let candidate = value.trim();
+  const bracketed = candidate.match(/^\[([^\]]+)\](?::\d+)?$/u);
+  if (bracketed) candidate = bracketed[1];
+  else if (/^\d{1,3}(?:\.\d{1,3}){3}:\d+$/u.test(candidate)) {
+    candidate = candidate.replace(/:\d+$/u, "");
+  }
+  const withoutZone = candidate.replace(/%.+$/u, "");
+  return isIP(withoutZone) ? withoutZone.toLowerCase() : null;
+}
+
+/**
+ * IP клиента берётся справа от X-Forwarded-For: доверенный ingress добавляет адрес
+ * непосредственного клиента в конец цепочки, поэтому клиентские префиксы не меняют ключ.
+ * Для нескольких доверенных proxy оператор задаёт AURORA_TRUSTED_PROXY_HOPS.
+ */
 export function clientIp(req: Request): string {
   const fwd = req.headers.get("x-forwarded-for");
-  if (fwd) return fwd.split(",")[0].trim();
-  return req.headers.get("x-real-ip") || "unknown";
+  if (fwd) {
+    const chain = fwd.split(",").map(normalizedIp).filter((value): value is string => Boolean(value));
+    const configuredHops = Number(process.env.AURORA_TRUSTED_PROXY_HOPS || 1);
+    const trustedHops = Number.isSafeInteger(configuredHops) && configuredHops >= 1 && configuredHops <= 10
+      ? configuredHops
+      : 1;
+    return chain.at(-trustedHops) || "unknown";
+  }
+  // X-Real-IP has no chain semantics and is trusted only when ingress is explicitly
+  // configured to overwrite it.
+  if (process.env.AURORA_TRUST_X_REAL_IP === "true") {
+    return normalizedIp(req.headers.get("x-real-ip") || "") || "unknown";
+  }
+  return "unknown";
 }
 
 /** Единый ответ 429/503 с заголовками, чтобы клиент мог безопасно предложить повтор. */

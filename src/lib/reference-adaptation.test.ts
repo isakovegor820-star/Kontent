@@ -6,7 +6,18 @@ import {
   referenceAdaptationContextFromDraft,
   sanitizeSemanticIntent,
   validateTopicAlignment,
+  type TopicAlignmentAdapter,
 } from "./reference-adaptation";
+
+const semanticAdapter: TopicAlignmentAdapter = {
+  id: "test-topic-semantic-v1",
+  async checkTopicAlignment({ text }) {
+    const unrelated = /(?:конференц|кофе|рыбалк)/iu.test(text);
+    return unrelated
+      ? { verdict: "misaligned", confidence: 0.99, reasonCode: "unrelated_subject" }
+      : { verdict: "aligned", confidence: 0.95, reasonCode: "subject_developed" };
+  },
+};
 
 function draft(overrides: Partial<ServerDraft> = {}): ServerDraft {
   return {
@@ -16,7 +27,12 @@ function draft(overrides: Partial<ServerDraft> = {}): ServerDraft {
     scheduled_at: null,
     origin: "trend",
     purpose: "source_context",
-    source_ref: { kind: "trend", id: "9", label: "Юридический тренд" },
+    source_ref: {
+      kind: "trend",
+      id: "9",
+      label: "Юридический тренд",
+      topic: "Исполнительский иммунитет необходимого имущества должника",
+    },
     generation_result_id: null,
     generation_binding_valid: false,
     client_key: "draft_reference_adaptation_71",
@@ -38,7 +54,7 @@ function draft(overrides: Partial<ServerDraft> = {}): ServerDraft {
 }
 
 describe("reference adaptation context", () => {
-  it("keeps a trend topic as semantic intent and rejects an unrelated conference post", () => {
+  it("keeps a server-owned trend topic and rejects an unrelated conference post", async () => {
     const context = referenceAdaptationContextFromDraft(draft())!;
     const task = buildReferenceAdaptationTask(context, "Технологии Права");
 
@@ -50,14 +66,16 @@ describe("reference adaptation context", () => {
       mode: "same_topic_original_post",
     });
     expect(task).toContain("Исполнительский иммунитет");
-    expect(validateTopicAlignment(
+    await expect(validateTopicAlignment(
       "Исполнительский иммунитет помогает отделить необходимое имущество от остальной конкурсной массы.",
       context,
-    ).status).toBe("passed");
-    expect(validateTopicAlignment(
+      { adapter: semanticAdapter },
+    )).resolves.toMatchObject({ status: "passed", semanticAdapter: "test-topic-semantic-v1" });
+    await expect(validateTopicAlignment(
       "Открываем продажи билетов на ежегодную конференцию о технологиях права.",
       context,
-    ).status).toBe("failed");
+      { adapter: semanticAdapter },
+    )).resolves.toMatchObject({ status: "failed", reasonCode: "unrelated_subject" });
   });
 
   it("preserves an idea as idea with explicit topic and separate provenance/mechanics", () => {
@@ -89,7 +107,12 @@ describe("reference adaptation context", () => {
     const context = referenceAdaptationContextFromDraft(draft({
       origin: "competitor",
       text: "15.09.2026 Иван Петров назвал 136 ошибок в договоре поставки. Полный разбор по ссылке https://example.com/source",
-      source_ref: { kind: "reference", id: "91", label: "Открытый источник" },
+      source_ref: {
+        kind: "reference",
+        id: "91",
+        label: "Открытый источник",
+        topic: "Ошибки в договоре поставки",
+      },
     }))!;
 
     expect(context.kind).toBe("reference");
@@ -127,17 +150,22 @@ describe("reference adaptation context", () => {
     expect(buildReferenceAdaptationTask(context)).toContain("Используй только факты, прямо указанные");
   });
 
-  it("does not mistake a generic hook for the source subject", () => {
+  it("does not infer a replacement topic from a generic hook or later body sentence", () => {
     const context = referenceAdaptationContextFromDraft(draft({
       text: "Вы тоже это делаете?\n\nИсполнительский иммунитет защищает необходимое для жизни имущество должника.",
-      source_ref: { kind: "trend", id: "92", label: "Тренд" },
+      source_ref: {
+        kind: "trend",
+        id: "92",
+        label: "Тренд",
+        topic: "Защита необходимого имущества должника",
+      },
     }))!;
 
-    expect(context.topic).toContain("Исполнительский иммунитет");
+    expect(context.topic).toBe("Защита необходимого имущества должника");
     expect(context.topic).not.toBe("Вы тоже это делаете?");
   });
 
-  it("accepts Russian legal synonyms but rejects exact-topic token stuffing", () => {
+  it("delegates legal synonyms and token stuffing to a semantic classifier", async () => {
     const context = referenceAdaptationContextFromDraft(draft({
       source_ref: {
         kind: "trend",
@@ -149,17 +177,37 @@ describe("reference adaptation context", () => {
       },
     }))!;
 
-    expect(validateTopicAlignment(
+    await expect(validateTopicAlignment(
       "Защита единственной квартиры должника от обращения взыскания сохраняет необходимое жильё, хотя границы правила зависят от обстоятельств.",
       context,
-    ).status).toBe("passed");
-    expect(validateTopicAlignment(
+      { adapter: semanticAdapter },
+    )).resolves.toMatchObject({ status: "passed" });
+    await expect(validateTopicAlignment(
       "Как выбрать обжарку кофе и настроить кофемолку. Исполнительский иммунитет единственного жилья — важная тема.",
       context,
-    ).status).toBe("failed");
-    expect(validateTopicAlignment(
+      { adapter: semanticAdapter },
+    )).resolves.toMatchObject({ status: "failed" });
+    await expect(validateTopicAlignment(
       "Конференция по искусственному интеллекту открывает регистрацию для участников.",
       context,
-    ).status).toBe("failed");
+      { adapter: semanticAdapter },
+    )).resolves.toMatchObject({ status: "failed" });
+  });
+
+  it("fails closed when semantic alignment is unavailable", async () => {
+    const context = referenceAdaptationContextFromDraft(draft())!;
+    await expect(validateTopicAlignment("Текст на нужную тему", context)).resolves.toMatchObject({
+      status: "failed",
+      score: 0,
+      semanticAdapter: "unavailable",
+      reasonCode: "semantic_check_unavailable",
+    });
+  });
+
+  it("refuses an ambiguous body without explicit server-owned topic metadata", () => {
+    expect(referenceAdaptationContextFromDraft(draft({
+      text: "Вы тоже это делаете? Второе предложение внезапно говорит о банкротстве. Третье — о конференции.",
+      source_ref: { kind: "trend", id: "ambiguous", label: "Тренд" },
+    }))).toBeNull();
   });
 });

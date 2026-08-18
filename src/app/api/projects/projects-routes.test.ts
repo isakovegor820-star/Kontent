@@ -43,7 +43,7 @@ const member = { id: 5, email: "member@example.com" };
 function request(path: string, method: string, body?: unknown, headers?: Record<string, string>) {
   return new NextRequest(`https://aurora.test${path}`, {
     method,
-    headers: { "content-type": "application/json", ...headers },
+    headers: { origin: "https://aurora.test", "content-type": "application/json", ...headers },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 }
@@ -94,7 +94,7 @@ describe("project API routes", () => {
   it("rejects unsupported media, unknown keys and the actual oversized stream", async () => {
     const unsupported = await createProject(new NextRequest("https://aurora.test/api/projects", {
       method: "POST",
-      headers: { "content-type": "text/plain" },
+      headers: { origin: "https://aurora.test", "content-type": "text/plain" },
       body: JSON.stringify({ name: "Команда" }),
     }));
     expect(unsupported.status).toBe(415);
@@ -107,7 +107,11 @@ describe("project API routes", () => {
 
     const oversized = await createProject(new NextRequest("https://aurora.test/api/projects", {
       method: "POST",
-      headers: { "content-type": "application/json", "content-length": "2" },
+      headers: {
+        origin: "https://aurora.test",
+        "content-type": "application/json",
+        "content-length": "2",
+      },
       body: JSON.stringify({ name: "x".repeat(20_000) }),
     }));
     expect(oversized.status).toBe(413);
@@ -117,7 +121,7 @@ describe("project API routes", () => {
   it("rejects malformed UTF-8 before project persistence", async () => {
     const response = await createProject(new NextRequest("https://aurora.test/api/projects", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { origin: "https://aurora.test", "content-type": "application/json" },
       body: new Uint8Array([0x7b, 0x22, 0x6e, 0x61, 0x6d, 0x65, 0x22, 0x3a, 0x22, 0xc3, 0x28, 0x22, 0x7d]),
     }));
     expect(response.status).toBe(400);
@@ -143,7 +147,7 @@ describe("project API routes", () => {
       "/api/project-invitations/accept",
       "POST",
       { token: "t".repeat(43) },
-      { "x-real-ip": "192.0.2.1" },
+      { "x-forwarded-for": "192.0.2.1" },
     ));
     expect(response.status).toBe(200);
     const ipHash = createHash("sha256").update("192.0.2.1").digest("hex").slice(0, 32);

@@ -76,6 +76,7 @@ import {
   referenceAdaptationContextFromDraft,
   validateTopicAlignment,
   type ReferenceAdaptationContext,
+  type TopicAlignmentAdapter,
   type TopicAlignmentResult,
 } from "@/lib/reference-adaptation";
 import {
@@ -630,8 +631,8 @@ function studioStreamResponse(
               history: params.styleSamples,
             })
           : null;
-        // No production semantic adapter is registered: draft/ledger content is not sent
-        // to an extra provider and the result remains visibly requires_review.
+        // Semantic checks run only through the explicitly configured classifier. Missing,
+        // failed or incomplete proof remains visibly requires_review/fail-closed.
         const factual = await validateFactualOutputWithSemantics(text, factLedger, {
           signal: pipelineSignal,
           adapter: semanticAdapter,
@@ -661,7 +662,10 @@ function studioStreamResponse(
         const postIssues = post ? buildPostRepairInstructions(post) : [];
         const channelIssues = channelQuality?.violations.map((item) => item.message) ?? [];
         const topic = params.referenceAdaptation
-          ? validateTopicAlignment(text, params.referenceAdaptation)
+          ? await validateTopicAlignment(text, params.referenceAdaptation, {
+              adapter: semanticAdapter as (SemanticEntailmentAdapter & TopicAlignmentAdapter) | null,
+              signal: pipelineSignal,
+            })
           : null;
         const topicIssues = topic ? buildTopicRepairInstructions(topic) : [];
         const postPassed = post?.passed ?? true;
@@ -1452,7 +1456,9 @@ export async function POST(req: NextRequest) {
       { status: 422 },
     );
   }
-  const semanticAdapter = createConfiguredSemanticAdapter() as SemanticEntailmentAdapter | null;
+  const semanticAdapter = createConfiguredSemanticAdapter() as
+    | (SemanticEntailmentAdapter & TopicAlignmentAdapter)
+    | null;
 
   // Резервируем квоту атомарно непосредственно перед платным вызовом. Параллельные
   // запросы одного аккаунта больше не могут все пройти на одном и том же count(*).

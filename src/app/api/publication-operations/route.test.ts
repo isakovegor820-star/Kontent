@@ -649,7 +649,7 @@ describe("POST /api/publication-operations readiness gate", () => {
     });
   });
 
-  it("keeps an approved generated post ready when an internal AI check was blocked", async () => {
+  it("keeps an approved generated post quarantined when AI validation was blocked", async () => {
     mocks.probePublication.mockResolvedValue({ redis: "up", publicationWorker: "up" });
     const tx = {
       query: vi.fn(async (sql: string, params?: unknown[]) => {
@@ -735,22 +735,17 @@ describe("POST /api/publication-operations readiness gate", () => {
 
     const response = await POST(request());
 
-    expect(response.status).toBe(201);
+    expect(response.status).toBe(422);
     await expect(response.json()).resolves.toMatchObject({
-      ok: true,
-      operationStatus: "queued",
-      destinations: [{ postId: 81, channelId: 12 }],
+      ok: false,
+      result: "operation_not_created",
+      error: "ai_draft_blocked",
     });
     expect(mocks.requireCurrentDraftApproval).toHaveBeenCalledWith(tx, 5, 23, 41);
-    expect(mocks.recheckTypographyForPublication).toHaveBeenCalledWith({
-      db: tx,
-      projectId: 23,
-      text: "Проверенный материал",
-      allowPublishAsIs: true,
-    });
+    expect(mocks.recheckTypographyForPublication).not.toHaveBeenCalled();
     expect(tx.query.mock.calls.some(([sql]) =>
-      String(sql).includes("insert into publication_operations"))).toBe(true);
-    expect(tx.query).toHaveBeenCalledWith("commit");
+      String(sql).includes("insert into publication_operations"))).toBe(false);
+    expect(tx.query).toHaveBeenCalledWith("rollback");
   });
 
   it("converges concurrent publication attempts by two publishers on one approved revision", async () => {

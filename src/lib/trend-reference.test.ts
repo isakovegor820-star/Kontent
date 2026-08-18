@@ -31,7 +31,7 @@ describe("buildTrendReferenceDraft", () => {
       channelId: 7,
       clientKey: "draft_trend_reference_42",
       sourceLabel: "Источник",
-      idea: { hook: "Хук", structure: "Структура" },
+      idea: { topic: "Тема идеи", hook: "Хук", structure: "Структура" },
     }).text).toBe("Хук\n\nСтруктура");
   });
 
@@ -56,7 +56,7 @@ describe("buildTrendReferenceDraft", () => {
       channelId: 7,
       clientKey: "draft_trend_reference_bigint",
       sourceLabel: "Источник",
-      text: "Тема",
+      text: "Юридическая тема",
     }).sourceRef?.id).toBe("9007199254740993");
   });
 
@@ -68,5 +68,15 @@ describe("buildTrendReferenceDraft", () => {
       sourceLabel: "Источник",
       text: "  ",
     })).toThrow("trend reference text is required");
+  });
+
+  it("rejects ambiguous source prose when no structured topic exists", () => {
+    expect(() => buildTrendReferenceDraft({
+      trendId: 44,
+      channelId: 7,
+      clientKey: "draft_trend_reference_44",
+      sourceLabel: "Источник",
+      text: "Вы это знали? Затем текст перескакивает на банкротство. А потом на конференцию.",
+    })).toThrow("trend reference topic is required");
   });
 });

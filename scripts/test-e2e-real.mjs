@@ -710,6 +710,7 @@ const runtimeEnv = {
   REDIS_URL: redisUrl,
   APP_URL: baseUrl,
   NEXT_PUBLIC_APP_URL: baseUrl,
+  AURORA_READINESS_TOKEN: "e2e-readiness-token-with-32-characters-minimum",
   HOSTNAME: "127.0.0.1",
   PORT: String(webPort),
   TG_BOT_TOKEN: "9000000000:e2e-fake-token-not-live",
@@ -769,7 +770,10 @@ function startFullRuntime(label) {
 
 async function waitForFullRuntime(message = "full development readiness did not become ready") {
   return waitFor(async () => {
-    const response = await fetch(`${baseUrl}/api/readiness`, { cache: "no-store" });
+    const response = await fetch(`${baseUrl}/api/readiness`, {
+      cache: "no-store",
+      headers: { authorization: `Bearer ${runtimeEnv.AURORA_READINESS_TOKEN}` },
+    });
     const body = await response.json();
     return response.status === 200
       && body.schemaReady

@@ -223,7 +223,7 @@ describe("POST /api/posts/create draft destination outcomes", () => {
         },
       },
       humanReviewVersion: null,
-      expected: "ai_draft_review_required",
+      expected: "ai_draft_blocked",
     },
     {
       label: "missing validation and no human ACK",
@@ -277,7 +277,7 @@ describe("POST /api/posts/create draft destination outcomes", () => {
     expect(mocks.add).not.toHaveBeenCalled();
   });
 
-  it("publishes an immutable generated post regardless of its internal validation score", async () => {
+  it("quarantines an immutable generated post with an explicit blocked validation", async () => {
     const scheduledAt = new Date(Date.now() + 3_600_000).toISOString();
     const text = "Готовый AI-текст";
     const validation = {
@@ -330,9 +330,9 @@ describe("POST /api/posts/create draft destination outcomes", () => {
 
     const response = await POST(request(text, scheduledAt, 3));
 
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({ ok: true, postId: 501, replayed: false });
-    expect(mocks.add).toHaveBeenCalledOnce();
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toEqual({ ok: false, error: "ai_draft_blocked" });
+    expect(mocks.add).not.toHaveBeenCalled();
   });
 
   it("allows an AI draft only after a human ACK bound to the current version", async () => {

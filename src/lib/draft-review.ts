@@ -93,8 +93,8 @@ export function normalizeDraftAiValidation(value: unknown): DraftAiValidation | 
         blockerCodes.length > 0 ||
         coverage !== "deterministic+semantic" ||
         semanticEntailment !== "passed")) ||
-    // A blocked generation can still be reviewable as a durable editing draft.
-    // `draftReviewDecision` keeps publication fail-closed regardless of this flag.
+    // A blocked generation remains useful as a durable editing draft, but can never be
+    // attested into publishability. The text must be changed and validated as a new result.
     (status === "blocked" && blockerCodes.length === 0) ||
     (status === "not_checked" &&
       (!value.requiresReview || semanticEntailment !== "not_checked"))
@@ -155,9 +155,11 @@ export function draftReviewDecision(input: {
 
   const validation = normalizeDraftAiValidation(input.ai_validation);
   if (input.ai_validation != null && !validation) return "review_required";
-  // Валидный неизменяемый результат уже принадлежит пользователю. Проверки сохраняются
-  // как внутренняя телеметрия, но не блокируют готовый пост и его публикацию.
-  if (validation && input.generation_binding_valid) return "allowed";
+  if (validation?.status === "blocked") return "blocked";
+  // Only a server-bound result that completed every validation gate is immediately
+  // publishable. Human review may attest an unavailable/not-checked validator, but it
+  // must never override an explicit blocker.
+  if (validation?.status === "passed" && input.generation_binding_valid) return "allowed";
   return validCurrentHumanReview(input.human_review, input.version)
     ? "allowed"
     : "review_required";

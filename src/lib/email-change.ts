@@ -201,7 +201,15 @@ export async function consumeEmailChange(
     }
 
     try {
-      await client.query(`update users set email = $2 where id = $1`, [request.user_id, request.target_email]);
+      // Email participates in authentication and in the global admin allowlist. Rotate
+      // the credential epoch in the same transaction so no session authenticated under
+      // the previous identity survives the change.
+      await client.query(
+        `update users
+            set email = $2, credential_epoch = credential_epoch + 1
+          where id = $1`,
+        [request.user_id, request.target_email],
+      );
     } catch (error) {
       if ((error as { code?: unknown })?.code === "23505") {
         await client.query("rollback").catch(() => undefined);
@@ -209,6 +217,7 @@ export async function consumeEmailChange(
       }
       throw error;
     }
+    await client.query(`delete from sessions where user_id = $1`, [request.user_id]);
     await client.query(
       `update email_change_requests set confirmed_at = $2, updated_at = now() where id = $1`,
       [request.id, now],

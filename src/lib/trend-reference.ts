@@ -1,5 +1,5 @@
 import type { DraftCreateInput } from "./draft-types";
-import { topicFromSourceText } from "./reference-adaptation";
+import { sanitizeSemanticIntent, topicFromSourceText } from "./reference-adaptation";
 
 export interface TrendReferenceDraftInput {
   trendId: number | string;
@@ -34,6 +34,8 @@ export function buildTrendReferenceDraft(input: TrendReferenceDraftInput): Draft
   const text = input.text?.trim()
     || [input.idea?.hook, input.idea?.structure].filter(Boolean).join("\n\n").trim();
   if (!text) throw new RangeError("trend reference text is required");
+  const topic = sanitizeSemanticIntent(input.idea?.topic, 320) || topicFromSourceText(text);
+  if (!topic) throw new RangeError("trend reference topic is required");
 
   return {
     text,
@@ -44,7 +46,7 @@ export function buildTrendReferenceDraft(input: TrendReferenceDraftInput): Draft
       kind: "trend",
       id: trendId,
       label: input.sourceLabel.trim().slice(0, 400) || "Идея из трендов",
-      topic: input.idea?.topic?.trim().slice(0, 500) || topicFromSourceText(text),
+      topic,
       ...(input.idea?.hook?.trim() ? { hook: input.idea.hook.trim().slice(0, 1_000) } : {}),
       ...(input.idea?.structure?.trim() ? { structure: input.idea.structure.trim().slice(0, 2_000) } : {}),
       provenance: {

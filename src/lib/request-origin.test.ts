@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 import { hasTrustedMutationOrigin } from "./request-origin";
 
@@ -10,11 +10,14 @@ function request(headers: Record<string, string>) {
 }
 
 describe("hasTrustedMutationOrigin", () => {
-  it("accepts the public forwarded origin", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("accepts a server-configured public origin without trusting forwarded headers", () => {
+    vi.stubEnv("APP_URL", "https://aurora.example");
     expect(hasTrustedMutationOrigin(request({
       origin: "https://aurora.example",
-      "x-forwarded-host": "aurora.example",
-      "x-forwarded-proto": "https",
+      "x-forwarded-host": "evil.example",
+      "x-forwarded-proto": "http",
       "sec-fetch-site": "same-origin",
     }))).toBe(true);
   });
@@ -30,7 +33,12 @@ describe("hasTrustedMutationOrigin", () => {
     }))).toBe(false);
   });
 
-  it("allows authenticated server clients without browser metadata", () => {
-    expect(hasTrustedMutationOrigin(request({}))).toBe(true);
+  it("rejects requests without Origin and cannot be opened with forwarded metadata", () => {
+    expect(hasTrustedMutationOrigin(request({}))).toBe(false);
+    expect(hasTrustedMutationOrigin(request({
+      origin: "https://evil.example",
+      "x-forwarded-host": "evil.example",
+      "x-forwarded-proto": "https",
+    }))).toBe(false);
   });
 });

@@ -41,6 +41,11 @@ Ingress/reverse proxy обязан жёстко ограничивать body з
 chunked multipart потоково с тем же пределом, не доверяет `Content-Length` и допускает не
 более четырёх одновременных body в одном web-процессе.
 
+Ingress также обязан добавлять клиентский адрес справа в `X-Forwarded-For`. Rate limiter
+считает от правого края цепочки; для нескольких доверенных proxy задай точное
+`AURORA_TRUSTED_PROXY_HOPS`. `X-Real-IP` игнорируется, пока оператор явно не включит его и
+не гарантирует перезапись заголовка на ingress.
+
 На платформе с отдельными типами процессов запускай `npm run start:web` для HTTP и
 `npm run start:worker` для фонового воркера. Все production-переменные должны быть
 внедрены самой платформой. Serverless-хостинг вроде Vercel подходит для web-процесса,
@@ -79,6 +84,7 @@ Mocked contract suite сохранён отдельно как `npm run test:con
 
 ```bash
 AURORA_DEPLOYMENT_SMOKE_BASE_URL='https://app.example.com' \
+AURORA_READINESS_TOKEN='replace-with-the-operator-secret' \
 npm run test:deployment-smoke
 ```
 
@@ -88,7 +94,8 @@ security headers и привязку всех framework scripts/styles к respon
 на `/` и `/bot`. Скрипт не следует redirect, принимает только публичный HTTPS origin без
 credentials/query/hash и ограничивает размер ответов. В GitHub Actions тот же gate
 запускается вручную workflow `Production deployment smoke`: защищаемое environment
-`production` должно содержать variable `PRODUCTION_BASE_URL`.
+`production` должно содержать variable `PRODUCTION_BASE_URL` и secret
+`AURORA_READINESS_TOKEN`.
 
 Live Telegram smoke запускается отдельно и никогда не использует обычные
 `TG_BOT_TOKEN`/`TG_CHAT_ID`. Для него нужны выделенные sandbox-бот и чат:
@@ -216,12 +223,18 @@ and required capabilities live in `src/lib/schema-manifest.mjs`. Production sche
 never applied from a request or worker startup path; run the separately controlled migration
 command during deployment.
 
-`GET /api/readiness` distinguishes process liveness, PostgreSQL reachability, exact schema
+Authenticated `GET /api/readiness` distinguishes process liveness, PostgreSQL reachability, exact schema
 compatibility, Redis, publication worker heartbeat, observed AI provider health and password
 reset delivery. A reachable legacy database returns HTTP 503. Missing mail configuration does
 not stop draft/web work, but the response remains `degraded` and
 `passwordRecoveryReady=false`; production must not claim password recovery is available until
 `APP_URL`, a delivery key and a sender are configured.
+
+Подробный отчёт доступен только глобальному администратору или с
+`Authorization: Bearer $AURORA_READINESS_TOKEN`; публичный запрос получает 401 до запуска
+dependency probes. Обычный вошедший пользователь видит только продуктовые capability-флаги,
+без схемы, Redis/worker state, keyring и внутренних причин. Post-deploy smoke использует тот
+же operator token.
 
 Readiness также проверяет, что каждый сохранённый `v1` token envelope ссылается на key ID,
 доступный в текущем write/read keyring. Неизвестный ID блокирует publication readiness до

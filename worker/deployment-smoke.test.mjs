@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { runDeploymentSmoke } from "../scripts/deployment-smoke.mjs";
 
 const NONCE = "YXVyb3JhLWRlcGxveW1lbnQtbm9uY2U=";
+const READINESS_TOKEN = "deployment-smoke-test-readiness-token";
 const SECURITY_HEADERS = {
   "cache-control": "private, no-cache, no-store, max-age=0, must-revalidate",
   "content-security-policy": [
@@ -69,7 +70,10 @@ describe("deployment smoke", () => {
     const fetchImpl = successfulFetch();
     const logger = { log: vi.fn() };
     await expect(runDeploymentSmoke({
-      env: { AURORA_DEPLOYMENT_SMOKE_BASE_URL: "https://aurora.example" },
+      env: {
+        AURORA_DEPLOYMENT_SMOKE_BASE_URL: "https://aurora.example",
+        AURORA_READINESS_TOKEN: READINESS_TOKEN,
+      },
       fetchImpl,
       logger,
       now: new Date("2026-08-17T12:01:00.000Z"),
@@ -84,6 +88,9 @@ describe("deployment smoke", () => {
     for (const [, options] of fetchImpl.mock.calls) {
       expect(options).toMatchObject({ method: "GET", redirect: "manual" });
     }
+    const readinessCall = fetchImpl.mock.calls.find(([url]) => new URL(url).pathname === "/api/readiness");
+    expect(new Headers(readinessCall?.[1]?.headers).get("authorization"))
+      .toBe(`Bearer ${READINESS_TOKEN}`);
   });
 
   it.each([
@@ -103,7 +110,10 @@ describe("deployment smoke", () => {
 
   it("fails full smoke when any production capability is degraded", async () => {
     await expect(runDeploymentSmoke({
-      env: { AURORA_DEPLOYMENT_SMOKE_BASE_URL: "https://aurora.example" },
+      env: {
+        AURORA_DEPLOYMENT_SMOKE_BASE_URL: "https://aurora.example",
+        AURORA_READINESS_TOKEN: READINESS_TOKEN,
+      },
       fetchImpl: successfulFetch(readyReport({
         status: "degraded",
         publicationReady: false,
@@ -121,6 +131,7 @@ describe("deployment smoke", () => {
       env: {
         AURORA_DEPLOYMENT_SMOKE_BASE_URL: "https://aurora.example",
         AURORA_DEPLOYMENT_SMOKE_PROFILE: "web",
+        AURORA_READINESS_TOKEN: READINESS_TOKEN,
       },
       fetchImpl: successfulFetch(readyReport({ status: "degraded", publicationReady: false })),
       logger: { log: vi.fn() },
@@ -130,7 +141,10 @@ describe("deployment smoke", () => {
 
   it("rejects stale readiness reports", async () => {
     await expect(runDeploymentSmoke({
-      env: { AURORA_DEPLOYMENT_SMOKE_BASE_URL: "https://aurora.example" },
+      env: {
+        AURORA_DEPLOYMENT_SMOKE_BASE_URL: "https://aurora.example",
+        AURORA_READINESS_TOKEN: READINESS_TOKEN,
+      },
       fetchImpl: successfulFetch(readyReport({ checkedAt: "2026-08-17T11:00:00.000Z" })),
       now: new Date("2026-08-17T12:01:00.000Z"),
     })).rejects.toMatchObject({ code: "deployment_smoke_readiness_stale" });
@@ -144,7 +158,10 @@ describe("deployment smoke", () => {
       return htmlResponse({ nonce: "different-nonce" });
     });
     await expect(runDeploymentSmoke({
-      env: { AURORA_DEPLOYMENT_SMOKE_BASE_URL: "https://aurora.example" },
+      env: {
+        AURORA_DEPLOYMENT_SMOKE_BASE_URL: "https://aurora.example",
+        AURORA_READINESS_TOKEN: READINESS_TOKEN,
+      },
       fetchImpl,
       now: new Date("2026-08-17T12:01:00.000Z"),
     })).rejects.toMatchObject({ code: "deployment_smoke_nonce_binding_failed" });
@@ -156,7 +173,10 @@ describe("deployment smoke", () => {
       headers: { location: "https://unexpected.example" },
     }));
     await expect(runDeploymentSmoke({
-      env: { AURORA_DEPLOYMENT_SMOKE_BASE_URL: "https://aurora.example" },
+      env: {
+        AURORA_DEPLOYMENT_SMOKE_BASE_URL: "https://aurora.example",
+        AURORA_READINESS_TOKEN: READINESS_TOKEN,
+      },
       fetchImpl,
     })).rejects.toMatchObject({ code: "deployment_smoke_unexpected_redirect" });
   });

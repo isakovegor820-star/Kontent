@@ -71,13 +71,21 @@ describe("consumeEmailChange", () => {
       }] })
       .mockResolvedValueOnce({ rowCount: 1 })
       .mockResolvedValueOnce({ rowCount: 1 })
+      .mockResolvedValueOnce({ rowCount: 1 })
       .mockResolvedValueOnce({});
 
     await expect(consumeEmailChange(
       { token: "x".repeat(32), now: new Date("2026-08-05T13:00:00Z") },
       pool as never,
     )).resolves.toBe("ok");
-    expect(query.mock.calls.some(([sql, params]) => String(sql).includes("update users set email") && params[1] === "new@example.test")).toBe(true);
+    expect(query.mock.calls.some(([sql, params]) => (
+      String(sql).includes("credential_epoch = credential_epoch + 1")
+      && params[1] === "new@example.test"
+    ))).toBe(true);
+    expect(query.mock.calls.some(([sql, params]) => (
+      String(sql).includes("delete from sessions where user_id = $1")
+      && params[0] === "3"
+    ))).toBe(true);
     expect(release).toHaveBeenCalled();
   });
 
@@ -99,6 +107,7 @@ describe("consumeEmailChange", () => {
       { token: "x".repeat(32), now: new Date("2026-08-05T13:00:00Z") },
       pool as never,
     )).resolves.toBe("used");
-    expect(query.mock.calls.some(([sql]) => String(sql).includes("update users set email"))).toBe(false);
+    expect(query.mock.calls.some(([sql]) => String(sql).includes("credential_epoch = credential_epoch + 1"))).toBe(false);
+    expect(query.mock.calls.some(([sql]) => String(sql).includes("delete from sessions"))).toBe(false);
   });
 });

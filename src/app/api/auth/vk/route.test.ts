@@ -4,18 +4,28 @@ import { NextRequest } from "next/server";
 const mocks = vi.hoisted(() => ({
   findOrCreateUser: vi.fn(),
   createSession: vi.fn(),
+  rateLimit: vi.fn(),
 }));
 
 vi.mock("@/lib/users", () => ({ findOrCreateUser: mocks.findOrCreateUser }));
 vi.mock("@/lib/session", () => ({ createSession: mocks.createSession }));
+vi.mock("@/lib/rate-limit", () => ({
+  checkRateLimit: mocks.rateLimit,
+  clientIp: () => "127.0.0.1",
+  rateLimitResponse: () => Response.json({ error: "rate_limited" }, { status: 429 }),
+}));
 
 import { POST } from "./route";
 
 function request() {
   return new NextRequest("http://localhost/api/auth/vk", {
     method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ code: "one-time-code" }),
+    headers: { "content-type": "application/json", origin: "http://localhost" },
+    body: JSON.stringify({
+      code: "one-time-code",
+      device_id: "device-id",
+      code_verifier: "v".repeat(43),
+    }),
   });
 }
 
@@ -24,6 +34,8 @@ describe("POST /api/auth/vk logging", () => {
     vi.clearAllMocks();
     vi.stubEnv("VK_APP_ID", "app-id");
     vi.stubEnv("VK_APP_SECRET", "app-secret");
+    mocks.rateLimit.mockResolvedValue({ allowed: true });
+    mocks.createSession.mockResolvedValue(true);
   });
 
   afterEach(() => {

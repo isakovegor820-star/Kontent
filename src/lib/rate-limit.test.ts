@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import { clientIp, rateLimitResponse, unavailableRateLimitResult } from "./rate-limit";
 
 function reqWith(headers: Record<string, string>): Request {
@@ -6,22 +6,34 @@ function reqWith(headers: Record<string, string>): Request {
 }
 
 describe("clientIp", () => {
-  it("берёт первый хоп из x-forwarded-for", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("берёт доверенный хоп справа, поэтому клиентский префикс не меняет IP", () => {
     const ip = clientIp(reqWith({ "x-forwarded-for": "1.2.3.4, 5.6.7.8, 9.9.9.9" }));
-    expect(ip).toBe("1.2.3.4");
+    expect(ip).toBe("9.9.9.9");
   });
 
   it("одиночный x-forwarded-for", () => {
     expect(clientIp(reqWith({ "x-forwarded-for": "8.8.8.8" }))).toBe("8.8.8.8");
   });
 
-  it("fallback на x-real-ip, когда нет x-forwarded-for", () => {
+  it("не доверяет x-real-ip без явной ingress-настройки", () => {
+    expect(clientIp(reqWith({ "x-real-ip": "9.9.9.9" }))).toBe("unknown");
+    vi.stubEnv("AURORA_TRUST_X_REAL_IP", "true");
     expect(clientIp(reqWith({ "x-real-ip": "9.9.9.9" }))).toBe("9.9.9.9");
   });
 
-  it("приоритет у x-forwarded-for перед x-real-ip", () => {
+  it("приоритет у правого x-forwarded-for перед x-real-ip", () => {
+    vi.stubEnv("AURORA_TRUST_X_REAL_IP", "true");
     const ip = clientIp(reqWith({ "x-forwarded-for": "1.1.1.1", "x-real-ip": "2.2.2.2" }));
     expect(ip).toBe("1.1.1.1");
+  });
+
+  it("поддерживает заданное число доверенных proxy и отбрасывает мусор", () => {
+    vi.stubEnv("AURORA_TRUSTED_PROXY_HOPS", "2");
+    expect(clientIp(reqWith({
+      "x-forwarded-for": "spoofed, 192.0.2.10, 198.51.100.20",
+    }))).toBe("192.0.2.10");
   });
 
   it("нет заголовков — unknown", () => {

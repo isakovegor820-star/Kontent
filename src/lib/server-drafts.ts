@@ -21,7 +21,7 @@ import {
   resolveGenerationDraft,
 } from "./generation-artifacts";
 import type { Post } from "./types";
-import { topicFromSourceText } from "./reference-adaptation";
+import { sanitizeSemanticIntent, topicFromSourceText } from "./reference-adaptation";
 import { resolveLocalSchedule, ScheduleValidationError } from "./timezone-schedule";
 import { recordDraftRevisionInTransaction } from "./editorial-approval";
 import { requireSelectedProjectPermission } from "./project-permissions";
@@ -719,6 +719,11 @@ async function resolveSourceContext(
   const channelId = input.channelIds.length === 1 ? input.channelIds[0] : null;
   if (!source || channelId == null) throw new DraftValidationError("bad_source_context");
   const sourceId = source.id;
+  const requiredTopic = (value: unknown): string => {
+    const topic = sanitizeSemanticIntent(value, 320);
+    if (!topic) throw new DraftValidationError("source_topic_missing");
+    return topic;
+  };
 
   if (input.origin === "trend") {
     if (source.kind !== "trend") throw new DraftValidationError("bad_source_context");
@@ -750,7 +755,7 @@ async function resolveSourceContext(
           kind: "trend",
           id: String(row.id),
           label,
-          topic: topicFromSourceText(canonicalText),
+          topic: requiredTopic(topicFromSourceText(canonicalText)),
           provenance: {
             kind: "radar_result",
             id: String(row.id),
@@ -780,7 +785,7 @@ async function resolveSourceContext(
           kind: "trend",
           id: String(row.id),
           label,
-          topic: topicFromSourceText(row.text),
+          topic: requiredTopic(topicFromSourceText(row.text)),
           provenance: { kind: "trend", id: String(row.id), label },
         },
       };
@@ -808,7 +813,7 @@ async function resolveSourceContext(
         kind: "trend",
         id: String(row.id),
         label,
-        topic: row.topic?.trim() || topicFromSourceText(row.text),
+        topic: requiredTopic(row.topic?.trim() || topicFromSourceText(row.text)),
         ...(row.hook?.trim() ? { hook: row.hook } : {}),
         ...(row.structure?.trim() ? { structure: row.structure } : {}),
         ...(row.why_it_worked?.trim() ? { whyItWorked: row.why_it_worked } : {}),
@@ -845,7 +850,7 @@ async function resolveSourceContext(
         kind: "idea",
         id: String(row.id),
         label: "Идея Авроры",
-        topic: row.topic?.trim() || topicFromSourceText(canonicalText),
+        topic: requiredTopic(row.topic),
         ...(row.hook?.trim() ? { hook: row.hook } : {}),
         ...(row.structure?.trim() ? { structure: row.structure } : {}),
         ...(row.why_it_worked?.trim() ? { whyItWorked: row.why_it_worked } : {}),
@@ -864,10 +869,13 @@ async function resolveSourceContext(
     }
     const row = (await db.query<{
       id: string; text: string; title: string | null; handle: string; tg_msg_id: string | null;
+      topic: string | null;
     }>(
-      `select post.id, post.text, competitor.title, competitor.handle, post.tg_msg_id
+      `select post.id, post.text, competitor.title, competitor.handle, post.tg_msg_id,
+              idea.topic
          from competitor_posts post
          join competitors competitor on competitor.id = post.competitor_id
+         left join content_ideas idea on idea.source_post_id = post.id and idea.user_id = $2
         where post.id = $1 and competitor.user_id = $2 and competitor.channel_id = $3
           and post.text is not null and length(trim(post.text)) > 0`,
       [sourceId, userId, channelId],
@@ -883,7 +891,7 @@ async function resolveSourceContext(
         kind: "reference",
         id: String(row.id),
         label,
-        topic: topicFromSourceText(row.text),
+        topic: requiredTopic(row.topic?.trim() || topicFromSourceText(row.text)),
         provenance: {
           kind: "competitor_post",
           id: String(row.id),
@@ -925,7 +933,7 @@ async function resolveSourceContext(
         kind: "rss",
         id: String(row.id),
         label,
-        topic: row.title?.trim() || topicFromSourceText(canonicalText),
+        topic: requiredTopic(row.title),
         ...(row.source_kind === "legal_opportunity"
           ? { factualGrounding: "curated_legal_source" as const }
           : {}),

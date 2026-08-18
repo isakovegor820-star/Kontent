@@ -9,7 +9,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("./db", () => ({ getPool: () => ({ query: mocks.query }) }));
 vi.mock("next/headers", () => ({ cookies: mocks.cookies }));
 
-import { destroySession, getSessionUser } from "./session";
+import { destroySession, getSessionUser, hashSessionToken } from "./session";
 
 describe("destroySession", () => {
   beforeEach(() => vi.clearAllMocks());
@@ -22,6 +22,11 @@ describe("destroySession", () => {
     const response = NextResponse.json({ ok: true });
 
     await expect(destroySession(request, response)).rejects.toThrow("database unavailable");
+
+    expect(mocks.query).toHaveBeenCalledWith(
+      "delete from sessions where token = $1",
+      [hashSessionToken("opaque-session-token")],
+    );
 
     const cookie = response.headers.get("set-cookie") ?? "";
     expect(cookie).toContain("sid=");
@@ -57,5 +62,14 @@ describe("getSessionUser", () => {
       tg_id: 42,
       vk_id: null,
     });
+    expect(mocks.query.mock.calls[0]?.[1]).toEqual([hashSessionToken("test-session")]);
+  });
+});
+
+describe("session token storage", () => {
+  it("uses a one-way verifier instead of the browser bearer", () => {
+    const raw = "live-browser-cookie";
+    expect(hashSessionToken(raw)).toMatch(/^[a-f0-9]{64}$/u);
+    expect(hashSessionToken(raw)).not.toContain(raw);
   });
 });

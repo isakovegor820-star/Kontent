@@ -32,16 +32,27 @@ export type TopicAlignmentResult = {
   status: "passed" | "failed";
   score: number;
   topic: string;
-  anchorTokens: string[];
-  matchedTokens: string[];
+  semanticAdapter: string;
+  reasonCode: string;
 };
 
-const TOPIC_STOP_WORDS = new Set([
-  "аврора", "авторы", "будет", "были", "быть", "вашего", "выбранного", "данные",
-  "для", "если", "есть", "или", "как", "который", "материал", "можно", "нового",
-  "новый", "поста", "пост", "публикация", "свой", "создай", "создать", "тема", "этого",
-  "этой", "это", "про", "при", "что", "чтобы", "читателя", "канала", "источник",
-]);
+export interface TopicAlignmentAdapter {
+  /** Stable, non-secret classifier identifier. */
+  readonly id: string;
+  checkTopicAlignment(
+    input: {
+      topic: string;
+      readerProblem?: string;
+      semanticGoal?: string;
+      text: string;
+    },
+    options?: { signal?: AbortSignal },
+  ): Promise<{
+    verdict: "aligned" | "misaligned" | "unknown";
+    confidence: number;
+    reasonCode: string;
+  }>;
+}
 
 function cleanText(value: unknown, max: number): string {
   return typeof value === "string"
@@ -71,22 +82,17 @@ export function sanitizeSemanticIntent(value: unknown, max = 320): string {
 
 export function topicFromSourceText(value: unknown): string {
   const source = cleanText(value, 4_000);
-  const candidates = source
-    .split(/\n+|(?<=[.!?])\s+/u)
-    .map((part) => sanitizeSemanticIntent(part, 320))
-    .filter((part) => part.match(/[\p{L}]{3,}/u))
-    .slice(0, 8);
-  const ranked = candidates.map((candidate, index) => {
-    const terms = new Set(
-      (candidate.match(/[\p{L}]{4,}/gu) ?? [])
-        .map((word) => word.toLocaleLowerCase("ru").replace(/ё/gu, "е"))
-        .filter((word) => !TOPIC_STOP_WORDS.has(word)),
-    );
-    const genericQuestion = /^(?:а\s+)?(?:вы|ты|кто|почему|зачем|когда|что)(?!\p{L})/iu.test(candidate);
-    return { candidate, index, score: terms.size - (genericQuestion ? 2 : 0) };
-  });
-  ranked.sort((left, right) => right.score - left.score || left.index - right.index);
-  return ranked[0]?.candidate || "Тема выбранного материала";
+  if (!source) return "";
+  const nonEmptyLines = source.split(/\n+/u).map((line) => line.trim()).filter(Boolean);
+  const sentences = source.split(/(?<=[.!?])\s+/u).map((sentence) => sentence.trim()).filter(Boolean);
+  // Never infer a subject by ranking arbitrary sentences or treating a hook as a title.
+  // Only a source that consists entirely of one short statement is unambiguous enough;
+  // everything else needs server-owned structured topic metadata and fails closed without it.
+  const bounded = nonEmptyLines.length === 1 && sentences.length === 1 ? sentences[0] : "";
+  const candidate = sanitizeSemanticIntent(bounded, 320);
+  const words = candidate.match(/[\p{L}]{3,}/gu) ?? [];
+  const genericHook = /^(?:а\s+)?(?:вы|ты|кто|почему|зачем|когда|что|знаете\s+ли)(?!\p{L})/iu.test(candidate);
+  return !genericHook && words.length >= 2 && words.length <= 24 ? candidate : "";
 }
 
 function adaptationKind(draft: ServerDraft): ReferenceAdaptationKind | null {
@@ -109,8 +115,10 @@ export function referenceAdaptationContextFromDraft(draft: ServerDraft): Referen
   const sourceRef = draft.source_ref;
   if (!kind || !sourceText || !sourceRef) return null;
 
-  const explicitTopic = sanitizeSemanticIntent(sourceRef.topic, 320);
-  const topic = explicitTopic || topicFromSourceText(sourceText);
+  // The source resolver must persist an explicit server-owned subject. Re-deriving it
+  // later from arbitrary body sentences risks validating against a substituted topic.
+  const topic = sanitizeSemanticIntent(sourceRef.topic, 320);
+  if (!topic) return null;
   const readerProblem = sanitizeSemanticIntent(sourceRef.readerProblem, 500) || undefined;
   const semanticGoal = sanitizeSemanticIntent(sourceRef.semanticGoal, 500) || undefined;
   const hook = cleanText(sourceRef.hook, 600) || undefined;
@@ -163,81 +171,56 @@ export function buildReferenceAdaptationTask(
   ].filter(Boolean).join("\n\n");
 }
 
-function topicStem(word: string): string {
-  const normalized = word.toLocaleLowerCase("ru").replace(/ё/gu, "е");
-  const stem = normalized.replace(
-    /(?:иями|ями|ами|ого|ему|ому|ими|ыми|ая|яя|ое|ее|ие|ые|ий|ый|ой|ую|юю|ов|ев|ах|ях|ам|ям|ом|ем|а|я|ы|и|у|ю|е|о)$/u,
-    "",
-  );
-  return stem.length >= 4 ? stem : normalized;
-}
+const SAFE_ADAPTER_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/u;
+const SAFE_REASON_CODE = /^[a-z0-9][a-z0-9._-]{0,79}$/u;
 
-const TOPIC_CONCEPTS: Array<{ concept: string; stems: string[] }> = [
-  { concept: "concept:enforcement", stems: ["исполнительск", "взыскан", "пристав", "исполнен"] },
-  { concept: "concept:protection", stems: ["иммунитет", "защит", "неприкосновен", "изъят"] },
-  { concept: "concept:housing", stems: ["жиль", "квартир", "дом"] },
-  { concept: "concept:sole", stems: ["единственн", "един"] },
-  { concept: "concept:contract", stems: ["договор", "контракт", "соглашен"] },
-  { concept: "concept:supply", stems: ["поставк", "поставщ", "товар"] },
-];
-
-function topicConcept(stem: string): string {
-  return TOPIC_CONCEPTS.find((group) => group.stems.some((alias) => (
-    stem.startsWith(alias) || alias.startsWith(stem)
-  )))?.concept ?? stem;
-}
-
-function alignmentTokens(value: string): string[] {
-  const result: string[] = [];
-  for (const word of value.match(/[\p{L}]{4,}/gu) ?? []) {
-    const normalized = word.toLocaleLowerCase("ru").replace(/ё/gu, "е");
-    if (TOPIC_STOP_WORDS.has(normalized)) continue;
-    const stem = topicConcept(topicStem(normalized));
-    if (!result.includes(stem)) result.push(stem);
-  }
-  return result.slice(0, 12);
-}
-
-/** Independent topical guard. It never reads or promotes factual claims from sourceText. */
-export function validateTopicAlignment(
+/**
+ * Independent semantic guard. Topic text is intent, never factual evidence. A missing,
+ * failed or malformed classifier cannot produce a publishable result.
+ */
+export async function validateTopicAlignment(
   text: string,
   context: ReferenceAdaptationContext,
-): TopicAlignmentResult {
-  const anchorTokens = alignmentTokens(context.topic);
-  const outputTokens = new Set(alignmentTokens(text));
-  const matchedTokens = anchorTokens.filter((anchor) => (
-    outputTokens.has(anchor)
-    || [...outputTokens].some((candidate) => candidate.startsWith(anchor) || anchor.startsWith(candidate))
-  ));
-  const score = anchorTokens.length ? matchedTokens.length / anchorTokens.length : 0;
-  const minimumMatches = Math.min(2, anchorTokens.length);
-  const minimumScore = anchorTokens.length >= 5 ? 0.25 : 0.4;
-  const normalizedText = text.toLocaleLowerCase("ru").replace(/ё/gu, "е");
-  const normalizedTopic = context.topic.toLocaleLowerCase("ru").replace(/ё/gu, "е");
-  const textWithoutExactTopic = normalizedText.includes(normalizedTopic)
-    ? normalizedText.replace(normalizedTopic, " ")
-    : normalizedText;
-  const remainingTokens = alignmentTokens(textWithoutExactTopic);
-  const remainingMatches = anchorTokens.filter((anchor) => remainingTokens.includes(anchor));
-  // Appending the exact topic as a label to an unrelated post is not semantic alignment.
-  // A real post must develop at least one subject concept outside that pasted phrase.
-  const exactTopicIndex = normalizedText.indexOf(normalizedTopic);
-  const prefixTokens = exactTopicIndex > 0
-    ? alignmentTokens(normalizedText.slice(0, exactTopicIndex))
-    : [];
-  const exactPhraseStuffing = exactTopicIndex > 0
-    && prefixTokens.length >= 3
-    && remainingMatches.length === 0;
-  const passed = anchorTokens.length > 0
-    && matchedTokens.length >= minimumMatches
-    && score >= minimumScore
-    && !exactPhraseStuffing;
+  options: { adapter?: TopicAlignmentAdapter | null; signal?: AbortSignal } = {},
+): Promise<TopicAlignmentResult> {
+  const adapter = options.adapter ?? null;
+  const adapterId = adapter && SAFE_ADAPTER_ID.test(adapter.id) ? adapter.id : "unavailable";
+  const failed = (reasonCode: string): TopicAlignmentResult => ({
+    status: "failed",
+    score: 0,
+    topic: context.topic,
+    semanticAdapter: adapterId,
+    reasonCode,
+  });
+  if (!adapter) return failed("semantic_check_unavailable");
+  let result;
+  try {
+    result = await adapter.checkTopicAlignment({
+      topic: context.topic,
+      ...(context.readerProblem ? { readerProblem: context.readerProblem } : {}),
+      ...(context.semanticGoal ? { semanticGoal: context.semanticGoal } : {}),
+      text: cleanText(text, 16_384),
+    }, { signal: options.signal });
+  } catch {
+    return failed("semantic_check_failed");
+  }
+  if (
+    !result
+    || !["aligned", "misaligned", "unknown"].includes(result.verdict)
+    || !Number.isFinite(result.confidence)
+    || result.confidence < 0
+    || result.confidence > 1
+    || !SAFE_REASON_CODE.test(result.reasonCode)
+  ) return failed("semantic_check_malformed");
+  // Unknown and low-confidence verdicts fail closed. The classifier is instructed that
+  // merely pasting the topic label into unrelated text is misalignment.
+  const passed = result.verdict === "aligned" && result.confidence >= 0.8;
   return {
     status: passed ? "passed" : "failed",
-    score: Number(score.toFixed(3)),
+    score: Number(result.confidence.toFixed(3)),
     topic: context.topic,
-    anchorTokens,
-    matchedTokens,
+    semanticAdapter: adapterId,
+    reasonCode: result.reasonCode,
   };
 }
 

@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   lookupTerminalGenerationFailure: vi.fn(),
   stageGenerationArtifact: vi.fn(),
   recordAiProviderAttempt: vi.fn(),
+  topicAlignment: vi.fn(),
 }));
 
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
@@ -58,6 +59,12 @@ vi.mock("@/lib/ai-attempt-budget", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/ai-attempt-budget")>();
   return { ...actual, recordAiProviderAttempt: mocks.recordAiProviderAttempt };
 });
+vi.mock("@/lib/ai-semantic-adapter.mjs", () => ({
+  createConfiguredSemanticAdapter: () => ({
+    id: "route-test-topic-semantic-v1",
+    checkTopicAlignment: mocks.topicAlignment,
+  }),
+}));
 
 import { generationDeadlines } from "@/lib/ai-generation-deadlines";
 import { presetQuality } from "@/lib/post-quality.mjs";
@@ -82,6 +89,7 @@ function request(channelId = 42) {
   return new NextRequest("http://localhost/api/ai/generate", {
     method: "POST",
     headers: {
+      origin: "http://localhost",
       "content-type": "application/json",
       "idempotency-key": "route_test_1234",
     },
@@ -93,6 +101,7 @@ function studioRequest() {
   return new NextRequest("http://localhost/api/ai/generate", {
     method: "POST",
     headers: {
+      origin: "http://localhost",
       "content-type": "application/json",
       "idempotency-key": "studio_stream_test_1",
     },
@@ -117,6 +126,7 @@ function studioFactCheckOffRequest() {
   return new NextRequest("http://localhost/api/ai/generate", {
     method: "POST",
     headers: {
+      origin: "http://localhost",
       "content-type": "application/json",
       "idempotency-key": "studio_fact_check_off_1",
     },
@@ -141,6 +151,7 @@ function studioSparseLegalBriefRequest() {
   return new NextRequest("http://localhost/api/ai/generate", {
     method: "POST",
     headers: {
+      origin: "http://localhost",
       "content-type": "application/json",
       "idempotency-key": "studio_sparse_legal_brief_1",
     },
@@ -165,6 +176,7 @@ function editorialRequest() {
   return new NextRequest("http://localhost/api/ai/generate", {
     method: "POST",
     headers: {
+      origin: "http://localhost",
       "content-type": "application/json",
       "idempotency-key": "editorial_stream_test_1",
     },
@@ -190,6 +202,7 @@ function balancedStudioRequest() {
   return new NextRequest("http://localhost/api/ai/generate", {
     method: "POST",
     headers: {
+      origin: "http://localhost",
       "content-type": "application/json",
       "idempotency-key": "balanced_single_pass_test_1",
     },
@@ -214,6 +227,7 @@ function maximumStudioRequest() {
   return new NextRequest("http://localhost/api/ai/generate", {
     method: "POST",
     headers: {
+      origin: "http://localhost",
       "content-type": "application/json",
       "idempotency-key": "maximum_studio_ready_post_1",
     },
@@ -240,6 +254,7 @@ function reviewableBlockedEditorialRequest() {
   return new NextRequest("http://localhost/api/ai/generate", {
     method: "POST",
     headers: {
+      origin: "http://localhost",
       "content-type": "application/json",
       "idempotency-key": "editorial_reviewable_blocked_1",
     },
@@ -265,6 +280,7 @@ function studioReferenceRequest(version = 3) {
   return new NextRequest("http://localhost/api/ai/generate", {
     method: "POST",
     headers: {
+      origin: "http://localhost",
       "content-type": "application/json",
       "idempotency-key": "studio_reference_test_1",
     },
@@ -335,6 +351,7 @@ function trendsRequest() {
   return new NextRequest("http://localhost/api/ai/generate", {
     method: "POST",
     headers: {
+      origin: "http://localhost",
       "content-type": "application/json",
       "idempotency-key": "trends_stream_test_1",
     },
@@ -401,6 +418,11 @@ describe("POST /api/ai/generate prerequisites", () => {
     mocks.beginGenerationOperation.mockResolvedValue({ id: 301, state: "created" });
     mocks.failGenerationOperation.mockResolvedValue(true);
     mocks.recordAiProviderAttempt.mockResolvedValue({ estimatedCostMicrousd: 0 });
+    mocks.topicAlignment.mockImplementation(async ({ text }: { text: string }) => (
+      /(?:конференц|билет|места в зале)/iu.test(text)
+        ? { verdict: "misaligned", confidence: 0.99, reasonCode: "unrelated_event" }
+        : { verdict: "aligned", confidence: 0.96, reasonCode: "subject_developed" }
+    ));
     mocks.stageGenerationArtifact.mockImplementation(async ({ text, validation }) => ({
       id: 501,
       text,
@@ -1286,6 +1308,7 @@ describe("POST /api/ai/generate prerequisites", () => {
     const response = await POST(new NextRequest("http://localhost/api/ai/generate", {
       method: "POST",
       headers: {
+        origin: "http://localhost",
         "content-type": "application/json",
         "idempotency-key": "studio_qwen_think_leak_regression_1",
       },

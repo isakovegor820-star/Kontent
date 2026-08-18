@@ -80,7 +80,11 @@ function configuration(env) {
   if (profile !== "web" && profile !== "full") {
     throw new DeploymentSmokeError("invalid_deployment_smoke_profile");
   }
-  return { baseUrl, profile };
+  const readinessToken = String(env.AURORA_READINESS_TOKEN || "");
+  if (readinessToken.length < 32) {
+    throw new DeploymentSmokeError("missing_readiness_token");
+  }
+  return { baseUrl, profile, readinessToken };
 }
 
 async function boundedText(response, limit) {
@@ -112,7 +116,7 @@ async function boundedText(response, limit) {
   return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
 }
 
-async function request(fetchImpl, url, accept, maxBytes) {
+async function request(fetchImpl, url, accept, maxBytes, extraHeaders = {}) {
   let response;
   try {
     response = await fetchImpl(url, {
@@ -120,6 +124,7 @@ async function request(fetchImpl, url, accept, maxBytes) {
       headers: {
         accept,
         "user-agent": "aurora-deployment-smoke/1",
+        ...extraHeaders,
       },
       redirect: "manual",
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
@@ -247,10 +252,16 @@ export async function runDeploymentSmoke({
   logger = console,
   now = new Date(),
 } = {}) {
-  const { baseUrl, profile } = configuration(env);
+  const { baseUrl, profile, readinessToken } = configuration(env);
   const [health, readiness, ...htmlPages] = await Promise.all([
     request(fetchImpl, new URL("/api/health", baseUrl), "application/json", MAX_JSON_BYTES),
-    request(fetchImpl, new URL("/api/readiness", baseUrl), "application/json", MAX_JSON_BYTES),
+    request(
+      fetchImpl,
+      new URL("/api/readiness", baseUrl),
+      "application/json",
+      MAX_JSON_BYTES,
+      { authorization: `Bearer ${readinessToken}` },
+    ),
     ...HTML_PATHS.map((path) => request(fetchImpl, new URL(path, baseUrl), "text/html", MAX_HTML_BYTES)),
   ]);
   validateHealth(health);

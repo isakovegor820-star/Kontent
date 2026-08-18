@@ -40,13 +40,18 @@ const input = (overrides: Record<string, unknown> = {}) => ({
 });
 
 describe("AI draft review policy", () => {
-  it("allows every immutable terminal result regardless of internal validation score", () => {
+  it("allows only a passed immutable result and keeps explicit blockers quarantined", () => {
     expect(draftReviewDecision(input({ ai_validation: validation("passed") }))).toBe("allowed");
-    expect(draftReviewDecision(input({ ai_validation: validation("blocked") }))).toBe("allowed");
+    expect(draftReviewDecision(input({ ai_validation: validation("blocked") }))).toBe("blocked");
     const reviewableBlocked = { ...validation("blocked"), requiresReview: true };
     expect(normalizeDraftAiValidation(reviewableBlocked)).toEqual(reviewableBlocked);
-    expect(draftReviewDecision(input({ ai_validation: reviewableBlocked }))).toBe("allowed");
-    expect(composerAiReviewState(input({ ai_validation: reviewableBlocked }))).toBe("none");
+    const current = {
+      policy_version: 1 as const,
+      draft_version: 4,
+      attested_at: "2026-08-02T10:05:00.000Z",
+    };
+    expect(draftReviewDecision(input({ ai_validation: reviewableBlocked, human_review: current }))).toBe("blocked");
+    expect(composerAiReviewState(input({ ai_validation: reviewableBlocked, human_review: current }))).toBe("blocked");
   });
 
   it("accepts human review only for the exact current draft version", () => {

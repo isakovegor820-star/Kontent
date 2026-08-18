@@ -10,10 +10,23 @@
 import { NextRequest, NextResponse } from "next/server";
 import { findOrCreateUser } from "@/lib/users";
 import { createSession } from "@/lib/session";
+import { checkRateLimit, clientIp, rateLimitResponse } from "@/lib/rate-limit";
+import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 
 export const runtime = "nodejs";
 
 export async function POST(req: NextRequest) {
+  if (!hasTrustedMutationOrigin(req)) {
+    return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
+  }
+  const ipLimit = await checkRateLimit(
+    `social-login:vk:ip:${clientIp(req)}`,
+    10,
+    15 * 60,
+    { failureMode: "closed" },
+  );
+  if (!ipLimit.allowed) return rateLimitResponse(ipLimit);
+
   const appId = process.env.VK_APP_ID;
   const secret = process.env.VK_APP_SECRET;
   if (!appId || !secret) {
@@ -28,7 +41,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "bad_request" }, { status: 400 });
   }
   const code = typeof data.code === "string" ? data.code : "";
-  if (!code) {
+  const deviceId = typeof data.device_id === "string" ? data.device_id.trim() : "";
+  const codeVerifier = typeof data.code_verifier === "string" ? data.code_verifier.trim() : "";
+  if (!code || code.length > 2_048 || !deviceId || deviceId.length > 512
+    || codeVerifier.length < 43 || codeVerifier.length > 128) {
     return NextResponse.json({ ok: false, error: "no_code" }, { status: 422 });
   }
 
@@ -39,8 +55,8 @@ export async function POST(req: NextRequest) {
       code,
       client_id: appId,
       client_secret: secret,
-      device_id: typeof data.device_id === "string" ? data.device_id : "",
-      code_verifier: typeof data.code_verifier === "string" ? data.code_verifier : "",
+      device_id: deviceId,
+      code_verifier: codeVerifier,
     });
     const tokenRes = await fetch("https://id.vk.com/oauth2/auth", {
       method: "POST",
@@ -61,10 +77,22 @@ export async function POST(req: NextRequest) {
     }
 
     const vk_id = Number(tokenData.user_id);
+    if (!Number.isSafeInteger(vk_id) || vk_id <= 0) {
+      return NextResponse.json({ ok: false, error: "vk_exchange_failed" }, { status: 401 });
+    }
+    const accountLimit = await checkRateLimit(
+      `social-login:vk:account:${vk_id}`,
+      5,
+      15 * 60,
+      { failureMode: "closed" },
+    );
+    if (!accountLimit.allowed) return rateLimitResponse(accountLimit);
     const { id } = await findOrCreateUser({ vk_id, name: `VK ${vk_id}` });
 
     const res = NextResponse.json({ ok: true });
-    await createSession(res, id, req.headers.get("user-agent"));
+    if (!await createSession(res, id, req.headers.get("user-agent"))) {
+      return NextResponse.json({ ok: false, error: "session_creation_failed" }, { status: 503 });
+    }
     return res;
   } catch (err) {
     console.error("[/api/auth/vk] request failed", {

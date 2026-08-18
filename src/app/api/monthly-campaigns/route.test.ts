@@ -41,7 +41,7 @@ import { POST as createPlan } from "./[campaignId]/plans/route";
 function request(path: string, method: string, body?: unknown, headers: Record<string, string> = {}) {
   return new NextRequest(`https://aurora.test${path}`, {
     method,
-    headers: { "content-type": "application/json", ...headers },
+    headers: { origin: "https://aurora.test", "content-type": "application/json", ...headers },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 }

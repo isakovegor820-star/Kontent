@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   probeDatabaseAndSchema: vi.fn(),
@@ -21,12 +22,18 @@ vi.mock("@/lib/readiness-probes", () => ({
 vi.mock("@/lib/ai-provider-health", () => ({
   aiProviderHealthSnapshot: mocks.aiProviderHealthSnapshot,
 }));
+vi.mock("@/lib/session", () => ({ getSessionUser: vi.fn(async () => null) }));
 
 import { GET } from "./route";
 
 describe("GET /api/readiness", () => {
+  const operatorRequest = () => new NextRequest("http://localhost/api/readiness", {
+    headers: { authorization: `Bearer ${"r".repeat(32)}` },
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubEnv("AURORA_READINESS_TOKEN", "r".repeat(32));
     mocks.probeDatabaseAndSchema.mockResolvedValue({
       database: "up",
       tokenEncryption: "up",
@@ -68,7 +75,7 @@ describe("GET /api/readiness", () => {
       publicationWorker: "down",
       telegramPolling: "up",
     });
-    const response = await GET();
+    const response = await GET(operatorRequest());
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       status: "degraded",
@@ -91,7 +98,7 @@ describe("GET /api/readiness", () => {
         reasons: ["schema_not_checked:database_unreachable"],
       },
     });
-    const response = await GET();
+    const response = await GET(operatorRequest());
     expect(response.status).toBe(503);
     await expect(response.json()).resolves.toMatchObject({
       status: "not_ready",
@@ -112,7 +119,7 @@ describe("GET /api/readiness", () => {
         reasons: ["capability_missing:table:drafts"],
       },
     });
-    const response = await GET();
+    const response = await GET(operatorRequest());
     expect(response.status).toBe(503);
     await expect(response.json()).resolves.toMatchObject({
       processAlive: true,
@@ -126,7 +133,7 @@ describe("GET /api/readiness", () => {
 
   it("keeps web usable but reports recovery degraded when mail is unconfigured", async () => {
     mocks.probeMailDeliveryConfiguration.mockReturnValue("not_configured");
-    const response = await GET();
+    const response = await GET(operatorRequest());
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       status: "degraded",
@@ -135,5 +142,13 @@ describe("GET /api/readiness", () => {
       passwordRecoveryReady: false,
       reasons: ["mail_delivery_not_configured"],
     });
+  });
+
+  it("does not run dependency probes for a public request", async () => {
+    const response = await GET(new NextRequest("http://localhost/api/readiness"));
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toEqual({ error: "unauthorized" });
+    expect(mocks.probeDatabaseAndSchema).not.toHaveBeenCalled();
+    expect(mocks.probeRedisAndPublicationWorker).not.toHaveBeenCalled();
   });
 });
