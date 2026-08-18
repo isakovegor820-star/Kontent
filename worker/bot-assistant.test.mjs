@@ -60,7 +60,7 @@ describe("Telegram persistent menu", () => {
       is_persistent: true,
       input_field_placeholder: "Выбери действие",
     });
-    expect(menu.keyboard).toHaveLength(3);
+    expect(menu.keyboard).toHaveLength(4);
     expect(menu.keyboard.every((row) => row.length === 2)).toBe(true);
     expect(new Set(labels).size).toBe(Object.keys(BOT_REPLY_ACTIONS).length);
     expect(labels).toEqual(Object.values(BOT_REPLY_ACTIONS));

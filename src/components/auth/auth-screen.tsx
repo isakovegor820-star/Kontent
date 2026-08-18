@@ -26,9 +26,14 @@ function validateEmail(raw: string): string | undefined {
 }
 
 function signedInDestination() {
-  return hasPendingProjectInvite(typeof window === "undefined" ? null : window.sessionStorage)
-    ? "/invite"
-    : "/app/calendar";
+  if (hasPendingProjectInvite(typeof window === "undefined" ? null : window.sessionStorage)) {
+    return "/invite";
+  }
+  if (typeof window !== "undefined") {
+    const requested = new URLSearchParams(window.location.search).get("next");
+    if (requested === "/bot/connect") return requested;
+  }
+  return "/app/calendar";
 }
 
 export function AuthScreen({ mode }: { mode: AuthMode }) {

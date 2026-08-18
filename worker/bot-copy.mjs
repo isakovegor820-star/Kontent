@@ -9,7 +9,9 @@ export const BOT_HELP_TEXT =
   "• Согласовать — одобрить текст или вернуть его с комментарием\n" +
   "• Проверить проблемы — увидеть только то, что требует решения\n" +
   "• Показать результаты — сравнить последние посты с обычным уровнем\n" +
-  "• Ещё — календарь, аналитика, план, тренды, вопросы клиентов и действие «Настроить уведомления»\n\n" +
+  "• Подключение — проверить аккаунт, приём команд, публикации и каналы\n" +
+  "• Уведомления — выбрать, какие события присылать\n" +
+  "• Ещё — календарь, аналитика, план, тренды и вопросы клиентов\n\n" +
   "Ничего не публикуется автоматически: перед отправкой я всегда показываю точный текст и прошу подтверждение.";
 
 const NETWORK_LABEL = {
@@ -55,6 +57,81 @@ export function formatBotMenu(input) {
     capability,
     "",
     "Выбери действие кнопкой ниже.",
+  ].join("\n");
+}
+
+function runtimeState(value, kind) {
+  if (value === "up") return kind === "commands" ? "работает" : "работают";
+  if (value === "conflict") return "ошибка — команды принимает второй процесс";
+  if (value === "not_configured") return kind === "commands" ? "не настроен" : "не настроены";
+  return kind === "commands" ? "нет свежего подтверждения" : "временно недоступны";
+}
+
+export function formatBotConnectionStatus(input) {
+  const projectName = input?.projectName ? String(input.projectName) : "не выбран";
+  const activeChannels = count(input?.activeChannels);
+  const reconnectChannels = count(input?.reconnectChannels);
+  const channelSummary = reconnectChannels > 0
+    ? `подключено — ${activeChannels}; нужно переподключить — ${reconnectChannels}`
+    : activeChannels > 0
+      ? `подключено — ${activeChannels}`
+      : "нет подключённых каналов";
+  const notificationState = input?.notificationState === "off"
+    ? "выключены"
+    : input?.notificationState === "partial"
+      ? "включены частично"
+      : "включены";
+  return [
+    "✦ Подключение к Авроре",
+    "",
+    `Аккаунт: ${String(input?.accountLabel || "подключён")}`,
+    `Приём команд: ${runtimeState(input?.commandState, "commands")}`,
+    `Публикации: ${runtimeState(input?.publicationState, "publication")}`,
+    `Проект: ${projectName}`,
+    `Каналы: ${channelSummary}`,
+    `Уведомления: ${notificationState}`,
+    `Последняя проверка: ${String(input?.checkedAt || "только что")}`,
+    "",
+    input?.commandState === "conflict"
+      ? "Чтобы команды не пропадали, оставь только один процесс с этим токеном Telegram."
+      : "Выбери действие ниже.",
+  ].join("\n");
+}
+
+export function formatBotConnectionOnboarding(input) {
+  const disconnected = input?.disconnected === true;
+  const available = input?.available !== false;
+  return [
+    disconnected ? "Чат отключён от Авроры" : "✦ Подключение к Авроре",
+    "",
+    disconnected
+      ? "Команды и уведомления в этом чате остановлены. Проекты и публикации сохранены."
+      : "Этот чат пока не связан с аккаунтом Авроры.",
+    "",
+    available
+      ? "Нажми «Подключить аккаунт», войди в Аврору и подтверди этот чат. Ссылка действует 15 минут."
+      : "Подключение из Telegram пока недоступно. Открой настройки Авроры и выбери «Подключить бота».",
+  ].join("\n");
+}
+
+export function formatBotProjectPicker(input) {
+  const projects = Array.isArray(input?.projects) ? input.projects : [];
+  if (projects.length === 0) {
+    return "У тебя пока нет доступных проектов. Создай проект в Авроре и повтори проверку.";
+  }
+  return [
+    "Проект для команд Telegram",
+    "",
+    "Выбери проект. Новые команды, черновики и уведомления будут относиться к нему.",
+    projects.length > 10 ? "Показаны первые 10 проектов." : "",
+  ].filter(Boolean).join("\n");
+}
+
+export function formatBotDisconnectConfirmation() {
+  return [
+    "Отключить этот чат?",
+    "",
+    "Команды и уведомления в Telegram остановятся. Проекты, каналы и публикации останутся в Авроре.",
   ].join("\n");
 }
 

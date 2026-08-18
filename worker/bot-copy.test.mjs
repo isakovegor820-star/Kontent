@@ -6,6 +6,9 @@ import {
   formatBotCalendar,
   formatBotApprovals,
   formatBotClientInbox,
+  formatBotConnectionOnboarding,
+  formatBotConnectionStatus,
+  formatBotDisconnectConfirmation,
   formatBotDraftPreview,
   formatBotMenu,
   formatBotNotificationSettings,
@@ -51,8 +54,34 @@ describe("Telegram daily control summary", () => {
     expect(BOT_HELP_TEXT).toContain("Используй кнопки под полем ввода");
     expect(BOT_HELP_TEXT).toContain("Показать сегодня");
     expect(BOT_HELP_TEXT).toContain("Создать пост");
-    expect(BOT_HELP_TEXT).toContain("Настроить уведомления");
+    expect(BOT_HELP_TEXT).toContain("Уведомления");
     expect(BOT_HELP_TEXT).not.toContain("/menu");
+  });
+});
+
+describe("Telegram connection center copy", () => {
+  it("names every independent connection state in plain language", () => {
+    const message = formatBotConnectionStatus({
+      accountLabel: "eg***@example.com",
+      commandState: "conflict",
+      publicationState: "up",
+      projectName: "Аврора",
+      activeChannels: 2,
+      reconnectChannels: 1,
+      notificationState: "partial",
+      checkedAt: "14:32",
+    });
+    expect(message).toContain("Аккаунт: eg***@example.com");
+    expect(message).toContain("Приём команд: ошибка — команды принимает второй процесс");
+    expect(message).toContain("Публикации: работают");
+    expect(message).toContain("Каналы: подключено — 2; нужно переподключить — 1");
+    expect(message).toContain("Уведомления: включены частично");
+  });
+
+  it("explains linking and disconnection consequences without relying on color", () => {
+    expect(formatBotConnectionOnboarding({ available: true })).toContain("Ссылка действует 15 минут");
+    expect(formatBotConnectionOnboarding({ disconnected: true })).toContain("Проекты и публикации сохранены");
+    expect(formatBotDisconnectConfirmation()).toContain("Команды и уведомления в Telegram остановятся");
   });
 });
 

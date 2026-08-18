@@ -71,6 +71,9 @@ describe("telegram polling heartbeat", () => {
       source.indexOf("function parseMonthlyCampaignRegenerationJson"),
     );
     expect(polling).toContain('const r = await tg("getUpdates"');
+    expect(polling.indexOf("ensureTelegramPollingLease()")).toBeLessThan(
+      polling.indexOf('const r = await tg("getUpdates"'),
+    );
     expect(polling.indexOf("if (!r?.ok)")).toBeLessThan(
       polling.indexOf("await refreshTelegramPollingHeartbeat();"),
     );

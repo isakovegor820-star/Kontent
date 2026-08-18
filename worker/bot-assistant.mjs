@@ -14,6 +14,8 @@ export const BOT_REPLY_ACTIONS = Object.freeze({
   approvals: "Согласовать",
   problems: "Проверить проблемы",
   results: "Показать результаты",
+  connection: "Подключение",
+  notifications: "Уведомления",
   more: "Ещё",
 });
 
@@ -35,7 +37,8 @@ export function botReplyKeyboard() {
     keyboard: [
       [{ text: BOT_REPLY_ACTIONS.today }, { text: BOT_REPLY_ACTIONS.create }],
       [{ text: BOT_REPLY_ACTIONS.approvals }, { text: BOT_REPLY_ACTIONS.problems }],
-      [{ text: BOT_REPLY_ACTIONS.results }, { text: BOT_REPLY_ACTIONS.more }],
+      [{ text: BOT_REPLY_ACTIONS.results }, { text: BOT_REPLY_ACTIONS.connection }],
+      [{ text: BOT_REPLY_ACTIONS.notifications }, { text: BOT_REPLY_ACTIONS.more }],
     ],
     resize_keyboard: true,
     is_persistent: true,

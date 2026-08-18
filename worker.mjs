@@ -205,11 +205,24 @@ import {
   temporaryTelegramVerification,
 } from "./worker/telegram-reconciliation.mjs";
 import {
+  PUBLICATION_HEARTBEAT_KEY,
   PUBLICATION_HEARTBEAT_INTERVAL_MS,
+  parsePublicationHeartbeat,
   publicationHeartbeatWrite,
   workerModeHasPublication,
 } from "./worker/publication-heartbeat.mjs";
-import { telegramPollingHeartbeatWrite } from "./worker/telegram-polling-heartbeat.mjs";
+import {
+  TELEGRAM_POLLING_HEARTBEAT_KEY,
+  parseTelegramPollingHeartbeat,
+  telegramPollingHeartbeatWrite,
+} from "./worker/telegram-polling-heartbeat.mjs";
+import {
+  TELEGRAM_POLLING_LEASE_RENEW_MS,
+  acquireTelegramPollingLease,
+  createTelegramPollingLeaseOwner,
+  releaseTelegramPollingLease,
+  renewTelegramPollingLease,
+} from "./worker/telegram-polling-lease.mjs";
 import {
   duePublicationRevision,
   publicationGraceMs,
@@ -228,6 +241,11 @@ import {
 import { assertWorkerAiCallPolicy } from "./worker/ai-call-policy.mjs";
 import { loadBotIdeaStyleSamples } from "./worker/bot-idea-context.mjs";
 import { retryFailedPostFromBot } from "./worker/bot-publication-retry.mjs";
+import {
+  createBotConnectionSession,
+  disconnectBotChat,
+  maskBotAccountEmail,
+} from "./src/lib/bot-connection.mjs";
 import {
   decideBotApproval,
   listBotApprovalItems,
@@ -256,11 +274,15 @@ import {
   formatBotCalendar,
   formatBotApprovals,
   formatBotClientInbox,
+  formatBotConnectionOnboarding,
+  formatBotConnectionStatus,
+  formatBotDisconnectConfirmation,
   formatBotDraftPreview,
   formatBotIntakePrompt,
   formatBotMenu,
   formatBotNotificationSettings,
   formatBotProblems,
+  formatBotProjectPicker,
   formatBotResults,
   formatBotToday,
 } from "./worker/bot-copy.mjs";
@@ -2384,8 +2406,42 @@ worker?.on("failed", (job, err) =>
 // ============================================================================
 
 const BOT_POLL = !AUTOPILOT_ONLY && !MEDIA_ONLY && !PUBLICATION_ONLY;
+const TELEGRAM_POLLING_OWNER = BOT_POLL ? createTelegramPollingLeaseOwner() : null;
+let telegramPollingLeaseHeld = false;
+let telegramPollingLeaseTimer = null;
 if (BOT_POLL && process.env.TG_WEBHOOK_URL) {
   console.warn("[bot] TG_WEBHOOK_URL игнорируется: webhook ingress не реализован, продолжаю long polling");
+}
+
+function startTelegramPollingLeaseRenewal() {
+  if (telegramPollingLeaseTimer || !TELEGRAM_POLLING_OWNER) return;
+  telegramPollingLeaseTimer = setInterval(() => {
+    renewTelegramPollingLease(connection, TELEGRAM_POLLING_OWNER)
+      .then((renewed) => {
+        if (!renewed) telegramPollingLeaseHeld = false;
+      })
+      .catch(() => {
+        telegramPollingLeaseHeld = false;
+      });
+  }, TELEGRAM_POLLING_LEASE_RENEW_MS);
+  telegramPollingLeaseTimer.unref();
+}
+
+function stopTelegramPollingLeaseRenewal() {
+  if (!telegramPollingLeaseTimer) return;
+  clearInterval(telegramPollingLeaseTimer);
+  telegramPollingLeaseTimer = null;
+}
+
+async function ensureTelegramPollingLease() {
+  if (telegramPollingLeaseHeld) return true;
+  if (!TELEGRAM_POLLING_OWNER) return false;
+  telegramPollingLeaseHeld = await acquireTelegramPollingLease(
+    connection,
+    TELEGRAM_POLLING_OWNER,
+  );
+  if (telegramPollingLeaseHeld) startTelegramPollingLeaseRenewal();
+  return telegramPollingLeaseHeld;
 }
 
 async function refreshTelegramPollingHeartbeat(state = "up") {
@@ -2401,6 +2457,9 @@ async function refreshTelegramPollingHeartbeat(state = "up") {
 /** Что бот умеет — показывается в меню Telegram по кнопке «/». */
 const BOT_COMMANDS = [
   { command: "menu", description: "Открыть главный экран" },
+  { command: "status", description: "Проверить подключение" },
+  { command: "connect", description: "Подключить аккаунт Авроры" },
+  { command: "projects", description: "Выбрать текущий проект" },
   { command: "today", description: "Публикации и задачи на сегодня" },
   { command: "create", description: "Создать новую публикацию" },
   { command: "approvals", description: "Тексты на согласовании" },
@@ -2411,6 +2470,7 @@ const BOT_COMMANDS = [
   { command: "plan", description: "План недели от автопилота" },
   { command: "trends", description: "Что зашло у конкурентов" },
   { command: "notifications", description: "Настроить уведомления" },
+  { command: "disconnect", description: "Отключить этот чат" },
   { command: "cancel", description: "Закрыть текущий диалог" },
   { command: "help", description: "Что я умею" },
 ];
@@ -2423,7 +2483,10 @@ async function botProject(userId, explicitProjectId = null) {
       `select project.id, project.name, project.timezone, member.role,
               count(channel.id) filter (
                 where channel.is_active = true and channel.status = 'active' and channel.network = 'tg'
-              )::int as channel_count
+              )::int as channel_count,
+              count(channel.id) filter (
+                where channel.is_active = true and channel.status <> 'active'
+              )::int as reconnect_count
          from project_members member
          join projects project on project.id = member.project_id and project.is_archived = false
          left join bot_project_controls project_control on project_control.project_id = project.id
@@ -2487,6 +2550,10 @@ async function botSendMenu(chatId, userId) {
 
 async function botSendPrimaryAction(chatId, userId, action) {
   if (action === "menu") return botSendMenu(chatId, userId);
+  if (action === "connection") {
+    const status = await botConnectionStatus(userId);
+    return tgSend(chatId, status.text, status.buttons);
+  }
   if (action === "today") {
     const overview = await botToday(userId);
     return tgSend(chatId, overview.text, overview.buttons);
@@ -2558,6 +2625,179 @@ function botAppUrl(pathname) {
   }
 }
 
+function botConnectionButtons() {
+  const settingsUrl = botAppUrl("/app/settings");
+  return [
+    [{ text: "Проверить снова", data: "connection:status" }],
+    [{ text: "Выбрать проект", data: "connection:projects" }, { text: "Настроить уведомления", data: "menu:notifications" }],
+    ...(settingsUrl ? [[{ text: "Открыть Аврору", url: settingsUrl }]] : []),
+    [{ text: "Отключить этот чат", data: "connection:disconnect" }],
+    [{ text: "Вернуться в меню", data: "menu:home" }],
+  ];
+}
+
+async function botRuntimeConnectionState() {
+  try {
+    const [telegramRaw, publicationRaw] = await connection.mget(
+      TELEGRAM_POLLING_HEARTBEAT_KEY,
+      PUBLICATION_HEARTBEAT_KEY,
+    );
+    return {
+      commandState: !TOKEN
+        ? "not_configured"
+        : parseTelegramPollingHeartbeat(telegramRaw)?.state || "down",
+      publicationState: parsePublicationHeartbeat(publicationRaw) ? "up" : "down",
+    };
+  } catch {
+    return {
+      commandState: TOKEN ? "down" : "not_configured",
+      publicationState: "down",
+    };
+  }
+}
+
+async function botConnectionStatus(userId) {
+  const [account, project, runtime] = await Promise.all([
+    pool.query(`select name, email from users where id = $1`, [userId]).then((result) => result.rows[0] ?? null),
+    botProject(userId),
+    botRuntimeConnectionState(),
+  ]);
+  let notificationState = "on";
+  if (project) {
+    const preference = (
+      await pool.query(
+        `select publication_success_enabled, publication_failure_enabled,
+                content_opportunities_enabled, daily_digest_enabled, weekly_digest_enabled,
+                post_results_enabled, review_reminders_enabled, problem_digest_enabled
+           from bot_notification_preferences
+          where project_id = $1 and user_id = $2`,
+        [project.id, userId],
+      )
+    ).rows[0];
+    if (preference) {
+      const values = Object.values(preference).map((value) => value !== false);
+      notificationState = values.every(Boolean) ? "on" : values.some(Boolean) ? "partial" : "off";
+    }
+  }
+  const checkedAt = new Date().toLocaleTimeString("ru-RU", {
+    timeZone: project?.timezone || "UTC",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  return {
+    text: formatBotConnectionStatus({
+      accountLabel: account?.email
+        ? maskBotAccountEmail(account.email)
+        : String(account?.name || "подключён"),
+      ...runtime,
+      projectName: project?.name || null,
+      activeChannels: project?.channel_count || 0,
+      reconnectChannels: project?.reconnect_count || 0,
+      notificationState,
+      checkedAt,
+    }),
+    buttons: botConnectionButtons(),
+  };
+}
+
+async function botProjects(userId) {
+  const projects = (
+    await pool.query(
+      `select project.id, project.name,
+              (preference.selected_project_id = project.id) as selected
+         from project_members member
+         join projects project on project.id = member.project_id and project.is_archived = false
+         left join bot_project_controls control on control.project_id = project.id
+         left join user_project_preferences preference on preference.user_id = member.user_id
+        where member.user_id = $1 and member.status = 'active'
+          and coalesce(control.enabled, true) = true
+        order by (preference.selected_project_id = project.id) desc, lower(project.name), project.id
+        limit 11`,
+      [userId],
+    )
+  ).rows;
+  return {
+    text: formatBotProjectPicker({ projects }),
+    buttons: [
+      ...projects.slice(0, 10).map((project) => [{
+        text: `${project.selected ? "✓ " : ""}${String(project.name || "Проект").slice(0, 48)}`,
+        data: `connection:project:${project.id}`,
+      }]),
+      [{ text: "Вернуться к подключению", data: "connection:status" }],
+    ],
+  };
+}
+
+async function botSelectProject(userId, projectId) {
+  const selected = (
+    await pool.query(
+      `insert into user_project_preferences (user_id, selected_project_id)
+       select $1, project.id
+         from projects project
+         join project_members member
+           on member.project_id = project.id and member.user_id = $1 and member.status = 'active'
+         left join bot_project_controls control on control.project_id = project.id
+        where project.id = $2 and project.is_archived = false
+          and coalesce(control.enabled, true) = true
+       on conflict (user_id) do update
+         set selected_project_id = excluded.selected_project_id, updated_at = now()
+       returning selected_project_id`,
+      [userId, projectId],
+    )
+  ).rows[0];
+  if (!selected) return false;
+  await pool.query(
+    `update bot_conversations
+        set state = 'cancelled', updated_at = now()
+      where user_id = $1 and state not in ('completed', 'cancelled')`,
+    [userId],
+  );
+  return true;
+}
+
+function telegramSenderIdentity(from) {
+  const first = String(from?.first_name || "").trim();
+  const last = String(from?.last_name || "").trim();
+  return {
+    telegramUserId: Number(from?.id),
+    username: String(from?.username || "").trim() || null,
+    displayName: [first, last].filter(Boolean).join(" ") || null,
+  };
+}
+
+async function botConnectionOnboarding(chatId, from, options = {}) {
+  const connectBase = botAppUrl("/bot/connect");
+  if (!connectBase) {
+    return {
+      text: formatBotConnectionOnboarding({ available: false, disconnected: options.disconnected }),
+      buttons: [],
+    };
+  }
+  try {
+    const session = await createBotConnectionSession(pool, {
+      ...telegramSenderIdentity(from),
+      telegramChatId: Number(chatId),
+    });
+    const url = new URL(connectBase);
+    url.hash = `token=${session.token}`;
+    return {
+      text: formatBotConnectionOnboarding({ available: true, disconnected: options.disconnected }),
+      buttons: [[{ text: "Подключить аккаунт", url: url.toString() }]],
+    };
+  } catch (error) {
+    console.error("[bot] connection session", { errorName: error?.name || "Error" });
+    return {
+      text: "Не удалось создать ссылку подключения. Попробуй ещё раз через минуту или подключи бота в настройках Авроры.",
+      buttons: [],
+    };
+  }
+}
+
+async function botSendConnectionOnboarding(chatId, from, options = {}) {
+  const onboarding = await botConnectionOnboarding(chatId, from, options);
+  return tgSend(chatId, onboarding.text, onboarding.buttons);
+}
+
 /** Кто написал и разрешён ли ему bot-only доступ. */
 async function userByChat(chatId) {
   return (await pool.query(
@@ -2569,14 +2809,9 @@ async function userByChat(chatId) {
 }
 
 /** /start <код> — привязка чата к аккаунту. Код одноразовый и живёт 15 минут. */
-async function handleStart(chatId, code) {
+async function handleStart(chatId, from, code) {
   if (!code) {
-    await tgSend(
-      chatId,
-      "Привет. Я присылаю, что происходит с твоим каналом: пост вышел, пост упал, у конкурента залетело.\n\n" +
-        "Чтобы я знал, чьи новости слать, — открой «Настройки» в Авроре и нажми «Подключить бота».",
-    );
-    return;
+    return botSendConnectionOnboarding(chatId, from);
   }
 
   const link = (
@@ -8509,12 +8744,13 @@ async function handleUpdate(u) {
       const chatId = u.message.chat.id;
       const text = String(u.message.text || u.message.caption || "").trim();
 
-      if (text.startsWith("/start")) return handleStart(chatId, text.split(/\s+/)[1] || null);
+      if (text.startsWith("/start")) {
+        return handleStart(chatId, u.message.from, text.split(/\s+/)[1] || null);
+      }
 
       const botUser = await userByChat(chatId);
       if (!botUser) {
-        await tgSend(chatId, "Мы ещё не знакомы. Открой «Настройки» в Авроре и нажми «Подключить бота».");
-        return;
+        return void (await botSendConnectionOnboarding(chatId, u.message.from));
       }
       if (botUser.enabled === false) {
         await tgSend(chatId, "Доступ к боту временно приостановлен администратором Авроры. Данные аккаунта и проекты сохранены.");
@@ -8528,6 +8764,13 @@ async function handleUpdate(u) {
       if (replyAction) return void (await botSendPrimaryAction(chatId, userId, replyAction));
 
       if (text.startsWith("/menu")) return void (await botSendPrimaryAction(chatId, userId, "menu"));
+      if (text.startsWith("/status") || text.startsWith("/connect")) {
+        return void (await botSendPrimaryAction(chatId, userId, "connection"));
+      }
+      if (text.startsWith("/projects")) {
+        const projects = await botProjects(userId);
+        return void (await tgSend(chatId, projects.text, projects.buttons));
+      }
       if (text.startsWith("/today")) return void (await botSendPrimaryAction(chatId, userId, "today"));
       if (text.startsWith("/create")) return void (await botSendPrimaryAction(chatId, userId, "create"));
       if (text.startsWith("/approvals")) return void (await botSendPrimaryAction(chatId, userId, "approvals"));
@@ -8539,6 +8782,12 @@ async function handleUpdate(u) {
       if (text.startsWith("/trends")) return void (await botSendPrimaryAction(chatId, userId, "trends"));
       if (text.startsWith("/notifications")) {
         return void (await botSendPrimaryAction(chatId, userId, "notifications"));
+      }
+      if (text.startsWith("/disconnect")) {
+        return void (await tgSend(chatId, formatBotDisconnectConfirmation(), [
+          [{ text: "Отключить этот чат", data: "connection:disconnect_confirm" }],
+          [{ text: "Отмена", data: "connection:disconnect_cancel" }],
+        ]));
       }
       if (text.startsWith("/cancel")) {
         return void (await tgSend(chatId, await botCancelActiveConversation(userId), [
@@ -8596,6 +8845,56 @@ async function handleUpdate(u) {
       if (!userId) return void (await answerCb(cb.id, botUser ? "Доступ к боту приостановлен" : "Чат не привязан к аккаунту"));
 
       const [kind, action, id, token] = String(cb.data || "").split(":");
+
+      if (kind === "connection") {
+        if (action === "status" || action === "disconnect_cancel") {
+          await answerCb(cb.id, "Проверяю подключение…");
+          const status = await botConnectionStatus(userId);
+          return void (await tgReplaceOrSend(chatId, cb.message?.message_id, status.text, status.buttons));
+        }
+        if (action === "projects") {
+          await answerCb(cb.id, "Показываю проекты…");
+          const projects = await botProjects(userId);
+          return void (await tgReplaceOrSend(chatId, cb.message?.message_id, projects.text, projects.buttons));
+        }
+        if (action === "project") {
+          const projectId = Number(id);
+          if (!Number.isSafeInteger(projectId) || projectId <= 0) {
+            return void (await answerCb(cb.id, "Проект не найден"));
+          }
+          const selected = await botSelectProject(userId, projectId);
+          if (!selected) return void (await answerCb(cb.id, "Нет доступа к проекту"));
+          await answerCb(cb.id, "Проект выбран");
+          const status = await botConnectionStatus(userId);
+          return void (await tgReplaceOrSend(chatId, cb.message?.message_id, status.text, status.buttons));
+        }
+        if (action === "disconnect") {
+          await answerCb(cb.id, "Нужно подтверждение");
+          return void (await tgReplaceOrSend(
+            chatId,
+            cb.message?.message_id,
+            formatBotDisconnectConfirmation(),
+            [
+              [{ text: "Отключить этот чат", data: "connection:disconnect_confirm" }],
+              [{ text: "Отмена", data: "connection:disconnect_cancel" }],
+            ],
+          ));
+        }
+        if (action === "disconnect_confirm") {
+          const disconnected = await disconnectBotChat(pool, {
+            userId,
+            telegramChatId: Number(chatId),
+          });
+          await answerCb(cb.id, disconnected ? "Чат отключён" : "Чат уже отключён");
+          const onboarding = await botConnectionOnboarding(chatId, cb.from, { disconnected: true });
+          return void (await tgReplaceOrSend(
+            chatId,
+            cb.message?.message_id,
+            onboarding.text,
+            onboarding.buttons,
+          ));
+        }
+      }
 
       if (kind === "menu") {
         await answerCb(cb.id, "Открываю…");
@@ -8859,10 +9158,14 @@ async function pollUpdates() {
     console.log(`[bot] группы обсуждений сверены: ${discussionSync.synchronized}/${discussionSync.total}`);
   }
   await tg("setMyCommands", { commands: BOT_COMMANDS }).catch(() => {});
-  console.log("[bot] слушаю команды и кнопки (long polling, webhook не нужен)");
+  console.log("[bot] готов принять lease для команд (long polling, webhook не нужен)");
 
-  for (;;) {
+  for (; !shutdownStarted;) {
     try {
+      if (!(await ensureTelegramPollingLease())) {
+        await sleep(5_000);
+        continue;
+      }
       const offset =
         Number((await pool.query(`select last_update from bot_state where id = 1`)).rows[0]?.last_update ?? 0) + 1;
       // timeout=30 — соединение висит и ждёт события: это не «опрос раз в секунду», а push.
@@ -8877,6 +9180,10 @@ async function pollUpdates() {
         }
         continue;
       }
+      // If the Redis lease expired while Telegram was answering, do not acknowledge or
+      // execute this batch. The durable offset stays unchanged, so the elected poller
+      // receives the same updates on its next request.
+      if (!telegramPollingLeaseHeld) continue;
       // Only a successful getUpdates round-trip proves that this exact process is reading
       // incoming commands. Publication readiness and getMe cannot establish that fact.
       await refreshTelegramPollingHeartbeat();
@@ -9514,12 +9821,18 @@ async function cleanupExpired() {
   const links = await pool.query(
     `delete from bot_links where used_at is not null or expires_at < now()`,
   );
+  const connectionSessions = await pool.query(
+    `delete from bot_connection_sessions
+      where expires_at < now() - interval '7 days'
+         or used_at < now() - interval '30 days'
+         or revoked_at < now() - interval '7 days'`,
+  );
   const conversations = await pool.query(
     `delete from bot_conversations where expires_at < now() - interval '7 days'`,
   );
   const aiReservations = await expireWorkerAiUsageReservations(pool, 500);
   console.log(
-    `[cleanup] удалено: сессий — ${sessions.rowCount}, bot_links — ${links.rowCount}, bot_conversations — ${conversations.rowCount}; закрыто AI reservations — ${aiReservations}`,
+    `[cleanup] удалено: сессий — ${sessions.rowCount}, bot_links — ${links.rowCount}, bot_connection_sessions — ${connectionSessions.rowCount}, bot_conversations — ${conversations.rowCount}; закрыто AI reservations — ${aiReservations}`,
   );
 }
 
@@ -9795,6 +10108,11 @@ async function shutdown(sig) {
   // Stop refreshing immediately. The shared key expires naturally within 30s; deleting it
   // here could hide another healthy publication worker using the same readiness key.
   stopPublicationHeartbeat();
+  stopTelegramPollingLeaseRenewal();
+  if (telegramPollingLeaseHeld && TELEGRAM_POLLING_OWNER) {
+    await releaseTelegramPollingLease(connection, TELEGRAM_POLLING_OWNER).catch(() => false);
+    telegramPollingLeaseHeld = false;
+  }
   try {
     await worker?.close();
     await mediaWorker?.close();
