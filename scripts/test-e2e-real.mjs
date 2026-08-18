@@ -1525,6 +1525,9 @@ try {
 
   const libraryContentId = `library-registry-text-reference-${libraryReferenceId}`;
   const libraryText = page.locator(`#${libraryContentId}`);
+  const libraryReferenceCard = libraryText.locator(
+    "xpath=ancestor::div[contains(concat(' ', normalize-space(@class), ' '), ' card-plain ')][1]",
+  );
   await libraryText.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const expand = page.locator(`button[aria-controls="${libraryContentId}"]`);
   const libraryUrlBeforeExpand = page.url();
@@ -1624,7 +1627,7 @@ try {
     [libraryComposerDraftId, userId],
   )).rows[0];
   assert(generatedDraft?.text === libraryComposerResult && generatedDraft?.origin === "ai", "Studio result was not persisted as an AI draft");
-  assert(String(generatedDraft?.source_ref?.id) === String(competitorIds[0]), "generated post lost reference provenance");
+  assert(String(generatedDraft?.source_ref?.id) === String(libraryReferenceId), "generated post lost reference provenance");
   const composerActive = desktopSidebar.locator('a[aria-current="page"]');
   assert((await composerActive.textContent())?.includes("Календарь"), "Composer alias did not activate desktop Calendar");
 
@@ -1634,9 +1637,10 @@ try {
   assert((await desktopSidebar.locator('a[aria-current="page"]').textContent())?.includes("Студия"), "browser Back lost active Studio item");
   await page.goBack();
   await page.waitForURL((url) => url.pathname === "/app/library" && url.searchParams.get("channel") === String(channels[0]));
-  await page.getByRole("button", { name: "Обсудить с Авророй", exact: true }).waitFor();
+  const discussReference = libraryReferenceCard.getByRole("button", { name: "Обсудить с Авророй", exact: true });
+  await discussReference.waitFor();
   assert((await desktopSidebar.locator('a[aria-current="page"]').textContent())?.includes("Идеи и примеры"), "browser Back lost active Library item");
-  await page.getByRole("button", { name: "Обсудить с Авророй", exact: true }).click();
+  await discussReference.click();
   await page.waitForURL((url) => url.pathname === "/app/studio" && /^\d+$/u.test(url.searchParams.get("draft") || ""));
   const studioDraftUrl = new URL(page.url());
   assert([...studioDraftUrl.searchParams.keys()].join(",") === "draft,intent", "Library leaked content through Studio URL");
@@ -2013,7 +2017,11 @@ try {
   );
   const truncatedAck = await authenticatedRequestViaContext(context.request, "/api/ai/generate/ack", {
     method: "POST",
-    headers: { "idempotency-key": "e2e_truncated_ai_1" },
+    headers: {
+      "idempotency-key": "e2e_truncated_ai_1",
+      origin: baseUrl,
+      "sec-fetch-site": "same-origin",
+    },
   });
   const truncatedAckBody = JSON.parse(truncatedAck.text);
   assert(
