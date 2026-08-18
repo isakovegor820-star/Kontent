@@ -3,9 +3,6 @@
 // а внешний источник можно заменить, не меняя API, воркер и интерфейс.
 
 export const RADAR_SEARCH_CACHE_MS = 24 * 60 * 60 * 1000;
-export const RADAR_SEARCH_RESULT_LIMIT = 60;
-export const RADAR_SEARCH_CANDIDATE_LIMIT = 72;
-export const RADAR_SEARCH_QUERY_LIMIT = 6;
 
 const TELEGRAM_HANDLE = /^[a-z][a-z0-9_]{3,31}$/u;
 const TELEGRAM_STOP_HANDLES = new Set([
@@ -143,7 +140,7 @@ export function buildRadarDiscoveryQueries(query, expanded = []) {
     const compact = radarDiscoveryPhrase(value);
     return compact && compact !== normalized ? [normalized, compact] : [normalized];
   }).filter((value) => value.length >= 2);
-  return [...new Set(values)].slice(0, RADAR_SEARCH_QUERY_LIMIT);
+  return [...new Set(values)];
 }
 
 function decodeHtml(value) {
@@ -227,7 +224,62 @@ export function parseTelegramCandidates(payload, provider = "web") {
       provider,
     });
   }
-  return [...unique.values()].slice(0, RADAR_SEARCH_CANDIDATE_LIMIT);
+  return [...unique.values()];
+}
+
+function mergeTelegramCandidates(target, candidates) {
+  for (const candidate of candidates || []) {
+    if (!candidate?.handle) continue;
+    const current = target.get(candidate.handle);
+    target.set(candidate.handle, {
+      ...(current || candidate),
+      ...candidate,
+      matchedQueries: [...new Set([
+        ...(current?.matchedQueries || []),
+        ...(candidate.matchedQueries || []),
+      ])],
+      providers: [...new Set([
+        ...(current?.providers || []),
+        ...(candidate.providers || []),
+        candidate.provider,
+      ].filter(Boolean))],
+    });
+  }
+}
+
+function pageSignature(values) {
+  return (values || [])
+    .map((value) => String(value || "").trim())
+    .filter(Boolean)
+    .sort()
+    .join("\n");
+}
+
+function xmlItemCount(payload) {
+  return [...String(payload || "").matchAll(/<item\b/giu)].length;
+}
+
+function xmlTotalResults(payload) {
+  const match = String(payload || "").match(/<(?:\w+:)?totalResults\b[^>]*>(\d+)<\//iu);
+  return match ? Number(match[1]) : null;
+}
+
+function htmlHiddenInput(payload, name) {
+  for (const match of String(payload || "").matchAll(/<input\b([^>]*)>/giu)) {
+    const attrs = match[1];
+    const nameMatch = attrs.match(/\bname\s*=\s*["']([^"']+)["']/iu);
+    if (nameMatch?.[1] !== name) continue;
+    const valueMatch = attrs.match(/\bvalue\s*=\s*["']([^"']*)["']/iu);
+    if (valueMatch) return decodeHtml(valueMatch[1]);
+  }
+  return null;
+}
+
+function duckDuckGoNextOffset(payload) {
+  const moreForm = String(payload || "").match(
+    /<form\b[^>]*class\s*=\s*["'][^"']*result--more[^"']*["'][^>]*>[\s\S]*?<\/form>/iu,
+  );
+  return htmlHiddenInput(moreForm?.[0] || "", "s");
 }
 
 function providerRequest(url, init = {}) {
@@ -265,13 +317,35 @@ export function createSearxngTelegramProvider({ endpoint, fetchImpl = fetch } = 
       url.searchParams.set("q", `site:t.me/s ${query}`);
       url.searchParams.set("format", "json");
       url.searchParams.set("language", "ru-RU");
-      const response = await fetchImpl(url, providerRequest(url).init);
-      if (!response.ok) throw new RadarDiscoveryError(`searxng_http_${response.status}`);
-      const json = await response.json();
-      const payload = Array.isArray(json?.results)
-        ? json.results.map((item) => `${item?.url || ""}\n${item?.content || ""}`).join("\n")
-        : "";
-      return parseTelegramCandidates(payload, "searxng");
+      const found = new Map();
+      const seenPages = new Set();
+      for (let page = 1; ; page += 1) {
+        url.searchParams.set("pageno", String(page));
+        let response;
+        try {
+          response = await fetchImpl(url, providerRequest(url).init);
+        } catch (error) {
+          if (found.size) break;
+          throw error;
+        }
+        if (!response.ok) {
+          if (found.size) break;
+          throw new RadarDiscoveryError(`searxng_http_${response.status}`);
+        }
+        const json = await response.json();
+        const pageResults = Array.isArray(json?.results) ? json.results : [];
+        if (!pageResults.length) break;
+        const signature = pageSignature(pageResults.map((item) => item?.url));
+        if (!signature || seenPages.has(signature)) break;
+        seenPages.add(signature);
+        const payload = pageResults
+          .map((item) => `${item?.url || ""}\n${item?.content || ""}`)
+          .join("\n");
+        mergeTelegramCandidates(found, parseTelegramCandidates(payload, "searxng"));
+        const total = Number(json?.number_of_results);
+        if (Number.isFinite(total) && total > 0 && page * pageResults.length >= total) break;
+      }
+      return [...found.values()];
     },
   };
 }
@@ -286,8 +360,36 @@ export function createBingRssTelegramProvider({ fetchImpl = fetch } = {}) {
       // формулировка находит также каталоги и подборки, а ниже мы всё равно принимаем
       // только реальные t.me-ссылки и отдельно проверяем сам публичный канал.
       url.searchParams.set("q", `${query} Telegram каналы`);
-      const payload = await readSearchResponse(fetchImpl, providerRequest(url), "bing_rss");
-      return parseTelegramCandidates(payload, "bing-rss");
+      url.searchParams.set("count", "50");
+      const found = new Map();
+      const seenPages = new Set();
+      let first = 1;
+      for (;;) {
+        url.searchParams.set("first", String(first));
+        let payload;
+        try {
+          payload = await readSearchResponse(fetchImpl, providerRequest(url), "bing_rss");
+        } catch (error) {
+          if (found.size) break;
+          throw error;
+        }
+        const pageCandidates = parseTelegramCandidates(payload, "bing-rss");
+        const itemCount = xmlItemCount(payload);
+        if (!itemCount) {
+          mergeTelegramCandidates(found, pageCandidates);
+          break;
+        }
+        const signature = pageSignature(
+          [...String(payload).matchAll(/<item\b[\s\S]*?<\/item>/giu)].map((match) => match[0]),
+        );
+        if (!signature || seenPages.has(signature)) break;
+        seenPages.add(signature);
+        mergeTelegramCandidates(found, pageCandidates);
+        const total = xmlTotalResults(payload);
+        first += itemCount;
+        if (total != null && first > total) break;
+      }
+      return [...found.values()];
     },
   };
 }
@@ -298,8 +400,26 @@ export function createDuckDuckGoTelegramProvider({ fetchImpl = fetch } = {}) {
     async search(query) {
       const url = new URL("https://html.duckduckgo.com/html/");
       url.searchParams.set("q", `${query} Telegram каналы`);
-      const payload = await readSearchResponse(fetchImpl, providerRequest(url), "duckduckgo");
-      return parseTelegramCandidates(payload, "duckduckgo-html");
+      const found = new Map();
+      const seenOffsets = new Set();
+      let offset = "0";
+      for (;;) {
+        if (offset === "0") url.searchParams.delete("s");
+        else url.searchParams.set("s", offset);
+        let payload;
+        try {
+          payload = await readSearchResponse(fetchImpl, providerRequest(url), "duckduckgo");
+        } catch (error) {
+          if (found.size) break;
+          throw error;
+        }
+        mergeTelegramCandidates(found, parseTelegramCandidates(payload, "duckduckgo-html"));
+        const nextOffset = duckDuckGoNextOffset(payload);
+        if (!nextOffset || nextOffset === offset || seenOffsets.has(nextOffset)) break;
+        seenOffsets.add(offset);
+        offset = nextOffset;
+      }
+      return [...found.values()];
     },
   };
 }
@@ -319,7 +439,6 @@ export async function discoverTelegramCandidates(query, options = {}) {
   let completed = 0;
   const discoveryQueries = buildRadarDiscoveryQueries(normalized, options.expandedQueries);
   for (const discoveryQuery of discoveryQueries) {
-    if (found.size >= RADAR_SEARCH_CANDIDATE_LIMIT) break;
     const settled = await Promise.allSettled(
       providers.map(async (provider) => ({ provider, candidates: await provider.search(discoveryQuery) })),
     );
@@ -339,14 +458,13 @@ export async function discoverTelegramCandidates(query, options = {}) {
           matchedQueries: [...new Set([...(current?.matchedQueries || []), discoveryQuery])],
           providers: [...new Set([...(current?.providers || []), candidate.provider || result.value.provider.name])],
         });
-        if (found.size >= RADAR_SEARCH_CANDIDATE_LIMIT) break;
       }
     }
   }
   if (completed === 0) {
     throw new RadarDiscoveryError("all_providers_unavailable", failures.join(", "));
   }
-  return [...found.values()].slice(0, RADAR_SEARCH_CANDIDATE_LIMIT);
+  return [...found.values()];
 }
 
 export function scoreRadarSemanticSimilarity(value) {
@@ -490,8 +608,7 @@ export function rankVerifiedTelegramSource(query, source, now = Date.now()) {
     accepted:
       trust === 100
       && relevance >= 35
-      && score >= 35
-      && !(freshness <= 25 && activityScore <= 55),
+      && score >= 35,
     reason: reasonParts.slice(0, 3).join("; ") || "публичный источник проверен",
   };
 }

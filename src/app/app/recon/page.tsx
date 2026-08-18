@@ -5,7 +5,7 @@ export default function ReconPage() {
   return (
     <AppShell
       title="Конкуренты и тренды"
-      subtitle="Ищи реальные Telegram-каналы, публикации и тренды по любой теме."
+      subtitle="Ищи Telegram-каналы, публикации и тренды без фиксированного лимита выдачи."
     >
       <RadarInner />
     </AppShell>

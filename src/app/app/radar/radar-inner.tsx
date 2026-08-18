@@ -3,7 +3,7 @@
 // Гибридный поиск: локальная база отвечает сразу, внешний discovery работает в фоне.
 // В карточки попадают только URL, которые воркер повторно проверил на публичной t.me/s.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   BookmarkPlus,
   CheckCircle2,
@@ -104,12 +104,12 @@ function runMessage(run: SearchRun) {
   if (run.status === "failed") return run.errorMessage || "Не удалось расширить поиск. Локальные результаты сохранены.";
   if (run.status === "ready") {
     return run.externalCount > 0
-      ? `Расширенный поиск добавил ${run.externalCount} ${plural(run.externalCount, "проверенный результат", "проверенных результата", "проверенных результатов")}.`
-      : "Общая база и публичные источники проверены, новых совпадений нет.";
+      ? `Доступный открытый индекс и публичная история каналов проверены. Добавлено ${run.externalCount} ${plural(run.externalCount, "проверенный результат", "проверенных результата", "проверенных результатов")}.`
+      : "Доступный открытый индекс и публичная история каналов проверены, новых совпадений нет.";
   }
-  if (run.stage === "verifying") return "Проверяю найденные каналы и читаю их публикации…";
+  if (run.stage === "verifying") return "Читаю всю доступную публичную историю найденных каналов. Результаты появляются по мере проверки…";
   if (run.stage === "ranking") return "Убираю дубли и ранжирую результаты…";
-  if (run.stage === "discovering") return "Проверяю исходный запрос и близкие формулировки в текстах публичных постов…";
+  if (run.stage === "discovering") return "Обхожу страницы открытого поиска по исходному запросу и близким формулировкам…";
   return "Запускаю расширенный поиск…";
 }
 
@@ -240,12 +240,20 @@ export function RadarInner() {
 
   const [actingId, setActingId] = useState<number | null>(null);
   const [completedActions, setCompletedActions] = useState<Set<number>>(new Set());
+  const resultCursorRef = useRef(0);
 
   const pollRun = useCallback(async (runId: number) => {
-    const response = await fetch(`/api/radar/search?run=${runId}`, { cache: "no-store" });
+    const params = new URLSearchParams({
+      run: String(runId),
+      after: String(resultCursorRef.current),
+    });
+    const response = await fetch(`/api/radar/search?${params}`, { cache: "no-store" });
     if (!response.ok) throw new Error("poll_failed");
-    const data = (await response.json()) as { run: SearchRun; results?: SearchResult[] };
+    const data = (await response.json()) as { run: SearchRun; results?: SearchResult[]; resultCursor?: number };
     setRun(data.run);
+    if (Number.isSafeInteger(data.resultCursor) && Number(data.resultCursor) > resultCursorRef.current) {
+      resultCursorRef.current = Number(data.resultCursor);
+    }
     if (data.results?.length) setResults((current) => mergeResults(current, data.results ?? []));
     return data.run;
   }, []);
@@ -273,6 +281,7 @@ export function RadarInner() {
   }, [activeRunId, pollRun]);
 
   const startExternal = useCallback(async (value: string, force = false) => {
+    if (force) resultCursorRef.current = 0;
     try {
       const response = await fetch("/api/radar/search", {
         method: "POST",
@@ -285,10 +294,14 @@ export function RadarInner() {
       const data = (await response.json().catch(() => null)) as {
         run?: SearchRun;
         results?: SearchResult[];
+        resultCursor?: number;
         error?: string;
       } | null;
       if (data?.results?.length) setResults((current) => mergeResults(current, data.results ?? []));
-      if (data?.run) setRun(data.run);
+      if (data?.run) {
+        setRun(data.run);
+        if (Number.isSafeInteger(data.resultCursor)) resultCursorRef.current = Number(data.resultCursor);
+      }
       if (!response.ok && data?.error !== "queue_unavailable") throw new Error(data?.error || "external_failed");
       if (!response.ok) setSearchError(data?.run?.errorMessage || "Поиск в интернете временно недоступен.");
     } catch {
@@ -309,6 +322,7 @@ export function RadarInner() {
     setSearched(true);
     setSubmittedQuery(value);
     setResults([]);
+    resultCursorRef.current = 0;
     setRun(null);
     setSearchError(null);
     setTab("all");
@@ -319,12 +333,14 @@ export function RadarInner() {
       const data = (await response.json().catch(() => null)) as {
         results?: SearchResult[];
         run?: SearchRun | null;
+        resultCursor?: number;
         shouldExpand?: boolean;
         error?: string;
       } | null;
       if (!response.ok || !data) throw new Error(data?.error || "local_failed");
       setResults(data.results ?? []);
       setRun(data.run ?? null);
+      if (Number.isSafeInteger(data.resultCursor)) resultCursorRef.current = Number(data.resultCursor);
       if (data.shouldExpand) void startExternal(value);
     } catch {
       setSearchError("Не удалось выполнить поиск. Проверь соединение и попробуй ещё раз.");
@@ -420,7 +436,7 @@ export function RadarInner() {
           aria-live="polite"
           className={cn("mt-3 text-[12px] leading-relaxed", queryError ? "font-medium text-danger-text" : "text-text-3")}
         >
-          {queryError || "Пиши обычными словами. Аврора выделит тему, проверит близкие формулировки, тексты постов и публичные Telegram-каналы."}
+          {queryError || "Пиши обычными словами. Аврора обойдёт доступную открытую выдачу, проверит близкие формулировки и прочитает публичную историю найденных Telegram-каналов. Для широких тем поиск может занять больше времени."}
         </p>
       </Card>
 
@@ -450,7 +466,7 @@ export function RadarInner() {
             {run && (
               <div
                 className={cn(
-                  "mt-4 flex items-center gap-3 rounded-md px-4 py-3 text-[13px] font-medium",
+                  "mt-4 flex flex-wrap items-center gap-3 rounded-md px-4 py-3 text-[13px] font-medium",
                   run.status === "failed" || run.status === "partial"
                     ? "bg-fire-soft text-fire-text"
                     : run.status === "ready"
@@ -459,8 +475,19 @@ export function RadarInner() {
                 )}
               >
                 {running ? <RefreshCw className="h-4 w-4 shrink-0 animate-spin motion-reduce:animate-none" aria-hidden /> : <ShieldCheck className="h-4 w-4 shrink-0" aria-hidden />}
-                <span>{runMessage(run)}</span>
+                <span className="min-w-0 flex-1">{runMessage(run)}</span>
                 {running && <span className="nums ml-auto shrink-0">{run.progress}%</span>}
+                {run.status === "partial" && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => void startExternal(submittedQuery, true)}
+                    className="ml-auto shrink-0"
+                  >
+                    <RefreshCw className="h-4 w-4" aria-hidden />
+                    Дочитать источники
+                  </Button>
+                )}
               </div>
             )}
           </div>

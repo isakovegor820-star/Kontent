@@ -22,9 +22,6 @@ export type RadarRank = {
 };
 
 export const RADAR_SEARCH_CACHE_MS: number;
-export const RADAR_SEARCH_RESULT_LIMIT: number;
-export const RADAR_SEARCH_CANDIDATE_LIMIT: number;
-export const RADAR_SEARCH_QUERY_LIMIT: number;
 export class RadarDiscoveryError extends Error { code: string; }
 export function normalizeRadarQuery(value: unknown): string;
 export function radarQueryTokens(value: unknown): string[];

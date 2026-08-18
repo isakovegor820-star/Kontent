@@ -222,4 +222,44 @@ describe("hybrid radar search route", () => {
       results: [{ kind: "trend", url: "https://t.me/sea_fishing/42" }],
     });
   });
+
+  it("returns every verified run result without a fixed result ceiling", async () => {
+    const readyRun = {
+      ...queuedRun,
+      status: "ready",
+      stage: "ready",
+      progress: 100,
+      external_count: 85,
+    };
+    const rows = Array.from({ length: 85 }, (_, index) => ({
+      id: String(1_000 + index),
+      action_id: String(1_000 + index),
+      kind: "channel",
+      provider: "web",
+      title: `Канал ${index}`,
+      handle: `public_channel_${String(index).padStart(3, "0")}`,
+      description: "Садоводство и уход за растениями",
+      url: `https://t.me/public_channel_${String(index).padStart(3, "0")}`,
+      quality_score: 72,
+      reason: "Публичный источник проверен",
+      last_post_at: "2026-08-15T10:00:00.000Z",
+      posts_per_week: 4,
+      verified: true,
+    }));
+    mocks.query.mockImplementation(async (sql: string) => {
+      if (sql.includes("from radar_search_runs where id")) return { rowCount: 1, rows: [readyRun] };
+      if (sql.includes("from radar_search_results")) return { rowCount: rows.length, rows };
+      return { rowCount: 0, rows: [] };
+    });
+
+    const response = await GET(new NextRequest("http://localhost/api/radar/search?run=91"));
+    expect(response.status).toBe(200);
+    const payload = await response.json();
+    expect(payload.results).toHaveLength(85);
+    expect(payload.resultCursor).toBe(1084);
+    const resultsQuery = mocks.query.mock.calls.find(([sql]) => String(sql).includes("from radar_search_results"));
+    expect(String(resultsQuery?.[0])).not.toMatch(/\blimit\b/iu);
+    expect(String(resultsQuery?.[0])).toContain("id > $3");
+    expect(resultsQuery?.[1]).toEqual([91, 7, 0]);
+  });
 });

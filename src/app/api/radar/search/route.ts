@@ -10,9 +10,6 @@ import { getPool } from "@/lib/db";
 import {
   normalizeRadarQuery,
   radarTsQuery,
-  RADAR_SEARCH_RESULT_LIMIT,
-  scoreRadarActivity,
-  scoreRadarFreshness,
   scoreRadarRelevance,
 } from "@/lib/radar-search.mjs";
 import { enqueueRadarSearch } from "@/lib/radar-search-queue";
@@ -122,8 +119,7 @@ function deduplicateSerializedResults(items: ReturnType<typeof serializeResult>[
     });
   }
   return [...results.values()]
-    .sort((a, b) => b.score - a.score || Date.parse(b.postedAt || b.lastPostAt || "") - Date.parse(a.postedAt || a.lastPostAt || ""))
-    .slice(0, RADAR_SEARCH_RESULT_LIMIT);
+    .sort((a, b) => b.score - a.score || Date.parse(b.postedAt || b.lastPostAt || "") - Date.parse(a.postedAt || a.lastPostAt || ""));
 }
 
 function deduplicateResults(rows: Record<string, unknown>[]) {
@@ -135,11 +131,7 @@ function isFocusedResult(row: Record<string, unknown>, query: string) {
     String(row.match_mode || "") === "semantic_content"
     && Number(row.relevance_score) >= 35
   ) {
-    if (String(row.kind || row.result_type) !== "channel") return true;
-    return !(
-      scoreRadarFreshness(row.last_post_at) <= 25
-      && scoreRadarActivity(row.posts_per_week) <= 55
-    );
+    return true;
   }
   const relevance = scoreRadarRelevance(query, {
     title: row.title,
@@ -147,12 +139,7 @@ function isFocusedResult(row: Record<string, unknown>, query: string) {
     description: row.description,
     posts: row.text || row.search_text ? [{ text: row.text || row.search_text }] : [],
   });
-  if (relevance < 35) return false;
-  if (String(row.kind || row.result_type) !== "channel") return true;
-  return !(
-    scoreRadarFreshness(row.last_post_at) <= 25
-    && scoreRadarActivity(row.posts_per_week) <= 55
-  );
+  return relevance >= 35;
 }
 
 async function searchLocal(pool: Db, userId: number, channelId: number | null, query: string) {
@@ -176,8 +163,7 @@ async function searchLocal(pool: Db, userId: number, channelId: number | null, q
          join competitors competitor on competitor.id = post.competitor_id
         where ${ownerColumn} = $1
           and post.tsv @@ to_tsquery('russian', $2)
-        order by ts_rank(post.tsv, to_tsquery('russian', $2)) desc, post.posted_at desc nulls last
-        limit 20`,
+        order by ts_rank(post.tsv, to_tsquery('russian', $2)) desc, post.posted_at desc nulls last`,
       [ownerId, textQuery],
     ),
     pool.query(
@@ -193,8 +179,7 @@ async function searchLocal(pool: Db, userId: number, channelId: number | null, q
          join trend_sources source on source.id = post.source_id and source.enabled = true
         where to_tsvector('russian', coalesce(post.text, '')) @@ to_tsquery('russian', $1)
         order by ts_rank(to_tsvector('russian', coalesce(post.text, '')), to_tsquery('russian', $1)) desc,
-                 post.posted_at desc nulls last
-        limit 16`,
+                 post.posted_at desc nulls last`,
       [textQuery],
     ),
     pool.query(
@@ -214,8 +199,7 @@ async function searchLocal(pool: Db, userId: number, channelId: number | null, q
          from discovered_sources source
         where source.verification_status = 'verified' and source.is_public = true
           and source.content_tsv @@ to_tsquery('russian', $1)
-        order by ts_rank(source.content_tsv, to_tsquery('russian', $1)) desc, source.verified_at desc
-        limit 30`,
+        order by ts_rank(source.content_tsv, to_tsquery('russian', $1)) desc, source.verified_at desc`,
       [textQuery],
     ),
     pool.query(
@@ -232,8 +216,7 @@ async function searchLocal(pool: Db, userId: number, channelId: number | null, q
         where result.user_id = $1 and result.tsv @@ to_tsquery('russian', $2)
           and result.verification_status = 'verified'
           and result.created_at >= now() - interval '30 days'
-        order by result.quality_score desc, result.created_at desc
-        limit 20`,
+        order by result.quality_score desc, result.created_at desc`,
       [userId, textQuery],
     ),
   ]);
@@ -259,7 +242,7 @@ async function searchLocal(pool: Db, userId: number, channelId: number | null, q
   ]);
 }
 
-async function loadRunResults(pool: Db, userId: number, runId: number) {
+async function loadRunResults(pool: Db, userId: number, runId: number, afterId = 0) {
   const run = (
     await pool.query<RunRow>(
       `select id, query, normalized_query, status, stage, progress, provider,
@@ -280,13 +263,14 @@ async function loadRunResults(pool: Db, userId: number, runId: number) {
             'radar-result:' || id as result_key, true as verified
        from radar_search_results
       where run_id = $1 and user_id = $2 and verification_status = 'verified'
-      order by quality_score desc, created_at desc
-      limit $3`,
-    [runId, userId, RADAR_SEARCH_RESULT_LIMIT],
+        and id > $3
+      order by id`,
+    [runId, userId, afterId],
   );
   return {
     run: serializeRun(run),
     results: deduplicateResults(results.rows.filter((row) => isFocusedResult(row, run.normalized_query))),
+    resultCursor: results.rows.reduce((cursor, row) => Math.max(cursor, Number(row.id) || 0), afterId),
   };
 }
 
@@ -301,7 +285,9 @@ export async function GET(req: NextRequest) {
   const runId = Number(req.nextUrl.searchParams.get("run"));
   try {
     if (Number.isSafeInteger(runId) && runId > 0) {
-      const payload = await loadRunResults(pool, user.id, runId);
+      const requestedCursor = Number(req.nextUrl.searchParams.get("after"));
+      const afterId = Number.isSafeInteger(requestedCursor) && requestedCursor > 0 ? requestedCursor : 0;
+      const payload = await loadRunResults(pool, user.id, runId, afterId);
       return payload ? json(payload) : json({ error: "not_found" }, 404);
     }
 
@@ -338,6 +324,7 @@ export async function GET(req: NextRequest) {
       query,
       results: combinedResults,
       run: latestPayload?.run ?? serializeRun(latest),
+      resultCursor: latestPayload?.resultCursor ?? 0,
       // Внешний слой теперь не запасной. Он всегда расширяет локальную базу, потому что
       // несколько знакомых каналов не означают, что вся ниша уже найдена.
       shouldExpand: !latest,

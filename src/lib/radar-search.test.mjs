@@ -39,6 +39,14 @@ describe("radar hybrid-search core", () => {
     expect(results.map((item) => item.handle)).toEqual(["fishing_ru", "garden_people"]);
   });
 
+  it("does not truncate a large set of public candidates", () => {
+    const payload = Array.from(
+      { length: 140 },
+      (_, index) => `<a href="https://t.me/public_source_${String(index).padStart(3, "0")}">source</a>`,
+    ).join("\n");
+    expect(parseTelegramCandidates(payload, "test")).toHaveLength(140);
+  });
+
   it("uses a configured local SearXNG instance through the same provider contract", async () => {
     const fetchImpl = vi.fn().mockResolvedValue({
       ok: true,
@@ -47,6 +55,24 @@ describe("radar hybrid-search core", () => {
     const provider = createSearxngTelegramProvider({ endpoint: "http://127.0.0.1:8080", fetchImpl });
     await expect(provider.search("рыбалка")).resolves.toMatchObject([{ handle: "fishing_ru" }]);
     expect(String(fetchImpl.mock.calls[0][0])).toContain("format=json");
+  });
+
+  it("walks SearXNG pages until the provider is exhausted", async () => {
+    const fetchImpl = vi.fn(async (url) => {
+      const page = Number(new URL(String(url)).searchParams.get("pageno"));
+      return {
+        ok: true,
+        json: async () => ({
+          number_of_results: 3,
+          results: page <= 3
+            ? [{ url: `https://t.me/s/public_page_${page}`, content: "Строительство" }]
+            : [],
+        }),
+      };
+    });
+    const provider = createSearxngTelegramProvider({ endpoint: "http://127.0.0.1:8080", fetchImpl });
+    await expect(provider.search("строительство")).resolves.toHaveLength(3);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
   });
 
   it("uses broad channel wording when a search engine ignores site:t.me", async () => {
@@ -100,6 +126,11 @@ describe("radar hybrid-search core", () => {
         "найди мне каналы где пишут про строительство",
         "строительство",
       ]);
+  });
+
+  it("keeps every unique semantic formulation instead of applying a query cap", () => {
+    const expanded = Array.from({ length: 18 }, (_, index) => `термин${index}`);
+    expect(buildRadarDiscoveryQueries("строительство", expanded)).toHaveLength(19);
   });
 
   it("accepts a verified source through a transparent close formulation", () => {
@@ -161,7 +192,7 @@ describe("radar hybrid-search core", () => {
     })).toBeGreaterThan(60);
   });
 
-  it("does not publish an abandoned channel as a high-quality discovery result", () => {
+  it("keeps an old but relevant public channel in the exhaustive search", () => {
     const now = Date.parse("2026-08-06T10:00:00.000Z");
     const rank = rankVerifiedTelegramSource("садоводство", {
       ok: true,
@@ -171,6 +202,7 @@ describe("radar hybrid-search core", () => {
       posts: [{ text: "Садоводство", postedAt: "2025-05-01T10:00:00.000Z" }],
       activity: { lastPostAt: "2025-05-01T10:00:00.000Z", postsPerWeek: 0.1 },
     }, now);
-    expect(rank.accepted).toBe(false);
+    expect(rank.accepted).toBe(true);
+    expect(rank.freshness).toBeLessThan(30);
   });
 });

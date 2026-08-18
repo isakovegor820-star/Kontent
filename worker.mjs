@@ -171,7 +171,6 @@ import {
   presentationVariantPrompt,
 } from "./src/lib/autopilot-config.mjs";
 import {
-  RADAR_SEARCH_RESULT_LIMIT,
   RadarDiscoveryError,
   discoverTelegramCandidates,
   median as radarMedian,
@@ -3416,60 +3415,100 @@ async function collectAllProjectStats() {
 // Закрытых данных не собираем. Тот же всегда-включённый воркер.
 // ============================================================================
 
-// Разбор публичной страницы канала: посты (id, текст, время, просмотры, реакции)
-// + запасные название/подписчики из шапки.
-async function fetchCompetitorPage(handle) {
-  const h = String(handle).replace(/^@/, "");
-  const out = { ok: false, title: null, description: null, subscribers: null, posts: [] };
-  try {
-    const r = await fetchTgWithBackoff(`https://t.me/s/${h}`);
-    if (!r.ok) return out;
-    const html = await r.text();
-
-    const subM = html.match(/counter_value">([^<]+)<\/span>\s*<span class="counter_type">subscribers/);
-    if (subM) out.subscribers = parseCount(subM[1].replace(/\s/g, ""));
-    const titM = html.match(/tgme_channel_info_header_title[^>]*><span[^>]*>([^<]+)/);
-    if (titM) out.title = decodeEntities(titM[1]).trim() || null;
-    out.description = parseTelegramChannelDescription(html);
-
-    const parts = html.split('data-post="');
-    for (let i = 1; i < parts.length; i++) {
-      const b = parts[i];
-      const midM = b.match(/^[^/]+\/(\d+)"/);
-      if (!midM) continue;
-      const timeM = b.match(/datetime="([^"]+)"/);
-      const viewsM = b.match(/tgme_widget_message_views">([^<]+)</);
-      const reactions = sumReactions(b);
-      const txtM = b.match(/tgme_widget_message_text[^>]*>([\s\S]*?)<\/div>/);
-      let text = null;
-      if (txtM) {
-        text = decodeEntities(txtM[1].replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]+>/g, "")).trim();
-        if (!text) text = null;
-      }
-      // Тип медиа — для медиа-микса в досье (что у конкурента заходит лучше).
-      const media = /tgme_widget_message_video/.test(b)
-        ? "video"
-        : /tgme_widget_message_photo/.test(b)
-          ? "photo"
-          : "text";
-      // Картинка поста для визуальной ленты. Telegram отдаёт её фоном блока, а не <img>.
-      // Ссылку можно показывать прямо у себя: cdn telesco.pe отвечает 200 без реферера
-      // и с access-control-allow-origin: * — прокси не нужен (проверено).
-      const photoM = b.match(/tgme_widget_message_photo_wrap[^>]*background-image:url\('([^']+)'\)/);
-      out.posts.push({
-        msgId: Number(midM[1]),
-        text,
-        media,
-        photoUrl: photoM ? photoM[1] : null,
-        views: viewsM ? parseCount(viewsM[1]) : null,
-        reactions,
-        postedAt: timeM ? timeM[1] : null,
-      });
+function parseTelegramPublicPage(html) {
+  const posts = [];
+  const parts = String(html || "").split('data-post="');
+  for (let i = 1; i < parts.length; i++) {
+    const block = parts[i];
+    const messageMatch = block.match(/^[^/]+\/(\d+)"/);
+    if (!messageMatch) continue;
+    const timeMatch = block.match(/datetime="([^"]+)"/);
+    const viewsMatch = block.match(/tgme_widget_message_views">([^<]+)</);
+    const textMatch = block.match(/tgme_widget_message_text[^>]*>([\s\S]*?)<\/div>/);
+    let text = null;
+    if (textMatch) {
+      text = decodeEntities(textMatch[1].replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]+>/g, "")).trim();
+      if (!text) text = null;
     }
-    out.ok = true;
+    const media = /tgme_widget_message_video/.test(block)
+      ? "video"
+      : /tgme_widget_message_photo/.test(block)
+        ? "photo"
+        : "text";
+    const photoMatch = block.match(/tgme_widget_message_photo_wrap[^>]*background-image:url\('([^']+)'\)/);
+    posts.push({
+      msgId: Number(messageMatch[1]),
+      text,
+      media,
+      photoUrl: photoMatch ? photoMatch[1] : null,
+      views: viewsMatch ? parseCount(viewsMatch[1]) : null,
+      reactions: sumReactions(block),
+      postedAt: timeMatch ? timeMatch[1] : null,
+    });
+  }
+  return posts;
+}
+
+// Обычная разведка читает свежую публичную страницу. Поиск по нише передаёт
+// exhaustive=true и идёт назад через `before`, пока Telegram действительно не вернёт
+// пустую/повторную страницу. Остановка зависит от исчерпания открытой ленты, а не от
+// заранее выбранного количества постов.
+async function fetchCompetitorPage(handle, { exhaustive = false } = {}) {
+  const normalizedHandle = String(handle).replace(/^@/, "");
+  const out = {
+    ok: false,
+    title: null,
+    description: null,
+    subscribers: null,
+    posts: [],
+    historyComplete: !exhaustive,
+  };
+  const seenPostIds = new Set();
+  const seenBoundaries = new Set();
+  let before = null;
+  try {
+    for (;;) {
+      const url = new URL(`https://t.me/s/${normalizedHandle}`);
+      if (before != null) url.searchParams.set("before", String(before));
+      const response = await fetchTgWithBackoff(url);
+      if (!response?.ok) break;
+      const html = await response.text();
+      if (!out.ok) {
+        const subscribersMatch = html.match(/counter_value">([^<]+)<\/span>\s*<span class="counter_type">subscribers/);
+        if (subscribersMatch) out.subscribers = parseCount(subscribersMatch[1].replace(/\s/g, ""));
+        const titleMatch = html.match(/tgme_channel_info_header_title[^>]*><span[^>]*>([^<]+)/);
+        if (titleMatch) out.title = decodeEntities(titleMatch[1]).trim() || null;
+        out.description = parseTelegramChannelDescription(html);
+      }
+      out.ok = true;
+
+      const pagePosts = parseTelegramPublicPage(html);
+      let added = 0;
+      for (const post of pagePosts) {
+        if (seenPostIds.has(post.msgId)) continue;
+        seenPostIds.add(post.msgId);
+        out.posts.push(post);
+        added += 1;
+      }
+      if (!exhaustive) break;
+      if (!pagePosts.length || added === 0) {
+        out.historyComplete = true;
+        break;
+      }
+      const oldestId = Math.min(...pagePosts.map((post) => post.msgId));
+      if (!Number.isSafeInteger(oldestId) || oldestId <= 0 || seenBoundaries.has(oldestId)) {
+        out.historyComplete = true;
+        break;
+      }
+      seenBoundaries.add(oldestId);
+      before = oldestId;
+      await sleep(180);
+    }
+    out.posts.sort((left, right) => right.msgId - left.msgId);
     return out;
   } catch (err) {
     console.error("[recon] разбор t.me/s не удался:", err?.message);
+    out.posts.sort((left, right) => right.msgId - left.msgId);
     return out;
   }
 }
@@ -3569,7 +3608,11 @@ async function upsertRadarPublicCorpus({ handle, page, activity, provider, embed
         activity?.lastPostAt || null,
         activity?.postsPerWeek ?? null,
         provider,
-        JSON.stringify({ publicPosts: page.posts.length, corpus: "telegram_public_posts" }),
+        JSON.stringify({
+          publicPosts: page.posts.length,
+          corpus: "telegram_public_posts",
+          historyComplete: page.historyComplete !== false,
+        }),
         contentSample,
         contentEmbedding ? toVector(contentEmbedding) : null,
         page.posts.length,
@@ -3867,7 +3910,7 @@ async function insertRadarResult({
        reason = excluded.reason,
        raw_data = excluded.raw_data,
        verified_at = now()
-     returning id`,
+     returning id, (xmax = 0) as inserted`,
     [
       runId,
       userId,
@@ -3896,7 +3939,7 @@ async function insertRadarResult({
       JSON.stringify(rawData),
     ],
   );
-  return inserted.rowCount > 0;
+  return Boolean(inserted.rows[0]?.inserted);
 }
 
 function parseRadarQueryExpansions(raw) {
@@ -3909,7 +3952,7 @@ function parseRadarQueryExpansions(raw) {
     const parsed = JSON.parse(source);
     const values = Array.isArray(parsed) ? parsed : parsed?.queries;
     return Array.isArray(values)
-      ? values.map((value) => String(value || "").trim()).filter(Boolean).slice(0, 5)
+      ? [...new Set(values.map((value) => String(value || "").trim()).filter(Boolean))]
       : [];
   } catch {
     return [];
@@ -3924,12 +3967,12 @@ async function expandRadarQueries(query) {
       null,
       [
         "Ты расширяешь поисковый запрос для поиска Telegram-каналов по реальному содержанию постов.",
-        "Верни только JSON-массив из 3–5 коротких русских поисковых формулировок без markdown.",
-        "Добавь синонимы, профессиональные термины, объекты и разговорные названия той же темы.",
+        "Верни только исчерпывающий JSON-массив коротких русских поисковых формулировок без markdown.",
+        "Добавь все уместные синонимы, профессиональные термины, объекты и разговорные названия той же темы.",
         "Не придумывай названия или username каналов. Не уходи в широкие смежные темы.",
       ].join("\n"),
       `Исходная тема: ${query}`,
-      160,
+      800,
       null,
       0.15,
     );
@@ -3956,6 +3999,7 @@ async function runRadarSearch(runId, userId) {
   const query = claimed.normalized_query;
   let resultCount = 0;
   let providerLabel = null;
+  let incompleteHistories = 0;
   try {
     const [expandedQueries, queryEmbedding] = await Promise.all([
       expandRadarQueries(query),
@@ -3975,13 +4019,11 @@ async function runRadarSearch(runId, userId) {
             where network = 'tg' and verification_status = 'verified' and is_public = true
               and content_embedding is not null
               and 1 - (content_embedding <=> $1::vector) >= 0.48
-            order by content_embedding <=> $1::vector
-            limit 24`,
+            order by content_embedding <=> $1::vector`,
           [toVector(queryEmbedding)],
         )
       ).rows;
       for (const source of semanticSources) {
-        if (resultCount >= RADAR_SEARCH_RESULT_LIMIT) break;
         const rank = rankVerifiedTelegramSource(query, {
           ok: true,
           title: source.title,
@@ -4061,7 +4103,7 @@ async function runRadarSearch(runId, userId) {
       const candidate = candidates[index];
       let page;
       try {
-        page = await fetchCompetitorPage(candidate.handle);
+        page = await fetchCompetitorPage(candidate.handle, { exhaustive: true });
       } catch (error) {
         await pool.query(
           `update radar_search_candidates
@@ -4084,6 +4126,7 @@ async function runRadarSearch(runId, userId) {
         );
         continue;
       }
+      if (page.historyComplete === false) incompleteHistories += 1;
 
       const activity = summarizeTelegramPostingActivity(page.posts);
       let contentEmbedding = null;
@@ -4123,38 +4166,36 @@ async function runRadarSearch(runId, userId) {
         embedding: contentEmbedding,
       });
 
-      if (resultCount < RADAR_SEARCH_RESULT_LIMIT) {
-        if (await insertRadarResult({
-          runId,
-          userId,
-          sourceId: source?.id ?? null,
-          type: "channel",
-          provider,
-          canonicalKey: `tg:channel:${candidate.handle}`,
-          url: `https://t.me/${candidate.handle}`,
-          handle: candidate.handle,
-          title: page.title,
-          description: page.description,
-          subscribers: page.subscribers,
-          postsPerWeek: activity.postsPerWeek,
-          lastPostAt: activity.lastPostAt,
-          rank: sourceRank,
-          rawData: {
-            publicPosts: page.posts.length,
-            indexedPostsCount: page.posts.length,
-            matchedQueries: candidate.matchedQueries || [candidate.matchedQuery || query],
-            matchedQuery: sourceRankingQuery,
-            matchMode: sourceRank.semanticRelevance > sourceRank.lexicalRelevance ? "semantic_content" : "lexical_content",
-          },
-        })) resultCount += 1;
-      }
+      if (await insertRadarResult({
+        runId,
+        userId,
+        sourceId: source?.id ?? null,
+        type: "channel",
+        provider,
+        canonicalKey: `tg:channel:${candidate.handle}`,
+        url: `https://t.me/${candidate.handle}`,
+        handle: candidate.handle,
+        title: page.title,
+        description: page.description,
+        subscribers: page.subscribers,
+        postsPerWeek: activity.postsPerWeek,
+        lastPostAt: activity.lastPostAt,
+        rank: sourceRank,
+        rawData: {
+          publicPosts: page.posts.length,
+          indexedPostsCount: page.posts.length,
+          historyComplete: page.historyComplete !== false,
+          matchedQueries: candidate.matchedQueries || [candidate.matchedQuery || query],
+          matchedQuery: sourceRankingQuery,
+          matchMode: sourceRank.semanticRelevance > sourceRank.lexicalRelevance ? "semantic_content" : "lexical_content",
+        },
+      })) resultCount += 1;
 
       const postRanks = page.posts
         .map((post) => ({ post, rank: rankVerifiedTelegramPost(sourceRankingQuery, post, sourceRank) }))
         .filter((item) => item.rank.accepted)
         .sort((a, b) => b.rank.score - a.rank.score);
-      for (const item of postRanks.slice(0, 3)) {
-        if (resultCount >= RADAR_SEARCH_RESULT_LIMIT) break;
+      for (const item of postRanks) {
         if (await insertRadarResult({
           runId,
           userId,
@@ -4182,10 +4223,10 @@ async function runRadarSearch(runId, userId) {
       // «Тренд» — не мнение ИИ: только релевантный пост, чьи просмотры минимум в 1,5 раза
       // выше медианы видимых публикаций этого же канала.
       const typicalViews = radarMedian(page.posts.map((post) => post.views));
-      const trend = postRanks.find(({ post }) =>
+      const trends = postRanks.filter(({ post }) =>
         typicalViews != null && typicalViews > 0 && Number(post.views) >= typicalViews * 1.5,
       );
-      if (trend && resultCount < RADAR_SEARCH_RESULT_LIMIT) {
+      for (const trend of trends) {
         const ratio = Number(trend.post.views) / typicalViews;
         if (await insertRadarResult({
           runId,
@@ -4232,13 +4273,33 @@ async function runRadarSearch(runId, userId) {
       await sleep(180);
     }
 
+    const visibleResultCount = Number((
+      await pool.query(
+        `select count(distinct url)::int as count
+           from radar_search_results
+          where run_id = $1 and user_id = $2 and verification_status = 'verified'`,
+        [runId, userId],
+      )
+    ).rows[0]?.count) || 0;
+    resultCount = visibleResultCount;
+
+    const finalStatus = incompleteHistories > 0 ? "partial" : "ready";
     await pool.query(
       `update radar_search_runs
-          set status = 'ready', stage = 'ready', progress = 100,
-              external_count = $2, provider = $3, completed_at = now(), updated_at = now(),
-              error_code = null, error_message = null
+          set status = $2, stage = 'ready', progress = 100,
+              external_count = $3, provider = $4, completed_at = now(), updated_at = now(),
+              error_code = $5, error_message = $6
         where id = $1 and status = 'running'`,
-      [runId, resultCount, providerLabel],
+      [
+        runId,
+        finalStatus,
+        resultCount,
+        providerLabel,
+        incompleteHistories > 0 ? "telegram_history_incomplete" : null,
+        incompleteHistories > 0
+          ? "Часть публичной истории Telegram временно не ответила. Уже проверенные результаты показаны; повтори поиск позже, чтобы дочитать источники."
+          : null,
+      ],
     );
     console.log(`[radar] run ${runId}: ${candidates.length} кандидатов, ${resultCount} проверенных результатов`);
   } catch (error) {
