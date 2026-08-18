@@ -2919,7 +2919,14 @@ try {
     const protection = await openComposerSection(targetPage, "composer-protection");
     const saveButton = protection.getByRole("button", { name: /^(Сохранить сейчас|Сохранено)$/u });
     await saveButton.waitFor();
+    const alreadySaved = await saveButton.getAttribute("data-loading") !== "true"
+      && (await saveButton.textContent())?.trim() === "Сохранено";
     await saveButton.click();
+    if (!alreadySaved) {
+      await protection.getByRole("button", { name: "Сохранено", exact: true }).waitFor({
+        timeout: UI_WAIT_TIMEOUT_MS,
+      });
+    }
     await waitFor(async () => {
       const row = (await pool.query(
         "select text from drafts where id = $1 and project_id = $2",
