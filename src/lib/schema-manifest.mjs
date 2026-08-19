@@ -5,7 +5,7 @@
  */
 export const SCHEMA_MANIFEST = Object.freeze({
   manifestVersion: 1,
-  schemaVersion: "2026-09-17.90",
+  schemaVersion: "2026-09-17.91",
   migrations: Object.freeze([
     ["20260801_account_onboarding.sql", "ac0e1f10046cf620185570ab5f40437991d08513473f67d4e93bdafa07b86614"],
     ["20260801_ai_usage_reservations.sql", "991c3a92dce16df55011d9df52fb65af1a7f4310b27f61dc519705f05528d7a0"],
@@ -95,6 +95,7 @@ export const SCHEMA_MANIFEST = Object.freeze({
     ["20260914_autopilot_build_activity.sql", "1d78e008683181f1447b9d2d7ccb209c9b81978ef937901a6af712d794d7ff49"],
     ["20260915_telegram_channel_health.sql", "752ff6947418daeee099d0f068551ab2d80647a1d45ca4d0debaec2bee4c3f74"],
     ["20260916_session_token_hashes.sql", "434acde2cee9f9a90112e5ed6083c0438a64bc596e6ffdbf8a0ff4c173adfc2c"],
+    ["20260917_growth_moves.sql", "d9d765450548fb80d74ee56923c984d2b8441b24399256cfb0a63cdf9bce7582"],
   ].map(([name, checksum]) => Object.freeze({ name, checksum }))),
   capabilities: Object.freeze({
     tables: Object.freeze([
@@ -205,6 +206,7 @@ export const SCHEMA_MANIFEST = Object.freeze({
       "project_brand_dictionaries",
       "project_brand_dictionary_entries",
       "project_typography_runs",
+      "growth_moves",
     ]),
     columns: Object.freeze([
       "users.onboarding_completed_at",
@@ -509,6 +511,21 @@ export const SCHEMA_MANIFEST = Object.freeze({
       "publication_tracking_snapshots.short_link_placement_id",
       "project_typography_runs.request_hash",
       "monthly_campaign_items.latest_post_stats_id",
+      "growth_moves.project_id",
+      "growth_moves.channel_id",
+      "growth_moves.week_start",
+      "growth_moves.kind",
+      "growth_moves.status",
+      "growth_moves.confidence",
+      "growth_moves.title",
+      "growth_moves.reason",
+      "growth_moves.prompt",
+      "growth_moves.action_href",
+      "growth_moves.source_kind",
+      "growth_moves.source_id",
+      "growth_moves.source_label",
+      "growth_moves.fingerprint",
+      "growth_moves.missing_slots",
     ]),
     constraints: Object.freeze([
       "bot_user_controls.bot_user_controls_reason_check",
@@ -734,6 +751,10 @@ export const SCHEMA_MANIFEST = Object.freeze({
       "short_link_clicks.short_link_clicks_placement_link_project_fk",
       "publication_tracking_snapshots.publication_tracking_placement_link_project_fk",
       "monthly_campaign_items.monthly_campaign_items_stats_post_project_fk",
+      "growth_moves.growth_moves_kind_check",
+      "growth_moves.growth_moves_status_check",
+      "growth_moves.growth_moves_confidence_check",
+      "growth_moves.growth_moves_channel_week_fingerprint_uniq",
     ]),
     indexes: Object.freeze([
       "ai_usage.ai_usage_user_reservation_key_uniq",
@@ -913,6 +934,8 @@ export const SCHEMA_MANIFEST = Object.freeze({
       "short_link_clicks.short_link_clicks_placement_time_idx",
       "publication_tracking_snapshots.publication_tracking_short_placement_uniq",
       "autopilot_plan.autopilot_plan_monthly_campaign_idx",
+      "growth_moves.growth_moves_channel_week_idx",
+      "growth_moves.growth_moves_channel_week_fingerprint_uniq",
     ]),
   }),
 });

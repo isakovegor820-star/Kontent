@@ -22,6 +22,17 @@ describe("app route registry", () => {
     }
   });
 
+  it("puts Growth in results and keeps it off the four-item mobile bar", () => {
+    expect(APP_NAV_GROUPS.find((group) => group.id === "results")?.routeIds).toEqual([
+      "growth",
+      "analytics",
+      "settings",
+    ]);
+    expect(APP_ROUTES.growth).toMatchObject({ href: "/app/growth", label: "Развитие" });
+    expect(APP_BOTTOM_NAV_ROUTE_IDS).toHaveLength(4);
+    expect(APP_BOTTOM_NAV_ROUTE_IDS).not.toContain("growth");
+  });
+
   it("uses the same aliases for desktop and mobile active state", () => {
     expect(isAppRouteActive("/app/composer", "calendar")).toBe(true);
     expect(isAppRouteActive("/app/competitors/41", "recon")).toBe(true);

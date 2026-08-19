@@ -67,6 +67,11 @@ export const APP_ROUTES = {
     label: "Поиск",
     activeAliases: [],
   },
+  growth: {
+    href: "/app/growth",
+    label: "Развитие",
+    activeAliases: [],
+  },
   analytics: {
     href: "/app/analytics",
     label: "Результаты",
@@ -96,7 +101,7 @@ export const APP_NAV_GROUPS = [
   {
     id: "results",
     title: "Итоги",
-    routeIds: ["analytics", "settings"],
+    routeIds: ["growth", "analytics", "settings"],
   },
 ] as const satisfies readonly {
   id: string;

@@ -25,6 +25,7 @@ import {
   ScanSearch,
   Settings,
   Sparkles,
+  TrendingUp,
   TriangleAlert,
   X,
 } from "lucide-react";
@@ -74,6 +75,7 @@ const NAV_ICONS: Record<AppNavRouteId, LucideIcon> = {
   rss: Scale,
   recon: ScanSearch,
   siteAnalysis: SearchCode,
+  growth: TrendingUp,
   analytics: BarChart3,
   settings: Settings,
 };

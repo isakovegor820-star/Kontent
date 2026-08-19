@@ -807,7 +807,11 @@ function StudioPageInner() {
   const [chatSessionOwner, setChatSessionOwner] = useState<number | null>(null);
   const [chatPersistenceStatus, setChatPersistenceStatus] = useState<ChatPersistenceStatus>("loading");
   const [mediaKind, setMediaKind] = useState<MediaKind>("image");
-  const [pickedChannelId, setPickedChannelId] = useState<number | null>(null);
+  const [pickedChannelId, setPickedChannelId] = useState<number | null>(() => {
+    if (typeof window === "undefined") return null;
+    const value = Number(new URLSearchParams(window.location.search).get("channel"));
+    return Number.isSafeInteger(value) && value > 0 ? value : null;
+  });
   // Нормализованные параметры публикации нужны генератору и проверке результата.
   // Пользовательский голос и формат редактируются только в единой настройке Авроры.
   const [postSettings, setPostSettings] = useState<PostSettings>(() => normalizePostSettings(DEFAULT_POST_SETTINGS));
@@ -1200,6 +1204,33 @@ function StudioPageInner() {
           kind: "danger",
           title: "Не удалось открыть вопрос",
           body: "Вернитесь в запросы аудитории и повторите создание ответа.",
+        });
+      });
+    return () => controller.abort();
+  }, [chatSessionOwner, searchParams, sessionOwner, showToast]);
+
+  useEffect(() => {
+    if (chatSessionOwner !== sessionOwner || sessionOwner == null) return;
+    const moveId = Number(searchParams.get("growthMove"));
+    if (
+      searchParams.get("intent") !== "create"
+      || !Number.isSafeInteger(moveId)
+      || moveId <= 0
+    ) return;
+    const controller = new AbortController();
+    void fetch(`/api/growth/moves/${moveId}`, { cache: "no-store", signal: controller.signal })
+      .then(async (response) => {
+        const body = await response.json().catch(() => null) as { move?: { prompt?: string } } | null;
+        if (!response.ok || typeof body?.move?.prompt !== "string") throw new Error("growth_move_load_failed");
+        setWorkspaceMode("chat");
+        setDraft(body.move.prompt);
+      })
+      .catch((error) => {
+        if ((error as Error)?.name === "AbortError") return;
+        showToast({
+          kind: "danger",
+          title: "Не удалось открыть ход",
+          body: "Вернись в Развитие и нажми «Сделать» ещё раз.",
         });
       });
     return () => controller.abort();

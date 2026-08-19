@@ -179,8 +179,13 @@ export default function AutopilotPage() {
   } | null>(null);
   // Выбранный канал. Список и выбор — как на «Конкурентах» и «Трендах»: общий компонент,
   // общий источник (стор), чтобы человек узнавал один и тот же элемент на всех экранах.
-  const [picked, setPicked] = useState<number | null>(null);
+  const [picked, setPicked] = useState<number | null>(() => {
+    if (typeof window === "undefined") return null;
+    const value = Number(new URLSearchParams(window.location.search).get("channel"));
+    return Number.isSafeInteger(value) && value > 0 ? value : null;
+  });
   const { tgChannels, channelId: chId } = useChannelChoice(s.realChannels, picked);
+  const [growthNotice, setGrowthNotice] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     const requestedChannelId = chId;
@@ -246,6 +251,29 @@ export default function AutopilotPage() {
       loadAbort.current?.abort();
     };
   }, [load]);
+
+  useEffect(() => {
+    const moveId = Number(new URLSearchParams(window.location.search).get("growthMove"));
+    if (!Number.isSafeInteger(moveId) || moveId <= 0) return;
+    const controller = new AbortController();
+    void fetch(`/api/growth/moves/${moveId}`, { cache: "no-store", signal: controller.signal })
+      .then(async (response) => {
+        const body = await response.json().catch(() => null) as {
+          move?: { reason?: string; missingSlots?: number | null };
+        } | null;
+        if (!response.ok || !body?.move) return;
+        const missing = body.move.missingSlots;
+        setGrowthNotice(
+          missing
+            ? `Развитие: не хватает ${missing} постов. Собери план и одобри слоты.`
+            : (body.move.reason ?? "Развитие: закрой дыру в ритме через план на неделю."),
+        );
+      })
+      .catch((error) => {
+        if ((error as Error)?.name === "AbortError") return;
+      });
+    return () => controller.abort();
+  }, []);
 
   const building = data?.plan?.status === "building";
   useEffect(() => {
@@ -708,6 +736,11 @@ export default function AutopilotPage() {
       subtitle="Выбери модель и горизонт. ИИ соберёт непохожие посты, а ты проверишь их перед публикацией."
     >
       {picker}
+      {growthNotice && (
+        <Card className="mb-5 p-4">
+          <p className="text-[14px] leading-relaxed text-text">{growthNotice}</p>
+        </Card>
+      )}
       {/* Резюме настроек. Редактирование живёт в одном месте — «Настройке Авроры». */}
       <Card className="mb-5 p-4 sm:p-5">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">

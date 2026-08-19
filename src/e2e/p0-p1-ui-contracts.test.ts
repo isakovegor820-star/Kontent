@@ -88,6 +88,7 @@ describe("P0 desktop/mobile navigation and Library action contract", () => {
       ["/app/trends?channel=18", "recon"],
       ["/app/radar", "recon"],
       ["/app/site-analysis/9", "siteAnalysis"],
+      ["/app/growth", "growth"],
     ] as const;
     for (const [url, routeId] of cases) {
       expect(isAppRouteActive(new URL(url, "https://aurora.test").pathname, routeId)).toBe(true);
