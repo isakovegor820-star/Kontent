@@ -30,9 +30,33 @@ export const AUTOPILOT_ENGINE_OPTIONS = Object.freeze([
   },
 ]);
 
-// Fast default for high-volume plans. GPT-5.4 remains selectable for deliberately complex
-// work, but its upstream currently returns intermittent HTTP 500/timeouts under load.
-export const DEFAULT_AUTOPILOT_ENGINE = "navy-minimax-m3";
+// DeepSeek Flash is the only Navy model that reliably finishes an Autopilot topic/post
+// inside the worker attempt budget. MiniMax and GPT-5.4 stay selectable, but they are
+// too slow or too bursty to be the automatic first hop.
+export const DEFAULT_AUTOPILOT_ENGINE = "navy-deepseek-flash";
+export const AUTOPILOT_FAST_FALLBACK_FLEET = Object.freeze([
+  "navy-deepseek-flash",
+  "navy-gpt-5-4",
+  "navy-qwen-3-6",
+  "navy-minimax-m3",
+]);
+
+export function autopilotFallbackEngines(primary) {
+  return AUTOPILOT_FAST_FALLBACK_FLEET.filter((engine) => engine !== primary);
+}
+
+export function autopilotAiTimeouts(env = process.env) {
+  const attemptRaw = Number(env.AUTOPILOT_AI_ATTEMPT_TIMEOUT_MS);
+  const overallRaw = Number(env.AUTOPILOT_AI_OVERALL_TIMEOUT_MS);
+  const attempt = Number.isFinite(attemptRaw)
+    ? Math.min(60_000, Math.max(8_000, Math.round(attemptRaw)))
+    : 30_000;
+  const overall = Number.isFinite(overallRaw)
+    ? Math.min(180_000, Math.max(attempt * 2, Math.round(overallRaw)))
+    : Math.max(90_000, attempt * 3);
+  return { attemptTimeoutMs: attempt, overallTimeoutMs: overall };
+}
+
 export const AUTOPILOT_PLANNING_MONTHS = Object.freeze([1, 2, 3]);
 export const AUTOPILOT_WEEKS_PER_MONTH = 4;
 export const MIN_AUTOPILOT_PLANNING_WEEKS = 1;

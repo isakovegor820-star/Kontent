@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  AUTOPILOT_FAST_FALLBACK_FLEET,
   DEFAULT_AUTOPILOT_ENGINE,
   applyAutopilotPresentation,
+  autopilotAiTimeouts,
+  autopilotFallbackEngines,
   autopilotPresentationVariant,
   autopilotTextSimilarity,
   findAutopilotNearDuplicate,
@@ -12,8 +15,14 @@ import {
 } from "./autopilot-config.mjs";
 
 describe("autopilot planning config", () => {
-  it("uses the fast healthy engine for new plans", () => {
-    expect(DEFAULT_AUTOPILOT_ENGINE).toBe("navy-minimax-m3");
+  it("uses the fast healthy engine for new plans and keeps slow models as later fallbacks", () => {
+    expect(DEFAULT_AUTOPILOT_ENGINE).toBe("navy-deepseek-flash");
+    expect(AUTOPILOT_FAST_FALLBACK_FLEET[0]).toBe("navy-deepseek-flash");
+    expect(autopilotFallbackEngines("navy-gpt-5-4")[0]).toBe("navy-deepseek-flash");
+    expect(autopilotAiTimeouts({}).attemptTimeoutMs).toBe(30_000);
+    expect(autopilotAiTimeouts({}).overallTimeoutMs).toBe(90_000);
+    expect(autopilotAiTimeouts({ AUTOPILOT_AI_ATTEMPT_TIMEOUT_MS: "15000" }).attemptTimeoutMs)
+      .toBe(15_000);
   });
 
   it("maps 1–3 months to four-week planning blocks and caps oversized plans", () => {

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { AiCompletionError, completeAiText } from "./ai-completion-service.mjs";
 import { configuredAiConcurrency, configuredServiceEngine } from "./ai-engine-policy.mjs";
+import { autopilotFallbackEngines } from "./autopilot-config.mjs";
 
 const request = { system: "SYSTEM", user: "USER", temperature: 0.2, maxTokens: 300 };
 
@@ -114,6 +115,36 @@ describe("shared direct/background AI completion service", () => {
       circuitFailureThreshold: 20,
     })).resolves.toMatchObject({ engine: "navy-minimax-m3", text: "RECOVERED" });
     expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("recovers an Autopilot call by jumping to Flash instead of waiting on MiniMax", async () => {
+    const env = { NAVYAI_API_KEY: "secret" };
+    const fetchImpl = vi.fn((_url, init) => {
+      const model = JSON.parse(init.body).model;
+      if (model === "gpt-5.4") {
+        return new Promise((_resolve, reject) => {
+          init.signal.addEventListener("abort", () => reject(init.signal.reason), { once: true });
+        });
+      }
+      return Promise.resolve(Response.json({
+        choices: [{ message: { content: "Разбор :: Проверка оферты" }, finish_reason: "stop" }],
+      }));
+    });
+
+    await expect(completeAiText({ ...request, engine: "navy-gpt-5-4" }, {
+      env,
+      fetchImpl,
+      timeoutMs: 80,
+      overallTimeoutMs: 400,
+      maxAttempts: 4,
+      circuitFailureThreshold: 20,
+      fallbackEngines: autopilotFallbackEngines("navy-gpt-5-4"),
+    })).resolves.toMatchObject({
+      engine: "navy-deepseek-flash",
+      text: "Разбор :: Проверка оферты",
+      fallbackUsed: true,
+    });
+    expect(JSON.parse(fetchImpl.mock.calls[1][1].body).model).toBe("deepseek-v4-flash");
   });
 
   it("can disable provider fallback for one evidence-sensitive request", async () => {

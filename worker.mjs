@@ -165,6 +165,8 @@ import {
   AUTOPILOT_ENGINE_OPTIONS,
   DEFAULT_AUTOPILOT_ENGINE,
   applyAutopilotPresentation,
+  autopilotAiTimeouts,
+  autopilotFallbackEngines,
   autopilotPresentationVariant,
   findAutopilotNearDuplicate,
   plannedPostCountForWeeks,
@@ -352,29 +354,14 @@ const PUBLICATION_ONLY = process.env.AURORA_WORKER_MODE === "publication";
 // Редакторские нарушения обычно исправляются за одну-две попытки. Дальнейшие переписывания
 // при недоступной semantic-проверке или пустой базе знаний только умножают одинаковые вызовы.
 const AUTOPILOT_QUALITY_REWRITE_ATTEMPTS = 2;
-const AUTOPILOT_AI_ATTEMPT_TIMEOUT_MS = Math.min(
-  30_000,
-  Math.max(5_000, Number(process.env.AUTOPILOT_AI_ATTEMPT_TIMEOUT_MS) || 15_000),
-);
-const AUTOPILOT_AI_OVERALL_TIMEOUT_MS = Math.min(
-  60_000,
-  Math.max(
-    AUTOPILOT_AI_ATTEMPT_TIMEOUT_MS * 2,
-    Number(process.env.AUTOPILOT_AI_OVERALL_TIMEOUT_MS) || 40_000,
-  ),
-);
+const {
+  attemptTimeoutMs: AUTOPILOT_AI_ATTEMPT_TIMEOUT_MS,
+  overallTimeoutMs: AUTOPILOT_AI_OVERALL_TIMEOUT_MS,
+} = autopilotAiTimeouts(process.env);
 const AUTOPILOT_AI_CIRCUIT_OPEN_MS = Math.min(
   15 * 60_000,
   Math.max(60_000, Number(process.env.AUTOPILOT_AI_CIRCUIT_OPEN_MS) || 5 * 60_000),
 );
-const AUTOPILOT_FAST_FALLBACK_FLEET = Object.freeze([
-  "navy-minimax-m3",
-  "navy-deepseek-flash",
-  "navy-gpt-5-4",
-  "navy-qwen-3-6",
-]);
-const autopilotFallbackEngines = (primary) => AUTOPILOT_FAST_FALLBACK_FLEET
-  .filter((engine) => engine !== primary);
 const AUTOPILOT_SEMANTIC_TIMEOUT_MS = Math.min(
   30_000,
   Math.max(5_000, Number(process.env.AUTOPILOT_SEMANTIC_TIMEOUT_MS) || 20_000),
@@ -4693,7 +4680,7 @@ async function askAI(
       localTimeoutMs: WORKER_LOCAL_AI_TIMEOUT_MS,
       ...(surface === "autopilot-plan"
         ? {
-            maxAttempts: 3,
+            maxAttempts: 4,
             overallTimeoutMs: AUTOPILOT_AI_OVERALL_TIMEOUT_MS,
             circuitFailureThreshold: 1,
             circuitOpenMs: AUTOPILOT_AI_CIRCUIT_OPEN_MS,
@@ -5701,7 +5688,7 @@ async function buildAutopilotPlan(
   const autopilotConcurrency = configuredAiConcurrency(
     generationEngine,
     process.env,
-    generationEngine === "navy-minimax-m3" ? 4 : 3,
+    generationEngine === "navy-minimax-m3" ? 2 : 3,
   );
   const items = await mapConcurrent(topics, autopilotConcurrency, async (t, i) => {
     const { topic, rubric } = t;

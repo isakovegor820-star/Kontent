@@ -88,7 +88,7 @@ describe("POST /api/settings/channel", () => {
     expect(statements[0]).toBe("begin");
     expect(mocks.query).toHaveBeenCalledWith(
       expect.stringContaining("generation_engine"),
-      [7, 21, "navy-minimax-m3"],
+      [7, 21, "navy-deepseek-flash"],
     );
     expect(statements.some((sql) => sql.includes("insert into content_brief"))).toBe(true);
     expect(statements.some((sql) => sql.includes("update autopilot_settings"))).toBe(true);

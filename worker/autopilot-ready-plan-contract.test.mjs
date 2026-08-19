@@ -22,13 +22,13 @@ describe("Autopilot ready-plan generation contract", () => {
   });
 
   it("keeps provider failure inside a short attempt budget with a fast cloud fallback", () => {
-    expect(source).toContain("const AUTOPILOT_AI_ATTEMPT_TIMEOUT_MS");
-    expect(source).toContain("const AUTOPILOT_AI_OVERALL_TIMEOUT_MS");
-    expect(source).toContain("const AUTOPILOT_FAST_FALLBACK_FLEET");
+    expect(source).toContain("attemptTimeoutMs: AUTOPILOT_AI_ATTEMPT_TIMEOUT_MS");
+    expect(source).toContain("overallTimeoutMs: AUTOPILOT_AI_OVERALL_TIMEOUT_MS");
     expect(source).toContain("fallbackEngines: autopilotFallbackEngines(selectedEngine)");
+    expect(source).toContain("maxAttempts: 4");
     expect(source).toContain("circuitFailureThreshold: 1");
     expect(source).toContain("process.env.AUTOPILOT_SEMANTIC_ENGINE || DEFAULT_AUTOPILOT_ENGINE");
-    expect(source).toContain('generationEngine === "navy-minimax-m3" ? 4 : 3');
+    expect(source).toContain('generationEngine === "navy-minimax-m3" ? 2 : 3');
   });
 
   it("rechecks full-auto eligibility while locking settings before publication", () => {
