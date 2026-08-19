@@ -1,0 +1,62 @@
+# Production deploy to the Aurora VPS.
+# Credentials live in the GitHub environment `production`. Agents must trigger
+# this workflow instead of asking the user for SSH access.
+name: Deploy production
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Configure SSH
+        env:
+          PRODUCTION_SSH_KEY: ${{ secrets.PRODUCTION_SSH_KEY }}
+          PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
+        run: |
+          test -n "$PRODUCTION_SSH_KEY"
+          test -n "$PRODUCTION_SSH_HOST"
+          umask 077
+          mkdir -p ~/.ssh
+          printf '%s\n' "$PRODUCTION_SSH_KEY" > ~/.ssh/deploy_key
+          ssh-keyscan -H -T 10 "$PRODUCTION_SSH_HOST" >> ~/.ssh/known_hosts
+
+      - name: Deploy release
+        env:
+          PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
+          PRODUCTION_SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
+          AURORA_DEPLOY_SHA: ${{ github.sha }}
+        run: |
+          test -n "$PRODUCTION_SSH_USER"
+          ssh -i ~/.ssh/deploy_key \
+            -o IdentitiesOnly=yes \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=8 \
+            "${PRODUCTION_SSH_USER}@${PRODUCTION_SSH_HOST}" \
+            "AURORA_DEPLOY_SHA=${AURORA_DEPLOY_SHA} bash -s" \
+            < scripts/deploy-production.sh
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Verify production deployment
+        env:
+          AURORA_DEPLOYMENT_SMOKE_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
+          AURORA_DEPLOYMENT_SMOKE_PROFILE: full
+          AURORA_READINESS_TOKEN: ${{ secrets.AURORA_READINESS_TOKEN }}
+        run: npm run test:deployment-smoke

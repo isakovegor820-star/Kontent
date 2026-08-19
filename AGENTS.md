@@ -14,3 +14,11 @@ This version has breaking changes — APIs, conventions, and file structure may 
   as the normal local dev command.
 - Before testing Autopilot, verify that the dedicated BullMQ `autopilot-plans` queue reports
   at least one worker. The `stats` queue is no longer its execution path.
+
+## Production deploys
+
+- Never ask the user for SSH host, password, or keys.
+- Deploy only via `gh workflow run "Deploy production" --ref main` after CI is green.
+  Watch the run with `gh run watch`.
+- Server credentials already live in the GitHub environment `production`.
+- Do not print secrets or `.env.production`.

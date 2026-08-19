@@ -1,0 +1,16 @@
+---
+description: Deploy Aurora through GitHub Actions, never ask for the VPS
+alwaysApply: true
+---
+
+# Production deploy
+
+- Never ask the user for SSH host, password, keys, or a one-off server login.
+- After CI is green, deploy with
+  `gh workflow run "Deploy production" --ref main`
+  and watch `gh run watch`.
+- Host, user, deploy key, public URL, and readiness token already live in the
+  GitHub environment `production`.
+- Do not print secrets, `.env.production`, or the deploy key.
+- Do not SSH to production unless the user explicitly asks to debug the machine
+  itself. A normal release is the workflow above.

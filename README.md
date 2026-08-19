@@ -102,9 +102,12 @@ publication worker, AI, почты, uploads, token keyring и tracking. Он т�
 security headers и привязку всех framework scripts/styles к response-specific CSP nonce
 на `/` и `/bot`. Скрипт не следует redirect, принимает только публичный HTTPS origin без
 credentials/query/hash и ограничивает размер ответов. В GitHub Actions тот же gate
-запускается вручную workflow `Production deployment smoke`: защищаемое environment
-`production` должно содержать variable `PRODUCTION_BASE_URL` и secret
-`AURORA_READINESS_TOKEN`.
+запускается вручную workflow `Production deployment smoke` и автоматически после
+workflow `Deploy production`. Защищаемое environment `production` должно содержать
+variable `PRODUCTION_BASE_URL` и secrets `AURORA_READINESS_TOKEN`,
+`PRODUCTION_SSH_HOST`, `PRODUCTION_SSH_USER`, `PRODUCTION_SSH_KEY`.
+Обычный релиз — `gh workflow run "Deploy production" --ref main`; агентам не
+нужен SSH.
 
 Live Telegram smoke запускается отдельно и никогда не использует обычные
 `TG_BOT_TOKEN`/`TG_CHAT_ID`. Для него нужны выделенные sandbox-бот и чат:
