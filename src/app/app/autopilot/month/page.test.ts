@@ -28,7 +28,11 @@ describe("monthly campaign page contract", () => {
     expect(studio).toContain('searchParams.get("monthlyItem")');
     expect(studio).toContain("/api/monthly-campaigns/");
     expect(studio).toContain("monthlyCampaignStudioPrompt");
+    expect(studio).toContain("setDraft(prompt)");
     expect(studio).toContain("from=autopilot-month");
+    expect(studio).toContain("monthlyCampaignContextRef");
     expect(studio).not.toContain("prompt=");
+    expect(studio).not.toContain("setPendingMonthlyCampaignGeneration");
+    expect(studio).not.toContain("pendingMonthlyCampaignGeneration");
   });
 });

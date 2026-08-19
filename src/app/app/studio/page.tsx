@@ -151,13 +151,10 @@ type PendingAudienceQuestionGeneration = {
   requestKey: string;
   resultClientKey: string;
 };
-type PendingMonthlyCampaignGeneration = {
+type MonthlyCampaignStudioContext = {
   campaignId: number;
   planId: number;
   itemId: number;
-  prompt: string;
-  requestKey: string;
-  channelId: number | null;
 };
 
 type WorkspaceMode = "chat" | "studio";
@@ -839,7 +836,6 @@ function StudioPageInner() {
   const [contextDraft, setContextDraft] = useState<ServerDraft | null>(null);
   const [pendingReferenceGeneration, setPendingReferenceGeneration] = useState<PendingReferenceGeneration | null>(null);
   const [pendingAudienceQuestionGeneration, setPendingAudienceQuestionGeneration] = useState<PendingAudienceQuestionGeneration | null>(null);
-  const [pendingMonthlyCampaignGeneration, setPendingMonthlyCampaignGeneration] = useState<PendingMonthlyCampaignGeneration | null>(null);
   const [postSettingsReady, setPostSettingsReady] = useState(false);
   const [postSettingsSaving, setPostSettingsSaving] = useState(false);
   const [pendingEngineSuggestion, setPendingEngineSuggestion] = useState<EngineInfo | null>(null);
@@ -866,7 +862,8 @@ function StudioPageInner() {
   });
   const startedReferenceDraftsRef = useRef<Set<number>>(new Set());
   const startedAudienceQuestionsRef = useRef<Set<string>>(new Set());
-  const startedMonthlyItemsRef = useRef<Set<number>>(new Set());
+  const loadedMonthlyItemsRef = useRef<Set<number>>(new Set());
+  const monthlyCampaignContextRef = useRef<MonthlyCampaignStudioContext | null>(null);
   const sessionRevisionRef = useRef(0);
   const sessionSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sessionSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
@@ -1257,7 +1254,7 @@ function StudioPageInner() {
   }, [chatSessionOwner, searchParams, sessionOwner, showToast]);
 
   // A monthly topic URL carries only owned ids. The write prompt is built here
-  // from the campaign API, never copied into the query string.
+  // from the campaign API and left in the input — the user sends it, or not.
   useEffect(() => {
     if (chatSessionOwner !== sessionOwner || sessionOwner == null) return;
     const campaignId = Number(searchParams.get("monthlyCampaign"));
@@ -1273,7 +1270,7 @@ function StudioPageInner() {
       || !Number.isSafeInteger(itemId)
       || itemId <= 0
     ) return;
-    if (startedMonthlyItemsRef.current.has(itemId)) return;
+    if (loadedMonthlyItemsRef.current.has(itemId)) return;
     const controller = new AbortController();
     void fetch(`/api/monthly-campaigns/${campaignId}`, { cache: "no-store", signal: controller.signal })
       .then(async (response) => {
@@ -1293,17 +1290,13 @@ function StudioPageInner() {
         const destinationChannelId = Number.isSafeInteger(channelFromUrl) && channelFromUrl > 0
           ? channelFromUrl
           : null;
+        loadedMonthlyItemsRef.current.add(itemId);
+        monthlyCampaignContextRef.current = { campaignId, planId, itemId };
         if (destinationChannelId) setPickedChannelId(destinationChannelId);
         setWorkspaceMode("chat");
         setDraft(prompt);
-        setPendingMonthlyCampaignGeneration({
-          campaignId,
-          planId,
-          itemId,
-          prompt,
-          requestKey: `monthly-item:${itemId}:studio`,
-          channelId: destinationChannelId,
-        });
+        window.history.replaceState(null, "", "/app/studio?mode=chat");
+        queueMicrotask(() => inputRef.current?.focus());
       })
       .catch((error) => {
         if ((error as Error)?.name === "AbortError") return;
@@ -1989,6 +1982,8 @@ function StudioPageInner() {
       return;
     }
     setPendingBrief(null);
+    const monthly = monthlyCampaignContextRef.current;
+    const destination = opts?.channelId ?? channelId;
     const gen: Gen = {
       cmd,
       input: opts?.input ?? text,
@@ -2001,16 +1996,17 @@ function StudioPageInner() {
       referenceDraftId: opts?.referenceDraftId ?? contextDraft?.id,
       referenceDraftVersion: opts?.referenceDraftVersion ?? contextDraft?.version,
       referenceIntent: opts?.autoOpenComposer ? "create" : contextDraft ? "discuss" : undefined,
-      channelId: opts?.channelId ?? channelId,
+      channelId: destination,
       postSettings: opts?.postSettings ?? postSettings,
       autoOpenComposer: opts?.autoOpenComposer,
-      resultClientKey: opts?.resultClientKey,
+      resultClientKey: opts?.resultClientKey
+        ?? (monthly && destination ? `monthly-item-studio:${monthly.itemId}:${destination}` : undefined),
       audienceQuestionId: opts?.audienceQuestionId,
       audienceQuestionVersion: opts?.audienceQuestionVersion,
       audienceQuestionGenerationKey: opts?.audienceQuestionGenerationKey,
-      monthlyCampaignId: opts?.monthlyCampaignId,
-      monthlyPlanId: opts?.monthlyPlanId,
-      monthlyItemId: opts?.monthlyItemId,
+      monthlyCampaignId: opts?.monthlyCampaignId ?? monthly?.campaignId,
+      monthlyPlanId: opts?.monthlyPlanId ?? monthly?.planId,
+      monthlyItemId: opts?.monthlyItemId ?? monthly?.itemId,
       suggestMedia: opts?.suggestMedia,
     };
     const aiId = uid("m");
@@ -2096,34 +2092,6 @@ function StudioPageInner() {
     // `ask` intentionally captures the selected channel and current post settings.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [channelId, enginesLoading, pendingAudienceQuestionGeneration, postSettingsReady]);
-
-  useEffect(() => {
-    const pending = pendingMonthlyCampaignGeneration;
-    if (
-      !pending
-      || !postSettingsReady
-      || enginesLoading
-      || startedMonthlyItemsRef.current.has(pending.itemId)
-    ) return;
-    const destination = pending.channelId && pending.channelId > 0 ? pending.channelId : channelId;
-    if (!destination) return;
-    startedMonthlyItemsRef.current.add(pending.itemId);
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- start one generation after channel/settings are ready
-    ask(pending.prompt, {
-      cmd: "write",
-      input: pending.prompt,
-      skipBrief: true,
-      requestKey: pending.requestKey,
-      autoOpenComposer: true,
-      resultClientKey: `monthly-item-studio:${pending.itemId}:${destination}`,
-      monthlyCampaignId: pending.campaignId,
-      monthlyPlanId: pending.planId,
-      monthlyItemId: pending.itemId,
-      channelId: destination,
-    });
-    // `ask` intentionally captures the selected channel and current post settings.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [channelId, enginesLoading, pendingMonthlyCampaignGeneration, postSettingsReady]);
 
   const stop = () => {
     const stopped = abortStudioStream(streamRef.current);
