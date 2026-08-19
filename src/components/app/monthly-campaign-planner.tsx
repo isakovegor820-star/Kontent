@@ -1,34 +1,45 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDown,
   ArrowUp,
   CalendarDays,
+  CalendarRange,
   Check,
   ChevronDown,
   CircleAlert,
   FilePenLine,
   GripVertical,
+  List,
   Loader2,
+  Pencil,
+  Plus,
   RefreshCw,
   Send,
+  Sparkles,
 } from "lucide-react";
 
 import { ChannelPicker, useChannelChoice } from "@/components/app/channel-picker";
 import { Button } from "@/components/ui/button";
-import { Badge, Checkbox, Field, Input, Textarea } from "@/components/ui/primitives";
+import { Badge, Card, Checkbox, EmptyState, Field, Input, Tabs, Textarea } from "@/components/ui/primitives";
 import { RUBRICS, type Brief } from "@/lib/brief";
 import {
+  campaignEditorialWeeks,
   campaignMonthRange,
+  campaignMonthTitle,
   equalPracticeMix,
+  monthCalendarCells,
+  monthlyCampaignWorkflowStep,
   parseMonthlyCampaignDetail,
   parseMonthlyCampaignList,
   type MonthlyCampaignClientDetail,
   type MonthlyCampaignClientItem,
   type MonthlyCampaignClientPlan,
   type MonthlyCampaignClientSummary,
+  type MonthlyCampaignEditorialWeek,
   type MonthlyCampaignRole,
 } from "@/lib/monthly-campaign-client";
 import { useStore } from "@/lib/store";
@@ -55,6 +66,8 @@ type CampaignForm = {
   importantDateLabel: string;
 };
 
+type ViewMode = "weeks" | "calendar";
+
 const FUNNELS = [
   { value: "awareness" as const, label: "Узнаваемость" },
   { value: "consideration" as const, label: "Выбор решения" },
@@ -68,6 +81,14 @@ const STATUS_COPY = {
   in_review: { label: "На согласовании", tone: "brand" as const },
   approved: { label: "Согласован", tone: "success" as const },
 };
+
+const WORKFLOW = [
+  { step: 1 as const, title: "Темы месяца", hint: "Сетка на каждый день" },
+  { step: 2 as const, title: "Согласование", hint: "Порядок и формулировки" },
+  { step: 3 as const, title: "Первая неделя", hint: "Полные тексты" },
+];
+
+const WEEKDAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"] as const;
 
 const REGENERATION_TERMINAL = new Set(["completed", "stale", "failed", "cancelled"]);
 
@@ -110,9 +131,12 @@ function periodLabel(campaign: MonthlyCampaignClientSummary): string {
     timeZone: "UTC",
     day: "numeric",
     month: "long",
-    year: "numeric",
   });
   return `${format.format(new Date(`${campaign.startsOn}T00:00:00.000Z`))} — ${format.format(new Date(`${campaign.endsOn}T00:00:00.000Z`))}`;
+}
+
+function dayNumber(date: string): string {
+  return String(Number(date.slice(8, 10)));
 }
 
 function apiError(code: string | undefined): string {
@@ -130,21 +154,37 @@ function apiError(code: string | undefined): string {
     worker_unavailable: "Фоновая подготовка сейчас недоступна. Запусти приложение вместе с обработчиком задач и повтори.",
     engine_unavailable: "Для выбранной модели не настроено подключение.",
     no_brief: "Сначала настрой Аврору для выбранного канала.",
+    invalid_channel: "Выбери активный канал проекта — в него уйдёт черновик.",
   };
   return messages[code ?? ""] ?? "Действие не выполнено. Введённые данные сохранены — попробуй ещё раз.";
-}
-
-function chunkWeeks(items: MonthlyCampaignClientItem[]): MonthlyCampaignClientItem[][] {
-  const weeks: MonthlyCampaignClientItem[][] = [];
-  for (let index = 0; index < items.length; index += 7) weeks.push(items.slice(index, index + 7));
-  return weeks;
 }
 
 function latestPlan(detail: MonthlyCampaignClientDetail | null): MonthlyCampaignClientPlan | null {
   return detail?.plans[0] ?? null;
 }
 
+function campaignChipLabel(
+  campaign: MonthlyCampaignClientSummary,
+  campaigns: readonly MonthlyCampaignClientSummary[],
+): string {
+  const title = campaignMonthTitle(campaign.startsOn);
+  const sameMonth = campaigns.filter((entry) => entry.startsOn === campaign.startsOn).length > 1;
+  return sameMonth ? `${title} · ${campaign.goal}` : title;
+}
+
+function syncCampaignQuery(campaignId: number | null) {
+  const url = new URL(window.location.href);
+  if (campaignId) url.searchParams.set("campaign", String(campaignId));
+  else url.searchParams.delete("campaign");
+  window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+}
+
+function prefersReducedMotion() {
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
 export function MonthlyCampaignPlanner() {
+  const router = useRouter();
   const store = useStore();
   const [pickedChannel, setPickedChannel] = useState<number | null>(null);
   const { tgChannels, channelId } = useChannelChoice(store.realChannels, pickedChannel);
@@ -155,6 +195,7 @@ export function MonthlyCampaignPlanner() {
   const [detail, setDetail] = useState<MonthlyCampaignClientDetail | null>(null);
   const [form, setForm] = useState<CampaignForm>(blankForm);
   const [loading, setLoading] = useState(true);
+  const [creating, setCreating] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<{ kind: "error" | "success" | "info"; text: string } | null>(null);
   const [advanced, setAdvanced] = useState(false);
@@ -216,12 +257,12 @@ export function MonthlyCampaignPlanner() {
       });
       setCampaigns(parsedCampaigns);
       const requestedCampaignId = Number(new URLSearchParams(window.location.search).get("campaign"));
-      setCampaignId(
-        Number.isSafeInteger(requestedCampaignId)
-          && parsedCampaigns.some((campaign) => campaign.id === requestedCampaignId)
-          ? requestedCampaignId
-          : parsedCampaigns[0]?.id ?? null,
-      );
+      const selectedId = Number.isSafeInteger(requestedCampaignId)
+        && parsedCampaigns.some((campaign) => campaign.id === requestedCampaignId)
+        ? requestedCampaignId
+        : parsedCampaigns[0]?.id ?? null;
+      setCampaignId(selectedId);
+      setCreating(parsedCampaigns.length === 0);
       setForm((current) => ({ ...current, month: current.month || nextMonth() }));
     }).catch(() => {
       if (!cancelled) setMessage({ kind: "error", text: "Не удалось загрузить кампании. Обнови страницу." });
@@ -232,7 +273,7 @@ export function MonthlyCampaignPlanner() {
   }, []);
 
   useEffect(() => {
-    if (!campaignId) return;
+    if (!campaignId || creating) return;
     let cancelled = false;
     queueMicrotask(() => void loadDetail(campaignId).catch(() => {
       if (!cancelled) setMessage({ kind: "error", text: "Не удалось открыть кампанию. Выбери её ещё раз." });
@@ -240,7 +281,12 @@ export function MonthlyCampaignPlanner() {
     return () => {
       cancelled = true;
     };
-  }, [campaignId, loadDetail]);
+  }, [campaignId, creating, loadDetail]);
+
+  useEffect(() => {
+    if (!campaignId) return;
+    syncCampaignQuery(campaignId);
+  }, [campaignId]);
 
   useEffect(() => {
     if (!channelId) return;
@@ -295,28 +341,28 @@ export function MonthlyCampaignPlanner() {
     return errors;
   }, [form]);
 
+  const focusInvalidField = () => {
+    if (!campaignMonthRange(form.month)) monthRef.current?.focus();
+    else if (!form.goal.trim()) goalRef.current?.focus();
+    else if (!form.audience.trim()) audienceRef.current?.focus();
+    else if (!equalPracticeMix(form.practices.split(",")).length) practicesRef.current?.focus();
+    else if (form.rubrics.length < 3 || form.rubrics.length > 6) {
+      setAdvanced(true);
+      requestAnimationFrame(() => document.querySelector<HTMLElement>("#campaign-rubrics")?.focus());
+    } else if (!form.funnelStages.length) {
+      setAdvanced(true);
+      requestAnimationFrame(() => document.querySelector<HTMLElement>("#campaign-funnels")?.focus());
+    } else if (form.importantDate && !form.importantDateLabel.trim()) {
+      setAdvanced(true);
+      requestAnimationFrame(() => importantDateLabelRef.current?.focus());
+    }
+  };
+
   const createCampaign = async () => {
     setCreationAttempted(true);
     if (!project || !canCreate || validation.length) {
       setMessage({ kind: "error", text: validation[0] ?? "Для создания кампании нужна роль автора или владельца." });
-      if (validation.length) {
-        if (!campaignMonthRange(form.month)) monthRef.current?.focus();
-        else if (!form.goal.trim()) goalRef.current?.focus();
-        else if (!form.audience.trim()) audienceRef.current?.focus();
-        else if (form.rubrics.length < 3 || form.rubrics.length > 6) {
-          setAdvanced(true);
-          requestAnimationFrame(() => document.querySelector<HTMLElement>("#campaign-rubrics")?.focus());
-        } else if (!equalPracticeMix(form.practices.split(",")).length) {
-          setAdvanced(true);
-          requestAnimationFrame(() => practicesRef.current?.focus());
-        } else if (!form.funnelStages.length) {
-          setAdvanced(true);
-          requestAnimationFrame(() => document.querySelector<HTMLElement>("#campaign-funnels")?.focus());
-        } else if (form.importantDate && !form.importantDateLabel.trim()) {
-          setAdvanced(true);
-          requestAnimationFrame(() => importantDateLabelRef.current?.focus());
-        }
-      }
+      if (validation.length) focusInvalidField();
       return;
     }
     const range = campaignMonthRange(form.month)!;
@@ -367,9 +413,10 @@ export function MonthlyCampaignPlanner() {
       });
       const planPayload = await planResponse.json().catch(() => null);
       if (!planResponse.ok || planPayload?.ok !== true) throw new Error(planPayload?.error || "server");
+      setCreating(false);
       await loadCampaigns(created.id);
       await loadDetail(created.id);
-      setMessage({ kind: "success", text: "Кампания создана. Проверь темы и отправь план на согласование." });
+      setMessage({ kind: "success", text: "Сетка собрана. Проверь темы и отправь план на согласование." });
     } catch (error) {
       setMessage({ kind: "error", text: apiError(error instanceof Error ? error.message : undefined) });
       await loadCampaigns().catch(() => {});
@@ -499,18 +546,104 @@ export function MonthlyCampaignPlanner() {
     }
   };
 
-  const weeks = plan ? chunkWeeks(plan.items) : [];
+  const openTopic = async (item: MonthlyCampaignClientItem, destination: "composer" | "studio") => {
+    if (!detail || !plan) return;
+    if (!channelId) {
+      setMessage({ kind: "error", text: "Сначала выбери канал — в него уйдёт черновик." });
+      return;
+    }
+    if (destination === "studio") {
+      const params = new URLSearchParams({
+        monthlyCampaign: String(detail.campaign.id),
+        monthlyPlan: String(plan.id),
+        monthlyItem: String(item.id),
+        intent: "create",
+        channel: String(channelId),
+      });
+      router.push(`/app/studio?${params.toString()}`);
+      return;
+    }
+    if (item.draftId) {
+      router.push(`/app/composer?draft=${item.draftId}&from=autopilot-month`);
+      return;
+    }
+    if (!canEdit) {
+      setMessage({ kind: "error", text: "Создать черновик может автор или владелец проекта." });
+      return;
+    }
+    setBusy(`draft:composer:${item.id}`);
+    try {
+      const response = await fetch(
+        `/api/monthly-campaigns/${detail.campaign.id}/plans/${plan.id}/items/${item.id}/draft`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ channelId }),
+        },
+      );
+      const payload = await response.json().catch(() => null);
+      const draftId = Number(payload?.draftId);
+      if (!response.ok || !Number.isSafeInteger(draftId) || draftId <= 0) {
+        throw new Error(payload?.error || "server");
+      }
+      setDetail((current) => {
+        if (!current) return current;
+        return {
+          ...current,
+          plans: current.plans.map((entry) => (
+            entry.id !== plan.id
+              ? entry
+              : {
+                ...entry,
+                items: entry.items.map((candidate) => (
+                  candidate.id === item.id ? { ...candidate, draftId } : candidate
+                )),
+              }
+          )),
+        };
+      });
+      router.push(`/app/composer?draft=${draftId}&from=autopilot-month`);
+    } catch (error) {
+      setMessage({ kind: "error", text: apiError(error instanceof Error ? error.message : undefined) });
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const selectedCampaign = detail?.campaign ?? campaigns.find((campaign) => campaign.id === campaignId) ?? null;
+  const workflowStep = monthlyCampaignWorkflowStep(plan);
+  const textsReady = plan?.items.filter((item) => item.draftId).length ?? 0;
+
+  const primaryAction = (() => {
+    if (!selectedCampaign) return null;
+    if (!plan && canCreate) {
+      return (
+        <Button variant="primary" onClick={createPlan} loading={busy === "plan"}>
+          Собрать темы
+        </Button>
+      );
+    }
+    if (plan?.status === "draft" && canEdit) {
+      return (
+        <Button variant="primary" onClick={() => transition("submit")} loading={busy === "submit"} disabled={plan.stale || hasActiveRegeneration}>
+          <Send className="h-4 w-4" aria-hidden />
+          Отправить на согласование
+        </Button>
+      );
+    }
+    if (plan?.status === "in_review" && canApprove) {
+      return (
+        <Button variant="primary" onClick={() => transition("approve")} loading={busy === "approve"} disabled={plan.stale || hasActiveRegeneration}>
+          <Check className="h-4 w-4" aria-hidden />
+          Согласовать план
+        </Button>
+      );
+    }
+    return null;
+  })();
 
   return (
     <div className="space-y-5">
-      <ChannelPicker
-        channels={tgChannels}
-        value={channelId}
-        onChange={setPickedChannel}
-        label="Канал для первой недели"
-      />
-
       {message && (
         <div
           role={message.kind === "error" ? "alert" : "status"}
@@ -526,25 +659,56 @@ export function MonthlyCampaignPlanner() {
         </div>
       )}
 
-      {campaigns.length > 0 && (
-        <div className="flex flex-col gap-3 border-b border-line pb-5 sm:flex-row sm:items-end sm:justify-between">
-          <div className="min-w-0 max-w-full sm:w-80">
-            <Field label="Кампания" htmlFor="monthly-campaign-select">
-              <select
-                id="monthly-campaign-select"
-                value={campaignId ?? ""}
-                onChange={(event) => setCampaignId(Number(event.target.value))}
-                className="h-12 w-full min-w-0 max-w-full rounded-xs border border-line bg-surface px-4 text-base text-text outline-none focus-visible:border-brand focus-visible:ring-4 focus-visible:ring-brand/15 sm:text-[15px]"
-              >
-                {campaigns.map((campaign) => (
-                  <option key={campaign.id} value={campaign.id}>{campaign.goal} · {campaign.startsOn.slice(0, 7)}</option>
-                ))}
-              </select>
-            </Field>
+      {!creating && campaigns.length > 0 && (
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0">
+            <p id="monthly-campaign-switcher-label" className="mb-2 text-[13px] font-semibold text-text-2">
+              Месяц
+            </p>
+            <div
+              role="group"
+              aria-labelledby="monthly-campaign-switcher-label"
+              className="flex flex-wrap gap-2"
+            >
+              {campaigns.map((campaign) => {
+                const selected = campaign.id === campaignId;
+                return (
+                  <button
+                    key={campaign.id}
+                    type="button"
+                    aria-pressed={selected}
+                    onClick={() => {
+                      setCampaignId(campaign.id);
+                      setCreating(false);
+                      setMessage(null);
+                    }}
+                    className={cn(
+                      "min-h-11 cursor-pointer rounded-sm border px-3.5 text-left text-[14px] font-semibold transition-[background-color,border-color,color] duration-200 motion-reduce:transition-none",
+                      "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15",
+                      selected
+                        ? "border-brand bg-info-soft text-text"
+                        : "border-line bg-surface text-text-2 hover:border-line-strong hover:text-text",
+                    )}
+                  >
+                    {campaignChipLabel(campaign, campaigns)}
+                  </button>
+                );
+              })}
+            </div>
           </div>
           {canCreate && (
-            <Button type="button" variant="outline" onClick={() => { setCampaignId(null); setDetail(null); setMessage(null); }}>
-              Создать другую кампанию
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => {
+                setCreating(true);
+                setCreationAttempted(false);
+                setMessage(null);
+                setForm((current) => ({ ...blankForm(), month: current.month || nextMonth(), audience: brief?.audience || current.audience, practices: brief?.niche || current.practices, goal: brief?.goal || current.goal, cta: brief?.cta || current.cta }));
+              }}
+            >
+              <Plus className="h-4 w-4" aria-hidden />
+              Новая кампания
             </Button>
           )}
         </div>
@@ -555,194 +719,231 @@ export function MonthlyCampaignPlanner() {
           <Loader2 className="h-5 w-5 animate-spin motion-reduce:animate-none" aria-hidden />
           Загружаю кампанию…
         </div>
-      ) : !selectedCampaign ? (
-        <section aria-labelledby="monthly-campaign-create-title" className="max-w-4xl">
-          <div className="mb-6 max-w-2xl">
-            <h2 id="monthly-campaign-create-title" className="text-xl font-bold tracking-[-0.02em] text-text sm:text-2xl">
-              Собери редакционную сетку на месяц
-            </h2>
-            <p className="mt-2 text-[14px] leading-relaxed text-text-2 sm:text-[15px]">
-              Аврора распределит 28–31 непохожую тему по рубрикам и практикам. Полные тексты ближайшей недели готовятся только после согласования плана.
-            </p>
-          </div>
+      ) : creating || !selectedCampaign ? (
+        !canCreate && campaigns.length === 0 ? (
+          <Card>
+            <EmptyState
+              icon={<CalendarDays className="h-6 w-6" strokeWidth={1.75} aria-hidden />}
+              title="Кампаний пока нет"
+              body="Сетку на месяц может собрать автор или владелец проекта. После этого её можно согласовать здесь."
+            />
+          </Card>
+        ) : (
+          <section aria-labelledby="monthly-campaign-create-title" className="space-y-5">
+            {campaigns.length > 0 && (
+              <Button type="button" variant="ghost" onClick={() => setCreating(false)}>
+                К текущей кампании
+              </Button>
+            )}
 
-          <div className="grid gap-5 sm:grid-cols-2">
-            <Field label="Месяц" htmlFor="campaign-month" required messageId="campaign-month-error" error={creationAttempted && !campaignMonthRange(form.month) ? "Выбери месяц." : undefined}>
-              <Input ref={monthRef} id="campaign-month" type="month" required value={form.month} aria-invalid={creationAttempted && !campaignMonthRange(form.month) || undefined} aria-describedby={creationAttempted && !campaignMonthRange(form.month) ? "campaign-month-error" : undefined} onChange={(event) => {
-                const month = event.currentTarget.value;
-                setForm((current) => ({ ...current, month }));
-              }} />
-            </Field>
-            <Field label="Материалов в неделю" htmlFor="campaign-frequency">
-              <select
-                id="campaign-frequency"
-                value={form.postsPerWeek}
-                onChange={(event) => {
-                  const postsPerWeek = Number(event.currentTarget.value);
-                  setForm((current) => ({ ...current, postsPerWeek }));
-                }}
-                className="h-12 w-full rounded-xs border border-line bg-surface px-4 text-base text-text outline-none focus-visible:border-brand focus-visible:ring-4 focus-visible:ring-brand/15 sm:text-[15px]"
-              >
-                {[3, 4, 5, 6, 7].map((count) => <option key={count} value={count}>{count} {plural(count, "материал", "материала", "материалов")}</option>)}
-              </select>
-            </Field>
-            <div className="sm:col-span-2">
-              <Field label="Цель кампании" htmlFor="campaign-goal" required messageId="campaign-goal-error" error={creationAttempted && !form.goal.trim() ? "Укажи цель." : undefined}>
-                <Textarea ref={goalRef} id="campaign-goal" rows={2} required value={form.goal} aria-invalid={creationAttempted && !form.goal.trim() || undefined} aria-describedby={creationAttempted && !form.goal.trim() ? "campaign-goal-error" : undefined} onChange={(event) => {
-                  const goal = event.currentTarget.value;
-                  setForm((current) => ({ ...current, goal }));
-                }} />
-              </Field>
-            </div>
-            <div className="sm:col-span-2">
-              <Field label="Для кого пишем" htmlFor="campaign-audience" required messageId="campaign-audience-message" error={creationAttempted && !form.audience.trim() ? "Укажи аудиторию." : undefined} hint={brief?.ready ? "Подставлено из настроек выбранного канала." : "Настрой канал, чтобы поле заполнялось автоматически."}>
-                <Input ref={audienceRef} id="campaign-audience" required value={form.audience} aria-invalid={creationAttempted && !form.audience.trim() || undefined} aria-describedby="campaign-audience-message" onChange={(event) => {
-                  const audience = event.currentTarget.value;
-                  setForm((current) => ({ ...current, audience }));
-                }} placeholder="Например: собственники малого бизнеса" />
-              </Field>
-            </div>
-          </div>
+            <Card className="p-5 sm:p-6">
+              <div className="max-w-2xl">
+                <h2 id="monthly-campaign-create-title" className="text-xl font-bold tracking-[-0.02em] text-text sm:text-2xl">
+                  Сетка тем на месяц
+                </h2>
+                <p className="mt-2 text-[14px] leading-relaxed text-text-2 sm:text-[15px]">
+                  Это не генерация постов. Аврора сначала раскладывает тему на каждый день, чтобы месяц не повторялся и не уходил в случайный поток.
+                </p>
+              </div>
+              <ol className="mt-6 grid gap-3 sm:grid-cols-3">
+                {WORKFLOW.map((item) => (
+                  <li key={item.step} className="rounded-sm bg-surface-inset px-4 py-3">
+                    <p className="text-[12px] font-semibold uppercase tracking-[0.04em] text-text-3">Шаг {item.step}</p>
+                    <p className="mt-1 text-[14px] font-semibold text-text">{item.title}</p>
+                    <p className="mt-1 text-[13px] leading-relaxed text-text-2">{item.hint}</p>
+                  </li>
+                ))}
+              </ol>
+            </Card>
 
-          <button
-            type="button"
-            aria-expanded={advanced}
-            onClick={() => setAdvanced((current) => !current)}
-            className="mt-6 flex min-h-11 w-full items-center justify-between border-y border-line py-3 text-left text-[14px] font-semibold text-text focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15"
-          >
-            Рубрики, практики и метрики
-            <ChevronDown className={cn("h-4 w-4 transition-transform", advanced && "rotate-180")} aria-hidden />
-          </button>
-
-          {advanced && (
-            <div className="space-y-6 border-b border-line py-6">
-              <fieldset id="campaign-rubrics" tabIndex={-1} aria-invalid={creationAttempted && (form.rubrics.length < 3 || form.rubrics.length > 6) || undefined}>
-                <legend className="text-[13px] font-semibold text-text-2">Рубрики: выбери 3–6</legend>
-                <div className="mt-2 grid gap-x-5 sm:grid-cols-2 lg:grid-cols-3">
-                  {RUBRICS.slice(0, 9).map((rubric) => (
-                    <Checkbox
-                      key={rubric.key}
-                      checked={form.rubrics.includes(rubric.label)}
-                      onChange={(checked) => setForm((current) => ({
-                        ...current,
-                        rubrics: checked
-                          ? [...new Set([...current.rubrics, rubric.label])].slice(0, 6)
-                          : current.rubrics.filter((value) => value !== rubric.label),
-                      }))}
-                      label={`${rubric.emoji} ${rubric.label}`}
-                    />
-                  ))}
-                </div>
-                <p className="mt-1 text-[13px] text-text-3" aria-live="polite">Выбрано: {form.rubrics.length} из 6</p>
-              </fieldset>
-              <Field label="Практики или услуги" htmlFor="campaign-practices" messageId="campaign-practices-message" error={creationAttempted && !equalPracticeMix(form.practices.split(",")).length ? "Укажи хотя бы одно направление практики." : undefined} hint="Если направлений несколько, раздели их запятыми. Доли распределятся автоматически.">
-                <Input ref={practicesRef} id="campaign-practices" value={form.practices} aria-invalid={creationAttempted && !equalPracticeMix(form.practices.split(",")).length || undefined} aria-describedby="campaign-practices-message" onChange={(event) => {
-                  const practices = event.currentTarget.value;
-                  setForm((current) => ({ ...current, practices }));
-                }} placeholder="Например: договорная работа, судебные споры" />
-              </Field>
-              <fieldset id="campaign-funnels" tabIndex={-1} aria-invalid={creationAttempted && !form.funnelStages.length || undefined}>
-                <legend className="text-[13px] font-semibold text-text-2">Этапы воронки</legend>
-                <div className="mt-2 flex flex-wrap gap-x-6">
-                  {FUNNELS.map((funnel) => (
-                    <Checkbox
-                      key={funnel.value}
-                      checked={form.funnelStages.includes(funnel.value)}
-                      onChange={(checked) => setForm((current) => ({
-                        ...current,
-                        funnelStages: checked
-                          ? [...current.funnelStages, funnel.value]
-                          : current.funnelStages.filter((value) => value !== funnel.value),
-                      }))}
-                      label={funnel.label}
-                    />
-                  ))}
-                </div>
-              </fieldset>
+            <Card className="p-5 sm:p-6">
               <div className="grid gap-5 sm:grid-cols-2">
-                <Field label="Важная дата" htmlFor="campaign-important-date" hint="Необязательно">
-                  <Input id="campaign-important-date" type="date" value={form.importantDate} onChange={(event) => {
-                    const importantDate = event.currentTarget.value;
-                    setForm((current) => ({ ...current, importantDate }));
+                <Field label="Месяц" htmlFor="campaign-month" required messageId="campaign-month-error" error={creationAttempted && !campaignMonthRange(form.month) ? "Выбери месяц." : undefined}>
+                  <Input ref={monthRef} id="campaign-month" type="month" required value={form.month} aria-invalid={creationAttempted && !campaignMonthRange(form.month) || undefined} aria-describedby={creationAttempted && !campaignMonthRange(form.month) ? "campaign-month-error" : undefined} onChange={(event) => {
+                    const month = event.currentTarget.value;
+                    setForm((current) => ({ ...current, month }));
                   }} />
                 </Field>
-                <Field label="Что произойдёт" htmlFor="campaign-important-label" messageId="campaign-important-label-error" error={creationAttempted && form.importantDate && !form.importantDateLabel.trim() ? "Подпиши важную дату." : undefined}>
-                  <Input ref={importantDateLabelRef} id="campaign-important-label" value={form.importantDateLabel} aria-invalid={creationAttempted && Boolean(form.importantDate) && !form.importantDateLabel.trim() || undefined} aria-describedby={creationAttempted && form.importantDate && !form.importantDateLabel.trim() ? "campaign-important-label-error" : undefined} onChange={(event) => {
-                    const importantDateLabel = event.currentTarget.value;
-                    setForm((current) => ({ ...current, importantDateLabel }));
-                  }} disabled={!form.importantDate} placeholder="Например: вебинар для клиентов" />
-                </Field>
-              </div>
-              <Field label="Призыв к действию" htmlFor="campaign-cta">
-                <Input id="campaign-cta" value={form.cta} onChange={(event) => {
-                  const cta = event.currentTarget.value;
-                  setForm((current) => ({ ...current, cta }));
-                }} />
-              </Field>
-              <fieldset>
-                <legend className="text-[13px] font-semibold text-text-2">Что измеряем</legend>
-                <div className="mt-2 flex flex-wrap gap-x-6">
-                  {METRICS.map((metric) => (
-                    <Checkbox
-                      key={metric}
-                      checked={form.metrics.includes(metric)}
-                      onChange={(checked) => setForm((current) => ({
-                        ...current,
-                        metrics: checked ? [...current.metrics, metric] : current.metrics.filter((value) => value !== metric),
-                      }))}
-                      label={metric}
-                    />
-                  ))}
+                <div className="sm:col-span-2">
+                  <Field label="Цель кампании" htmlFor="campaign-goal" required messageId="campaign-goal-error" error={creationAttempted && !form.goal.trim() ? "Укажи цель." : undefined}>
+                    <Textarea ref={goalRef} id="campaign-goal" rows={2} required value={form.goal} aria-invalid={creationAttempted && !form.goal.trim() || undefined} aria-describedby={creationAttempted && !form.goal.trim() ? "campaign-goal-error" : undefined} onChange={(event) => {
+                      const goal = event.currentTarget.value;
+                      setForm((current) => ({ ...current, goal }));
+                    }} />
+                  </Field>
                 </div>
-              </fieldset>
-            </div>
-          )}
+                <div className="sm:col-span-2">
+                  <Field label="Для кого пишем" htmlFor="campaign-audience" required messageId="campaign-audience-message" error={creationAttempted && !form.audience.trim() ? "Укажи аудиторию." : undefined} hint={brief?.ready ? "Подставлено из настроек канала." : "Настрой канал, чтобы поле заполнялось автоматически."}>
+                    <Input ref={audienceRef} id="campaign-audience" required value={form.audience} aria-invalid={creationAttempted && !form.audience.trim() || undefined} aria-describedby="campaign-audience-message" onChange={(event) => {
+                      const audience = event.currentTarget.value;
+                      setForm((current) => ({ ...current, audience }));
+                    }} placeholder="Например: собственники малого бизнеса" />
+                  </Field>
+                </div>
+                <div className="sm:col-span-2">
+                  <Field label="О чём пишем в этом месяце" htmlFor="campaign-practices" required messageId="campaign-practices-message" error={creationAttempted && !equalPracticeMix(form.practices.split(",")).length ? "Укажи хотя бы одно направление." : undefined} hint="Если направлений несколько, раздели их запятыми. Доли распределятся автоматически.">
+                    <Input ref={practicesRef} id="campaign-practices" required value={form.practices} aria-invalid={creationAttempted && !equalPracticeMix(form.practices.split(",")).length || undefined} aria-describedby="campaign-practices-message" onChange={(event) => {
+                      const practices = event.currentTarget.value;
+                      setForm((current) => ({ ...current, practices }));
+                    }} placeholder="Например: договорная работа, судебные споры" />
+                  </Field>
+                </div>
+              </div>
 
-          <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <p className="max-w-xl text-[13px] leading-relaxed text-text-3">
-              Темы не содержат выдуманных законов, дел или цифр. Предметные факты появятся только из базы знаний выбранного канала.
-            </p>
-            <Button variant="brand" onClick={createCampaign} loading={busy === "create"} disabled={!canCreate || Boolean(busy)}>
-              <CalendarDays className="h-4 w-4" aria-hidden />
-              Собрать месяц
-            </Button>
-          </div>
-        </section>
+              <button
+                type="button"
+                aria-expanded={advanced}
+                onClick={() => setAdvanced((current) => !current)}
+                className="mt-6 flex min-h-11 w-full cursor-pointer items-center justify-between border-y border-line py-3 text-left text-[14px] font-semibold text-text focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15"
+              >
+                Рубрики, воронка и метрики
+                <ChevronDown className={cn("h-4 w-4 transition-transform duration-200 motion-reduce:transition-none", advanced && "rotate-180")} aria-hidden />
+              </button>
+
+              {advanced && (
+                <div className="space-y-6 py-6">
+                  <fieldset id="campaign-rubrics" tabIndex={-1} aria-invalid={creationAttempted && (form.rubrics.length < 3 || form.rubrics.length > 6) || undefined}>
+                    <legend className="text-[13px] font-semibold text-text-2">Рубрики: выбери 3–6</legend>
+                    <div className="mt-2 grid gap-x-5 sm:grid-cols-2 lg:grid-cols-3">
+                      {RUBRICS.slice(0, 9).map((rubric) => (
+                        <Checkbox
+                          key={rubric.key}
+                          checked={form.rubrics.includes(rubric.label)}
+                          onChange={(checked) => setForm((current) => ({
+                            ...current,
+                            rubrics: checked
+                              ? [...new Set([...current.rubrics, rubric.label])].slice(0, 6)
+                              : current.rubrics.filter((value) => value !== rubric.label),
+                          }))}
+                          label={`${rubric.emoji} ${rubric.label}`}
+                        />
+                      ))}
+                    </div>
+                    <p className="mt-1 text-[13px] text-text-3" aria-live="polite">Выбрано: {form.rubrics.length} из 6</p>
+                  </fieldset>
+                  <fieldset id="campaign-funnels" tabIndex={-1} aria-invalid={creationAttempted && !form.funnelStages.length || undefined}>
+                    <legend className="text-[13px] font-semibold text-text-2">Этапы воронки</legend>
+                    <div className="mt-2 flex flex-wrap gap-x-6">
+                      {FUNNELS.map((funnel) => (
+                        <Checkbox
+                          key={funnel.value}
+                          checked={form.funnelStages.includes(funnel.value)}
+                          onChange={(checked) => setForm((current) => ({
+                            ...current,
+                            funnelStages: checked
+                              ? [...current.funnelStages, funnel.value]
+                              : current.funnelStages.filter((value) => value !== funnel.value),
+                          }))}
+                          label={funnel.label}
+                        />
+                      ))}
+                    </div>
+                  </fieldset>
+                  <div className="grid gap-5 sm:grid-cols-2">
+                    <Field label="Важная дата" htmlFor="campaign-important-date" hint="Необязательно">
+                      <Input id="campaign-important-date" type="date" value={form.importantDate} onChange={(event) => {
+                        const importantDate = event.currentTarget.value;
+                        setForm((current) => ({ ...current, importantDate }));
+                      }} />
+                    </Field>
+                    <Field label="Что произойдёт" htmlFor="campaign-important-label" messageId="campaign-important-label-error" error={creationAttempted && form.importantDate && !form.importantDateLabel.trim() ? "Подпиши важную дату." : undefined}>
+                      <Input ref={importantDateLabelRef} id="campaign-important-label" value={form.importantDateLabel} aria-invalid={creationAttempted && Boolean(form.importantDate) && !form.importantDateLabel.trim() || undefined} aria-describedby={creationAttempted && form.importantDate && !form.importantDateLabel.trim() ? "campaign-important-label-error" : undefined} onChange={(event) => {
+                        const importantDateLabel = event.currentTarget.value;
+                        setForm((current) => ({ ...current, importantDateLabel }));
+                      }} disabled={!form.importantDate} placeholder="Например: вебинар для клиентов" />
+                    </Field>
+                  </div>
+                  <Field label="Призыв к действию" htmlFor="campaign-cta">
+                    <Input id="campaign-cta" value={form.cta} onChange={(event) => {
+                      const cta = event.currentTarget.value;
+                      setForm((current) => ({ ...current, cta }));
+                    }} />
+                  </Field>
+                  <Field label="Целевой темп публикаций" htmlFor="campaign-frequency" hint="Сетка всё равно строится на каждый день месяца. Темп сохранится в брифе кампании.">
+                    <select
+                      id="campaign-frequency"
+                      value={form.postsPerWeek}
+                      onChange={(event) => {
+                        const postsPerWeek = Number(event.currentTarget.value);
+                        setForm((current) => ({ ...current, postsPerWeek }));
+                      }}
+                      className="h-12 w-full cursor-pointer rounded-xs border border-line bg-surface px-4 text-base text-text outline-none focus-visible:border-brand focus-visible:ring-4 focus-visible:ring-brand/15 sm:text-[15px]"
+                    >
+                      {[3, 4, 5, 6, 7].map((count) => <option key={count} value={count}>{count} {plural(count, "материал", "материала", "материалов")} в неделю</option>)}
+                    </select>
+                  </Field>
+                  <fieldset>
+                    <legend className="text-[13px] font-semibold text-text-2">Что измеряем</legend>
+                    <div className="mt-2 flex flex-wrap gap-x-6">
+                      {METRICS.map((metric) => (
+                        <Checkbox
+                          key={metric}
+                          checked={form.metrics.includes(metric)}
+                          onChange={(checked) => setForm((current) => ({
+                            ...current,
+                            metrics: checked ? [...current.metrics, metric] : current.metrics.filter((value) => value !== metric),
+                          }))}
+                          label={metric}
+                        />
+                      ))}
+                    </div>
+                  </fieldset>
+                </div>
+              )}
+
+              <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <p className="max-w-xl text-[13px] leading-relaxed text-text-3">
+                  Темы не содержат выдуманных законов, дел или цифр. Предметные факты появятся только из базы знаний канала — и только в текстах первой недели.
+                </p>
+                <Button variant="primary" onClick={createCampaign} loading={busy === "create"} disabled={!canCreate || Boolean(busy)}>
+                  <CalendarDays className="h-4 w-4" aria-hidden />
+                  Собрать сетку месяца
+                </Button>
+              </div>
+            </Card>
+          </section>
+        )
       ) : (
         <section aria-labelledby="monthly-campaign-title" className="space-y-5">
-          <div className="flex flex-col gap-4 border-b border-line pb-5 lg:flex-row lg:items-start lg:justify-between">
-            <div className="min-w-0 max-w-3xl">
-              <div className="flex flex-wrap items-center gap-2">
-                <Badge tone={plan ? STATUS_COPY[plan.status].tone : "neutral"}>{plan ? STATUS_COPY[plan.status].label : "Без плана"}</Badge>
-                {plan?.stale && <Badge tone="danger">Нужно обновить</Badge>}
-                <span className="text-[13px] text-text-3">{periodLabel(selectedCampaign)}</span>
+          <Card className="p-5 sm:p-6">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+              <div className="min-w-0 max-w-3xl">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge tone={plan ? STATUS_COPY[plan.status].tone : "neutral"}>{plan ? STATUS_COPY[plan.status].label : "Без плана"}</Badge>
+                  {plan?.stale && <Badge tone="danger">Нужно обновить</Badge>}
+                  <span className="text-[13px] text-text-3">{periodLabel(selectedCampaign)}</span>
+                </div>
+                <h2 id="monthly-campaign-title" className="mt-3 text-xl font-bold tracking-[-0.02em] text-text sm:text-2xl">
+                  {campaignMonthTitle(selectedCampaign.startsOn)}
+                </h2>
+                <p className="mt-2 text-[14px] leading-relaxed text-text-2">
+                  {selectedCampaign.goal}
+                </p>
+                <p className="mt-1 text-[13px] text-text-3">
+                  {selectedCampaign.audience}
+                  {plan ? ` · ${plan.items.length} ${plural(plan.items.length, "тема", "темы", "тем")}` : null}
+                  {textsReady > 0 ? ` · ${textsReady} с текстом` : null}
+                </p>
               </div>
-              <h2 id="monthly-campaign-title" className="mt-3 text-xl font-bold tracking-[-0.02em] text-text sm:text-2xl">
-                {selectedCampaign.goal}
-              </h2>
-              <p className="mt-2 text-[14px] leading-relaxed text-text-2">
-                {selectedCampaign.audience} · {selectedCampaign.postsPerWeek} {plural(selectedCampaign.postsPerWeek, "материал", "материала", "материалов")} в неделю
-              </p>
+              {primaryAction && <div className="flex flex-wrap gap-2">{primaryAction}</div>}
             </div>
-            <div className="flex flex-wrap gap-2">
-              {!plan && canCreate && <Button variant="brand" onClick={createPlan} loading={busy === "plan"}>Собрать темы</Button>}
-              {plan?.status === "draft" && canEdit && (
-                <Button variant="brand" onClick={() => transition("submit")} loading={busy === "submit"} disabled={plan.stale || hasActiveRegeneration}>
-                  <Send className="h-4 w-4" aria-hidden />Отправить на согласование
-                </Button>
-              )}
-              {plan?.status === "in_review" && canApprove && (
-                <Button variant="brand" onClick={() => transition("approve")} loading={busy === "approve"} disabled={plan.stale || hasActiveRegeneration}>
-                  <Check className="h-4 w-4" aria-hidden />Согласовать план
-                </Button>
-              )}
-              {plan?.status === "approved" && (
-                <Button variant="brand" onClick={prepareFirstWeek} loading={busy === "prepare-week"} disabled={!channelId || !brief?.ready || plan.stale || hasActiveRegeneration}>
-                  <FilePenLine className="h-4 w-4" aria-hidden />Подготовить первую неделю
-                </Button>
+
+            <div className="mt-4">
+              <ChannelPicker
+                channels={tgChannels}
+                value={channelId}
+                onChange={setPickedChannel}
+                label="Канал для черновика"
+              />
+              {!channelId && (
+                <p className="mt-2 text-[13px] leading-relaxed text-text-2">
+                  Подключи канал, чтобы написать тему в редакторе или подготовить её в Студии.
+                </p>
               )}
             </div>
-          </div>
+
+            <WorkflowRail current={workflowStep} />
+          </Card>
 
           {plan?.stale && (
             <div role="alert" className="flex items-start gap-2 rounded-sm bg-danger-soft p-4 text-[14px] text-danger-text">
@@ -758,94 +959,474 @@ export function MonthlyCampaignPlanner() {
             </div>
           )}
 
-          {plan && (
-            <>
-              <p id="campaign-reorder-help" className="text-[13px] leading-relaxed text-text-3">
-                Перетащи материал на другую дату или используй кнопки «Раньше» и «Позже». Перенос не меняет согласованный текст.
-              </p>
-              <div className="space-y-8">
-                {weeks.map((week, weekIndex) => (
-                  <section key={week[0].scheduledFor} aria-labelledby={`campaign-week-${weekIndex}`}>
-                    <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                      <h3 id={`campaign-week-${weekIndex}`} className="text-[15px] font-bold text-text">
-                        Неделя {weekIndex + 1} · {dateLabel(week[0].scheduledFor)} — {dateLabel(week[week.length - 1].scheduledFor)}
-                      </h3>
-                      {canEdit && (
-                        <Button size="sm" variant="ghost" onClick={() => regenerate("week", week[0])} disabled={Boolean(busy) || hasActiveRegeneration}>
-                          <RefreshCw className="h-4 w-4" aria-hidden />Пересобрать неделю
-                        </Button>
-                      )}
-                    </div>
-                    <ol className="divide-y divide-line border-y border-line">
-                      {week.map((item) => {
-                        const globalIndex = plan.items.findIndex((candidate) => candidate.id === item.id);
-                        const previous = plan.items[globalIndex - 1];
-                        const next = plan.items[globalIndex + 1];
-                        const regenerating = item.regenerationStatus === "pending" || item.regenerationStatus === "processing";
-                        return (
-                          <li
-                            id={`monthly-item-${item.id}`}
-                            key={item.id}
-                            draggable={canEdit && !busy && !hasActiveRegeneration}
-                            onDragStart={() => setDraggedId(item.id)}
-                            onDragEnd={() => setDraggedId(null)}
-                            onDragOver={(event) => event.preventDefault()}
-                            onDrop={() => {
-                              const dragged = plan.items.find((candidate) => candidate.id === draggedId);
-                              if (dragged) void moveItem(dragged, item);
-                            }}
-                            aria-describedby="campaign-reorder-help"
-                            className={cn(
-                              "grid gap-3 py-4 sm:grid-cols-[7.5rem_minmax(0,1fr)_auto] sm:items-start",
-                              draggedId === item.id && "opacity-50",
-                            )}
-                          >
-                            <div className="flex items-center gap-2 text-[13px] font-semibold capitalize text-text-2">
-                              {canEdit && <GripVertical className="h-4 w-4 text-text-3" aria-hidden />}
-                              <time dateTime={item.scheduledFor}>{dateLabel(item.scheduledFor)}</time>
-                            </div>
-                            <div className="min-w-0">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <p className="break-words text-[15px] font-semibold leading-snug text-text">{item.title}</p>
-                                {regenerating && <Badge tone="brand"><Loader2 className="h-3 w-3 animate-spin motion-reduce:animate-none" aria-hidden />Пересборка</Badge>}
-                                {item.draftId && <Badge tone="success">Текст готов</Badge>}
-                              </div>
-                              <p className="mt-1 break-words text-[12px] leading-relaxed text-text-3">
-                                {item.rubric} · {item.practice} · {FUNNELS.find((funnel) => funnel.value === item.funnelStage)?.label}
-                              </p>
-                              <div className="mt-2 flex flex-wrap gap-1">
-                                {item.draftId && (
-                                  <Link href={`/app/composer?draft=${item.draftId}&from=autopilot-month`} className="inline-flex min-h-11 items-center rounded-sm px-3 text-[13px] font-semibold text-brand hover:bg-info-soft focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15">
-                                    Открыть текст
-                                  </Link>
-                                )}
-                                {canEdit && (
-                                  <>
-                                    <Button size="sm" variant="ghost" onClick={() => previous && moveItem(item, previous)} disabled={!previous || Boolean(busy) || hasActiveRegeneration} aria-label={`Перенести тему «${item.title}» на день раньше`}>
-                                      <ArrowUp className="h-4 w-4" aria-hidden />Раньше
-                                    </Button>
-                                    <Button size="sm" variant="ghost" onClick={() => next && moveItem(item, next)} disabled={!next || Boolean(busy) || hasActiveRegeneration} aria-label={`Перенести тему «${item.title}» на день позже`}>
-                                      <ArrowDown className="h-4 w-4" aria-hidden />Позже
-                                    </Button>
-                                    <Button size="sm" variant="ghost" onClick={() => regenerate("item", item)} disabled={Boolean(busy) || regenerating || hasActiveRegeneration} aria-label={`Пересобрать только тему «${item.title}»`}>
-                                      <RefreshCw className="h-4 w-4" aria-hidden />Только эту тему
-                                    </Button>
-                                  </>
-                                )}
-                              </div>
-                            </div>
-                            <Badge tone={STATUS_COPY[item.approvalStatus].tone}>{STATUS_COPY[item.approvalStatus].label}</Badge>
-                          </li>
-                        );
-                      })}
-                    </ol>
-                  </section>
-                ))}
+          {plan?.status === "approved" && (
+            <Card className="p-5 sm:p-6">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+                <div className="min-w-0 max-w-xl">
+                  <h3 className="text-[15px] font-bold text-text">Тексты первой недели</h3>
+                  <p className="mt-1 text-[14px] leading-relaxed text-text-2">
+                    Сетка уже согласована. Аврора напишет полные материалы только на ближайшие семь дней — остальные даты останутся темами.
+                  </p>
+                </div>
+                <Button
+                  variant="primary"
+                  onClick={prepareFirstWeek}
+                  loading={busy === "prepare-week"}
+                  disabled={!channelId || !brief?.ready || plan.stale || hasActiveRegeneration}
+                >
+                  <FilePenLine className="h-4 w-4" aria-hidden />
+                  Подготовить первую неделю
+                </Button>
               </div>
-            </>
+              <div className="mt-4">
+                {!brief?.ready && (
+                  <p className="mt-3 text-[13px] leading-relaxed text-text-2">
+                    Сначала настрой Аврору для канала — без брифа тексты не собрать.{" "}
+                    <Link
+                      href={`/app/settings${channelId ? `?channel=${channelId}` : ""}`}
+                      className="font-semibold text-brand underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15"
+                    >
+                      Открыть настройки канала
+                    </Link>
+                  </p>
+                )}
+              </div>
+            </Card>
+          )}
+
+          {plan && (
+            <PlanBoard
+              key={selectedCampaign.id}
+              campaign={selectedCampaign}
+              plan={plan}
+              canEdit={canEdit}
+              busy={busy}
+              hasActiveRegeneration={hasActiveRegeneration}
+              draggedId={draggedId}
+              onDragStart={setDraggedId}
+              onDragEnd={() => setDraggedId(null)}
+              onMove={moveItem}
+              onRegenerate={regenerate}
+              onOpenTopic={openTopic}
+            />
           )}
         </section>
       )}
     </div>
+  );
+}
+
+function PlanBoard({
+  campaign,
+  plan,
+  canEdit,
+  busy,
+  hasActiveRegeneration,
+  draggedId,
+  onDragStart,
+  onDragEnd,
+  onMove,
+  onRegenerate,
+  onOpenTopic,
+}: {
+  campaign: MonthlyCampaignClientSummary;
+  plan: MonthlyCampaignClientPlan;
+  canEdit: boolean;
+  busy: string | null;
+  hasActiveRegeneration: boolean;
+  draggedId: number | null;
+  onDragStart: (id: number) => void;
+  onDragEnd: () => void;
+  onMove: (item: MonthlyCampaignClientItem, target: MonthlyCampaignClientItem) => void;
+  onRegenerate: (scope: "item" | "week", item: MonthlyCampaignClientItem) => void;
+  onOpenTopic: (item: MonthlyCampaignClientItem, destination: "composer" | "studio") => void;
+}) {
+  const weeks = campaignEditorialWeeks(plan.items);
+  const [viewMode, setViewMode] = useState<ViewMode>("weeks");
+  const [weekOverride, setWeekOverride] = useState<string | null | undefined>(undefined);
+  const [openItemId, setOpenItemId] = useState<number | null>(null);
+  const openWeek = weekOverride === undefined ? weeks[0]?.startsOn ?? null : weekOverride;
+  const importantDates = new Set(campaign.importantDates.map((item) => item.date));
+
+  useEffect(() => {
+    if (!openItemId || viewMode !== "weeks") return;
+    const node = document.getElementById(`monthly-item-${openItemId}`);
+    node?.scrollIntoView({
+      block: "nearest",
+      behavior: prefersReducedMotion() ? "auto" : "smooth",
+    });
+  }, [openItemId, viewMode]);
+
+  const revealItem = (item: MonthlyCampaignClientItem) => {
+    const week = weeks.find((entry) => entry.items.some((candidate) => candidate.id === item.id));
+    setWeekOverride(week?.startsOn ?? null);
+    setOpenItemId(item.id);
+    setViewMode("weeks");
+  };
+
+  return (
+    <>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <p id="campaign-reorder-help" className="text-[13px] leading-relaxed text-text-3">
+          Открой день, чтобы перенести тему или пересобрать её. Перенос не меняет уже согласованный текст.
+        </p>
+        <Tabs
+          value={viewMode}
+          onChange={setViewMode}
+          ariaLabel="Как показать сетку месяца"
+          items={[
+            { value: "weeks", label: "По неделям", icon: <List className="h-4 w-4" aria-hidden /> },
+            { value: "calendar", label: "Календарь", icon: <CalendarRange className="h-4 w-4" aria-hidden /> },
+          ]}
+        />
+      </div>
+
+      {viewMode === "calendar" ? (
+        <MonthCalendar
+          campaign={campaign}
+          items={plan.items}
+          importantDates={importantDates}
+          onSelect={revealItem}
+        />
+      ) : (
+        <div className="space-y-3">
+          {weeks.map((week) => (
+            <WeekSection
+              key={week.startsOn}
+              week={week}
+              plan={plan}
+              open={openWeek === week.startsOn}
+              openItemId={openItemId}
+              canEdit={canEdit}
+              busy={busy}
+              hasActiveRegeneration={hasActiveRegeneration}
+              draggedId={draggedId}
+              onToggle={() => setWeekOverride((current) => {
+                const resolved = current === undefined ? weeks[0]?.startsOn ?? null : current;
+                return resolved === week.startsOn ? null : week.startsOn;
+              })}
+              onOpenItem={(id) => setOpenItemId((current) => current === id ? null : id)}
+              onDragStart={onDragStart}
+              onDragEnd={onDragEnd}
+              onMove={onMove}
+              onRegenerate={onRegenerate}
+              onOpenTopic={onOpenTopic}
+            />
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+function WorkflowRail({ current }: { current: 1 | 2 | 3 }) {
+  return (
+    <ol className="mt-6 grid gap-2 sm:grid-cols-3" aria-label="Этапы кампании">
+      {WORKFLOW.map((item) => {
+        const done = item.step < current;
+        const active = item.step === current;
+        return (
+          <li
+            key={item.step}
+            aria-current={active ? "step" : undefined}
+            className={cn(
+              "flex items-start gap-3 rounded-sm px-3 py-3",
+              active ? "bg-info-soft" : "bg-surface-inset",
+            )}
+          >
+            <span
+              className={cn(
+                "mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[12px] font-bold",
+                done ? "bg-success-soft text-success-text" : active ? "bg-brand text-white" : "bg-surface text-text-3",
+              )}
+            >
+              {done ? <Check className="h-3.5 w-3.5" strokeWidth={3} aria-hidden /> : item.step}
+            </span>
+            <span>
+              <span className="block text-[14px] font-semibold text-text">{item.title}</span>
+              <span className="mt-0.5 block text-[12px] text-text-3">{item.hint}</span>
+            </span>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+function MonthCalendar({
+  campaign,
+  items,
+  importantDates,
+  onSelect,
+}: {
+  campaign: MonthlyCampaignClientSummary;
+  items: readonly MonthlyCampaignClientItem[];
+  importantDates: ReadonlySet<string>;
+  onSelect: (item: MonthlyCampaignClientItem) => void;
+}) {
+  const byDate = new Map(items.map((item) => [item.scheduledFor, item]));
+  const cells = monthCalendarCells(campaign.startsOn, campaign.endsOn);
+  return (
+    <Card className="overflow-hidden p-3 sm:p-4">
+      <div className="grid grid-cols-7 gap-1" aria-label={`Календарь: ${campaignMonthTitle(campaign.startsOn)}`}>
+        {WEEKDAYS.map((day) => (
+          <div key={day} className="px-1 py-2 text-center text-[12px] font-semibold text-text-3">
+            {day}
+          </div>
+        ))}
+        {cells.map((date, index) => {
+          if (!date) {
+            return <div key={`empty-${index}`} aria-hidden className="min-h-16 rounded-sm sm:min-h-24" />;
+          }
+          const item = byDate.get(date);
+          const ready = Boolean(item?.draftId);
+          const regenerating = item?.regenerationStatus === "pending" || item?.regenerationStatus === "processing";
+          return (
+            <button
+              key={date}
+              type="button"
+              disabled={!item}
+              aria-label={item ? `${dateLabel(date)}: ${item.title}` : undefined}
+              onClick={() => item && onSelect(item)}
+              className={cn(
+                "flex min-h-16 cursor-pointer flex-col items-start rounded-sm border px-1.5 py-1.5 text-left transition-[border-color,background-color] duration-150 motion-reduce:transition-none sm:min-h-24 sm:px-2 sm:py-2",
+                "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15",
+                item ? "border-line bg-surface hover:border-line-strong" : "cursor-default border-transparent",
+                importantDates.has(date) && "border-brand/40 bg-info-soft",
+              )}
+            >
+              <span className="flex w-full items-center justify-between gap-1">
+                <time dateTime={date} className="text-[12px] font-semibold text-text-2">{dayNumber(date)}</time>
+                {ready && <span className="h-1.5 w-1.5 rounded-full bg-success-text" aria-label="Текст готов" />}
+                {regenerating && <Loader2 className="h-3 w-3 animate-spin text-brand motion-reduce:animate-none" aria-label="Пересборка" />}
+              </span>
+              {item && (
+                <span className="mt-1 line-clamp-3 text-[11px] leading-snug text-text sm:text-[12px]">
+                  {item.title}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </Card>
+  );
+}
+
+function WeekSection({
+  week,
+  plan,
+  open,
+  openItemId,
+  canEdit,
+  busy,
+  hasActiveRegeneration,
+  draggedId,
+  onToggle,
+  onOpenItem,
+  onDragStart,
+  onDragEnd,
+  onMove,
+  onRegenerate,
+  onOpenTopic,
+}: {
+  week: MonthlyCampaignEditorialWeek;
+  plan: MonthlyCampaignClientPlan;
+  open: boolean;
+  openItemId: number | null;
+  canEdit: boolean;
+  busy: string | null;
+  hasActiveRegeneration: boolean;
+  draggedId: number | null;
+  onToggle: () => void;
+  onOpenItem: (id: number) => void;
+  onDragStart: (id: number) => void;
+  onDragEnd: () => void;
+  onMove: (item: MonthlyCampaignClientItem, target: MonthlyCampaignClientItem) => void;
+  onRegenerate: (scope: "item" | "week", item: MonthlyCampaignClientItem) => void;
+  onOpenTopic: (item: MonthlyCampaignClientItem, destination: "composer" | "studio") => void;
+}) {
+  const ready = week.items.filter((item) => item.draftId).length;
+  const panelId = `campaign-week-panel-${week.startsOn}`;
+  return (
+    <Card className="overflow-hidden">
+      <div className="flex flex-wrap items-center gap-2 px-4 py-2 sm:px-5">
+        <button
+          type="button"
+          aria-expanded={open}
+          aria-controls={panelId}
+          onClick={onToggle}
+          className="flex min-h-11 min-w-0 flex-1 cursor-pointer items-center gap-3 py-1 text-left focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15"
+        >
+          <ChevronDown className={cn("h-4 w-4 shrink-0 text-text-3 transition-transform duration-200 motion-reduce:transition-none", open && "rotate-180")} aria-hidden />
+          <span className="min-w-0">
+            <span className="block text-[15px] font-bold text-text">
+              Неделя {week.index}
+            </span>
+            <span className="block text-[13px] text-text-3">
+              {dateLabel(week.startsOn)} — {dateLabel(week.endsOn)}
+              {" · "}
+              {week.items.length} {plural(week.items.length, "тема", "темы", "тем")}
+              {ready > 0 ? ` · ${ready} с текстом` : ""}
+            </span>
+          </span>
+        </button>
+        {canEdit && (
+          <Button size="sm" variant="ghost" onClick={() => week.items[0] && onRegenerate("week", week.items[0])} disabled={Boolean(busy) || hasActiveRegeneration}>
+            <RefreshCw className="h-4 w-4" aria-hidden />
+            Пересобрать неделю
+          </Button>
+        )}
+      </div>
+      {open && (
+        <ol id={panelId} className="divide-y divide-line border-t border-line">
+          {week.items.map((item) => {
+            const globalIndex = plan.items.findIndex((candidate) => candidate.id === item.id);
+            const previous = plan.items[globalIndex - 1];
+            const next = plan.items[globalIndex + 1];
+            return (
+              <TopicRow
+                key={item.id}
+                item={item}
+                previous={previous}
+                next={next}
+                open={openItemId === item.id}
+                canEdit={canEdit}
+                busy={busy}
+                hasActiveRegeneration={hasActiveRegeneration}
+                dragged={draggedId === item.id}
+                onToggle={() => onOpenItem(item.id)}
+                onDragStart={() => onDragStart(item.id)}
+                onDragEnd={onDragEnd}
+                onDrop={() => {
+                  const dragged = plan.items.find((candidate) => candidate.id === draggedId);
+                  if (dragged) void onMove(dragged, item);
+                }}
+                onMove={onMove}
+                onRegenerate={onRegenerate}
+                onOpenTopic={onOpenTopic}
+              />
+            );
+          })}
+        </ol>
+      )}
+    </Card>
+  );
+}
+
+function TopicRow({
+  item,
+  previous,
+  next,
+  open,
+  canEdit,
+  busy,
+  hasActiveRegeneration,
+  dragged,
+  onToggle,
+  onDragStart,
+  onDragEnd,
+  onDrop,
+  onMove,
+  onRegenerate,
+  onOpenTopic,
+}: {
+  item: MonthlyCampaignClientItem;
+  previous?: MonthlyCampaignClientItem;
+  next?: MonthlyCampaignClientItem;
+  open: boolean;
+  canEdit: boolean;
+  busy: string | null;
+  hasActiveRegeneration: boolean;
+  dragged: boolean;
+  onToggle: () => void;
+  onDragStart: () => void;
+  onDragEnd: () => void;
+  onDrop: () => void;
+  onMove: (item: MonthlyCampaignClientItem, target: MonthlyCampaignClientItem) => void;
+  onRegenerate: (scope: "item" | "week", item: MonthlyCampaignClientItem) => void;
+  onOpenTopic: (item: MonthlyCampaignClientItem, destination: "composer" | "studio") => void;
+}) {
+  const regenerating = item.regenerationStatus === "pending" || item.regenerationStatus === "processing";
+  return (
+    <li
+      id={`monthly-item-${item.id}`}
+      draggable={canEdit && !busy && !hasActiveRegeneration}
+      onDragStart={onDragStart}
+      onDragEnd={onDragEnd}
+      onDragOver={(event) => event.preventDefault()}
+      onDrop={onDrop}
+      aria-describedby="campaign-reorder-help"
+      className={cn("px-4 py-3 sm:px-5", dragged && "opacity-50")}
+    >
+      <div className="flex items-start gap-3">
+        {canEdit && <GripVertical className="mt-2.5 h-4 w-4 shrink-0 text-text-3" aria-hidden />}
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={onToggle}
+          className="grid min-h-11 min-w-0 flex-1 cursor-pointer grid-cols-1 gap-2 py-1 text-left sm:grid-cols-[7.5rem_minmax(0,1fr)] sm:items-start focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15"
+        >
+          <time dateTime={item.scheduledFor} className="text-[13px] font-semibold capitalize text-text-2">
+            {dateLabel(item.scheduledFor)}
+          </time>
+          <span className="min-w-0">
+            <span className="flex flex-wrap items-center gap-2">
+              <span className="break-words text-[15px] font-semibold leading-snug text-text">{item.title}</span>
+              {regenerating && <Badge tone="brand"><Loader2 className="h-3 w-3 animate-spin motion-reduce:animate-none" aria-hidden />Пересборка</Badge>}
+              {item.draftId && <Badge tone="success">Текст готов</Badge>}
+              {item.approvalStatus !== "draft" && (
+                <Badge tone={STATUS_COPY[item.approvalStatus].tone}>{STATUS_COPY[item.approvalStatus].label}</Badge>
+              )}
+            </span>
+            <span className="mt-1 block break-words text-[12px] leading-relaxed text-text-3">
+              {item.rubric} · {item.practice} · {FUNNELS.find((funnel) => funnel.value === item.funnelStage)?.label}
+            </span>
+          </span>
+        </button>
+      </div>
+      <div className="mt-2 flex flex-wrap gap-1 sm:pl-[2.25rem]">
+        {(canEdit || item.draftId) && (
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => onOpenTopic(item, "composer")}
+            loading={busy === `draft:composer:${item.id}`}
+            disabled={Boolean(busy) && busy !== `draft:composer:${item.id}`}
+          >
+            <Pencil className="h-4 w-4" aria-hidden />
+            {item.draftId ? "Открыть в редакторе" : "Написать в редакторе"}
+          </Button>
+        )}
+        {canEdit && (
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => onOpenTopic(item, "studio")}
+            disabled={Boolean(busy)}
+          >
+            <Sparkles className="h-4 w-4" aria-hidden />
+            Подготовить в Студии
+          </Button>
+        )}
+      </div>
+      {open && (
+        <div className="mt-1 flex flex-wrap gap-1 sm:pl-[2.25rem]">
+          {canEdit && (
+            <>
+              <Button size="sm" variant="ghost" onClick={() => previous && onMove(item, previous)} disabled={!previous || Boolean(busy) || hasActiveRegeneration} aria-label={`Перенести тему «${item.title}» на день раньше`}>
+                <ArrowUp className="h-4 w-4" aria-hidden />Раньше
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => next && onMove(item, next)} disabled={!next || Boolean(busy) || hasActiveRegeneration} aria-label={`Перенести тему «${item.title}» на день позже`}>
+                <ArrowDown className="h-4 w-4" aria-hidden />Позже
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => onRegenerate("item", item)} disabled={Boolean(busy) || regenerating || hasActiveRegeneration} aria-label={`Пересобрать только тему «${item.title}»`}>
+                <RefreshCw className="h-4 w-4" aria-hidden />Только эту тему
+              </Button>
+            </>
+          )}
+        </div>
+      )}
+    </li>
   );
 }

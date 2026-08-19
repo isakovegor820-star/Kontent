@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   transitionMonthlyCampaignPlan: vi.fn(),
   getMonthlyCampaign: vi.fn(),
   createMonthlyCampaignPlan: vi.fn(),
+  ensureMonthlyCampaignItemDraft: vi.fn(),
 }));
 
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
@@ -29,6 +30,7 @@ vi.mock("@/lib/monthly-campaign-service", async (importOriginal) => {
     transitionMonthlyCampaignPlan: mocks.transitionMonthlyCampaignPlan,
     getMonthlyCampaign: mocks.getMonthlyCampaign,
     createMonthlyCampaignPlan: mocks.createMonthlyCampaignPlan,
+    ensureMonthlyCampaignItemDraft: mocks.ensureMonthlyCampaignItemDraft,
   };
 });
 
@@ -37,6 +39,7 @@ import { GET, POST } from "./route";
 import { POST as regenerate } from "./[campaignId]/plans/[planId]/regenerate/route";
 import { PATCH as transition } from "./[campaignId]/plans/[planId]/route";
 import { POST as createPlan } from "./[campaignId]/plans/route";
+import { POST as createItemDraft } from "./[campaignId]/plans/[planId]/items/[itemId]/draft/route";
 
 function request(path: string, method: string, body?: unknown, headers: Record<string, string> = {}) {
   return new NextRequest(`https://aurora.test${path}`, {
@@ -70,6 +73,9 @@ describe("monthly campaign API", () => {
       },
     });
     mocks.createMonthlyCampaignPlan.mockResolvedValue({ plan: { id: 52 }, duplicate: false });
+    mocks.ensureMonthlyCampaignItemDraft.mockResolvedValue({
+      draftId: 901, created: true, item: { id: 62, draftId: 901 },
+    });
   });
 
   it("rejects a cross-site mutation before auth or persistence", async () => {
@@ -190,5 +196,29 @@ describe("monthly campaign API", () => {
       ]),
     }));
     expect(mocks.createMonthlyCampaignPlan.mock.calls[0][0].items).toHaveLength(30);
+  });
+
+  it("creates or reuses a topic draft without accepting a client-supplied prompt", async () => {
+    const created = await createItemDraft(
+      request("/api/monthly-campaigns/41/plans/52/items/62/draft", "POST", { channelId: 11 }),
+      { params: Promise.resolve({ campaignId: "41", planId: "52", itemId: "62" }) },
+    );
+    expect(created.status).toBe(201);
+    expect(mocks.ensureMonthlyCampaignItemDraft).toHaveBeenCalledWith(expect.objectContaining({
+      actorUserId: 11, campaignId: 41, planId: 52, itemId: 62, channelId: 11,
+    }));
+    expect(JSON.stringify(await created.json())).not.toContain("Напиши пост");
+
+    mocks.ensureMonthlyCampaignItemDraft.mockResolvedValueOnce({
+      draftId: 901, created: false, item: { id: 62, draftId: 901 },
+    });
+    const reused = await createItemDraft(
+      request("/api/monthly-campaigns/41/plans/52/items/62/draft", "POST", { channelId: 11, draftId: 901 }),
+      { params: Promise.resolve({ campaignId: "41", planId: "52", itemId: "62" }) },
+    );
+    expect(reused.status).toBe(200);
+    expect(mocks.ensureMonthlyCampaignItemDraft).toHaveBeenLastCalledWith(expect.objectContaining({
+      attachDraftId: 901,
+    }));
   });
 });

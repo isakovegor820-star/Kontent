@@ -61,6 +61,10 @@ import {
   legalOpportunityVariantFromClientKey,
   type LegalOpportunityPostVariant,
 } from "@/lib/legal-opportunity-post";
+import {
+  monthlyCampaignStudioPrompt,
+  parseMonthlyCampaignDetail,
+} from "@/lib/monthly-campaign-client";
 import { studioReferenceGenerationIdentity } from "@/lib/studio-reference-generation";
 import {
   DEFAULT_POST_SETTINGS,
@@ -103,6 +107,9 @@ type Gen = StudioChatGeneration & {
   audienceQuestionVersion?: number;
   audienceQuestionGenerationKey?: string;
   suggestMedia?: boolean;
+  monthlyCampaignId?: number;
+  monthlyPlanId?: number;
+  monthlyItemId?: number;
 };
 type AskOptions = {
   cmd?: AiCommand;
@@ -116,6 +123,9 @@ type AskOptions = {
   audienceQuestionId?: number;
   audienceQuestionVersion?: number;
   audienceQuestionGenerationKey?: string;
+  monthlyCampaignId?: number;
+  monthlyPlanId?: number;
+  monthlyItemId?: number;
   /** Source-bound destination survives reload before the global channel store is ready. */
   channelId?: number | null;
   postSettings?: PostSettings;
@@ -140,6 +150,14 @@ type PendingAudienceQuestionGeneration = {
   prompt: string;
   requestKey: string;
   resultClientKey: string;
+};
+type PendingMonthlyCampaignGeneration = {
+  campaignId: number;
+  planId: number;
+  itemId: number;
+  prompt: string;
+  requestKey: string;
+  channelId: number | null;
 };
 
 type WorkspaceMode = "chat" | "studio";
@@ -821,6 +839,7 @@ function StudioPageInner() {
   const [contextDraft, setContextDraft] = useState<ServerDraft | null>(null);
   const [pendingReferenceGeneration, setPendingReferenceGeneration] = useState<PendingReferenceGeneration | null>(null);
   const [pendingAudienceQuestionGeneration, setPendingAudienceQuestionGeneration] = useState<PendingAudienceQuestionGeneration | null>(null);
+  const [pendingMonthlyCampaignGeneration, setPendingMonthlyCampaignGeneration] = useState<PendingMonthlyCampaignGeneration | null>(null);
   const [postSettingsReady, setPostSettingsReady] = useState(false);
   const [postSettingsSaving, setPostSettingsSaving] = useState(false);
   const [pendingEngineSuggestion, setPendingEngineSuggestion] = useState<EngineInfo | null>(null);
@@ -847,6 +866,7 @@ function StudioPageInner() {
   });
   const startedReferenceDraftsRef = useRef<Set<number>>(new Set());
   const startedAudienceQuestionsRef = useRef<Set<string>>(new Set());
+  const startedMonthlyItemsRef = useRef<Set<number>>(new Set());
   const sessionRevisionRef = useRef(0);
   const sessionSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sessionSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
@@ -1236,6 +1256,66 @@ function StudioPageInner() {
     return () => controller.abort();
   }, [chatSessionOwner, searchParams, sessionOwner, showToast]);
 
+  // A monthly topic URL carries only owned ids. The write prompt is built here
+  // from the campaign API, never copied into the query string.
+  useEffect(() => {
+    if (chatSessionOwner !== sessionOwner || sessionOwner == null) return;
+    const campaignId = Number(searchParams.get("monthlyCampaign"));
+    const planId = Number(searchParams.get("monthlyPlan"));
+    const itemId = Number(searchParams.get("monthlyItem"));
+    const channelFromUrl = Number(searchParams.get("channel"));
+    if (
+      searchParams.get("intent") !== "create"
+      || !Number.isSafeInteger(campaignId)
+      || campaignId <= 0
+      || !Number.isSafeInteger(planId)
+      || planId <= 0
+      || !Number.isSafeInteger(itemId)
+      || itemId <= 0
+    ) return;
+    if (startedMonthlyItemsRef.current.has(itemId)) return;
+    const controller = new AbortController();
+    void fetch(`/api/monthly-campaigns/${campaignId}`, { cache: "no-store", signal: controller.signal })
+      .then(async (response) => {
+        const body = await response.json().catch(() => null);
+        const detail = parseMonthlyCampaignDetail(body);
+        const plan = detail?.plans.find((entry) => entry.id === planId);
+        const item = plan?.items.find((entry) => entry.id === itemId);
+        if (!response.ok || !detail || !plan || !item) throw new Error("monthly_item_load_failed");
+        const prompt = monthlyCampaignStudioPrompt({
+          title: item.title,
+          rubric: item.rubric,
+          practice: item.practice,
+          audience: detail.campaign.audience,
+          goal: detail.campaign.goal,
+          cta: detail.campaign.ctas[0],
+        });
+        const destinationChannelId = Number.isSafeInteger(channelFromUrl) && channelFromUrl > 0
+          ? channelFromUrl
+          : null;
+        if (destinationChannelId) setPickedChannelId(destinationChannelId);
+        setWorkspaceMode("chat");
+        setDraft(prompt);
+        setPendingMonthlyCampaignGeneration({
+          campaignId,
+          planId,
+          itemId,
+          prompt,
+          requestKey: `monthly-item:${itemId}:studio`,
+          channelId: destinationChannelId,
+        });
+      })
+      .catch((error) => {
+        if ((error as Error)?.name === "AbortError") return;
+        showToast({
+          kind: "danger",
+          title: "Не удалось открыть тему месяца",
+          body: "Вернись в кампанию и нажми «Подготовить в Студии» ещё раз.",
+        });
+      });
+    return () => controller.abort();
+  }, [chatSessionOwner, searchParams, sessionOwner, showToast]);
+
   // Технические параметры генерации загружаются из базы; голос канала приходит
   // в серверный контекст из единого поканального профиля Авроры.
   useEffect(() => {
@@ -1442,6 +1522,36 @@ function StudioPageInner() {
             });
           }
           window.history.replaceState(null, "", "/app/studio?mode=chat");
+        }
+        if (generation?.monthlyCampaignId && generation.monthlyPlanId && generation.monthlyItemId) {
+          try {
+            const linkResponse = await fetch(
+              `/api/monthly-campaigns/${generation.monthlyCampaignId}/plans/${generation.monthlyPlanId}/items/${generation.monthlyItemId}/draft`,
+              {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({
+                  channelId: destinationChannelId,
+                  draftId: result.draft.id,
+                }),
+              },
+            );
+            if (!linkResponse.ok) throw new Error("monthly_link_failed");
+          } catch {
+            s.toast({
+              kind: "info",
+              title: "Пост создан, но день кампании не обновился",
+              body: "Черновик сохранён. Связь с темой месяца можно повторить позже.",
+            });
+          }
+          window.history.replaceState(null, "", "/app/studio?mode=chat");
+          s.toast({
+            kind: "success",
+            title: "Пост создан",
+            body: "Открываем редактор — можно опубликовать сразу или запланировать.",
+          });
+          router.push(`/app/composer?draft=${result.draft.id}&from=autopilot-month`);
+          return;
         }
         s.toast({
           kind: "success",
@@ -1898,6 +2008,9 @@ function StudioPageInner() {
       audienceQuestionId: opts?.audienceQuestionId,
       audienceQuestionVersion: opts?.audienceQuestionVersion,
       audienceQuestionGenerationKey: opts?.audienceQuestionGenerationKey,
+      monthlyCampaignId: opts?.monthlyCampaignId,
+      monthlyPlanId: opts?.monthlyPlanId,
+      monthlyItemId: opts?.monthlyItemId,
       suggestMedia: opts?.suggestMedia,
     };
     const aiId = uid("m");
@@ -1983,6 +2096,34 @@ function StudioPageInner() {
     // `ask` intentionally captures the selected channel and current post settings.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [channelId, enginesLoading, pendingAudienceQuestionGeneration, postSettingsReady]);
+
+  useEffect(() => {
+    const pending = pendingMonthlyCampaignGeneration;
+    if (
+      !pending
+      || !postSettingsReady
+      || enginesLoading
+      || startedMonthlyItemsRef.current.has(pending.itemId)
+    ) return;
+    const destination = pending.channelId && pending.channelId > 0 ? pending.channelId : channelId;
+    if (!destination) return;
+    startedMonthlyItemsRef.current.add(pending.itemId);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- start one generation after channel/settings are ready
+    ask(pending.prompt, {
+      cmd: "write",
+      input: pending.prompt,
+      skipBrief: true,
+      requestKey: pending.requestKey,
+      autoOpenComposer: true,
+      resultClientKey: `monthly-item-studio:${pending.itemId}:${destination}`,
+      monthlyCampaignId: pending.campaignId,
+      monthlyPlanId: pending.planId,
+      monthlyItemId: pending.itemId,
+      channelId: destination,
+    });
+    // `ask` intentionally captures the selected channel and current post settings.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [channelId, enginesLoading, pendingMonthlyCampaignGeneration, postSettingsReady]);
 
   const stop = () => {
     const stopped = abortStudioStream(streamRef.current);

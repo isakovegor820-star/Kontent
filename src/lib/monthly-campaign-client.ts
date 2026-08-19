@@ -265,3 +265,84 @@ export function equalPracticeMix(names: readonly string[]) {
     weight: base + (index < 100 - base * unique.length ? 1 : 0),
   }));
 }
+
+export function campaignMonthTitle(startsOn: string): string {
+  const date = new Date(`${startsOn}T00:00:00.000Z`);
+  const month = new Intl.DateTimeFormat("ru-RU", {
+    timeZone: "UTC",
+    month: "long",
+  }).format(date);
+  const titled = month ? month.charAt(0).toLocaleUpperCase("ru-RU") + month.slice(1) : month;
+  return `${titled} ${date.getUTCFullYear()}`;
+}
+
+export type MonthlyCampaignEditorialWeek = {
+  index: number;
+  startsOn: string;
+  endsOn: string;
+  items: MonthlyCampaignClientItem[];
+};
+
+/** Seven consecutive campaign days from the 1st. Matches server week regeneration. */
+export function campaignEditorialWeeks(
+  items: readonly MonthlyCampaignClientItem[],
+): MonthlyCampaignEditorialWeek[] {
+  const weeks: MonthlyCampaignEditorialWeek[] = [];
+  for (let offset = 0; offset < items.length; offset += 7) {
+    const slice = items.slice(offset, offset + 7);
+    if (!slice[0]) continue;
+    weeks.push({
+      index: weeks.length + 1,
+      startsOn: slice[0].scheduledFor,
+      endsOn: slice[slice.length - 1]?.scheduledFor ?? slice[0].scheduledFor,
+      items: slice,
+    });
+  }
+  return weeks;
+}
+
+export function monthCalendarCells(startsOn: string, endsOn: string): (string | null)[] {
+  const start = Date.parse(`${startsOn}T00:00:00.000Z`);
+  const end = Date.parse(`${endsOn}T00:00:00.000Z`);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return [];
+  const pad = (new Date(start).getUTCDay() + 6) % 7;
+  const cells: (string | null)[] = Array.from({ length: pad }, () => null);
+  for (let at = start; at <= end; at += 86_400_000) {
+    cells.push(new Date(at).toISOString().slice(0, 10));
+  }
+  while (cells.length % 7 !== 0) cells.push(null);
+  return cells;
+}
+
+export function monthlyCampaignWorkflowStep(
+  plan: MonthlyCampaignClientPlan | null,
+): 1 | 2 | 3 {
+  if (!plan || plan.status === "draft") return 1;
+  if (plan.status === "in_review") return 2;
+  return 3;
+}
+
+export function monthlyCampaignStudioPrompt(input: {
+  title: string;
+  rubric: string;
+  practice: string;
+  audience: string;
+  goal: string;
+  cta?: string;
+}): string {
+  const title = input.title.trim();
+  const rubric = input.rubric.trim();
+  const practice = input.practice.trim();
+  const audience = input.audience.trim();
+  const goal = input.goal.trim();
+  const cta = input.cta?.trim();
+  const parts = [
+    `Напиши пост для Telegram по теме месяца: «${title}».`,
+    `Рубрика: ${rubric}. Направление: ${practice}.`,
+    `Для кого: ${audience}.`,
+    `Цель кампании: ${goal}.`,
+  ];
+  if (cta) parts.push(`Призыв к действию: ${cta}.`);
+  parts.push("Пиши по фактам из базы знаний канала. Не выдумывай законы, дела, цифры и обещания.");
+  return parts.join(" ");
+}

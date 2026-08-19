@@ -6,8 +6,10 @@ import {
   requireSelectedProjectPermission,
   type ProjectPermission,
 } from "./project-permissions";
+import { DRAFT_REVIEW_POLICY_VERSION } from "./draft-review";
 import { normalizeIdempotencyKey } from "./publication-idempotency";
 import { titleSimilarity } from "./monthly-campaign";
+import { resolveLocalSchedule } from "./timezone-schedule";
 
 export const MONTHLY_CAMPAIGN_FUNNEL_STAGES = [
   "awareness",
@@ -165,6 +167,7 @@ export class MonthlyCampaignServiceError extends Error {
     | "invalid_regeneration_scope"
     | "no_regeneration_targets"
     | "lineage_conflict"
+    | "invalid_channel"
     | "archived";
 
   constructor(code: MonthlyCampaignServiceError["code"]) {
@@ -1408,5 +1411,152 @@ export async function linkMonthlyCampaignItem(input: {
         input.requestId?.slice(0, 128) || null],
     );
     return { planVersion: Number(version.rows[0].version), item: itemFromRow(updated.rows[0]) };
+  });
+}
+
+const MONTHLY_ITEM_DRAFT_TIME = "10:00";
+
+export async function ensureMonthlyCampaignItemDraft(input: {
+  pool: TransactionPool;
+  actorUserId: number;
+  campaignId: number;
+  planId: number;
+  itemId: number;
+  channelId: unknown;
+  attachDraftId?: unknown;
+}): Promise<{ draftId: number; created: boolean; item: MonthlyCampaignItemRecord; campaign: MonthlyCampaignSummary }> {
+  const channelId = positiveId(input.channelId, "invalid_channel");
+  const attachDraftId = input.attachDraftId == null ? null : positiveId(input.attachDraftId, "lineage_conflict");
+  return withTransaction(input.pool, async (client) => {
+    const projectId = await authorizeSelected(client, input.actorUserId, "content.create");
+    const { campaign, planRow } = await lockedPlanContext(
+      client, projectId, positiveId(input.campaignId), positiveId(input.planId),
+    );
+    if (campaign.archived) throw new MonthlyCampaignServiceError("archived");
+    const itemResult = await client.query<Record<string, unknown>>(
+      `${ITEM_SELECT} where id = $1 and plan_id = $2 and project_id = $3 for update`,
+      [positiveId(input.itemId), planRow.id, projectId],
+    );
+    if (!itemResult.rows[0]) throw new MonthlyCampaignServiceError("not_found");
+    const item = itemFromRow(itemResult.rows[0]);
+    const channel = await client.query<{ id: number | string }>(
+      `select id from channels
+        where id = $1 and project_id = $2 and is_active = true and status = 'active'
+        for share`,
+      [channelId, projectId],
+    );
+    if (!channel.rows[0]) throw new MonthlyCampaignServiceError("invalid_channel");
+
+    if (attachDraftId != null) {
+      const owned = await client.query<{ id: number | string }>(
+        `select id from drafts where id = $1 and project_id = $2 for share`,
+        [attachDraftId, projectId],
+      );
+      if (!owned.rows[0]) throw new MonthlyCampaignServiceError("lineage_conflict");
+      const updated = await client.query<Record<string, unknown>>(
+        `update monthly_campaign_items
+            set draft_id = $4, updated_at = now()
+          where id = $1 and plan_id = $2 and project_id = $3
+          returning id, project_id, plan_id, item_key, scheduled_for, position, title, rubric,
+                    practice, funnel_stage, state, approval_status, content_version,
+                    approved_content_version, source_item_id, weekly_autopilot_plan_id,
+                    weekly_autopilot_item_index, draft_id, post_id, latest_post_stats_id,
+                    regeneration_version, regeneration_status, created_at, updated_at`,
+        [item.id, planRow.id, projectId, attachDraftId],
+      );
+      if (!updated.rows[0]) throw new MonthlyCampaignServiceError("not_found");
+      return {
+        draftId: attachDraftId,
+        created: false,
+        item: itemFromRow(updated.rows[0]),
+        campaign,
+      };
+    }
+
+    if (item.draftId) {
+      return { draftId: item.draftId, created: false, item, campaign };
+    }
+
+    let schedule: ReturnType<typeof resolveLocalSchedule> | null = null;
+    try {
+      schedule = resolveLocalSchedule({
+        localDate: item.scheduledFor,
+        localTime: MONTHLY_ITEM_DRAFT_TIME,
+        timezone: campaign.timezone,
+        disambiguation: "later",
+      });
+    } catch {
+      schedule = null;
+    }
+
+    const clientKey = `monthly-item-draft:${item.id}:${channelId}`;
+    const inserted = await client.query<{ id: number | string }>(
+      `insert into drafts (
+         user_id, project_id, text, media, tracking, scheduled_at, origin, purpose, source_ref,
+         client_key, review_policy_version, ai_validation, generation_result_id,
+         scheduled_timezone, scheduled_local_date, scheduled_local_time,
+         scheduled_offset, scheduled_disambiguation, formatting
+       ) values (
+         $1, $2, $3, null, '{}'::jsonb, $4, 'manual', 'publishable', $5::jsonb,
+         $6, $7, null, null, $8, $9::date, $10::time, $11, $12, '[]'::jsonb
+       )
+       on conflict (user_id, client_key) do nothing
+       returning id`,
+      [
+        input.actorUserId,
+        projectId,
+        item.title,
+        schedule?.scheduledAt ?? null,
+        JSON.stringify({
+          kind: "monthly_campaign",
+          campaignId: campaign.id,
+          planId: Number(planRow.id),
+          itemId: item.id,
+          contentVersion: item.contentVersion,
+        }),
+        clientKey,
+        DRAFT_REVIEW_POLICY_VERSION,
+        schedule?.timezone ?? null,
+        schedule?.localDate ?? null,
+        schedule?.localTime ?? null,
+        schedule?.offset ?? null,
+        schedule?.disambiguation ?? null,
+      ],
+    );
+    let draftId = inserted.rows[0] ? Number(inserted.rows[0].id) : null;
+    const created = draftId != null;
+    if (draftId == null) {
+      const existing = await client.query<{ id: number | string }>(
+        `select id from drafts where project_id = $1 and user_id = $2 and client_key = $3`,
+        [projectId, input.actorUserId, clientKey],
+      );
+      draftId = existing.rows[0] ? Number(existing.rows[0].id) : null;
+    }
+    if (draftId == null) throw new Error("monthly_campaign_item_draft_lookup_failed");
+    await client.query(
+      `insert into draft_destinations (draft_id, channel_id)
+       values ($1, $2)
+       on conflict (draft_id, channel_id) do nothing`,
+      [draftId, channelId],
+    );
+    const updated = await client.query<Record<string, unknown>>(
+      `update monthly_campaign_items
+          set draft_id = coalesce(draft_id, $4), updated_at = now()
+        where id = $1 and plan_id = $2 and project_id = $3
+        returning id, project_id, plan_id, item_key, scheduled_for, position, title, rubric,
+                  practice, funnel_stage, state, approval_status, content_version,
+                  approved_content_version, source_item_id, weekly_autopilot_plan_id,
+                  weekly_autopilot_item_index, draft_id, post_id, latest_post_stats_id,
+                  regeneration_version, regeneration_status, created_at, updated_at`,
+      [item.id, planRow.id, projectId, draftId],
+    );
+    if (!updated.rows[0]) throw new MonthlyCampaignServiceError("not_found");
+    const linked = itemFromRow(updated.rows[0]);
+    return {
+      draftId: linked.draftId ?? draftId,
+      created,
+      item: linked,
+      campaign,
+    };
   });
 }

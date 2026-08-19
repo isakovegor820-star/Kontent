@@ -89,6 +89,7 @@ export function monthlyCampaignApiError(error: unknown, requestId: string) {
       invalid_regeneration_scope: 422,
       no_regeneration_targets: 422,
       lineage_conflict: 409,
+      invalid_channel: 422,
       archived: 409,
     };
     return monthlyCampaignJson({ ok: false, error: error.code }, status[error.code], requestId);

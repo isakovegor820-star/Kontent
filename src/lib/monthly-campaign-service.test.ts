@@ -21,6 +21,7 @@ import {
   moveMonthlyCampaignItem,
   normalizeMonthlyCampaignBrief,
   normalizeMonthlyCampaignItems,
+  ensureMonthlyCampaignItemDraft,
   requestMonthlyCampaignRegeneration,
   transitionMonthlyCampaignPlan,
   updateMonthlyCampaign,
@@ -416,5 +417,89 @@ describe("monthly campaign project service", () => {
     expect(result.status).toBe("pending");
     const markerSql = String(h.query.mock.calls.find(([sql]) => String(sql).startsWith("update monthly_campaign_items"))?.[0]);
     expect(markerSql).not.toMatch(/title\s*=|approval_status\s*=|approved_content_version\s*=/u);
+  });
+
+  it("reuses an already linked topic draft instead of inserting another", async () => {
+    const h = transactionHarness((sql) => {
+      if (sql.includes("from monthly_campaigns")) return { rows: [campaignRow()] };
+      if (sql.includes("from monthly_campaign_plans")) return { rows: [planRow()] };
+      if (sql.includes("from monthly_campaign_items")) return { rows: [itemRow(62, 2, 1, { draft_id: 901 })] };
+      if (sql.includes("from channels")) return { rows: [{ id: 11 }] };
+      throw new Error(`unexpected SQL: ${sql}`);
+    });
+    const result = await ensureMonthlyCampaignItemDraft({
+      pool: h.pool as never, actorUserId: 11, campaignId: 41, planId: 52, itemId: 62, channelId: 11,
+    });
+    expect(result).toMatchObject({ draftId: 901, created: false });
+    expect(h.query.mock.calls.some(([sql]) => String(sql).startsWith("insert into drafts"))).toBe(false);
+  });
+
+  it("creates a scheduled topic draft and links only draft_id", async () => {
+    const h = transactionHarness((sql) => {
+      if (sql.includes("from monthly_campaigns")) return { rows: [campaignRow()] };
+      if (sql.includes("from monthly_campaign_plans")) return { rows: [planRow()] };
+      if (sql.includes("from monthly_campaign_items") && sql.includes("for update")) {
+        return { rows: [itemRow(62, 2, 1)] };
+      }
+      if (sql.includes("from channels")) return { rows: [{ id: 11 }] };
+      if (sql.startsWith("insert into drafts")) return { rows: [{ id: 901 }] };
+      if (sql.startsWith("insert into draft_destinations")) return { rows: [] };
+      if (sql.startsWith("update monthly_campaign_items")) {
+        return { rows: [itemRow(62, 2, 1, { draft_id: 901 })] };
+      }
+      throw new Error(`unexpected SQL: ${sql}`);
+    });
+    const result = await ensureMonthlyCampaignItemDraft({
+      pool: h.pool as never, actorUserId: 11, campaignId: 41, planId: 52, itemId: 62, channelId: 11,
+    });
+    expect(result).toMatchObject({ draftId: 901, created: true });
+    const draftInsert = h.query.mock.calls.find(([sql]) => String(sql).startsWith("insert into drafts"));
+    expect(draftInsert?.[1]).toEqual(expect.arrayContaining([
+      11, 7, "Тема 2", expect.stringMatching(/^2026-09-02T/),
+    ]));
+    const linkSql = String(h.query.mock.calls.find(([sql]) => String(sql).startsWith("update monthly_campaign_items"))?.[0]);
+    expect(linkSql).toContain("draft_id = coalesce(draft_id, $4)");
+    expect(linkSql).not.toContain("weekly_autopilot_plan_id =");
+  });
+
+  it("attaches an owned generated draft without creating another", async () => {
+    const h = transactionHarness((sql) => {
+      if (sql.includes("from monthly_campaigns")) return { rows: [campaignRow()] };
+      if (sql.includes("from monthly_campaign_plans")) return { rows: [planRow()] };
+      if (sql.includes("from monthly_campaign_items") && sql.includes("for update")) {
+        return { rows: [itemRow(62, 2, 1)] };
+      }
+      if (sql.includes("from channels")) return { rows: [{ id: 11 }] };
+      if (sql.includes("from drafts")) return { rows: [{ id: 777 }] };
+      if (sql.startsWith("update monthly_campaign_items")) {
+        return { rows: [itemRow(62, 2, 1, { draft_id: 777 })] };
+      }
+      throw new Error(`unexpected SQL: ${sql}`);
+    });
+    const result = await ensureMonthlyCampaignItemDraft({
+      pool: h.pool as never,
+      actorUserId: 11,
+      campaignId: 41,
+      planId: 52,
+      itemId: 62,
+      channelId: 11,
+      attachDraftId: 777,
+    });
+    expect(result).toMatchObject({ draftId: 777, created: false });
+    expect(h.query.mock.calls.some(([sql]) => String(sql).startsWith("insert into drafts"))).toBe(false);
+  });
+
+  it("rejects a channel outside the selected project before inserting a draft", async () => {
+    const h = transactionHarness((sql) => {
+      if (sql.includes("from monthly_campaigns")) return { rows: [campaignRow()] };
+      if (sql.includes("from monthly_campaign_plans")) return { rows: [planRow()] };
+      if (sql.includes("from monthly_campaign_items")) return { rows: [itemRow(62, 2, 1)] };
+      if (sql.includes("from channels")) return { rows: [] };
+      throw new Error(`unexpected SQL: ${sql}`);
+    });
+    await expect(ensureMonthlyCampaignItemDraft({
+      pool: h.pool as never, actorUserId: 11, campaignId: 41, planId: 52, itemId: 62, channelId: 99,
+    })).rejects.toMatchObject({ code: "invalid_channel" });
+    expect(h.query.mock.calls.some(([sql]) => String(sql).startsWith("insert into drafts"))).toBe(false);
   });
 });
