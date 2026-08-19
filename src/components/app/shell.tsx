@@ -101,7 +101,6 @@ const NAV_CHILDREN: Partial<Record<AppNavRouteId, readonly NavChild[]>> = {
     { href: "/app/rss?view=hidden", label: "Скрытые", preserveParams: ["channel"] },
   ],
   recon: [
-    { href: "/app/recon", label: "Поиск" },
     { href: "/app/competitors", label: "Конкуренты" },
     { href: "/app/trends", label: "Тренды" },
   ],

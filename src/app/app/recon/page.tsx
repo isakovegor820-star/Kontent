@@ -1,13 +1,5 @@
-import { AppShell } from "@/components/app/shell";
-import { RadarInner } from "@/app/app/radar/radar-inner";
+import { redirect } from "next/navigation";
 
 export default function ReconPage() {
-  return (
-    <AppShell
-      title="Конкуренты и тренды"
-      subtitle="Ищи Telegram-каналы, публикации и тренды без фиксированного лимита выдачи."
-    >
-      <RadarInner />
-    </AppShell>
-  );
+  redirect("/app/trends?scope=internet");
 }

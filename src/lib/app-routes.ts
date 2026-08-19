@@ -42,10 +42,10 @@ export const APP_ROUTES = {
     activeAliases: [],
   },
   recon: {
-    href: "/app/recon",
+    href: "/app/competitors",
     label: "Конкуренты и тренды",
     mobileLabel: "Разведка",
-    activeAliases: ["/app/competitors", "/app/trends", "/app/radar"],
+    activeAliases: ["/app/trends", "/app/radar", "/app/recon"],
   },
   siteAnalysis: {
     href: "/app/site-analysis",

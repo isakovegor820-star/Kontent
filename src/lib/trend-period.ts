@@ -24,7 +24,12 @@ export const TREND_PERIODS = {
 } as const;
 
 export type TrendPeriod = keyof typeof TREND_PERIODS;
+export type TrendFeedScope = "niche" | "internet" | "global";
 
 export function parseTrendPeriod(value: string | null | undefined): TrendPeriod {
   return value === "week" || value === "hits" ? value : "today";
+}
+
+export function parseTrendFeedScope(value: string | null | undefined): TrendFeedScope {
+  return value === "internet" || value === "global" ? value : "niche";
 }

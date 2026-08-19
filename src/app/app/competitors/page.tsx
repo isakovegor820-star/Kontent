@@ -900,7 +900,7 @@ export default function CompetitorsPage() {
   return (
     <AppShell
       title="Конкуренты"
-      subtitle="Telegram и Instagram в одном списке: статус подключения, свежие публикации и ручное обновление."
+      subtitle="Ищи и веди соседей по нише. Публикации по теме — во вкладке «Интернет» в трендах."
       action={
         <Button variant="brand" onClick={() => setOpen((v) => !v)} disabled={atLimit}>
           <Plus className="h-[18px] w-[18px]" strokeWidth={2.25} aria-hidden />
@@ -914,8 +914,17 @@ export default function CompetitorsPage() {
         value={channelId}
         onChange={setPicked}
         label="Конкуренты канала"
-        className="mb-6"
+        className="mb-3"
       />
+      <p className="mb-6 text-[13px] leading-relaxed text-text-3">
+        Нужны посты, а не каналы?{" "}
+        <Link
+          href="/app/trends?scope=internet"
+          className="font-semibold text-brand underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15"
+        >
+          Открыть поиск публикаций
+        </Link>
+      </p>
 
       {/* Сводка автодобавленного. Метка на карточке — это хорошо, но её надо искать; сюда
           человек смотрит первым. Без явной отмены автоматика была бы сюрпризом. */}

@@ -9,6 +9,7 @@
 // а огонёк ставим на настоящие выбросы. Порог — в руках пользователя, а не в env.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { motion, useReducedMotion } from "motion/react";
 import {
@@ -46,7 +47,12 @@ import {
   TrendDraftReviewError,
 } from "@/lib/trend-draft-review";
 import { buildTrendReferenceDraft } from "@/lib/trend-reference";
-import { TREND_PERIODS, type TrendPeriod } from "@/lib/trend-period";
+import {
+  TREND_PERIODS,
+  parseTrendFeedScope,
+  type TrendFeedScope,
+  type TrendPeriod,
+} from "@/lib/trend-period";
 import { cn, fmtAgo, fmtCompact, plural } from "@/lib/utils";
 
 const EASE = [0.22, 1, 0.36, 1] as const;
@@ -118,8 +124,23 @@ interface Data {
 }
 
 type TrendView = "feed" | "statistics";
-type TrendFeedScope = "niche" | "internet" | "global";
 type InternetSearchState = "idle" | "invalid" | "searching" | "ready" | "error";
+
+function trendsInternetQueryFromUrl(): string {
+  if (typeof window === "undefined") return "";
+  const params = new URLSearchParams(window.location.search);
+  if (parseTrendFeedScope(params.get("scope")) !== "internet") return "";
+  return params.get("q")?.trim().slice(0, 200) ?? "";
+}
+
+function writeTrendsSearch(scope: TrendFeedScope, query = "") {
+  const url = new URL(window.location.href);
+  if (scope === "niche") url.searchParams.delete("scope");
+  else url.searchParams.set("scope", scope);
+  if (scope === "internet" && query) url.searchParams.set("q", query);
+  else url.searchParams.delete("q");
+  window.history.replaceState(window.history.state, "", url);
+}
 
 interface RadarSearchRun {
   id: number;
@@ -538,10 +559,13 @@ export default function TrendsPage() {
       ? "statistics"
       : "feed";
   });
-  const [scope, setScope] = useState<TrendFeedScope>("niche");
+  const [scope, setScope] = useState<TrendFeedScope>(() => {
+    if (typeof window === "undefined") return "niche";
+    return parseTrendFeedScope(new URLSearchParams(window.location.search).get("scope"));
+  });
   const [period, setPeriod] = useState<TrendPeriod>("today");
-  const [internetQuery, setInternetQuery] = useState("");
-  const [internetAppliedQuery, setInternetAppliedQuery] = useState("");
+  const [internetQuery, setInternetQuery] = useState(trendsInternetQueryFromUrl);
+  const [internetAppliedQuery, setInternetAppliedQuery] = useState(trendsInternetQueryFromUrl);
   const [internetSearchState, setInternetSearchState] = useState<InternetSearchState>("idle");
   const [internetSearchMessage, setInternetSearchMessage] = useState(
     "Нажми «Найти публикации»: пустое поле возьмёт тему из брифа, затем пойду в интернет и проверю каналы на t.me.",
@@ -559,7 +583,7 @@ export default function TrendsPage() {
   const generationRequestRef = useRef<Record<number, AiClientRequestIdentity>>({});
   const transferInFlightRef = useRef<Set<number>>(new Set());
   const refreshRequestRef = useRef<{ fingerprint: string; key: string } | null>(null);
-  const internetQueryRef = useRef("");
+  const internetQueryRef = useRef(trendsInternetQueryFromUrl());
   const internetSearchInputRef = useRef<HTMLInputElement>(null);
   const internetSearchTokenRef = useRef(0);
   const internetSearchRequestRef = useRef<{ fingerprint: string; key: string } | null>(null);
@@ -666,6 +690,7 @@ export default function TrendsPage() {
     if (v !== "internet") setInternetSearchState("idle");
     scopeRef.current = v;
     setScope(v);
+    writeTrendsSearch(v, v === "internet" ? internetQueryRef.current : "");
     setLoading(true);
     setLoadError(false);
     setData(null);
@@ -688,6 +713,7 @@ export default function TrendsPage() {
   const loadInternetQuery = (query: string) => {
     internetQueryRef.current = query;
     setInternetAppliedQuery(query);
+    writeTrendsSearch("internet", query);
     setLoading(true);
     setLoadError(false);
     setData(null);
@@ -701,6 +727,7 @@ export default function TrendsPage() {
     setInternetQuery("");
     setInternetAppliedQuery("");
     setInternetSearchState("idle");
+    writeTrendsSearch("internet");
     setInternetSearchMessage("Нажми «Найти публикации»: пустое поле возьмёт тему из брифа, затем пойду в интернет и проверю каналы на t.me.");
     setLoading(true);
     setLoadError(false);
@@ -1295,7 +1322,14 @@ export default function TrendsPage() {
 
           {internet && (
             <p className="mt-3 max-w-2xl text-[13px] leading-relaxed text-text-3">
-              По запросу Аврора ищет в открытом интернете публичные Telegram-каналы, проверяет их на t.me и кладёт сюда. Повторные ссылки скрыты. Без нажатия «Найти» новых источников не будет.
+              По запросу Аврора ищет публикации в открытом интернете и проверяет их на t.me. Соседей по нише добавляй в{" "}
+              <Link
+                href="/app/competitors"
+                className="font-semibold text-brand underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15"
+              >
+                конкурентах
+              </Link>
+              . Без «Найти публикации» новых источников не будет.
             </p>
           )}
 

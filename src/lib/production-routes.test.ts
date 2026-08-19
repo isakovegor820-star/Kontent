@@ -11,6 +11,17 @@ describe("production route surface", () => {
     const redirects = await nextConfig.redirects?.();
     const sources = new Set((redirects ?? []).map((route) => route.source));
 
+    expect(redirects ?? []).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        source: "/app/radar",
+        destination: "/app/trends?scope=internet",
+      }),
+      expect.objectContaining({
+        source: "/app/recon",
+        destination: "/app/trends?scope=internet",
+      }),
+    ]));
+
     for (const source of [
       "/v2/:path*",
       "/v3/:path*",

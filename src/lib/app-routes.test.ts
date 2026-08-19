@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -38,7 +39,14 @@ describe("app route registry", () => {
     expect(isAppRouteActive("/app/competitors/41", "recon")).toBe(true);
     expect(isAppRouteActive("/app/trends", "recon")).toBe(true);
     expect(isAppRouteActive("/app/radar", "recon")).toBe(true);
+    expect(isAppRouteActive("/app/recon", "recon")).toBe(true);
     expect(isAppRouteActive("/app/reconnaissance", "recon")).toBe(false);
+    expect(APP_ROUTES.recon.href).toBe("/app/competitors");
+    expect(APP_ROUTES.recon.activeAliases).toEqual(["/app/trends", "/app/radar", "/app/recon"]);
+    const shell = readFileSync(new URL("../components/app/shell.tsx", import.meta.url), "utf8");
+    expect(shell).not.toContain('{ href: "/app/recon", label: "Поиск" }');
+    expect(shell).toContain('{ href: "/app/competitors", label: "Конкуренты" }');
+    expect(shell).toContain('{ href: "/app/trends", label: "Тренды" }');
     expect(isAppRouteActive("/app/site-analysis/41", "siteAnalysis")).toBe(true);
   });
 });

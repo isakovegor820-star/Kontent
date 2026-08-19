@@ -44,7 +44,8 @@ const nextConfig: NextConfig = {
 
   async redirects() {
     const routes = [
-      { source: "/app/radar", destination: "/app/recon", permanent: true },
+      { source: "/app/radar", destination: "/app/trends?scope=internet", permanent: false },
+      { source: "/app/recon", destination: "/app/trends?scope=internet", permanent: false },
     ];
     if (process.env.NODE_ENV === "production") {
       routes.push(
