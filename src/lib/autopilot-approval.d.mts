@@ -58,7 +58,7 @@ export function autopilotPlanRevisionHash(input: {
   channelId: number;
 }): string;
 
-export function isAutopilotHumanReviewItem(item: AutopilotApprovalItem | Record<string, unknown>): boolean;
+export function isAutopilotHumanReviewItem(item: unknown): boolean;
 export function reconcileAutopilotReviewQuality(quality: QualityResult): QualityResult;
 export function attestAutopilotItemForHumanApproval<T extends AutopilotApprovalItem>(
   item: T,
