@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   buildRadarDiscoveryQueries,
+  competitorDiscoveryQuery,
   createBingRssTelegramProvider,
   createDuckDuckGoTelegramProvider,
   createSearxngTelegramProvider,
@@ -18,6 +19,19 @@ import {
 describe("radar hybrid-search core", () => {
   it("normalizes arbitrary Russian queries without losing their meaning", () => {
     expect(normalizeRadarQuery("  Рыбалка — на Волге!!! ")).toBe("рыбалка на волге");
+  });
+
+  it("builds a competitor web-search query from the channel brief, not from invented handles", () => {
+    expect(competitorDiscoveryQuery({
+      niche: "Банкротство бизнеса",
+      audience: "Собственники",
+      channelTitle: "Правовой канал",
+    })).toBe("банкротство бизнеса");
+    expect(competitorDiscoveryQuery({
+      audience: "Садоводы",
+      channelTitle: "Дача",
+    })).toBe("садоводы");
+    expect(competitorDiscoveryQuery({})).toBe("");
   });
 
   it("accepts only canonical public Telegram channel and post links", () => {

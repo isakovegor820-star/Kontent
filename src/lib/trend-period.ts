@@ -7,19 +7,19 @@ export const TREND_PERIODS = {
     label: "Сегодня",
     description: "Публикации с начала сегодняшнего дня по Москве, сначала новые.",
     sort: "newest",
-    limit: 36,
+    limit: 48,
   },
   week: {
     label: "7 дней",
     description: "Все публикации за последние 7 дней, сначала новые.",
     sort: "newest",
-    limit: 48,
+    limit: 72,
   },
   hits: {
     label: "Залёты · 30 дней",
     description: "Проверенные посты за 30 дней, которые сравнимы с нормой своего канала.",
     sort: "ratio",
-    limit: 18,
+    limit: 24,
   },
 } as const;
 

@@ -544,7 +544,7 @@ export default function TrendsPage() {
   const [internetAppliedQuery, setInternetAppliedQuery] = useState("");
   const [internetSearchState, setInternetSearchState] = useState<InternetSearchState>("idle");
   const [internetSearchMessage, setInternetSearchMessage] = useState(
-    "Введи тему — например, «рыбалка» или «садоводство».",
+    "Нажми «Найти публикации»: пустое поле возьмёт тему из брифа, затем пойду в интернет и проверю каналы на t.me.",
   );
   const [threshold, setThreshold] = useState<ThresholdValue>("all");
   const [checking, setChecking] = useState(false);
@@ -701,7 +701,7 @@ export default function TrendsPage() {
     setInternetQuery("");
     setInternetAppliedQuery("");
     setInternetSearchState("idle");
-    setInternetSearchMessage("Введи тему — например, «рыбалка» или «садоводство».");
+    setInternetSearchMessage("Нажми «Найти публикации»: пустое поле возьмёт тему из брифа, затем пойду в интернет и проверю каналы на t.me.");
     setLoading(true);
     setLoadError(false);
     setData(null);
@@ -710,7 +710,8 @@ export default function TrendsPage() {
 
   const searchInternet = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const query = internetQuery.replace(/\s+/gu, " ").trim().slice(0, 200);
+    const query = (internetQuery.replace(/\s+/gu, " ").trim() || String(data?.status.niche || "").trim())
+      .slice(0, 200);
     if (query.length < 2) {
       setInternetSearchState("invalid");
       setInternetSearchMessage("Введи минимум два символа.");
@@ -723,6 +724,7 @@ export default function TrendsPage() {
       return;
     }
 
+    if (!internetQuery.trim()) setInternetQuery(query);
     const token = ++internetSearchTokenRef.current;
     loadInternetQuery(query);
     setInternetSearchState("searching");
@@ -846,7 +848,7 @@ export default function TrendsPage() {
       setInternetQuery("");
       setInternetAppliedQuery("");
       setInternetSearchState("idle");
-      setInternetSearchMessage("Введи тему — например, «рыбалка» или «садоводство».");
+      setInternetSearchMessage("Нажми «Найти публикации»: пустое поле возьмёт тему из брифа, затем пойду в интернет и проверю каналы на t.me.");
     }
     const url = new URL(window.location.href);
     url.searchParams.set("channel", String(id));
@@ -1293,7 +1295,7 @@ export default function TrendsPage() {
 
           {internet && (
             <p className="mt-3 max-w-2xl text-[13px] leading-relaxed text-text-3">
-              Здесь только проверенные публичные Telegram-публикации, которые Аврора нашла через поиск для выбранного канала. Повторные ссылки скрыты.
+              По запросу Аврора ищет в открытом интернете публичные Telegram-каналы, проверяет их на t.me и кладёт сюда. Повторные ссылки скрыты. Без нажатия «Найти» новых источников не будет.
             </p>
           )}
 
@@ -1334,13 +1336,13 @@ export default function TrendsPage() {
                     if (internetSearchState === "invalid") {
                       setInternetSearchState("idle");
                       setInternetSearchMessage(
-                        "Введи тему — например, «рыбалка» или «садоводство».",
+                        "Нажми «Найти публикации»: пустое поле возьмёт тему из брифа, затем пойду в интернет и проверю каналы на t.me.",
                       );
                     }
                   }}
                   aria-describedby="internet-feed-search-status"
                   aria-invalid={internetSearchState === "invalid" || undefined}
-                  placeholder="Например: рыбалка, садоводство или банкротство"
+                  placeholder={niche || "Например: рыбалка, садоводство или банкротство"}
                   className="min-w-0 flex-1"
                 />
                 <Button type="submit" variant="brand" className="shrink-0">
@@ -1486,7 +1488,7 @@ export default function TrendsPage() {
                         ? "Аврора проверяет публичные Telegram-источники. Новые публикации появятся здесь автоматически."
                         : internetAppliedQuery
                           ? "Попробуй другую формулировку или покажи всю уже собранную интернет-базу."
-                          : "Введи тему в поиске выше. Проверенные публичные Telegram-публикации появятся здесь автоматически."
+                          : "Нажми «Найти публикации»: пустое поле возьмёт тему из брифа, затем Аврора пойдёт в интернет и проверит каналы на t.me."
                     : waiting > 0
                       ? `Разведка уже прошла по теме${niche ? ` «${niche}»` : ""} и отобрала кандидатов. Оставь тех, кто правда твой сосед, — дальше я сам посчитаю их норму и поймаю посты, которые её обошли.`
                       : "Добавь каналы конкурентов — и я начну считать их норму и ловить посты, которые её обошли. Данные беру только открытые: посты, просмотры, реакции."

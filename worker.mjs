@@ -176,6 +176,7 @@ import {
 } from "./src/lib/autopilot-config.mjs";
 import {
   RadarDiscoveryError,
+  competitorDiscoveryQuery,
   discoverTelegramCandidates,
   median as radarMedian,
   rankVerifiedTelegramPost,
@@ -4311,20 +4312,20 @@ async function runRadarSearch(runId, userId) {
 // ============================================================================
 // Д.6+ — АГЕНТ САМ ИЩЕТ СОСЕДЕЙ ПО НИШЕ.
 //
-// Почему так, а не «спросить у ИИ»: у Telegram нет поиска каналов, а модель на вопрос
+// Почему так, а не «спросить у ИИ»: у Telegram нет своего поиска каналов, а модель на вопрос
 // «назови юридические каналы» выдумает handle'ы, которых не существует. Проверено в этой
 // же сессии: hermes3 сочинил категории с несуществующими числами.
 //
-// Работающий сигнал — граф ниши: каналы ссылаются друг на друга в постах. Идём от своего
-// канала и уже добавленных конкурентов, собираем упоминания, каждого кандидата проверяем
-// живьём и приносим человеку на подтверждение. Добавляет он, а не мы.
+// Работающие сигналы: граф упоминаний, открытый интернет-поиск (Bing/DDG/SearXNG → t.me),
+// и общий справочник уже проверенных каналов. Кандидата всегда проверяем живьём на t.me/s.
+// Добавляет человек, а не мы.
 // ============================================================================
 
 // Гигант — не твой конкурент. @kommersant и @bbbreaking упоминают все, но соседями
 // по нише они не являются: у них другая лига и другая аудитория.
 const DISCOVER_MAX_SUBS = 500_000;
-// Сколько кандидатов проверяем за проход: каждая проверка — запрос к t.me, экономим.
-const DISCOVER_CHECK_LIMIT = 12;
+// Сколько кандидатов проверяем за проход: каждая проверка — запрос к t.me плюс ИИ.
+const DISCOVER_CHECK_LIMIT = 28;
 // Сколько каналов добавляем сами на холодном старте. Три — чтобы лента ожила, но у человека
 // осталось место (потолок 20) и ощущение, что список его, а не наш.
 const AUTO_ADD_MAX = 3;
@@ -4404,6 +4405,9 @@ async function directoryPool(userId, channelId) {
         select handle from competitors where network = 'tg' and channel_id <> $2 and handle is not null
         union all
         select handle from trend_sources where enabled = true
+        union all
+        select handle from discovered_sources
+         where network = 'tg' and verification_status = 'verified' and is_public = true
      ) x
       where lower(x.handle) not in (
         select lower(handle) from channels where user_id = $1 and handle is not null
@@ -4445,7 +4449,22 @@ async function discoverForChannel(userId, channelId) {
   ).rows
     .map((r) => r.handle)
     .filter(Boolean);
-  if (!seeds.length) return 0;
+
+  const brief = (
+    await pool.query(`select * from content_brief where user_id = $1 and channel_id = $2`, [
+      userId,
+      channelId,
+    ])
+  ).rows[0];
+  const channel = (
+    await pool.query(`select title from channels where id = $1`, [channelId])
+  ).rows[0];
+  const webQuery = competitorDiscoveryQuery({
+    niche: brief?.niche,
+    audience: brief?.audience,
+    channelTitle: channel?.title,
+  });
+  if (!seeds.length && !webQuery) return 0;
 
   // handle → множество семян, которые его упомянули
   const graph = new Map();
@@ -4493,23 +4512,31 @@ async function discoverForChannel(userId, channelId) {
   // @sberbusiness и @forbesrussia — только собственные каналы. Справочник у первого
   // пользователя ниши пуст (и это честно), у сотого — богат.
   const seen = new Set(fromGraph.map((c) => c.handle));
+  const fromWeb = [];
+  if (webQuery) {
+    try {
+      const found = await discoverTelegramCandidates(webQuery, {
+        searxngUrl: process.env.RADAR_SEARXNG_URL,
+        fetchImpl: fetch,
+      });
+      for (const candidate of found) {
+        const handle = String(candidate.handle || "").toLowerCase();
+        if (!handle || known.has(handle) || dismissed.has(handle) || seen.has(handle)) continue;
+        seen.add(handle);
+        fromWeb.push({ handle, by: [], fromPool: false });
+      }
+    } catch (error) {
+      console.error("[поиск] web discovery:", error?.code || error?.message || error);
+    }
+  }
+
   const fromPool = (await directoryPool(userId, channelId))
     .filter((h) => !known.has(h) && !dismissed.has(h) && !seen.has(h))
     .map((handle) => ({ handle, by: [], fromPool: true }));
 
-  // Граф идёт первым: «на него ссылается твой сосед» — сигнал сильнее, чем «его знает
-  // платформа». Общий предел держим: каждая проверка — это запрос к t.me плюс вызов ИИ.
-  const candidates = [...fromGraph, ...fromPool].slice(0, DISCOVER_CHECK_LIMIT);
-
-  // Бриф — единственный источник правды о том, ЧТО за канал. Без него судить не по чему:
-  // раньше я подбирал «популярные юридические», то есть по своему представлению о нише,
-  // и приносил PR-агентство и софтверный блог только потому, что на них кто-то сослался.
-  const brief = (
-    await pool.query(`select * from content_brief where user_id = $1 and channel_id = $2`, [
-      userId,
-      channelId,
-    ])
-  ).rows[0];
+  // Граф — самый сильный сигнал, затем живой интернет-поиск, затем то, что платформа
+  // уже проверяла. Общий предел держим: каждая проверка — это запрос к t.me плюс вызов ИИ.
+  const candidates = [...fromGraph, ...fromWeb, ...fromPool].slice(0, DISCOVER_CHECK_LIMIT);
 
   // АВТОДОБАВЛЕНИЕ — только на холодном старте. Новый канал = пустой экран трендов, и это
   // единственная боль, которую стоит лечить молча. Как только у канала есть хоть один
@@ -4611,7 +4638,7 @@ async function discoverForChannel(userId, channelId) {
   }
 
   console.log(
-    `[поиск] user ${userId}/канал ${channelId}: сидов ${seeds.length}, кандидатов ${candidates.length}, новых ${added}`,
+    `[поиск] user ${userId}/канал ${channelId}: сидов ${seeds.length}, web ${fromWeb.length}, кандидатов ${candidates.length}, новых ${added}`,
   );
   return added;
 }

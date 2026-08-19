@@ -104,6 +104,14 @@ export function radarQueryTokens(value) {
   return [...new Set(tokens)].slice(0, 12);
 }
 
+export function competitorDiscoveryQuery(input = {}) {
+  for (const value of [input.niche, input.audience, input.channelTitle]) {
+    const query = normalizeRadarQuery(value);
+    if (query.length >= 2) return query;
+  }
+  return "";
+}
+
 /**
  * Полнотекстовая ветка ищет слова через ИЛИ, а точность затем проверяет кодовое
  * ранжирование. Это важно для живых вопросов: PostgreSQL `plainto_tsquery` связывает

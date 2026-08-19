@@ -58,12 +58,12 @@ export async function GET(req: NextRequest) {
            from competitor_suggestions s
           where s.channel_id = $1 and s.status = 'new' and s.on_topic is distinct from false
           order by s.on_topic desc nulls last, s.mentioned_by desc, s.subscribers desc nulls last
-          limit 12`,
+          limit 24`,
         [channelId],
       )
     ).rows;
 
-    // Есть ли от чего плясать: без своего канала и без конкурентов графа нет.
+    // Сиды помогают графу упоминаний. Без них всё равно можно искать в интернете по брифу.
     const seeds = (
       await pool.query<{ n: number }>(
         `select (
