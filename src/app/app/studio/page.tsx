@@ -1732,6 +1732,8 @@ function StudioPageInner() {
           }
           setMsg({
             text: completion.text,
+            // Готовый черновик говорит сам за себя. Требование ручной проверки остаётся —
+            // его показывает композер перед планированием и проверяет сервер при публикации.
             statusMessage: undefined,
             progressLabel: undefined,
             streaming: false,
@@ -2131,7 +2133,7 @@ function StudioPageInner() {
     .find((message) => message.role === "ai");
   const generationAnnouncement = latestAiStatus?.streaming
     ? latestAiStatus.progressLabel ?? "Генерация продолжается"
-    : latestAiStatus?.statusMessage ?? "";
+    : latestAiStatus?.statusMessage ?? (latestAiStatus?.reviewable ? "Черновик готов." : "");
   const originalityLimit = postSettings.originalityDepth === "all" ? 200 : Number(postSettings.originalityDepth);
   const similarPosts = pendingBrief && postSettings.showSimilarPosts
     ? s.realPosts
