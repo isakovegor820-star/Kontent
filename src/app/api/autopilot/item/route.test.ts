@@ -259,6 +259,92 @@ describe("PATCH /api/autopilot/item approve", () => {
       items: [expect.objectContaining({ status: "approved", postId: 501 })],
     }));
   });
+
+  it("lets a person approve a review-only draft after attaching a human attestation", async () => {
+    const reviewQuality = {
+      ...quality,
+      score: 84,
+      passed: false,
+      blockers: ["Смысл фактических утверждений не проверен. Нужна ручная проверка перед публикацией."],
+      violations: [{
+        code: "semantic_review_required",
+        message: "Смысл фактических утверждений не проверен. Нужна ручная проверка перед публикацией.",
+        blocker: true,
+        penalty: 0,
+      }],
+      semantic: {
+        ...quality.semantic,
+        status: "not_checked",
+        passed: false,
+        requiresReview: true,
+        claimVerdicts: [{
+          claimId: "claim-1",
+          claim: "Проверенный текст",
+          verdict: "unknown",
+          reasonCode: "semantic_provider_unavailable",
+          riskCodes: [],
+          sourceSpans: [],
+        }],
+        provenance: {
+          ...quality.semantic.provenance,
+          provider: "unavailable",
+          terminalVerdict: "not_checked",
+        },
+      },
+    };
+    const source = [{
+      ...approvedItem,
+      status: "pending",
+      postId: undefined,
+      scheduledAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      quality: reviewQuality,
+      qualityBlocked: true,
+      reviewRequired: true,
+    }];
+    mocks.claimPlan.mockResolvedValue({ items: source, channel_id: 7 });
+    mocks.scheduleItem.mockResolvedValue({
+      postId: 612,
+      scheduledAt: source[0].scheduledAt,
+      queuePending: false,
+    });
+    mocks.query.mockImplementation(async (sqlValue: string) => {
+      const sql = sqlValue.replace(/\s+/g, " ").trim();
+      if (sql.startsWith("select id, items, channel_id, status, revision from autopilot_plan")) {
+        return { rows: [{ id: 44, items: source, channel_id: 7, status: "pending" }], rowCount: 1 };
+      }
+      if (sql.includes("from autopilot_approval_operations where project_id")) {
+        return { rows: [], rowCount: 0 };
+      }
+      if (sql.startsWith("insert into autopilot_approval_operations")) {
+        return { rows: [{ id: 92 }], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 1 };
+    });
+
+    const response = await PATCH(
+      new NextRequest("http://localhost/api/autopilot/item", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          channelId: 7,
+          index: 2,
+          action: "approve",
+          idempotencyKey: "item-review-key",
+          ...planBinding,
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ ok: true, postId: 612 });
+    expect(mocks.scheduleItem).toHaveBeenCalledOnce();
+    const saved = mocks.finalizeApproval.mock.calls[0][0].items[0];
+    expect(saved.quality.metadata.provenance.humanAttestation).toMatchObject({
+      kind: "human_review",
+      userId: 3,
+    });
+    expect(saved.qualityOrigin).toBe("human_attested");
+  });
 });
 
 describe("PATCH /api/autopilot/item reject", () => {

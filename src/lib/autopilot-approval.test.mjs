@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   annotateAutopilotItems,
+  attestAutopilotItemForHumanApproval,
   autopilotPlanRevisionHash,
   buildAutopilotApprovalPreview,
   evaluateAutopilotItem,
   executeAutopilotApproval,
+  isAutopilotHumanReviewItem,
 } from "./autopilot-approval.mjs";
 
 const NOW = Date.parse("2026-08-01T12:00:00.000Z");
@@ -57,6 +59,40 @@ const item = (overrides = {}) => ({
   ...overrides,
 });
 
+const reviewQuality = {
+  score: 84,
+  threshold: 85,
+  passed: false,
+  blockers: ["Смысл фактических утверждений не проверен. Нужна ручная проверка перед публикацией."],
+  violations: [{
+    code: "semantic_review_required",
+    message: "Смысл фактических утверждений не проверен. Нужна ручная проверка перед публикацией.",
+    blocker: true,
+    penalty: 0,
+  }],
+  semantic: {
+    version: 1,
+    status: "not_checked",
+    passed: false,
+    requiresReview: true,
+    blockers: [],
+    claimVerdicts: [{
+      claimId: "claim-1", claim: "Проверенный текст", verdict: "unknown",
+      reasonCode: "semantic_provider_unavailable", riskCodes: [], sourceSpans: [],
+    }],
+    provenance: {
+      validatorVersion: "semantic-publication-v1",
+      checkedAt: "2026-08-02T09:30:00.000Z",
+      provider: "unavailable",
+      model: null,
+      sourceIds: [],
+      rejectedSourceSpans: [],
+      terminalVerdict: "not_checked",
+    },
+  },
+  metadata: passedQuality.metadata,
+};
+
 describe("Autopilot approval policy", () => {
   it("makes three expired items ineligible and marks immutable copies expired", () => {
     const source = [
@@ -89,6 +125,48 @@ describe("Autopilot approval policy", () => {
     expect(evaluateAutopilotItem(item({ quality: legacyResult }), NOW).blockers).toContainEqual(
       expect.objectContaining({ code: "quality_missing" }),
     );
+  });
+
+  it("lets a person approve a review-only draft and keeps full-auto locked", () => {
+    const reviewItem = item({
+      quality: reviewQuality,
+      qualityBlocked: true,
+      reviewRequired: true,
+    });
+    expect(isAutopilotHumanReviewItem(reviewItem)).toBe(true);
+    expect(evaluateAutopilotItem(reviewItem, NOW).eligible).toBe(false);
+    expect(evaluateAutopilotItem(reviewItem, NOW, { actor: "human" }).eligible).toBe(true);
+    expect(evaluateAutopilotItem(item({
+      quality: { ...reviewQuality, passed: false, violations: [{
+        code: "too_long", message: "Нужно максимум 1800 знаков, сейчас 1946", blocker: true, penalty: 25,
+      }] },
+      qualityBlocked: true,
+    }), NOW, { actor: "human" }).eligible).toBe(false);
+
+    const attested = attestAutopilotItemForHumanApproval(reviewItem, {
+      userId: 3,
+      attestedAt: "2026-08-01T12:01:00.000Z",
+    });
+    expect(attested.qualityBlocked).toBe(false);
+    expect(evaluateAutopilotItem(attested, NOW).eligible).toBe(true);
+  });
+
+  it("counts review-only drafts as eligible only for a human preview", () => {
+    const preview = buildAutopilotApprovalPreview({
+      items: [item({ quality: reviewQuality, qualityBlocked: true, reviewRequired: true })],
+      nowMs: NOW,
+      channel: { id: 7, title: "Канал" },
+      planId: 9,
+      actor: "human",
+    });
+    const systemPreview = buildAutopilotApprovalPreview({
+      items: [item({ quality: reviewQuality, qualityBlocked: true, reviewRequired: true })],
+      nowMs: NOW,
+      channel: { id: 7, title: "Канал" },
+      planId: 9,
+    });
+    expect(preview.counts).toEqual({ total: 1, eligible: 1, expired: 0, blocked: 0 });
+    expect(systemPreview.counts).toEqual({ total: 1, eligible: 0, expired: 0, blocked: 1 });
   });
 
   it("blocks failed quality and empty drafts", () => {
@@ -138,6 +216,22 @@ describe("Autopilot approval policy", () => {
     expect(autopilotPlanRevisionHash({ ...base, items: [item({ quality: { ...passedQuality, passed: false } })] })).not.toBe(hash);
     expect(autopilotPlanRevisionHash({ ...base, channelId: 8 })).not.toBe(hash);
     expect(autopilotPlanRevisionHash({ ...base, planRevision: 5 })).not.toBe(hash);
+  });
+
+  it("schedules a review-only draft only after a human attestation", async () => {
+    const calls = [];
+    const result = await executeAutopilotApproval({
+      items: [item({ quality: reviewQuality, qualityBlocked: true, reviewRequired: true })],
+      nowMs: NOW,
+      attestor: { userId: 3, attestedAt: "2026-08-01T12:01:00.000Z" },
+      schedule: async (entry) => {
+        calls.push(entry.i);
+        return 77;
+      },
+    });
+    expect(calls).toEqual([0]);
+    expect(result.scheduled).toBe(1);
+    expect(result.items[0]).toMatchObject({ status: "approved", postId: 77, qualityOrigin: "human_attested" });
   });
 
   it("creates no posts for expired items", async () => {

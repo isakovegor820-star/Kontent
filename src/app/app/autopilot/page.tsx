@@ -32,7 +32,11 @@ import {
   hasVerifiedQualityMetadata,
   type QualityResult,
 } from "@/lib/post-quality.mjs";
-import type { ApprovalBlocker, AutopilotApprovalPreview } from "@/lib/autopilot-approval.mjs";
+import {
+  isAutopilotHumanReviewItem,
+  type ApprovalBlocker,
+  type AutopilotApprovalPreview,
+} from "@/lib/autopilot-approval.mjs";
 import { autopilotPlanNeedsQualityRebuild } from "@/lib/autopilot-plan-visibility.mjs";
 import {
   estimateAutopilotBuildMinutes,
@@ -127,6 +131,9 @@ const hasPassedVerifiedQuality = (item: PlanItem) =>
   hasVerifiedQualityMetadata(item.quality) &&
   item.quality?.passed === true &&
   item.qualityBlocked !== true;
+
+const canApproveItem = (item: PlanItem) =>
+  hasPassedVerifiedQuality(item) || isAutopilotHumanReviewItem(item);
 
 // Иконка поста. Сначала — точная, по рубрике из брифа; если рубрики нет
 // (например, тема пришла из залётов конкурентов) — угадываем по словам темы.
@@ -698,9 +705,10 @@ export default function AutopilotPage() {
   const plan = data.plan;
   const items = plan?.items ?? [];
   const pending = items.filter((it) => it.status === "pending");
-  const blocked = pending.filter((it) => !hasPassedVerifiedQuality(it));
+  const blocked = pending.filter((it) => !canApproveItem(it));
   const planNeedsQualityRebuild = autopilotPlanNeedsQualityRebuild(items);
-  const readyPending = pending.filter(hasPassedVerifiedQuality);
+  const readyPending = pending.filter(canApproveItem);
+  const reviewPending = pending.filter(isAutopilotHumanReviewItem);
   const expired = items.filter((it) => it.status === "expired");
   const approved = items.filter((it) => it.status === "approved" || it.status === "published");
   const canOfferFull = st.approvals_streak >= 2 && st.mode !== "full";
@@ -838,7 +846,7 @@ export default function AutopilotPage() {
         </div>
         <p className="mt-4 flex items-start gap-2 rounded-md bg-surface-inset p-3 text-[12px] leading-relaxed text-text-3">
           <Check className="mt-0.5 h-4 w-4 shrink-0 text-success" aria-hidden />
-          Аврора пробует резервную модель при сбое. Посты, которые не удалось проверить автоматически, останутся заблокированными до твоей ручной проверки.
+          Аврора пробует резервную модель при сбое. Если факты не проверены автоматически, прочитай пост и нажми «Одобрить».
         </p>
       </Card>
 
@@ -966,10 +974,16 @@ export default function AutopilotPage() {
                       · {readyPending.length} {plural(readyPending.length, "готов", "готовы", "готовы")} к одобрению
                     </>
                   )}
+                  {reviewPending.length > 0 && (
+                    <>
+                      {" "}
+                      · {reviewPending.length} {plural(reviewPending.length, "нужно", "нужно", "нужно")} прочитать
+                    </>
+                  )}
                   {blocked.length > 0 && (
                     <>
                       {" "}
-                      · {blocked.length} {plural(blocked.length, "требует", "требуют", "требуют")} правки
+                      · {blocked.length} {plural(blocked.length, "нужно", "нужно", "нужно")} поправить
                     </>
                   )}
                   {expired.length > 0 && <> · {expired.length} с истёкшей датой</>}
@@ -1030,7 +1044,7 @@ export default function AutopilotPage() {
                         "mt-0.5 h-1.5 w-1.5 rounded-full",
                         done
                           ? "bg-success"
-                          : it.status === "expired" || !hasPassedVerifiedQuality(it)
+                          : it.status === "expired" || blocked.includes(it)
                             ? "bg-danger"
                             : "bg-brand",
                       )}
@@ -1052,7 +1066,7 @@ export default function AutopilotPage() {
               </span>
               {blocked.length > 0 && (
                 <span className="inline-flex items-center gap-1.5">
-                  <span className="h-1.5 w-1.5 rounded-full bg-danger" aria-hidden />не прошёл контроль
+                  <span className="h-1.5 w-1.5 rounded-full bg-danger" aria-hidden />нужно поправить
                 </span>
               )}
               {expired.length > 0 && (
@@ -1130,6 +1144,10 @@ export default function AutopilotPage() {
                       ) : !it.quality || !hasVerifiedQualityMetadata(it.quality) ? (
                         <Badge tone="neutral">
                           <AlertTriangle className="h-3 w-3" aria-hidden />не проверено
+                        </Badge>
+                      ) : isAutopilotHumanReviewItem(it) ? (
+                        <Badge tone="brand">
+                          проверь и одобри
                         </Badge>
                       ) : it.qualityBlocked || it.quality.passed !== true ? (
                         <Badge tone="danger">
@@ -1247,18 +1265,32 @@ export default function AutopilotPage() {
                         </div>
                       )}
 
+                      {!isEditing && it.aiReady !== false && isAutopilotHumanReviewItem(it) && (
+                        <div className="mt-3 flex items-start gap-2 rounded-sm bg-info-soft p-3">
+                          <AlertTriangle
+                            className="mt-0.5 h-4 w-4 shrink-0 text-info-text"
+                            aria-hidden
+                          />
+                          <p className="text-[13px] leading-snug text-info-text">
+                            <span className="font-semibold">Прочитай и нажми «Одобрить».</span>{" "}
+                            Автопроверка фактов не отработала. Если текст в порядке — этого достаточно.
+                          </p>
+                        </div>
+                      )}
+
                       {!isEditing &&
                         it.aiReady !== false &&
+                        !isAutopilotHumanReviewItem(it) &&
                         it.qualityBlocked &&
                         it.quality &&
                         hasVerifiedQualityMetadata(it.quality) && (
                         <div className="mt-3 rounded-sm bg-danger-soft p-3">
                           <p className="flex items-center gap-2 text-[13px] font-semibold text-danger-text">
                             <AlertTriangle className="h-4 w-4" aria-hidden />
-                            Пост заблокирован · {it.quality.score}/{it.quality.threshold}
+                            Нужно поправить · {it.quality.score}/{it.quality.threshold}
                           </p>
                           <ul className="mt-1.5 space-y-1 text-[13px] leading-snug text-danger-text">
-                            {it.quality.violations.slice(0, 4).map((v) => (
+                            {it.quality.violations.filter((v) => v.blocker).slice(0, 4).map((v) => (
                               <li key={`${v.code}-${v.message}`}>— {v.message}</li>
                             ))}
                           </ul>
@@ -1288,7 +1320,7 @@ export default function AutopilotPage() {
                           <Button
                             size="sm"
                             variant="soft"
-                            disabled={!hasPassedVerifiedQuality(it)}
+                            disabled={!canApproveItem(it)}
                             onClick={() => itemAction(it.i, "approve")}
                           >
                             <Check className="h-4 w-4" aria-hidden />

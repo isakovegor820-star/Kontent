@@ -132,6 +132,10 @@ export function presetQuality(id: string): PostQuality;
 export function normalizePostQuality(raw: unknown): PostQuality;
 export function hasVerifiedQualityMetadata(result: unknown): boolean;
 export function hasHumanQualityAttestation(result: unknown): boolean;
+export function withHumanQualityAttestation(
+  result: QualityResult,
+  options?: { userId?: number; attestedAt?: string | number | Date },
+): QualityResult;
 export function hasAutomaticQualityApproval(result: unknown): boolean;
 export function buildQualityPrompt(raw: unknown, options?: { postIndex?: number }): string;
 export function validatePostQuality(

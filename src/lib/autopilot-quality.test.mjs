@@ -5,6 +5,7 @@ import {
   autopilotQualityFailureKind,
   padDraftToMinimum,
   removeUnverifiedSemanticClaims,
+  trimDraftToMaximum,
 } from "./autopilot-quality.mjs";
 import { evaluateAutopilotItem } from "./autopilot-approval.mjs";
 import { hasAutomaticQualityApproval, normalizePostQuality } from "./post-quality.mjs";
@@ -71,6 +72,20 @@ describe("production Autopilot semantic quality", () => {
       semantic: { status: "blocked" },
     })).toBe("rewriteable");
   });
+  it("trims an overlong draft at a paragraph or sentence boundary", () => {
+    const overlong = [
+      "Первый абзац остаётся на месте, потому что он уже даёт законченную мысль.",
+      "Второй абзац тоже нужен: в нём есть отдельный вывод и точка.",
+      "Третий абзац лишний и только раздувает объём без новой проверки.",
+    ].join("\n\n");
+    const trimmed = trimDraftToMaximum(overlong, overlong.length - 20);
+    expect(trimmed.length).toBeLessThanOrEqual(overlong.length - 20);
+    expect(trimmed).toContain("Первый абзац");
+    expect(trimmed).not.toContain("Третий абзац");
+    expect(trimmed).toMatch(/[.!?…]$/u);
+    expect(trimDraftToMaximum("Короткий текст.", 1800)).toBe("Короткий текст.");
+  });
+
   it("fills a small length miss only with a non-factual reader question", () => {
     const draft = "Подтверждённый текст".padEnd(278, ".");
     const padded = padDraftToMinimum(draft, 300, 400);
@@ -160,9 +175,21 @@ describe("production Autopilot semantic quality", () => {
       invented: [],
       now: checkedAt,
     });
-    expect(result).toMatchObject({ passed: false, semantic: { status: "not_checked", requiresReview: true } });
-    expect(result.score).toBeLessThan(result.threshold);
+    expect(result).toMatchObject({ passed: true, semantic: { status: "not_checked", requiresReview: true } });
+    expect(result.score).toBeGreaterThanOrEqual(result.threshold);
+    expect(result.violations.some((violation) => violation.code === "semantic_review_required" && violation.blocker)).toBe(false);
     expect(hasAutomaticQualityApproval(result)).toBe(false);
+    const reviewItem = {
+      i: 0,
+      scheduledAt: "2026-08-03T12:00:00.000Z",
+      draft: text,
+      topic: "Исполнительский иммунитет",
+      status: "pending",
+      quality: result,
+      reviewRequired: true,
+    };
+    expect(evaluateAutopilotItem(reviewItem, Date.parse("2026-08-02T10:00:00.000Z")).eligible).toBe(false);
+    expect(evaluateAutopilotItem(reviewItem, Date.parse("2026-08-02T10:00:00.000Z"), { actor: "human" }).eligible).toBe(true);
   });
 
   it("accepts a complete correct paraphrase only with claim verdicts and concrete source spans", async () => {

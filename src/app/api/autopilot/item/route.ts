@@ -11,6 +11,7 @@ import { normalizePostQuality, type QualityResult } from "@/lib/post-quality.mjs
 import { assessAutopilotDraft } from "@/lib/autopilot-quality.mjs";
 import {
   annotateAutopilotItems,
+  attestAutopilotItemForHumanApproval,
   evaluateAutopilotItem,
   type ApprovalBlocker,
 } from "@/lib/autopilot-approval.mjs";
@@ -236,7 +237,14 @@ export async function PATCH(req: NextRequest) {
       claimedApproval = approvalContext;
 
       const approvalTime = Date.now();
-      const claimedItems = claim.items;
+      const claimedItems = claim.items.map((entry) =>
+        entry.i === index
+          ? attestAutopilotItemForHumanApproval(entry, {
+              userId: user.id,
+              attestedAt: new Date(approvalTime).toISOString(),
+            })
+          : entry,
+      );
       const claimedItem = claimedItems.find((entry) => entry.i === index);
       if (!claimedItem) {
         const result = { ok: false, error: "no_item" };

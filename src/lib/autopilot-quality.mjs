@@ -25,6 +25,35 @@ export function autopilotQualityFailureKind(result) {
   return "rewriteable";
 }
 
+/**
+ * Drop trailing paragraphs or sentences until the draft fits. Never invent text and never
+ * cut mid-sentence: a failed trim stays too long so the user can edit it.
+ */
+export function trimDraftToMaximum(text, maxChars) {
+  const value = String(text || "").trim();
+  const maximum = Math.max(0, Number(maxChars) || 0);
+  if (!value || !maximum || value.length <= maximum) return value;
+
+  const paragraphs = value.split(/\n\s*\n/).map((paragraph) => paragraph.trim()).filter(Boolean);
+  while (paragraphs.length > 2) {
+    paragraphs.pop();
+    const candidate = paragraphs.join("\n\n");
+    if (candidate.length <= maximum && /[.!?…»”*)\]]$/u.test(candidate)) return candidate;
+  }
+
+  const sentences = value.match(/[^.!?…]+[.!?…]+(?:[»”"')\]]+)?/gu);
+  if (sentences?.length) {
+    let kept = "";
+    for (const sentence of sentences) {
+      const next = `${kept}${sentence}`.trim();
+      if (next.length > maximum) break;
+      kept = next;
+    }
+    if (kept.length >= Math.min(300, maximum) && /[.!?…»”*)\]]$/u.test(kept)) return kept;
+  }
+  return value;
+}
+
 /** Fill only a small length miss with a non-factual question, never with invented facts. */
 export function padDraftToMinimum(text, minChars, maxChars) {
   const value = String(text || "").trim();
@@ -102,7 +131,7 @@ export async function assessAutopilotDraft({
   const semanticMessages = semantic.status === "blocked"
     ? semantic.blockers.map((blocker) => blocker.message)
     : semantic.status === "not_checked"
-      ? ["Смысл фактических утверждений не проверен. Нужна ручная проверка перед публикацией."]
+      ? ["Автопроверка фактов не отработала. Прочитай текст и нажми «Одобрить» — это и есть проверка."]
       : [];
   const semanticViolations = semantic.status === "blocked"
     ? semantic.blockers.map((blocker) => ({
@@ -115,7 +144,7 @@ export async function assessAutopilotDraft({
       ? [{
           code: "semantic_review_required",
           message: semanticMessages[0],
-          blocker: true,
+          blocker: false,
           penalty: 0,
         }]
       : [];
@@ -135,14 +164,16 @@ export async function assessAutopilotDraft({
     .map((violation) => violation.message);
   const deterministicPassed = deterministicBlockers.length === 0 &&
     deterministicScore >= deterministic.threshold;
-  const passed = deterministicPassed && semantic.status === "passed";
+  const passed = deterministicPassed && semantic.status !== "blocked";
   return {
     ...deterministic,
-    score: semantic.status === "passed"
-      ? deterministicScore
-      : Math.min(deterministicScore, Math.max(0, deterministic.threshold - 1)),
+    score: semantic.status === "blocked"
+      ? Math.min(deterministicScore, Math.max(0, deterministic.threshold - 1))
+      : deterministicScore,
     passed,
-    blockers: [...deterministicBlockers, ...semanticMessages],
+    blockers: semantic.status === "blocked"
+      ? [...deterministicBlockers, ...semanticMessages]
+      : deterministicBlockers,
     violations: [...deterministicViolations, ...semanticViolations],
     semantic,
   };

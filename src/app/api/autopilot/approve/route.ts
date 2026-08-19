@@ -119,6 +119,7 @@ async function createStoredPreview(
     channel,
     planId: Number(plan.id),
     planRevision: Number(plan.revision),
+    actor: "human",
   });
   const token = createAutopilotPreviewToken();
   await pool.query(
@@ -288,6 +289,7 @@ export async function POST(req: NextRequest) {
           channel: channelSnapshot,
           planId,
           planRevision: currentRevision,
+          actor: "human",
         })
       : null;
     const previewIsStale =
@@ -366,6 +368,7 @@ export async function POST(req: NextRequest) {
       channel: channelSnapshot,
       planId,
       planRevision: Number(plan.revision || planRevision + 1),
+      actor: "human",
     });
     await pool.query(
       `update autopilot_approval_operations
@@ -378,6 +381,7 @@ export async function POST(req: NextRequest) {
     const outcome = await executeAutopilotApproval({
       items: plan.items,
       nowMs: approvalTime,
+      attestor: { userId: user.id, attestedAt: new Date(approvalTime).toISOString() },
       schedule: async (item) => {
         const checkpoint = await scheduleAutopilotItem({
           pool,
@@ -403,6 +407,7 @@ export async function POST(req: NextRequest) {
         channel: channelSnapshot,
         planId,
         planRevision: Number(plan.revision || planRevision + 1),
+        actor: "human",
       });
       const result: OperationResult = {
         ok: false,

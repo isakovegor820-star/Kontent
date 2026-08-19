@@ -6,6 +6,7 @@ export function autopilotQualityFailureKind(
 ): "passed" | "missing_evidence" | "semantic_unavailable" | "rewriteable";
 
 export function padDraftToMinimum(text: string, minChars: number, maxChars: number): string;
+export function trimDraftToMaximum(text: string, maxChars: number): string;
 
 export function removeUnverifiedSemanticClaims(
   text: string,

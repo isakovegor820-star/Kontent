@@ -5,6 +5,7 @@ import {
   fallbackTopicVariantFromSeed,
   hasHumanQualityAttestation,
   hasVerifiedQualityMetadata,
+  withHumanQualityAttestation,
   normalizePostQuality,
   presetQuality,
   validatePostQuality,
@@ -84,6 +85,10 @@ describe("post quality contract", () => {
     };
 
     expect(hasHumanQualityAttestation(attested)).toBe(true);
+    expect(hasHumanQualityAttestation(withHumanQualityAttestation(result, {
+      userId: 7,
+      attestedAt: "2026-08-02T09:35:00.000Z",
+    }))).toBe(true);
     expect(
       hasHumanQualityAttestation({
         ...result,

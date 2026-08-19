@@ -15,6 +15,7 @@ import {
   autopilotBuildProgress,
 } from "@/lib/autopilot-build-progress.mjs";
 import { plannedPostCountForWeeks } from "@/lib/autopilot-config.mjs";
+import { isAutopilotHumanReviewItem } from "@/lib/autopilot-approval.mjs";
 import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/project-permissions";
 
 export const runtime = "nodejs";
@@ -105,6 +106,14 @@ export async function GET(req: NextRequest) {
       if (expired.rowCount) plan = { ...plan, status: "error", errorReason: "timeout" };
     }
     const brief = await loadBrief(scope, channelId);
+    if (Array.isArray(plan?.items)) {
+      plan = {
+        ...plan,
+        items: plan.items.map((item: { reviewRequired?: boolean }) =>
+          isAutopilotHumanReviewItem(item) ? { ...item, reviewRequired: true } : item,
+        ),
+      };
+    }
 
     return NextResponse.json({
       settings,

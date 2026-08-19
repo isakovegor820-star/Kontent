@@ -140,6 +140,7 @@ import {
   buildRewritePrompt,
   fallbackTopicFromSeed,
   fallbackTopicVariantFromSeed,
+  hasAutomaticQualityApproval,
   normalizePostQuality,
   validateTopicQuality,
 } from "./src/lib/post-quality.mjs";
@@ -149,6 +150,7 @@ import {
   autopilotQualityFailureKind,
   padDraftToMinimum,
   removeUnverifiedSemanticClaims,
+  trimDraftToMaximum,
 } from "./src/lib/autopilot-quality.mjs";
 import { completeAiText } from "./src/lib/ai-completion-service.mjs";
 import {
@@ -5678,7 +5680,7 @@ async function buildAutopilotPlan(
   rule += facts
     ? ` Факты — из твоей базы знаний (${facts} ${plural(facts, "кусок", "куска", "кусков")}).`
     : ` База знаний пуста, поэтому пишу без конкретики — ни дат, ни сумм, ни номеров дел выдумывать не стану. Добавь материалы, и посты станут предметными.`;
-  rule += ` Каждый текст проходит редакционный порог ${quality.qualityThreshold}/100; нарушение жёстких правил блокирует выпуск.`;
+  rule += ` Каждый текст проходит редакционный порог ${quality.qualityThreshold}/100. Жёсткие нарушения нужно поправить; если автопроверка фактов не отработала — прочитай и реши, выпускать ли пост.`;
   rule += " Темы и готовые тексты сверяются с текущим планом и недавней историей канала; близкий дубль переписывается или останавливает сборку.";
 
   // Генерация постов — узкое место плана: каждый пост это findSupport + askAI (~90с) + возможный
@@ -5696,7 +5698,7 @@ async function buildAutopilotPlan(
       console.log(`[auto]   «${topic.slice(0, 40)}»: восстановлен из checkpoint`);
       const restoredItem = { ...checkpointItems[i] };
       if (
-        full && restoredItem.aiReady === true && restoredItem.quality?.passed === true
+        full && restoredItem.aiReady === true && hasAutomaticQualityApproval(restoredItem.quality)
         && restoredItem.qualityBlocked !== true
       ) restoredItem.autoApprove = true;
       else delete restoredItem.autoApprove;
@@ -5734,12 +5736,15 @@ async function buildAutopilotPlan(
       generationEngine,
     );
     let aiDraft = candidateRaw
-      ? applyAutopilotPresentation(
-          padDraftToMinimum(stripCites(candidateRaw), quality.minChars, quality.maxChars),
-          presentation,
-          quality,
-          brief,
-          i,
+      ? trimDraftToMaximum(
+          applyAutopilotPresentation(
+            padDraftToMinimum(stripCites(candidateRaw), quality.minChars, quality.maxChars),
+            presentation,
+            quality,
+            brief,
+            i,
+          ),
+          quality.maxChars,
         )
       : null;
     let cited = support.length && candidateRaw ? citedShare(candidateRaw) : null;
@@ -5779,12 +5784,15 @@ async function buildAutopilotPlan(
         generationEngine,
       );
       aiDraft = candidateRaw
-        ? applyAutopilotPresentation(
-            padDraftToMinimum(stripCites(candidateRaw), quality.minChars, quality.maxChars),
-            presentation,
-            quality,
-            brief,
-            i,
+        ? trimDraftToMaximum(
+            applyAutopilotPresentation(
+              padDraftToMinimum(stripCites(candidateRaw), quality.minChars, quality.maxChars),
+              presentation,
+              quality,
+              brief,
+              i,
+            ),
+            quality.maxChars,
           )
         : null;
       cited = support.length && candidateRaw ? citedShare(candidateRaw) : null;
@@ -5809,7 +5817,10 @@ async function buildAutopilotPlan(
       if (!["blocked", "not_checked"].includes(qualityResult.semantic?.status)) break;
       const cleanedDraft = removeUnverifiedSemanticClaims(aiDraft, qualityResult.semantic);
       if (!cleanedDraft || cleanedDraft === aiDraft) break;
-      aiDraft = padDraftToMinimum(cleanedDraft, quality.minChars, quality.maxChars);
+      aiDraft = trimDraftToMaximum(
+        padDraftToMinimum(cleanedDraft, quality.minChars, quality.maxChars),
+        quality.maxChars,
+      );
       invented = findInvented(aiDraft, support);
       qualityResult = await assessAutopilotDraft({
         text: aiDraft,
@@ -5847,9 +5858,18 @@ async function buildAutopilotPlan(
       // Непустое — в посте осталась непроверенная конкретика. Человек увидит предупреждение,
       // а автопубликация для такого поста закрыта.
       invented: invented.length ? invented : undefined,
-      qualityBlocked: !aiDraft || !qualityResult.passed,
-      reviewRequired: Boolean(aiDraft && !qualityResult.passed),
-      reviewReason: aiDraft && !qualityResult.passed ? qualityFailureKind : undefined,
+      qualityBlocked: !aiDraft || !qualityResult.passed || qualityResult.semantic?.status === "not_checked",
+      reviewRequired: Boolean(
+        aiDraft && (
+          !qualityResult.passed ||
+          qualityResult.semantic?.status === "not_checked"
+        ),
+      ),
+      reviewReason: aiDraft && (
+        !qualityResult.passed || qualityResult.semantic?.status === "not_checked"
+      )
+        ? qualityFailureKind
+        : undefined,
       quality: qualityResult,
       qualityOrigin: "automatic",
       presentation: presentation.name,
@@ -5864,7 +5884,7 @@ async function buildAutopilotPlan(
     // И НИКОГДА не публикуем сами пост с невыверенной конкретикой. Выдуманный номер статьи
     // в канале юриста — это профессиональный риск, а не «неточность»: пусть человек решит
     // сам. Автопилот тут молчит именно потому, что цена ошибки высокая.
-    if (full && aiDraft && qualityResult.passed) {
+    if (full && aiDraft && hasAutomaticQualityApproval(qualityResult)) {
       // Побочные эффекты откладываем до финальной проверки generation placeholder. Иначе
       // устаревшая сборка успевала поставить посты в очередь, а затем честно объявляла себя
       // superseded — уже запланированные публикации при этом никуда не исчезали.
@@ -5962,12 +5982,15 @@ async function buildAutopilotPlan(
         generationEngine,
       );
       if (!raw?.trim()) continue;
-      const candidate = applyAutopilotPresentation(
-        padDraftToMinimum(stripCites(raw), quality.minChars, quality.maxChars),
-        presentation,
-        quality,
-        brief,
-        index,
+      const candidate = trimDraftToMaximum(
+        applyAutopilotPresentation(
+          padDraftToMinimum(stripCites(raw), quality.minChars, quality.maxChars),
+          presentation,
+          quality,
+          brief,
+          index,
+        ),
+        quality.maxChars,
       );
       const cited = support.length ? citedShare(raw) : null;
       const invented = findInvented(candidate, support);
@@ -5993,10 +6016,12 @@ async function buildAutopilotPlan(
       item.aiReady = true;
       item.cited = cited;
       item.invented = invented.length ? invented : undefined;
-      item.qualityBlocked = false;
+      item.qualityBlocked = qualityResult.semantic?.status === "not_checked";
+      item.reviewRequired = qualityResult.semantic?.status === "not_checked";
+      item.reviewReason = item.reviewRequired ? "semantic_unavailable" : undefined;
       item.quality = qualityResult;
       item.presentation = presentation.name;
-      if (full) item.autoApprove = true;
+      if (full && hasAutomaticQualityApproval(qualityResult)) item.autoApprove = true;
       else delete item.autoApprove;
       duplicate = findAutopilotNearDuplicate(item, acceptedForVariety);
     }

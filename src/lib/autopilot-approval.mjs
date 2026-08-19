@@ -1,7 +1,12 @@
 // Pure approval policy shared by the Next.js API and the standalone worker.
 // The quality metadata verifier is the single source of truth in every entry point.
 
-import { hasAutomaticQualityApproval, hasVerifiedQualityMetadata } from "./post-quality.mjs";
+import {
+  hasAutomaticQualityApproval,
+  hasHumanQualityAttestation,
+  hasVerifiedQualityMetadata,
+  withHumanQualityAttestation,
+} from "./post-quality.mjs";
 import { createHash, randomBytes } from "node:crypto";
 
 export const AUTOPILOT_FRESHNESS_MS = 60_000;
@@ -61,8 +66,70 @@ const messages = {
   empty_draft: "Черновик пуст. Добавьте текст перед одобрением.",
   quality_missing: "Пост ещё не прошёл фактическую проверку качества.",
   quality_failed: "Пост не прошёл проверку качества.",
-  semantic_review_required: "Смысл фактических утверждений не подтверждён. Нужна ручная проверка.",
+  semantic_review_required: "Автопроверка фактов не отработала. Прочитай текст и нажми «Одобрить».",
 };
+
+function hardQualityViolations(quality) {
+  return (Array.isArray(quality?.violations) ? quality.violations : [])
+    .filter((violation) => violation?.blocker === true && violation.code !== "semantic_review_required");
+}
+
+/**
+ * Editorial rules passed, but claim-level auto-check did not. A person may approve
+ * this draft; full-auto and unattended publication may not.
+ */
+export function isAutopilotHumanReviewItem(item) {
+  if (item?.aiReady === false) return false;
+  if (!hasVerifiedQualityMetadata(item?.quality)) return false;
+  if (Array.isArray(item.invented) && item.invented.length > 0) return false;
+  if (hasAutomaticQualityApproval(item.quality)) return false;
+  if (hasHumanQualityAttestation(item.quality)) return false;
+  if (item.quality.semantic?.status === "blocked") return false;
+  if (hardQualityViolations(item.quality).length > 0) return false;
+  return item.quality.semantic?.status === "not_checked" ||
+    item.reviewRequired === true ||
+    (Array.isArray(item.quality.violations) &&
+      item.quality.violations.some((violation) => violation?.code === "semantic_review_required"));
+}
+
+export function reconcileAutopilotReviewQuality(quality) {
+  if (!quality || typeof quality !== "object") return quality;
+  const violations = (Array.isArray(quality.violations) ? quality.violations : [])
+    .map((violation) => (
+      violation?.code === "semantic_review_required"
+        ? { ...violation, blocker: false }
+        : violation
+    ));
+  const blockers = (Array.isArray(quality.blockers) ? quality.blockers : [])
+    .filter((message) => !/не проверен|не подтвержд|не отработала/iu.test(String(message)));
+  const threshold = Number(quality.threshold);
+  const score = Number(quality.score);
+  return {
+    ...quality,
+    passed: true,
+    score: Number.isFinite(score) && Number.isFinite(threshold)
+      ? Math.max(score, threshold)
+      : score,
+    blockers,
+    violations,
+  };
+}
+
+export function attestAutopilotItemForHumanApproval(item, { userId, attestedAt } = {}) {
+  if (!isAutopilotHumanReviewItem(item)) return item;
+  const quality = withHumanQualityAttestation(
+    reconcileAutopilotReviewQuality(item.quality),
+    { userId, attestedAt },
+  );
+  if (!hasHumanQualityAttestation(quality)) return item;
+  return {
+    ...item,
+    quality,
+    qualityOrigin: "human_attested",
+    qualityBlocked: false,
+    reviewRequired: false,
+  };
+}
 
 function qualityIsComplete(value) {
   return Boolean(
@@ -87,7 +154,7 @@ function blocker(code, detail) {
  * Decide whether one plan item may be scheduled without mutating it.
  * Non-pending/already scheduled items are ignored rather than reported as blocked.
  */
-export function evaluateAutopilotItem(item, nowMs = Date.now()) {
+export function evaluateAutopilotItem(item, nowMs = Date.now(), options = {}) {
   const actionable = item?.status === "pending" && !item?.postId;
   if (!actionable) {
     return {
@@ -113,19 +180,28 @@ export function evaluateAutopilotItem(item, nowMs = Date.now()) {
 
   if (!qualityIsComplete(item.quality)) {
     blockers.push(blocker("quality_missing"));
+  } else if (
+    hasAutomaticQualityApproval(item.quality) ||
+    hasHumanQualityAttestation(item.quality)
+  ) {
+    // Automatic proof or an explicit human review both clear the quality gate.
+  } else if (isAutopilotHumanReviewItem(item) && options.actor === "human") {
+    // Confirmation-mode click is the review. Full-auto never passes actor: "human".
+  } else if (
+    isAutopilotHumanReviewItem(item) ||
+    (item.quality.passed === true && !hasAutomaticQualityApproval(item.quality))
+  ) {
+    blockers.push(blocker("semantic_review_required"));
   } else {
-    const semanticUnverified = item.quality.passed === true && !hasAutomaticQualityApproval(item.quality);
-    if (semanticUnverified) blockers.push(blocker("semantic_review_required"));
     const qualityFailed =
       item.quality.passed !== true ||
-      item.quality.blockers.length > 0 ||
-      item.quality.violations.some((violation) => violation?.blocker === true) ||
+      hardQualityViolations(item.quality).length > 0 ||
       item.qualityBlocked === true ||
       (Array.isArray(item.invented) && item.invented.length > 0);
-    if (qualityFailed && !semanticUnverified) {
+    if (qualityFailed) {
       const detail =
         item.quality.blockers.find((entry) => typeof entry === "string" && entry.trim()) ||
-        item.quality.violations.find((violation) => violation?.blocker === true)?.message;
+        hardQualityViolations(item.quality)[0]?.message;
       blockers.push(blocker("quality_failed", detail));
     }
   }
@@ -139,10 +215,10 @@ export function evaluateAutopilotItem(item, nowMs = Date.now()) {
 }
 
 /** Persistable, immutable annotation of unsafe items. */
-export function annotateAutopilotItems(items, nowMs = Date.now()) {
+export function annotateAutopilotItems(items, nowMs = Date.now(), options = {}) {
   return (Array.isArray(items) ? items : []).map((source) => {
     const item = { ...source };
-    const evaluation = evaluateAutopilotItem(item, nowMs);
+    const evaluation = evaluateAutopilotItem(item, nowMs, options);
     if (!evaluation.actionable) return item;
 
     if (evaluation.blockers.length === 0) {
@@ -173,9 +249,10 @@ export function buildAutopilotApprovalPreview({
   planId,
   planRevision = 1,
   expiresAtMs = nowMs + AUTOPILOT_PREVIEW_TTL_MS,
+  actor,
 }) {
   const evaluations = (Array.isArray(items) ? items : [])
-    .map((item) => ({ item, evaluation: evaluateAutopilotItem(item, nowMs) }))
+    .map((item) => ({ item, evaluation: evaluateAutopilotItem(item, nowMs, { actor }) }))
     .filter(({ evaluation }) => evaluation.actionable);
 
   const dates = [];
@@ -237,8 +314,17 @@ export async function executeAutopilotApproval({
   nowMs = Date.now(),
   schedule,
   onCheckpoint,
+  attestor,
 }) {
-  const safeItems = annotateAutopilotItems(items, nowMs);
+  const prepared = (Array.isArray(items) ? items : []).map((item) => (
+    attestor
+      ? attestAutopilotItemForHumanApproval(item, {
+          userId: attestor.userId,
+          attestedAt: attestor.attestedAt || new Date(nowMs).toISOString(),
+        })
+      : item
+  ));
+  const safeItems = annotateAutopilotItems(prepared, nowMs);
   let scheduled = 0;
   try {
     for (const item of safeItems) {

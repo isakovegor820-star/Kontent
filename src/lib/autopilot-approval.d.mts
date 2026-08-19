@@ -58,11 +58,22 @@ export function autopilotPlanRevisionHash(input: {
   channelId: number;
 }): string;
 
+export function isAutopilotHumanReviewItem(item: AutopilotApprovalItem | Record<string, unknown>): boolean;
+export function reconcileAutopilotReviewQuality(quality: QualityResult): QualityResult;
+export function attestAutopilotItemForHumanApproval<T extends AutopilotApprovalItem>(
+  item: T,
+  attestor?: { userId?: number; attestedAt?: string | number | Date },
+): T;
 export function evaluateAutopilotItem(
   item: AutopilotApprovalItem,
   nowMs?: number,
+  options?: { actor?: "human" | "system" },
 ): AutopilotApprovalEvaluation;
-export function annotateAutopilotItems<T extends AutopilotApprovalItem>(items: T[], nowMs?: number): T[];
+export function annotateAutopilotItems<T extends AutopilotApprovalItem>(
+  items: T[],
+  nowMs?: number,
+  options?: { actor?: "human" | "system" },
+): T[];
 export function buildAutopilotApprovalPreview(input: {
   items: AutopilotApprovalItem[];
   nowMs?: number;
@@ -70,10 +81,12 @@ export function buildAutopilotApprovalPreview(input: {
   planId: number;
   planRevision?: number;
   expiresAtMs?: number;
+  actor?: "human" | "system";
 }): AutopilotApprovalPreview;
 export function executeAutopilotApproval<T extends AutopilotApprovalItem>(input: {
   items: T[];
   nowMs?: number;
   schedule: (item: T, scheduledAt: string) => Promise<number>;
   onCheckpoint?: (items: T[], item: T, scheduled: number) => Promise<void> | void;
+  attestor?: { userId: number; attestedAt?: string };
 }): Promise<{ items: T[]; scheduled: number; error: unknown | null }>;

@@ -58,6 +58,27 @@ export function hasHumanQualityAttestation(result) {
   );
 }
 
+/** Persist that a specific person accepted a review-only Autopilot draft. */
+export function withHumanQualityAttestation(result, { userId, attestedAt } = {}) {
+  if (!hasVerifiedQualityMetadata(result)) return result;
+  const id = Math.round(Number(userId));
+  if (!Number.isInteger(id) || id <= 0) return result;
+  return {
+    ...result,
+    metadata: {
+      ...result.metadata,
+      provenance: {
+        ...result.metadata.provenance,
+        humanAttestation: {
+          kind: "human_review",
+          userId: id,
+          attestedAt: isoTimestamp(attestedAt),
+        },
+      },
+    },
+  };
+}
+
 /** Automatic publication needs claim-level semantic proof, not only citation syntax. */
 export function hasAutomaticQualityApproval(result) {
   if (!hasVerifiedQualityMetadata(result) || result?.passed !== true) return false;
