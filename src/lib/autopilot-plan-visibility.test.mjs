@@ -64,9 +64,34 @@ describe("Autopilot plan visibility", () => {
         draft: "Черновик для ручной проверки",
         qualityBlocked: true,
         reviewRequired: true,
-        quality: { ...verifiedQuality, passed: false },
+        quality: {
+          ...verifiedQuality,
+          semantic: { status: "not_checked", requiresReview: true },
+        },
       }),
     ])).toBe(false);
+  });
+
+  it("rebuilds a short automatic draft instead of asking the person to finish it", () => {
+    expect(autopilotPlanNeedsQualityRebuild([
+      planItem({
+        aiReady: true,
+        draft: "Слишком короткий черновик",
+        qualityBlocked: true,
+        reviewRequired: true,
+        quality: {
+          ...verifiedQuality,
+          passed: false,
+          score: 75,
+          violations: [{
+            code: "too_short",
+            message: "Нужно минимум 900 знаков, сейчас 659",
+            blocker: true,
+            penalty: 25,
+          }],
+        },
+      }),
+    ])).toBe(true);
   });
 
   it("requires a rebuild for a pending legacy automatic draft without verified metadata", () => {

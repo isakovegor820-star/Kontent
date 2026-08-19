@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   assessAutopilotDraft,
+  autopilotOutputTokens,
   autopilotQualityFailureKind,
+  fitAutopilotDraftLength,
   padDraftToMinimum,
   removeUnverifiedSemanticClaims,
   trimDraftToMaximum,
@@ -86,13 +88,23 @@ describe("production Autopilot semantic quality", () => {
     expect(trimDraftToMaximum("Короткий текст.", 1800)).toBe("Короткий текст.");
   });
 
+  it("never trims a draft below the channel minimum", () => {
+    const overlong = "Первое предложение остаётся. ".repeat(40).trim();
+    const trimmed = trimDraftToMaximum(overlong, 500, 400);
+    expect(trimmed.length).toBeGreaterThanOrEqual(400);
+    expect(trimmed.length).toBeLessThanOrEqual(500);
+    expect(trimDraftToMaximum(overlong, 200, 400)).toBe(overlong);
+    expect(fitAutopilotDraftLength("Коротко.", 900, 1800).length).toBeLessThan(900);
+    expect(autopilotOutputTokens({ maxChars: 1800 })).toBeGreaterThanOrEqual(1400);
+  });
+
   it("fills a small length miss only with a non-factual reader question", () => {
     const draft = "Подтверждённый текст".padEnd(278, ".");
     const padded = padDraftToMinimum(draft, 300, 400);
     expect(padded.length).toBeGreaterThanOrEqual(300);
     expect(padded.length).toBeLessThanOrEqual(400);
     expect(padded).toMatch(/\?$/u);
-    expect(padDraftToMinimum("Коротко", 300, 400)).toBe("Коротко");
+    expect(padDraftToMinimum("Коротко", 300, 400).length).toBeGreaterThanOrEqual(300);
   });
 
   it("removes only exact rejected claims in the final deterministic cleanup", () => {

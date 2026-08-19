@@ -282,19 +282,19 @@ describe("autopilotBuildComplete", () => {
     expect(autopilotBuildComplete(2, topics, [items[0], blocked])).toBe(false);
   });
 
-  it("shows review-required drafts only through the confirmation-mode boundary", () => {
-    const blocked = {
+  it("shows review-required drafts only when editorial rules already passed", () => {
+    const review = {
       aiReady: true,
       draft: "Черновик для ручной проверки",
       qualityBlocked: true,
       reviewRequired: true,
-      quality: { passed: false },
+      quality: { passed: true },
     };
-    expect(autopilotBuildComplete(2, topics, [items[0], blocked])).toBe(false);
-    expect(autopilotDraftsDeliverable(2, topics, [items[0], blocked])).toBe(true);
+    expect(autopilotBuildComplete(2, topics, [items[0], review])).toBe(false);
+    expect(autopilotDraftsDeliverable(2, topics, [items[0], review])).toBe(true);
     expect(autopilotDraftsDeliverable(2, topics, [items[0], {
-      ...blocked,
-      reviewRequired: false,
+      ...review,
+      quality: { passed: false },
     }])).toBe(false);
   });
 });

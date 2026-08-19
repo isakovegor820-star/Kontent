@@ -1,4 +1,5 @@
 import { hasVerifiedQualityMetadata } from "./post-quality.mjs";
+import { isAutopilotHumanReviewItem } from "./autopilot-review.mjs";
 
 /**
  * Автопилот показывает план как готовый только когда каждый автоматический черновик
@@ -13,7 +14,7 @@ export function autopilotPlanNeedsQualityRebuild(items) {
       (
         item?.aiReady === false ||
         (
-          item?.reviewRequired !== true &&
+          !isAutopilotHumanReviewItem(item) &&
           (
             item?.qualityBlocked === true ||
             item?.quality?.passed !== true ||

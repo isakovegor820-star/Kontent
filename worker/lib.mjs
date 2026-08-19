@@ -122,7 +122,7 @@ export function autopilotDraftsDeliverable(expected, topics, items = null) {
       String(item?.draft || "").trim().length > 0 &&
       (
         (item?.qualityBlocked !== true && item?.quality?.passed === true) ||
-        (item?.qualityBlocked === true && item?.reviewRequired === true)
+        (item?.qualityBlocked === true && item?.reviewRequired === true && item?.quality?.passed === true)
       ),
     );
 }

@@ -148,9 +148,9 @@ import { authorProfileContext } from "./src/lib/author-profile.mjs";
 import {
   assessAutopilotDraft,
   autopilotQualityFailureKind,
-  padDraftToMinimum,
+  autopilotOutputTokens,
+  fitAutopilotDraftLength,
   removeUnverifiedSemanticClaims,
-  trimDraftToMaximum,
 } from "./src/lib/autopilot-quality.mjs";
 import { completeAiText } from "./src/lib/ai-completion-service.mjs";
 import {
@@ -5724,7 +5724,7 @@ async function buildAutopilotPlan(
     const task = rubric
       ? `Напиши пост в рубрику «${rubric}» на тему: ${topic}.`
       : `Напиши пост на тему: ${topic}.`;
-    const outputTokens = Math.min(900, Math.max(400, Math.ceil(quality.maxChars / 2)));
+    const outputTokens = autopilotOutputTokens(quality);
     let candidateRaw = await askAI(
       "autopilot-plan",
       usageReservationId,
@@ -5736,14 +5736,9 @@ async function buildAutopilotPlan(
       generationEngine,
     );
     let aiDraft = candidateRaw
-      ? trimDraftToMaximum(
-          applyAutopilotPresentation(
-            padDraftToMinimum(stripCites(candidateRaw), quality.minChars, quality.maxChars),
-            presentation,
-            quality,
-            brief,
-            i,
-          ),
+      ? fitAutopilotDraftLength(
+          applyAutopilotPresentation(stripCites(candidateRaw), presentation, quality, brief, i),
+          quality.minChars,
           quality.maxChars,
         )
       : null;
@@ -5784,14 +5779,9 @@ async function buildAutopilotPlan(
         generationEngine,
       );
       aiDraft = candidateRaw
-        ? trimDraftToMaximum(
-            applyAutopilotPresentation(
-              padDraftToMinimum(stripCites(candidateRaw), quality.minChars, quality.maxChars),
-              presentation,
-              quality,
-              brief,
-              i,
-            ),
+        ? fitAutopilotDraftLength(
+            applyAutopilotPresentation(stripCites(candidateRaw), presentation, quality, brief, i),
+            quality.minChars,
             quality.maxChars,
           )
         : null;
@@ -5817,10 +5807,9 @@ async function buildAutopilotPlan(
       if (!["blocked", "not_checked"].includes(qualityResult.semantic?.status)) break;
       const cleanedDraft = removeUnverifiedSemanticClaims(aiDraft, qualityResult.semantic);
       if (!cleanedDraft || cleanedDraft === aiDraft) break;
-      aiDraft = trimDraftToMaximum(
-        padDraftToMinimum(cleanedDraft, quality.minChars, quality.maxChars),
-        quality.maxChars,
-      );
+      const fitted = fitAutopilotDraftLength(cleanedDraft, quality.minChars, quality.maxChars);
+      if (fitted.length < quality.minChars) break;
+      aiDraft = fitted;
       invented = findInvented(aiDraft, support);
       qualityResult = await assessAutopilotDraft({
         text: aiDraft,
@@ -5837,6 +5826,9 @@ async function buildAutopilotPlan(
     const draft = aiDraft || `Черновик на тему «${topic}» — ИИ допишет, когда движок будет доступен.`;
     const scheduledAt = slots[i];
     const qualityFailureKind = autopilotQualityFailureKind(qualityResult);
+    const needsHumanReview = Boolean(
+      aiDraft && qualityResult.passed && qualityResult.semantic?.status === "not_checked",
+    );
     const item = {
       i,
       scheduledAt,
@@ -5858,18 +5850,9 @@ async function buildAutopilotPlan(
       // Непустое — в посте осталась непроверенная конкретика. Человек увидит предупреждение,
       // а автопубликация для такого поста закрыта.
       invented: invented.length ? invented : undefined,
-      qualityBlocked: !aiDraft || !qualityResult.passed || qualityResult.semantic?.status === "not_checked",
-      reviewRequired: Boolean(
-        aiDraft && (
-          !qualityResult.passed ||
-          qualityResult.semantic?.status === "not_checked"
-        ),
-      ),
-      reviewReason: aiDraft && (
-        !qualityResult.passed || qualityResult.semantic?.status === "not_checked"
-      )
-        ? qualityFailureKind
-        : undefined,
+      qualityBlocked: !aiDraft || !qualityResult.passed || needsHumanReview,
+      reviewRequired: needsHumanReview,
+      reviewReason: needsHumanReview ? qualityFailureKind : undefined,
       quality: qualityResult,
       qualityOrigin: "automatic",
       presentation: presentation.name,
@@ -5982,14 +5965,9 @@ async function buildAutopilotPlan(
         generationEngine,
       );
       if (!raw?.trim()) continue;
-      const candidate = trimDraftToMaximum(
-        applyAutopilotPresentation(
-          padDraftToMinimum(stripCites(raw), quality.minChars, quality.maxChars),
-          presentation,
-          quality,
-          brief,
-          index,
-        ),
+      const candidate = fitAutopilotDraftLength(
+        applyAutopilotPresentation(stripCites(raw), presentation, quality, brief, index),
+        quality.minChars,
         quality.maxChars,
       );
       const cited = support.length ? citedShare(raw) : null;
@@ -6032,28 +6010,7 @@ async function buildAutopilotPlan(
         item: index,
         score: duplicate.score,
       });
-      if (full) return { error: "content_variety_insufficient" };
-      item.qualityBlocked = true;
-      item.reviewRequired = true;
-      item.reviewReason = "content_variety";
-      item.quality = {
-        ...item.quality,
-        passed: false,
-        blockers: [
-          ...(Array.isArray(item.quality?.blockers) ? item.quality.blockers : []),
-          "Текст похож на недавнюю публикацию. Проверь и отредактируй перед подтверждением.",
-        ],
-        violations: [
-          ...(Array.isArray(item.quality?.violations) ? item.quality.violations : []),
-          {
-            code: "near_duplicate",
-            message: "Текст похож на недавнюю публикацию.",
-            blocker: true,
-            penalty: 0,
-          },
-        ],
-      };
-      delete item.autoApprove;
+      return { error: "content_variety_insufficient" };
     }
     acceptedForVariety.push({ topic: item.topic, draft: item.draft });
     delete item._support;

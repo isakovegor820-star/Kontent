@@ -5,6 +5,8 @@ const SAFE_LENGTH_QUESTIONS = [
   "Что из этого для тебя важнее?",
   "Какой из этих пунктов ты бы проверил первым?",
   "Какой из этих пунктов сейчас важнее для твоей ситуации и что стоит разобрать подробнее в следующем посте?",
+  "Если бы пришлось выбрать один следующий шаг — какой он был бы и почему именно он?",
+  "Что здесь для тебя привычно, а что стоит перепроверить на своём материале?",
 ];
 
 /**
@@ -26,19 +28,22 @@ export function autopilotQualityFailureKind(result) {
 }
 
 /**
- * Drop trailing paragraphs or sentences until the draft fits. Never invent text and never
- * cut mid-sentence: a failed trim stays too long so the user can edit it.
+ * Drop trailing paragraphs or sentences until the draft fits. Never invent text, never
+ * cut mid-sentence, and never return a draft shorter than minChars — a failed trim stays
+ * too long so the model can rewrite it instead of handing the user a stub.
  */
-export function trimDraftToMaximum(text, maxChars) {
+export function trimDraftToMaximum(text, maxChars, minChars = 0) {
   const value = String(text || "").trim();
   const maximum = Math.max(0, Number(maxChars) || 0);
+  const minimum = Math.max(0, Number(minChars) || 0);
   if (!value || !maximum || value.length <= maximum) return value;
 
   const paragraphs = value.split(/\n\s*\n/).map((paragraph) => paragraph.trim()).filter(Boolean);
-  while (paragraphs.length > 2) {
-    paragraphs.pop();
-    const candidate = paragraphs.join("\n\n");
-    if (candidate.length <= maximum && /[.!?…»”*)\]]$/u.test(candidate)) return candidate;
+  for (let keep = paragraphs.length - 1; keep >= 2; keep -= 1) {
+    const candidate = paragraphs.slice(0, keep).join("\n\n");
+    if (candidate.length >= minimum && candidate.length <= maximum && /[.!?…»”*)\]]$/u.test(candidate)) {
+      return candidate;
+    }
   }
 
   const sentences = value.match(/[^.!?…]+[.!?…]+(?:[»”"')\]]+)?/gu);
@@ -49,22 +54,34 @@ export function trimDraftToMaximum(text, maxChars) {
       if (next.length > maximum) break;
       kept = next;
     }
-    if (kept.length >= Math.min(300, maximum) && /[.!?…»”*)\]]$/u.test(kept)) return kept;
+    if (kept.length >= minimum && /[.!?…»”*)\]]$/u.test(kept)) return kept;
   }
   return value;
 }
 
-/** Fill only a small length miss with a non-factual question, never with invented facts. */
+/** Fill a length miss with non-factual reader questions, never with invented facts. */
 export function padDraftToMinimum(text, minChars, maxChars) {
-  const value = String(text || "").trim();
+  let value = String(text || "").trim();
   const minimum = Math.max(0, Number(minChars) || 0);
   const maximum = Math.max(minimum, Number(maxChars) || minimum);
-  if (!value || value.length >= minimum || minimum - value.length > 140) return value;
+  if (!value || value.length >= minimum) return value;
   for (const question of SAFE_LENGTH_QUESTIONS) {
     const candidate = `${value}\n\n${question}`;
-    if (candidate.length >= minimum && candidate.length <= maximum) return candidate;
+    if (candidate.length > maximum) continue;
+    value = candidate;
+    if (value.length >= minimum) return value;
   }
   return value;
+}
+
+export function fitAutopilotDraftLength(text, minChars, maxChars) {
+  return trimDraftToMaximum(padDraftToMinimum(text, minChars, maxChars), maxChars, minChars);
+}
+
+/** Enough completion budget for the channel length band, including a short Russian post. */
+export function autopilotOutputTokens(quality) {
+  const maxChars = Math.max(500, Number(quality?.maxChars) || 1800);
+  return Math.min(1800, Math.max(800, Math.ceil(maxChars * 0.9)));
 }
 
 /**
