@@ -32,11 +32,8 @@ import {
   hasVerifiedQualityMetadata,
   type QualityResult,
 } from "@/lib/post-quality.mjs";
-import {
-  isAutopilotHumanReviewItem,
-  type ApprovalBlocker,
-  type AutopilotApprovalPreview,
-} from "@/lib/autopilot-approval.mjs";
+import { isAutopilotHumanReviewItem } from "@/lib/autopilot-review.mjs";
+import type { ApprovalBlocker, AutopilotApprovalPreview } from "@/lib/autopilot-approval.mjs";
 import { autopilotPlanNeedsQualityRebuild } from "@/lib/autopilot-plan-visibility.mjs";
 import {
   estimateAutopilotBuildMinutes,
