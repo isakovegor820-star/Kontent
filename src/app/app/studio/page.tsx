@@ -1732,9 +1732,7 @@ function StudioPageInner() {
           }
           setMsg({
             text: completion.text,
-            statusMessage: completion.requiresReview
-              ? "Черновик готов и сохранён. Проверка нашла риск: проверь текст перед публикацией."
-              : "Пост готов.",
+            statusMessage: undefined,
             progressLabel: undefined,
             streaming: false,
             postable: completion.postable,
