@@ -23,6 +23,6 @@ export function buildContentSecurityPolicy(nonce: string, development = false): 
     "connect-src 'self'",
     "worker-src 'self' blob:",
     "manifest-src 'self'",
-    "upgrade-insecure-requests",
+    ...(development ? [] : ["upgrade-insecure-requests"]),
   ].join("; ");
 }

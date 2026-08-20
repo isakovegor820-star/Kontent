@@ -24,6 +24,11 @@ describe("strict content security policy", () => {
     );
     expect(policy).toContain("style-src 'self' 'unsafe-inline'");
     expect(policy).not.toMatch(/style-src(?!-attr)[^;]*'nonce-/u);
+    expect(policy).not.toContain("upgrade-insecure-requests");
+  });
+
+  it("keeps insecure-request upgrades enabled for the production HTTPS origin", () => {
+    expect(buildContentSecurityPolicy(nonce)).toContain("upgrade-insecure-requests");
   });
 
   it("rejects values that could inject another directive", () => {
