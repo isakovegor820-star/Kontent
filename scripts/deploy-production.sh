@@ -143,7 +143,7 @@ set +a
 npm run build
 
 echo "MIGRATE"
-npm run db:migrate
+bash scripts/run-production-migrations.sh
 
 echo "PREVIOUS=$previous"
 echo "TARGET=$release"

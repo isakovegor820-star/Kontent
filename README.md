@@ -111,6 +111,10 @@ variables `PRODUCTION_BASE_URL`, `REQUIRED_CI_CHECKS` и secrets
 обязательных check-run names. При изменении migration manifest rollback разрешается только
 после отдельного schema compatibility audit: защищённая variable `SCHEMA_ROLLBACK_AUDIT`
 должна содержать точную пару `<previous-40-char-sha>:<target-40-char-sha>`.
+DDL запускается отдельной database identity: через `AURORA_MIGRATION_DATABASE_URL` на
+сервере или, только для root-operated single-host PostgreSQL, через явно включённую
+protected variable `ALLOW_LOCAL_PEER_MIGRATIONS=true`. Runtime `DATABASE_URL` используется
+лишь для проверки точного локального target и никогда не получает DDL-права.
 Обычный релиз — `gh workflow run "Deploy production" --ref main`; агентам не
 нужен SSH.
 Полный порядок ledger audit, staging rehearsal, go/no-go и rollback описан в

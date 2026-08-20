@@ -115,11 +115,17 @@ jobs:
           PRODUCTION_SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
           AURORA_DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
           AURORA_SCHEMA_ROLLBACK_AUDIT: ${{ vars.SCHEMA_ROLLBACK_AUDIT }}
+          AURORA_ALLOW_LOCAL_PEER_MIGRATIONS: ${{ vars.ALLOW_LOCAL_PEER_MIGRATIONS }}
         run: |
           test -n "$PRODUCTION_SSH_USER"
           if [[ -n "$AURORA_SCHEMA_ROLLBACK_AUDIT" \
             && ! "$AURORA_SCHEMA_ROLLBACK_AUDIT" =~ ^[0-9a-f]{40}:[0-9a-f]{40}$ ]]; then
             echo "SCHEMA_ROLLBACK_AUDIT must be an exact previous:target SHA pair" >&2
+            exit 1
+          fi
+          if [[ "$AURORA_ALLOW_LOCAL_PEER_MIGRATIONS" != "true" \
+            && "$AURORA_ALLOW_LOCAL_PEER_MIGRATIONS" != "false" ]]; then
+            echo "ALLOW_LOCAL_PEER_MIGRATIONS must be true or false" >&2
             exit 1
           fi
           ssh -i ~/.ssh/deploy_key \
@@ -128,7 +134,7 @@ jobs:
             -o ServerAliveInterval=15 \
             -o ServerAliveCountMax=8 \
             "${PRODUCTION_SSH_USER}@${PRODUCTION_SSH_HOST}" \
-            "AURORA_DEPLOY_SHA=${AURORA_DEPLOY_SHA} AURORA_SCHEMA_ROLLBACK_AUDIT=${AURORA_SCHEMA_ROLLBACK_AUDIT} bash -s" \
+            "AURORA_DEPLOY_SHA=${AURORA_DEPLOY_SHA} AURORA_SCHEMA_ROLLBACK_AUDIT=${AURORA_SCHEMA_ROLLBACK_AUDIT} AURORA_ALLOW_LOCAL_PEER_MIGRATIONS=${AURORA_ALLOW_LOCAL_PEER_MIGRATIONS} bash -s" \
             < scripts/deploy-production.sh
 
       - name: Verify production deployment

@@ -206,6 +206,29 @@ describe("migration runner helpers", () => {
     expect(poolFactory).toHaveBeenCalledWith(expect.objectContaining({ ssl: false }));
   });
 
+  it("does not require SSL for the local peer socket migration identity", async () => {
+    const connectionError = new Error("stop after config inspection");
+    const pool = {
+      connect: vi.fn(async () => {
+        throw connectionError;
+      }),
+      end: vi.fn(async () => {}),
+    };
+    const poolFactory = vi.fn(() => pool);
+
+    await expect(
+      migrate({
+        env: {
+          DATABASE_URL: "postgresql:///aurora?host=%2Fvar%2Frun%2Fpostgresql&port=5432",
+        },
+        migrations: [VALID_MIGRATION],
+        poolFactory,
+      }),
+    ).rejects.toBe(connectionError);
+
+    expect(poolFactory).toHaveBeenCalledWith(expect.objectContaining({ ssl: false }));
+  });
+
   it("sets bounded timeouts, acquires a non-blocking lock, and records atomically", async () => {
     const queries = [];
     const { client, pool } = mockPool(async (sql, params) => {

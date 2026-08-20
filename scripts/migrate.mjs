@@ -113,7 +113,14 @@ export class DatabaseNotBootstrappedError extends Error {
 }
 
 function poolOptions(connectionString, env) {
-  const local = /\/\/(?:[^@/]+@)?(?:localhost|127\.0\.0\.1)(?::|\/)/u.test(connectionString);
+  let local = false;
+  try {
+    const target = new URL(connectionString);
+    local = ["localhost", "127.0.0.1", "[::1]", "::1"].includes(target.hostname)
+      || target.searchParams.get("host")?.startsWith("/") === true;
+  } catch {
+    // Pool reports a malformed connection string without logging it here.
+  }
   return {
     connectionString,
     ssl: local ? false : { rejectUnauthorized: env.PGSSL_REJECT_UNAUTHORIZED !== "false" },

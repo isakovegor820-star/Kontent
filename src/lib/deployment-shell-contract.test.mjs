@@ -3,19 +3,29 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const script = await readFile(resolve("scripts/deploy-production.sh"), "utf8");
+const migrationScript = await readFile(resolve("scripts/run-production-migrations.sh"), "utf8");
 const workflow = await readFile(resolve(".github/workflows/deploy-production.yml"), "utf8");
 const workflowDirectory = resolve(".github/workflows");
 
 describe("production deployment shell contract", () => {
   it("keeps build and migration failures before the live symlink switch", () => {
     const build = script.indexOf("npm run build");
-    const migrate = script.indexOf("npm run db:migrate");
+    const migrate = script.indexOf("bash scripts/run-production-migrations.sh");
     const state = script.indexOf("rollback-compatible\" > \"$state_file");
     const swap = script.indexOf('swap_current "$release"');
     expect(build).toBeGreaterThan(0);
     expect(migrate).toBeGreaterThan(build);
     expect(state).toBeGreaterThan(migrate);
     expect(swap).toBeGreaterThan(state);
+  });
+
+  it("never runs production DDL through the runtime database identity", () => {
+    expect(migrationScript).toContain("AURORA_MIGRATION_DATABASE_URL");
+    expect(migrationScript).toContain("AURORA_ALLOW_LOCAL_PEER_MIGRATIONS");
+    expect(migrationScript).toContain("runuser -u postgres");
+    expect(migrationScript).toContain("production-local-migration-url.mjs");
+    expect(migrationScript).toContain("no privileged production migration identity configured");
+    expect(migrationScript).not.toContain('DATABASE_URL="$DATABASE_URL" npm run db:migrate');
   });
 
   it("rolls back restart, health, and partial web/worker activation failures", () => {
@@ -70,7 +80,9 @@ describe("production deployment shell contract", () => {
     expect(workflow).not.toContain("ssh-keyscan");
     expect(workflow).toContain("PRODUCTION_SSH_HOST_FINGERPRINT");
     expect(workflow).toContain("verify-ssh-host-identity.sh");
-    expect(script.indexOf("verify-rollback-boundary.mjs")).toBeLessThan(script.indexOf("npm run db:migrate"));
+    expect(script.indexOf("verify-rollback-boundary.mjs")).toBeLessThan(
+      script.indexOf("bash scripts/run-production-migrations.sh"),
+    );
   });
 
   it("pins every external action in every workflow to an immutable commit", async () => {
