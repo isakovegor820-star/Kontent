@@ -47,7 +47,7 @@ services_active() {
 wait_for_health() {
   local ok=0
   for _ in $(seq 1 "$HEALTH_ATTEMPTS"); do
-    if curl -fsS --max-time 5 "$HEALTH_URL" >/dev/null; then
+    if curl -fsS --max-time 5 "$HEALTH_URL" >/dev/null && services_active; then
       ok=1
       break
     fi

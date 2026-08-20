@@ -38,6 +38,14 @@ describe("production deployment shell contract", () => {
     expect(script.split('rollback_to "$previous" || true')).toHaveLength(4);
   });
 
+  it("waits through delayed worker startup after deploy and rollback restarts", () => {
+    const waitForHealth = script.slice(
+      script.indexOf("wait_for_health()"),
+      script.indexOf("rollback_to()"),
+    );
+    expect(waitForHealth).toMatch(/if curl[\s\S]*&& services_active; then/u);
+  });
+
   it("makes full smoke failure invoke the remote schema-boundary rollback", () => {
     expect(workflow).toContain("if npm run test:deployment-smoke; then");
     expect(workflow).toContain("AURORA_DEPLOY_ACTION=rollback");
