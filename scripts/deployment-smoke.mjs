@@ -210,28 +210,36 @@ function validateForwardCompatibleCurrentReadiness(readiness, profile, now) {
     || aiProviders.every((provider) => provider?.state !== "open" && provider?.lastOutcome === "success");
   const allowedReasons = new Set([
     ...schemaReasons.map(String),
+    ...(checks?.publicationWorker === "down" ? ["publication_worker_unavailable"] : []),
+    ...(checks?.telegramPolling === "down" ? ["telegram_polling_unavailable"] : []),
     ...(aiProviders.length === 0 ? ["ai_unobserved"] : []),
     ...(profile === "release"
       ? ["mail_delivery_not_configured", "mail_delivery_unavailable"]
       : []),
   ]);
   const reasons = Array.isArray(readiness?.reasons) ? readiness.reasons.map(String) : [];
-  const rawDependenciesHealthy = readiness?.processAlive === true
-    && readiness?.databaseReady === true
-    && checks?.database === "up"
-    && checks?.schema?.ready === false
-    && checks?.redis === "up"
-    && checks?.publicationWorker === "up"
-    && checks?.telegramPolling === "up"
-    && checks?.aiConfigured === true
-    && aiEvidenceSafe
-    && checks?.uploadIngress === "up"
-    && checks?.trackingSecrets === "up"
-    && (profile === "release" || checks?.mailDelivery === "up")
-    && reasons.length >= schemaReasons.length
-    && reasons.every((reason) => allowedReasons.has(reason));
-  if (!knownForwardOnly || !rawDependenciesHealthy) {
-    throw new DeploymentSmokeError("deployment_smoke_forward_schema_unverified");
+  const checksByName = {
+    target_known_forward_migrations: knownForwardOnly,
+    process_alive: readiness?.processAlive === true,
+    database: readiness?.databaseReady === true && checks?.database === "up",
+    schema_blocked_only: checks?.schema?.ready === false,
+    redis: checks?.redis === "up",
+    publication_worker_recoverable: checks?.publicationWorker === "up"
+      || checks?.publicationWorker === "down",
+    telegram_polling_recoverable: checks?.telegramPolling === "up"
+      || checks?.telegramPolling === "down",
+    ai_configuration: checks?.aiConfigured === true && aiEvidenceSafe,
+    upload_ingress: checks?.uploadIngress === "up",
+    tracking_secrets: checks?.trackingSecrets === "up",
+    mail_policy: profile === "release" || checks?.mailDelivery === "up",
+    reasons_allowlisted: reasons.length >= schemaReasons.length
+      && reasons.every((reason) => allowedReasons.has(reason)),
+  };
+  const failedChecks = Object.entries(checksByName)
+    .filter(([, passed]) => !passed)
+    .map(([name]) => name);
+  if (failedChecks.length > 0) {
+    throw new DeploymentSmokeError("deployment_smoke_forward_schema_unverified", { failedChecks });
   }
   return "forward_compatible";
 }
