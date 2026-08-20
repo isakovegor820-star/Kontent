@@ -80,6 +80,7 @@ describe("production deployment shell contract", () => {
     expect(workflow).toContain("vars.ALLOW_DEGRADED_MAIL == 'true'");
     expect(workflow.match(/AURORA_DEPLOYMENT_SMOKE_PROFILE:/gu)).toHaveLength(2);
     expect(workflow.match(/&& 'release' \|\| 'full'/gu)).toHaveLength(2);
+    expect(workflow.match(/AURORA_DEPLOYMENT_SMOKE_ALLOW_FORWARD_SCHEMA: "true"/gu)).toHaveLength(1);
   });
 
   it("verifies CI, immutable actions, pinned host identity, and rollback compatibility", () => {

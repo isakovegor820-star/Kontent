@@ -156,6 +156,83 @@ describe("deployment smoke", () => {
     })).resolves.toMatchObject({ profile: "release", readinessStatus: "degraded" });
   });
 
+  it("accepts only target-known forward schema drift during the explicit pre-deploy check", async () => {
+    const migrationReason = "migration_unexpected:20260920_session_token_expand_compat.sql";
+    const readiness = readyReport({
+      status: "not_ready",
+      processAlive: true,
+      databaseReady: true,
+      schemaReady: false,
+      webReady: false,
+      publicationReady: false,
+      aiReady: false,
+      tokenEncryptionReady: false,
+      mailDeliveryReady: false,
+      passwordRecoveryReady: false,
+      reasons: [migrationReason, "ai_unobserved", "mail_delivery_not_configured"],
+      checks: {
+        database: "up",
+        schema: { ready: false, reasons: [migrationReason] },
+        redis: "up",
+        publicationWorker: "up",
+        telegramPolling: "up",
+        aiProviders: [],
+        aiConfigured: true,
+        mailDelivery: "not_configured",
+        uploadIngress: "up",
+        tokenEncryption: "down",
+        trackingSecrets: "up",
+      },
+    });
+    const fetchImpl = vi.fn(async (url) => {
+      const path = new URL(url).pathname;
+      if (path === "/api/health") return jsonResponse({ ok: true, status: "alive" });
+      if (path === "/api/readiness") return jsonResponse(readiness, { status: 503 });
+      return htmlResponse();
+    });
+
+    await expect(runDeploymentSmoke({
+      env: {
+        AURORA_DEPLOYMENT_SMOKE_BASE_URL: "https://aurora.example",
+        AURORA_DEPLOYMENT_SMOKE_PROFILE: "release",
+        AURORA_READINESS_TOKEN: READINESS_TOKEN,
+      },
+      fetchImpl,
+      now: new Date("2026-08-17T12:01:00.000Z"),
+    })).rejects.toMatchObject({
+      code: "deployment_smoke_http_failure",
+      details: { surface: "readiness", status: 503 },
+    });
+
+    await expect(runDeploymentSmoke({
+      env: {
+        AURORA_DEPLOYMENT_SMOKE_BASE_URL: "https://aurora.example",
+        AURORA_DEPLOYMENT_SMOKE_PROFILE: "release",
+        AURORA_DEPLOYMENT_SMOKE_ALLOW_FORWARD_SCHEMA: "true",
+        AURORA_READINESS_TOKEN: READINESS_TOKEN,
+      },
+      fetchImpl,
+      logger: { log: vi.fn() },
+      now: new Date("2026-08-17T12:01:00.000Z"),
+    })).resolves.toMatchObject({
+      profile: "release",
+      readinessStatus: "forward_compatible",
+    });
+
+    readiness.reasons[0] = "migration_unexpected:20990101_unknown.sql";
+    readiness.checks.schema.reasons[0] = "migration_unexpected:20990101_unknown.sql";
+    await expect(runDeploymentSmoke({
+      env: {
+        AURORA_DEPLOYMENT_SMOKE_BASE_URL: "https://aurora.example",
+        AURORA_DEPLOYMENT_SMOKE_PROFILE: "release",
+        AURORA_DEPLOYMENT_SMOKE_ALLOW_FORWARD_SCHEMA: "true",
+        AURORA_READINESS_TOKEN: READINESS_TOKEN,
+      },
+      fetchImpl,
+      now: new Date("2026-08-17T12:01:00.000Z"),
+    })).rejects.toMatchObject({ code: "deployment_smoke_forward_schema_unverified" });
+  });
+
   it("keeps every non-mail production capability mandatory for release smoke", async () => {
     await expect(runDeploymentSmoke({
       env: {

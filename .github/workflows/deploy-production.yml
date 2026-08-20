@@ -59,6 +59,7 @@ jobs:
         env:
           AURORA_DEPLOYMENT_SMOKE_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
           AURORA_DEPLOYMENT_SMOKE_PROFILE: ${{ vars.ALLOW_DEGRADED_MAIL == 'true' && 'release' || 'full' }}
+          AURORA_DEPLOYMENT_SMOKE_ALLOW_FORWARD_SCHEMA: "true"
           AURORA_READINESS_TOKEN: ${{ secrets.AURORA_READINESS_TOKEN }}
         run: npm run test:deployment-smoke
 

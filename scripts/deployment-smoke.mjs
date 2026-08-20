@@ -1,5 +1,6 @@
 import { isIP } from "node:net";
 import { pathToFileURL } from "node:url";
+import { SCHEMA_MANIFEST } from "../src/lib/schema-manifest.mjs";
 
 const MAX_JSON_BYTES = 256 * 1024;
 const MAX_HTML_BYTES = 2 * 1024 * 1024;
@@ -21,6 +22,7 @@ const RELEASE_CAPABILITIES = FULL_CAPABILITIES.filter(
   (capability) => capability !== "mailDeliveryReady" && capability !== "passwordRecoveryReady",
 );
 const WEB_CAPABILITIES = ["schemaReady", "webReady", "uploadReady"];
+const TARGET_MIGRATIONS = new Set(SCHEMA_MANIFEST.migrations.map((migration) => migration.name));
 
 export class DeploymentSmokeError extends Error {
   constructor(code, details = undefined) {
@@ -87,7 +89,18 @@ function configuration(env) {
   if (readinessToken.length < 32) {
     throw new DeploymentSmokeError("missing_readiness_token");
   }
-  return { baseUrl, profile, readinessToken };
+  const rawAllowForwardSchema = String(
+    env.AURORA_DEPLOYMENT_SMOKE_ALLOW_FORWARD_SCHEMA || "false",
+  ).trim();
+  if (rawAllowForwardSchema !== "true" && rawAllowForwardSchema !== "false") {
+    throw new DeploymentSmokeError("invalid_forward_schema_smoke_policy");
+  }
+  return {
+    baseUrl,
+    profile,
+    readinessToken,
+    allowForwardSchema: rawAllowForwardSchema === "true",
+  };
 }
 
 async function boundedText(response, limit) {
@@ -152,8 +165,8 @@ function requireNoStore(response, surface) {
   }
 }
 
-function parseJsonResponse(result, surface) {
-  if (result.response.status !== 200) {
+function parseJsonResponse(result, surface, allowedStatuses = [200]) {
+  if (!allowedStatuses.includes(result.response.status)) {
     throw new DeploymentSmokeError("deployment_smoke_http_failure", {
       surface,
       status: result.response.status,
@@ -177,7 +190,57 @@ function validateHealth(result) {
   }
 }
 
-function validateReadiness(result, profile, now) {
+function requireFreshReadiness(readiness, now) {
+  const checkedAt = Date.parse(String(readiness?.checkedAt || ""));
+  if (!Number.isFinite(checkedAt) || Math.abs(now.getTime() - checkedAt) > MAX_READINESS_AGE_MS) {
+    throw new DeploymentSmokeError("deployment_smoke_readiness_stale");
+  }
+}
+
+function validateForwardCompatibleCurrentReadiness(readiness, profile, now) {
+  requireFreshReadiness(readiness, now);
+  const checks = readiness?.checks;
+  const schemaReasons = Array.isArray(checks?.schema?.reasons) ? checks.schema.reasons : [];
+  const knownForwardOnly = schemaReasons.length > 0 && schemaReasons.every((reason) => {
+    const migration = String(reason).match(/^migration_unexpected:(.+\.sql)$/u)?.[1];
+    return Boolean(migration && TARGET_MIGRATIONS.has(migration));
+  });
+  const aiProviders = Array.isArray(checks?.aiProviders) ? checks.aiProviders : [];
+  const aiEvidenceSafe = aiProviders.length === 0
+    || aiProviders.every((provider) => provider?.state !== "open" && provider?.lastOutcome === "success");
+  const allowedReasons = new Set([
+    ...schemaReasons.map(String),
+    ...(aiProviders.length === 0 ? ["ai_unobserved"] : []),
+    ...(profile === "release"
+      ? ["mail_delivery_not_configured", "mail_delivery_unavailable"]
+      : []),
+  ]);
+  const reasons = Array.isArray(readiness?.reasons) ? readiness.reasons.map(String) : [];
+  const rawDependenciesHealthy = readiness?.processAlive === true
+    && readiness?.databaseReady === true
+    && checks?.database === "up"
+    && checks?.schema?.ready === false
+    && checks?.redis === "up"
+    && checks?.publicationWorker === "up"
+    && checks?.telegramPolling === "up"
+    && checks?.aiConfigured === true
+    && aiEvidenceSafe
+    && checks?.uploadIngress === "up"
+    && checks?.trackingSecrets === "up"
+    && (profile === "release" || checks?.mailDelivery === "up")
+    && reasons.length >= schemaReasons.length
+    && reasons.every((reason) => allowedReasons.has(reason));
+  if (!knownForwardOnly || !rawDependenciesHealthy) {
+    throw new DeploymentSmokeError("deployment_smoke_forward_schema_unverified");
+  }
+  return "forward_compatible";
+}
+
+function validateReadiness(result, profile, now, allowForwardSchema = false) {
+  if (allowForwardSchema && result.response.status === 503) {
+    const readiness = parseJsonResponse(result, "readiness", [503]);
+    return validateForwardCompatibleCurrentReadiness(readiness, profile, now);
+  }
   const readiness = parseJsonResponse(result, "readiness");
   const required = profile === "full"
     ? FULL_CAPABILITIES
@@ -191,10 +254,7 @@ function validateReadiness(result, profile, now) {
   if (profile === "full" && readiness?.status !== "ready") {
     throw new DeploymentSmokeError("deployment_smoke_status_degraded");
   }
-  const checkedAt = Date.parse(String(readiness?.checkedAt || ""));
-  if (!Number.isFinite(checkedAt) || Math.abs(now.getTime() - checkedAt) > MAX_READINESS_AGE_MS) {
-    throw new DeploymentSmokeError("deployment_smoke_readiness_stale");
-  }
+  requireFreshReadiness(readiness, now);
   return readiness.status;
 }
 
@@ -259,7 +319,7 @@ export async function runDeploymentSmoke({
   logger = console,
   now = new Date(),
 } = {}) {
-  const { baseUrl, profile, readinessToken } = configuration(env);
+  const { baseUrl, profile, readinessToken, allowForwardSchema } = configuration(env);
   const [health, readiness, ...htmlPages] = await Promise.all([
     request(fetchImpl, new URL("/api/health", baseUrl), "application/json", MAX_JSON_BYTES),
     request(
@@ -272,7 +332,7 @@ export async function runDeploymentSmoke({
     ...HTML_PATHS.map((path) => request(fetchImpl, new URL(path, baseUrl), "text/html", MAX_HTML_BYTES)),
   ]);
   validateHealth(health);
-  const status = validateReadiness(readiness, profile, now);
+  const status = validateReadiness(readiness, profile, now, allowForwardSchema);
   htmlPages.forEach((page, index) => validateHtml(page, HTML_PATHS[index]));
   const report = {
     ok: true,
