@@ -51,11 +51,11 @@ jobs:
             -o ServerAliveCountMax=8 \
             "${PRODUCTION_SSH_USER}@${PRODUCTION_SSH_HOST}" \
             'bash -s' <<'REMOTE' | base64 | tr -d '\n'
-          set -Eeuo pipefail
+          set -u
 
           bytes_for() {
             if [[ -e "$1" ]]; then
-              du -xsb "$1" 2>/dev/null | awk 'NR == 1 { print $1 + 0 }'
+              du -xsb "$1" 2>/dev/null | awk 'NR == 1 { value = $1 } END { print value + 0 }'
             else
               printf '0\n'
             fi
