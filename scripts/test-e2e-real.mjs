@@ -40,6 +40,7 @@ const webPort = Number(process.env.E2E_WEB_PORT || 43190);
 const fakePort = Number(process.env.E2E_FAKE_PORT || 43191);
 const UI_WAIT_TIMEOUT_MS = 30_000;
 const RUNTIME_WAIT_TIMEOUT_MS = 120_000;
+const API_REQUEST_TIMEOUT_MS = RUNTIME_WAIT_TIMEOUT_MS;
 const baseUrl = `http://127.0.0.1:${webPort}`;
 const fakeBase = `http://127.0.0.1:${fakePort}`;
 const trackedDestination = "https://example.com/consultation";
@@ -1184,6 +1185,7 @@ try {
       headers,
       data,
       failOnStatusCode: false,
+      timeout: API_REQUEST_TIMEOUT_MS,
     });
     return {
       status: response.status(),
@@ -1256,6 +1258,7 @@ try {
   const registration = await context.request.post("/api/auth/register", {
     headers: { origin: baseUrl },
     data: { email: "qa-e2e@aurora.test", password: "qa-password-2026", name: "QA E2E" },
+    timeout: API_REQUEST_TIMEOUT_MS,
   });
   assert(registration.ok(), `QA registration failed with ${registration.status()}`);
   const userId = Number((await pool.query(
@@ -1458,7 +1461,9 @@ try {
   assert(fakeState.media.jobs.size === 1 && fakeState.media.requestKeys.size === 1, "provider idempotency did not collapse one logical job");
   assert(fakeState.media.promptPolicyOk, "provider payload missed the safe versioned media prompt policy");
 
-  const storedAsset = await context.request.get(mediaTerminal.generation.assetUrl);
+  const storedAsset = await context.request.get(mediaTerminal.generation.assetUrl, {
+    timeout: API_REQUEST_TIMEOUT_MS,
+  });
   assert(storedAsset.status() === 200, `stored media asset failed with ${storedAsset.status()}`);
   assert(storedAsset.headers()["content-type"] === "image/png", "stored media asset has an unexpected type");
   assert((await storedAsset.body()).byteLength > 32, "stored media asset is empty");
@@ -1598,7 +1603,9 @@ try {
     "Library export format set is incomplete",
   );
   for (const exportUrl of parsedExports) {
-    const downloaded = await context.request.get(`${exportUrl.pathname}${exportUrl.search}`);
+    const downloaded = await context.request.get(`${exportUrl.pathname}${exportUrl.search}`, {
+      timeout: API_REQUEST_TIMEOUT_MS,
+    });
     assert(downloaded.status() === 200, `Library ${exportUrl.searchParams.get("format")} export failed`);
     assert(downloaded.headers()["cache-control"] === "private, no-store", "Library export is cacheable");
     assert(downloaded.headers()["x-content-type-options"] === "nosniff", "Library export can be MIME-sniffed");
@@ -1979,7 +1986,7 @@ try {
   const siteExportLinks = page.locator(`a[download][href^="/api/site-analysis/${siteAnalysisId}/export"]`);
   assert(await siteExportLinks.count() === 6, "site analysis did not expose six immutable export formats");
   for (const href of await siteExportLinks.evaluateAll((links) => links.map((link) => link.getAttribute("href")))) {
-    const downloaded = await context.request.get(href);
+    const downloaded = await context.request.get(href, { timeout: API_REQUEST_TIMEOUT_MS });
     assert(downloaded.status() === 200, `site analysis export failed: ${href}`);
   }
   await page.reload();
@@ -2667,6 +2674,7 @@ try {
   const reviewerRegistration = await reviewerContext.request.post("/api/auth/register", {
     headers: { origin: baseUrl },
     data: { email: reviewerEmail, password: "qa-approver-password-2026", name: reviewerName },
+    timeout: API_REQUEST_TIMEOUT_MS,
   });
   assert(reviewerRegistration.ok(), `reviewer registration failed with ${reviewerRegistration.status()}`);
   const reviewerUserId = Number((await pool.query(

@@ -20,4 +20,12 @@ describe("real E2E runtime isolation", () => {
     expect(source).toContain('summary?.includes("Сохранено") === true');
     expect(source).toContain('select text from drafts where id = $1 and project_id = $2');
   });
+
+  it("gives cold API compilation the same bounded budget as runtime readiness", () => {
+    const source = readFileSync(resolve("scripts/test-e2e-real.mjs"), "utf8");
+    const explicitBudgets = source.match(/timeout: API_REQUEST_TIMEOUT_MS/gu) ?? [];
+
+    expect(source).toContain("const API_REQUEST_TIMEOUT_MS = RUNTIME_WAIT_TIMEOUT_MS");
+    expect(explicitBudgets.length).toBeGreaterThanOrEqual(6);
+  });
 });
