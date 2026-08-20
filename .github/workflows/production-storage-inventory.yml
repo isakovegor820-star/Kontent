@@ -1,0 +1,129 @@
+name: Production storage inventory
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/production-storage-inventory.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-storage-inventory
+  cancel-in-progress: false
+
+jobs:
+  inventory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    steps:
+      - name: Configure SSH
+        env:
+          PRODUCTION_SSH_KEY: ${{ secrets.PRODUCTION_SSH_KEY }}
+          PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$PRODUCTION_SSH_KEY"
+          test -n "$PRODUCTION_SSH_HOST"
+          umask 077
+          mkdir -p ~/.ssh
+          printf '%s\n' "$PRODUCTION_SSH_KEY" > ~/.ssh/deploy_key
+          ssh-keyscan -H -T 10 "$PRODUCTION_SSH_HOST" >> ~/.ssh/known_hosts
+
+      - name: Collect read-only production storage inventory
+        env:
+          PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
+          PRODUCTION_SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$PRODUCTION_SSH_HOST"
+          test -n "$PRODUCTION_SSH_USER"
+          report_b64="$(ssh -i ~/.ssh/deploy_key \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=8 \
+            "${PRODUCTION_SSH_USER}@${PRODUCTION_SSH_HOST}" \
+            'bash -s' <<'REMOTE' | base64 | tr -d '\n'
+          set -Eeuo pipefail
+
+          bytes_for() {
+            if [[ -e "$1" ]]; then
+              du -xsb "$1" 2>/dev/null | awk 'NR == 1 { print $1 + 0 }'
+            else
+              printf '0\n'
+            fi
+          }
+
+          read -r root_total root_used root_available root_percent < <(
+            df -B1 --output=size,used,avail,pcent / | tail -n 1
+          )
+          printf 'collected_at_utc=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          printf 'root_total_bytes=%s\n' "$root_total"
+          printf 'root_used_bytes=%s\n' "$root_used"
+          printf 'root_available_bytes=%s\n' "$root_available"
+          printf 'root_used_percent=%s\n' "$root_percent"
+
+          printf 'opt_total_bytes=%s\n' "$(bytes_for /opt)"
+          printf 'var_log_bytes=%s\n' "$(bytes_for /var/log)"
+          printf 'postgres_bytes=%s\n' "$(bytes_for /var/lib/postgresql)"
+          printf 'tmp_bytes=%s\n' "$(bytes_for /tmp)"
+          printf 'aurora_releases_bytes=%s\n' "$(bytes_for /opt/aurora-releases)"
+          printf 'aurora_backups_bytes=%s\n' "$(bytes_for /opt/aurora-backups)"
+          printf 'compliance_releases_bytes=%s\n' "$(bytes_for /opt/compliance152-releases)"
+          printf 'aspb_deploy_bytes=%s\n' "$(bytes_for /opt/aspb-autowebinar)"
+
+          aurora_release_count=0
+          if [[ -d /opt/aurora-releases ]]; then
+            aurora_release_count="$(find /opt/aurora-releases -mindepth 1 -maxdepth 1 -type d | wc -l)"
+          fi
+          compliance_release_count=0
+          if [[ -d /opt/compliance152-releases ]]; then
+            compliance_release_count="$(find /opt/compliance152-releases -mindepth 1 -maxdepth 1 -type d | wc -l)"
+          fi
+          printf 'aurora_release_count=%s\n' "$aurora_release_count"
+          printf 'compliance_release_count=%s\n' "$compliance_release_count"
+
+          docker_root="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)"
+          docker_root_bytes=0
+          if [[ -n "$docker_root" && -e "$docker_root" ]]; then
+            docker_root_bytes="$(bytes_for "$docker_root")"
+          fi
+          printf 'docker_root_bytes=%s\n' "$docker_root_bytes"
+          printf 'docker_image_count=%s\n' "$(docker image ls -aq 2>/dev/null | sort -u | wc -l)"
+          printf 'docker_container_count=%s\n' "$(docker ps -aq 2>/dev/null | wc -l)"
+          printf 'docker_running_container_count=%s\n' "$(docker ps -q 2>/dev/null | wc -l)"
+          printf 'docker_volume_count=%s\n' "$(docker volume ls -q 2>/dev/null | wc -l)"
+          docker_df="$(docker system df 2>/dev/null || true)"
+          printf 'docker_system_df_base64=%s\n' "$(printf '%s' "$docker_df" | base64 | tr -d '\n')"
+
+          large_file_stats="$(
+            find /opt /var /tmp -xdev -type f -size +500M -printf '%s\n' 2>/dev/null |
+              awk '{ count += 1; bytes += $1 } END { printf "%d %d", count + 0, bytes + 0 }'
+          )"
+          read -r large_file_count large_file_bytes <<<"$large_file_stats"
+          printf 'large_file_count=%s\n' "$large_file_count"
+          printf 'large_file_bytes=%s\n' "$large_file_bytes"
+
+          journal_usage="$(journalctl --disk-usage 2>/dev/null || true)"
+          printf 'journal_usage_base64=%s\n' "$(printf '%s' "$journal_usage" | base64 | tr -d '\n')"
+
+          deleted_open_file_count=0
+          if command -v lsof >/dev/null 2>&1; then
+            deleted_open_file_count="$(lsof +L1 2>/dev/null | tail -n +2 | wc -l)"
+          fi
+          printf 'deleted_open_file_count=%s\n' "$deleted_open_file_count"
+          REMOTE
+          )"
+
+          if [[ -z "$report_b64" ]]; then
+            echo "Storage inventory returned an empty report." >&2
+            exit 1
+          fi
+          echo "::notice title=Production storage inventory (base64)::$report_b64"
