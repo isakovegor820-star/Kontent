@@ -46,5 +46,6 @@ fi
 echo "[deploy] migration identity: local PostgreSQL peer role"
 runuser -u postgres -- env -i \
   DATABASE_URL="$peer_database_url" \
+  PGUSER="postgres" \
   HOME="/var/lib/postgresql" \
   "$node_bin" scripts/migrate.mjs

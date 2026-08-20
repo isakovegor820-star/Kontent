@@ -23,6 +23,7 @@ describe("production deployment shell contract", () => {
     expect(migrationScript).toContain("AURORA_MIGRATION_DATABASE_URL");
     expect(migrationScript).toContain("AURORA_ALLOW_LOCAL_PEER_MIGRATIONS");
     expect(migrationScript).toContain("runuser -u postgres");
+    expect(migrationScript).toContain('PGUSER="postgres"');
     expect(migrationScript).toContain("production-local-migration-url.mjs");
     expect(migrationScript).toContain("no privileged production migration identity configured");
     expect(migrationScript).not.toContain('DATABASE_URL="$DATABASE_URL" npm run db:migrate');
