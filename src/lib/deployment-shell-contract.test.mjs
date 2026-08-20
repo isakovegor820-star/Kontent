@@ -57,6 +57,12 @@ describe("production deployment shell contract", () => {
     expect(workflow).toContain('[[ "$AURORA_SCHEMA_ROLLBACK_AUDIT" == "$expected" ]]');
   });
 
+  it("allows only the explicit degraded-mail release profile override", () => {
+    expect(workflow).toContain("vars.ALLOW_DEGRADED_MAIL == 'true'");
+    expect(workflow.match(/AURORA_DEPLOYMENT_SMOKE_PROFILE:/gu)).toHaveLength(2);
+    expect(workflow.match(/&& 'release' \|\| 'full'/gu)).toHaveLength(2);
+  });
+
   it("verifies CI, immutable actions, pinned host identity, and rollback compatibility", () => {
     expect(workflow).toContain("actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1");
     expect(workflow).toContain("actions/setup-node@820762786026740c76f36085b0efc47a31fe5020");

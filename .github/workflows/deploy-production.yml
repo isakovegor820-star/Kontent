@@ -58,7 +58,7 @@ jobs:
       - name: Verify current production readiness before deploy
         env:
           AURORA_DEPLOYMENT_SMOKE_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
-          AURORA_DEPLOYMENT_SMOKE_PROFILE: full
+          AURORA_DEPLOYMENT_SMOKE_PROFILE: ${{ vars.ALLOW_DEGRADED_MAIL == 'true' && 'release' || 'full' }}
           AURORA_READINESS_TOKEN: ${{ secrets.AURORA_READINESS_TOKEN }}
         run: npm run test:deployment-smoke
 
@@ -134,7 +134,7 @@ jobs:
       - name: Verify production deployment
         env:
           AURORA_DEPLOYMENT_SMOKE_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
-          AURORA_DEPLOYMENT_SMOKE_PROFILE: full
+          AURORA_DEPLOYMENT_SMOKE_PROFILE: ${{ vars.ALLOW_DEGRADED_MAIL == 'true' && 'release' || 'full' }}
           AURORA_READINESS_TOKEN: ${{ secrets.AURORA_READINESS_TOKEN }}
           PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
           PRODUCTION_SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
@@ -143,7 +143,7 @@ jobs:
           if npm run test:deployment-smoke; then
             exit 0
           fi
-          echo "full smoke failed; initiating schema-boundary-verified rollback" >&2
+          echo "release smoke failed; initiating schema-boundary-verified rollback" >&2
           ssh -i ~/.ssh/deploy_key \
             -o StrictHostKeyChecking=yes \
             -o IdentitiesOnly=yes \

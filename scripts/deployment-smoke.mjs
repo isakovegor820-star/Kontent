@@ -17,6 +17,9 @@ const FULL_CAPABILITIES = [
   "trackingReady",
   "passwordRecoveryReady",
 ];
+const RELEASE_CAPABILITIES = FULL_CAPABILITIES.filter(
+  (capability) => capability !== "mailDeliveryReady" && capability !== "passwordRecoveryReady",
+);
 const WEB_CAPABILITIES = ["schemaReady", "webReady", "uploadReady"];
 
 export class DeploymentSmokeError extends Error {
@@ -77,7 +80,7 @@ function configuration(env) {
     throw new DeploymentSmokeError("deployment_smoke_target_not_public_origin");
   }
   const profile = String(env.AURORA_DEPLOYMENT_SMOKE_PROFILE || "full").trim();
-  if (profile !== "web" && profile !== "full") {
+  if (profile !== "web" && profile !== "release" && profile !== "full") {
     throw new DeploymentSmokeError("invalid_deployment_smoke_profile");
   }
   const readinessToken = String(env.AURORA_READINESS_TOKEN || "");
@@ -176,7 +179,11 @@ function validateHealth(result) {
 
 function validateReadiness(result, profile, now) {
   const readiness = parseJsonResponse(result, "readiness");
-  const required = profile === "full" ? FULL_CAPABILITIES : WEB_CAPABILITIES;
+  const required = profile === "full"
+    ? FULL_CAPABILITIES
+    : profile === "release"
+      ? RELEASE_CAPABILITIES
+      : WEB_CAPABILITIES;
   const failedCapabilities = required.filter((capability) => readiness?.[capability] !== true);
   if (failedCapabilities.length > 0) {
     throw new DeploymentSmokeError("deployment_smoke_readiness_failed", { failedCapabilities });

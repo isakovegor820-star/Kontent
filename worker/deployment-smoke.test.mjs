@@ -139,6 +139,43 @@ describe("deployment smoke", () => {
     })).resolves.toMatchObject({ profile: "web", readinessStatus: "degraded" });
   });
 
+  it("allows an explicit release smoke when only mail and password recovery are degraded", async () => {
+    await expect(runDeploymentSmoke({
+      env: {
+        AURORA_DEPLOYMENT_SMOKE_BASE_URL: "https://aurora.example",
+        AURORA_DEPLOYMENT_SMOKE_PROFILE: "release",
+        AURORA_READINESS_TOKEN: READINESS_TOKEN,
+      },
+      fetchImpl: successfulFetch(readyReport({
+        status: "degraded",
+        mailDeliveryReady: false,
+        passwordRecoveryReady: false,
+      })),
+      logger: { log: vi.fn() },
+      now: new Date("2026-08-17T12:01:00.000Z"),
+    })).resolves.toMatchObject({ profile: "release", readinessStatus: "degraded" });
+  });
+
+  it("keeps every non-mail production capability mandatory for release smoke", async () => {
+    await expect(runDeploymentSmoke({
+      env: {
+        AURORA_DEPLOYMENT_SMOKE_BASE_URL: "https://aurora.example",
+        AURORA_DEPLOYMENT_SMOKE_PROFILE: "release",
+        AURORA_READINESS_TOKEN: READINESS_TOKEN,
+      },
+      fetchImpl: successfulFetch(readyReport({
+        status: "degraded",
+        publicationReady: false,
+        mailDeliveryReady: false,
+        passwordRecoveryReady: false,
+      })),
+      now: new Date("2026-08-17T12:01:00.000Z"),
+    })).rejects.toMatchObject({
+      code: "deployment_smoke_readiness_failed",
+      details: { failedCapabilities: ["publicationReady"] },
+    });
+  });
+
   it("rejects stale readiness reports", async () => {
     await expect(runDeploymentSmoke({
       env: {
