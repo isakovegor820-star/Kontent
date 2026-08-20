@@ -27,6 +27,8 @@ export class DraftRequestError extends Error {
   }
 }
 
+const DRAFT_CLIENT_KEY_PATTERN = /^draft_[A-Za-z0-9-]{16,}$/u;
+
 /**
  * Синхронный single-flight для React ref. Нужен поверх disabled-состояния: два click
  * события до следующего рендера всё равно обязаны разделить один сетевой запрос.
@@ -115,6 +117,13 @@ export function createDraftClientKey(): string {
   globalThis.crypto?.getRandomValues?.(bytes);
   const random = Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
   return `draft_${random || `${Date.now()}_${Math.random().toString(36).slice(2)}`}`;
+}
+
+/** Server-owned draft keys may use a different namespace and must not scope browser outbox data. */
+export function ensureDraftClientKey(candidate: unknown): string {
+  return typeof candidate === "string" && DRAFT_CLIENT_KEY_PATTERN.test(candidate)
+    ? candidate
+    : createDraftClientKey();
 }
 
 const LEGACY_DEMO_POST_ID = /^post_(?:past_\d+|fut_\d+|failed|q1|q2)$/;

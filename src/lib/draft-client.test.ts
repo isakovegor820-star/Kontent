@@ -10,6 +10,7 @@ import {
   DRAFT_AUTOSAVE_DELAY_MS,
   draftMatchesWrite,
   DraftRequestError,
+  ensureDraftClientKey,
   isRecoverableLegacyDraft,
   isUnownedLegacyDraftCandidate,
   reusableAcknowledgedDraft,
@@ -50,6 +51,16 @@ describe("draft client coordination", () => {
 
   it("creates an API-safe idempotency key", () => {
     expect(createDraftClientKey()).toMatch(/^draft_[A-Za-z0-9-]{16,}$/);
+  });
+
+  it("keeps server-owned monthly keys out of the browser draft outbox", () => {
+    const local = ensureDraftClientKey("monthly-item-draft:17:23");
+
+    expect(local).toMatch(/^draft_[A-Za-z0-9-]{16,}$/);
+    expect(local).not.toBe("monthly-item-draft:17:23");
+    expect(ensureDraftClientKey("draft_existing-local-1234567890")).toBe(
+      "draft_existing-local-1234567890",
+    );
   });
 
   it("POSTs full draft context in JSON and keeps it out of the request URL", async () => {

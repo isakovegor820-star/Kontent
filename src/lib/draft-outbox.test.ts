@@ -68,6 +68,24 @@ describe("durable draft outbox", () => {
     expect(listPendingDrafts(7, storage)).toEqual([]);
   });
 
+  it("does not turn a server ACK into a false failure for a server-owned client key", () => {
+    const storage = memoryStorage();
+
+    expect(acknowledgePendingDraft(7, "monthly-item-draft:17:23", 9, storage)).toBe(false);
+  });
+
+  it("does not turn a server ACK into a false failure when outbox cleanup is blocked", () => {
+    const storage = memoryStorage();
+    persistPendingDraft(revision(), storage);
+    const blockedStorage: DraftOutboxStorage = {
+      ...storage,
+      removeItem: () => { throw new DOMException("blocked", "SecurityError"); },
+    };
+
+    expect(acknowledgePendingDraft(7, "draft_1234567890abcdef", 9, blockedStorage)).toBe(false);
+    expect(listPendingDrafts(7, storage)).toHaveLength(1);
+  });
+
   it("does not throw when browser storage refuses cleanup after a server success", () => {
     const storage = memoryStorage();
     persistPendingDraft(revision(), storage);

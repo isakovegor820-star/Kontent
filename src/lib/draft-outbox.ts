@@ -132,11 +132,17 @@ export function acknowledgePendingDraft(
 ): boolean {
   const target = storageOrNull(storage);
   if (!target) return false;
-  const key = pendingDraftStorageKey(userId, clientKey);
-  const current = parseRecord(target.getItem(key), userId);
-  if (!current || current.revision !== revision) return false;
-  target.removeItem(key);
-  return true;
+  try {
+    const key = pendingDraftStorageKey(userId, clientKey);
+    const current = parseRecord(target.getItem(key), userId);
+    if (!current || current.revision !== revision) return false;
+    target.removeItem(key);
+    return true;
+  } catch {
+    // The server ACK remains authoritative if private-mode storage refuses cleanup
+    // or an imported draft carries a server-owned idempotency namespace.
+    return false;
+  }
 }
 
 export function removePendingDraft(

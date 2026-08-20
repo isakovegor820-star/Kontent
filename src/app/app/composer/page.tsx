@@ -103,6 +103,7 @@ import {
   DRAFT_AUTOSAVE_DELAY_MS,
   draftMatchesWrite,
   DraftRequestError,
+  ensureDraftClientKey,
   getServerDraft,
   isRecoverableLegacyDraft,
   resolveAcknowledgedDraftRevision,
@@ -590,7 +591,7 @@ export default function ComposerPage() {
     setDraftRevision(initialRevision);
     setLastSavedRevision(0);
     setLastAttemptedRevision(0);
-    draftClientKeyRef.current = pending?.clientKey ?? draft?.client_key ?? null;
+    draftClientKeyRef.current = ensureDraftClientKey(pending?.clientKey ?? draft?.client_key);
     acknowledgedDraftRef.current = draft ?? null;
     hydratedUserIdRef.current = ownerUserId;
     const pendingTgIds = pending?.form.channelIds.filter((id) =>
@@ -1504,7 +1505,8 @@ export default function ComposerPage() {
           setGenerationResultId(null);
           acknowledgedDraftRef.current = draft;
           setEditingId(`draft-${draft.id}`);
-          draftClientKeyRef.current = draft.client_key;
+          // Browser recovery keeps its own safe namespace even for monthly/server-issued drafts.
+          draftClientKeyRef.current = clientKey;
           if (composerUserId != null) {
             // A newer local edit may already have replaced this record. Exact revision
             // matching prevents an older ACK from deleting that newer pending copy.
