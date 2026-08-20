@@ -9,6 +9,9 @@ import { SCHEMA_MANIFEST } from "../src/lib/schema-manifest.mjs";
 const LOCK_ID = 1_972_475_321;
 const STATEMENT_TIMEOUT_MS = 300_000;
 const LOCK_TIMEOUT_MS = 10_000;
+const SESSION_TOKEN_MIGRATION = "20260916_session_token_hashes.sql";
+const SESSION_TOKEN_COMPAT_MIGRATION = "20260920_session_token_expand_compat.sql";
+const ORIGINAL_SESSION_TOKEN_CHECKSUM = "30c7987f372e4259b23fdc2d8bbee7257009b92e85385828741807c3c6f814ec";
 export const REQUIRED_BASELINE_TABLES = Object.freeze([
   "users",
   "sessions",
@@ -31,6 +34,73 @@ export function migrationChecksum(sql) {
 }
 
 export { migrationBody };
+
+function manifestMigration(name) {
+  return SCHEMA_MANIFEST.migrations.find((migration) => migration.name === name);
+}
+
+function isAcceptedHistoricalAlias(entry, currentChecksum, recordedChecksum) {
+  return entry?.checksum === currentChecksum
+    && entry?.acceptedChecksums?.includes(recordedChecksum) === true;
+}
+
+/**
+ * The original session migration left a hashed `token` column in place. Accept that
+ * exact historical checksum only when its actual schema/data effect is proven. The
+ * later expand migration will add the dual-write `token_hash` compatibility column.
+ */
+export async function assertKnownSessionMigrationState(client, checksum, appliedAt) {
+  if (checksum !== ORIGINAL_SESSION_TOKEN_CHECKSUM) {
+    throw new Error(`${SESSION_TOKEN_MIGRATION}: unknown historical checksum`);
+  }
+  if (!appliedAt || !Number.isFinite(new Date(appliedAt).getTime())) {
+    throw new Error(`${SESSION_TOKEN_MIGRATION}: historical ledger applied_at is invalid`);
+  }
+  const columns = (await client.query(
+    `select column_name
+       from information_schema.columns
+      where table_schema = 'public' and table_name = 'sessions'
+        and column_name in ('token', 'token_hash')`,
+  )).rows.map((row) => String(row.column_name));
+  if (!columns.includes("token")) {
+    throw new Error(`${SESSION_TOKEN_MIGRATION}: historical checksum does not match sessions schema`);
+  }
+  const tokenState = (await client.query(
+    `select count(*) filter (
+              where token is null or token !~ '^[a-f0-9]{64}$'
+            )::integer as invalid_hashes,
+            count(*) filter (
+              where created_at <= $1::timestamptz and expires_at > $1::timestamptz
+            )::integer as non_invalidated_legacy
+       from sessions`,
+    [appliedAt],
+  )).rows[0];
+  if (Number(tokenState?.invalid_hashes ?? 0) !== 0) {
+    throw new Error(`${SESSION_TOKEN_MIGRATION}: historical token rows are not hashed`);
+  }
+  if (Number(tokenState?.non_invalidated_legacy ?? 0) !== 0) {
+    throw new Error(`${SESSION_TOKEN_MIGRATION}: historical session rows were not invalidated`);
+  }
+  if (columns.includes("token_hash")) {
+    const inconsistent = Number((await client.query(
+      `select count(*)::integer as count from sessions
+        where token_hash is null or token_hash !~ '^[a-f0-9]{64}$' or token_hash <> token`,
+    )).rows[0]?.count ?? 0);
+    if (inconsistent !== 0) {
+      throw new Error(`${SESSION_TOKEN_MIGRATION}: reconciled token columns disagree`);
+    }
+  }
+  const constraint = (await client.query(
+    `select exists (
+       select 1 from pg_constraint
+        where conrelid = 'sessions'::regclass
+          and pg_get_constraintdef(oid) ~ '\\(token ~'
+     ) as present`,
+  )).rows[0]?.present;
+  if (constraint !== true) {
+    throw new Error(`${SESSION_TOKEN_MIGRATION}: historical token hash constraint missing`);
+  }
+}
 
 export class DatabaseNotBootstrappedError extends Error {
   constructor(missing) {
@@ -197,16 +267,104 @@ export async function migrate(options = {}) {
       await recordBootstrapMigrations(client, { migrations: inputMigrations });
     }
 
-    for (const migration of migrations) {
+    // Validate every already-recorded migration in this run before applying any pending
+    // DDL. An unknown checksum therefore blocks without partially advancing the schema.
+    const migrationByName = new Map(migrations.map((migration) => [migration.name, migration]));
+    const recordedMigrations = await client.query(
+      "select name, checksum, applied_at from schema_migrations order by name",
+    );
+    const verifiedHistorical = new Set();
+    for (const recorded of recordedMigrations.rows) {
+      const migration = migrationByName.get(String(recorded.name));
+      if (!migration) continue;
+      const checksum = migrationChecksum(migration.sql);
+      if (String(recorded.checksum) === checksum) continue;
+      const manifestEntry = manifestMigration(migration.name);
+      if (!isAcceptedHistoricalAlias(manifestEntry, checksum, String(recorded.checksum))) {
+        throw new Error(`${migration.name}: checksum changed after application`);
+      }
+      if (migration.name !== SESSION_TOKEN_MIGRATION) {
+        throw new Error(`${migration.name}: checksum alias has no reconciliation policy`);
+      }
+      await assertKnownSessionMigrationState(client, String(recorded.checksum), recorded.applied_at);
+      verifiedHistorical.add(migration.name);
+      logger.log(`[migrate] verified historical ${migration.name}`);
+    }
+
+    const processed = new Set();
+    for (let migrationIndex = 0; migrationIndex < migrations.length; migrationIndex += 1) {
+      const migration = migrations[migrationIndex];
+      if (processed.has(migration.name)) continue;
       const checksum = migrationChecksum(migration.sql);
       const existing = (
-        await client.query("select checksum from schema_migrations where name = $1", [migration.name])
+        await client.query(
+          "select checksum, applied_at from schema_migrations where name = $1",
+          [migration.name],
+        )
       ).rows[0];
       if (existing) {
         if (existing.checksum !== checksum) {
-          throw new Error(`${migration.name}: checksum changed after application`);
+          const manifestEntry = manifestMigration(migration.name);
+          if (!isAcceptedHistoricalAlias(manifestEntry, checksum, existing.checksum)) {
+            throw new Error(`${migration.name}: checksum changed after application`);
+          }
+          if (migration.name !== SESSION_TOKEN_MIGRATION) {
+            throw new Error(`${migration.name}: checksum alias has no reconciliation policy`);
+          }
+          if (!verifiedHistorical.has(migration.name)) {
+            await assertKnownSessionMigrationState(client, existing.checksum, existing.applied_at);
+            logger.log(`[migrate] verified historical ${migration.name}`);
+          }
         }
         continue;
+      }
+
+      // A database predating the token hash migration must never expose the intermediate
+      // rename-only schema to the still-running previous release. Commit the historical
+      // migration and its expand-compatible boundary atomically.
+      if (migration.name === SESSION_TOKEN_MIGRATION) {
+        const compatIndex = migrations.findIndex(
+          (candidate, index) => index >= migrationIndex && candidate.name === SESSION_TOKEN_COMPAT_MIGRATION,
+        );
+        if (compatIndex < 0) {
+          throw new Error(`${SESSION_TOKEN_MIGRATION}: compatibility boundary migration missing`);
+        }
+        const boundary = migrations.slice(migrationIndex, compatIndex + 1);
+        const pending = [];
+        for (const candidate of boundary) {
+          const candidateChecksum = migrationChecksum(candidate.sql);
+          const recorded = (
+            await client.query("select checksum from schema_migrations where name = $1", [candidate.name])
+          ).rows[0];
+          if (!recorded) {
+            pending.push({ ...candidate, checksum: candidateChecksum });
+            continue;
+          }
+          if (recorded.checksum !== candidateChecksum) {
+            throw new Error(`${candidate.name}: checksum changed after application`);
+          }
+          processed.add(candidate.name);
+        }
+        if (pending.length !== boundary.length) {
+          throw new Error(`${SESSION_TOKEN_MIGRATION}: incomplete compatibility boundary ledger`);
+        }
+        await client.query("begin");
+        try {
+          for (const candidate of pending) {
+            await client.query(candidate.body);
+            await client.query(
+              "insert into schema_migrations (name, checksum) values ($1, $2)",
+              [candidate.name, candidate.checksum],
+            );
+          }
+          await client.query("commit");
+          for (const candidate of pending) logger.log(`[migrate] applied ${candidate.name}`);
+          for (const candidate of boundary) processed.add(candidate.name);
+          continue;
+        } catch (error) {
+          await client.query("rollback").catch(() => {});
+          throw error;
+        }
       }
 
       await client.query("begin");

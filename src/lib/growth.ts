@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 
 import { getPool } from "./db";
 import { ProjectAccessError, requireSelectedProjectPermission } from "./project-permissions";
@@ -379,7 +379,7 @@ function mapMove(row: {
 }
 
 async function loadSignals(
-  pool: Pool,
+  pool: Pick<Pool, "query">,
   input: { projectId: number; channelId: number },
 ): Promise<GrowthSignals> {
   const own = (
@@ -480,12 +480,9 @@ async function loadSignals(
          join site_analysis_answers a
            on a.analysis_id = j.id and a.run_revision = j.run_revision
         where j.status = 'ready'
+          and j.project_id = $1
           and a.question_id = 'offer.catalog'
           and a.status in ('answered', 'hypothesis')
-          and j.user_id in (
-            select user_id from project_members
-             where project_id = $1 and status = 'active'
-          )
         order by j.completed_at desc nulls last, j.id desc
         limit 1`,
       [input.projectId],
@@ -538,7 +535,7 @@ async function loadSignals(
 }
 
 async function loadWeekMoves(
-  pool: Pool,
+  pool: Pick<Pool, "query">,
   channelId: number,
   weekStart: string,
 ): Promise<GrowthMoveRecord[]> {
@@ -555,12 +552,16 @@ async function loadWeekMoves(
   return rows.map(mapMove);
 }
 
-export async function loadGrowthBoard(input: {
+async function growthBoard(input: {
   actorUserId: number;
   channelId?: number | null;
-}): Promise<GrowthBoard> {
+}, ensure: boolean): Promise<GrowthBoard> {
   const pool = getPool();
-  const membership = await requireSelectedProjectPermission(pool, input.actorUserId, "project.read");
+  const membership = await requireSelectedProjectPermission(
+    pool,
+    input.actorUserId,
+    ensure ? "content.create" : "project.read",
+  );
   const channelId = await resolveChannel(
     { actorUserId: input.actorUserId, projectId: membership.projectId },
     input.channelId ?? null,
@@ -580,60 +581,85 @@ export async function loadGrowthBoard(input: {
     };
   }
 
-  const existing = await loadWeekMoves(pool, channelId, weekStart);
   const signals = await loadSignals(pool, {
     projectId: membership.projectId,
     channelId,
   });
   const { diagnosis, gaps } = buildGrowthDiagnosis(signals);
 
-  let moves = existing;
-  if (existing.length === 0) {
-    const drafts = buildGrowthMoves(signals);
-    for (const draft of drafts) {
-      const inserted = await pool.query<{ id: string }>(
-        `insert into growth_moves (
-           project_id, channel_id, week_start, kind, status, confidence,
-           title, reason, prompt, action_href, source_kind, source_id,
-           source_label, fingerprint, missing_slots
-         ) values (
-           $1, $2, $3::date, $4, 'open', $5,
-           $6, $7, $8, '/app/growth', $9, $10,
-           $11, $12, $13
-         )
-         on conflict (channel_id, week_start, fingerprint) do nothing
-         returning id`,
-        [
-          membership.projectId,
-          channelId,
-          weekStart,
-          draft.kind,
-          draft.confidence,
-          clip(draft.title, 200),
-          clip(draft.reason, 500),
-          clip(draft.prompt, 2000),
-          draft.sourceKind,
-          draft.sourceId,
-          draft.sourceLabel,
-          draft.fingerprint,
-          draft.missingSlots,
-        ],
-      );
-      const id = inserted.rows[0] ? Number(inserted.rows[0].id) : null;
-      if (id) {
-        const href = growthActionHref({
-          id,
-          kind: draft.kind,
-          channelId,
-          sourceId: draft.sourceId,
-        });
-        await pool.query(
-          `update growth_moves set action_href = $2, updated_at = now() where id = $1`,
-          [id, href],
-        );
-      }
-    }
+  let moves: GrowthMoveRecord[];
+  if (!ensure) {
     moves = await loadWeekMoves(pool, channelId, weekStart);
+  } else {
+    let client: PoolClient | undefined;
+    try {
+      client = await pool.connect();
+      await client.query("begin");
+      await client.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [
+        `growth:${channelId}:${weekStart}`,
+      ]);
+      const existing = await loadWeekMoves(client, channelId, weekStart);
+      const incompleteLegacySet = existing.some((move) => move.actionHref === "/app/growth");
+      if (existing.length === 0 || incompleteLegacySet) {
+        const drafts = buildGrowthMoves(signals);
+        for (const draft of drafts) {
+          await client.query(
+            `insert into growth_moves (
+               project_id, channel_id, week_start, kind, status, confidence,
+               title, reason, prompt, action_href, source_kind, source_id,
+               source_label, fingerprint, missing_slots
+             ) values (
+               $1, $2, $3::date, $4, 'open', $5,
+               $6, $7, $8, '/app/growth', $9, $10,
+               $11, $12, $13
+             )
+             on conflict (channel_id, week_start, fingerprint) do nothing`,
+            [
+              membership.projectId,
+              channelId,
+              weekStart,
+              draft.kind,
+              draft.confidence,
+              clip(draft.title, 200),
+              clip(draft.reason, 500),
+              clip(draft.prompt, 2000),
+              draft.sourceKind,
+              draft.sourceId,
+              draft.sourceLabel,
+              draft.fingerprint,
+              draft.missingSlots,
+            ],
+          );
+        }
+      }
+      moves = await loadWeekMoves(client, channelId, weekStart);
+      let actionHrefUpdated = false;
+      for (const move of moves) {
+        const href = growthActionHref({
+          id: move.id,
+          kind: move.kind,
+          channelId,
+          sourceId: move.sourceId,
+        });
+        if (move.actionHref === href) continue;
+        await client.query(
+          `update growth_moves
+              set action_href = $2, updated_at = now()
+            where id = $1 and project_id = $3 and channel_id = $4`,
+          [move.id, href, membership.projectId, channelId],
+        );
+        actionHrefUpdated = true;
+      }
+      if (actionHrefUpdated) {
+        moves = await loadWeekMoves(client, channelId, weekStart);
+      }
+      await client.query("commit");
+    } catch (error) {
+      if (client) await client.query("rollback").catch(() => undefined);
+      throw error;
+    } finally {
+      client?.release();
+    }
   }
 
   const previousMoves = await loadWeekMoves(pool, channelId, previousWeekStart);
@@ -647,6 +673,20 @@ export async function loadGrowthBoard(input: {
     previousMoves,
     gaps,
   };
+}
+
+export async function loadGrowthBoard(input: {
+  actorUserId: number;
+  channelId?: number | null;
+}): Promise<GrowthBoard> {
+  return growthBoard(input, false);
+}
+
+export async function ensureGrowthBoard(input: {
+  actorUserId: number;
+  channelId?: number | null;
+}): Promise<GrowthBoard> {
+  return growthBoard(input, true);
 }
 
 export async function getGrowthMove(input: {

@@ -60,14 +60,14 @@ const item = (overrides = {}) => ({
 });
 
 const reviewQuality = {
-  score: 84,
+  score: 91,
   threshold: 85,
-  passed: false,
-  blockers: ["Смысл фактических утверждений не проверен. Нужна ручная проверка перед публикацией."],
+  passed: true,
+  blockers: [],
   violations: [{
     code: "semantic_review_required",
     message: "Смысл фактических утверждений не проверен. Нужна ручная проверка перед публикацией.",
-    blocker: true,
+    blocker: false,
     penalty: 0,
   }],
   semantic: {
@@ -132,6 +132,7 @@ describe("Autopilot approval policy", () => {
       quality: reviewQuality,
       qualityBlocked: true,
       reviewRequired: true,
+      reviewState: "semantic_only_review",
     });
     expect(isAutopilotHumanReviewItem(reviewItem)).toBe(true);
     expect(evaluateAutopilotItem(reviewItem, NOW).eligible).toBe(false);
@@ -147,20 +148,37 @@ describe("Autopilot approval policy", () => {
       userId: 3,
       attestedAt: "2026-08-01T12:01:00.000Z",
     });
-    expect(attested.qualityBlocked).toBe(false);
+    expect(attested.quality).toEqual(reviewQuality);
+    expect(attested.qualityBlocked).toBe(true);
+    expect(attested.reviewRequired).toBe(true);
+    expect(attested.humanAttestation).toMatchObject({
+      kind: "human_review",
+      reviewState: "semantic_only_review",
+      userId: 3,
+    });
     expect(evaluateAutopilotItem(attested, NOW).eligible).toBe(true);
   });
 
   it("counts review-only drafts as eligible only for a human preview", () => {
     const preview = buildAutopilotApprovalPreview({
-      items: [item({ quality: reviewQuality, qualityBlocked: true, reviewRequired: true })],
+      items: [item({
+        quality: reviewQuality,
+        qualityBlocked: true,
+        reviewRequired: true,
+        reviewState: "semantic_only_review",
+      })],
       nowMs: NOW,
       channel: { id: 7, title: "Канал" },
       planId: 9,
       actor: "human",
     });
     const systemPreview = buildAutopilotApprovalPreview({
-      items: [item({ quality: reviewQuality, qualityBlocked: true, reviewRequired: true })],
+      items: [item({
+        quality: reviewQuality,
+        qualityBlocked: true,
+        reviewRequired: true,
+        reviewState: "semantic_only_review",
+      })],
       nowMs: NOW,
       channel: { id: 7, title: "Канал" },
       planId: 9,
@@ -221,7 +239,12 @@ describe("Autopilot approval policy", () => {
   it("schedules a review-only draft only after a human attestation", async () => {
     const calls = [];
     const result = await executeAutopilotApproval({
-      items: [item({ quality: reviewQuality, qualityBlocked: true, reviewRequired: true })],
+      items: [item({
+        quality: reviewQuality,
+        qualityBlocked: true,
+        reviewRequired: true,
+        reviewState: "semantic_only_review",
+      })],
       nowMs: NOW,
       attestor: { userId: 3, attestedAt: "2026-08-01T12:01:00.000Z" },
       schedule: async (entry) => {
@@ -232,6 +255,126 @@ describe("Autopilot approval policy", () => {
     expect(calls).toEqual([0]);
     expect(result.scheduled).toBe(1);
     expect(result.items[0]).toMatchObject({ status: "approved", postId: 77, qualityOrigin: "human_attested" });
+  });
+
+  it.each([
+    ["deterministic score below threshold", item({
+      quality: { ...reviewQuality, score: 84, passed: false },
+      qualityBlocked: true,
+      reviewRequired: true,
+      reviewState: "semantic_only_review",
+    })],
+    ["too_long", item({
+      quality: {
+        ...reviewQuality,
+        passed: false,
+        blockers: ["Нужно максимум 1800 знаков"],
+        violations: [
+          ...reviewQuality.violations,
+          { code: "too_long", message: "Нужно максимум 1800 знаков", blocker: true, penalty: 25 },
+        ],
+      },
+      qualityBlocked: true,
+      reviewRequired: true,
+      reviewState: "semantic_only_review",
+    })],
+    ["invented facts", item({
+      quality: reviewQuality,
+      invented: ["Выдуманный факт"],
+      qualityBlocked: true,
+      reviewRequired: true,
+      reviewState: "semantic_only_review",
+    })],
+    ["hard deterministic violation", item({
+      quality: {
+        ...reviewQuality,
+        passed: false,
+        blockers: ["Запрещённое обещание"],
+        violations: [
+          ...reviewQuality.violations,
+          { code: "hard_violation", message: "Запрещённое обещание", blocker: true, penalty: 50 },
+        ],
+      },
+      qualityBlocked: true,
+      reviewRequired: true,
+      reviewState: "semantic_only_review",
+    })],
+    ["semantic blocked", item({
+      quality: {
+        ...reviewQuality,
+        passed: false,
+        blockers: ["Факт не подтверждён"],
+        semantic: {
+          ...reviewQuality.semantic,
+          status: "blocked",
+          requiresReview: false,
+          provenance: { ...reviewQuality.semantic.provenance, provider: "qa-nli-v1", terminalVerdict: "blocked" },
+        },
+      },
+      qualityBlocked: true,
+      reviewRequired: true,
+      reviewState: "semantic_only_review",
+    })],
+    ["semantic passed with stale reviewRequired", item({
+      quality: passedQuality,
+      qualityBlocked: true,
+      reviewRequired: true,
+      reviewState: "semantic_only_review",
+    })],
+    ["corrupted persisted JSON", item({
+      quality: { ...reviewQuality, semantic: "corrupted" },
+      qualityBlocked: true,
+      reviewRequired: true,
+      reviewState: "semantic_only_review",
+    })],
+    ["forged human attestation", item({
+      quality: reviewQuality,
+      qualityBlocked: true,
+      reviewRequired: true,
+      reviewState: "semantic_only_review",
+      humanAttestation: {
+        kind: "human_review",
+        reviewState: "semantic_only_review",
+        userId: 3,
+        attestedAt: "2026-08-01T12:01:00.000Z",
+      },
+    })],
+    ["legacy quality attestation", item({
+      quality: {
+        ...reviewQuality,
+        metadata: {
+          ...reviewQuality.metadata,
+          provenance: {
+            ...reviewQuality.metadata.provenance,
+            humanAttestation: {
+              kind: "human_review",
+              userId: 3,
+              attestedAt: "2026-08-01T12:01:00.000Z",
+            },
+          },
+        },
+      },
+      qualityBlocked: true,
+      reviewRequired: true,
+      reviewState: "semantic_only_review",
+    })],
+  ])("never schedules %s through a human attestation", async (_label, unsafeItem) => {
+    let calls = 0;
+    const result = await executeAutopilotApproval({
+      items: [unsafeItem],
+      nowMs: NOW,
+      attestor: { userId: 3, attestedAt: "2026-08-01T12:01:00.000Z" },
+      schedule: async () => {
+        calls += 1;
+        return 77;
+      },
+    });
+    expect(calls).toBe(0);
+    expect(result.scheduled).toBe(0);
+    expect(result.items[0].qualityBlocked).toBe(true);
+    expect(result.items[0].approvalBlockers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: expect.stringMatching(/^quality_|semantic_review_required$/u) }),
+    ]));
   });
 
   it("creates no posts for expired items", async () => {

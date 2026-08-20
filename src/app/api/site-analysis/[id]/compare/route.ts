@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 
 import { getPool } from "@/lib/db";
+import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/project-permissions";
 import { getSessionUser } from "@/lib/session";
 
 export const runtime = "nodejs";
@@ -33,9 +34,10 @@ export async function GET(req: NextRequest, context: Context) {
   if (!Number.isSafeInteger(id) || id <= 0) return NextResponse.json({ error: "bad_id", requestId }, { status: 400, headers: { "x-request-id": requestId } });
   try {
     const pool = getPool();
+    const membership = await requireSelectedProjectPermission(pool, user.id, "project.read");
     const owned = await pool.query<{ run_revision: string | number; request_id: string }>(
-      `select run_revision, request_id from site_analysis_jobs where id = $1 and user_id = $2`,
-      [id, user.id],
+      `select run_revision, request_id from site_analysis_jobs where id = $1 and project_id = $2`,
+      [id, membership.projectId],
     );
     const currentRevision = Number(owned.rows[0]?.run_revision || 0);
     if (!currentRevision) return NextResponse.json({ error: "not_found", requestId }, { status: 404, headers: { "x-request-id": requestId } });
@@ -67,6 +69,9 @@ export async function GET(req: NextRequest, context: Context) {
       comparison: { currentRevision, previousRevision, new: added, changed, disappeared, unchanged },
     }, { headers: { "x-request-id": owned.rows[0].request_id, "cache-control": "no-store" } });
   } catch (error) {
+    if (error instanceof ProjectAccessError) {
+      return NextResponse.json({ error: "access_denied", requestId }, { status: 403, headers: { "x-request-id": requestId } });
+    }
     console.error("[/api/site-analysis/:id/compare] GET", { requestId, analysisId: id, errorName: error instanceof Error ? error.name : "Error" });
     return NextResponse.json({ error: "unavailable", requestId }, { status: 503, headers: { "x-request-id": requestId } });
   }

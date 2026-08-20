@@ -104,10 +104,17 @@ security headers и привязку всех framework scripts/styles к respon
 credentials/query/hash и ограничивает размер ответов. В GitHub Actions тот же gate
 запускается вручную workflow `Production deployment smoke` и автоматически после
 workflow `Deploy production`. Защищаемое environment `production` должно содержать
-variable `PRODUCTION_BASE_URL` и secrets `AURORA_READINESS_TOKEN`,
-`PRODUCTION_SSH_HOST`, `PRODUCTION_SSH_USER`, `PRODUCTION_SSH_KEY`.
+variables `PRODUCTION_BASE_URL`, `REQUIRED_CI_CHECKS` и secrets
+`AURORA_READINESS_TOKEN`, `PRODUCTION_SSH_HOST`, `PRODUCTION_SSH_USER`,
+`PRODUCTION_SSH_KEY`, `PRODUCTION_SSH_KNOWN_HOSTS`,
+`PRODUCTION_SSH_HOST_FINGERPRINT`. `REQUIRED_CI_CHECKS` — разделённый запятыми список
+обязательных check-run names. При изменении migration manifest rollback разрешается только
+после отдельного schema compatibility audit: защищённая variable `SCHEMA_ROLLBACK_AUDIT`
+должна содержать точную пару `<previous-40-char-sha>:<target-40-char-sha>`.
 Обычный релиз — `gh workflow run "Deploy production" --ref main`; агентам не
 нужен SSH.
+Полный порядок ledger audit, staging rehearsal, go/no-go и rollback описан в
+[`docs/production-readiness-plan-2026-08-20.md`](docs/production-readiness-plan-2026-08-20.md).
 
 Live Telegram smoke запускается отдельно и никогда не использует обычные
 `TG_BOT_TOKEN`/`TG_CHAT_ID`. Для него нужны выделенные sandbox-бот и чат:
@@ -242,10 +249,11 @@ not stop draft/web work, but the response remains `degraded` and
 `passwordRecoveryReady=false`; production must not claim password recovery is available until
 `APP_URL`, a delivery key and a sender are configured.
 
-Отчёт доступен только прямому loopback probe, глобальному администратору или с
-`Authorization: Bearer $AURORA_READINESS_TOKEN`; любой другой внешний запрос получает 401
-до запуска dependency probes. Снаружи без авторизации открыт только `/api/health`.
-Post-deploy smoke использует тот же operator token.
+Отчёт доступен только подтверждённой глобальной admin session или с
+`Authorization: Bearer $AURORA_READINESS_TOKEN`; hostname, loopback-адрес и forwarded
+headers не дают авторизацию. Любой другой запрос получает 401 до запуска dependency
+probes. Без авторизации открыт только минимальный `/api/health`. Локальный и post-deploy
+monitoring используют тот же operator token.
 
 Readiness также проверяет, что каждый сохранённый `v1` token envelope ссылается на key ID,
 доступный в текущем write/read keyring. Неизвестный ID блокирует publication readiness до

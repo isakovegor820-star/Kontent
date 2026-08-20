@@ -26,6 +26,18 @@ try {
     throw new Error("aurora_migration_test must be an empty disposable database");
   }
   const fixture = await readFile(resolve("db/fixtures/legacy-migration.sql"), "utf8");
+  const originalSessionMigration = await readFile(
+    resolve("db/fixtures/20260916_session_token_hashes_original.sql"),
+    "utf8",
+  );
+  const currentSessionMigration = await readFile(
+    resolve("db/migrations/20260916_session_token_hashes.sql"),
+    "utf8",
+  );
+  const productionLedgerAudit = await readFile(
+    resolve("scripts/production-migration-ledger-audit.sql"),
+    "utf8",
+  );
   const freshSchema = await readFile(resolve("db/schema.sql"), "utf8");
   const migrationFiles = (await readdir(resolve("db/migrations")))
     .filter((name) => name.endsWith(".sql"))
@@ -62,11 +74,17 @@ try {
        (select count(*)::int from ai_usage where status = 'committed') as usage_preserved,
        (select count(*)::int from content_brief where source = 'quiz') as quiz_briefs,
        (select count(*)::int from sessions
-         where token_hash = encode(digest('live-legacy-cookie', 'sha256'), 'hex')
-           and expires_at <= now()) as invalidated_hashed_sessions,
+         where token = encode(digest('live-legacy-cookie', 'sha256'), 'hex')
+           and token_hash = token
+           and expires_at <= now()) as invalidated_dual_sessions,
        (select count(*)::int from information_schema.columns
-         where table_schema = 'public' and table_name = 'sessions' and column_name = 'token')
-         as plaintext_session_columns,
+         where table_schema = 'public' and table_name = 'sessions'
+           and column_name in ('token', 'token_hash') and is_nullable = 'NO')
+         as required_session_columns,
+       (select count(*)::int from sessions
+         where token <> token_hash
+           or token !~ '^[a-f0-9]{64}$'
+           or token_hash !~ '^[a-f0-9]{64}$') as invalid_session_rows,
        (select count(*)::int from information_schema.columns
          where table_schema = 'public' and table_name = 'competitor_suggestions'
            and column_name in ('channel_id','description','last_post_at','posts_per_week','on_topic'))
@@ -81,8 +99,9 @@ try {
     || Number(summary.rss_labeled) !== 1
     || Number(summary.usage_preserved) !== 1
     || Number(summary.quiz_briefs) !== 1
-    || Number(summary.invalidated_hashed_sessions) !== 1
-    || Number(summary.plaintext_session_columns) !== 0
+    || Number(summary.invalidated_dual_sessions) !== 1
+    || Number(summary.required_session_columns) !== 2
+    || Number(summary.invalid_session_rows) !== 0
     || Number(summary.suggestion_columns) !== 5
     || byId.get(101)?.external_message_id !== "77"
     || byId.get(102)?.external_message_id !== null
@@ -90,6 +109,143 @@ try {
     || byId.get(103)?.external_message_id !== "77"
   ) {
     throw new Error(`migration integration assertions failed: ${JSON.stringify({ posts: posts.rows, summary })}`);
+  }
+
+  const auditQuery = productionLedgerAudit.match(/\n(with relevant_ledger[\s\S]+?)\n\ncommit;/u)?.[1];
+  if (!auditQuery) throw new Error("production ledger audit query could not be extracted");
+  const auditClient = await pool.connect();
+  let ledgerEvidence;
+  try {
+    await auditClient.query("begin transaction isolation level repeatable read read only");
+    const result = await auditClient.query(auditQuery);
+    ledgerEvidence = JSON.parse(String(result.rows[0]?.jsonb_build_object || "null"));
+    await auditClient.query("commit");
+  } catch (error) {
+    await auditClient.query("rollback").catch(() => {});
+    throw error;
+  } finally {
+    auditClient.release();
+  }
+  const auditedSessionMigration = ledgerEvidence?.ledger?.find(
+    (entry) => entry.name === "20260916_session_token_hashes.sql",
+  );
+  if (
+    ledgerEvidence?.transactionReadOnly !== "on"
+    || auditedSessionMigration?.checksum !== "434acde2cee9f9a90112e5ed6083c0438a64bc596e6ffdbf8a0ff4c173adfc2c"
+    || ledgerEvidence?.sessionColumns?.length !== 2
+    || Number(ledgerEvidence?.sessionRows?.non_hash_token_rows) !== 0
+    || Number(ledgerEvidence?.sessionRows?.non_hash_token_hash_rows) !== 0
+    || Number(ledgerEvidence?.sessionRows?.divergent_dual_rows) !== 0
+    || Number(ledgerEvidence?.sessionRows?.non_invalidated_pre_migration_rows) !== 0
+  ) {
+    throw new Error(`production ledger audit evidence is invalid: ${JSON.stringify(ledgerEvidence)}`);
+  }
+
+  const assertSessionCompatibility = async (expectedLedgerChecksum) => {
+    const state = (await pool.query(
+      `select
+         (select checksum from schema_migrations
+           where name = '20260916_session_token_hashes.sql') as checksum,
+         (select count(*)::int from information_schema.columns
+           where table_schema = 'public' and table_name = 'sessions'
+             and column_name in ('token','token_hash') and is_nullable = 'NO') as required_columns,
+         (select count(*)::int from sessions
+           where token is null or token_hash is null or token <> token_hash
+             or token !~ '^[a-f0-9]{64}$' or expires_at > now()) as invalid_rows`,
+    )).rows[0];
+    if (
+      state?.checksum !== expectedLedgerChecksum
+      || Number(state?.required_columns) !== 2
+      || Number(state?.invalid_rows) !== 0
+    ) throw new Error(`session history reconciliation failed: ${JSON.stringify(state)}`);
+
+    const currentHash = "a".repeat(64);
+    const legacyHash = "b".repeat(64);
+    await pool.query(
+      `insert into sessions (token_hash, user_id, expires_at, device, credential_epoch)
+       values ($1, 1, now() + interval '1 hour', 'current-release', 1)`,
+      [currentHash],
+    );
+    await pool.query(
+      `insert into sessions (token, user_id, expires_at, device, credential_epoch)
+       values ($1, 1, now() + interval '1 hour', 'previous-release', 1)`,
+      [legacyHash],
+    );
+    const writes = (await pool.query(
+      `select token, token_hash from sessions where token in ($1, $2) order by token`,
+      [currentHash, legacyHash],
+    )).rows;
+    if (writes.length !== 2 || writes.some((row) => row.token !== row.token_hash)) {
+      throw new Error(`session dual-write compatibility failed: ${JSON.stringify(writes)}`);
+    }
+  };
+
+  // Historical ledger state #1: the original checksum left the hashed column named
+  // `token`. It is accepted only after the runner proves the exact schema/data effect.
+  await resetPublic();
+  await pool.query(fixture);
+  await pool.query(originalSessionMigration);
+  await pool.query(`create table schema_migrations (
+    name text primary key, checksum char(64) not null, applied_at timestamptz not null default now()
+  )`);
+  await pool.query(
+    "insert into schema_migrations (name, checksum) values ($1, $2)",
+    ["20260916_session_token_hashes.sql", "30c7987f372e4259b23fdc2d8bbee7257009b92e85385828741807c3c6f814ec"],
+  );
+  await pool.query(
+    `insert into sessions (token, user_id, expires_at, device, created_at)
+     select $1, 1, applied_at + interval '1 hour', 'post-history-active',
+            applied_at + interval '1 second'
+       from schema_migrations
+      where name = '20260916_session_token_hashes.sql'`,
+    ["c".repeat(64)],
+  );
+  await migrate({ env, logger: { log() {} } });
+  await migrate({ env, logger: { log() {} } });
+  await assertSessionCompatibility("30c7987f372e4259b23fdc2d8bbee7257009b92e85385828741807c3c6f814ec");
+
+  // Historical ledger state #2: the renamed `token_hash` checksum converges to the
+  // same dual-column expand boundary and remains compatible with the previous release.
+  await resetPublic();
+  await pool.query(fixture);
+  await pool.query(currentSessionMigration);
+  await pool.query(`create table schema_migrations (
+    name text primary key, checksum char(64) not null, applied_at timestamptz not null default now()
+  )`);
+  await pool.query(
+    "insert into schema_migrations (name, checksum) values ($1, $2)",
+    ["20260916_session_token_hashes.sql", "434acde2cee9f9a90112e5ed6083c0438a64bc596e6ffdbf8a0ff4c173adfc2c"],
+  );
+  await migrate({ env, logger: { log() {} } });
+  await migrate({ env, logger: { log() {} } });
+  await assertSessionCompatibility("434acde2cee9f9a90112e5ed6083c0438a64bc596e6ffdbf8a0ff4c173adfc2c");
+
+  // Any third checksum is rejected before earlier pending migrations can advance.
+  await resetPublic();
+  await pool.query(fixture);
+  await pool.query(originalSessionMigration);
+  await pool.query(`create table schema_migrations (
+    name text primary key, checksum char(64) not null, applied_at timestamptz not null default now()
+  )`);
+  await pool.query(
+    "insert into schema_migrations (name, checksum) values ($1, $2)",
+    ["20260916_session_token_hashes.sql", "f".repeat(64)],
+  );
+  await migrate({ env, logger: { log() {} } })
+    .then(() => { throw new Error("unknown session checksum unexpectedly succeeded"); })
+    .catch((error) => {
+      if (!String(error?.message || "").includes("checksum changed after application")) throw error;
+    });
+  const unknownState = (await pool.query(
+    `select count(*)::int as ledger_rows,
+            exists (
+              select 1 from information_schema.columns
+               where table_schema = 'public' and table_name = 'sessions' and column_name = 'token_hash'
+            ) as token_hash_added
+       from schema_migrations`,
+  )).rows[0];
+  if (Number(unknownState?.ledger_rows) !== 1 || unknownState?.token_hash_added !== false) {
+    throw new Error(`unknown checksum was not fail-closed: ${JSON.stringify(unknownState)}`);
   }
 
   // A partially provisioned table keeps its row while the additive baseline fills the

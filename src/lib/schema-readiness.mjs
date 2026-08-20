@@ -17,7 +17,10 @@ export function evaluateSchemaSnapshot(snapshot, manifest = SCHEMA_MANIFEST) {
   for (const migration of manifest.migrations) {
     const checksum = applied.get(migration.name);
     if (checksum === undefined) reasons.push(`migration_missing:${migration.name}`);
-    else if (checksum !== migration.checksum) {
+    else if (
+      checksum !== migration.checksum
+      && !migration.acceptedChecksums?.includes(checksum)
+    ) {
       reasons.push(`migration_checksum_mismatch:${migration.name}`);
     }
   }

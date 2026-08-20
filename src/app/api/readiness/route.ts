@@ -12,7 +12,6 @@ import {
   probeUploadIngressConfiguration,
 } from "@/lib/readiness-probes";
 import { evaluateReadiness } from "@/lib/readiness";
-import { clientIp } from "@/lib/rate-limit";
 import { getSessionUser } from "@/lib/session";
 
 export const runtime = "nodejs";
@@ -27,23 +26,8 @@ function validOperatorBearer(req: NextRequest): boolean {
   );
 }
 
-function isLoopback(value: string): boolean {
-  const normalized = value.toLowerCase().replace(/^\[|\]$/gu, "");
-  return normalized === "localhost"
-    || normalized === "127.0.0.1"
-    || normalized === "::1"
-    || normalized === "::ffff:127.0.0.1";
-}
-
-function isLoopbackProbe(req: NextRequest): boolean {
-  if (!isLoopback(req.nextUrl.hostname)) return false;
-  const hasForwardedClient = req.headers.has("x-forwarded-for")
-    || (process.env.AURORA_TRUST_X_REAL_IP === "true" && req.headers.has("x-real-ip"));
-  return !hasForwardedClient || isLoopback(clientIp(req));
-}
-
 export async function GET(req: NextRequest) {
-  let authorized = validOperatorBearer(req) || isLoopbackProbe(req);
+  let authorized = validOperatorBearer(req);
   if (!authorized) {
     try {
       const user = await getSessionUser(req);

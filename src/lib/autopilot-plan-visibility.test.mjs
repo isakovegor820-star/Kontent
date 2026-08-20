@@ -57,7 +57,7 @@ describe("Autopilot plan visibility", () => {
     ])).toBe(false);
   });
 
-  it("keeps an explicit review-required AI draft visible but blocked", () => {
+  it("rebuilds a stale reviewRequired flag without explicit semantic-only server state", () => {
     expect(autopilotPlanNeedsQualityRebuild([
       planItem({
         aiReady: true,
@@ -67,6 +67,39 @@ describe("Autopilot plan visibility", () => {
         quality: {
           ...verifiedQuality,
           semantic: { status: "not_checked", requiresReview: true },
+        },
+      }),
+    ])).toBe(true);
+  });
+
+  it("keeps an exact semantic-provider-unavailable draft visible for human review", () => {
+    expect(autopilotPlanNeedsQualityRebuild([
+      planItem({
+        aiReady: true,
+        draft: "Черновик с пройденными deterministic-проверками",
+        qualityBlocked: true,
+        reviewRequired: true,
+        reviewState: "semantic_only_review",
+        quality: {
+          ...verifiedQuality,
+          violations: [{
+            code: "semantic_review_required",
+            message: "Semantic provider unavailable",
+            blocker: true,
+            penalty: 0,
+          }],
+          semantic: {
+            version: 1,
+            status: "not_checked",
+            passed: false,
+            requiresReview: true,
+            claimVerdicts: [{ verdict: "unknown", reasonCode: "semantic_provider_unavailable" }],
+            provenance: {
+              validatorVersion: "semantic-publication-v1",
+              provider: "unavailable",
+              terminalVerdict: "not_checked",
+            },
+          },
         },
       }),
     ])).toBe(false);

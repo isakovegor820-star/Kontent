@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 
 import { getPool } from "@/lib/db";
+import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/project-permissions";
 import { getSessionUser } from "@/lib/session";
 import { serializeSiteAnalysis, type SiteAnalysisRow } from "@/lib/site-analysis";
 
@@ -17,15 +18,17 @@ export async function GET(req: NextRequest, context: { params: Promise<{ id: str
     return NextResponse.json({ error: "bad_id", requestId }, { status: 400, headers: { "x-request-id": requestId } });
   }
   try {
-    const result = await getPool().query<SiteAnalysisRow>(
+    const pool = getPool();
+    const membership = await requireSelectedProjectPermission(pool, user.id, "project.read");
+    const result = await pool.query<SiteAnalysisRow>(
       `select id, request_id, target_url, confirmed_domain, status, stage, progress,
               progress_detail, limits, result, error_code, error_message, attempts,
               run_revision, queue_confirmed_at, created_at, updated_at, completed_at,
               prompt_version, question_catalog_version, snapshot_hash, coverage_mode,
               answered_count, question_count
          from site_analysis_jobs
-        where id = $1 and user_id = $2`,
-      [id, user.id],
+        where id = $1 and project_id = $2`,
+      [id, membership.projectId],
     );
     const row = result.rows[0];
     if (!row) return NextResponse.json({ error: "not_found", requestId }, { status: 404, headers: { "x-request-id": requestId } });
@@ -35,6 +38,9 @@ export async function GET(req: NextRequest, context: { params: Promise<{ id: str
       analysis: serializeSiteAnalysis(row, row.status === "ready"),
     }, { headers: { "x-request-id": row.request_id, "cache-control": "no-store" } });
   } catch (error) {
+    if (error instanceof ProjectAccessError) {
+      return NextResponse.json({ error: "access_denied", requestId }, { status: 403, headers: { "x-request-id": requestId } });
+    }
     console.error("[/api/site-analysis/:id] GET", { requestId, analysisId: id, errorName: error instanceof Error ? error.name : "Error" });
     return NextResponse.json({ error: "unavailable", requestId }, { status: 503, headers: { "x-request-id": requestId } });
   }

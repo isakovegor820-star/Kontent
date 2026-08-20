@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   getPool: vi.fn(),
   hasSiteAnalysisWorker: vi.fn(),
   enqueueSiteAnalysis: vi.fn(),
+  requireSelectedProjectPermission: vi.fn(),
 }));
 
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
@@ -14,6 +15,10 @@ vi.mock("@/lib/request-origin", () => ({
   hasTrustedMutationOrigin: mocks.hasTrustedMutationOrigin,
 }));
 vi.mock("@/lib/db", () => ({ getPool: mocks.getPool }));
+vi.mock("@/lib/project-permissions", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/project-permissions")>(),
+  requireSelectedProjectPermission: mocks.requireSelectedProjectPermission,
+}));
 vi.mock("@/lib/site-analysis-queue", () => ({
   hasSiteAnalysisWorker: mocks.hasSiteAnalysisWorker,
   enqueueSiteAnalysis: mocks.enqueueSiteAnalysis,
@@ -28,6 +33,7 @@ type JobStatus = "queued" | "crawling" | "analyzing" | "planning" | "saving" | "
 type DurableJob = {
   id: number;
   user_id: number;
+  project_id: number;
   request_id: string;
   idempotency_key: string;
   request_fingerprint: string;
@@ -58,6 +64,7 @@ type DurableJob = {
 };
 
 const USER_ID = 7;
+const PROJECT_ID = 31;
 const ANALYSIS_ID = 41;
 const RESERVATION_ID = 91;
 const SNAPSHOT_HASH = `sha256:${"a".repeat(64)}`;
@@ -111,6 +118,9 @@ describe("authenticated site-analysis terminal contract", () => {
     mocks.getSessionUser.mockResolvedValue({ id: USER_ID });
     mocks.hasTrustedMutationOrigin.mockReturnValue(true);
     mocks.hasSiteAnalysisWorker.mockResolvedValue(true);
+    mocks.requireSelectedProjectPermission.mockResolvedValue({
+      projectId: PROJECT_ID, userId: USER_ID, role: "owner", version: 1,
+    });
     mocks.enqueueSiteAnalysis.mockImplementation(async (job) => {
       queuedJob = structuredClone(job);
       return { jobId: `site-analysis-${job.analysisId}-r${job.runRevision}`, recovered: false };
@@ -157,27 +167,29 @@ describe("authenticated site-analysis terminal contract", () => {
     const pool = {
       query: vi.fn(async (sqlValue: string, values: unknown[] = []) => {
         const sql = String(sqlValue);
-        if (sql.includes("where user_id = $1 and idempotency_key = $2")) {
+        if (sql.includes("where project_id = $1 and user_id = $2 and idempotency_key in")) {
           const matches = durable
-            && durable.user_id === Number(values[0])
-            && durable.idempotency_key === String(values[1]);
+            && durable.project_id === Number(values[0])
+            && durable.user_id === Number(values[1])
+            && [String(values[2]), String(values[3])].includes(durable.idempotency_key);
           return { rows: matches ? [durable] : [], rowCount: matches ? 1 : 0 };
         }
         if (sql.includes("insert into site_analysis_jobs")) {
           const now = new Date("2026-08-05T12:00:00.000Z");
           durable = {
             id: ANALYSIS_ID,
-            user_id: Number(values[0]),
-            request_id: String(values[1]),
-            idempotency_key: String(values[2]),
-            request_fingerprint: String(values[3]),
-            target_url: String(values[4]),
-            confirmed_domain: String(values[5]),
+            project_id: Number(values[0]),
+            user_id: Number(values[1]),
+            request_id: String(values[2]),
+            idempotency_key: String(values[3]),
+            request_fingerprint: String(values[4]),
+            target_url: String(values[5]),
+            confirmed_domain: String(values[6]),
             status: "queued",
             stage: "queued",
             progress: 0,
             progress_detail: null,
-            limits: JSON.parse(String(values[6])),
+            limits: JSON.parse(String(values[7])),
             result: null,
             error_code: null,
             error_message: null,

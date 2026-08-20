@@ -16,8 +16,17 @@ export interface AutopilotApprovalItem {
   status: string;
   postId?: number;
   qualityBlocked?: boolean;
+  reviewRequired?: boolean;
+  reviewState?: "semantic_only_review";
   invented?: string[];
   quality?: QualityResult;
+  humanAttestation?: {
+    kind: "human_review";
+    reviewState: "semantic_only_review";
+    userId: number;
+    attestedAt: string;
+    qualityCheckedAt: string;
+  };
   approvalBlockers?: ApprovalBlocker[];
 }
 
@@ -59,7 +68,7 @@ export function autopilotPlanRevisionHash(input: {
 }): string;
 
 export function isAutopilotHumanReviewItem(item: unknown): boolean;
-export function reconcileAutopilotReviewQuality(quality: QualityResult): QualityResult;
+export function hasServerAutopilotHumanAttestation(item: unknown): boolean;
 export function attestAutopilotItemForHumanApproval<T extends AutopilotApprovalItem>(
   item: T,
   attestor?: { userId?: number; attestedAt?: string | number | Date },

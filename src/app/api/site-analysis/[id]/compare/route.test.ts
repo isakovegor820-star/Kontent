@@ -1,9 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
-const mocks = vi.hoisted(() => ({ getSessionUser: vi.fn(), query: vi.fn() }));
+const mocks = vi.hoisted(() => ({ getSessionUser: vi.fn(), query: vi.fn(), requireSelectedProjectPermission: vi.fn() }));
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
 vi.mock("@/lib/db", () => ({ getPool: () => ({ query: mocks.query }) }));
+vi.mock("@/lib/project-permissions", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/project-permissions")>(),
+  requireSelectedProjectPermission: mocks.requireSelectedProjectPermission,
+}));
 
 import { GET } from "./route";
 
@@ -11,6 +15,7 @@ describe("GET /api/site-analysis/:id/compare", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.getSessionUser.mockResolvedValue({ id: 7 });
+    mocks.requireSelectedProjectPermission.mockResolvedValue({ projectId: 31, userId: 7, role: "owner", version: 1 });
   });
 
   it("compares two stored run revisions without inventing missing answers", async () => {
@@ -26,6 +31,7 @@ describe("GET /api/site-analysis/:id/compare", () => {
       ] });
     const response = await GET(new NextRequest("http://localhost/api/site-analysis/41/compare"), { params: Promise.resolve({ id: "41" }) });
     expect(response.status).toBe(200);
+    expect(mocks.query.mock.calls[0]).toEqual([expect.stringContaining("project_id = $2"), [41, 31]]);
     expect(await response.json()).toMatchObject({ comparison: {
       currentRevision: 2,
       previousRevision: 1,

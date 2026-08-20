@@ -1448,15 +1448,34 @@ export async function ensureMonthlyCampaignItemDraft(input: {
     if (!channel.rows[0]) throw new MonthlyCampaignServiceError("invalid_channel");
 
     if (attachDraftId != null) {
+      if (item.draftId != null && item.draftId !== attachDraftId) {
+        throw new MonthlyCampaignServiceError("lineage_conflict");
+      }
       const owned = await client.query<{ id: number | string }>(
-        `select id from drafts where id = $1 and project_id = $2 for share`,
-        [attachDraftId, projectId],
+        `select draft.id
+           from drafts draft
+           join draft_destinations destination
+             on destination.draft_id = draft.id and destination.channel_id = $6
+           join generation_results result on result.id = draft.generation_result_id
+           join generation_operations operation
+             on operation.id = result.operation_id and operation.channel_id = destination.channel_id
+          where draft.id = $1 and draft.project_id = $2
+            and operation.monthly_campaign_id = $3
+            and operation.monthly_plan_id = $4
+            and operation.monthly_item_id = $5
+            and operation.status = 'acknowledged'
+          for share of draft, operation`,
+        [attachDraftId, projectId, campaign.id, Number(planRow.id), item.id, channelId],
       );
       if (!owned.rows[0]) throw new MonthlyCampaignServiceError("lineage_conflict");
+      if (item.draftId === attachDraftId) {
+        return { draftId: attachDraftId, created: false, item, campaign };
+      }
       const updated = await client.query<Record<string, unknown>>(
         `update monthly_campaign_items
             set draft_id = $4, updated_at = now()
           where id = $1 and plan_id = $2 and project_id = $3
+            and (draft_id is null or draft_id = $4)
           returning id, project_id, plan_id, item_key, scheduled_for, position, title, rubric,
                     practice, funnel_stage, state, approval_status, content_version,
                     approved_content_version, source_item_id, weekly_autopilot_plan_id,
@@ -1464,7 +1483,7 @@ export async function ensureMonthlyCampaignItemDraft(input: {
                     regeneration_version, regeneration_status, created_at, updated_at`,
         [item.id, planRow.id, projectId, attachDraftId],
       );
-      if (!updated.rows[0]) throw new MonthlyCampaignServiceError("not_found");
+      if (!updated.rows[0]) throw new MonthlyCampaignServiceError("lineage_conflict");
       return {
         draftId: attachDraftId,
         created: false,

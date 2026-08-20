@@ -5879,6 +5879,7 @@ async function buildAutopilotPlan(
       invented: invented.length ? invented : undefined,
       qualityBlocked: !aiDraft || !qualityResult.passed || needsHumanReview,
       reviewRequired: needsHumanReview,
+      reviewState: needsHumanReview ? "semantic_only_review" : undefined,
       reviewReason: needsHumanReview ? qualityFailureKind : undefined,
       quality: qualityResult,
       qualityOrigin: "automatic",
@@ -6023,6 +6024,7 @@ async function buildAutopilotPlan(
       item.invented = invented.length ? invented : undefined;
       item.qualityBlocked = qualityResult.semantic?.status === "not_checked";
       item.reviewRequired = qualityResult.semantic?.status === "not_checked";
+      item.reviewState = item.reviewRequired ? "semantic_only_review" : undefined;
       item.reviewReason = item.reviewRequired ? "semantic_unavailable" : undefined;
       item.quality = qualityResult;
       item.presentation = presentation.name;

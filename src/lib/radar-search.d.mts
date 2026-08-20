@@ -22,6 +22,18 @@ export type RadarRank = {
 };
 
 export const RADAR_SEARCH_CACHE_MS: number;
+export const RADAR_DISCOVERY_BUDGET: Readonly<{
+  maxPages: number;
+  maxCandidates: number;
+  maxQueries: number;
+  maxResponseBytes: number;
+  deadlineMs: number;
+}>;
+export type TelegramDiscoveryResult = TelegramCandidate[] & {
+  readonly status: "complete" | "partial";
+  readonly partialReasons: string[];
+  readonly budget: { pages: number; candidates: number; reasons: string[]; deadlineMs: number };
+};
 export class RadarDiscoveryError extends Error { code: string; }
 export function normalizeRadarQuery(value: unknown): string;
 export function radarQueryTokens(value: unknown): string[];
@@ -32,7 +44,8 @@ export function parseTelegramCandidates(payload: unknown, provider?: string): Te
 export function createSearxngTelegramProvider(options?: Record<string, unknown>): unknown;
 export function createBingRssTelegramProvider(options?: Record<string, unknown>): unknown;
 export function createDuckDuckGoTelegramProvider(options?: Record<string, unknown>): unknown;
-export function discoverTelegramCandidates(query: unknown, options?: Record<string, unknown>): Promise<TelegramCandidate[]>;
+export function createRadarDiscoveryBudget(options?: Record<string, unknown>): unknown;
+export function discoverTelegramCandidates(query: unknown, options?: Record<string, unknown>): Promise<TelegramDiscoveryResult>;
 export function scoreRadarRelevance(query: unknown, input?: Record<string, unknown>): number;
 export function scoreRadarSemanticSimilarity(value: unknown): number;
 export function scoreRadarFreshness(value: unknown, now?: number): number;

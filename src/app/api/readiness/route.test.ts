@@ -148,11 +148,25 @@ describe("GET /api/readiness", () => {
     });
   });
 
-  it("allows a direct loopback probe", async () => {
-    const response = await GET(new NextRequest("http://127.0.0.1/api/readiness"));
-    expect(response.status).toBe(200);
-    expect(mocks.getSessionUser).not.toHaveBeenCalled();
-    expect(mocks.probeDatabaseAndSchema).toHaveBeenCalledOnce();
+  it.each([
+    ["localhost Host", new NextRequest("http://localhost/api/readiness")],
+    ["127.0.0.1 URL", new NextRequest("http://127.0.0.1/api/readiness")],
+    ["missing forwarded headers", new NextRequest("https://aurora.example/api/readiness")],
+    ["spoofed external forwarded header", new NextRequest("http://127.0.0.1/api/readiness", {
+      headers: { "x-forwarded-for": "203.0.113.8" },
+    })],
+    ["spoofed loopback forwarded header", new NextRequest("https://aurora.example/api/readiness", {
+      headers: { "x-forwarded-for": "127.0.0.1" },
+    })],
+    ["wrong bearer", new NextRequest("https://aurora.example/api/readiness", {
+      headers: { authorization: `Bearer ${"x".repeat(32)}` },
+    })],
+  ])("rejects %s without running dependency probes", async (_label, request) => {
+    const response = await GET(request);
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toEqual({ error: "unauthorized" });
+    expect(mocks.probeDatabaseAndSchema).not.toHaveBeenCalled();
+    expect(mocks.probeRedisAndPublicationWorker).not.toHaveBeenCalled();
   });
 
   it("does not run dependency probes for a public request", async () => {
@@ -183,11 +197,4 @@ describe("GET /api/readiness", () => {
     expect(mocks.probeDatabaseAndSchema).toHaveBeenCalledOnce();
   });
 
-  it("does not trust a loopback Host when the trusted client hop is external", async () => {
-    const response = await GET(new NextRequest("http://127.0.0.1/api/readiness", {
-      headers: { "x-forwarded-for": "203.0.113.8" },
-    }));
-    expect(response.status).toBe(401);
-    expect(mocks.probeDatabaseAndSchema).not.toHaveBeenCalled();
-  });
 });

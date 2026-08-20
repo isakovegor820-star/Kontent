@@ -7,17 +7,22 @@ const mocks = vi.hoisted(() => ({
   query: vi.fn(),
   hasSiteAnalysisWorker: vi.fn(),
   enqueueSiteAnalysis: vi.fn(),
+  requireSelectedProjectPermission: vi.fn(),
 }));
 
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
 vi.mock("@/lib/request-origin", () => ({ hasTrustedMutationOrigin: mocks.hasTrustedMutationOrigin }));
 vi.mock("@/lib/db", () => ({ getPool: () => ({ query: mocks.query }) }));
+vi.mock("@/lib/project-permissions", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/project-permissions")>(),
+  requireSelectedProjectPermission: mocks.requireSelectedProjectPermission,
+}));
 vi.mock("@/lib/site-analysis-queue", () => ({
   hasSiteAnalysisWorker: mocks.hasSiteAnalysisWorker,
   enqueueSiteAnalysis: mocks.enqueueSiteAnalysis,
 }));
 
-import { POST } from "./route";
+import { GET, POST } from "./route";
 
 const row = {
   id: "41",
@@ -56,12 +61,24 @@ describe("POST /api/site-analysis", () => {
     mocks.hasTrustedMutationOrigin.mockReturnValue(true);
     mocks.hasSiteAnalysisWorker.mockResolvedValue(true);
     mocks.enqueueSiteAnalysis.mockResolvedValue({ jobId: "site-analysis-41-r1", recovered: false });
+    mocks.requireSelectedProjectPermission.mockResolvedValue({ projectId: 31, userId: 7, role: "owner", version: 1 });
     mocks.query.mockImplementation(async (sql: string) => {
-      if (sql.includes("where user_id = $1 and idempotency_key = $2")) return { rows: [] };
+      if (sql.includes("idempotency_key in ($3, $4)")) return { rows: [] };
       if (sql.includes("insert into site_analysis_jobs")) return { rows: [row] };
       if (sql.includes("queue_confirmed_at = now()")) return { rows: [{ ...row, queue_confirmed_at: new Date() }] };
       return { rows: [] };
     });
+  });
+
+  it("lists only analyses from the selected project and hides legacy NULL rows", async () => {
+    mocks.query.mockResolvedValueOnce({ rows: [{ ...row, project_id: 31 }] });
+    const response = await GET(new NextRequest("http://localhost/api/site-analysis"));
+    expect(response.status).toBe(200);
+    expect(mocks.requireSelectedProjectPermission).toHaveBeenCalledWith(expect.anything(), 7, "project.read");
+    expect(mocks.query).toHaveBeenCalledWith(
+      expect.stringContaining("where project_id = $1"),
+      [31],
+    );
   });
 
   it("rejects missing consent or a mismatched confirmed domain before queueing", async () => {
@@ -89,9 +106,10 @@ describe("POST /api/site-analysis", () => {
     expect(await response.json()).toMatchObject({ ok: true, replayed: false, analysis: { id: 41, status: "queued" } });
     expect(mocks.enqueueSiteAnalysis).toHaveBeenCalledWith({ analysisId: 41, requestId: row.request_id, runRevision: 1 });
     expect(mocks.query).toHaveBeenCalledWith(expect.stringContaining("insert into site_analysis_jobs"), expect.arrayContaining([
+      31,
       7,
       expect.any(String),
-      "site-analysis-client-1234",
+      "project:31:site-analysis-client-1234",
       expect.stringMatching(/^[a-f0-9]{64}$/),
       "https://example.com/",
       "example.com",
@@ -110,7 +128,7 @@ describe("POST /api/site-analysis", () => {
         confirmedDomain: "example.com",
         limits: {},
       });
-      expect(values).toEqual([7, "site-analysis-client-1234"]);
+      expect(values).toEqual([31, 7, "project:31:site-analysis-client-1234", "site-analysis-client-1234"]);
       return { rows: [{ ...row, request_fingerprint: fingerprint, status: "ready", stage: "ready", progress: 100, result: { inventory: [] } }] };
     });
     mocks.hasSiteAnalysisWorker.mockResolvedValue(false);
@@ -158,5 +176,21 @@ describe("POST /api/site-analysis", () => {
     const response = await POST(request({ url: "https://example.com", confirmedDomain: "example.com", consent: true }));
     expect(response.status).toBe(503);
     expect(await response.json()).toMatchObject({ error: "queue_unavailable", analysis: { status: "failed" } });
+  });
+
+  it("scopes the same client idempotency key independently per project", async () => {
+    mocks.query.mockImplementation(async (sql: string, values?: unknown[]) => {
+      if (sql.includes("idempotency_key in ($3, $4)")) return { rows: [] };
+      if (sql.includes("insert into site_analysis_jobs")) return { rows: [{ ...row, request_id: String(values?.[2]) }] };
+      if (sql.includes("queue_confirmed_at = now()")) return { rows: [{ ...row, queue_confirmed_at: new Date() }] };
+      return { rows: [] };
+    });
+    await POST(request({ url: "https://example.com", confirmedDomain: "example.com", consent: true }, "same-client-key"));
+    mocks.requireSelectedProjectPermission.mockResolvedValueOnce({ projectId: 32, userId: 7, role: "owner", version: 1 });
+    await POST(request({ url: "https://example.com", confirmedDomain: "example.com", consent: true }, "same-client-key"));
+    const insertedKeys = mocks.query.mock.calls
+      .filter(([sql]) => String(sql).includes("insert into site_analysis_jobs"))
+      .map(([, values]) => values[3]);
+    expect(insertedKeys).toEqual(["project:31:same-client-key", "project:32:same-client-key"]);
   });
 });

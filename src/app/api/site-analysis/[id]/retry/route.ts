@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from "next/server";
 import type { PoolClient } from "pg";
 
 import { getPool } from "@/lib/db";
+import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/project-permissions";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import { getSessionUser } from "@/lib/session";
 import { normalizeSiteAnalysisKey, serializeSiteAnalysis, type SiteAnalysisRow } from "@/lib/site-analysis";
@@ -41,6 +42,18 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
   if (!retryKey) return reply({ error: "idempotency_key_required" }, 400, requestId);
 
   const pool = getPool();
+  let projectId: number;
+  try {
+    projectId = (await requireSelectedProjectPermission(pool, user.id, "content.create")).projectId;
+  } catch (error) {
+    if (error instanceof ProjectAccessError) return reply({ error: "access_denied" }, 403, requestId);
+    console.error("[/api/site-analysis/:id/retry] project scope", {
+      requestId,
+      analysisId: id,
+      errorName: error instanceof Error ? error.name : "Error",
+    });
+    return reply({ error: "unavailable" }, 503, requestId);
+  }
   let client: PoolClient;
   try {
     client = await pool.connect();
@@ -53,8 +66,8 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
   try {
     await client.query("begin");
     const current = await client.query<SiteAnalysisRow & { last_retry_key: string | null }>(
-      `select ${FIELDS} from site_analysis_jobs where id = $1 and user_id = $2 for update`,
-      [id, user.id],
+      `select ${FIELDS} from site_analysis_jobs where id = $1 and project_id = $2 for update`,
+      [id, projectId],
     );
     row = current.rows[0] || null;
     if (!row) {
@@ -80,9 +93,9 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
                 answered_count = 0, question_count = 0,
                 ai_usage_reservation_id = null, run_revision = run_revision + 1,
                 last_retry_key = $3, limits = $4::jsonb, updated_at = now()
-          where id = $1 and user_id = $2
+          where id = $1 and project_id = $2
           returning ${FIELDS}`,
-        [id, user.id, retryKey, JSON.stringify(retryLimits)],
+        [id, projectId, retryKey, JSON.stringify(retryLimits)],
       );
       row = updated.rows[0];
       await client.query("commit");
@@ -104,9 +117,9 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
     await enqueueSiteAnalysis({ analysisId: Number(row.id), requestId: row.request_id, runRevision: Number(row.run_revision) });
     const confirmed = await pool.query<SiteAnalysisRow>(
       `update site_analysis_jobs set queue_confirmed_at = now(), updated_at = now()
-        where id = $1 and user_id = $2 and status = 'queued' and run_revision = $3
+        where id = $1 and project_id = $2 and status = 'queued' and run_revision = $3
         returning ${FIELDS}`,
-      [id, user.id, row.run_revision],
+      [id, projectId, row.run_revision],
     );
     row = confirmed.rows[0] || row;
     return reply({ ok: true, replayed: false, analysis: serializeSiteAnalysis(row) }, 202, row.request_id);
@@ -115,9 +128,9 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
       `update site_analysis_jobs
           set status = 'failed', stage = 'failed', error_code = 'queue_unavailable',
               error_message = 'Фоновый анализ временно недоступен.', completed_at = now(), updated_at = now()
-        where id = $1 and user_id = $2 and status = 'queued' and run_revision = $3
+        where id = $1 and project_id = $2 and status = 'queued' and run_revision = $3
         returning ${FIELDS}`,
-      [id, user.id, row.run_revision],
+      [id, projectId, row.run_revision],
     );
     row = failed.rows[0] || row;
     return reply({ error: "queue_unavailable", analysis: serializeSiteAnalysis(row) }, 503, row.request_id);

@@ -42,6 +42,25 @@ describe("runtime schema manifest", () => {
     ]);
   });
 
+  it("accepts only the documented historical session checksum after full capability reconciliation", () => {
+    const snapshot = completeSnapshot();
+    const sessionIndex = snapshot.migrations.findIndex(
+      (migration) => migration.name === "20260916_session_token_hashes.sql",
+    );
+    snapshot.migrations[sessionIndex] = {
+      ...snapshot.migrations[sessionIndex],
+      checksum: "30c7987f372e4259b23fdc2d8bbee7257009b92e85385828741807c3c6f814ec",
+    };
+    expect(evaluateSchemaSnapshot(snapshot).ready).toBe(true);
+
+    snapshot.migrations[sessionIndex] = {
+      ...snapshot.migrations[sessionIndex], checksum: "f".repeat(64),
+    };
+    expect(evaluateSchemaSnapshot(snapshot).reasons).toEqual([
+      "migration_checksum_mismatch:20260916_session_token_hashes.sql",
+    ]);
+  });
+
   it("fails closed when schema_migrations is absent even if tables were manually created", () => {
     const snapshot = completeSnapshot();
     snapshot.schemaMigrationsTable = false;
@@ -54,4 +73,3 @@ describe("runtime schema manifest", () => {
     );
   });
 });
-

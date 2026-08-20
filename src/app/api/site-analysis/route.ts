@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 
 import { getPool } from "@/lib/db";
+import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/project-permissions";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import { getSessionUser } from "@/lib/session";
 import {
@@ -41,16 +42,21 @@ export async function GET(req: NextRequest) {
   const user = await getSessionUser(req);
   if (!user) return jsonWithRequest({ error: "unauthorized" }, 401, requestId);
   try {
-    const rows = await getPool().query<SiteAnalysisRow>(
+    const pool = getPool();
+    const membership = await requireSelectedProjectPermission(pool, user.id, "project.read");
+    const rows = await pool.query<SiteAnalysisRow>(
       `select ${SELECT_FIELDS}
          from site_analysis_jobs
-        where user_id = $1
+        where project_id = $1
         order by created_at desc
         limit 25`,
-      [user.id],
+      [membership.projectId],
     );
     return jsonWithRequest({ analyses: rows.rows.map((row) => serializeSiteAnalysis(row)) }, 200, requestId);
   } catch (error) {
+    if (error instanceof ProjectAccessError) {
+      return jsonWithRequest({ error: "access_denied" }, 403, requestId);
+    }
     console.error("[/api/site-analysis] GET", { requestId, errorName: error instanceof Error ? error.name : "Error" });
     return jsonWithRequest({ error: "unavailable" }, 503, requestId);
   }
@@ -63,6 +69,21 @@ export async function POST(req: NextRequest) {
   }
   const user = await getSessionUser(req);
   if (!user) return jsonWithRequest({ error: "unauthorized" }, 401, requestId);
+
+  const pool = getPool();
+  let projectId: number;
+  try {
+    projectId = (await requireSelectedProjectPermission(pool, user.id, "content.create")).projectId;
+  } catch (error) {
+    if (error instanceof ProjectAccessError) {
+      return jsonWithRequest({ error: "access_denied" }, 403, requestId);
+    }
+    console.error("[/api/site-analysis] project scope", {
+      requestId,
+      errorName: error instanceof Error ? error.name : "Error",
+    });
+    return jsonWithRequest({ error: "unavailable" }, 503, requestId);
+  }
 
   let body: Record<string, unknown>;
   try {
@@ -88,14 +109,16 @@ export async function POST(req: NextRequest) {
     confirmedDomain,
     limits,
   });
-  const pool = getPool();
+  const scopedKey = `project:${projectId}:${key}`;
 
   try {
     const existing = await pool.query<SiteAnalysisRow & { request_fingerprint: string }>(
       `select ${SELECT_FIELDS}, request_fingerprint
          from site_analysis_jobs
-        where user_id = $1 and idempotency_key = $2`,
-      [user.id, key],
+        where project_id = $1 and user_id = $2 and idempotency_key in ($3, $4)
+        order by (idempotency_key = $3) desc
+        limit 1`,
+      [projectId, user.id, scopedKey, key],
     );
     if (existing.rows[0]) {
       const row = existing.rows[0];
@@ -116,20 +139,20 @@ export async function POST(req: NextRequest) {
 
     const inserted = await pool.query<SiteAnalysisRow>(
       `insert into site_analysis_jobs
-         (user_id, request_id, idempotency_key, request_fingerprint, target_url,
+         (project_id, user_id, request_id, idempotency_key, request_fingerprint, target_url,
           confirmed_domain, consented_at, limits)
-       values ($1, $2, $3, $4, $5, $6, now(), $7::jsonb)
+       values ($1, $2, $3, $4, $5, $6, $7, now(), $8::jsonb)
        on conflict (user_id, idempotency_key) do nothing
        returning ${SELECT_FIELDS}`,
-      [user.id, requestId, key, fingerprint, target.toString(), confirmedDomain, JSON.stringify(limits)],
+      [projectId, user.id, requestId, scopedKey, fingerprint, target.toString(), confirmedDomain, JSON.stringify(limits)],
     );
     let row = inserted.rows[0];
     if (!row) {
       const raced = await pool.query<SiteAnalysisRow & { request_fingerprint: string }>(
         `select ${SELECT_FIELDS}, request_fingerprint
            from site_analysis_jobs
-          where user_id = $1 and idempotency_key = $2`,
-        [user.id, key],
+          where project_id = $1 and user_id = $2 and idempotency_key = $3`,
+        [projectId, user.id, scopedKey],
       );
       const existingRow = raced.rows[0];
       if (!existingRow) throw new Error("site_analysis_insert_race");
@@ -153,9 +176,9 @@ export async function POST(req: NextRequest) {
       const confirmed = await pool.query<SiteAnalysisRow>(
         `update site_analysis_jobs
             set queue_confirmed_at = now(), updated_at = now()
-          where id = $1 and user_id = $2 and status = 'queued' and run_revision = $3
+          where id = $1 and project_id = $2 and status = 'queued' and run_revision = $3
           returning ${SELECT_FIELDS}`,
-        [row.id, user.id, row.run_revision],
+        [row.id, projectId, row.run_revision],
       );
       row = confirmed.rows[0] || row;
     } catch {
@@ -163,9 +186,9 @@ export async function POST(req: NextRequest) {
         `update site_analysis_jobs
             set status = 'failed', stage = 'failed', error_code = 'queue_unavailable',
                 error_message = 'Фоновый анализ временно недоступен.', completed_at = now(), updated_at = now()
-          where id = $1 and user_id = $2 and status = 'queued' and run_revision = $3
+          where id = $1 and project_id = $2 and status = 'queued' and run_revision = $3
           returning ${SELECT_FIELDS}`,
-        [row.id, user.id, row.run_revision],
+        [row.id, projectId, row.run_revision],
       );
       row = failed.rows[0] || row;
       return jsonWithRequest({ error: "queue_unavailable", analysis: serializeSiteAnalysis(row) }, 503, row.request_id);

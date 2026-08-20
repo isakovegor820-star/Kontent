@@ -4,6 +4,7 @@ import type { Pool, PoolClient } from "pg";
 import { getPool } from "./db";
 import type { DraftAiValidation } from "./draft-types";
 import { normalizeDraftAiValidation } from "./draft-review";
+import { requireSelectedProjectPermission } from "./project-permissions";
 import type { Post } from "./types";
 
 type Queryable = Pick<Pool | PoolClient, "query">;
@@ -27,6 +28,9 @@ export interface GenerationOperationInput {
   sourceContextVersion?: number | null;
   inputDraftId?: number | null;
   inputDraftVersion?: number | null;
+  monthlyCampaignId?: number | null;
+  monthlyPlanId?: number | null;
+  monthlyItemId?: number | null;
   providerEngine: string;
   providerModel: string;
 }
@@ -92,6 +96,17 @@ function exactOptionalPair(id: unknown, version: unknown): [number | null, numbe
   return [normalizedId, normalizedVersion];
 }
 
+function exactOptionalTriple(
+  campaignId: unknown,
+  planId: unknown,
+  itemId: unknown,
+): [number | null, number | null, number | null] {
+  const normalized = [campaignId, planId, itemId].map((value) => value == null ? null : positiveId(value));
+  const present = normalized.filter((value) => value != null).length;
+  if (present !== 0 && present !== 3) throw new GenerationArtifactError("generation_binding_incomplete");
+  return normalized as [number | null, number | null, number | null];
+}
+
 function validFingerprint(value: string): boolean {
   return /^[0-9a-f]{64}$/u.test(value);
 }
@@ -124,6 +139,11 @@ export async function beginGenerationOperation(
   const [inputDraftId, inputDraftVersion] = exactOptionalPair(
     input.inputDraftId,
     input.inputDraftVersion,
+  );
+  const [monthlyCampaignId, monthlyPlanId, monthlyItemId] = exactOptionalTriple(
+    input.monthlyCampaignId,
+    input.monthlyPlanId,
+    input.monthlyItemId,
   );
   const tx = await pool.connect();
   try {
@@ -159,6 +179,27 @@ export async function beginGenerationOperation(
         || Number(draft.rows[0]?.version) !== inputDraftVersion
       ) throw new GenerationArtifactError("generation_input_conflict");
     }
+    if (monthlyItemId != null) {
+      const membership = await requireSelectedProjectPermission(tx, input.userId, "content.create");
+      const monthly = await tx.query(
+        `select item.id
+           from monthly_campaign_items item
+           join monthly_campaign_plans plan
+             on plan.id = item.plan_id and plan.project_id = item.project_id
+           join monthly_campaigns campaign
+             on campaign.id = plan.campaign_id and campaign.project_id = item.project_id
+           join channels channel
+             on channel.id = $5 and channel.project_id = item.project_id
+            and channel.is_active = true and channel.status = 'active'
+          where campaign.id = $1 and plan.id = $2 and item.id = $3
+            and item.project_id = $4 and campaign.is_archived = false
+          for share of item, plan, campaign, channel`,
+        [monthlyCampaignId, monthlyPlanId, monthlyItemId, membership.projectId, input.channelId],
+      );
+      if (monthly.rowCount !== 1) {
+        throw new GenerationArtifactError("generation_monthly_lineage_conflict");
+      }
+    }
 
     const existing = (await tx.query<{
       id: number | string;
@@ -168,10 +209,14 @@ export async function beginGenerationOperation(
       source_context_version: number | string | null;
       input_draft_id: number | string | null;
       input_draft_version: number | string | null;
+      monthly_campaign_id: number | string | null;
+      monthly_plan_id: number | string | null;
+      monthly_item_id: number | string | null;
       status: GenerationOperationStatus;
     }>(
       `select id, request_fingerprint, channel_id, source_context_id, source_context_version,
-              input_draft_id, input_draft_version, status
+              input_draft_id, input_draft_version, monthly_campaign_id, monthly_plan_id,
+              monthly_item_id, status
          from generation_operations
         where user_id = $1 and request_key = $2
         for update`,
@@ -183,7 +228,10 @@ export async function beginGenerationOperation(
         && (existing.source_context_id == null ? null : Number(existing.source_context_id)) === sourceContextId
         && (existing.source_context_version == null ? null : Number(existing.source_context_version)) === sourceContextVersion
         && (existing.input_draft_id == null ? null : Number(existing.input_draft_id)) === inputDraftId
-        && (existing.input_draft_version == null ? null : Number(existing.input_draft_version)) === inputDraftVersion;
+        && (existing.input_draft_version == null ? null : Number(existing.input_draft_version)) === inputDraftVersion
+        && (existing.monthly_campaign_id == null ? null : Number(existing.monthly_campaign_id)) === monthlyCampaignId
+        && (existing.monthly_plan_id == null ? null : Number(existing.monthly_plan_id)) === monthlyPlanId
+        && (existing.monthly_item_id == null ? null : Number(existing.monthly_item_id)) === monthlyItemId;
       if (!sameBinding) throw new GenerationArtifactError("generation_operation_conflict");
       if (existing.status === "failed") throw new GenerationArtifactError("generation_terminal_failure");
       // A durable result already exists for pending_ack/acknowledged. The usage replay path
@@ -214,12 +262,14 @@ export async function beginGenerationOperation(
       `insert into generation_operations (
          user_id, ai_usage_id, request_key, server_request_id, request_fingerprint,
          channel_id, source_context_id, source_context_version,
-         input_draft_id, input_draft_version, provider_engine, provider_model, status
-       ) values ($1, $2, $3, $4::uuid, $5, $6, $7, $8, $9, $10, $11, $12, 'running')
+         input_draft_id, input_draft_version, monthly_campaign_id, monthly_plan_id,
+         monthly_item_id, provider_engine, provider_model, status
+       ) values ($1, $2, $3, $4::uuid, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 'running')
        returning id`,
       [input.userId, input.aiUsageId, input.requestKey, input.serverRequestId,
         input.requestFingerprint, input.channelId, sourceContextId, sourceContextVersion,
-        inputDraftId, inputDraftVersion, input.providerEngine.slice(0, 80), input.providerModel.slice(0, 160)],
+        inputDraftId, inputDraftVersion, monthlyCampaignId, monthlyPlanId, monthlyItemId,
+        input.providerEngine.slice(0, 80), input.providerModel.slice(0, 160)],
     );
     await tx.query("commit");
     return Number(inserted.rows[0]?.id);

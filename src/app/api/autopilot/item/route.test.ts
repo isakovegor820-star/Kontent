@@ -263,13 +263,13 @@ describe("PATCH /api/autopilot/item approve", () => {
   it("lets a person approve a review-only draft after attaching a human attestation", async () => {
     const reviewQuality = {
       ...quality,
-      score: 84,
-      passed: false,
-      blockers: ["Смысл фактических утверждений не проверен. Нужна ручная проверка перед публикацией."],
+      score: 91,
+      passed: true,
+      blockers: [],
       violations: [{
         code: "semantic_review_required",
         message: "Смысл фактических утверждений не проверен. Нужна ручная проверка перед публикацией.",
-        blocker: true,
+        blocker: false,
         penalty: 0,
       }],
       semantic: {
@@ -300,6 +300,7 @@ describe("PATCH /api/autopilot/item approve", () => {
       quality: reviewQuality,
       qualityBlocked: true,
       reviewRequired: true,
+      reviewState: "semantic_only_review",
     }];
     mocks.claimPlan.mockResolvedValue({ items: source, channel_id: 7 });
     mocks.scheduleItem.mockResolvedValue({
@@ -339,10 +340,13 @@ describe("PATCH /api/autopilot/item approve", () => {
     await expect(response.json()).resolves.toMatchObject({ ok: true, postId: 612 });
     expect(mocks.scheduleItem).toHaveBeenCalledOnce();
     const saved = mocks.finalizeApproval.mock.calls[0][0].items[0];
-    expect(saved.quality.metadata.provenance.humanAttestation).toMatchObject({
+    expect(saved.humanAttestation).toMatchObject({
       kind: "human_review",
+      reviewState: "semantic_only_review",
       userId: 3,
     });
+    expect(saved.quality).toEqual(reviewQuality);
+    expect(saved.qualityBlocked).toBe(true);
     expect(saved.qualityOrigin).toBe("human_attested");
   });
 });

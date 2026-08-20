@@ -1,0 +1,203 @@
+name: Production storage cleanup
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type CLEANUP to remove guarded storage candidates
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-storage-maintenance
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Validate confirmation
+        env:
+          CONFIRMATION: ${{ inputs.confirmation }}
+        shell: bash
+        run: test "$CONFIRMATION" = CLEANUP
+
+      - name: Configure SSH
+        env:
+          PRODUCTION_SSH_KEY: ${{ secrets.PRODUCTION_SSH_KEY }}
+          PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
+          PRODUCTION_SSH_KNOWN_HOSTS: ${{ secrets.PRODUCTION_SSH_KNOWN_HOSTS }}
+          PRODUCTION_SSH_HOST_FINGERPRINT: ${{ secrets.PRODUCTION_SSH_HOST_FINGERPRINT }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$PRODUCTION_SSH_KEY"
+          test -n "$PRODUCTION_SSH_HOST"
+          test -n "$PRODUCTION_SSH_KNOWN_HOSTS"
+          test -n "$PRODUCTION_SSH_HOST_FINGERPRINT"
+          umask 077
+          mkdir -p ~/.ssh
+          printf '%s\n' "$PRODUCTION_SSH_KEY" > ~/.ssh/deploy_key
+          printf '%s\n' "$PRODUCTION_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          bash scripts/verify-ssh-host-identity.sh \
+            ~/.ssh/known_hosts \
+            "$PRODUCTION_SSH_HOST" \
+            "$PRODUCTION_SSH_HOST_FINGERPRINT"
+
+      - name: Remove guarded candidates and install growth limits
+        env:
+          PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
+          PRODUCTION_SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$PRODUCTION_SSH_HOST"
+          test -n "$PRODUCTION_SSH_USER"
+          report_b64="$(ssh -i ~/.ssh/deploy_key \
+            -o StrictHostKeyChecking=yes \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=8 \
+            "${PRODUCTION_SSH_USER}@${PRODUCTION_SSH_HOST}" \
+            'bash -s' <<'REMOTE' | base64 | tr -d '\n'
+          set -Eeuo pipefail
+
+          readonly releases_root=/opt/aurora-releases
+          readonly current_link=/opt/aurora-current
+          readonly previous_link=/opt/aurora-previous
+          readonly keep_rollback_releases=2
+
+          read -r before_total before_used before_available before_percent < <(
+            df -B1 --output=size,used,avail,pcent / | tail -n 1
+          )
+          running_containers_before="$(docker ps -q 2>/dev/null | wc -l)"
+
+          current_release="$(readlink -f "$current_link")"
+          if [[ -z "$current_release" || ! -d "$current_release" ]]; then
+            echo "Current Aurora release cannot be resolved." >&2
+            exit 1
+          fi
+          case "$current_release" in
+            "$releases_root"/*) ;;
+            *) echo "Current release is outside the guarded root." >&2; exit 1 ;;
+          esac
+
+          declare -A protected_releases=(["$current_release"]=1)
+          previous_release="$(readlink -f "$previous_link" 2>/dev/null || true)"
+          if [[ -n "$previous_release" && -d "$previous_release" ]]; then
+            case "$previous_release" in
+              "$releases_root"/*) protected_releases["$previous_release"]=1 ;;
+              *) echo "Previous release is outside the guarded root." >&2; exit 1 ;;
+            esac
+          fi
+          declare -a candidate_releases=()
+          rollback_releases_kept=0
+          while IFS= read -r release_dir; do
+            [[ -n "$release_dir" ]] || continue
+            case "$release_dir" in
+              "$releases_root"/*) ;;
+              *) echo "Refusing unexpected release path." >&2; exit 1 ;;
+            esac
+            [[ "$release_dir" != "$releases_root" ]]
+            if [[ -n "${protected_releases[$release_dir]+x}" ]]; then
+              continue
+            fi
+            if [[ "$rollback_releases_kept" -lt "$keep_rollback_releases" ]]; then
+              protected_releases["$release_dir"]=1
+              rollback_releases_kept=$((rollback_releases_kept + 1))
+            else
+              candidate_releases+=("$release_dir")
+            fi
+          done < <(find "$releases_root" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' | sort -rn | cut -d' ' -f2-)
+
+          release_bytes_removed=0
+          for release_dir in "${candidate_releases[@]}"; do
+            release_bytes="$(du -xsb "$release_dir" | awk 'NR == 1 { print $1 + 0 }')"
+            rm -rf -- "$release_dir"
+            release_bytes_removed=$((release_bytes_removed + release_bytes))
+          done
+
+          install -d -m 0755 /etc/systemd/journald.conf.d
+          printf '%s\n' \
+            '[Journal]' \
+            'SystemMaxUse=500M' \
+            'RuntimeMaxUse=100M' \
+            > /etc/systemd/journald.conf.d/90-storage-limits.conf
+          systemctl restart systemd-journald
+          journalctl --vacuum-size=500M >/dev/null
+
+          install -m 0644 /dev/stdin /etc/systemd/system/shared-docker-build-cache-prune.service <<'UNIT'
+          [Unit]
+          Description=Prune unused Docker build cache older than seven days
+          After=docker.service
+          Requires=docker.service
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/bin/docker builder prune --force --filter until=168h
+          UNIT
+          install -m 0644 /dev/stdin /etc/systemd/system/shared-docker-build-cache-prune.timer <<'UNIT'
+          [Unit]
+          Description=Weekly pruning of old unused Docker build cache
+
+          [Timer]
+          OnCalendar=weekly
+          Persistent=true
+          RandomizedDelaySec=30m
+
+          [Install]
+          WantedBy=timers.target
+          UNIT
+          systemctl daemon-reload
+          systemctl enable --now shared-docker-build-cache-prune.timer >/dev/null
+          docker builder prune --force --filter until=168h >/dev/null
+
+          if ! systemctl is-active --quiet aurora-web.service \
+            || ! systemctl is-active --quiet aurora-worker.service; then
+            echo "Aurora services are not active after cleanup." >&2
+            exit 1
+          fi
+          running_containers_after="$(docker ps -q 2>/dev/null | wc -l)"
+          if [[ "$running_containers_after" -ne "$running_containers_before" ]]; then
+            echo "Running container count changed during cleanup." >&2
+            exit 1
+          fi
+
+          read -r after_total after_used after_available after_percent < <(
+            df -B1 --output=size,used,avail,pcent / | tail -n 1
+          )
+          journal_bytes="$(journalctl --disk-usage 2>/dev/null | grep -Eo '[0-9.]+[KMGTP]?' | tail -n 1 || true)"
+          remaining_releases="$(find "$releases_root" -mindepth 1 -maxdepth 1 -type d | wc -l)"
+
+          printf 'collected_at_utc=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          printf 'before_used_bytes=%s\n' "$before_used"
+          printf 'before_available_bytes=%s\n' "$before_available"
+          printf 'before_used_percent=%s\n' "$before_percent"
+          printf 'after_used_bytes=%s\n' "$after_used"
+          printf 'after_available_bytes=%s\n' "$after_available"
+          printf 'after_used_percent=%s\n' "$after_percent"
+          printf 'release_count_removed=%s\n' "${#candidate_releases[@]}"
+          printf 'release_bytes_removed=%s\n' "$release_bytes_removed"
+          printf 'remaining_release_count=%s\n' "$remaining_releases"
+          printf 'running_container_count=%s\n' "$running_containers_after"
+          printf 'journal_usage=%s\n' "$journal_bytes"
+          printf 'aurora_web_active=true\n'
+          printf 'aurora_worker_active=true\n'
+          printf 'docker_cache_timer_active=%s\n' "$(systemctl is-active shared-docker-build-cache-prune.timer)"
+          REMOTE
+          )"
+
+          if [[ -z "$report_b64" ]]; then
+            echo "Storage cleanup returned an empty report." >&2
+            exit 1
+          fi
+          echo "::notice title=Production storage cleanup (base64)::$report_b64"

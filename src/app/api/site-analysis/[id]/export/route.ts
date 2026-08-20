@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 
 import { getPool } from "@/lib/db";
+import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/project-permissions";
 import {
   buildSiteAnalysisExportSnapshot,
   renderSiteAnalysisExport,
@@ -33,11 +34,13 @@ export async function GET(req: NextRequest, context: Context) {
     return NextResponse.json({ error: "bad_request", requestId }, { status: 400, headers: { "x-request-id": requestId } });
   }
   try {
-    const queried = await getPool().query<ExportRow>(
+    const pool = getPool();
+    const membership = await requireSelectedProjectPermission(pool, user.id, "project.read");
+    const queried = await pool.query<ExportRow>(
       `select id, request_id, target_url, confirmed_domain, run_revision, result, completed_at
          from site_analysis_jobs
-        where id = $1 and user_id = $2 and status = 'ready'`,
-      [id, user.id],
+        where id = $1 and project_id = $2 and status = 'ready'`,
+      [id, membership.projectId],
     );
     const row = queried.rows[0];
     if (!row) return NextResponse.json({ error: "not_found", requestId }, { status: 404, headers: { "x-request-id": requestId } });
@@ -65,6 +68,9 @@ export async function GET(req: NextRequest, context: Context) {
       },
     });
   } catch (error) {
+    if (error instanceof ProjectAccessError) {
+      return NextResponse.json({ error: "access_denied", requestId }, { status: 403, headers: { "x-request-id": requestId } });
+    }
     console.error("[/api/site-analysis/:id/export] GET", {
       requestId,
       analysisId: id,

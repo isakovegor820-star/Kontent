@@ -199,6 +199,7 @@ describe("production Autopilot semantic quality", () => {
       status: "pending",
       quality: result,
       reviewRequired: true,
+      reviewState: "semantic_only_review",
     };
     expect(evaluateAutopilotItem(reviewItem, Date.parse("2026-08-02T10:00:00.000Z")).eligible).toBe(false);
     expect(evaluateAutopilotItem(reviewItem, Date.parse("2026-08-02T10:00:00.000Z"), { actor: "human" }).eligible).toBe(true);

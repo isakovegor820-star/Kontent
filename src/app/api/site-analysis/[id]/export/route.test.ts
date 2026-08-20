@@ -6,10 +6,15 @@ const mocks = vi.hoisted(() => ({
   query: vi.fn(),
   buildSnapshot: vi.fn(),
   renderExport: vi.fn(),
+  requireSelectedProjectPermission: vi.fn(),
 }));
 
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
 vi.mock("@/lib/db", () => ({ getPool: () => ({ query: mocks.query }) }));
+vi.mock("@/lib/project-permissions", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/project-permissions")>(),
+  requireSelectedProjectPermission: mocks.requireSelectedProjectPermission,
+}));
 vi.mock("@/lib/site-analysis/export.mjs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/site-analysis/export.mjs")>();
   return {
@@ -25,6 +30,7 @@ describe("GET /api/site-analysis/:id/export", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.getSessionUser.mockResolvedValue({ id: 7 });
+    mocks.requireSelectedProjectPermission.mockResolvedValue({ projectId: 31, userId: 7, role: "owner", version: 1 });
     mocks.query.mockResolvedValue({ rows: [{
       id: 41,
       request_id: "req-41",
@@ -46,7 +52,7 @@ describe("GET /api/site-analysis/:id/export", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("content-disposition")).toContain("aurora-site-osint-41-r2.json");
     expect(response.headers.get("x-aurora-snapshot-hash")).toBe(`sha256:${"a".repeat(64)}`);
-    expect(mocks.query).toHaveBeenCalledWith(expect.stringContaining("status = 'ready'"), [41, 7]);
+    expect(mocks.query).toHaveBeenCalledWith(expect.stringContaining("project_id = $2"), [41, 31]);
   });
 
   it("fails closed for unauthenticated and unsupported requests", async () => {

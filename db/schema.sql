@@ -79,12 +79,47 @@ create table if not exists sessions (
   token_hash  text        primary key
                           constraint sessions_token_hash_check
                           check (token_hash ~ '^[a-f0-9]{64}$'),
+  token       text        not null
+                          constraint sessions_token_legacy_hash_check
+                          check (token ~ '^[a-f0-9]{64}$'),
   user_id     bigint      not null references users (id) on delete cascade,
   expires_at  timestamptz not null,
   device      text,
   created_at  timestamptz not null default now()
 );
 create index if not exists sessions_user_idx on sessions (user_id);
+create unique index if not exists sessions_token_hash_compat_uniq on sessions (token_hash);
+create unique index if not exists sessions_token_legacy_compat_uniq on sessions (token);
+
+create or replace function aurora_sync_session_token_columns()
+returns trigger language plpgsql as $$
+begin
+  if tg_op = 'INSERT' then
+    if new.token is not null and new.token_hash is not null and new.token <> new.token_hash then
+      raise exception 'sessions token columns disagree';
+    end if;
+    new.token_hash := coalesce(new.token_hash, new.token);
+    new.token := coalesce(new.token, new.token_hash);
+  else
+    if new.token is distinct from old.token and new.token_hash is distinct from old.token_hash
+       and new.token is distinct from new.token_hash then
+      raise exception 'sessions token columns disagree';
+    elsif new.token_hash is distinct from old.token_hash then
+      new.token := new.token_hash;
+    elsif new.token is distinct from old.token then
+      new.token_hash := new.token;
+    end if;
+  end if;
+  if new.token is null or new.token_hash is null or new.token <> new.token_hash then
+    raise exception 'sessions token columns incomplete';
+  end if;
+  return new;
+end
+$$;
+drop trigger if exists sessions_sync_token_columns_before_write on sessions;
+create trigger sessions_sync_token_columns_before_write
+  before insert or update of token, token_hash on sessions
+  for each row execute function aurora_sync_session_token_columns();
 
 -- Legacy email_codes intentionally is not created on a fresh database. If an older
 -- installation still has it, this bootstrap snapshot leaves the table and its data
@@ -1562,6 +1597,9 @@ create table if not exists generation_operations (
   source_context_version bigint,
   input_draft_id         bigint references drafts (id) on delete restrict,
   input_draft_version    bigint,
+  monthly_campaign_id    bigint,
+  monthly_plan_id        bigint,
+  monthly_item_id        bigint,
   provider_engine        varchar(80) not null,
   provider_model         varchar(160) not null,
   status                 text not null default 'running'
@@ -1576,6 +1614,12 @@ create table if not exists generation_operations (
   check (request_fingerprint ~ '^[0-9a-f]{64}$'),
   check ((source_context_id is null) = (source_context_version is null)),
   check ((input_draft_id is null) = (input_draft_version is null)),
+  constraint generation_operations_monthly_lineage_complete_check
+    check (
+      (monthly_campaign_id is null and monthly_plan_id is null and monthly_item_id is null)
+      or
+      (monthly_campaign_id is not null and monthly_plan_id is not null and monthly_item_id is not null)
+    ),
   check (source_context_version is null or source_context_version > 0),
   check (input_draft_version is null or input_draft_version > 0)
 );
@@ -1583,6 +1627,9 @@ create unique index if not exists generation_operations_user_request_id_uniq
   on generation_operations (user_id, server_request_id);
 create index if not exists generation_operations_recovery_idx
   on generation_operations (user_id, status, updated_at desc);
+create index if not exists generation_operations_monthly_lineage_idx
+  on generation_operations (monthly_item_id, channel_id, id)
+  where monthly_item_id is not null;
 
 create table if not exists generation_results (
   id              bigint generated always as identity primary key,
@@ -1925,6 +1972,7 @@ create index if not exists email_change_outbox_due_idx
 create table if not exists site_analysis_jobs (
   id                  bigint generated always as identity primary key,
   user_id             bigint not null references users (id) on delete cascade,
+  project_id          bigint references projects (id) on delete restrict,
   request_id          text not null unique,
   idempotency_key     text not null,
   request_fingerprint text not null,
@@ -1971,6 +2019,12 @@ create table if not exists site_analysis_jobs (
 );
 create index if not exists site_analysis_jobs_user_created_idx
   on site_analysis_jobs (user_id, created_at desc);
+create index if not exists site_analysis_jobs_project_created_idx
+  on site_analysis_jobs (project_id, created_at desc, id desc)
+  where project_id is not null;
+create unique index if not exists site_analysis_jobs_project_user_idempotency_uniq
+  on site_analysis_jobs (project_id, user_id, idempotency_key)
+  where project_id is not null;
 create index if not exists site_analysis_jobs_queued_idx
   on site_analysis_jobs (status, updated_at)
   where status in ('queued', 'crawling', 'analyzing', 'planning');
@@ -4141,6 +4195,29 @@ begin
   if not exists (select 1 from pg_constraint where conname = 'autopilot_schedule_outbox_post_project_fk') then
     alter table autopilot_schedule_outbox add constraint autopilot_schedule_outbox_post_project_fk
       foreign key (post_id, project_id) references posts (id, project_id) on delete cascade;
+  end if;
+end
+$$;
+
+-- generation_operations is declared before the monthly planner tables. These optional
+-- forward-only references are added after every historical bootstrap block so existing
+-- migration bodies remain byte-for-byte rehearsable.
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conrelid = 'generation_operations'::regclass
+    and conname = 'generation_operations_monthly_campaign_fk') then
+    alter table generation_operations add constraint generation_operations_monthly_campaign_fk
+      foreign key (monthly_campaign_id) references monthly_campaigns (id) on delete restrict;
+  end if;
+  if not exists (select 1 from pg_constraint where conrelid = 'generation_operations'::regclass
+    and conname = 'generation_operations_monthly_plan_fk') then
+    alter table generation_operations add constraint generation_operations_monthly_plan_fk
+      foreign key (monthly_plan_id) references monthly_campaign_plans (id) on delete restrict;
+  end if;
+  if not exists (select 1 from pg_constraint where conrelid = 'generation_operations'::regclass
+    and conname = 'generation_operations_monthly_item_fk') then
+    alter table generation_operations add constraint generation_operations_monthly_item_fk
+      foreign key (monthly_item_id) references monthly_campaign_items (id) on delete restrict;
   end if;
 end
 $$;

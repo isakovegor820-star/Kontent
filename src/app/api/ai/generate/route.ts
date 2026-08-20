@@ -1105,6 +1105,9 @@ export async function POST(req: NextRequest) {
     referenceIntent?: unknown;
     inputDraftId?: unknown;
     inputDraftVersion?: unknown;
+    monthlyCampaignId?: unknown;
+    monthlyPlanId?: unknown;
+    monthlyItemId?: unknown;
   };
   try {
     body = await req.json();
@@ -1182,6 +1185,17 @@ export async function POST(req: NextRequest) {
   )) return aiJson(requestId, { error: "bad_input_draft", retryable: false }, { status: 400 });
   if (hasReferenceDraft && hasInputDraft) {
     return aiJson(requestId, { error: "ambiguous_generation_source", retryable: false }, { status: 422 });
+  }
+  const rawMonthlyIds = [body.monthlyCampaignId, body.monthlyPlanId, body.monthlyItemId];
+  const hasMonthlyLineage = rawMonthlyIds.some((value) => value != null);
+  const [monthlyCampaignId, monthlyPlanId, monthlyItemId] = rawMonthlyIds.map(Number);
+  if (hasMonthlyLineage && (
+    rawMonthlyIds.some((value) => value == null)
+    || ![monthlyCampaignId, monthlyPlanId, monthlyItemId].every(
+      (value) => Number.isSafeInteger(value) && value > 0,
+    )
+  )) {
+    return aiJson(requestId, { error: "bad_monthly_lineage", retryable: false }, { status: 400 });
   }
   if (channelId == null) {
     return aiJson(requestId, { error: "no_channel", retryable: false }, { status: 422 });
@@ -1516,6 +1530,9 @@ export async function POST(req: NextRequest) {
       sourceContextVersion: hasReferenceDraft ? referenceDraftVersion : null,
       inputDraftId: hasInputDraft ? inputDraftId : null,
       inputDraftVersion: hasInputDraft ? inputDraftVersion : null,
+      monthlyCampaignId: hasMonthlyLineage ? monthlyCampaignId : null,
+      monthlyPlanId: hasMonthlyLineage ? monthlyPlanId : null,
+      monthlyItemId: hasMonthlyLineage ? monthlyItemId : null,
       providerEngine: chosen,
       providerModel: runtime.model,
     });

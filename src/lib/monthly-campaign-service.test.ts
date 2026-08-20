@@ -462,7 +462,7 @@ describe("monthly campaign project service", () => {
     expect(linkSql).not.toContain("weekly_autopilot_plan_id =");
   });
 
-  it("attaches an owned generated draft without creating another", async () => {
+  it("attaches only a generated draft with exact campaign, plan, item, and channel lineage", async () => {
     const h = transactionHarness((sql) => {
       if (sql.includes("from monthly_campaigns")) return { rows: [campaignRow()] };
       if (sql.includes("from monthly_campaign_plans")) return { rows: [planRow()] };
@@ -486,7 +486,109 @@ describe("monthly campaign project service", () => {
       attachDraftId: 777,
     });
     expect(result).toMatchObject({ draftId: 777, created: false });
+    const lineageSql = String(h.query.mock.calls.find(([sql]) => String(sql).includes("from drafts"))?.[0]);
+    expect(lineageSql).toContain("generation_operations");
+    expect(lineageSql).toContain("monthly_campaign_id");
+    expect(lineageSql).toContain("monthly_plan_id");
+    expect(lineageSql).toContain("monthly_item_id");
+    expect(lineageSql).toContain("draft_destinations");
     expect(h.query.mock.calls.some(([sql]) => String(sql).startsWith("insert into drafts"))).toBe(false);
+  });
+
+  it.each([
+    ["wrong project", 8, 41, 52, 62, 11],
+    ["wrong channel", 7, 41, 52, 62, 12],
+    ["wrong item", 7, 41, 52, 63, 11],
+    ["arbitrary draft without generation lineage", 7, null, null, null, 11],
+  ])("rejects an attached draft with %s", async (_case, draftProjectId, campaignId, planId, itemId, destinationId) => {
+    const h = transactionHarness((sql, params) => {
+      if (sql.includes("from monthly_campaigns")) return { rows: [campaignRow()] };
+      if (sql.includes("from monthly_campaign_plans")) return { rows: [planRow()] };
+      if (sql.includes("from monthly_campaign_items") && sql.includes("for update")) {
+        return { rows: [itemRow(62, 2, 1)] };
+      }
+      if (sql.includes("from channels")) return { rows: [{ id: 11 }] };
+      if (sql.includes("from drafts")) {
+        const exact = draftProjectId === 7
+          && campaignId === 41
+          && planId === 52
+          && itemId === 62
+          && destinationId === 11
+          && params.join(":") === "777:7:41:52:62:11";
+        return { rows: exact ? [{ id: 777 }] : [] };
+      }
+      throw new Error(`unexpected SQL: ${sql}`);
+    });
+    await expect(ensureMonthlyCampaignItemDraft({
+      pool: h.pool as never,
+      actorUserId: 11,
+      campaignId: 41,
+      planId: 52,
+      itemId: 62,
+      channelId: 11,
+      attachDraftId: 777,
+    })).rejects.toMatchObject({ code: "lineage_conflict" });
+    expect(h.query.mock.calls.some(([sql]) => String(sql).startsWith("update monthly_campaign_items"))).toBe(false);
+  });
+
+  it("is idempotent for the same attached draft and rejects a competing tab", async () => {
+    const same = transactionHarness((sql) => {
+      if (sql.includes("from monthly_campaigns")) return { rows: [campaignRow()] };
+      if (sql.includes("from monthly_campaign_plans")) return { rows: [planRow()] };
+      if (sql.includes("from monthly_campaign_items")) {
+        return { rows: [itemRow(62, 2, 1, { draft_id: 777 })] };
+      }
+      if (sql.includes("from channels")) return { rows: [{ id: 11 }] };
+      if (sql.includes("from drafts")) return { rows: [{ id: 777 }] };
+      throw new Error(`unexpected SQL: ${sql}`);
+    });
+    await expect(ensureMonthlyCampaignItemDraft({
+      pool: same.pool as never, actorUserId: 11, campaignId: 41, planId: 52,
+      itemId: 62, channelId: 11, attachDraftId: 777,
+    })).resolves.toMatchObject({ draftId: 777, created: false });
+    expect(same.query.mock.calls.some(([sql]) => String(sql).startsWith("update monthly_campaign_items"))).toBe(false);
+
+    const competing = transactionHarness((sql) => {
+      if (sql.includes("from monthly_campaigns")) return { rows: [campaignRow()] };
+      if (sql.includes("from monthly_campaign_plans")) return { rows: [planRow()] };
+      if (sql.includes("from monthly_campaign_items")) {
+        return { rows: [itemRow(62, 2, 1, { draft_id: 776 })] };
+      }
+      if (sql.includes("from channels")) return { rows: [{ id: 11 }] };
+      throw new Error(`unexpected SQL: ${sql}`);
+    });
+    await expect(ensureMonthlyCampaignItemDraft({
+      pool: competing.pool as never, actorUserId: 11, campaignId: 41, planId: 52,
+      itemId: 62, channelId: 11, attachDraftId: 777,
+    })).rejects.toMatchObject({ code: "lineage_conflict" });
+  });
+
+  it("rolls back a partial attachment failure and permits an exact retry", async () => {
+    const run = (updateRows: Record<string, unknown>[]) => transactionHarness((sql) => {
+      if (sql.includes("from monthly_campaigns")) return { rows: [campaignRow()] };
+      if (sql.includes("from monthly_campaign_plans")) return { rows: [planRow()] };
+      if (sql.includes("from monthly_campaign_items") && sql.includes("for update")) {
+        return { rows: [itemRow(62, 2, 1)] };
+      }
+      if (sql.includes("from channels")) return { rows: [{ id: 11 }] };
+      if (sql.includes("from drafts")) return { rows: [{ id: 777 }] };
+      if (sql.startsWith("update monthly_campaign_items")) return { rows: updateRows };
+      throw new Error(`unexpected SQL: ${sql}`);
+    });
+
+    const failed = run([]);
+    await expect(ensureMonthlyCampaignItemDraft({
+      pool: failed.pool as never, actorUserId: 11, campaignId: 41, planId: 52,
+      itemId: 62, channelId: 11, attachDraftId: 777,
+    })).rejects.toMatchObject({ code: "lineage_conflict" });
+    expect(failed.query).toHaveBeenCalledWith("rollback");
+
+    const retried = run([itemRow(62, 2, 1, { draft_id: 777 })]);
+    await expect(ensureMonthlyCampaignItemDraft({
+      pool: retried.pool as never, actorUserId: 11, campaignId: 41, planId: 52,
+      itemId: 62, channelId: 11, attachDraftId: 777,
+    })).resolves.toMatchObject({ draftId: 777, created: false });
+    expect(retried.query).toHaveBeenCalledWith("commit");
   });
 
   it("rejects a channel outside the selected project before inserting a draft", async () => {

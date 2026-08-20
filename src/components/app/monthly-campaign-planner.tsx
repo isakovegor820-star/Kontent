@@ -26,6 +26,7 @@ import { ChannelPicker, useChannelChoice } from "@/components/app/channel-picker
 import { Button } from "@/components/ui/button";
 import { Badge, Card, Checkbox, EmptyState, Field, Input, Tabs, Textarea } from "@/components/ui/primitives";
 import { RUBRICS, type Brief } from "@/lib/brief";
+import { createWorkspaceRequestFence, isAbortError } from "@/lib/client-workspace-isolation";
 import {
   campaignEditorialWeeks,
   campaignMonthRange,
@@ -42,6 +43,7 @@ import {
   type MonthlyCampaignEditorialWeek,
   type MonthlyCampaignRole,
 } from "@/lib/monthly-campaign-client";
+import { isCurrentMonthlyDetailRequest, monthlyDetailRequestIdentity } from "@/lib/monthly-detail-request-race";
 import { useStore } from "@/lib/store";
 import { cn, plural } from "@/lib/utils";
 
@@ -192,6 +194,8 @@ export function MonthlyCampaignPlanner() {
   const [brief, setBrief] = useState<Brief | null>(null);
   const [campaigns, setCampaigns] = useState<MonthlyCampaignClientSummary[]>([]);
   const [campaignId, setCampaignId] = useState<number | null>(null);
+  const campaignIdRef = useRef<number | null>(null);
+  const [detailRequestFence] = useState(createWorkspaceRequestFence);
   const [detail, setDetail] = useState<MonthlyCampaignClientDetail | null>(null);
   const [form, setForm] = useState<CampaignForm>(blankForm);
   const [loading, setLoading] = useState(true);
@@ -215,26 +219,36 @@ export function MonthlyCampaignPlanner() {
     const parsed = parseMonthlyCampaignList(payload);
     if (!response.ok || !parsed) throw new Error("campaign_list_unavailable");
     setCampaigns(parsed);
-    setCampaignId((current) => {
-      const wanted = preferredId ?? current;
-      return wanted && parsed.some((campaign) => campaign.id === wanted)
-        ? wanted
-        : parsed[0]?.id ?? null;
-    });
+    const wanted = preferredId ?? campaignIdRef.current;
+    const nextId = wanted && parsed.some((campaign) => campaign.id === wanted)
+      ? wanted
+      : parsed[0]?.id ?? null;
+    campaignIdRef.current = nextId;
+    setCampaignId(nextId);
   }, []);
 
   const loadDetail = useCallback(async (id: number, quiet = false) => {
+    const ticket = detailRequestFence.start(monthlyDetailRequestIdentity(id));
     if (!quiet) setLoading(true);
     try {
-      const response = await fetch(`/api/monthly-campaigns/${id}`, { cache: "no-store" });
+      const response = await fetch(`/api/monthly-campaigns/${id}`, {
+        cache: "no-store",
+        signal: ticket.signal,
+      });
       const payload = await response.json().catch(() => null);
       const parsed = parseMonthlyCampaignDetail(payload);
       if (!response.ok || !parsed) throw new Error("campaign_detail_unavailable");
-      setDetail(parsed);
+      if (isCurrentMonthlyDetailRequest(detailRequestFence, ticket, campaignIdRef.current)) {
+        setDetail(parsed);
+      }
+    } catch (error) {
+      if (!isAbortError(error)) throw error;
     } finally {
-      if (!quiet) setLoading(false);
+      if (!quiet && isCurrentMonthlyDetailRequest(detailRequestFence, ticket, campaignIdRef.current)) {
+        setLoading(false);
+      }
     }
-  }, []);
+  }, [detailRequestFence]);
 
   useEffect(() => {
     let cancelled = false;
@@ -261,6 +275,7 @@ export function MonthlyCampaignPlanner() {
         && parsedCampaigns.some((campaign) => campaign.id === requestedCampaignId)
         ? requestedCampaignId
         : parsedCampaigns[0]?.id ?? null;
+      campaignIdRef.current = selectedId;
       setCampaignId(selectedId);
       setCreating(parsedCampaigns.length === 0);
       setForm((current) => ({ ...current, month: current.month || nextMonth() }));
@@ -678,6 +693,7 @@ export function MonthlyCampaignPlanner() {
                     type="button"
                     aria-pressed={selected}
                     onClick={() => {
+                      campaignIdRef.current = campaign.id;
                       setCampaignId(campaign.id);
                       setCreating(false);
                       setMessage(null);

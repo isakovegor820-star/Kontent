@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   poolQuery: vi.fn(),
   txQuery: vi.fn(),
   release: vi.fn(),
+  requireSelectedProjectPermission: vi.fn(),
 }));
 
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
@@ -22,6 +23,10 @@ vi.mock("@/lib/db", () => ({
     query: mocks.poolQuery,
     connect: vi.fn(async () => ({ query: mocks.txQuery, release: mocks.release })),
   }),
+}));
+vi.mock("@/lib/project-permissions", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/project-permissions")>(),
+  requireSelectedProjectPermission: mocks.requireSelectedProjectPermission,
 }));
 
 import { POST } from "./route";
@@ -61,6 +66,7 @@ describe("POST /api/site-analysis/:id/retry", () => {
     mocks.hasTrustedMutationOrigin.mockReturnValue(true);
     mocks.hasSiteAnalysisWorker.mockResolvedValue(true);
     mocks.enqueueSiteAnalysis.mockResolvedValue({ jobId: "site-analysis-41-r2", recovered: false });
+    mocks.requireSelectedProjectPermission.mockResolvedValue({ projectId: 31, userId: 7, role: "owner", version: 1 });
     mocks.txQuery.mockImplementation(async (sql: string) => {
       if (sql.includes("for update")) return { rows: [failed] };
       if (sql.includes("run_revision = run_revision + 1")) return { rows: [queued] };
@@ -82,7 +88,7 @@ describe("POST /api/site-analysis/:id/retry", () => {
     expect(response.status).toBe(202);
     expect(mocks.txQuery).toHaveBeenCalledWith(expect.stringContaining("run_revision = run_revision + 1"), [
       41,
-      7,
+      31,
       "site-analysis-retry-1234",
       JSON.stringify({
         maxPages: 20,
@@ -141,6 +147,6 @@ describe("POST /api/site-analysis/:id/retry", () => {
     mocks.poolQuery.mockResolvedValue({ rows: [{ ...queued, status: "failed", stage: "failed", error_code: "queue_unavailable" }] });
     const response = await POST(request(), { params: Promise.resolve({ id: "41" }) });
     expect(response.status).toBe(503);
-    expect(mocks.poolQuery).toHaveBeenCalledWith(expect.stringContaining("error_code = 'queue_unavailable'"), [41, 7, 2]);
+    expect(mocks.poolQuery).toHaveBeenCalledWith(expect.stringContaining("error_code = 'queue_unavailable'"), [41, 31, 2]);
   });
 });

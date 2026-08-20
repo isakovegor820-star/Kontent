@@ -3,6 +3,13 @@
 // а внешний источник можно заменить, не меняя API, воркер и интерфейс.
 
 export const RADAR_SEARCH_CACHE_MS = 24 * 60 * 60 * 1000;
+export const RADAR_DISCOVERY_BUDGET = Object.freeze({
+  maxPages: 12,
+  maxCandidates: 250,
+  maxQueries: 8,
+  maxResponseBytes: 2 * 1024 * 1024,
+  deadlineMs: 15_000,
+});
 
 const TELEGRAM_HANDLE = /^[a-z][a-z0-9_]{3,31}$/u;
 const TELEGRAM_STOP_HANDLES = new Set([
@@ -290,7 +297,118 @@ function duckDuckGoNextOffset(payload) {
   return htmlHiddenInput(moreForm?.[0] || "", "s");
 }
 
-function providerRequest(url, init = {}) {
+function boundedBudgetNumber(value, fallback, min, max) {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? Math.max(min, Math.min(max, parsed)) : fallback;
+}
+
+export function createRadarDiscoveryBudget(input = {}) {
+  const limits = {
+    maxPages: boundedBudgetNumber(input.maxPages, RADAR_DISCOVERY_BUDGET.maxPages, 1, 100),
+    maxCandidates: boundedBudgetNumber(input.maxCandidates, RADAR_DISCOVERY_BUDGET.maxCandidates, 1, 2_000),
+    maxQueries: boundedBudgetNumber(input.maxQueries, RADAR_DISCOVERY_BUDGET.maxQueries, 1, 50),
+    maxResponseBytes: boundedBudgetNumber(
+      input.maxResponseBytes,
+      RADAR_DISCOVERY_BUDGET.maxResponseBytes,
+      1_024,
+      10 * 1024 * 1024,
+    ),
+    deadlineMs: boundedBudgetNumber(input.deadlineMs, RADAR_DISCOVERY_BUDGET.deadlineMs, 10, 60_000),
+  };
+  const controller = new AbortController();
+  const startedAt = Date.now();
+  const deadlineAt = startedAt + limits.deadlineMs;
+  const reasons = new Set();
+  const acceptedCandidates = new Set();
+  let pages = 0;
+  const timer = setTimeout(() => {
+    reasons.add("deadline");
+    controller.abort(new RadarDiscoveryError("discovery_deadline_exceeded"));
+  }, limits.deadlineMs);
+  timer.unref?.();
+  if (input.signal) {
+    if (input.signal.aborted) controller.abort(input.signal.reason);
+    else input.signal.addEventListener("abort", () => controller.abort(input.signal.reason), { once: true });
+  }
+
+  const expired = () => {
+    if (controller.signal.aborted || Date.now() >= deadlineAt) {
+      reasons.add("deadline");
+      if (!controller.signal.aborted) controller.abort(new RadarDiscoveryError("discovery_deadline_exceeded"));
+      return true;
+    }
+    return false;
+  };
+
+  return {
+    limits,
+    signal: controller.signal,
+    mark(reason) { reasons.add(String(reason)); },
+    expired,
+    takePage() {
+      if (expired()) return false;
+      if (pages >= limits.maxPages) {
+        reasons.add("max_pages");
+        return false;
+      }
+      pages += 1;
+      return true;
+    },
+    acceptCandidates(candidates) {
+      const accepted = [];
+      for (const candidate of Array.isArray(candidates) ? candidates : []) {
+        const key = String(candidate?.handle || "").toLowerCase();
+        if (!key) continue;
+        if (!acceptedCandidates.has(key) && acceptedCandidates.size >= limits.maxCandidates) {
+          reasons.add("max_candidates");
+          break;
+        }
+        acceptedCandidates.add(key);
+        accepted.push(candidate);
+      }
+      return accepted;
+    },
+    assertResponseSize(payload, declaredLength) {
+      if (Number.isFinite(declaredLength) && declaredLength > limits.maxResponseBytes) {
+        reasons.add("max_response_bytes");
+        throw new RadarDiscoveryError("response_too_large");
+      }
+      if (new TextEncoder().encode(String(payload || "")).byteLength > limits.maxResponseBytes) {
+        reasons.add("max_response_bytes");
+        throw new RadarDiscoveryError("response_too_large");
+      }
+    },
+    async run(task) {
+      if (expired()) throw new RadarDiscoveryError("discovery_deadline_exceeded");
+      return new Promise((resolve, reject) => {
+        const abort = () => reject(new RadarDiscoveryError("discovery_deadline_exceeded"));
+        controller.signal.addEventListener("abort", abort, { once: true });
+        Promise.resolve(task).then(
+          (value) => {
+            controller.signal.removeEventListener("abort", abort);
+            resolve(value);
+          },
+          (error) => {
+            controller.signal.removeEventListener("abort", abort);
+            reject(error);
+          },
+        );
+      });
+    },
+    finish() { clearTimeout(timer); },
+    summary() {
+      return {
+        pages,
+        candidates: acceptedCandidates.size,
+        reasons: [...reasons],
+        deadlineMs: limits.deadlineMs,
+      };
+    },
+  };
+}
+
+function providerRequest(url, init = {}, budget) {
+  const signals = [init.signal, budget?.signal, AbortSignal.timeout(12_000)].filter(Boolean);
   return {
     url,
     init: {
@@ -301,15 +419,25 @@ function providerRequest(url, init = {}) {
         "user-agent": "Mozilla/5.0 (compatible; AuroraRadar/1.0; public-source-discovery)",
         ...(init.headers || {}),
       },
-      signal: AbortSignal.timeout(12_000),
+      signal: signals.length === 1 ? signals[0] : AbortSignal.any(signals),
     },
   };
 }
 
-async function readSearchResponse(fetchImpl, request, provider) {
+async function responseText(response, budget) {
+  const declaredLength = Number(response.headers?.get?.("content-length"));
+  let payload;
+  if (typeof response.text === "function") payload = await response.text();
+  else if (typeof response.json === "function") payload = JSON.stringify(await response.json());
+  else payload = "";
+  budget?.assertResponseSize(payload, declaredLength);
+  return payload;
+}
+
+async function readSearchResponse(fetchImpl, request, provider, budget) {
   const response = await fetchImpl(request.url, request.init);
   if (!response.ok) throw new RadarDiscoveryError(`${provider}_http_${response.status}`);
-  return response.text();
+  return responseText(response, budget);
 }
 
 export function createSearxngTelegramProvider({ endpoint, fetchImpl = fetch } = {}) {
@@ -317,7 +445,8 @@ export function createSearxngTelegramProvider({ endpoint, fetchImpl = fetch } = 
   if (!base) return null;
   return {
     name: "searxng",
-    async search(query) {
+    async search(query, context = {}) {
+      const budget = context.budget;
       const url = new URL(base);
       if (!/\/search\/?$/u.test(url.pathname)) url.pathname = `${url.pathname.replace(/\/$/u, "")}/search`;
       // /s/ указывает поисковику на публичные страницы с текстами постов. Название
@@ -328,10 +457,11 @@ export function createSearxngTelegramProvider({ endpoint, fetchImpl = fetch } = 
       const found = new Map();
       const seenPages = new Set();
       for (let page = 1; ; page += 1) {
+        if (budget && !budget.takePage()) break;
         url.searchParams.set("pageno", String(page));
         let response;
         try {
-          response = await fetchImpl(url, providerRequest(url).init);
+          response = await fetchImpl(url, providerRequest(url, {}, budget).init);
         } catch (error) {
           if (found.size) break;
           throw error;
@@ -340,7 +470,9 @@ export function createSearxngTelegramProvider({ endpoint, fetchImpl = fetch } = 
           if (found.size) break;
           throw new RadarDiscoveryError(`searxng_http_${response.status}`);
         }
-        const json = await response.json();
+        const payloadText = await responseText(response, budget);
+        let json;
+        try { json = JSON.parse(payloadText); } catch { throw new RadarDiscoveryError("searxng_invalid_json"); }
         const pageResults = Array.isArray(json?.results) ? json.results : [];
         if (!pageResults.length) break;
         const signature = pageSignature(pageResults.map((item) => item?.url));
@@ -349,7 +481,8 @@ export function createSearxngTelegramProvider({ endpoint, fetchImpl = fetch } = 
         const payload = pageResults
           .map((item) => `${item?.url || ""}\n${item?.content || ""}`)
           .join("\n");
-        mergeTelegramCandidates(found, parseTelegramCandidates(payload, "searxng"));
+        const pageCandidates = parseTelegramCandidates(payload, "searxng");
+        mergeTelegramCandidates(found, budget ? budget.acceptCandidates(pageCandidates) : pageCandidates);
         const total = Number(json?.number_of_results);
         if (Number.isFinite(total) && total > 0 && page * pageResults.length >= total) break;
       }
@@ -361,7 +494,8 @@ export function createSearxngTelegramProvider({ endpoint, fetchImpl = fetch } = 
 export function createBingRssTelegramProvider({ fetchImpl = fetch } = {}) {
   return {
     name: "bing-rss",
-    async search(query) {
+    async search(query, context = {}) {
+      const budget = context.budget;
       const url = new URL("https://www.bing.com/search");
       url.searchParams.set("format", "rss");
       // Bing часто игнорирует site:t.me для русскоязычной RSS-выдачи. Широкая
@@ -373,15 +507,17 @@ export function createBingRssTelegramProvider({ fetchImpl = fetch } = {}) {
       const seenPages = new Set();
       let first = 1;
       for (;;) {
+        if (budget && !budget.takePage()) break;
         url.searchParams.set("first", String(first));
         let payload;
         try {
-          payload = await readSearchResponse(fetchImpl, providerRequest(url), "bing_rss");
+          payload = await readSearchResponse(fetchImpl, providerRequest(url, {}, budget), "bing_rss", budget);
         } catch (error) {
           if (found.size) break;
           throw error;
         }
-        const pageCandidates = parseTelegramCandidates(payload, "bing-rss");
+        const parsedCandidates = parseTelegramCandidates(payload, "bing-rss");
+        const pageCandidates = budget ? budget.acceptCandidates(parsedCandidates) : parsedCandidates;
         const itemCount = xmlItemCount(payload);
         if (!itemCount) {
           mergeTelegramCandidates(found, pageCandidates);
@@ -405,23 +541,26 @@ export function createBingRssTelegramProvider({ fetchImpl = fetch } = {}) {
 export function createDuckDuckGoTelegramProvider({ fetchImpl = fetch } = {}) {
   return {
     name: "duckduckgo-html",
-    async search(query) {
+    async search(query, context = {}) {
+      const budget = context.budget;
       const url = new URL("https://html.duckduckgo.com/html/");
       url.searchParams.set("q", `${query} Telegram каналы`);
       const found = new Map();
       const seenOffsets = new Set();
       let offset = "0";
       for (;;) {
+        if (budget && !budget.takePage()) break;
         if (offset === "0") url.searchParams.delete("s");
         else url.searchParams.set("s", offset);
         let payload;
         try {
-          payload = await readSearchResponse(fetchImpl, providerRequest(url), "duckduckgo");
+          payload = await readSearchResponse(fetchImpl, providerRequest(url, {}, budget), "duckduckgo", budget);
         } catch (error) {
           if (found.size) break;
           throw error;
         }
-        mergeTelegramCandidates(found, parseTelegramCandidates(payload, "duckduckgo-html"));
+        const pageCandidates = parseTelegramCandidates(payload, "duckduckgo-html");
+        mergeTelegramCandidates(found, budget ? budget.acceptCandidates(pageCandidates) : pageCandidates);
         const nextOffset = duckDuckGoNextOffset(payload);
         if (!nextOffset || nextOffset === offset || seenOffsets.has(nextOffset)) break;
         seenOffsets.add(offset);
@@ -442,37 +581,58 @@ export async function discoverTelegramCandidates(query, options = {}) {
   ].filter(Boolean);
   if (providers.length === 0) throw new RadarDiscoveryError("provider_not_configured");
 
+  const budget = createRadarDiscoveryBudget({ ...(options.budget || {}), signal: options.signal });
   const found = new Map();
   const failures = [];
   let completed = 0;
-  const discoveryQueries = buildRadarDiscoveryQueries(normalized, options.expandedQueries);
-  for (const discoveryQuery of discoveryQueries) {
-    const settled = await Promise.allSettled(
-      providers.map(async (provider) => ({ provider, candidates: await provider.search(discoveryQuery) })),
-    );
-    for (const result of settled) {
-      if (result.status === "rejected") {
-        failures.push(result.reason?.code || result.reason?.message || "provider_failed");
-        continue;
-      }
-      completed += 1;
-      for (const candidate of result.value.candidates || []) {
-        if (!candidate?.handle) continue;
-        const current = found.get(candidate.handle);
-        found.set(candidate.handle, {
-          ...(current || candidate),
-          ...candidate,
-          matchedQuery: discoveryQuery,
-          matchedQueries: [...new Set([...(current?.matchedQueries || []), discoveryQuery])],
-          providers: [...new Set([...(current?.providers || []), candidate.provider || result.value.provider.name])],
-        });
+  const allQueries = buildRadarDiscoveryQueries(normalized, options.expandedQueries);
+  const discoveryQueries = allQueries.slice(0, budget.limits.maxQueries);
+  if (allQueries.length > discoveryQueries.length) budget.mark("max_queries");
+  try {
+    for (const discoveryQuery of discoveryQueries) {
+      if (budget.expired()) break;
+      const settled = await Promise.allSettled(
+        providers.map(async (provider) => ({
+          provider,
+          candidates: await budget.run(provider.search(discoveryQuery, { budget, signal: budget.signal })),
+        })),
+      );
+      for (const result of settled) {
+        if (result.status === "rejected") {
+          failures.push(result.reason?.code || result.reason?.message || "provider_failed");
+          continue;
+        }
+        completed += 1;
+        const accepted = budget.acceptCandidates(result.value.candidates || []);
+        for (const candidate of accepted) {
+          if (!candidate?.handle) continue;
+          const current = found.get(candidate.handle);
+          found.set(candidate.handle, {
+            ...(current || candidate),
+            ...candidate,
+            matchedQuery: discoveryQuery,
+            matchedQueries: [...new Set([...(current?.matchedQueries || []), discoveryQuery])],
+            providers: [...new Set([...(current?.providers || []), candidate.provider || result.value.provider.name])],
+          });
+        }
       }
     }
+    const summary = budget.summary();
+    if (completed === 0 && summary.reasons.length === 0) {
+      throw new RadarDiscoveryError("all_providers_unavailable", failures.join(", "));
+    }
+    if (failures.length > 0 && completed > 0) budget.mark("provider_failed");
+    const finalSummary = budget.summary();
+    const result = [...found.values()];
+    Object.defineProperties(result, {
+      status: { value: finalSummary.reasons.length > 0 ? "partial" : "complete", enumerable: false },
+      partialReasons: { value: finalSummary.reasons, enumerable: false },
+      budget: { value: finalSummary, enumerable: false },
+    });
+    return result;
+  } finally {
+    budget.finish();
   }
-  if (completed === 0) {
-    throw new RadarDiscoveryError("all_providers_unavailable", failures.join(", "));
-  }
-  return [...found.values()];
 }
 
 export function scoreRadarSemanticSimilarity(value) {

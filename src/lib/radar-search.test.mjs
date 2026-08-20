@@ -89,6 +89,27 @@ describe("radar hybrid-search core", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(3);
   });
 
+  it("stops an infinite unique-page provider at the shared page budget", async () => {
+    const fetchImpl = vi.fn(async (url) => {
+      const page = Number(new URL(String(url)).searchParams.get("pageno"));
+      return {
+        ok: true,
+        text: async () => JSON.stringify({
+          results: [{ url: `https://t.me/s/infinite_page_${page}`, content: "Строительство" }],
+        }),
+      };
+    });
+    const provider = createSearxngTelegramProvider({ endpoint: "http://127.0.0.1:8080", fetchImpl });
+    const result = await discoverTelegramCandidates("строительство", {
+      providers: [provider],
+      budget: { maxPages: 3, deadlineMs: 500 },
+    });
+    expect(result).toHaveLength(3);
+    expect(result.status).toBe("partial");
+    expect(result.partialReasons).toContain("max_pages");
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
   it("uses broad channel wording when a search engine ignores site:t.me", async () => {
     const response = {
       ok: true,
@@ -111,6 +132,38 @@ describe("radar hybrid-search core", () => {
     ]) };
     await expect(discoverTelegramCandidates("садоводство", { providers: [failed, working] }))
       .resolves.toMatchObject([{ handle: "garden_people" }]);
+    const partial = await discoverTelegramCandidates("садоводство", { providers: [failed, working] });
+    expect(partial.status).toBe("partial");
+    expect(partial.partialReasons).toContain("provider_failed");
+  });
+
+  it("returns within the wall-clock deadline when a provider hangs", async () => {
+    const hanging = { name: "hanging", search: vi.fn(() => new Promise(() => {})) };
+    const started = Date.now();
+    const result = await discoverTelegramCandidates("строительство", {
+      providers: [hanging],
+      budget: { deadlineMs: 25 },
+    });
+    expect(Date.now() - started).toBeLessThan(250);
+    expect(result.status).toBe("partial");
+    expect(result.partialReasons).toContain("deadline");
+  });
+
+  it("rejects an oversized provider response without reading unbounded results", async () => {
+    const provider = createBingRssTelegramProvider({
+      fetchImpl: vi.fn().mockResolvedValue({
+        ok: true,
+        headers: { get: () => "5000" },
+        text: async () => "x".repeat(5000),
+      }),
+    });
+    const result = await discoverTelegramCandidates("строительство", {
+      providers: [provider],
+      budget: { maxResponseBytes: 1024, deadlineMs: 500 },
+    });
+    expect(result).toHaveLength(0);
+    expect(result.status).toBe("partial");
+    expect(result.partialReasons).toContain("max_response_bytes");
   });
 
   it("searches every bounded semantic formulation and merges providers", async () => {
@@ -132,6 +185,35 @@ describe("radar hybrid-search core", () => {
     }]);
     expect(buildRadarDiscoveryQueries("Строительство", ["Девелопмент", "строительство"]))
       .toEqual(["строительство", "девелопмент"]);
+  });
+
+  it("caps expanded queries with one shared query budget", async () => {
+    const provider = { name: "search", search: vi.fn().mockResolvedValue([]) };
+    const result = await discoverTelegramCandidates("строительство", {
+      providers: [provider],
+      expandedQueries: Array.from({ length: 20 }, (_, index) => `термин${index}`),
+      budget: { maxQueries: 3, deadlineMs: 500 },
+    });
+    expect(provider.search).toHaveBeenCalledTimes(3);
+    expect(result.status).toBe("partial");
+    expect(result.partialReasons).toContain("max_queries");
+  });
+
+  it("caps candidates across providers", async () => {
+    const provider = {
+      name: "many",
+      search: vi.fn().mockResolvedValue(Array.from({ length: 20 }, (_, index) => ({
+        ...normalizeTelegramCandidate(`https://t.me/public_candidate_${index}`),
+        provider: "many",
+      }))),
+    };
+    const result = await discoverTelegramCandidates("строительство", {
+      providers: [provider],
+      budget: { maxCandidates: 5, deadlineMs: 500 },
+    });
+    expect(result).toHaveLength(5);
+    expect(result.status).toBe("partial");
+    expect(result.partialReasons).toContain("max_candidates");
   });
 
   it("turns a natural-language request into a compact content query without AI", () => {

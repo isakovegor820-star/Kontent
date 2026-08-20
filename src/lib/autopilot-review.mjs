@@ -1,9 +1,9 @@
 import {
   hasAutomaticQualityApproval,
-  hasHumanQualityAttestation,
   hasVerifiedQualityMetadata,
-  withHumanQualityAttestation,
 } from "./post-quality.mjs";
+
+const SERVER_ATTESTATION = Symbol("aurora.autopilot.server_attestation");
 
 function hardQualityViolations(quality) {
   return (Array.isArray(quality?.violations) ? quality.violations : [])
@@ -15,56 +15,70 @@ function hardQualityViolations(quality) {
  * this draft; full-auto and unattended publication may not.
  */
 export function isAutopilotHumanReviewItem(item) {
+  if (item?.reviewState !== "semantic_only_review" || item?.reviewRequired !== true) return false;
+  if (item?.humanAttestation != null) return false;
   if (item?.aiReady === false) return false;
   if (!hasVerifiedQualityMetadata(item?.quality)) return false;
+  if (item.quality.metadata?.provenance?.humanAttestation != null) return false;
   if (Array.isArray(item.invented) && item.invented.length > 0) return false;
   if (hasAutomaticQualityApproval(item.quality)) return false;
-  if (hasHumanQualityAttestation(item.quality)) return false;
-  if (item.quality.semantic?.status === "blocked") return false;
+  if (item.quality.passed !== true) return false;
+  if (Number(item.quality.score) < Number(item.quality.threshold)) return false;
+  if (Array.isArray(item.quality.blockers) && item.quality.blockers.length > 0) return false;
   if (hardQualityViolations(item.quality).length > 0) return false;
-  return item.quality.semantic?.status === "not_checked" ||
-    item.reviewRequired === true ||
-    (Array.isArray(item.quality.violations) &&
-      item.quality.violations.some((violation) => violation?.code === "semantic_review_required"));
-}
-
-export function reconcileAutopilotReviewQuality(quality) {
-  if (!quality || typeof quality !== "object") return quality;
-  const violations = (Array.isArray(quality.violations) ? quality.violations : [])
-    .map((violation) => (
-      violation?.code === "semantic_review_required"
-        ? { ...violation, blocker: false }
-        : violation
-    ));
-  const blockers = (Array.isArray(quality.blockers) ? quality.blockers : [])
-    .filter((message) => !/не проверен|не подтвержд|не отработала/iu.test(String(message)));
-  const threshold = Number(quality.threshold);
-  const score = Number(quality.score);
-  return {
-    ...quality,
-    passed: true,
-    score: Number.isFinite(score) && Number.isFinite(threshold)
-      ? Math.max(score, threshold)
-      : score,
-    blockers,
-    violations,
-  };
+  const semantic = item.quality.semantic;
+  const semanticOnlyViolation = (Array.isArray(item.quality.violations)
+    ? item.quality.violations
+    : []).some((violation) => violation?.code === "semantic_review_required");
+  return Boolean(
+    semanticOnlyViolation &&
+      semantic && typeof semantic === "object" &&
+      semantic.version === 1 &&
+      semantic.status === "not_checked" &&
+      semantic.passed === false &&
+      semantic.requiresReview === true &&
+      semantic.provenance?.validatorVersion === "semantic-publication-v1" &&
+      semantic.provenance?.provider === "unavailable" &&
+      semantic.provenance?.terminalVerdict === "not_checked" &&
+      Array.isArray(semantic.claimVerdicts) &&
+      semantic.claimVerdicts.every((verdict) =>
+        verdict?.verdict === "unknown" && verdict?.reasonCode === "semantic_provider_unavailable",
+      )
+  );
 }
 
 export function attestAutopilotItemForHumanApproval(item, { userId, attestedAt } = {}) {
   if (!isAutopilotHumanReviewItem(item)) return item;
-  const quality = withHumanQualityAttestation(
-    reconcileAutopilotReviewQuality(item.quality),
-    { userId, attestedAt },
-  );
-  if (!hasHumanQualityAttestation(quality)) return item;
+  const id = Number(userId);
+  const timestamp = new Date(attestedAt ?? Date.now());
+  if (!Number.isSafeInteger(id) || id <= 0 || !Number.isFinite(timestamp.getTime())) return item;
+  const humanAttestation = Object.freeze({
+    kind: "human_review",
+    reviewState: "semantic_only_review",
+    userId: id,
+    attestedAt: timestamp.toISOString(),
+    qualityCheckedAt: item.quality.metadata.checkedAt,
+  });
   return {
     ...item,
-    quality,
+    humanAttestation,
     qualityOrigin: "human_attested",
-    qualityBlocked: false,
-    reviewRequired: false,
+    [SERVER_ATTESTATION]: humanAttestation,
   };
+}
+
+export function hasServerAutopilotHumanAttestation(item) {
+  const attestation = item?.humanAttestation;
+  return Boolean(
+    isAutopilotHumanReviewItem({ ...item, humanAttestation: undefined }) &&
+      attestation &&
+      item[SERVER_ATTESTATION] === attestation &&
+      attestation.kind === "human_review" &&
+      attestation.reviewState === "semantic_only_review" &&
+      Number.isSafeInteger(attestation.userId) &&
+      attestation.userId > 0 &&
+      attestation.qualityCheckedAt === item.quality.metadata.checkedAt,
+  );
 }
 
 export { hardQualityViolations };

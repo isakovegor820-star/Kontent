@@ -1,15 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { Compass, Sparkles } from "lucide-react";
 
 import { AppShell } from "@/components/app/shell";
 import { ChannelPicker, useChannelChoice } from "@/components/app/channel-picker";
-import { Button } from "@/components/ui/button";
+import { Button, buttonClassName } from "@/components/ui/button";
 import { Badge, Card, EmptyState } from "@/components/ui/primitives";
 import type { GrowthBoard, GrowthConfidence, GrowthMoveRecord } from "@/lib/growth";
+import { createWorkspaceRequestFence, isAbortError } from "@/lib/client-workspace-isolation";
+import { growthRequestIdentity, isCurrentGrowthRequest } from "@/lib/growth-request-race";
 import { useStore } from "@/lib/store";
 
 function confidenceLabel(value: GrowthConfidence): string {
@@ -26,7 +27,6 @@ function statusLabel(status: GrowthMoveRecord["status"]): string {
 
 export default function GrowthPage() {
   const store = useStore();
-  const router = useRouter();
   const [picked, setPicked] = useState<number | null>(() => {
     if (typeof window === "undefined") return null;
     const value = Number(new URLSearchParams(window.location.search).get("channel"));
@@ -37,32 +37,48 @@ export default function GrowthPage() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const [busyId, setBusyId] = useState<number | null>(null);
+  const [requestFence] = useState(createWorkspaceRequestFence);
+  const channelRef = useRef(channelId);
 
   const load = useCallback(async () => {
-    if (!channelId) {
+    const requestedChannelId = channelRef.current;
+    if (!requestedChannelId) {
+      requestFence.invalidate();
       setBoard(null);
       setLoadError(false);
       setLoading(false);
       return;
     }
+    const ticket = requestFence.start(growthRequestIdentity(requestedChannelId));
+    const isCurrent = () => isCurrentGrowthRequest(requestFence, ticket, channelRef.current);
     setLoading(true);
     setLoadError(false);
     try {
-      const response = await fetch(`/api/growth?channel=${channelId}`, { cache: "no-store" });
+      const response = await fetch(`/api/growth?channel=${requestedChannelId}`, {
+        method: "POST",
+        cache: "no-store",
+        signal: ticket.signal,
+      });
       const next = (await response.json().catch(() => null)) as GrowthBoard | null;
       if (!response.ok || !next) throw new Error("growth_unavailable");
+      if (!isCurrent()) return;
       setBoard(next);
-    } catch {
+    } catch (error) {
+      if (isAbortError(error) || !isCurrent()) return;
       setLoadError(true);
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
+  }, [requestFence]);
+
+  useEffect(() => {
+    channelRef.current = channelId;
   }, [channelId]);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- запрос /api/growth при смене канала
     void load();
-  }, [load]);
+    return () => requestFence.invalidate();
+  }, [channelId, load, requestFence]);
 
   async function changeStatus(move: GrowthMoveRecord, action: "skip" | "complete") {
     if (busyId) return;
@@ -99,6 +115,16 @@ export default function GrowthPage() {
         className="mb-6"
       />
 
+      <div className="sr-only" role="status" aria-live="polite">
+        {loading
+          ? "Загружаем ходы для выбранного канала."
+          : loadError
+            ? "Не удалось загрузить развитие."
+            : board?.hasChannel
+              ? `Ходы загружены: ${board.moves.length}.`
+              : ""}
+      </div>
+
       {loading && (
         <div className="space-y-4">
           <div className="skeleton h-24 w-full rounded-md" />
@@ -128,8 +154,8 @@ export default function GrowthPage() {
             title="Сначала нужен канал"
             body="Подключи Telegram-канал — без него сравнивать нечего."
             action={
-              <Link href="/app/onboarding">
-                <Button variant="solid" size="sm">К подключению</Button>
+              <Link href="/app/onboarding" className={buttonClassName({ variant: "solid", size: "sm" })}>
+                К подключению
               </Link>
             }
           />
@@ -193,18 +219,20 @@ export default function GrowthPage() {
                         <p className="max-w-[68ch] text-[14px] leading-relaxed text-text-2">{move.reason}</p>
                         {move.status === "open" && (
                           <div className="flex flex-wrap gap-2">
-                            <Button
-                              variant="brand"
-                              size="sm"
-                              onClick={() => router.push(move.actionHref)}
+                            <Link
+                              href={move.actionHref}
+                              className={buttonClassName({ variant: "brand", size: "sm" })}
+                              aria-label={`Сделать ход: ${move.title}`}
                             >
                               <Sparkles className="h-4 w-4" aria-hidden />
                               Сделать
-                            </Button>
+                            </Link>
                             <Button
                               variant="ghost"
                               size="sm"
+                              disabled={busyId !== null}
                               loading={busyId === move.id}
+                              aria-label={`Пропустить ход: ${move.title}`}
                               onClick={() => void changeStatus(move, "skip")}
                             >
                               Пропустить
@@ -212,7 +240,9 @@ export default function GrowthPage() {
                             <Button
                               variant="ghost"
                               size="sm"
+                              disabled={busyId !== null}
                               loading={busyId === move.id}
+                              aria-label={`Отметить ход сделанным: ${move.title}`}
                               onClick={() => void changeStatus(move, "complete")}
                             >
                               Сделали

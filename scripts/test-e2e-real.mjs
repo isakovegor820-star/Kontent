@@ -178,6 +178,26 @@ async function installBrowserDiagnostics(context, label) {
     });
   });
   context.on("page", (targetPage) => {
+    targetPage.on("crash", () => {
+      browserIssues.push({
+        context: label,
+        kind: "page.crash",
+        message: "browser page crashed",
+        url: targetPage.url(),
+        line: 0,
+      });
+    });
+    targetPage.on("close", () => {
+      if (browser?.isConnected()) {
+        browserIssues.push({
+          context: label,
+          kind: "page.close",
+          message: "browser page closed before test teardown",
+          url: targetPage.url(),
+          line: 0,
+        });
+      }
+    });
     targetPage.on("console", (message) => {
       if (message.type() !== "error") return;
       const rawText = message.text();
@@ -1108,6 +1128,15 @@ try {
   await waitForFullWorkerSet();
 
   browser = await chromium.launch({ headless: true, executablePath: await browserExecutable() });
+  browser.on("disconnected", () => {
+    browserIssues.push({
+      context: "browser",
+      kind: "browser.disconnected",
+      message: "browser disconnected before test teardown",
+      url: "",
+      line: 0,
+    });
+  });
   const context = await browser.newContext({
     baseURL: baseUrl,
     viewport: { width: 390, height: 844 },
@@ -1912,14 +1941,16 @@ try {
   };
   const siteAnalysisId = Number((await pool.query(
     `insert into site_analysis_jobs
-       (user_id, request_id, idempotency_key, request_fingerprint, target_url,
+       (project_id, user_id, request_id, idempotency_key, request_fingerprint, target_url,
         confirmed_domain, consented_at, status, stage, progress, progress_detail,
         result, run_revision, queue_confirmed_at, completed_at, prompt_version,
         question_catalog_version, snapshot_hash, coverage_mode, answered_count, question_count)
-     values ($1, '11111111-1111-4111-8111-111111111111', 'e2e-site-analysis-ready', $2,
-             'https://example.com/', 'example.com', now(), 'ready', 'ready', 100,
-             'OSINT-интервью и маркетинговый план готовы', $3::jsonb, 1, now(), now(),
-             'site-osint-interview-v1', 'site-osint-questions-v1', $4, 'site_only', $5, $5)
+     select preference.selected_project_id, $1,
+            '11111111-1111-4111-8111-111111111111', 'e2e-site-analysis-ready', $2,
+            'https://example.com/', 'example.com', now(), 'ready', 'ready', 100,
+            'OSINT-интервью и маркетинговый план готовы', $3::jsonb, 1, now(), now(),
+            'site-osint-interview-v1', 'site-osint-questions-v1', $4, 'site_only', $5, $5
+       from user_project_preferences preference where preference.user_id = $1
      returning id`,
     [userId, "c".repeat(64), JSON.stringify(siteReport), siteSnapshotHash, SITE_INTERVIEW_QUESTIONS.length],
   )).rows[0].id);
@@ -2724,21 +2755,21 @@ try {
   );
 
   await page.goto("/app/autopilot/month");
-  await page.getByRole("heading", { name: "Собери редакционную сетку на месяц", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  await page.getByRole("heading", { name: "Сетка тем на месяц", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const monthDate = new Date();
   monthDate.setUTCMonth(monthDate.getUTCMonth() + 1, 1);
   const campaignMonth = `${monthDate.getUTCFullYear()}-${String(monthDate.getUTCMonth() + 1).padStart(2, "0")}`;
   await page.locator("#campaign-month").fill(campaignMonth);
-  await page.locator("#campaign-frequency").selectOption("3");
   await page.locator("#campaign-goal").fill("Показать практические сценарии правовых технологий без рекламных обещаний");
   await page.locator("#campaign-audience").fill("руководители юридических команд");
-  const advancedCampaign = page.getByRole("button", { name: "Рубрики, практики и метрики", exact: true });
+  const advancedCampaign = page.getByRole("button", { name: "Рубрики, воронка и метрики", exact: true });
   await advancedCampaign.click();
+  await page.locator("#campaign-frequency").selectOption("3");
   await page.locator("#campaign-practices").fill("автоматизация договоров, юридическая аналитика");
-  const assembleMonth = page.getByRole("button", { name: "Собрать месяц", exact: true });
+  const assembleMonth = page.getByRole("button", { name: "Собрать сетку месяца", exact: true });
   await assertTouch(assembleMonth, "assemble monthly campaign");
   await assembleMonth.click();
-  await page.getByText("Кампания создана. Проверь темы и отправь план на согласование.", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  await page.getByText("Сетка собрана. Проверь темы и отправь план на согласование.", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const monthlyCampaign = (await pool.query(
     `select campaign.id, campaign.project_id, campaign.posts_per_week, plan.id as plan_id, plan.status
        from monthly_campaigns campaign
@@ -2789,13 +2820,31 @@ try {
   )).rows;
   assert(monthlyBeforeMove.length === 2, "monthly plan has no pair for keyboard movement");
   const movedItemId = Number(monthlyBeforeMove[0].id);
+  await page.locator(`#monthly-item-${movedItemId} button[aria-expanded]`).click();
   const moveLater = page.getByRole("button", {
     name: `Перенести тему «${monthlyBeforeMove[0].title}» на день позже`,
     exact: true,
   });
   await assertTouch(moveLater, "move monthly item later");
   await moveLater.focus();
+  const moveResponsePromise = page.waitForResponse((response) => (
+    response.request().method() === "POST"
+      && response.url().endsWith(`/api/monthly-campaigns/${monthlyCampaignId}/plans/${monthlyPlanId}/move`)
+  ));
   await page.keyboard.press("Enter");
+  const moveResponse = await moveResponsePromise;
+  if (!moveResponse.ok()) {
+    const moveBody = await moveResponse.json().catch(() => null);
+    const moveContext = (await pool.query(
+      `select preference.selected_project_id,
+              exists(select 1 from monthly_campaigns where id = $2 and project_id = preference.selected_project_id) as campaign_visible,
+              exists(select 1 from monthly_campaign_plans where id = $3 and campaign_id = $2
+                       and project_id = preference.selected_project_id) as plan_visible
+         from user_project_preferences preference where preference.user_id = $1`,
+      [userId, monthlyCampaignId, monthlyPlanId],
+    )).rows[0] ?? null;
+    throw new Error(`monthly move failed: ${moveResponse.status()}:${JSON.stringify({ moveBody, moveContext })}`);
+  }
   await page.getByText(/Материал перенесён на/u).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const monthlyAfterMove = (await pool.query(
     `select id, scheduled_for::text as scheduled_for, position
@@ -2946,9 +2995,12 @@ try {
   );
 
   await page.reload();
-  const openMonthlyDraft = page.locator(`a[href="/app/composer?draft=${monthlyDraftId}&from=autopilot-month"]`);
+  const openMonthlyDraft = page.locator(`#monthly-item-${monthlyItemId}`).getByRole(
+    "button",
+    { name: "Открыть в редакторе", exact: true },
+  );
   await openMonthlyDraft.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
-  assert(await openMonthlyDraft.count() === 1, "monthly plan did not expose one exact Composer link for its first material");
+  assert(await openMonthlyDraft.count() === 1, "monthly plan did not expose one exact Composer action for its first material");
   await page.setViewportSize({ width: 320, height: 780 });
   await assertNoHorizontalOverflow(page, "monthly campaign at 320px");
   await page.setViewportSize({ width: 1280, height: 900 });

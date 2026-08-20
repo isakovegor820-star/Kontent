@@ -8,6 +8,8 @@ on:
 
 permissions:
   contents: read
+  checks: read
+  statuses: read
 
 concurrency:
   group: production-deploy
@@ -20,43 +22,88 @@ jobs:
     environment: production
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Verify required CI checks
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AURORA_DEPLOY_SHA: ${{ github.sha }}
+          AURORA_REQUIRED_CI_CHECKS: ${{ vars.REQUIRED_CI_CHECKS }}
+        run: |
+          test -n "$AURORA_REQUIRED_CI_CHECKS"
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${GITHUB_REPOSITORY}/commits/${AURORA_DEPLOY_SHA}/check-runs?per_page=100" \
+            > "${RUNNER_TEMP}/required-checks.json"
+          node scripts/verify-required-ci-checks.mjs "${RUNNER_TEMP}/required-checks.json"
 
       - name: Configure SSH
         env:
           PRODUCTION_SSH_KEY: ${{ secrets.PRODUCTION_SSH_KEY }}
           PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
+          PRODUCTION_SSH_KNOWN_HOSTS: ${{ secrets.PRODUCTION_SSH_KNOWN_HOSTS }}
+          PRODUCTION_SSH_HOST_FINGERPRINT: ${{ secrets.PRODUCTION_SSH_HOST_FINGERPRINT }}
         run: |
           test -n "$PRODUCTION_SSH_KEY"
           test -n "$PRODUCTION_SSH_HOST"
+          test -n "$PRODUCTION_SSH_KNOWN_HOSTS"
+          test -n "$PRODUCTION_SSH_HOST_FINGERPRINT"
           umask 077
           mkdir -p ~/.ssh
           printf '%s\n' "$PRODUCTION_SSH_KEY" > ~/.ssh/deploy_key
-          ssh-keyscan -H -T 10 "$PRODUCTION_SSH_HOST" >> ~/.ssh/known_hosts
+          printf '%s\n' "$PRODUCTION_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          bash scripts/verify-ssh-host-identity.sh \
+            ~/.ssh/known_hosts \
+            "$PRODUCTION_SSH_HOST" \
+            "$PRODUCTION_SSH_HOST_FINGERPRINT"
 
       - name: Deploy release
         env:
           PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
           PRODUCTION_SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
           AURORA_DEPLOY_SHA: ${{ github.sha }}
+          AURORA_SCHEMA_ROLLBACK_AUDIT: ${{ vars.SCHEMA_ROLLBACK_AUDIT }}
         run: |
           test -n "$PRODUCTION_SSH_USER"
+          if [[ -n "$AURORA_SCHEMA_ROLLBACK_AUDIT" \
+            && ! "$AURORA_SCHEMA_ROLLBACK_AUDIT" =~ ^[0-9a-f]{40}:[0-9a-f]{40}$ ]]; then
+            echo "SCHEMA_ROLLBACK_AUDIT must be an exact previous:target SHA pair" >&2
+            exit 1
+          fi
           ssh -i ~/.ssh/deploy_key \
+            -o StrictHostKeyChecking=yes \
             -o IdentitiesOnly=yes \
             -o ServerAliveInterval=15 \
             -o ServerAliveCountMax=8 \
             "${PRODUCTION_SSH_USER}@${PRODUCTION_SSH_HOST}" \
-            "AURORA_DEPLOY_SHA=${AURORA_DEPLOY_SHA} bash -s" \
+            "AURORA_DEPLOY_SHA=${AURORA_DEPLOY_SHA} AURORA_SCHEMA_ROLLBACK_AUDIT=${AURORA_SCHEMA_ROLLBACK_AUDIT} bash -s" \
             < scripts/deploy-production.sh
-
-      - name: Setup Node
-        uses: actions/setup-node@v7
-        with:
-          node-version: 24
 
       - name: Verify production deployment
         env:
           AURORA_DEPLOYMENT_SMOKE_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
           AURORA_DEPLOYMENT_SMOKE_PROFILE: full
           AURORA_READINESS_TOKEN: ${{ secrets.AURORA_READINESS_TOKEN }}
-        run: npm run test:deployment-smoke
+          PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
+          PRODUCTION_SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
+          AURORA_DEPLOY_SHA: ${{ github.sha }}
+        run: |
+          if npm run test:deployment-smoke; then
+            exit 0
+          fi
+          echo "full smoke failed; initiating schema-boundary-verified rollback" >&2
+          ssh -i ~/.ssh/deploy_key \
+            -o StrictHostKeyChecking=yes \
+            -o IdentitiesOnly=yes \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=8 \
+            "${PRODUCTION_SSH_USER}@${PRODUCTION_SSH_HOST}" \
+            "AURORA_DEPLOY_ACTION=rollback AURORA_DEPLOY_SHA=${AURORA_DEPLOY_SHA} bash -s" \
+            < scripts/deploy-production.sh
+          exit 1

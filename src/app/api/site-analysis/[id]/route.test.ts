@@ -1,9 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
-const mocks = vi.hoisted(() => ({ getSessionUser: vi.fn(), query: vi.fn() }));
+const mocks = vi.hoisted(() => ({ getSessionUser: vi.fn(), query: vi.fn(), requireSelectedProjectPermission: vi.fn() }));
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
 vi.mock("@/lib/db", () => ({ getPool: () => ({ query: mocks.query }) }));
+vi.mock("@/lib/project-permissions", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/project-permissions")>(),
+  requireSelectedProjectPermission: mocks.requireSelectedProjectPermission,
+}));
 
 import { GET } from "./route";
 
@@ -11,6 +15,7 @@ describe("GET /api/site-analysis/:id", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.getSessionUser.mockResolvedValue({ id: 7 });
+    mocks.requireSelectedProjectPermission.mockResolvedValue({ projectId: 31, userId: 7, role: "owner", version: 1 });
   });
 
   it("scopes the result to its owner and returns the persisted request ID", async () => {
@@ -24,7 +29,7 @@ describe("GET /api/site-analysis/:id", () => {
     const response = await GET(new NextRequest("http://localhost/api/site-analysis/41"), { params: Promise.resolve({ id: "41" }) });
     expect(response.status).toBe(200);
     expect(response.headers.get("x-request-id")).toBe("req-41");
-    expect(mocks.query).toHaveBeenCalledWith(expect.stringContaining("where id = $1 and user_id = $2"), [41, 7]);
+    expect(mocks.query).toHaveBeenCalledWith(expect.stringContaining("where id = $1 and project_id = $2"), [41, 31]);
     expect(await response.json()).toMatchObject({
       analysis: {
         startedAt: startedAt.toISOString(),
@@ -34,9 +39,10 @@ describe("GET /api/site-analysis/:id", () => {
     });
   });
 
-  it("does not reveal another user's analysis", async () => {
+  it("does not reveal an analysis from another selected project or a legacy NULL row", async () => {
     mocks.query.mockResolvedValue({ rows: [] });
     const response = await GET(new NextRequest("http://localhost/api/site-analysis/41"), { params: Promise.resolve({ id: "41" }) });
     expect(response.status).toBe(404);
+    expect(mocks.query).toHaveBeenCalledWith(expect.stringContaining("project_id = $2"), [41, 31]);
   });
 });

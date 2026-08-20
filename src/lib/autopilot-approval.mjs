@@ -3,20 +3,20 @@
 
 import {
   hasAutomaticQualityApproval,
-  hasHumanQualityAttestation,
   hasVerifiedQualityMetadata,
 } from "./post-quality.mjs";
 import {
   attestAutopilotItemForHumanApproval,
   hardQualityViolations,
+  hasServerAutopilotHumanAttestation,
   isAutopilotHumanReviewItem,
 } from "./autopilot-review.mjs";
 import { createHash, randomBytes } from "node:crypto";
 
 export {
   attestAutopilotItemForHumanApproval,
+  hasServerAutopilotHumanAttestation,
   isAutopilotHumanReviewItem,
-  reconcileAutopilotReviewQuality,
 } from "./autopilot-review.mjs";
 
 export const AUTOPILOT_FRESHNESS_MS = 60_000;
@@ -129,29 +129,24 @@ export function evaluateAutopilotItem(item, nowMs = Date.now(), options = {}) {
   if (!qualityIsComplete(item.quality)) {
     blockers.push(blocker("quality_missing"));
   } else if (
-    hasAutomaticQualityApproval(item.quality) ||
-    hasHumanQualityAttestation(item.quality)
+    hasAutomaticQualityApproval(item.quality) &&
+    item.reviewRequired !== true &&
+    item.reviewState !== "semantic_only_review" &&
+    item.qualityBlocked !== true &&
+    (!Array.isArray(item.invented) || item.invented.length === 0)
   ) {
-    // Automatic proof or an explicit human review both clear the quality gate.
+    // Complete automatic proof clears the gate only when persisted review flags agree.
+  } else if (hasServerAutopilotHumanAttestation(item)) {
+    // The marker is process-local and cannot be forged by persisted plan JSON.
   } else if (isAutopilotHumanReviewItem(item) && options.actor === "human") {
-    // Confirmation-mode click is the review. Full-auto never passes actor: "human".
-  } else if (
-    isAutopilotHumanReviewItem(item) ||
-    (item.quality.passed === true && !hasAutomaticQualityApproval(item.quality))
-  ) {
+    // A preview may show the one semantic-only exception as human-eligible.
+  } else if (isAutopilotHumanReviewItem(item)) {
     blockers.push(blocker("semantic_review_required"));
   } else {
-    const qualityFailed =
-      item.quality.passed !== true ||
-      hardQualityViolations(item.quality).length > 0 ||
-      item.qualityBlocked === true ||
-      (Array.isArray(item.invented) && item.invented.length > 0);
-    if (qualityFailed) {
-      const detail =
-        item.quality.blockers.find((entry) => typeof entry === "string" && entry.trim()) ||
-        hardQualityViolations(item.quality)[0]?.message;
-      blockers.push(blocker("quality_failed", detail));
-    }
+    const detail =
+      item.quality.blockers.find((entry) => typeof entry === "string" && entry.trim()) ||
+      hardQualityViolations(item.quality)[0]?.message;
+    blockers.push(blocker("quality_failed", detail));
   }
 
   return {

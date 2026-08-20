@@ -1633,6 +1633,9 @@ function StudioPageInner() {
           referenceDraftId: gen.referenceDraftId,
           referenceDraftVersion: gen.referenceDraftVersion,
           referenceIntent: gen.referenceIntent,
+          monthlyCampaignId: gen.monthlyCampaignId,
+          monthlyPlanId: gen.monthlyPlanId,
+          monthlyItemId: gen.monthlyItemId,
           // Для draft-backed adaptation сервер сам загружает тему, provenance и недоверенный
           // источник; клиент передаёт только draft id/version. Старый inline reference остаётся
           // лишь для обратной совместимости discuss-flow.

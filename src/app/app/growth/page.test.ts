@@ -26,4 +26,16 @@ describe("growth page contract", () => {
     expect(studio).not.toContain("prompt=");
     expect(autopilot).not.toContain("prompt=");
   });
+
+  it("uses native navigation semantics and contextual, announced move controls", () => {
+    expect(source).toContain("href={move.actionHref}");
+    expect(source).not.toMatch(/<Link[^>]*>\s*<Button/gu);
+    expect(source).toContain("Сделать ход: ${move.title}");
+    expect(source).toContain("Пропустить ход: ${move.title}");
+    expect(source).toContain("Отметить ход сделанным: ${move.title}");
+    expect(source).toContain('role="status"');
+    expect(source).toContain("Загружаем ходы для выбранного канала.");
+    expect(source).toContain("Ходы загружены:");
+    expect(source).toContain("disabled={busyId !== null}");
+  });
 });
