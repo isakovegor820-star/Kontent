@@ -3029,9 +3029,10 @@ try {
       && (await saveButton.textContent())?.trim() === "Сохранено";
     await saveButton.click();
     if (!alreadySaved) {
-      await protection.getByRole("button", { name: "Сохранено", exact: true }).waitFor({
-        timeout: UI_WAIT_TIMEOUT_MS,
-      });
+      await waitFor(async () => {
+        const summary = await protection.locator("summary").textContent();
+        return summary?.includes("Сохранено") === true;
+      }, "Composer save state did not acknowledge the visible text", UI_WAIT_TIMEOUT_MS);
     }
     await waitFor(async () => {
       const row = (await pool.query(

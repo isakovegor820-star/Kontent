@@ -10,4 +10,12 @@ describe("real E2E runtime isolation", () => {
     expect(source).toContain("AURORA_NEXT_DIST_DIR: `.next-e2e-real-${distSuffix}`");
     expect(source).toContain("const distSuffix = label.toLowerCase()");
   });
+
+  it("accepts the visible save summary when a resolved error collapses its details", () => {
+    const source = readFileSync(resolve("scripts/test-e2e-real.mjs"), "utf8");
+
+    expect(source).toContain('const summary = await protection.locator("summary").textContent()');
+    expect(source).toContain('summary?.includes("Сохранено") === true');
+    expect(source).toContain('select text from drafts where id = $1 and project_id = $2');
+  });
 });
