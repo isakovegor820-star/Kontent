@@ -1,5 +1,12 @@
 import Redis from "ioredis";
+import { aiReady, serviceEngine } from "./ai-provider";
+import {
+  aiProviderCircuitBreaker,
+  aiProviderHealthSnapshot,
+  type ProviderHealthSnapshot,
+} from "./ai-provider-health";
 import { getPool } from "./db";
+import type { EngineId } from "./engines";
 import {
   isFreshPublicationHeartbeat,
   telegramPollingHeartbeatState,
@@ -73,6 +80,61 @@ export function probeAiConfiguration(env: NodeJS.ProcessEnv = process.env): bool
       || String(env.GEMINI_API_KEY || "").trim()
       || String(env.AI_SERVICE_ENGINE || "").trim() === "local",
   );
+}
+
+interface AiProviderReadinessDependencies {
+  configured: () => boolean;
+  engine: () => EngineId;
+  ready: (engine: EngineId) => Promise<boolean>;
+  snapshot: () => ProviderHealthSnapshot[];
+  recordSuccess: (engine: EngineId, latencyMs: number) => void;
+  recordFailure: (
+    engine: EngineId,
+    input: { code: string; transient: boolean; latencyMs: number },
+  ) => void;
+  now: () => number;
+}
+
+const defaultAiProviderReadinessDependencies: AiProviderReadinessDependencies = {
+  configured: probeAiConfiguration,
+  engine: serviceEngine,
+  ready: aiReady,
+  snapshot: aiProviderHealthSnapshot,
+  recordSuccess: (engine, latencyMs) => aiProviderCircuitBreaker.recordSuccess(engine, latencyMs),
+  recordFailure: (engine, input) => aiProviderCircuitBreaker.recordFailure(engine, input),
+  now: Date.now,
+};
+
+/**
+ * A web restart clears the in-process circuit snapshot. On the first authorized
+ * readiness check, establish fresh bounded provider evidence instead of waiting
+ * for a paid user request. Existing runtime failure evidence is never overwritten.
+ */
+export async function probeAiProviderReadiness(
+  dependencies: AiProviderReadinessDependencies = defaultAiProviderReadinessDependencies,
+): Promise<ProviderHealthSnapshot[]> {
+  const existing = dependencies.snapshot();
+  if (!dependencies.configured() || existing.length > 0) return existing;
+
+  const engine = dependencies.engine();
+  const startedAt = dependencies.now();
+  let providerReady = false;
+  try {
+    providerReady = await dependencies.ready(engine);
+  } catch {
+    providerReady = false;
+  }
+  const latencyMs = Math.max(0, dependencies.now() - startedAt);
+  if (providerReady) {
+    dependencies.recordSuccess(engine, latencyMs);
+  } else {
+    dependencies.recordFailure(engine, {
+      code: "readiness_probe_failed",
+      transient: true,
+      latencyMs,
+    });
+  }
+  return dependencies.snapshot();
 }
 
 /** Mail is a separate degraded capability; no secret value is returned or logged. */

@@ -2,9 +2,9 @@ import { createHash, timingSafeEqual } from "node:crypto";
 
 import { NextRequest, NextResponse } from "next/server";
 import { hasAuroraAdminAccess } from "@/lib/admin-access";
-import { aiProviderHealthSnapshot } from "@/lib/ai-provider-health";
 import {
   probeAiConfiguration,
+  probeAiProviderReadiness,
   probeDatabaseAndSchema,
   probeMailDeliveryConfiguration,
   probeRedisAndPublicationWorker,
@@ -43,9 +43,10 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  const [database, queue] = await Promise.all([
+  const [database, queue, aiProviders] = await Promise.all([
     probeDatabaseAndSchema(),
     probeRedisAndPublicationWorker(),
+    probeAiProviderReadiness(),
   ]);
   const report = evaluateReadiness({
     database: database.database,
@@ -53,7 +54,7 @@ export async function GET(req: NextRequest) {
     redis: queue.redis,
     publicationWorker: queue.publicationWorker,
     telegramPolling: queue.telegramPolling,
-    aiProviders: aiProviderHealthSnapshot(),
+    aiProviders,
     aiConfigured: probeAiConfiguration(),
     mailDelivery: probeMailDeliveryConfiguration(),
     uploadIngress: probeUploadIngressConfiguration(),

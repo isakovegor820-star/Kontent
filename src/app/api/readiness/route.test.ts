@@ -5,10 +5,10 @@ const mocks = vi.hoisted(() => ({
   probeDatabaseAndSchema: vi.fn(),
   probeRedisAndPublicationWorker: vi.fn(),
   probeAiConfiguration: vi.fn(),
+  probeAiProviderReadiness: vi.fn(),
   probeMailDeliveryConfiguration: vi.fn(),
   probeUploadIngressConfiguration: vi.fn(),
   probeTrackingSecretsConfiguration: vi.fn(),
-  aiProviderHealthSnapshot: vi.fn(),
   getSessionUser: vi.fn(),
 }));
 
@@ -16,12 +16,10 @@ vi.mock("@/lib/readiness-probes", () => ({
   probeDatabaseAndSchema: mocks.probeDatabaseAndSchema,
   probeRedisAndPublicationWorker: mocks.probeRedisAndPublicationWorker,
   probeAiConfiguration: mocks.probeAiConfiguration,
+  probeAiProviderReadiness: mocks.probeAiProviderReadiness,
   probeMailDeliveryConfiguration: mocks.probeMailDeliveryConfiguration,
   probeUploadIngressConfiguration: mocks.probeUploadIngressConfiguration,
   probeTrackingSecretsConfiguration: mocks.probeTrackingSecretsConfiguration,
-}));
-vi.mock("@/lib/ai-provider-health", () => ({
-  aiProviderHealthSnapshot: mocks.aiProviderHealthSnapshot,
 }));
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
 
@@ -57,7 +55,7 @@ describe("GET /api/readiness", () => {
     mocks.probeMailDeliveryConfiguration.mockReturnValue("up");
     mocks.probeUploadIngressConfiguration.mockReturnValue("up");
     mocks.probeTrackingSecretsConfiguration.mockReturnValue("up");
-    mocks.aiProviderHealthSnapshot.mockReturnValue([{
+    mocks.probeAiProviderReadiness.mockResolvedValue([{
       engine: "openai",
       state: "closed",
       consecutiveTransientFailures: 0,
@@ -167,6 +165,7 @@ describe("GET /api/readiness", () => {
     await expect(response.json()).resolves.toEqual({ error: "unauthorized" });
     expect(mocks.probeDatabaseAndSchema).not.toHaveBeenCalled();
     expect(mocks.probeRedisAndPublicationWorker).not.toHaveBeenCalled();
+    expect(mocks.probeAiProviderReadiness).not.toHaveBeenCalled();
   });
 
   it("does not run dependency probes for a public request", async () => {
@@ -175,6 +174,7 @@ describe("GET /api/readiness", () => {
     await expect(response.json()).resolves.toEqual({ error: "unauthorized" });
     expect(mocks.probeDatabaseAndSchema).not.toHaveBeenCalled();
     expect(mocks.probeRedisAndPublicationWorker).not.toHaveBeenCalled();
+    expect(mocks.probeAiProviderReadiness).not.toHaveBeenCalled();
   });
 
   it("rejects a non-admin session without exposing capability flags", async () => {
