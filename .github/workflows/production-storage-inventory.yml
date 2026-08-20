@@ -103,6 +103,83 @@ jobs:
           docker_df="$(docker system df 2>/dev/null || true)"
           printf 'docker_system_df_base64=%s\n' "$(printf '%s' "$docker_df" | base64 | tr -d '\n')"
 
+          # Calculate application-image candidates without exposing repository names or IDs.
+          # Every image referenced by any container is protected, as are the three newest
+          # images for each ASPB repository. Only older, unreferenced images are candidates.
+          declare -A protected_image_ids=()
+          declare -A aspb_candidate_image_ids=()
+          while IFS= read -r container_id; do
+            [[ -n "$container_id" ]] || continue
+            image_id="$(docker inspect --format '{{.Image}}' "$container_id" 2>/dev/null || true)"
+            [[ -n "$image_id" ]] && protected_image_ids["$image_id"]=1
+          done < <(docker ps -aq 2>/dev/null || true)
+
+          for repository in aspb-autowebinar-api aspb-autowebinar-worker; do
+            kept_for_repository=0
+            while IFS= read -r image_id; do
+              [[ -n "$image_id" ]] || continue
+              if [[ -z "${protected_image_ids[$image_id]+x}" && "$kept_for_repository" -lt 3 ]]; then
+                protected_image_ids["$image_id"]=1
+                kept_for_repository=$((kept_for_repository + 1))
+              fi
+            done < <(docker image ls "$repository" --no-trunc --format '{{.ID}}' 2>/dev/null | awk '!seen[$0]++')
+
+            while IFS= read -r image_id; do
+              [[ -n "$image_id" ]] || continue
+              if [[ -z "${protected_image_ids[$image_id]+x}" ]]; then
+                aspb_candidate_image_ids["$image_id"]=1
+              fi
+            done < <(docker image ls "$repository" --no-trunc --format '{{.ID}}' 2>/dev/null | awk '!seen[$0]++')
+          done
+
+          aspb_prunable_image_bytes=0
+          for image_id in "${!aspb_candidate_image_ids[@]}"; do
+            image_bytes="$(docker image inspect --format '{{.Size}}' "$image_id" 2>/dev/null || printf '0')"
+            aspb_prunable_image_bytes=$((aspb_prunable_image_bytes + image_bytes))
+          done
+          printf 'aspb_prunable_image_unique_count=%s\n' "${#aspb_candidate_image_ids[@]}"
+          printf 'aspb_prunable_image_bytes=%s\n' "$aspb_prunable_image_bytes"
+
+          declare -A dangling_image_ids=()
+          while IFS= read -r image_id; do
+            [[ -n "$image_id" ]] && dangling_image_ids["$image_id"]=1
+          done < <(docker image ls --filter dangling=true --quiet --no-trunc 2>/dev/null || true)
+          dangling_image_bytes=0
+          for image_id in "${!dangling_image_ids[@]}"; do
+            image_bytes="$(docker image inspect --format '{{.Size}}' "$image_id" 2>/dev/null || printf '0')"
+            dangling_image_bytes=$((dangling_image_bytes + image_bytes))
+          done
+          printf 'dangling_image_unique_count=%s\n' "${#dangling_image_ids[@]}"
+          printf 'dangling_image_bytes=%s\n' "$dangling_image_bytes"
+
+          # Model the release policy as current + previous + two additional recent releases.
+          declare -A protected_aurora_releases=()
+          declare -a aurora_candidate_releases=()
+          for link in /opt/aurora-current /opt/aurora-previous; do
+            target="$(readlink -f "$link" 2>/dev/null || true)"
+            [[ -n "$target" ]] && protected_aurora_releases["$target"]=1
+          done
+          extra_aurora_releases=0
+          while IFS= read -r release_dir; do
+            [[ -n "$release_dir" ]] || continue
+            if [[ -n "${protected_aurora_releases[$release_dir]+x}" ]]; then
+              continue
+            fi
+            if [[ "$extra_aurora_releases" -lt 2 ]]; then
+              protected_aurora_releases["$release_dir"]=1
+              extra_aurora_releases=$((extra_aurora_releases + 1))
+            else
+              aurora_candidate_releases+=("$release_dir")
+            fi
+          done < <(find /opt/aurora-releases -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' 2>/dev/null | sort -rn | cut -d' ' -f2-)
+          aurora_prunable_release_bytes=0
+          for release_dir in "${aurora_candidate_releases[@]}"; do
+            release_bytes="$(bytes_for "$release_dir")"
+            aurora_prunable_release_bytes=$((aurora_prunable_release_bytes + release_bytes))
+          done
+          printf 'aurora_prunable_release_count=%s\n' "${#aurora_candidate_releases[@]}"
+          printf 'aurora_prunable_release_bytes=%s\n' "$aurora_prunable_release_bytes"
+
           large_file_stats="$(
             find /opt /var /tmp -xdev -type f -size +500M -printf '%s\n' 2>/dev/null |
               awk '{ count += 1; bytes += $1 } END { printf "%d %d", count + 0, bytes + 0 }'
@@ -115,10 +192,13 @@ jobs:
           printf 'journal_usage_base64=%s\n' "$(printf '%s' "$journal_usage" | base64 | tr -d '\n')"
 
           deleted_open_file_count=0
+          deleted_open_file_bytes=0
           if command -v lsof >/dev/null 2>&1; then
             deleted_open_file_count="$(lsof +L1 2>/dev/null | tail -n +2 | wc -l)"
+            deleted_open_file_bytes="$(lsof -nP +L1 -F s 2>/dev/null | sed -n 's/^s//p' | awk '{ bytes += $1 } END { print bytes + 0 }')"
           fi
           printf 'deleted_open_file_count=%s\n' "$deleted_open_file_count"
+          printf 'deleted_open_file_bytes=%s\n' "$deleted_open_file_bytes"
           REMOTE
           )"
 
