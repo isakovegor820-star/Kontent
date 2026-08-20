@@ -757,6 +757,7 @@ const runtimeEnv = {
   AURORA_E2E_VK_API_URL: fakeBase,
   AURORA_AVATAR_BODY_LIMIT_BYTES: String(5 * 1024 * 1024 + 512 * 1024),
   AURORA_WORKER_MODE: "full",
+  AURORA_NEXT_DIST_DIR: ".next-e2e-real",
   TG_WEBHOOK_URL: "",
   RETRY_DELAYS_MS: "500,500,500",
   PUBLICATION_OVERDUE_GRACE_MS: "300000",
@@ -778,18 +779,15 @@ function encryptE2eVkToken(userId) {
 }
 
 function startFullRuntime(label) {
-  const distSuffix = label.toLowerCase().replace(/[^a-z0-9_-]+/gu, "-");
+  // A stopped Turbopack process can leave an internally consistent cache whose route
+  // manifest serves every application path as 404. A real release restart also uses a
+  // clean release directory, so remove only this test-owned dist tree before each lifecycle.
+  rmSync(resolve(runtimeEnv.AURORA_NEXT_DIST_DIR), { recursive: true, force: true });
   runtimeProcess = child(
     label,
     globalThis.process.platform === "win32" ? "npm.cmd" : "npm",
     ["run", "dev", "--", "-H", "127.0.0.1", "-p", String(webPort)],
-    {
-      ...runtimeEnv,
-      // A stopped Turbopack process can leave an internally consistent cache whose route
-      // manifest serves every application path as 404. A real release restart also uses a
-      // new release directory, so each lifecycle gets an isolated dist directory here.
-      AURORA_NEXT_DIST_DIR: `.next-e2e-real-${distSuffix}`,
-    },
+    runtimeEnv,
   );
   return runtimeProcess;
 }
