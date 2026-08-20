@@ -33,6 +33,30 @@ describe("production deployment shell contract", () => {
     expect(workflow).toContain("schema-boundary-verified rollback");
   });
 
+  it("autodeploys only the exact main SHA that completed CI successfully", () => {
+    expect(workflow).toContain("workflow_run:");
+    expect(workflow).toContain('workflows: ["CI"]');
+    expect(workflow).toContain("branches: [main]");
+    expect(workflow).toContain("types: [completed]");
+    expect(workflow).toContain("github.event.workflow_run.conclusion == 'success'");
+    expect(workflow).toContain("vars.AUTO_DEPLOY_ENABLED == 'true'");
+    expect(workflow).toContain("ref: ${{ github.event.workflow_run.head_sha || github.sha }}");
+    expect(workflow).toContain("AURORA_DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}");
+  });
+
+  it("fails closed before deploy writes when readiness or rollback evidence is missing", () => {
+    const preflight = workflow.indexOf("Verify current production readiness before deploy");
+    const configureSsh = workflow.indexOf("Configure SSH");
+    const boundary = workflow.indexOf("Verify exact rollback boundary");
+    const deploy = workflow.indexOf("Deploy release");
+    expect(preflight).toBeGreaterThan(0);
+    expect(configureSsh).toBeGreaterThan(preflight);
+    expect(boundary).toBeGreaterThan(configureSsh);
+    expect(deploy).toBeGreaterThan(boundary);
+    expect(workflow).toContain('expected="${current_sha}:${AURORA_DEPLOY_SHA}"');
+    expect(workflow).toContain('[[ "$AURORA_SCHEMA_ROLLBACK_AUDIT" == "$expected" ]]');
+  });
+
   it("verifies CI, immutable actions, pinned host identity, and rollback compatibility", () => {
     expect(workflow).toContain("actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1");
     expect(workflow).toContain("actions/setup-node@820762786026740c76f36085b0efc47a31fe5020");

@@ -5,6 +5,10 @@ name: Deploy production
 
 on:
   workflow_dispatch:
+  workflow_run:
+    workflows: ["CI"]
+    branches: [main]
+    types: [completed]
 
 permissions:
   contents: read
@@ -17,12 +21,20 @@ concurrency:
 
 jobs:
   deploy:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_repository.full_name == github.repository &&
+       vars.AUTO_DEPLOY_ENABLED == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 40
     environment: production
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Setup Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -33,7 +45,7 @@ jobs:
       - name: Verify required CI checks
         env:
           GH_TOKEN: ${{ github.token }}
-          AURORA_DEPLOY_SHA: ${{ github.sha }}
+          AURORA_DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
           AURORA_REQUIRED_CI_CHECKS: ${{ vars.REQUIRED_CI_CHECKS }}
         run: |
           test -n "$AURORA_REQUIRED_CI_CHECKS"
@@ -42,6 +54,13 @@ jobs:
             "/repos/${GITHUB_REPOSITORY}/commits/${AURORA_DEPLOY_SHA}/check-runs?per_page=100" \
             > "${RUNNER_TEMP}/required-checks.json"
           node scripts/verify-required-ci-checks.mjs "${RUNNER_TEMP}/required-checks.json"
+
+      - name: Verify current production readiness before deploy
+        env:
+          AURORA_DEPLOYMENT_SMOKE_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
+          AURORA_DEPLOYMENT_SMOKE_PROFILE: full
+          AURORA_READINESS_TOKEN: ${{ secrets.AURORA_READINESS_TOKEN }}
+        run: npm run test:deployment-smoke
 
       - name: Configure SSH
         env:
@@ -63,11 +82,38 @@ jobs:
             "$PRODUCTION_SSH_HOST" \
             "$PRODUCTION_SSH_HOST_FINGERPRINT"
 
+      - name: Verify exact rollback boundary
+        env:
+          PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
+          PRODUCTION_SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
+          AURORA_DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          AURORA_SCHEMA_ROLLBACK_AUDIT: ${{ vars.SCHEMA_ROLLBACK_AUDIT }}
+        run: |
+          test -n "$PRODUCTION_SSH_USER"
+          current_sha="$(
+            ssh -i ~/.ssh/deploy_key \
+              -o StrictHostKeyChecking=yes \
+              -o IdentitiesOnly=yes \
+              -o ServerAliveInterval=15 \
+              -o ServerAliveCountMax=8 \
+              "${PRODUCTION_SSH_USER}@${PRODUCTION_SSH_HOST}" \
+              'current_path="$(readlink -f /opt/aurora-current)" && test -n "$current_path" && git -C "$current_path" rev-parse --verify HEAD'
+          )"
+          if [[ ! "$current_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Unable to resolve the exact current production SHA" >&2
+            exit 1
+          fi
+          expected="${current_sha}:${AURORA_DEPLOY_SHA}"
+          [[ "$AURORA_SCHEMA_ROLLBACK_AUDIT" == "$expected" ]] || {
+            echo "SCHEMA_ROLLBACK_AUDIT must equal the rehearsed current:target pair: $expected" >&2
+            exit 1
+          }
+
       - name: Deploy release
         env:
           PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
           PRODUCTION_SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
-          AURORA_DEPLOY_SHA: ${{ github.sha }}
+          AURORA_DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
           AURORA_SCHEMA_ROLLBACK_AUDIT: ${{ vars.SCHEMA_ROLLBACK_AUDIT }}
         run: |
           test -n "$PRODUCTION_SSH_USER"
@@ -92,7 +138,7 @@ jobs:
           AURORA_READINESS_TOKEN: ${{ secrets.AURORA_READINESS_TOKEN }}
           PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
           PRODUCTION_SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
-          AURORA_DEPLOY_SHA: ${{ github.sha }}
+          AURORA_DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
           if npm run test:deployment-smoke; then
             exit 0
