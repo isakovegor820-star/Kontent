@@ -28,6 +28,18 @@ describe("RSS catalog", () => {
     expect(ranked).toHaveLength(rssCatalogSize());
   });
 
+  it("подбирает профильные криптоисточники для канала о цифровых активах", () => {
+    const ranked = rankRssCatalog("Криптовалюты, биткоин, Web3 и новости DeFi");
+    const recommendedIds = ranked
+      .filter((source) => source.recommended)
+      .map((source) => source.id);
+
+    expect(recommendedIds).toContain("coindesk");
+    expect(recommendedIds).toContain("cointelegraph");
+    expect(recommendedIds).toContain("decrypt");
+    expect(ranked[0].category).toBe("Финансы");
+  });
+
   it("автоматически подключает широкую юридическую подборку в устойчивом порядке", () => {
     expect(listPublicLegalRssSources().map((source) => source.id)).toEqual([
       "government",

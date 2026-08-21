@@ -107,15 +107,10 @@ export function autopilotBuildComplete(expected, topics, items = null) {
     );
 }
 
-// План отдаётся человеку всегда, когда модель вернула настоящий текст на каждый слот.
-// Проверка решает не судьбу плана, а состояние одного поста: готов, прочитать или
-// поправить. Раньше один непрошедший пост из пяти уничтожал все пять — при том что
-// черновики уже лежали в базе. Автопилот, который иногда не выдаёт ничего, бесполезен:
-// человек не может ни опубликовать, ни исправить то, чего ему не показали.
-//
-// Единственное жёсткое условие: непрошедший пост обязан быть ПОМЕЧЕН. Иначе он выглядел
-// бы готовым — та самая регрессия, из-за которой когда-то появился строгий гейт.
-// Автопубликация закрыта отдельно, через item.autoApprove/hasAutomaticQualityApproval.
+// Публичный план содержит только reader-ready тексты. Обычный провал редактора — внутренняя
+// работа Автопилота, а не карточка «поправь меня» для платящего пользователя. Единственное
+// допустимое ручное состояние — чистый текст, который прошёл все детерминированные правила,
+// но остался на чтении из-за недоступности claim-level semantic provider.
 export function autopilotDraftsDeliverable(expected, topics, items = null) {
   const count = Number(expected);
   if (!Number.isInteger(count) || count < 1) return false;
@@ -126,9 +121,15 @@ export function autopilotDraftsDeliverable(expected, topics, items = null) {
     items.every((item) =>
       item?.aiReady === true &&
       String(item?.draft || "").trim().length > 0 &&
+      item?.quality?.passed === true &&
+      !(Array.isArray(item?.invented) && item.invented.length > 0) &&
       (
-        (item?.qualityBlocked !== true && item?.quality?.passed === true) ||
-        (item?.qualityBlocked === true && item?.reviewRequired === true)
+        (item?.qualityBlocked !== true && item?.reviewRequired !== true) ||
+        (
+          item?.qualityBlocked === true &&
+          item?.reviewRequired === true &&
+          item?.reviewState === "semantic_only_review"
+        )
       ),
     );
 }

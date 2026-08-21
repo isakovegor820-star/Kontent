@@ -14,7 +14,9 @@ import {
   Check,
   ChevronDown,
   Clock,
+  ExternalLink,
   Loader2,
+  Newspaper,
   Pencil,
   Rocket,
   Settings2,
@@ -32,13 +34,11 @@ import {
   hasVerifiedQualityMetadata,
   type QualityResult,
 } from "@/lib/post-quality.mjs";
-import { isAutopilotHumanReviewItem } from "@/lib/autopilot-review.mjs";
-import type { ApprovalBlocker, AutopilotApprovalPreview } from "@/lib/autopilot-approval.mjs";
-import { autopilotPlanNeedsQualityRebuild } from "@/lib/autopilot-plan-visibility.mjs";
 import {
-  QUALITY_FAILURE_GUIDE,
-  autopilotQualityFailureReport,
-} from "@/lib/autopilot-quality-report.mjs";
+  isAutopilotHumanReviewItem,
+  isAutopilotReaderReadyItem,
+} from "@/lib/autopilot-review.mjs";
+import type { ApprovalBlocker, AutopilotApprovalPreview } from "@/lib/autopilot-approval.mjs";
 import {
   estimateAutopilotBuildMinutes,
   type AutopilotBuildMinuteEstimate,
@@ -65,7 +65,14 @@ interface PlanItem {
   aiReady?: boolean;
   // На чём основан пост: куски базы знаний. Это доказательство, что цифры не выдуманы,
   // а взяты из материалов автора. Пусто — пост написан без конкретики (её нечем подпереть).
-  sources?: { id: number; text: string }[];
+  sources?: {
+    id: number | string;
+    text: string;
+    kind?: string;
+    title?: string;
+    url?: string;
+    publishedAt?: string;
+  }[];
   // Конкретика, которой нет в базе: она может остаться в старом плане или после ручной
   // правки. Новая автоматическая сборка такой пост готовым уже не считает.
   invented?: string[];
@@ -110,6 +117,7 @@ interface State {
       | "variety"
       | "quality"
       | "knowledge"
+      | "sources"
       | "provider"
       | "cancelled";
   } | null;
@@ -148,6 +156,7 @@ const canApproveItem = (item: PlanItem) =>
 // (например, тема пришла из залётов конкурентов) — угадываем по словам темы.
 const RUBRIC_ICONS = new Map(RUBRICS.map((r) => [r.label, r.emoji]));
 const TOPIC_ICONS: [RegExp, string][] = [
+  [/новост|событ|анонс|изменен|исследован/i, "🗞️"],
   [/совет|полезн/i, "💡"],
   [/истори|личн/i, "📖"],
   [/ошибк|разбор/i, "⚠️"],
@@ -440,18 +449,14 @@ export default function AutopilotPage() {
             minute: "2-digit",
           })}`,
       );
-      const blockerLines = preview.blockers.slice(0, 5).map((entry) => {
-        const label = entry.topic ? `«${entry.topic}»` : `Пост ${entry.index + 1}`;
-        return `• ${label}: ${entry.reasons.map((reason) => reason.message).join("; ")}`;
-      });
       const confirmation = [
         `Канал: ${channelName}`,
         `Будет поставлено в очередь: ${preview.counts.eligible}`,
         ...(dateLines.length ? ["Даты:", ...dateLines] : []),
         ...(preview.counts.expired || preview.counts.blocked
           ? [
-              `Не будут опубликованы: ${preview.counts.expired} с истёкшей датой, ${preview.counts.blocked} заблокировано`,
-              ...blockerLines,
+              `Не попадут в очередь: ${preview.counts.expired} неактуальных, ${preview.counts.blocked} ещё не готово`,
+              "Аврора оставит их вне очереди и заменит при следующем обновлении плана.",
             ]
           : []),
         "",
@@ -520,7 +525,7 @@ export default function AutopilotPage() {
             "",
             `Канал: ${freshChannel}`,
             `Теперь можно поставить: ${fresh.counts.eligible}`,
-            `Истекло: ${fresh.counts.expired}; заблокировано: ${fresh.counts.blocked}`,
+            `Неактуально: ${fresh.counts.expired}; ещё не готово: ${fresh.counts.blocked}`,
             ...(freshDates.length ? ["Новые даты:", ...freshDates] : []),
             "",
             "Проверь изменения и нажми «Одобрить всё» ещё раз.",
@@ -540,7 +545,7 @@ export default function AutopilotPage() {
             ? `Одобрено — ${result.scheduled} в очереди 🚀`
             : "Ничего не поставлено в очередь",
           body: skipped
-            ? `${result.expired || 0} с истёкшей датой и ${result.blocked || 0} без пройденного контроля оставлены в плане.`
+            ? `${result.expired || 0} неактуальных и ${result.blocked || 0} неготовых материалов не попали в очередь.`
             : "Посты выйдут по показанному расписанию. Компьютер держать включённым не нужно.",
         });
       } else if (result?.error === "queue_unavailable") {
@@ -713,31 +718,36 @@ export default function AutopilotPage() {
 
   const st = data.settings!;
   const plan = data.plan;
-  const items = plan?.items ?? [];
+  const planItems = plan?.items ?? [];
+  // Legacy plans may contain internal quality-review drafts. The reader-facing product
+  // boundary is stricter: show only verified material (plus already published history).
+  const items = planItems.filter((item) =>
+    item.status !== "expired" && item.status !== "rejected" &&
+      (
+        item.status === "approved" || item.status === "published" ||
+        isAutopilotReaderReadyItem(item)
+      ),
+  );
   const pending = items.filter((it) => it.status === "pending");
-  const blocked = pending.filter((it) => !canApproveItem(it));
-  const planNeedsQualityRebuild = autopilotPlanNeedsQualityRebuild(items);
-  // Разбор провала берём из самих постов: воркер сохраняет замечания проверки в план,
-  // даже когда план не показывается. Это и есть ответ на вопрос «а что не так».
-  const failureReport =
-    plan?.status === "error" && plan.errorReason === "quality" && items.length
-      ? autopilotQualityFailureReport(items, plan.expected_post_count ?? items.length)
-      : null;
-  const readyPending = pending.filter(canApproveItem);
   const reviewPending = pending.filter(isAutopilotHumanReviewItem);
-  const expired = items.filter((it) => it.status === "expired");
+  const readyPending = pending.filter(
+    (item) => canApproveItem(item) && !isAutopilotHumanReviewItem(item),
+  );
   const approved = items.filter((it) => it.status === "approved" || it.status === "published");
   const canOfferFull = st.approvals_streak >= 2 && st.mode !== "full";
 
   // Отсортированный по времени список для ленты недели и карточек.
   const visible = [...items]
-    .filter((it) => it.status !== "rejected")
     .sort((a, b) => new Date(a.scheduledAt).getTime() - new Date(b.scheduledAt).getTime());
   const rangeLabel =
     visible.length > 0
       ? `${fmtRangeMsk(visible[0].scheduledAt)} — ${fmtRangeMsk(visible[visible.length - 1].scheduledAt)}`
       : "";
-  const allApproved = pending.length === 0 && expired.length === 0 && approved.length > 0;
+  const allApproved = pending.length === 0 && approved.length > 0;
+  const sourceCount = new Set(
+    items.flatMap((item) => item.sources?.map((source) => String(source.id)) ?? []),
+  ).size;
+  const newsCount = items.filter((item) => item.sources?.some((source) => source.kind === "news")).length;
   const plannedCount = plannedPostCountForWeeks(st.post_frequency, planningWeeks);
   const plannedDuration = fmtBuildEstimate(estimateAutopilotBuildMinutes(plannedCount));
   const buildCompleted = plan?.buildProgress?.completed ?? 0;
@@ -757,7 +767,7 @@ export default function AutopilotPage() {
   return (
     <AppShell
       title="Автопилот"
-      subtitle="Выбери модель и горизонт. ИИ соберёт непохожие посты, а ты проверишь их перед публикацией."
+      subtitle="Аврора сама найдёт свежие источники, выберет интересные темы и подготовит готовые посты."
     >
       {picker}
       {growthNotice && (
@@ -805,7 +815,7 @@ export default function AutopilotPage() {
         <div className="flex flex-col gap-5 lg:flex-row lg:items-end">
           <div className="min-w-0 flex-1">
             <label htmlFor="autopilot-engine" className="text-[13px] font-semibold text-text">
-              Модель генерации
+              Редактор
             </label>
             <select
               id="autopilot-engine"
@@ -858,12 +868,12 @@ export default function AutopilotPage() {
             className="min-h-11 shrink-0 lg:min-w-[230px]"
           >
             <Sparkles className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
-            {building ? "План собирается" : `${plan ? "Пересобрать" : "Сгенерировать"} ${plannedCount} ${plural(plannedCount, "пост", "поста", "постов")}`}
+            {building ? "План собирается" : `${plan ? "Обновить" : "Собрать"} ${plannedCount} ${plural(plannedCount, "пост", "поста", "постов")}`}
           </Button>
         </div>
         <p className="mt-4 flex items-start gap-2 rounded-md bg-surface-inset p-3 text-[12px] leading-relaxed text-text-3">
           <Check className="mt-0.5 h-4 w-4 shrink-0 text-success" aria-hidden />
-          Аврора пробует резервную модель при сбое. Если факты не проверены автоматически, прочитай пост и нажми «Одобрить».
+          Аврора сама подбирает источники по теме канала, проверяет факты и убирает слабые варианты до того, как ты увидишь план.
         </p>
       </Card>
 
@@ -930,99 +940,44 @@ export default function AutopilotPage() {
         </Card>
       ) : plan?.status === "error" ? (
         <Card className="p-6 sm:p-8" role="alert">
-          <p className="text-center text-[15px] font-semibold text-text">Не получилось собрать план</p>
+          <Newspaper className="mx-auto h-7 w-7 text-brand" aria-hidden />
+          <p className="mt-3 text-center text-[15px] font-semibold text-text">
+            Пока не получилось собрать сильный план
+          </p>
           <p className="mx-auto mt-1 max-w-xl text-center text-[14px] text-text-3">
             {plan.errorReason === "timeout"
-              ? "Сборка не была обработана вовремя. Перезапусти приложение и попробуй ещё раз."
+              ? "Поиск занял больше времени, чем ожидалось. Текущий план не изменился — попробуй обновить ещё раз."
               : plan.errorReason === "cancelled"
-                ? "Сборка остановлена. Готовые планы и запланированные публикации не изменились."
+                ? "Сборка остановлена. Готовые публикации и календарь не изменились."
               : plan.errorReason === "quota"
-                ? "Дневной лимит ИИ исчерпан. Он обновится завтра; текущий план и настройки сохранены."
+                ? "Дневной лимит редактора исчерпан. Он обновится завтра; готовые публикации сохранены."
                 : plan.errorReason === "variety"
-                  ? "Модель несколько раз повторила похожие темы или тексты. Старый план сохранён — выбери другую модель или попробуй снова."
-                  : plan.errorReason === "knowledge"
-                    ? "Профиль канала требует источник под каждый факт, а база знаний пуста. Ни одна модель такой пост не проведёт — сборку не начинал, чтобы не тратить дневной лимит ИИ."
+                  ? "Свежие материалы оказались слишком похожи на недавние посты. Аврора не стала заполнять план повторами."
+                  : plan.errorReason === "sources" || plan.errorReason === "knowledge"
+                    ? "Аврора не нашла достаточно свежих и подтверждённых материалов по теме канала. Слабые источники в план не попали."
                     : plan.errorReason === "quality"
-                      ? failureReport && failureReport.causes.length
-                        ? `Готовы ${failureReport.passed} из ${failureReport.total} ${plural(failureReport.total, "поста", "постов", "постов")}. Дело не в модели — вот что именно не сошлось.`
-                        : "Часть постов не удалось довести до публикации. Пересобери план — черновики и настройки сохранены."
+                      ? "Найденные темы не удалось довести до готовых публикаций. Аврора убрала слабые варианты вместо того, чтобы отдавать их на исправление."
                       : plan.errorReason === "provider"
-                        ? "Ни выбранная, ни резервные модели не вернули ни одного текста. Запрос и настройки сохранены — пересобери план, когда хотя бы один провайдер отвечает."
-                        : "Проверь, что канал подключён и ИИ-движок доступен, и попробуй ещё раз."}
+                        ? "Редактор временно недоступен. Источники и настройки сохранены — повтори сборку немного позже."
+                        : "Готовые публикации сохранены. Попробуй обновить план ещё раз."}
           </p>
-
-          {/* Разбор по кодам проверки. Без него совет «выбери другую модель» уводил в сторону:
-              ни отсутствие источника, ни дисклеймер, ни диапазон длины от модели не зависят. */}
-          {plan.errorReason === "quality" && failureReport && failureReport.causes.length > 0 && (
-            <ul className="mx-auto mt-4 max-w-xl space-y-2 text-left">
-              {failureReport.causes.map((cause) => (
-                <li key={cause.code} className="rounded-xl bg-surface-inset p-3">
-                  <p className="text-[13px] font-semibold text-text">
-                    {cause.title}
-                    <span className="ml-2 font-normal tabular-nums text-text-3">
-                      {cause.count} {plural(cause.count, "пост", "поста", "постов")}
-                    </span>
-                  </p>
-                  <p className="mt-0.5 text-[13px] text-text-3">{cause.action}</p>
-                </li>
-              ))}
-            </ul>
-          )}
-
-          <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
-            {(plan.errorReason === "knowledge" || failureReport?.primaryFix === "knowledge") && (
-              <Link
-                href={`/app/knowledge${chId ? `?channel=${chId}` : ""}`}
-                className={buttonClassName({ variant: "brand" })}
-              >
-                <BookText className="h-4 w-4" aria-hidden />
-                Добавить материалы
-              </Link>
-            )}
-            {failureReport?.primaryFix === "settings" && (
-              <Link
-                href={`/app/settings${chId ? `?channel=${chId}` : ""}`}
-                className={buttonClassName({ variant: "brand" })}
-              >
-                <Settings2 className="h-4 w-4" aria-hidden />
-                Открыть настройки канала
-              </Link>
-            )}
+          <div className="mt-5 flex justify-center">
             <Button
-              variant={
-                plan.errorReason === "knowledge" || failureReport?.primaryFix === "knowledge" ||
-                failureReport?.primaryFix === "settings"
-                  ? "outline"
-                  : "brand"
-              }
+              variant="brand"
               onClick={generate}
               loading={busy}
               disabled={busy}
             >
-              Пересобрать план
+              Найти новые материалы
             </Button>
           </div>
         </Card>
-      ) : planNeedsQualityRebuild ? (
-        <Card className="p-8 text-center">
-          <AlertTriangle className="mx-auto h-7 w-7 text-brand" aria-hidden />
-          <p className="mt-3 text-[15px] font-semibold text-text">План нужно пересобрать</p>
-          <p className="mx-auto mt-1 max-w-md text-[14px] text-text-3">
-            В этом плане есть незавершённые или не прошедшие проверку тексты. Пересобери его:
-            Аврора заменит план только полностью готовой версией.
-          </p>
-          <div className="mt-4">
-            <Button variant="brand" onClick={generate} loading={busy} disabled={busy}>
-              Пересобрать план
-            </Button>
-          </div>
-        </Card>
-      ) : !plan ? (
+      ) : !plan || visible.length === 0 ? (
         <Card className="py-4">
           <EmptyState
-            icon={<CalendarCheck className="h-6 w-6" strokeWidth={1.75} aria-hidden />}
-            title="Плана пока нет"
-            body="Выбери модель и период выше. ИИ подготовит разные посты, а ты проверишь и одобришь их одной кнопкой."
+            icon={<Newspaper className="h-6 w-6" strokeWidth={1.75} aria-hidden />}
+            title="Готовых материалов пока нет"
+            body="Аврора сама найдёт свежие источники по теме канала, выберет интересные события и соберёт из них понятные посты."
           />
         </Card>
       ) : (
@@ -1046,31 +1001,18 @@ export default function AutopilotPage() {
                   {reviewPending.length > 0 && (
                     <>
                       {" "}
-                      · {reviewPending.length} {plural(reviewPending.length, "нужно", "нужно", "нужно")} прочитать
+                      · {reviewPending.length} на согласовании
                     </>
                   )}
-                  {blocked.length > 0 && (
-                    <>
-                      {" "}
-                      · {blocked.length} {plural(blocked.length, "нужно", "нужно", "нужно")} поправить
-                    </>
-                  )}
-                  {expired.length > 0 && <> · {expired.length} с истёкшей датой</>}
+                  {sourceCount > 0 && <> · {sourceCount} {plural(sourceCount, "источник", "источника", "источников")}</>}
+                  {newsCount > 0 && <> · {newsCount} по свежим событиям</>}
                 </p>
               </div>
               {readyPending.length > 0 ? (
                 <Button variant="brand" onClick={approveAll} loading={busy} disabled={busy}>
                   <Check className="h-[18px] w-[18px]" strokeWidth={2.5} aria-hidden />
-                  {blocked.length ? `Одобрить готовые (${readyPending.length})` : "Одобрить всё"}
+                  Одобрить всё
                 </Button>
-              ) : blocked.length > 0 ? (
-                <Link
-                  href={`/app/settings${chId ? `?channel=${chId}` : ""}`}
-                  className={buttonClassName({ variant: "outline", size: "sm" })}
-                >
-                  <Settings2 className="h-4 w-4" aria-hidden />
-                  Исправить настройки
-                </Link>
               ) : allApproved ? (
                 <Link
                   href="/app/calendar"
@@ -1095,7 +1037,7 @@ export default function AutopilotPage() {
                     aria-pressed={active}
                     aria-label={`${active ? "Свернуть" : "Открыть"} пост «${it.topic}»`}
                     className={cn(
-                      "flex min-w-[84px] flex-1 flex-col items-center gap-1 rounded-lg border px-2 py-3 text-center transition-colors",
+                      "flex min-w-[84px] flex-1 flex-col items-center gap-1 rounded-lg border px-2 py-3 text-center transition-colors focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15",
                       active
                         ? "border-brand bg-info-soft"
                         : "border-line bg-surface-inset hover:border-brand/40",
@@ -1115,9 +1057,7 @@ export default function AutopilotPage() {
                         "mt-0.5 h-1.5 w-1.5 rounded-full",
                         done
                           ? "bg-success"
-                          : it.status === "expired" || blocked.includes(it)
-                            ? "bg-danger"
-                            : "bg-brand",
+                          : "bg-brand",
                       )}
                       aria-hidden
                     />
@@ -1135,16 +1075,6 @@ export default function AutopilotPage() {
               <span className="inline-flex items-center gap-1.5">
                 <span className="h-1.5 w-1.5 rounded-full bg-success" aria-hidden />в очереди
               </span>
-              {blocked.length > 0 && (
-                <span className="inline-flex items-center gap-1.5">
-                  <span className="h-1.5 w-1.5 rounded-full bg-danger" aria-hidden />нужно поправить
-                </span>
-              )}
-              {expired.length > 0 && (
-                <span className="inline-flex items-center gap-1.5">
-                  <span className="h-1.5 w-1.5 rounded-full bg-danger" aria-hidden />дата истекла
-                </span>
-              )}
             </div>
           </Card>
 
@@ -1168,6 +1098,8 @@ export default function AutopilotPage() {
                 editing.revision === plan.revision &&
                 editing.itemIndex === it.i;
               const isOpen = expanded === it.i || isEditing;
+              const externalSources = (it.sources ?? []).filter((source) => source.url);
+              const knowledgeSources = (it.sources ?? []).filter((source) => !source.url);
               return (
                 <motion.li
                   key={it.i}
@@ -1181,7 +1113,7 @@ export default function AutopilotPage() {
                       onClick={() => !isEditing && setExpanded(isOpen ? null : it.i)}
                       aria-expanded={isOpen}
                       aria-label={`${isOpen ? "Свернуть" : "Открыть"} пост «${it.topic}»`}
-                      className="flex w-full items-center gap-3 p-4 text-left"
+                      className="flex w-full items-center gap-3 p-4 text-left focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-inset focus-visible:ring-brand/15"
                     >
                       <span
                         className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-surface-inset text-[20px]"
@@ -1204,34 +1136,13 @@ export default function AutopilotPage() {
                         <Badge tone="success">
                           <Check className="h-3 w-3" strokeWidth={2.5} aria-hidden />в очереди
                         </Badge>
-                      ) : it.status === "expired" ? (
-                        <Badge tone="danger">
-                          <Clock className="h-3 w-3" aria-hidden />дата истекла
-                        </Badge>
-                      ) : it.aiReady === false ? (
-                        <Badge tone="neutral">
-                          <AlertTriangle className="h-3 w-3" aria-hidden />нужен повтор
-                        </Badge>
-                      ) : !it.quality || !hasVerifiedQualityMetadata(it.quality) ? (
-                        <Badge tone="neutral">
-                          <AlertTriangle className="h-3 w-3" aria-hidden />не проверено
-                        </Badge>
                       ) : isAutopilotHumanReviewItem(it) ? (
-                        <Badge tone="brand">
-                          проверь и одобри
-                        </Badge>
-                      ) : it.qualityBlocked || it.quality.passed !== true ? (
-                        <Badge tone="danger">
-                          <AlertTriangle className="h-3 w-3" aria-hidden />
-                          нужна правка
-                        </Badge>
+                        <Badge tone="brand">на согласовании</Badge>
                       ) : (
-                        // Балл проверки человеку не адресован: он не решает, что делать с постом,
-                        // и превращает готовый текст в экзаменационную ведомость.
                         <Badge tone="success">
                           {hasHumanQualityAttestation(it.quality)
                             ? "подтверждено вручную"
-                            : "готов к публикации"}
+                            : "готов к просмотру"}
                         </Badge>
                       )}
                       <ChevronDown
@@ -1268,7 +1179,7 @@ export default function AutopilotPage() {
                       ) : (
                         <p
                           className={cn(
-                            "whitespace-pre-line text-[14px] leading-relaxed text-text-2",
+                            "max-w-[72ch] whitespace-pre-line text-[14px] leading-relaxed text-text-2",
                             !isOpen && "line-clamp-2",
                           )}
                         >
@@ -1276,142 +1187,47 @@ export default function AutopilotPage() {
                         </p>
                       )}
 
-                      {/* Невыверенная конкретика — ВСЕГДА на виду, без раскрытия карточки.
-                          Человек не должен раскапывать риск: выдуманный номер статьи в канале
-                          юриста — это его репутация. Автопилот такой пост сам не публикует. */}
-                      {!isEditing && it.invented && it.invented.length > 0 && (
-                        <div className="mt-3 flex items-start gap-2 rounded-sm bg-danger-soft p-3">
-                          <AlertTriangle
-                            className="mt-0.5 h-4 w-4 shrink-0 text-danger-text"
-                            strokeWidth={2}
-                            aria-hidden
-                          />
-                          <p className="text-[13px] leading-snug text-danger-text">
-                            <span className="font-semibold">Проверь перед публикацией:</span> в тексте есть{" "}
-                            {it.invented.join(", ")} — этого нет в твоей базе знаний. Возможно, ИИ
-                            выдумал. Сам такой пост я не опубликую.
-                          </p>
-                        </div>
-                      )}
-
-                      {!isEditing && it.status === "expired" && (
-                        <div className="mt-3 flex items-start gap-2 rounded-sm bg-danger-soft p-3">
-                          <Clock
-                            className="mt-0.5 h-4 w-4 shrink-0 text-danger-text"
-                            aria-hidden
-                          />
-                          <p className="text-[13px] leading-snug text-danger-text">
-                            <span className="font-semibold">Дата публикации истекла.</span> Этот
-                            черновик не поставлен в очередь. Пересобери план, чтобы выбрать новую
-                            дату перед следующим одобрением.
-                          </p>
-                        </div>
-                      )}
-
-                      {!isEditing && it.status === "pending" && it.aiReady === false && (
-                        <div role="status" className="mt-3 flex items-start gap-2 rounded-sm bg-info-soft p-3">
-                          <AlertTriangle
-                            className="mt-0.5 h-4 w-4 shrink-0 text-info-text"
-                            aria-hidden
-                          />
-                          <p className="text-[13px] leading-snug text-info-text">
-                            <span className="font-semibold">Этот слот не потерял остальные посты.</span>{" "}
-                            Модель не вернула текст именно для этой темы. Пересобери план, чтобы повторить генерацию; готовые черновики уже сохранены.
-                          </p>
-                        </div>
-                      )}
-
-                      {!isEditing &&
-                        it.status === "pending" &&
-                        it.aiReady !== false &&
-                        !hasVerifiedQualityMetadata(it.quality) && (
-                        <div className="mt-3 flex items-start gap-2 rounded-sm bg-danger-soft p-3">
-                          <AlertTriangle
-                            className="mt-0.5 h-4 w-4 shrink-0 text-danger-text"
-                            aria-hidden
-                          />
-                          <p className="text-[13px] leading-snug text-danger-text">
-                            <span className="font-semibold">Пост не проверен.</span> Без фактического
-                            результата контроля качества его нельзя одобрить.
-                          </p>
-                        </div>
-                      )}
-
-                      {!isEditing && it.aiReady !== false && isAutopilotHumanReviewItem(it) && (
+                      {!isEditing && isAutopilotHumanReviewItem(it) && (
                         <div className="mt-3 flex items-start gap-2 rounded-sm bg-info-soft p-3">
-                          <AlertTriangle
+                          <Sparkles
                             className="mt-0.5 h-4 w-4 shrink-0 text-info-text"
                             aria-hidden
                           />
                           <p className="text-[13px] leading-snug text-info-text">
-                            <span className="font-semibold">Прочитай и нажми «Одобрить».</span>{" "}
-                            Автопроверка фактов не отработала. Если текст в порядке — этого достаточно.
+                            <span className="font-semibold">Пост готов к согласованию.</span>{" "}
+                            Прочитай его перед первой публикацией — Аврора запомнит твои правки и подачу.
                           </p>
                         </div>
                       )}
 
-                      {/* Похожий текст проверку качества проходит — он просто повторяет то,
-                          что в канале уже было. Замечаний валидатора здесь нет, поэтому
-                          общий разбор ниже показал бы пустой список. */}
-                      {!isEditing &&
-                        it.aiReady !== false &&
-                        it.qualityBlocked &&
-                        it.reviewReason === "content_variety" && (
-                        <div className="mt-3 flex items-start gap-2 rounded-sm bg-info-soft p-3">
-                          <AlertTriangle
-                            className="mt-0.5 h-4 w-4 shrink-0 text-info-text"
-                            aria-hidden
-                          />
-                          <p className="text-[13px] leading-snug text-info-text">
-                            <span className="font-semibold">Похоже на прежний пост канала.</span>{" "}
-                            Текст готов, но повторяет то, что уже выходило. Замени тему или перепиши
-                            под другим углом — остальные посты плана это не задержит. Сам такой пост
-                            я не опубликую.
-                          </p>
-                        </div>
-                      )}
-
-                      {!isEditing &&
-                        it.aiReady !== false &&
-                        !isAutopilotHumanReviewItem(it) &&
-                        it.reviewReason !== "content_variety" &&
-                        it.qualityBlocked &&
-                        it.quality &&
-                        hasVerifiedQualityMetadata(it.quality) &&
-                        it.quality.violations.some((v) => v.blocker) && (
-                        <div className="mt-3 rounded-sm bg-danger-soft p-3">
-                          <p className="flex items-center gap-2 text-[13px] font-semibold text-danger-text">
-                            <AlertTriangle className="h-4 w-4" aria-hidden />
-                            Что здесь поправить
-                          </p>
-                          {/* Причина словами и следующий шаг вместо формулировки валидатора.
-                              «Нужно минимум 1200 знаков, сейчас 1181» — это отчёт проверки,
-                              а не ответ на вопрос «что мне сделать». */}
-                          <ul className="mt-1.5 space-y-1 text-[13px] leading-snug text-danger-text">
-                            {it.quality.violations
-                              .filter((v) => v.blocker)
-                              .slice(0, 4)
-                              .map((v) => (
-                                <li key={`${v.code}-${v.message}`}>
-                                  — {QUALITY_FAILURE_GUIDE[v.code]?.title ?? v.message}
-                                </li>
-                              ))}
-                          </ul>
-                        </div>
-                      )}
-
-                      {/* На чём основан пост — только в раскрытой карточке. Это доказательство,
-                          что конкретика взята из базы знаний, а не выдумана. */}
                       {isOpen && !isEditing && it.sources && it.sources.length > 0 && (
-                        <div className="mt-3 rounded-sm bg-surface-inset p-3">
+                        <div className="mt-3 max-w-[72ch] rounded-sm bg-surface-inset p-3">
                           <p className="mb-1.5 flex items-center gap-1.5 text-[12px] font-semibold text-text-3">
                             <BookText className="h-3.5 w-3.5" aria-hidden />
-                            На основе твоей базы знаний
+                            Источники и контекст
                           </p>
-                          <ul className="space-y-1">
-                            {it.sources.map((src) => (
-                              <li key={src.id} className="text-[13px] leading-snug text-text-3">
-                                — {src.text}
+                          <ul className="space-y-2">
+                            {externalSources.map((src) => (
+                              <li key={String(src.id)} className="text-[13px] leading-snug text-text-3">
+                                <a
+                                  href={src.url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="inline-flex min-h-6 items-center gap-1 font-semibold text-text-2 underline-offset-4 hover:text-brand hover:underline focus-visible:rounded-xs focus-visible:ring-4 focus-visible:ring-brand/15"
+                                >
+                                  {src.title || "Открыть первоисточник"}
+                                  <ExternalLink className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                                </a>
+                                {src.publishedAt && (
+                                  <span className="ml-2 tabular-nums text-text-3">
+                                    {new Date(src.publishedAt).toLocaleDateString("ru-RU", { day: "numeric", month: "long" })}
+                                  </span>
+                                )}
+                              </li>
+                            ))}
+                            {knowledgeSources.slice(0, 3).map((src) => (
+                              <li key={String(src.id)} className="text-[13px] leading-snug text-text-3">
+                                {src.text}
                               </li>
                             ))}
                           </ul>
@@ -1444,7 +1260,7 @@ export default function AutopilotPage() {
                             }}
                           >
                             <Pencil className="h-4 w-4" aria-hidden />
-                            Поправить
+                            Редактировать
                           </Button>
                           <Button size="sm" variant="ghost" onClick={() => itemAction(it.i, "reject")}>
                             <X className="h-4 w-4" aria-hidden />

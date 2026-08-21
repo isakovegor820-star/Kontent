@@ -5,7 +5,7 @@
  */
 export const SCHEMA_MANIFEST = Object.freeze({
   manifestVersion: 1,
-  schemaVersion: "2026-09-20.92",
+  schemaVersion: "2026-09-21.93",
   migrations: Object.freeze([
     ["20260801_account_onboarding.sql", "ac0e1f10046cf620185570ab5f40437991d08513473f67d4e93bdafa07b86614"],
     ["20260801_ai_usage_reservations.sql", "991c3a92dce16df55011d9df52fb65af1a7f4310b27f61dc519705f05528d7a0"],
@@ -101,6 +101,7 @@ export const SCHEMA_MANIFEST = Object.freeze({
     ["20260918_site_analysis_project_scope.sql", "6ea59b79510fb29b7a7636b7dcdccb9469d64228c3585e6f603dcd432fd30570"],
     ["20260919_generation_monthly_lineage.sql", "a67c6c3a0af8077f20bf0cd54371c5160c3ecbbc80e93d7b67b05fc03c45d2b8"],
     ["20260920_session_token_expand_compat.sql", "6faa3f10ebbfc7427e4a5ac8b423e993fe04c357e529096528009c503c47fcf2"],
+    ["20260921_autopilot_news_sources.sql", "5e2637f586e26194e0da9ee75d80b1d10b3b1043ad0501024af4e54a0124cca7"],
   ].map(([name, checksum, acceptedChecksums]) => Object.freeze({
     name,
     checksum,
@@ -414,6 +415,7 @@ export const SCHEMA_MANIFEST = Object.freeze({
       "autopilot_settings.generation_engine",
       "autopilot_settings.planning_months",
       "autopilot_settings.planning_weeks",
+      "autopilot_settings.news_sources",
       "autopilot_approval_operations.plan_revision",
       "autopilot_approval_operations.preview_hash",
       "autopilot_approval_operations.project_id",
@@ -592,6 +594,7 @@ export const SCHEMA_MANIFEST = Object.freeze({
       "autopilot_settings.autopilot_settings_generation_engine_check",
       "autopilot_settings.autopilot_settings_planning_months_check",
       "autopilot_settings.autopilot_settings_planning_weeks_check",
+      "autopilot_settings.autopilot_settings_news_sources_check",
       "content_brief.content_brief_source_check",
       "competitor_suggestions.competitor_suggestions_status_check",
       "competitor_suggestions.competitor_suggestions_channel_id_fkey",

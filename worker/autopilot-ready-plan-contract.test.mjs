@@ -8,12 +8,12 @@ describe("Autopilot ready-plan generation contract", () => {
     expect(source).not.toContain('acceptLengthLimitedOutput: surface === "autopilot-plan"');
   });
 
-  // План доходит до человека в обоих режимах. Право на выпуск считается по каждому посту
-  // (item.autoApprove), поэтому один неидеальный текст больше не отменяет всю сборку —
-  // прежний строгий гейт в полном режиме оставлял человека вообще без плана.
-  it("delivers the plan in both modes and gates publication per post", () => {
+  // План доходит до человека в обоих режимах, но только после reader-ready фильтра.
+  // Право на выпуск считается отдельно для каждого оставшегося сильного поста.
+  it("delivers only reader-ready posts and gates publication per post", () => {
     expect(source).toContain("const AUTOPILOT_QUALITY_REWRITE_ATTEMPTS = 2;");
-    expect(source.match(/autopilotDraftsDeliverable\(N, topics, items\)/g)?.length).toBe(2);
+    expect(source.match(/autopilotDraftsDeliverable\(items\.length, topics, items\)/g)?.length).toBe(2);
+    expect(source.match(/isAutopilotReaderReadyItem\(item\)/g)?.length).toBeGreaterThanOrEqual(2);
     expect(source).not.toContain("full\n    ? autopilotBuildComplete(N, topics, items)");
     expect(source).not.toMatch(/full\s*\n?\s*\?\s*autopilotBuildComplete\(N, topics, items\)/);
     expect(source).toContain("fullAtCommit && item.autoApprove && evaluation.eligible");
@@ -59,15 +59,17 @@ describe("Autopilot ready-plan generation contract", () => {
     expect(source).not.toContain("if (item.autoApprove && evaluation.eligible");
   });
 
-  // Профиль «источник обязателен» при пустой базе знаний не мог дать ни одного поста, но
-  // сборка всё равно шла полный цикл, тратила дневную квоту ИИ и заканчивалась неправдой
-  // «модель не дотянула до порога». Отказ обязан случиться до первого запроса к модели.
-  it("refuses a source-required build with an empty knowledge base before spending AI quota", () => {
-    const preflight = source.indexOf('return { error: "no_knowledge_base" }');
+  // Строгий профиль использует и базу знаний, и найденные новости. Только отсутствие обоих
+  // типов источников должно остановить сборку до первого запроса к модели.
+  it("refuses a source-required build only when both knowledge and news are empty", () => {
+    const discovery = source.indexOf("await discoverAutopilotNews(");
+    const preflight = source.indexOf('return { error: "no_sources_found" }');
+    expect(discovery).toBeGreaterThan(0);
     expect(preflight).toBeGreaterThan(0);
-    expect(source).toMatch(/quality\.factsPolicy === "source_required" && facts === 0/);
+    expect(source).toMatch(/quality\.factsPolicy === "source_required" && facts === 0 && newsCandidates\.length === 0/);
+    expect(discovery).toBeLessThan(preflight);
     expect(preflight).toBeLessThan(source.indexOf("await planTopics("));
-    expect(source).toContain('"no_knowledge_base",\n  "no_brief"');
+    expect(source).toContain('"no_sources_found",\n  "no_brief"');
   });
 
   // Второе расхождение промпта и проверки: без источников модель не получала запрета на
@@ -84,10 +86,12 @@ describe("Autopilot ready-plan generation contract", () => {
     expect(source.match(/prepareAutopilotDraftForm\(/g)?.length).toBe(4);
   });
 
-  it("непрошедший пост помечает, а не выбрасывает вместе с планом", () => {
+  it("держит непрошедший пост внутри сборки и фильтрует его перед показом", () => {
     expect(source).toContain("const needsHumanEdit = Boolean(aiDraft && !qualityResult.passed)");
     expect(source).toContain("reviewRequired: needsHumanReview || needsHumanEdit");
     expect(source).toMatch(/needsHumanEdit\s*\?\s*"quality_review"/);
+    expect(source).toContain("const readerReadyPairs = items");
+    expect(source).toContain("isAutopilotReaderReadyItem(item)");
   });
 
   it("не показывает человеку внутренний числовой порог как результат плана", () => {

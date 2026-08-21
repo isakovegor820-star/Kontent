@@ -6,7 +6,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
 import { RUBRICS, briefComplete, normalizeBrief } from "@/lib/brief";
-import { loadBrief, resolveChannel } from "@/lib/autopilot";
+import { ensureSettings, loadBrief, resolveChannel } from "@/lib/autopilot";
+import { selectAutopilotNewsSources } from "@/lib/autopilot-source-selection";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/project-permissions";
 
@@ -91,6 +92,17 @@ export async function POST(req: NextRequest) {
         b.source,
       ],
     );
+    if (b.ready) {
+      // A weekly build may run before the user ever presses “Собрать”. Persist the curated
+      // perimeter at brief confirmation so unattended Autopilot still discovers news itself.
+      await ensureSettings(scope, channelId);
+      await pool.query(
+        `update autopilot_settings
+            set news_sources = $3::jsonb, updated_at = now()
+          where project_id = $1 and channel_id = $2`,
+        [membership.projectId, channelId, JSON.stringify(selectAutopilotNewsSources(b))],
+      );
+    }
     return NextResponse.json({ ok: true, brief: b });
   } catch (err) {
     if (err instanceof ProjectAccessError) {

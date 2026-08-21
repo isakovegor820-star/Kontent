@@ -191,6 +191,7 @@ describe("POST /api/autopilot/settings", () => {
       null,
       null,
       null,
+      expect.stringContaining('"id"'),
     ]);
   });
 
@@ -224,6 +225,7 @@ describe("POST /api/autopilot/settings", () => {
       "navy-gpt-5-4",
       2,
       7,
+      null,
     ]);
   });
 

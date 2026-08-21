@@ -16,6 +16,7 @@ import {
 import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/project-permissions";
 import { BoundedBodyError, readRequestBodyLimited } from "@/lib/bounded-request-body";
 import { checkRateLimit, rateLimitResponse } from "@/lib/rate-limit";
+import { selectAutopilotNewsSources } from "@/lib/autopilot-source-selection";
 
 export const runtime = "nodejs";
 
@@ -78,11 +79,13 @@ export async function POST(req: NextRequest) {
 
   // Включать автопилот можно только с готовым брифом — иначе он начнёт писать наугад (ТЗ Д.9).
   // Проверяем на СЕРВЕРЕ: гейт в интерфейсе обходится прямым запросом.
+    let selectedNewsSources: string | null = null;
     if (enabled === true && !cur.enabled) {
       const brief = await loadBrief(scope, channelId);
       if (!brief.ready || !briefComplete(brief)) {
         return NextResponse.json({ ok: false, error: "no_brief" }, { status: 422 });
       }
+      selectedNewsSources = JSON.stringify(selectAutopilotNewsSources(brief));
     }
 
   // Полный режим (публикация без подтверждения) — только после 2 недель одобрений без правок.
@@ -126,11 +129,22 @@ export async function POST(req: NextRequest) {
               generation_engine = coalesce($6, generation_engine),
               planning_months = coalesce($7, planning_months),
               planning_weeks = coalesce($8, planning_weeks),
+              news_sources = coalesce($9::jsonb, news_sources),
               updated_at = now()
         where project_id = $1 and channel_id = $2
         returning enabled, mode, post_frequency, approvals_streak, generation_engine,
                   planning_months, planning_weeks`,
-      [membership.projectId, channelId, enabled, mode, freq, generationEngine, planningMonths, planningWeeks],
+      [
+        membership.projectId,
+        channelId,
+        enabled,
+        mode,
+        freq,
+        generationEngine,
+        planningMonths,
+        planningWeeks,
+        selectedNewsSources,
+      ],
     );
     if (!updated.rows[0]) {
       return NextResponse.json({ ok: false, error: "not_found" }, { status: 404 });

@@ -19,6 +19,7 @@ import {
 } from "@/lib/autopilot-config.mjs";
 import { resolveAiEngineRuntime } from "@/lib/ai-engine-policy.mjs";
 import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/project-permissions";
+import { selectAutopilotNewsSources } from "@/lib/autopilot-source-selection";
 
 export const runtime = "nodejs";
 
@@ -130,6 +131,17 @@ export async function POST(req: NextRequest) {
         { status: 503 },
       );
     }
+
+    // Source selection belongs to Autopilot, not to the user. The catalog is curated and
+    // SSRF-safe; ranking is deterministic from the confirmed channel brief. Persist the
+    // server-owned perimeter so the weekly worker uses the same sources without another UI.
+    const newsSources = selectAutopilotNewsSources(brief);
+    await pool.query(
+      `update autopilot_settings
+          set news_sources = $3::jsonb, updated_at = now()
+        where project_id = $1 and channel_id = $2`,
+      [projectId, channelId, JSON.stringify(newsSources)],
+    );
 
     // Плейсхолдер «собираю» — интерфейс покажет процесс; воркер заменит его готовым планом.
     // Чистим только этот канал: у соседнего канала свой план, и он тут ни при чём.

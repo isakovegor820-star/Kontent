@@ -485,6 +485,8 @@ create table if not exists autopilot_settings (
                                check (generation_engine in ('navy-deepseek-pro', 'navy-deepseek-flash', 'navy-gpt-5-4', 'navy-qwen-3-6', 'navy-minimax-m3')),
   planning_months smallint      not null default 1 check (planning_months in (1, 2, 3)),
   planning_weeks smallint       not null default 4 check (planning_weeks between 1 and 12),
+  news_sources     jsonb        not null default '[]'::jsonb
+                               check (jsonb_typeof(news_sources) = 'array'),
   updated_at       timestamptz not null default now()
 );
 
@@ -5245,6 +5247,7 @@ create index if not exists competitors_channel_active_idx
 alter table autopilot_plan add column if not exists generation_post_frequency smallint;
 alter table autopilot_plan add column if not exists expected_post_count smallint;
 alter table autopilot_plan add column if not exists build_activity_at timestamptz;
+alter table autopilot_settings add column if not exists news_sources jsonb not null default '[]'::jsonb;
 update autopilot_plan plan
    set generation_post_frequency = coalesce(
          (
@@ -5270,6 +5273,20 @@ alter table autopilot_plan alter column expected_post_count set not null;
 update autopilot_plan set build_activity_at = created_at where build_activity_at is null;
 alter table autopilot_plan alter column build_activity_at set default now();
 alter table autopilot_plan alter column build_activity_at set not null;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+     where conrelid = 'autopilot_settings'::regclass
+       and conname = 'autopilot_settings_news_sources_check'
+  ) then
+    alter table autopilot_settings
+      add constraint autopilot_settings_news_sources_check
+      check (jsonb_typeof(news_sources) = 'array');
+  end if;
+end
+$$;
 
 do $$
 begin

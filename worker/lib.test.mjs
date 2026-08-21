@@ -282,22 +282,24 @@ describe("autopilotBuildComplete", () => {
     expect(autopilotBuildComplete(2, topics, [items[0], blocked])).toBe(false);
   });
 
-  it("отдаёт план с помеченным постом, но не считает сборку завершённой", () => {
+  it("допускает только чистую семантическую проверку, но не слабый черновик", () => {
     const review = {
       aiReady: true,
       draft: "Черновик для ручной проверки",
       qualityBlocked: true,
       reviewRequired: true,
+      reviewState: "semantic_only_review",
       quality: { passed: true },
     };
     expect(autopilotBuildComplete(2, topics, [items[0], review])).toBe(false);
     expect(autopilotDraftsDeliverable(2, topics, [items[0], review])).toBe(true);
-    // Непрошедший текст тоже доходит до человека: он уже написан, и выбросить его вместе
-    // с четырьмя готовыми постами хуже, чем показать с пометкой «нужна правка».
+    // Обычный провал редакционного порога остаётся внутри сборки и не превращает
+    // пользователя в бесплатного корректора Автопилота.
     expect(autopilotDraftsDeliverable(2, topics, [items[0], {
       ...review,
+      reviewState: "quality_review",
       quality: { passed: false },
-    }])).toBe(true);
+    }])).toBe(false);
   });
 
   it("не отдаёт непрошедший пост без пометки: он выглядел бы готовым", () => {
@@ -312,7 +314,7 @@ describe("autopilotBuildComplete", () => {
     expect(autopilotBuildComplete(2, topics, [items[0], silentlyBroken])).toBe(false);
   });
 
-  it("возвращает все пять запрошенных текстов, даже если один требует правки", () => {
+  it("не дополняет сильный план текстом, который требует редакционной правки", () => {
     const fiveTopics = Array.from({ length: 5 }, (_, index) => ({ topic: `Тема ${index + 1}` }));
     const fiveDrafts = Array.from({ length: 5 }, (_, index) => ({
       aiReady: true,
@@ -328,10 +330,13 @@ describe("autopilotBuildComplete", () => {
       quality: { passed: false, score: 84 },
     };
 
-    expect(autopilotDraftsDeliverable(5, fiveTopics, fiveDrafts)).toBe(true);
+    expect(autopilotDraftsDeliverable(5, fiveTopics, fiveDrafts)).toBe(false);
     expect(autopilotBuildComplete(5, fiveTopics, fiveDrafts)).toBe(false);
-    expect(fiveDrafts).toHaveLength(5);
-    expect(fiveDrafts.every((item) => item.aiReady && item.draft.trim())).toBe(true);
+
+    const readyDrafts = fiveDrafts.filter((item) => item.quality.passed);
+    const readyTopics = fiveTopics.slice(0, readyDrafts.length);
+    expect(readyDrafts).toHaveLength(4);
+    expect(autopilotDraftsDeliverable(4, readyTopics, readyDrafts)).toBe(true);
   });
 });
 

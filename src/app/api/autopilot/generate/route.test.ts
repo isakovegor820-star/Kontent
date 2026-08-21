@@ -116,6 +116,10 @@ describe("POST /api/autopilot/generate", () => {
       expect.stringContaining("insert into autopilot_plan"),
       [88, 4, 22, "navy-gpt-5-4", 7, 49, 2, 7, null],
     );
+    expect(mocks.poolQuery).toHaveBeenCalledWith(
+      expect.stringContaining("news_sources = $3::jsonb"),
+      [88, 22, expect.any(String)],
+    );
     expect(mocks.add).toHaveBeenCalledWith(
       "autopilot-plan",
       { projectId: 88, userId: 4, channelId: 22, planId: "91" },

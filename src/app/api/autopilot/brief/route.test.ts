@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
   resolveChannel: vi.fn(),
   loadBrief: vi.fn(),
+  ensureSettings: vi.fn(),
   query: vi.fn(),
   requireSelectedProjectPermission: vi.fn(),
 }));
@@ -14,6 +15,7 @@ vi.mock("@/lib/db", () => ({ getPool: () => ({ query: mocks.query }) }));
 vi.mock("@/lib/autopilot", () => ({
   resolveChannel: mocks.resolveChannel,
   loadBrief: mocks.loadBrief,
+  ensureSettings: mocks.ensureSettings,
 }));
 vi.mock("@/lib/project-permissions", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/project-permissions")>();
@@ -41,6 +43,7 @@ describe("POST /api/autopilot/brief", () => {
       version: 1,
     });
     mocks.resolveChannel.mockResolvedValue(21);
+    mocks.ensureSettings.mockResolvedValue({});
     mocks.query.mockResolvedValue({ rows: [], rowCount: 1 });
   });
 
@@ -72,6 +75,14 @@ describe("POST /api/autopilot/brief", () => {
     );
     expect(mocks.query.mock.calls[0][0]).toContain("on conflict (project_id, channel_id)");
     expect(mocks.query.mock.calls[0][1].at(-1)).toBe("quiz");
+    expect(mocks.ensureSettings).toHaveBeenCalledWith(
+      { actorUserId: 7, projectId: 88 },
+      21,
+    );
+    expect(mocks.query).toHaveBeenCalledWith(
+      expect.stringContaining("set news_sources = $3::jsonb"),
+      [88, 21, expect.stringContaining("consultant")],
+    );
   });
 
   it("does not save a project A brief while project B is selected", async () => {

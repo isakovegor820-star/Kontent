@@ -47,6 +47,25 @@ export function isAutopilotHumanReviewItem(item) {
   );
 }
 
+/**
+ * Reader-ready is the public product boundary: a deterministic pass or a clean draft whose
+ * only remaining gate is an unavailable semantic provider. Quality-review drafts, missing
+ * text and invented specifics stay inside the generator instead of becoming user work.
+ */
+export function isAutopilotReaderReadyItem(item) {
+  if (item?.aiReady !== true || !String(item?.draft || "").trim()) return false;
+  if (!hasVerifiedQualityMetadata(item?.quality)) return false;
+  if (Array.isArray(item?.invented) && item.invented.length > 0) return false;
+  if (isAutopilotHumanReviewItem(item)) return true;
+  return Boolean(
+    item?.qualityBlocked !== true &&
+      item?.reviewRequired !== true &&
+      item?.quality?.passed === true &&
+      Number(item.quality.score) >= Number(item.quality.threshold) &&
+      hardQualityViolations(item.quality).length === 0,
+  );
+}
+
 export function attestAutopilotItemForHumanApproval(item, { userId, attestedAt } = {}) {
   if (!isAutopilotHumanReviewItem(item)) return item;
   const id = Number(userId);

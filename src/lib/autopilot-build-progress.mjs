@@ -36,6 +36,7 @@ export function autopilotTopicCheckpoints(topics, slots, now = () => new Date())
     topic: String(topic?.topic || ""),
     rubric: String(topic?.rubric || ""),
     ...(topic?.seed ? { seed: topic.seed } : {}),
+    ...(topic?.news ? { news: topic.news } : {}),
     ...(topic?.monthlyCampaignItemId
       ? {
           monthlyCampaignItemId: topic.monthlyCampaignItemId,

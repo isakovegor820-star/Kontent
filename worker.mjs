@@ -14,6 +14,7 @@ import { Temporal } from "@js-temporal/polyfill";
 // без сайд-эффектов — так их можно тестировать, не поднимая пул/Redis/BullMQ.
 import {
   parseCount,
+  parseRss,
   sumReactions,
   decodeEntities,
   splitChunks,
@@ -152,7 +153,14 @@ import {
   prepareAutopilotDraftForm,
   removeUnverifiedSemanticClaims,
 } from "./src/lib/autopilot-quality.mjs";
+import {
+  appendAutopilotSourceFooter,
+  autopilotNewsEvidence,
+  buildAutopilotNewsCandidates,
+  normalizeAutopilotNewsSources,
+} from "./src/lib/autopilot-news.mjs";
 import { autopilotQualityFailureReport } from "./src/lib/autopilot-quality-report.mjs";
+import { isAutopilotReaderReadyItem } from "./src/lib/autopilot-review.mjs";
 import { completeAiText } from "./src/lib/ai-completion-service.mjs";
 import {
   autopilotCheckpointItem,
@@ -5181,6 +5189,36 @@ function varietyRulesW(variety) {
   );
 }
 
+async function discoverAutopilotNews(newsSources, brief) {
+  const sources = normalizeAutopilotNewsSources(newsSources);
+  if (!sources.length) return [];
+  const context = [
+    brief?.niche,
+    brief?.audience,
+    brief?.goal,
+    ...(Array.isArray(brief?.rubrics) ? brief.rubrics : []),
+    ...(Array.isArray(brief?.formats) ? brief.formats : []),
+  ].filter(Boolean).join(" ");
+  const sourceResults = await mapConcurrent(sources, 3, async (source) => {
+    try {
+      const response = await fetchPublicText(source.url, {
+        timeoutMs: 12_000,
+        maxBytes: 2 * 1024 * 1024,
+        headers: { "user-agent": "Aurora-Autopilot-News/1.0" },
+      });
+      if (!response.ok) return { source, items: [] };
+      return { source, items: parseRss(await response.text()).slice(0, 12) };
+    } catch (error) {
+      console.warn("[auto-news] source unavailable", {
+        sourceId: source.id,
+        errorName: error?.name || "Error",
+      });
+      return { source, items: [] };
+    }
+  });
+  return buildAutopilotNewsCandidates(sourceResults, { context, limit: 36 });
+}
+
 function postSystem(
   samples,
   brief,
@@ -5199,6 +5237,13 @@ function postSystem(
   if (varietyRules) s += "\n\n" + varietyRules;
   if (presentation) s += "\n\n" + presentationVariantPrompt(presentation);
   if (brief) s += "\n\n" + briefContextW(brief);
+  s +=
+    "\n\nРЕДАКЦИОННАЯ ЗАДАЧА: пост должен быть интересным, познавательным и приятным для чтения." +
+    " Дай лёгкий контекст человеку, который впервые видит новость: что произошло, почему это важно" +
+    " именно аудитории канала и какой полезный вывод можно унести." +
+    " Не пересказывай источник абзац за абзацем и не пиши сухую новостную сводку." +
+    " Авторский анализ, аналогии и прогноз допустимы свободно, но явно отделяй их от подтверждённых фактов" +
+    " формулировками «похоже», «на мой взгляд», «это может означать».";
   if (!quality.disclaimerRequired) {
     s += "\n\nНе добавляй дисклеймер про информационный характер текста или юридическую консультацию: он не настроен для этого канала.";
   }
@@ -5212,6 +5257,7 @@ function postSystem(
   // и такой пост можно не выпускать. На замере вариант со ссылками дал самый чистый текст
   // и 3 ссылки; вариант с одним лишь запретом — 0 ссылок и искажение факта.
   if (support.length) {
+    const hasNews = support.some((item) => item?.kind === "news");
     s +=
       "\n\nФАКТЫ (только из них можно брать сведения):\n" +
       support.map((c, i) => `[${i + 1}] ${c.text}`).join("\n") +
@@ -5222,6 +5268,11 @@ function postSystem(
       " если этот вывод прямо не написан в фактах. Неподтверждённую мысль удаляй, а не заменяй новой." +
       "\nСвязки, заголовки и финальный вопрос делай нефактическими. Факты можно сокращать," +
       " но нельзя расширять их смысл.";
+    if (hasNews) {
+      s +=
+        "\nЭто новостной материал. Не копируй заголовок источника дословно: найди понятный угол для аудитории канала." +
+        " Не добавляй URL в текст — Аврора сама поставит ссылку на первоисточник внизу.";
+    }
   } else {
     // Опоры нет — и раньше модель об этом не знала. Она честно писала «по данным 2026
     // года» и «статья 213», после чего findInvented объявлял это выдумкой и заворачивал
@@ -5255,6 +5306,7 @@ async function planTopics(
   brief,
   need,
   hitTopics,
+  newsSeeds,
   mood,
   channelId = null,
   usageReservationId = null,
@@ -5273,6 +5325,14 @@ async function planTopics(
     out.push(item);
     return true;
   };
+  // Свежий подтверждённый материал идёт первым. Заголовок источника — не готовый пост,
+  // а factual seed: дальше редактор найдёт понятный угол и сохранит ссылку в metadata.
+  for (const news of (Array.isArray(newsSeeds) ? newsSeeds : []).slice(0, need)) {
+    const direct = validateTopicQuality(news?.title, news?.text);
+    const fallback = validateTopicQuality(fallbackTopicFromSeed(news?.text), news?.text);
+    const topic = direct.passed ? direct.value : fallback.passed ? fallback.value : null;
+    if (topic) pushUnique({ topic, rubric: "Новости и события", news });
+  }
   for (const topic of hitTopics.slice(0, need)) pushUnique({ topic, rubric: null });
   if (out.length >= need) return out;
 
@@ -5566,7 +5626,7 @@ async function buildAutopilotPlan(
   const st = (
     await pool.query(
       `select post_frequency, mode, approvals_streak, generation_engine,
-              planning_months, planning_weeks
+              planning_months, planning_weeks, news_sources
          from autopilot_settings
         where project_id = $1 and channel_id = $2`,
       [projectId, channelId],
@@ -5668,16 +5728,16 @@ async function buildAutopilotPlan(
       [channelId],
     )
   ).rows[0].n;
-  // Профиль «источник обязателен» при пустой базе не может дать НИ ОДНОГО поста:
-  // validatePostQuality ставит блокер no_sources, а переписыванием источник не появляется.
-  // Раньше сборка всё равно уходила на полный цикл, съедала дневную квоту ИИ и
-  // заканчивалась сообщением «модель не дотянула до порога» — неправдой, из-за которой
-  // человек менял модели вместо того, чтобы добавить материалы.
-  if (quality.factsPolicy === "source_required" && facts === 0) {
+  const newsCandidates = monthlyContext
+    ? []
+    : await discoverAutopilotNews(st?.news_sources, brief);
+  // Источником может быть и база автора, и свежий редакционный материал. Если строгому
+  // профилю не нашлось ни того, ни другого, не тратим ИИ-квоту и не показываем сырой текст.
+  if (quality.factsPolicy === "source_required" && facts === 0 && newsCandidates.length === 0) {
     console.warn(
-      `[auto] user ${userId}/${channelId}: профиль требует источник, база знаний пуста — сборку не начинаю`,
+      `[auto] user ${userId}/${channelId}: не найдено ни базы знаний, ни свежих новостей — сборку не начинаю`,
     );
-    return { error: "no_knowledge_base" };
+    return { error: "no_sources_found" };
   }
 
   // Залёт конкурента — только сигнал, а не редакционное задание. По умолчанию темы
@@ -5748,11 +5808,12 @@ async function buildAutopilotPlan(
   ].slice(0, 10);
 
   // Сначала конкретные темы под нишу, только потом тексты.
-  const topics = hasCheckpointedTopics
+  let topics = hasCheckpointedTopics
     ? checkpointItems.map((item) => ({
         topic: item.topic,
         rubric: item.rubric,
         ...(item.seed ? { seed: item.seed } : {}),
+        ...(item.news ? { news: item.news } : {}),
         ...(item.monthlyCampaignItemId
           ? {
               monthlyCampaignItemId: item.monthlyCampaignItemId,
@@ -5764,6 +5825,7 @@ async function buildAutopilotPlan(
         brief,
         N,
         ideaTopics,
+        newsCandidates,
         planMood,
         channelId,
         usageReservationId,
@@ -5787,9 +5849,12 @@ async function buildAutopilotPlan(
   }
   rule += ` Темы — под твою нишу: ${brief.niche}.`;
 
+  if (newsCandidates.length) {
+    rule += ` Нашёл ${newsCandidates.length} ${plural(newsCandidates.length, "свежий инфоповод", "свежих инфоповода", "свежих инфоповодов")} в источниках по теме канала.`;
+  }
   rule += facts
-    ? ` Факты — из твоей базы знаний (${facts} ${plural(facts, "кусок", "куска", "кусков")}).`
-    : ` База знаний пуста, поэтому пишу без конкретики — ни дат, ни сумм, ни номеров дел выдумывать не стану. Добавь материалы, и посты станут предметными.`;
+    ? ` Дополнительный контекст — из твоей базы знаний (${facts} ${plural(facts, "фрагмент", "фрагмента", "фрагментов")}).`
+    : " Конкретные факты беру только из найденных источников; неподтверждённые детали не добавляю.";
   rule += " Каждый текст проходит автоматическую редактуру. Готовые посты можно выпускать; если автопроверка фактов недоступна, пост останется на подтверждении.";
   rule += " Темы и готовые тексты сверяются с текущим планом и недавней историей канала; близкий дубль переписывается или останавливает сборку.";
 
@@ -5802,7 +5867,7 @@ async function buildAutopilotPlan(
     process.env,
     generationEngine === "navy-minimax-m3" ? 2 : 3,
   );
-  const items = await mapConcurrent(topics, autopilotConcurrency, async (t, i) => {
+  let items = await mapConcurrent(topics, autopilotConcurrency, async (t, i) => {
     const { topic, rubric } = t;
     if (reusableAutopilotCheckpoint(checkpointItems[i], t, slots[i])) {
       console.log(`[auto]   «${topic.slice(0, 40)}»: восстановлен из checkpoint`);
@@ -5816,7 +5881,11 @@ async function buildAutopilotPlan(
     }
     // Опора под КАЖДУЮ тему. В строгом профиле пустая опора — блокер, а не разрешение
     // модели заполнить пробел убедительно звучащей выдумкой.
-    let support = await findSupport(channelId, topic);
+    const newsEvidence = autopilotNewsEvidence(t.news);
+    const channelSupport = await findSupport(channelId, topic);
+    let support = newsEvidence
+      ? [newsEvidence, ...channelSupport].slice(0, TOP_K)
+      : channelSupport;
     if (t.seed && !support.some((source) => Number(source.id) === Number(t.seed))) {
       const seeded = (
         await pool.query(
@@ -5834,9 +5903,15 @@ async function buildAutopilotPlan(
       otherTopics: topics.filter((_, index) => index !== i).map((other) => other.topic),
       recentOpenings,
     });
-    const task = rubric
-      ? `Напиши пост в рубрику «${rubric}» на тему: ${topic}.`
-      : `Напиши пост на тему: ${topic}.`;
+    const task = t.news
+      ? [
+          `Напиши новостной пост на тему: ${topic}.`,
+          `Материал опубликован ${new Date(t.news.publishedAt).toLocaleDateString("ru-RU")}.`,
+          "Сначала дай лёгкий контекст, затем объясни, почему событие интересно аудитории канала, и закончи полезным авторским выводом.",
+        ].join("\n")
+      : rubric
+        ? `Напиши пост в рубрику «${rubric}» на тему: ${topic}.`
+        : `Напиши пост на тему: ${topic}.`;
     const outputTokens = autopilotOutputTokens(quality);
     let candidateRaw = await askAI(
       "autopilot-plan",
@@ -5934,15 +6009,16 @@ async function buildAutopilotPlan(
       });
     }
 
-    const draft = aiDraft || `Черновик на тему «${topic}» — ИИ допишет, когда движок будет доступен.`;
+    const draft = aiDraft
+      ? appendAutopilotSourceFooter(aiDraft, support, quality.maxChars)
+      : `Черновик на тему «${topic}» — ИИ допишет, когда движок будет доступен.`;
     const scheduledAt = slots[i];
     const qualityFailureKind = autopilotQualityFailureKind(qualityResult);
     const needsHumanReview = Boolean(
       aiDraft && qualityResult.passed && qualityResult.semantic?.status === "not_checked",
     );
-    // Крайний случай: форма приведена автоматически, редактура отработала, а замечание
-    // осталось. Текст всё равно остаётся у человека — «Поправить» в карточке перезапускает
-    // ту же проверку. Выбросить готовые тексты хуже, чем показать один абзац на доработку.
+    // Крайний случай: форма приведена автоматически, но редакционный порог не пройден.
+    // Такой текст нужен только диагностике сборки и не пересекает reader-ready границу.
     const needsHumanEdit = Boolean(aiDraft && !qualityResult.passed);
     const item = {
       i,
@@ -5960,7 +6036,14 @@ async function buildAutopilotPlan(
       aiReady: !!aiDraft,
       // Чем пост подкреплён — покажем человеку в карточке: это и есть доказательство,
       // что цифры не выдуманы, а взяты из его же материалов.
-      sources: support.map((c) => ({ id: c.id, text: c.text.slice(0, 120) })),
+      sources: support.map((c) => ({
+        id: c.id,
+        text: c.text.slice(0, 240),
+        ...(c.kind ? { kind: c.kind } : {}),
+        ...(c.title ? { title: c.title } : {}),
+        ...(c.url ? { url: c.url } : {}),
+        ...(c.publishedAt ? { publishedAt: c.publishedAt } : {}),
+      })),
       cited,
       // Непустое — в посте осталась непроверенная конкретика. Человек увидит предупреждение,
       // а автопубликация для такого поста закрыта.
@@ -6014,22 +6097,32 @@ async function buildAutopilotPlan(
     return item;
   });
 
-  // Условие одно для обоих режимов: на каждый слот есть настоящий текст, а непрошедший
-  // пост помечен. Что можно публиковать без человека — решает item.autoApprove по каждому
-  // посту, и в полном режиме неидеальный текст просто ждёт одобрения вместо того, чтобы
-  // отменить всю сборку.
-  if (!autopilotDraftsDeliverable(N, topics, items)) {
+  // Public plan is a product result, not a validator inbox. Keep only texts that passed the
+  // editorial boundary (or need a clean human read solely because semantic infrastructure
+  // was unavailable). Failed quality, invented specifics and provider placeholders stay
+  // inside the build. A shorter strong plan is better than the requested count padded with
+  // drafts that advertise an unreliable Autopilot.
+  const readerReadyPairs = items
+    .map((item, index) => ({ item, topic: topics[index] }))
+    .filter(({ item }) => isAutopilotReaderReadyItem(item));
+  if (!readerReadyPairs.length) {
     const missing = items.filter((item) => !item.aiReady).length;
     const report = autopilotQualityFailureReport(items, N);
-    // Причину пишем в лог кодами нарушений, а не одним счётчиком: «прошли 2/5» не
-    // отвечает на вопрос, что именно чинить, и разбор приходилось делать вручную.
     console.log(
       missing
-        ? `[auto] user ${userId}: модель не завершила ${missing}/${N} постов — неполный план не сохраняю`
-        : `[auto] user ${userId}: непрошедший пост остался без пометки — план не отдаю` +
+        ? `[auto] user ${userId}: модель не завершила ни одного готового поста (${missing}/${N} пустых)`
+        : `[auto] user ${userId}: ни один пост не прошёл reader-ready границу` +
           ` (${report.causes.map((cause) => `${cause.code}×${cause.count}`).join(", ") || "без разбора"})`,
     );
     return { error: missing ? "ai_unavailable" : "quality_gate_unsatisfied" };
+  }
+  items = readerReadyPairs.map(({ item }, index) => ({ ...item, i: index }));
+  topics = readerReadyPairs.map(({ topic }) => topic);
+  if (items.length < N) {
+    rule += ` Аврора собрала ${items.length} ${plural(items.length, "сильный материал", "сильных материала", "сильных материалов")} без повторов и неподтверждённых тем.`;
+  }
+  if (!autopilotDraftsDeliverable(items.length, topics, items)) {
+    return { error: "quality_gate_unsatisfied" };
   }
 
   // Повтор предотвращается правилом: модель заранее получает остальные темы сборки и
@@ -6056,13 +6149,13 @@ async function buildAutopilotPlan(
     ) {
       const duplicateItem = acceptedForVariety[duplicate.index];
       const presentation = autopilotPresentationVariant(index + (attempt + 1) * 5, quality);
-      let support = item._support || [];
-      if (!support.length && Array.isArray(item.sources) && item.sources.length) {
+      let support = item._support || (Array.isArray(item.sources) ? item.sources : []);
+      if (Array.isArray(item.sources) && item.sources.length) {
         const sourceIds = item.sources
           .map((source) => Number(source?.id))
           .filter((id) => Number.isSafeInteger(id) && id > 0);
         if (sourceIds.length) {
-          support = (
+          const knowledgeSupport = (
             await pool.query(
               `select id, text, kind, source_id
                  from knowledge_chunks
@@ -6070,6 +6163,8 @@ async function buildAutopilotPlan(
               [channelId, sourceIds],
             )
           ).rows;
+          const externalSupport = item.sources.filter((source) => source?.kind === "news");
+          support = [...externalSupport, ...knowledgeSupport].slice(0, TOP_K);
         }
       }
       const system = postSystem(samples, brief, support, quality, index, presentation, {
@@ -6118,7 +6213,7 @@ async function buildAutopilotPlan(
         ].join("\n\n");
         continue;
       }
-      item.draft = candidate;
+      item.draft = appendAutopilotSourceFooter(candidate, support, quality.maxChars);
       item.aiReady = true;
       item.cited = cited;
       item.invented = invented.length ? invented : undefined;
@@ -6156,12 +6251,16 @@ async function buildAutopilotPlan(
     delete item._outputTokens;
   }
 
-  // План отдаётся в обоих режимах. В полном автомате право на выпуск считается по КАЖДОМУ
-  // посту отдельно (item.autoApprove ниже), поэтому неидеальный пост не публикуется сам, а
-  // ждёт человека — и при этом не отменяет остальные. Прежний строгий гейт отменял всю
-  // сборку из-за одного поста, то есть наказывал за осторожность полным отсутствием плана.
-  if (!autopilotDraftsDeliverable(N, topics, items)) {
-    console.warn(`[auto] user ${userId}: на слот не оказалось текста — план не отдаю`);
+  // План отдаётся в обоих режимах. В полном автомате право на выпуск считается по каждому
+  // reader-ready посту отдельно (item.autoApprove ниже). То, что не прошло редакционную
+  // границу после проверки разнообразия, остаётся внутренним результатом сборки.
+  const variedPairs = items
+    .map((item, index) => ({ item, topic: topics[index] }))
+    .filter(({ item }) => isAutopilotReaderReadyItem(item));
+  items = variedPairs.map(({ item }, index) => ({ ...item, i: index }));
+  topics = variedPairs.map(({ topic }) => topic);
+  if (!items.length || !autopilotDraftsDeliverable(items.length, topics, items)) {
+    console.warn(`[auto] user ${userId}: после проверки разнообразия не осталось готовых текстов`);
     return { error: "quality_gate_unsatisfied" };
   }
 
@@ -6284,7 +6383,11 @@ async function buildAutopilotPlan(
     anyPending = items.some((item) => item.status === "pending" || item.status === "expired");
     planStatus = fullAtCommit && !anyPending ? "approved" : "pending";
 
-    const usedSourceIds = [...new Set(items.flatMap((item) => item.sources?.map((source) => source.id) ?? []))];
+    const usedSourceIds = [...new Set(
+      items
+        .flatMap((item) => item.sources?.map((source) => Number(source.id)) ?? [])
+        .filter((id) => Number.isSafeInteger(id) && id > 0),
+    )];
     if (usedSourceIds.length) {
       await tx.query(`update knowledge_chunks set used_count = used_count + 1 where id = any($1)`, [
         usedSourceIds,
@@ -9937,7 +10040,7 @@ const AUTOPILOT_QUEUE = "autopilot-plans";
 const NON_RETRYABLE_AUTOPILOT_ERRORS = new Set([
   "quality_gate_unsatisfied",
   "content_variety_insufficient",
-  "no_knowledge_base",
+  "no_sources_found",
   "no_brief",
   "no_channel",
 ]);

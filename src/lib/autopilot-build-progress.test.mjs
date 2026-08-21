@@ -14,11 +14,20 @@ const now = () => new Date("2026-08-18T08:00:00.000Z");
 describe("Autopilot durable build progress", () => {
   it("stores topic shells and strips private prompt context from completed checkpoints", () => {
     const shells = autopilotTopicCheckpoints(
-      [{ topic: "Первая", rubric: "Разбор" }],
+      [{
+        topic: "Первая",
+        rubric: "Разбор",
+        news: { id: "news-1", title: "Новость", text: "Факты новости" },
+      }],
       ["2026-08-19T09:00:00.000Z"],
       now,
     );
-    expect(shells[0]).toMatchObject({ buildState: "queued", topic: "Первая", i: 0 });
+    expect(shells[0]).toMatchObject({
+      buildState: "queued",
+      topic: "Первая",
+      i: 0,
+      news: { id: "news-1" },
+    });
 
     const checkpoint = autopilotCheckpointItem({
       ...shells[0],

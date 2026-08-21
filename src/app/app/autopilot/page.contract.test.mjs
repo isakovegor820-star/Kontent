@@ -25,9 +25,15 @@ describe("Autopilot build UI contract", () => {
     expect(source).toContain("Не удалось остановить сборку");
   });
 
-  it("shows an actionable publication state instead of an internal numeric score", () => {
-    expect(source).toContain("готов к публикации");
-    expect(source).toContain("нужна правка");
+  it("shows only reader-ready publication states instead of validator diagnostics", () => {
+    expect(source).toContain("готов к просмотру");
+    expect(source).toContain("на согласовании");
+    expect(source).toContain("isAutopilotReaderReadyItem(item)");
+    expect(source).toContain("Источники и контекст");
+    expect(source).toContain("!isAutopilotHumanReviewItem(item)");
+    expect(source).toContain("max-w-[72ch]");
+    expect(source).not.toContain("нужна правка");
+    expect(source).not.toContain("Что здесь поправить");
     expect(source).not.toContain("{it.quality.score}/{it.quality.threshold}");
     expect(source).not.toContain("Сырые тексты не сохранены");
   });
