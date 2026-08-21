@@ -13,9 +13,25 @@ describe("Autopilot build UI contract", () => {
 
   it("shows durable progress and lets the user stop a build", () => {
     expect(source).toContain('role="progressbar"');
-    expect(source).toContain("plan?.buildProgress?.completed");
+    expect(source).toContain("attempt.readyCount");
+    expect(source).toContain("data?.buildAttempt?.status");
     expect(source).toContain("Остановить сборку");
     expect(source).toContain('method: "DELETE"');
+    expect(source).toContain("attempt.publicationTargetCount");
+    expect(source).toContain("attempt.candidateCount");
+    expect(source).toContain("Резерв автоматически не публикуется");
+    expect(source).toContain("plannedCandidateCount");
+  });
+
+  it("keeps the active plan visible and offers cause-specific repair actions", () => {
+    expect(source).toContain("data.activePlan ?? data.plan");
+    expect(source).toContain("Текущий готовый план остаётся доступен ниже");
+    expect(source).toContain("Дополнить ${repairCount}");
+    expect(source).toContain("Добавить материалы");
+    expect(source).toContain("Открыть настройки качества");
+    expect(source).toContain("Проверить {Math.max(1, attempt.progress.reviewRequired)}");
+    expect(source).toContain("/api/autopilot/repair");
+    expect(source).toContain("repairBusy");
   });
 
   it("waits for each poll to finish and reports generation/cancel network failures", () => {
@@ -46,5 +62,14 @@ describe("Autopilot build UI contract", () => {
   it("uses real links styled as buttons without nested interactive controls", () => {
     expect(source).not.toMatch(/<Link\b[^>]*>\s*<Button\b/u);
     expect(source).toContain("buttonClassName");
+  });
+
+  it("announces progress and errors without forcing motion", () => {
+    expect(source).toContain('role={terminal ? "alert" : "status"}');
+    expect(source).toContain('aria-live={terminal ? "assertive" : "polite"}');
+    expect(source).toContain("useReducedMotion()");
+    expect(source).toContain("autopilotBuildSpinnerClass(reducedMotion)");
+    expect(source).toContain("motion-reduce:transition-none");
+    expect(source).toContain("tabular-nums");
   });
 });

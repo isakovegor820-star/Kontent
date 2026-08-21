@@ -25,6 +25,17 @@ vi.mock("@/lib/project-permissions", async (importOriginal) => {
 import { GET } from "./route";
 
 describe("GET /api/autopilot", () => {
+  const readyQuality = {
+    passed: true,
+    score: 92,
+    threshold: 85,
+    violations: [],
+    metadata: {
+      checkedAt: "2026-08-18T08:00:00.000Z",
+      rules: { id: "aurora-post-quality", version: 1, profileVersion: 1 },
+      provenance: { kind: "deterministic", validator: "validatePostQuality", trigger: "generation" },
+    },
+  };
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.getSessionUser.mockResolvedValue({ id: 4 });
@@ -112,10 +123,21 @@ describe("GET /api/autopilot", () => {
             build_activity_at: checkpointedAt,
             planning_months: 1,
             planning_weeks: 1,
-            generation_post_frequency: 7,
-            expected_post_count: 7,
+            generation_post_frequency: 5,
+            expected_post_count: 5,
+            publication_target_count: 5,
+            candidate_count: 7,
             items: [
-              { i: 0, buildState: "ready", checkpointedAt, aiReady: true, draft: "Готово" },
+              {
+                i: 0,
+                buildState: "ready",
+                checkpointedAt,
+                aiReady: true,
+                draft: "Готово.",
+                status: "pending",
+                scheduledAt: checkpointedAt,
+                quality: readyQuality,
+              },
               { i: 1, buildState: "queued", checkpointedAt },
             ],
           }],
@@ -129,11 +151,19 @@ describe("GET /api/autopilot", () => {
     const body = await response.json();
 
     expect(response.status).toBe(200);
-    expect(body.plan.buildProgress).toMatchObject({
+    expect(body.plan).toBeNull();
+    expect(body.activePlan).toBeNull();
+    expect(body.buildAttempt.progress).toMatchObject({
       completed: 1,
       total: 7,
       percent: 14,
       stage: "generating",
+    });
+    expect(body.buildAttempt).toMatchObject({
+      publicationTargetCount: 5,
+      candidateCount: 7,
+      readyCount: 1,
+      failedCount: 0,
     });
   });
 
@@ -168,11 +198,60 @@ describe("GET /api/autopilot", () => {
     const response = await GET(new NextRequest("http://localhost/api/autopilot?channel=22"));
     const body = await response.json();
 
-    expect(body.plan.status).toBe("building");
+    expect(body.plan).toBeNull();
+    expect(body.buildAttempt.status).toBe("building");
     expect(mocks.query).not.toHaveBeenCalledWith(
       expect.stringContaining("set status = 'error'"),
       expect.anything(),
     );
+  });
+
+  it("keeps the last usable plan visible when a newer build fails", async () => {
+    mocks.resolveChannel.mockResolvedValue(22);
+    const now = new Date().toISOString();
+    mocks.query.mockImplementation(async (sqlValue: string) => {
+      const sql = sqlValue.replace(/\s+/g, " ").trim();
+      if (sql.includes("from channels")) {
+        return { rows: [{ id: "22", title: "Проект B", handle: "project_b" }], rowCount: 1 };
+      }
+      if (sql.includes("from autopilot_plan")) {
+        return {
+          rows: [
+            {
+              id: 92,
+              status: "error",
+              revision: 3,
+              rules: "ai_unavailable",
+              created_at: now,
+              build_activity_at: now,
+              expected_post_count: 5,
+              planning_weeks: 1,
+              items: [{ i: 0, aiReady: false, draft: "", buildState: "failed" }],
+            },
+            {
+              id: 70,
+              status: "pending",
+              revision: 6,
+              rules: "Стабильный план",
+              created_at: "2026-08-20T08:00:00.000Z",
+              build_activity_at: "2026-08-20T08:00:00.000Z",
+              expected_post_count: 5,
+              planning_weeks: 1,
+              items: [],
+            },
+          ],
+          rowCount: 2,
+        };
+      }
+      return { rows: [], rowCount: 0 };
+    });
+
+    const response = await GET(new NextRequest("http://localhost/api/autopilot?channel=22"));
+    const body = await response.json();
+
+    expect(body.activePlan).toMatchObject({ id: 70, status: "pending" });
+    expect(body.plan).toMatchObject({ id: 70, status: "pending", planning_weeks: 1 });
+    expect(body.buildAttempt).toMatchObject({ planId: 92, status: "error", errorReason: "provider" });
   });
 
   it("does not disguise an internal failure as an empty successful state", async () => {

@@ -1,6 +1,10 @@
 import { normalizePostQuality, validatePostQuality } from "./post-quality.mjs";
 import { finishPostForm, normalizePostForm, reservedFormChars } from "./post-form.mjs";
 import { validateSemanticClaims } from "./semantic-claims.mjs";
+import {
+  QUALITY_FAILURE_GUIDE,
+  autopilotQualityDisposition,
+} from "./autopilot-quality-report.mjs";
 
 // Добивка объёма обязана говорить с читателем так же, как весь канал. Один вариант на
 // «ты» стоил месяца сборок: профили «Экспертный» и «Юридический» говорят на «вы», проверка
@@ -41,7 +45,12 @@ function lengthQuestions(address) {
  * human review (and remain ineligible for automatic publication).
  */
 export function autopilotQualityFailureKind(result) {
-  if (result?.passed === true) return "passed";
+  if (result?.publicationDisposition === "ready" || (
+    result?.passed === true && result?.publicationDisposition == null
+  )) return "passed";
+  const strategy = result?.repairStrategy || autopilotQualityDisposition(result).repairStrategy;
+  if (strategy === "add_knowledge") return "missing_evidence";
+  if (strategy === "human_review") return "semantic_unavailable";
   const codes = new Set(
     (Array.isArray(result?.violations) ? result.violations : [])
       .map((violation) => String(violation?.code || "")),
@@ -51,6 +60,11 @@ export function autopilotQualityFailureKind(result) {
     return "semantic_unavailable";
   }
   return "rewriteable";
+}
+
+export function autopilotQualityRepairStrategy(result) {
+  if (result?.publicationDisposition === "ready") return null;
+  return result?.repairStrategy || autopilotQualityDisposition(result).repairStrategy;
 }
 
 /**
@@ -115,23 +129,33 @@ export function fitAutopilotDraftLength(text, minChars, maxChars, address = "в�
  */
 export function prepareAutopilotDraftForm(text, rawQuality) {
   const q = normalizePostQuality(rawQuality);
-  const normalized = normalizePostForm(text, q);
+  const desiredMinChars = Number(q.desiredMinChars ?? q.minChars);
+  const desiredMaxChars = Number(q.desiredMaxChars ?? q.maxChars);
+  const formQuality = {
+    ...q,
+    minChars: desiredMinChars,
+    maxChars: desiredMaxChars,
+  };
+  const normalized = normalizePostForm(text, formQuality);
   if (!normalized) return "";
-  const reserved = reservedFormChars(normalized, q);
+  const reserved = reservedFormChars(normalized, formQuality);
   const fitted = fitAutopilotDraftLength(
     normalized,
-    Math.max(0, q.minChars - reserved),
-    Math.max(1, q.maxChars - reserved),
-    q.address,
+    Math.max(0, desiredMinChars - reserved),
+    Math.max(1, desiredMaxChars - reserved),
+    formQuality.address,
   );
   // Добивка объёма склеивает вопрос читателя в отдельный абзац — форму после неё
   // перепроверяем, иначе абзац может выйти за лимит предложений.
-  return finishPostForm(normalizePostForm(fitted, q), q);
+  return finishPostForm(normalizePostForm(fitted, formQuality), formQuality);
 }
 
 /** Enough completion budget for the channel length band, including a short Russian post. */
 export function autopilotOutputTokens(quality) {
-  const maxChars = Math.max(500, Number(quality?.maxChars) || 1800);
+  const maxChars = Math.max(
+    500,
+    Number(quality?.desiredMaxChars ?? quality?.maxChars) || 1800,
+  );
   return Math.min(1800, Math.max(800, Math.ceil(maxChars * 0.9)));
 }
 
@@ -230,22 +254,54 @@ export async function assessAutopilotDraft({
     0,
     100 - deterministicViolations.reduce((sum, violation) => sum + violation.penalty, 0),
   );
-  const deterministicBlockers = deterministicViolations
-    .filter((violation) => violation.blocker)
+  const combinedViolations = [...deterministicViolations, ...semanticViolations];
+  if (
+    deterministicScore < deterministic.threshold &&
+    !combinedViolations.some((violation) => violation?.code === "quality_threshold")
+  ) {
+    combinedViolations.push({
+      code: "quality_threshold",
+      message: `Редакционный результат ${deterministicScore}/100 ниже порога ${deterministic.threshold}/100`,
+      blocker: false,
+      penalty: 0,
+    });
+  }
+  const { publicationDisposition, repairStrategy } = autopilotQualityDisposition({
+    violations: combinedViolations,
+  });
+  const deterministicBlockers = combinedViolations
+    .filter((violation) =>
+      QUALITY_FAILURE_GUIDE[violation?.code]?.publicationDisposition === "blocked",
+    )
     .map((violation) => violation.message);
-  const deterministicPassed = deterministicBlockers.length === 0 &&
-    deterministicScore >= deterministic.threshold;
-  const passed = deterministicPassed && semantic.status !== "blocked";
+  const passed = publicationDisposition !== "blocked";
+  const actualChars = String(text || "").trim().length;
+  const desiredMinChars = Number(quality?.desiredMinChars ?? quality?.minChars ?? 0);
+  const desiredMaxChars = Number(quality?.desiredMaxChars ?? quality?.maxChars ?? 0);
+  const publicationMinChars = Number(quality?.publicationMinChars ?? quality?.minChars ?? 0);
+  const publicationMaxChars = Number(quality?.publicationMaxChars ?? quality?.maxChars ?? 0);
   return {
     ...deterministic,
     score: semantic.status === "blocked"
       ? Math.min(deterministicScore, Math.max(0, deterministic.threshold - 1))
       : deterministicScore,
     passed,
-    blockers: semantic.status === "blocked"
-      ? [...deterministicBlockers, ...semanticMessages]
-      : deterministicBlockers,
-    violations: [...deterministicViolations, ...semanticViolations],
+    blockers: deterministicBlockers,
+    violations: combinedViolations,
     semantic,
+    publicationDisposition,
+    repairStrategy,
+    desiredLength: {
+      minChars: desiredMinChars,
+      maxChars: desiredMaxChars,
+      actualChars,
+      withinRange: actualChars >= desiredMinChars && actualChars <= desiredMaxChars,
+    },
+    publicationEnvelope: {
+      minChars: publicationMinChars,
+      maxChars: publicationMaxChars,
+      actualChars,
+      withinRange: actualChars >= publicationMinChars && actualChars <= publicationMaxChars,
+    },
   };
 }

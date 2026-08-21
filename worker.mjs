@@ -149,6 +149,7 @@ import { authorProfileContext } from "./src/lib/author-profile.mjs";
 import {
   assessAutopilotDraft,
   autopilotQualityFailureKind,
+  autopilotQualityRepairStrategy,
   autopilotOutputTokens,
   prepareAutopilotDraftForm,
   removeUnverifiedSemanticClaims,
@@ -161,12 +162,17 @@ import {
 import { sanitizeAutopilotPublicText } from "./src/lib/autopilot-publication.mjs";
 import {
   applyAutopilotQuickSettingsToQuality,
+  autopilotDesiredLengthPrompt,
   autopilotEnergyPrompt,
   autopilotNewsPostCount,
   normalizeAutopilotQuickSettings,
 } from "./src/lib/autopilot-style.mjs";
 import { autopilotQualityFailureReport } from "./src/lib/autopilot-quality-report.mjs";
 import { isAutopilotReaderReadyItem } from "./src/lib/autopilot-review.mjs";
+import {
+  autopilotCandidateCount,
+  selectAutopilotCandidates,
+} from "./src/lib/autopilot-candidate-selection.mjs";
 import { completeAiText } from "./src/lib/ai-completion-service.mjs";
 import {
   autopilotCheckpointItem,
@@ -185,7 +191,7 @@ import {
   autopilotFallbackEngines,
   autopilotPresentationVariant,
   findAutopilotNearDuplicate,
-  plannedDailyAutopilotPostCount,
+  plannedPostCountForWeeks,
   presentationVariantPrompt,
 } from "./src/lib/autopilot-config.mjs";
 import {
@@ -368,9 +374,6 @@ const OWNER_CHAT = process.env.TG_CHAT_ID;
 const AUTOPILOT_ONLY = process.env.AURORA_WORKER_MODE === "autopilot";
 const MEDIA_ONLY = process.env.AURORA_WORKER_MODE === "media";
 const PUBLICATION_ONLY = process.env.AURORA_WORKER_MODE === "publication";
-// Редакторские нарушения обычно исправляются за одну-две попытки. Дальнейшие переписывания
-// при недоступной semantic-проверке или пустой базе знаний только умножают одинаковые вызовы.
-const AUTOPILOT_QUALITY_REWRITE_ATTEMPTS = 2;
 const {
   attemptTimeoutMs: AUTOPILOT_AI_ATTEMPT_TIMEOUT_MS,
   overallTimeoutMs: AUTOPILOT_AI_OVERALL_TIMEOUT_MS,
@@ -4681,6 +4684,22 @@ async function discoverForUser(userId) {
 
 // Генерация идей/планов в воркере без стрима. Выбирает движок (облако/локально) сам.
 // null, если движок недоступен — тогда идея/план сохраняются без ИИ-текста (честно).
+const workerAiCallCounts = new Map();
+
+function noteWorkerAiCall(reservationId) {
+  const id = Number(reservationId);
+  if (!Number.isSafeInteger(id) || id <= 0) return;
+  workerAiCallCounts.set(id, (workerAiCallCounts.get(id) || 0) + 1);
+}
+
+function workerAiCallCount(reservationId) {
+  return workerAiCallCounts.get(Number(reservationId)) || 0;
+}
+
+function clearWorkerAiCallCount(reservationId) {
+  workerAiCallCounts.delete(Number(reservationId));
+}
+
 async function askAI(
   surface,
   usageReservationId,
@@ -4711,6 +4730,7 @@ async function askAI(
       ).rows[0]?.ai_engine ?? null;
     }
     const selectedEngine = configuredServiceEngine(explicitEngine || requestedEngine);
+    noteWorkerAiCall(usageReservationId);
     const completed = await completeAiText({
       messages,
       engine: selectedEngine,
@@ -5243,6 +5263,8 @@ function postSystem(
   const varietyRules = varietyRulesW(variety);
   if (varietyRules) s += "\n\n" + varietyRules;
   if (presentation) s += "\n\n" + presentationVariantPrompt(presentation);
+  const desiredLength = autopilotDesiredLengthPrompt(quality);
+  if (desiredLength) s += "\n\n" + desiredLength;
   s += "\n\n" + autopilotEnergyPrompt(quickSettings);
   if (brief) s += "\n\n" + briefContextW(brief);
   s +=
@@ -5629,7 +5651,11 @@ async function buildAutopilotPlan(
   channelId,
   expectedPlanId = null,
   usageReservationId = null,
+  repairIndexes = null,
+  repairOperationId = null,
 ) {
+  const buildStartedAt = Date.now();
+  const aiCallsBefore = workerAiCallCount(usageReservationId);
   // A manual build is tied to the placeholder created by the API. Old duplicate jobs used
   // to rebuild the same channel one after another and could overwrite a newer retry. A job
   // whose placeholder is gone or no longer `building` is obsolete and must do no work.
@@ -5637,7 +5663,9 @@ async function buildAutopilotPlan(
   if (expectedPlanId != null) {
     const expected = await pool.query(
       `select generation_engine, generation_post_frequency, expected_post_count,
-              planning_months, planning_weeks, monthly_campaign_plan_id, items, quick_settings
+              publication_target_count, candidate_count,
+              planning_months, planning_weeks, monthly_campaign_plan_id, items, quick_settings,
+              repair_attempt
          from autopilot_plan
         where id = $1 and project_id = $2 and channel_id = $3 and status = 'building'`,
       [expectedPlanId, projectId, channelId],
@@ -5681,7 +5709,10 @@ async function buildAutopilotPlan(
   const generationEngine = expectedPlan?.generation_engine || st?.generation_engine || DEFAULT_AUTOPILOT_ENGINE;
   const standaloneBuild = !Number(expectedPlan?.monthly_campaign_plan_id);
   const generationPostFrequency = standaloneBuild
-    ? 7
+    ? Math.min(
+        MAX_WEEKLY_POSTS,
+        Math.max(1, Math.round(Number(expectedPlan?.generation_post_frequency ?? st?.post_frequency ?? 5) || 5)),
+      )
     : Math.min(
         MAX_WEEKLY_POSTS,
         Math.max(1, Math.round(Number(expectedPlan?.generation_post_frequency ?? 7) || 7)),
@@ -5758,10 +5789,17 @@ async function buildAutopilotPlan(
     planningMonths = 1;
     rule += " Первая неделя взята из согласованной месячной кампании; темы и даты сохраняют её версию.";
   }
-  const N = monthlyContext
+  const publicationTargetCount = monthlyContext
     ? monthlyContext.topics.length
-    : Number(expectedPlan?.expected_post_count)
-      || plannedDailyAutopilotPostCount(planWeeks);
+    : Number(expectedPlan?.publication_target_count || expectedPlan?.expected_post_count)
+      || plannedPostCountForWeeks(generationPostFrequency, planWeeks);
+  const N = monthlyContext
+    ? publicationTargetCount
+    : Number(expectedPlan?.candidate_count)
+      || autopilotCandidateCount(publicationTargetCount);
+  const selectionNewsQuota = monthlyContext
+    ? 0
+    : autopilotNewsPostCount(quickSettings, planWeeks, publicationTargetCount);
 
   const quality = normalizePostQuality(
     applyAutopilotQuickSettingsToQuality(brief.quality, quickSettings),
@@ -5880,7 +5918,7 @@ async function buildAutopilotPlan(
         usageReservationId,
         generationEngine,
         historicalTopics,
-        autopilotNewsPostCount(quickSettings, planWeeks, N),
+        selectionNewsQuota,
       );
   if (!autopilotBuildComplete(N, topics)) {
     console.log(`[auto] user ${userId}: получено тем ${topics.length}/${N} — неполный план не сохраняю`);
@@ -5897,10 +5935,10 @@ async function buildAutopilotPlan(
     );
     if (!checkpointed.rowCount) return { superseded: true };
   }
-  const selectedNewsCount = topics.filter((topic) => topic.news).length;
-  const evergreenCount = Math.max(0, topics.length - selectedNewsCount);
-  rule = `По одному посту в день: ${selectedNewsCount} ${plural(selectedNewsCount, "свежее событие", "свежих события", "свежих событий")}`
-    + ` и ${evergreenCount} ${plural(evergreenCount, "полезный разбор", "полезных разбора", "полезных разборов")}.`
+  const plannedNewsCount = topics.filter((topic) => topic.news).length;
+  const plannedEvergreenCount = Math.max(0, topics.length - plannedNewsCount);
+  rule = `По одному посту в день: ${plannedNewsCount} ${plural(plannedNewsCount, "свежее событие", "свежих события", "свежих событий")}`
+    + ` и ${plannedEvergreenCount} ${plural(plannedEvergreenCount, "полезный разбор", "полезных разбора", "полезных разборов")}.`
 
   // Генерация постов — узкое место плана: каждый пост это findSupport + askAI (~90с) + возможный
   // ретрай. Последовательно 30 постов собирались до 45 минут и всё это время держали крон-очередь
@@ -5911,9 +5949,18 @@ async function buildAutopilotPlan(
     process.env,
     generationEngine === "navy-minimax-m3" ? 2 : 3,
   );
+  const targetedRepairIndexes = Array.isArray(repairIndexes)
+    ? new Set(
+        repairIndexes
+          .map(Number)
+          .filter((index) => Number.isSafeInteger(index) && index >= 0 && index < N),
+      )
+    : null;
+  const reusedCheckpointIndexes = new Set();
   let items = await mapConcurrent(topics, autopilotConcurrency, async (t, i) => {
     const { topic, rubric } = t;
     if (reusableAutopilotCheckpoint(checkpointItems[i], t, slots[i])) {
+      reusedCheckpointIndexes.add(i);
       console.log(`[auto]   «${topic.slice(0, 40)}»: восстановлен из checkpoint`);
       const restoredItem = { ...checkpointItems[i] };
       if (
@@ -5923,6 +5970,22 @@ async function buildAutopilotPlan(
       else delete restoredItem.autoApprove;
       return restoredItem;
     }
+    // A repair job owns only the indexes claimed by its durable operation. Failed items
+    // outside that set remain byte-for-byte checkpoints and consume no provider quota.
+    if (targetedRepairIndexes && !targetedRepairIndexes.has(i)) {
+      return autopilotCheckpointItem(checkpointItems[i] || {
+        ...t,
+        i,
+        scheduledAt: slots[i],
+        aiReady: false,
+        status: "pending",
+      });
+    }
+    // News always needs source-backed factual proof. This is an effective per-item policy;
+    // the user's base profile is never rewritten.
+    const itemQuality = t.news
+      ? normalizePostQuality({ ...quality, factsPolicy: "source_required" })
+      : quality;
     // Опора под КАЖДУЮ тему. В строгом профиле пустая опора — блокер, а не разрешение
     // модели заполнить пробел убедительно звучащей выдумкой.
     const newsEvidence = autopilotNewsEvidence(t.news);
@@ -5942,8 +6005,8 @@ async function buildAutopilotPlan(
       ).rows[0];
       if (seeded) support = [seeded, ...support].slice(0, TOP_K);
     }
-    const presentation = autopilotPresentationVariant(i, quality);
-    const system = postSystem(samples, brief, support, quality, i, presentation, {
+    const presentation = autopilotPresentationVariant(i, itemQuality);
+    const system = postSystem(samples, brief, support, itemQuality, i, presentation, {
       otherTopics: topics.filter((_, index) => index !== i).map((other) => other.topic),
       recentOpenings,
     }, quickSettings);
@@ -5957,8 +6020,14 @@ async function buildAutopilotPlan(
       : rubric
         ? `Напиши пост в рубрику «${rubric}» на тему: ${topic}.`
         : `Напиши пост на тему: ${topic}.`;
-    const outputTokens = autopilotOutputTokens(quality);
-    let candidateRaw = await askAI(
+    const outputTokens = autopilotOutputTokens(itemQuality);
+    const checkpointDraft = targetedRepairIndexes?.has(i) && checkpointItems[i]?.aiReady === true
+      ? String(checkpointItems[i]?.draft || "").trim()
+      : "";
+    // A repair starts from the durable failed draft. This lets format-only strategies
+    // finish without a provider call and gives rewrite strategies the exact failed text;
+    // generating the topic from scratch would both lose work and charge quota twice.
+    let candidateRaw = checkpointDraft || await askAI(
       "autopilot-plan",
       usageReservationId,
       system,
@@ -5969,16 +6038,20 @@ async function buildAutopilotPlan(
       generationEngine,
     );
     let aiDraft = candidateRaw
-      ? prepareAutopilotDraftForm(
-          applyAutopilotPresentation(stripCites(candidateRaw), presentation, quality, brief, i),
-          quality,
-        )
+      ? checkpointDraft
+        ? prepareAutopilotDraftForm(checkpointDraft, itemQuality)
+        : prepareAutopilotDraftForm(
+            applyAutopilotPresentation(stripCites(candidateRaw), presentation, itemQuality, brief, i),
+            itemQuality,
+          )
       : null;
-    let cited = support.length && candidateRaw ? citedShare(candidateRaw) : null;
+    let cited = checkpointDraft
+      ? checkpointItems[i]?.cited ?? null
+      : support.length && candidateRaw ? citedShare(candidateRaw) : null;
     let invented = aiDraft ? findInvented(aiDraft, support) : [];
     let qualityResult = await assessAutopilotDraft({
       text: aiDraft || "",
-      quality,
+      quality: itemQuality,
       topic,
       sources: support,
       citedShare: cited,
@@ -5987,16 +6060,44 @@ async function buildAutopilotPlan(
       semanticAdapter: semanticPublicationAdapter,
     });
 
+    // Unsupported semantic claims are removed before buying an open-ended rewrite. The
+    // deletion is exact, introduces no new content, and the complete boundary runs again.
+    if (qualityResult.publicationDisposition === "blocked" && aiDraft &&
+        qualityResult.semantic?.status === "blocked") {
+      const cleanedDraft = removeUnverifiedSemanticClaims(aiDraft, qualityResult.semantic);
+      if (cleanedDraft && cleanedDraft !== aiDraft) {
+        const fitted = prepareAutopilotDraftForm(cleanedDraft, itemQuality);
+        if (fitted.length >= Number(itemQuality.publicationMinChars || 1)) {
+          aiDraft = fitted;
+          invented = findInvented(aiDraft, support);
+          qualityResult = await assessAutopilotDraft({
+            text: aiDraft,
+            quality: itemQuality,
+            topic,
+            sources: support,
+            citedShare: cited,
+            invented,
+            trigger: "rewrite",
+            semanticAdapter: semanticPublicationAdapter,
+          });
+        }
+      }
+    }
+
     // Модель получает замечания выпускающего редактора и переписывает весь текст. После
-    // каждой попытки работает тот же программный валидатор. Повторы ограничены двумя:
+    // каждой попытки работает тот же программный валидатор. Число повторов берётся из
+    // открытой настройки retryLimit (0–3):
     // отсутствие источников или semantic-провайдера переписыванием не исправить, а черновик
     // в режиме подтверждения безопаснее сразу показать заблокированным для ручной проверки.
-    const rewriteAttempts = Math.min(
-      AUTOPILOT_QUALITY_REWRITE_ATTEMPTS,
-      boundedAutopilotRewriteAttempts(quality.retryLimit),
-    );
-    for (let attempt = 0; attempt < rewriteAttempts && !qualityResult.passed; attempt++) {
+    const rewriteAttempts = boundedAutopilotRewriteAttempts(itemQuality.retryLimit);
+    let rewriteAttemptCount = 0;
+    for (
+      let attempt = 0;
+      attempt < rewriteAttempts && qualityResult.publicationDisposition !== "ready";
+      attempt++
+    ) {
       if (autopilotQualityFailureKind(qualityResult) !== "rewriteable") break;
+      rewriteAttemptCount += 1;
       console.log(
         `[auto]   «${topic.slice(0, 40)}»: ${qualityResult.score}/100 — редактура ${attempt + 1}/${rewriteAttempts}`,
       );
@@ -6012,15 +6113,15 @@ async function buildAutopilotPlan(
       );
       aiDraft = candidateRaw
         ? prepareAutopilotDraftForm(
-            applyAutopilotPresentation(stripCites(candidateRaw), presentation, quality, brief, i),
-            quality,
+            applyAutopilotPresentation(stripCites(candidateRaw), presentation, itemQuality, brief, i),
+            itemQuality,
           )
         : null;
       cited = support.length && candidateRaw ? citedShare(candidateRaw) : null;
       invented = aiDraft ? findInvented(aiDraft, support) : [];
       qualityResult = await assessAutopilotDraft({
         text: aiDraft || "",
-        quality,
+        quality: itemQuality,
         topic,
         sources: support,
         citedShare: cited,
@@ -6033,18 +6134,22 @@ async function buildAutopilotPlan(
     // The model sometimes keeps one harmless but unsupported bridge sentence after every
     // rewrite. Delete exactly the claims rejected by the semantic validator, then run the
     // complete quality boundary once more. No new model text or unverified fact is introduced.
-    for (let cleanup = 0; cleanup < 2 && !qualityResult.passed && aiDraft; cleanup++) {
+    for (
+      let cleanup = 0;
+      cleanup < 2 && qualityResult.publicationDisposition === "blocked" && aiDraft;
+      cleanup++
+    ) {
       if (autopilotQualityFailureKind(qualityResult) !== "rewriteable") break;
       if (!["blocked", "not_checked"].includes(qualityResult.semantic?.status)) break;
       const cleanedDraft = removeUnverifiedSemanticClaims(aiDraft, qualityResult.semantic);
       if (!cleanedDraft || cleanedDraft === aiDraft) break;
-      const fitted = prepareAutopilotDraftForm(cleanedDraft, quality);
-      if (fitted.length < quality.minChars) break;
+      const fitted = prepareAutopilotDraftForm(cleanedDraft, itemQuality);
+      if (fitted.length < Number(itemQuality.publicationMinChars || 1)) break;
       aiDraft = fitted;
       invented = findInvented(aiDraft, support);
       qualityResult = await assessAutopilotDraft({
         text: aiDraft,
-        quality,
+        quality: itemQuality,
         topic,
         sources: support,
         citedShare: cited,
@@ -6059,17 +6164,21 @@ async function buildAutopilotPlan(
       : `Черновик на тему «${topic}» — ИИ допишет, когда движок будет доступен.`;
     const scheduledAt = slots[i];
     const qualityFailureKind = autopilotQualityFailureKind(qualityResult);
+    const repairStrategy = autopilotQualityRepairStrategy(qualityResult);
     const needsHumanReview = Boolean(
-      aiDraft && qualityResult.passed && qualityResult.semantic?.status === "not_checked",
+      aiDraft && qualityResult.publicationDisposition === "confirmation_required",
     );
     // Крайний случай: форма приведена автоматически, но редакционный порог не пройден.
     // Такой текст нужен только диагностике сборки и не пересекает reader-ready границу.
-    const needsHumanEdit = Boolean(aiDraft && !qualityResult.passed);
+    const needsHumanEdit = Boolean(
+      aiDraft && qualityResult.publicationDisposition === "blocked",
+    );
     const item = {
       i,
       scheduledAt,
       topic,
       rubric,
+      ...(t.news ? { news: t.news } : {}),
       ...(t.monthlyCampaignItemId
         ? {
             monthlyCampaignItemId: t.monthlyCampaignItemId,
@@ -6093,16 +6202,20 @@ async function buildAutopilotPlan(
       // Непустое — в посте осталась непроверенная конкретика. Человек увидит предупреждение,
       // а автопубликация для такого поста закрыта.
       invented: invented.length ? invented : undefined,
-      qualityBlocked: !aiDraft || !qualityResult.passed || needsHumanReview,
+      qualityBlocked: !aiDraft || qualityResult.publicationDisposition !== "ready",
       reviewRequired: needsHumanReview || needsHumanEdit,
       // semantic_only_review человек может одобрить прочтением. quality_review — нет:
       // такой пост сначала правят, и правка перезапускает проверку.
       reviewState: needsHumanReview
-        ? "semantic_only_review"
+        ? qualityResult.semantic?.status === "not_checked"
+          ? "semantic_only_review"
+          : "editorial_review"
         : needsHumanEdit
           ? "quality_review"
           : undefined,
-      reviewReason: needsHumanReview || needsHumanEdit ? qualityFailureKind : undefined,
+      reviewReason: needsHumanReview || needsHumanEdit
+        ? repairStrategy || qualityFailureKind
+        : undefined,
       quality: qualityResult,
       qualityOrigin: "automatic",
       presentation: presentation.name,
@@ -6110,6 +6223,7 @@ async function buildAutopilotPlan(
       _system: system,
       _task: task,
       _outputTokens: outputTokens,
+      _rewriteAttempts: rewriteAttemptCount,
     };
     // Полный режим публикует БЕЗ подтверждения — но ТОЛЬКО настоящий ИИ-текст. Заглушку
     // (ИИ недоступен) в живой канал автоматически не отправляем: оставляем на подтверждение (честность).
@@ -6142,11 +6256,8 @@ async function buildAutopilotPlan(
     return item;
   });
 
-  // Public plan is a product result, not a validator inbox. Keep only texts that passed the
-  // editorial boundary (or need a clean human read solely because semantic infrastructure
-  // was unavailable). Failed quality, invented specifics and provider placeholders stay
-  // inside the build. A weekly plan is an exact promise: never call three posts a seven-day
-  // result just because four drafts failed the editor.
+  // Ready checkpoints remain in place while failed checkpoints continue through targeted
+  // repair. Never reindex here: the original item index is the durable repair identity.
   const readerReadyPairs = items
     .map((item, index) => ({ item, topic: topics[index] }))
     .filter(({ item }) => isAutopilotReaderReadyItem(item));
@@ -6159,12 +6270,6 @@ async function buildAutopilotPlan(
         : `[auto] user ${userId}: готово только ${readerReadyPairs.length}/${N} reader-ready постов` +
           ` (${report.causes.map((cause) => `${cause.code}×${cause.count}`).join(", ") || "без разбора"})`,
     );
-    return { error: missing ? "ai_unavailable" : "quality_gate_unsatisfied" };
-  }
-  items = readerReadyPairs.map(({ item }, index) => ({ ...item, i: index }));
-  topics = readerReadyPairs.map(({ topic }) => topic);
-  if (!autopilotDraftsDeliverable(N, topics, items)) {
-    return { error: "quality_gate_unsatisfied" };
   }
 
   // Повтор предотвращается правилом: модель заранее получает остальные темы сборки и
@@ -6182,15 +6287,33 @@ async function buildAutopilotPlan(
       if (!activeBuild.rowCount) throw new UnrecoverableError("autopilot-plan: superseded");
     }
     const item = items[index];
+    // A reader-ready checkpoint already passed the diversity boundary in its original
+    // attempt. Rechecking it during repair could mutate a good post and bill it again.
+    if (reusedCheckpointIndexes.has(index)) {
+      acceptedForVariety.push({ topic: item.topic, draft: item.draft });
+      delete item._support;
+      delete item._system;
+      delete item._task;
+      delete item._outputTokens;
+      continue;
+    }
+    if (!isAutopilotReaderReadyItem(item)) continue;
     let duplicate = findAutopilotNearDuplicate(item, acceptedForVariety);
     let varietyRewritePrompt = null;
+    const remainingRewriteAttempts = Math.max(
+      0,
+      boundedAutopilotRewriteAttempts(quality.retryLimit) - Number(item._rewriteAttempts || 0),
+    );
     for (
       let attempt = 0;
-      duplicate && attempt < AUTOPILOT_QUALITY_REWRITE_ATTEMPTS;
+      duplicate && attempt < remainingRewriteAttempts;
       attempt++
     ) {
       const duplicateItem = acceptedForVariety[duplicate.index];
-      const presentation = autopilotPresentationVariant(index + (attempt + 1) * 5, quality);
+      const itemQuality = topics[index]?.news
+        ? normalizePostQuality({ ...quality, factsPolicy: "source_required" })
+        : quality;
+      const presentation = autopilotPresentationVariant(index + (attempt + 1) * 5, itemQuality);
       let support = item._support || (Array.isArray(item.sources) ? item.sources : []);
       if (Array.isArray(item.sources) && item.sources.length) {
         const sourceIds = item.sources
@@ -6209,7 +6332,7 @@ async function buildAutopilotPlan(
           support = [...externalSupport, ...knowledgeSupport].slice(0, TOP_K);
         }
       }
-      const system = postSystem(samples, brief, support, quality, index, presentation, {
+      const system = postSystem(samples, brief, support, itemQuality, index, presentation, {
         otherTopics: topics.filter((_, at) => at !== index).map((other) => other.topic),
         recentOpenings: [
           String(duplicateItem?.draft || duplicateItem?.topic || "").split("\n")[0],
@@ -6232,14 +6355,14 @@ async function buildAutopilotPlan(
       );
       if (!raw?.trim()) continue;
       const candidate = prepareAutopilotDraftForm(
-        applyAutopilotPresentation(stripCites(raw), presentation, quality, brief, index),
-        quality,
+        applyAutopilotPresentation(stripCites(raw), presentation, itemQuality, brief, index),
+        itemQuality,
       );
       const cited = support.length ? citedShare(raw) : null;
       const invented = findInvented(candidate, support);
       const qualityResult = await assessAutopilotDraft({
         text: candidate,
-        quality,
+        quality: itemQuality,
         topic: item.topic,
         sources: support,
         citedShare: cited,
@@ -6247,7 +6370,7 @@ async function buildAutopilotPlan(
         trigger: "rewrite",
         semanticAdapter: semanticPublicationAdapter,
       });
-      if (!qualityResult.passed) {
+      if (qualityResult.publicationDisposition !== "ready") {
         varietyRewritePrompt = [
           buildRewritePrompt(raw, qualityResult),
           "После исправления текст всё ещё должен заметно отличаться от этого похожего поста:",
@@ -6259,10 +6382,16 @@ async function buildAutopilotPlan(
       item.aiReady = true;
       item.cited = cited;
       item.invented = invented.length ? invented : undefined;
-      item.qualityBlocked = qualityResult.semantic?.status === "not_checked";
-      item.reviewRequired = qualityResult.semantic?.status === "not_checked";
-      item.reviewState = item.reviewRequired ? "semantic_only_review" : undefined;
-      item.reviewReason = item.reviewRequired ? "semantic_unavailable" : undefined;
+      item.qualityBlocked = qualityResult.publicationDisposition !== "ready";
+      item.reviewRequired = qualityResult.publicationDisposition === "confirmation_required";
+      item.reviewState = item.reviewRequired
+        ? qualityResult.semantic?.status === "not_checked"
+          ? "semantic_only_review"
+          : "editorial_review"
+        : undefined;
+      item.reviewReason = item.reviewRequired
+        ? autopilotQualityRepairStrategy(qualityResult)
+        : undefined;
       item.quality = qualityResult;
       item.presentation = presentation.name;
       if (full && hasAutomaticQualityApproval(qualityResult)) item.autoApprove = true;
@@ -6281,15 +6410,47 @@ async function buildAutopilotPlan(
       item.qualityBlocked = true;
       item.reviewRequired = true;
       item.reviewState = "quality_review";
-      item.reviewReason = "content_variety";
+      item.reviewReason = "rewrite";
+      item.quality = {
+        ...item.quality,
+        passed: false,
+        publicationDisposition: "blocked",
+        repairStrategy: "rewrite",
+        blockers: [...(item.quality?.blockers || []), "Пост слишком похож на недавнюю публикацию"],
+        violations: [
+          ...(item.quality?.violations || []),
+          {
+            code: "duplicate",
+            message: "Пост слишком похож на недавнюю публикацию",
+            blocker: true,
+            penalty: 50,
+          },
+        ],
+      };
       // Автопубликация такого поста закрыта: похожий текст в канале решает человек.
       delete item.autoApprove;
     }
-    acceptedForVariety.push({ topic: item.topic, draft: item.draft });
+    if (isAutopilotReaderReadyItem(item)) {
+      acceptedForVariety.push({ topic: item.topic, draft: item.draft });
+    }
     delete item._support;
     delete item._system;
     delete item._task;
     delete item._outputTokens;
+    delete item._rewriteAttempts;
+    if (expectedPlanId != null) {
+      const durableItem = autopilotCheckpointItem(item);
+      const checkpointed = await pool.query(
+        `update autopilot_plan
+            set items = jsonb_set(items, array[$4::text], $5::jsonb, false),
+                build_activity_at = now(), revision = revision + 1
+          where id = $1 and project_id = $2 and channel_id = $3 and status = 'building'
+          returning id`,
+        [expectedPlanId, projectId, channelId, index, JSON.stringify(durableItem)],
+      );
+      if (!checkpointed.rowCount) throw new UnrecoverableError("autopilot-plan: superseded");
+      checkpointItems[index] = durableItem;
+    }
   }
 
   // План отдаётся в обоих режимах. В полном автомате право на выпуск считается по каждому
@@ -6298,10 +6459,195 @@ async function buildAutopilotPlan(
   const variedPairs = items
     .map((item, index) => ({ item, topic: topics[index] }))
     .filter(({ item }) => isAutopilotReaderReadyItem(item));
-  items = variedPairs.map(({ item }, index) => ({ ...item, i: index }));
-  topics = variedPairs.map(({ topic }) => topic);
-  if (items.length !== N || !autopilotDraftsDeliverable(N, topics, items)) {
-    console.warn(`[auto] user ${userId}: после проверки разнообразия не осталось готовых текстов`);
+  const candidateSelection = selectAutopilotCandidates(
+    variedPairs.map((pair) => ({
+      pair,
+      i: pair.item.i,
+      topic: pair.item.topic,
+      draft: pair.item.draft,
+      news: pair.topic?.news,
+      quality: pair.item.quality,
+      sourceConfirmed: Number(pair.item.quality?.metrics?.supportCount || 0) > 0,
+    })),
+    { targetCount: publicationTargetCount, newsQuota: selectionNewsQuota },
+  );
+  const selectedPairs = candidateSelection.selected
+    .map((candidate) => candidate.pair)
+    .sort((left, right) =>
+      Date.parse(String(left.item.scheduledAt || "")) - Date.parse(String(right.item.scheduledAt || "")),
+    );
+  const selectionDeficit = Math.max(
+    0,
+    publicationTargetCount - selectedPairs.length,
+    selectionNewsQuota - candidateSelection.selectedNewsCount,
+  );
+  const durableCandidateItems = items.map((item) => autopilotCheckpointItem(item));
+  if (!candidateSelection.complete) {
+    const qualityReport = autopilotQualityFailureReport(durableCandidateItems, N);
+    const report = {
+      ...qualityReport,
+      publicationTargetCount,
+      candidateCount: N,
+      readyCount: variedPairs.length,
+      selectedCount: selectedPairs.length,
+      selectionDeficit,
+      newsQuota: selectionNewsQuota,
+      selectedNewsCount: candidateSelection.selectedNewsCount,
+    };
+    const aiCallCount = Math.max(0, workerAiCallCount(usageReservationId) - aiCallsBefore);
+    const partialTx = await pool.connect();
+    let partialPlanId = expectedPlanId == null ? null : Number(expectedPlanId);
+    let usageCommitted = false;
+    try {
+      await partialTx.query("begin");
+      if (expectedPlanId != null) {
+        const saved = await partialTx.query(
+          `update autopilot_plan
+                  set items = $4::jsonb,
+                  candidate_items = $4::jsonb,
+                  status = 'partial',
+                  rules = $5,
+                  build_report = $6::jsonb,
+                  repair_strategy = $7,
+                  terminal_outcome = 'partial',
+                  ai_call_count = ai_call_count + $8,
+                  build_activity_at = now(),
+                  revision = revision + 1
+            where id = $1 and project_id = $2 and channel_id = $3 and status = 'building'
+            returning id`,
+          [
+            expectedPlanId,
+            projectId,
+            channelId,
+            JSON.stringify(durableCandidateItems),
+            rule,
+            JSON.stringify(report),
+            report.primaryFix,
+            aiCallCount,
+          ],
+        );
+        if (!saved.rowCount) {
+          await partialTx.query("rollback");
+          return { superseded: true };
+        }
+      } else {
+        const saved = await partialTx.query(
+          `insert into autopilot_plan
+             (project_id, user_id, channel_id, week_start, items, rules, status,
+              generation_engine, generation_post_frequency, expected_post_count,
+              publication_target_count, candidate_count, candidate_items,
+              planning_months, planning_weeks, monthly_campaign_plan_id, quick_settings,
+              build_report, repair_strategy, terminal_outcome, ai_call_count)
+           values ($1, $2, $3, $4, $5::jsonb, $6, 'partial', $7, $8, $9, $9, $10,
+                   $5::jsonb, $11, $12, $13, $14::jsonb, $15::jsonb, $16, 'partial', $17)
+           returning id`,
+          [
+            projectId,
+            userId,
+            channelId,
+            monthlyContext?.topics[0]?.monthlySchedule.localDate || mskDatePlus(1),
+            JSON.stringify(durableCandidateItems),
+            rule,
+            generationEngine,
+            generationPostFrequency,
+            publicationTargetCount,
+            N,
+            planningMonths,
+            planWeeks,
+            monthlyContext?.planId ?? null,
+            JSON.stringify(quickSettings),
+            JSON.stringify(report),
+            report.primaryFix,
+            aiCallCount,
+          ],
+        );
+        partialPlanId = Number(saved.rows[0].id);
+      }
+      if (usageReservationId != null && aiCallCount > 0) {
+        usageCommitted = await commitWorkerAiUsage(partialTx, userId, usageReservationId);
+        if (!usageCommitted) throw Object.assign(
+          new Error("autopilot-plan: AI usage reservation expired"),
+          { code: "AI_USAGE_FINALIZE_FAILED" },
+        );
+      }
+      if (repairOperationId != null) {
+        const completedRepair = await partialTx.query(
+          `update autopilot_repair_operations
+              set status = 'partial', ai_call_count = $5, terminal_outcome = 'partial',
+                  diagnostic = jsonb_build_object(
+                    'readyCount', $6::integer,
+                    'failedCount', $7::integer,
+                    'causeCodes', $8::jsonb
+                  ),
+                  completed_at = now(), updated_at = now()
+            where id = $1 and project_id = $2 and channel_id = $3
+              and plan_id = $4 and status = 'processing'`,
+          [
+            repairOperationId,
+            projectId,
+            channelId,
+            partialPlanId,
+            aiCallCount,
+            variedPairs.length,
+            N - variedPairs.length,
+            JSON.stringify(report.causes.map((cause) => cause.code)),
+          ],
+        );
+        if (!completedRepair.rowCount) throw new Error("autopilot repair operation lost its scope");
+      }
+      await partialTx.query("commit");
+    } catch (error) {
+      await partialTx.query("rollback").catch(() => {});
+      throw error;
+    } finally {
+      partialTx.release();
+    }
+    console.info("[autopilot] build", {
+      projectId,
+      channelId,
+      planId: partialPlanId,
+      targetCount: publicationTargetCount,
+      candidateCount: N,
+      readyCount: variedPairs.length,
+      failedCount: N - variedPairs.length,
+      causes: report.causes.map((cause) => cause.code),
+      repairStrategy: report.primaryFix,
+      attemptNumber: Number(expectedPlan?.repair_attempt || 0) + 1,
+      generationEngine,
+      durationMs: Date.now() - buildStartedAt,
+      terminalOutcome: "partial",
+      aiCallCount,
+    });
+    return {
+      id: partialPlanId,
+      count: variedPairs.length,
+      targetCount: publicationTargetCount,
+      candidateCount: N,
+      partial: true,
+      usageCommitted,
+      aiCallCount,
+    };
+  }
+  items = selectedPairs.map(({ item }) => item);
+  topics = selectedPairs.map(({ topic }) => topic);
+  const selectedNewsCount = topics.filter((topic) => topic?.news).length;
+  const selectedEvergreenCount = Math.max(0, items.length - selectedNewsCount);
+  const selectionReport = {
+    publicationTargetCount,
+    candidateCount: N,
+    readyCount: variedPairs.length,
+    failedCount: N - variedPairs.length,
+    selectedCount: items.length,
+    reserveCount: Math.max(0, variedPairs.length - items.length),
+    newsQuota: selectionNewsQuota,
+    selectedNewsCount,
+    selectedCandidateIndexes: items.map((item) => Number(item.i)),
+  };
+  rule = `${items.length} ${plural(items.length, "публикация", "публикации", "публикаций")} выбраны из ${N} ` +
+    `${plural(N, "кандидата", "кандидатов", "кандидатов")}: ${selectedNewsCount} ` +
+    `${plural(selectedNewsCount, "свежее событие", "свежих события", "свежих событий")} и ` +
+    `${selectedEvergreenCount} ${plural(selectedEvergreenCount, "полезный разбор", "полезных разбора", "полезных разборов")}.`;
+  if (!autopilotDraftsDeliverable(publicationTargetCount, topics, items)) {
     return { error: "quality_gate_unsatisfied" };
   }
 
@@ -6310,6 +6656,7 @@ async function buildAutopilotPlan(
   // человек остаётся вообще без плана. Так и вышло на моих же тестах: старый воркер удалил
   // оба плана и не смог вставить свой.
   const tx = await pool.connect();
+  const aiCallCount = Math.max(0, workerAiCallCount(usageReservationId) - aiCallsBefore);
   let ins;
   let planStatus = "pending";
   let anyPending = true;
@@ -6357,6 +6704,17 @@ async function buildAutopilotPlan(
       return { superseded: true };
     }
 
+    const linkedGrowthMoveIds = expectedPlanId == null
+      ? []
+      : (
+          await tx.query(
+            `select id from growth_moves
+              where project_id = $1 and channel_id = $2 and kind = 'rhythm'
+                and artifact_autopilot_plan_id = $3
+              for update`,
+            [projectId, channelId, expectedPlanId],
+          )
+        ).rows.map((row) => Number(row.id));
     const previousPlans = (
       await tx.query(
         `select items from autopilot_plan
@@ -6462,9 +6820,12 @@ async function buildAutopilotPlan(
     ins = await tx.query(
       `insert into autopilot_plan
          (project_id, user_id, channel_id, week_start, items, rules, status, generation_engine,
-          generation_post_frequency, expected_post_count, planning_months, planning_weeks,
-          monthly_campaign_plan_id, quick_settings)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb) returning id`,
+          generation_post_frequency, expected_post_count, publication_target_count,
+          candidate_count, candidate_items, planning_months, planning_weeks,
+          monthly_campaign_plan_id, quick_settings, build_report, repair_strategy,
+          terminal_outcome, ai_call_count)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10, $11, $12::jsonb,
+               $13, $14, $15, $16::jsonb, $17::jsonb, null, 'complete', $18) returning id`,
       [
         projectId,
         userId,
@@ -6475,13 +6836,31 @@ async function buildAutopilotPlan(
         planStatus,
         generationEngine,
         generationPostFrequency,
+        publicationTargetCount,
         N,
+        JSON.stringify(durableCandidateItems),
         planningMonths,
         planWeeks,
         monthlyContext?.planId ?? null,
         JSON.stringify(quickSettings),
+        JSON.stringify(selectionReport),
+        aiCallCount,
       ],
     );
+    if (linkedGrowthMoveIds.length) {
+      const transferredGrowthMoves = await tx.query(
+        `update growth_moves
+            set artifact_autopilot_plan_id = $4, updated_at = now()
+          where project_id = $1 and channel_id = $2 and kind = 'rhythm'
+            and id = any($3::bigint[])
+            and artifact_draft_id is null
+            and artifact_autopilot_plan_id is null`,
+        [projectId, channelId, linkedGrowthMoveIds, Number(ins.rows[0].id)],
+      );
+      if (transferredGrowthMoves.rowCount !== linkedGrowthMoveIds.length) {
+        throw new Error("growth move plan lineage changed during generation");
+      }
+    }
     if (monthlyContext) {
       for (const item of items) {
         const monthlyItemId = Number(item.monthlyCampaignItemId);
@@ -6597,13 +6976,25 @@ async function buildAutopilotPlan(
     }
     // The generated plan and its quota charge are one database outcome. A plan containing
     // only deterministic placeholders is not a usable AI result and is not charged.
-    if (usageReservationId != null && items.some((item) => item.aiReady)) {
+    if (usageReservationId != null && aiCallCount > 0) {
       usageCommitted = await commitWorkerAiUsage(tx, userId, usageReservationId);
       if (!usageCommitted) {
         const error = new Error("autopilot-plan: AI usage reservation expired");
         error.code = "AI_USAGE_FINALIZE_FAILED";
         throw error;
       }
+    }
+    if (repairOperationId != null) {
+      const completedRepair = await tx.query(
+        `update autopilot_repair_operations
+            set status = 'completed', ai_call_count = $5, terminal_outcome = 'complete',
+                diagnostic = jsonb_build_object('resultPlanId', $6::bigint),
+                completed_at = now(), updated_at = now()
+          where id = $1 and project_id = $2 and channel_id = $3
+            and (plan_id = $4 or plan_id is null) and status = 'processing'`,
+        [repairOperationId, projectId, channelId, expectedPlanId, aiCallCount, Number(ins.rows[0].id)],
+      );
+      if (!completedRepair.rowCount) throw new Error("autopilot repair operation lost its scope");
     }
     await tx.query("commit");
     await removePublishJobs(removedPreviousPostIds);
@@ -6660,12 +7051,12 @@ async function buildAutopilotPlan(
   const horizonLabel = `${planWeeks} ${plural(planWeeks, "неделю", "недели", "недель")}`;
   const planTextBase =
     planStatus === "approved"
-      ? `🚀 Автопилот (полный режим)${who}: ${N} ${plural(N, "пост", "поста", "постов")} на ${horizonLabel} уже в очереди.\n${rule}`
+      ? `🚀 Автопилот (полный режим)${who}: ${items.length} ${plural(items.length, "пост", "поста", "постов")} на ${horizonLabel} уже в очереди.\n${rule}`
       : full && anyPending
         ? `🗓 План собран${who}: полный режим поставил ${scheduledByBuild.length} безопасных постов; ${blockedCount} заблокировано контролем, ${expiredCount} с истёкшей датой оставлены черновиками.`
         : blockedCount || expiredCount
           ? `🗓 План собран${who}: ${readyCount} готовы, ${blockedCount} заблокировано контролем, ${expiredCount} с истёкшей датой.`
-          : `🗓 План на ${horizonLabel} готов${who}: ${N} ${plural(N, "пост", "поста", "постов")}.\n${rule}`;
+          : `🗓 План на ${horizonLabel} готов${who}: ${items.length} ${plural(items.length, "пост", "поста", "постов")}.\n${rule}`;
   const planText = queuePendingReconciliation
     ? `${planTextBase}\n\n⚠️ ${queuePendingReconciliation} ${plural(queuePendingReconciliation, "задача ждёт", "задачи ждут", "задач ждут")} восстановления очереди. Посты сохранены в календаре, повторно одобрять их не нужно.`
     : planTextBase;
@@ -6702,8 +7093,30 @@ async function buildAutopilotPlan(
     }
   }
 
-  console.log(`[auto] user ${userId}/${channelId}: план на ${N} постов собран (${planStatus})`);
-  return { id: ins.rows[0].id, count: N, usageCommitted };
+  console.info("[autopilot] build", {
+    projectId,
+    channelId,
+    planId: Number(ins.rows[0].id),
+    targetCount: publicationTargetCount,
+    candidateCount: N,
+    readyCount: variedPairs.length,
+    failedCount: N - variedPairs.length,
+    causes: [],
+    repairStrategy: null,
+    attemptNumber: Number(expectedPlan?.repair_attempt || 0) + 1,
+    generationEngine,
+    durationMs: Date.now() - buildStartedAt,
+    terminalOutcome: "complete",
+    aiCallCount,
+  });
+  return {
+    id: ins.rows[0].id,
+    count: items.length,
+    targetCount: publicationTargetCount,
+    candidateCount: N,
+    usageCommitted,
+    aiCallCount,
+  };
 }
 
 // DB-строки старого плана удаляются атомарно при замене плана. После commit чистим только
@@ -6937,6 +7350,7 @@ async function weeklyPlans() {
           });
         });
       }
+      clearWorkerAiCallCount(usage.reservationId);
     }
   }
 }
@@ -10087,7 +10501,19 @@ const NON_RETRYABLE_AUTOPILOT_ERRORS = new Set([
   "no_channel",
 ]);
 
+function autopilotTerminalOutcomeForError(error) {
+  const code = String(error?.code || error?.message || error || "provider_error");
+  if (/quota|usage_limit/iu.test(code)) return "quota";
+  if (/source|no_sources/iu.test(code)) return "source_error";
+  if (/semantic/iu.test(code)) return "semantic_block";
+  if (/variety|duplicate/iu.test(code)) return "duplicate";
+  if (/quality|editorial/iu.test(code)) return "editorial_block";
+  if (/cancel|superseded/iu.test(code)) return "cancelled";
+  return "provider_error";
+}
+
 async function processAutopilotPlanJob(job) {
+  const jobStartedAt = Date.now();
   let scope;
   try {
     scope = await requireAutopilotPlanJobScope(pool, job.data);
@@ -10098,21 +10524,87 @@ async function processAutopilotPlanJob(job) {
     throw error;
   }
   const { userId, projectId, channelId, planId } = scope;
+  const repairOperationId = job.name === "autopilot-repair"
+    ? Number(job.data?.operationId)
+    : null;
+  const repairIndexes = job.name === "autopilot-repair" && Array.isArray(job.data?.repairIndexes)
+    ? job.data.repairIndexes.map(Number)
+    : null;
+  if (
+    job.name === "autopilot-repair" &&
+    (!Number.isSafeInteger(repairOperationId) || repairOperationId <= 0)
+  ) {
+    throw new UnrecoverableError("autopilot-repair: bad_operation_id");
+  }
+  if (repairOperationId != null) {
+    const claimed = await pool.query(
+      `update autopilot_repair_operations
+          set status = 'processing', updated_at = now()
+        where id = $1 and project_id = $2 and channel_id = $3 and plan_id = $4
+          and status in ('queued', 'processing')
+        returning id`,
+      [repairOperationId, projectId, channelId, planId],
+    );
+    if (!claimed.rowCount) {
+      const terminal = (
+        await pool.query(
+          `select status from autopilot_repair_operations
+            where id = $1 and project_id = $2 and channel_id = $3`,
+          [repairOperationId, projectId, channelId],
+        )
+      ).rows[0];
+      if (["completed", "partial"].includes(terminal?.status)) {
+        return { ok: true, replayed: true, planId, operationId: repairOperationId };
+      }
+      throw new UnrecoverableError("autopilot-repair: operation_scope_mismatch");
+    }
+  }
   const usage = await acquireWorkerAiUsage(pool, {
     userId,
     kind: "autopilot-plan",
-    key: workerAiUsageCompositeKey("autopilot-plan", [projectId, planId]),
+    key: workerAiUsageCompositeKey(
+      repairOperationId == null ? "autopilot-plan" : "autopilot-repair",
+      repairOperationId == null ? [projectId, planId] : [projectId, planId, repairOperationId],
+    ),
   });
   if (usage.state === "committed") return { ok: true, replayed: true, planId };
   if (usage.state === "in_progress") return { ok: true, inProgress: true, planId };
   if (usage.state === "limit") {
     await pool.query(
       `update autopilot_plan
-          set status = 'error', rules = 'ai_usage_limit', revision = revision + 1
+          set status = 'error', rules = 'ai_usage_limit', terminal_outcome = 'quota',
+              revision = revision + 1
         where id = $1 and project_id = $2 and channel_id = $3 and status = 'building'`,
       [planId, projectId, channelId],
     );
-    console.warn("[autopilot] quota", { userId, planId, used: usage.used, limit: usage.limit });
+    if (repairOperationId != null) {
+      await pool.query(
+        `update autopilot_repair_operations
+            set status = 'failed', terminal_outcome = 'quota',
+                diagnostic = '{"code":"ai_usage_limit"}'::jsonb,
+                completed_at = now(), updated_at = now()
+          where id = $1 and project_id = $2 and status = 'processing'`,
+        [repairOperationId, projectId],
+      );
+    }
+    console.warn("[autopilot] build", {
+      projectId,
+      channelId,
+      planId,
+      targetCount: null,
+      candidateCount: null,
+      readyCount: null,
+      failedCount: null,
+      causes: ["quota"],
+      repairStrategy: null,
+      attemptNumber: Number(job.attemptsMade || 0) + 1,
+      generationEngine: null,
+      durationMs: Date.now() - jobStartedAt,
+      terminalOutcome: "quota",
+      aiCallCount: 0,
+      used: usage.used,
+      limit: usage.limit,
+    });
     return { ok: false, error: "ai_usage_limit", used: usage.used, limit: usage.limit };
   }
 
@@ -10126,6 +10618,8 @@ async function processAutopilotPlanJob(job) {
       channelId,
       planId,
       usage.reservationId,
+      repairIndexes,
+      repairOperationId,
     );
     usageCommitted = result?.usageCommitted === true;
     if (result?.error) {
@@ -10146,11 +10640,60 @@ async function processAutopilotPlanJob(job) {
     const attempts = Math.max(1, Number(job.opts.attempts || 1));
     const finalAttempt = error instanceof UnrecoverableError || job.attemptsMade + 1 >= attempts;
     if (finalAttempt) {
+      const terminalOutcome = autopilotTerminalOutcomeForError(error);
       await pool.query(
-        `update autopilot_plan set status = 'error', revision = revision + 1
+        `update autopilot_plan
+            set status = 'error', terminal_outcome = $4, revision = revision + 1
           where id = $1 and project_id = $2 and channel_id = $3 and status = 'building'`,
-        [planId, projectId, channelId],
+        [planId, projectId, channelId, terminalOutcome],
       ).catch(() => {});
+      if (repairOperationId != null) {
+        await pool.query(
+          `update autopilot_repair_operations
+              set status = 'failed', terminal_outcome = $4,
+                  diagnostic = jsonb_build_object('code', $3::text),
+                  completed_at = now(), updated_at = now()
+            where id = $1 and project_id = $2 and status = 'processing'`,
+          [
+            repairOperationId,
+            projectId,
+            String(error?.code || error?.message || "worker_failed").slice(0, 120),
+            terminalOutcome,
+          ],
+        ).catch(() => {});
+      }
+      const diagnostic = (
+        await pool.query(
+          `select expected_post_count, publication_target_count, candidate_count,
+                  generation_engine, repair_strategy, repair_attempt,
+                  build_report, ai_call_count
+             from autopilot_plan
+            where id = $1 and project_id = $2 and channel_id = $3`,
+          [planId, projectId, channelId],
+        ).catch(() => ({ rows: [] }))
+      ).rows[0];
+      console.error("[autopilot] build", {
+        projectId,
+        channelId,
+        planId,
+        targetCount: Number(
+          diagnostic?.publication_target_count || diagnostic?.expected_post_count || 0,
+        ) || null,
+        candidateCount: Number(
+          diagnostic?.candidate_count || diagnostic?.expected_post_count || 0,
+        ) || null,
+        readyCount: Number(diagnostic?.build_report?.passed || 0),
+        failedCount: Number(diagnostic?.build_report?.failed || 0),
+        causes: Array.isArray(diagnostic?.build_report?.causes)
+          ? diagnostic.build_report.causes.map((cause) => cause?.code).filter(Boolean)
+          : [String(error?.code || error?.message || "provider_error").slice(0, 120)],
+        repairStrategy: diagnostic?.repair_strategy || null,
+        attemptNumber: Number(diagnostic?.repair_attempt || job.attemptsMade || 0) + 1,
+        generationEngine: diagnostic?.generation_engine || null,
+        durationMs: Date.now() - jobStartedAt,
+        terminalOutcome,
+        aiCallCount: Number(diagnostic?.ai_call_count || 0),
+      });
     }
     throw error;
   } finally {
@@ -10165,11 +10708,12 @@ async function processAutopilotPlanJob(job) {
         });
       });
     }
+    clearWorkerAiCallCount(usage.reservationId);
   }
 }
 
 function recoverFailedAutopilotPlan(job, error) {
-  if (job?.name !== "autopilot-plan") return;
+  if (!["autopilot-plan", "autopilot-repair"].includes(job?.name)) return;
   const planId = Number(job.data?.planId);
   const projectId = Number(job.data?.projectId);
   const userId = Number(job.data?.userId);
@@ -10189,6 +10733,17 @@ function recoverFailedAutopilotPlan(job, error) {
       where id = $1 and project_id = $2 and channel_id = $3 and status = 'building'`,
     [planId, projectId, channelId],
   ).then(() => {
+    const operationId = Number(job.data?.operationId);
+    if (job.name === "autopilot-repair" && Number.isSafeInteger(operationId) && operationId > 0) {
+      void pool.query(
+        `update autopilot_repair_operations
+            set status = 'failed', terminal_outcome = 'provider_error',
+                diagnostic = '{"code":"worker_terminal_failure"}'::jsonb,
+                completed_at = now(), updated_at = now()
+          where id = $1 and project_id = $2 and status in ('queued', 'processing')`,
+        [operationId, projectId],
+      ).catch(() => {});
+    }
     console.warn("[autopilot] terminal failure", {
       planId,
       error: error?.message || "worker_failed",

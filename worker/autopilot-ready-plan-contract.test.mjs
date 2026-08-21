@@ -11,9 +11,11 @@ describe("Autopilot ready-plan generation contract", () => {
   // План доходит до человека в обоих режимах, но только после reader-ready фильтра.
   // Право на выпуск считается отдельно для каждого оставшегося сильного поста.
   it("delivers only reader-ready posts and gates publication per post", () => {
-    expect(source).toContain("const AUTOPILOT_QUALITY_REWRITE_ATTEMPTS = 2;");
-    expect(source.match(/autopilotDraftsDeliverable\(N, topics, items\)/g)?.length).toBe(2);
-    expect(source).toContain("items.length !== N");
+    expect(source).not.toContain("AUTOPILOT_QUALITY_REWRITE_ATTEMPTS");
+    expect(source).toContain("boundedAutopilotRewriteAttempts(itemQuality.retryLimit)");
+    expect(source).toContain("boundedAutopilotRewriteAttempts(quality.retryLimit) - Number(item._rewriteAttempts || 0)");
+    expect(source.match(/autopilotDraftsDeliverable\(publicationTargetCount, topics, items\)/g)?.length).toBe(1);
+    expect(source).toContain("status = 'partial'");
     expect(source.match(/isAutopilotReaderReadyItem\(item\)/g)?.length).toBeGreaterThanOrEqual(2);
     expect(source).not.toContain("full\n    ? autopilotBuildComplete(N, topics, items)");
     expect(source).not.toMatch(/full\s*\n?\s*\?\s*autopilotBuildComplete\(N, topics, items\)/);
@@ -33,7 +35,8 @@ describe("Autopilot ready-plan generation contract", () => {
 
   it("маркирует один повторяющийся пост вместо отмены всей сборки", () => {
     expect(source).not.toContain('return { error: "content_variety_insufficient" }');
-    expect(source).toContain('item.reviewReason = "content_variety"');
+    expect(source).toContain('item.reviewReason = "rewrite"');
+    expect(source).toContain('code: "duplicate"');
     expect(source).toContain("delete item.autoApprove;");
   });
 
@@ -84,11 +87,11 @@ describe("Autopilot ready-plan generation contract", () => {
   // лишний эмодзи и служебную метку, а человеку предлагали «выбрать другую модель».
   it("приводит форму к профилю канала на каждом пути черновика", () => {
     expect(source).not.toContain("fitAutopilotDraftLength(");
-    expect(source.match(/prepareAutopilotDraftForm\(/g)?.length).toBe(4);
+    expect(source.match(/prepareAutopilotDraftForm\(/g)?.length).toBe(6);
   });
 
   it("держит непрошедший пост внутри сборки и фильтрует его перед показом", () => {
-    expect(source).toContain("const needsHumanEdit = Boolean(aiDraft && !qualityResult.passed)");
+    expect(source).toContain('qualityResult.publicationDisposition === "blocked"');
     expect(source).toContain("reviewRequired: needsHumanReview || needsHumanEdit");
     expect(source).toMatch(/needsHumanEdit\s*\?\s*"quality_review"/);
     expect(source).toContain("const readerReadyPairs = items");
@@ -113,5 +116,42 @@ describe("Autopilot ready-plan generation contract", () => {
     expect(source).toContain("const stopBuildHeartbeat = startAutopilotBuildHeartbeat");
     expect(source).toContain("set build_activity_at = now()");
     expect(source).toContain("await stopBuildHeartbeat()");
+  });
+
+  it("repairs only claimed failed indexes and never regenerates ready checkpoints", () => {
+    expect(source).toContain("const targetedRepairIndexes = Array.isArray(repairIndexes)");
+    expect(source).toContain("targetedRepairIndexes && !targetedRepairIndexes.has(i)");
+    expect(source).toContain("const reusedCheckpointIndexes = new Set()");
+    expect(source).toContain("if (reusedCheckpointIndexes.has(index))");
+    expect(source).toContain('repairOperationId == null ? "autopilot-plan" : "autopilot-repair"');
+    expect(source).toContain("ai_call_count = $5");
+    expect(source).toContain("clearWorkerAiCallCount(usage.reservationId)");
+    expect(source).toContain("const checkpointDraft = targetedRepairIndexes?.has(i)");
+    expect(source).toContain("let candidateRaw = checkpointDraft || await askAI(");
+  });
+
+  it("finalizes five publications from six ready candidates and keeps the reserve internal", () => {
+    expect(source).toContain("const candidateSelection = selectAutopilotCandidates(");
+    expect(source).toContain("if (!candidateSelection.complete)");
+    expect(source).toContain("status = 'partial'");
+    expect(source).toContain("candidate_items = $4::jsonb");
+    expect(source).toContain("items = selectedPairs.map(({ item }) => item)");
+    expect(source).toContain("candidate_count, candidate_items");
+    expect(source).toContain("readyCount: variedPairs.length");
+    expect(source).toContain("failedCount: N - variedPairs.length");
+    expect(source).toContain("targetCount: publicationTargetCount");
+  });
+
+  it("records repair completion in the same transaction as plan completion", () => {
+    expect(source).toContain("set status = 'completed', ai_call_count = $5, terminal_outcome = 'complete'");
+    expect(source).toContain("diagnostic = jsonb_build_object('resultPlanId'");
+    expect(source).toContain("monthly_campaign_plan_id");
+  });
+
+  it("transfers Growth lineage from the building placeholder to the final plan", () => {
+    expect(source).toContain("const linkedGrowthMoveIds = expectedPlanId == null");
+    expect(source).toContain("artifact_autopilot_plan_id = $3");
+    expect(source).toContain("set artifact_autopilot_plan_id = $4, updated_at = now()");
+    expect(source).toContain("growth move plan lineage changed during generation");
   });
 });

@@ -6,7 +6,10 @@ import {
   coversTopic,
   growthActionHref,
   growthFingerprint,
+  growthPeriodLabel,
   growthWeekStart,
+  goalFitForMove,
+  growthOutcomeFromScore,
   previousGrowthWeekStart,
   tokenOverlap,
   type GrowthSignals,
@@ -21,6 +24,10 @@ function signals(overrides: Partial<GrowthSignals> = {}): GrowthSignals {
     competitorWeeklyMedian: null,
     siteOffer: null,
     audienceQuestion: null,
+    goal: null,
+    ownPublishedCount: 0,
+    latestDataAt: null,
+    trackingStatus: null,
     ...overrides,
   };
 }
@@ -29,6 +36,7 @@ describe("growth week", () => {
   it("starts on Monday in Moscow calendar time", () => {
     expect(growthWeekStart(new Date("2026-08-19T10:00:00+02:00"))).toBe("2026-08-17");
     expect(previousGrowthWeekStart("2026-08-17")).toBe("2026-08-10");
+    expect(growthPeriodLabel("2026-08-17")).toBe("17–23 августа");
   });
 });
 
@@ -76,7 +84,7 @@ describe("growth diagnosis and moves", () => {
     }));
 
     expect(next).toHaveLength(3);
-    expect(next.map((move) => move.kind)).toEqual(["topic", "rhythm", "offer"]);
+    expect(next.map((move) => move.kind)).toEqual(["audience", "rhythm", "offer"]);
     expect(next.every((move) => move.fingerprint)).toBe(true);
     expect(next[0]?.prompt).not.toContain("Скопируй");
   });
@@ -126,6 +134,58 @@ describe("growth diagnosis and moves", () => {
     expect(gaps.join(" ")).toMatch(/сайта/i);
   });
 
+  it("ranks deterministically without a goal and raises offer/audience for a sales goal", () => {
+    const source = signals({
+      ownPosts7d: 1,
+      ownPosts30d: [{ id: 1, text: "короткий статус", publishedAt: "2026-08-18" }],
+      competitorCount: 3,
+      competitorWeeklyMedian: 5,
+      competitorHits: [
+        { id: 41, text: "Разбор кейса", views: 1200, handle: "one", title: "Один" },
+        { id: 42, text: "Судебная практика", views: 800, handle: "two", title: "Два" },
+        { id: 43, text: "Договор поставки", views: 700, handle: "three", title: "Три" },
+      ],
+      siteOffer: { jobId: 9, domain: "example.test", answer: "Консультация по договорам" },
+      audienceQuestion: { id: 7, question: "Сколько стоит консультация?", occurrences: 4 },
+    });
+    const first = buildGrowthMoves(source).map((move) => move.kind);
+    const second = buildGrowthMoves(source).map((move) => move.kind);
+    expect(second).toEqual(first);
+    const sales = buildGrowthMoves({ ...source, goal: "Продажи и новые заявки" }).map((move) => move.kind);
+    expect(new Set(sales.slice(0, 2))).toEqual(new Set(["offer", "audience"]));
+    expect(goalFitForMove("Продажи", "offer")).toBeGreaterThan(goalFitForMove("Продажи", "rhythm"));
+  });
+
+  it("does not call a one-post competitor sample confirmed data", () => {
+    const [move] = buildGrowthMoves(signals({
+      competitorCount: 1,
+      competitorHits: [{ id: 41, text: "Разбор кейса", views: 1200, handle: "one", title: "Один" }],
+    }));
+    expect(move?.kind).toBe("topic");
+    expect(move?.confidence).toBe("hypothesis");
+    expect(move?.evidence.sampleSize).toBe(1);
+  });
+
+  it("keeps an outcome collecting before 48 hours and never invents conversions", () => {
+    const outcome = growthOutcomeFromScore({
+      artifactLabel: "Черновик поста",
+      artifactHref: "/app/composer?draft=3",
+      postId: 8,
+      publishedAt: "2026-08-20T12:00:00.000Z",
+      views: 120,
+      reactions: null,
+      conversions: null,
+      trackingAvailable: false,
+      collectedAt: "2026-08-21T05:00:00.000Z",
+      scored: null,
+      now: new Date("2026-08-21T06:00:00.000Z"),
+    });
+    expect(outcome.maturity).toBe("collecting");
+    expect(outcome.checkpointHours).toBe(24);
+    expect(outcome.conversions).toBeNull();
+    expect(outcome.conclusion).toMatch(/рано/u);
+  });
+
   it("keeps action URLs on owned ids, not competitor text", () => {
     const href = growthActionHref({
       id: 18,
@@ -145,7 +205,7 @@ describe("growth diagnosis and moves", () => {
       kind: "audience",
       channelId: 4,
       sourceId: "7",
-    })).toBe("/app/studio/questions");
+    })).toBe("/app/studio?growthMove=20&channel=4&intent=create");
     expect(href).not.toContain("text=");
     expect(growthFingerprint({
       kind: "topic",

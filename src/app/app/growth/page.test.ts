@@ -6,11 +6,12 @@ const studio = readFileSync(new URL("../studio/page.tsx", import.meta.url), "utf
 const autopilot = readFileSync(new URL("../autopilot/page.tsx", import.meta.url), "utf8");
 
 describe("growth page contract", () => {
-  it("shows diagnosis, weekly moves, do button and last week without promising growth", () => {
-    expect(source).toContain("Что сейчас слабо");
-    expect(source).toContain("Три хода на неделю");
-    expect(source).toContain("Сделать");
-    expect(source).toContain("Что было на прошлой неделе");
+  it("shows trajectory, primary move, evidence and measured history without promising growth", () => {
+    expect(source).toContain("Траектория недели");
+    expect(source).toContain("Главный ход недели");
+    expect(source).toContain("Почему Аврора так решила");
+    expect(source).toContain("Результаты прошлой недели");
+    expect(source).toContain("Чему Аврора научилась");
     expect(source).not.toContain("вырастешь");
     expect(source).not.toContain("+12%");
     expect(source).toContain("/api/growth?channel=");
@@ -21,21 +22,26 @@ describe("growth page contract", () => {
     expect(studio).toContain('searchParams.get("growthMove")');
     expect(studio).toContain("/api/growth/moves/");
     expect(studio).toContain("setDraft(body.move.prompt)");
+    expect(studio).toContain("growthMoveId: growthMoveIdRef.current");
     expect(autopilot).toContain('window.location.search).get("growthMove")');
     expect(autopilot).toContain("/api/growth/moves/");
+    expect(autopilot).toContain("growthMoveId,");
     expect(studio).not.toContain("prompt=");
     expect(autopilot).not.toContain("prompt=");
   });
 
-  it("uses native navigation semantics and contextual, announced move controls", () => {
+  it("uses native navigation, action-specific labels and an announced busy region", () => {
     expect(source).toContain("href={move.actionHref}");
     expect(source).not.toMatch(/<Link[^>]*>\s*<Button/gu);
-    expect(source).toContain("Сделать ход: ${move.title}");
-    expect(source).toContain("Пропустить ход: ${move.title}");
-    expect(source).toContain("Отметить ход сделанным: ${move.title}");
+    expect(source).toContain("Создать пост по сигналу");
+    expect(source).toContain("Собрать план недели");
+    expect(source).toContain("Создать пост об услуге");
+    expect(source).toContain("Ответить аудитории");
+    expect(source).not.toContain("Отметить ход сделанным");
     expect(source).toContain('role="status"');
-    expect(source).toContain("Загружаем ходы для выбранного канала.");
-    expect(source).toContain("Ходы загружены:");
+    expect(source).toContain('aria-busy={loading}');
+    expect(source).toContain('role="region" aria-busy={loading}');
+    expect(source).toContain("Загружаем траекторию выбранного канала.");
     expect(source).toContain("disabled={busyId !== null}");
   });
 });

@@ -6,20 +6,20 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: {
-    default: "Аврора — SMM-платформа для юридического бизнеса",
+    default: "Аврора — Content Intelligence для Telegram",
     template: "%s · Аврора",
   },
   description:
-    "Аврора помогает юридическому бизнесу создавать, согласовывать и публиковать контент в социальных сетях.",
+    "Аврора превращает реальные сигналы вашей ниши в оригинальные, проверяемые публикации для Telegram.",
   icons: {
     icon: "/icon.svg",
     shortcut: "/icon.svg",
   },
-  keywords: ["юридический SMM", "автопостинг", "Telegram", "VK", "ИИ-контент"],
+  keywords: ["Content Intelligence", "Telegram", "анализ конкурентов", "автопостинг", "ИИ-контент"],
   openGraph: {
-    title: "Аврора — SMM-платформа для юридического бизнеса",
+    title: "Аврора — Content Intelligence для Telegram",
     description:
-      "Контент, согласование, календарь и публикация для юридических команд — в одном рабочем цикле.",
+      "От проверенного сигнала до оригинального материала и подтверждённой публикации — в одном рабочем цикле.",
     locale: "ru_RU",
     type: "website",
   },

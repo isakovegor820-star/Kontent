@@ -97,6 +97,7 @@ export interface DraftWriteInput {
 
 export interface DraftCreateInput extends DraftWriteInput {
   clientKey: string;
+  growthMoveId?: number | null;
 }
 
 export interface DraftUpdateInput extends DraftWriteInput {

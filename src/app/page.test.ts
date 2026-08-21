@@ -11,24 +11,26 @@ vi.mock("next/font/google", () => ({
 }));
 
 describe("production landing page", () => {
-  it("renders the factual Aurora landing for legal content", () => {
+  it("renders the evidence-driven Aurora positioning", () => {
     const markup = renderToStaticMarkup(
       createElement(StoreProvider, null, createElement(LandingPage)),
     );
 
-    expect(markup).toContain("Юридический контент с проверкой рисков и доказательств");
-    expect(markup).toContain("SMM-платформа для юридического контента");
-    expect(markup).toContain("Создать первый материал");
-    expect(markup).toContain("Рабочий контур для юридической редакции");
-    expect(markup).toContain("Планирование публикаций");
-    expect(markup).toContain("От идеи до согласованной публикации");
-    expect(markup).toContain("Проверяйте риски и доказательства до публикации");
-    expect(markup).toContain("Пример проверки материала");
-    expect(markup).toContain("Что уже есть для юридического редактора");
-    expect(markup).toContain("Фактический статус рабочих контуров");
-    expect(markup).toContain("Начните с проверяемого материала");
+    expect(markup).toContain("Сначала");
+    expect(markup).toContain("доказательство.");
+    expect(markup).toContain("Content Intelligence для Telegram");
+    expect(markup).toContain("Найти сигнал в моей нише");
+    expect(markup).toContain("Разбор сигнала");
+    expect(markup).toContain("Демо-данные");
+    expect(markup).toContain("Не лучше во всём. Сильнее в главном переходе.");
+    expect(markup).toContain("Что стоит публиковать дальше — и почему?");
+    expect(markup).toContain("От чужого сигнала — к вашему решению");
+    expect(markup).toContain("Можно открыть любой вывод и понять, откуда он взялся");
+    expect(markup).toContain("Не концепт. Рабочие контуры продукта.");
+    expect(markup).toContain("Дайте Авроре её доказать");
     expect(markup).toContain('<main id="main">');
     expect(markup).toContain('aria-controls="landing-mobile-menu"');
+    expect(markup).toContain('aria-pressed="true"');
     expect(markup).toContain('href="/login"');
     expect(markup).toContain('href="/register"');
     expect(markup).toContain('id="access"');

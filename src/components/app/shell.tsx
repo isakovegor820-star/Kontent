@@ -25,6 +25,7 @@ import {
   ScanSearch,
   Settings,
   Sparkles,
+  Sunrise,
   TrendingUp,
   TriangleAlert,
   X,
@@ -69,6 +70,7 @@ type NavItem = {
 };
 
 const NAV_ICONS: Record<AppNavRouteId, LucideIcon> = {
+  today: Sunrise,
   calendar: Calendar,
   studio: Sparkles,
   autopilot: Rocket,
@@ -102,6 +104,7 @@ const NAV_CHILDREN: Partial<Record<AppNavRouteId, readonly NavChild[]>> = {
     { href: "/app/rss?view=hidden", label: "Скрытые", preserveParams: ["channel"] },
   ],
   recon: [
+    { href: "/app/opportunities", label: "Карта возможностей", preserveParams: ["channel"] },
     { href: "/app/competitors", label: "Конкуренты" },
     { href: "/app/trends", label: "Тренды" },
   ],

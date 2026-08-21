@@ -107,10 +107,9 @@ export function autopilotBuildComplete(expected, topics, items = null) {
     );
 }
 
-// Публичный план содержит только reader-ready тексты. Обычный провал редактора — внутренняя
-// работа Автопилота, а не карточка «поправь меня» для платящего пользователя. Единственное
-// допустимое ручное состояние — чистый текст, который прошёл все детерминированные правила,
-// но остался на чтении из-за недоступности claim-level semantic provider.
+// Публичный план содержит только reader-ready тексты. Заблокированный провал редактора —
+// внутренняя работа Автопилота, а безопасный редакционный недочёт после исчерпания ретраев
+// можно отдать на явное подтверждение. Оба ручных состояния остаются закрыты для full-auto.
 export function autopilotDraftsDeliverable(expected, topics, items = null) {
   const count = Number(expected);
   if (!Number.isInteger(count) || count < 1) return false;
@@ -128,7 +127,14 @@ export function autopilotDraftsDeliverable(expected, topics, items = null) {
         (
           item?.qualityBlocked === true &&
           item?.reviewRequired === true &&
-          item?.reviewState === "semantic_only_review"
+          ["semantic_only_review", "editorial_review"].includes(item?.reviewState) &&
+          (
+            item?.quality?.publicationDisposition === "confirmation_required" ||
+            (
+              item?.reviewState === "semantic_only_review" &&
+              item?.quality?.publicationDisposition == null
+            )
+          )
         )
       ),
     );
@@ -150,7 +156,7 @@ export function autopilotJobTerminalFailure(attemptsMade, configuredAttempts, re
 export function boundedAutopilotRewriteAttempts(value) {
   const attempts = Number(value);
   return Number.isFinite(attempts)
-    ? Math.min(2, Math.max(0, Math.round(attempts)))
+    ? Math.min(3, Math.max(0, Math.round(attempts)))
     : 1;
 }
 

@@ -2,12 +2,15 @@ import {
   hasAutomaticQualityApproval,
   hasVerifiedQualityMetadata,
 } from "./post-quality.mjs";
+import { QUALITY_FAILURE_GUIDE } from "./autopilot-quality-report.mjs";
 
 const SERVER_ATTESTATION = Symbol("aurora.autopilot.server_attestation");
 
 function hardQualityViolations(quality) {
   return (Array.isArray(quality?.violations) ? quality.violations : [])
-    .filter((violation) => violation?.blocker === true && violation.code !== "semantic_review_required");
+    .filter((violation) =>
+      QUALITY_FAILURE_GUIDE[violation?.code]?.publicationDisposition === "blocked",
+    );
 }
 
 /**
@@ -15,7 +18,10 @@ function hardQualityViolations(quality) {
  * this draft; full-auto and unattended publication may not.
  */
 export function isAutopilotHumanReviewItem(item) {
-  if (item?.reviewState !== "semantic_only_review" || item?.reviewRequired !== true) return false;
+  if (![
+    "semantic_only_review",
+    "editorial_review",
+  ].includes(item?.reviewState) || item?.reviewRequired !== true) return false;
   if (item?.humanAttestation != null) return false;
   if (item?.aiReady === false) return false;
   if (!hasVerifiedQualityMetadata(item?.quality)) return false;
@@ -23,9 +29,15 @@ export function isAutopilotHumanReviewItem(item) {
   if (Array.isArray(item.invented) && item.invented.length > 0) return false;
   if (hasAutomaticQualityApproval(item.quality)) return false;
   if (item.quality.passed !== true) return false;
-  if (Number(item.quality.score) < Number(item.quality.threshold)) return false;
   if (Array.isArray(item.quality.blockers) && item.quality.blockers.length > 0) return false;
   if (hardQualityViolations(item.quality).length > 0) return false;
+  if (item.reviewState === "editorial_review") {
+    return Boolean(
+      item.quality.publicationDisposition === "confirmation_required" &&
+      item.quality.semantic?.status === "passed" &&
+      item.quality.semantic?.passed === true,
+    );
+  }
   const semantic = item.quality.semantic;
   const semanticOnlyViolation = (Array.isArray(item.quality.violations)
     ? item.quality.violations
@@ -73,7 +85,7 @@ export function attestAutopilotItemForHumanApproval(item, { userId, attestedAt }
   if (!Number.isSafeInteger(id) || id <= 0 || !Number.isFinite(timestamp.getTime())) return item;
   const humanAttestation = Object.freeze({
     kind: "human_review",
-    reviewState: "semantic_only_review",
+    reviewState: item.reviewState,
     userId: id,
     attestedAt: timestamp.toISOString(),
     qualityCheckedAt: item.quality.metadata.checkedAt,
@@ -93,7 +105,7 @@ export function hasServerAutopilotHumanAttestation(item) {
       attestation &&
       item[SERVER_ATTESTATION] === attestation &&
       attestation.kind === "human_review" &&
-      attestation.reviewState === "semantic_only_review" &&
+      attestation.reviewState === item.reviewState &&
       Number.isSafeInteger(attestation.userId) &&
       attestation.userId > 0 &&
       attestation.qualityCheckedAt === item.quality.metadata.checkedAt,

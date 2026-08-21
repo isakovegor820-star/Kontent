@@ -28,6 +28,7 @@ import {
 } from "lucide-react";
 
 import { AppShell } from "@/components/app/shell";
+import { EvidenceCard } from "@/components/app/evidence-card";
 import { Button } from "@/components/ui/button";
 import { Card, Textarea } from "@/components/ui/primitives";
 import {
@@ -864,6 +865,7 @@ function StudioPageInner() {
   const startedAudienceQuestionsRef = useRef<Set<string>>(new Set());
   const loadedMonthlyItemsRef = useRef<Set<number>>(new Set());
   const monthlyCampaignContextRef = useRef<MonthlyCampaignStudioContext | null>(null);
+  const growthMoveIdRef = useRef<number | null>(null);
   const sessionRevisionRef = useRef(0);
   const sessionSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sessionSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
@@ -1239,6 +1241,7 @@ function StudioPageInner() {
       .then(async (response) => {
         const body = await response.json().catch(() => null) as { move?: { prompt?: string } } | null;
         if (!response.ok || typeof body?.move?.prompt !== "string") throw new Error("growth_move_load_failed");
+        growthMoveIdRef.current = moveId;
         setWorkspaceMode("chat");
         setDraft(body.move.prompt);
       })
@@ -1495,7 +1498,12 @@ function StudioPageInner() {
           aiValidation: null,
           generationResultId,
           clientKey,
+          growthMoveId: growthMoveIdRef.current,
         });
+        if (growthMoveIdRef.current != null) {
+          growthMoveIdRef.current = null;
+          window.history.replaceState(null, "", "/app/studio?mode=chat");
+        }
         if (generation?.audienceQuestionId && generation.audienceQuestionVersion) {
           try {
             const linkResponse = await fetch(`/api/audience-questions/${generation.audienceQuestionId}/draft`, {
@@ -2291,6 +2299,7 @@ function StudioPageInner() {
   return (
     <AppShell
       title="Студия контента"
+      action={contextDraft ? <EvidenceCard kind="draft" id={contextDraft.id} label="Доказательства источника" compact /> : undefined}
       subtitle={
         workspaceMode === "chat"
           ? "Обсуждай идеи и создавай тексты в обычном диалоге."

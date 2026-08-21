@@ -12,17 +12,43 @@ import { briefComplete } from "@/lib/brief";
 import { isAutopilotBuildStale } from "@/lib/autopilot-build";
 import {
   autopilotBuildActivityAt,
-  autopilotBuildProgress,
 } from "@/lib/autopilot-build-progress.mjs";
-import { plannedDailyAutopilotPostCount } from "@/lib/autopilot-config.mjs";
+import { plannedPostCountForWeeks } from "@/lib/autopilot-config.mjs";
 import { isAutopilotHumanReviewItem } from "@/lib/autopilot-approval.mjs";
 import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/project-permissions";
 import { sanitizeAutopilotPublicText } from "@/lib/autopilot-publication.mjs";
 import { normalizeAutopilotQuickSettings } from "@/lib/autopilot-style.mjs";
+import {
+  autopilotBuildAttemptDto,
+  serializeAutopilotActivePlan,
+} from "@/lib/autopilot-build-attempt.mjs";
 
 export const runtime = "nodejs";
 
-const empty = { settings: null, plan: null, hasChannel: false, brief: null, channels: [], channelId: null };
+const empty = {
+  settings: null,
+  plan: null,
+  activePlan: null,
+  buildAttempt: null,
+  hasChannel: false,
+  brief: null,
+  channels: [],
+  channelId: null,
+};
+
+function errorReasonForPlan(plan: Record<string, unknown> | null) {
+  if (!plan || plan.status !== "error") return null;
+  const reasons: Record<string, string> = {
+    ai_usage_limit: "quota",
+    content_variety_insufficient: "variety",
+    quality_gate_unsatisfied: "quality",
+    no_sources_found: "sources",
+    ai_unavailable: "provider",
+    cancelled: "cancelled",
+    timeout: "timeout",
+  };
+  return reasons[String(plan.rules || "")] || "provider";
+}
 
 export async function GET(req: NextRequest) {
   const user = await getSessionUser(req);
@@ -49,69 +75,77 @@ export async function GET(req: NextRequest) {
     if (!channelId) return NextResponse.json({ ...empty, channels }, { status: wanted ? 404 : 200 });
 
     const settings = await ensureSettings(scope, channelId);
-    let plan =
-      (
+    const plans = (
         await pool.query(
-          `select id, week_start, items, rules, status, revision, created_at,
-                  build_activity_at,
-                  generation_engine, generation_post_frequency, expected_post_count,
-                  planning_months, planning_weeks, quick_settings
-             from autopilot_plan where project_id = $1 and channel_id = $2
-             order by created_at desc limit 1`,
+          `with scoped as (
+             select id, week_start, items, rules, status, revision, created_at,
+                    build_activity_at,
+                    generation_engine, generation_post_frequency, expected_post_count,
+                    publication_target_count, candidate_count,
+                    planning_months, planning_weeks, quick_settings, build_report,
+                    repair_strategy, terminal_outcome, repair_attempt, ai_call_count,
+                    row_number() over (
+                      partition by case
+                        when status in ('pending', 'approved', 'approving') then 'active'
+                        else 'attempt'
+                      end
+                      order by created_at desc, id desc
+                    ) as lifecycle_rank
+               from autopilot_plan
+              where project_id = $1 and channel_id = $2
+                and status in ('pending', 'approved', 'approving', 'building', 'partial', 'error')
+           )
+           select * from scoped where lifecycle_rank = 1`,
           [membership.projectId, channelId],
         )
-      ).rows[0] ?? null;
-    if (plan?.status === "error" && plan.rules === "ai_usage_limit") {
-      plan = { ...plan, errorReason: "quota" };
-    }
-    if (plan?.status === "error" && plan.rules === "content_variety_insufficient") {
-      plan = { ...plan, errorReason: "variety" };
-    }
-    if (plan?.status === "error" && plan.rules === "quality_gate_unsatisfied") {
-      plan = { ...plan, errorReason: "quality" };
-    }
-    if (plan?.status === "error" && plan.rules === "no_sources_found") {
-      plan = { ...plan, errorReason: "sources" };
-    }
-    if (plan?.status === "error" && plan.rules === "ai_unavailable") {
-      plan = { ...plan, errorReason: "provider" };
-    }
-    if (plan?.status === "error" && plan.rules === "cancelled") {
-      plan = { ...plan, errorReason: "cancelled" };
-    }
-    const expectedPostCount = plan
-      ? Number(plan.expected_post_count) || plannedDailyAutopilotPostCount(
-          plan.planning_weeks ?? plan.planning_months * 4,
+      ).rows;
+    let activeRow = plans.find((candidate) =>
+      ["pending", "approved", "approving"].includes(String(candidate.status)),
+    ) ?? null;
+    let attemptRow = plans.find((candidate) =>
+      ["building", "partial", "error"].includes(String(candidate.status)),
+    ) ?? null;
+    const expectedPostCount = attemptRow
+      ? Number(attemptRow.candidate_count || attemptRow.expected_post_count) || plannedPostCountForWeeks(
+          attemptRow.generation_post_frequency || settings.post_frequency || 5,
+          attemptRow.planning_weeks ?? attemptRow.planning_months * 4,
         )
       : 0;
-    if (plan?.status === "building") {
-      plan = {
-        ...plan,
-        buildProgress: autopilotBuildProgress(plan.items, expectedPostCount),
-      };
-    }
 
     // A queue job can survive while its worker is stopped. Without a deadline that left the
     // page polling `building` forever (the real incident lasted two days). Mark only the exact
     // placeholder we loaded, so a concurrent retry for the same channel cannot be touched.
     if (
-      plan?.status === "building" &&
+      attemptRow?.status === "building" &&
       isAutopilotBuildStale(
-        plan.build_activity_at || autopilotBuildActivityAt(plan.created_at, plan.items),
+        attemptRow.build_activity_at || autopilotBuildActivityAt(attemptRow.created_at, attemptRow.items),
         expectedPostCount,
       )
     ) {
       const expired = await pool.query(
-        `update autopilot_plan set status = 'error', revision = revision + 1
+        `update autopilot_plan
+            set status = 'error', rules = 'timeout', terminal_outcome = 'provider_error',
+                revision = revision + 1
           where id = $1 and project_id = $2 and channel_id = $3 and status = 'building'
           returning id`,
-        [plan.id, membership.projectId, channelId],
+        [attemptRow.id, membership.projectId, channelId],
       );
-      if (expired.rowCount) plan = { ...plan, status: "error", errorReason: "timeout" };
+      if (expired.rowCount) {
+        await pool.query(
+          `update autopilot_repair_operations
+              set status = 'failed', terminal_outcome = 'provider_error',
+                  diagnostic = '{"code":"timeout"}'::jsonb,
+                  completed_at = now(), updated_at = now()
+            where plan_id = $1 and project_id = $2 and channel_id = $3
+              and status in ('queued', 'processing')`,
+          [attemptRow.id, membership.projectId, channelId],
+        );
+        attemptRow = { ...attemptRow, status: "error", rules: "timeout", errorReason: "timeout" };
+      }
     }
     const brief = await loadBrief(scope, channelId);
-    if (Array.isArray(plan?.items)) {
-      const draftIds = plan.items
+    if (Array.isArray(activeRow?.items)) {
+      const draftIds = activeRow.items
         .map((item: { draftId?: unknown }) => Number(item.draftId))
         .filter((id: number) => Number.isSafeInteger(id) && id > 0);
       const linkedDrafts = draftIds.length
@@ -124,10 +158,10 @@ export async function GET(req: NextRequest) {
           ).rows
         : [];
       const draftById = new Map(linkedDrafts.map((draft) => [Number(draft.id), draft]));
-      plan = {
-        ...plan,
-        quick_settings: normalizeAutopilotQuickSettings(plan.quick_settings),
-        items: plan.items.map((item: {
+      activeRow = {
+        ...activeRow,
+        quick_settings: normalizeAutopilotQuickSettings(activeRow.quick_settings),
+        items: activeRow.items.map((item: {
           draftId?: unknown;
           draft?: unknown;
           scheduledAt?: string;
@@ -146,9 +180,39 @@ export async function GET(req: NextRequest) {
       };
     }
 
+    if (attemptRow) {
+      attemptRow = { ...attemptRow, errorReason: errorReasonForPlan(attemptRow) };
+    }
+    const activePlan = serializeAutopilotActivePlan(activeRow);
+    const buildAttempt = autopilotBuildAttemptDto(attemptRow, expectedPostCount);
+    const legacyPlan = activePlan
+      ? {
+          ...activePlan,
+          generation_engine: activePlan.generationEngine,
+          planning_months: activePlan.planningMonths,
+          planning_weeks: activePlan.planningWeeks,
+          expected_post_count: activePlan.expectedPostCount,
+          quick_settings: activePlan.quickSettings,
+        }
+      : null;
+    const publicSettings = {
+      enabled: settings.enabled,
+      mode: settings.mode,
+      post_frequency: settings.post_frequency,
+      approvals_streak: settings.approvals_streak,
+      generation_engine: settings.generation_engine,
+      planning_months: settings.planning_months,
+      planning_weeks: settings.planning_weeks,
+      quick_settings: normalizeAutopilotQuickSettings(settings.quick_settings),
+    };
+
     return NextResponse.json({
-      settings: { ...settings, quick_settings: normalizeAutopilotQuickSettings(settings.quick_settings) },
-      plan,
+      settings: publicSettings,
+      activePlan,
+      buildAttempt,
+      // Backward compatibility: `plan` is always the usable publication result. A failed
+      // or partial attempt never masks it.
+      plan: legacyPlan,
       hasChannel: true,
       brief,
       briefReady: brief.ready && briefComplete(brief),

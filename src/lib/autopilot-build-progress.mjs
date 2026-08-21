@@ -3,6 +3,7 @@ const PRIVATE_ITEM_KEYS = new Set([
   "_system",
   "_task",
   "_outputTokens",
+  "_rewriteAttempts",
   // This is a transient decision made while generating. Persisting it across a retry can
   // publish a post after the user has switched from full-auto back to confirmation mode.
   "autoApprove",
@@ -55,14 +56,18 @@ export function autopilotCheckpointItem(item, now = () => new Date()) {
   }
   return {
     ...checkpoint,
-    buildState: item?.reviewRequired === true ? "review_required" : "ready",
+    buildState: isAutopilotReaderReadyItem(item)
+      ? item?.reviewRequired === true
+        ? "confirmation_required"
+        : "ready"
+      : "failed",
     checkpointedAt: now().toISOString(),
   };
 }
 
 export function reusableAutopilotCheckpoint(item, topic, scheduledAt) {
-  if (!item || !["ready", "review_required"].includes(item.buildState)) return false;
-  if (item.aiReady !== true || !String(item.draft || "").trim()) return false;
+  if (!item || !["ready", "confirmation_required", "review_required"].includes(item.buildState)) return false;
+  if (!isAutopilotReaderReadyItem(item)) return false;
   if (String(item.topic || "") !== String(topic?.topic || "")) return false;
   return String(item.scheduledAt || "") === String(scheduledAt || "");
 }
@@ -70,17 +75,35 @@ export function reusableAutopilotCheckpoint(item, topic, scheduledAt) {
 export function autopilotBuildProgress(items, expected) {
   const list = Array.isArray(items) ? items : [];
   const total = Math.max(0, Number(expected) || list.length);
-  const completed = list.filter((item) =>
-    item?.aiReady === true && String(item?.draft || "").trim().length > 0,
+  const completed = list.filter((item) => isAutopilotReaderReadyItem(item)).length;
+  const failed = list.filter((item) =>
+    item?.buildState === "failed" || (
+      item?.aiReady === true && String(item?.draft || "").trim() &&
+      !isAutopilotReaderReadyItem(item)
+    ),
   ).length;
   const reviewRequired = list.filter((item) => item?.reviewRequired === true).length;
   return {
     completed,
     total,
     reviewRequired,
+    ready: completed,
+    failed,
     percent: total ? Math.min(100, Math.round(completed / total * 100)) : 0,
     stage: completed >= total && total > 0 ? "finalizing" : completed > 0 ? "generating" : "preparing",
   };
+}
+
+export function autopilotRetryableItemIndexes(items) {
+  return (Array.isArray(items) ? items : [])
+    .flatMap((item, index) =>
+      !isAutopilotReaderReadyItem(item) &&
+      item?.status !== "approved" &&
+      item?.status !== "published" &&
+      !Number(item?.postId)
+        ? [Number.isSafeInteger(Number(item?.i)) ? Number(item.i) : index]
+        : [],
+    );
 }
 
 export function autopilotBuildActivityAt(createdAt, items) {
@@ -91,3 +114,4 @@ export function autopilotBuildActivityAt(createdAt, items) {
   }
   return Number.isFinite(latest) ? new Date(latest) : new Date(createdAt);
 }
+import { isAutopilotReaderReadyItem } from "./autopilot-review.mjs";

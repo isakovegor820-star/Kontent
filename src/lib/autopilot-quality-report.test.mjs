@@ -32,6 +32,15 @@ describe("Autopilot quality failure diagnosis", () => {
       expect(entry.title.length).toBeGreaterThan(8);
       expect(entry.action.length).toBeGreaterThan(16);
       expect(["knowledge", "settings", "retry", "review"]).toContain(entry.fix);
+      expect(["ready", "confirmation_required", "blocked"]).toContain(entry.publicationDisposition);
+      expect([
+        "deterministic_format",
+        "rewrite",
+        "add_knowledge",
+        "human_review",
+        "provider_retry",
+        "settings_change",
+      ]).toContain(entry.repairStrategy);
     }
   });
 
@@ -61,7 +70,7 @@ describe("Autopilot quality failure diagnosis", () => {
       },
     ]);
 
-    expect(report).toMatchObject({ total: 3, passed: 1, failed: 2, drafts: 3, primaryFix: "knowledge" });
+    expect(report).toMatchObject({ total: 3, passed: 1, failed: 2, drafts: 3, primaryFix: "add_knowledge" });
     expect(report.causes).toHaveLength(1);
     expect(report.causes[0]).toMatchObject({ code: "no_sources", count: 2, fix: "knowledge" });
   });

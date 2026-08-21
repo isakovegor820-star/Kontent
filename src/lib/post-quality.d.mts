@@ -25,6 +25,10 @@ export interface PostQuality {
   originality: number;
   minChars: number;
   maxChars: number;
+  desiredMinChars?: number;
+  desiredMaxChars?: number;
+  publicationMinChars?: number;
+  publicationMaxChars?: number;
   hookRequired: boolean;
   hookMaxChars: number;
   maxParagraphSentences: number;
@@ -120,6 +124,10 @@ export interface QualityResult {
   };
   metadata: QualityMetadata;
   semantic?: import("./semantic-claims.mjs").SemanticPublicationResult;
+  publicationDisposition?: "ready" | "confirmation_required" | "blocked";
+  repairStrategy?: "deterministic_format" | "rewrite" | "add_knowledge" | "human_review" | "provider_retry" | "settings_change" | null;
+  desiredLength?: { minChars: number; maxChars: number; actualChars: number; withinRange: boolean };
+  publicationEnvelope?: { minChars: number; maxChars: number; actualChars: number; withinRange: boolean };
 }
 
 export const QUALITY_PRESETS: Record<

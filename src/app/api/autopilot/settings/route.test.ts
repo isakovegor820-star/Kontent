@@ -77,7 +77,7 @@ describe("POST /api/autopilot/settings", () => {
     });
     mocks.loadBrief.mockResolvedValue(readyBrief);
     mocks.query.mockResolvedValue({
-      rows: [{ enabled: true, mode: "confirm", post_frequency: 7, approvals_streak: 0 }],
+      rows: [{ enabled: true, mode: "confirm", post_frequency: 5, approvals_streak: 0 }],
       rowCount: 1,
     });
   });
@@ -174,20 +174,20 @@ describe("POST /api/autopilot/settings", () => {
     expect(mocks.query).not.toHaveBeenCalled();
   });
 
-  it("returns authoritative settings and keeps the daily seven-post contract", async () => {
-    const response = await POST(request({ channelId: 22, enabled: true, post_frequency: 999 }));
+  it("returns authoritative settings and saves the requested weekly frequency", async () => {
+    const response = await POST(request({ channelId: 22, enabled: true, post_frequency: 5 }));
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({
       ok: true,
-      settings: { enabled: true, mode: "confirm", post_frequency: 7, approvals_streak: 0 },
+      settings: { enabled: true, mode: "confirm", post_frequency: 5, approvals_streak: 0 },
     });
     expect(mocks.query).toHaveBeenCalledWith(expect.stringContaining("returning enabled"), [
       88,
       22,
       true,
       null,
-      7,
+      5,
       null,
       null,
       null,
@@ -222,7 +222,7 @@ describe("POST /api/autopilot/settings", () => {
       22,
       null,
       null,
-      7,
+      null,
       "navy-gpt-5-4",
       2,
       7,

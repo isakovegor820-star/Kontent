@@ -15,13 +15,14 @@ import {
   DEFAULT_AUTOPILOT_ENGINE,
   isAutopilotEngine,
   isAutopilotPlanningWeeks,
-  plannedDailyAutopilotPostCount,
   plannedPostCountForWeeks,
 } from "@/lib/autopilot-config.mjs";
 import { resolveAiEngineRuntime } from "@/lib/ai-engine-policy.mjs";
 import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/project-permissions";
 import { selectAutopilotNewsSources } from "@/lib/autopilot-source-selection";
 import { normalizeAutopilotQuickSettings } from "@/lib/autopilot-style.mjs";
+import { autopilotCandidateCount } from "@/lib/autopilot-candidate-selection.mjs";
+import { GrowthArtifactLinkError, linkGrowthMovePlanInTransaction } from "@/lib/growth";
 
 export const runtime = "nodejs";
 
@@ -44,10 +45,15 @@ export async function POST(req: NextRequest) {
       planningWeeks?: unknown;
       monthlyCampaignPlanId?: unknown;
       quickSettings?: unknown;
+      growthMoveId?: unknown;
     };
     const channelId = await resolveChannel(scope, body.channelId ?? null);
     if (!channelId) {
       return NextResponse.json({ ok: false, error: "no_channel" }, { status: 422 });
+    }
+    const growthMoveId = body.growthMoveId == null ? null : Number(body.growthMoveId);
+    if (growthMoveId != null && (!Number.isSafeInteger(growthMoveId) || growthMoveId <= 0)) {
+      return NextResponse.json({ ok: false, error: "bad_growth_move" }, { status: 422 });
     }
 
     // Без брифа ИИ не знает, о чём канал, и пишет наугад — план не собираем (ТЗ Д.9).
@@ -115,10 +121,17 @@ export async function POST(req: NextRequest) {
     }
     const planningWeeks = Number(selectedPlanningWeeks);
     const planningMonths = Math.max(1, Math.min(3, Math.ceil(planningWeeks / 4)));
-    const generationPostFrequency = monthlyPostFrequency ?? 7;
-    const expectedPostCount = monthlyCampaignPlanId != null
-      ? plannedPostCountForWeeks(generationPostFrequency, planningWeeks)
-      : plannedDailyAutopilotPostCount(planningWeeks);
+    const generationPostFrequency = monthlyPostFrequency ?? Math.max(
+      1,
+      Math.min(7, Math.round(Number(settings.post_frequency) || 5)),
+    );
+    const publicationTargetCount = plannedPostCountForWeeks(generationPostFrequency, planningWeeks);
+    // Approved monthly items already define an exact, immutable set. Standalone weekly
+    // builds get a proportional reserve; only the selected publication target can enter
+    // approval and scheduling.
+    const candidateCount = monthlyCampaignPlanId == null
+      ? autopilotCandidateCount(publicationTargetCount)
+      : publicationTargetCount;
     const quickSettings = normalizeAutopilotQuickSettings(
       body.quickSettings ?? settings.quick_settings,
     );
@@ -144,7 +157,7 @@ export async function POST(req: NextRequest) {
     await pool.query(
       `update autopilot_settings
           set news_sources = $3::jsonb, quick_settings = $4::jsonb,
-              post_frequency = 7, updated_at = now()
+              updated_at = now()
         where project_id = $1 and channel_id = $2`,
       [projectId, channelId, JSON.stringify(newsSources), JSON.stringify(quickSettings)],
     );
@@ -171,7 +184,6 @@ export async function POST(req: NextRequest) {
                 planning_months = $4,
                 planning_weeks = $5,
                 quick_settings = $6::jsonb,
-                post_frequency = 7,
                 updated_at = now()
           where project_id = $1 and channel_id = $2`,
         [
@@ -186,7 +198,8 @@ export async function POST(req: NextRequest) {
       const current = (
         await tx.query(
           `select id, created_at, build_activity_at, items, generation_engine,
-                  generation_post_frequency, expected_post_count, planning_months,
+                  generation_post_frequency, expected_post_count, publication_target_count,
+                  candidate_count, planning_months,
                   planning_weeks, monthly_campaign_plan_id, quick_settings
              from autopilot_plan
             where project_id = $1 and channel_id = $2 and status = 'building'
@@ -195,12 +208,13 @@ export async function POST(req: NextRequest) {
         )
       ).rows[0];
 
-      const currentPostCount = Number(current?.expected_post_count) || 0;
+      const currentPostCount = Number(current?.candidate_count || current?.expected_post_count) || 0;
       if (current
           && Number(current.monthly_campaign_plan_id || 0) === Number(monthlyCampaignPlanId || 0)
           && current.generation_engine === generationEngine
           && Number(current.generation_post_frequency) === generationPostFrequency
-          && Number(current.expected_post_count) === expectedPostCount
+          && Number(current.publication_target_count || current.expected_post_count) === publicationTargetCount
+          && Number(current.candidate_count || current.expected_post_count) === candidateCount
           && Number(current.planning_months) === planningMonths
           && Number(current.planning_weeks) === planningWeeks
           && JSON.stringify(normalizeAutopilotQuickSettings(current.quick_settings)) === JSON.stringify(quickSettings)
@@ -211,11 +225,28 @@ export async function POST(req: NextRequest) {
           )) {
         planId = String(current.id);
         alreadyBuilding = true;
+        if (growthMoveId != null) {
+          await linkGrowthMovePlanInTransaction({
+            db: tx, projectId, actorUserId: user.id, moveId: growthMoveId,
+            planId: Number(planId), channelId,
+          });
+        }
         await tx.query("commit");
       } else {
         if (current) {
           await tx.query(
-            `update autopilot_plan set status = 'error', revision = revision + 1
+            `update autopilot_repair_operations
+                set status = 'failed', terminal_outcome = 'cancelled',
+                    diagnostic = '{"code":"superseded_by_new_build"}'::jsonb,
+                    completed_at = now(), updated_at = now()
+              where plan_id = $1 and project_id = $2 and channel_id = $3
+                and status in ('queued', 'processing')`,
+            [current.id, projectId, channelId],
+          );
+          await tx.query(
+            `update autopilot_plan
+                set status = 'error', rules = 'cancelled', terminal_outcome = 'cancelled',
+                    revision = revision + 1
               where id = $1 and project_id = $2 and channel_id = $3 and status = 'building'`,
             [current.id, projectId, channelId],
           );
@@ -231,17 +262,25 @@ export async function POST(req: NextRequest) {
         const inserted = await tx.query(
           `insert into autopilot_plan
               (project_id, user_id, channel_id, week_start, status, generation_engine,
-              generation_post_frequency, expected_post_count, planning_months, planning_weeks,
-              monthly_campaign_plan_id, quick_settings, build_activity_at)
-             values ($1, $2, $3, current_date, 'building', $4, $5, $6, $7, $8, $9, $10::jsonb, now())
+              generation_post_frequency, expected_post_count, publication_target_count,
+              candidate_count, planning_months, planning_weeks, monthly_campaign_plan_id,
+              quick_settings, build_activity_at)
+             values ($1, $2, $3, current_date, 'building', $4, $5, $6, $6, $7,
+                     $8, $9, $10, $11::jsonb, now())
              returning id`,
           [
             projectId, user.id, channelId, generationEngine, generationPostFrequency,
-            expectedPostCount, planningMonths, planningWeeks, monthlyCampaignPlanId,
+            publicationTargetCount, candidateCount, planningMonths, planningWeeks, monthlyCampaignPlanId,
             JSON.stringify(quickSettings),
           ],
         );
         planId = String(inserted.rows[0].id);
+        if (growthMoveId != null) {
+          await linkGrowthMovePlanInTransaction({
+            db: tx, projectId, actorUserId: user.id, moveId: growthMoveId,
+            planId: Number(planId), channelId,
+          });
+        }
         await tx.query("commit");
       }
     } catch (err) {
@@ -251,7 +290,15 @@ export async function POST(req: NextRequest) {
       tx.release();
     }
 
-    if (alreadyBuilding) return NextResponse.json({ ok: true, building: true, planId });
+    if (alreadyBuilding) {
+      return NextResponse.json({
+        ok: true,
+        building: true,
+        planId,
+        publicationTargetCount,
+        candidateCount,
+      });
+    }
     if (!planId) throw new Error("autopilot placeholder was not created");
 
     try {
@@ -278,8 +325,11 @@ export async function POST(req: NextRequest) {
       console.error("[/api/autopilot/generate] enqueue", err);
       return NextResponse.json({ ok: false, error: "queue_unavailable" }, { status: 503 });
     }
-    return NextResponse.json({ ok: true, planId });
+    return NextResponse.json({ ok: true, planId, publicationTargetCount, candidateCount });
   } catch (err) {
+    if (err instanceof GrowthArtifactLinkError) {
+      return NextResponse.json({ ok: false, error: err.code }, { status: 409 });
+    }
     if (err instanceof ProjectAccessError) {
       return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
     }
@@ -310,6 +360,7 @@ export async function DELETE(req: NextRequest) {
 
     const tx = await pool.connect();
     let planId: string | null = null;
+    let repairJobId: string | null = null;
     try {
       await tx.query("begin");
       await tx.query(
@@ -319,17 +370,32 @@ export async function DELETE(req: NextRequest) {
       );
       const cancelled = await tx.query(
         `update autopilot_plan
-            set status = 'error', rules = 'cancelled', revision = revision + 1
+            set status = 'error', rules = 'cancelled', terminal_outcome = 'cancelled',
+                revision = revision + 1
           where id = (
             select id from autopilot_plan
              where project_id = $1 and channel_id = $2 and status = 'building'
              order by created_at desc limit 1
              for update
           )
-          returning id`,
+          returning id, last_repair_job_id`,
         [projectId, channelId],
       );
       planId = cancelled.rows[0]?.id ? String(cancelled.rows[0].id) : null;
+      repairJobId = cancelled.rows[0]?.last_repair_job_id
+        ? String(cancelled.rows[0].last_repair_job_id)
+        : null;
+      if (planId) {
+        await tx.query(
+          `update autopilot_repair_operations
+              set status = 'failed', terminal_outcome = 'cancelled',
+                  diagnostic = '{"code":"cancelled"}'::jsonb,
+                  completed_at = now(), updated_at = now()
+            where plan_id = $1 and project_id = $2 and channel_id = $3
+              and status in ('queued', 'processing')`,
+          [planId, projectId, channelId],
+        );
+      }
       await tx.query("commit");
     } catch (error) {
       await tx.query("rollback").catch(() => {});
@@ -340,8 +406,15 @@ export async function DELETE(req: NextRequest) {
 
     if (planId) {
       try {
-        const job = await getAutopilotQueue().getJob(`autopilot-plan-${planId}`);
-        await job?.remove();
+        const queue = getAutopilotQueue();
+        const jobIds = [
+          `autopilot-plan-${planId}`,
+          ...(repairJobId ? [`autopilot-repair-${projectId}-${repairJobId}`] : []),
+        ];
+        for (const jobId of jobIds) {
+          const job = await queue.getJob(jobId);
+          await job?.remove();
+        }
       } catch (error) {
         // The DB status is the authority. An active worker will fail its next guarded
         // checkpoint/finalization even if BullMQ cannot remove the locked job immediately.

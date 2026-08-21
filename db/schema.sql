@@ -116,6 +116,7 @@ begin
   return new;
 end
 $$;
+
 drop trigger if exists sessions_sync_token_columns_before_write on sessions;
 create trigger sessions_sync_token_columns_before_write
   before insert or update of token, token_hash on sessions
@@ -1559,6 +1560,10 @@ create table if not exists growth_moves (
   source_label text,
   fingerprint  char(64) not null,
   missing_slots integer,
+  rank_position smallint,
+  evidence     jsonb not null default '{}'::jsonb,
+  artifact_draft_id bigint,
+  artifact_autopilot_plan_id bigint,
   created_at   timestamptz not null default now(),
   updated_at   timestamptz not null default now(),
   constraint growth_moves_kind_check
@@ -1583,11 +1588,21 @@ create table if not exists growth_moves (
     )),
   constraint growth_moves_missing_slots_check
     check (missing_slots is null or missing_slots between 1 and 20),
+  constraint growth_moves_rank_position_check
+    check (rank_position is null or rank_position between 1 and 3),
+  constraint growth_moves_evidence_object_check
+    check (jsonb_typeof(evidence) = 'object'),
+  constraint growth_moves_single_artifact_check
+    check (num_nonnulls(artifact_draft_id, artifact_autopilot_plan_id) <= 1),
   constraint growth_moves_channel_week_fingerprint_uniq
     unique (channel_id, week_start, fingerprint)
 );
 create index if not exists growth_moves_channel_week_idx
   on growth_moves (channel_id, week_start, status, id);
+create index if not exists growth_moves_draft_artifact_idx
+  on growth_moves (artifact_draft_id) where artifact_draft_id is not null;
+create index if not exists growth_moves_plan_artifact_idx
+  on growth_moves (artifact_autopilot_plan_id) where artifact_autopilot_plan_id is not null;
 
 -- Immutable server-owned lineage for paid text generation. The editable draft points to
 -- a result, never the other way around, so changing a draft cannot mutate provider output.
@@ -3343,6 +3358,81 @@ begin
 end
 $$;
 
+-- Content Intelligence Release 1 (kept after project/channel composite keys).
+create table if not exists channel_feature_flags (
+  project_id bigint not null references projects (id) on delete cascade,
+  channel_id bigint not null references channels (id) on delete cascade,
+  feature_key varchar(80) not null,
+  enabled boolean not null default false,
+  enabled_by_user_id bigint references users (id) on delete set null,
+  enabled_at timestamptz,
+  updated_at timestamptz not null default now(),
+  primary key (project_id, channel_id, feature_key),
+  constraint channel_feature_flags_channel_project_fk foreign key (channel_id, project_id) references channels (id, project_id) on delete cascade,
+  constraint channel_feature_flags_key_check check (feature_key in ('content_intelligence_release_1')),
+  constraint channel_feature_flags_enabled_at_check check ((enabled and enabled_at is not null) or not enabled)
+);
+create index if not exists channel_feature_flags_rollout_idx on channel_feature_flags (feature_key, enabled, project_id, channel_id);
+create unique index if not exists growth_moves_id_project_channel_uniq on growth_moves (id, project_id, channel_id);
+
+create table if not exists opportunity_snapshots (
+  id bigint generated always as identity primary key,
+  project_id bigint not null references projects (id) on delete cascade,
+  channel_id bigint not null references channels (id) on delete cascade,
+  growth_move_id bigint not null references growth_moves (id) on delete restrict,
+  revision integer not null default 1,
+  fingerprint char(64) not null,
+  topic_key varchar(200) not null,
+  title varchar(200) not null,
+  independent_angle text not null,
+  confidence text not null,
+  epistemic_state text not null,
+  formula_version varchar(80) not null,
+  evidence jsonb not null,
+  observed_at timestamptz,
+  expires_at timestamptz not null,
+  source_context_draft_id bigint,
+  created_at timestamptz not null default now(),
+  constraint opportunity_snapshots_scope_uniq unique (id, project_id, channel_id),
+  constraint opportunity_snapshots_move_revision_uniq unique (growth_move_id, revision),
+  constraint opportunity_snapshots_channel_fingerprint_uniq unique (channel_id, fingerprint, revision),
+  constraint opportunity_snapshots_channel_project_fk foreign key (channel_id, project_id) references channels (id, project_id) on delete cascade,
+  constraint opportunity_snapshots_move_scope_fk foreign key (growth_move_id, project_id, channel_id) references growth_moves (id, project_id, channel_id) on delete restrict,
+  constraint opportunity_snapshots_source_context_fk foreign key (source_context_draft_id, project_id) references drafts (id, project_id) on delete restrict,
+  constraint opportunity_snapshots_revision_check check (revision > 0),
+  constraint opportunity_snapshots_fingerprint_check check (fingerprint ~ '^[0-9a-f]{64}$'),
+  constraint opportunity_snapshots_text_check check (length(btrim(topic_key)) between 1 and 200 and length(btrim(title)) between 3 and 200 and length(btrim(independent_angle)) between 3 and 2000),
+  constraint opportunity_snapshots_confidence_check check (confidence in ('low','medium','high')),
+  constraint opportunity_snapshots_epistemic_check check (epistemic_state in ('observed','inferred','insufficient_data','stale')),
+  constraint opportunity_snapshots_formula_check check (length(btrim(formula_version)) between 1 and 80),
+  constraint opportunity_snapshots_evidence_check check (jsonb_typeof(evidence) = 'object'),
+  constraint opportunity_snapshots_ttl_check check (expires_at > created_at)
+);
+create index if not exists opportunity_snapshots_channel_fresh_idx on opportunity_snapshots (project_id, channel_id, expires_at desc, id desc);
+create index if not exists opportunity_snapshots_source_context_idx on opportunity_snapshots (project_id, source_context_draft_id) where source_context_draft_id is not null;
+
+create table if not exists today_item_states (
+  project_id bigint not null references projects (id) on delete cascade,
+  channel_id bigint not null references channels (id) on delete cascade,
+  user_id bigint not null references users (id) on delete cascade,
+  fingerprint char(64) not null,
+  ranking_version varchar(80) not null,
+  state text not null,
+  snoozed_until timestamptz,
+  state_version bigint not null default 1,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  primary key (project_id, channel_id, user_id, fingerprint),
+  constraint today_item_states_member_fk foreign key (project_id, user_id) references project_members (project_id, user_id) on delete cascade,
+  constraint today_item_states_channel_project_fk foreign key (channel_id, project_id) references channels (id, project_id) on delete cascade,
+  constraint today_item_states_fingerprint_check check (fingerprint ~ '^[0-9a-f]{64}$'),
+  constraint today_item_states_ranking_check check (length(btrim(ranking_version)) between 1 and 80),
+  constraint today_item_states_state_check check (state in ('active','done','dismissed','snoozed','expired','superseded')),
+  constraint today_item_states_snooze_check check ((state = 'snoozed' and snoozed_until is not null) or (state <> 'snoozed' and snoozed_until is null)),
+  constraint today_item_states_version_check check (state_version > 0)
+);
+create index if not exists today_item_states_user_active_idx on today_item_states (user_id, project_id, channel_id, state, updated_at desc);
+
 -- Large project exports use a durable outbox and a short-lived, hashed download
 -- token. The immutable snapshot is shared by CSV, XLSX and PDF renderers.
 create table if not exists project_export_operations (
@@ -4073,6 +4163,24 @@ create table if not exists monthly_campaign_regeneration_outbox (
 create index if not exists monthly_campaign_regeneration_outbox_due_idx
   on monthly_campaign_regeneration_outbox (next_attempt_at, id)
   where status in ('pending','retryable_failed');
+
+-- Growth artifacts use the real downstream sources of truth. These project-scoped
+-- foreign keys are declared after the historical composite unique indexes exist.
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'growth_moves_artifact_draft_project_fk') then
+    alter table growth_moves add constraint growth_moves_artifact_draft_project_fk
+      foreign key (artifact_draft_id, project_id)
+      references drafts (id, project_id) on delete set null (artifact_draft_id);
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'growth_moves_artifact_plan_project_fk') then
+    alter table growth_moves add constraint growth_moves_artifact_plan_project_fk
+      foreign key (artifact_autopilot_plan_id, project_id)
+      references autopilot_plan (id, project_id) on delete set null (artifact_autopilot_plan_id);
+  end if;
+end
+$$;
+
 -- ------------------------------------------------ Autopilot project boundary
 
 -- Autopilot is shared project state. `user_id` records the actor/creator, but it is
@@ -5100,6 +5208,88 @@ update monthly_campaign_items item
    and item.post_id = latest.post_id
    and item.latest_post_stats_id is distinct from latest.id;
 
+-- ------------------------------------------------ Incremental Autopilot repair
+
+alter table autopilot_plan drop constraint if exists autopilot_plan_status_check;
+alter table autopilot_plan add constraint autopilot_plan_status_check
+  check (status in ('building', 'partial', 'pending', 'approving', 'approved', 'done', 'error'));
+alter table autopilot_plan add column if not exists build_report jsonb not null default '{}'::jsonb;
+alter table autopilot_plan add column if not exists repair_strategy text;
+alter table autopilot_plan add column if not exists terminal_outcome text;
+alter table autopilot_plan add column if not exists repair_attempt integer not null default 0;
+alter table autopilot_plan add column if not exists last_repair_job_id uuid;
+alter table autopilot_plan add column if not exists ai_call_count integer not null default 0;
+alter table autopilot_plan drop constraint if exists autopilot_plan_build_report_check;
+alter table autopilot_plan add constraint autopilot_plan_build_report_check
+  check (jsonb_typeof(build_report) = 'object');
+alter table autopilot_plan drop constraint if exists autopilot_plan_repair_strategy_check;
+alter table autopilot_plan add constraint autopilot_plan_repair_strategy_check
+  check (repair_strategy is null or repair_strategy in (
+    'deterministic_format', 'rewrite', 'add_knowledge', 'human_review',
+    'provider_retry', 'settings_change'
+  ));
+alter table autopilot_plan drop constraint if exists autopilot_plan_terminal_outcome_check;
+alter table autopilot_plan add constraint autopilot_plan_terminal_outcome_check
+  check (terminal_outcome is null or terminal_outcome in (
+    'complete', 'partial', 'cancelled', 'quota', 'provider_error', 'source_error',
+    'semantic_block', 'editorial_block', 'duplicate', 'manual_wait'
+  ));
+alter table autopilot_plan drop constraint if exists autopilot_plan_repair_attempt_check;
+alter table autopilot_plan add constraint autopilot_plan_repair_attempt_check
+  check (repair_attempt between 0 and 100);
+alter table autopilot_plan drop constraint if exists autopilot_plan_ai_call_count_check;
+alter table autopilot_plan add constraint autopilot_plan_ai_call_count_check
+  check (ai_call_count >= 0);
+
+create table if not exists autopilot_repair_operations (
+  id                 bigint generated always as identity primary key,
+  project_id         bigint not null references projects (id) on delete cascade,
+  user_id            bigint not null references users (id) on delete cascade,
+  channel_id         bigint not null references channels (id) on delete cascade,
+  source_plan_id     bigint not null,
+  plan_id            bigint references autopilot_plan (id) on delete set null,
+  job_id              uuid not null,
+  request_hash        varchar(64) not null,
+  base_revision       bigint not null,
+  item_indexes        jsonb not null default '[]'::jsonb,
+  repair_strategy     text,
+  attempt_number      integer not null,
+  status              text not null default 'queued',
+  ai_call_count       integer not null default 0,
+  terminal_outcome    text,
+  diagnostic          jsonb not null default '{}'::jsonb,
+  created_at          timestamptz not null default now(),
+  updated_at          timestamptz not null default now(),
+  completed_at        timestamptz,
+  constraint autopilot_repair_operations_job_uniq unique (project_id, job_id),
+  constraint autopilot_repair_operations_request_hash_check check (request_hash ~ '^[a-f0-9]{64}$'),
+  constraint autopilot_repair_operations_source_plan_check check (source_plan_id > 0),
+  constraint autopilot_repair_operations_revision_check check (base_revision > 0),
+  constraint autopilot_repair_operations_indexes_check check (jsonb_typeof(item_indexes) = 'array'),
+  constraint autopilot_repair_operations_strategy_check check (
+    repair_strategy is null or repair_strategy in (
+      'deterministic_format', 'rewrite', 'add_knowledge', 'human_review',
+      'provider_retry', 'settings_change'
+    )
+  ),
+  constraint autopilot_repair_operations_attempt_check check (attempt_number between 1 and 100),
+  constraint autopilot_repair_operations_status_check check (
+    status in ('queued', 'processing', 'completed', 'partial', 'failed')
+  ),
+  constraint autopilot_repair_operations_ai_calls_check check (ai_call_count >= 0),
+  constraint autopilot_repair_operations_diagnostic_check check (jsonb_typeof(diagnostic) = 'object')
+);
+create unique index if not exists autopilot_repair_operations_active_plan_uniq
+  on autopilot_repair_operations (plan_id)
+  where plan_id is not null and status in ('queued', 'processing');
+create index if not exists autopilot_repair_operations_scope_idx
+  on autopilot_repair_operations (project_id, channel_id, created_at desc, id desc);
+alter table autopilot_settings alter column post_frequency set default 5;
+alter table autopilot_settings alter column quick_settings set default
+  '{"newsPerWeek":2,"detail":2,"energy":2,"emoji":1}'::jsonb;
+alter table autopilot_plan alter column quick_settings set default
+  '{"newsPerWeek":2,"detail":2,"energy":2,"emoji":1}'::jsonb;
+
 -- ------------------------------------------------ Publication follow-up reliability
 
 alter table publication_extra_operations
@@ -5342,3 +5532,26 @@ begin
   end if;
 end
 $$;
+
+-- ------------------------------------------------ Autopilot candidate pool
+
+-- Publication targets remain the user-facing scheduling contract. Candidate counts and
+-- candidate payloads are build-only state: reserve drafts never enter approval or the
+-- publication outbox unless the deterministic selector places them in `items`.
+alter table autopilot_plan
+  add column if not exists publication_target_count smallint,
+  add column if not exists candidate_count smallint,
+  add column if not exists candidate_items jsonb;
+
+alter table autopilot_plan add constraint autopilot_plan_publication_target_count_check
+  check (publication_target_count is null or publication_target_count between 1 and 90);
+alter table autopilot_plan add constraint autopilot_plan_candidate_count_check
+  check (candidate_count is null or candidate_count between 1 and 126);
+alter table autopilot_plan add constraint autopilot_plan_candidate_target_check
+  check (
+    candidate_count is null
+    or publication_target_count is null
+    or candidate_count >= publication_target_count
+  );
+alter table autopilot_plan add constraint autopilot_plan_candidate_items_check
+  check (candidate_items is null or jsonb_typeof(candidate_items) = 'array');

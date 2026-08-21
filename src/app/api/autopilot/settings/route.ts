@@ -95,9 +95,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "streak_required" }, { status: 422 });
     }
 
-    // Standalone Autopilot is deliberately predictable: one useful post for every day.
-    // Keep the legacy column normalized because older settings screens still submit it.
-    const freq = 7;
+    const requestedFrequency = Number(body.post_frequency);
+    const freq = body.post_frequency == null
+      ? null
+      : Number.isSafeInteger(requestedFrequency) && requestedFrequency >= 1 && requestedFrequency <= 7
+        ? requestedFrequency
+        : undefined;
     const quickSettings = body.quick_settings == null
       ? null
       : normalizeAutopilotQuickSettings(body.quick_settings);
@@ -116,7 +119,7 @@ export async function POST(req: NextRequest) {
     const planningMonths = planningWeeks == null
       ? null
       : Math.max(1, Math.min(3, Math.ceil(planningWeeks / 4)));
-    if (generationEngine === undefined || planningWeeks === undefined) {
+    if (freq === undefined || generationEngine === undefined || planningWeeks === undefined) {
       return NextResponse.json({ ok: false, error: "bad_generation_settings" }, { status: 422 });
     }
 

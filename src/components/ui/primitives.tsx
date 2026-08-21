@@ -11,10 +11,11 @@ import { cn } from "@/lib/utils";
 
 export function Card({
   className,
+  strong: _strong,
   as: Tag = "div",
   ...props
-}: React.HTMLAttributes<HTMLElement> & { as?: React.ElementType }) {
-  return <Tag className={cn("card-plain rounded-md", className)} {...props} />;
+}: React.HTMLAttributes<HTMLElement> & { as?: React.ElementType; strong?: boolean }) {
+  return <Tag data-strong={_strong || undefined} className={cn("card-plain rounded-md", className)} {...props} />;
 }
 
 export function GlassCard({

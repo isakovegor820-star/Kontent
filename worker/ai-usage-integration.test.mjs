@@ -6,14 +6,15 @@ const source = await readFile(new URL("../worker.mjs", import.meta.url), "utf8")
 
 describe("worker AI usage integration contract", () => {
   it("binds autopilot jobs to planId and commits inside the plan transaction", () => {
-    expect(source).toContain(
-      'key: workerAiUsageCompositeKey("autopilot-plan", [projectId, planId])',
-    );
+    expect(source).toContain('repairOperationId == null ? "autopilot-plan" : "autopilot-repair"');
+    expect(source).toContain("repairOperationId == null ? [projectId, planId] : [projectId, planId, repairOperationId]");
     expect(source).toMatch(
       /buildAutopilotPlan\(\s*projectId,\s*userId,\s*channelId,\s*planId,\s*usage\.reservationId/u,
     );
     expect(source).toContain("commitWorkerAiUsage(tx, userId, usageReservationId)");
     expect(source).toContain("releaseWorkerAiUsage(pool, userId, usage.reservationId)");
+    expect(source).toContain("aiCallCount > 0");
+    expect(source).toContain("clearWorkerAiCallCount(usage.reservationId)");
     expect(source).toContain("set status = 'error', rules = 'ai_usage_limit'");
   });
 

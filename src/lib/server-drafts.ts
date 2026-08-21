@@ -32,6 +32,7 @@ import {
   type UtmValues,
 } from "./utm";
 import { normalizeRichTextEntities } from "./rich-text.mjs";
+import { GrowthArtifactLinkError, linkGrowthMoveDraftInTransaction } from "./growth";
 
 type Queryable = Pick<Pool | PoolClient, "query">;
 type TransactionPool = Pick<Pool, "connect">;
@@ -469,7 +470,13 @@ export function parseDraftCreateInput(value: unknown): DraftCreateInput {
   const clientKey = typeof value.clientKey === "string" ? value.clientKey : "";
   if (!CLIENT_KEY_RE.test(clientKey)) throw new DraftValidationError("bad_client_key");
   const parsed = parseDraftWriteInput(value);
-  return { ...parsed, tracking: parsed.tracking ?? null, clientKey };
+  const growthMoveId = value.growthMoveId == null ? null : Number(value.growthMoveId);
+  if (growthMoveId != null && (!Number.isSafeInteger(growthMoveId) || growthMoveId <= 0)) {
+    throw new DraftValidationError("bad_growth_move");
+  }
+  return growthMoveId == null
+    ? { ...parsed, tracking: parsed.tracking ?? null, clientKey }
+    : { ...parsed, tracking: parsed.tracking ?? null, clientKey, growthMoveId };
 }
 
 export function parseDraftUpdateInput(value: unknown): DraftUpdateInput {
@@ -1144,6 +1151,23 @@ export async function createDraftForUser(
     }
 
     if (draftId == null) throw new Error("idempotent draft lookup failed");
+    if (input.growthMoveId != null) {
+      try {
+        await linkGrowthMoveDraftInTransaction({
+          db: tx,
+          projectId,
+          actorUserId: userId,
+          moveId: input.growthMoveId,
+          draftId,
+          channelIds: trusted.channelIds,
+        });
+      } catch (error) {
+        if (error instanceof GrowthArtifactLinkError) {
+          throw new DraftValidationError(error.code);
+        }
+        throw error;
+      }
+    }
     const draft = await selectDraft(tx, projectId, draftId);
     if (!draft) throw new Error("created draft lookup failed");
     await tx.query("commit");

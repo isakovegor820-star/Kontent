@@ -85,6 +85,7 @@ export function withHumanQualityAttestation(result, { userId, attestedAt } = {})
 /** Automatic publication needs claim-level semantic proof, not only citation syntax. */
 export function hasAutomaticQualityApproval(result) {
   if (!hasVerifiedQualityMetadata(result) || result?.passed !== true) return false;
+  if (result?.publicationDisposition && result.publicationDisposition !== "ready") return false;
   const semantic = result?.semantic;
   return Boolean(
     semantic?.version === 1 &&
@@ -145,7 +146,7 @@ export const QUALITY_PRESETS = {
       originality: 78,
       minChars: 900,
       maxChars: 1800,
-      hookRequired: true,
+      hookRequired: false,
       hookMaxChars: 80,
       maxParagraphSentences: 3,
       sentenceRhythm: 48,
@@ -174,9 +175,9 @@ export const QUALITY_PRESETS = {
       ctaIntensity: 30,
       ctaEveryPosts: 5,
       interactivity: 38,
-      salesMaxPercent: 20,
+      salesMaxPercent: 15,
       emojiPolicy: "restrained",
-      maxEmojis: 3,
+      maxEmojis: 1,
       hashtagsPolicy: "none",
       maxHashtags: 0,
       allowedEmoji: "",
@@ -199,7 +200,7 @@ export const QUALITY_PRESETS = {
       forbiddenTopics: [],
       styleExamples: [],
       qualityThreshold: 85,
-      retryLimit: 2,
+      retryLimit: 3,
     },
   },
   legal: {
@@ -307,6 +308,21 @@ export function normalizePostQuality(raw) {
   let minChars = clamp(source.minChars, 300, 3500, base.minChars);
   let maxChars = clamp(source.maxChars, 500, 4000, base.maxChars);
   if (maxChars < minChars) [minChars, maxChars] = [maxChars, minChars];
+  let desiredMinChars = source.desiredMinChars == null
+    ? null
+    : clamp(source.desiredMinChars, 1, 4_000, minChars);
+  let desiredMaxChars = source.desiredMaxChars == null
+    ? null
+    : clamp(source.desiredMaxChars, 1, 4_000, maxChars);
+  if (desiredMinChars != null && desiredMaxChars != null && desiredMaxChars < desiredMinChars) {
+    [desiredMinChars, desiredMaxChars] = [desiredMaxChars, desiredMinChars];
+  }
+  const publicationMinChars = source.publicationMinChars == null
+    ? null
+    : clamp(source.publicationMinChars, 1, 4_096, 1);
+  const publicationMaxChars = source.publicationMaxChars == null
+    ? null
+    : clamp(source.publicationMaxChars, 1, 32_768, 4_096);
   const emojiPolicy = oneOf(source.emojiPolicy, ["none", "restrained", "active"], base.emojiPolicy);
   const hashtagsPolicy = oneOf(source.hashtagsPolicy, ["none", "restrained"], base.hashtagsPolicy);
   const humorLevel = clamp(
@@ -346,6 +362,12 @@ export function normalizePostQuality(raw) {
     originality: clamp(source.originality, 0, 100, base.originality),
     minChars,
     maxChars,
+    ...(desiredMinChars != null && desiredMaxChars != null
+      ? { desiredMinChars, desiredMaxChars }
+      : {}),
+    ...(publicationMinChars != null && publicationMaxChars != null
+      ? { publicationMinChars, publicationMaxChars }
+      : {}),
     hookRequired: source.hookRequired !== false,
     hookMaxChars: clamp(source.hookMaxChars, 30, 160, base.hookMaxChars),
     maxParagraphSentences: clamp(source.maxParagraphSentences, 1, 6, base.maxParagraphSentences),
@@ -427,6 +449,9 @@ function profanityInstruction(value) {
 export function buildQualityPrompt(rawQuality, options = {}) {
   const q = normalizePostQuality(rawQuality);
   const ctaDue = q.ctaStyle !== "none" && Number(options.postIndex) % q.ctaEveryPosts === q.ctaEveryPosts - 1;
+  const desiredLengthInstruction = q.desiredMinChars != null && q.desiredMaxChars != null
+    ? `— желаемый объём: ${q.desiredMinChars}–${q.desiredMaxChars} знаков с пробелами; это ориентир, поэтому закончи мысль полным предложением, даже если текст немного выйдет за диапазон;`
+    : `— объём готового текста: ${q.minChars}–${q.maxChars} знаков с пробелами;`;
   const lines = [
     "РЕДАКЦИОННЫЙ СТАНДАРТ КАНАЛА — не нарушай ни одного пункта:",
     `— голос: ${q.persona};`,
@@ -437,7 +462,7 @@ export function buildQualityPrompt(rawQuality, options = {}) {
     `— обращение: ${labels[q.address]};`,
     `— язык: ${q.languageLevel};`,
     `— сложность языка ${q.languageComplexity}/100, оригинальность и анти-клише ${q.originality}/100;`,
-    `— объём готового текста: ${q.minChars}–${q.maxChars} знаков с пробелами;`,
+    desiredLengthInstruction,
     q.hookRequired
       ? `— первая строка — хук в формате «${HOOK_STYLES[q.hookStyle]}», интенсивность ${q.hookIntensity}/100, до ${q.hookMaxChars} знаков и без кликбейта;`
       : "— отдельный хук не обязателен;",
@@ -519,10 +544,53 @@ export function validatePostQuality(text, rawQuality, context = {}) {
   const paragraphs = value.split(/\n\s*\n/).map((x) => x.trim()).filter(Boolean);
 
   if (!value) addViolation(violations, "empty", "Модель не вернула текст", true, 100);
-  if (chars < q.minChars)
-    addViolation(violations, "too_short", `Нужно минимум ${q.minChars} знаков, сейчас ${chars}`, true, 25);
-  if (chars > q.maxChars)
-    addViolation(violations, "too_long", `Нужно максимум ${q.maxChars} знаков, сейчас ${chars}`, true, 25);
+  const hasPublicationEnvelope = Number.isFinite(Number(q.publicationMinChars))
+    && Number.isFinite(Number(q.publicationMaxChars));
+  if (hasPublicationEnvelope) {
+    const hardMin = Number(q.publicationMinChars);
+    const hardMax = Number(q.publicationMaxChars);
+    const desiredMin = Number(q.desiredMinChars ?? q.minChars);
+    const desiredMax = Number(q.desiredMaxChars ?? q.maxChars);
+    if (value && chars < hardMin) {
+      addViolation(
+        violations,
+        "insufficient_content",
+        `Нужно хотя бы ${hardMin} знаков содержательного текста, сейчас ${chars}`,
+        true,
+        100,
+      );
+    } else if (value && chars < desiredMin) {
+      addViolation(
+        violations,
+        "too_short",
+        `Желаемый объём от ${desiredMin} знаков, сейчас ${chars}`,
+        false,
+        0,
+      );
+    }
+    if (chars > hardMax) {
+      addViolation(
+        violations,
+        "platform_limit",
+        `Технический предел площадки — ${hardMax} знаков, сейчас ${chars}`,
+        true,
+        100,
+      );
+    } else if (chars > desiredMax) {
+      addViolation(
+        violations,
+        "too_long",
+        `Желаемый объём до ${desiredMax} знаков, сейчас ${chars}`,
+        false,
+        0,
+      );
+    }
+  } else {
+    if (chars < q.minChars)
+      addViolation(violations, "too_short", `Нужно минимум ${q.minChars} знаков, сейчас ${chars}`, true, 25);
+    if (chars > q.maxChars)
+      addViolation(violations, "too_long", `Нужно максимум ${q.maxChars} знаков, сейчас ${chars}`, true, 25);
+  }
   if (q.hookRequired && (!lines[0] || lines[0].length > q.hookMaxChars))
     addViolation(violations, "hook", `Первая строка должна быть хуком до ${q.hookMaxChars} знаков`, true, 15);
   if (q.address === "вы" && informal.test(value))
@@ -635,6 +703,21 @@ export function buildRewritePrompt(draft, result) {
   const riskFlagged = (result?.violations || []).some((violation) =>
     ["unsupported_semantic_claim", "semantic_review_required"].includes(violation?.code),
   );
+  const codes = new Set((result?.violations || []).map((violation) => violation?.code));
+  const focusedInstructions = [
+    ...(codes.has("too_short")
+      ? ["Раскрой 2–3 конкретных аспекта темы, опираясь только на факты из источников системного сообщения."]
+      : []),
+    ...(codes.has("too_long")
+      ? ["Сократи текст без потери подтверждённых фактов, основного вывода и законченных предложений."]
+      : []),
+    ...(codes.has("duplicate")
+      ? ["Возьми другой угол темы, другой хук и другую логику блоков; не перефразируй прежний пост."]
+      : []),
+    ...(codes.has("truncated") || codes.has("empty")
+      ? ["Верни полный законченный пост: не обрывай последнюю мысль и последнее предложение."]
+      : []),
+  ];
   return [
     "Перепиши черновик целиком. Исправь каждое замечание и сохрани только подтверждённый смысл.",
     "Верни ТОЛЬКО готовый пост, без объяснений и разбора.",
@@ -645,6 +728,7 @@ export function buildRewritePrompt(draft, result) {
           "Вместо оценки оставляй только описание того, что происходит по факту.",
         ]
       : []),
+    ...focusedInstructions,
     "Не убирай служебные ссылки [1], [2]: после КАЖДОГО предложения с фактом должна стоять ссылка на источник.",
     "Каждое замечание про неподтверждённое утверждение означает: удали эту мысль целиком. Не перефразируй её и не заменяй новым советом.",
     "Не добавляй определения, причинно-следственные выводы, обещания результата, обобщения, оценку пользы или риска, если источник не говорит об этом прямо.",

@@ -53,6 +53,7 @@ import {
 } from "lucide-react";
 
 import { AppShell } from "@/components/app/shell";
+import { EvidenceCard } from "@/components/app/evidence-card";
 import { EditorialReviewPanel } from "@/components/app/editorial-review-panel";
 import { useProjects } from "@/components/app/project-provider";
 import { PostSettingsMenu } from "@/components/studio/post-settings-menu";
@@ -2169,6 +2170,7 @@ export default function ComposerPage() {
       <AppShell
         title="Редактор поста"
         subtitle="Создавай, оформляй и добавляй публикации в календарь."
+        action={draftId ? <EvidenceCard kind="draft" id={draftId} label="Доказательства" /> : undefined}
       >
         <Suspense fallback={<ComposerSkeleton />}>
           <ComposerInner />

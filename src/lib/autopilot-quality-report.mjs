@@ -9,26 +9,25 @@
 // причину и в следующий шаг. Тест держит его полным: новый гейт нельзя добавить, не
 // объяснив человеку, что с ним делать.
 
-/** knowledge — добавить материалы; settings — поправить профиль; text — правка текста; review — прочитать глазами. */
-export const QUALITY_FAILURE_GUIDE = Object.freeze({
+const QUALITY_FAILURE_COPY = {
   empty: {
     title: "Модель не вернула текст",
     action: "Похоже на сбой движка. Пересобери план — при повторе выбери другую модель.",
     fix: "retry",
   },
   too_short: {
-    title: "Текст короче нижней границы объёма",
-    action: "Опусти минимальный объём поста в настройках канала или добавь материалов, чтобы было чем наполнить текст.",
+    title: "Пост короче желаемого объёма",
+    action: "Аврора дополнит 2–3 конкретных аспекта темы по уже найденным источникам.",
     fix: "settings",
   },
   too_long: {
-    title: "Текст длиннее верхней границы объёма",
-    action: "Подними верхнюю границу объёма в настройках канала.",
+    title: "Пост длиннее желаемого объёма",
+    action: "Аврора сократит только этот текст без потери фактов и вывода.",
     fix: "settings",
   },
   hook: {
     title: "Первая строка не похожа на короткий хук",
-    action: "Увеличь лимит длины хука в настройках канала или отключи обязательный хук.",
+    action: "Аврора перепишет только первую строку и снова проверит весь пост.",
     fix: "settings",
   },
   address: {
@@ -58,32 +57,32 @@ export const QUALITY_FAILURE_GUIDE = Object.freeze({
   },
   dense_paragraph: {
     title: "Абзац длиннее разрешённого числа предложений",
-    action: "Разреши больше предложений в абзаце в настройках канала.",
+    action: "Аврора разделит абзац кодом, не меняя факты и смысл.",
     fix: "settings",
   },
   structure: {
     title: "Нет отдельных хука, основной части и вывода",
-    action: "Отключи обязательный вывод в настройках канала или пересобери план.",
+    action: "Аврора сначала разложит готовые предложения по коротким смысловым блокам.",
     fix: "settings",
   },
   list: {
     title: "Список есть там, где запрещён, или нет там, где обязателен",
-    action: "Поставь политику списков «когда полезно» в настройках канала.",
+    action: "Аврора приведёт список к правилам канала без нового запроса к ИИ.",
     fix: "settings",
   },
   bold: {
     title: "Жирное выделение не по правилам канала",
-    action: "Поправь политику выделений в настройках канала.",
+    action: "Аврора исправит выделение кодом без изменения текста.",
     fix: "settings",
   },
   emoji: {
     title: "Эмодзи больше разрешённого",
-    action: "Подними лимит эмодзи в настройках канала.",
+    action: "Аврора уберёт лишние эмодзи кодом.",
     fix: "settings",
   },
   hashtags: {
     title: "Хэштегов больше разрешённого",
-    action: "Подними лимит хэштегов в настройках канала.",
+    action: "Аврора уберёт лишние хэштеги кодом.",
     fix: "settings",
   },
   disclaimer: {
@@ -93,12 +92,12 @@ export const QUALITY_FAILURE_GUIDE = Object.freeze({
   },
   meta_labels: {
     title: "В текст попали служебные метки промпта",
-    action: "Пересобери план. Если повторяется — смени модель: она не держит формат.",
+    action: "Аврора удалит служебные метки кодом и повторит проверку.",
     fix: "retry",
   },
   punctuation: {
     title: "Слишком много повторяющихся знаков препинания",
-    action: "Пересобери план: модель сорвалась в восклицания. Если повторяется — выбери другую модель.",
+    action: "Аврора нормализует повторяющиеся знаки кодом.",
     fix: "retry",
   },
   truncated: {
@@ -131,19 +130,113 @@ export const QUALITY_FAILURE_GUIDE = Object.freeze({
     action: "Прочитай текст и нажми «Одобрить» — это и есть проверка. Публикация без чтения для такого поста закрыта.",
     fix: "review",
   },
+  insufficient_content: {
+    title: "В тексте недостаточно содержательной мысли",
+    action: "Повтори только этот пост или открой его в редакторе: короткий обрывок нельзя публиковать.",
+    fix: "retry",
+  },
+  platform_limit: {
+    title: "Текст не помещается в технический лимит площадки",
+    action: "Сократи только этот пост до полного предложения — остальные публикации менять не нужно.",
+    fix: "retry",
+  },
+  quality_threshold: {
+    title: "Остались редакционные замечания",
+    action: "Проверь пост перед публикацией или открой настройки качества, если правило больше не подходит каналу.",
+    fix: "settings",
+  },
+  duplicate: {
+    title: "Пост слишком похож на недавнюю публикацию",
+    action: "Перепиши только этот пост с другой темой или другим углом подачи.",
+    fix: "retry",
+  },
+};
+
+const QUALITY_FAILURE_AXES = Object.freeze({
+  empty: ["blocked", "provider_retry"],
+  too_short: ["confirmation_required", "rewrite"],
+  too_long: ["confirmation_required", "rewrite"],
+  hook: ["confirmation_required", "rewrite"],
+  address: ["confirmation_required", "deterministic_format"],
+  profanity: ["blocked", "rewrite"],
+  profanity_required: ["confirmation_required", "settings_change"],
+  forbidden_phrase: ["blocked", "rewrite"],
+  forbidden_topic: ["blocked", "settings_change"],
+  dense_paragraph: ["confirmation_required", "deterministic_format"],
+  structure: ["confirmation_required", "deterministic_format"],
+  list: ["confirmation_required", "deterministic_format"],
+  bold: ["confirmation_required", "deterministic_format"],
+  emoji: ["confirmation_required", "deterministic_format"],
+  hashtags: ["confirmation_required", "deterministic_format"],
+  disclaimer: ["blocked", "deterministic_format"],
+  meta_labels: ["confirmation_required", "deterministic_format"],
+  punctuation: ["confirmation_required", "deterministic_format"],
+  truncated: ["blocked", "provider_retry"],
+  no_sources: ["blocked", "add_knowledge"],
+  weak_sources: ["blocked", "add_knowledge"],
+  invented: ["blocked", "rewrite"],
+  unsupported_semantic_claim: ["blocked", "rewrite"],
+  semantic_review_required: ["confirmation_required", "human_review"],
+  insufficient_content: ["blocked", "provider_retry"],
+  platform_limit: ["blocked", "deterministic_format"],
+  quality_threshold: ["confirmation_required", "settings_change"],
+  duplicate: ["blocked", "rewrite"],
 });
+
+/**
+ * One catalog owns both independent quality axes. Publication disposition answers whether
+ * the current text may cross the publication boundary; repairStrategy answers what should
+ * happen next. Keeping them separate prevents a harmless formatting miss from being treated
+ * like an unsupported factual claim.
+ */
+export const QUALITY_FAILURE_GUIDE = Object.freeze(Object.fromEntries(
+  Object.entries(QUALITY_FAILURE_COPY).map(([code, copy]) => {
+    const [publicationDisposition, repairStrategy] = QUALITY_FAILURE_AXES[code] || [
+      "blocked",
+      "human_review",
+    ];
+    return [code, Object.freeze({
+      ...copy,
+      publicationDisposition,
+      repairStrategy,
+    })];
+  }),
+));
 
 const guideFor = (code) =>
   QUALITY_FAILURE_GUIDE[code] || {
     title: `Проверка «${code}» не пройдена`,
     action: "Открой пост и посмотри замечание целиком.",
     fix: "review",
+    publicationDisposition: "blocked",
+    repairStrategy: "human_review",
   };
+
+export function autopilotQualityDisposition(result) {
+  const violations = Array.isArray(result?.violations) ? result.violations : [];
+  let disposition = "ready";
+  let repairStrategy = null;
+  for (const violation of violations) {
+    const guide = guideFor(String(violation?.code || ""));
+    if (guide.publicationDisposition === "blocked") {
+      if (disposition !== "blocked") repairStrategy = guide.repairStrategy;
+      disposition = "blocked";
+      repairStrategy ||= guide.repairStrategy;
+      continue;
+    }
+    if (guide.publicationDisposition === "confirmation_required" && disposition === "ready") {
+      disposition = "confirmation_required";
+      repairStrategy ||= guide.repairStrategy;
+    }
+  }
+  return { publicationDisposition: disposition, repairStrategy };
+}
 
 function itemPassed(item) {
   return item?.aiReady === true &&
     String(item?.draft || "").trim().length > 0 &&
-    item?.quality?.passed === true;
+    item?.quality?.passed === true &&
+    item?.quality?.publicationDisposition !== "blocked";
 }
 
 /**
@@ -168,7 +261,10 @@ export function autopilotQualityFailureReport(items, expected = null) {
     const violations = Array.isArray(item?.quality?.violations) ? item.quality.violations : [];
     const codes = new Set(
       violations
-        .filter((violation) => violation?.blocker === true)
+        .filter((violation) => {
+          const guide = guideFor(String(violation?.code || ""));
+          return violation?.blocker === true || guide.publicationDisposition === "blocked";
+        })
         .map((violation) => String(violation?.code || ""))
         .filter(Boolean),
     );
@@ -189,6 +285,6 @@ export function autopilotQualityFailureReport(items, expected = null) {
     causes,
     // Главная причина решает, что предложить кнопкой: добавить материалы, поправить
     // профиль или действительно пересобрать план.
-    primaryFix: causes[0]?.fix ?? null,
+    primaryFix: causes[0]?.repairStrategy ?? null,
   };
 }

@@ -11,6 +11,7 @@ import {
 } from "./autopilot-config.mjs";
 import type { AutopilotNewsSource } from "./autopilot-news.mjs";
 import type { AutopilotQuickSettings } from "./autopilot-style.mjs";
+import { DEFAULT_AUTOPILOT_QUICK_SETTINGS } from "./autopilot-style.mjs";
 
 export interface AutopilotSettings {
   enabled: boolean;
@@ -134,8 +135,9 @@ export async function ensureSettings(
 
     await pool.query(
       `insert into autopilot_settings
-         (project_id, user_id, channel_id, generation_engine, planning_months, planning_weeks)
-       select $1, $2, $3, $4, 1, $5
+         (project_id, user_id, channel_id, generation_engine, planning_months, planning_weeks,
+          post_frequency, mode, quick_settings)
+       select $1, $2, $3, $4, 1, $5, 5, 'confirm', $6::jsonb
         where exists (
           select 1 from channels
            where id = $3 and project_id = $1 and network = 'tg' and is_active = true
@@ -147,6 +149,7 @@ export async function ensureSettings(
         channelId,
         DEFAULT_AUTOPILOT_ENGINE,
         DEFAULT_AUTOPILOT_PLANNING_WEEKS,
+        JSON.stringify(DEFAULT_AUTOPILOT_QUICK_SETTINGS),
       ],
     );
     const created = await pool.query<AutopilotSettings>(

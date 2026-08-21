@@ -5,10 +5,10 @@ import { Menu, X } from "lucide-react";
 import styles from "./reference-landing.module.css";
 
 const links = [
-  { href: "#product", label: "Продукт" },
-  { href: "#features", label: "Возможности" },
+  { href: "#difference", label: "Отличие" },
   { href: "#how", label: "Как работает" },
-  { href: "#integrations", label: "Интеграции" },
+  { href: "#control", label: "Контроль" },
+  { href: "#features", label: "Возможности" },
   { href: "#access", label: "Доступ" },
 ] as const;
 

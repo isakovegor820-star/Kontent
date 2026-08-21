@@ -360,7 +360,8 @@ describe("boundedAutopilotRewriteAttempts", () => {
   it("preserves an explicit zero and caps excessive rewrites", () => {
     expect(boundedAutopilotRewriteAttempts(0)).toBe(0);
     expect(boundedAutopilotRewriteAttempts(1)).toBe(1);
-    expect(boundedAutopilotRewriteAttempts(3)).toBe(2);
+    expect(boundedAutopilotRewriteAttempts(2)).toBe(2);
+    expect(boundedAutopilotRewriteAttempts(3)).toBe(3);
     expect(boundedAutopilotRewriteAttempts(undefined)).toBe(1);
   });
 });

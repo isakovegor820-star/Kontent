@@ -24,6 +24,7 @@ import {
   X,
 } from "lucide-react";
 import { AppShell } from "@/components/app/shell";
+import { EvidenceCard } from "@/components/app/evidence-card";
 import { Button, buttonClassName } from "@/components/ui/button";
 import { Badge, Card, EmptyState } from "@/components/ui/primitives";
 import { useStore } from "@/lib/store";
@@ -51,6 +52,7 @@ import {
   MAX_AUTOPILOT_PLANNING_WEEKS,
   MIN_AUTOPILOT_PLANNING_WEEKS,
   plannedDailyAutopilotPostCount,
+  plannedPostCountForWeeks,
 } from "@/lib/autopilot-config.mjs";
 import {
   DEFAULT_AUTOPILOT_QUICK_SETTINGS,
@@ -58,6 +60,8 @@ import {
   type AutopilotQuickSettings,
 } from "@/lib/autopilot-style.mjs";
 import { sanitizeAutopilotPublicText } from "@/lib/autopilot-publication.mjs";
+import { autopilotCandidateCount } from "@/lib/autopilot-candidate-selection.mjs";
+import { autopilotBuildSpinnerClass } from "@/lib/autopilot-build-ui.mjs";
 
 interface PlanItem {
   i: number;
@@ -85,6 +89,7 @@ interface PlanItem {
   qualityOrigin?: string;
   approvalBlockers?: ApprovalBlocker[];
   reviewRequired?: boolean;
+  reviewState?: "semantic_only_review" | "editorial_review" | "quality_review";
   reviewReason?: string;
   draftId?: number;
 }
@@ -98,36 +103,73 @@ interface Settings {
   planning_weeks: number;
   quick_settings: AutopilotQuickSettings;
 }
+interface ActivePlan {
+  id: number;
+  revision: number;
+  items: PlanItem[];
+  rules: string | null;
+  status: "pending" | "approved" | "approving";
+  generationEngine: string;
+  planningMonths: number;
+  planningWeeks: number;
+  expectedPostCount: number;
+  publicationTargetCount: number;
+  candidateCount: number;
+  quickSettings?: AutopilotQuickSettings;
+}
+interface BuildAttempt {
+  planId: number;
+  revision: number;
+  status: "building" | "partial" | "error";
+  targetCount: number;
+  publicationTargetCount: number;
+  candidateCount: number;
+  readyCount: number;
+  failedCount: number;
+  progress: {
+    completed: number;
+    total: number;
+    reviewRequired: number;
+    ready: number;
+    failed: number;
+    percent: number;
+    stage: "preparing" | "generating" | "finalizing";
+  };
+  causes: {
+    code: string;
+    count: number;
+    title: string;
+    action: string;
+    publicationDisposition: "ready" | "confirmation_required" | "blocked";
+    repairStrategy: string;
+  }[];
+  primaryFix:
+    | "deterministic_format"
+    | "rewrite"
+    | "add_knowledge"
+    | "human_review"
+    | "provider_retry"
+    | "settings_change"
+    | null;
+  retryableItemIndexes: number[];
+  readerReadyItems: PlanItem[];
+  errorReason?:
+    | "timeout"
+    | "quota"
+    | "variety"
+    | "quality"
+    | "knowledge"
+    | "sources"
+    | "provider"
+    | "cancelled"
+    | null;
+  updatedAt: string;
+}
 interface State {
   settings: Settings | null;
-  plan: {
-    id: number;
-    revision: number;
-    items: PlanItem[];
-    rules: string | null;
-    status: string;
-    generation_engine: string;
-    planning_months: number;
-    planning_weeks: number;
-    quick_settings?: AutopilotQuickSettings;
-    buildProgress?: {
-      completed: number;
-      total: number;
-      reviewRequired: number;
-      percent: number;
-      stage: "preparing" | "generating" | "finalizing";
-    };
-    expected_post_count?: number | null;
-    errorReason?:
-      | "timeout"
-      | "quota"
-      | "variety"
-      | "quality"
-      | "knowledge"
-      | "sources"
-      | "provider"
-      | "cancelled";
-  } | null;
+  plan: ActivePlan | null;
+  activePlan: ActivePlan | null;
+  buildAttempt: BuildAttempt | null;
   hasChannel: boolean;
   brief: Brief | null;
   briefReady: boolean;
@@ -265,6 +307,156 @@ function QuickRange({
   );
 }
 
+function BuildAttemptPanel({
+  attempt,
+  hasActivePlan,
+  busy,
+  reducedMotion,
+  onRepair,
+  onGenerate,
+  onCancel,
+  channelId,
+}: {
+  attempt: BuildAttempt;
+  hasActivePlan: boolean;
+  busy: boolean;
+  reducedMotion: boolean | null;
+  onRepair: () => void;
+  onGenerate: () => void;
+  onCancel: () => void;
+  channelId: number | null;
+}) {
+  const remaining = Math.max(0, attempt.candidateCount - attempt.readyCount);
+  const publicationDeficit = Math.max(
+    0,
+    attempt.publicationTargetCount - Math.min(attempt.readyCount, attempt.publicationTargetCount),
+  );
+  const repairCount = attempt.retryableItemIndexes.length || attempt.failedCount;
+  const neededForPlan = Math.max(publicationDeficit, repairCount);
+  const primaryCode = attempt.causes[0]?.code;
+  const repairLabel = primaryCode === "too_short"
+    ? `Дополнить ${repairCount} ${plural(repairCount, "пост", "поста", "постов")}`
+    : attempt.primaryFix === "provider_retry"
+      ? `Повторить ${repairCount} ${plural(repairCount, "пост", "поста", "постов")}`
+      : `Исправить ${repairCount} ${plural(repairCount, "пост", "поста", "постов")}`;
+  const terminal = attempt.status === "error";
+  const title = attempt.status === "building"
+    ? `Готово ${attempt.readyCount} из ${attempt.candidateCount} кандидатов`
+    : attempt.status === "partial"
+      ? `Готово ${attempt.readyCount} из ${attempt.candidateCount} кандидатов. Для плана из ${attempt.publicationTargetCount} ${plural(attempt.publicationTargetCount, "публикации", "публикаций", "публикаций")} не хватает ${neededForPlan} ${plural(neededForPlan, "кандидата", "кандидатов", "кандидатов")}`
+      : attempt.readyCount > 0
+        ? `Готово ${attempt.readyCount} из ${attempt.candidateCount} кандидатов. Сборка остановилась`
+        : "Сборка остановилась до готового результата";
+  const description = attempt.status === "building"
+    ? attempt.readyCount >= attempt.publicationTargetCount
+      ? `Для плана уже достаточно вариантов. Аврора выбирает лучшие ${attempt.publicationTargetCount}.`
+      : remaining > 0
+        ? `Аврора дописывает ещё ${remaining} ${plural(remaining, "кандидат", "кандидата", "кандидатов")}.`
+        : "Аврора завершает проверку и готовит результат."
+    : attempt.errorReason === "quota"
+      ? "Лимит редактора исчерпан. Уже готовые тексты и прежний план сохранены."
+      : attempt.errorReason === "cancelled"
+        ? "Сборка остановлена. Уже готовые тексты и прежний план сохранены."
+        : attempt.causes[0]?.count
+          ? `${attempt.causes[0].count} ${plural(attempt.causes[0].count, "пост требует", "поста требуют", "постов требуют")} отдельного исправления.`
+          : "Готовые тексты сохранены. Повторная операция затронет только незавершённые посты.";
+  const commonLinkClass = buttonClassName({
+    variant: "primary",
+    size: "sm",
+    className: "w-full whitespace-normal text-center sm:w-auto",
+  });
+
+  return (
+    <Card
+      className="mb-5 overflow-hidden p-4 sm:p-5"
+      role={terminal ? "alert" : "status"}
+      aria-live={terminal ? "assertive" : "polite"}
+      aria-atomic="true"
+      aria-busy={attempt.status === "building" || undefined}
+    >
+      <div className="flex min-w-0 items-start gap-3">
+        {attempt.status === "building" ? (
+          <Loader2
+            className={cn("mt-0.5 h-5 w-5 shrink-0 text-brand", autopilotBuildSpinnerClass(reducedMotion))}
+            aria-hidden
+          />
+        ) : (
+          <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-brand" aria-hidden />
+        )}
+        <div className="min-w-0 flex-1">
+          <p className="text-[15px] font-semibold leading-snug text-text tabular-nums">{title}</p>
+          <p className="mt-1 text-[13px] leading-relaxed text-text-3">{description}</p>
+          <p className="mt-1 text-[12px] leading-relaxed text-text-3">
+            В публикацию попадут только {attempt.publicationTargetCount} лучших вариантов. Резерв автоматически не публикуется.
+          </p>
+          {hasActivePlan && (
+            <p className="mt-1 text-[12px] leading-relaxed text-text-3">
+              Текущий готовый план остаётся доступен ниже, пока новая версия не завершена.
+            </p>
+          )}
+          {attempt.causes.length > 0 && attempt.status !== "building" && (
+            <ul className="mt-3 space-y-1.5 text-[13px] leading-relaxed text-text-2">
+              {attempt.causes.slice(0, 3).map((cause) => (
+                <li key={cause.code} className="flex min-w-0 gap-2">
+                  <span aria-hidden>•</span>
+                  <span className="min-w-0 break-words">
+                    <span className="font-semibold tabular-nums">{cause.count}×</span> {cause.title}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+            {attempt.status === "building" ? (
+              <Button variant="secondary" size="sm" onClick={onCancel} loading={busy} disabled={busy}>
+                <X className="h-4 w-4" aria-hidden />
+                Остановить сборку
+              </Button>
+            ) : attempt.primaryFix === "add_knowledge" ? (
+              <Link href={`/app/knowledge${channelId ? `?channel=${channelId}` : ""}`} className={commonLinkClass}>
+                Добавить материалы
+              </Link>
+            ) : attempt.primaryFix === "settings_change" ? (
+              <Link href={`/app/settings${channelId ? `?channel=${channelId}` : ""}`} className={commonLinkClass}>
+                Открыть настройки качества
+              </Link>
+            ) : attempt.primaryFix === "human_review" ? (
+              <a href="#autopilot-partial-posts" className={commonLinkClass}>
+                Проверить {Math.max(1, attempt.progress.reviewRequired)} {plural(Math.max(1, attempt.progress.reviewRequired), "пост", "поста", "постов")}
+              </a>
+            ) : attempt.retryableItemIndexes.length > 0 ? (
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={onRepair}
+                loading={busy}
+                disabled={busy}
+                className="w-full whitespace-normal sm:w-auto"
+              >
+                {repairLabel}
+              </Button>
+            ) : (
+              <Button variant="primary" size="sm" onClick={onGenerate} loading={busy} disabled={busy}>
+                Повторить сборку
+              </Button>
+            )}
+          </div>
+        </div>
+      </div>
+      <div
+        className="mt-4 h-2 overflow-hidden rounded-full bg-surface-inset"
+        role="progressbar"
+        aria-label="Прогресс сборки контент-плана"
+        aria-valuemin={0}
+        aria-valuemax={attempt.candidateCount}
+        aria-valuenow={attempt.readyCount}
+      >
+        <div className="h-full rounded-full bg-brand motion-reduce:transition-none" style={{ width: `${attempt.progress.percent}%` }} />
+      </div>
+    </Card>
+  );
+}
+
 export default function AutopilotPage() {
   const s = useStore();
   const router = useRouter();
@@ -273,6 +465,7 @@ export default function AutopilotPage() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [repairBusy, setRepairBusy] = useState(false);
   const [editorBusyIndex, setEditorBusyIndex] = useState<number | null>(null);
   const [expanded, setExpanded] = useState<number | null>(null); // какая карточка раскрыта целиком
   const [generationEngine, setGenerationEngine] = useState(DEFAULT_AUTOPILOT_ENGINE);
@@ -292,6 +485,12 @@ export default function AutopilotPage() {
     hash: string;
     key: string;
   } | null>(null);
+  const repairAttempt = useRef<{
+    planId: number;
+    revision: number;
+    indexes: string;
+    jobId: string;
+  } | null>(null);
   // Выбранный канал. Список и выбор — как на «Конкурентах» и «Трендах»: общий компонент,
   // общий источник (стор), чтобы человек узнавал один и тот же элемент на всех экранах.
   const [picked, setPicked] = useState<number | null>(() => {
@@ -301,6 +500,11 @@ export default function AutopilotPage() {
   });
   const { tgChannels, channelId: chId } = useChannelChoice(s.realChannels, picked);
   const [growthNotice, setGrowthNotice] = useState<string | null>(null);
+  const [growthMoveId] = useState<number | null>(() => {
+    if (typeof window === "undefined") return null;
+    const value = Number(new URLSearchParams(window.location.search).get("growthMove"));
+    return Number.isSafeInteger(value) && value > 0 ? value : null;
+  });
 
   const load = useCallback(async () => {
     const requestedChannelId = chId;
@@ -333,8 +537,9 @@ export default function AutopilotPage() {
         );
         setQuickSettings(normalizeAutopilotQuickSettings(d.settings.quick_settings));
       }
-      const nextPlanIdentity = d.plan
-        ? `${d.channelId}:${d.plan.id}:${d.plan.revision}`
+      const usablePlan = d.activePlan ?? d.plan;
+      const nextPlanIdentity = usablePlan
+        ? `${d.channelId}:${usablePlan.id}:${usablePlan.revision}`
         : null;
       if (activePlanIdentity.current !== nextPlanIdentity) setVisibleLimit(14);
       activePlanIdentity.current = nextPlanIdentity;
@@ -390,7 +595,7 @@ export default function AutopilotPage() {
     return () => controller.abort();
   }, []);
 
-  const building = data?.plan?.status === "building";
+  const building = data?.buildAttempt?.status === "building";
   useEffect(() => {
     if (!building) return;
     let cancelled = false;
@@ -418,16 +623,24 @@ export default function AutopilotPage() {
           generationEngine,
           planningWeeks,
           quickSettings,
+          growthMoveId,
         }),
       });
-      const d = (await r.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
+      const d = (await r.json().catch(() => null)) as {
+        ok?: boolean;
+        error?: string;
+        publicationTargetCount?: number;
+        candidateCount?: number;
+      } | null;
       if (d?.ok) {
-        const count = plannedDailyAutopilotPostCount(planningWeeks);
-        const duration = fmtBuildEstimate(estimateAutopilotBuildMinutes(count));
+        const publicationCount = Number(d.publicationTargetCount) ||
+          plannedPostCountForWeeks(data?.settings?.post_frequency ?? 5, planningWeeks);
+        const candidateCount = Number(d.candidateCount) || autopilotCandidateCount(publicationCount);
+        const duration = fmtBuildEstimate(estimateAutopilotBuildMinutes(candidateCount));
         s.toast({
           kind: "info",
-          title: "Собираю контент-план",
-          body: `${count} ${plural(count, "пост", "поста", "постов")} на ${planningWeeks} ${plural(planningWeeks, "неделю", "недели", "недель")}. Сборка займёт ${duration}; можно продолжать работу в других разделах.`,
+          title: `Собираю ${candidateCount} ${plural(candidateCount, "кандидат", "кандидата", "кандидатов")}`,
+          body: `В план войдут ${publicationCount} ${plural(publicationCount, "лучшая публикация", "лучшие публикации", "лучших публикаций")} на ${planningWeeks} ${plural(planningWeeks, "неделю", "недели", "недель")}. Сборка займёт ${duration}; можно продолжать работу в других разделах.`,
         });
         await load();
       } else {
@@ -496,6 +709,77 @@ export default function AutopilotPage() {
       await load();
     } finally {
       setBusy(false);
+    }
+  };
+
+  const repairBuild = async () => {
+    const attempt = data?.buildAttempt;
+    const channelId = data?.channelId;
+    if (!attempt || !channelId || channelId !== chId || repairBusy || building) return;
+    const indexes = [...attempt.retryableItemIndexes].sort((a, b) => a - b);
+    if (!indexes.length) return;
+    const indexesKey = indexes.join(",");
+    const previous = repairAttempt.current;
+    const jobId = previous?.planId === attempt.planId &&
+      previous.revision === attempt.revision && previous.indexes === indexesKey
+      ? previous.jobId
+      : crypto.randomUUID();
+    repairAttempt.current = {
+      planId: attempt.planId,
+      revision: attempt.revision,
+      indexes: indexesKey,
+      jobId,
+    };
+    setRepairBusy(true);
+    try {
+      const response = await fetch("/api/autopilot/repair", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          channelId,
+          planId: attempt.planId,
+          revision: attempt.revision,
+          itemIndexes: indexes,
+          jobId,
+        }),
+      });
+      const result = await response.json().catch(() => null) as {
+        ok?: boolean;
+        error?: string;
+      } | null;
+      if (result?.ok) {
+        repairAttempt.current = null;
+        s.toast({
+          kind: "info",
+          title: "Исправляю только проблемные посты",
+          body: `Готовые ${attempt.readyCount} ${plural(attempt.readyCount, "пост", "поста", "постов")} останутся без изменений.`,
+        });
+      } else {
+        const copy: Record<string, string> = {
+          nothing_to_repair: "Все доступные посты уже готовы или ожидают ручной проверки.",
+          revision_conflict: "Сборка уже изменилась. Обновляю актуальный прогресс.",
+          repair_in_progress: "Исправление уже запущено. Второй запрос не понадобится.",
+          worker_unavailable: "Фоновый редактор временно недоступен. Готовые посты сохранены.",
+          queue_unavailable: "Очередь редактора временно недоступна. Готовые посты сохранены.",
+        };
+        repairAttempt.current = null;
+        s.toast({
+          kind: result?.error === "repair_in_progress" ? "info" : "danger",
+          title: result?.error === "repair_in_progress" ? "Исправление уже идёт" : "Не удалось запустить исправление",
+          body: copy[result?.error ?? ""] ?? "Обнови состояние и повтори. Готовые посты не изменены.",
+        });
+      }
+      await load();
+    } catch {
+      // Preserve the idempotency key after an ambiguous network outcome. A second click
+      // replays the same durable operation instead of starting another repair.
+      s.toast({
+        kind: "danger",
+        title: "Не удалось получить ответ",
+        body: "Нажми действие ещё раз: Аврора безопасно проверит ту же операцию.",
+      });
+    } finally {
+      setRepairBusy(false);
     }
   };
 
@@ -672,7 +956,7 @@ export default function AutopilotPage() {
   };
 
   const itemAction = async (index: number, action: string, draft?: string) => {
-    const plan = data?.plan;
+    const plan = data?.activePlan ?? data?.plan;
     const channelId = data?.channelId;
     if (!plan || !channelId || channelId !== chId) return;
     const identity = `${channelId}:${plan.id}:${plan.revision}`;
@@ -731,7 +1015,7 @@ export default function AutopilotPage() {
   };
 
   const openEditor = async (item: PlanItem) => {
-    const plan = data?.plan;
+    const plan = data?.activePlan ?? data?.plan;
     const channelId = data?.channelId;
     if (!plan || !channelId || channelId !== chId || editorBusyIndex != null) return;
     setEditorBusyIndex(item.i);
@@ -871,8 +1155,10 @@ export default function AutopilotPage() {
   }
 
   const st = data.settings!;
-  const plan = data.plan;
-  const planItems = plan?.items ?? [];
+  const plan = data.activePlan ?? data.plan;
+  const buildAttempt = data.buildAttempt;
+  const partialPreview = !plan && (buildAttempt?.readerReadyItems.length ?? 0) > 0;
+  const planItems = plan?.items ?? buildAttempt?.readerReadyItems ?? [];
   // Legacy plans may contain internal quality-review drafts. The reader-facing product
   // boundary is stricter: show only verified material (plus already published history).
   const items = planItems.filter((item) =>
@@ -887,7 +1173,7 @@ export default function AutopilotPage() {
   const reviewPending = pending.filter(
     (item) => !item.draftId && isAutopilotHumanReviewItem(item),
   );
-  const readyPending = pending.filter(
+  const readyPending = partialPreview ? [] : pending.filter(
     (item) => !item.draftId && canApproveItem(item) && !isAutopilotHumanReviewItem(item),
   );
   const approved = items.filter((it) => it.status === "approved" || it.status === "published");
@@ -901,13 +1187,9 @@ export default function AutopilotPage() {
       ? `${fmtRangeMsk(visible[0].scheduledAt)} — ${fmtRangeMsk(visible[visible.length - 1].scheduledAt)}`
       : "";
   const allApproved = pending.length === 0 && approved.length > 0;
-  const plannedCount = plannedDailyAutopilotPostCount(planningWeeks);
-  const plannedDuration = fmtBuildEstimate(estimateAutopilotBuildMinutes(plannedCount));
-  const buildCompleted = plan?.buildProgress?.completed ?? 0;
-  const buildTotal = plan?.buildProgress?.total ?? plannedCount;
-  const remainingBuildDuration = fmtBuildEstimate(
-    estimateAutopilotBuildMinutes(buildTotal, buildCompleted),
-  );
+  const plannedCount = plannedPostCountForWeeks(st.post_frequency, planningWeeks);
+  const plannedCandidateCount = autopilotCandidateCount(plannedCount);
+  const plannedDuration = fmtBuildEstimate(estimateAutopilotBuildMinutes(plannedCandidateCount));
   const renderedVisible = visible.slice(0, visibleLimit);
   const planEndLabel = new Date(planningAnchorMs + planningWeeks * 7 * 86_400_000).toLocaleDateString(
     "ru-RU",
@@ -934,7 +1216,7 @@ export default function AutopilotPage() {
                 {st.enabled ? "Автопилот включён" : "Автопилот выключен"}
               </Badge>
               <Badge tone="neutral">
-                1 пост в день · 7 в неделю
+                {st.post_frequency} {plural(st.post_frequency, "публикация", "публикации", "публикаций")} в неделю
               </Badge>
               <Badge tone="neutral">
                 {st.mode === "full" ? "без подтверждения" : "с подтверждением"}
@@ -984,7 +1266,8 @@ export default function AutopilotPage() {
               ))}
             </select>
             <p className="mt-1.5 text-[12px] text-text-3" aria-live="polite">
-              До {planEndLabel} · {plannedCount} {plural(plannedCount, "пост", "поста", "постов")}
+              До {planEndLabel} · {plannedCount} {plural(plannedCount, "публикация", "публикации", "публикаций")}
+              {` · ${plannedCandidateCount} ${plural(plannedCandidateCount, "кандидат", "кандидата", "кандидатов")}`}
               {` · сборка — ${plannedDuration}`}
             </p>
           </div>
@@ -1020,8 +1303,8 @@ export default function AutopilotPage() {
             />
             <QuickRange
               id="autopilot-detail"
-              label="Подробность"
-              hint="Аврора сохранит лёгкую структуру без пустых абзацев."
+              label="Желаемый объём"
+              hint="Это ориентир для текста. Если мысль раскрыта, Аврора сможет выпустить пост немного короче или длиннее."
               min={1}
               max={3}
               value={quickSettings.detail}
@@ -1082,79 +1365,26 @@ export default function AutopilotPage() {
         </div>
       )}
 
-      {/* Состояние плана */}
-      {building ? (
-        <Card className="p-8 text-center" aria-busy="true">
-          <Loader2 className={cn("mx-auto h-7 w-7 text-brand", !reduce && "animate-spin")} aria-hidden />
-          <p className="mt-3 text-[15px] font-semibold text-text">Собираю контент-план…</p>
-          <p
-            className="mt-1 text-[14px] tabular-nums text-text-3"
-            role="status"
-            aria-live="polite"
-            aria-atomic="true"
-          >
-            {buildCompleted} из {buildTotal} {plural(buildTotal, "пост", "поста", "постов")} готовы. Осталось {remainingBuildDuration}. Можно уйти со страницы — прогресс сохранится.
-          </p>
-          <div
-            className="mx-auto mt-4 h-2 max-w-md overflow-hidden rounded-full bg-surface-inset"
-            role="progressbar"
-            aria-label="Прогресс сборки контент-плана"
-            aria-valuemin={0}
-            aria-valuemax={buildTotal}
-            aria-valuenow={buildCompleted}
-          >
-            <div
-              className="h-full rounded-full bg-brand"
-              style={{ width: `${plan?.buildProgress?.percent ?? 0}%` }}
-            />
-          </div>
-          {loadError && (
-            <p className="mx-auto mt-4 max-w-md text-[13px] text-danger" role="status">
-              Прогресс временно не обновляется. Повторю автоматически.
-            </p>
-          )}
-          <div className="mt-5">
-            <Button variant="outline" onClick={cancelBuild} loading={busy} disabled={busy}>
-              <X className="h-4 w-4" aria-hidden />
-              Остановить сборку
-            </Button>
-          </div>
-        </Card>
-      ) : plan?.status === "error" ? (
-        <Card className="p-6 sm:p-8" role="alert">
-          <Newspaper className="mx-auto h-7 w-7 text-brand" aria-hidden />
-          <p className="mt-3 text-center text-[15px] font-semibold text-text">
-            Пока не получилось собрать сильный план
-          </p>
-          <p className="mx-auto mt-1 max-w-xl text-center text-[14px] text-text-3">
-            {plan.errorReason === "timeout"
-              ? "Поиск занял больше времени, чем ожидалось. Текущий план не изменился — попробуй обновить ещё раз."
-              : plan.errorReason === "cancelled"
-                ? "Сборка остановлена. Готовые публикации и календарь не изменились."
-              : plan.errorReason === "quota"
-                ? "Дневной лимит редактора исчерпан. Он обновится завтра; готовые публикации сохранены."
-                : plan.errorReason === "variety"
-                  ? "Свежие материалы оказались слишком похожи на недавние посты. Аврора не стала заполнять план повторами."
-                  : plan.errorReason === "sources" || plan.errorReason === "knowledge"
-                    ? "Аврора не нашла достаточно свежих и подтверждённых материалов по теме канала. Слабые варианты в план не попали."
-                    : plan.errorReason === "quality"
-                      ? "Найденные темы не удалось довести до готовых публикаций. Аврора убрала слабые варианты вместо того, чтобы отдавать их на исправление."
-                      : plan.errorReason === "provider"
-                        ? "Редактор временно недоступен. Настройки сохранены — повтори сборку немного позже."
-                        : "Готовые публикации сохранены. Попробуй обновить план ещё раз."}
-          </p>
-          <div className="mt-5 flex justify-center">
-            <Button
-              variant="brand"
-              onClick={generate}
-              loading={busy}
-              disabled={busy}
-            >
-              Найти новые материалы
-            </Button>
-          </div>
-        </Card>
-      ) : !plan || visible.length === 0 ? (
+      {/* Состояние новой сборки не заменяет пригодный план. */}
+      {buildAttempt && (
+        <BuildAttemptPanel
+          attempt={buildAttempt}
+          hasActivePlan={Boolean(plan)}
+          busy={busy || repairBusy}
+          reducedMotion={reduce}
+          onRepair={() => void repairBuild()}
+          onGenerate={() => void generate()}
+          onCancel={() => void cancelBuild()}
+          channelId={chId}
+        />
+      )}
+      {loadError && buildAttempt?.status === "building" && (
+        <p className="mb-5 text-[13px] text-danger" role="status">
+          Прогресс временно не обновляется. Аврора повторит проверку автоматически.
+        </p>
+      )}
+
+      {!plan && visible.length === 0 ? (
         <Card className="py-4">
           <EmptyState
             icon={<Newspaper className="h-6 w-6" strokeWidth={1.75} aria-hidden />}
@@ -1163,13 +1393,17 @@ export default function AutopilotPage() {
           />
         </Card>
       ) : (
-        <div className="space-y-5">
+        <div id={partialPreview ? "autopilot-partial-posts" : undefined} className="space-y-5">
           {/* Обзор плана — с одного взгляда: что, когда и что от тебя нужно */}
           <Card className="p-4 sm:p-5">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="min-w-0">
                 <p className="text-[15px] font-bold text-text">
-                  {allApproved ? "Контент-план в очереди 🚀" : "Контент-план готов"}
+                  {partialPreview
+                    ? `Готовая часть сборки: ${visible.length} из ${buildAttempt?.targetCount ?? visible.length}`
+                    : allApproved
+                      ? "Контент-план в очереди 🚀"
+                      : "Контент-план готов"}
                 </p>
                 <p className="mt-0.5 text-[13px] text-text-3">
                   {visible.length} {plural(visible.length, "пост", "поста", "постов")}
@@ -1192,17 +1426,17 @@ export default function AutopilotPage() {
                       · {editorPending.length} {plural(editorPending.length, "пост", "поста", "постов")} в редакторе
                     </>
                   )}
-                  {visible.length === plannedDailyAutopilotPostCount(plan.planning_weeks || 1) && (
+                  {plan && visible.length === plannedDailyAutopilotPostCount(plan.planningWeeks || 1) && (
                     <> · по одному посту на каждый день</>
                   )}
                 </p>
               </div>
-              {readyPending.length > 0 ? (
+              {!partialPreview && readyPending.length > 0 ? (
                 <Button variant="brand" onClick={approveAll} loading={busy} disabled={busy}>
                   <Check className="h-[18px] w-[18px]" strokeWidth={2.5} aria-hidden />
                   Одобрить всё
                 </Button>
-              ) : allApproved ? (
+              ) : !partialPreview && allApproved ? (
                 <Link
                   href="/app/calendar"
                   className={buttonClassName({ variant: "soft", size: "sm" })}
@@ -1268,7 +1502,7 @@ export default function AutopilotPage() {
           </Card>
 
           {/* Правило: почему такой план (из аналитики) */}
-          {plan.rules && (
+          {plan?.rules && (
             <div className="flex items-start gap-3 rounded-lg bg-surface-inset p-4">
               <Sparkles className="mt-0.5 h-5 w-5 shrink-0 text-brand" aria-hidden />
               <p className="text-[14px] leading-relaxed text-text-2">
@@ -1343,6 +1577,12 @@ export default function AutopilotPage() {
                     <div className="px-4 pb-4">
                       <PostPreview text={it.draft} expanded={isOpen} />
 
+                      {it.draftId && (
+                        <div className="mt-3">
+                          <EvidenceCard kind="draft" id={it.draftId} compact />
+                        </div>
+                      )}
+
                       {isAutopilotHumanReviewItem(it) && (
                         <div className="mt-3 flex items-start gap-2 rounded-sm bg-info-soft p-3">
                           <Sparkles
@@ -1350,8 +1590,12 @@ export default function AutopilotPage() {
                             aria-hidden
                           />
                           <p className="text-[13px] leading-snug text-info-text">
-                            <span className="font-semibold">Пост готов к согласованию.</span>{" "}
-                            Прочитай его перед первой публикацией — Аврора запомнит твои правки и подачу.
+                            <span className="font-semibold">
+                              {it.reviewState === "editorial_review"
+                                ? it.quality?.violations?.[0]?.message ?? "Пост требует редакционной проверки."
+                                : "Автопроверка фактов требует твоего подтверждения."}
+                            </span>{" "}
+                            Прочитай текст перед публикацией: без твоего решения он не выйдет автоматически.
                           </p>
                         </div>
                       )}
@@ -1365,7 +1609,7 @@ export default function AutopilotPage() {
                         </div>
                       )}
 
-                      {it.status === "pending" && (
+                      {it.status === "pending" && !partialPreview && (
                         <div className="mt-3 flex flex-wrap gap-2">
                           {!it.draftId && (
                             <Button

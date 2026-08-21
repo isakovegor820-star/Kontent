@@ -42,18 +42,24 @@ function atomicPool(options: { failActionUpdateOnce?: boolean } = {}) {
   let failActionUpdateOnce = options.failActionUpdateOnce === true;
 
   const readSignals = async (sql: string) => {
+    if (sql.includes("select greatest(")) return { rows: [{ collected_at: null }] };
     if (sql.includes("from posts")) return { rows: sql.includes("count(*)") ? [{ n: "0" }] : [] };
     if (sql.includes("from competitors")) return { rows: [{ n: "0" }] };
     if (sql.includes("from competitor_posts")) return { rows: sql.includes("percentile_cont") ? [{ weekly: null }] : [] };
     if (sql.includes("from site_analysis_jobs")) return { rows: [] };
     if (sql.includes("from audience_questions")) {
-      return { rows: [{ id: "91", question: "Как выбрать формат?" }] };
+      return { rows: [{ id: "91", question: "Как выбрать формат?", occurrences: 1, last_seen_at: null }] };
     }
+    if (sql.includes("from content_brief")) return { rows: [] };
+    if (sql.includes("select greatest(")) return { rows: [{ collected_at: null }] };
+    if (sql.includes("from project_tracking_settings")) return { rows: [] };
     throw new Error(`unexpected pool query: ${sql}`);
   };
 
   const pool = {
     query: vi.fn(async (sql: string, values?: unknown[]) => {
+      if (sql.includes("from growth_moves move")) return { rows: [] };
+      if (sql.includes("from posts post") && sql.includes("interval '90 days'")) return { rows: [] };
       if (sql.includes("from growth_moves")) {
         return { rows: committed.filter((move) => move.week_start === String(values?.[1])) };
       }

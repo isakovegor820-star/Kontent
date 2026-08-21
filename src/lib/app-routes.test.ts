@@ -40,13 +40,15 @@ describe("app route registry", () => {
     expect(isAppRouteActive("/app/trends", "recon")).toBe(true);
     expect(isAppRouteActive("/app/radar", "recon")).toBe(true);
     expect(isAppRouteActive("/app/recon", "recon")).toBe(true);
+    expect(isAppRouteActive("/app/opportunities", "recon")).toBe(true);
     expect(isAppRouteActive("/app/reconnaissance", "recon")).toBe(false);
     expect(APP_ROUTES.recon.href).toBe("/app/competitors");
-    expect(APP_ROUTES.recon.activeAliases).toEqual(["/app/trends", "/app/radar", "/app/recon"]);
+    expect(APP_ROUTES.recon.activeAliases).toEqual(["/app/trends", "/app/radar", "/app/recon", "/app/opportunities"]);
     const shell = readFileSync(new URL("../components/app/shell.tsx", import.meta.url), "utf8");
     expect(shell).not.toContain('{ href: "/app/recon", label: "Поиск" }');
     expect(shell).toContain('{ href: "/app/competitors", label: "Конкуренты" }');
     expect(shell).toContain('{ href: "/app/trends", label: "Тренды" }');
+    expect(shell).toContain('{ href: "/app/opportunities", label: "Карта возможностей", preserveParams: ["channel"] }');
     expect(isAppRouteActive("/app/site-analysis/41", "siteAnalysis")).toBe(true);
   });
 });
