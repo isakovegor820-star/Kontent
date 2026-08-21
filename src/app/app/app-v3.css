@@ -1,7 +1,7 @@
 /* ==========================================================================
    AURORA GLASS — ЕДИНЫЙ ВИЗУАЛЬНЫЙ СЛОЙ ПЛАТФОРМЫ
 
-   Рабочая платформа живёт в отдельной чёрной теме: глубокий нейтральный фон,
+   Рабочая платформа поддерживает светлую, тёмную и системную темы:
    фирменный синий #2563FF, спокойные слоистые поверхности и ясная типографика.
    Все правила скоупированы по наличию .app-v3, поэтому публичные страницы
    и авторизация сохраняют собственное светлое оформление.
@@ -49,6 +49,7 @@ html:has(.app-v3),
   --glass-bg-strong: rgb(17 24 36 / 0.9);
   --glass-border: rgb(157 187 255 / 0.14);
   --glass-highlight: rgb(255 255 255 / 0.055);
+  --image-outline: rgb(255 255 255 / 0.1);
 
   --text: #f7f9fc;
   --text-2: #c9d2df;
@@ -76,6 +77,15 @@ html:has(.app-v3),
   --shadow-lg: 0 32px 80px -30px rgb(0 0 0 / 0.9), 0 12px 28px -18px rgb(37 99 255 / 0.2);
   --shadow-brand: 0 12px 32px -10px rgb(37 99 255 / 0.42);
   --shadow-brand-lg: 0 22px 54px -16px rgb(37 99 255 / 0.48);
+  --shadow-inset-sm: inset 0 1px 2px rgb(0 0 0 / 0.28);
+  --shadow-inset-md: inset 0 1px 2px rgb(0 0 0 / 0.38);
+  --shadow-inset-deep: inset 0 1px 3px rgb(0 0 0 / 0.42);
+
+  --app-background-image:
+    radial-gradient(circle at 4% 0%, rgb(37 99 255 / 0.16), transparent 32rem),
+    radial-gradient(circle at 96% 10%, rgb(96 165 250 / 0.09), transparent 34rem),
+    linear-gradient(to right, rgb(157 187 255 / 0.025) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(157 187 255 / 0.025) 1px, transparent 1px);
 
   --radius-xs: 10px;
   --radius-sm: 12px;
@@ -83,6 +93,157 @@ html:has(.app-v3),
   --radius-lg: 20px;
   --radius-xl: 28px;
   --radius-2xl: 36px;
+}
+
+/* Явная светлая тема переопределяет те же семантические роли, поэтому экраны
+   не получают локальных цветовых исключений. html нужен portaled UI. */
+html:has(.app-v3[data-theme="light"]),
+.app-v3[data-theme="light"] {
+  color-scheme: light;
+
+  --paper: #f7faff;
+  --sheet: #ffffff;
+  --ink: #101828;
+  --ink-2: #344054;
+  --acc: #eff4ff;
+  --acc-deep: #dbe8ff;
+  --red: #ef4444;
+  --red-soft: #fef2f2;
+  --green: #10b981;
+  --green-soft: #ecfdf5;
+
+  --brand-1: #2563ff;
+  --brand-2: #1746e8;
+  --brand-3: #8fb2ff;
+  --brand-hover: #1d4ed8;
+  --brand-active: #173ea8;
+  --brand-text-start: #1d4ed8;
+  --brand-text-end: #1746e8;
+  --gradient-brand: linear-gradient(135deg, #2563ff 0%, #1746e8 100%);
+  --gradient-logo: linear-gradient(145deg, #3b82ff 0%, #2563ff 52%, #1746e8 100%);
+
+  --bg: #f4f7fd;
+  --bg-section: #f7faff;
+  --surface: #ffffff;
+  --surface-2: #f7faff;
+  --surface-inset: #eef4ff;
+  --surface-translucent: rgb(255 255 255 / 0.88);
+  --surface-translucent-strong: rgb(255 255 255 / 0.96);
+  --control-bg: rgb(255 255 255 / 0.94);
+
+  --glass-bg: rgb(255 255 255 / 0.72);
+  --glass-bg-strong: rgb(255 255 255 / 0.92);
+  --glass-border: rgb(37 99 255 / 0.1);
+  --glass-highlight: rgb(255 255 255 / 0.82);
+  --image-outline: rgb(0 0 0 / 0.1);
+
+  --text: #101828;
+  --text-2: #344054;
+  --text-3: #5d6b82;
+
+  --border: rgb(37 99 255 / 0.1);
+  --border-strong: rgb(37 99 255 / 0.18);
+
+  --success: #10b981;
+  --success-soft: #ecfdf5;
+  --success-text: #047857;
+  --danger: #ef4444;
+  --danger-soft: #fef2f2;
+  --danger-text: #b91c1c;
+  --fire: #f59e0b;
+  --fire-soft: #fffbeb;
+  --fire-text: #92400e;
+  --info: #2563ff;
+  --info-soft: #eff4ff;
+  --info-text: #1d4ed8;
+
+  --shadow-xs: 0 1px 2px rgb(15 23 42 / 0.04);
+  --shadow-sm: 0 2px 8px -2px rgb(15 23 42 / 0.06), 0 1px 2px rgb(15 23 42 / 0.04);
+  --shadow-md: 0 8px 24px -8px rgb(15 23 42 / 0.1), 0 2px 6px -2px rgb(15 23 42 / 0.05);
+  --shadow-lg: 0 24px 56px -20px rgb(15 23 42 / 0.16), 0 6px 16px -8px rgb(15 23 42 / 0.06);
+  --shadow-brand: 0 12px 32px -10px rgb(37 99 255 / 0.32);
+  --shadow-brand-lg: 0 22px 54px -16px rgb(37 99 255 / 0.38);
+  --shadow-inset-sm: inset 0 1px 2px rgb(15 23 42 / 0.08);
+  --shadow-inset-md: inset 0 1px 2px rgb(15 23 42 / 0.12);
+  --shadow-inset-deep: inset 0 1px 3px rgb(15 23 42 / 0.14);
+
+  --app-background-image:
+    radial-gradient(circle at 4% 0%, rgb(37 99 255 / 0.11), transparent 32rem),
+    radial-gradient(circle at 96% 10%, rgb(96 165 250 / 0.08), transparent 34rem),
+    linear-gradient(to right, rgb(37 99 255 / 0.035) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(37 99 255 / 0.035) 1px, transparent 1px);
+}
+
+/* В системном режиме браузер выбирает светлую ветку до гидрации. */
+@media (prefers-color-scheme: light) {
+  html:has(.app-v3[data-theme="system"]),
+  .app-v3[data-theme="system"] {
+    color-scheme: light;
+
+    --paper: #f7faff;
+    --sheet: #ffffff;
+    --ink: #101828;
+    --ink-2: #344054;
+    --acc: #eff4ff;
+    --acc-deep: #dbe8ff;
+    --red: #ef4444;
+    --red-soft: #fef2f2;
+    --green: #10b981;
+    --green-soft: #ecfdf5;
+    --brand-1: #2563ff;
+    --brand-2: #1746e8;
+    --brand-3: #8fb2ff;
+    --brand-hover: #1d4ed8;
+    --brand-active: #173ea8;
+    --brand-text-start: #1d4ed8;
+    --brand-text-end: #1746e8;
+    --gradient-brand: linear-gradient(135deg, #2563ff 0%, #1746e8 100%);
+    --gradient-logo: linear-gradient(145deg, #3b82ff 0%, #2563ff 52%, #1746e8 100%);
+    --bg: #f4f7fd;
+    --bg-section: #f7faff;
+    --surface: #ffffff;
+    --surface-2: #f7faff;
+    --surface-inset: #eef4ff;
+    --surface-translucent: rgb(255 255 255 / 0.88);
+    --surface-translucent-strong: rgb(255 255 255 / 0.96);
+    --control-bg: rgb(255 255 255 / 0.94);
+    --glass-bg: rgb(255 255 255 / 0.72);
+    --glass-bg-strong: rgb(255 255 255 / 0.92);
+    --glass-border: rgb(37 99 255 / 0.1);
+    --glass-highlight: rgb(255 255 255 / 0.82);
+    --image-outline: rgb(0 0 0 / 0.1);
+    --text: #101828;
+    --text-2: #344054;
+    --text-3: #5d6b82;
+    --border: rgb(37 99 255 / 0.1);
+    --border-strong: rgb(37 99 255 / 0.18);
+    --success: #10b981;
+    --success-soft: #ecfdf5;
+    --success-text: #047857;
+    --danger: #ef4444;
+    --danger-soft: #fef2f2;
+    --danger-text: #b91c1c;
+    --fire: #f59e0b;
+    --fire-soft: #fffbeb;
+    --fire-text: #92400e;
+    --info: #2563ff;
+    --info-soft: #eff4ff;
+    --info-text: #1d4ed8;
+    --shadow-xs: 0 1px 2px rgb(15 23 42 / 0.04);
+    --shadow-sm: 0 2px 8px -2px rgb(15 23 42 / 0.06), 0 1px 2px rgb(15 23 42 / 0.04);
+    --shadow-md: 0 8px 24px -8px rgb(15 23 42 / 0.1), 0 2px 6px -2px rgb(15 23 42 / 0.05);
+    --shadow-lg: 0 24px 56px -20px rgb(15 23 42 / 0.16), 0 6px 16px -8px rgb(15 23 42 / 0.06);
+    --shadow-brand: 0 12px 32px -10px rgb(37 99 255 / 0.32);
+    --shadow-brand-lg: 0 22px 54px -16px rgb(37 99 255 / 0.38);
+    --shadow-inset-sm: inset 0 1px 2px rgb(15 23 42 / 0.08);
+    --shadow-inset-md: inset 0 1px 2px rgb(15 23 42 / 0.12);
+    --shadow-inset-deep: inset 0 1px 3px rgb(15 23 42 / 0.14);
+    --app-background-image:
+      radial-gradient(circle at 4% 0%, rgb(37 99 255 / 0.11), transparent 32rem),
+      radial-gradient(circle at 96% 10%, rgb(96 165 250 / 0.08), transparent 34rem),
+      linear-gradient(to right, rgb(37 99 255 / 0.035) 1px, transparent 1px),
+      linear-gradient(to bottom, rgb(37 99 255 / 0.035) 1px, transparent 1px);
+  }
 }
 
 body:has(.app-v3) {
@@ -93,11 +254,7 @@ body:has(.app-v3) {
   min-height: 100dvh;
   color: var(--text);
   background-color: var(--bg);
-  background-image:
-    radial-gradient(circle at 4% 0%, rgb(37 99 255 / 0.16), transparent 32rem),
-    radial-gradient(circle at 96% 10%, rgb(96 165 250 / 0.09), transparent 34rem),
-    linear-gradient(to right, rgb(157 187 255 / 0.025) 1px, transparent 1px),
-    linear-gradient(to bottom, rgb(157 187 255 / 0.025) 1px, transparent 1px);
+  background-image: var(--app-background-image);
   background-size: auto, auto, 72px 72px, 72px 72px;
   background-attachment: fixed;
   font-family: var(--font-interface);
@@ -379,7 +536,7 @@ body:has(.app-v3) {
   border-color: var(--border);
   border-radius: var(--radius-xs);
   background-color: var(--control-bg);
-  box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.28);
+  box-shadow: var(--shadow-inset-sm);
 }
 
 .app-v3 input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="hidden"]):not([type="color"]):focus,
@@ -458,7 +615,7 @@ body:has(.app-v3) {
     rgb(37 99 255 / 0.16) var(--aurora-range-progress, 50%),
     rgb(23 70 232 / 0.12) 100%
   );
-  box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.38);
+  box-shadow: var(--shadow-inset-md);
 }
 
 .app-v3 input[type="range"]::-webkit-slider-thumb {
@@ -490,7 +647,7 @@ body:has(.app-v3) {
   height: 8px;
   border-radius: 999px;
   background: rgb(37 99 255 / 0.18);
-  box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.38);
+  box-shadow: var(--shadow-inset-md);
 }
 
 .app-v3 input[type="range"]::-moz-range-thumb {
@@ -538,7 +695,7 @@ body:has(.app-v3) {
   border-color: var(--border);
   border-radius: var(--radius-sm);
   background: var(--surface-inset);
-  box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.34);
+  box-shadow: var(--shadow-inset-sm);
 }
 
 .app-v3 button[role="tab"] {
@@ -606,7 +763,7 @@ body:has(.app-v3) {
 .app-v3 .clay-in,
 .app-v3 .clay-press {
   background: var(--surface-inset);
-  box-shadow: inset 0 1px 3px rgb(0 0 0 / 0.42);
+  box-shadow: var(--shadow-inset-deep);
 }
 
 /* Тост рендерится выше app-layout, поэтому класс не скоупирован. */

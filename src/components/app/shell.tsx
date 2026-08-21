@@ -3,8 +3,8 @@
 /**
  * КАРКАС РАБОЧИХ ЭКРАНОВ ПЛАТФОРМЫ (Приложение А: экраны А4–А12).
  *
- * Визуальный мир — чёрная Aurora Glass: глубокая основа, фирменные синие
- * акценты, слоистые полупрозрачные панели и спокойная типографика.
+ * Визуальный мир — Aurora Glass в светлом, тёмном или системном режиме:
+ * фирменные синие акценты, слоистые полупрозрачные панели и спокойная типографика.
  * Здесь остаётся только структура оболочки; цвета и физика приезжают из app-v3.css.
  */
 
@@ -34,6 +34,7 @@ import { AuroraBackground } from "@/components/aurora-background";
 import { Wordmark } from "@/components/brand";
 import { ProjectSwitcher } from "@/components/app/project-switcher";
 import { ProjectNotificationsInbox } from "@/components/app/project-notifications-inbox";
+import { AppThemeSelector } from "@/components/app/theme-selector";
 import { Button } from "@/components/ui/button";
 import { H1, SecondaryText } from "@/components/ui/typography";
 import { getAiUsageMetrics } from "@/lib/ai-usage-sync";
@@ -514,6 +515,7 @@ function SidebarInner({
       </nav>
 
       <div className="shrink-0 space-y-3 border-t border-line p-3">
+        <AppThemeSelector />
         <AiLimitCard />
         <UserRow user={user} onSignOut={onSignOut} />
       </div>

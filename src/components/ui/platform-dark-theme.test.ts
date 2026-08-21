@@ -14,9 +14,21 @@ const toaster = readFileSync(
   path.join(process.cwd(), "src/components/ui/toaster.tsx"),
   "utf8",
 );
+const themeProvider = readFileSync(
+  path.join(process.cwd(), "src/components/app/theme-provider.tsx"),
+  "utf8",
+);
+const themeSelector = readFileSync(
+  path.join(process.cwd(), "src/components/app/theme-selector.tsx"),
+  "utf8",
+);
 
-function token(name: string): string {
-  const match = css.match(new RegExp(`--${name}:\\s*(#[0-9a-fA-F]{6})\\s*;`));
+const lightThemeBlock = css.match(
+  /html:has\(\.app-v3\[data-theme="light"\]\),\n\.app-v3\[data-theme="light"\] \{([\s\S]*?)\n\}/,
+)?.[1] ?? "";
+
+function token(name: string, source = css): string {
+  const match = source.match(new RegExp(`--${name}:\\s*(#[0-9a-fA-F]{6})\\s*;`));
   if (!match) throw new Error(`Missing hex token --${name}`);
   return match[1];
 }
@@ -37,15 +49,21 @@ function contrast(foreground: string, background: string): number {
   return (lighter + 0.05) / (darker + 0.05);
 }
 
-describe("platform dark theme", () => {
-  it("scopes a dark color scheme to the platform and portal UI", () => {
+describe("platform appearance themes", () => {
+  it("scopes appearance tokens to the platform and portal UI", () => {
     expect(css).toContain("html:has(.app-v3)");
     expect(css).toContain("color-scheme: dark;");
+    expect(css).toContain('html:has(.app-v3[data-theme="light"])');
+    expect(css).toContain('html:has(.app-v3[data-theme="system"])');
+    expect(css).toContain("@media (prefers-color-scheme: light)");
     expect(css).toContain("body:has(.app-v3)");
     expect(css).toContain("[role=\"dialog\"]");
     expect(css).toContain(".v3-toast");
-    expect(layout).toContain('colorScheme: "dark"');
+    expect(layout).toContain('colorScheme: "light dark"');
     expect(layout).toContain('themeColor: "#070a10"');
+    expect(layout).toContain("await cookies()");
+    expect(layout).toContain("normalizeAppThemePreference");
+    expect(layout).toContain("AppThemeProvider");
     expect(toaster).toContain('pathname.startsWith("/app") || pathname.startsWith("/admin")');
     expect(toaster).not.toContain('pathname.startsWith("/register")');
   });
@@ -56,10 +74,20 @@ describe("platform dark theme", () => {
     expect(token("surface")).toBe("#111824");
     expect(token("surface-2")).toBe("#151e2c");
     expect(token("surface-inset")).toBe("#1b2636");
-    expect(css).not.toContain("background: rgb(255 255 255 / 0.88)");
-    expect(css).not.toContain("background-color: rgb(255 255 255 / 0.9)");
     expect(css).toContain(".app-v3 .text-brand");
     expect(css).not.toContain(".app-v3 .bg-brand {");
+  });
+
+  it("offers a persistent light, dark and system selector", () => {
+    expect(themeSelector).toContain("Оформление");
+    expect(themeSelector).toContain("Светлая");
+    expect(themeSelector).toContain("Тёмная");
+    expect(themeSelector).toContain("Система");
+    expect(themeSelector).toContain("aria-pressed={selected}");
+    expect(themeProvider).toContain("Max-Age=31536000");
+    expect(themeProvider).toContain("SameSite=Lax");
+    expect(themeProvider).toContain('window.matchMedia("(prefers-color-scheme: dark)")');
+    expect(themeProvider).toContain('meta[name="theme-color"]');
   });
 
   it("keeps body, secondary, status and primary-action text above WCAG AA", () => {
@@ -75,5 +103,19 @@ describe("platform dark theme", () => {
     expect(contrast(token("danger-text"), token("danger-soft"))).toBeGreaterThanOrEqual(4.5);
     expect(contrast(token("fire-text"), token("fire-soft"))).toBeGreaterThanOrEqual(4.5);
     expect(contrast(token("info-text"), token("info-soft"))).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it("keeps light-theme text and status pairs above WCAG AA", () => {
+    expect(lightThemeBlock).not.toBe("");
+    const lightToken = (name: string) => token(name, lightThemeBlock);
+    const surface = lightToken("surface");
+    expect(contrast(lightToken("text"), surface)).toBeGreaterThanOrEqual(4.5);
+    expect(contrast(lightToken("text-2"), surface)).toBeGreaterThanOrEqual(4.5);
+    expect(contrast(lightToken("text-3"), surface)).toBeGreaterThanOrEqual(4.5);
+    expect(contrast("#ffffff", lightToken("brand-1"))).toBeGreaterThanOrEqual(4.5);
+    expect(contrast(lightToken("info-text"), lightToken("info-soft"))).toBeGreaterThanOrEqual(4.5);
+    expect(contrast(lightToken("success-text"), lightToken("success-soft"))).toBeGreaterThanOrEqual(4.5);
+    expect(contrast(lightToken("danger-text"), lightToken("danger-soft"))).toBeGreaterThanOrEqual(4.5);
+    expect(contrast(lightToken("fire-text"), lightToken("fire-soft"))).toBeGreaterThanOrEqual(4.5);
   });
 });
