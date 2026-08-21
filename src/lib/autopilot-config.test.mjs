@@ -9,6 +9,7 @@ import {
   autopilotTextSimilarity,
   findAutopilotNearDuplicate,
   normalizePlanningMonths,
+  plannedDailyAutopilotPostCount,
   plannedPostCount,
   plannedPostCountForWeeks,
   planningWeeks,
@@ -37,6 +38,8 @@ describe("autopilot planning config", () => {
   });
 
   it("supports every weekly horizon instead of three fixed month presets", () => {
+    expect(plannedDailyAutopilotPostCount(1)).toBe(7);
+    expect(plannedDailyAutopilotPostCount(2)).toBe(14);
     expect(plannedPostCountForWeeks(7, 3)).toBe(21);
     expect(plannedPostCountForWeeks(7, 5)).toBe(35);
     expect(plannedPostCountForWeeks(7, 10)).toBe(70);

@@ -4,7 +4,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
 import { ensureSettings, loadBrief, resolveChannel } from "@/lib/autopilot";
-import { MAX_WEEKLY_POSTS } from "@/lib/brief";
 import { briefComplete } from "@/lib/brief";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import type { AutopilotSettings } from "@/lib/autopilot";
@@ -17,6 +16,7 @@ import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/proj
 import { BoundedBodyError, readRequestBodyLimited } from "@/lib/bounded-request-body";
 import { checkRateLimit, rateLimitResponse } from "@/lib/rate-limit";
 import { selectAutopilotNewsSources } from "@/lib/autopilot-source-selection";
+import { normalizeAutopilotQuickSettings } from "@/lib/autopilot-style.mjs";
 
 export const runtime = "nodejs";
 
@@ -28,6 +28,7 @@ const SETTINGS_KEYS = new Set([
   "generation_engine",
   "planning_months",
   "planning_weeks",
+  "quick_settings",
   "channelId",
 ]);
 
@@ -94,14 +95,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "streak_required" }, { status: 422 });
     }
 
-  // Частоту выбирает человек, а не мы. Прежний потолок 7 был не про вкус — он прятал баг
-  // планировщика: тот ставил пост i на день i+1, и при 14 план разъезжался на две недели
-  // вместо «14 постов за неделю». Планировщик починен (weekSlots), потолок снят.
-  // Оставшийся предел — физический: ИИ пишет посты по одному, до 90с на пост.
-    const freq =
-      Number.isFinite(Number(body.post_frequency)) && Number(body.post_frequency) > 0
-        ? Math.min(MAX_WEEKLY_POSTS, Math.max(1, Math.round(Number(body.post_frequency))))
-        : null;
+    // Standalone Autopilot is deliberately predictable: one useful post for every day.
+    // Keep the legacy column normalized because older settings screens still submit it.
+    const freq = 7;
+    const quickSettings = body.quick_settings == null
+      ? null
+      : normalizeAutopilotQuickSettings(body.quick_settings);
     const generationEngine = body.generation_engine == null
       ? null
       : isAutopilotEngine(body.generation_engine)
@@ -130,10 +129,11 @@ export async function POST(req: NextRequest) {
               planning_months = coalesce($7, planning_months),
               planning_weeks = coalesce($8, planning_weeks),
               news_sources = coalesce($9::jsonb, news_sources),
+              quick_settings = coalesce($10::jsonb, quick_settings),
               updated_at = now()
         where project_id = $1 and channel_id = $2
         returning enabled, mode, post_frequency, approvals_streak, generation_engine,
-                  planning_months, planning_weeks`,
+                  planning_months, planning_weeks, quick_settings`,
       [
         membership.projectId,
         channelId,
@@ -144,6 +144,7 @@ export async function POST(req: NextRequest) {
         planningMonths,
         planningWeeks,
         selectedNewsSources,
+        quickSettings == null ? null : JSON.stringify(quickSettings),
       ],
     );
     if (!updated.rows[0]) {

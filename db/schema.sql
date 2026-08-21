@@ -479,7 +479,7 @@ create table if not exists autopilot_settings (
   user_id          bigint      primary key references users (id) on delete cascade,
   enabled          boolean     not null default false,
   mode             text        not null default 'confirm' check (mode in ('confirm', 'full')),
-  post_frequency   int         not null default 5,   -- постов в неделю
+  post_frequency   int         not null default 7,   -- standalone Autopilot: один пост в день
   approvals_streak int         not null default 0,   -- недель подряд без правок (для полного режима)
   generation_engine text       not null default 'navy-deepseek-pro'
                                check (generation_engine in ('navy-deepseek-pro', 'navy-deepseek-flash', 'navy-gpt-5-4', 'navy-qwen-3-6', 'navy-minimax-m3')),
@@ -487,6 +487,8 @@ create table if not exists autopilot_settings (
   planning_weeks smallint       not null default 4 check (planning_weeks between 1 and 12),
   news_sources     jsonb        not null default '[]'::jsonb
                                check (jsonb_typeof(news_sources) = 'array'),
+  quick_settings   jsonb        not null default '{"newsPerWeek":3,"detail":2,"energy":2,"emoji":1}'::jsonb
+                               check (jsonb_typeof(quick_settings) = 'object'),
   updated_at       timestamptz not null default now()
 );
 
@@ -505,6 +507,8 @@ create table if not exists autopilot_plan (
   planning_weeks smallint not null default 4 check (planning_weeks between 1 and 12),
   generation_post_frequency smallint not null default 5,
   expected_post_count smallint not null default 5,
+  quick_settings jsonb not null default '{"newsPerWeek":3,"detail":2,"energy":2,"emoji":1}'::jsonb
+                         check (jsonb_typeof(quick_settings) = 'object'),
   build_activity_at timestamptz not null default now(),
   status     text        not null default 'building'
                          check (status in ('building', 'pending', 'approving', 'approved', 'done', 'error')),
@@ -5248,6 +5252,11 @@ alter table autopilot_plan add column if not exists generation_post_frequency sm
 alter table autopilot_plan add column if not exists expected_post_count smallint;
 alter table autopilot_plan add column if not exists build_activity_at timestamptz;
 alter table autopilot_settings add column if not exists news_sources jsonb not null default '[]'::jsonb;
+alter table autopilot_settings add column if not exists quick_settings jsonb not null
+  default '{"newsPerWeek":3,"detail":2,"energy":2,"emoji":1}'::jsonb;
+alter table autopilot_plan add column if not exists quick_settings jsonb not null
+  default '{"newsPerWeek":3,"detail":2,"energy":2,"emoji":1}'::jsonb;
+update autopilot_settings set post_frequency = 7 where post_frequency <> 7;
 update autopilot_plan plan
    set generation_post_frequency = coalesce(
          (
@@ -5284,6 +5293,29 @@ begin
     alter table autopilot_settings
       add constraint autopilot_settings_news_sources_check
       check (jsonb_typeof(news_sources) = 'array');
+  end if;
+end
+$$;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+     where conrelid = 'autopilot_settings'::regclass
+       and conname = 'autopilot_settings_quick_settings_check'
+  ) then
+    alter table autopilot_settings
+      add constraint autopilot_settings_quick_settings_check
+      check (jsonb_typeof(quick_settings) = 'object');
+  end if;
+  if not exists (
+    select 1 from pg_constraint
+     where conrelid = 'autopilot_plan'::regclass
+       and conname = 'autopilot_plan_quick_settings_check'
+  ) then
+    alter table autopilot_plan
+      add constraint autopilot_plan_quick_settings_check
+      check (jsonb_typeof(quick_settings) = 'object');
   end if;
 end
 $$;

@@ -17,6 +17,7 @@ import {
 } from "@/lib/autopilot-approval.mjs";
 import {
   abortAutopilotApproval,
+  AutopilotScheduleBlockedError,
   claimAutopilotPlan,
   finalizeAutopilotApproval,
   reclaimStaleAutopilotApprovals,
@@ -317,6 +318,7 @@ export async function PATCH(req: NextRequest) {
           channelId: Number(claim.channel_id),
           operationId,
           index,
+          approvedItem: claimedItem,
           nowMs: approvalTime,
         });
         safeItem.postId = checkpoint.postId;
@@ -342,7 +344,16 @@ export async function PATCH(req: NextRequest) {
         claimedApproval = null;
         return NextResponse.json(result);
       } catch (error) {
-        const result = { ok: false, error: "queue_unavailable", retryable: true };
+        const blocked = error instanceof AutopilotScheduleBlockedError;
+        const result = blocked
+          ? {
+              ok: false,
+              error: "approval_blocked",
+              retryable: false,
+              blockers: error.blockers.map((entry: { message?: string }) => entry.message).filter(Boolean),
+              blockerDetails: error.blockers,
+            }
+          : { ok: false, error: "scheduling_failed", retryable: true };
         await finalizeAutopilotApproval({
           pool,
           ...approvalContext,
@@ -350,11 +361,11 @@ export async function PATCH(req: NextRequest) {
           planStatus: "pending",
           operationStatus: "failed",
           result,
-          httpStatus: 503,
+          httpStatus: blocked ? 422 : 503,
         });
         claimedApproval = null;
         console.error("[/api/autopilot/item] checkpoint", error);
-        return NextResponse.json(result, { status: 503 });
+        return NextResponse.json(result, { status: blocked ? 422 : 503 });
       }
     }
 

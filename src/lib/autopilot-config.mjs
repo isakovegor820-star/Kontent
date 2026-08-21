@@ -63,6 +63,7 @@ export const MIN_AUTOPILOT_PLANNING_WEEKS = 1;
 export const MAX_AUTOPILOT_PLANNING_WEEKS = 12;
 export const DEFAULT_AUTOPILOT_PLANNING_WEEKS = 1;
 export const MAX_AUTOPILOT_PLAN_POSTS = 90;
+export const AUTOPILOT_DAILY_POSTS_PER_WEEK = 7;
 export const AUTOPILOT_SIMILARITY_THRESHOLD = 0.62;
 
 const ENGINE_IDS = new Set(AUTOPILOT_ENGINE_OPTIONS.map((option) => option.id));
@@ -99,6 +100,14 @@ export function normalizePlanningWeeks(value, fallback = DEFAULT_AUTOPILOT_PLANN
 export function plannedPostCountForWeeks(postFrequency, weeks) {
   const frequency = Math.max(1, Math.round(Number(postFrequency) || 1));
   return Math.min(MAX_AUTOPILOT_PLAN_POSTS, frequency * normalizePlanningWeeks(weeks));
+}
+
+/** Standalone Autopilot promises one useful publication per day. */
+export function plannedDailyAutopilotPostCount(weeks) {
+  return Math.min(
+    MAX_AUTOPILOT_PLAN_POSTS,
+    AUTOPILOT_DAILY_POSTS_PER_WEEK * normalizePlanningWeeks(weeks),
+  );
 }
 
 export function planCountWasCappedForWeeks(postFrequency, weeks) {

@@ -15,11 +15,13 @@ import {
   DEFAULT_AUTOPILOT_ENGINE,
   isAutopilotEngine,
   isAutopilotPlanningWeeks,
+  plannedDailyAutopilotPostCount,
   plannedPostCountForWeeks,
 } from "@/lib/autopilot-config.mjs";
 import { resolveAiEngineRuntime } from "@/lib/ai-engine-policy.mjs";
 import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/project-permissions";
 import { selectAutopilotNewsSources } from "@/lib/autopilot-source-selection";
+import { normalizeAutopilotQuickSettings } from "@/lib/autopilot-style.mjs";
 
 export const runtime = "nodejs";
 
@@ -41,6 +43,7 @@ export async function POST(req: NextRequest) {
       planningMonths?: unknown;
       planningWeeks?: unknown;
       monthlyCampaignPlanId?: unknown;
+      quickSettings?: unknown;
     };
     const channelId = await resolveChannel(scope, body.channelId ?? null);
     if (!channelId) {
@@ -112,11 +115,13 @@ export async function POST(req: NextRequest) {
     }
     const planningWeeks = Number(selectedPlanningWeeks);
     const planningMonths = Math.max(1, Math.min(3, Math.ceil(planningWeeks / 4)));
-    const generationPostFrequency = monthlyPostFrequency ?? Math.max(
-      1,
-      Math.min(30, Math.round(Number(settings.post_frequency) || 5)),
+    const generationPostFrequency = monthlyPostFrequency ?? 7;
+    const expectedPostCount = monthlyCampaignPlanId != null
+      ? plannedPostCountForWeeks(generationPostFrequency, planningWeeks)
+      : plannedDailyAutopilotPostCount(planningWeeks);
+    const quickSettings = normalizeAutopilotQuickSettings(
+      body.quickSettings ?? settings.quick_settings,
     );
-    const expectedPostCount = plannedPostCountForWeeks(generationPostFrequency, planningWeeks);
     const engineRuntime = resolveAiEngineRuntime(generationEngine);
     if (!engineRuntime.supported || !engineRuntime.configured) {
       return NextResponse.json({ ok: false, error: "engine_unavailable" }, { status: 422 });
@@ -138,9 +143,10 @@ export async function POST(req: NextRequest) {
     const newsSources = selectAutopilotNewsSources(brief);
     await pool.query(
       `update autopilot_settings
-          set news_sources = $3::jsonb, updated_at = now()
+          set news_sources = $3::jsonb, quick_settings = $4::jsonb,
+              post_frequency = 7, updated_at = now()
         where project_id = $1 and channel_id = $2`,
-      [projectId, channelId, JSON.stringify(newsSources)],
+      [projectId, channelId, JSON.stringify(newsSources), JSON.stringify(quickSettings)],
     );
 
     // Плейсхолдер «собираю» — интерфейс покажет процесс; воркер заменит его готовым планом.
@@ -164,15 +170,24 @@ export async function POST(req: NextRequest) {
             set generation_engine = $3,
                 planning_months = $4,
                 planning_weeks = $5,
+                quick_settings = $6::jsonb,
+                post_frequency = 7,
                 updated_at = now()
           where project_id = $1 and channel_id = $2`,
-        [projectId, channelId, generationEngine, planningMonths, planningWeeks],
+        [
+          projectId,
+          channelId,
+          generationEngine,
+          planningMonths,
+          planningWeeks,
+          JSON.stringify(quickSettings),
+        ],
       );
       const current = (
         await tx.query(
           `select id, created_at, build_activity_at, items, generation_engine,
                   generation_post_frequency, expected_post_count, planning_months,
-                  planning_weeks, monthly_campaign_plan_id
+                  planning_weeks, monthly_campaign_plan_id, quick_settings
              from autopilot_plan
             where project_id = $1 and channel_id = $2 and status = 'building'
             order by created_at desc limit 1`,
@@ -188,6 +203,7 @@ export async function POST(req: NextRequest) {
           && Number(current.expected_post_count) === expectedPostCount
           && Number(current.planning_months) === planningMonths
           && Number(current.planning_weeks) === planningWeeks
+          && JSON.stringify(normalizeAutopilotQuickSettings(current.quick_settings)) === JSON.stringify(quickSettings)
           && !isAutopilotBuildStale(
             current.build_activity_at
               || autopilotBuildActivityAt(current.created_at, current.items),
@@ -216,12 +232,13 @@ export async function POST(req: NextRequest) {
           `insert into autopilot_plan
               (project_id, user_id, channel_id, week_start, status, generation_engine,
               generation_post_frequency, expected_post_count, planning_months, planning_weeks,
-              monthly_campaign_plan_id, build_activity_at)
-             values ($1, $2, $3, current_date, 'building', $4, $5, $6, $7, $8, $9, now())
+              monthly_campaign_plan_id, quick_settings, build_activity_at)
+             values ($1, $2, $3, current_date, 'building', $4, $5, $6, $7, $8, $9, $10::jsonb, now())
              returning id`,
           [
             projectId, user.id, channelId, generationEngine, generationPostFrequency,
             expectedPostCount, planningMonths, planningWeeks, monthlyCampaignPlanId,
+            JSON.stringify(quickSettings),
           ],
         );
         planId = String(inserted.rows[0].id);

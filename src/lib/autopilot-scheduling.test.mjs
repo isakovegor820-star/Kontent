@@ -9,6 +9,7 @@ import {
   reconcileAutopilotScheduleOutbox,
   scheduleAutopilotItem,
 } from "./autopilot-scheduling.mjs";
+import { attestAutopilotItemForHumanApproval } from "./autopilot-review.mjs";
 
 const passedQuality = {
   score: 92,
@@ -45,6 +46,35 @@ const passedQuality = {
       validator: "validatePostQuality",
       trigger: "generation",
       humanAttestation: null,
+    },
+  },
+};
+
+const reviewQuality = {
+  ...passedQuality,
+  violations: [{
+    code: "semantic_review_required",
+    message: "Нужна проверка человеком",
+    blocker: true,
+    penalty: 0,
+  }],
+  semantic: {
+    ...passedQuality.semantic,
+    status: "not_checked",
+    passed: false,
+    requiresReview: true,
+    claimVerdicts: [{
+      claimId: "claim-1",
+      claim: "Проверенный текст",
+      verdict: "unknown",
+      reasonCode: "semantic_provider_unavailable",
+      riskCodes: [],
+      sourceSpans: [],
+    }],
+    provenance: {
+      ...passedQuality.semantic.provenance,
+      provider: "unavailable",
+      terminalVerdict: "not_checked",
     },
   },
 };
@@ -106,6 +136,7 @@ function checkpointPool({
           working.post = {
             id: 501,
             project_id: params[0],
+            text: params[3],
             scheduled_at: params[4],
             status: "scheduled",
             idempotency_key: params[5],
@@ -298,6 +329,43 @@ describe("transactional Autopilot scheduling", () => {
     expect(state.post).toBeNull();
     expect(state.outbox).toBeNull();
     expect(enqueue).not.toHaveBeenCalled();
+  });
+
+  it("uses the server-attested human item inside the transaction", async () => {
+    const reviewItem = {
+      ...sourceItems()[0],
+      aiReady: true,
+      quality: reviewQuality,
+      qualityBlocked: true,
+      reviewRequired: true,
+      reviewState: "semantic_only_review",
+    };
+    const { pool, state } = checkpointPool({ items: [reviewItem] });
+    const enqueue = vi.fn().mockResolvedValue(undefined);
+    const approvedItem = attestAutopilotItemForHumanApproval(reviewItem, {
+      userId: 3,
+      attestedAt: "2026-08-02T12:01:00.000Z",
+    });
+
+    await scheduleAutopilotItem({ ...scheduleInput(pool, enqueue), approvedItem });
+
+    expect(state.post).toMatchObject({ id: 501, text: "Проверенный текст" });
+    expect(state.items[0]).toMatchObject({
+      status: "approved",
+      qualityOrigin: "human_attested",
+      humanAttestation: { kind: "human_review", userId: 3 },
+    });
+  });
+
+  it("removes a legacy source footer before creating the public post", async () => {
+    const items = sourceItems();
+    items[0].draft = "Полезный текст для читателя.\n\nИсточник: Право.ru\nhttps://pravo.ru/news/1";
+    const { pool, state } = checkpointPool({ items });
+
+    await scheduleAutopilotItem(scheduleInput(pool, vi.fn().mockResolvedValue(undefined)));
+
+    expect(state.post.text).toBe("Полезный текст для читателя.");
+    expect(state.items[0].draft).toBe("Полезный текст для читателя.");
   });
 
   it("re-dispatches pending outbox rows with the same post identity", async () => {

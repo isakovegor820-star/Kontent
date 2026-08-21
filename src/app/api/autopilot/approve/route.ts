@@ -392,6 +392,7 @@ export async function POST(req: NextRequest) {
           channelId,
           operationId: operationId!,
           index: item.i,
+          approvedItem: item,
           nowMs: approvalTime,
         });
         if (checkpoint.queuePending) queuePendingReconciliation += 1;
@@ -411,7 +412,7 @@ export async function POST(req: NextRequest) {
       });
       const result: OperationResult = {
         ok: false,
-        error: "queue_unavailable",
+        error: "scheduling_failed",
         scheduled,
         blocked: preview.counts.blocked,
         expired: preview.counts.expired,

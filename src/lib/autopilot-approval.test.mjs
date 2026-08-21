@@ -202,6 +202,19 @@ describe("Autopilot approval policy", () => {
     expect(result.blockers.map((entry) => entry.code)).toEqual(["empty_draft", "quality_failed"]);
   });
 
+  it("keeps a standalone item in Composer out of Autopilot approval", () => {
+    const linked = evaluateAutopilotItem(item({ draftId: 301 }), NOW, { actor: "human" });
+    expect(linked.eligible).toBe(false);
+    expect(linked.blockers).toContainEqual(expect.objectContaining({ code: "editor_draft_linked" }));
+
+    const monthly = evaluateAutopilotItem(
+      item({ draftId: 301, monthlyCampaignItemId: 77 }),
+      NOW,
+      { actor: "human" },
+    );
+    expect(monthly.eligible).toBe(true);
+  });
+
   it("exposes the channel, exact eligible dates, counts, and blocker reasons", () => {
     const preview = buildAutopilotApprovalPreview({
       items: [
@@ -226,12 +239,13 @@ describe("Autopilot approval policy", () => {
     ]);
   });
 
-  it("binds the canonical revision hash to channel, text, date and quality", () => {
+  it("binds the canonical revision hash to channel, text, date, editor link and quality", () => {
     const base = { items: [item()], planId: 9, planRevision: 4, channelId: 7 };
     const hash = autopilotPlanRevisionHash(base);
     expect(autopilotPlanRevisionHash({ ...base, items: [item({ draft: "Другой текст" })] })).not.toBe(hash);
     expect(autopilotPlanRevisionHash({ ...base, items: [item({ scheduledAt: "2026-08-01T14:00:00Z" })] })).not.toBe(hash);
     expect(autopilotPlanRevisionHash({ ...base, items: [item({ quality: { ...passedQuality, passed: false } })] })).not.toBe(hash);
+    expect(autopilotPlanRevisionHash({ ...base, items: [item({ draftId: 301 })] })).not.toBe(hash);
     expect(autopilotPlanRevisionHash({ ...base, channelId: 8 })).not.toBe(hash);
     expect(autopilotPlanRevisionHash({ ...base, planRevision: 5 })).not.toBe(hash);
   });

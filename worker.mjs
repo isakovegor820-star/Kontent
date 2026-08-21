@@ -154,11 +154,17 @@ import {
   removeUnverifiedSemanticClaims,
 } from "./src/lib/autopilot-quality.mjs";
 import {
-  appendAutopilotSourceFooter,
   autopilotNewsEvidence,
   buildAutopilotNewsCandidates,
   normalizeAutopilotNewsSources,
 } from "./src/lib/autopilot-news.mjs";
+import { sanitizeAutopilotPublicText } from "./src/lib/autopilot-publication.mjs";
+import {
+  applyAutopilotQuickSettingsToQuality,
+  autopilotEnergyPrompt,
+  autopilotNewsPostCount,
+  normalizeAutopilotQuickSettings,
+} from "./src/lib/autopilot-style.mjs";
 import { autopilotQualityFailureReport } from "./src/lib/autopilot-quality-report.mjs";
 import { isAutopilotReaderReadyItem } from "./src/lib/autopilot-review.mjs";
 import { completeAiText } from "./src/lib/ai-completion-service.mjs";
@@ -173,14 +179,13 @@ import {
   configuredServiceEngine,
 } from "./src/lib/ai-engine-policy.mjs";
 import {
-  AUTOPILOT_ENGINE_OPTIONS,
   DEFAULT_AUTOPILOT_ENGINE,
   applyAutopilotPresentation,
   autopilotAiTimeouts,
   autopilotFallbackEngines,
   autopilotPresentationVariant,
   findAutopilotNearDuplicate,
-  plannedPostCountForWeeks,
+  plannedDailyAutopilotPostCount,
   presentationVariantPrompt,
 } from "./src/lib/autopilot-config.mjs";
 import {
@@ -5140,17 +5145,18 @@ function briefContextW(b) {
 }
 
 // Единые требования к структуре поста. Одинаковы в промпте (ИИ старается) и в
-// форматтере-гаранте (дожимаем программно). Цель — пост не «простыня», а воздух:
-// короткие абзацы, пустые строки между блоками, списки столбиком.
+// форматтере-гаранте (дожимаем программно). Цель — компактный Telegram-пост, а не
+// переписка редактора с валидатором и не лес пустых строк.
 const FORMAT_RULES_W = [
   "ФОРМАТ ПОСТА (обязательно):",
   "— первая строка — короткий хук (до 60 символов), сразу цепляет;",
-  "— абзацы по 1–3 предложения, между абзацами — ПУСТАЯ строка;",
-  "— никаких «простыней»: сплошной текст длиннее 3 строк без переноса запрещён;",
-  "— перечисления — столбиком, каждый пункт с новой строки через «—» или «•»;",
+  "— 3–5 смысловых блоков; новый абзац только при смене мысли, а не после каждого предложения;",
+  "— абзацы по 1–3 предложения; не ставь несколько пустых строк подряд;",
+  "— список используй только когда он действительно упрощает чтение;",
   "— ключевую мысль выдели **жирным** (одну, максимум две);",
-  "— финальный абзац — вывод или вопрос читателю, отдельным блоком;",
+  "— финал — короткий полезный вывод; вопрос читателю не обязателен;",
   "— никаких мета-меток: не пиши «Хук:», «Абзац:», «CTA:» — только сам текст.",
+  "— никогда не описывай свою проверку и ход рассуждений редактора.",
 ].join("\n");
 
 /**
@@ -5227,6 +5233,7 @@ function postSystem(
   postIndex = 0,
   presentation = null,
   variety = null,
+  quickSettings = null,
 ) {
   let s =
     "Ты — строгий выпускающий редактор Telegram-канала. Выдай ТОЛЬКО готовый текст поста, без пояснений, приветствий и подписи.\n\n" +
@@ -5236,12 +5243,17 @@ function postSystem(
   const varietyRules = varietyRulesW(variety);
   if (varietyRules) s += "\n\n" + varietyRules;
   if (presentation) s += "\n\n" + presentationVariantPrompt(presentation);
+  s += "\n\n" + autopilotEnergyPrompt(quickSettings);
   if (brief) s += "\n\n" + briefContextW(brief);
   s +=
     "\n\nРЕДАКЦИОННАЯ ЗАДАЧА: пост должен быть интересным, познавательным и приятным для чтения." +
     " Дай лёгкий контекст человеку, который впервые видит новость: что произошло, почему это важно" +
     " именно аудитории канала и какой полезный вывод можно унести." +
     " Не пересказывай источник абзац за абзацем и не пиши сухую новостную сводку." +
+    " Не упоминай источник, первоисточник, проверку фактов и внутренние редакционные ограничения в готовом тексте." +
+    " Запрещены фразы и их вариации: «только то, что сказано прямо», «опорные факты»," +
+    " «подтверждённый смысл», «если читать новость без достраивания», «отделяем факт от интерпретации»," +
+    " «дальше начинается чтение между строк»." +
     " Авторский анализ, аналогии и прогноз допустимы свободно, но явно отделяй их от подтверждённых фактов" +
     " формулировками «похоже», «на мой взгляд», «это может означать».";
   if (!quality.disclaimerRequired) {
@@ -5264,14 +5276,17 @@ function postSystem(
       "\n\nПиши ТОЛЬКО по этим фактам. После каждого утверждения ставь его номер: [1], [2]." +
       "\nЗапрещено добавлять номера дел, даты, суммы, сроки, названия судов и любые сведения," +
       " которых нет в фактах. Не выдумывай примеры и истории." +
-      "\nНе добавляй выводы о пользе, риске, причине, результате, обязанности или универсальный совет," +
-      " если этот вывод прямо не написан в фактах. Неподтверждённую мысль удаляй, а не заменяй новой." +
+      "\nФактические выводы о причине, результате или обязанности должны следовать из фактов." +
+      " Авторскую интерпретацию и практический вывод можно добавить, если явно обозначить их как мнение" +
+      " и не вводить новые цифры, даты, организации или события." +
       "\nСвязки, заголовки и финальный вопрос делай нефактическими. Факты можно сокращать," +
-      " но нельзя расширять их смысл.";
+      " но нельзя расширять их смысл. Номера нужны только внутренней проверке и будут удалены перед публикацией.";
     if (hasNews) {
       s +=
         "\nЭто новостной материал. Не копируй заголовок источника дословно: найди понятный угол для аудитории канала." +
-        " Не добавляй URL в текст — Аврора сама поставит ссылку на первоисточник внизу.";
+        " Не добавляй URL, название СМИ и строку «Источник» в текст." +
+        " Если событие проводит другая организация, не рекламируй его от лица канала и не выдавай за собственное." +
+        " Объясни только то, что событие меняет или показывает читателю; если полезного угла нет — не строй анонс.";
     }
   } else {
     // Опоры нет — и раньше модель об этом не знала. Она честно писала «по данным 2026
@@ -5312,6 +5327,7 @@ async function planTopics(
   usageReservationId = null,
   generationEngine = null,
   historicalTopics = [],
+  newsLimit = need,
 ) {
   const out = [];
   const topicHistory = historicalTopics
@@ -5325,12 +5341,42 @@ async function planTopics(
     out.push(item);
     return true;
   };
-  // Свежий подтверждённый материал идёт первым. Заголовок источника — не готовый пост,
-  // а factual seed: дальше редактор найдёт понятный угол и сохранит ссылку в metadata.
-  for (const news of (Array.isArray(newsSeeds) ? newsSeeds : []).slice(0, need)) {
-    const direct = validateTopicQuality(news?.title, news?.text);
-    const fallback = validateTopicQuality(fallbackTopicFromSeed(news?.text), news?.text);
-    const topic = direct.passed ? direct.value : fallback.passed ? fallback.value : null;
+  // A source headline is private research, not a ready channel angle. Ask the editor to
+  // translate each selected event into a useful promise for this exact audience.
+  const selectedNews = (Array.isArray(newsSeeds) ? newsSeeds : []).slice(
+    0,
+    Math.min(need, Math.max(0, Number(newsLimit) || 0)),
+  );
+  const newsAngleSystem = [
+    "Ты — шеф-редактор Telegram-канала.",
+    "Сформулируй тему будущего поста в 4–10 словах.",
+    "Тема должна объяснять пользу или изменение для аудитории канала, а не копировать заголовок СМИ.",
+    "Не называй источник. Не рекламируй чужое мероприятие от лица канала.",
+    "Если новость про событие другой организации, найди только практический смысл для читателя.",
+    "Выдай одну тему без кавычек, точки и пояснений.",
+    "",
+    briefContextW(brief),
+  ].join("\n");
+  const angledNews = await mapConcurrent(
+    selectedNews,
+    configuredAiConcurrency(generationEngine),
+    async (news) => {
+      const generated = await askAI(
+        "autopilot-plan",
+        usageReservationId,
+        newsAngleSystem,
+        "Новость:\n" + String(news?.text || "").slice(0, 3_500),
+        80,
+        null,
+        0.35,
+        generationEngine,
+      );
+      return { news, generated };
+    },
+  );
+  for (const { news, generated } of angledNews) {
+    const direct = validateTopicQuality(generated, news?.text);
+    const topic = direct.passed ? direct.value : null;
     if (topic) pushUnique({ topic, rubric: "Новости и события", news });
   }
   for (const topic of hitTopics.slice(0, need)) pushUnique({ topic, rubric: null });
@@ -5591,7 +5637,7 @@ async function buildAutopilotPlan(
   if (expectedPlanId != null) {
     const expected = await pool.query(
       `select generation_engine, generation_post_frequency, expected_post_count,
-              planning_months, planning_weeks, monthly_campaign_plan_id, items
+              planning_months, planning_weeks, monthly_campaign_plan_id, items, quick_settings
          from autopilot_plan
         where id = $1 and project_id = $2 and channel_id = $3 and status = 'building'`,
       [expectedPlanId, projectId, channelId],
@@ -5626,26 +5672,28 @@ async function buildAutopilotPlan(
   const st = (
     await pool.query(
       `select post_frequency, mode, approvals_streak, generation_engine,
-              planning_months, planning_weeks, news_sources
+              planning_months, planning_weeks, news_sources, quick_settings
          from autopilot_settings
         where project_id = $1 and channel_id = $2`,
       [projectId, channelId],
     )
   ).rows[0];
   const generationEngine = expectedPlan?.generation_engine || st?.generation_engine || DEFAULT_AUTOPILOT_ENGINE;
-  const generationPostFrequency = Math.min(
-    MAX_WEEKLY_POSTS,
-    Math.max(1, Math.round(Number(
-      expectedPlan?.generation_post_frequency ?? st?.post_frequency ?? 5,
-    ) || 5)),
+  const standaloneBuild = !Number(expectedPlan?.monthly_campaign_plan_id);
+  const generationPostFrequency = standaloneBuild
+    ? 7
+    : Math.min(
+        MAX_WEEKLY_POSTS,
+        Math.max(1, Math.round(Number(expectedPlan?.generation_post_frequency ?? 7) || 7)),
+      );
+  const quickSettings = normalizeAutopilotQuickSettings(
+    expectedPlan?.quick_settings ?? st?.quick_settings,
   );
   let planWeeks = Number(
     expectedPlan?.planning_weeks || st?.planning_weeks ||
     (expectedPlan?.planning_months || st?.planning_months || 1) * 4,
   );
   let planningMonths = Math.max(1, Math.min(3, Math.ceil(planWeeks / 4)));
-  const engineLabel = AUTOPILOT_ENGINE_OPTIONS.find((option) => option.id === generationEngine)?.label
-    || generationEngine;
 
   // Лучшее время из аналитики Д.5: час МСК с наибольшим средним просмотром.
   const published = (
@@ -5710,13 +5758,14 @@ async function buildAutopilotPlan(
     planningMonths = 1;
     rule += " Первая неделя взята из согласованной месячной кампании; темы и даты сохраняют её версию.";
   }
-  rule += ` План на ${planWeeks} ${plural(planWeeks, "неделю", "недели", "недель")}, модель — ${engineLabel}.`;
   const N = monthlyContext
     ? monthlyContext.topics.length
     : Number(expectedPlan?.expected_post_count)
-      || plannedPostCountForWeeks(generationPostFrequency, planWeeks);
+      || plannedDailyAutopilotPostCount(planWeeks);
 
-  const quality = brief.quality;
+  const quality = normalizePostQuality(
+    applyAutopilotQuickSettingsToQuality(brief.quality, quickSettings),
+  );
 
   // Сколько у канала реальных опор. Считаем ДО генерации: от этого зависит, имеет ли
   // сборка шанс закончиться планом.
@@ -5831,6 +5880,7 @@ async function buildAutopilotPlan(
         usageReservationId,
         generationEngine,
         historicalTopics,
+        autopilotNewsPostCount(quickSettings, planWeeks, N),
       );
   if (!autopilotBuildComplete(N, topics)) {
     console.log(`[auto] user ${userId}: получено тем ${topics.length}/${N} — неполный план не сохраняю`);
@@ -5847,16 +5897,10 @@ async function buildAutopilotPlan(
     );
     if (!checkpointed.rowCount) return { superseded: true };
   }
-  rule += ` Темы — под твою нишу: ${brief.niche}.`;
-
-  if (newsCandidates.length) {
-    rule += ` Нашёл ${newsCandidates.length} ${plural(newsCandidates.length, "свежий инфоповод", "свежих инфоповода", "свежих инфоповодов")} в источниках по теме канала.`;
-  }
-  rule += facts
-    ? ` Дополнительный контекст — из твоей базы знаний (${facts} ${plural(facts, "фрагмент", "фрагмента", "фрагментов")}).`
-    : " Конкретные факты беру только из найденных источников; неподтверждённые детали не добавляю.";
-  rule += " Каждый текст проходит автоматическую редактуру. Готовые посты можно выпускать; если автопроверка фактов недоступна, пост останется на подтверждении.";
-  rule += " Темы и готовые тексты сверяются с текущим планом и недавней историей канала; близкий дубль переписывается или останавливает сборку.";
+  const selectedNewsCount = topics.filter((topic) => topic.news).length;
+  const evergreenCount = Math.max(0, topics.length - selectedNewsCount);
+  rule = `По одному посту в день: ${selectedNewsCount} ${plural(selectedNewsCount, "свежее событие", "свежих события", "свежих событий")}`
+    + ` и ${evergreenCount} ${plural(evergreenCount, "полезный разбор", "полезных разбора", "полезных разборов")}.`
 
   // Генерация постов — узкое место плана: каждый пост это findSupport + askAI (~90с) + возможный
   // ретрай. Последовательно 30 постов собирались до 45 минут и всё это время держали крон-очередь
@@ -5902,12 +5946,13 @@ async function buildAutopilotPlan(
     const system = postSystem(samples, brief, support, quality, i, presentation, {
       otherTopics: topics.filter((_, index) => index !== i).map((other) => other.topic),
       recentOpenings,
-    });
+    }, quickSettings);
     const task = t.news
       ? [
           `Напиши новостной пост на тему: ${topic}.`,
           `Материал опубликован ${new Date(t.news.publishedAt).toLocaleDateString("ru-RU")}.`,
-          "Сначала дай лёгкий контекст, затем объясни, почему событие интересно аудитории канала, и закончи полезным авторским выводом.",
+          "Дай лёгкий контекст, объясни практический смысл для аудитории и закончи полезным авторским выводом.",
+          "Не пиши о том, как ты проверял факты. Не называй источник и не превращай текст в рекламу чужого события.",
         ].join("\n")
       : rubric
         ? `Напиши пост в рубрику «${rubric}» на тему: ${topic}.`
@@ -6010,7 +6055,7 @@ async function buildAutopilotPlan(
     }
 
     const draft = aiDraft
-      ? appendAutopilotSourceFooter(aiDraft, support, quality.maxChars)
+      ? sanitizeAutopilotPublicText(aiDraft)
       : `Черновик на тему «${topic}» — ИИ допишет, когда движок будет доступен.`;
     const scheduledAt = slots[i];
     const qualityFailureKind = autopilotQualityFailureKind(qualityResult);
@@ -6100,28 +6145,25 @@ async function buildAutopilotPlan(
   // Public plan is a product result, not a validator inbox. Keep only texts that passed the
   // editorial boundary (or need a clean human read solely because semantic infrastructure
   // was unavailable). Failed quality, invented specifics and provider placeholders stay
-  // inside the build. A shorter strong plan is better than the requested count padded with
-  // drafts that advertise an unreliable Autopilot.
+  // inside the build. A weekly plan is an exact promise: never call three posts a seven-day
+  // result just because four drafts failed the editor.
   const readerReadyPairs = items
     .map((item, index) => ({ item, topic: topics[index] }))
     .filter(({ item }) => isAutopilotReaderReadyItem(item));
-  if (!readerReadyPairs.length) {
+  if (readerReadyPairs.length !== N) {
     const missing = items.filter((item) => !item.aiReady).length;
     const report = autopilotQualityFailureReport(items, N);
     console.log(
       missing
         ? `[auto] user ${userId}: модель не завершила ни одного готового поста (${missing}/${N} пустых)`
-        : `[auto] user ${userId}: ни один пост не прошёл reader-ready границу` +
+        : `[auto] user ${userId}: готово только ${readerReadyPairs.length}/${N} reader-ready постов` +
           ` (${report.causes.map((cause) => `${cause.code}×${cause.count}`).join(", ") || "без разбора"})`,
     );
     return { error: missing ? "ai_unavailable" : "quality_gate_unsatisfied" };
   }
   items = readerReadyPairs.map(({ item }, index) => ({ ...item, i: index }));
   topics = readerReadyPairs.map(({ topic }) => topic);
-  if (items.length < N) {
-    rule += ` Аврора собрала ${items.length} ${plural(items.length, "сильный материал", "сильных материала", "сильных материалов")} без повторов и неподтверждённых тем.`;
-  }
-  if (!autopilotDraftsDeliverable(items.length, topics, items)) {
+  if (!autopilotDraftsDeliverable(N, topics, items)) {
     return { error: "quality_gate_unsatisfied" };
   }
 
@@ -6173,7 +6215,7 @@ async function buildAutopilotPlan(
           String(duplicateItem?.draft || duplicateItem?.topic || "").split("\n")[0],
           ...recentOpenings,
         ],
-      });
+      }, quickSettings);
       const raw = await askAI(
         "autopilot-plan",
         usageReservationId,
@@ -6213,7 +6255,7 @@ async function buildAutopilotPlan(
         ].join("\n\n");
         continue;
       }
-      item.draft = appendAutopilotSourceFooter(candidate, support, quality.maxChars);
+      item.draft = sanitizeAutopilotPublicText(candidate);
       item.aiReady = true;
       item.cited = cited;
       item.invented = invented.length ? invented : undefined;
@@ -6228,9 +6270,8 @@ async function buildAutopilotPlan(
       duplicate = findAutopilotNearDuplicate(item, acceptedForVariety);
     }
     if (duplicate) {
-      // Повтор предотвращается правилом в промпте: модель заранее видит остальные темы
-      // сборки и прошлые хуки. Если он всё равно остался — это один пост, а не приговор
-      // сборке. Раньше здесь терялись и уже написанные тексты.
+      // Повтор предотвращается правилом в промпте. Если он всё равно остался, пост не
+      // пересекает reader-ready границу, а точный недельный контракт остановит сборку.
       console.warn("[auto] близкий повтор остался после переписываний — помечаю один пост", {
         userId,
         channelId,
@@ -6259,7 +6300,7 @@ async function buildAutopilotPlan(
     .filter(({ item }) => isAutopilotReaderReadyItem(item));
   items = variedPairs.map(({ item }, index) => ({ ...item, i: index }));
   topics = variedPairs.map(({ topic }) => topic);
-  if (!items.length || !autopilotDraftsDeliverable(items.length, topics, items)) {
+  if (items.length !== N || !autopilotDraftsDeliverable(N, topics, items)) {
     console.warn(`[auto] user ${userId}: после проверки разнообразия не осталось готовых текстов`);
     return { error: "quality_gate_unsatisfied" };
   }
@@ -6422,8 +6463,8 @@ async function buildAutopilotPlan(
       `insert into autopilot_plan
          (project_id, user_id, channel_id, week_start, items, rules, status, generation_engine,
           generation_post_frequency, expected_post_count, planning_months, planning_weeks,
-          monthly_campaign_plan_id)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) returning id`,
+          monthly_campaign_plan_id, quick_settings)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb) returning id`,
       [
         projectId,
         userId,
@@ -6438,6 +6479,7 @@ async function buildAutopilotPlan(
         planningMonths,
         planWeeks,
         monthlyContext?.planId ?? null,
+        JSON.stringify(quickSettings),
       ],
     );
     if (monthlyContext) {

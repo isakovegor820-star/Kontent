@@ -105,6 +105,10 @@ describe("app action registry", () => {
       href: "/app/autopilot/month",
       label: "Вернуться к плану месяца",
     });
+    expect(composerReturnTarget(composerSource("autopilot"))).toEqual({
+      href: "/app/autopilot",
+      label: "Вернуться в Автопилот",
+    });
     expect(composerReturnTarget(composerSource("studio-visuals"), 41)).toEqual({
       href: "/app/studio/visuals?draft=41",
       label: "Вернуться к визуалам",

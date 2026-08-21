@@ -4,7 +4,7 @@ export const AUTOPILOT_FRESHNESS_MS: 60000;
 export const AUTOPILOT_PREVIEW_TTL_MS: 300000;
 
 export interface ApprovalBlocker {
-  code: "expired" | "invalid_schedule" | "empty_draft" | "quality_missing" | "quality_failed" | "semantic_review_required";
+  code: "expired" | "invalid_schedule" | "empty_draft" | "quality_missing" | "quality_failed" | "semantic_review_required" | "editor_draft_linked";
   message: string;
 }
 
@@ -15,6 +15,8 @@ export interface AutopilotApprovalItem {
   draft?: string;
   status: string;
   postId?: number;
+  draftId?: number;
+  monthlyCampaignItemId?: number;
   qualityBlocked?: boolean;
   reviewRequired?: boolean;
   reviewState?: "semantic_only_review";

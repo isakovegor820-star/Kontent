@@ -23,7 +23,6 @@ import { Badge, Card, Field, Input, Textarea, Toggle } from "@/components/ui/pri
 import {
   AUTHOR_PROFILE_QUESTION_COUNT,
   AUTHOR_PROFILE_SECTIONS,
-  MAX_WEEKLY_POSTS,
   RUBRICS,
   type AuthorProfileAnswers,
   type AuthorProfileQuestionId,
@@ -1353,17 +1352,12 @@ export function ChannelSettingsCenter() {
                 label="Включить автопилот для этого канала"
                 description="Аврора будет собирать план недели по сохранённому профилю."
               />
-              <RangeSetting
-                id="channel-post-frequency"
-                label="Постов в неделю"
-                min={1}
-                max={MAX_WEEKLY_POSTS}
-                value={draft.settings.post_frequency}
-                valueLabel={`${draft.settings.post_frequency} в неделю`}
-                startLabel="редко"
-                endLabel="несколько в день"
-                onChange={(value) => setAutopilot("post_frequency", value)}
-              />
+              <div className="rounded-sm border border-line bg-surface/80 p-4">
+                <p className="text-[13px] font-bold text-text">Ритм публикаций</p>
+                <p className="mt-1 text-[13px] leading-relaxed text-text-3">
+                  Один пост в день — 7 готовых публикаций на каждую неделю плана.
+                </p>
+              </div>
               <Segments
                 label="Контроль публикации"
                 value={draft.settings.mode}

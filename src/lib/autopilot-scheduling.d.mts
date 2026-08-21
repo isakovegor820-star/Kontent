@@ -66,6 +66,7 @@ export function scheduleAutopilotItem(input: {
   channelId: number;
   operationId: number;
   index: number;
+  approvedItem?: unknown;
   nowMs?: number;
 }): Promise<{
   postId: number;

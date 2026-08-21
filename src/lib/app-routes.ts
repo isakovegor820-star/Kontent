@@ -166,7 +166,7 @@ export function appDraftActionHref(action: DraftBackedAppAction, draftId: number
   return `${route.href}?${params.toString()}`;
 }
 
-export const COMPOSER_SOURCES = ["calendar", "studio", "autopilot-month", "studio-visuals"] as const;
+export const COMPOSER_SOURCES = ["calendar", "studio", "autopilot", "autopilot-month", "studio-visuals"] as const;
 export type ComposerSource = (typeof COMPOSER_SOURCES)[number];
 
 export function composerSource(value: string | null): ComposerSource | null {
@@ -175,6 +175,9 @@ export function composerSource(value: string | null): ComposerSource | null {
 
 export function composerReturnTarget(source: ComposerSource | null, draftId?: number | null) {
   if (source === "studio") return { href: "/app/studio", label: "Вернуться в Студию" } as const;
+  if (source === "autopilot") {
+    return { href: "/app/autopilot", label: "Вернуться в Автопилот" } as const;
+  }
   if (source === "autopilot-month") {
     return { href: "/app/autopilot/month", label: "Вернуться к плану месяца" } as const;
   }

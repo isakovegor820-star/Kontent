@@ -10,6 +10,7 @@ import {
   DEFAULT_AUTOPILOT_PLANNING_WEEKS,
 } from "./autopilot-config.mjs";
 import type { AutopilotNewsSource } from "./autopilot-news.mjs";
+import type { AutopilotQuickSettings } from "./autopilot-style.mjs";
 
 export interface AutopilotSettings {
   enabled: boolean;
@@ -20,6 +21,7 @@ export interface AutopilotSettings {
   planning_months: number;
   planning_weeks: number;
   news_sources: AutopilotNewsSource[];
+  quick_settings: AutopilotQuickSettings;
 }
 
 /**
@@ -121,7 +123,7 @@ export async function ensureSettings(
   if (isProjectScope(scopeOrUserId)) {
     const existing = await pool.query<AutopilotSettings>(
       `select enabled, mode, post_frequency, approvals_streak, generation_engine,
-              planning_months, planning_weeks, news_sources
+              planning_months, planning_weeks, news_sources, quick_settings
          from autopilot_settings
         where project_id = $1 and channel_id = $2
         order by updated_at desc, user_id
@@ -149,7 +151,7 @@ export async function ensureSettings(
     );
     const created = await pool.query<AutopilotSettings>(
       `select enabled, mode, post_frequency, approvals_streak, generation_engine,
-              planning_months, planning_weeks, news_sources
+              planning_months, planning_weeks, news_sources, quick_settings
          from autopilot_settings
         where project_id = $1 and channel_id = $2
         order by updated_at desc, user_id

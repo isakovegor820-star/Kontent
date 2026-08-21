@@ -28,6 +28,7 @@ export const MIN_AUTOPILOT_PLANNING_WEEKS: number;
 export const MAX_AUTOPILOT_PLANNING_WEEKS: number;
 export const DEFAULT_AUTOPILOT_PLANNING_WEEKS: number;
 export const MAX_AUTOPILOT_PLAN_POSTS: number;
+export const AUTOPILOT_DAILY_POSTS_PER_WEEK: number;
 export const AUTOPILOT_SIMILARITY_THRESHOLD: number;
 
 export function isAutopilotEngine(value: unknown): value is AutopilotEngineId;
@@ -37,6 +38,7 @@ export function planningWeeks(months: unknown): number;
 export function isAutopilotPlanningWeeks(value: unknown): boolean;
 export function normalizePlanningWeeks(value: unknown, fallback?: number): number;
 export function plannedPostCountForWeeks(postFrequency: unknown, weeks: unknown): number;
+export function plannedDailyAutopilotPostCount(weeks: unknown): number;
 export function planCountWasCappedForWeeks(postFrequency: unknown, weeks: unknown): boolean;
 export function plannedPostCount(postFrequency: unknown, months: unknown): number;
 export function planCountWasCapped(postFrequency: unknown, months: unknown): boolean;

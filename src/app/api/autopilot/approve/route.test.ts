@@ -335,7 +335,7 @@ describe("POST /api/autopilot/approve", () => {
     expect(response.status).toBe(503);
     expect(body).toMatchObject({
       ok: false,
-      error: "queue_unavailable",
+      error: "scheduling_failed",
       scheduled: 1,
       partial: true,
       retryable: true,

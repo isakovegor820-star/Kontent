@@ -110,15 +110,15 @@ describe("POST /api/autopilot/generate", () => {
     await expect(response.json()).resolves.toEqual({ ok: true, planId: "91" });
     expect(mocks.clientQuery).toHaveBeenCalledWith(
       expect.stringContaining("generation_engine = $3"),
-      [88, 22, "navy-gpt-5-4", 2, 7],
+      [88, 22, "navy-gpt-5-4", 2, 7, expect.any(String)],
     );
     expect(mocks.clientQuery).toHaveBeenCalledWith(
       expect.stringContaining("insert into autopilot_plan"),
-      [88, 4, 22, "navy-gpt-5-4", 7, 49, 2, 7, null],
+      [88, 4, 22, "navy-gpt-5-4", 7, 49, 2, 7, null, expect.any(String)],
     );
     expect(mocks.poolQuery).toHaveBeenCalledWith(
       expect.stringContaining("news_sources = $3::jsonb"),
-      [88, 22, expect.any(String)],
+      [88, 22, expect.any(String), expect.any(String)],
     );
     expect(mocks.add).toHaveBeenCalledWith(
       "autopilot-plan",
@@ -191,7 +191,7 @@ describe("POST /api/autopilot/generate", () => {
     );
     expect(mocks.clientQuery).toHaveBeenCalledWith(
       expect.stringContaining("monthly_campaign_plan_id"),
-      [88, 4, 22, "navy-deepseek-pro", 6, 6, 1, 1, 73],
+      [88, 4, 22, "navy-deepseek-pro", 6, 6, 1, 1, 73, expect.any(String)],
     );
   });
 

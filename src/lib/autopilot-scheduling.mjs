@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { evaluateAutopilotItem } from "./autopilot-approval.mjs";
+import { sanitizeAutopilotPublicText } from "./autopilot-publication.mjs";
 
 export const AUTOPILOT_APPROVAL_LEASE_SECONDS = 300;
 
@@ -38,6 +39,23 @@ const itemIndex = (value) => {
 
 const cloneItems = (value) =>
   (Array.isArray(value) ? value : []).map((item) => ({ ...item }));
+
+function approvalSnapshot(item) {
+  return JSON.stringify({
+    i: Number(item?.i),
+    scheduledAt: item?.scheduledAt ?? null,
+    topic: item?.topic ?? "",
+    draft: item?.draft ?? "",
+    status: item?.status ?? "",
+    postId: Number(item?.postId) || null,
+    aiReady: item?.aiReady ?? null,
+    qualityBlocked: item?.qualityBlocked ?? null,
+    reviewRequired: item?.reviewRequired ?? null,
+    reviewState: item?.reviewState ?? null,
+    invented: item?.invented ?? null,
+    quality: item?.quality ?? null,
+  });
+}
 
 export function autopilotItemOperationKey(projectIdValue, planIdValue, itemIndexValue) {
   const projectId = positiveInteger(projectIdValue, "project id");
@@ -244,6 +262,7 @@ export async function scheduleAutopilotItem({
   channelId: channelIdValue,
   operationId: operationIdValue,
   index: indexValue,
+  approvedItem = null,
   nowMs = Date.now(),
 }) {
   const planId = positiveInteger(planIdValue, "plan id");
@@ -285,6 +304,9 @@ export async function scheduleAutopilotItem({
     items = cloneItems(plan.items);
     const target = items.find((item) => Number(item.i) === index);
     if (!target) throw new AutopilotScheduleBlockedError([{ code: "no_item", message: "Пост не найден в плане." }]);
+    if (approvedItem != null && approvalSnapshot(target) !== approvalSnapshot(approvedItem)) {
+      throw new AutopilotApprovalLeaseLostError();
+    }
 
     checkpoint = (
       await tx.query(
@@ -315,11 +337,20 @@ export async function scheduleAutopilotItem({
     }
 
     if (!checkpoint) {
-      const evaluation = evaluateAutopilotItem(target, nowMs);
+      const evaluationTarget = approvedItem ?? target;
+      const evaluation = evaluateAutopilotItem(evaluationTarget, nowMs);
       if (!evaluation.eligible || !evaluation.scheduledAt) {
         throw new AutopilotScheduleBlockedError(evaluation.blockers);
       }
-      const text = String(target.draft ?? "");
+      const text = sanitizeAutopilotPublicText(target.draft);
+      if (!text) {
+        throw new AutopilotScheduleBlockedError([{ code: "empty_draft", message: "Черновик пуст." }]);
+      }
+      target.draft = text;
+      if (approvedItem?.humanAttestation) {
+        target.humanAttestation = approvedItem.humanAttestation;
+        target.qualityOrigin = approvedItem.qualityOrigin;
+      }
       const key = autopilotItemOperationKey(projectId, planId, index);
       const fingerprint = requestFingerprint({
         projectId,

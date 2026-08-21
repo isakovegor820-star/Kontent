@@ -48,6 +48,10 @@ export function canonicalAutopilotPlanSnapshot({ items, planId, planRevision, ch
       draft: typeof item?.draft === "string" ? item.draft : "",
       status: typeof item?.status === "string" ? item.status : "",
       postId: Number.isSafeInteger(Number(item?.postId)) ? Number(item.postId) : null,
+      draftId: Number.isSafeInteger(Number(item?.draftId)) ? Number(item.draftId) : null,
+      monthlyCampaignItemId: Number.isSafeInteger(Number(item?.monthlyCampaignItemId))
+        ? Number(item.monthlyCampaignItemId)
+        : null,
       qualityBlocked: item?.qualityBlocked === true,
       invented: Array.isArray(item?.invented) ? item.invented.map(String) : [],
       quality: item?.quality ?? null,
@@ -77,6 +81,7 @@ const messages = {
   quality_missing: "Пост ещё не прошёл фактическую проверку качества.",
   quality_failed: "Пост не прошёл проверку качества.",
   semantic_review_required: "Автопроверка фактов не отработала. Прочитай текст и нажми «Одобрить».",
+  editor_draft_linked: "Пост открыт в редакторе. Поставь его в календарь из редактора, чтобы сохранить правки.",
 };
 
 function qualityIsComplete(value) {
@@ -124,6 +129,13 @@ export function evaluateAutopilotItem(item, nowMs = Date.now(), options = {}) {
 
   if (typeof item.draft !== "string" || item.draft.trim().length === 0) {
     blockers.push(blocker("empty_draft"));
+  }
+
+  // A standalone plan item linked to Composer may already contain newer text,
+  // formatting or media. Never schedule the stale plan snapshot over that draft.
+  // Monthly campaign items have their own draft-backed approval lifecycle.
+  if (Number(item.draftId) > 0 && !Number(item.monthlyCampaignItemId)) {
+    blockers.push(blocker("editor_draft_linked"));
   }
 
   if (!qualityIsComplete(item.quality)) {
@@ -175,7 +187,12 @@ export function annotateAutopilotItems(items, nowMs = Date.now(), options = {}) 
     }
     if (
       evaluation.blockers.some((entry) =>
-        ["quality_missing", "quality_failed", "semantic_review_required", "empty_draft"].includes(entry.code),
+        [
+          "quality_missing",
+          "quality_failed",
+          "semantic_review_required",
+          "empty_draft",
+        ].includes(entry.code),
       )
     ) {
       item.qualityBlocked = true;

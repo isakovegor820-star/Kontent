@@ -6,7 +6,7 @@ import { NextRequest, NextResponse } from "next/server";
 import type { PoolClient } from "pg";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
-import { MAX_WEEKLY_POSTS, briefComplete, normalizeBrief } from "@/lib/brief";
+import { briefComplete, normalizeBrief } from "@/lib/brief";
 import { ensureSettings, loadBrief, resolveChannel } from "@/lib/autopilot";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import type { AutopilotSettings } from "@/lib/autopilot";
@@ -86,16 +86,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "incomplete" }, { status: 422 });
   }
 
-  const frequency = Number(body.settings.post_frequency);
-  const postFrequency = Number.isFinite(frequency)
-    ? Math.min(MAX_WEEKLY_POSTS, Math.max(1, Math.round(frequency)))
-    : null;
+  const postFrequency = 7;
   const enabled = typeof body.settings.enabled === "boolean" ? body.settings.enabled : null;
   const mode = body.settings.mode === "confirm" || body.settings.mode === "full"
     ? body.settings.mode
     : null;
 
-  if (postFrequency == null || enabled == null || mode == null) {
+  if (enabled == null || mode == null) {
     return NextResponse.json({ ok: false, error: "bad_settings" }, { status: 422 });
   }
 
@@ -119,7 +116,7 @@ export async function POST(req: NextRequest) {
     );
     const current = await client.query<AutopilotSettings>(
       `select enabled, mode, post_frequency, approvals_streak, generation_engine,
-              planning_months, planning_weeks
+              planning_months, planning_weeks, news_sources, quick_settings
          from autopilot_settings
         where user_id = $1 and channel_id = $2
         for update`,
@@ -176,7 +173,7 @@ export async function POST(req: NextRequest) {
               updated_at = now()
         where user_id = $1 and channel_id = $2
         returning enabled, mode, post_frequency, approvals_streak, generation_engine,
-                  planning_months, planning_weeks`,
+                  planning_months, planning_weeks, news_sources, quick_settings`,
       [user.id, channelId, enabled, mode, postFrequency],
     );
     await client.query("commit");

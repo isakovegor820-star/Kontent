@@ -4,17 +4,16 @@
 // в стиле пользователя. Одобрил — посты уходят в ту же очередь публикации (Д.3). Настоящие
 // данные, никаких фейков: нет движка/аналитики — честно помечаем.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { motion, useReducedMotion } from "motion/react";
 import {
   AlertTriangle,
-  BookText,
   CalendarCheck,
   Check,
   ChevronDown,
   Clock,
-  ExternalLink,
   Loader2,
   Newspaper,
   Pencil,
@@ -26,7 +25,7 @@ import {
 } from "lucide-react";
 import { AppShell } from "@/components/app/shell";
 import { Button, buttonClassName } from "@/components/ui/button";
-import { Badge, Card, EmptyState, Textarea } from "@/components/ui/primitives";
+import { Badge, Card, EmptyState } from "@/components/ui/primitives";
 import { useStore } from "@/lib/store";
 import { RUBRICS, type Brief } from "@/lib/brief";
 import {
@@ -51,9 +50,14 @@ import {
   DEFAULT_AUTOPILOT_ENGINE,
   MAX_AUTOPILOT_PLANNING_WEEKS,
   MIN_AUTOPILOT_PLANNING_WEEKS,
-  planCountWasCappedForWeeks,
-  plannedPostCountForWeeks,
+  plannedDailyAutopilotPostCount,
 } from "@/lib/autopilot-config.mjs";
+import {
+  DEFAULT_AUTOPILOT_QUICK_SETTINGS,
+  normalizeAutopilotQuickSettings,
+  type AutopilotQuickSettings,
+} from "@/lib/autopilot-style.mjs";
+import { sanitizeAutopilotPublicText } from "@/lib/autopilot-publication.mjs";
 
 interface PlanItem {
   i: number;
@@ -82,6 +86,7 @@ interface PlanItem {
   approvalBlockers?: ApprovalBlocker[];
   reviewRequired?: boolean;
   reviewReason?: string;
+  draftId?: number;
 }
 interface Settings {
   enabled: boolean;
@@ -91,6 +96,7 @@ interface Settings {
   generation_engine: string;
   planning_months: number;
   planning_weeks: number;
+  quick_settings: AutopilotQuickSettings;
 }
 interface State {
   settings: Settings | null;
@@ -103,6 +109,7 @@ interface State {
     generation_engine: string;
     planning_months: number;
     planning_weeks: number;
+    quick_settings?: AutopilotQuickSettings;
     buildProgress?: {
       completed: number;
       total: number;
@@ -173,23 +180,106 @@ function topicIcon(topic: string, rubric?: string | null): string {
   return "✨";
 }
 
+const plainPostText = (value: string) =>
+  sanitizeAutopilotPublicText(value).replace(/\*\*([^*]+)\*\*/gu, "$1");
+
+function PostPreview({ text, expanded }: { text: string; expanded: boolean }) {
+  const clean = sanitizeAutopilotPublicText(text);
+  if (!expanded) {
+    return (
+      <p className="line-clamp-2 max-w-[68ch] text-[14px] leading-relaxed text-text-2">
+        {plainPostText(clean)}
+      </p>
+    );
+  }
+
+  return (
+    <div className="max-w-[68ch] space-y-3 text-[14px] leading-relaxed text-text-2">
+      {clean.split(/\n{2,}/u).filter(Boolean).map((paragraph, paragraphIndex) => (
+        <p key={`${paragraph.slice(0, 32)}-${paragraphIndex}`} className="whitespace-pre-line">
+          {paragraph.split(/(\*\*[^*]+\*\*)/u).map((part, partIndex) =>
+            part.startsWith("**") && part.endsWith("**") ? (
+              <strong key={`${partIndex}-${part}`} className="font-semibold text-text">
+                {part.slice(2, -2)}
+              </strong>
+            ) : (
+              part
+            ),
+          )}
+        </p>
+      ))}
+    </div>
+  );
+}
+
+function QuickRange({
+  id,
+  label,
+  hint,
+  min,
+  max,
+  value,
+  valueLabel,
+  disabled,
+  onChange,
+}: {
+  id: string;
+  label: string;
+  hint: string;
+  min: number;
+  max: number;
+  value: number;
+  valueLabel: string;
+  disabled: boolean;
+  onChange: (value: number) => void;
+}) {
+  const progress = ((value - min) / Math.max(1, max - min)) * 100;
+  return (
+    <div className="min-w-0">
+      <div className="flex items-baseline justify-between gap-3">
+        <label htmlFor={id} className="text-[13px] font-semibold text-text">
+          {label}
+        </label>
+        <output htmlFor={id} className="shrink-0 text-[12px] font-semibold text-brand">
+          {valueLabel}
+        </output>
+      </div>
+      <input
+        id={id}
+        type="range"
+        min={min}
+        max={max}
+        step={1}
+        value={value}
+        disabled={disabled}
+        aria-valuetext={valueLabel}
+        aria-describedby={`${id}-hint`}
+        onChange={(event) => onChange(Number(event.target.value))}
+        style={{ "--aurora-range-progress": `${progress}%` } as CSSProperties}
+        className="aurora-range mt-2 h-11 w-full cursor-pointer disabled:cursor-not-allowed disabled:opacity-60"
+      />
+      <p id={`${id}-hint`} className="mt-1 text-[12px] leading-snug text-text-3">
+        {hint}
+      </p>
+    </div>
+  );
+}
+
 export default function AutopilotPage() {
   const s = useStore();
+  const router = useRouter();
   const reduce = useReducedMotion();
   const [data, setData] = useState<State | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [editing, setEditing] = useState<{
-    channelId: number;
-    planId: number;
-    revision: number;
-    itemIndex: number;
-  } | null>(null);
-  const [editText, setEditText] = useState("");
+  const [editorBusyIndex, setEditorBusyIndex] = useState<number | null>(null);
   const [expanded, setExpanded] = useState<number | null>(null); // какая карточка раскрыта целиком
   const [generationEngine, setGenerationEngine] = useState(DEFAULT_AUTOPILOT_ENGINE);
   const [planningWeeks, setPlanningWeeks] = useState(DEFAULT_AUTOPILOT_PLANNING_WEEKS);
+  const [quickSettings, setQuickSettings] = useState<AutopilotQuickSettings>({
+    ...DEFAULT_AUTOPILOT_QUICK_SETTINGS,
+  });
   const [planningAnchorMs] = useState(Date.now);
   const [visibleLimit, setVisibleLimit] = useState(14);
   const approvalBusy = useRef(false);
@@ -241,6 +331,7 @@ export default function AutopilotPage() {
             ? savedWeeks
             : DEFAULT_AUTOPILOT_PLANNING_WEEKS,
         );
+        setQuickSettings(normalizeAutopilotQuickSettings(d.settings.quick_settings));
       }
       const nextPlanIdentity = d.plan
         ? `${d.channelId}:${d.plan.id}:${d.plan.revision}`
@@ -264,8 +355,7 @@ export default function AutopilotPage() {
       setLoading(true);
       setData(null);
       setLoadError(null);
-      setEditing(null);
-      setEditText("");
+      setEditorBusyIndex(null);
       setExpanded(null);
       activePlanIdentity.current = null;
       void load();
@@ -327,11 +417,12 @@ export default function AutopilotPage() {
           channelId: chId,
           generationEngine,
           planningWeeks,
+          quickSettings,
         }),
       });
       const d = (await r.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
       if (d?.ok) {
-        const count = plannedPostCountForWeeks(data?.settings?.post_frequency ?? 5, planningWeeks);
+        const count = plannedDailyAutopilotPostCount(planningWeeks);
         const duration = fmtBuildEstimate(estimateAutopilotBuildMinutes(count));
         s.toast({
           kind: "info",
@@ -548,15 +639,15 @@ export default function AutopilotPage() {
             ? `${result.expired || 0} неактуальных и ${result.blocked || 0} неготовых материалов не попали в очередь.`
             : "Посты выйдут по показанному расписанию. Компьютер держать включённым не нужно.",
         });
-      } else if (result?.error === "queue_unavailable") {
+      } else if (result?.error === "scheduling_failed") {
         s.toast({
           kind: "danger",
           title: result.partial
-            ? `${result.scheduled || 0} уже в очереди, продолжение остановлено`
-            : "Очередь публикации недоступна",
+            ? `${result.scheduled || 0} уже в календаре, продолжение остановлено`
+            : "Не удалось добавить план в календарь",
           body: result.partial
             ? `Состояние сохранено. Осталось безопасно повторить: ${result.remaining?.eligible || 0}.`
-            : "Ни одного нового поста не создано. Можно безопасно повторить.",
+            : "Ни одного нового поста не создано. Обнови план и безопасно повтори.",
         });
       } else {
         s.toast({
@@ -600,7 +691,13 @@ export default function AutopilotPage() {
       }),
     }).catch(() => null);
     const result = (await r?.json().catch(() => null)) as
-      | { ok?: boolean; error?: string; blockers?: string[] }
+      | {
+          ok?: boolean;
+          error?: string;
+          blockers?: string[];
+          reconciliationPending?: boolean;
+          scheduledAt?: string;
+        }
       | null;
     if (activePlanIdentity.current !== identity) return;
     if (result?.error === "approval_blocked") {
@@ -609,11 +706,11 @@ export default function AutopilotPage() {
         title: "Пост нельзя поставить в очередь",
         body: result.blockers?.[0] ?? "Выбери новую дату, исправь замечания или пересобери план.",
       });
-    } else if (result?.error === "queue_unavailable") {
+    } else if (result?.error === "scheduling_failed") {
       s.toast({
         kind: "danger",
-        title: "Очередь публикации недоступна",
-        body: "Пост не создан. Можно безопасно повторить.",
+        title: "Не удалось добавить пост в календарь",
+        body: "Пост не создан. Обнови план и безопасно повтори.",
       });
     } else if (result?.error === "stale_plan") {
       s.toast({
@@ -621,9 +718,66 @@ export default function AutopilotPage() {
         title: "План уже изменился",
         body: "Обновил карточки. Повтори действие для актуальной версии плана.",
       });
+    } else if (result?.ok && action === "approve") {
+      s.toast({
+        kind: "success",
+        title: "Пост добавлен в календарь",
+        body: result.reconciliationPending
+          ? "Дата сохранена. Отправку в очередь Аврора повторит автоматически."
+          : "Он выйдет в запланированное время.",
+      });
     }
-    setEditing(null);
     await load();
+  };
+
+  const openEditor = async (item: PlanItem) => {
+    const plan = data?.plan;
+    const channelId = data?.channelId;
+    if (!plan || !channelId || channelId !== chId || editorBusyIndex != null) return;
+    setEditorBusyIndex(item.i);
+    try {
+      const response = await fetch("/api/autopilot/item/draft", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          channelId,
+          planId: plan.id,
+          planRevision: plan.revision,
+          index: item.i,
+        }),
+      });
+      const result = (await response.json().catch(() => null)) as
+        | { ok?: boolean; error?: string; draftId?: number }
+        | null;
+      if (response.ok && result?.ok && Number.isSafeInteger(result.draftId)) {
+        const params = new URLSearchParams({
+          draft: String(result.draftId),
+          channel: String(channelId),
+          from: "autopilot",
+        });
+        router.push(`/app/composer?${params.toString()}`);
+        return;
+      }
+      const copy: Record<string, string> = {
+        stale_plan: "План уже изменился. Обновляю карточки — открой редактор ещё раз.",
+        item_unavailable: "Этот пост уже обработан и больше не доступен для правки.",
+        empty_draft: "В этом посте пока нет текста для редактора.",
+      };
+      s.toast({
+        kind: "danger",
+        title: "Не удалось открыть редактор",
+        body: copy[result?.error ?? ""] ?? "Проверь подключение и повтори.",
+      });
+      await load();
+    } catch {
+      s.toast({
+        kind: "danger",
+        title: "Не удалось открыть редактор",
+        body: "Проверь подключение и повтори.",
+      });
+    } finally {
+      setEditorBusyIndex(null);
+    }
   };
 
   if (loading) {
@@ -729,9 +883,12 @@ export default function AutopilotPage() {
       ),
   );
   const pending = items.filter((it) => it.status === "pending");
-  const reviewPending = pending.filter(isAutopilotHumanReviewItem);
+  const editorPending = pending.filter((item) => Boolean(item.draftId));
+  const reviewPending = pending.filter(
+    (item) => !item.draftId && isAutopilotHumanReviewItem(item),
+  );
   const readyPending = pending.filter(
-    (item) => canApproveItem(item) && !isAutopilotHumanReviewItem(item),
+    (item) => !item.draftId && canApproveItem(item) && !isAutopilotHumanReviewItem(item),
   );
   const approved = items.filter((it) => it.status === "approved" || it.status === "published");
   const canOfferFull = st.approvals_streak >= 2 && st.mode !== "full";
@@ -744,20 +901,13 @@ export default function AutopilotPage() {
       ? `${fmtRangeMsk(visible[0].scheduledAt)} — ${fmtRangeMsk(visible[visible.length - 1].scheduledAt)}`
       : "";
   const allApproved = pending.length === 0 && approved.length > 0;
-  const sourceCount = new Set(
-    items.flatMap((item) => item.sources?.map((source) => String(source.id)) ?? []),
-  ).size;
-  const newsCount = items.filter((item) => item.sources?.some((source) => source.kind === "news")).length;
-  const plannedCount = plannedPostCountForWeeks(st.post_frequency, planningWeeks);
+  const plannedCount = plannedDailyAutopilotPostCount(planningWeeks);
   const plannedDuration = fmtBuildEstimate(estimateAutopilotBuildMinutes(plannedCount));
   const buildCompleted = plan?.buildProgress?.completed ?? 0;
   const buildTotal = plan?.buildProgress?.total ?? plannedCount;
   const remainingBuildDuration = fmtBuildEstimate(
     estimateAutopilotBuildMinutes(buildTotal, buildCompleted),
   );
-  const countCapped = planCountWasCappedForWeeks(st.post_frequency, planningWeeks);
-  const selectedEngine = AUTOPILOT_ENGINE_OPTIONS.find((option) => option.id === generationEngine)
-    ?? AUTOPILOT_ENGINE_OPTIONS[0];
   const renderedVisible = visible.slice(0, visibleLimit);
   const planEndLabel = new Date(planningAnchorMs + planningWeeks * 7 * 86_400_000).toLocaleDateString(
     "ru-RU",
@@ -767,7 +917,7 @@ export default function AutopilotPage() {
   return (
     <AppShell
       title="Автопилот"
-      subtitle="Аврора сама найдёт свежие источники, выберет интересные темы и подготовит готовые посты."
+      subtitle="Аврора сама найдёт свежие инфоповоды, выберет интересные темы и подготовит готовые посты."
     >
       {picker}
       {growthNotice && (
@@ -775,7 +925,7 @@ export default function AutopilotPage() {
           <p className="text-[14px] leading-relaxed text-text">{growthNotice}</p>
         </Card>
       )}
-      {/* Резюме настроек. Редактирование живёт в одном месте — «Настройке Авроры». */}
+      {/* Короткое резюме канала. Редкие ограничения и стратегия остаются в полных настройках. */}
       <Card className="mb-5 p-4 sm:p-5">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
@@ -784,7 +934,7 @@ export default function AutopilotPage() {
                 {st.enabled ? "Автопилот включён" : "Автопилот выключен"}
               </Badge>
               <Badge tone="neutral">
-                {st.post_frequency} {plural(st.post_frequency, "пост", "поста", "постов")} в неделю
+                1 пост в день · 7 в неделю
               </Badge>
               <Badge tone="neutral">
                 {st.mode === "full" ? "без подтверждения" : "с подтверждением"}
@@ -806,36 +956,16 @@ export default function AutopilotPage() {
             className={buttonClassName({ variant: "outline", size: "sm", className: "shrink-0" })}
           >
             <Settings2 className="h-4 w-4" aria-hidden />
-            Настроить Аврору
+            Полные настройки
           </Link>
         </div>
       </Card>
 
       <Card className="mb-5 p-4 sm:p-5">
-        <div className="flex flex-col gap-5 lg:flex-row lg:items-end">
-          <div className="min-w-0 flex-1">
-            <label htmlFor="autopilot-engine" className="text-[13px] font-semibold text-text">
-              Редактор
-            </label>
-            <select
-              id="autopilot-engine"
-              value={generationEngine}
-              onChange={(event) => setGenerationEngine(event.target.value as typeof generationEngine)}
-              disabled={busy || building}
-              className="mt-2 h-11 w-full rounded-md border border-line bg-surface px-3 text-[14px] font-semibold text-text outline-none transition-colors focus-visible:border-brand focus-visible:ring-2 focus-visible:ring-brand/20 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {AUTOPILOT_ENGINE_OPTIONS.map((option) => (
-                <option key={option.id} value={option.id}>{option.label}</option>
-              ))}
-            </select>
-            <p className="mt-1.5 text-[12px] leading-relaxed text-text-3">
-              {selectedEngine.note}
-            </p>
-          </div>
-
-          <div className="min-w-0 flex-1">
+        <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+          <div className="min-w-0 lg:max-w-sm lg:flex-1">
             <label htmlFor="autopilot-horizon" className="text-[13px] font-semibold text-text">
-              На сколько недель
+              Период
             </label>
             <select
               id="autopilot-horizon"
@@ -855,7 +985,6 @@ export default function AutopilotPage() {
             </select>
             <p className="mt-1.5 text-[12px] text-text-3" aria-live="polite">
               До {planEndLabel} · {plannedCount} {plural(plannedCount, "пост", "поста", "постов")}
-              {countCapped && " · максимум 90 за один запуск"}
               {` · сборка — ${plannedDuration}`}
             </p>
           </div>
@@ -871,9 +1000,62 @@ export default function AutopilotPage() {
             {building ? "План собирается" : `${plan ? "Обновить" : "Собрать"} ${plannedCount} ${plural(plannedCount, "пост", "поста", "постов")}`}
           </Button>
         </div>
+
+        <fieldset className="mt-5 border-t border-line pt-5" disabled={busy || building}>
+          <legend className="px-1 text-[14px] font-semibold text-text">Как будут звучать посты</legend>
+          <p className="mt-1 text-[12px] leading-relaxed text-text-3">
+            Только главное. Изменения применятся к следующей сборке.
+          </p>
+          <div className="mt-4 grid gap-x-6 gap-y-5 sm:grid-cols-2">
+            <QuickRange
+              id="autopilot-news"
+              label="Свежие события"
+              hint="Остальные посты — полезные разборы и идеи по теме канала."
+              min={0}
+              max={7}
+              value={quickSettings.newsPerWeek}
+              valueLabel={`${quickSettings.newsPerWeek} из 7`}
+              disabled={busy || building}
+              onChange={(newsPerWeek) => setQuickSettings((current) => ({ ...current, newsPerWeek }))}
+            />
+            <QuickRange
+              id="autopilot-detail"
+              label="Подробность"
+              hint="Аврора сохранит лёгкую структуру без пустых абзацев."
+              min={1}
+              max={3}
+              value={quickSettings.detail}
+              valueLabel={quickSettings.detail === 1 ? "коротко" : quickSettings.detail === 3 ? "подробно" : "оптимально"}
+              disabled={busy || building}
+              onChange={(detail) => setQuickSettings((current) => ({ ...current, detail }))}
+            />
+            <QuickRange
+              id="autopilot-energy"
+              label="Подача"
+              hint="Без канцелярита, редакторских комментариев и кликбейта."
+              min={1}
+              max={3}
+              value={quickSettings.energy}
+              valueLabel={quickSettings.energy === 1 ? "спокойно" : quickSettings.energy === 3 ? "живо" : "разговорно"}
+              disabled={busy || building}
+              onChange={(energy) => setQuickSettings((current) => ({ ...current, energy }))}
+            />
+            <QuickRange
+              id="autopilot-emoji"
+              label="Эмодзи"
+              hint="Эмодзи помогают чтению, но не заменяют смысл."
+              min={0}
+              max={2}
+              value={quickSettings.emoji}
+              valueLabel={quickSettings.emoji === 0 ? "без эмодзи" : quickSettings.emoji === 2 ? "заметно" : "умеренно"}
+              disabled={busy || building}
+              onChange={(emoji) => setQuickSettings((current) => ({ ...current, emoji }))}
+            />
+          </div>
+        </fieldset>
         <p className="mt-4 flex items-start gap-2 rounded-md bg-surface-inset p-3 text-[12px] leading-relaxed text-text-3">
           <Check className="mt-0.5 h-4 w-4 shrink-0 text-success" aria-hidden />
-          Аврора сама подбирает источники по теме канала, проверяет факты и убирает слабые варианты до того, как ты увидишь план.
+          Аврора сама находит материалы по теме канала, проверяет факты и убирает слабые варианты до того, как ты увидишь план.
         </p>
       </Card>
 
@@ -954,11 +1136,11 @@ export default function AutopilotPage() {
                 : plan.errorReason === "variety"
                   ? "Свежие материалы оказались слишком похожи на недавние посты. Аврора не стала заполнять план повторами."
                   : plan.errorReason === "sources" || plan.errorReason === "knowledge"
-                    ? "Аврора не нашла достаточно свежих и подтверждённых материалов по теме канала. Слабые источники в план не попали."
+                    ? "Аврора не нашла достаточно свежих и подтверждённых материалов по теме канала. Слабые варианты в план не попали."
                     : plan.errorReason === "quality"
                       ? "Найденные темы не удалось довести до готовых публикаций. Аврора убрала слабые варианты вместо того, чтобы отдавать их на исправление."
                       : plan.errorReason === "provider"
-                        ? "Редактор временно недоступен. Источники и настройки сохранены — повтори сборку немного позже."
+                        ? "Редактор временно недоступен. Настройки сохранены — повтори сборку немного позже."
                         : "Готовые публикации сохранены. Попробуй обновить план ещё раз."}
           </p>
           <div className="mt-5 flex justify-center">
@@ -977,7 +1159,7 @@ export default function AutopilotPage() {
           <EmptyState
             icon={<Newspaper className="h-6 w-6" strokeWidth={1.75} aria-hidden />}
             title="Готовых материалов пока нет"
-            body="Аврора сама найдёт свежие источники по теме канала, выберет интересные события и соберёт из них понятные посты."
+            body="Аврора сама найдёт свежие инфоповоды по теме канала, выберет интересные события и соберёт из них понятные посты."
           />
         </Card>
       ) : (
@@ -1004,8 +1186,15 @@ export default function AutopilotPage() {
                       · {reviewPending.length} на согласовании
                     </>
                   )}
-                  {sourceCount > 0 && <> · {sourceCount} {plural(sourceCount, "источник", "источника", "источников")}</>}
-                  {newsCount > 0 && <> · {newsCount} по свежим событиям</>}
+                  {editorPending.length > 0 && (
+                    <>
+                      {" "}
+                      · {editorPending.length} {plural(editorPending.length, "пост", "поста", "постов")} в редакторе
+                    </>
+                  )}
+                  {visible.length === plannedDailyAutopilotPostCount(plan.planning_weeks || 1) && (
+                    <> · по одному посту на каждый день</>
+                  )}
                 </p>
               </div>
               {readyPending.length > 0 ? (
@@ -1093,13 +1282,7 @@ export default function AutopilotPage() {
           <ul className="space-y-3">
             {renderedVisible.map((it) => {
               const done = it.status === "approved" || it.status === "published";
-              const isEditing = editing?.channelId === data.channelId &&
-                editing.planId === plan.id &&
-                editing.revision === plan.revision &&
-                editing.itemIndex === it.i;
-              const isOpen = expanded === it.i || isEditing;
-              const externalSources = (it.sources ?? []).filter((source) => source.url);
-              const knowledgeSources = (it.sources ?? []).filter((source) => !source.url);
+              const isOpen = expanded === it.i;
               return (
                 <motion.li
                   key={it.i}
@@ -1110,7 +1293,7 @@ export default function AutopilotPage() {
                     {/* Шапка: иконка темы + тема + когда + статус. Клик — раскрыть/свернуть. */}
                     <button
                       type="button"
-                      onClick={() => !isEditing && setExpanded(isOpen ? null : it.i)}
+                      onClick={() => setExpanded(isOpen ? null : it.i)}
                       aria-expanded={isOpen}
                       aria-label={`${isOpen ? "Свернуть" : "Открыть"} пост «${it.topic}»`}
                       className="flex w-full items-center gap-3 p-4 text-left focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-inset focus-visible:ring-brand/15"
@@ -1136,6 +1319,8 @@ export default function AutopilotPage() {
                         <Badge tone="success">
                           <Check className="h-3 w-3" strokeWidth={2.5} aria-hidden />в очереди
                         </Badge>
+                      ) : it.draftId ? (
+                        <Badge tone="brand">в редакторе</Badge>
                       ) : isAutopilotHumanReviewItem(it) ? (
                         <Badge tone="brand">на согласовании</Badge>
                       ) : (
@@ -1154,40 +1339,11 @@ export default function AutopilotPage() {
                       />
                     </button>
 
-                    {/* Тело: редактор / полный текст / короткое превью */}
+                    {/* Тело: готовый читательский текст. Исследовательские источники остаются внутри Авроры. */}
                     <div className="px-4 pb-4">
-                      {isEditing ? (
-                        <div>
-                          <Textarea
-                            rows={5}
-                            value={editText}
-                            onChange={(e) => setEditText(e.target.value)}
-                          />
-                          <div className="mt-2 flex gap-2">
-                            <Button
-                              size="sm"
-                              variant="solid"
-                              onClick={() => itemAction(it.i, "edit", editText)}
-                            >
-                              Сохранить
-                            </Button>
-                            <Button size="sm" variant="ghost" onClick={() => setEditing(null)}>
-                              Отмена
-                            </Button>
-                          </div>
-                        </div>
-                      ) : (
-                        <p
-                          className={cn(
-                            "max-w-[72ch] whitespace-pre-line text-[14px] leading-relaxed text-text-2",
-                            !isOpen && "line-clamp-2",
-                          )}
-                        >
-                          {it.draft}
-                        </p>
-                      )}
+                      <PostPreview text={it.draft} expanded={isOpen} />
 
-                      {!isEditing && isAutopilotHumanReviewItem(it) && (
+                      {isAutopilotHumanReviewItem(it) && (
                         <div className="mt-3 flex items-start gap-2 rounded-sm bg-info-soft p-3">
                           <Sparkles
                             className="mt-0.5 h-4 w-4 shrink-0 text-info-text"
@@ -1200,67 +1356,37 @@ export default function AutopilotPage() {
                         </div>
                       )}
 
-                      {isOpen && !isEditing && it.sources && it.sources.length > 0 && (
-                        <div className="mt-3 max-w-[72ch] rounded-sm bg-surface-inset p-3">
-                          <p className="mb-1.5 flex items-center gap-1.5 text-[12px] font-semibold text-text-3">
-                            <BookText className="h-3.5 w-3.5" aria-hidden />
-                            Источники и контекст
+                      {it.status === "pending" && it.draftId && (
+                        <div className="mt-3 flex items-start gap-2 rounded-sm bg-info-soft p-3">
+                          <Pencil className="mt-0.5 h-4 w-4 shrink-0 text-info-text" aria-hidden />
+                          <p className="text-[13px] leading-snug text-info-text">
+                            Правки сохранены в редакторе. Поставь пост в календарь оттуда — дата Автопилота уже выбрана.
                           </p>
-                          <ul className="space-y-2">
-                            {externalSources.map((src) => (
-                              <li key={String(src.id)} className="text-[13px] leading-snug text-text-3">
-                                <a
-                                  href={src.url}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="inline-flex min-h-6 items-center gap-1 font-semibold text-text-2 underline-offset-4 hover:text-brand hover:underline focus-visible:rounded-xs focus-visible:ring-4 focus-visible:ring-brand/15"
-                                >
-                                  {src.title || "Открыть первоисточник"}
-                                  <ExternalLink className="h-3.5 w-3.5 shrink-0" aria-hidden />
-                                </a>
-                                {src.publishedAt && (
-                                  <span className="ml-2 tabular-nums text-text-3">
-                                    {new Date(src.publishedAt).toLocaleDateString("ru-RU", { day: "numeric", month: "long" })}
-                                  </span>
-                                )}
-                              </li>
-                            ))}
-                            {knowledgeSources.slice(0, 3).map((src) => (
-                              <li key={String(src.id)} className="text-[13px] leading-snug text-text-3">
-                                {src.text}
-                              </li>
-                            ))}
-                          </ul>
                         </div>
                       )}
 
-                      {it.status === "pending" && !isEditing && (
+                      {it.status === "pending" && (
                         <div className="mt-3 flex flex-wrap gap-2">
-                          <Button
-                            size="sm"
-                            variant="soft"
-                            disabled={!canApproveItem(it)}
-                            onClick={() => itemAction(it.i, "approve")}
-                          >
-                            <Check className="h-4 w-4" aria-hidden />
-                            Одобрить
-                          </Button>
+                          {!it.draftId && (
+                            <Button
+                              size="sm"
+                              variant="soft"
+                              disabled={!canApproveItem(it)}
+                              onClick={() => itemAction(it.i, "approve")}
+                            >
+                              <Check className="h-4 w-4" aria-hidden />
+                              Одобрить
+                            </Button>
+                          )}
                           <Button
                             size="sm"
                             variant="ghost"
-                            onClick={() => {
-                              if (!data.channelId) return;
-                              setEditing({
-                                channelId: data.channelId,
-                                planId: plan.id,
-                                revision: plan.revision,
-                                itemIndex: it.i,
-                              });
-                              setEditText(it.draft);
-                            }}
+                            loading={editorBusyIndex === it.i}
+                            disabled={editorBusyIndex != null}
+                            onClick={() => void openEditor(it)}
                           >
                             <Pencil className="h-4 w-4" aria-hidden />
-                            Редактировать
+                            Открыть в редакторе
                           </Button>
                           <Button size="sm" variant="ghost" onClick={() => itemAction(it.i, "reject")}>
                             <X className="h-4 w-4" aria-hidden />

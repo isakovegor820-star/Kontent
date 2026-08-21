@@ -12,7 +12,8 @@ describe("Autopilot ready-plan generation contract", () => {
   // Право на выпуск считается отдельно для каждого оставшегося сильного поста.
   it("delivers only reader-ready posts and gates publication per post", () => {
     expect(source).toContain("const AUTOPILOT_QUALITY_REWRITE_ATTEMPTS = 2;");
-    expect(source.match(/autopilotDraftsDeliverable\(items\.length, topics, items\)/g)?.length).toBe(2);
+    expect(source.match(/autopilotDraftsDeliverable\(N, topics, items\)/g)?.length).toBe(2);
+    expect(source).toContain("items.length !== N");
     expect(source.match(/isAutopilotReaderReadyItem\(item\)/g)?.length).toBeGreaterThanOrEqual(2);
     expect(source).not.toContain("full\n    ? autopilotBuildComplete(N, topics, items)");
     expect(source).not.toMatch(/full\s*\n?\s*\?\s*autopilotBuildComplete\(N, topics, items\)/);
@@ -98,7 +99,9 @@ describe("Autopilot ready-plan generation contract", () => {
     expect(source).not.toContain(
       "Каждый текст проходит редакционный порог ${quality.qualityThreshold}/100",
     );
-    expect(source).toContain("Каждый текст проходит автоматическую редактуру");
+    expect(source).toContain("По одному посту в день:");
+    expect(source).not.toContain("Каждый текст проходит автоматическую редактуру");
+    expect(source).not.toContain("модель — ${engineLabel}");
   });
 
   it("logs which gate rejected the plan instead of a bare counter", () => {

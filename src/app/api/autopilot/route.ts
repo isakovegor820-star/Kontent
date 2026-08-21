@@ -14,9 +14,11 @@ import {
   autopilotBuildActivityAt,
   autopilotBuildProgress,
 } from "@/lib/autopilot-build-progress.mjs";
-import { plannedPostCountForWeeks } from "@/lib/autopilot-config.mjs";
+import { plannedDailyAutopilotPostCount } from "@/lib/autopilot-config.mjs";
 import { isAutopilotHumanReviewItem } from "@/lib/autopilot-approval.mjs";
 import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/project-permissions";
+import { sanitizeAutopilotPublicText } from "@/lib/autopilot-publication.mjs";
+import { normalizeAutopilotQuickSettings } from "@/lib/autopilot-style.mjs";
 
 export const runtime = "nodejs";
 
@@ -53,7 +55,7 @@ export async function GET(req: NextRequest) {
           `select id, week_start, items, rules, status, revision, created_at,
                   build_activity_at,
                   generation_engine, generation_post_frequency, expected_post_count,
-                  planning_months, planning_weeks
+                  planning_months, planning_weeks, quick_settings
              from autopilot_plan where project_id = $1 and channel_id = $2
              order by created_at desc limit 1`,
           [membership.projectId, channelId],
@@ -78,8 +80,7 @@ export async function GET(req: NextRequest) {
       plan = { ...plan, errorReason: "cancelled" };
     }
     const expectedPostCount = plan
-      ? Number(plan.expected_post_count) || plannedPostCountForWeeks(
-          settings.post_frequency,
+      ? Number(plan.expected_post_count) || plannedDailyAutopilotPostCount(
           plan.planning_weeks ?? plan.planning_months * 4,
         )
       : 0;
@@ -110,16 +111,43 @@ export async function GET(req: NextRequest) {
     }
     const brief = await loadBrief(scope, channelId);
     if (Array.isArray(plan?.items)) {
+      const draftIds = plan.items
+        .map((item: { draftId?: unknown }) => Number(item.draftId))
+        .filter((id: number) => Number.isSafeInteger(id) && id > 0);
+      const linkedDrafts = draftIds.length
+        ? (
+            await pool.query<{ id: string; text: string; scheduled_at: string | null }>(
+              `select id, text, scheduled_at from drafts
+                where project_id = $1 and id = any($2::bigint[])`,
+              [membership.projectId, draftIds],
+            )
+          ).rows
+        : [];
+      const draftById = new Map(linkedDrafts.map((draft) => [Number(draft.id), draft]));
       plan = {
         ...plan,
-        items: plan.items.map((item: { reviewRequired?: boolean }) =>
-          isAutopilotHumanReviewItem(item) ? { ...item, reviewRequired: true } : item,
-        ),
+        quick_settings: normalizeAutopilotQuickSettings(plan.quick_settings),
+        items: plan.items.map((item: {
+          draftId?: unknown;
+          draft?: unknown;
+          scheduledAt?: string;
+          reviewRequired?: boolean;
+        }) => {
+          const linked = draftById.get(Number(item.draftId));
+          const hydrated = {
+            ...item,
+            draft: sanitizeAutopilotPublicText(linked?.text ?? item.draft),
+            ...(linked?.scheduled_at ? { scheduledAt: new Date(linked.scheduled_at).toISOString() } : {}),
+          };
+          return isAutopilotHumanReviewItem(hydrated)
+            ? { ...hydrated, reviewRequired: true }
+            : hydrated;
+        }),
       };
     }
 
     return NextResponse.json({
-      settings,
+      settings: { ...settings, quick_settings: normalizeAutopilotQuickSettings(settings.quick_settings) },
       plan,
       hasChannel: true,
       brief,

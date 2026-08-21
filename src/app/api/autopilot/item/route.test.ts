@@ -339,6 +339,11 @@ describe("PATCH /api/autopilot/item approve", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ ok: true, postId: 612 });
     expect(mocks.scheduleItem).toHaveBeenCalledOnce();
+    expect(mocks.scheduleItem).toHaveBeenCalledWith(expect.objectContaining({
+      approvedItem: expect.objectContaining({
+        humanAttestation: expect.objectContaining({ kind: "human_review", userId: 3 }),
+      }),
+    }));
     const saved = mocks.finalizeApproval.mock.calls[0][0].items[0];
     expect(saved.humanAttestation).toMatchObject({
       kind: "human_review",
