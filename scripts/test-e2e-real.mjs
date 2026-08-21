@@ -2408,6 +2408,11 @@ try {
   });
   const telegramTextBeforeCommentsPublication = fakeState.telegram.textCalls;
   const telegramPinBeforeCommentsPublication = fakeState.telegram.pinCalls;
+  // Resolve the immediate publication slot at mutation time. Reusing the draft's
+  // minute after the approval/typography setup can cross the API's one-minute
+  // clock-skew boundary and turn this fixture into a request for the past.
+  const commentsOperationInstant = new Date();
+  commentsOperationInstant.setUTCSeconds(0, 0);
   const commentsOperationResponse = await authenticatedRequest("/api/publication-operations", {
     method: "POST",
     headers: { "idempotency-key": "e2e_supported_comments_publication_1" },
@@ -2415,6 +2420,14 @@ try {
       draftId: commentsDraft.id,
       draftVersion: commentsPreferences.draftVersion,
       timezone: "UTC",
+      schedule: {
+        scheduledAt: commentsOperationInstant.toISOString(),
+        localDate: commentsOperationInstant.toISOString().slice(0, 10),
+        localTime: commentsOperationInstant.toISOString().slice(11, 16),
+        timezone: "UTC",
+        offset: "+00:00",
+        disambiguation: "reject",
+      },
     },
   });
   assert(
