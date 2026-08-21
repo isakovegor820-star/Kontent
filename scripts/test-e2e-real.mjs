@@ -413,6 +413,7 @@ function fakeAutopilotPost(messageText) {
   return [
     `${presentation}: ${safeTopic}?`,
     ...bodies[variant],
+    "Перед публикацией проверьте, что каждый абзац помогает основной мысли, а вывод можно применить без скрытого контекста и дополнительных обещаний.",
     `Какой следующий шаг вы выберете после формата «${presentation}»?`,
   ].join("\n\n");
 }
@@ -432,6 +433,10 @@ assert(
     [{ topic: "", draft: fakeAutopilotBase }],
   ),
   "fake Autopilot provider must honor presentation rewrites with a distinct draft",
+);
+assert(
+  [fakeAutopilotBase, fakeAutopilotRewrite].every((draft) => draft.length >= 700 && draft.length <= 1_150),
+  "fake Autopilot provider must satisfy the default detail length contract",
 );
 
 function fakeProvider() {
