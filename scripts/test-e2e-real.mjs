@@ -3842,10 +3842,13 @@ try {
        from publication_parts where post_id = $1 order by part_index`,
     [criticalPostId],
   )).rows;
+  const criticalPublicationMediaParts = criticalPublicationParts.filter(
+    (part) => part.part_type === "media",
+  );
   assert(
-    criticalPublicationParts.length === 5
-      && criticalPublicationParts.every((part) => part.send_status === "sent")
-      && JSON.stringify(criticalPublicationParts.map((part) => Number(part.external_message_id))) === JSON.stringify([801, 802, 803, 804, 805]),
+    criticalPublicationParts.every((part) => part.send_status === "sent")
+      && criticalPublicationMediaParts.length === 5
+      && JSON.stringify(criticalPublicationMediaParts.map((part) => Number(part.external_message_id))) === JSON.stringify([801, 802, 803, 804, 805]),
     "Telegram carousel did not persist the exact five provider album message ids",
   );
   const criticalExtraOperations = await waitFor(async () => {
@@ -4441,7 +4444,7 @@ try {
       publication: {
         operationId: criticalOperationId,
         postId: criticalPostId,
-        albumMessageIds: criticalPublicationParts.map((part) => Number(part.external_message_id)),
+        albumMessageIds: criticalPublicationMediaParts.map((part) => Number(part.external_message_id)),
         extras: criticalExtraOperations.map((operation) => ({
           kind: operation.kind,
           status: operation.status,
