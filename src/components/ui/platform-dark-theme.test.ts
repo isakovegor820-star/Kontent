@@ -22,6 +22,10 @@ const themeSelector = readFileSync(
   path.join(process.cwd(), "src/components/app/theme-selector.tsx"),
   "utf8",
 );
+const shell = readFileSync(
+  path.join(process.cwd(), "src/components/app/shell.tsx"),
+  "utf8",
+);
 
 const lightThemeBlock = css.match(
   /html:has\(\.app-v3\[data-theme="light"\]\),\n\.app-v3\[data-theme="light"\] \{([\s\S]*?)\n\}/,
@@ -54,8 +58,8 @@ describe("platform appearance themes", () => {
     expect(css).toContain("html:has(.app-v3)");
     expect(css).toContain("color-scheme: dark;");
     expect(css).toContain('html:has(.app-v3[data-theme="light"])');
-    expect(css).toContain('html:has(.app-v3[data-theme="system"])');
-    expect(css).toContain("@media (prefers-color-scheme: light)");
+    expect(css).not.toContain('data-theme="system"');
+    expect(css).not.toContain("@media (prefers-color-scheme: light)");
     expect(css).toContain("body:has(.app-v3)");
     expect(css).toContain("[role=\"dialog\"]");
     expect(css).toContain(".v3-toast");
@@ -78,15 +82,19 @@ describe("platform appearance themes", () => {
     expect(css).not.toContain(".app-v3 .bg-brand {");
   });
 
-  it("offers a persistent light, dark and system selector", () => {
-    expect(themeSelector).toContain("Оформление");
-    expect(themeSelector).toContain("Светлая");
-    expect(themeSelector).toContain("Тёмная");
-    expect(themeSelector).toContain("Система");
-    expect(themeSelector).toContain("aria-pressed={selected}");
+  it("offers one persistent icon control for light and dark themes", () => {
+    expect(themeSelector).toContain("Moon");
+    expect(themeSelector).toContain("Sun");
+    expect(themeSelector).toContain("aria-label={label}");
+    expect(themeSelector).not.toContain("Система");
+    expect(themeSelector).not.toContain("<fieldset>");
+    expect(shell).toMatch(/<AppThemeSelector\s*\/>[\s\S]*?<LogOut/);
+    expect(shell).not.toContain(
+      '<div className="shrink-0 space-y-3 border-t border-line p-3">\n        <AppThemeSelector />',
+    );
     expect(themeProvider).toContain("Max-Age=31536000");
     expect(themeProvider).toContain("SameSite=Lax");
-    expect(themeProvider).toContain('window.matchMedia("(prefers-color-scheme: dark)")');
+    expect(themeProvider).not.toContain("window.matchMedia");
     expect(themeProvider).toContain('meta[name="theme-color"]');
   });
 

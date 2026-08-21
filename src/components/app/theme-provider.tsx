@@ -27,8 +27,8 @@ function writeThemeCookie(preference: AppThemePreference) {
   document.cookie = `${APP_THEME_COOKIE}=${preference}; Max-Age=31536000; Path=/; SameSite=Lax${secure}`;
 }
 
-function updateBrowserThemeColor(preference: AppThemePreference, systemPrefersDark: boolean) {
-  const theme = resolveAppTheme(preference, systemPrefersDark);
+function updateBrowserThemeColor(preference: AppThemePreference) {
+  const theme = resolveAppTheme(preference);
   const meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
   meta?.setAttribute("content", appThemeColor(theme));
 }
@@ -48,13 +48,7 @@ export function AppThemeProvider({
   }, []);
 
   useEffect(() => {
-    const colorScheme = window.matchMedia("(prefers-color-scheme: dark)");
-    const syncBrowserChrome = () => updateBrowserThemeColor(preference, colorScheme.matches);
-    syncBrowserChrome();
-
-    if (preference !== "system") return;
-    colorScheme.addEventListener("change", syncBrowserChrome);
-    return () => colorScheme.removeEventListener("change", syncBrowserChrome);
+    updateBrowserThemeColor(preference);
   }, [preference]);
 
   const value = useMemo(() => ({ preference, setPreference }), [preference, setPreference]);

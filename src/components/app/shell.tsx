@@ -3,7 +3,7 @@
 /**
  * КАРКАС РАБОЧИХ ЭКРАНОВ ПЛАТФОРМЫ (Приложение А: экраны А4–А12).
  *
- * Визуальный мир — Aurora Glass в светлом, тёмном или системном режиме:
+ * Визуальный мир — Aurora Glass в светлом или тёмном режиме:
  * фирменные синие акценты, слоистые полупрозрачные панели и спокойная типографика.
  * Здесь остаётся только структура оболочки; цвета и физика приезжают из app-v3.css.
  */
@@ -295,6 +295,7 @@ function UserRow({ user, onSignOut }: { user: User; onSignOut: () => void }) {
         <p className="truncate text-[14px] font-semibold text-text">{user.name}</p>
         <p className="truncate text-[13px] text-text-3">{user.email}</p>
       </div>
+      <AppThemeSelector />
       <Button
         type="button"
         variant="ghost"
@@ -515,7 +516,6 @@ function SidebarInner({
       </nav>
 
       <div className="shrink-0 space-y-3 border-t border-line p-3">
-        <AppThemeSelector />
         <AiLimitCard />
         <UserRow user={user} onSignOut={onSignOut} />
       </div>
