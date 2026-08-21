@@ -7,7 +7,9 @@ import { getSessionUser } from "@/lib/session";
 
 export const runtime = "nodejs";
 
-export async function POST(req: NextRequest, context: RouteContext<"/api/opportunities/[id]/draft">) {
+type Context = { params: Promise<{ id: string }> };
+
+export async function POST(req: NextRequest, context: Context) {
   if (!hasTrustedMutationOrigin(req)) return NextResponse.json({ error: "forbidden_origin" }, { status: 403 });
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });

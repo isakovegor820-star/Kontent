@@ -6,7 +6,9 @@ import { getSessionUser } from "@/lib/session";
 
 export const runtime = "nodejs";
 
-export async function GET(req: NextRequest, context: RouteContext<"/api/evidence/[kind]/[id]">) {
+type Context = { params: Promise<{ kind: string; id: string }> };
+
+export async function GET(req: NextRequest, context: Context) {
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   const { kind, id } = await context.params;
