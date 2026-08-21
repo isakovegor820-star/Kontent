@@ -2584,18 +2584,23 @@ try {
       post_frequency: 3,
       generation_engine: "navy-deepseek-pro",
       planning_weeks: 1,
+      quick_settings: { newsPerWeek: 4, detail: 3, energy: 2, emoji: 1 },
     },
   });
   assert(autopilotSettingsResponse.status === 200, `autopilot settings failed: ${autopilotSettingsResponse.status}:${autopilotSettingsResponse.text}`);
   const storedAutopilotSettings = (await pool.query(
-    `select post_frequency, generation_engine, planning_weeks
+    `select post_frequency, generation_engine, planning_weeks, quick_settings
        from autopilot_settings where project_id = $1 and channel_id = $2`,
     [sharedProjectId, sharedChannelId],
   )).rows[0];
   assert(
-    Number(storedAutopilotSettings?.post_frequency) === 3
+    Number(storedAutopilotSettings?.post_frequency) === 7
       && storedAutopilotSettings?.generation_engine === "navy-deepseek-pro"
-      && Number(storedAutopilotSettings?.planning_weeks) === 1,
+      && Number(storedAutopilotSettings?.planning_weeks) === 1
+      && Number(storedAutopilotSettings?.quick_settings?.newsPerWeek) === 4
+      && Number(storedAutopilotSettings?.quick_settings?.detail) === 3
+      && Number(storedAutopilotSettings?.quick_settings?.energy) === 2
+      && Number(storedAutopilotSettings?.quick_settings?.emoji) === 1,
     "autopilot generation settings were not persisted in the shared project",
   );
 
