@@ -24,9 +24,9 @@ const ACCENT = {
 
 export function Toaster() {
   const { toasts, dismissToast } = useStore();
-  // На маршрутах платформы (скоуп .app-v3) тост — бумажный штамп, а не стекло
+  // На маршрутах платформы тост продолжает её тёмную слоистую поверхность.
   const pathname = usePathname();
-  const appMode = pathname.startsWith("/app") || pathname.startsWith("/register");
+  const appMode = pathname.startsWith("/app") || pathname.startsWith("/admin");
 
   return (
     <div

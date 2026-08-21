@@ -237,7 +237,7 @@ function ToolbarButton({
       className={cn(
         "inline-flex size-10 shrink-0 items-center justify-center rounded-xs text-text-2",
         "transition-[color,background-color,scale] duration-150 active:scale-[0.96]",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 focus-visible:ring-offset-surface",
         "disabled:cursor-not-allowed disabled:opacity-40",
         active ? "bg-info-soft text-info-text" : "hover:bg-surface hover:text-text",
       )}
@@ -646,20 +646,20 @@ export function RichTextEditor({
           </div>
           {linkError && <p id={`${id}-link-error`} role="alert" className="text-[13px] font-medium text-danger-text">{linkError}</p>}
           <div className="flex flex-wrap items-center gap-2">
-            <button type="button" onClick={applyLink} className="inline-flex min-h-10 items-center rounded-xs bg-brand px-4 text-[14px] font-semibold text-white transition-transform active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2">
+            <button type="button" onClick={applyLink} className="inline-flex min-h-10 items-center rounded-xs bg-brand px-4 text-[14px] font-semibold text-white transition-transform active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 focus-visible:ring-offset-surface">
               {linkForm.existing ? "Сохранить ссылку" : "Добавить ссылку"}
             </button>
-            <button type="button" onClick={closeLinkForm} className="inline-flex min-h-10 items-center rounded-xs px-3 text-[14px] font-semibold text-text-2 transition-transform active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2">
+            <button type="button" onClick={closeLinkForm} className="inline-flex min-h-10 items-center rounded-xs px-3 text-[14px] font-semibold text-text-2 transition-transform active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 focus-visible:ring-offset-surface">
               Отмена
             </button>
             {linkForm.existing && (
               <>
                 {openLinkHref && (
-                  <a href={openLinkHref} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-10 items-center gap-1.5 rounded-xs px-3 text-[14px] font-semibold text-info-text underline decoration-from-font underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2">
+                  <a href={openLinkHref} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-10 items-center gap-1.5 rounded-xs px-3 text-[14px] font-semibold text-info-text underline decoration-from-font underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 focus-visible:ring-offset-surface">
                     <ExternalLink className="size-4" aria-hidden /> Открыть
                   </a>
                 )}
-                <button type="button" onClick={removeLink} className="inline-flex min-h-10 items-center gap-1.5 rounded-xs px-3 text-[14px] font-semibold text-danger-text transition-transform active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger focus-visible:ring-offset-2">
+                <button type="button" onClick={removeLink} className="inline-flex min-h-10 items-center gap-1.5 rounded-xs px-3 text-[14px] font-semibold text-danger-text transition-transform active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger focus-visible:ring-offset-2 focus-visible:ring-offset-surface">
                   <Unlink className="size-4" aria-hidden /> Удалить ссылку
                 </button>
               </>

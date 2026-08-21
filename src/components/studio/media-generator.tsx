@@ -564,7 +564,7 @@ export function MediaGenerator({
                     {active && (
                       <div
                         className={cn(
-                          "relative w-full overflow-hidden rounded-[18px] bg-surface-inset outline -outline-offset-1 outline-black/10",
+                          "relative w-full overflow-hidden rounded-[18px] bg-surface-inset outline -outline-offset-1 outline-white/10",
                           vertical ? "max-w-[360px]" : "max-w-[640px]",
                         )}
                         style={{ aspectRatio }}
@@ -577,7 +577,7 @@ export function MediaGenerator({
                     {generation.status === "ready" && generation.assetUrl && (
                       <div
                         className={cn(
-                          "mt-4 overflow-hidden rounded-[18px] outline -outline-offset-1 outline-black/10",
+                          "mt-4 overflow-hidden rounded-[18px] outline -outline-offset-1 outline-white/10",
                           generation.kind === "video" ? "bg-black" : "bg-surface",
                           vertical ? "max-w-[420px]" : "max-w-[680px]",
                         )}

@@ -1,69 +1,79 @@
 /* ==========================================================================
    AURORA GLASS — ЕДИНЫЙ ВИЗУАЛЬНЫЙ СЛОЙ ПЛАТФОРМЫ
 
-   Платформа и публичный лендинг теперь живут в одном мире:
-   светлая основа, фирменный синий #2563FF, прозрачные панели,
-   мягкие тени и спокойная типографика. Все правила скоупированы под
-   .app-v3: функции и публичные страницы они не затрагивают.
+   Рабочая платформа живёт в отдельной чёрной теме: глубокий нейтральный фон,
+   фирменный синий #2563FF, спокойные слоистые поверхности и ясная типографика.
+   Все правила скоупированы по наличию .app-v3, поэтому публичные страницы
+   и авторизация сохраняют собственное светлое оформление.
    ========================================================================== */
 
+/* Токены также поднимаются на html: это даёт ту же тему portaled-модалкам и
+   тостам, которые физически рендерятся за пределами .app-v3. */
+html:has(.app-v3),
 .app-v3 {
-  /* Алиасы для старых декоративных классов: теперь они говорят на языке Glass. */
-  --paper: #f7faff;
-  --sheet: #ffffff;
-  --ink: #101828;
-  --ink-2: #344054;
-  --acc: #eff4ff;
-  --acc-deep: #dce8ff;
+  color-scheme: dark;
+
+  /* Алиасы для старых декоративных классов. */
+  --paper: #0b1018;
+  --sheet: #111824;
+  --ink: #f7f9fc;
+  --ink-2: #c9d2df;
+  --acc: #102343;
+  --acc-deep: #19335f;
   --red: #ef4444;
-  --red-soft: #fef2f2;
+  --red-soft: #32171c;
   --green: #10b981;
-  --green-soft: #ecfdf5;
+  --green-soft: #0d2b22;
 
   /* Тот же семантический мост, что на лендинге. */
   --brand-1: #2563ff;
   --brand-2: #1746e8;
-  --brand-3: #8fb2ff;
+  --brand-3: #9dbbff;
   --brand-hover: #1d4ed8;
   --brand-active: #173ea8;
+  --brand-text-start: #78a0ff;
+  --brand-text-end: #b7caff;
   --gradient-brand: linear-gradient(135deg, #2563ff 0%, #1746e8 100%);
   --gradient-logo: linear-gradient(145deg, #3b82ff 0%, #2563ff 52%, #1746e8 100%);
 
-  --bg: #f7faff;
-  --bg-section: #eef4ff;
-  --surface: #ffffff;
-  --surface-2: #f8fbff;
-  --surface-inset: #edf3ff;
+  --bg: #070a10;
+  --bg-section: #0b1018;
+  --surface: #111824;
+  --surface-2: #151e2c;
+  --surface-inset: #1b2636;
+  --surface-translucent: rgb(17 24 36 / 0.88);
+  --surface-translucent-strong: rgb(17 24 36 / 0.95);
+  --control-bg: rgb(17 24 36 / 0.94);
 
-  --glass-bg: rgb(255 255 255 / 0.68);
-  --glass-bg-strong: rgb(255 255 255 / 0.9);
-  --glass-border: rgb(255 255 255 / 0.78);
-  --glass-highlight: rgb(255 255 255 / 0.7);
+  --glass-bg: rgb(17 24 36 / 0.72);
+  --glass-bg-strong: rgb(17 24 36 / 0.9);
+  --glass-border: rgb(157 187 255 / 0.14);
+  --glass-highlight: rgb(255 255 255 / 0.055);
 
-  --text: #101828;
-  --text-2: #344054;
-  --text-3: #5d6b82;
+  --text: #f7f9fc;
+  --text-2: #c9d2df;
+  --text-3: #95a3b7;
 
-  --border: rgb(37 99 255 / 0.1);
-  --border-strong: rgb(37 99 255 / 0.18);
+  --border: rgb(157 187 255 / 0.11);
+  --border-strong: rgb(157 187 255 / 0.2);
 
   --success: #10b981;
-  --success-soft: #ecfdf5;
-  --success-text: #047857;
+  --success-soft: #0d2b22;
+  --success-text: #7ce0b4;
   --danger: #ef4444;
-  --danger-soft: #fef2f2;
-  --danger-text: #b91c1c;
+  --danger-soft: #32171c;
+  --danger-text: #ff9ea3;
   --fire: #f59e0b;
-  --fire-soft: #fffbeb;
-  --fire-text: #b45309;
+  --fire-soft: #302411;
+  --fire-text: #ffd078;
   --info: #2563ff;
-  --info-soft: #eff4ff;
-  --info-text: #1d4ed8;
+  --info-soft: #102343;
+  --info-text: #9dbbff;
 
-  --shadow-xs: 0 1px 2px rgb(15 23 42 / 0.04);
-  --shadow-sm: 0 4px 14px -6px rgb(15 23 42 / 0.16), 0 1px 3px rgb(15 23 42 / 0.05);
-  --shadow-md: 0 14px 34px -16px rgb(15 23 42 / 0.22), 0 4px 10px -6px rgb(15 23 42 / 0.09);
-  --shadow-lg: 0 28px 70px -28px rgb(15 23 42 / 0.28), 0 10px 24px -14px rgb(37 99 255 / 0.14);
+  --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.3);
+  --shadow-sm: 0 8px 24px -14px rgb(0 0 0 / 0.72), 0 1px 2px rgb(0 0 0 / 0.35);
+  --shadow-md: 0 18px 42px -20px rgb(0 0 0 / 0.82), 0 5px 14px -8px rgb(0 0 0 / 0.55);
+  --shadow-lg: 0 32px 80px -30px rgb(0 0 0 / 0.9), 0 12px 28px -18px rgb(37 99 255 / 0.2);
   --shadow-brand: 0 12px 32px -10px rgb(37 99 255 / 0.42);
   --shadow-brand-lg: 0 22px 54px -16px rgb(37 99 255 / 0.48);
 
@@ -73,15 +83,21 @@
   --radius-lg: 20px;
   --radius-xl: 28px;
   --radius-2xl: 36px;
+}
 
+body:has(.app-v3) {
+  background: var(--bg);
+}
+
+.app-v3 {
   min-height: 100dvh;
   color: var(--text);
   background-color: var(--bg);
   background-image:
-    radial-gradient(circle at 4% 0%, rgb(37 99 255 / 0.13), transparent 32rem),
-    radial-gradient(circle at 96% 10%, rgb(96 165 250 / 0.12), transparent 34rem),
-    linear-gradient(to right, rgb(15 23 42 / 0.025) 1px, transparent 1px),
-    linear-gradient(to bottom, rgb(15 23 42 / 0.025) 1px, transparent 1px);
+    radial-gradient(circle at 4% 0%, rgb(37 99 255 / 0.16), transparent 32rem),
+    radial-gradient(circle at 96% 10%, rgb(96 165 250 / 0.09), transparent 34rem),
+    linear-gradient(to right, rgb(157 187 255 / 0.025) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(157 187 255 / 0.025) 1px, transparent 1px);
   background-size: auto, auto, 72px 72px, 72px 72px;
   background-attachment: fixed;
   font-family: var(--font-interface);
@@ -96,6 +112,10 @@
 .app-v3 :focus-visible {
   outline: 2px solid var(--brand-1);
   outline-offset: 2px;
+}
+
+.app-v3 {
+  accent-color: var(--brand-1);
 }
 
 /* ---------- Единая типографика платформы ---------- */
@@ -238,9 +258,9 @@
 /* ---------- Поверхности ---------- */
 
 .app-v3 .card-plain {
-  background: rgb(255 255 255 / 0.88);
+  background: var(--surface-translucent);
   border: 1px solid var(--border);
-  box-shadow: var(--shadow-sm), inset 0 1px 0 rgb(255 255 255 / 0.8);
+  box-shadow: var(--shadow-sm), inset 0 1px 0 var(--glass-highlight);
   -webkit-backdrop-filter: blur(18px) saturate(145%);
   backdrop-filter: blur(18px) saturate(145%);
 }
@@ -266,7 +286,7 @@
   background: linear-gradient(
     110deg,
     var(--surface-inset) 8%,
-    rgb(255 255 255 / 0.85) 18%,
+    var(--surface-2) 18%,
     var(--surface-inset) 33%
   );
   background-size: 220% 100%;
@@ -337,7 +357,7 @@
 }
 
 .app-v3 button[data-variant="secondary"] {
-  background: rgb(255 255 255 / 0.82);
+  background: var(--control-bg);
   -webkit-backdrop-filter: blur(14px);
   backdrop-filter: blur(14px);
 }
@@ -358,8 +378,8 @@
   border-width: 1px;
   border-color: var(--border);
   border-radius: var(--radius-xs);
-  background-color: rgb(255 255 255 / 0.9);
-  box-shadow: inset 0 1px 2px rgb(15 23 42 / 0.025);
+  background-color: var(--control-bg);
+  box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.28);
 }
 
 .app-v3 input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="hidden"]):not([type="color"]):focus,
@@ -438,7 +458,7 @@
     rgb(37 99 255 / 0.16) var(--aurora-range-progress, 50%),
     rgb(23 70 232 / 0.12) 100%
   );
-  box-shadow: inset 0 1px 2px rgb(15 23 42 / 0.08);
+  box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.38);
 }
 
 .app-v3 input[type="range"]::-webkit-slider-thumb {
@@ -446,7 +466,7 @@
   width: 24px;
   height: 24px;
   margin-top: -8px;
-  border: 4px solid #fff;
+  border: 4px solid var(--surface);
   border-radius: 999px;
   background: var(--gradient-brand);
   box-shadow: 0 4px 14px rgb(37 99 255 / 0.42), 0 0 0 1px rgb(37 99 255 / 0.12);
@@ -470,13 +490,13 @@
   height: 8px;
   border-radius: 999px;
   background: rgb(37 99 255 / 0.18);
-  box-shadow: inset 0 1px 2px rgb(15 23 42 / 0.08);
+  box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.38);
 }
 
 .app-v3 input[type="range"]::-moz-range-thumb {
   width: 18px;
   height: 18px;
-  border: 4px solid #fff;
+  border: 4px solid var(--surface);
   border-radius: 999px;
   background: var(--brand-1);
   box-shadow: 0 3px 10px rgb(37 99 255 / 0.35);
@@ -517,8 +537,8 @@
   border-width: 1px;
   border-color: var(--border);
   border-radius: var(--radius-sm);
-  background: rgb(241 245 249 / 0.86);
-  box-shadow: inset 0 1px 2px rgb(15 23 42 / 0.035);
+  background: var(--surface-inset);
+  box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.34);
 }
 
 .app-v3 button[role="tab"] {
@@ -533,9 +553,8 @@
   box-shadow: var(--shadow-sm);
 }
 
-.app-v3 .bg-brand {
+.app-v3 .text-brand {
   color: var(--info-text);
-  background-color: var(--info-soft);
 }
 
 .app-v3 .bg-brand-gradient {
@@ -543,7 +562,7 @@
 }
 
 .app-v3 .text-gradient {
-  background-image: linear-gradient(115deg, var(--brand-1), var(--brand-2));
+  background-image: linear-gradient(115deg, var(--brand-text-start), var(--brand-text-end));
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
@@ -555,8 +574,8 @@
 .app-v3 .clay {
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  background: rgb(255 255 255 / 0.88);
-  box-shadow: var(--shadow-md), inset 0 1px 0 rgb(255 255 255 / 0.8);
+  background: var(--surface-translucent);
+  box-shadow: var(--shadow-md), inset 0 1px 0 var(--glass-highlight);
   -webkit-backdrop-filter: blur(22px) saturate(150%);
   backdrop-filter: blur(22px) saturate(150%);
 }
@@ -580,23 +599,23 @@
 .app-v3 .clay-sm {
   border: 1px solid var(--border);
   border-radius: 999px;
-  background: rgb(255 255 255 / 0.9);
+  background: var(--control-bg);
   box-shadow: var(--shadow-xs);
 }
 
 .app-v3 .clay-in,
 .app-v3 .clay-press {
   background: var(--surface-inset);
-  box-shadow: inset 0 1px 3px rgb(15 23 42 / 0.08);
+  box-shadow: inset 0 1px 3px rgb(0 0 0 / 0.42);
 }
 
 /* Тост рендерится выше app-layout, поэтому класс не скоупирован. */
 .v3-toast {
-  color: #0f172a;
-  background: rgb(255 255 255 / 0.94);
-  border: 1px solid rgb(15 23 42 / 0.1);
+  color: var(--text);
+  background: var(--surface-translucent-strong);
+  border: 1px solid var(--border-strong);
   border-radius: 16px;
-  box-shadow: 0 24px 60px -24px rgb(15 23 42 / 0.32);
+  box-shadow: var(--shadow-lg), inset 0 1px 0 var(--glass-highlight);
   -webkit-backdrop-filter: blur(24px) saturate(160%);
   backdrop-filter: blur(24px) saturate(160%);
 }
@@ -610,8 +629,8 @@
   }
 
   .app-v3 .card-plain:hover {
-    border-color: rgb(37 99 255 / 0.16);
-    box-shadow: var(--shadow-md), inset 0 1px 0 rgb(255 255 255 / 0.9);
+    border-color: var(--border-strong);
+    box-shadow: var(--shadow-md), inset 0 1px 0 var(--glass-highlight);
   }
 }
 

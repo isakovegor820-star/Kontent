@@ -274,7 +274,7 @@ function VisualPreview({ config, activeCardId }: { config: VisualConfig; activeC
             <img
               src={`/api/media/assets/${config.brand.logo.assetId}`}
               alt={config.brand.logo.alt}
-              className="h-[clamp(24px,6vw,44px)] w-[clamp(24px,6vw,44px)] shrink-0 rounded-xs object-contain outline outline-1 outline-black/10"
+              className="h-[clamp(24px,6vw,44px)] w-[clamp(24px,6vw,44px)] shrink-0 rounded-xs object-contain outline outline-1 outline-white/10"
             />
           )}
           <p className="min-w-0 text-[clamp(8px,1.6vw,11px)] leading-snug" style={{ color: config.brand.colors.mutedText }}>{config.brand.signature}</p>
@@ -698,7 +698,7 @@ function BrandKitPanel({
           <section aria-labelledby="brand-logo-heading" className="min-w-0 rounded-sm bg-surface-2 p-4">
             <h3 id="brand-logo-heading" className="text-[15px] font-bold text-text">Логотип проекта</h3>
             <p className="mt-1 text-[13px] leading-relaxed text-text-3">Выберите изображение из медиатеки или загрузите PNG, JPEG либо WebP до 10 МБ.</p>
-            <div className="mt-4 flex min-h-24 items-center justify-center rounded-sm bg-surface p-3 outline outline-1 outline-black/10">
+            <div className="mt-4 flex min-h-24 items-center justify-center rounded-sm bg-surface p-3 outline outline-1 outline-white/10">
               {brand.logo ? (
                 // eslint-disable-next-line @next/next/no-img-element -- authenticated project media cannot use the image optimizer
                 <img src={`/api/media/assets/${brand.logo.assetId}`} alt={brand.logo.alt} className="max-h-24 max-w-full object-contain" />

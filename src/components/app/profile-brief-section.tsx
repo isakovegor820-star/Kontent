@@ -444,7 +444,7 @@ export function ProfileBriefSection() {
                       <img
                         src={avatarSrc}
                         alt="Фотография профиля"
-                        className="h-28 w-28 rounded-full object-cover shadow-soft outline outline-1 outline-black/10 ring-4 ring-surface dark:outline-white/10"
+                        className="h-28 w-28 rounded-full object-cover shadow-soft outline outline-1 outline-white/10 ring-4 ring-surface"
                         onError={() => setAvatarBroken(true)}
                       />
                     ) : (
