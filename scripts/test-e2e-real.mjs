@@ -2612,7 +2612,7 @@ try {
     [sharedProjectId, sharedChannelId],
   )).rows[0];
   assert(
-    Number(storedAutopilotSettings?.post_frequency) === 7
+    Number(storedAutopilotSettings?.post_frequency) === 3
       && storedAutopilotSettings?.generation_engine === "navy-deepseek-pro"
       && Number(storedAutopilotSettings?.planning_weeks) === 1
       && Number(storedAutopilotSettings?.quick_settings?.newsPerWeek) === 4
