@@ -23,6 +23,7 @@ export interface SemanticPublicationResult {
   passed: boolean;
   requiresReview: boolean;
   blockers: Array<{ code: "unsupported_semantic_claim"; claimId: string; message: string }>;
+  reviewClaims: Array<{ claimId: string; reasonCode: string; message: string }>;
   claimVerdicts: Array<{
     claimId: string;
     claim: string;
@@ -42,6 +43,7 @@ export interface SemanticPublicationResult {
   };
 }
 
+export const SEMANTIC_RISK_RULES: readonly string[];
 export function extractSemanticClaims(text: string): Array<{ id: string; text: string }>;
 export function validateSemanticClaims(
   input: { text: string; sources: Array<{ id: string | number; text: string }> },

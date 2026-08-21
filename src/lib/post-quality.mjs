@@ -2,6 +2,9 @@
 // его используют и Next.js, и отдельный node-worker. Правила существуют не только в
 // промпте — validatePostQuality программно закрывает публикацию, если модель вышла за рамки.
 
+import { countSentences } from "./ru-sentences.mjs";
+import { SEMANTIC_RISK_RULES } from "./semantic-claims.mjs";
+
 const clean = (value, max = 500) => String(value ?? "").trim().slice(0, max);
 const list = (value, limit, itemMax) =>
   Array.isArray(value)
@@ -481,6 +484,10 @@ export function buildQualityPrompt(rawQuality, options = {}) {
   if (q.visualDirection) lines.push(`— стиль визуального сопровождения: ${q.visualDirection};`);
   if (q.forbiddenPhrases.length) lines.push(`— запрещённые формулировки: ${q.forbiddenPhrases.join("; ")};`);
   if (q.forbiddenTopics.length) lines.push(`— запрещённые темы: ${q.forbiddenTopics.join("; ")};`);
+  // Те же обороты, которые семантическая проверка не пропустит в публикацию. Держать их
+  // только в проверке — значит раз за разом заворачивать текст за то, о чём модель
+  // никто не предупредил.
+  lines.push(...SEMANTIC_RISK_RULES.map((rule) => `— ${rule}`));
   lines.push("— никаких заголовков-разметок «Хук:», «Основная часть:», «Вывод:», «CTA:».");
   return lines.join("\n");
 }
@@ -494,9 +501,10 @@ const informal =
 const emoji = /\p{Extended_Pictographic}/gu;
 const hashtag = /(^|\s)#[\p{L}\p{N}_]+/gu;
 
-function sentenceCount(text) {
-  return (text.match(/[.!?…]+(?:[»”"')\]]|$)/g) || []).length || (text.trim() ? 1 : 0);
-}
+// Прежний счётчик искал точку, за которой сразу закрывающая кавычка или конец строки, —
+// то есть «Раз. Два. Три.» считал одним предложением. Правило про плотность абзаца из-за
+// этого не срабатывало никогда, и посты выходили простынёй, оставаясь «в рамках».
+const sentenceCount = countSentences;
 
 function addViolation(out, code, message, blocker, penalty) {
   out.push({ code, message, blocker, penalty });
@@ -567,7 +575,10 @@ export function validatePostQuality(text, rawQuality, context = {}) {
     addViolation(violations, "hashtags", `Хэштегов ${hashtagCount}, разрешено максимум ${q.maxHashtags}`, true, 10);
   if (q.disclaimerRequired && q.disclaimerText && !value.includes(q.disclaimerText))
     addViolation(violations, "disclaimer", "Нет обязательного дисклеймера", true, 30);
-  if (/\b(?:хук|основная часть|вывод|cta|призыв к действию)\s*:/iu.test(value))
+  // \b в JS опирается на латиницу: перед кириллицей границы слова нет, и «Хук:» с «Вывод:»
+  // раньше уходили в публикацию — ловилось только латинское «CTA:». Ищем метку в начале
+  // строки: внутри фразы «отсюда вывод:» — обычная речь, а не остаток промпта.
+  if (/^\s*(?:\*\*)?(?:хук|основная часть|вывод|заключение|cta|призыв к действию)(?:\*\*)?\s*:/imu.test(value))
     addViolation(violations, "meta_labels", "В текст попали служебные метки промпта", true, 15);
   if (/[!?]{3,}|\.{4,}/.test(value))
     addViolation(violations, "punctuation", "Слишком много повторяющихся знаков препинания", false, 8);
@@ -619,9 +630,21 @@ export function buildRewritePrompt(draft, result) {
   const problems = result?.violations?.length
     ? result.violations.map((x) => `— ${x.message}`).join("\n")
     : "— Проведи строгую редактуру: убери воду, повторы, канцелярит и неестественные фразы.";
+  // Замечание про рисковый оборот бесполезно без инструкции: модель перефразировала
+  // «снижает риск» в «позволяет избежать» и получала то же замечание на второй попытке.
+  const riskFlagged = (result?.violations || []).some((violation) =>
+    ["unsupported_semantic_claim", "semantic_review_required"].includes(violation?.code),
+  );
   return [
     "Перепиши черновик целиком. Исправь каждое замечание и сохрани только подтверждённый смысл.",
     "Верни ТОЛЬКО готовый пост, без объяснений и разбора.",
+    ...(riskFlagged
+      ? [
+          "Оценочные утверждения не перефразируй, а убирай вместе с оценкой:",
+          ...SEMANTIC_RISK_RULES.map((rule) => `— ${rule}`),
+          "Вместо оценки оставляй только описание того, что происходит по факту.",
+        ]
+      : []),
     "Не убирай служебные ссылки [1], [2]: после КАЖДОГО предложения с фактом должна стоять ссылка на источник.",
     "Каждое замечание про неподтверждённое утверждение означает: удали эту мысль целиком. Не перефразируй её и не заменяй новым советом.",
     "Не добавляй определения, причинно-следственные выводы, обещания результата, обобщения, оценку пользы или риска, если источник не говорит об этом прямо.",

@@ -77,7 +77,13 @@ const PROFILE_SOURCE_LABEL: Record<ProfileSourceKind, string> = {
 
 export default function KnowledgePage() {
   const store = useStore();
-  const [picked, setPicked] = useState<number | null>(null);
+  // Сюда приводит ссылка «Добавить материалы» с автопилота: без чтения ?channel человек
+  // попадал на другой канал и добавлял материалы не туда, где не собрался план.
+  const [picked, setPicked] = useState<number | null>(() => {
+    if (typeof window === "undefined") return null;
+    const value = Number(new URLSearchParams(window.location.search).get("channel"));
+    return Number.isSafeInteger(value) && value > 0 ? value : null;
+  });
   const { tgChannels, channelId } = useChannelChoice(store.realChannels, picked);
 
   const [data, setData] = useState<State | null>(null);

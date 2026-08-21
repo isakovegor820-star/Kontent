@@ -107,9 +107,15 @@ export function autopilotBuildComplete(expected, topics, items = null) {
     );
 }
 
-// Confirmation mode may safely expose a complete AI draft that still needs a person to
-// verify evidence. Such items are explicitly blocked from auto-publication. Full-auto keeps
-// using autopilotBuildComplete and therefore never crosses this relaxed delivery boundary.
+// План отдаётся человеку всегда, когда модель вернула настоящий текст на каждый слот.
+// Проверка решает не судьбу плана, а состояние одного поста: готов, прочитать или
+// поправить. Раньше один непрошедший пост из пяти уничтожал все пять — при том что
+// черновики уже лежали в базе. Автопилот, который иногда не выдаёт ничего, бесполезен:
+// человек не может ни опубликовать, ни исправить то, чего ему не показали.
+//
+// Единственное жёсткое условие: непрошедший пост обязан быть ПОМЕЧЕН. Иначе он выглядел
+// бы готовым — та самая регрессия, из-за которой когда-то появился строгий гейт.
+// Автопубликация закрыта отдельно, через item.autoApprove/hasAutomaticQualityApproval.
 export function autopilotDraftsDeliverable(expected, topics, items = null) {
   const count = Number(expected);
   if (!Number.isInteger(count) || count < 1) return false;
@@ -122,7 +128,7 @@ export function autopilotDraftsDeliverable(expected, topics, items = null) {
       String(item?.draft || "").trim().length > 0 &&
       (
         (item?.qualityBlocked !== true && item?.quality?.passed === true) ||
-        (item?.qualityBlocked === true && item?.reviewRequired === true && item?.quality?.passed === true)
+        (item?.qualityBlocked === true && item?.reviewRequired === true)
       ),
     );
 }

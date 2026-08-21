@@ -1,13 +1,39 @@
-import { validatePostQuality } from "./post-quality.mjs";
+import { normalizePostQuality, validatePostQuality } from "./post-quality.mjs";
+import { finishPostForm, normalizePostForm, reservedFormChars } from "./post-form.mjs";
 import { validateSemanticClaims } from "./semantic-claims.mjs";
 
-const SAFE_LENGTH_QUESTIONS = [
-  "Что из этого для тебя важнее?",
-  "Какой из этих пунктов ты бы проверил первым?",
-  "Какой из этих пунктов сейчас важнее для твоей ситуации и что стоит разобрать подробнее в следующем посте?",
-  "Если бы пришлось выбрать один следующий шаг — какой он был бы и почему именно он?",
-  "Что здесь для тебя привычно, а что стоит перепроверить на своём материале?",
-];
+// Добивка объёма обязана говорить с читателем так же, как весь канал. Один вариант на
+// «ты» стоил месяца сборок: профили «Экспертный» и «Юридический» говорят на «вы», проверка
+// ставила блокер «обращение на ты», а редактура его не снимала — короткий текст снова
+// добивался тем же вопросом. Обращение канала выбирается здесь, а не достаётся по умолчанию.
+const SAFE_LENGTH_QUESTIONS = {
+  ты: [
+    "Что из этого для тебя важнее?",
+    "Какой из этих пунктов ты бы проверил первым?",
+    "Какой из этих пунктов сейчас важнее для твоей ситуации и что стоит разобрать подробнее в следующем посте?",
+    "Если бы пришлось выбрать один следующий шаг — какой он был бы и почему именно он?",
+    "Что здесь для тебя привычно, а что стоит перепроверить на своём материале?",
+  ],
+  вы: [
+    "Что из этого для вас важнее?",
+    "Какой из этих пунктов вы бы проверили первым?",
+    "Какой из этих пунктов сейчас важнее для вашей ситуации и что стоит разобрать подробнее в следующем посте?",
+    "Если бы пришлось выбрать один следующий шаг — какой он был бы и почему именно он?",
+    "Что здесь для вас привычно, а что стоит перепроверить на своём материале?",
+  ],
+  // Канал без прямого обращения: добираем объём наблюдением, а не вопросом читателю.
+  neutral: [
+    "Этот пункт стоит перечитать отдельно.",
+    "Здесь важен порядок действий, а не скорость.",
+    "Разбор каждого из этих пунктов заслуживает отдельного поста.",
+    "Следующий шаг зависит от того, какой из пунктов ближе к конкретной ситуации.",
+    "Часть этого выглядит привычной, а часть стоит перепроверить на своём материале.",
+  ],
+};
+
+function lengthQuestions(address) {
+  return SAFE_LENGTH_QUESTIONS[address] || SAFE_LENGTH_QUESTIONS["вы"];
+}
 
 /**
  * Classify a failed gate before spending another model call. Missing evidence and an
@@ -60,12 +86,12 @@ export function trimDraftToMaximum(text, maxChars, minChars = 0) {
 }
 
 /** Fill a length miss with non-factual reader questions, never with invented facts. */
-export function padDraftToMinimum(text, minChars, maxChars) {
+export function padDraftToMinimum(text, minChars, maxChars, address = "вы") {
   let value = String(text || "").trim();
   const minimum = Math.max(0, Number(minChars) || 0);
   const maximum = Math.max(minimum, Number(maxChars) || minimum);
   if (!value || value.length >= minimum) return value;
-  for (const question of SAFE_LENGTH_QUESTIONS) {
+  for (const question of lengthQuestions(address)) {
     const candidate = `${value}\n\n${question}`;
     if (candidate.length > maximum) continue;
     value = candidate;
@@ -74,8 +100,33 @@ export function padDraftToMinimum(text, minChars, maxChars) {
   return value;
 }
 
-export function fitAutopilotDraftLength(text, minChars, maxChars) {
-  return trimDraftToMaximum(padDraftToMinimum(text, minChars, maxChars), maxChars, minChars);
+export function fitAutopilotDraftLength(text, minChars, maxChars, address = "вы") {
+  return trimDraftToMaximum(
+    padDraftToMinimum(text, minChars, maxChars, address),
+    maxChars,
+    minChars,
+  );
+}
+
+/**
+ * Единственный путь черновика к проверке: форма приводится к профилю канала, объём
+ * подгоняется под оставшееся место, дисклеймер и выделение ставятся последними. Порядок
+ * важен — иначе подрезка объёма съедала бы дословный дисклеймер, который сама же и требует.
+ */
+export function prepareAutopilotDraftForm(text, rawQuality) {
+  const q = normalizePostQuality(rawQuality);
+  const normalized = normalizePostForm(text, q);
+  if (!normalized) return "";
+  const reserved = reservedFormChars(normalized, q);
+  const fitted = fitAutopilotDraftLength(
+    normalized,
+    Math.max(0, q.minChars - reserved),
+    Math.max(1, q.maxChars - reserved),
+    q.address,
+  );
+  // Добивка объёма склеивает вопрос читателя в отдельный абзац — форму после неё
+  // перепроверяем, иначе абзац может выйти за лимит предложений.
+  return finishPostForm(normalizePostForm(fitted, q), q);
 }
 
 /** Enough completion budget for the channel length band, including a short Russian post. */
@@ -145,10 +196,13 @@ export async function assessAutopilotDraft({
     { text, sources: Array.isArray(sources) ? sources : [] },
     { adapter: semanticAdapter, signal, now },
   );
+  const reviewClaims = Array.isArray(semantic.reviewClaims) ? semantic.reviewClaims : [];
   const semanticMessages = semantic.status === "blocked"
     ? semantic.blockers.map((blocker) => blocker.message)
     : semantic.status === "not_checked"
-      ? ["Автопроверка фактов не отработала. Прочитай текст и нажми «Одобрить» — это и есть проверка."]
+      ? reviewClaims.length
+        ? reviewClaims.map((claim) => claim.message)
+        : ["Автопроверка фактов не отработала. Прочитай текст и нажми «Одобрить» — это и есть проверка."]
       : [];
   const semanticViolations = semantic.status === "blocked"
     ? semantic.blockers.map((blocker) => ({

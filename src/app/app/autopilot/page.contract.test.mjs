@@ -24,4 +24,16 @@ describe("Autopilot build UI contract", () => {
     expect(source).toContain("Не удалось запустить сборку");
     expect(source).toContain("Не удалось остановить сборку");
   });
+
+  it("shows an actionable publication state instead of an internal numeric score", () => {
+    expect(source).toContain("готов к публикации");
+    expect(source).toContain("нужна правка");
+    expect(source).not.toContain("{it.quality.score}/{it.quality.threshold}");
+    expect(source).not.toContain("Сырые тексты не сохранены");
+  });
+
+  it("uses real links styled as buttons without nested interactive controls", () => {
+    expect(source).not.toMatch(/<Link\b[^>]*>\s*<Button\b/u);
+    expect(source).toContain("buttonClassName");
+  });
 });

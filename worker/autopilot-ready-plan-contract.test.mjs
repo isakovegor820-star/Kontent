@@ -8,10 +8,32 @@ describe("Autopilot ready-plan generation contract", () => {
     expect(source).not.toContain('acceptLengthLimitedOutput: surface === "autopilot-plan"');
   });
 
-  it("caps rewrites and only relaxes delivery for confirmation mode", () => {
+  // План доходит до человека в обоих режимах. Право на выпуск считается по каждому посту
+  // (item.autoApprove), поэтому один неидеальный текст больше не отменяет всю сборку —
+  // прежний строгий гейт в полном режиме оставлял человека вообще без плана.
+  it("delivers the plan in both modes and gates publication per post", () => {
     expect(source).toContain("const AUTOPILOT_QUALITY_REWRITE_ATTEMPTS = 2;");
-    expect(source).toContain("autopilotDraftsDeliverable(N, topics, items)");
-    expect(source).toContain("full\n    ? autopilotBuildComplete(N, topics, items)");
+    expect(source.match(/autopilotDraftsDeliverable\(N, topics, items\)/g)?.length).toBe(2);
+    expect(source).not.toContain("full\n    ? autopilotBuildComplete(N, topics, items)");
+    expect(source).not.toMatch(/full\s*\n?\s*\?\s*autopilotBuildComplete\(N, topics, items\)/);
+    expect(source).toContain("fullAtCommit && item.autoApprove && evaluation.eligible");
+  });
+
+  // Повтор дешевле предотвратить правилом, чем поймать проверкой и выбросить всю сборку.
+  it("tells the model what must not be repeated before it writes", () => {
+    expect(source).toContain("function varietyRulesW(variety)");
+    expect(source).toContain("ОСТАЛЬНЫЕ ПОСТЫ ЭТОЙ СБОРКИ");
+    expect(source).toContain("УЖЕ ВЫХОДИЛО В КАНАЛЕ");
+    expect(source).toMatch(/otherTopics: topics\.filter/);
+    expect(source).toContain("recentOpenings,");
+    // Правило уходит в промпт генерации, а не только в переписывание после провала.
+    expect(source.indexOf("const varietyRules = varietyRulesW(variety)")).toBeGreaterThan(0);
+  });
+
+  it("маркирует один повторяющийся пост вместо отмены всей сборки", () => {
+    expect(source).not.toContain('return { error: "content_variety_insufficient" }');
+    expect(source).toContain('item.reviewReason = "content_variety"');
+    expect(source).toContain("delete item.autoApprove;");
   });
 
   it("runs manual builds on a dedicated resumable queue", () => {
@@ -35,6 +57,49 @@ describe("Autopilot ready-plan generation contract", () => {
     expect(source).toMatch(/select enabled, mode, approvals_streak[\s\S]*?for update/);
     expect(source).toContain("fullAtCommit && item.autoApprove");
     expect(source).not.toContain("if (item.autoApprove && evaluation.eligible");
+  });
+
+  // Профиль «источник обязателен» при пустой базе знаний не мог дать ни одного поста, но
+  // сборка всё равно шла полный цикл, тратила дневную квоту ИИ и заканчивалась неправдой
+  // «модель не дотянула до порога». Отказ обязан случиться до первого запроса к модели.
+  it("refuses a source-required build with an empty knowledge base before spending AI quota", () => {
+    const preflight = source.indexOf('return { error: "no_knowledge_base" }');
+    expect(preflight).toBeGreaterThan(0);
+    expect(source).toMatch(/quality\.factsPolicy === "source_required" && facts === 0/);
+    expect(preflight).toBeLessThan(source.indexOf("await planTopics("));
+    expect(source).toContain('"no_knowledge_base",\n  "no_brief"');
+  });
+
+  // Второе расхождение промпта и проверки: без источников модель не получала запрета на
+  // цифры и даты, писала их, и findInvented заворачивал весь план.
+  it("warns the model that specifics are forbidden when no support was found", () => {
+    expect(source).toContain("ИСТОЧНИКОВ НЕТ.");
+    expect(source).toMatch(/Запрещено называть любые цифры, даты, годы, суммы/);
+  });
+
+  // Форма поста — работа кода. Пока её приводила только модель, план заворачивался за
+  // лишний эмодзи и служебную метку, а человеку предлагали «выбрать другую модель».
+  it("приводит форму к профилю канала на каждом пути черновика", () => {
+    expect(source).not.toContain("fitAutopilotDraftLength(");
+    expect(source.match(/prepareAutopilotDraftForm\(/g)?.length).toBe(4);
+  });
+
+  it("непрошедший пост помечает, а не выбрасывает вместе с планом", () => {
+    expect(source).toContain("const needsHumanEdit = Boolean(aiDraft && !qualityResult.passed)");
+    expect(source).toContain("reviewRequired: needsHumanReview || needsHumanEdit");
+    expect(source).toMatch(/needsHumanEdit\s*\?\s*"quality_review"/);
+  });
+
+  it("не показывает человеку внутренний числовой порог как результат плана", () => {
+    expect(source).not.toContain(
+      "Каждый текст проходит редакционный порог ${quality.qualityThreshold}/100",
+    );
+    expect(source).toContain("Каждый текст проходит автоматическую редактуру");
+  });
+
+  it("logs which gate rejected the plan instead of a bare counter", () => {
+    expect(source).toContain("autopilotQualityFailureReport(items, N)");
+    expect(source).toMatch(/cause\.code\}×\$\{cause\.count\}/);
   });
 
   it("keeps a durable build heartbeat through long generation phases", () => {

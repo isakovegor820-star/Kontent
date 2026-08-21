@@ -23,7 +23,7 @@ import {
   X,
 } from "lucide-react";
 import { AppShell } from "@/components/app/shell";
-import { Button } from "@/components/ui/button";
+import { Button, buttonClassName } from "@/components/ui/button";
 import { Badge, Card, EmptyState, Textarea } from "@/components/ui/primitives";
 import { useStore } from "@/lib/store";
 import { RUBRICS, type Brief } from "@/lib/brief";
@@ -35,6 +35,10 @@ import {
 import { isAutopilotHumanReviewItem } from "@/lib/autopilot-review.mjs";
 import type { ApprovalBlocker, AutopilotApprovalPreview } from "@/lib/autopilot-approval.mjs";
 import { autopilotPlanNeedsQualityRebuild } from "@/lib/autopilot-plan-visibility.mjs";
+import {
+  QUALITY_FAILURE_GUIDE,
+  autopilotQualityFailureReport,
+} from "@/lib/autopilot-quality-report.mjs";
 import {
   estimateAutopilotBuildMinutes,
   type AutopilotBuildMinuteEstimate,
@@ -99,7 +103,15 @@ interface State {
       percent: number;
       stage: "preparing" | "generating" | "finalizing";
     };
-    errorReason?: "timeout" | "quota" | "variety" | "quality" | "provider" | "cancelled";
+    expected_post_count?: number | null;
+    errorReason?:
+      | "timeout"
+      | "quota"
+      | "variety"
+      | "quality"
+      | "knowledge"
+      | "provider"
+      | "cancelled";
   } | null;
   hasChannel: boolean;
   brief: Brief | null;
@@ -650,8 +662,8 @@ export default function AutopilotPage() {
             title="Сначала подключи канал"
             body="Автопилот публикует в твой Telegram-канал. Подключи его — и я соберу контент-план."
             action={
-              <Link href="/app/onboarding">
-                <Button variant="solid">Подключить канал</Button>
+              <Link href="/app/onboarding" className={buttonClassName({ variant: "solid" })}>
+                Подключить канал
               </Link>
             }
           />
@@ -685,11 +697,12 @@ export default function AutopilotPage() {
             title="Сначала настрой автопилот"
             body="Чтобы посты были про твоё дело, а не ни о чём, мне нужно знать: о чём канал, для кого и о чём писать нельзя. Займёт минуту — или дай прочитать твой канал, и я предложу всё сам."
             action={
-              <Link href={`/app/settings${chId ? `?channel=${chId}` : ""}`}>
-                <Button variant="brand">
-                  <Wand2 className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
-                  Настроить автопилот
-                </Button>
+              <Link
+                href={`/app/settings${chId ? `?channel=${chId}` : ""}`}
+                className={buttonClassName({ variant: "brand" })}
+              >
+                <Wand2 className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
+                Настроить автопилот
               </Link>
             }
           />
@@ -704,6 +717,12 @@ export default function AutopilotPage() {
   const pending = items.filter((it) => it.status === "pending");
   const blocked = pending.filter((it) => !canApproveItem(it));
   const planNeedsQualityRebuild = autopilotPlanNeedsQualityRebuild(items);
+  // Разбор провала берём из самих постов: воркер сохраняет замечания проверки в план,
+  // даже когда план не показывается. Это и есть ответ на вопрос «а что не так».
+  const failureReport =
+    plan?.status === "error" && plan.errorReason === "quality" && items.length
+      ? autopilotQualityFailureReport(items, plan.expected_post_count ?? items.length)
+      : null;
   const readyPending = pending.filter(canApproveItem);
   const reviewPending = pending.filter(isAutopilotHumanReviewItem);
   const expired = items.filter((it) => it.status === "expired");
@@ -772,11 +791,12 @@ export default function AutopilotPage() {
               )}
             </p>
           </div>
-          <Link href={`/app/settings${chId ? `?channel=${chId}` : ""}`} className="shrink-0">
-            <Button variant="outline" size="sm">
-              <Settings2 className="h-4 w-4" aria-hidden />
-              Настроить Аврору
-            </Button>
+          <Link
+            href={`/app/settings${chId ? `?channel=${chId}` : ""}`}
+            className={buttonClassName({ variant: "outline", size: "sm", className: "shrink-0" })}
+          >
+            <Settings2 className="h-4 w-4" aria-hidden />
+            Настроить Аврору
           </Link>
         </div>
       </Card>
@@ -859,10 +879,11 @@ export default function AutopilotPage() {
               В полном режиме посты будут выходить без твоего подтверждения. В любой момент вернёшь.
             </p>
             <div className="mt-3">
-              <Link href={`/app/settings${chId ? `?channel=${chId}` : ""}`}>
-                <Button size="sm" variant="brand">
-                  Проверить и включить в настройках
-                </Button>
+              <Link
+                href={`/app/settings${chId ? `?channel=${chId}` : ""}`}
+                className={buttonClassName({ size: "sm", variant: "brand" })}
+              >
+                Проверить и включить в настройках
               </Link>
             </div>
           </div>
@@ -908,9 +929,9 @@ export default function AutopilotPage() {
           </div>
         </Card>
       ) : plan?.status === "error" ? (
-        <Card className="p-8 text-center" role="alert">
-          <p className="text-[15px] font-semibold text-text">Не получилось собрать план</p>
-          <p className="mx-auto mt-1 max-w-md text-[14px] text-text-3">
+        <Card className="p-6 sm:p-8" role="alert">
+          <p className="text-center text-[15px] font-semibold text-text">Не получилось собрать план</p>
+          <p className="mx-auto mt-1 max-w-xl text-center text-[14px] text-text-3">
             {plan.errorReason === "timeout"
               ? "Сборка не была обработана вовремя. Перезапусти приложение и попробуй ещё раз."
               : plan.errorReason === "cancelled"
@@ -919,14 +940,65 @@ export default function AutopilotPage() {
                 ? "Дневной лимит ИИ исчерпан. Он обновится завтра; текущий план и настройки сохранены."
                 : plan.errorReason === "variety"
                   ? "Модель несколько раз повторила похожие темы или тексты. Старый план сохранён — выбери другую модель или попробуй снова."
-                  : plan.errorReason === "quality"
-                    ? `Модель не смогла довести все посты до порога ${data.brief?.quality.qualityThreshold ?? 85}/100. Сырые тексты не сохранены. Выбери другую модель или пересобери план.`
-                    : plan.errorReason === "provider"
-                      ? "Ни выбранная, ни резервные модели не вернули ни одного текста. Запрос и настройки сохранены — пересобери план, когда хотя бы один провайдер отвечает."
-                      : "Проверь, что канал подключён и ИИ-движок доступен, и попробуй ещё раз."}
+                  : plan.errorReason === "knowledge"
+                    ? "Профиль канала требует источник под каждый факт, а база знаний пуста. Ни одна модель такой пост не проведёт — сборку не начинал, чтобы не тратить дневной лимит ИИ."
+                    : plan.errorReason === "quality"
+                      ? failureReport && failureReport.causes.length
+                        ? `Готовы ${failureReport.passed} из ${failureReport.total} ${plural(failureReport.total, "поста", "постов", "постов")}. Дело не в модели — вот что именно не сошлось.`
+                        : "Часть постов не удалось довести до публикации. Пересобери план — черновики и настройки сохранены."
+                      : plan.errorReason === "provider"
+                        ? "Ни выбранная, ни резервные модели не вернули ни одного текста. Запрос и настройки сохранены — пересобери план, когда хотя бы один провайдер отвечает."
+                        : "Проверь, что канал подключён и ИИ-движок доступен, и попробуй ещё раз."}
           </p>
-          <div className="mt-4">
-            <Button variant="brand" onClick={generate} loading={busy} disabled={busy}>
+
+          {/* Разбор по кодам проверки. Без него совет «выбери другую модель» уводил в сторону:
+              ни отсутствие источника, ни дисклеймер, ни диапазон длины от модели не зависят. */}
+          {plan.errorReason === "quality" && failureReport && failureReport.causes.length > 0 && (
+            <ul className="mx-auto mt-4 max-w-xl space-y-2 text-left">
+              {failureReport.causes.map((cause) => (
+                <li key={cause.code} className="rounded-xl bg-surface-inset p-3">
+                  <p className="text-[13px] font-semibold text-text">
+                    {cause.title}
+                    <span className="ml-2 font-normal tabular-nums text-text-3">
+                      {cause.count} {plural(cause.count, "пост", "поста", "постов")}
+                    </span>
+                  </p>
+                  <p className="mt-0.5 text-[13px] text-text-3">{cause.action}</p>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
+            {(plan.errorReason === "knowledge" || failureReport?.primaryFix === "knowledge") && (
+              <Link
+                href={`/app/knowledge${chId ? `?channel=${chId}` : ""}`}
+                className={buttonClassName({ variant: "brand" })}
+              >
+                <BookText className="h-4 w-4" aria-hidden />
+                Добавить материалы
+              </Link>
+            )}
+            {failureReport?.primaryFix === "settings" && (
+              <Link
+                href={`/app/settings${chId ? `?channel=${chId}` : ""}`}
+                className={buttonClassName({ variant: "brand" })}
+              >
+                <Settings2 className="h-4 w-4" aria-hidden />
+                Открыть настройки канала
+              </Link>
+            )}
+            <Button
+              variant={
+                plan.errorReason === "knowledge" || failureReport?.primaryFix === "knowledge" ||
+                failureReport?.primaryFix === "settings"
+                  ? "outline"
+                  : "brand"
+              }
+              onClick={generate}
+              loading={busy}
+              disabled={busy}
+            >
               Пересобрать план
             </Button>
           </div>
@@ -992,18 +1064,20 @@ export default function AutopilotPage() {
                   {blocked.length ? `Одобрить готовые (${readyPending.length})` : "Одобрить всё"}
                 </Button>
               ) : blocked.length > 0 ? (
-                <Link href={`/app/settings${chId ? `?channel=${chId}` : ""}`}>
-                  <Button variant="outline" size="sm">
-                    <Settings2 className="h-4 w-4" aria-hidden />
-                    Исправить настройки
-                  </Button>
+                <Link
+                  href={`/app/settings${chId ? `?channel=${chId}` : ""}`}
+                  className={buttonClassName({ variant: "outline", size: "sm" })}
+                >
+                  <Settings2 className="h-4 w-4" aria-hidden />
+                  Исправить настройки
                 </Link>
               ) : allApproved ? (
-                <Link href="/app/calendar">
-                  <Button variant="soft" size="sm">
-                    <CalendarCheck className="h-4 w-4" aria-hidden />
-                    Открыть календарь
-                  </Button>
+                <Link
+                  href="/app/calendar"
+                  className={buttonClassName({ variant: "soft", size: "sm" })}
+                >
+                  <CalendarCheck className="h-4 w-4" aria-hidden />
+                  Открыть календарь
                 </Link>
               ) : null}
             </div>
@@ -1149,14 +1223,15 @@ export default function AutopilotPage() {
                       ) : it.qualityBlocked || it.quality.passed !== true ? (
                         <Badge tone="danger">
                           <AlertTriangle className="h-3 w-3" aria-hidden />
-                          {it.quality.score}/{it.quality.threshold}
+                          нужна правка
                         </Badge>
                       ) : (
+                        // Балл проверки человеку не адресован: он не решает, что делать с постом,
+                        // и превращает готовый текст в экзаменационную ведомость.
                         <Badge tone="success">
                           {hasHumanQualityAttestation(it.quality)
                             ? "подтверждено вручную"
-                            : "автопроверка"}{" "}
-                          {it.quality.score}/{it.quality.threshold}
+                            : "готов к публикации"}
                         </Badge>
                       )}
                       <ChevronDown
@@ -1275,21 +1350,52 @@ export default function AutopilotPage() {
                         </div>
                       )}
 
+                      {/* Похожий текст проверку качества проходит — он просто повторяет то,
+                          что в канале уже было. Замечаний валидатора здесь нет, поэтому
+                          общий разбор ниже показал бы пустой список. */}
+                      {!isEditing &&
+                        it.aiReady !== false &&
+                        it.qualityBlocked &&
+                        it.reviewReason === "content_variety" && (
+                        <div className="mt-3 flex items-start gap-2 rounded-sm bg-info-soft p-3">
+                          <AlertTriangle
+                            className="mt-0.5 h-4 w-4 shrink-0 text-info-text"
+                            aria-hidden
+                          />
+                          <p className="text-[13px] leading-snug text-info-text">
+                            <span className="font-semibold">Похоже на прежний пост канала.</span>{" "}
+                            Текст готов, но повторяет то, что уже выходило. Замени тему или перепиши
+                            под другим углом — остальные посты плана это не задержит. Сам такой пост
+                            я не опубликую.
+                          </p>
+                        </div>
+                      )}
+
                       {!isEditing &&
                         it.aiReady !== false &&
                         !isAutopilotHumanReviewItem(it) &&
+                        it.reviewReason !== "content_variety" &&
                         it.qualityBlocked &&
                         it.quality &&
-                        hasVerifiedQualityMetadata(it.quality) && (
+                        hasVerifiedQualityMetadata(it.quality) &&
+                        it.quality.violations.some((v) => v.blocker) && (
                         <div className="mt-3 rounded-sm bg-danger-soft p-3">
                           <p className="flex items-center gap-2 text-[13px] font-semibold text-danger-text">
                             <AlertTriangle className="h-4 w-4" aria-hidden />
-                            Нужно поправить · {it.quality.score}/{it.quality.threshold}
+                            Что здесь поправить
                           </p>
+                          {/* Причина словами и следующий шаг вместо формулировки валидатора.
+                              «Нужно минимум 1200 знаков, сейчас 1181» — это отчёт проверки,
+                              а не ответ на вопрос «что мне сделать». */}
                           <ul className="mt-1.5 space-y-1 text-[13px] leading-snug text-danger-text">
-                            {it.quality.violations.filter((v) => v.blocker).slice(0, 4).map((v) => (
-                              <li key={`${v.code}-${v.message}`}>— {v.message}</li>
-                            ))}
+                            {it.quality.violations
+                              .filter((v) => v.blocker)
+                              .slice(0, 4)
+                              .map((v) => (
+                                <li key={`${v.code}-${v.message}`}>
+                                  — {QUALITY_FAILURE_GUIDE[v.code]?.title ?? v.message}
+                                </li>
+                              ))}
                           </ul>
                         </div>
                       )}

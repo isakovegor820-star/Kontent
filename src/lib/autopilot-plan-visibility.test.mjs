@@ -28,7 +28,7 @@ const planItem = (overrides = {}) => ({
 });
 
 describe("Autopilot plan visibility", () => {
-  it("requires a rebuild instead of presenting a mixed-quality plan as ready", () => {
+  it("requires a rebuild when a failed draft is not marked as needing work", () => {
     const ready = Array.from({ length: 12 }, () => planItem());
     const blocked = Array.from({ length: 16 }, () =>
       planItem({
@@ -57,7 +57,7 @@ describe("Autopilot plan visibility", () => {
     ])).toBe(false);
   });
 
-  it("rebuilds a stale reviewRequired flag without explicit semantic-only server state", () => {
+  it("keeps a marked review draft visible: approval stays closed elsewhere", () => {
     expect(autopilotPlanNeedsQualityRebuild([
       planItem({
         aiReady: true,
@@ -69,7 +69,7 @@ describe("Autopilot plan visibility", () => {
           semantic: { status: "not_checked", requiresReview: true },
         },
       }),
-    ])).toBe(true);
+    ])).toBe(false);
   });
 
   it("keeps an exact semantic-provider-unavailable draft visible for human review", () => {
@@ -105,26 +105,31 @@ describe("Autopilot plan visibility", () => {
     ])).toBe(false);
   });
 
-  it("rebuilds a short automatic draft instead of asking the person to finish it", () => {
-    expect(autopilotPlanNeedsQualityRebuild([
-      planItem({
-        aiReady: true,
-        draft: "Слишком короткий черновик",
-        qualityBlocked: true,
-        reviewRequired: true,
-        quality: {
-          ...verifiedQuality,
-          passed: false,
-          score: 75,
-          violations: [{
-            code: "too_short",
-            message: "Нужно минимум 900 знаков, сейчас 659",
-            blocker: true,
-            penalty: 25,
-          }],
-        },
-      }),
-    ])).toBe(true);
+  // Четыре готовых поста не должны исчезать из-за пятого, который просит правки: текст
+  // уже написан, и человек может его дописать — а из состояния «пересобери» не может ничего.
+  it("keeps a marked short draft visible instead of hiding the whole plan", () => {
+    const short = planItem({
+      aiReady: true,
+      draft: "Слишком короткий черновик",
+      qualityBlocked: true,
+      reviewRequired: true,
+      quality: {
+        ...verifiedQuality,
+        passed: false,
+        score: 75,
+        violations: [{
+          code: "too_short",
+          message: "Нужно минимум 900 знаков, сейчас 659",
+          blocker: true,
+          penalty: 25,
+        }],
+      },
+    });
+    expect(autopilotPlanNeedsQualityRebuild([planItem(), short])).toBe(false);
+    // Без пометки тот же пост выглядел бы готовым — такой план по-прежнему скрываем.
+    expect(
+      autopilotPlanNeedsQualityRebuild([{ ...short, reviewRequired: false }]),
+    ).toBe(true);
   });
 
   it("requires a rebuild for a pending legacy automatic draft without verified metadata", () => {

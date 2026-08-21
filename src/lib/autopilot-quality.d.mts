@@ -5,9 +5,23 @@ export function autopilotQualityFailureKind(
   result: QualityResult | null | undefined,
 ): "passed" | "missing_evidence" | "semantic_unavailable" | "rewriteable";
 
-export function padDraftToMinimum(text: string, minChars: number, maxChars: number): string;
+export function padDraftToMinimum(
+  text: string,
+  minChars: number,
+  maxChars: number,
+  address?: PostQuality["address"],
+): string;
 export function trimDraftToMaximum(text: string, maxChars: number, minChars?: number): string;
-export function fitAutopilotDraftLength(text: string, minChars: number, maxChars: number): string;
+export function fitAutopilotDraftLength(
+  text: string,
+  minChars: number,
+  maxChars: number,
+  address?: PostQuality["address"],
+): string;
+export function prepareAutopilotDraftForm(
+  text: string,
+  quality: Partial<PostQuality> | null | undefined,
+): string;
 export function autopilotOutputTokens(quality: { maxChars?: number } | null | undefined): number;
 
 export function removeUnverifiedSemanticClaims(

@@ -53,6 +53,7 @@ const passedQuality: QualityResult = {
     passed: true,
     requiresReview: false,
     blockers: [],
+    reviewClaims: [],
     claimVerdicts: [{
       claimId: "claim-1", claim: "Проверенный текст", verdict: "supported",
       reasonCode: "entailed_by_source", riskCodes: [],

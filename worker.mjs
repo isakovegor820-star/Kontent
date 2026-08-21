@@ -149,9 +149,10 @@ import {
   assessAutopilotDraft,
   autopilotQualityFailureKind,
   autopilotOutputTokens,
-  fitAutopilotDraftLength,
+  prepareAutopilotDraftForm,
   removeUnverifiedSemanticClaims,
 } from "./src/lib/autopilot-quality.mjs";
+import { autopilotQualityFailureReport } from "./src/lib/autopilot-quality-report.mjs";
 import { completeAiText } from "./src/lib/ai-completion-service.mjs";
 import {
   autopilotCheckpointItem,
@@ -5144,12 +5145,58 @@ const FORMAT_RULES_W = [
   "— никаких мета-меток: не пиши «Хук:», «Абзац:», «CTA:» — только сам текст.",
 ].join("\n");
 
-function postSystem(samples, brief, support = [], quality, postIndex = 0, presentation = null) {
+/**
+ * Что в канале уже сказано. Посты плана пишутся параллельно, поэтому модель физически не
+ * знала ни об остальных постах этой сборки, ни о том, что выходило раньше, — и повторяла
+ * пятым постом хук первого. Повтор дешевле предотвратить правилом, чем поймать проверкой
+ * на сходство и выбросить всю сборку, как было раньше.
+ */
+function varietyRulesW(variety) {
+  const otherTopics = (variety?.otherTopics || [])
+    .map((topic) => String(topic || "").trim().slice(0, 70))
+    .filter(Boolean)
+    .slice(0, 12);
+  const recentOpenings = (variety?.recentOpenings || [])
+    .map((opening) => String(opening || "").trim().slice(0, 90))
+    .filter(Boolean)
+    .slice(0, 10);
+  const blocks = [];
+  if (otherTopics.length) {
+    blocks.push(
+      "ОСТАЛЬНЫЕ ПОСТЫ ЭТОЙ СБОРКИ — их пишут отдельно, не пересекайся с ними:\n" +
+        otherTopics.map((topic) => `— ${topic}`).join("\n"),
+    );
+  }
+  if (recentOpenings.length) {
+    blocks.push(
+      "УЖЕ ВЫХОДИЛО В КАНАЛЕ — эти начала, ходы и выводы повторять нельзя:\n" +
+        recentOpenings.map((opening) => `— ${opening}`).join("\n"),
+    );
+  }
+  if (!blocks.length) return "";
+  return (
+    blocks.join("\n\n") +
+    "\n\nТвой пост обязан отличаться: другой хук, другой ход мысли, другой финал." +
+    " Не пересказывай перечисленное и не давай тот же совет другими словами."
+  );
+}
+
+function postSystem(
+  samples,
+  brief,
+  support = [],
+  quality,
+  postIndex = 0,
+  presentation = null,
+  variety = null,
+) {
   let s =
     "Ты — строгий выпускающий редактор Telegram-канала. Выдай ТОЛЬКО готовый текст поста, без пояснений, приветствий и подписи.\n\n" +
     FORMAT_RULES_W +
     "\n\n" +
     buildQualityPrompt(quality, { postIndex });
+  const varietyRules = varietyRulesW(variety);
+  if (varietyRules) s += "\n\n" + varietyRules;
   if (presentation) s += "\n\n" + presentationVariantPrompt(presentation);
   if (brief) s += "\n\n" + briefContextW(brief);
   if (!quality.disclaimerRequired) {
@@ -5175,6 +5222,17 @@ function postSystem(samples, brief, support = [], quality, postIndex = 0, presen
       " если этот вывод прямо не написан в фактах. Неподтверждённую мысль удаляй, а не заменяй новой." +
       "\nСвязки, заголовки и финальный вопрос делай нефактическими. Факты можно сокращать," +
       " но нельзя расширять их смысл.";
+  } else {
+    // Опоры нет — и раньше модель об этом не знала. Она честно писала «по данным 2026
+    // года» и «статья 213», после чего findInvented объявлял это выдумкой и заворачивал
+    // весь план. Предупреждаем ДО генерации, а не наказываем после.
+    s +=
+      "\n\nИСТОЧНИКОВ НЕТ. Пиши только то, для чего не нужна ссылка: как устроен процесс," +
+      " на что смотреть, какие вопросы задать себе." +
+      "\nЗапрещено называть любые цифры, даты, годы, суммы, сроки, проценты, номера статей," +
+      " законов, дел и постановлений, названия судов, компаний и конкретные случаи." +
+      "\nНе ссылайся на исследования, статистику и практику. Обобщённая формулировка без" +
+      " числа лучше правдоподобного числа.";
   }
 
   const ss = (samples || []).filter(Boolean).slice(0, 8);
@@ -5600,6 +5658,28 @@ async function buildAutopilotPlan(
 
   const quality = brief.quality;
 
+  // Сколько у канала реальных опор. Считаем ДО генерации: от этого зависит, имеет ли
+  // сборка шанс закончиться планом.
+  const facts = (
+    await pool.query(
+      `select count(*)::int as n from knowledge_chunks
+        where channel_id = $1 and kind <> 'voice'
+          and (valid_until is null or valid_until >= current_date)`,
+      [channelId],
+    )
+  ).rows[0].n;
+  // Профиль «источник обязателен» при пустой базе не может дать НИ ОДНОГО поста:
+  // validatePostQuality ставит блокер no_sources, а переписыванием источник не появляется.
+  // Раньше сборка всё равно уходила на полный цикл, съедала дневную квоту ИИ и
+  // заканчивалась сообщением «модель не дотянула до порога» — неправдой, из-за которой
+  // человек менял модели вместо того, чтобы добавить материалы.
+  if (quality.factsPolicy === "source_required" && facts === 0) {
+    console.warn(
+      `[auto] user ${userId}/${channelId}: профиль требует источник, база знаний пуста — сборку не начинаю`,
+    );
+    return { error: "no_knowledge_base" };
+  }
+
   // Залёт конкурента — только сигнал, а не редакционное задание. По умолчанию темы
   // конкурентов выключены: раньше нерелевантный хит молча уводил весь план в сторону.
   const ideaTopics = quality.competitorTopics
@@ -5657,6 +5737,15 @@ async function buildAutopilotPlan(
     )
   ).rows.map((post) => ({ topic: "", draft: post.text || "" }));
   const historicalTopics = historicalPlanItems.map((item) => item.topic).filter(Boolean);
+  // Первые строки того, что уже выходило: по ним модель узнаёт свои же ходы. Целые посты
+  // сюда не кладём — промпт и так большой, а повтор виден по хуку.
+  const recentOpenings = [
+    ...new Set(
+      [...historicalPlanItems, ...recentPublished]
+        .map((entry) => String(entry?.draft || entry?.topic || "").trim().split("\n")[0].trim())
+        .filter(Boolean),
+    ),
+  ].slice(0, 10);
 
   // Сначала конкретные темы под нишу, только потом тексты.
   const topics = hasCheckpointedTopics
@@ -5698,16 +5787,10 @@ async function buildAutopilotPlan(
   }
   rule += ` Темы — под твою нишу: ${brief.niche}.`;
 
-  const facts = (
-    await pool.query(
-      `select count(*)::int as n from knowledge_chunks where channel_id = $1 and kind <> 'voice'`,
-      [channelId],
-    )
-  ).rows[0].n;
   rule += facts
     ? ` Факты — из твоей базы знаний (${facts} ${plural(facts, "кусок", "куска", "кусков")}).`
     : ` База знаний пуста, поэтому пишу без конкретики — ни дат, ни сумм, ни номеров дел выдумывать не стану. Добавь материалы, и посты станут предметными.`;
-  rule += ` Каждый текст проходит редакционный порог ${quality.qualityThreshold}/100. Жёсткие нарушения нужно поправить; если автопроверка фактов не отработала — прочитай и реши, выпускать ли пост.`;
+  rule += " Каждый текст проходит автоматическую редактуру. Готовые посты можно выпускать; если автопроверка фактов недоступна, пост останется на подтверждении.";
   rule += " Темы и готовые тексты сверяются с текущим планом и недавней историей канала; близкий дубль переписывается или останавливает сборку.";
 
   // Генерация постов — узкое место плана: каждый пост это findSupport + askAI (~90с) + возможный
@@ -5747,7 +5830,10 @@ async function buildAutopilotPlan(
       if (seeded) support = [seeded, ...support].slice(0, TOP_K);
     }
     const presentation = autopilotPresentationVariant(i, quality);
-    const system = postSystem(samples, brief, support, quality, i, presentation);
+    const system = postSystem(samples, brief, support, quality, i, presentation, {
+      otherTopics: topics.filter((_, index) => index !== i).map((other) => other.topic),
+      recentOpenings,
+    });
     const task = rubric
       ? `Напиши пост в рубрику «${rubric}» на тему: ${topic}.`
       : `Напиши пост на тему: ${topic}.`;
@@ -5763,10 +5849,9 @@ async function buildAutopilotPlan(
       generationEngine,
     );
     let aiDraft = candidateRaw
-      ? fitAutopilotDraftLength(
+      ? prepareAutopilotDraftForm(
           applyAutopilotPresentation(stripCites(candidateRaw), presentation, quality, brief, i),
-          quality.minChars,
-          quality.maxChars,
+          quality,
         )
       : null;
     let cited = support.length && candidateRaw ? citedShare(candidateRaw) : null;
@@ -5806,10 +5891,9 @@ async function buildAutopilotPlan(
         generationEngine,
       );
       aiDraft = candidateRaw
-        ? fitAutopilotDraftLength(
+        ? prepareAutopilotDraftForm(
             applyAutopilotPresentation(stripCites(candidateRaw), presentation, quality, brief, i),
-            quality.minChars,
-            quality.maxChars,
+            quality,
           )
         : null;
       cited = support.length && candidateRaw ? citedShare(candidateRaw) : null;
@@ -5834,7 +5918,7 @@ async function buildAutopilotPlan(
       if (!["blocked", "not_checked"].includes(qualityResult.semantic?.status)) break;
       const cleanedDraft = removeUnverifiedSemanticClaims(aiDraft, qualityResult.semantic);
       if (!cleanedDraft || cleanedDraft === aiDraft) break;
-      const fitted = fitAutopilotDraftLength(cleanedDraft, quality.minChars, quality.maxChars);
+      const fitted = prepareAutopilotDraftForm(cleanedDraft, quality);
       if (fitted.length < quality.minChars) break;
       aiDraft = fitted;
       invented = findInvented(aiDraft, support);
@@ -5856,6 +5940,10 @@ async function buildAutopilotPlan(
     const needsHumanReview = Boolean(
       aiDraft && qualityResult.passed && qualityResult.semantic?.status === "not_checked",
     );
+    // Крайний случай: форма приведена автоматически, редактура отработала, а замечание
+    // осталось. Текст всё равно остаётся у человека — «Поправить» в карточке перезапускает
+    // ту же проверку. Выбросить готовые тексты хуже, чем показать один абзац на доработку.
+    const needsHumanEdit = Boolean(aiDraft && !qualityResult.passed);
     const item = {
       i,
       scheduledAt,
@@ -5878,9 +5966,15 @@ async function buildAutopilotPlan(
       // а автопубликация для такого поста закрыта.
       invented: invented.length ? invented : undefined,
       qualityBlocked: !aiDraft || !qualityResult.passed || needsHumanReview,
-      reviewRequired: needsHumanReview,
-      reviewState: needsHumanReview ? "semantic_only_review" : undefined,
-      reviewReason: needsHumanReview ? qualityFailureKind : undefined,
+      reviewRequired: needsHumanReview || needsHumanEdit,
+      // semantic_only_review человек может одобрить прочтением. quality_review — нет:
+      // такой пост сначала правят, и правка перезапускает проверку.
+      reviewState: needsHumanReview
+        ? "semantic_only_review"
+        : needsHumanEdit
+          ? "quality_review"
+          : undefined,
+      reviewReason: needsHumanReview || needsHumanEdit ? qualityFailureKind : undefined,
       quality: qualityResult,
       qualityOrigin: "automatic",
       presentation: presentation.name,
@@ -5920,26 +6014,27 @@ async function buildAutopilotPlan(
     return item;
   });
 
-  const planIsDeliverable = full
-    ? autopilotBuildComplete(N, topics, items)
-    : autopilotDraftsDeliverable(N, topics, items);
-  if (!planIsDeliverable) {
+  // Условие одно для обоих режимов: на каждый слот есть настоящий текст, а непрошедший
+  // пост помечен. Что можно публиковать без человека — решает item.autoApprove по каждому
+  // посту, и в полном режиме неидеальный текст просто ждёт одобрения вместо того, чтобы
+  // отменить всю сборку.
+  if (!autopilotDraftsDeliverable(N, topics, items)) {
     const missing = items.filter((item) => !item.aiReady).length;
-    const passed = items.filter(
-      (item) => item.aiReady && item.quality?.passed === true && item.qualityBlocked !== true,
-    ).length;
+    const report = autopilotQualityFailureReport(items, N);
+    // Причину пишем в лог кодами нарушений, а не одним счётчиком: «прошли 2/5» не
+    // отвечает на вопрос, что именно чинить, и разбор приходилось делать вручную.
     console.log(
       missing
         ? `[auto] user ${userId}: модель не завершила ${missing}/${N} постов — неполный план не сохраняю`
-        : `[auto] user ${userId}: редакционный порог прошли ${passed}/${N} — план нельзя безопасно показать`,
+        : `[auto] user ${userId}: непрошедший пост остался без пометки — план не отдаю` +
+          ` (${report.causes.map((cause) => `${cause.code}×${cause.count}`).join(", ") || "без разбора"})`,
     );
     return { error: missing ? "ai_unavailable" : "quality_gate_unsatisfied" };
   }
 
-  // Промпт снижает повторы, но не гарантирует их отсутствие. Финальная граница работает
-  // кодом: близкий дубль получает отдельные переписывания. Если сходство осталось, новый
-  // полный режим останавливается; в режиме подтверждения оставшийся дубль показывается
-  // заблокированным для обязательной ручной правки.
+  // Повтор предотвращается правилом: модель заранее получает остальные темы сборки и
+  // прошлые хуки канала. Здесь — страховка кодом: близкий дубль получает отдельные
+  // переписывания, а если сходство осталось, помечается один пост. Сборку это не отменяет.
   const acceptedForVariety = [...historicalPlanItems, ...recentPublished];
   for (let index = 0; index < items.length; index++) {
     if (expectedPlanId != null) {
@@ -5977,7 +6072,13 @@ async function buildAutopilotPlan(
           ).rows;
         }
       }
-      const system = postSystem(samples, brief, support, quality, index, presentation);
+      const system = postSystem(samples, brief, support, quality, index, presentation, {
+        otherTopics: topics.filter((_, at) => at !== index).map((other) => other.topic),
+        recentOpenings: [
+          String(duplicateItem?.draft || duplicateItem?.topic || "").split("\n")[0],
+          ...recentOpenings,
+        ],
+      });
       const raw = await askAI(
         "autopilot-plan",
         usageReservationId,
@@ -5993,10 +6094,9 @@ async function buildAutopilotPlan(
         generationEngine,
       );
       if (!raw?.trim()) continue;
-      const candidate = fitAutopilotDraftLength(
+      const candidate = prepareAutopilotDraftForm(
         applyAutopilotPresentation(stripCites(raw), presentation, quality, brief, index),
-        quality.minChars,
-        quality.maxChars,
+        quality,
       );
       const cited = support.length ? citedShare(raw) : null;
       const invented = findInvented(candidate, support);
@@ -6033,13 +6133,21 @@ async function buildAutopilotPlan(
       duplicate = findAutopilotNearDuplicate(item, acceptedForVariety);
     }
     if (duplicate) {
-      console.warn("[auto] план остановлен: модель повторила близкий текст", {
+      // Повтор предотвращается правилом в промпте: модель заранее видит остальные темы
+      // сборки и прошлые хуки. Если он всё равно остался — это один пост, а не приговор
+      // сборке. Раньше здесь терялись и уже написанные тексты.
+      console.warn("[auto] близкий повтор остался после переписываний — помечаю один пост", {
         userId,
         channelId,
         item: index,
         score: duplicate.score,
       });
-      return { error: "content_variety_insufficient" };
+      item.qualityBlocked = true;
+      item.reviewRequired = true;
+      item.reviewState = "quality_review";
+      item.reviewReason = "content_variety";
+      // Автопубликация такого поста закрыта: похожий текст в канале решает человек.
+      delete item.autoApprove;
     }
     acceptedForVariety.push({ topic: item.topic, draft: item.draft });
     delete item._support;
@@ -6048,10 +6156,12 @@ async function buildAutopilotPlan(
     delete item._outputTokens;
   }
 
-  if (!(full
-    ? autopilotBuildComplete(N, topics, items)
-    : autopilotDraftsDeliverable(N, topics, items))) {
-    console.warn(`[auto] user ${userId}: финальная граница качества отклонила план`);
+  // План отдаётся в обоих режимах. В полном автомате право на выпуск считается по КАЖДОМУ
+  // посту отдельно (item.autoApprove ниже), поэтому неидеальный пост не публикуется сам, а
+  // ждёт человека — и при этом не отменяет остальные. Прежний строгий гейт отменял всю
+  // сборку из-за одного поста, то есть наказывал за осторожность полным отсутствием плана.
+  if (!autopilotDraftsDeliverable(N, topics, items)) {
+    console.warn(`[auto] user ${userId}: на слот не оказалось текста — план не отдаю`);
     return { error: "quality_gate_unsatisfied" };
   }
 
@@ -9827,6 +9937,7 @@ const AUTOPILOT_QUEUE = "autopilot-plans";
 const NON_RETRYABLE_AUTOPILOT_ERRORS = new Set([
   "quality_gate_unsatisfied",
   "content_variety_insufficient",
+  "no_knowledge_base",
   "no_brief",
   "no_channel",
 ]);

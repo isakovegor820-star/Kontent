@@ -68,6 +68,9 @@ export async function GET(req: NextRequest) {
     if (plan?.status === "error" && plan.rules === "quality_gate_unsatisfied") {
       plan = { ...plan, errorReason: "quality" };
     }
+    if (plan?.status === "error" && plan.rules === "no_knowledge_base") {
+      plan = { ...plan, errorReason: "knowledge" };
+    }
     if (plan?.status === "error" && plan.rules === "ai_unavailable") {
       plan = { ...plan, errorReason: "provider" };
     }

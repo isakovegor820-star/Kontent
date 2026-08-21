@@ -282,7 +282,7 @@ describe("autopilotBuildComplete", () => {
     expect(autopilotBuildComplete(2, topics, [items[0], blocked])).toBe(false);
   });
 
-  it("shows review-required drafts only when editorial rules already passed", () => {
+  it("отдаёт план с помеченным постом, но не считает сборку завершённой", () => {
     const review = {
       aiReady: true,
       draft: "Черновик для ручной проверки",
@@ -292,10 +292,46 @@ describe("autopilotBuildComplete", () => {
     };
     expect(autopilotBuildComplete(2, topics, [items[0], review])).toBe(false);
     expect(autopilotDraftsDeliverable(2, topics, [items[0], review])).toBe(true);
+    // Непрошедший текст тоже доходит до человека: он уже написан, и выбросить его вместе
+    // с четырьмя готовыми постами хуже, чем показать с пометкой «нужна правка».
     expect(autopilotDraftsDeliverable(2, topics, [items[0], {
       ...review,
       quality: { passed: false },
-    }])).toBe(false);
+    }])).toBe(true);
+  });
+
+  it("не отдаёт непрошедший пост без пометки: он выглядел бы готовым", () => {
+    const silentlyBroken = {
+      aiReady: true,
+      draft: "Черновик, который не прошёл проверку",
+      qualityBlocked: true,
+      reviewRequired: false,
+      quality: { passed: false },
+    };
+    expect(autopilotDraftsDeliverable(2, topics, [items[0], silentlyBroken])).toBe(false);
+    expect(autopilotBuildComplete(2, topics, [items[0], silentlyBroken])).toBe(false);
+  });
+
+  it("возвращает все пять запрошенных текстов, даже если один требует правки", () => {
+    const fiveTopics = Array.from({ length: 5 }, (_, index) => ({ topic: `Тема ${index + 1}` }));
+    const fiveDrafts = Array.from({ length: 5 }, (_, index) => ({
+      aiReady: true,
+      draft: `Готовый текст поста ${index + 1}`,
+      qualityBlocked: false,
+      reviewRequired: false,
+      quality: { passed: true, score: 100 },
+    }));
+    fiveDrafts[4] = {
+      ...fiveDrafts[4],
+      qualityBlocked: true,
+      reviewRequired: true,
+      quality: { passed: false, score: 84 },
+    };
+
+    expect(autopilotDraftsDeliverable(5, fiveTopics, fiveDrafts)).toBe(true);
+    expect(autopilotBuildComplete(5, fiveTopics, fiveDrafts)).toBe(false);
+    expect(fiveDrafts).toHaveLength(5);
+    expect(fiveDrafts.every((item) => item.aiReady && item.draft.trim())).toBe(true);
   });
 });
 
