@@ -247,13 +247,30 @@ async function opportunityItems(
   const rows = (await db.query<{
     id: string; title: string; confidence: "low" | "medium" | "high"; epistemic_state: string;
     observed_at: string | null; expires_at: string; fingerprint: string; evidence: Record<string, unknown>;
-  }>(`select id, title, confidence, epistemic_state, observed_at::text, expires_at::text, fingerprint, evidence
-        from opportunity_snapshots where project_id = $1 and channel_id = $2 and expires_at > now()
-        order by observed_at desc nulls last, expires_at desc, id desc limit 2`, [scope.projectId, scope.channelId])).rows;
+    source_available: boolean;
+  }>(`select snapshot.id, snapshot.title, snapshot.confidence, snapshot.epistemic_state,
+             snapshot.observed_at::text, snapshot.expires_at::text, snapshot.fingerprint, snapshot.evidence,
+             exists (
+               select 1
+                 from competitor_posts source_post
+                 join competitors source_competitor on source_competitor.id = source_post.competitor_id
+                where source_post.id = case
+                    when snapshot.evidence->>'sourceId' ~ '^[1-9][0-9]*$'
+                    then (snapshot.evidence->>'sourceId')::bigint
+                    else null
+                  end
+                  and snapshot.evidence->>'sourceKind' = 'competitor_post'
+                  and source_competitor.channel_id = snapshot.channel_id
+                  and source_post.text is not null
+                  and length(trim(source_post.text)) > 0
+             ) as source_available
+        from opportunity_snapshots snapshot
+        where snapshot.project_id = $1 and snapshot.channel_id = $2 and snapshot.expires_at > now()
+        order by snapshot.observed_at desc nulls last, snapshot.expires_at desc, snapshot.id desc limit 2`, [scope.projectId, scope.channelId])).rows;
   const gap = rows.length > 0 ? await nextCalendarGap(db, scope, timezone).catch(() => null) : null;
   return rows.map((row, index) => {
     const sourceId = Number(row.evidence?.sourceId);
-    const actionable = row.evidence?.sourceKind === "competitor_post"
+    const actionable = row.source_available === true && row.evidence?.sourceKind === "competitor_post"
       && Number.isSafeInteger(sourceId) && sourceId > 0;
     const fillsGap = index === 0 && Boolean(gap) && actionable;
     return {

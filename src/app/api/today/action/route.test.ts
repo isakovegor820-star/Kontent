@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 import { ProjectAccessError } from "@/lib/project-permissions";
+import { TodayActionError } from "@/lib/today-actions";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -64,5 +65,17 @@ describe("POST /api/today/action", () => {
   it("preserves project isolation failures", async () => {
     mocks.performTodaySmartAction.mockRejectedValueOnce(new ProjectAccessError("permission_denied"));
     expect((await POST(request())).status).toBe(403);
+  });
+
+  it.each([
+    ["action_not_found", 404],
+    ["action_changed", 409],
+    ["action_source_unavailable", 409],
+    ["opportunity_stale", 422],
+  ])("maps %s without hiding its recovery semantics", async (code, status) => {
+    mocks.performTodaySmartAction.mockRejectedValueOnce(new TodayActionError(code));
+    const response = await POST(request());
+    expect(response.status).toBe(status);
+    await expect(response.json()).resolves.toEqual({ error: code });
   });
 });

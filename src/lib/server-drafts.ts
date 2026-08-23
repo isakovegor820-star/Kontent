@@ -806,7 +806,7 @@ async function resolveSourceContext(
          from competitor_posts post
          join competitors competitor on competitor.id = post.competitor_id
          left join content_ideas idea on idea.source_post_id = post.id and idea.user_id = $2
-        where post.id = $1 and competitor.user_id = $2 and competitor.channel_id = $3
+        where post.id = $1 and competitor.channel_id = $3
           and post.text is not null and length(trim(post.text)) > 0`,
       [sourceId, userId, channelId],
     )).rows[0];
@@ -919,7 +919,7 @@ async function resolveSourceContext(
          from competitor_posts post
          join competitors competitor on competitor.id = post.competitor_id
          left join content_ideas idea on idea.source_post_id = post.id and idea.user_id = $2
-        where post.id = $1 and competitor.user_id = $2 and competitor.channel_id = $3
+        where post.id = $1 and competitor.channel_id = $3
           and post.text is not null and length(trim(post.text)) > 0`,
       [sourceId, userId, channelId],
     )).rows[0];

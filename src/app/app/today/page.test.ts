@@ -20,6 +20,14 @@ describe("Today page resilience and interface contract", () => {
     expect(source).toContain("Вернуть");
   });
 
+  it("recovers stale smart actions and explains permission or source failures", () => {
+    expect(source).toContain('"action_source_unavailable"');
+    expect(source).toContain("const loaded = await load({ channelId: current.channelId })");
+    expect(source).toContain("Источник для быстрого черновика больше недоступен");
+    expect(source).toContain("У вас нет доступа к созданию материалов в этом проекте");
+    expect(source).toContain('setPendingFocus(stillVisible ? item.fingerprint : "summary")');
+  });
+
   it("covers loading, onboarding, partial, unavailable and completed states", () => {
     expect(source).toContain("Собираем решения на сегодня");
     expect(source).toContain("Подключите канал");

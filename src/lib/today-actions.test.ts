@@ -20,6 +20,7 @@ vi.mock("./content-intelligence", async (importOriginal) => {
 });
 
 import { performTodaySmartAction } from "./today-actions";
+import { DraftValidationError } from "./server-drafts";
 
 function board(action: Record<string, unknown> | null) {
   return {
@@ -62,5 +63,14 @@ describe("Today smart actions", () => {
     });
     expect(mocks.createPublishedPostSourceContext).toHaveBeenCalledWith({ actorUserId: 9, postId: 91, channelId: 11, mode });
     expect(result.href).toBe("/app/studio?draft=42&intent=create");
+  });
+
+  it("preserves a missing source as a recoverable action error", async () => {
+    mocks.loadTodayBoard.mockResolvedValue(board({ kind: "create_opportunity_draft", subjectId: 71 }));
+    mocks.createOpportunitySourceContext.mockRejectedValue(new DraftValidationError("source_context_not_found"));
+
+    await expect(performTodaySmartAction({
+      actorUserId: 9, channelId: 11, fingerprint: "a".repeat(64), actionKind: "create_opportunity_draft",
+    })).rejects.toMatchObject({ code: "action_source_unavailable" });
   });
 });

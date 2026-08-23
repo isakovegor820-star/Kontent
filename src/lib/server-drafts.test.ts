@@ -356,7 +356,7 @@ describe("server draft transactions", () => {
     expect(forbiddenQuery).not.toHaveBeenCalled();
   });
 
-  it("rebuilds source text, topic and provenance from the owned server record", async () => {
+  it("lets a project member rebuild source text from a competitor added by another member", async () => {
     let insertedParams: unknown[] | undefined;
     const canonicalRef = {
       kind: "reference",
@@ -384,6 +384,9 @@ describe("server draft transactions", () => {
     const query = vi.fn(async (sql: string, params?: unknown[]) => {
       if (sql.includes("select id from channels")) return { rowCount: 1, rows: [{ id: "11" }] };
       if (sql.includes("from competitor_posts post")) {
+        expect(sql).toContain("competitor.channel_id = $3");
+        expect(sql).not.toContain("competitor.user_id");
+        expect(params).toEqual(["55", 5, 11]);
         return {
           rowCount: 1,
           rows: [{

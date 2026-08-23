@@ -34,7 +34,9 @@ export async function POST(req: NextRequest) {
   } catch (error) {
     if (error instanceof SyntaxError) return NextResponse.json({ error: "bad_request" }, { status: 400 });
     if (error instanceof TodayActionError) {
-      const status = error.code === "action_not_found" ? 404 : error.code === "action_changed" ? 409 : 422;
+      const status = error.code === "action_not_found" ? 404
+        : error.code === "action_changed" || error.code === "action_source_unavailable" ? 409
+          : 422;
       return NextResponse.json({ error: error.code }, { status });
     }
     if (error instanceof ProjectAccessError) return NextResponse.json({ error: "access_denied" }, { status: 403 });

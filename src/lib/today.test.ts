@@ -307,6 +307,7 @@ describe("Today board states", () => {
       id: "71", title: "Ответить на новый рыночный сигнал", confidence: "high", epistemic_state: "inferred",
       observed_at: "2026-08-23T09:00:00.000Z", expires_at: "2026-08-30T09:00:00.000Z", fingerprint: "source-71",
       evidence: { sourceKind: "competitor_post", sourceId: 51, sourceLabel: "Подтверждённый источник" },
+      source_available: true,
     }];
     const ready = await loadTodayBoard({ actorUserId: 9, channelId: 11 }, todayDb({ opportunityRows, postFrequency: 5, occupiedDates: ["2026-08-24"] }) as never);
     const opportunity = ready.items.find((candidate) => candidate.type === "opportunity");
@@ -316,6 +317,26 @@ describe("Today board states", () => {
     const hidden = await loadTodayBoard({ actorUserId: 9, channelId: 11 }, todayDb({ opportunityRows, postFrequency: 5, hiddenPreference: true }) as never);
     expect(hidden.items.some((candidate) => candidate.type === "opportunity")).toBe(false);
     vi.useRealTimers();
+  });
+
+  it("does not offer draft creation when an opportunity source is no longer available", async () => {
+    const opportunityRows = [{
+      id: "71", title: "Ответить на новый рыночный сигнал", confidence: "high", epistemic_state: "inferred",
+      observed_at: "2026-08-23T09:00:00.000Z", expires_at: "2026-08-30T09:00:00.000Z", fingerprint: "source-71",
+      evidence: { sourceKind: "competitor_post", sourceId: 51, sourceLabel: "Удалённый источник" },
+      source_available: false,
+    }];
+    const board = await loadTodayBoard(
+      { actorUserId: 9, channelId: 11 },
+      todayDb({ opportunityRows }) as never,
+    );
+    const opportunity = board.items.find((candidate) => candidate.type === "opportunity");
+
+    expect(opportunity?.smartAction).toBeNull();
+    expect(opportunity?.primaryAction).toEqual({
+      label: "Открыть возможность",
+      href: "/app/opportunities?opportunity=71&channel=11",
+    });
   });
 
   it("stores and restores a recommendation preference inside the selected project and channel", async () => {

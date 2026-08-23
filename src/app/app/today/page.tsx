@@ -556,19 +556,52 @@ function TodayPageContent() {
           actionKind: item.smartAction.kind,
         }),
       });
-      const body = await response.json().catch(() => null) as { href?: unknown } | null;
-      if (!response.ok || typeof body?.href !== "string" || !body.href.startsWith("/app/studio?")) {
+      const body = await response.json().catch(() => null) as { error?: unknown; href?: unknown } | null;
+      const errorCode = typeof body?.error === "string" ? body.error : "action_unavailable";
+      if (!response.ok) {
+        const refreshable = new Set([
+          "action_changed", "action_not_found", "action_source_unavailable",
+          "opportunity_not_found", "opportunity_stale", "opportunity_not_actionable",
+        ]).has(errorCode);
+        if (refreshable) {
+          const loaded = await load({ channelId: current.channelId });
+          if (controller.signal.aborted || sequence !== actionSequence.current) return;
+          const stillVisible = boardRef.current?.items.some((candidate) => candidate.fingerprint === item.fingerprint) === true;
+          setPendingFocus(stillVisible ? item.fingerprint : "summary");
+          if (loaded) {
+            const sourceUnavailable = errorCode === "action_source_unavailable";
+            const message = sourceUnavailable
+              ? "Источник для быстрого черновика больше недоступен. Решение обновлено — откройте возможность, чтобы выбрать другой источник."
+              : "Следующий шаг изменился. Решения обновлены — выберите актуальное действие.";
+            if (stillVisible) setItemErrors((errors) => ({ ...errors, [item.fingerprint]: message }));
+            else setRefreshError(message);
+            setAnnouncement(message);
+          } else {
+            setItemErrors((errors) => ({ ...errors, [item.fingerprint]: "Не удалось проверить актуальность решения. Обновите решения и повторите действие." }));
+            setAnnouncement(`Не удалось обновить решение «${item.title}».`);
+          }
+          return;
+        }
+        throw new Error(errorCode);
+      }
+      if (typeof body?.href !== "string" || !body.href.startsWith("/app/studio?")) {
         throw new Error("action_unavailable");
       }
       if (controller.signal.aborted || sequence !== actionSequence.current) return;
       setAnnouncement(`Следующий шаг для «${item.title}» подготовлен. Карточка останется в списке, пока вы не отметите её готовой.`);
       router.push(body.href);
-    } catch {
+    } catch (error) {
       if (controller.signal.aborted || sequence !== actionSequence.current) return;
-      setItemErrors((errors) => ({ ...errors, [item.fingerprint]: "Не удалось подготовить следующий шаг. Исходные данные не изменены — попробуйте ещё раз." }));
+      const code = error instanceof Error ? error.message : "action_unavailable";
+      const message = code === "access_denied"
+        ? "У вас нет доступа к созданию материалов в этом проекте. Обратитесь к владельцу проекта."
+        : code === "unauthorized"
+          ? "Сессия завершилась. Обновите страницу и войдите снова."
+          : "Не удалось подготовить следующий шаг. Проверьте соединение и повторите действие.";
+      setItemErrors((errors) => ({ ...errors, [item.fingerprint]: message }));
       setAnnouncement(`Не удалось подготовить следующий шаг для «${item.title}».`);
     } finally { if (sequence === actionSequence.current) setBusy(null); }
-  }, [busy, router]);
+  }, [busy, load, router]);
 
   const hideRecommendation = useCallback(async (item: TodayItem) => {
     if (busy || !item.recommendationKind) return;

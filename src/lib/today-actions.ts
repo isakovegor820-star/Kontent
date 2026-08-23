@@ -48,7 +48,9 @@ export async function performTodaySmartAction(input: {
     return { href: appDraftActionHref("create", result.draftId), created: result.created };
   } catch (error) {
     if (isContentIntelligenceError(error)) throw new TodayActionError(error.code);
-    if (error instanceof DraftValidationError) throw new TodayActionError("action_changed");
+    if (error instanceof DraftValidationError) {
+      throw new TodayActionError(error.code === "source_context_not_found" ? "action_source_unavailable" : "action_changed");
+    }
     throw error;
   }
 }
