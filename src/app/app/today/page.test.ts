@@ -66,6 +66,15 @@ describe("Today page resilience and interface contract", () => {
     expect(source).toContain("Только реальные данные");
   });
 
+  it("keeps the Today command center compact, data-backed and keyboard discoverable", () => {
+    expect(source).toContain("function TodaySummaryMetrics");
+    expect(source).toContain('aria-label="Краткая сводка на сегодня"');
+    expect(source).toContain('item.confidence === "high"');
+    expect(source).toContain("function PulseArtwork");
+    expect(source).toContain('aria-label="Дополнительные действия"');
+    expect(source).toContain("MoreHorizontal");
+  });
+
   it("uses buttons for mutations, links for navigation and keeps recommendation feedback reversible", () => {
     expect(source).toContain('fetch("/api/today/action"');
     expect(source).toContain('fetch("/api/today/feedback"');

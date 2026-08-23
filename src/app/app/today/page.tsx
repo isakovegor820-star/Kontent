@@ -6,6 +6,8 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   AlertTriangle,
   BarChart3,
+  BadgeCheck,
+  BrainCircuit,
   Check,
   CheckCircle2,
   Clock3,
@@ -13,7 +15,9 @@ import {
   Database,
   EyeOff,
   FileCheck2,
+  Flame,
   Lightbulb,
+  MoreHorizontal,
   RefreshCw,
   RotateCcw,
   Sparkles,
@@ -102,9 +106,9 @@ function updatedLabel(board: TodayBoard): string {
       hour: "2-digit",
       minute: "2-digit",
     }).format(new Date(board.lastSuccessfulAt));
-    return `Последнее успешное обновление: ${formatted}`;
+    return `Последнее обновление: ${formatted}`;
   } catch {
-    return "Последнее успешное обновление: недавно";
+    return "Последнее обновление: недавно";
   }
 }
 
@@ -158,30 +162,66 @@ function comparisonLabel(value: number | null, suffix = "%"): string {
   return `${value > 0 ? "+" : "−"}${Math.abs(value).toLocaleString("ru-RU")}${suffix} к прошлым 7 дням`;
 }
 
+function PulseArtwork({ muted = false }: { muted?: boolean }) {
+  return (
+    <svg
+      aria-hidden="true"
+      className="h-28 w-full overflow-visible"
+      viewBox="0 0 360 128"
+      fill="none"
+      preserveAspectRatio="none"
+    >
+      <defs>
+        <linearGradient id="today-pulse-fill" x1="180" y1="26" x2="180" y2="128" gradientUnits="userSpaceOnUse">
+          <stop stopColor="var(--brand-1)" stopOpacity={muted ? 0.12 : 0.3} />
+          <stop offset="1" stopColor="var(--brand-1)" stopOpacity="0" />
+        </linearGradient>
+      </defs>
+      <path
+        d="M10 103L40 83L70 89L100 87L130 70L160 79L190 61L220 45L250 59L280 39L310 25L350 7V128H10Z"
+        fill="url(#today-pulse-fill)"
+      />
+      <path
+        d="M10 103L40 83L70 89L100 87L130 70L160 79L190 61L220 45L250 59L280 39L310 25L350 7"
+        stroke="var(--brand-1)"
+        strokeOpacity={muted ? 0.45 : 0.95}
+        strokeWidth="2.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        vectorEffect="non-scaling-stroke"
+      />
+      {[10, 40, 70, 100, 130, 160, 190, 220, 250, 280, 310, 350].map((x, index) => {
+        const y = [103, 83, 89, 87, 70, 79, 61, 45, 59, 39, 25, 7][index];
+        return <circle key={x} cx={x} cy={y} r="3" fill="var(--surface)" stroke="var(--brand-1)" strokeWidth="2" vectorEffect="non-scaling-stroke" />;
+      })}
+    </svg>
+  );
+}
+
 function ChannelPulse({ pulse, refreshing, onRefresh }: { pulse: TodayPulse; refreshing: boolean; onRefresh: () => void }) {
   if (pulse.state === "unavailable") {
     return (
-      <Card as="section" className="p-5 sm:p-6" aria-labelledby="today-pulse-title">
-        <div className="flex items-start gap-3">
-          <BarChart3 className="mt-0.5 h-5 w-5 shrink-0 text-text-3" aria-hidden />
+      <Card as="section" className="overflow-hidden p-5 sm:p-6" aria-labelledby="today-pulse-title">
+        <div className="grid items-center gap-6 md:grid-cols-[minmax(0,0.9fr)_minmax(15rem,1.1fr)]">
           <div className="min-w-0">
-            <h2 id="today-pulse-title">Пульс канала за 7 дней</h2>
-            <p className="mt-2 max-w-[65ch] text-[14px] leading-relaxed text-text-2">Статистика временно недоступна. Остальные решения можно продолжать разбирать.</p>
+            <div className="flex items-center gap-2 text-text-3"><BarChart3 className="h-4 w-4 shrink-0 text-brand" aria-hidden /><p className="type-caption font-semibold">Последние 7 дней</p></div>
+            <h2 id="today-pulse-title" className="mt-2">Пульс канала за 7 дней</h2>
+            <p className="mt-2 max-w-[55ch] text-pretty text-[14px] leading-relaxed text-text-2">Статистика временно недоступна. Остальные решения можно продолжать разбирать.</p>
             <Button variant="secondary" size="sm" className="mt-4" loading={refreshing} onClick={onRefresh}>Обновить статистику</Button>
           </div>
+          <div className="min-w-0 opacity-60"><PulseArtwork muted /></div>
         </div>
       </Card>
     );
   }
   if (pulse.state === "no_posts" || pulse.state === "no_stats") {
     return (
-      <Card as="section" className="p-5 sm:p-6" aria-labelledby="today-pulse-title">
-        <div className="flex items-start gap-3">
-          <BarChart3 className="mt-0.5 h-5 w-5 shrink-0 text-brand" aria-hidden />
+      <Card as="section" className="overflow-hidden p-5 sm:p-6" aria-labelledby="today-pulse-title">
+        <div className="grid items-center gap-6 md:grid-cols-[minmax(0,0.9fr)_minmax(15rem,1.1fr)]">
           <div className="min-w-0">
-            <p className="type-caption font-semibold text-text-3">{pulse.periodLabel}</p>
-            <h2 id="today-pulse-title" className="mt-1">Пульс канала за 7 дней</h2>
-            <p className="mt-2 max-w-[65ch] text-[14px] leading-relaxed text-text-2">
+            <div className="flex items-center gap-2 text-text-3"><BarChart3 className="h-4 w-4 shrink-0 text-brand" aria-hidden /><p className="type-caption font-semibold">{pulse.periodLabel}</p></div>
+            <h2 id="today-pulse-title" className="mt-2">Пульс канала за 7 дней</h2>
+            <p className="mt-2 max-w-[55ch] text-pretty text-[14px] leading-relaxed text-text-2">
               {pulse.state === "no_posts"
                 ? "За последние 7 дней публикаций не было. После первой публикации здесь появится короткая динамика канала."
                 : "Публикации есть, но статистика по ним ещё не получена. Исходные материалы остаются без изменений."}
@@ -192,49 +232,57 @@ function ChannelPulse({ pulse, refreshing, onRefresh }: { pulse: TodayPulse; ref
               <Button variant="secondary" size="sm" className="mt-4" loading={refreshing} onClick={onRefresh}>Обновить статистику</Button>
             )}
           </div>
+          <div className="min-w-0"><PulseArtwork muted /></div>
         </div>
       </Card>
     );
   }
-  const metrics = [
-    { label: "Публикации", value: String(pulse.publishedCount), comparison: `${pulse.postsWithStats} со статистикой` },
-    { label: "Просмотры", value: metric(pulse.views), comparison: comparisonLabel(pulse.comparison.viewsPerPostPercent) },
-    { label: "Реакции", value: metric(pulse.reactions), comparison: comparisonLabel(pulse.comparison.reactionsPerPostPercent) },
-    { label: "Доля реакций", value: pulse.engagementRate == null ? "—" : `${pulse.engagementRate.toLocaleString("ru-RU")}%`, comparison: comparisonLabel(pulse.comparison.engagementPoints, " п. п.") },
-  ];
   return (
-    <Card as="section" className="p-5 sm:p-6" aria-labelledby="today-pulse-title">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <p className="type-caption font-semibold text-text-3">{pulse.periodLabel}</p>
-          <h2 id="today-pulse-title" className="mt-1">Пульс канала за 7 дней</h2>
+    <Card as="section" className="overflow-hidden p-5 sm:p-6" aria-labelledby="today-pulse-title">
+      <div className="grid items-center gap-7 md:grid-cols-[minmax(0,0.92fr)_minmax(15rem,1.08fr)]">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2 text-text-3"><BarChart3 className="h-4 w-4 shrink-0 text-brand" aria-hidden /><p className="type-caption font-semibold">{pulse.periodLabel}</p><Badge tone="neutral">Только реальные данные</Badge></div>
+          <h2 id="today-pulse-title" className="mt-2">Пульс канала за 7 дней</h2>
+          <p className="mt-2 max-w-[55ch] text-pretty text-[14px] leading-relaxed text-text-2">{pulse.insight}</p>
+          <dl className="mt-4 grid grid-cols-2 gap-x-5 gap-y-3">
+            <div><dt className="type-caption text-text-3">Просмотры</dt><dd className="mt-0.5 font-bold tabular-nums text-text">{metric(pulse.views)}</dd><dd className="type-caption text-text-3">{comparisonLabel(pulse.comparison.viewsPerPostPercent)}</dd></div>
+            <div><dt className="type-caption text-text-3">Реакции</dt><dd className="mt-0.5 font-bold tabular-nums text-text">{metric(pulse.reactions)}</dd><dd className="type-caption text-text-3">{comparisonLabel(pulse.comparison.reactionsPerPostPercent)}</dd></div>
+          </dl>
+          {pulse.bestPost ? (
+            <Link className="mt-4 inline-flex min-h-11 items-center break-words text-[14px] font-semibold leading-relaxed text-brand underline decoration-brand/35 underline-offset-4 hover:decoration-brand focus-visible:rounded-xs" href={pulse.bestPost.href}>Открыть лучший результат</Link>
+          ) : null}
         </div>
-        <Badge tone="neutral">Только реальные данные</Badge>
-      </div>
-      <dl className="mt-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
-        {metrics.map((entry) => (
-          <div key={entry.label} className="min-w-0 rounded-sm bg-surface-inset p-3 sm:p-4">
-            <dt className="type-caption text-text-3">{entry.label}</dt>
-            <dd className="mt-1 text-xl font-bold leading-tight tabular-nums text-text sm:text-2xl">{entry.value}</dd>
-            <dd className="mt-1 text-[12px] leading-relaxed text-text-3">{entry.comparison}</dd>
-          </div>
-        ))}
-      </dl>
-      <div className="mt-5 grid gap-4 border-t border-line pt-4 lg:grid-cols-[minmax(0,1fr)_minmax(16rem,0.7fr)]">
-        <div>
-          <p className="type-caption font-semibold text-text-3">Что это значит</p>
-          <p className="mt-1 max-w-[65ch] text-[14px] leading-relaxed text-text-2">{pulse.insight}</p>
-        </div>
-        {pulse.bestPost ? (
-          <div className="min-w-0">
-            <p className="type-caption font-semibold text-text-3">Лучший результат периода</p>
-            <Link className="mt-1 inline-flex min-h-11 items-center break-words text-[14px] font-semibold leading-relaxed text-brand underline decoration-brand/35 underline-offset-4 hover:decoration-brand focus-visible:rounded-xs focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-brand" href={pulse.bestPost.href}>
-              {pulse.bestPost.title}
-            </Link>
-          </div>
-        ) : null}
+        <div className="min-w-0" role="img" aria-label={`${pulse.publishedCount} публикаций за 7 дней, ${pulse.postsWithStats} со статистикой`}><PulseArtwork /></div>
       </div>
     </Card>
+  );
+}
+
+function TodaySummaryMetrics({ board, items }: { board: TodayBoard; items: TodayItem[] }) {
+  const highConfidenceShare = items.length === 0
+    ? 0
+    : Math.round((items.filter((item) => item.confidence === "high").length / items.length) * 100);
+  const entries = [
+    { label: "Решения в фокусе", value: String(items.length), icon: Flame, tone: "text-fire-text" },
+    { label: "Период аналитики", value: "7 дней", icon: BarChart3, tone: "text-brand" },
+    { label: "Возможности", value: String(board.readiness.opportunityCount), icon: BrainCircuit, tone: "text-danger-text" },
+    { label: "Высокая уверенность", value: items.length > 0 ? `${highConfidenceShare}%` : "—", icon: BadgeCheck, tone: "text-success-text" },
+  ];
+  return (
+    <dl className="grid grid-cols-2 gap-3 lg:grid-cols-4" aria-label="Краткая сводка на сегодня">
+      {entries.map((entry) => {
+        const Icon = entry.icon;
+        return (
+          <Card as="div" key={entry.label} className="flex min-w-0 flex-col p-4">
+            <dt className="order-2 mt-2 type-caption text-text-3">{entry.label}</dt>
+            <dd className="order-1 flex items-center gap-2 text-xl font-bold leading-none tabular-nums text-text">
+              <Icon className={`h-5 w-5 shrink-0 ${entry.tone}`} strokeWidth={2} aria-hidden />
+              <span>{entry.value}</span>
+            </dd>
+          </Card>
+        );
+      })}
+    </dl>
   );
 }
 
@@ -252,26 +300,26 @@ function TodayItemCard({ item, featured, actionsDisabled, actionLoading, error, 
 }) {
   const Icon = ICONS[item.type];
   return (
-    <Card strong={featured} className="overflow-hidden">
-      <div className="grid min-w-0 gap-5 p-5 sm:p-6 lg:grid-cols-[minmax(0,1fr)_auto]">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge tone={item.type === "risk" ? "danger" : featured ? "brand" : "neutral"}>
-              <Icon className="h-3.5 w-3.5" aria-hidden />
-              {ITEM_LABELS[item.type]}
-            </Badge>
-            <span className="type-caption break-words text-text-3">{item.channelLabel} · {item.freshness}</span>
-          </div>
-          <p className="mt-2 type-caption text-text-3">{CONFIDENCE_LABELS[item.confidence]} · {STATE_LABELS[item.epistemicState]}</p>
-          <h3 ref={setTitleRef} tabIndex={-1} className="mt-4 text-balance focus-visible:rounded-xs focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-brand">{item.title}</h3>
-          <p className="mt-3 max-w-[65ch] text-pretty text-[15px] leading-relaxed text-text-2">
-            <span className="font-semibold text-text">Почему сейчас: </span>{item.whyNow}
-          </p>
-          <p className="mt-3 flex items-start gap-2 text-[13px] leading-relaxed text-text-3">
-            <Database className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
-            <span className="break-words">Источник данных: {item.sourceLabel}</span>
-          </p>
-          <div className="mt-5 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
+    <Card strong={featured} className="relative">
+      <div className="min-w-0 p-5 sm:p-6">
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge tone={item.type === "risk" ? "danger" : featured ? "brand" : "neutral"}>
+            <Icon className="h-3.5 w-3.5" aria-hidden />
+            {ITEM_LABELS[item.type]}
+          </Badge>
+          <span className="type-caption break-words text-text-3">{item.channelLabel} · {item.freshness}</span>
+        </div>
+        <p className="mt-2 type-caption text-text-3">{CONFIDENCE_LABELS[item.confidence]} · {STATE_LABELS[item.epistemicState]}</p>
+        <h3 ref={setTitleRef} tabIndex={-1} className="mt-4 max-w-[46rem] text-balance focus-visible:rounded-xs focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-brand">{item.title}</h3>
+        <p className="mt-3 max-w-[65ch] text-pretty text-[15px] leading-relaxed text-text-2">
+          <span className="font-semibold text-text">Почему сейчас: </span>{item.whyNow}
+        </p>
+        <p className="mt-3 flex items-start gap-2 text-[13px] leading-relaxed text-text-3">
+          <Database className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
+          <span className="break-words">Источник данных: {item.sourceLabel}</span>
+        </p>
+        <div className="mt-5 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+          <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
             {item.smartAction ? (
               <Button variant="primary" className="h-auto min-h-11 whitespace-normal text-center" disabled={actionsDisabled} loading={actionLoading} onClick={() => onPrimary(item)}>
                 <Sparkles className="h-4 w-4 shrink-0" aria-hidden />{item.primaryAction.label}
@@ -283,21 +331,28 @@ function TodayItemCard({ item, featured, actionsDisabled, actionLoading, error, 
             )}
             {item.evidence ? <EvidenceCard kind={item.evidence.kind} id={item.evidence.id} compact /> : null}
           </div>
-          {error ? <p className="mt-4 text-[13px] font-semibold text-danger-text" role="alert">{error}</p> : null}
-        </div>
-        <div className="flex flex-col items-stretch gap-2 sm:flex-row lg:items-end">
-          <Button variant="secondary" size="sm" className="min-h-11 w-full sm:w-auto" disabled={actionsDisabled} loading={!item.smartAction && actionLoading} onClick={() => onDone(item)}>
-            <Check className="h-4 w-4" aria-hidden />Готово
-          </Button>
-          <Button variant="ghost" size="sm" className="min-h-11 w-full sm:w-auto" disabled={actionsDisabled} onClick={() => onSnooze(item)}>
-            <Clock3 className="h-4 w-4" aria-hidden />Напомнить завтра
-          </Button>
-          {item.recommendationKind ? (
-            <Button variant="ghost" size="sm" className="min-h-11 w-full whitespace-normal text-left sm:w-auto" disabled={actionsDisabled} onClick={() => onHide(item)}>
-              <EyeOff className="h-4 w-4 shrink-0" aria-hidden />Больше не показывать такое
+          <div className="flex items-center justify-end gap-2">
+            <Button variant="secondary" size="sm" className="min-h-11" disabled={actionsDisabled} loading={!item.smartAction && actionLoading} onClick={() => onDone(item)}>
+              <Check className="h-4 w-4" aria-hidden />Готово
             </Button>
-          ) : null}
+            <details className="group/more relative">
+              <summary className={buttonClassName({ variant: "secondary", size: "icon", className: "list-none [&::-webkit-details-marker]:hidden" })} aria-label="Дополнительные действия">
+                <MoreHorizontal className="h-5 w-5" aria-hidden />
+              </summary>
+              <div className="card-plain absolute right-0 bottom-[calc(100%+0.5rem)] z-20 w-64 rounded-sm p-2 shadow-float">
+                <Button variant="ghost" size="sm" className="w-full justify-start whitespace-normal text-left" disabled={actionsDisabled} onClick={() => onSnooze(item)}>
+                  <Clock3 className="h-4 w-4 shrink-0" aria-hidden />Напомнить завтра
+                </Button>
+                {item.recommendationKind ? (
+                  <Button variant="ghost" size="sm" className="w-full justify-start whitespace-normal text-left" disabled={actionsDisabled} onClick={() => onHide(item)}>
+                    <EyeOff className="h-4 w-4 shrink-0" aria-hidden />Больше не показывать такое
+                  </Button>
+                ) : null}
+              </div>
+            </details>
+          </div>
         </div>
+        {error ? <p className="mt-4 text-[13px] font-semibold text-danger-text" role="alert">{error}</p> : null}
       </div>
     </Card>
   );
@@ -305,16 +360,16 @@ function TodayItemCard({ item, featured, actionsDisabled, actionLoading, error, 
 
 function ChannelSelector({ board, id, onChange }: { board: TodayBoard; id: string; onChange: (value: string) => void }) {
   if (board.channels.length <= 1) {
-    return <div><p className="type-caption font-semibold text-text-2">Канал</p><p className="mt-1 break-words text-[15px] font-semibold text-text">{board.channelLabel}</p></div>;
+    return <div className="flex flex-wrap items-center gap-x-4 gap-y-1"><p className="type-caption font-semibold text-text-2">Канал</p><p className="break-words text-[15px] font-semibold text-text">{board.channelLabel}</p></div>;
   }
   return (
-    <label className="block" htmlFor={id}>
-      <span className="type-caption font-semibold text-text-2">Канал</span>
+    <label className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4" htmlFor={id}>
+      <span className="type-caption shrink-0 font-semibold text-text-2">Канал</span>
       <select
         id={id}
         value={board.channelId ?? ""}
         onChange={(event) => onChange(event.target.value)}
-        className="mt-1.5 h-12 w-full min-w-0 rounded-xs border border-line bg-surface px-4 text-base font-semibold text-text transition-colors hover:border-line-strong focus:border-brand focus:outline-none focus-visible:ring-4 focus-visible:ring-brand/15 sm:w-72 sm:text-sm"
+        className="h-12 w-full min-w-0 rounded-xs border border-line bg-surface px-4 text-base font-semibold text-text transition-colors hover:border-line-strong focus:border-brand focus:outline-none focus-visible:ring-4 focus-visible:ring-brand/15 sm:w-72 sm:text-sm"
       >
         {board.channels.map((channel) => <option key={channel.id} value={channel.id}>{channel.label}{channel.enabled ? "" : " — временно приостановлен"}</option>)}
       </select>
@@ -774,6 +829,8 @@ function TodayPageContent() {
                 </div>
               ) : null}
             </Card>
+
+            <TodaySummaryMetrics board={board} items={actionableItems} />
 
             <ChannelPulse pulse={board.pulse} refreshing={refreshing} onRefresh={() => void refreshSources()} />
 
