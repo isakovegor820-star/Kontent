@@ -1027,6 +1027,9 @@ async function runTodayWorkspacePass(targetPage, channels, draftId) {
 
   await targetPage.getByRole("button", { name: "Выйти из режима", exact: true }).click();
 
+  const moreActions = targetPage.getByRole("button", { name: "Дополнительные действия", exact: true }).first();
+  await tabTo(targetPage, moreActions, "Today additional actions");
+  await targetPage.keyboard.press("Enter");
   const snooze = targetPage.getByRole("button", { name: "Напомнить завтра", exact: true }).first();
   await tabTo(targetPage, snooze, "Today snooze action");
   await targetPage.keyboard.press("Space");
