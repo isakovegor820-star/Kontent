@@ -155,8 +155,8 @@ describe("GET /api/autopilot", () => {
     expect(body.activePlan).toBeNull();
     expect(body.buildAttempt.progress).toMatchObject({
       completed: 1,
-      total: 7,
-      percent: 14,
+      total: 5,
+      percent: 20,
       stage: "generating",
     });
     expect(body.buildAttempt).toMatchObject({

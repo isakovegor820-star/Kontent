@@ -18,20 +18,27 @@ describe("Autopilot build UI contract", () => {
     expect(source).toContain("Остановить сборку");
     expect(source).toContain('method: "DELETE"');
     expect(source).toContain("attempt.publicationTargetCount");
-    expect(source).toContain("attempt.candidateCount");
-    expect(source).toContain("Резерв автоматически не публикуется");
-    expect(source).toContain("plannedCandidateCount");
+    expect(source).not.toContain("Резерв автоматически не публикуется");
+    expect(source).not.toContain("кандидатов");
+    expect(source).toContain("покажет план целиком");
   });
 
-  it("keeps the active plan visible and offers cause-specific repair actions", () => {
+  it("keeps the active plan visible while Autopilot owns internal repair", () => {
     expect(source).toContain("data.activePlan ?? data.plan");
-    expect(source).toContain("Текущий готовый план остаётся доступен ниже");
-    expect(source).toContain("Дополнить ${repairCount}");
+    expect(source).toContain("Неудачные тексты Аврора переписывает сама");
     expect(source).toContain("Добавить материалы");
     expect(source).toContain("Открыть настройки качества");
-    expect(source).toContain("Проверить {Math.max(1, attempt.progress.reviewRequired)}");
-    expect(source).toContain("/api/autopilot/repair");
-    expect(source).toContain("repairBusy");
+    expect(source).not.toContain("/api/autopilot/repair");
+    expect(source).not.toContain("Повторить 6 постов");
+  });
+
+  it("keeps quick settings behind a compact accessible dialog", () => {
+    expect(source).toContain("Настроить посты");
+    expect(source).toContain('aria-haspopup="dialog"');
+    expect(source).toContain("dialog.showModal()");
+    expect(source).toContain("Настройки постов");
+    expect(source).toContain('type="range"');
+    expect(source).not.toContain("Почему такой план");
   });
 
   it("waits for each poll to finish and reports generation/cancel network failures", () => {
@@ -55,7 +62,6 @@ describe("Autopilot build UI contract", () => {
     expect(source).not.toContain("Источники и контекст");
     expect(source).toContain("Открыть в редакторе");
     expect(source).toContain('from: "autopilot"');
-    expect(source).toContain('type="range"');
     expect(source).toContain("!isAutopilotHumanReviewItem(item)");
     expect(source).toContain("!item.draftId && canApproveItem(item)");
     expect(source).toContain("Поставь пост в календарь оттуда");

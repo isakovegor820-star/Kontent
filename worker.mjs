@@ -176,6 +176,7 @@ import {
 import { completeAiText } from "./src/lib/ai-completion-service.mjs";
 import {
   autopilotCheckpointItem,
+  autopilotRetryableItemIndexes,
   autopilotTopicCheckpoints,
   reusableAutopilotCheckpoint,
 } from "./src/lib/autopilot-build-progress.mjs";
@@ -379,8 +380,8 @@ const {
   overallTimeoutMs: AUTOPILOT_AI_OVERALL_TIMEOUT_MS,
 } = autopilotAiTimeouts(process.env);
 const AUTOPILOT_AI_CIRCUIT_OPEN_MS = Math.min(
-  15 * 60_000,
-  Math.max(60_000, Number(process.env.AUTOPILOT_AI_CIRCUIT_OPEN_MS) || 5 * 60_000),
+  30_000,
+  Math.max(5_000, Number(process.env.AUTOPILOT_AI_CIRCUIT_OPEN_MS) || 15_000),
 );
 const AUTOPILOT_SEMANTIC_TIMEOUT_MS = Math.min(
   30_000,
@@ -4745,7 +4746,9 @@ async function askAI(
         ? {
             maxAttempts: 4,
             overallTimeoutMs: AUTOPILOT_AI_OVERALL_TIMEOUT_MS,
-            circuitFailureThreshold: 1,
+            // One slow request must not open the circuit for the rest of the concurrent
+            // weekly batch. Require a complete concurrency wave to fail first.
+            circuitFailureThreshold: Math.max(2, configuredAiConcurrency(selectedEngine)),
             circuitOpenMs: AUTOPILOT_AI_CIRCUIT_OPEN_MS,
             fallbackEngines: autopilotFallbackEngines(selectedEngine),
           }
@@ -5539,6 +5542,12 @@ async function planTopics(
 // воркер на часы и лишить остальных публикации. Хочешь больше — надо распараллелить askAI,
 // это отдельная работа.
 const MAX_WEEKLY_POSTS = 30;
+const MAX_AUTOPILOT_INTERNAL_REPAIR_PASSES = 2;
+const AUTOPILOT_INTERNAL_REPAIR_STRATEGIES = new Set([
+  "deterministic_format",
+  "provider_retry",
+  "rewrite",
+]);
 
 function monthlyCampaignLocalSlot(localDate, hour, timezone) {
   const [year, month, day] = String(localDate).split("-").map(Number);
@@ -5653,9 +5662,13 @@ async function buildAutopilotPlan(
   usageReservationId = null,
   repairIndexes = null,
   repairOperationId = null,
+  internalRepair = null,
 ) {
-  const buildStartedAt = Date.now();
-  const aiCallsBefore = workerAiCallCount(usageReservationId);
+  const buildStartedAt = Number(internalRepair?.buildStartedAt) || Date.now();
+  const aiCallsBefore = Number.isFinite(Number(internalRepair?.aiCallsBefore))
+    ? Number(internalRepair.aiCallsBefore)
+    : workerAiCallCount(usageReservationId);
+  const internalRepairPass = Math.max(0, Number(internalRepair?.pass) || 0);
   // A manual build is tied to the placeholder created by the API. Old duplicate jobs used
   // to rebuild the same channel one after another and could overwrite a newer retry. A job
   // whose placeholder is gone or no longer `building` is obsolete and must do no work.
@@ -5944,11 +5957,13 @@ async function buildAutopilotPlan(
   // ретрай. Последовательно 30 постов собирались до 45 минут и всё это время держали крон-очередь
   // (concurrency: 1), простаивая разведку и аналитику. Параллелим через mapConcurrent — порядок
   // элементов сохраняется по индексу, поэтому slots[i] и нумерация карточек не разъезжаются.
-  const autopilotConcurrency = configuredAiConcurrency(
-    generationEngine,
-    process.env,
-    generationEngine === "navy-minimax-m3" ? 2 : 3,
-  );
+  const autopilotConcurrency = internalRepairPass > 0
+    ? 1
+    : configuredAiConcurrency(
+        generationEngine,
+        process.env,
+        generationEngine === "navy-minimax-m3" ? 2 : 3,
+      );
   const targetedRepairIndexes = Array.isArray(repairIndexes)
     ? new Set(
         repairIndexes
@@ -6494,6 +6509,63 @@ async function buildAutopilotPlan(
       newsQuota: selectionNewsQuota,
       selectedNewsCount: candidateSelection.selectedNewsCount,
     };
+    const repairScopeIndexes = Array.isArray(internalRepair?.scopeIndexes)
+      ? new Set(internalRepair.scopeIndexes.map(Number))
+      : repairOperationId != null && Array.isArray(repairIndexes)
+        ? new Set(repairIndexes.map(Number))
+        : null;
+    const retriedIndexes = new Set(
+      Array.isArray(internalRepair?.retriedIndexes)
+        ? internalRepair.retriedIndexes.map(Number)
+        : [],
+    );
+    const automaticRepairIndexes = autopilotRetryableItemIndexes(durableCandidateItems)
+      .filter((index) => !repairScopeIndexes || repairScopeIndexes.has(index))
+      .sort((left, right) =>
+        Number(Boolean(durableCandidateItems[right]?.news)) -
+          Number(Boolean(durableCandidateItems[left]?.news)) ||
+        Number(retriedIndexes.has(left)) - Number(retriedIndexes.has(right)) ||
+        left - right,
+      )
+      .slice(0, selectionDeficit);
+    if (
+      expectedPlanId != null &&
+      internalRepairPass < MAX_AUTOPILOT_INTERNAL_REPAIR_PASSES &&
+      automaticRepairIndexes.length > 0 &&
+      AUTOPILOT_INTERNAL_REPAIR_STRATEGIES.has(report.primaryFix)
+    ) {
+      console.info("[autopilot] internal repair", {
+        projectId,
+        channelId,
+        planId: Number(expectedPlanId),
+        pass: internalRepairPass + 1,
+        targetCount: publicationTargetCount,
+        readyCount: selectedPairs.length,
+        repairCount: automaticRepairIndexes.length,
+        strategy: report.primaryFix,
+      });
+      if (report.primaryFix === "provider_retry") {
+        // Let transient provider circuits recover before a sequential retry wave. This is
+        // internal work for the same requested plan, not another user-facing operation.
+        await sleep(AUTOPILOT_AI_CIRCUIT_OPEN_MS + 250);
+      }
+      return buildAutopilotPlan(
+        projectId,
+        userId,
+        channelId,
+        expectedPlanId,
+        usageReservationId,
+        automaticRepairIndexes,
+        repairOperationId,
+        {
+          pass: internalRepairPass + 1,
+          buildStartedAt,
+          aiCallsBefore,
+          scopeIndexes: repairScopeIndexes ? [...repairScopeIndexes] : null,
+          retriedIndexes: [...retriedIndexes, ...automaticRepairIndexes],
+        },
+      );
+    }
     const aiCallCount = Math.max(0, workerAiCallCount(usageReservationId) - aiCallsBefore);
     const partialTx = await pool.connect();
     let partialPlanId = expectedPlanId == null ? null : Number(expectedPlanId);
@@ -6643,10 +6715,13 @@ async function buildAutopilotPlan(
     selectedNewsCount,
     selectedCandidateIndexes: items.map((item) => Number(item.i)),
   };
-  rule = `${items.length} ${plural(items.length, "публикация", "публикации", "публикаций")} выбраны из ${N} ` +
-    `${plural(N, "кандидата", "кандидатов", "кандидатов")}: ${selectedNewsCount} ` +
+  const scheduleSummary = generationPostFrequency > 7
+    ? "Публикации распределены с 9:00 до 21:00 МСК без выхода пачкой."
+    : `Время публикации — ${String(bestHour).padStart(2, "0")}:00 МСК.`;
+  rule = `В плане ${selectedNewsCount} ` +
     `${plural(selectedNewsCount, "свежее событие", "свежих события", "свежих событий")} и ` +
-    `${selectedEvergreenCount} ${plural(selectedEvergreenCount, "полезный разбор", "полезных разбора", "полезных разборов")}.`;
+    `${selectedEvergreenCount} ${plural(selectedEvergreenCount, "полезный разбор", "полезных разбора", "полезных разборов")}. ` +
+    scheduleSummary;
   if (!autopilotDraftsDeliverable(publicationTargetCount, topics, items)) {
     return { error: "quality_gate_unsatisfied" };
   }

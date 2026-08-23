@@ -109,11 +109,11 @@ describe("Autopilot public serialization", () => {
     expect(attempt).toMatchObject({
       planId: 91,
       status: "partial",
-      targetCount: 7,
+      targetCount: 5,
       publicationTargetCount: 5,
       candidateCount: 7,
       readyCount: 1,
-      failedCount: 6,
+      failedCount: 4,
       retryableItemIndexes: [1],
     });
     expect(attempt.readerReadyItems).toHaveLength(1);

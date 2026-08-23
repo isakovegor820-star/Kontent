@@ -4,7 +4,7 @@
 // в стиле пользователя. Одобрил — посты уходят в ту же очередь публикации (Д.3). Настоящие
 // данные, никаких фейков: нет движка/аналитики — честно помечаем.
 
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type CSSProperties } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { motion, useReducedMotion } from "motion/react";
@@ -307,59 +307,186 @@ function QuickRange({
   );
 }
 
+function quickSettingsSummary(settings: AutopilotQuickSettings) {
+  const detail = settings.detail === 1 ? "коротко" : settings.detail === 3 ? "подробно" : "оптимальный объём";
+  const energy = settings.energy === 1 ? "спокойно" : settings.energy === 3 ? "живо" : "разговорно";
+  const emoji = settings.emoji === 0 ? "без эмодзи" : settings.emoji === 2 ? "заметные эмодзи" : "умеренные эмодзи";
+  return `${settings.newsPerWeek} ${plural(settings.newsPerWeek, "новость", "новости", "новостей")} в неделю · ${detail} · ${energy} · ${emoji}`;
+}
+
+function QuickSettingsDialog({
+  open,
+  settings,
+  disabled,
+  channelId,
+  onChange,
+  onClose,
+}: {
+  open: boolean;
+  settings: AutopilotQuickSettings;
+  disabled: boolean;
+  channelId: number | null;
+  onChange: (settings: AutopilotQuickSettings) => void;
+  onClose: () => void;
+}) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const openerRef = useRef<HTMLElement | null>(null);
+  const titleId = useId();
+  const descriptionId = useId();
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    if (open && !dialog.open) {
+      openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      dialog.showModal();
+    }
+    if (!open && dialog.open) dialog.close();
+  }, [open]);
+
+  const restoreOpenerFocus = () => {
+    const opener = openerRef.current;
+    if (!opener?.isConnected) return;
+    requestAnimationFrame(() => opener.focus());
+  };
+
+  return (
+    <dialog
+      ref={dialogRef}
+      aria-labelledby={titleId}
+      aria-describedby={descriptionId}
+      aria-busy={disabled || undefined}
+      onKeyDown={(event) => {
+        if (event.key !== "Escape") return;
+        event.preventDefault();
+        onClose();
+      }}
+      onClose={() => {
+        onClose();
+        restoreOpenerFocus();
+      }}
+      className="m-auto max-h-[calc(100dvh-2rem)] w-[min(680px,calc(100%-2rem))] overflow-y-auto rounded-lg border border-line bg-surface p-0 text-text shadow-card backdrop:bg-black/45"
+    >
+      <div className="p-4 sm:p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <h2 id={titleId} className="text-balance text-[18px] font-bold leading-tight text-text">
+              Настройки постов
+            </h2>
+            <p id={descriptionId} className="mt-1 max-w-[60ch] text-pretty text-[13px] leading-relaxed text-text-3">
+              Эти параметры применятся к следующей сборке. Факты, стоп-темы и правила канала останутся без изменений.
+            </p>
+          </div>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            aria-label="Закрыть настройки постов"
+            onClick={onClose}
+            className="shrink-0"
+          >
+            <X className="h-4 w-4" aria-hidden />
+          </Button>
+        </div>
+
+        <fieldset disabled={disabled} className="mt-5">
+          <legend className="sr-only">Параметры следующей сборки</legend>
+          <div className="grid gap-x-6 gap-y-5 sm:grid-cols-2">
+            <QuickRange
+              id="autopilot-news"
+              label="Свежие события"
+              hint="Остальные посты — полезные разборы и идеи по теме канала."
+              min={0}
+              max={7}
+              value={settings.newsPerWeek}
+              valueLabel={`${settings.newsPerWeek} из 7`}
+              disabled={disabled}
+              onChange={(newsPerWeek) => onChange({ ...settings, newsPerWeek })}
+            />
+            <QuickRange
+              id="autopilot-detail"
+              label="Желаемый объём"
+              hint="Ориентир для текста, а не жёсткий лимит."
+              min={1}
+              max={3}
+              value={settings.detail}
+              valueLabel={settings.detail === 1 ? "коротко" : settings.detail === 3 ? "подробно" : "оптимально"}
+              disabled={disabled}
+              onChange={(detail) => onChange({ ...settings, detail })}
+            />
+            <QuickRange
+              id="autopilot-energy"
+              label="Подача"
+              hint="Без канцелярита, редакторских комментариев и кликбейта."
+              min={1}
+              max={3}
+              value={settings.energy}
+              valueLabel={settings.energy === 1 ? "спокойно" : settings.energy === 3 ? "живо" : "разговорно"}
+              disabled={disabled}
+              onChange={(energy) => onChange({ ...settings, energy })}
+            />
+            <QuickRange
+              id="autopilot-emoji"
+              label="Эмодзи"
+              hint="Эмодзи помогают чтению, но не заменяют смысл."
+              min={0}
+              max={2}
+              value={settings.emoji}
+              valueLabel={settings.emoji === 0 ? "без эмодзи" : settings.emoji === 2 ? "заметно" : "умеренно"}
+              disabled={disabled}
+              onChange={(emoji) => onChange({ ...settings, emoji })}
+            />
+          </div>
+        </fieldset>
+
+        <div className="mt-6 flex flex-col-reverse gap-2 border-t border-line pt-4 sm:flex-row sm:items-center sm:justify-between">
+          <Link
+            href={`/app/settings${channelId ? `?channel=${channelId}` : ""}`}
+            className={buttonClassName({ variant: "ghost", size: "sm", className: "justify-center sm:justify-start" })}
+          >
+            Настройки канала
+          </Link>
+          <Button type="button" variant="brand" onClick={onClose}>
+            Готово
+          </Button>
+        </div>
+      </div>
+    </dialog>
+  );
+}
+
 function BuildAttemptPanel({
   attempt,
-  hasActivePlan,
   busy,
   reducedMotion,
-  onRepair,
   onGenerate,
   onCancel,
   channelId,
 }: {
   attempt: BuildAttempt;
-  hasActivePlan: boolean;
   busy: boolean;
   reducedMotion: boolean | null;
-  onRepair: () => void;
   onGenerate: () => void;
   onCancel: () => void;
   channelId: number | null;
 }) {
-  const remaining = Math.max(0, attempt.candidateCount - attempt.readyCount);
-  const publicationDeficit = Math.max(
-    0,
-    attempt.publicationTargetCount - Math.min(attempt.readyCount, attempt.publicationTargetCount),
-  );
-  const repairCount = attempt.retryableItemIndexes.length || attempt.failedCount;
-  const neededForPlan = Math.max(publicationDeficit, repairCount);
-  const primaryCode = attempt.causes[0]?.code;
-  const repairLabel = primaryCode === "too_short"
-    ? `Дополнить ${repairCount} ${plural(repairCount, "пост", "поста", "постов")}`
-    : attempt.primaryFix === "provider_retry"
-      ? `Повторить ${repairCount} ${plural(repairCount, "пост", "поста", "постов")}`
-      : `Исправить ${repairCount} ${plural(repairCount, "пост", "поста", "постов")}`;
+  const readyCount = Math.min(attempt.readyCount, attempt.publicationTargetCount);
+  const remaining = Math.max(0, attempt.publicationTargetCount - readyCount);
   const terminal = attempt.status === "error";
   const title = attempt.status === "building"
-    ? `Готово ${attempt.readyCount} из ${attempt.candidateCount} кандидатов`
-    : attempt.status === "partial"
-      ? `Готово ${attempt.readyCount} из ${attempt.candidateCount} кандидатов. Для плана из ${attempt.publicationTargetCount} ${plural(attempt.publicationTargetCount, "публикации", "публикаций", "публикаций")} не хватает ${neededForPlan} ${plural(neededForPlan, "кандидата", "кандидатов", "кандидатов")}`
-      : attempt.readyCount > 0
-        ? `Готово ${attempt.readyCount} из ${attempt.candidateCount} кандидатов. Сборка остановилась`
-        : "Сборка остановилась до готового результата";
+    ? `Собираю ${attempt.publicationTargetCount} ${plural(attempt.publicationTargetCount, "пост", "поста", "постов")}`
+    : "План пока не готов";
   const description = attempt.status === "building"
-    ? attempt.readyCount >= attempt.publicationTargetCount
-      ? `Для плана уже достаточно вариантов. Аврора выбирает лучшие ${attempt.publicationTargetCount}.`
-      : remaining > 0
-        ? `Аврора дописывает ещё ${remaining} ${plural(remaining, "кандидат", "кандидата", "кандидатов")}.`
-        : "Аврора завершает проверку и готовит результат."
+    ? remaining > 0
+      ? `Готово ${readyCount} из ${attempt.publicationTargetCount}. Неудачные тексты Аврора переписывает сама.`
+      : "Тексты готовы. Аврора завершает проверку и раскладывает их по расписанию."
     : attempt.errorReason === "quota"
-      ? "Лимит редактора исчерпан. Уже готовые тексты и прежний план сохранены."
+      ? "Дневной лимит генераций закончился до завершения плана. Запусти сборку после обновления лимита."
       : attempt.errorReason === "cancelled"
-        ? "Сборка остановлена. Уже готовые тексты и прежний план сохранены."
-        : attempt.causes[0]?.count
-          ? `${attempt.causes[0].count} ${plural(attempt.causes[0].count, "пост требует", "поста требуют", "постов требуют")} отдельного исправления.`
-          : "Готовые тексты сохранены. Повторная операция затронет только незавершённые посты.";
+        ? "Сборка остановлена. Когда будешь готов, запусти её снова."
+        : attempt.primaryFix === "add_knowledge"
+          ? "По выбранным темам не хватило подтверждённых материалов. Добавь факты о канале и собери план снова."
+          : "Аврора не смогла завершить все посты. Запусти сборку снова — план появится только целиком.";
   const commonLinkClass = buttonClassName({
     variant: "primary",
     size: "sm",
@@ -386,26 +513,6 @@ function BuildAttemptPanel({
         <div className="min-w-0 flex-1">
           <p className="text-[15px] font-semibold leading-snug text-text tabular-nums">{title}</p>
           <p className="mt-1 text-[13px] leading-relaxed text-text-3">{description}</p>
-          <p className="mt-1 text-[12px] leading-relaxed text-text-3">
-            В публикацию попадут только {attempt.publicationTargetCount} лучших вариантов. Резерв автоматически не публикуется.
-          </p>
-          {hasActivePlan && (
-            <p className="mt-1 text-[12px] leading-relaxed text-text-3">
-              Текущий готовый план остаётся доступен ниже, пока новая версия не завершена.
-            </p>
-          )}
-          {attempt.causes.length > 0 && attempt.status !== "building" && (
-            <ul className="mt-3 space-y-1.5 text-[13px] leading-relaxed text-text-2">
-              {attempt.causes.slice(0, 3).map((cause) => (
-                <li key={cause.code} className="flex min-w-0 gap-2">
-                  <span aria-hidden>•</span>
-                  <span className="min-w-0 break-words">
-                    <span className="font-semibold tabular-nums">{cause.count}×</span> {cause.title}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
           <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
             {attempt.status === "building" ? (
               <Button variant="secondary" size="sm" onClick={onCancel} loading={busy} disabled={busy}>
@@ -420,24 +527,9 @@ function BuildAttemptPanel({
               <Link href={`/app/settings${channelId ? `?channel=${channelId}` : ""}`} className={commonLinkClass}>
                 Открыть настройки качества
               </Link>
-            ) : attempt.primaryFix === "human_review" ? (
-              <a href="#autopilot-partial-posts" className={commonLinkClass}>
-                Проверить {Math.max(1, attempt.progress.reviewRequired)} {plural(Math.max(1, attempt.progress.reviewRequired), "пост", "поста", "постов")}
-              </a>
-            ) : attempt.retryableItemIndexes.length > 0 ? (
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={onRepair}
-                loading={busy}
-                disabled={busy}
-                className="w-full whitespace-normal sm:w-auto"
-              >
-                {repairLabel}
-              </Button>
             ) : (
               <Button variant="primary" size="sm" onClick={onGenerate} loading={busy} disabled={busy}>
-                Повторить сборку
+                Собрать заново
               </Button>
             )}
           </div>
@@ -448,10 +540,13 @@ function BuildAttemptPanel({
         role="progressbar"
         aria-label="Прогресс сборки контент-плана"
         aria-valuemin={0}
-        aria-valuemax={attempt.candidateCount}
-        aria-valuenow={attempt.readyCount}
+        aria-valuemax={attempt.publicationTargetCount}
+        aria-valuenow={readyCount}
       >
-        <div className="h-full rounded-full bg-brand motion-reduce:transition-none" style={{ width: `${attempt.progress.percent}%` }} />
+        <div
+          className="h-full rounded-full bg-brand motion-reduce:transition-none"
+          style={{ width: `${attempt.publicationTargetCount ? Math.round(readyCount / attempt.publicationTargetCount * 100) : 0}%` }}
+        />
       </div>
     </Card>
   );
@@ -465,9 +560,9 @@ export default function AutopilotPage() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [repairBusy, setRepairBusy] = useState(false);
   const [editorBusyIndex, setEditorBusyIndex] = useState<number | null>(null);
   const [expanded, setExpanded] = useState<number | null>(null); // какая карточка раскрыта целиком
+  const [quickSettingsOpen, setQuickSettingsOpen] = useState(false);
   const [generationEngine, setGenerationEngine] = useState(DEFAULT_AUTOPILOT_ENGINE);
   const [planningWeeks, setPlanningWeeks] = useState(DEFAULT_AUTOPILOT_PLANNING_WEEKS);
   const [quickSettings, setQuickSettings] = useState<AutopilotQuickSettings>({
@@ -484,12 +579,6 @@ export default function AutopilotPage() {
     revision: number;
     hash: string;
     key: string;
-  } | null>(null);
-  const repairAttempt = useRef<{
-    planId: number;
-    revision: number;
-    indexes: string;
-    jobId: string;
   } | null>(null);
   // Выбранный канал. Список и выбор — как на «Конкурентах» и «Трендах»: общий компонент,
   // общий источник (стор), чтобы человек узнавал один и тот же элемент на всех экранах.
@@ -641,8 +730,8 @@ export default function AutopilotPage() {
         const duration = fmtBuildEstimate(estimateAutopilotBuildMinutes(candidateCount));
         s.toast({
           kind: "info",
-          title: `Собираю ${candidateCount} ${plural(candidateCount, "кандидат", "кандидата", "кандидатов")}`,
-          body: `В план войдут ${publicationCount} ${plural(publicationCount, "лучшая публикация", "лучшие публикации", "лучших публикаций")} на ${planningWeeks} ${plural(planningWeeks, "неделю", "недели", "недель")}. Сборка займёт ${duration}; можно продолжать работу в других разделах.`,
+          title: `Собираю ${publicationCount} ${plural(publicationCount, "пост", "поста", "постов")}`,
+          body: `Готовый план появится целиком. Обычно это занимает ${duration}; можно продолжать работу в других разделах.`,
         });
         await load();
       } else {
@@ -711,77 +800,6 @@ export default function AutopilotPage() {
       await load();
     } finally {
       setBusy(false);
-    }
-  };
-
-  const repairBuild = async () => {
-    const attempt = data?.buildAttempt;
-    const channelId = data?.channelId;
-    if (!attempt || !channelId || channelId !== chId || repairBusy || building) return;
-    const indexes = [...attempt.retryableItemIndexes].sort((a, b) => a - b);
-    if (!indexes.length) return;
-    const indexesKey = indexes.join(",");
-    const previous = repairAttempt.current;
-    const jobId = previous?.planId === attempt.planId &&
-      previous.revision === attempt.revision && previous.indexes === indexesKey
-      ? previous.jobId
-      : crypto.randomUUID();
-    repairAttempt.current = {
-      planId: attempt.planId,
-      revision: attempt.revision,
-      indexes: indexesKey,
-      jobId,
-    };
-    setRepairBusy(true);
-    try {
-      const response = await fetch("/api/autopilot/repair", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          channelId,
-          planId: attempt.planId,
-          revision: attempt.revision,
-          itemIndexes: indexes,
-          jobId,
-        }),
-      });
-      const result = await response.json().catch(() => null) as {
-        ok?: boolean;
-        error?: string;
-      } | null;
-      if (result?.ok) {
-        repairAttempt.current = null;
-        s.toast({
-          kind: "info",
-          title: "Исправляю только проблемные посты",
-          body: `Готовые ${attempt.readyCount} ${plural(attempt.readyCount, "пост", "поста", "постов")} останутся без изменений.`,
-        });
-      } else {
-        const copy: Record<string, string> = {
-          nothing_to_repair: "Все доступные посты уже готовы или ожидают ручной проверки.",
-          revision_conflict: "Сборка уже изменилась. Обновляю актуальный прогресс.",
-          repair_in_progress: "Исправление уже запущено. Второй запрос не понадобится.",
-          worker_unavailable: "Фоновый редактор временно недоступен. Готовые посты сохранены.",
-          queue_unavailable: "Очередь редактора временно недоступна. Готовые посты сохранены.",
-        };
-        repairAttempt.current = null;
-        s.toast({
-          kind: result?.error === "repair_in_progress" ? "info" : "danger",
-          title: result?.error === "repair_in_progress" ? "Исправление уже идёт" : "Не удалось запустить исправление",
-          body: copy[result?.error ?? ""] ?? "Обнови состояние и повтори. Готовые посты не изменены.",
-        });
-      }
-      await load();
-    } catch {
-      // Preserve the idempotency key after an ambiguous network outcome. A second click
-      // replays the same durable operation instead of starting another repair.
-      s.toast({
-        kind: "danger",
-        title: "Не удалось получить ответ",
-        body: "Нажми действие ещё раз: Аврора безопасно проверит ту же операцию.",
-      });
-    } finally {
-      setRepairBusy(false);
     }
   };
 
@@ -1159,8 +1177,7 @@ export default function AutopilotPage() {
   const st = data.settings!;
   const plan = data.activePlan ?? data.plan;
   const buildAttempt = data.buildAttempt;
-  const partialPreview = !plan && (buildAttempt?.readerReadyItems.length ?? 0) > 0;
-  const planItems = plan?.items ?? buildAttempt?.readerReadyItems ?? [];
+  const planItems = plan?.items ?? [];
   // Legacy plans may contain internal quality-review drafts. The reader-facing product
   // boundary is stricter: show only verified material (plus already published history).
   const items = planItems.filter((item) =>
@@ -1175,7 +1192,7 @@ export default function AutopilotPage() {
   const reviewPending = pending.filter(
     (item) => !item.draftId && isAutopilotHumanReviewItem(item),
   );
-  const readyPending = partialPreview ? [] : pending.filter(
+  const readyPending = pending.filter(
     (item) => !item.draftId && canApproveItem(item) && !isAutopilotHumanReviewItem(item),
   );
   const approved = items.filter((it) => it.status === "approved" || it.status === "published");
@@ -1190,8 +1207,8 @@ export default function AutopilotPage() {
       : "";
   const allApproved = pending.length === 0 && approved.length > 0;
   const plannedCount = plannedPostCountForWeeks(st.post_frequency, planningWeeks);
-  const plannedCandidateCount = autopilotCandidateCount(plannedCount);
-  const plannedDuration = fmtBuildEstimate(estimateAutopilotBuildMinutes(plannedCandidateCount));
+  const generationWorkCount = autopilotCandidateCount(plannedCount);
+  const plannedDuration = fmtBuildEstimate(estimateAutopilotBuildMinutes(generationWorkCount));
   const renderedVisible = visible.slice(0, visibleLimit);
   const planEndLabel = new Date(planningAnchorMs + planningWeeks * 7 * 86_400_000).toLocaleDateString(
     "ru-RU",
@@ -1240,14 +1257,14 @@ export default function AutopilotPage() {
             className={buttonClassName({ variant: "outline", size: "sm", className: "shrink-0" })}
           >
             <Settings2 className="h-4 w-4" aria-hidden />
-            Полные настройки
+            Настройки канала
           </Link>
         </div>
       </Card>
 
       <Card className="mb-5 p-4 sm:p-5">
-        <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
-          <div className="min-w-0 lg:max-w-sm lg:flex-1">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+          <div className="min-w-0 lg:max-w-xs lg:flex-1">
             <label htmlFor="autopilot-horizon" className="text-[13px] font-semibold text-text">
               Период
             </label>
@@ -1269,80 +1286,46 @@ export default function AutopilotPage() {
             </select>
             <p className="mt-1.5 text-[12px] text-text-3" aria-live="polite">
               До {planEndLabel} · {plannedCount} {plural(plannedCount, "публикация", "публикации", "публикаций")}
-              {` · ${plannedCandidateCount} ${plural(plannedCandidateCount, "кандидат", "кандидата", "кандидатов")}`}
               {` · сборка — ${plannedDuration}`}
             </p>
           </div>
-
-          <Button
-            variant="brand"
-            onClick={generate}
-            loading={busy}
-            disabled={busy || building}
-            className="min-h-11 shrink-0 lg:min-w-[230px]"
-          >
-            <Sparkles className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
-            {building ? "План собирается" : `${plan ? "Обновить" : "Собрать"} ${plannedCount} ${plural(plannedCount, "пост", "поста", "постов")}`}
-          </Button>
-        </div>
-
-        <fieldset className="mt-5 border-t border-line pt-5" disabled={busy || building}>
-          <legend className="px-1 text-[14px] font-semibold text-text">Как будут звучать посты</legend>
-          <p className="mt-1 text-[12px] leading-relaxed text-text-3">
-            Только главное. Изменения применятся к следующей сборке.
-          </p>
-          <div className="mt-4 grid gap-x-6 gap-y-5 sm:grid-cols-2">
-            <QuickRange
-              id="autopilot-news"
-              label="Свежие события"
-              hint="Остальные посты — полезные разборы и идеи по теме канала."
-              min={0}
-              max={7}
-              value={quickSettings.newsPerWeek}
-              valueLabel={`${quickSettings.newsPerWeek} из 7`}
+          <div className="flex flex-col gap-2 sm:flex-row lg:shrink-0">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setQuickSettingsOpen(true)}
               disabled={busy || building}
-              onChange={(newsPerWeek) => setQuickSettings((current) => ({ ...current, newsPerWeek }))}
-            />
-            <QuickRange
-              id="autopilot-detail"
-              label="Желаемый объём"
-              hint="Это ориентир для текста. Если мысль раскрыта, Аврора сможет выпустить пост немного короче или длиннее."
-              min={1}
-              max={3}
-              value={quickSettings.detail}
-              valueLabel={quickSettings.detail === 1 ? "коротко" : quickSettings.detail === 3 ? "подробно" : "оптимально"}
+              aria-haspopup="dialog"
+              className="min-h-11"
+            >
+              <Settings2 className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
+              Настроить посты
+            </Button>
+            <Button
+              variant="brand"
+              onClick={generate}
+              loading={busy}
               disabled={busy || building}
-              onChange={(detail) => setQuickSettings((current) => ({ ...current, detail }))}
-            />
-            <QuickRange
-              id="autopilot-energy"
-              label="Подача"
-              hint="Без канцелярита, редакторских комментариев и кликбейта."
-              min={1}
-              max={3}
-              value={quickSettings.energy}
-              valueLabel={quickSettings.energy === 1 ? "спокойно" : quickSettings.energy === 3 ? "живо" : "разговорно"}
-              disabled={busy || building}
-              onChange={(energy) => setQuickSettings((current) => ({ ...current, energy }))}
-            />
-            <QuickRange
-              id="autopilot-emoji"
-              label="Эмодзи"
-              hint="Эмодзи помогают чтению, но не заменяют смысл."
-              min={0}
-              max={2}
-              value={quickSettings.emoji}
-              valueLabel={quickSettings.emoji === 0 ? "без эмодзи" : quickSettings.emoji === 2 ? "заметно" : "умеренно"}
-              disabled={busy || building}
-              onChange={(emoji) => setQuickSettings((current) => ({ ...current, emoji }))}
-            />
+              className="min-h-11 shrink-0 lg:min-w-[230px]"
+            >
+              <Sparkles className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
+              {building ? "План собирается" : `${plan ? "Обновить" : "Собрать"} ${plannedCount} ${plural(plannedCount, "пост", "поста", "постов")}`}
+            </Button>
           </div>
-        </fieldset>
-        <p className="mt-4 flex items-start gap-2 rounded-md bg-surface-inset p-3 text-[12px] leading-relaxed text-text-3">
-          <Check className="mt-0.5 h-4 w-4 shrink-0 text-success" aria-hidden />
-          Аврора сама находит материалы по теме канала, проверяет факты и убирает слабые варианты до того, как ты увидишь план.
+        </div>
+        <p className="mt-3 [overflow-wrap:anywhere] text-[12px] leading-relaxed text-text-3">
+          {quickSettingsSummary(quickSettings)}
         </p>
       </Card>
+
+      <QuickSettingsDialog
+        open={quickSettingsOpen}
+        settings={quickSettings}
+        disabled={busy || building}
+        channelId={chId}
+        onChange={setQuickSettings}
+        onClose={() => setQuickSettingsOpen(false)}
+      />
 
       {/* Предложение полного режима после 2 недель без правок */}
       {canOfferFull && (
@@ -1371,10 +1354,8 @@ export default function AutopilotPage() {
       {buildAttempt && (
         <BuildAttemptPanel
           attempt={buildAttempt}
-          hasActivePlan={Boolean(plan)}
-          busy={busy || repairBusy}
+          busy={busy}
           reducedMotion={reduce}
-          onRepair={() => void repairBuild()}
           onGenerate={() => void generate()}
           onCancel={() => void cancelBuild()}
           channelId={chId}
@@ -1390,22 +1371,20 @@ export default function AutopilotPage() {
         <Card className="py-4">
           <EmptyState
             icon={<Newspaper className="h-6 w-6" strokeWidth={1.75} aria-hidden />}
-            title="Готовых материалов пока нет"
-            body="Аврора сама найдёт свежие инфоповоды по теме канала, выберет интересные события и соберёт из них понятные посты."
+            title={building ? "План собирается" : "Готового плана пока нет"}
+            body={building
+              ? `Аврора подготовит все ${plannedCount} ${plural(plannedCount, "пост", "поста", "постов")} и покажет план целиком.`
+              : "Выбери период и запусти сборку. Аврора сама найдёт темы, напишет и проверит посты."}
           />
         </Card>
       ) : (
-        <div id={partialPreview ? "autopilot-partial-posts" : undefined} className="space-y-5">
+        <div className="space-y-5">
           {/* Обзор плана — с одного взгляда: что, когда и что от тебя нужно */}
           <Card className="p-4 sm:p-5">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="min-w-0">
                 <p className="text-[15px] font-bold text-text">
-                  {partialPreview
-                    ? `Готовая часть сборки: ${visible.length} из ${buildAttempt?.targetCount ?? visible.length}`
-                    : allApproved
-                      ? "Контент-план в очереди 🚀"
-                      : "Контент-план готов"}
+                  {allApproved ? "Контент-план в очереди 🚀" : "Контент-план готов"}
                 </p>
                 <p className="mt-0.5 text-[13px] text-text-3">
                   {visible.length} {plural(visible.length, "пост", "поста", "постов")}
@@ -1433,12 +1412,12 @@ export default function AutopilotPage() {
                   )}
                 </p>
               </div>
-              {!partialPreview && readyPending.length > 0 ? (
+              {readyPending.length > 0 ? (
                 <Button variant="brand" onClick={approveAll} loading={busy} disabled={busy}>
                   <Check className="h-[18px] w-[18px]" strokeWidth={2.5} aria-hidden />
                   Одобрить всё
                 </Button>
-              ) : !partialPreview && allApproved ? (
+              ) : allApproved ? (
                 <Link
                   href="/app/calendar"
                   className={buttonClassName({ variant: "soft", size: "sm" })}
@@ -1502,17 +1481,6 @@ export default function AutopilotPage() {
               </span>
             </div>
           </Card>
-
-          {/* Правило: почему такой план (из аналитики) */}
-          {plan?.rules && (
-            <div className="flex items-start gap-3 rounded-lg bg-surface-inset p-4">
-              <Sparkles className="mt-0.5 h-5 w-5 shrink-0 text-brand" aria-hidden />
-              <p className="text-[14px] leading-relaxed text-text-2">
-                <span className="font-semibold text-text">Почему такой план: </span>
-                {plan.rules}
-              </p>
-            </div>
-          )}
 
           {/* Посты плана — компактные карточки, раскрываются по клику */}
           <ul className="space-y-3">
@@ -1611,7 +1579,7 @@ export default function AutopilotPage() {
                         </div>
                       )}
 
-                      {it.status === "pending" && !partialPreview && (
+                      {it.status === "pending" && (
                         <div className="mt-3 flex flex-wrap gap-2">
                           {!it.draftId && (
                             <Button

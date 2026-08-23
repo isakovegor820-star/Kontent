@@ -52,7 +52,11 @@ describe("Autopilot ready-plan generation contract", () => {
     expect(source).toContain("overallTimeoutMs: AUTOPILOT_AI_OVERALL_TIMEOUT_MS");
     expect(source).toContain("fallbackEngines: autopilotFallbackEngines(selectedEngine)");
     expect(source).toContain("maxAttempts: 4");
-    expect(source).toContain("circuitFailureThreshold: 1");
+    expect(source).toContain("circuitFailureThreshold: Math.max(2, configuredAiConcurrency(selectedEngine))");
+    expect(source).toContain("MAX_AUTOPILOT_INTERNAL_REPAIR_PASSES = 2");
+    expect(source).toContain("AUTOPILOT_INTERNAL_REPAIR_STRATEGIES.has(report.primaryFix)");
+    expect(source).toContain("AUTOPILOT_AI_CIRCUIT_OPEN_MS + 250");
+    expect(source).toContain("internalRepairPass > 0");
     expect(source).toContain("process.env.AUTOPILOT_SEMANTIC_ENGINE || DEFAULT_AUTOPILOT_ENGINE");
     expect(source).toContain('generationEngine === "navy-minimax-m3" ? 2 : 3');
   });

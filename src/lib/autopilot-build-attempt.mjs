@@ -150,12 +150,26 @@ export function autopilotBuildAttemptDto(row, expected) {
     publicationTargetCount,
     Number(expected ?? row.candidate_count ?? row.expected_post_count) || items.length,
   );
-  const targetCount = candidateCount;
-  const report = autopilotQualityFailureReport(items, targetCount);
-  const measuredProgress = autopilotBuildProgress(items, targetCount);
-  const progress = measuredProgress.ready >= publicationTargetCount && publicationTargetCount > 0
-    ? { ...measuredProgress, stage: "finalizing" }
-    : measuredProgress;
+  // Candidate reserve is an internal quality mechanism. Public progress follows the
+  // promise the person made: the exact number of posts requested for publication.
+  const targetCount = publicationTargetCount;
+  const report = autopilotQualityFailureReport(items, candidateCount);
+  const measuredProgress = autopilotBuildProgress(items, candidateCount);
+  const readyForPlan = Math.min(publicationTargetCount, measuredProgress.ready);
+  const progress = {
+    ...measuredProgress,
+    completed: readyForPlan,
+    total: publicationTargetCount,
+    ready: readyForPlan,
+    percent: publicationTargetCount
+      ? Math.min(100, Math.round(readyForPlan / publicationTargetCount * 100))
+      : 0,
+    stage: readyForPlan >= publicationTargetCount && publicationTargetCount > 0
+      ? "finalizing"
+      : readyForPlan > 0
+        ? "generating"
+        : "preparing",
+  };
   const persistedReport = row.build_report && typeof row.build_report === "object"
     ? row.build_report
     : null;
