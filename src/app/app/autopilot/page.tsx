@@ -487,7 +487,9 @@ function BuildAttemptPanel({
         ? "Нужно дополнить план"
         : "Сборка остановилась";
   const description = waitingForProvider
-    ? `Готово ${readyCount} из ${attempt.publicationTargetCount}. Эти посты сохранены; недостающие Аврора продолжит собирать автоматически.`
+    ? readyCount > 0
+      ? `Готово ${readyCount} из ${attempt.publicationTargetCount}. Готовые посты сохранены; недостающие Аврора продолжит собирать автоматически.`
+      : "Готовых постов пока нет. Аврора продолжит сборку автоматически, как только ИИ снова ответит."
     : attempt.status === "building"
       ? remaining > 0
         ? `Аврора пишет и проверяет ещё ${remaining} ${plural(remaining, "пост", "поста", "постов")}. Готовые тексты не пересобираются.`
@@ -499,8 +501,12 @@ function BuildAttemptPanel({
         : attempt.primaryFix === "add_knowledge"
           ? "По выбранным темам не хватило подтверждённых материалов. Добавь факты о канале и собери план снова."
           : attempt.recoveryState === "provider_stopped" || attempt.errorReason === "provider"
-            ? `Готово ${readyCount} из ${attempt.publicationTargetCount}. Посты сохранены; продолжи сборку позже — Аврора возьмёт только недостающие.`
-            : `Готово ${readyCount} из ${attempt.publicationTargetCount}. Продолжи сборку — готовые посты останутся без изменений.`;
+            ? readyCount > 0
+              ? `Готово ${readyCount} из ${attempt.publicationTargetCount}. Готовые посты сохранены; продолжи сборку позже — Аврора возьмёт только недостающие.`
+              : "Готовых постов пока нет. Продолжи сборку позже — Аврора снова попробует подготовить весь план."
+            : readyCount > 0
+              ? `Готово ${readyCount} из ${attempt.publicationTargetCount}. Продолжи сборку — готовые посты останутся без изменений.`
+              : "Готовых постов пока нет. Продолжи сборку — Аврора снова попробует подготовить весь план.";
   const commonLinkClass = buttonClassName({
     variant: "primary",
     size: "sm",
@@ -1274,6 +1280,9 @@ export default function AutopilotPage() {
       : "";
   const allApproved = pending.length === 0 && approved.length > 0;
   const plannedCount = plannedPostCountForWeeks(st.post_frequency, planningWeeks);
+  const missingBuildCount = buildAttempt
+    ? Math.max(0, buildAttempt.publicationTargetCount - buildAttempt.readyCount)
+    : plannedCount;
   const generationWorkCount = autopilotCandidateCount(plannedCount);
   const plannedDuration = fmtBuildEstimate(estimateAutopilotBuildMinutes(generationWorkCount));
   const renderedVisible = visible.slice(0, visibleLimit);
@@ -1438,9 +1447,17 @@ export default function AutopilotPage() {
         <Card className="py-4">
           <EmptyState
             icon={<Newspaper className="h-6 w-6" strokeWidth={1.75} aria-hidden />}
-            title={building ? "План собирается" : "Готового плана пока нет"}
+            title={building
+              ? "План собирается"
+              : buildAttempt
+                ? "План появится здесь целиком"
+                : "Готового плана пока нет"}
             body={building
               ? `Аврора подготовит все ${plannedCount} ${plural(plannedCount, "пост", "поста", "постов")} и покажет план целиком.`
+              : buildAttempt && buildAttempt.readyCount > 0
+                ? `Осталось подготовить ${missingBuildCount} ${plural(missingBuildCount, "пост", "поста", "постов")}. Готовые тексты уже сохранены.`
+                : buildAttempt
+                  ? `Аврора покажет план, когда все ${buildAttempt.publicationTargetCount} ${plural(buildAttempt.publicationTargetCount, "пост", "поста", "постов")} будут готовы.`
               : "Выбери период и запусти сборку. Аврора сама найдёт темы, напишет и проверит посты."}
           />
         </Card>

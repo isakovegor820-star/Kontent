@@ -36,7 +36,11 @@ describe("Autopilot build UI contract", () => {
   it("shows automatic provider recovery and never labels an empty plan as ready", () => {
     expect(source).toContain("ИИ временно не ответил");
     expect(source).toContain("недостающие Аврора продолжит собирать автоматически");
+    expect(source).toContain("Готовых постов пока нет");
+    expect(source).not.toContain("Эти посты сохранены");
     expect(source).toContain("Продолжить сборку");
+    expect(source).toContain("План появится здесь целиком");
+    expect(source).toContain("Осталось подготовить");
     expect(source).not.toContain("Собрать заново");
     expect(source).toContain("const hasUsablePlan = Boolean(plan && visible.length > 0)");
     expect(source).toContain("{!hasUsablePlan ? (");
