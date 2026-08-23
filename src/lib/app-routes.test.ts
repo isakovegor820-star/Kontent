@@ -23,6 +23,17 @@ describe("app route registry", () => {
     }
   });
 
+  it("keeps Today permanently discoverable in desktop and mobile navigation", () => {
+    const workGroup = APP_NAV_GROUPS.find((group) => group.id === "work");
+    const shell = readFileSync(new URL("../components/app/shell.tsx", import.meta.url), "utf8");
+
+    expect(workGroup?.routeIds[0]).toBe("today");
+    expect(APP_BOTTOM_NAV_ROUTE_IDS).toContain("today");
+    expect(shell).not.toContain("useTodayNavigationAvailability");
+    expect(shell).not.toContain("summary=availability");
+    expect(shell).not.toContain('routeId !== "today"');
+  });
+
   it("puts Growth in results and keeps it off the four-item mobile bar", () => {
     expect(APP_NAV_GROUPS.find((group) => group.id === "results")?.routeIds).toEqual([
       "growth",

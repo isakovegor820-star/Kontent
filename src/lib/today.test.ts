@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   loadTodayBoard,
-  loadTodayNavigationAvailability,
   nextTodayReminderAt,
   rankTodayItems,
   updateTodayItemState,
@@ -140,15 +139,6 @@ describe("Today board states", () => {
 
     expect(board.items).toHaveLength(1);
     expect(board.items[0]?.type).toBe("review");
-  });
-
-  it("checks navigation availability without loading card sources", async () => {
-    vi.stubEnv("AURORA_RELEASE1_DEV_ENABLED", "false");
-    const db = todayDb();
-
-    await expect(loadTodayNavigationAvailability(9, db as never)).resolves.toEqual({ visible: true });
-    expect(db.query).toHaveBeenCalledTimes(3);
-    expect(db.query.mock.calls.some(([sql]) => String(sql).includes("opportunity_snapshots"))).toBe(false);
   });
 
   it("restores a snoozed item by deleting only its user-owned state", async () => {

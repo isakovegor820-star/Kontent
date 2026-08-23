@@ -176,37 +176,6 @@ function useLegalOpportunityUnreadCount(userId: number | null) {
   return count;
 }
 
-function useTodayNavigationAvailability(userId: number | null) {
-  const [visible, setVisible] = useState(true);
-
-  const refresh = useCallback(async () => {
-    try {
-      const response = await fetch("/api/today?summary=availability", { cache: "no-store" });
-      if (!response.ok) return;
-      const body = await response.json() as { visible?: unknown };
-      if (typeof body.visible === "boolean") setVisible(body.visible);
-    } catch {
-      // Временный сетевой сбой не должен убирать доступный пункт из навигации.
-    }
-  }, []);
-
-  useEffect(() => {
-    if (userId == null) return;
-    const startupTimer = window.setTimeout(() => void refresh(), 0);
-    const handleProjectChange = () => {
-      setVisible(true);
-      void refresh();
-    };
-    window.addEventListener("aurora:project-changed", handleProjectChange);
-    return () => {
-      window.clearTimeout(startupTimer);
-      window.removeEventListener("aurora:project-changed", handleProjectChange);
-    };
-  }, [refresh, userId]);
-
-  return visible;
-}
-
 function childHref(child: NavChild, searchParams: Pick<URLSearchParams, "get">): string {
   if (!child.preserveParams?.length) return child.href;
 
@@ -351,7 +320,6 @@ function UserRow({ user, onSignOut }: { user: User; onSignOut: () => void }) {
 function SidebarInner({
   pathname,
   user,
-  todayVisible,
   opportunityUnreadCount,
   onSignOut,
   onClose,
@@ -359,7 +327,6 @@ function SidebarInner({
 }: {
   pathname: string;
   user: User;
-  todayVisible: boolean;
   opportunityUnreadCount: number;
   onSignOut: () => void;
   onClose?: () => void;
@@ -370,12 +337,6 @@ function SidebarInner({
   // группа с активным пунктом не сворачивается.
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const activeItemRef = useRef<HTMLLIElement>(null);
-  const navigationGroups = todayVisible
-    ? NAV_GROUPS
-    : NAV_GROUPS.map((group) => ({
-      ...group,
-      items: group.items.filter((item) => item.routeId !== "today"),
-    }));
   const toggleGroup = useCallback((title: string) => {
     setCollapsedGroups((prev) => {
       const next = new Set(prev);
@@ -441,7 +402,7 @@ function SidebarInner({
         aria-label="Разделы платформы"
         className="flex-1 space-y-4 overflow-y-auto px-3 pt-2 pb-4"
       >
-        {navigationGroups.map((group) => {
+        {NAV_GROUPS.map((group) => {
           const hasActive = group.items.some((item) => isActive(pathname, item));
           const isCollapsed = collapsedGroups.has(group.title) && !hasActive;
           return (
@@ -680,9 +641,6 @@ export function AppShell({
   const opportunityUnreadCount = useLegalOpportunityUnreadCount(
     ready && authReady && user ? user.id : null,
   );
-  const todayVisible = useTodayNavigationAvailability(
-    ready && authReady && user ? user.id : null,
-  );
 
   const burgerRef = useRef<HTMLButtonElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -816,7 +774,6 @@ export function AppShell({
           <SidebarInner
             pathname={pathname}
             user={user}
-            todayVisible={todayVisible}
             opportunityUnreadCount={opportunityUnreadCount}
             onSignOut={handleSignOut}
           />
@@ -856,7 +813,6 @@ export function AppShell({
               <SidebarInner
                 pathname={pathname}
                 user={user}
-                todayVisible={todayVisible}
                 opportunityUnreadCount={opportunityUnreadCount}
                 onSignOut={handleSignOut}
                 onClose={closeMenu}
@@ -929,7 +885,7 @@ export function AppShell({
           className="fixed inset-x-0 bottom-0 z-30 border-t border-line bg-surface/85 pb-[env(safe-area-inset-bottom)] backdrop-blur-2xl backdrop-saturate-150 lg:hidden"
         >
           <ul className="mx-auto flex max-w-lg items-stretch">
-            {BOTTOM_NAV.filter((item) => todayVisible || item.routeId !== "today").map((item) => {
+            {BOTTOM_NAV.map((item) => {
               const active = isActive(pathname, item);
               const Icon = item.icon;
               const route = APP_ROUTES[item.routeId];

@@ -276,16 +276,6 @@ export async function loadTodayBoard(input: { actorUserId: number; channelId: nu
   return { ...shared, enabled, availability, items, partialErrors };
 }
 
-export async function loadTodayNavigationAvailability(
-  actorUserId: number,
-  db: Queryable = getPool(),
-): Promise<{ visible: boolean }> {
-  const scope = await scopeFor(db, actorUserId, null);
-  return {
-    visible: scope.channels.length === 0 || scope.channels.some((channel) => channel.enabled),
-  };
-}
-
 export async function updateTodayItemState(input: {
   actorUserId: number;
   channelId: number;
