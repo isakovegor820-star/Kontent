@@ -94,7 +94,11 @@ describe("POST /api/autopilot/repair", () => {
     expect(mocks.queueAdd).toHaveBeenCalledWith(
       "autopilot-repair",
       expect.objectContaining({ projectId: 88, channelId: 22, planId: 91, repairIndexes: [1] }),
-      expect.objectContaining({ jobId: `autopilot-repair-88-${jobId}` }),
+      expect.objectContaining({
+        jobId: `autopilot-repair-88-${jobId}`,
+        attempts: 6,
+        backoff: { type: "fixed", delay: 20_000 },
+      }),
     );
     const planLookup = mocks.txQuery.mock.calls.find(([sql]) => String(sql).includes("from autopilot_plan"));
     expect(planLookup?.[1]).toEqual([91, 88, 22]);

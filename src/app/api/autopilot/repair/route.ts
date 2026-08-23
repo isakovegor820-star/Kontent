@@ -10,6 +10,10 @@ import { getAutopilotQueue } from "@/lib/queue";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import { getSessionUser } from "@/lib/session";
 import { BoundedBodyError, readRequestBodyLimited } from "@/lib/bounded-request-body";
+import {
+  AUTOPILOT_JOB_ATTEMPTS,
+  AUTOPILOT_JOB_BACKOFF_MS,
+} from "@/lib/autopilot-config.mjs";
 
 export const runtime = "nodejs";
 
@@ -287,8 +291,8 @@ export async function POST(req: NextRequest) {
         {
           jobId: `autopilot-repair-${projectId}-${jobId}`,
           removeOnComplete: true,
-          attempts: 2,
-          backoff: { type: "fixed", delay: 20_000 },
+          attempts: AUTOPILOT_JOB_ATTEMPTS,
+          backoff: { type: "fixed", delay: AUTOPILOT_JOB_BACKOFF_MS },
         },
       );
     } catch {

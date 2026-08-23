@@ -4,6 +4,7 @@ import {
   autopilotBuildActivityAt,
   autopilotBuildProgress,
   autopilotCheckpointItem,
+  autopilotProviderWaitingItem,
   autopilotRetryableItemIndexes,
   autopilotTopicCheckpoints,
   estimateAutopilotBuildMinutes,
@@ -102,5 +103,38 @@ describe("Autopilot durable build progress", () => {
       { i: 2, aiReady: false, buildState: "failed", status: "approved" },
       { i: 3, aiReady: false, buildState: "failed", postId: 99 },
     ])).toEqual([1]);
+  });
+
+  it("keeps a provider outage separate from editorial failure and resumes only that slot", () => {
+    const waiting = autopilotProviderWaitingItem({
+      item: {
+        i: 2,
+        topic: "Тема",
+        rubric: "Разбор",
+        draft: "Старый готовый дубль",
+        aiReady: true,
+        autoApprove: true,
+        quality: readyQuality,
+        reviewState: "editorial_review",
+      },
+      topic: { topic: "Тема", rubric: "Разбор" },
+      scheduledAt: "2026-08-20T09:00:00.000Z",
+      error: { code: "provider_timeout", engine: "navy-deepseek-flash", status: 504 },
+      now,
+    });
+    const checkpoint = autopilotCheckpointItem(waiting, now);
+
+    expect(checkpoint).toMatchObject({
+      i: 2,
+      aiReady: false,
+      draft: "",
+      buildState: "waiting_provider",
+      _providerFailure: { code: "provider_timeout", status: 504 },
+    });
+    expect(checkpoint).not.toHaveProperty("autoApprove");
+    expect(checkpoint).not.toHaveProperty("quality");
+    expect(checkpoint).not.toHaveProperty("reviewState");
+    expect(autopilotBuildProgress([checkpoint], 7)).toMatchObject({ ready: 0, failed: 0 });
+    expect(autopilotRetryableItemIndexes([checkpoint])).toEqual([2]);
   });
 });

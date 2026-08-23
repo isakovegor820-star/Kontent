@@ -153,4 +153,41 @@ describe("Autopilot public serialization", () => {
     expect(attempt.retryableItemIndexes).toEqual([4]);
     expect(attempt).toMatchObject({ readyCount: 4, failedCount: 3, publicationTargetCount: 5 });
   });
+
+  it("exposes automatic provider recovery without counting waiting slots as bad posts", () => {
+    const attempt = autopilotBuildAttemptDto({
+      id: 93,
+      revision: 8,
+      status: "building",
+      expected_post_count: 7,
+      publication_target_count: 7,
+      candidate_count: 10,
+      build_report: {
+        recoveryState: "waiting_provider",
+        providerFailureCode: "provider_timeout",
+        attemptNumber: 2,
+        maxAttempts: 6,
+        nextRetryAt: "2026-08-21T10:00:20.000Z",
+      },
+      items: [{
+        i: 0,
+        topic: "Ожидающая тема",
+        draft: "",
+        aiReady: false,
+        status: "pending",
+        buildState: "waiting_provider",
+      }],
+      created_at: "2026-08-21T10:00:00.000Z",
+    }, 10);
+
+    expect(attempt).toMatchObject({
+      status: "building",
+      recoveryState: "waiting_provider",
+      providerFailureCode: "provider_timeout",
+      attemptNumber: 2,
+      maxAttempts: 6,
+      failedCount: 0,
+      retryableItemIndexes: [0],
+    });
+  });
 });

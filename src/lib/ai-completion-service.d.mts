@@ -6,6 +6,8 @@ export class AiCompletionError extends Error {
   readonly status: number | null;
 }
 
+export function isRetryableAiCompletionError(error: unknown): error is AiCompletionError;
+
 export function completeAiText(
   request: {
     system?: string;
@@ -20,6 +22,12 @@ export function completeAiText(
     signal?: AbortSignal;
     timeoutMs?: number;
     localTimeoutMs?: number;
+    overallTimeoutMs?: number;
+    maxAttempts?: number;
+    circuitFailureThreshold?: number;
+    circuitOpenMs?: number;
+    fallbackEngines?: EngineId[];
+    allowFallback?: boolean;
     fetchImpl?: typeof fetch;
     telemetry?: (event: Record<string, unknown>) => void;
   },

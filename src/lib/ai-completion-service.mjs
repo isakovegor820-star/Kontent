@@ -15,7 +15,7 @@ export class AiCompletionError extends Error {
   }
 }
 
-const transient = (error) => error instanceof AiCompletionError && (
+export const isRetryableAiCompletionError = (error) => error instanceof AiCompletionError && (
   error.status === 408 || error.status === 425 || error.status === 429 ||
   (Number(error.status) >= 500) ||
   ["provider_timeout", "overall_timeout", "network_error", "stream_truncated", "empty_generation", "reasoning_without_content"].includes(error.code)
@@ -55,7 +55,7 @@ function recordCircuitSuccess(engine) {
 }
 
 function recordCircuitFailure(engine, error, now, threshold, openMs) {
-  if (!transient(error)) return;
+  if (!isRetryableAiCompletionError(error)) return;
   const previous = completionCircuits.get(engine);
   const failures = (previous?.resetAt > now ? previous.failures : 0) + 1;
   completionCircuits.set(engine, {
@@ -365,7 +365,7 @@ export async function completeAiText(request, options = {}) {
       if (options.signal?.aborted || deadlineSignal.aborted || attempts >= maxAttempts) {
         throw normalizedError;
       }
-      if (!transient(normalizedError)) {
+      if (!isRetryableAiCompletionError(normalizedError)) {
         if (!canRetryNavyModelRejection(normalizedError, engine)) throw normalizedError;
         restrictFallbackToNavy = true;
         const nextNavyIndex = candidates.findIndex(

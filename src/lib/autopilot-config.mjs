@@ -41,6 +41,11 @@ export const AUTOPILOT_FAST_FALLBACK_FLEET = Object.freeze([
   "navy-minimax-m3",
 ]);
 
+// A provider wave can fail without invalidating the plan. BullMQ retries the same durable
+// placeholder; ready checkpoints are reused and only waiting slots issue another request.
+export const AUTOPILOT_JOB_ATTEMPTS = 6;
+export const AUTOPILOT_JOB_BACKOFF_MS = 20_000;
+
 export function autopilotFallbackEngines(primary) {
   return AUTOPILOT_FAST_FALLBACK_FLEET.filter((engine) => engine !== primary);
 }

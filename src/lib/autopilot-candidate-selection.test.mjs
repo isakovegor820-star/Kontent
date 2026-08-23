@@ -63,4 +63,29 @@ describe("Autopilot candidate selection", () => {
     expect(result.selected).toHaveLength(5);
     expect(result.reserve.map((candidate) => candidate.i)).toEqual([5]);
   });
+
+  it("publishes exactly seven ready posts when the remaining reserve is waiting for the provider", () => {
+    const subjects = [
+      ["Налоговый календарь", "Сроки обязательных платежей и напоминания бухгалтеру."],
+      ["Проверка договора", "Условия ответственности до подписания соглашения."],
+      ["Защита бренда", "Регистрация товарного знака для новой компании."],
+      ["Переговоры с клиентом", "Письменная фиксация договорённостей после встречи."],
+      ["Архив документов", "Правила хранения актов после закрытия проекта."],
+      ["Работа с подрядчиком", "Приёмка результата по понятным этапам."],
+      ["Ответ на претензию", "Спокойная последовательность действий для предпринимателя."],
+    ];
+    const ready = subjects.map(([topic, draft], i) => ({
+      i,
+      topic,
+      draft,
+      qualityScore: 95 - i,
+    }));
+
+    const result = selectAutopilotCandidates(ready, { targetCount: 7, newsQuota: 0 });
+
+    expect(result.complete).toBe(true);
+    expect(result.selected).toHaveLength(7);
+    expect(result.selected.map((candidate) => candidate.i)).toEqual([0, 1, 2, 3, 4, 5, 6]);
+    expect(result.reserve).toHaveLength(0);
+  });
 });

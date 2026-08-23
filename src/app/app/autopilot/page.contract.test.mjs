@@ -25,11 +25,21 @@ describe("Autopilot build UI contract", () => {
 
   it("keeps the active plan visible while Autopilot owns internal repair", () => {
     expect(source).toContain("data.activePlan ?? data.plan");
-    expect(source).toContain("Неудачные тексты Аврора переписывает сама");
+    expect(source).toContain("Готовые тексты не пересобираются");
     expect(source).toContain("Добавить материалы");
     expect(source).toContain("Открыть настройки качества");
-    expect(source).not.toContain("/api/autopilot/repair");
+    expect(source).toContain("/api/autopilot/repair");
+    expect(source).toContain("Готовые посты сохранены. Аврора работает только с недостающими");
     expect(source).not.toContain("Повторить 6 постов");
+  });
+
+  it("shows automatic provider recovery and never labels an empty plan as ready", () => {
+    expect(source).toContain("ИИ временно не ответил");
+    expect(source).toContain("недостающие Аврора продолжит собирать автоматически");
+    expect(source).toContain("Продолжить сборку");
+    expect(source).not.toContain("Собрать заново");
+    expect(source).toContain("const hasUsablePlan = Boolean(plan && visible.length > 0)");
+    expect(source).toContain("{!hasUsablePlan ? (");
   });
 
   it("keeps quick settings behind a compact accessible dialog", () => {

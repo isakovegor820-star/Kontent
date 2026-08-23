@@ -22,6 +22,8 @@ export interface AutopilotPresentationVariant {
 
 export const AUTOPILOT_ENGINE_OPTIONS: readonly AutopilotEngineOption[];
 export const DEFAULT_AUTOPILOT_ENGINE: AutopilotEngineId;
+export const AUTOPILOT_JOB_ATTEMPTS: number;
+export const AUTOPILOT_JOB_BACKOFF_MS: number;
 export const AUTOPILOT_PLANNING_MONTHS: readonly number[];
 export const AUTOPILOT_WEEKS_PER_MONTH: number;
 export const MIN_AUTOPILOT_PLANNING_WEEKS: number;

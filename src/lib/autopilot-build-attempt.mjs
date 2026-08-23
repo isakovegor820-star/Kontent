@@ -184,6 +184,11 @@ export function autopilotBuildAttemptDto(row, expected) {
     ? persistedReport.causes
     : report.causes;
   const status = String(row.status || "building");
+  const recoveryState = ["waiting_provider", "provider_stopped"].includes(
+    String(persistedReport?.recoveryState || ""),
+  )
+    ? String(persistedReport.recoveryState)
+    : null;
   return {
     planId: Number(row.id),
     revision: Number(row.revision || 1),
@@ -205,6 +210,15 @@ export function autopilotBuildAttemptDto(row, expected) {
       repairStrategy: cause.repairStrategy || "human_review",
     })),
     primaryFix: persistedReport?.primaryFix || row.repair_strategy || report.primaryFix,
+    recoveryState,
+    providerFailureCode: typeof persistedReport?.providerFailureCode === "string"
+      ? persistedReport.providerFailureCode
+      : null,
+    attemptNumber: Math.max(0, Number(persistedReport?.attemptNumber) || 0),
+    maxAttempts: Math.max(0, Number(persistedReport?.maxAttempts) || 0),
+    nextRetryAt: typeof persistedReport?.nextRetryAt === "string"
+      ? persistedReport.nextRetryAt
+      : null,
     retryableItemIndexes,
     readerReadyItems: items
       .filter(isAutopilotReaderReadyItem)

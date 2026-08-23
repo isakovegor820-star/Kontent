@@ -12,6 +12,8 @@ import { autopilotBuildActivityAt } from "@/lib/autopilot-build-progress.mjs";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import {
   AUTOPILOT_PLANNING_MONTHS,
+  AUTOPILOT_JOB_ATTEMPTS,
+  AUTOPILOT_JOB_BACKOFF_MS,
   DEFAULT_AUTOPILOT_ENGINE,
   isAutopilotEngine,
   isAutopilotPlanningWeeks,
@@ -308,8 +310,8 @@ export async function POST(req: NextRequest) {
         {
           jobId: `autopilot-plan-${planId}`,
           removeOnComplete: true,
-          attempts: 2,
-          backoff: { type: "fixed", delay: 20000 },
+          attempts: AUTOPILOT_JOB_ATTEMPTS,
+          backoff: { type: "fixed", delay: AUTOPILOT_JOB_BACKOFF_MS },
         },
       );
     } catch (err) {

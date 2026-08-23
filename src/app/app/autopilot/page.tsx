@@ -151,6 +151,11 @@ interface BuildAttempt {
     | "provider_retry"
     | "settings_change"
     | null;
+  recoveryState: "waiting_provider" | "provider_stopped" | null;
+  providerFailureCode: string | null;
+  attemptNumber: number;
+  maxAttempts: number;
+  nextRetryAt: string | null;
   retryableItemIndexes: number[];
   readerReadyItems: PlanItem[];
   errorReason?:
@@ -459,34 +464,43 @@ function BuildAttemptPanel({
   attempt,
   busy,
   reducedMotion,
-  onGenerate,
+  onContinue,
   onCancel,
   channelId,
 }: {
   attempt: BuildAttempt;
   busy: boolean;
   reducedMotion: boolean | null;
-  onGenerate: () => void;
+  onContinue: () => void;
   onCancel: () => void;
   channelId: number | null;
 }) {
   const readyCount = Math.min(attempt.readyCount, attempt.publicationTargetCount);
   const remaining = Math.max(0, attempt.publicationTargetCount - readyCount);
-  const terminal = attempt.status === "error";
-  const title = attempt.status === "building"
-    ? `Собираю ${attempt.publicationTargetCount} ${plural(attempt.publicationTargetCount, "пост", "поста", "постов")}`
-    : "План пока не готов";
-  const description = attempt.status === "building"
-    ? remaining > 0
-      ? `Готово ${readyCount} из ${attempt.publicationTargetCount}. Неудачные тексты Аврора переписывает сама.`
-      : "Тексты готовы. Аврора завершает проверку и раскладывает их по расписанию."
+  const terminal = attempt.status !== "building";
+  const waitingForProvider = attempt.status === "building" && attempt.recoveryState === "waiting_provider";
+  const title = waitingForProvider
+    ? "ИИ временно не ответил"
+    : attempt.status === "building"
+      ? `Готово ${readyCount} из ${attempt.publicationTargetCount}`
+      : attempt.status === "partial"
+        ? "Нужно дополнить план"
+        : "Сборка остановилась";
+  const description = waitingForProvider
+    ? `Готово ${readyCount} из ${attempt.publicationTargetCount}. Эти посты сохранены; недостающие Аврора продолжит собирать автоматически.`
+    : attempt.status === "building"
+      ? remaining > 0
+        ? `Аврора пишет и проверяет ещё ${remaining} ${plural(remaining, "пост", "поста", "постов")}. Готовые тексты не пересобираются.`
+        : "Тексты готовы. Аврора завершает проверку и раскладывает их по расписанию."
     : attempt.errorReason === "quota"
       ? "Дневной лимит генераций закончился до завершения плана. Запусти сборку после обновления лимита."
       : attempt.errorReason === "cancelled"
         ? "Сборка остановлена. Когда будешь готов, запусти её снова."
         : attempt.primaryFix === "add_knowledge"
           ? "По выбранным темам не хватило подтверждённых материалов. Добавь факты о канале и собери план снова."
-          : "Аврора не смогла завершить все посты. Запусти сборку снова — план появится только целиком.";
+          : attempt.recoveryState === "provider_stopped" || attempt.errorReason === "provider"
+            ? `Готово ${readyCount} из ${attempt.publicationTargetCount}. Посты сохранены; продолжи сборку позже — Аврора возьмёт только недостающие.`
+            : `Готово ${readyCount} из ${attempt.publicationTargetCount}. Продолжи сборку — готовые посты останутся без изменений.`;
   const commonLinkClass = buttonClassName({
     variant: "primary",
     size: "sm",
@@ -528,8 +542,8 @@ function BuildAttemptPanel({
                 Открыть настройки качества
               </Link>
             ) : (
-              <Button variant="primary" size="sm" onClick={onGenerate} loading={busy} disabled={busy}>
-                Собрать заново
+              <Button variant="primary" size="sm" onClick={onContinue} loading={busy} disabled={busy}>
+                Продолжить сборку
               </Button>
             )}
           </div>
@@ -796,6 +810,58 @@ export default function AutopilotPage() {
         kind: "danger",
         title: "Не удалось остановить сборку",
         body: "Проверь подключение и повтори. Готовые публикации не затронуты.",
+      });
+      await load();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const continueBuild = async () => {
+    const attempt = data?.buildAttempt;
+    if (busy || !attempt || attempt.status === "building" || !chId) return;
+    setBusy(true);
+    try {
+      const response = await fetch("/api/autopilot/repair", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          planId: attempt.planId,
+          revision: attempt.revision,
+          channelId: chId,
+          jobId: crypto.randomUUID(),
+          itemIndexes: attempt.retryableItemIndexes,
+        }),
+      });
+      const result = (await response.json().catch(() => null)) as
+        | { ok?: boolean; error?: string }
+        | null;
+      if (response.ok && result?.ok) {
+        s.toast({
+          kind: "info",
+          title: "Продолжаю сборку",
+          body: "Готовые посты сохранены. Аврора работает только с недостающими.",
+        });
+      } else {
+        const why: Record<string, string> = {
+          revision_conflict: "План уже изменился. Обновляю его состояние.",
+          repair_in_progress: "Сборка уже продолжается в фоне.",
+          nothing_to_repair: "Недостающих постов больше нет. Обновляю план.",
+          worker_unavailable: "Фоновый обработчик сейчас недоступен. Попробуй позже.",
+          queue_unavailable: "Очередь генерации сейчас недоступна. Попробуй позже.",
+        };
+        s.toast({
+          kind: result?.error === "repair_in_progress" ? "info" : "danger",
+          title: result?.error === "repair_in_progress" ? "Сборка уже идёт" : "Не удалось продолжить сборку",
+          body: why[result?.error ?? ""] ?? "Проверь подключение и повтори. Готовые посты сохранены.",
+        });
+      }
+      await load();
+    } catch {
+      s.toast({
+        kind: "danger",
+        title: "Не удалось продолжить сборку",
+        body: "Проверь подключение и повтори. Готовые посты сохранены.",
       });
       await load();
     } finally {
@@ -1201,6 +1267,7 @@ export default function AutopilotPage() {
   // Отсортированный по времени список для ленты недели и карточек.
   const visible = [...items]
     .sort((a, b) => new Date(a.scheduledAt).getTime() - new Date(b.scheduledAt).getTime());
+  const hasUsablePlan = Boolean(plan && visible.length > 0);
   const rangeLabel =
     visible.length > 0
       ? `${fmtRangeMsk(visible[0].scheduledAt)} — ${fmtRangeMsk(visible[visible.length - 1].scheduledAt)}`
@@ -1309,7 +1376,7 @@ export default function AutopilotPage() {
               className="min-h-11 shrink-0 lg:min-w-[230px]"
             >
               <Sparkles className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
-              {building ? "План собирается" : `${plan ? "Обновить" : "Собрать"} ${plannedCount} ${plural(plannedCount, "пост", "поста", "постов")}`}
+              {building ? "План собирается" : `${hasUsablePlan ? "Обновить" : "Собрать"} ${plannedCount} ${plural(plannedCount, "пост", "поста", "постов")}`}
             </Button>
           </div>
         </div>
@@ -1356,7 +1423,7 @@ export default function AutopilotPage() {
           attempt={buildAttempt}
           busy={busy}
           reducedMotion={reduce}
-          onGenerate={() => void generate()}
+          onContinue={() => void continueBuild()}
           onCancel={() => void cancelBuild()}
           channelId={chId}
         />
@@ -1367,7 +1434,7 @@ export default function AutopilotPage() {
         </p>
       )}
 
-      {!plan && visible.length === 0 ? (
+      {!hasUsablePlan ? (
         <Card className="py-4">
           <EmptyState
             icon={<Newspaper className="h-6 w-6" strokeWidth={1.75} aria-hidden />}

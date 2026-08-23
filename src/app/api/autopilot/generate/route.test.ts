@@ -133,7 +133,11 @@ describe("POST /api/autopilot/generate", () => {
     expect(mocks.add).toHaveBeenCalledWith(
       "autopilot-plan",
       { projectId: 88, userId: 4, channelId: 22, planId: "91" },
-      expect.objectContaining({ jobId: "autopilot-plan-91" }),
+      expect.objectContaining({
+        jobId: "autopilot-plan-91",
+        attempts: 6,
+        backoff: { type: "fixed", delay: 20_000 },
+      }),
     );
   });
 

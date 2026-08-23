@@ -27,6 +27,13 @@ export function autopilotCheckpointItem(
   item: Record<string, unknown>,
   now?: () => Date,
 ): Record<string, unknown>;
+export function autopilotProviderWaitingItem(input: {
+  item?: Record<string, unknown> | null;
+  topic?: Record<string, unknown> | null;
+  scheduledAt?: unknown;
+  error?: unknown;
+  now?: () => Date;
+}): Record<string, unknown>;
 export function reusableAutopilotCheckpoint(
   item: Record<string, unknown> | null,
   topic: Record<string, unknown>,

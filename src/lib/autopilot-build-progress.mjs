@@ -9,6 +9,22 @@ const PRIVATE_ITEM_KEYS = new Set([
   "autoApprove",
 ]);
 
+const PROVIDER_WAITING_DISCARDED_KEYS = new Set([
+  ...PRIVATE_ITEM_KEYS,
+  "draft",
+  "quality",
+  "qualityOrigin",
+  "sources",
+  "cited",
+  "invented",
+  "presentation",
+  "approvalBlockers",
+  "humanAttestation",
+  "reviewState",
+  "reviewReason",
+  "_providerFailure",
+]);
+
 // Production load checks currently put a completed post in the 6–8 second range when
 // several drafts are generated in parallel. Keep a range instead of showing a precise
 // countdown: provider load and fallback attempts can legitimately move the finish time.
@@ -56,12 +72,52 @@ export function autopilotCheckpointItem(item, now = () => new Date()) {
   }
   return {
     ...checkpoint,
-    buildState: isAutopilotReaderReadyItem(item)
-      ? item?.reviewRequired === true
-        ? "confirmation_required"
-        : "ready"
-      : "failed",
+    buildState: item?.buildState === "waiting_provider"
+      ? "waiting_provider"
+      : isAutopilotReaderReadyItem(item)
+        ? item?.reviewRequired === true
+          ? "confirmation_required"
+          : "ready"
+        : "failed",
     checkpointedAt: now().toISOString(),
+  };
+}
+
+export function autopilotProviderWaitingItem({
+  item,
+  topic,
+  scheduledAt,
+  error,
+  now = () => new Date(),
+}) {
+  const source = item && typeof item === "object" ? item : {};
+  const plannedTopic = topic && typeof topic === "object" ? topic : {};
+  const checkpointedAt = now().toISOString();
+  const checkpoint = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (!PROVIDER_WAITING_DISCARDED_KEYS.has(key) && value !== undefined) checkpoint[key] = value;
+  }
+  return {
+    ...checkpoint,
+    i: Number.isSafeInteger(Number(source.i)) ? Number(source.i) : Number(plannedTopic.i || 0),
+    scheduledAt: scheduledAt || source.scheduledAt || plannedTopic.scheduledAt || null,
+    topic: String(plannedTopic.topic || source.topic || ""),
+    rubric: String(plannedTopic.rubric || source.rubric || ""),
+    ...(plannedTopic.seed ? { seed: plannedTopic.seed } : {}),
+    ...(plannedTopic.news ? { news: plannedTopic.news } : {}),
+    draft: "",
+    status: "pending",
+    aiReady: false,
+    qualityBlocked: true,
+    reviewRequired: false,
+    buildState: "waiting_provider",
+    _providerFailure: {
+      code: String(error?.code || "provider_unavailable").slice(0, 80),
+      engine: String(error?.engine || "").slice(0, 80),
+      status: Number.isFinite(Number(error?.status)) ? Number(error.status) : 503,
+      at: checkpointedAt,
+    },
+    checkpointedAt,
   };
 }
 

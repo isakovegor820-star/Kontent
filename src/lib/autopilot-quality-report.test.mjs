@@ -80,6 +80,26 @@ describe("Autopilot quality failure diagnosis", () => {
     expect(report).toMatchObject({ total: 2, passed: 0, failed: 2, drafts: 0 });
     expect(report.causes[0].code).toBe("empty");
   });
+
+  it("does not diagnose hook and structure defects when the provider returned no text", () => {
+    const report = autopilotQualityFailureReport([{
+      aiReady: false,
+      draft: "",
+      buildState: "waiting_provider",
+      quality: {
+        passed: false,
+        violations: [
+          { code: "empty", blocker: true },
+          { code: "hook", blocker: true },
+          { code: "structure", blocker: true },
+        ],
+      },
+    }], 7);
+
+    expect(report.causes).toEqual([
+      expect.objectContaining({ code: "empty", count: 1, repairStrategy: "provider_retry" }),
+    ]);
+  });
 });
 
 describe("Generation prompt agrees with the semantic gate", () => {

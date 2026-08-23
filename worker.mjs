@@ -174,9 +174,14 @@ import {
   autopilotCandidateCount,
   selectAutopilotCandidates,
 } from "./src/lib/autopilot-candidate-selection.mjs";
-import { completeAiText } from "./src/lib/ai-completion-service.mjs";
+import {
+  AiCompletionError,
+  completeAiText,
+  isRetryableAiCompletionError,
+} from "./src/lib/ai-completion-service.mjs";
 import {
   autopilotCheckpointItem,
+  autopilotProviderWaitingItem,
   autopilotRetryableItemIndexes,
   autopilotTopicCheckpoints,
   reusableAutopilotCheckpoint,
@@ -4750,6 +4755,7 @@ async function askAI(
   mood = null,
   tempOverride = null,
   explicitEngine = null,
+  options = null,
 ) {
   assertWorkerAiCallPolicy(surface, usageReservationId);
   const messages = [
@@ -4815,6 +4821,9 @@ async function askAI(
       errorName: error?.name || "Error",
       code: error?.code || "provider_error",
     });
+    if (options?.throwOnUnavailable === true && isRetryableAiCompletionError(error)) {
+      throw error;
+    }
     return null;
   }
 }
@@ -6036,6 +6045,7 @@ async function buildAutopilotPlan(
         status: "pending",
       });
     }
+    try {
     // News always needs source-backed factual proof. This is an effective per-item policy;
     // the user's base profile is never rewritten.
     const itemQuality = t.news
@@ -6091,6 +6101,7 @@ async function buildAutopilotPlan(
       null,
       0.45,
       generationEngine,
+      { throwOnUnavailable: true },
     );
     let aiDraft = candidateRaw
       ? checkpointDraft
@@ -6165,6 +6176,7 @@ async function buildAutopilotPlan(
         null,
         0.35,
         generationEngine,
+        { throwOnUnavailable: true },
       );
       aiDraft = candidateRaw
         ? prepareAutopilotDraftForm(
@@ -6309,6 +6321,28 @@ async function buildAutopilotPlan(
       checkpointItems[i] = durableItem;
     }
     return item;
+    } catch (error) {
+      if (!isRetryableAiCompletionError(error)) throw error;
+      const waitingItem = autopilotProviderWaitingItem({
+        item: checkpointItems[i] || { ...t, i },
+        topic: t,
+        scheduledAt: slots[i],
+        error,
+      });
+      if (expectedPlanId != null) {
+        const checkpointed = await pool.query(
+          `update autopilot_plan
+              set items = jsonb_set(items, array[$4::text], $5::jsonb, false),
+                  build_activity_at = now(), revision = revision + 1
+            where id = $1 and project_id = $2 and channel_id = $3 and status = 'building'
+            returning id`,
+          [expectedPlanId, projectId, channelId, i, JSON.stringify(waitingItem)],
+        );
+        if (!checkpointed.rowCount) throw new UnrecoverableError("autopilot-plan: superseded");
+        checkpointItems[i] = waitingItem;
+      }
+      return waitingItem;
+    }
   });
 
   // Ready checkpoints remain in place while failed checkpoints continue through targeted
@@ -6355,6 +6389,7 @@ async function buildAutopilotPlan(
     if (!isAutopilotReaderReadyItem(item)) continue;
     let duplicate = findAutopilotNearDuplicate(item, acceptedForVariety);
     let varietyRewritePrompt = null;
+    let waitingForProvider = false;
     const remainingRewriteAttempts = Math.max(
       0,
       boundedAutopilotRewriteAttempts(quality.retryLimit) - Number(item._rewriteAttempts || 0),
@@ -6394,20 +6429,47 @@ async function buildAutopilotPlan(
           ...recentOpenings,
         ],
       }, quickSettings);
-      const raw = await askAI(
-        "autopilot-plan",
-        usageReservationId,
-        system,
-        varietyRewritePrompt || [
-          item._task,
-          "Перепиши с другим хуком, логикой блоков и финалом. Не перефразируй похожий пост:",
-          `\"\"\"${String(duplicateItem?.draft || duplicateItem?.topic || "").slice(0, 1200)}\"\"\"`,
-        ].join("\n\n"),
-        item._outputTokens,
-        null,
-        0.6,
-        generationEngine,
-      );
+      let raw;
+      try {
+        raw = await askAI(
+          "autopilot-plan",
+          usageReservationId,
+          system,
+          varietyRewritePrompt || [
+            item._task,
+            "Перепиши с другим хуком, логикой блоков и финалом. Не перефразируй похожий пост:",
+            `\"\"\"${String(duplicateItem?.draft || duplicateItem?.topic || "").slice(0, 1200)}\"\"\"`,
+          ].join("\n\n"),
+          item._outputTokens,
+          null,
+          0.6,
+          generationEngine,
+          { throwOnUnavailable: true },
+        );
+      } catch (error) {
+        if (!isRetryableAiCompletionError(error)) throw error;
+        const waitingItem = autopilotProviderWaitingItem({
+          item,
+          topic: topics[index],
+          scheduledAt: item.scheduledAt,
+          error,
+        });
+        items[index] = waitingItem;
+        waitingForProvider = true;
+        if (expectedPlanId != null) {
+          const checkpointed = await pool.query(
+            `update autopilot_plan
+                set items = jsonb_set(items, array[$4::text], $5::jsonb, false),
+                    build_activity_at = now(), revision = revision + 1
+              where id = $1 and project_id = $2 and channel_id = $3 and status = 'building'
+              returning id`,
+            [expectedPlanId, projectId, channelId, index, JSON.stringify(waitingItem)],
+          );
+          if (!checkpointed.rowCount) throw new UnrecoverableError("autopilot-plan: superseded");
+          checkpointItems[index] = waitingItem;
+        }
+        break;
+      }
       if (!raw?.trim()) continue;
       const candidate = prepareAutopilotDraftForm(
         applyAutopilotPresentation(stripCites(raw), presentation, itemQuality, brief, index),
@@ -6453,6 +6515,7 @@ async function buildAutopilotPlan(
       else delete item.autoApprove;
       duplicate = findAutopilotNearDuplicate(item, acceptedForVariety);
     }
+    if (waitingForProvider) continue;
     if (duplicate) {
       // Повтор предотвращается правилом в промпте. Если он всё равно остался, пост не
       // пересекает reader-ready границу, а точный недельный контракт остановит сборку.
@@ -6549,6 +6612,34 @@ async function buildAutopilotPlan(
       newsQuota: selectionNewsQuota,
       selectedNewsCount: candidateSelection.selectedNewsCount,
     };
+    const providerWaitingItems = durableCandidateItems.filter(
+      (item) => item?.buildState === "waiting_provider",
+    );
+    if (providerWaitingItems.length > 0) {
+      const firstFailure = providerWaitingItems[0]?._providerFailure || {};
+      const recoveryReport = {
+        ...report,
+        recoveryState: "waiting_provider",
+        providerFailureCode: String(firstFailure.code || "provider_unavailable"),
+        waitingProviderCount: providerWaitingItems.length,
+      };
+      if (expectedPlanId != null) {
+        const savedRecovery = await pool.query(
+          `update autopilot_plan
+              set build_report = $4::jsonb, repair_strategy = 'provider_retry',
+                  build_activity_at = now(), revision = revision + 1
+            where id = $1 and project_id = $2 and channel_id = $3 and status = 'building'
+            returning id`,
+          [expectedPlanId, projectId, channelId, JSON.stringify(recoveryReport)],
+        );
+        if (!savedRecovery.rowCount) throw new UnrecoverableError("autopilot-plan: superseded");
+      }
+      throw new AiCompletionError(
+        String(firstFailure.engine || generationEngine),
+        String(firstFailure.code || "provider_unavailable"),
+        Number(firstFailure.status || 503),
+      );
+    }
     const repairScopeIndexes = Array.isArray(internalRepair?.scopeIndexes)
       ? new Set(internalRepair.scopeIndexes.map(Number))
       : repairOperationId != null && Array.isArray(repairIndexes)
@@ -10754,13 +10845,49 @@ async function processAutopilotPlanJob(job) {
   } catch (error) {
     const attempts = Math.max(1, Number(job.opts.attempts || 1));
     const finalAttempt = error instanceof UnrecoverableError || job.attemptsMade + 1 >= attempts;
+    const providerRetry = isRetryableAiCompletionError(error);
+    const backoffDelayMs = Math.max(
+      0,
+      Number(typeof job.opts.backoff === "object" ? job.opts.backoff?.delay : job.opts.backoff) || 0,
+    );
+    const recoveryState = providerRetry
+      ? {
+          recoveryState: finalAttempt ? "provider_stopped" : "waiting_provider",
+          providerFailureCode: String(error?.code || "provider_unavailable").slice(0, 80),
+          attemptNumber: Math.min(attempts, job.attemptsMade + 1),
+          maxAttempts: attempts,
+          nextRetryAt: finalAttempt
+            ? null
+            : new Date(Date.now() + backoffDelayMs).toISOString(),
+        }
+      : {};
+    if (providerRetry && !finalAttempt) {
+      await pool.query(
+        `update autopilot_plan
+            set build_report = coalesce(build_report, '{}'::jsonb) || $4::jsonb,
+                repair_strategy = 'provider_retry', build_activity_at = now(),
+                revision = revision + 1
+          where id = $1 and project_id = $2 and channel_id = $3 and status = 'building'`,
+        [planId, projectId, channelId, JSON.stringify(recoveryState)],
+      ).catch(() => {});
+    }
     if (finalAttempt) {
       const terminalOutcome = autopilotTerminalOutcomeForError(error);
       await pool.query(
         `update autopilot_plan
-            set status = 'error', terminal_outcome = $4, revision = revision + 1
+            set status = 'error', terminal_outcome = $4,
+                rules = case when $6::boolean then 'ai_unavailable' else rules end,
+                build_report = coalesce(build_report, '{}'::jsonb) || $5::jsonb,
+                revision = revision + 1
           where id = $1 and project_id = $2 and channel_id = $3 and status = 'building'`,
-        [planId, projectId, channelId, terminalOutcome],
+        [
+          planId,
+          projectId,
+          channelId,
+          terminalOutcome,
+          JSON.stringify(recoveryState),
+          providerRetry,
+        ],
       ).catch(() => {});
       if (repairOperationId != null) {
         await pool.query(

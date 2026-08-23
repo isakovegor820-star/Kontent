@@ -12,7 +12,7 @@
 const QUALITY_FAILURE_COPY = {
   empty: {
     title: "Модель не вернула текст",
-    action: "Похоже на сбой движка. Пересобери план — при повторе выбери другую модель.",
+    action: "Аврора повторит запрос автоматически. Уже готовые посты останутся в плане.",
     fix: "retry",
   },
   too_short: {
@@ -102,7 +102,7 @@ const QUALITY_FAILURE_COPY = {
   },
   truncated: {
     title: "Текст оборван на середине",
-    action: "Модель не дописала пост. Пересобери план или выбери другую модель.",
+    action: "Аврора автоматически допишет только этот пост и снова проверит его.",
     fix: "retry",
   },
   no_sources: {
@@ -258,6 +258,13 @@ export function autopilotQualityFailureReport(items, expected = null) {
       passed += 1;
       continue;
     }
+    // No model text means a provider/build state, not three editorial defects. Do not
+    // diagnose a missing hook or structure on an empty value: that produced the confusing
+    // repeated counters that made one outage look like many bad posts.
+    if (item?.aiReady !== true || !String(item?.draft || "").trim()) {
+      counts.set("empty", (counts.get("empty") || 0) + 1);
+      continue;
+    }
     const violations = Array.isArray(item?.quality?.violations) ? item.quality.violations : [];
     const codes = new Set(
       violations
@@ -268,8 +275,6 @@ export function autopilotQualityFailureReport(items, expected = null) {
         .map((violation) => String(violation?.code || ""))
         .filter(Boolean),
     );
-    // Пост без черновика и без разбора — движок молчал, а не текст не понравился.
-    if (!codes.size && item?.aiReady !== true) codes.add("empty");
     for (const code of codes) counts.set(code, (counts.get(code) || 0) + 1);
   }
 
