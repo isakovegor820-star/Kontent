@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { Temporal } from "@js-temporal/polyfill";
 import type { Pool, PoolClient } from "pg";
 
 import { getPool } from "./db";
@@ -8,6 +9,7 @@ import { RELEASE_1_FEATURE, TODAY_RANKING_VERSION, release1Enabled } from "./con
 type Queryable = Pick<Pool | PoolClient, "query">;
 
 export type TodayItemType = "opportunity" | "review" | "result" | "risk" | "onboarding";
+export type TodayChannelOption = { id: number; label: string; enabled: boolean };
 export type TodayItem = {
   fingerprint: string;
   type: TodayItemType;
@@ -20,7 +22,7 @@ export type TodayItem = {
   freshness: string;
   priority: number;
   primaryAction: { label: string; href: string };
-  secondaryAction: { label: string; state: "dismissed" | "snoozed" } | null;
+  secondaryAction: { label: string; state: "snoozed" } | null;
   evidence: { kind: "opportunity" | "draft"; id: number } | null;
 };
 
@@ -29,8 +31,12 @@ export type TodayBoard = {
   featureKey: typeof RELEASE_1_FEATURE;
   rankingVersion: typeof TODAY_RANKING_VERSION;
   projectId: number;
+  timezone: string;
   channelId: number | null;
   channelLabel: string;
+  channels: TodayChannelOption[];
+  updatedAt: string;
+  availability: "ready" | "partial" | "unavailable";
   items: TodayItem[];
   partialErrors: Array<{ source: string; message: string }>;
 };
@@ -54,11 +60,65 @@ function channelLabel(row: { title: string | null; handle: string | null }): str
 
 async function scopeFor(db: Queryable, actorUserId: number, requestedChannelId: number | null) {
   const membership = await requireSelectedProjectPermission(db, actorUserId, "project.read");
-  const row = (await db.query<{ id: string; title: string | null; handle: string | null }>(
-    `select id, title, handle from channels where project_id = $1 and is_active = true and status = 'active'
-      and ($2::bigint is null or id = $2) order by id limit 1`, [membership.projectId, requestedChannelId],
+  const project = (await db.query<{ timezone: string }>(
+    `select timezone from projects where id = $1 and is_archived = false limit 1`,
+    [membership.projectId],
   )).rows[0];
-  return { projectId: membership.projectId, channelId: row ? Number(row.id) : null, label: row ? channelLabel(row) : "Канал не подключён" };
+  if (!project) throw new TodayError("project_not_found");
+  const rows = (await db.query<{
+    id: string;
+    title: string | null;
+    handle: string | null;
+    today_enabled: boolean;
+  }>(
+    `select channel.id, channel.title, channel.handle,
+            coalesce(flag.enabled, false) as today_enabled
+       from channels channel
+       left join channel_feature_flags flag
+         on flag.project_id = channel.project_id
+        and flag.channel_id = channel.id
+        and flag.feature_key = $2
+      where channel.project_id = $1
+        and channel.is_active = true
+        and channel.status = 'active'
+      order by channel.id`,
+    [membership.projectId, RELEASE_1_FEATURE],
+  )).rows;
+  const requested = requestedChannelId == null
+    ? null
+    : rows.find((candidate) => Number(candidate.id) === requestedChannelId) ?? null;
+  const row = requested ?? rows[0];
+  return {
+    projectId: membership.projectId,
+    timezone: project.timezone,
+    channelId: row ? Number(row.id) : null,
+    label: row ? channelLabel(row) : "Канал не подключён",
+    channels: rows.map((candidate) => ({
+      id: Number(candidate.id),
+      label: channelLabel(candidate),
+      enabled: process.env.NODE_ENV !== "production" && process.env.AURORA_RELEASE1_DEV_ENABLED === "true"
+        ? true
+        : candidate.today_enabled === true,
+    })),
+  };
+}
+
+/** Returns 09:00 on the next calendar day in the selected project's timezone. */
+export function nextTodayReminderAt(timezone: string, now = new Date()): string {
+  const tomorrow = Temporal.Instant.from(now.toISOString())
+    .toZonedDateTimeISO(timezone)
+    .toPlainDate()
+    .add({ days: 1 });
+  const reminder = Temporal.ZonedDateTime.from({
+    timeZone: timezone,
+    year: tomorrow.year,
+    month: tomorrow.month,
+    day: tomorrow.day,
+    hour: 9,
+    minute: 0,
+    second: 0,
+  }, { disambiguation: "compatible" });
+  return new Date(reminder.epochMilliseconds).toISOString();
 }
 
 function hoursAgo(value: string | null): string {
@@ -82,7 +142,7 @@ async function opportunityItems(db: Queryable, scope: { projectId: number; chann
     epistemicState: row.epistemic_state === "insufficient_data" ? "insufficient_data" : "inferred",
     freshness: hoursAgo(row.observed_at), priority: 80 - index,
     primaryAction: { label: "Открыть возможность", href: `/app/opportunities?opportunity=${row.id}&channel=${scope.channelId}` },
-    secondaryAction: { label: "Отложить до завтра", state: "snoozed" },
+    secondaryAction: { label: "Напомнить завтра", state: "snoozed" },
     evidence: { kind: "opportunity", id: Number(row.id) },
   }));
 }
@@ -108,7 +168,7 @@ async function reviewItems(db: Queryable, scope: { projectId: number; channelId:
       epistemicState: blocked ? "blocked" as const : "observed" as const, freshness: hoursAgo(row.updated_at),
       priority: blocked ? 100 : 90,
       primaryAction: { label: blocked ? "Исправить черновик" : "Проверить черновик", href: `/app/composer?draft=${row.id}&from=today` },
-      secondaryAction: { label: "Не сегодня", state: "dismissed" as const },
+      secondaryAction: { label: "Напомнить завтра", state: "snoozed" as const },
       evidence: { kind: "draft" as const, id: Number(row.id) },
     };
   });
@@ -164,7 +224,8 @@ async function applyUserState(db: Queryable, userId: number, scope: { projectId:
   const states = new Map(rows.map((row) => [row.fingerprint, row]));
   return items.filter((item) => {
     const state = states.get(item.fingerprint);
-    if (!state || state.state === "active") return true;
+    // Старое действие «Не сегодня» не должно продолжать скрывать карточку навсегда.
+    if (!state || state.state === "active" || state.state === "dismissed") return true;
     if (state.state === "snoozed" && state.snoozed_until && new Date(state.snoozed_until).getTime() <= Date.now()) return true;
     return false;
   });
@@ -172,9 +233,18 @@ async function applyUserState(db: Queryable, userId: number, scope: { projectId:
 
 export async function loadTodayBoard(input: { actorUserId: number; channelId: number | null }, db: Queryable = getPool()): Promise<TodayBoard> {
   const scope = await scopeFor(db, input.actorUserId, input.channelId);
+  const shared = {
+    featureKey: RELEASE_1_FEATURE,
+    rankingVersion: TODAY_RANKING_VERSION,
+    projectId: scope.projectId,
+    timezone: scope.timezone,
+    channelId: scope.channelId,
+    channelLabel: scope.label,
+    channels: scope.channels,
+    updatedAt: new Date().toISOString(),
+  } as const;
   if (!scope.channelId) {
-    return { enabled: true, featureKey: RELEASE_1_FEATURE, rankingVersion: TODAY_RANKING_VERSION,
-      projectId: scope.projectId, channelId: null, channelLabel: scope.label, partialErrors: [], items: [{
+    return { ...shared, enabled: true, availability: "ready", partialErrors: [], items: [{
         fingerprint: sha(`today:${TODAY_RANKING_VERSION}:onboarding:${scope.projectId}`), type: "onboarding",
         title: "Подключите первый канал", whyNow: "Без канала Аврора не смешивает демо-данные с вашими решениями.",
         channelId: null, channelLabel: scope.label, confidence: "low", epistemicState: "insufficient_data",
@@ -183,32 +253,65 @@ export async function loadTodayBoard(input: { actorUserId: number; channelId: nu
       }] };
   }
   const enabled = await release1Enabled(db, { projectId: scope.projectId, channelId: scope.channelId });
-  if (!enabled) return { enabled: false, featureKey: RELEASE_1_FEATURE, rankingVersion: TODAY_RANKING_VERSION,
-    projectId: scope.projectId, channelId: scope.channelId, channelLabel: scope.label, items: [], partialErrors: [] };
+  if (!enabled) return { ...shared, enabled: false, availability: "ready", items: [], partialErrors: [] };
   const partialErrors: TodayBoard["partialErrors"] = [];
   const collected: TodayItem[] = [];
   for (const [source, loader] of [["opportunities", opportunityItems], ["reviews", reviewItems], ["results", resultItems]] as const) {
     try { collected.push(...await loader(db, { projectId: scope.projectId, channelId: scope.channelId }, scope.label)); }
     catch { partialErrors.push({ source, message: source === "opportunities" ? "Возможности временно недоступны." : source === "reviews" ? "Проверки временно недоступны." : "Результаты временно недоступны." }); }
   }
-  let items = rankTodayItems(await applyUserState(db, input.actorUserId, { projectId: scope.projectId, channelId: scope.channelId }, collected));
-  if (items.length === 0) items = [{
-    fingerprint: sha(`today:${TODAY_RANKING_VERSION}:onboarding-map:${scope.projectId}:${scope.channelId}`), type: "onboarding",
-    title: "Найдите первую доказанную возможность", whyNow: "Обновите карту — Аврора покажет только реальные сигналы, без демонстрационных цифр.",
-    channelId: scope.channelId, channelLabel: scope.label, confidence: "low", epistemicState: "insufficient_data", freshness: "Данных пока нет",
-    priority: 10, primaryAction: { label: "Открыть карту возможностей", href: `/app/opportunities?channel=${scope.channelId}` }, secondaryAction: null, evidence: null,
-  }];
-  return { enabled, featureKey: RELEASE_1_FEATURE, rankingVersion: TODAY_RANKING_VERSION,
-    projectId: scope.projectId, channelId: scope.channelId, channelLabel: scope.label, items, partialErrors };
+  const availability = partialErrors.length === 3
+    ? "unavailable"
+    : partialErrors.length > 0
+      ? "partial"
+      : "ready";
+  const items = availability === "unavailable"
+    ? []
+    : rankTodayItems(await applyUserState(
+      db,
+      input.actorUserId,
+      { projectId: scope.projectId, channelId: scope.channelId },
+      collected,
+    ));
+  return { ...shared, enabled, availability, items, partialErrors };
+}
+
+export async function loadTodayNavigationAvailability(
+  actorUserId: number,
+  db: Queryable = getPool(),
+): Promise<{ visible: boolean }> {
+  const scope = await scopeFor(db, actorUserId, null);
+  return {
+    visible: scope.channels.length === 0 || scope.channels.some((channel) => channel.enabled),
+  };
 }
 
 export async function updateTodayItemState(input: {
-  actorUserId: number; channelId: number; fingerprint: string; state: "dismissed" | "snoozed" | "done"; snoozedUntil?: string | null;
+  actorUserId: number;
+  channelId: number;
+  fingerprint: string;
+  state: "active" | "snoozed" | "done";
+  snoozedUntil?: string | null;
 }, db: Queryable = getPool()) {
   if (!/^[0-9a-f]{64}$/u.test(input.fingerprint)) throw new TodayError("bad_fingerprint");
+  if (!Number.isSafeInteger(input.channelId) || input.channelId <= 0) throw new TodayError("bad_channel");
+  if (input.state === "active") {
+    const scope = await scopeFor(db, input.actorUserId, input.channelId);
+    if (scope.channelId !== input.channelId) throw new TodayError("item_not_found");
+    const restored = await db.query(
+      `delete from today_item_states
+        where project_id = $1 and channel_id = $2 and user_id = $3 and fingerprint = $4
+        returning fingerprint`,
+      [scope.projectId, input.channelId, input.actorUserId, input.fingerprint],
+    );
+    if (restored.rows.length === 0) throw new TodayError("item_not_found");
+    return;
+  }
   const board = await loadTodayBoard({ actorUserId: input.actorUserId, channelId: input.channelId }, db);
   if (!board.enabled || !board.items.some((item) => item.fingerprint === input.fingerprint)) throw new TodayError("item_not_found");
-  const snoozedUntil = input.state === "snoozed" ? new Date(input.snoozedUntil || Date.now() + 86_400_000) : null;
+  const snoozedUntil = input.state === "snoozed"
+    ? new Date(input.snoozedUntil || nextTodayReminderAt(board.timezone))
+    : null;
   if (snoozedUntil && (!Number.isFinite(snoozedUntil.getTime()) || snoozedUntil.getTime() <= Date.now())) throw new TodayError("bad_snooze");
   await db.query(
     `insert into today_item_states

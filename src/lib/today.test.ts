@@ -1,6 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { rankTodayItems, type TodayItem } from "./today";
+import {
+  loadTodayBoard,
+  loadTodayNavigationAvailability,
+  nextTodayReminderAt,
+  rankTodayItems,
+  updateTodayItemState,
+  type TodayItem,
+} from "./today";
 
 const item = (type: TodayItem["type"], priority: number, fingerprint: string): TodayItem => ({
   fingerprint: fingerprint.repeat(64).slice(0, 64), type, priority, title: type, whyNow: "Почему сейчас",
@@ -16,5 +23,145 @@ describe("Today deterministic ranking", () => {
 
   it("never returns more than five decisions", () => {
     expect(rankTodayItems(Array.from({ length: 9 }, (_, index) => item("opportunity", index, String(index))))).toHaveLength(5);
+  });
+});
+
+describe("Today reminder time", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("uses 09:00 on the next project calendar day instead of adding 24 hours", () => {
+    expect(nextTodayReminderAt(
+      "Europe/Amsterdam",
+      new Date("2026-03-28T12:00:00.000Z"),
+    )).toBe("2026-03-29T07:00:00.000Z");
+  });
+
+  it("keeps 09:00 local time across the autumn clock change", () => {
+    expect(nextTodayReminderAt(
+      "Europe/Amsterdam",
+      new Date("2026-10-24T12:00:00.000Z"),
+    )).toBe("2026-10-25T08:00:00.000Z");
+  });
+});
+
+function todayDb(options: { failSources?: boolean; userState?: string } = {}) {
+  return {
+    query: vi.fn(async (...args: [sql: string, values?: unknown[]]) => {
+      const [sql, values = []] = args;
+      if (sql.includes("user_project_preferences")) {
+        return { rows: [{ project_id: "7", user_id: "9", role: "owner", version: "1" }] };
+      }
+      if (sql.includes("select timezone from projects")) {
+        return { rows: [{ timezone: "Europe/Amsterdam" }] };
+      }
+      if (sql.includes("from channels channel")) {
+        return { rows: [
+          { id: "11", title: "Первый канал", handle: "first", today_enabled: true },
+          { id: "12", title: "Второй канал", handle: "second", today_enabled: false },
+        ] };
+      }
+      if (sql.includes("select enabled from channel_feature_flags")) {
+        return { rows: [{ enabled: true }] };
+      }
+      if (sql.includes("from opportunity_snapshots")) {
+        if (options.failSources) throw new Error("opportunities unavailable");
+        return { rows: [] };
+      }
+      if (sql.includes("from drafts draft")) {
+        if (options.failSources) throw new Error("reviews unavailable");
+        return { rows: [{
+          id: "81",
+          version: "3",
+          updated_at: "2026-08-23T08:00:00.000Z",
+          editorial_state: "in_review",
+          ai_validation: null,
+        }] };
+      }
+      if (sql.includes("from posts post")) {
+        if (options.failSources) throw new Error("results unavailable");
+        return { rows: [] };
+      }
+      if (sql.includes("delete from today_item_states")) {
+        return { rows: [{ fingerprint: "c".repeat(64) }] };
+      }
+      if (sql.includes("from today_item_states")) {
+        const fingerprints = values[3] as string[] | undefined;
+        return { rows: options.userState && fingerprints?.[0] ? [{
+          fingerprint: fingerprints[0],
+          state: options.userState,
+          snoozed_until: null,
+        }] : [] };
+      }
+      throw new Error(`unexpected query: ${sql}`);
+    }),
+  };
+}
+
+describe("Today board states", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("falls back from a stale channel and exposes selectable channel availability", async () => {
+    vi.stubEnv("AURORA_RELEASE1_DEV_ENABLED", "false");
+    const board = await loadTodayBoard(
+      { actorUserId: 9, channelId: 999 },
+      todayDb() as never,
+    );
+
+    expect(board.channelId).toBe(11);
+    expect(board.timezone).toBe("Europe/Amsterdam");
+    expect(board.channels).toEqual([
+      { id: 11, label: "Первый канал", enabled: true },
+      { id: 12, label: "Второй канал", enabled: false },
+    ]);
+    expect(board.items[0]?.secondaryAction).toEqual({
+      label: "Напомнить завтра",
+      state: "snoozed",
+    });
+  });
+
+  it("reports total source failure instead of showing a fake empty-state action", async () => {
+    vi.stubEnv("AURORA_RELEASE1_DEV_ENABLED", "false");
+    const board = await loadTodayBoard(
+      { actorUserId: 9, channelId: 11 },
+      todayDb({ failSources: true }) as never,
+    );
+
+    expect(board.availability).toBe("unavailable");
+    expect(board.partialErrors).toHaveLength(3);
+    expect(board.items).toEqual([]);
+  });
+
+  it("does not keep legacy dismissed cards hidden forever", async () => {
+    vi.stubEnv("AURORA_RELEASE1_DEV_ENABLED", "false");
+    const board = await loadTodayBoard(
+      { actorUserId: 9, channelId: 11 },
+      todayDb({ userState: "dismissed" }) as never,
+    );
+
+    expect(board.items).toHaveLength(1);
+    expect(board.items[0]?.type).toBe("review");
+  });
+
+  it("checks navigation availability without loading card sources", async () => {
+    vi.stubEnv("AURORA_RELEASE1_DEV_ENABLED", "false");
+    const db = todayDb();
+
+    await expect(loadTodayNavigationAvailability(9, db as never)).resolves.toEqual({ visible: true });
+    expect(db.query).toHaveBeenCalledTimes(3);
+    expect(db.query.mock.calls.some(([sql]) => String(sql).includes("opportunity_snapshots"))).toBe(false);
+  });
+
+  it("restores a snoozed item by deleting only its user-owned state", async () => {
+    vi.stubEnv("AURORA_RELEASE1_DEV_ENABLED", "false");
+    const db = todayDb();
+    await updateTodayItemState({
+      actorUserId: 9,
+      channelId: 11,
+      fingerprint: "c".repeat(64),
+      state: "active",
+    }, db as never);
+
+    const deleteCall = db.query.mock.calls.find(([sql]) => String(sql).includes("delete from today_item_states"));
+    expect(deleteCall?.[1]).toEqual([7, 11, 9, "c".repeat(64)]);
   });
 });

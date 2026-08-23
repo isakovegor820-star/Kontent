@@ -14,8 +14,18 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json() as Record<string, unknown>;
     const state = body.state;
-    if (state !== "dismissed" && state !== "snoozed" && state !== "done") throw new TodayError("bad_state");
-    await updateTodayItemState({ actorUserId: user.id, channelId: Number(body.channelId), fingerprint: String(body.fingerprint || ""), state, snoozedUntil: typeof body.snoozedUntil === "string" ? body.snoozedUntil : null });
+    if (state !== "active" && state !== "snoozed" && state !== "done") {
+      throw new TodayError("bad_state");
+    }
+    const channelId = Number(body.channelId);
+    if (!Number.isSafeInteger(channelId) || channelId <= 0) throw new TodayError("bad_channel");
+    await updateTodayItemState({
+      actorUserId: user.id,
+      channelId,
+      fingerprint: String(body.fingerprint || ""),
+      state,
+      snoozedUntil: typeof body.snoozedUntil === "string" ? body.snoozedUntil : null,
+    });
     return NextResponse.json({ ok: true });
   } catch (error) {
     if (error instanceof SyntaxError || error instanceof TodayError) return NextResponse.json({ error: error instanceof TodayError ? error.code : "bad_request" }, { status: 422 });
