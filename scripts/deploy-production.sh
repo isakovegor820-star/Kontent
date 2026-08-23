@@ -13,12 +13,17 @@ DEPLOY_ACTION="${AURORA_DEPLOY_ACTION:-deploy}"
 RELEASES_DIR="${AURORA_RELEASES_DIR:-/opt/aurora-releases}"
 CURRENT_LINK="${AURORA_CURRENT_LINK:-/opt/aurora-current}"
 KEEP_RELEASES="${AURORA_KEEP_RELEASES:-2}"
+CLEANUP_RELEASE_SHA="${AURORA_INCOMPLETE_RELEASE_SHA:-}"
 HEALTH_URL="${AURORA_HEALTH_URL:-http://127.0.0.1:3002/api/health}"
 HEALTH_ATTEMPTS="${AURORA_HEALTH_ATTEMPTS:-30}"
 HEALTH_SLEEP_SECS="${AURORA_HEALTH_SLEEP_SECS:-2}"
 
 if [[ ! "$DEPLOY_SHA" =~ ^[0-9a-f]{40}$ ]]; then
   echo "AURORA_DEPLOY_SHA must be an exact 40-character git SHA" >&2
+  exit 1
+fi
+if [[ -n "$CLEANUP_RELEASE_SHA" && ! "$CLEANUP_RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "AURORA_INCOMPLETE_RELEASE_SHA must be empty or an exact 40-character git SHA" >&2
   exit 1
 fi
 if [[ "$DEPLOY_ACTION" != "deploy" && "$DEPLOY_ACTION" != "rollback" ]]; then
@@ -89,11 +94,61 @@ if [[ "$DEPLOY_ACTION" == "rollback" ]]; then
 fi
 
 short_sha="$(printf '%s' "$DEPLOY_SHA" | cut -c1-7)"
+
+# A failed build can leave a full node_modules tree and a partial .next cache behind.
+# Cleanup is opt-in and bound to an exact operator-provided SHA. A completed deploy
+# records both rollback participants before switching the symlink, so those stay safe.
+release_is_recorded() {
+  local candidate="$1" state
+  for state in "${RELEASES_DIR}"/.deploy-state-*; do
+    [[ -f "$state" ]] || continue
+    if [[ "$(sed -n '3p' "$state")" == "rollback-compatible" ]] \
+      && sed -n '1,2p' "$state" | grep -Fxq "$candidate"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+cleanup_incomplete_releases() {
+  local current candidate candidate_sha
+  [[ -n "$CLEANUP_RELEASE_SHA" ]] || return 0
+  current="$(readlink -f "$CURRENT_LINK")"
+  while IFS= read -r candidate; do
+    [[ -n "$candidate" && -d "$candidate" ]] || continue
+    candidate="$(readlink -f "$candidate")"
+    [[ "$candidate" == "${RELEASES_DIR}/"* ]] || continue
+    [[ "$candidate" != "$current" ]] || continue
+    if release_is_recorded "$candidate"; then
+      continue
+    fi
+    candidate_sha="$(git -C "$candidate" rev-parse --verify HEAD 2>/dev/null || true)"
+    [[ "$candidate_sha" == "$CLEANUP_RELEASE_SHA" ]] || continue
+    echo "PRUNE_INCOMPLETE $candidate"
+    rm -rf -- "$candidate"
+  done < <(find "$RELEASES_DIR" -mindepth 1 -maxdepth 1 -type d -print)
+}
+
+cleanup_incomplete_releases
+
 release="${RELEASES_DIR}/$(date -u +%Y%m%dT%H%M%SZ)-${short_sha}"
 if [[ -e "$release" ]]; then
   echo "release directory already exists: $release" >&2
   exit 1
 fi
+
+cleanup_failed_release() {
+  local status="$?" current=""
+  trap - EXIT
+  current="$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)"
+  if [[ "$status" -ne 0 && -n "$release" && -d "$release" && "$current" != "$release" ]]; then
+    echo "PRUNE_FAILED $release" >&2
+    rm -rf -- "$release"
+    rm -f -- "$state_file"
+  fi
+  exit "$status"
+}
+trap cleanup_failed_release EXIT
 
 if [[ ! -f "${CURRENT_LINK}/.env.production" ]]; then
   echo "missing ${CURRENT_LINK}/.env.production" >&2

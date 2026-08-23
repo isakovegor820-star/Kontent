@@ -123,4 +123,27 @@ describe("production deployment shell contract", () => {
   it("preserves the guarded remote retention default from current main", () => {
     expect(script).toContain('KEEP_RELEASES="${AURORA_KEEP_RELEASES:-2}"');
   });
+
+  it("reclaims only incomplete release checkouts before building", () => {
+    const cleanup = script.indexOf("cleanup_incomplete_releases");
+    const clone = script.indexOf('git clone --branch main --single-branch "$REPO_URL" "$release"');
+    expect(cleanup).toBeGreaterThan(0);
+    expect(cleanup).toBeLessThan(clone);
+    expect(script).toContain("release_is_recorded");
+    expect(script).toContain('CLEANUP_RELEASE_SHA="${AURORA_INCOMPLETE_RELEASE_SHA:-}"');
+    expect(script).toContain('[[ -n "$CLEANUP_RELEASE_SHA" ]] || return 0');
+    expect(script).toContain('[[ "$candidate" != "$current" ]]');
+    expect(script).toContain('if release_is_recorded "$candidate"; then');
+    expect(script).toContain('candidate_sha="$(git -C "$candidate" rev-parse --verify HEAD');
+    expect(script).toContain('[[ "$candidate_sha" == "$CLEANUP_RELEASE_SHA" ]]');
+    expect(script).toContain('rm -rf -- "$candidate"');
+    expect(workflow).toContain("AURORA_INCOMPLETE_RELEASE_SHA: ${{ vars.INCOMPLETE_RELEASE_SHA }}");
+  });
+
+  it("removes its own failed pre-switch release without touching the live release", () => {
+    expect(script).toContain("trap cleanup_failed_release EXIT");
+    expect(script).toContain('[[ "$status" -ne 0 && -n "$release" && -d "$release" && "$current" != "$release" ]]');
+    expect(script).toContain('rm -rf -- "$release"');
+    expect(script).toContain('rm -f -- "$state_file"');
+  });
 });
