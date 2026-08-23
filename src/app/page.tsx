@@ -2,9 +2,9 @@ import type { Metadata } from "next";
 import { ReferenceLanding } from "@/components/landing/reference-landing";
 
 export const metadata: Metadata = {
-  title: { absolute: "Аврора — контент из реальных сигналов" },
+  title: { absolute: "Аврора — юридический контент с проверкой рисков" },
   description:
-    "Аврора находит, что сработало в вашей нише, объясняет почему и готовит оригинальный материал для Telegram — с источниками, контролем версии и публикацией после одобрения.",
+    "Планируйте юридический контент, фиксируйте источники и доказательства, согласовывайте версии и публикуйте готовые материалы в Telegram.",
 };
 
 export default function LandingPage() {

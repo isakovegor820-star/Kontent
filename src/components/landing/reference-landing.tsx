@@ -1,22 +1,21 @@
 import type { ReactNode } from "react";
 import {
   ArrowRight,
-  BarChart3,
   BookOpenCheck,
+  CalendarDays,
   Check,
   ClipboardCheck,
-  Compass,
+  Clock3,
   FileCheck2,
-  Gauge,
   History,
-  Radar,
-  RotateCcw,
+  Scale,
   Send,
+  Settings2,
   ShieldCheck,
-  Sparkles,
+  UsersRound,
 } from "lucide-react";
 import { Logo } from "@/components/brand";
-import { EvidenceEngine } from "./evidence-engine";
+import { HeroProductScene } from "./hero-product-scene";
 import { LandingMobileNav } from "./landing-mobile-nav";
 import styles from "./reference-landing.module.css";
 
@@ -28,121 +27,96 @@ type Feature = {
 
 const features: Feature[] = [
   {
-    icon: <Radar aria-hidden="true" />,
-    title: "Сигнал относительно нормы",
-    text: "Аврора сравнивает пост не с чужими миллионниками, а с медианой его собственного канала.",
+    icon: <CalendarDays aria-hidden="true" />,
+    title: "Планирование публикаций",
+    text: "Собирайте контент-план, готовьте материалы и назначайте время публикации в Telegram.",
   },
   {
-    icon: <Compass aria-hidden="true" />,
-    title: "Причина, а не огонёк",
-    text: "Показывает источник, свежесть, цифры и механику: какой хук, тема и структура дали результат.",
-  },
-  {
-    icon: <Sparkles aria-hidden="true" />,
-    title: "Новый угол вместо копии",
-    text: "Берёт работающий принцип, сверяет историю вашего канала и собирает самостоятельный материал.",
+    icon: <Clock3 aria-hidden="true" />,
+    title: "Единый календарь",
+    text: "Проверяйте всю неделю, находите пробелы и переносите материалы без ручных таблиц.",
   },
   {
     icon: <BookOpenCheck aria-hidden="true" />,
-    title: "Факты рядом с текстом",
-    text: "Значимые утверждения, источник и дата актуальности остаются в одной карточке материала.",
+    title: "Факты и доказательства",
+    text: "Добавляйте к утверждениям источник, дату актуальности и правила использования.",
+  },
+  {
+    icon: <UsersRound aria-hidden="true" />,
+    title: "Командная работа",
+    text: "Роли, версии, комментарии и решения остаются рядом с материалом.",
   },
   {
     icon: <ClipboardCheck aria-hidden="true" />,
-    title: "Одобрение точной версии",
-    text: "Комментарии и решение относятся к конкретной версии. Изменённый текст требует новой проверки.",
+    title: "Редакционное согласование",
+    text: "Отправляйте точную версию на проверку и сохраняйте историю решений.",
   },
   {
-    icon: <Send aria-hidden="true" />,
-    title: "Подтверждённая публикация",
-    text: "Telegram публикуется с сервера, а статус операции и безопасный повтор сохраняются в проекте.",
+    icon: <ShieldCheck aria-hidden="true" />,
+    title: "Контроль перед публикацией",
+    text: "Аврора отмечает конфликтные настройки, а финальное решение принимает юрист.",
   },
 ];
 
 const steps = [
   {
-    icon: <Radar aria-hidden="true" />,
-    title: "Находит сигнал",
-    text: "Проверяет выбранные каналы и открытые источники в вашей нише.",
+    icon: <Settings2 aria-hidden="true" />,
+    title: "Настройте проект",
+    text: "Добавьте данные о практике, аудитории и правилах юридического контента.",
   },
   {
-    icon: <Gauge aria-hidden="true" />,
-    title: "Сравнивает честно",
-    text: "Считает результат относительно привычного уровня каждого канала.",
+    icon: <CalendarDays aria-hidden="true" />,
+    title: "Соберите контент-план",
+    text: "Разложите темы по датам и подготовьте отдельные редактируемые материалы.",
   },
   {
-    icon: <Sparkles aria-hidden="true" />,
-    title: "Готовит ваш угол",
-    text: "Переносит механику, но не чужие фразы, факты и позицию.",
+    icon: <BookOpenCheck aria-hidden="true" />,
+    title: "Привяжите доказательства",
+    text: "Укажите источник, актуальность и допустимую формулировку для значимых фактов.",
   },
   {
-    icon: <ShieldCheck aria-hidden="true" />,
-    title: "Даёт контроль",
-    text: "Показывает доказательства, ограничения и точную версию на одобрение.",
-  },
-  {
-    icon: <RotateCcw aria-hidden="true" />,
-    title: "Сохраняет результат",
-    text: "Публикует после решения и возвращает результат в аналитику проекта.",
+    icon: <Send aria-hidden="true" />,
+    title: "Согласуйте и опубликуйте",
+    text: "Подтвердите версию и отправьте её в Telegram. VK доступен после настройки интеграции.",
   },
 ];
 
-const comparisonRows = [
+const editorCapabilities: Feature[] = [
   {
-    criterion: "Главный вопрос",
-    scheduler: "Когда и куда поставить пост?",
-    analytics: "Что уже произошло?",
-    generator: "Как быстро написать текст?",
-    aurora: "Что стоит публиковать дальше — и почему?",
+    icon: <FileCheck2 aria-hidden="true" />,
+    title: "Карточка доказательства",
+    text: "Тип, содержание, источник и дата актуальности хранятся вместе с настройками материала.",
   },
   {
-    criterion: "Точка старта",
-    scheduler: "Готовая идея пользователя",
-    analytics: "Таблица метрик",
-    generator: "Промпт",
-    aurora: "Проверенный пост выше нормы канала",
+    icon: <Scale aria-hidden="true" />,
+    title: "Юридические источники",
+    text: "Публичные ленты и разрешённые подключения отделены от закрытых и неподтверждённых данных.",
   },
   {
-    criterion: "Связь с источником",
-    scheduler: "Не обязательна",
-    analytics: "Источник есть, действия нет",
-    generator: "Обычно не видна",
-    aurora: "Источник → причина → новый угол → черновик",
+    icon: <History aria-hidden="true" />,
+    title: "История согласования",
+    text: "Комментарии и решения относятся к конкретной версии и не теряются после правок.",
   },
-  {
-    criterion: "Контроль смысла",
-    scheduler: "Редакторская проверка",
-    analytics: "Не относится к тексту",
-    generator: "Зависит от промпта",
-    aurora: "Факты, история, версия и ручное одобрение",
-  },
-  {
-    criterion: "Результат",
-    scheduler: "Опубликованный пост",
-    analytics: "Отчёт",
-    generator: "Черновик",
-    aurora: "Обоснованный материал и подтверждённая публикация",
-  },
-] as const;
+];
 
 const accessCards = [
   {
-    status: "Работает",
-    title: "Радар и тренды",
-    note: "Проверенные Telegram-источники, норма канала и объяснение найденного сигнала.",
-    features: ["Поиск по своей нише", "Ссылка на исходный пост", "Черновик из найденной возможности"],
-  },
-  {
     status: "Доступно",
-    title: "Редактор и контроль",
-    note: "Голос канала, настройки качества, доказательства, версии и согласование.",
-    features: ["Сравнение с историей канала", "Карточки источников", "Ручное подтверждение версии"],
+    title: "Редактор и контент-план",
+    note: "Основной рабочий контур для подготовки юридического контента.",
+    features: ["Черновики и календарь", "Источники и доказательства", "Настройки тона, включая необязательный мат"],
   },
   {
     status: "Работает",
-    title: "Telegram-публикация",
-    note: "Календарь, серверная отправка и состояние каждой операции.",
-    features: ["Публикация по расписанию", "Статусы и история", "Повтор без дублирования частей"],
+    title: "Telegram",
+    note: "Подключение канала, расписание и серверная публикация.",
+    features: ["Публикация по расписанию", "Статусы и история операций", "Повторная попытка без дублей"],
+  },
+  {
+    status: "После настройки",
+    title: "ВКонтакте",
+    note: "Доступность зависит от настроенного приложения и тестового сообщества.",
+    features: ["Подключение сообщества", "Проверка разрешений", "Статус готовности внутри проекта"],
   },
 ];
 
@@ -184,106 +158,80 @@ export function ReferenceLanding() {
             <BrandLockup />
           </a>
           <nav className={styles.nav} aria-label="Основная навигация">
-            <a href="#difference">Отличие</a>
-            <a href="#how">Как работает</a>
-            <a href="#control">Контроль</a>
+            <a href="#product">Продукт</a>
             <a href="#features">Возможности</a>
+            <a href="#how">Как работает</a>
+            <a href="#integrations">Интеграции</a>
             <a href="#access">Доступ</a>
           </nav>
           <div className={styles.headerActions}>
             <a className={styles.loginLink} href="/login">Войти</a>
-            <a className={styles.primaryButton} href="/register">Попробовать Аврору</a>
+            <a className={styles.primaryButton} href="/register">Создать аккаунт</a>
           </div>
           <LandingMobileNav />
         </div>
       </header>
 
       <main id="main">
-        <section className={`${styles.hero} ${styles.heroReframed}`} id="top" aria-labelledby="hero-title">
-          <div className={styles.heroGrid} aria-hidden="true" />
-          <div className={styles.heroBeam} aria-hidden="true" />
-          <div className={`${styles.heroInner} ${styles.heroInnerReframed}`}>
-            <div className={`${styles.heroCopy} ${styles.heroCopyReframed}`}>
-              <p className={`${styles.eyebrow} ${styles.heroEyebrow}`}>Content Intelligence для Telegram</p>
-              <h1 id="hero-title">
-                Сначала{" "}<br />
-                <span>доказательство.</span>{" "}<br />
-                Потом контент.
-              </h1>
+        <section className={styles.hero} id="top" aria-labelledby="hero-title">
+          <div className={styles.heroGlow} aria-hidden="true" />
+          <div className={styles.heroInner}>
+            <div className={styles.heroCopy}>
+              <p className={styles.eyebrow}>SMM-платформа для юридического контента</p>
+              <h1 id="hero-title">Юридический контент с проверкой рисков и доказательств</h1>
               <p className={styles.heroLead}>
-                Аврора находит посты, которые сработали <strong>выше нормы своего канала</strong>,
-                объясняет почему и готовит ваш оригинальный материал — с источниками, контролем
-                версии и публикацией после одобрения.
+                Планируйте публикации, фиксируйте источники, согласовывайте формулировки
+                и отправляйте готовые материалы в Telegram.
               </p>
               <div className={styles.heroActions}>
                 <a className={styles.primaryButtonLarge} href="/register">
-                  Найти сигнал в моей нише
+                  Создать первый материал
                   <ArrowRight aria-hidden="true" />
                 </a>
-                <a className={styles.heroTextLink} href="#difference">
-                  Почему это не автопостинг
-                </a>
+                <span className={styles.trialNote}>
+                  <strong>Telegram работает</strong>
+                  VK — после настройки
+                </span>
               </div>
-              <ul className={styles.heroBenefits} aria-label="Главные отличия Авроры">
-                <li><Check aria-hidden="true" />Источник виден</li>
-                <li><Check aria-hidden="true" />Новый угол вместо копии</li>
-                <li><Check aria-hidden="true" />Без одобрения не публикует</li>
+              <ul className={styles.heroBenefits} aria-label="Основные возможности">
+                <li><Check aria-hidden="true" />Контент-план и редактор</li>
+                <li><Check aria-hidden="true" />Источники и доказательства</li>
+                <li><Check aria-hidden="true" />Согласование перед публикацией</li>
               </ul>
             </div>
-            <EvidenceEngine />
+            <HeroProductScene />
           </div>
         </section>
 
-        <section className={`${styles.trustBar} ${styles.outcomeBar}`} aria-label="Цикл Авроры">
-          <div className={styles.outcomeTrack}>
-            <span><b>01</b>Сигнал</span><i aria-hidden="true" />
-            <span><b>02</b>Причина</span><i aria-hidden="true" />
-            <span><b>03</b>Ваш материал</span><i aria-hidden="true" />
-            <span><b>04</b>Контроль</span><i aria-hidden="true" />
-            <span><b>05</b>Публикация</span>
+        <section className={styles.trustBar} aria-label="Фактические возможности Авроры">
+          <div className={styles.brandMarquee}>
+            <span>Контент-план</span>
+            <span>Доказательства</span>
+            <span>Согласование</span>
+            <span>Telegram</span>
+            <span>VK после настройки</span>
           </div>
         </section>
 
-        <section className={`${styles.section} ${styles.differenceSection}`} id="difference" aria-labelledby="difference-title">
+        <section className={styles.section} id="features" aria-labelledby="features-title">
           <div className={styles.container}>
             <SectionHeading
-              id="difference-title"
-              eyebrow="Почему Аврора"
-              title="Не лучше во всём. Сильнее в главном переходе."
-              description="Планировщики доставляют готовый контент. Аналитика показывает прошлое. Обычный AI пишет по запросу. Аврора соединяет наблюдаемый сигнал с контролируемым действием."
+              id="features-title"
+              eyebrow="Возможности"
+              title="Рабочий контур для юридической редакции"
+              description="От темы и доказательств до согласованной версии и контролируемой публикации."
             />
-
-            <div className={styles.comparisonCallout}>
-              <div><span>Рыночный разрыв</span><strong>От «это залетело» до «вот что публиковать нам»</strong></div>
-              <p>Один непрерывный маршрут — без таблиц, копипаста и прыжков между пятью сервисами.</p>
+            <div className={styles.featureGrid}>
+              {features.map((feature) => (
+                <article className={styles.featureCard} key={feature.title}>
+                  <span className={styles.featureIcon}>{feature.icon}</span>
+                  <div>
+                    <h3>{feature.title}</h3>
+                    <p>{feature.text}</p>
+                  </div>
+                </article>
+              ))}
             </div>
-
-            <div className={styles.comparisonScroll} tabIndex={0} aria-describedby="comparison-hint">
-              <table className={styles.comparisonTable}>
-                <caption className="sr-only">Сравнение Авроры с основными категориями SMM-инструментов</caption>
-                <thead>
-                  <tr>
-                    <th scope="col">Критерий</th>
-                    <th scope="col">Автопостинг</th>
-                    <th scope="col">Аналитика</th>
-                    <th scope="col">AI-генератор</th>
-                    <th scope="col" className={styles.auroraColumn}><Logo size={22} decorative />Аврора</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {comparisonRows.map((row) => (
-                    <tr key={row.criterion}>
-                      <th scope="row">{row.criterion}</th>
-                      <td>{row.scheduler}</td>
-                      <td>{row.analytics}</td>
-                      <td>{row.generator}</td>
-                      <td className={styles.auroraColumn}><Check aria-hidden="true" />{row.aurora}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <p className={styles.comparisonHint} id="comparison-hint">На узком экране таблицу можно прокрутить по горизонтали.</p>
           </div>
         </section>
 
@@ -291,11 +239,11 @@ export function ReferenceLanding() {
           <div className={styles.container}>
             <SectionHeading
               id="how-title"
-              eyebrow="Замкнутый цикл"
-              title="От чужого сигнала — к вашему решению"
-              description="Аврора не переносит чужой текст. Она сохраняет доказательство, выделяет рабочую механику и строит новую версию вокруг вашего голоса и фактов."
+              eyebrow="Как это работает"
+              title="От идеи до согласованной публикации"
+              description="Четыре шага сохраняют смысл, источники и ответственность за финальную версию."
             />
-            <ol className={`${styles.steps} ${styles.cycleSteps}`}>
+            <ol className={styles.steps}>
               {steps.map((step, index) => (
                 <li className={styles.step} key={step.title}>
                   <div className={styles.stepTop}>
@@ -310,83 +258,103 @@ export function ReferenceLanding() {
           </div>
         </section>
 
-        <section className={`${styles.analyticsSection} ${styles.controlSection}`} id="control" aria-labelledby="control-title">
-          <div className={`${styles.container} ${styles.analyticsShell} ${styles.controlShell}`}>
+        <section className={styles.analyticsSection} id="product" aria-labelledby="product-title">
+          <div className={`${styles.container} ${styles.analyticsShell}`}>
             <div className={styles.analyticsIntro}>
-              <p className={styles.eyebrow}>Доверие по умолчанию</p>
-              <h2 id="control-title">Можно открыть любой вывод и понять, откуда он взялся</h2>
+              <p className={styles.eyebrow}>Юридический контроль</p>
+              <h2 id="product-title">Проверяйте риски и доказательства до публикации</h2>
               <p>
-                Для экспертного контента скорость без прозрачности опасна. Поэтому источник,
-                наблюдаемые цифры, использованные факты и решение редактора остаются рядом с материалом.
+                Аврора связывает значимые утверждения с источниками, датами актуальности
+                и редакционным решением. Финальная юридическая оценка остаётся за специалистом.
               </p>
               <ul className={styles.analyticsList}>
-                <li><Check aria-hidden="true" />Ссылка на исходный пост</li>
-                <li><Check aria-hidden="true" />Сравнение с нормой канала</li>
-                <li><Check aria-hidden="true" />Факты и дата актуальности</li>
-                <li><Check aria-hidden="true" />История точной версии</li>
+                <li><Check aria-hidden="true" />Источник рядом с утверждением</li>
+                <li><Check aria-hidden="true" />Дата актуальности доказательства</li>
+                <li><Check aria-hidden="true" />Комментарии к конкретной версии</li>
+                <li><Check aria-hidden="true" />История согласования</li>
               </ul>
               <a className={styles.secondaryButton} href="/register">
-                Проверить свою тему
+                Создать материал
                 <ArrowRight aria-hidden="true" />
               </a>
             </div>
 
-            <div className={`${styles.dashboard} ${styles.proofDashboard}`} aria-label="Демонстрация цепочки доказательств">
-              <div className={styles.proofDashboardHeader}>
-                <div><span>Evidence trail · #A-2408</span><strong>Почему этот материал появился в плане</strong></div>
-                <span><ShieldCheck aria-hidden="true" />Всё можно проверить</span>
+            <div className={styles.dashboard} aria-label="Демонстрация структуры проверки материала">
+              <p className={styles.dashboardEyebrow}>Пример проверки материала</p>
+              <div className={styles.metricGrid}>
+                <article><span>Источник</span><strong>Указан</strong><small>ссылка сохранена</small></article>
+                <article><span>Актуальность</span><strong>Проверена</strong><small>дата указана</small></article>
+                <article><span>Риск</span><strong>На проверке</strong><small>решает юрист</small></article>
+                <article><span>Версия</span><strong>Текущая</strong><small>на согласовании</small></article>
               </div>
-              <div className={styles.proofChain}>
-                <article>
-                  <span><Radar aria-hidden="true" />Наблюдение</span>
-                  <strong>×2,7 к медиане источника</strong>
-                  <p>Не абсолютная популярность, а отклонение от привычного результата канала.</p>
+              <div className={styles.chartGrid}>
+                <article className={styles.lineChartCard}>
+                  <div className={styles.chartHeader}>
+                    <strong>Утверждение и доказательство</strong>
+                    <span>Демонстрация</span>
+                  </div>
+                  <div className={styles.evidenceStatement}>
+                    <span>Утверждение</span>
+                    <p>Формулировка должна точно отражать условия документа и не обещать результат.</p>
+                  </div>
+                  <dl className={styles.evidenceRows}>
+                    <div><dt>Источник</dt><dd>Документ проекта</dd></div>
+                    <div><dt>Актуальность</dt><dd>Дата указана</dd></div>
+                    <div><dt>Использование</dt><dd>Требует согласования</dd></div>
+                  </dl>
                 </article>
-                <ArrowRight aria-hidden="true" />
-                <article>
-                  <span><BarChart3 aria-hidden="true" />Гипотеза</span>
-                  <strong>Сработала конкретика риска</strong>
-                  <p>Аврора переносит механику, но создаёт новый пример и структуру.</p>
+                <article className={styles.donutCard}>
+                  <strong>Решение редактора</strong>
+                  <div className={styles.reviewDecision}>
+                    <ShieldCheck aria-hidden="true" />
+                    <span>Требует проверки</span>
+                    <p>Аврора показывает контекст, но не подменяет юридическое решение.</p>
+                  </div>
+                  <ul>
+                    <li><i /><span>Источник</span><b>есть</b></li>
+                    <li><i /><span>Дата</span><b>есть</b></li>
+                    <li><i /><span>Решение</span><b>ожидается</b></li>
+                  </ul>
                 </article>
-                <ArrowRight aria-hidden="true" />
-                <article>
-                  <span><FileCheck2 aria-hidden="true" />Решение</span>
-                  <strong>Версия 3 одобрена</strong>
-                  <p>Опубликована именно проверенная версия. История правок сохранена.</p>
-                </article>
-              </div>
-              <div className={styles.proofFooter}>
-                <span><History aria-hidden="true" />Источник · факты · версия · операция публикации</span>
-                <b>Цепочка не потеряна</b>
               </div>
             </div>
           </div>
         </section>
 
-        <section className={styles.socialSection} aria-labelledby="focus-title">
+        <section className={styles.socialSection} id="integrations" aria-labelledby="integrations-title">
           <div className={styles.container}>
-            <p className={styles.eyebrow} id="focus-title">Осознанный фокус</p>
+            <p className={styles.eyebrow} id="integrations-title">Статус интеграций</p>
             <div className={styles.socialList}>
-              <span><i className={styles.telegramIcon}>➤</i><span className={styles.socialCopy}><strong>Telegram</strong><small>разведка и публикация работают</small></span></span>
-              <span><i className={styles.vkIcon}>VK</i><span className={styles.socialCopy}><strong>ВКонтакте</strong><small>подключается после настройки приложения</small></span></span>
-              <span><ShieldCheck aria-hidden="true" /><span className={styles.socialCopy}><strong>Не 30 сетей ради цифры</strong><small>сначала глубина решения для Telegram и VK</small></span></span>
+              <span>
+                <i className={styles.telegramIcon}>➤</i>
+                <span className={styles.socialCopy}><strong>Telegram</strong><small>публикация работает</small></span>
+              </span>
+              <span>
+                <i className={styles.vkIcon}>VK</i>
+                <span className={styles.socialCopy}><strong>ВКонтакте</strong><small>после настройки приложения</small></span>
+              </span>
+              <span>
+                <ShieldCheck aria-hidden="true" />
+                <span className={styles.socialCopy}><strong>Другие сети</strong><small>пока не заявлены как подключённые</small></span>
+              </span>
             </div>
           </div>
         </section>
 
-        <section className={`${styles.section} ${styles.reviewsSection}`} id="features" aria-labelledby="features-title">
+        <section className={`${styles.section} ${styles.reviewsSection}`} id="evidence" aria-labelledby="evidence-title">
           <div className={styles.container}>
             <SectionHeading
-              id="features-title"
-              eyebrow="Продуктовый ров"
-              title="То, что сложнее скопировать, чем кнопку «Написать AI»"
-              description="Ценность не в одной модели. Она в накопленной связи между источниками, решениями, голосом канала и результатами публикаций."
+              id="evidence-title"
+              eyebrow="Основа продукта"
+              title="Что уже есть для юридического редактора"
+              description="Три контура, которые формируют проверяемый материал вместо безымянного текста от ИИ."
             />
-            <div className={styles.featureGrid}>
-              {features.map((feature) => (
-                <article className={styles.featureCard} key={feature.title}>
-                  <span className={styles.featureIcon}>{feature.icon}</span>
-                  <div><h3>{feature.title}</h3><p>{feature.text}</p></div>
+            <div className={styles.reviewGrid}>
+              {editorCapabilities.map((capability) => (
+                <article className={`${styles.reviewCard} ${styles.capabilityCard}`} key={capability.title}>
+                  <span className={styles.capabilityIcon}>{capability.icon}</span>
+                  <h3>{capability.title}</h3>
+                  <p>{capability.text}</p>
                 </article>
               ))}
             </div>
@@ -397,9 +365,9 @@ export function ReferenceLanding() {
           <div className={styles.container}>
             <SectionHeading
               id="access-title"
-              eyebrow="Что доступно сейчас"
-              title="Не концепт. Рабочие контуры продукта."
-              description="Показываем только то, что уже существует в «Авроре», а готовность конкретного подключения проверяем внутри проекта."
+              eyebrow="Доступность"
+              title="Фактический статус рабочих контуров"
+              description="Доступность каждого контура обозначена прямо и соответствует текущей конфигурации продукта."
             />
             <div className={`${styles.pricingGrid} ${styles.accessGrid}`}>
               {accessCards.map((card) => (
@@ -407,26 +375,33 @@ export function ReferenceLanding() {
                   <span className={styles.accessStatus}>{card.status}</span>
                   <h3>{card.title}</h3>
                   <p className={styles.planNote}>{card.note}</p>
-                  <ul>{card.features.map((feature) => <li key={feature}><Check aria-hidden="true" />{feature}</li>)}</ul>
+                  <ul>
+                    {card.features.map((feature) => <li key={feature}><Check aria-hidden="true" />{feature}</li>)}
+                  </ul>
                 </article>
               ))}
             </div>
             <div className={styles.accessAction}>
-              <a className={styles.secondaryButton} href="/register">Создать проект<ArrowRight aria-hidden="true" /></a>
-              <p>Начните с канала, темы и трёх конкурентов. Остальное Аврора покажет по шагам.</p>
+              <a className={styles.secondaryButton} href="/register">
+                Создать аккаунт
+                <ArrowRight aria-hidden="true" />
+              </a>
+              <p>Готовность конкретного подключения отображается внутри проекта.</p>
             </div>
           </div>
         </section>
 
         <section className={styles.ctaSection} aria-labelledby="cta-title">
-          <div className={`${styles.container} ${styles.ctaCard} ${styles.ctaCardReframed}`}>
+          <div className={`${styles.container} ${styles.ctaCard}`}>
             <div className={styles.ctaMark} aria-hidden="true"><Logo size={68} decorative /></div>
             <div className={styles.ctaCopy}>
-              <p className={styles.ctaEyebrow}>Первый результат</p>
-              <h2 id="cta-title">Не просите AI придумать тему. Дайте Авроре её доказать.</h2>
-              <p>Подключите канал, укажите нишу и получите первый обоснованный черновик.</p>
+              <h2 id="cta-title">Начните с проверяемого материала</h2>
+              <p>Создайте проект, добавьте источники и подготовьте первую согласованную публикацию.</p>
             </div>
-            <a className={styles.whiteButton} href="/register">Найти первый сигнал<ArrowRight aria-hidden="true" /></a>
+            <a className={styles.whiteButton} href="/register">
+              Создать аккаунт
+              <ArrowRight aria-hidden="true" />
+            </a>
             <div className={styles.ctaOrbit} aria-hidden="true"><span>✦</span></div>
           </div>
         </section>
@@ -436,17 +411,17 @@ export function ReferenceLanding() {
         <div className={styles.footerInner}>
           <div className={styles.footerBrand}>
             <BrandLockup />
-            <p>Evidence-driven Content Intelligence для Telegram и VK.</p>
+            <p>Платформа для планирования и проверки юридического контента.</p>
             <small>© 2026 Аврора. Все права защищены.</small>
           </div>
           <div className={styles.footerLinks}>
-            <div><strong>Продукт</strong><a href="#difference">Отличие</a><a href="#how">Как работает</a><a href="#features">Возможности</a></div>
-            <div><strong>Контроль</strong><a href="#control">Цепочка доказательств</a><a href="#access">Доступность</a></div>
+            <div><strong>Продукт</strong><a href="#features">Возможности</a><a href="#how">Как работает</a><a href="#access">Доступность</a></div>
+            <div><strong>Интеграции</strong><a href="#integrations">Telegram и VK</a><a href="#product">Контроль материала</a></div>
             <div><strong>Связь</strong><a href="mailto:hello@avrora.app">Контакты</a><a href="mailto:help@avrora.app">Сообщить об ошибке</a></div>
             <div><strong>Документы</strong><a href="mailto:legal@avrora.app?subject=Пользовательское%20соглашение">Пользовательское соглашение</a><a href="mailto:legal@avrora.app?subject=Политика%20конфиденциальности">Конфиденциальность</a></div>
           </div>
           <div className={styles.footerSocial}>
-            <strong>Фокус</strong>
+            <strong>Статус интеграций</strong>
             <p>Telegram — работает<br />VK — после настройки</p>
           </div>
         </div>
