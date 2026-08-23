@@ -1,9 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  buildTodayPulse,
   loadTodayBoard,
   nextTodayReminderAt,
   rankTodayItems,
+  setTodayRecommendationPreference,
+  todayPreferenceFingerprint,
   updateTodayItemState,
   type TodayItem,
 } from "./today";
@@ -13,6 +16,8 @@ const item = (type: TodayItem["type"], priority: number, fingerprint: string): T
   channelId: 1, channelLabel: "Канал", confidence: "medium", epistemicState: "inferred", freshness: "сейчас",
   primaryAction: { label: "Открыть", href: "/app/calendar" }, secondaryAction: null, evidence: null,
   sourceLabel: "Источник",
+  smartAction: null,
+  recommendationKind: null,
 });
 
 describe("Today deterministic ranking", () => {
@@ -50,6 +55,11 @@ function todayDb(options: {
   featureEnabled?: boolean;
   noChannels?: boolean;
   readiness?: Partial<{ competitor_count: string; opportunity_count: string; published_count: string; stats_count: string }>;
+  opportunityRows?: Array<Record<string, unknown>>;
+  resultRows?: Array<Record<string, unknown>>;
+  hiddenPreference?: boolean;
+  postFrequency?: number | null;
+  occupiedDates?: string[];
 } = {}) {
   return {
     query: vi.fn(async (...args: [sql: string, values?: unknown[]]) => {
@@ -78,7 +88,13 @@ function todayDb(options: {
       }
       if (sql.includes("from opportunity_snapshots")) {
         if (options.failSources?.includes("opportunities")) throw new Error("opportunities unavailable");
-        return { rows: [] };
+        return { rows: options.opportunityRows ?? [] };
+      }
+      if (sql.includes("from autopilot_settings")) {
+        return { rows: options.postFrequency == null ? [] : [{ post_frequency: String(options.postFrequency) }] };
+      }
+      if (sql.includes("select distinct local_date::text")) {
+        return { rows: (options.occupiedDates ?? []).map((local_date) => ({ local_date })) };
       }
       if (sql.includes("from drafts draft")) {
         if (options.failSources?.includes("reviews")) throw new Error("reviews unavailable");
@@ -92,7 +108,7 @@ function todayDb(options: {
       }
       if (sql.includes("from posts post")) {
         if (options.failSources?.includes("results")) throw new Error("results unavailable");
-        return { rows: [] };
+        return { rows: options.resultRows ?? [] };
       }
       if (sql.includes("from today_source_refreshes")) {
         return { rows: [
@@ -106,6 +122,9 @@ function todayDb(options: {
       }
       if (sql.includes("from today_item_states")) {
         const fingerprints = values[3] as string[] | undefined;
+        if (options.hiddenPreference && fingerprints && fingerprints.length > 1) {
+          return { rows: [{ fingerprint: fingerprints.at(-1), state: "dismissed", snoozed_until: null }] };
+        }
         return { rows: options.userState && fingerprints?.[0] ? [{
           fingerprint: fingerprints[0],
           state: options.userState,
@@ -249,5 +268,64 @@ describe("Today board states", () => {
     }, db as never);
     const insert = db.query.mock.calls.find(([sql]) => String(sql).includes("insert into today_item_states"));
     expect(insert?.[1]).toEqual([7, 11, 9, board.items[0].fingerprint, "today-rank-v1", "done", null]);
+  });
+
+  it("builds a real seven-day pulse and compares normalized results", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-23T12:00:00.000Z"));
+    const pulse = buildTodayPulse([
+      { post_id: "1", post_text: "Новый пост", stats_id: "101", draft_id: null, source_topic: "Новый пост", views: 300, reactions: 30, previous_views: null, previous_reactions: null, collected_at: "2026-08-23T10:00:00.000Z", published_at: "2026-08-23T08:00:00.000Z" },
+      { post_id: "2", post_text: "Прошлый пост", stats_id: "102", draft_id: null, source_topic: "Прошлый пост", views: 100, reactions: 5, previous_views: null, previous_reactions: null, collected_at: "2026-08-16T10:00:00.000Z", published_at: "2026-08-16T08:00:00.000Z" },
+    ], "Europe/Amsterdam");
+    expect(pulse).toMatchObject({ state: "ready", publishedCount: 1, postsWithStats: 1, views: 300, reactions: 30 });
+    expect(pulse.comparison.viewsPerPostPercent).toBe(200);
+    expect(pulse.bestPost?.title).toBe("Новый пост");
+    vi.useRealTimers();
+  });
+
+  it("keeps a result fingerprint stable across new stats snapshots and offers a continuation", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-23T12:00:00.000Z"));
+    const row = (statsId: string, views: number) => ([
+      { post_id: "91", post_text: "Как выстроить редакционный процесс", stats_id: statsId, draft_id: "81", source_topic: "Редакционный процесс", views, reactions: 30, previous_views: null, previous_reactions: null, collected_at: "2026-08-23T10:00:00.000Z", published_at: "2026-08-22T08:00:00.000Z" },
+      ...[1, 2, 3].map((id) => ({ post_id: String(id), post_text: `База ${id}`, stats_id: String(id), draft_id: null, source_topic: null, views: 100, reactions: 5, previous_views: null, previous_reactions: null, collected_at: "2026-08-20T10:00:00.000Z", published_at: `2026-08-${10 + id}T08:00:00.000Z` })),
+    ]);
+    const first = await loadTodayBoard({ actorUserId: 9, channelId: 11 }, todayDb({ resultRows: row("501", 160) }) as never);
+    const second = await loadTodayBoard({ actorUserId: 9, channelId: 11 }, todayDb({ resultRows: row("502", 180) }) as never);
+    const firstResult = first.items.find((candidate) => candidate.type === "result");
+    const secondResult = second.items.find((candidate) => candidate.type === "result");
+    expect(firstResult?.fingerprint).toBe(secondResult?.fingerprint);
+    expect(firstResult?.primaryAction.label).toBe("Запланировать продолжение");
+    expect(firstResult?.smartAction?.kind).toBe("continue_post");
+    vi.useRealTimers();
+  });
+
+  it("uses a real calendar gap for the best opportunity and suppresses only that recommendation type", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-23T12:00:00.000Z"));
+    const opportunityRows = [{
+      id: "71", title: "Ответить на новый рыночный сигнал", confidence: "high", epistemic_state: "inferred",
+      observed_at: "2026-08-23T09:00:00.000Z", expires_at: "2026-08-30T09:00:00.000Z", fingerprint: "source-71",
+      evidence: { sourceKind: "competitor_post", sourceId: 51, sourceLabel: "Подтверждённый источник" },
+    }];
+    const ready = await loadTodayBoard({ actorUserId: 9, channelId: 11 }, todayDb({ opportunityRows, postFrequency: 5, occupiedDates: ["2026-08-24"] }) as never);
+    const opportunity = ready.items.find((candidate) => candidate.type === "opportunity");
+    expect(opportunity?.primaryAction.label).toBe("Заполнить окно");
+    expect(opportunity?.smartAction).toMatchObject({ kind: "fill_calendar_gap", scheduledLocalDate: "2026-08-25" });
+
+    const hidden = await loadTodayBoard({ actorUserId: 9, channelId: 11 }, todayDb({ opportunityRows, postFrequency: 5, hiddenPreference: true }) as never);
+    expect(hidden.items.some((candidate) => candidate.type === "opportunity")).toBe(false);
+    vi.useRealTimers();
+  });
+
+  it("stores and restores a recommendation preference inside the selected project and channel", async () => {
+    const db = todayDb();
+    await setTodayRecommendationPreference({ actorUserId: 9, channelId: 11, recommendationKind: "result_weak", state: "hidden" }, db as never);
+    const insert = db.query.mock.calls.find(([sql]) => String(sql).includes("'dismissed'"));
+    expect(insert?.[1]).toEqual([
+      7, 11, 9, todayPreferenceFingerprint({ projectId: 7, channelId: 11, recommendationKind: "result_weak" }), "today-preference-v1",
+    ]);
+    await setTodayRecommendationPreference({ actorUserId: 9, channelId: 11, recommendationKind: "result_weak", state: "active" }, db as never);
+    expect(db.query.mock.calls.some(([sql]) => String(sql).includes("delete from today_item_states"))).toBe(true);
   });
 });

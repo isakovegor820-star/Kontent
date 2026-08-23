@@ -46,6 +46,25 @@ describe("Today page resilience and interface contract", () => {
     expect(source).toContain("const failedSources = new Set(body.partialErrors");
     expect(source).toContain("stableClientRank([...body.items, ...retained])");
     expect(source).toContain(".slice(0, 5)");
+    expect(source).toContain('failedSources.has("results")');
+    expect(source).toContain("pulse: retainPulse ? previous.pulse : body.pulse");
+  });
+
+  it("offers the seven-day pulse, smart next step and accessible five-minute mode", () => {
+    expect(source).toContain("Пульс канала за 7 дней");
+    expect(source).toContain("Сделать следующий шаг");
+    expect(source).toContain("Разобрать за 5 минут");
+    expect(source).toContain("Быстрый разбор завершён");
+    expect(source).toContain("Только реальные данные");
+  });
+
+  it("uses buttons for mutations, links for navigation and keeps recommendation feedback reversible", () => {
+    expect(source).toContain('fetch("/api/today/action"');
+    expect(source).toContain('fetch("/api/today/feedback"');
+    expect(source).toContain("Больше не показывать такое");
+    expect(source).toContain('state: "hidden"');
+    expect(source).toContain('state: "active"');
+    expect(source).toContain("Такие рекомендации снова будут появляться");
   });
 
   it("does not expose internal rollout or ranking identifiers", () => {

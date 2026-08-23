@@ -971,10 +971,25 @@ async function runKeyboardOnlyCriticalPass(targetPage) {
 
 async function runTodayWorkspacePass(targetPage, channels, draftId) {
   await pool.query("update drafts set purpose = 'needs_review', updated_at = now() where id = $1", [draftId]);
+  const secondDraftId = Number((await pool.query(
+    `insert into drafts (user_id, project_id, text, origin, purpose, client_key)
+       select user_id, project_id, 'Второй материал для быстрого разбора', 'manual', 'needs_review',
+              'e2e-today-quick-' || id::text
+         from drafts where id = $1
+     on conflict (user_id, client_key) do update set purpose = 'needs_review', updated_at = now()
+     returning id`,
+    [draftId],
+  )).rows[0].id);
+  await pool.query(
+    `insert into draft_destinations (draft_id, channel_id) values ($1, $2)
+     on conflict (draft_id, channel_id) do nothing`,
+    [secondDraftId, channels[0]],
+  );
   await targetPage.setViewportSize({ width: 390, height: 844 });
   await targetPage.goto(`/app/today?channel=${channels[0]}`);
   await targetPage.getByRole("heading", { name: "Сегодня", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
-  const reviewHeading = targetPage.getByRole("heading", { name: "Проверьте черновик", exact: true });
+  await targetPage.getByRole("heading", { name: "Пульс канала за 7 дней", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  const reviewHeading = targetPage.getByRole("heading", { name: "Проверьте черновик", exact: true }).first();
   await reviewHeading.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await assertNoHorizontalOverflow(targetPage, "Today mobile");
 
@@ -984,13 +999,18 @@ async function runTodayWorkspacePass(targetPage, channels, draftId) {
     document.body.focus();
     document.body.removeAttribute("tabindex");
   });
+  const quick = targetPage.getByRole("button", { name: "Разобрать за 5 минут", exact: true });
+  const quickTabs = await tabTo(targetPage, quick, "Today five-minute mode");
+  await targetPage.keyboard.press("Enter");
+  await targetPage.getByRole("heading", { name: "Разобрать за 5 минут", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const done = targetPage.getByRole("button", { name: "Готово", exact: true });
   const doneTabs = await tabTo(targetPage, done, "Today done action");
   await targetPage.keyboard.press("Enter");
   const summary = targetPage.getByRole("heading", { name: /решени.+ в фокусе/u });
   await waitFor(
-    async () => summary.evaluate((element) => element === document.activeElement),
-    "Today completion did not move focus to the summary",
+    async () => targetPage.evaluate(() => document.activeElement?.tagName === "H3")
+      || summary.evaluate((element) => element === document.activeElement),
+    "Today completion did not move focus to the next decision or summary",
     5_000,
   );
   const undo = targetPage.getByRole("button", { name: "Вернуть", exact: true });
@@ -1005,7 +1025,9 @@ async function runTodayWorkspacePass(targetPage, channels, draftId) {
     5_000,
   );
 
-  const snooze = targetPage.getByRole("button", { name: "Напомнить завтра", exact: true });
+  await targetPage.getByRole("button", { name: "Выйти из режима", exact: true }).click();
+
+  const snooze = targetPage.getByRole("button", { name: "Напомнить завтра", exact: true }).first();
   await tabTo(targetPage, snooze, "Today snooze action");
   await targetPage.keyboard.press("Space");
   await targetPage.getByText("Напомним завтра в 09:00", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
@@ -1029,7 +1051,7 @@ async function runTodayWorkspacePass(targetPage, channels, draftId) {
   await waitFor(async () => refreshCalls === 1 && await refresh.isEnabled(), "Today refresh did not complete", 10_000);
   await targetPage.unroute("**/api/today/refresh");
   await assertNoHorizontalOverflow(targetPage, "Today desktop");
-  return { doneTabs, refreshCalls, channelsSwitched: true, done: true, undone: true, snoozed: true };
+  return { doneTabs, quickTabs, refreshCalls, channelsSwitched: true, pulse: true, quickMode: true, done: true, undone: true, snoozed: true };
 }
 
 async function assertTouch(locator, label) {

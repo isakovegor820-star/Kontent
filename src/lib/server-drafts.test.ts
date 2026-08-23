@@ -437,6 +437,60 @@ describe("server draft transactions", () => {
     );
   });
 
+  it("rebuilds a published channel post as a separate immutable source context", async () => {
+    let insertedParams: unknown[] | undefined;
+    const canonicalRef = {
+      kind: "reference",
+      id: "91",
+      label: "Опубликованный материал канала",
+      topic: "Как выстроить редакционный процесс",
+      semanticGoal: "Развить тему новым ракурсом без копирования исходной публикации.",
+      provenance: {
+        kind: "saved_reference",
+        id: "91",
+        label: "Опубликованный материал канала",
+      },
+    };
+    const sourceInput: DraftCreateInput = {
+      ...input,
+      origin: "competitor",
+      text: "Подменённый текст",
+      sourceRef: {
+        kind: "reference",
+        id: "91",
+        label: "Поддельная подпись",
+        topic: "Подменённая тема",
+        semanticGoal: "Развить тему новым ракурсом без копирования исходной публикации.",
+        provenance: { kind: "saved_reference", id: "91", label: "Мой пост" },
+      },
+    };
+    const query = vi.fn(async (sql: string, params?: unknown[]) => {
+      if (sql.includes("select id from channels")) return { rowCount: 1, rows: [{ id: "11" }] };
+      if (sql.includes("from posts post") && sql.includes("saved_reference") === false) {
+        expect(params).toEqual(["91", 11]);
+        return {
+          rowCount: 1,
+          rows: [{ id: "91", text: "Как выстроить редакционный процесс", topic: "Как выстроить редакционный процесс" }],
+        };
+      }
+      if (sql.includes("insert into drafts")) {
+        insertedParams = params;
+        return { rowCount: 1, rows: [{ id: "41", project_id: "7" }] };
+      }
+      if (sql.includes("select d.id")) {
+        return { rowCount: 1, rows: [{ ...row, text: "Как выстроить редакционный процесс", origin: "competitor", purpose: "source_context", source_ref: canonicalRef }] };
+      }
+      return { rowCount: 1, rows: [] };
+    });
+    const { pool } = fakePool(query);
+
+    const result = await createDraftForUser(5, sourceInput, pool as never);
+
+    expect(result.draft).toMatchObject({ purpose: "source_context", source_ref: canonicalRef });
+    expect(insertedParams?.[2]).toBe("Как выстроить редакционный процесс");
+    expect(JSON.parse(String(insertedParams?.[8]))).toEqual(canonicalRef);
+  });
+
   it("rebuilds an internet trend from the owned verified radar result", async () => {
     let insertedParams: unknown[] | undefined;
     const canonicalRef = {

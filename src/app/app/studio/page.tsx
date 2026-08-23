@@ -1149,6 +1149,16 @@ function StudioPageInner() {
             source: serverDraft.source_ref.label,
             topic: serverDraft.source_ref.topic,
           });
+          const requestedCalendarDate = searchParams.get("calendarDate");
+          const calendarDate = requestedCalendarDate && /^\d{4}-\d{2}-\d{2}$/u.test(requestedCalendarDate)
+            ? requestedCalendarDate : null;
+          const calendarLabel = calendarDate
+            ? new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "long", timeZone: "UTC" })
+              .format(new Date(`${calendarDate}T12:00:00.000Z`))
+            : null;
+          const prompt = calendarLabel
+            ? `${adaptation.prompt}\n\nЭтот материал предназначен для свободного окна ${calendarLabel}. Не вставляй дату в текст автоматически; после создания пользователь отдельно подтвердит расписание.`
+            : adaptation.prompt;
           const identity = studioReferenceGenerationIdentity(serverDraft.id, serverDraft.version);
           const isLegalOpportunity = serverDraft.origin === "rss"
             && serverDraft.source_ref.factualGrounding === "curated_legal_source";
@@ -1156,11 +1166,11 @@ function StudioPageInner() {
             ? legalOpportunityVariantFromClientKey(serverDraft.client_key)
             : undefined;
           setWorkspaceMode("chat");
-          setDraft(adaptation.prompt);
+          setDraft(prompt);
           setPendingReferenceGeneration({
             draftId: serverDraft.id,
             version: serverDraft.version,
-            prompt: adaptation.prompt,
+            prompt,
             channelId: destination.channel_id,
             network: destination.network,
             ...(variant ? { variant, suggestMedia: true } : {}),

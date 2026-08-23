@@ -171,15 +171,14 @@ export async function createOpportunitySourceContext(input: {
   const membership = await requireSelectedProjectPermission(db, input.actorUserId, "content.create");
   const row = (await db.query<{
     id: string; channel_id: string; expires_at: string; source_context_draft_id: string | null;
-    evidence: Record<string, unknown>;
+    title: string; angle: string; evidence: Record<string, unknown>;
   }>(
-    `select id, channel_id, expires_at::text, source_context_draft_id, evidence
+    `select id, channel_id, title, angle, expires_at::text, source_context_draft_id, evidence
        from opportunity_snapshots where id = $1 and project_id = $2`,
     [input.opportunityId, membership.projectId],
   )).rows[0];
   if (!row) throw new ContentIntelligenceError("opportunity_not_found");
   if (new Date(row.expires_at).getTime() <= Date.now()) throw new ContentIntelligenceError("opportunity_stale");
-  if (row.source_context_draft_id) return { draftId: Number(row.source_context_draft_id), created: false };
   const sourceId = safeId(row.evidence?.sourceId);
   if (row.evidence?.sourceKind !== "competitor_post" || !sourceId) {
     throw new ContentIntelligenceError("opportunity_not_actionable");
@@ -187,7 +186,12 @@ export async function createOpportunitySourceContext(input: {
   const result = await createDraftForUser(input.actorUserId, {
     text: "Сервер заменит этот текст точным контекстом источника.", formatting: [], media: null,
     scheduledAt: null, origin: "competitor",
-    sourceRef: { kind: "competitor", id: String(sourceId), label: "Источник возможности" },
+    sourceRef: {
+      kind: "competitor",
+      id: String(sourceId),
+      label: "Источник возможности",
+      semanticGoal: `Создать актуальный материал по возможности «${row.title}». ${row.angle}`.slice(0, 500),
+    },
     channelIds: [Number(row.channel_id)], aiValidation: null,
     clientKey: `opportunity-source:${input.opportunityId}:${row.channel_id}`,
   });
@@ -196,6 +200,45 @@ export async function createOpportunitySourceContext(input: {
       where id = $1 and project_id = $2`,
     [input.opportunityId, membership.projectId, result.draft.id],
   );
+  return { draftId: result.draft.id, created: result.created };
+}
+
+export async function createPublishedPostSourceContext(input: {
+  actorUserId: number;
+  postId: number;
+  channelId: number;
+  mode: "continue" | "improve";
+}) {
+  if (!Number.isSafeInteger(input.postId) || input.postId <= 0) {
+    throw new ContentIntelligenceError("post_not_found");
+  }
+  if (!Number.isSafeInteger(input.channelId) || input.channelId <= 0) {
+    throw new ContentIntelligenceError("channel_not_found");
+  }
+  const semanticGoal = input.mode === "continue"
+    ? "Развить тему новым ракурсом без копирования исходной публикации."
+    : "Подготовить более ясную и полезную версию темы, не изменяя опубликованный материал.";
+  const result = await createDraftForUser(input.actorUserId, {
+    text: "Сервер заменит этот текст опубликованным материалом канала.",
+    formatting: [],
+    media: null,
+    scheduledAt: null,
+    origin: "competitor",
+    sourceRef: {
+      kind: "reference",
+      id: String(input.postId),
+      label: "Опубликованный материал канала",
+      semanticGoal,
+      provenance: {
+        kind: "saved_reference",
+        id: String(input.postId),
+        label: "Опубликованный материал канала",
+      },
+    },
+    channelIds: [input.channelId],
+    aiValidation: null,
+    clientKey: `today-post:${input.mode}:${input.postId}:${input.channelId}`,
+  });
   return { draftId: result.draft.id, created: result.created };
 }
 

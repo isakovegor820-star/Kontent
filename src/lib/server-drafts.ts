@@ -874,6 +874,42 @@ async function resolveSourceContext(
     if (source.kind !== "competitor" && source.kind !== "reference") {
       throw new DraftValidationError("bad_source_context");
     }
+    if (source.kind === "reference" && source.provenance?.kind === "saved_reference") {
+      const row = (await db.query<{
+        id: string; text: string; topic: string | null;
+      }>(
+        `select post.id, post.text, source_draft.source_ref->>'topic' as topic
+           from posts post
+           left join publication_operations operation
+             on operation.id = post.publication_operation_id and operation.project_id = post.project_id
+           left join drafts source_draft
+             on source_draft.id = operation.draft_id and source_draft.project_id = post.project_id
+          where post.id = $1 and post.channel_id = $2
+            and post.status in ('published','published_unverified')
+            and post.text is not null and length(trim(post.text)) > 0`,
+        [sourceId, channelId],
+      )).rows[0];
+      if (!row) throw new DraftValidationError("source_context_not_found");
+      const topic = requiredTopic(row.topic?.trim() || topicFromSourceText(row.text));
+      const semanticGoal = sanitizeSemanticIntent(source.semanticGoal, 500);
+      return {
+        ...input,
+        text: row.text,
+        formatting: [],
+        sourceRef: {
+          kind: "reference",
+          id: String(row.id),
+          label: "Опубликованный материал канала",
+          topic,
+          ...(semanticGoal ? { semanticGoal } : {}),
+          provenance: {
+            kind: "saved_reference",
+            id: String(row.id),
+            label: "Опубликованный материал канала",
+          },
+        },
+      };
+    }
     const row = (await db.query<{
       id: string; text: string; title: string | null; handle: string; tg_msg_id: string | null;
       topic: string | null;
@@ -890,6 +926,7 @@ async function resolveSourceContext(
     if (!row) throw new DraftValidationError("source_context_not_found");
     const label = row.title || `@${row.handle}`;
     const handle = row.handle.replace(/^@/u, "");
+    const semanticGoal = sanitizeSemanticIntent(source.semanticGoal, 500);
     return {
       ...input,
       text: row.text,
@@ -899,6 +936,7 @@ async function resolveSourceContext(
         id: String(row.id),
         label,
         topic: requiredTopic(row.topic?.trim() || topicFromSourceText(row.text)),
+        ...(semanticGoal ? { semanticGoal } : {}),
         provenance: {
           kind: "competitor_post",
           id: String(row.id),
