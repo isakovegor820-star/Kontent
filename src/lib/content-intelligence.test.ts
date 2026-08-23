@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { baselineCoverage, normalizeTopicKey, opportunityConfidence, opportunityExpiry, opportunityFingerprint } from "./content-intelligence";
+import { baselineCoverage, normalizeTopicKey, opportunityConfidence, opportunityExpiry, opportunityFingerprint, release1Enabled } from "./content-intelligence";
 import type { GrowthMoveRecord } from "./growth";
 
 function move(overrides: Partial<GrowthMoveRecord> = {}): GrowthMoveRecord {
@@ -18,6 +18,20 @@ function move(overrides: Partial<GrowthMoveRecord> = {}): GrowthMoveRecord {
 }
 
 describe("Release 1 opportunity baseline", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it.each([
+    [true, true],
+    [false, false],
+    [undefined, false],
+  ])("reads the production channel switch %s as %s", async (enabled, expected) => {
+    vi.stubEnv("NODE_ENV", "production");
+    const db = { query: vi.fn(async () => ({ rows: enabled === undefined ? [] : [{ enabled }] })) };
+    await expect(release1Enabled(db as never, { projectId: 7, channelId: 11 })).resolves.toBe(expected);
+    expect(db.query).toHaveBeenCalledWith(expect.stringContaining("project_id = $1 and channel_id = $2"), [
+      7, 11, "content_intelligence_release_1",
+    ]);
+  });
   it("is deterministic for the same immutable growth snapshot", () => {
     expect(opportunityFingerprint(move())).toBe(opportunityFingerprint(move()));
     expect(opportunityFingerprint(move({ weekStart: "2026-08-24" }))).not.toBe(opportunityFingerprint(move()));
