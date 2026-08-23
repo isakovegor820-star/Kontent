@@ -41,6 +41,13 @@ describe("Autopilot build UI contract", () => {
     expect(source).toContain("Не удалось остановить сборку");
   });
 
+  it("reads the Growth move deep link at generation time after hydration", () => {
+    expect(source).not.toContain("const [growthMoveId] = useState");
+    expect(source).toContain('window.location.search).get("growthMove")');
+    expect(source).toContain("const growthMoveId = Number.isSafeInteger(growthMoveValue)");
+    expect(source).toContain("growthMoveId,");
+  });
+
   it("shows only reader-ready publication states instead of validator diagnostics", () => {
     expect(source).toContain("готов к просмотру");
     expect(source).toContain("на согласовании");

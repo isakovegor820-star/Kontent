@@ -500,11 +500,6 @@ export default function AutopilotPage() {
   });
   const { tgChannels, channelId: chId } = useChannelChoice(s.realChannels, picked);
   const [growthNotice, setGrowthNotice] = useState<string | null>(null);
-  const [growthMoveId] = useState<number | null>(() => {
-    if (typeof window === "undefined") return null;
-    const value = Number(new URLSearchParams(window.location.search).get("growthMove"));
-    return Number.isSafeInteger(value) && value > 0 ? value : null;
-  });
 
   const load = useCallback(async () => {
     const requestedChannelId = chId;
@@ -615,6 +610,13 @@ export default function AutopilotPage() {
     if (busy) return;
     setBusy(true);
     try {
+      // Read this at the moment of the user action. A useState initializer runs during the
+      // server render first, where `window` is unavailable, and would permanently turn a
+      // valid Growth deep link into null after hydration.
+      const growthMoveValue = Number(new URLSearchParams(window.location.search).get("growthMove"));
+      const growthMoveId = Number.isSafeInteger(growthMoveValue) && growthMoveValue > 0
+        ? growthMoveValue
+        : null;
       const r = await fetch("/api/autopilot/generate", {
         method: "POST",
         headers: { "content-type": "application/json" },
