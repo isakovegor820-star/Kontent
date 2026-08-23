@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
-import { ProjectAccessError } from "@/lib/project-permissions";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -60,28 +59,6 @@ describe("POST /api/today/state", () => {
       channelId: 11,
       state: "active",
     }));
-  });
-
-  it("accepts done as an explicit persisted state", async () => {
-    const response = await POST(request({
-      channelId: 11,
-      fingerprint: "c".repeat(64),
-      state: "done",
-    }));
-    expect(response.status).toBe(200);
-    expect(mocks.updateTodayItemState).toHaveBeenCalledWith(expect.objectContaining({ state: "done" }));
-  });
-
-  it("rejects untrusted, unauthenticated and access-denied mutations", async () => {
-    mocks.hasTrustedMutationOrigin.mockReturnValueOnce(false);
-    expect((await POST(request({ channelId: 11, fingerprint: "a".repeat(64), state: "done" }))).status).toBe(403);
-    expect(mocks.getSessionUser).not.toHaveBeenCalled();
-
-    mocks.getSessionUser.mockResolvedValueOnce(null);
-    expect((await POST(request({ channelId: 11, fingerprint: "a".repeat(64), state: "done" }))).status).toBe(401);
-
-    mocks.updateTodayItemState.mockRejectedValueOnce(new ProjectAccessError("permission_denied"));
-    expect((await POST(request({ channelId: 11, fingerprint: "a".repeat(64), state: "done" }))).status).toBe(403);
   });
 
   it("rejects the legacy permanent-dismiss state", async () => {

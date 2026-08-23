@@ -1,31 +1,16 @@
+import { createHash } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 
 import { getPool } from "./db";
-import { ensureGrowthBoard } from "./growth";
-import {
-  OPPORTUNITY_FORMULA_VERSION,
-  baselineCoverage,
-  materializeOpportunitySnapshots,
-  normalizeTopicKey,
-  opportunityConfidence,
-  opportunityExpiry,
-  opportunityFingerprint,
-} from "./opportunity-snapshot-materializer.mjs";
+import { ensureGrowthBoard, type GrowthMoveRecord } from "./growth";
 import { requireSelectedProjectPermission } from "./project-permissions";
 import { createDraftForUser } from "./server-drafts";
 
 type Queryable = Pick<Pool | PoolClient, "query">;
 
 export const RELEASE_1_FEATURE = "content_intelligence_release_1" as const;
+export const OPPORTUNITY_FORMULA_VERSION = "opportunity-baseline-v1" as const;
 export const TODAY_RANKING_VERSION = "today-rank-v1" as const;
-export {
-  OPPORTUNITY_FORMULA_VERSION,
-  baselineCoverage,
-  normalizeTopicKey,
-  opportunityConfidence,
-  opportunityExpiry,
-  opportunityFingerprint,
-};
 
 export type Confidence = "low" | "medium" | "high";
 export type EpistemicState = "observed" | "inferred" | "insufficient_data" | "stale";
@@ -65,6 +50,53 @@ export class ContentIntelligenceError extends Error {
 function safeId(value: unknown): number | null {
   const id = Number(value);
   return Number.isSafeInteger(id) && id > 0 ? id : null;
+}
+
+function sha(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+const TOPIC_STOP_WORDS = new Set(["как", "для", "или", "что", "это", "про", "свой", "своя", "свои", "пост", "напиши", "написать", "канал", "канала"]);
+
+export function normalizeTopicKey(value: string): string {
+  const words = value.toLocaleLowerCase("ru-RU").replaceAll("ё", "е")
+    .replace(/[^\p{L}\p{N}]+/gu, " ").trim().split(/\s+/u)
+    .filter((word) => word.length > 2 && !TOPIC_STOP_WORDS.has(word));
+  return [...new Set(words)].join(" ").slice(0, 200) || "topic";
+}
+
+function topicLabel(value: string): string {
+  const quoted = value.match(/[«"]([^»"]{3,200})[»"]/u)?.[1]?.trim();
+  return (quoted || value.replace(/^напиши\s+(?:свой\s+)?пост\s+про\s+/iu, "").trim() || "Новая тема").slice(0, 200);
+}
+
+export function baselineCoverage(topic: string, ownPostTexts: string[]): number {
+  const topicTokens = new Set(normalizeTopicKey(topic).split(" "));
+  if (topicTokens.size === 0) return 0;
+  const minimumMatches = Math.min(2, topicTokens.size);
+  const covered = ownPostTexts.filter((text) => {
+    const postTokens = new Set(normalizeTopicKey(text).split(" "));
+    let overlap = 0;
+    for (const token of topicTokens) if (postTokens.has(token)) overlap++;
+    return overlap >= minimumMatches && overlap / topicTokens.size >= 0.4;
+  }).length;
+  return Math.min(4, covered);
+}
+
+export function opportunityFingerprint(move: Pick<GrowthMoveRecord, "fingerprint" | "weekStart">): string {
+  return sha(`${OPPORTUNITY_FORMULA_VERSION}:${move.weekStart}:${move.fingerprint}`);
+}
+
+export function opportunityConfidence(move: Pick<GrowthMoveRecord, "confidence" | "evidence">): Confidence {
+  if (move.confidence === "answered" && (move.evidence.sampleSize ?? 0) >= 3) return "high";
+  if (move.confidence !== "insufficient_data" && (move.evidence.sampleSize ?? 0) >= 1) return "medium";
+  return "low";
+}
+
+export function opportunityExpiry(observedAt: string | null, now = new Date()): Date {
+  const observed = observedAt ? new Date(observedAt) : now;
+  const base = Number.isFinite(observed.getTime()) ? observed : now;
+  return new Date(Math.max(base.getTime(), now.getTime()) + 7 * 86_400_000);
 }
 
 function freshness(expiresAt: string, observedAt: string | null, now = new Date()): string {
@@ -107,6 +139,24 @@ export async function release1Enabled(
   return row?.enabled === true;
 }
 
+function evidenceObject(move: GrowthMoveRecord, coverage: number) {
+  return {
+    sourceType: move.evidence.sourceType,
+    sourceLabel: move.evidence.sourceLabel,
+    sourceKind: move.sourceKind,
+    sourceId: move.sourceId,
+    sourceHref: move.evidence.href,
+    sampleSize: move.evidence.sampleSize,
+    periodLabel: move.evidence.periodLabel,
+    methodology: move.evidence.methodology,
+    metricLabel: move.evidence.metricLabel,
+    demand: Math.max(0, Math.min(4, move.evidence.opportunityStrength)),
+    coverage,
+    saturation: Math.max(1, Math.min(4, move.evidence.opportunityStrength - 1)),
+    growthMoveFingerprint: move.fingerprint,
+  };
+}
+
 /** Explicit refresh only: polling GET endpoints never materialize snapshots. */
 export async function refreshOpportunitySnapshots(input: {
   actorUserId: number;
@@ -115,7 +165,35 @@ export async function refreshOpportunitySnapshots(input: {
   const scope = await resolveChannelScope(db, input.actorUserId, input.channelId);
   if (!await release1Enabled(db, scope)) throw new ContentIntelligenceError("feature_disabled");
   const board = await ensureGrowthBoard({ actorUserId: input.actorUserId, channelId: scope.channelId });
-  await materializeOpportunitySnapshots(db, scope, board.moves);
+  const candidates = board.moves.filter(
+    (move) => move.kind === "topic" && move.sourceKind === "competitor_post" && move.sourceId,
+  );
+  const ownPostTexts = (await db.query<{ text: string }>(
+    `select text from posts where project_id = $1 and channel_id = $2
+      and status in ('published','published_unverified')
+      and published_at >= now() - interval '30 days' order by published_at desc limit 200`,
+    [scope.projectId, scope.channelId],
+  )).rows.map((row) => row.text);
+  for (const move of candidates) {
+    const observedAt = move.evidence.observedAt;
+    const expiresAt = opportunityExpiry(observedAt);
+    const confidence = opportunityConfidence(move);
+    const label = topicLabel(move.title);
+    const topicKey = normalizeTopicKey(label);
+    const coverage = baselineCoverage(label, ownPostTexts);
+    await db.query(
+      `insert into opportunity_snapshots
+         (project_id, channel_id, growth_move_id, revision, fingerprint, topic_key, title,
+          independent_angle, confidence, epistemic_state, formula_version, evidence,
+          observed_at, expires_at)
+       values ($1, $2, $3, 1, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13)
+       on conflict (growth_move_id, revision) do nothing`,
+      [scope.projectId, scope.channelId, move.id, opportunityFingerprint(move), topicKey,
+        label, move.prompt.slice(0, 2_000), confidence,
+        confidence === "low" ? "insufficient_data" : "inferred", OPPORTUNITY_FORMULA_VERSION,
+        JSON.stringify(evidenceObject(move, coverage)), observedAt, expiresAt],
+    );
+  }
   return listOpportunitySnapshots(input, db);
 }
 
