@@ -1,0 +1,105 @@
+name: Production AI readiness recovery
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Serialize recovery with releases: the web process must never restart while the
+# production symlink is being switched or a rollback is in progress.
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Configure SSH
+        env:
+          PRODUCTION_SSH_KEY: ${{ secrets.PRODUCTION_SSH_KEY }}
+          PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
+          PRODUCTION_SSH_KNOWN_HOSTS: ${{ secrets.PRODUCTION_SSH_KNOWN_HOSTS }}
+          PRODUCTION_SSH_HOST_FINGERPRINT: ${{ secrets.PRODUCTION_SSH_HOST_FINGERPRINT }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$PRODUCTION_SSH_KEY"
+          test -n "$PRODUCTION_SSH_HOST"
+          test -n "$PRODUCTION_SSH_KNOWN_HOSTS"
+          test -n "$PRODUCTION_SSH_HOST_FINGERPRINT"
+          umask 077
+          mkdir -p ~/.ssh
+          printf '%s\n' "$PRODUCTION_SSH_KEY" > ~/.ssh/deploy_key
+          printf '%s\n' "$PRODUCTION_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          bash scripts/verify-ssh-host-identity.sh \
+            ~/.ssh/known_hosts \
+            "$PRODUCTION_SSH_HOST" \
+            "$PRODUCTION_SSH_HOST_FINGERPRINT"
+
+      - name: Restart web process to establish fresh AI evidence
+        env:
+          PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
+          PRODUCTION_SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$PRODUCTION_SSH_HOST"
+          test -n "$PRODUCTION_SSH_USER"
+          ssh -i ~/.ssh/deploy_key \
+            -o StrictHostKeyChecking=yes \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=4 \
+            "${PRODUCTION_SSH_USER}@${PRODUCTION_SSH_HOST}" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          current_path="$(readlink -f /opt/aurora-current)"
+          test -d "$current_path"
+          current_sha="$(git -C "$current_path" rev-parse --verify HEAD)"
+          [[ "$current_sha" =~ ^[0-9a-f]{40}$ ]]
+          test -f "$current_path/.env.production"
+          systemctl is-active --quiet aurora-worker.service
+          systemctl restart aurora-web.service
+          for _ in $(seq 1 30); do
+            if systemctl is-active --quiet aurora-web.service \
+              && curl -fsS --max-time 5 http://127.0.0.1:3002/api/health >/dev/null; then
+              printf 'AI_READINESS_RECOVERY_RESTART_OK sha=%s\n' "$current_sha"
+              exit 0
+            fi
+            sleep 2
+          done
+          journalctl -u aurora-web.service --since '-2 minutes' --no-pager -n 40 >&2
+          exit 1
+          REMOTE
+
+      - name: Verify fresh production readiness
+        env:
+          AURORA_DEPLOYMENT_SMOKE_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
+          AURORA_DEPLOYMENT_SMOKE_PROFILE: ${{ vars.ALLOW_DEGRADED_MAIL == 'true' && 'release' || 'full' }}
+          AURORA_READINESS_TOKEN: ${{ secrets.AURORA_READINESS_TOKEN }}
+        run: npm run test:deployment-smoke
+
+      - name: Report redacted readiness state on failure
+        if: failure()
+        env:
+          AURORA_DEPLOYMENT_SMOKE_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
+          AURORA_READINESS_TOKEN: ${{ secrets.AURORA_READINESS_TOKEN }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          curl -fsS --max-time 10 \
+            -H "Authorization: Bearer ${AURORA_READINESS_TOKEN}" \
+            "${AURORA_DEPLOYMENT_SMOKE_BASE_URL}/api/readiness"
