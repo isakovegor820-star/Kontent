@@ -10,6 +10,7 @@ type Queryable = Pick<Pool | PoolClient, "query">;
 
 export type TodayItemType = "opportunity" | "review" | "result" | "risk" | "onboarding";
 export type TodayChannelOption = { id: number; label: string; enabled: boolean };
+export type TodaySource = "reviews" | "opportunities" | "results";
 export type TodayItem = {
   fingerprint: string;
   type: TodayItemType;
@@ -24,21 +25,35 @@ export type TodayItem = {
   primaryAction: { label: string; href: string };
   secondaryAction: { label: string; state: "snoozed" } | null;
   evidence: { kind: "opportunity" | "draft"; id: number } | null;
+  sourceLabel: string;
 };
 
 export type TodayBoard = {
   enabled: boolean;
-  featureKey: typeof RELEASE_1_FEATURE;
-  rankingVersion: typeof TODAY_RANKING_VERSION;
   projectId: number;
   timezone: string;
   channelId: number | null;
   channelLabel: string;
   channels: TodayChannelOption[];
   updatedAt: string;
+  lastSuccessfulAt: string | null;
   availability: "ready" | "partial" | "unavailable";
   items: TodayItem[];
-  partialErrors: Array<{ source: string; message: string }>;
+  partialErrors: Array<{ source: TodaySource; message: string }>;
+  sourceStatuses: Array<{
+    source: TodaySource;
+    status: "ready" | "error" | "not_updated";
+    lastSuccessfulAt: string | null;
+    message: string;
+  }>;
+  readiness: {
+    state: "no_channel" | "admin_disabled" | "has_items" | "need_competitors" | "need_posts" | "need_stats" | "complete";
+    competitorCount: number;
+    opportunityCount: number;
+    publishedCount: number;
+    statsCount: number;
+  };
+  summary: { doneToday: number; snoozed: number };
 };
 
 export class TodayError extends Error {
@@ -87,6 +102,7 @@ async function scopeFor(db: Queryable, actorUserId: number, requestedChannelId: 
   const requested = requestedChannelId == null
     ? null
     : rows.find((candidate) => Number(candidate.id) === requestedChannelId) ?? null;
+  if (requestedChannelId != null && !requested) throw new TodayError("channel_not_found");
   const row = requested ?? rows[0];
   return {
     projectId: membership.projectId,
@@ -130,10 +146,10 @@ function hoursAgo(value: string | null): string {
 async function opportunityItems(db: Queryable, scope: { projectId: number; channelId: number }, label: string): Promise<TodayItem[]> {
   const rows = (await db.query<{
     id: string; title: string; confidence: "low" | "medium" | "high"; epistemic_state: string;
-    observed_at: string | null; expires_at: string; fingerprint: string;
-  }>(`select id, title, confidence, epistemic_state, observed_at::text, expires_at::text, fingerprint
+    observed_at: string | null; expires_at: string; fingerprint: string; evidence: Record<string, unknown>;
+  }>(`select id, title, confidence, epistemic_state, observed_at::text, expires_at::text, fingerprint, evidence
         from opportunity_snapshots where project_id = $1 and channel_id = $2 and expires_at > now()
-        order by expires_at, id desc limit 2`, [scope.projectId, scope.channelId])).rows;
+        order by observed_at desc nulls last, expires_at desc, id desc limit 2`, [scope.projectId, scope.channelId])).rows;
   return rows.map((row, index) => ({
     fingerprint: sha(`today:${TODAY_RANKING_VERSION}:opportunity:${row.id}:${row.fingerprint}`),
     type: "opportunity", title: row.title,
@@ -144,6 +160,8 @@ async function opportunityItems(db: Queryable, scope: { projectId: number; chann
     primaryAction: { label: "Открыть возможность", href: `/app/opportunities?opportunity=${row.id}&channel=${scope.channelId}` },
     secondaryAction: { label: "Напомнить завтра", state: "snoozed" },
     evidence: { kind: "opportunity", id: Number(row.id) },
+    sourceLabel: typeof row.evidence?.sourceLabel === "string" && row.evidence.sourceLabel.trim()
+      ? row.evidence.sourceLabel : "Карта возможностей",
   }));
 }
 
@@ -155,7 +173,8 @@ async function reviewItems(db: Queryable, scope: { projectId: number; channelId:
        join draft_destinations destination on destination.draft_id = draft.id and destination.channel_id = $2
        left join draft_editorial_workflows workflow on workflow.draft_id = draft.id and workflow.project_id = draft.project_id
       where draft.project_id = $1 and draft.purpose <> 'source_context'
-        and (workflow.state in ('in_review','changes_requested') or draft.purpose = 'needs_review')
+        and (workflow.state in ('in_review','changes_requested') or draft.purpose = 'needs_review'
+          or draft.ai_validation->>'status' = 'blocked')
       order by draft.updated_at desc limit 2`, [scope.projectId, scope.channelId])).rows;
   return rows.map((row) => {
     const blocked = row.ai_validation && typeof row.ai_validation === "object" && (row.ai_validation as { status?: unknown }).status === "blocked";
@@ -170,6 +189,7 @@ async function reviewItems(db: Queryable, scope: { projectId: number; channelId:
       primaryAction: { label: blocked ? "Исправить черновик" : "Проверить черновик", href: `/app/composer?draft=${row.id}&from=today` },
       secondaryAction: { label: "Напомнить завтра", state: "snoozed" as const },
       evidence: { kind: "draft" as const, id: Number(row.id) },
+      sourceLabel: blocked ? "Проверка утверждений" : "Редакционный процесс",
     };
   });
 }
@@ -177,15 +197,19 @@ async function reviewItems(db: Queryable, scope: { projectId: number; channelId:
 async function resultItems(db: Queryable, scope: { projectId: number; channelId: number }, label: string): Promise<TodayItem[]> {
   const rows = (await db.query<{
     post_id: string; stats_id: string; draft_id: string | null; views: number | null; reactions: number | null;
-    collected_at: string; published_at: string;
+    previous_views: number | null; previous_reactions: number | null; collected_at: string; published_at: string;
   }>(
     `select post.id as post_id, stats.id as stats_id, operation.draft_id,
-            stats.views, stats.reactions, stats.collected_at::text, post.published_at::text
+            stats.views, stats.reactions, stats.previous_views, stats.previous_reactions,
+            stats.collected_at::text, post.published_at::text
        from posts post
        join lateral (
-         select snapshot.id, snapshot.views, snapshot.reactions, snapshot.collected_at
+         select snapshot.id, snapshot.views, snapshot.reactions, snapshot.collected_at,
+                lag(snapshot.views) over ordered as previous_views,
+                lag(snapshot.reactions) over ordered as previous_reactions
            from post_stats snapshot
           where snapshot.project_id = post.project_id and snapshot.post_id = post.id
+          window ordered as (order by snapshot.snapshot_date, snapshot.collected_at)
           order by snapshot.snapshot_date desc, snapshot.collected_at desc limit 1
        ) stats on true
        left join publication_operations operation
@@ -198,9 +222,11 @@ async function resultItems(db: Queryable, scope: { projectId: number; channelId:
     [scope.projectId, scope.channelId],
   )).rows;
   return rows.map((row) => {
+    const viewDelta = row.views != null && row.previous_views != null ? row.views - row.previous_views : null;
+    const reactionDelta = row.reactions != null && row.previous_reactions != null ? row.reactions - row.previous_reactions : null;
     const metrics = [
-      row.views == null ? null : `${row.views.toLocaleString("ru-RU")} просмотров`,
-      row.reactions == null ? null : `${row.reactions.toLocaleString("ru-RU")} реакций`,
+      row.views == null ? null : `${row.views.toLocaleString("ru-RU")} просмотров${viewDelta && viewDelta > 0 ? ` (+${viewDelta.toLocaleString("ru-RU")})` : ""}`,
+      row.reactions == null ? null : `${row.reactions.toLocaleString("ru-RU")} реакций${reactionDelta && reactionDelta > 0 ? ` (+${reactionDelta.toLocaleString("ru-RU")})` : ""}`,
     ].filter(Boolean).join(" · ");
     return {
       fingerprint: sha(`today:${TODAY_RANKING_VERSION}:result:${row.post_id}:${row.stats_id}`),
@@ -208,9 +234,79 @@ async function resultItems(db: Queryable, scope: { projectId: number; channelId:
       whyNow: `${metrics}. Это наблюдаемый снимок, а не обещание роста.`,
       channelId: scope.channelId, channelLabel: label, confidence: "medium",
       epistemicState: "observed", freshness: hoursAgo(row.collected_at), priority: 70,
-      primaryAction: { label: "Открыть результаты", href: "/app/analytics" }, secondaryAction: null,
+      primaryAction: { label: "Открыть результаты", href: "/app/analytics" },
+      secondaryAction: { label: "Напомнить завтра", state: "snoozed" },
       evidence: row.draft_id ? { kind: "draft", id: Number(row.draft_id) } : null,
+      sourceLabel: "Статистика публикации",
     } satisfies TodayItem;
+  });
+}
+
+/* Readiness comes from source truth, not visible cards: cards may already be done or snoozed. */
+async function loadReadiness(db: Queryable, input: {
+  projectId: number; channelId: number; userId: number; timezone: string;
+}) {
+  const row = (await db.query<{
+    competitor_count: string; opportunity_count: string; published_count: string; stats_count: string;
+    done_today: string; snoozed: string;
+  }>(
+    `select
+       (select count(*)::int from competitors competitor
+         where competitor.project_id = $1 and competitor.channel_id = $2 and competitor.is_active = true) as competitor_count,
+       (select count(*)::int from opportunity_snapshots snapshot
+         where snapshot.project_id = $1 and snapshot.channel_id = $2 and snapshot.expires_at > now()) as opportunity_count,
+       (select count(*)::int from posts post
+         where post.project_id = $1 and post.channel_id = $2
+           and post.status in ('published','published_unverified')) as published_count,
+       (select count(*)::int from post_stats stats
+         join posts post on post.id = stats.post_id and post.project_id = stats.project_id
+         where stats.project_id = $1 and post.channel_id = $2) as stats_count,
+       (select count(*)::int from today_item_states state
+         where state.project_id = $1 and state.channel_id = $2 and state.user_id = $3
+           and state.state = 'done'
+           and state.updated_at >= (date_trunc('day', now() at time zone $4) at time zone $4)) as done_today,
+       (select count(*)::int from today_item_states state
+         where state.project_id = $1 and state.channel_id = $2 and state.user_id = $3
+           and state.state = 'snoozed' and state.snoozed_until > now()) as snoozed`,
+    [input.projectId, input.channelId, input.userId, input.timezone],
+  )).rows[0];
+  return {
+    competitorCount: Number(row?.competitor_count ?? 0),
+    opportunityCount: Number(row?.opportunity_count ?? 0),
+    publishedCount: Number(row?.published_count ?? 0),
+    statsCount: Number(row?.stats_count ?? 0),
+    doneToday: Number(row?.done_today ?? 0),
+    snoozed: Number(row?.snoozed ?? 0),
+  };
+}
+
+const SOURCE_MESSAGES: Record<TodaySource, string> = {
+  reviews: "Проверки временно недоступны.",
+  opportunities: "Возможности временно недоступны.",
+  results: "Результаты временно недоступны.",
+};
+
+async function loadSourceStatuses(db: Queryable, scope: { projectId: number; channelId: number }) {
+  const rows = (await db.query<{
+    source: TodaySource; last_attempt_state: "success" | "error" | null; last_success_at: string | null;
+  }>(
+    `select source, last_attempt_state, last_success_at::text
+       from today_source_refreshes
+      where project_id = $1 and channel_id = $2
+      order by case source when 'reviews' then 1 when 'opportunities' then 2 else 3 end`,
+    [scope.projectId, scope.channelId],
+  )).rows;
+  const bySource = new Map(rows.map((row) => [row.source, row]));
+  return (["reviews", "opportunities", "results"] as const).map((source) => {
+    const row = bySource.get(source);
+    return {
+      source,
+      status: row?.last_attempt_state === "error" ? "error" as const
+        : row?.last_attempt_state === "success" ? "ready" as const : "not_updated" as const,
+      lastSuccessfulAt: row?.last_success_at ?? null,
+      message: row?.last_attempt_state === "error" ? SOURCE_MESSAGES[source]
+        : row?.last_attempt_state === "success" ? "Источник обновлён." : "Источник ещё не обновлялся вручную.",
+    };
   });
 }
 
@@ -234,8 +330,6 @@ async function applyUserState(db: Queryable, userId: number, scope: { projectId:
 export async function loadTodayBoard(input: { actorUserId: number; channelId: number | null }, db: Queryable = getPool()): Promise<TodayBoard> {
   const scope = await scopeFor(db, input.actorUserId, input.channelId);
   const shared = {
-    featureKey: RELEASE_1_FEATURE,
-    rankingVersion: TODAY_RANKING_VERSION,
     projectId: scope.projectId,
     timezone: scope.timezone,
     channelId: scope.channelId,
@@ -244,23 +338,63 @@ export async function loadTodayBoard(input: { actorUserId: number; channelId: nu
     updatedAt: new Date().toISOString(),
   } as const;
   if (!scope.channelId) {
-    return { ...shared, enabled: true, availability: "ready", partialErrors: [], items: [{
-        fingerprint: sha(`today:${TODAY_RANKING_VERSION}:onboarding:${scope.projectId}`), type: "onboarding",
-        title: "Подключите первый канал", whyNow: "Без канала Аврора не смешивает демо-данные с вашими решениями.",
-        channelId: null, channelLabel: scope.label, confidence: "low", epistemicState: "insufficient_data",
-        freshness: "Данных пока нет", priority: 100,
-        primaryAction: { label: "Подключить канал", href: "/app/settings?section=channels" }, secondaryAction: null, evidence: null,
-      }] };
+    return {
+      ...shared,
+      enabled: true,
+      availability: "ready",
+      partialErrors: [],
+      sourceStatuses: [],
+      lastSuccessfulAt: null,
+      items: [],
+      readiness: {
+        state: "no_channel", competitorCount: 0, opportunityCount: 0, publishedCount: 0, statsCount: 0,
+      },
+      summary: { doneToday: 0, snoozed: 0 },
+    };
   }
   const enabled = await release1Enabled(db, { projectId: scope.projectId, channelId: scope.channelId });
-  if (!enabled) return { ...shared, enabled: false, availability: "ready", items: [], partialErrors: [] };
-  const partialErrors: TodayBoard["partialErrors"] = [];
-  const collected: TodayItem[] = [];
-  for (const [source, loader] of [["opportunities", opportunityItems], ["reviews", reviewItems], ["results", resultItems]] as const) {
-    try { collected.push(...await loader(db, { projectId: scope.projectId, channelId: scope.channelId }, scope.label)); }
-    catch { partialErrors.push({ source, message: source === "opportunities" ? "Возможности временно недоступны." : source === "reviews" ? "Проверки временно недоступны." : "Результаты временно недоступны." }); }
+  if (!enabled) return {
+    ...shared,
+    enabled: false,
+    availability: "ready",
+    items: [],
+    partialErrors: [],
+    sourceStatuses: [],
+    lastSuccessfulAt: null,
+    readiness: {
+      state: "admin_disabled", competitorCount: 0, opportunityCount: 0, publishedCount: 0, statsCount: 0,
+    },
+    summary: { doneToday: 0, snoozed: 0 },
+  };
+  const channelId = scope.channelId;
+  const loaders = [["opportunities", opportunityItems], ["reviews", reviewItems], ["results", resultItems]] as const;
+  const loaded = await Promise.all(loaders.map(async ([source, loader]) => {
+    try {
+      return { source, items: await loader(db, { projectId: scope.projectId, channelId }, scope.label), failed: false };
+    } catch {
+      return { source, items: [] as TodayItem[], failed: true };
+    }
+  }));
+  const collected = loaded.flatMap((result) => result.items);
+  const sourceStatuses = await loadSourceStatuses(db, {
+    projectId: scope.projectId,
+    channelId,
+  }).catch(() => (["reviews", "opportunities", "results"] as const).map((source) => ({
+    source,
+    status: "not_updated" as const,
+    lastSuccessfulAt: null,
+    message: "Статус обновления пока неизвестен.",
+  })));
+  const partialErrors: TodayBoard["partialErrors"] = loaded
+    .filter((result) => result.failed)
+    .map((result) => ({ source: result.source, message: SOURCE_MESSAGES[result.source] }));
+  for (const status of sourceStatuses) {
+    if (status.status === "error" && !partialErrors.some((error) => error.source === status.source)) {
+      partialErrors.push({ source: status.source, message: status.message });
+    }
   }
-  const availability = partialErrors.length === 3
+  const failedLoaders = loaded.filter((result) => result.failed).length;
+  const availability = failedLoaders === loaders.length
     ? "unavailable"
     : partialErrors.length > 0
       ? "partial"
@@ -270,10 +404,40 @@ export async function loadTodayBoard(input: { actorUserId: number; channelId: nu
     : rankTodayItems(await applyUserState(
       db,
       input.actorUserId,
-      { projectId: scope.projectId, channelId: scope.channelId },
+      { projectId: scope.projectId, channelId },
       collected,
     ));
-  return { ...shared, enabled, availability, items, partialErrors };
+  const readinessData = await loadReadiness(db, {
+    projectId: scope.projectId,
+    channelId,
+    userId: input.actorUserId,
+    timezone: scope.timezone,
+  }).catch(() => ({ competitorCount: 0, opportunityCount: 0, publishedCount: 0, statsCount: 0, doneToday: 0, snoozed: 0 }));
+  const readinessState = items.length > 0 ? "has_items" as const
+    : readinessData.opportunityCount === 0 && readinessData.competitorCount < 2 ? "need_competitors" as const
+      : readinessData.publishedCount === 0 ? "need_posts" as const
+        : readinessData.statsCount === 0 ? "need_stats" as const : "complete" as const;
+  const successfulTimes = sourceStatuses
+    .map((status) => status.lastSuccessfulAt)
+    .filter((value): value is string => Boolean(value))
+    .sort();
+  return {
+    ...shared,
+    enabled,
+    availability,
+    items,
+    partialErrors,
+    sourceStatuses,
+    lastSuccessfulAt: successfulTimes.at(-1) ?? null,
+    readiness: {
+      state: readinessState,
+      competitorCount: readinessData.competitorCount,
+      opportunityCount: readinessData.opportunityCount,
+      publishedCount: readinessData.publishedCount,
+      statsCount: readinessData.statsCount,
+    },
+    summary: { doneToday: readinessData.doneToday, snoozed: readinessData.snoozed },
+  };
 }
 
 export async function updateTodayItemState(input: {

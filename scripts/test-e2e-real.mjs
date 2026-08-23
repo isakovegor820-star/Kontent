@@ -73,6 +73,7 @@ const interfaceEvidence = {
   keyboardOnly: false,
   runtimeRestart: null,
   analyticsUi: null,
+  todayUi: null,
 };
 
 function assert(value, message) {
@@ -968,6 +969,69 @@ async function runKeyboardOnlyCriticalPass(targetPage) {
   return { menuTabs, exportTabs, keys: ["Tab", "Shift+Tab", "Enter", "Space"] };
 }
 
+async function runTodayWorkspacePass(targetPage, channels, draftId) {
+  await pool.query("update drafts set purpose = 'needs_review', updated_at = now() where id = $1", [draftId]);
+  await targetPage.setViewportSize({ width: 390, height: 844 });
+  await targetPage.goto(`/app/today?channel=${channels[0]}`);
+  await targetPage.getByRole("heading", { name: "Сегодня", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  const reviewHeading = targetPage.getByRole("heading", { name: "Проверьте черновик", exact: true });
+  await reviewHeading.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  await assertNoHorizontalOverflow(targetPage, "Today mobile");
+
+  await targetPage.setViewportSize({ width: 1280, height: 900 });
+  await targetPage.evaluate(() => {
+    document.body.setAttribute("tabindex", "-1");
+    document.body.focus();
+    document.body.removeAttribute("tabindex");
+  });
+  const done = targetPage.getByRole("button", { name: "Готово", exact: true });
+  const doneTabs = await tabTo(targetPage, done, "Today done action");
+  await targetPage.keyboard.press("Enter");
+  const summary = targetPage.getByRole("heading", { name: /решени.+ в фокусе/u });
+  await waitFor(
+    async () => summary.evaluate((element) => element === document.activeElement),
+    "Today completion did not move focus to the summary",
+    5_000,
+  );
+  const undo = targetPage.getByRole("button", { name: "Вернуть", exact: true });
+  await undo.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  await waitFor(async () => await undo.isEnabled(), "Today undo remained disabled", 5_000);
+  await tabTo(targetPage, undo, "Today undo action");
+  await targetPage.keyboard.press("Enter");
+  await reviewHeading.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  await waitFor(
+    async () => reviewHeading.evaluate((element) => element === document.activeElement),
+    "Today undo did not restore focus to the card",
+    5_000,
+  );
+
+  const snooze = targetPage.getByRole("button", { name: "Напомнить завтра", exact: true });
+  await tabTo(targetPage, snooze, "Today snooze action");
+  await targetPage.keyboard.press("Space");
+  await targetPage.getByText("Напомним завтра в 09:00", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+
+  const selector = targetPage.locator("#today-channel");
+  await selector.selectOption(String(channels[1]));
+  await targetPage.waitForURL((url) => url.pathname === "/app/today" && url.searchParams.get("channel") === String(channels[1]));
+  await targetPage.getByRole("heading", { name: "Добавьте конкурентов", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+
+  let refreshCalls = 0;
+  await targetPage.route("**/api/today/refresh", async (route) => {
+    refreshCalls += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ availability: "ready", sources: [], completedAt: new Date().toISOString() }),
+    });
+  });
+  const refresh = targetPage.getByRole("button", { name: "Обновить решения", exact: true });
+  await refresh.click();
+  await waitFor(async () => refreshCalls === 1 && await refresh.isEnabled(), "Today refresh did not complete", 10_000);
+  await targetPage.unroute("**/api/today/refresh");
+  await assertNoHorizontalOverflow(targetPage, "Today desktop");
+  return { doneTabs, refreshCalls, channelsSwitched: true, done: true, undone: true, snoozed: true };
+}
+
 async function assertTouch(locator, label) {
   const box = await locator.boundingBox();
   assert(box && box.width >= 44 && box.height >= 44, `${label} touch target is below 44x44`);
@@ -1335,6 +1399,8 @@ try {
     await page.waitForTimeout(350);
     assert(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 2), `${route} has mobile horizontal overflow`);
   }
+
+  interfaceEvidence.todayUi = await runTodayWorkspacePass(page, channels, draftId);
 
   const mediaRequestKey = "e2e_media_terminal_1";
   const mediaCountBefore = Number((await pool.query(
@@ -4491,6 +4557,7 @@ try {
         keyboardOnly: interfaceEvidence.keyboardOnly,
         runtimeRestart: interfaceEvidence.runtimeRestart,
         analyticsUi: interfaceEvidence.analyticsUi,
+        todayUi: interfaceEvidence.todayUi,
         browserRuntimeErrors: browserIssues.length,
         touchTargets: true,
       },

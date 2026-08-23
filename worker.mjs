@@ -78,6 +78,7 @@ import {
 import { processLegalVisualRender } from "./worker/legal-visual-render-worker.mjs";
 import { createSiteAnalysisWorker } from "./worker/site-analysis-worker.mjs";
 import { createProjectExportWorker } from "./worker/project-export-worker.mjs";
+import { materializeAllOpportunitySnapshots } from "./src/lib/opportunity-snapshot-materializer.mjs";
 import { ensureDraftEditorialBootstrap } from "./worker/draft-editorial-bootstrap.mjs";
 import {
   expireProjectExportArtifacts,
@@ -3410,11 +3411,50 @@ async function collectAllProjectStats() {
     )
   ).rows;
 
+  let failed = 0;
   for (const row of projects) {
     const projectId = requireStatsProjectId(row.project_id, "cron-stats");
-    await collectStats(projectId);
-    await collectVkStats(projectId);
+    try {
+      await collectStats(projectId);
+      await collectVkStats(projectId);
+      await recordTodayResultsRefresh(projectId, "success");
+    } catch (error) {
+      failed++;
+      await recordTodayResultsRefresh(projectId, "error").catch(() => undefined);
+      console.error("[stats] обновление проекта не завершено", {
+        projectId,
+        errorName: error instanceof Error ? error.name : "Error",
+      });
+    }
   }
+  if (failed > 0) throw new Error(`stats_projects_failed:${failed}`);
+}
+
+async function recordTodayResultsRefresh(projectId, state = "success", channelId = null) {
+  await pool.query(
+    `insert into today_source_refreshes
+       (project_id, channel_id, source, last_attempt_state, last_attempt_at,
+        last_success_at, last_error_code, updated_at)
+     select channel.project_id, channel.id, 'results', $2, now(),
+            case when $2 = 'success' then now() else null end,
+            case when $2 = 'error' then 'results_refresh_failed' else null end, now()
+       from channels channel
+       join channel_feature_flags flag
+         on flag.project_id = channel.project_id
+        and flag.channel_id = channel.id
+        and flag.feature_key = 'content_intelligence_release_1'
+        and flag.enabled = true
+      where channel.project_id = $1 and channel.is_active = true and channel.status = 'active'
+        and ($3::bigint is null or channel.id = $3)
+     on conflict (project_id, channel_id, source) do update
+       set last_attempt_state = excluded.last_attempt_state,
+           last_attempt_at = excluded.last_attempt_at,
+           last_success_at = case when excluded.last_attempt_state = 'success'
+                                  then excluded.last_attempt_at
+                                  else today_source_refreshes.last_success_at end,
+           last_error_code = excluded.last_error_code, updated_at = now()`,
+    [projectId, state, channelId],
+  );
 }
 
 // ============================================================================
@@ -10854,6 +10894,12 @@ const statsWorker = MEDIA_ONLY || AUTOPILOT_ONLY || PUBLICATION_ONLY ? null : ne
       // userId is the initiating actor; projectId is the only data boundary.
       await collectStats(scope.projectId);
       await collectVkStats(scope.projectId);
+      const requestedChannelId = Number(job.data?.channelId);
+      await recordTodayResultsRefresh(
+        scope.projectId,
+        "success",
+        Number.isSafeInteger(requestedChannelId) && requestedChannelId > 0 ? requestedChannelId : null,
+      );
     } else if (job.name === "report") {
       let scope;
       try {
@@ -10922,7 +10968,18 @@ const statsWorker = MEDIA_ONLY || AUTOPILOT_ONLY || PUBLICATION_ONLY ? null : ne
   { connection },
 );
 statsWorker?.on("error", (err) => console.error("[stats] ошибка:", err));
-statsWorker?.on("failed", recoverFailedAutopilotPlan);
+statsWorker?.on("failed", (job, error) => {
+  recoverFailedAutopilotPlan(job, error);
+  if (job?.name !== "collect") return;
+  const projectId = Number(job.data?.projectId);
+  const channelId = Number(job.data?.channelId);
+  if (!Number.isSafeInteger(projectId) || projectId <= 0) return;
+  void recordTodayResultsRefresh(
+    projectId,
+    "error",
+    Number.isSafeInteger(channelId) && channelId > 0 ? channelId : null,
+  ).catch(() => undefined);
+});
 
 // ----------------------------------------------------------------------------
 // Крон на BullMQ-планировщиках (заменил setInterval). Таймеры в памяти процесса не
@@ -11255,6 +11312,7 @@ const CRON_SCHEDULES = [
   { name: "stats",    pattern: "0 1 * * *" },    // суточный снимок аналитики, 01:00 МСК
   { name: "recon",    pattern: "0 */2 * * *" },  // разведка конкурентов, каждые 2ч
   { name: "trend",    pattern: "15 */2 * * *" }, // насмотренность, каждые 2ч (сдвиг 15мин от recon)
+  { name: "today-opportunities", pattern: "30 */2 * * *" }, // снимки возможностей, каждые 2ч
   { name: "discover", pattern: "0 4 * * *" },    // поиск соседей по нише, 04:00 МСК
   { name: "weekly",   pattern: "0 21 * * 0" },   // недельные планы, вс 21:00 МСК
   { name: "cleanup",  pattern: "0 3 * * *" },    // чистка протухших sessions/bot_links, 03:00 МСК
@@ -11271,6 +11329,7 @@ const cronWorker = AUTOPILOT_ONLY || MEDIA_ONLY || PUBLICATION_ONLY ? null : new
       case "stats":    return collectAllProjectStats();
       case "recon":    await collectCompetitors(); return checkNicheAlerts();
       case "trend":    return collectTrendSources();
+      case "today-opportunities": return materializeAllOpportunitySnapshots(pool);
       case "discover": return discoverAll();
       case "weekly":   return weeklyPlans();
       case "cleanup":  return cleanupExpired();
@@ -11487,7 +11546,7 @@ if (!AUTOPILOT_ONLY && !MEDIA_ONLY && !PUBLICATION_ONLY) {
 // Стартовая свежесть: разовые задачи сразу после запуска, чтобы не ждать первого тика.
 // Идут через ту же очередь (concurrency: 1) — не долбят t.me все разом при старте.
 // weekly НЕ запускаем: планы не должны перестраиваться при каждом рестарте (лечит баг «плана нет»).
-for (const name of AUTOPILOT_ONLY || MEDIA_ONLY || PUBLICATION_ONLY ? [] : ["stats", "recon", "trend", "discover", "exports"]) {
+for (const name of AUTOPILOT_ONLY || MEDIA_ONLY || PUBLICATION_ONLY ? [] : ["stats", "recon", "trend", "today-opportunities", "discover", "exports"]) {
   await cronQueue.add(name, {}, { jobId: `startup-${name}`, removeOnComplete: true }).catch(() => {});
 }
 

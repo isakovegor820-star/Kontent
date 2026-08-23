@@ -5,7 +5,7 @@
  */
 export const SCHEMA_MANIFEST = Object.freeze({
   manifestVersion: 1,
-  schemaVersion: "2026-09-26.98",
+  schemaVersion: "2026-09-27.99",
   migrations: Object.freeze([
     ["20260801_account_onboarding.sql", "ac0e1f10046cf620185570ab5f40437991d08513473f67d4e93bdafa07b86614"],
     ["20260801_ai_usage_reservations.sql", "991c3a92dce16df55011d9df52fb65af1a7f4310b27f61dc519705f05528d7a0"],
@@ -107,6 +107,7 @@ export const SCHEMA_MANIFEST = Object.freeze({
     ["20260924_growth_weekly_loop.sql", "e37f704a5d0599e37a1c25d81ca1b49f1e33f29dede5e671b28f53bc618a50e9"],
     ["20260925_content_intelligence_release1.sql", "395b7db94bebc24b5debae702c81dea349b6e57636921e69a33f663e5c8b1cca"],
     ["20260926_autopilot_candidate_pool.sql", "734e21f4551c43ee3ca7e241a3e1f28946d8e5cc9f413128cb849d3796b64d27"],
+    ["20260927_today_workspace.sql", "d9b7d8a1c86076be12b975230aeb3fb4d3c2e2691768c23654b0eb329c9a9d83"],
   ].map(([name, checksum, acceptedChecksums]) => Object.freeze({
     name,
     checksum,
@@ -226,6 +227,7 @@ export const SCHEMA_MANIFEST = Object.freeze({
       "channel_feature_flags",
       "opportunity_snapshots",
       "today_item_states",
+      "today_source_refreshes",
     ]),
     columns: Object.freeze([
       "users.onboarding_completed_at",
@@ -244,6 +246,11 @@ export const SCHEMA_MANIFEST = Object.freeze({
       "today_item_states.user_id",
       "today_item_states.fingerprint",
       "today_item_states.state",
+      "today_source_refreshes.project_id",
+      "today_source_refreshes.channel_id",
+      "today_source_refreshes.source",
+      "today_source_refreshes.last_attempt_state",
+      "today_source_refreshes.last_success_at",
       "legal_visual_designs.request_hash",
       "legal_video_scripts.request_hash",
       "users.ai_post_settings",
@@ -868,6 +875,10 @@ export const SCHEMA_MANIFEST = Object.freeze({
       "today_item_states.today_item_states_member_fk",
       "today_item_states.today_item_states_channel_project_fk",
       "today_item_states.today_item_states_state_check",
+      "today_source_refreshes.today_source_refreshes_channel_project_fk",
+      "today_source_refreshes.today_source_refreshes_source_check",
+      "today_source_refreshes.today_source_refreshes_state_check",
+      "today_source_refreshes.today_source_refreshes_error_check",
     ]),
     indexes: Object.freeze([
       "ai_usage.ai_usage_user_reservation_key_uniq",
@@ -878,6 +889,8 @@ export const SCHEMA_MANIFEST = Object.freeze({
       "opportunity_snapshots.opportunity_snapshots_channel_fresh_idx",
       "today_item_states.today_item_states_pkey",
       "today_item_states.today_item_states_user_active_idx",
+      "today_source_refreshes.today_source_refreshes_pkey",
+      "today_source_refreshes.today_source_refreshes_health_idx",
       "ai_usage.ai_usage_operation_id_uniq",
       "posts.posts_channel_external_message_uniq",
       "posts.posts_user_idempotency_key_uniq",
