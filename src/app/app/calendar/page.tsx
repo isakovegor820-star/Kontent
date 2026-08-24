@@ -12,10 +12,12 @@ import {
   type DragEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { motion, useReducedMotion } from "motion/react";
 import {
   AlertTriangle,
+  BarChart3,
   CalendarDays,
   CalendarPlus,
   Check,
@@ -28,8 +30,11 @@ import {
   GripVertical,
   Inbox,
   LayoutGrid,
+  Lightbulb,
+  List,
   Plus,
   RotateCw,
+  Send,
   Sparkles,
   X,
 } from "lucide-react";
@@ -45,7 +50,7 @@ import {
   type PublicationActionTarget,
   type PublicationRescheduleInput,
 } from "@/components/app/publication-actions-dialog";
-import { Button } from "@/components/ui/button";
+import { Button, buttonClassName } from "@/components/ui/button";
 import {
   Badge,
   Card,
@@ -107,7 +112,7 @@ import {
 
 /* ------------------------------------------------------------- ОСНОВЫ */
 
-type View = "week" | "month";
+type View = "week" | "month" | "list";
 
 type CalendarPost = Post & {
   authorUserId?: number;
@@ -301,6 +306,14 @@ function weekRangeLabel(start: Date) {
 function monthTitle(d: Date) {
   const name = new Intl.DateTimeFormat("ru-RU", { month: "long" }).format(d);
   return `${name.charAt(0).toUpperCase()}${name.slice(1)} ${d.getFullYear()}`;
+}
+
+function isoWeekNumber(date: Date) {
+  const utc = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const day = utc.getUTCDay() || 7;
+  utc.setUTCDate(utc.getUTCDate() + 4 - day);
+  const yearStart = new Date(Date.UTC(utc.getUTCFullYear(), 0, 1));
+  return Math.ceil((((utc.getTime() - yearStart.getTime()) / 86_400_000) + 1) / 7);
 }
 
 /** 7.8 → «×7,8» */
@@ -807,40 +820,45 @@ function DayColumn({
       onDragLeave={onDayDragLeave}
       onDrop={onDayDrop}
       className={cn(
-        "group/day min-w-0 flex flex-col rounded-md ring-1",
+        "group/day min-w-0 flex min-h-[27rem] flex-col overflow-hidden rounded-md ring-1",
         "transition-[background-color,box-shadow] duration-150 ease-out",
         isToday ? "bg-surface ring-brand/35" : "ring-line",
-        !isToday && isPast ? "bg-surface-2/60" : "bg-surface",
+        !isToday && isPast ? "bg-surface-2/50" : "bg-surface",
         dragging && dropAllowed && !dropActive && "ring-brand/25",
         dropActive && dropAllowed && "bg-brand/10 shadow-card ring-2 ring-brand",
       )}
     >
-      <div className="flex items-center gap-2 px-2.5 pt-2.5 pb-1.5 md:justify-between">
-        <span
-          className={cn(
-            "text-[13px] font-semibold",
-            isToday ? "text-brand" : "text-text-2",
-          )}
-        >
-          {weekdayShort(index)}
-        </span>
-        {isToday ? (
-          <span className="nums flex h-7 w-7 items-center justify-center rounded-full bg-brand-gradient text-[13px] font-bold text-white">
-            {day.getDate()}
-          </span>
-        ) : (
+      <div className="border-b border-line px-3 py-3">
+        <div className="flex items-center gap-2">
           <span
             className={cn(
-              "nums flex h-7 w-7 items-center justify-center text-[15px] font-bold",
-              isPast ? "text-text-3" : "text-text",
+              "text-[13px] font-bold",
+              isToday ? "text-brand" : "text-text-2",
             )}
           >
-            {day.getDate()}
+            {weekdayShort(index)}
           </span>
-        )}
+          {isToday ? (
+            <span className="nums flex h-7 w-7 items-center justify-center rounded-full bg-brand-gradient text-[13px] font-bold text-white">
+              {day.getDate()}
+            </span>
+          ) : (
+            <span
+              className={cn(
+                "nums flex h-7 w-7 items-center justify-center text-[15px] font-bold",
+                isPast ? "text-text-3" : "text-text",
+              )}
+            >
+              {day.getDate()}
+            </span>
+          )}
+        </div>
+        <p className="nums mt-1.5 text-[12px] text-text-3">
+          {posts.length} {plural(posts.length, "пост", "поста", "постов")}
+        </p>
       </div>
 
-      <div className="flex min-h-[88px] min-w-0 flex-1 flex-col gap-1.5 p-1.5 pt-0 xl:min-h-[180px]">
+      <div className="flex min-w-0 flex-1 flex-col gap-2 p-2">
         {dropActive && dropAllowed && (
           <div
             className="pointer-events-none flex min-h-11 items-center justify-center gap-1 rounded-sm border border-dashed border-brand bg-surface px-2 text-center text-[13px] font-semibold text-brand"
@@ -878,24 +896,17 @@ function DayColumn({
             onClick={onAdd}
             aria-label={`Создать пост: ${weekdayFull(index)}, ${fmtDate(day.toISOString())}, ${DEFAULT_TIME}`}
             className={cn(
-              "flex min-h-[44px] flex-1 cursor-pointer items-center justify-center rounded-sm",
-              "border border-dashed border-transparent transition-colors duration-200",
-              "hover:border-line-strong hover:bg-surface-inset/70",
-              "focus-visible:border-line-strong focus-visible:bg-surface-inset/70",
+              "mt-auto flex min-h-11 cursor-pointer items-center justify-center gap-1.5 rounded-sm px-2",
+              "border border-dashed transition-colors duration-150 motion-reduce:transition-none",
+              posts.length === 0 && isToday
+                ? "flex-1 border-brand/45 bg-brand/5 text-brand"
+                : "border-transparent text-brand hover:border-brand/30 hover:bg-brand/5",
+              "focus-visible:border-brand focus-visible:bg-brand/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand",
             )}
           >
-            <span
-              className={cn(
-                "flex h-8 w-8 items-center justify-center rounded-full bg-surface-inset text-text-2 shadow-soft",
-                "transition-[opacity,color,transform] duration-200 ease-[var(--ease-soft)]",
-                "group-hover/day:text-brand",
-                // На тач-устройствах кнопка видна всегда, на десктопе — по наведению
-                "opacity-100 md:opacity-0",
-                "md:group-hover/day:opacity-100 md:group-focus-within/day:opacity-100",
-                "[@media(hover:none)]:opacity-100",
-              )}
-            >
-              <Plus className="h-4 w-4" strokeWidth={2.5} aria-hidden />
+            <Plus className="h-4 w-4" strokeWidth={2.5} aria-hidden />
+            <span className="text-[13px] font-semibold">
+              {posts.length === 0 && isToday ? "Добавить пост" : "Новый пост"}
             </span>
           </button>
         )}
@@ -1024,6 +1035,130 @@ function SideSkeleton() {
   );
 }
 
+function WeekSummary({ posts }: { posts: DatedPost[] }) {
+  const scheduled = posts.filter((post) => ["scheduled", "publishing", "failed_retry"].includes(post.status)).length;
+  const published = posts.filter((post) => post.status === "published").length;
+  const measured = posts.filter((post) => post.metrics && post.metrics.views > 0);
+  const views = measured.reduce((total, post) => total + (post.metrics?.views ?? 0), 0);
+  const reactions = measured.reduce((total, post) => total + (
+    (post.metrics?.reactions ?? 0)
+    + (post.metrics?.comments ?? 0)
+    + (post.metrics?.shares ?? 0)
+  ), 0);
+  const engagement = views > 0 ? `${Math.round((reactions / views) * 100)}%` : "—";
+  const items = [
+    { label: "Постов на неделе", value: String(posts.length), icon: Flame, tone: "text-fire-text" },
+    { label: "Запланировано", value: String(scheduled), icon: CalendarPlus, tone: "text-fire-text" },
+    { label: "Опубликовано", value: String(published), icon: Send, tone: "text-success-text" },
+    { label: "Вовлечённость", value: engagement, icon: BarChart3, tone: "text-brand" },
+  ];
+
+  return (
+    <Card as="section" className="p-4 sm:p-5" aria-labelledby="calendar-week-summary-title">
+      <h2 id="calendar-week-summary-title" className="sr-only">Статистика недели</h2>
+      <dl className="grid grid-cols-1 gap-4 min-[360px]:grid-cols-2 lg:grid-cols-4">
+        {items.map((item) => {
+          const Icon = item.icon;
+          return (
+            <div key={item.label} className="flex min-w-0 items-start gap-3">
+              <span className={cn("mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-surface-inset", item.tone)}>
+                <Icon className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
+              </span>
+              <div className="flex min-w-0 flex-col">
+                <dt className="order-2 mt-1.5 text-[13px] leading-snug text-text-3">{item.label}</dt>
+                <dd className="nums order-1 text-xl font-extrabold leading-none text-text tabular-nums">{item.value}</dd>
+              </div>
+            </div>
+          );
+        })}
+      </dl>
+    </Card>
+  );
+}
+
+function UpcomingPublications({
+  posts,
+  calendarTimezone,
+  onOpen,
+  onCreate,
+  exportAction,
+}: {
+  posts: DatedPost[];
+  calendarTimezone: string;
+  onOpen: (post: DatedPost) => void;
+  onCreate?: () => void;
+  exportAction: React.ReactNode;
+}) {
+  return (
+    <Card as="section" className="p-4 sm:p-5" aria-labelledby="calendar-upcoming-title">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 id="calendar-upcoming-title" className="text-[16px] font-extrabold tracking-tight text-text">
+          Ближайшие публикации
+        </h2>
+        {exportAction}
+      </div>
+      {posts.length === 0 ? (
+        <div className="mt-4 rounded-sm bg-surface-inset p-4">
+          <p className="text-[14px] font-semibold text-text">Публикаций пока нет</p>
+          <p className="mt-1 text-[13px] leading-relaxed text-text-2">
+            Добавьте пост, чтобы он появился в недельном плане.
+          </p>
+          {onCreate && (
+            <Button variant="secondary" size="sm" className="mt-3" onClick={onCreate}>
+              <Plus className="h-4 w-4" strokeWidth={2} aria-hidden />
+              Создать пост
+            </Button>
+          )}
+        </div>
+      ) : (
+        <ul className="mt-3 divide-y divide-line">
+          {posts.map((post) => (
+            <li key={post.id}>
+              <button
+                type="button"
+                onClick={() => onOpen(post)}
+                className="grid min-h-11 w-full grid-cols-[auto_auto_minmax(0,1fr)] items-center gap-x-3 gap-y-1 rounded-xs px-1 py-2.5 text-left transition-colors duration-150 hover:bg-surface-inset focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand motion-reduce:transition-none sm:grid-cols-[auto_auto_minmax(0,1fr)_auto]"
+                aria-label={`Открыть публикацию: ${post.text.slice(0, 60)}`}
+              >
+                <span className="text-[12px] font-semibold text-text-3">{fmtDate(post.scheduledAt)}</span>
+                <span className="nums text-[13px] font-bold text-text tabular-nums">
+                  {fmtTime(post.scheduledAt, post.scheduleTimezone ?? calendarTimezone)}
+                </span>
+                <span className="truncate text-[13px] text-text-2">{post.text}</span>
+                <Badge tone={calendarStatusTone(calendarRecordStatus(post))} className="col-start-3 justify-self-start sm:col-auto">
+                  {CALENDAR_STATUS_LABEL[calendarRecordStatus(post)] ?? calendarRecordStatus(post)}
+                </Badge>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Card>
+  );
+}
+
+function CalendarTip() {
+  return (
+    <Card as="aside" className="bg-info-soft p-4 sm:p-5" aria-labelledby="calendar-tip-title">
+      <div className="flex items-start gap-3">
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-surface text-fire-text shadow-soft">
+          <Lightbulb className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
+        </span>
+        <div className="min-w-0">
+          <h2 id="calendar-tip-title" className="text-[14px] font-extrabold text-text">Подсказка</h2>
+          <p className="mt-1.5 text-pretty text-[13px] leading-relaxed text-text-2">
+            Разносите ключевые публикации по разным дням — так проще видеть нагрузку и сравнивать результаты.
+          </p>
+          <Link href="/app/analytics" className={buttonClassName({ variant: "ghost", size: "sm", className: "mt-2 -ml-3 text-brand" })}>
+            Смотреть аналитику
+            <ChevronRight className="h-4 w-4" strokeWidth={2} aria-hidden />
+          </Link>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
 /* --------------------------------------------------------------- ЭКРАН */
 
 export default function CalendarPage() {
@@ -1132,7 +1267,7 @@ export default function CalendarPage() {
 
   const weekStart = useMemo(() => startOfWeek(anchor), [anchor]);
   const exportPeriod = useMemo(
-    () => calendarProjectExportPeriod(view, anchor, weekStart),
+    () => calendarProjectExportPeriod(view === "month" ? "month" : "week", anchor, weekStart),
     [anchor, view, weekStart],
   );
   const weekDays = useMemo(
@@ -1294,23 +1429,33 @@ export default function CalendarPage() {
     [s.posts, s.user],
   );
 
-  const visibleDays = view === "week" ? weekDays : monthCells;
-  const periodCount = visibleDays.reduce((n, d) => {
-    if (view === "month" && d.getMonth() !== anchor.getMonth()) return n;
-    return n + dayPosts(d).length;
-  }, 0);
+  const weekPosts = useMemo(
+    () => weekDays.flatMap((day) => postsByDay.get(dayKey(day)) ?? []),
+    [postsByDay, weekDays],
+  );
+  const upcomingPosts = useMemo(
+    () => gridPosts
+      .filter((post): post is DatedPost => (
+        isOnGrid(post)
+        && new Date(post.scheduledAt).getTime() >= today.getTime()
+        && !["published", "missing", "deleted_external", "cancelled", "failed"].includes(post.status)
+      ))
+      .sort((a, b) => new Date(a.scheduledAt).getTime() - new Date(b.scheduledAt).getTime())
+      .slice(0, 3),
+    [gridPosts, today],
+  );
 
   const isCurrentPeriod =
-    view === "week"
-      ? sameDay(weekStart, startOfWeek(today))
-      : anchor.getFullYear() === today.getFullYear() && anchor.getMonth() === today.getMonth();
+    view === "month"
+      ? anchor.getFullYear() === today.getFullYear() && anchor.getMonth() === today.getMonth()
+      : sameDay(weekStart, startOfWeek(today));
 
   const shift = (delta: number) => {
     setDir(delta);
     setAnchor((prev) =>
-      view === "week"
-        ? addDays(startOfWeek(prev), delta * 7)
-        : new Date(prev.getFullYear(), prev.getMonth() + delta, 1),
+      view === "month"
+        ? new Date(prev.getFullYear(), prev.getMonth() + delta, 1)
+        : addDays(startOfWeek(prev), delta * 7),
     );
   };
 
@@ -1762,9 +1907,9 @@ export default function CalendarPage() {
   };
 
   const periodKey =
-    view === "week"
-      ? `w${weekStart.getTime()}`
-      : `m${anchor.getFullYear()}-${anchor.getMonth()}`;
+    view === "month"
+      ? `m${anchor.getFullYear()}-${anchor.getMonth()}`
+      : `${view}-${weekStart.getTime()}`;
 
   // `s.trends` — демонстрационный seed. В авторизованный календарь его не подмешиваем.
   const suggestions = s.user ? [] : s.trends.slice(0, 3);
@@ -1773,32 +1918,26 @@ export default function CalendarPage() {
     <AppShell
       title="Календарь"
       subtitle={canEdit
-        ? "Выбери день, чтобы создать пост. Публикацию выполняет сервер."
-        : "Следи за статусами и открывай публикации для проверки."}
+        ? "Планируйте, публикуйте и отслеживайте контент."
+        : "Следите за статусами и открывайте публикации для проверки."}
       action={
-        <div
-          className={cn(
-            "grid grid-cols-1 gap-2",
-            canEdit && "min-[24rem]:grid-cols-2",
-          )}
-        >
+        canEdit ? (
+          <Button variant="primary" size="md" onClick={() => router.push("/app/composer?from=calendar")}>
+            <Plus className="h-[18px] w-[18px]" strokeWidth={2.5} aria-hidden />
+            Новый пост
+          </Button>
+        ) : (
           <ProjectExportButton
             channels={s.realChannels}
             defaultKind="content_plan"
             initialPeriod={exportPeriod}
           />
-          {canEdit && (
-            <Button variant="brand" size="md" onClick={() => router.push("/app/composer?from=calendar")}>
-              <Plus className="h-[18px] w-[18px]" strokeWidth={2.5} aria-hidden />
-              Новый пост
-            </Button>
-          )}
-        </div>
+        )
       }
     >
-      <div className="flex flex-col gap-6 xl:flex-row xl:items-start">
+      <div className="flex flex-col gap-8">
         {/* ------------------------------------------------------- СЕТКА */}
-        <div className="min-w-0 flex-1">
+        <div className="min-w-0">
           {!s.ready ? (
             <div className="flex flex-col gap-4">
               <div className="flex items-center justify-between gap-3">
@@ -1809,51 +1948,59 @@ export default function CalendarPage() {
             </div>
           ) : (
             <>
-              <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                 <div className="flex items-center gap-1.5">
                   <Button
                     variant="ghost"
                     size="icon"
                     className="h-11 w-11"
-                    aria-label={view === "week" ? "Предыдущая неделя" : "Предыдущий месяц"}
+                    aria-label={view === "month" ? "Предыдущий месяц" : "Предыдущая неделя"}
                     onClick={() => shift(-1)}
                   >
                     <ChevronLeft className="h-5 w-5" strokeWidth={2} aria-hidden />
                   </Button>
 
-                  <div className="min-w-[150px] text-center sm:text-left">
+                  <div className="min-w-[120px] text-center sm:min-w-[150px] sm:text-left">
                     <p className="text-[17px] font-extrabold -tracking-[0.02em] text-text">
-                      {view === "week" ? weekRangeLabel(weekStart) : monthTitle(anchor)}
+                      {view === "month" ? monthTitle(anchor) : weekRangeLabel(weekStart)}
                     </p>
                     <p className="type-caption mt-0.5 text-text-3">
-                      Время проекта: <bdi>{calendarTimezone}</bdi>
+                      {view === "month" ? "Месячный план" : `Неделя ${isoWeekNumber(weekStart)}`}
                     </p>
+                    <span className="sr-only">Время проекта: <bdi>{calendarTimezone}</bdi></span>
                   </div>
 
                   <Button
                     variant="ghost"
                     size="icon"
                     className="h-11 w-11"
-                    aria-label={view === "week" ? "Следующая неделя" : "Следующий месяц"}
+                    aria-label={view === "month" ? "Следующий месяц" : "Следующая неделя"}
                     onClick={() => shift(1)}
                   >
                     <ChevronRight className="h-5 w-5" strokeWidth={2} aria-hidden />
                   </Button>
 
                   {!isCurrentPeriod && (
-                    <Button variant="ghost" size="sm" onClick={goToday} className="ml-1">
-                      Сегодня
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={goToday}
+                      aria-label="Сегодня"
+                      className="ml-1 max-[359px]:h-11 max-[359px]:w-11 max-[359px]:px-0"
+                    >
+                      <CalendarDays className="hidden h-4 w-4 max-[359px]:block" strokeWidth={2} aria-hidden />
+                      <span className="max-[359px]:sr-only">Сегодня</span>
                     </Button>
                   )}
                 </div>
 
-                <div className="flex items-center gap-3">
-                  <span className="nums hidden text-[13px] text-text-2 md:inline">
-                    {periodCount} {plural(periodCount, "пост", "поста", "постов")}
-                  </span>
+                <div className="flex w-full min-w-0 items-center gap-3 self-start md:w-auto md:self-auto">
                   <Tabs<View>
                     value={view}
                     onChange={setView}
+                    idPrefix="calendar-view-tab"
+                    controls="calendar-view-panel"
+                    className="w-full max-[359px]:gap-0 max-[359px]:[&_[role=tab]]:flex-1 max-[359px]:[&_[role=tab]]:justify-center max-[359px]:[&_[role=tab]]:px-1.5 md:w-auto"
                     items={[
                       {
                         value: "week",
@@ -1865,19 +2012,24 @@ export default function CalendarPage() {
                         label: "Месяц",
                         icon: <LayoutGrid className="h-4 w-4" strokeWidth={2} aria-hidden />,
                       },
+                      {
+                        value: "list",
+                        label: "Список",
+                        icon: <List className="h-4 w-4" strokeWidth={2} aria-hidden />,
+                      },
                     ]}
                   />
                 </div>
               </div>
 
-              <fieldset className="mb-4 flex min-w-0 flex-col gap-3 border-0 p-0 sm:flex-row sm:flex-wrap sm:items-end">
+              <fieldset className="mb-4 flex min-w-0 flex-col gap-3 border-0 p-0 sm:flex-row sm:flex-wrap sm:items-center">
                 <legend className="sr-only">Фильтры общего календаря</legend>
-                <label className="min-w-0 flex-1 text-[13px] font-semibold text-text-2 sm:max-w-[17rem]">
-                  <span className="mb-1.5 block">Автор</span>
+                <label className="min-w-0 flex-1 sm:max-w-[17rem]">
+                  <span className="sr-only">Автор</span>
                   <select
                     value={authorFilter}
                     onChange={(event) => setAuthorFilter(event.currentTarget.value)}
-                    className="h-11 w-full rounded-sm border border-line-strong bg-surface px-3 text-[14px] text-text outline-none focus-visible:ring-4 focus-visible:ring-brand/15"
+                    className="h-11 w-full rounded-sm border border-line-strong bg-surface px-3 text-base text-text outline-none transition-colors duration-150 hover:border-brand/40 focus-visible:border-brand focus-visible:ring-4 focus-visible:ring-brand/15 motion-reduce:transition-none sm:text-[14px]"
                   >
                     <option value="all">Все авторы</option>
                     {calendarAuthors.map((author) => (
@@ -1885,12 +2037,12 @@ export default function CalendarPage() {
                     ))}
                   </select>
                 </label>
-                <label className="min-w-0 flex-1 text-[13px] font-semibold text-text-2 sm:max-w-[17rem]">
-                  <span className="mb-1.5 block">Статус</span>
+                <label className="min-w-0 flex-1 sm:max-w-[17rem]">
+                  <span className="sr-only">Статус</span>
                   <select
                     value={statusFilter}
                     onChange={(event) => setStatusFilter(event.currentTarget.value)}
-                    className="h-11 w-full rounded-sm border border-line-strong bg-surface px-3 text-[14px] text-text outline-none focus-visible:ring-4 focus-visible:ring-brand/15"
+                    className="h-11 w-full rounded-sm border border-line-strong bg-surface px-3 text-base text-text outline-none transition-colors duration-150 hover:border-brand/40 focus-visible:border-brand focus-visible:ring-4 focus-visible:ring-brand/15 motion-reduce:transition-none sm:text-[14px]"
                   >
                     <option value="all">Все статусы</option>
                     {calendarStatuses.map((status) => (
@@ -1993,72 +2145,77 @@ export default function CalendarPage() {
               </p>
 
               <motion.div
+                id="calendar-view-panel"
+                role="tabpanel"
+                aria-labelledby={`calendar-view-tab-${view}`}
                 key={periodKey}
                 initial={reduce ? false : { opacity: 0, x: dir * 10 }}
                 animate={{ opacity: 1, x: 0 }}
                 transition={{ duration: 0.22, ease: EASE_SOFT }}
               >
                 {view === "week" ? (
-                  <div className="grid min-w-0 gap-2 xl:grid-cols-7">
-                    {weekDays.map((day, i) => {
-                      const key = dayKey(day);
-                      const dropAllowed = canDropDraggedPostOn(day);
-                      return (
-                        <DayColumn
-                          key={day.toISOString()}
-                          day={day}
-                          index={i}
-                          posts={dayPosts(day)}
-                          isToday={sameDay(day, today)}
-                          isPast={day.getTime() < today.getTime()}
-                          onAdd={canEdit ? () => addPostOn(day) : undefined}
-                          onOpen={openPost}
-                          onRetry={canPublish ? retryCalendarPost : undefined}
-                          onReschedule={canPublish ? retryCalendarPost : undefined}
-                          canMovePost={canStartCalendarMove}
-                          movingPostId={movingPostId}
-                          draggedPostId={draggedPostId}
-                          dragging={draggedPost != null}
-                          dropActive={dragOverDay === key}
-                          dropAllowed={dropAllowed}
-                          onPostDragStart={startPostDrag}
-                          onPostDragEnd={endPostDrag}
-                          onPostLongPressDragStart={startPostLongPressDrag}
-                          onPostLongPressDragMove={movePostLongPressDrag}
-                          onPostLongPressDragEnd={endPostLongPressDrag}
-                          onPostLongPressDragCancel={cancelPostLongPressDrag}
-                          calendarTimezone={calendarTimezone}
-                          onDayDragEnter={(event) => {
-                            if (!dropAllowed) return;
-                            event.preventDefault();
-                            setDragOverDay(key);
-                          }}
-                          onDayDragOver={(event) => {
-                            if (!dropAllowed) return;
-                            event.preventDefault();
-                            event.dataTransfer.dropEffect = "move";
-                            if (dragOverDay !== key) setDragOverDay(key);
-                          }}
-                          onDayDragLeave={(event) => {
-                            const next = event.relatedTarget;
-                            if (next instanceof Node && event.currentTarget.contains(next)) return;
-                            if (dragOverDay === key) setDragOverDay(null);
-                          }}
-                          onDayDrop={(event) => {
-                            if (!dropAllowed || !draggedPost) return;
-                            event.preventDefault();
-                            const transferredId = event.dataTransfer.getData(CALENDAR_DRAG_MIME)
-                              || event.dataTransfer.getData("text/plain");
-                            if (transferredId && transferredId !== draggedPost.id) return;
-                            setDragOverDay(null);
-                            setDraggedPostId(null);
-                            void moveCalendarPost(draggedPost, day);
-                          }}
-                        />
-                      );
-                    })}
+                  <div className="-mx-4 overflow-x-auto overscroll-x-contain px-4 pb-2 sm:mx-0 sm:px-0">
+                    <div className="grid min-w-[64rem] grid-cols-7 gap-2 xl:min-w-0">
+                      {weekDays.map((day, i) => {
+                        const key = dayKey(day);
+                        const dropAllowed = canDropDraggedPostOn(day);
+                        return (
+                          <DayColumn
+                            key={day.toISOString()}
+                            day={day}
+                            index={i}
+                            posts={dayPosts(day)}
+                            isToday={sameDay(day, today)}
+                            isPast={day.getTime() < today.getTime()}
+                            onAdd={canEdit ? () => addPostOn(day) : undefined}
+                            onOpen={openPost}
+                            onRetry={canPublish ? retryCalendarPost : undefined}
+                            onReschedule={canPublish ? retryCalendarPost : undefined}
+                            canMovePost={canStartCalendarMove}
+                            movingPostId={movingPostId}
+                            draggedPostId={draggedPostId}
+                            dragging={draggedPost != null}
+                            dropActive={dragOverDay === key}
+                            dropAllowed={dropAllowed}
+                            onPostDragStart={startPostDrag}
+                            onPostDragEnd={endPostDrag}
+                            onPostLongPressDragStart={startPostLongPressDrag}
+                            onPostLongPressDragMove={movePostLongPressDrag}
+                            onPostLongPressDragEnd={endPostLongPressDrag}
+                            onPostLongPressDragCancel={cancelPostLongPressDrag}
+                            calendarTimezone={calendarTimezone}
+                            onDayDragEnter={(event) => {
+                              if (!dropAllowed) return;
+                              event.preventDefault();
+                              setDragOverDay(key);
+                            }}
+                            onDayDragOver={(event) => {
+                              if (!dropAllowed) return;
+                              event.preventDefault();
+                              event.dataTransfer.dropEffect = "move";
+                              if (dragOverDay !== key) setDragOverDay(key);
+                            }}
+                            onDayDragLeave={(event) => {
+                              const next = event.relatedTarget;
+                              if (next instanceof Node && event.currentTarget.contains(next)) return;
+                              if (dragOverDay === key) setDragOverDay(null);
+                            }}
+                            onDayDrop={(event) => {
+                              if (!dropAllowed || !draggedPost) return;
+                              event.preventDefault();
+                              const transferredId = event.dataTransfer.getData(CALENDAR_DRAG_MIME)
+                                || event.dataTransfer.getData("text/plain");
+                              if (transferredId && transferredId !== draggedPost.id) return;
+                              setDragOverDay(null);
+                              setDraggedPostId(null);
+                              void moveCalendarPost(draggedPost, day);
+                            }}
+                          />
+                        );
+                      })}
+                    </div>
                   </div>
-                ) : (
+                ) : view === "month" ? (
                   <div>
                     <div className="mb-1.5 grid grid-cols-7 gap-1.5">
                       {Array.from({ length: 7 }, (_, i) => (
@@ -2088,18 +2245,89 @@ export default function CalendarPage() {
                       ))}
                     </div>
                   </div>
+                ) : (
+                  <div className="space-y-3">
+                    {weekDays.map((day, index) => {
+                      const posts = dayPosts(day);
+                      return (
+                        <Card as="section" key={day.toISOString()} className="overflow-hidden" aria-labelledby={`calendar-list-day-${dayKey(day)}`}>
+                          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3">
+                            <div className="flex items-center gap-2">
+                              <h2 id={`calendar-list-day-${dayKey(day)}`} className="text-[14px] font-extrabold text-text">
+                                {weekdayFull(index)}, {fmtDate(day.toISOString())}
+                              </h2>
+                              <span className="nums text-[12px] text-text-3 tabular-nums">
+                                {posts.length} {plural(posts.length, "пост", "поста", "постов")}
+                              </span>
+                            </div>
+                            {canEdit && (
+                              <Button variant="ghost" size="sm" onClick={() => addPostOn(day)}>
+                                <Plus className="h-4 w-4" strokeWidth={2} aria-hidden />
+                                Новый пост
+                              </Button>
+                            )}
+                          </div>
+                          {posts.length === 0 ? (
+                            <p className="px-4 py-5 text-[13px] text-text-3">На этот день публикаций нет.</p>
+                          ) : (
+                            <ul className="divide-y divide-line">
+                              {posts.map((post) => (
+                                <li key={post.id}>
+                                  <button
+                                    type="button"
+                                    onClick={() => openPost(post)}
+                                    className="grid min-h-11 w-full grid-cols-[auto_minmax(0,1fr)] items-center gap-3 px-4 py-3 text-left transition-colors duration-150 hover:bg-surface-inset focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-brand motion-reduce:transition-none sm:grid-cols-[auto_auto_minmax(0,1fr)_auto]"
+                                  >
+                                    <span className="nums text-[13px] font-bold text-text tabular-nums">
+                                      {fmtTime(post.scheduledAt, post.scheduleTimezone ?? calendarTimezone)}
+                                    </span>
+                                    <Badge tone={calendarStatusTone(calendarRecordStatus(post))} className="hidden sm:inline-flex">
+                                      {CALENDAR_STATUS_LABEL[calendarRecordStatus(post)] ?? calendarRecordStatus(post)}
+                                    </Badge>
+                                    <span className="truncate text-[14px] text-text-2">{post.text}</span>
+                                    <NetworkChips networks={post.networks} />
+                                  </button>
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </Card>
+                      );
+                    })}
+                  </div>
                 )}
               </motion.div>
             </>
           )}
         </div>
 
-        {/* ----------------------------------------------- ПРАВАЯ КОЛОНКА */}
-        <aside className="w-full xl:sticky xl:top-6 xl:w-[320px] xl:shrink-0 xl:self-start">
+        {s.ready && view !== "month" && <WeekSummary posts={weekPosts} />}
+
+        {s.ready && (
+          <div className="grid gap-4 lg:grid-cols-[minmax(0,1.65fr)_minmax(17rem,0.75fr)]">
+            <UpcomingPublications
+              posts={upcomingPosts}
+              calendarTimezone={calendarTimezone}
+              onOpen={openPost}
+              onCreate={canEdit ? () => router.push("/app/composer?from=calendar") : undefined}
+              exportAction={canEdit ? (
+                <ProjectExportButton
+                  channels={s.realChannels}
+                  defaultKind="content_plan"
+                  initialPeriod={exportPeriod}
+                />
+              ) : null}
+            />
+            <CalendarTip />
+          </div>
+        )}
+
+        {/* --------------------------------------- ВТОРИЧНЫЕ МАТЕРИАЛЫ */}
+        <section aria-label="Дополнительные материалы календаря">
           {!s.ready ? (
             <SideSkeleton />
           ) : (
-            <div className="flex flex-col gap-4">
+            <div className="grid gap-4 lg:grid-cols-2 lg:items-start">
               {/* Очередь без дат */}
               <Card as="section" className="p-4">
                 <header className="flex items-center justify-between gap-2">
@@ -2349,7 +2577,7 @@ export default function CalendarPage() {
               </Card>
             </div>
           )}
-        </aside>
+        </section>
       </div>
 
       {canInspectPublication && (

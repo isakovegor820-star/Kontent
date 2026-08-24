@@ -5,19 +5,26 @@
 // данные, никаких фейков: нет движка/аналитики — честно помечаем.
 
 import { useCallback, useEffect, useId, useRef, useState, type CSSProperties } from "react";
+import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { motion, useReducedMotion } from "motion/react";
 import {
   AlertTriangle,
+  BarChart3,
   CalendarCheck,
+  CalendarDays,
   Check,
   ChevronDown,
   Clock,
+  Eye,
   Loader2,
   Newspaper,
+  Pause,
   Pencil,
+  Play,
   Rocket,
+  Send,
   Settings2,
   Sparkles,
   Wand2,
@@ -43,7 +50,6 @@ import {
   estimateAutopilotBuildMinutes,
   type AutopilotBuildMinuteEstimate,
 } from "@/lib/autopilot-build-progress.mjs";
-import { cn, plural } from "@/lib/utils";
 import { ChannelPicker, useChannelChoice } from "@/components/app/channel-picker";
 import {
   AUTOPILOT_ENGINE_OPTIONS,
@@ -62,6 +68,8 @@ import {
 import { sanitizeAutopilotPublicText } from "@/lib/autopilot-publication.mjs";
 import { autopilotCandidateCount } from "@/lib/autopilot-candidate-selection.mjs";
 import { autopilotBuildSpinnerClass } from "@/lib/autopilot-build-ui.mjs";
+import type { RealPost } from "@/lib/types";
+import { cn, fmtCompact, plural } from "@/lib/utils";
 
 interface PlanItem {
   i: number;
@@ -181,6 +189,18 @@ interface State {
   channelId: number | null;
 }
 
+interface OverviewPostStat {
+  id: number;
+  published_at: string;
+  views: number | null;
+  reactions: number | null;
+}
+
+interface OverviewStats {
+  posts?: OverviewPostStat[];
+  available?: { views?: boolean; reactions?: boolean; reach?: boolean };
+}
+
 const MSK = "Europe/Moscow";
 const fmtDayMsk = (iso: string) =>
   new Date(iso).toLocaleDateString("ru-RU", { timeZone: MSK, weekday: "short", day: "numeric" });
@@ -188,6 +208,56 @@ const fmtTimeMsk = (iso: string) =>
   new Date(iso).toLocaleTimeString("ru-RU", { timeZone: MSK, hour: "2-digit", minute: "2-digit" });
 const fmtRangeMsk = (iso: string) =>
   new Date(iso).toLocaleDateString("ru-RU", { timeZone: MSK, day: "numeric", month: "short" });
+
+const moscowDateKey = (value: string | Date) => {
+  const parts = new Intl.DateTimeFormat("en", {
+    timeZone: MSK,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(typeof value === "string" ? new Date(value) : value);
+  const read = (type: Intl.DateTimeFormatPartTypes) => parts.find((part) => part.type === type)?.value ?? "";
+  return `${read("year")}-${read("month")}-${read("day")}`;
+};
+
+const shiftDateKey = (key: string, days: number) => {
+  const date = new Date(`${key}T12:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+};
+
+const mondayDateKey = (value: string | Date) => {
+  const key = moscowDateKey(value);
+  const date = new Date(`${key}T12:00:00Z`);
+  const weekday = date.getUTCDay() || 7;
+  return shiftDateKey(key, 1 - weekday);
+};
+
+const dateForKey = (key: string) => new Date(`${key}T12:00:00Z`);
+
+const realPostMediaUrl = (media: unknown): string | null => {
+  if (!media || typeof media !== "object") return null;
+  const record = media as Record<string, unknown>;
+  if (typeof record.url === "string" && record.url) return record.url;
+  if (Array.isArray(record.items)) {
+    const first = record.items.find((item) => (
+      item && typeof item === "object" && typeof (item as Record<string, unknown>).url === "string"
+    )) as Record<string, unknown> | undefined;
+    return typeof first?.url === "string" ? first.url : null;
+  }
+  return null;
+};
+
+const realPostUrl = (post: RealPost): string | null => {
+  if (post.status !== "published" || post.verification_state !== "verified") return null;
+  if (post.network === "vk" && post.vk_group_id != null && post.vk_post_id != null) {
+    return `https://vk.com/wall-${post.vk_group_id}_${post.vk_post_id}`;
+  }
+  if (post.network === "tg" && post.handle && post.tg_message_id != null) {
+    return `https://t.me/${post.handle.replace(/^@/, "")}/${post.tg_message_id}`;
+  }
+  return null;
+};
 
 const fmtBuildEstimate = ({ min, max }: AutopilotBuildMinuteEstimate) => {
   if (max <= 0) return "меньше минуты";
@@ -256,6 +326,286 @@ function PostPreview({ text, expanded }: { text: string; expanded: boolean }) {
         </p>
       ))}
     </div>
+  );
+}
+
+function AutopilotHero({
+  enabled,
+  building,
+  hasPlan,
+  busy,
+  blocked,
+  onToggle,
+}: {
+  enabled: boolean;
+  building: boolean;
+  hasPlan: boolean;
+  busy: boolean;
+  blocked: boolean;
+  onToggle: () => void;
+}) {
+  const status = enabled ? "Автопилот активен" : "Автопилот на паузе";
+  const title = building
+    ? "Контент-план собирается"
+    : enabled && hasPlan
+      ? "Контент создаётся и публикуется"
+      : enabled
+        ? "Автопилот готов к работе"
+        : "Новые планы приостановлены";
+  const description = building
+    ? "Аврора подбирает темы, пишет посты и проверяет их перед добавлением в расписание."
+    : enabled
+      ? "Аврора подбирает темы, готовит посты и публикует их по подтверждённому расписанию."
+      : "Уже запланированные публикации остаются в календаре. Возобновите Автопилот, когда будете готовы.";
+
+  return (
+    <Card
+      as="section"
+      aria-labelledby="autopilot-hero-title"
+      className="relative overflow-hidden bg-info-soft p-0 ring-1 ring-brand/10"
+    >
+      <div className="relative z-10 flex min-h-[14.75rem] max-w-[48rem] flex-col items-start justify-center p-5 sm:p-7 lg:p-8">
+        <Badge tone={enabled ? "success" : "neutral"} className="gap-1.5 px-3 py-1.5">
+          {status}
+          <span className={cn("h-1.5 w-1.5 rounded-full", enabled ? "bg-success" : "bg-text-3")} aria-hidden />
+        </Badge>
+        <h2 id="autopilot-hero-title" className="mt-5 text-balance text-[22px] font-extrabold leading-tight tracking-tight text-text sm:text-[25px]">
+          {title}
+        </h2>
+        <p className="mt-2 max-w-[60ch] text-pretty text-[14px] leading-relaxed text-text-2">
+          {description}
+        </p>
+        <Button
+          type="button"
+          variant="outline"
+          size="md"
+          onClick={onToggle}
+          loading={busy}
+          disabled={busy || blocked || building}
+          className="mt-6 bg-surface/85"
+        >
+          {enabled ? (
+            <Pause className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
+          ) : (
+            <Play className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
+          )}
+          {enabled ? "Приостановить" : "Возобновить"}
+        </Button>
+      </div>
+
+      <div className="pointer-events-none absolute inset-y-0 right-0 hidden w-[42%] overflow-hidden sm:block" aria-hidden>
+        <div className="absolute top-2 right-3 h-52 w-52 rounded-full bg-brand/10 blur-2xl" />
+        <div className="absolute top-9 right-[18%] grid h-32 w-32 rotate-12 place-items-center rounded-full bg-surface/70 shadow-card ring-1 ring-white/50 backdrop-blur-md lg:h-36 lg:w-36">
+          <Rocket className="h-20 w-20 -translate-y-1 text-brand drop-shadow-[0_14px_18px_color-mix(in_oklch,var(--brand-1)_24%,transparent)] lg:h-24 lg:w-24" strokeWidth={1.55} />
+        </div>
+        <div className="absolute right-[-4rem] bottom-[-5rem] h-40 w-[30rem] rounded-[50%] bg-surface shadow-soft" />
+        <div className="absolute right-[18rem] bottom-[-3rem] h-28 w-28 rounded-full bg-surface" />
+        <div className="absolute right-[10rem] bottom-[-2rem] h-36 w-36 rounded-full bg-surface" />
+        <div className="absolute right-[2rem] bottom-[-3rem] h-32 w-32 rounded-full bg-surface" />
+      </div>
+    </Card>
+  );
+}
+
+function OverviewMetricCard({
+  icon,
+  label,
+  value,
+  note,
+  tone,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  note: string;
+  tone: "brand" | "success" | "violet";
+}) {
+  return (
+    <Card className="p-4 sm:p-5">
+      <div className="flex items-center gap-4">
+        <span
+          style={tone === "violet" ? {
+            backgroundColor: "color-mix(in oklch, oklch(0.65 0.18 292) 14%, var(--surface))",
+            color: "color-mix(in oklch, oklch(0.68 0.2 292) 78%, var(--text))",
+          } : undefined}
+          className={cn(
+            "flex h-14 w-14 shrink-0 items-center justify-center rounded-md",
+            tone === "brand" && "bg-brand/10 text-brand",
+            tone === "success" && "bg-success-soft text-success-text",
+          )}
+        >
+          {icon}
+        </span>
+        <div className="min-w-0">
+          <p className="text-[13px] font-semibold text-text-3">{label}</p>
+          <p className="nums mt-1 text-[25px] font-extrabold leading-none tracking-tight text-text tabular-nums">{value}</p>
+          <p className="mt-1.5 text-[12px] leading-snug text-text-3">{note}</p>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+interface OverviewScheduleDay {
+  key: string;
+  weekday: string;
+  date: number;
+  items: PlanItem[];
+}
+
+function WeekSchedule({ days }: { days: OverviewScheduleDay[] }) {
+  return (
+    <Card as="section" className="overflow-hidden p-0" aria-labelledby="autopilot-schedule-title">
+      <div className="p-4 pb-0 sm:p-5 sm:pb-0">
+        <h2 id="autopilot-schedule-title" className="text-[17px] font-extrabold tracking-tight text-text">
+          Расписание публикаций
+        </h2>
+      </div>
+      <div className="mt-4 overflow-x-auto overscroll-x-contain px-4 pb-2 sm:px-5">
+        <div className="grid min-w-[54rem] grid-cols-7 lg:min-w-0">
+          {days.map((day, index) => {
+            const item = day.items[0];
+            const published = item?.status === "published";
+            const scheduled = item?.status === "approved";
+            const status = published
+              ? "Опубликовано"
+              : scheduled
+                ? "Запланировано"
+                : item
+                  ? "Готово к просмотру"
+                  : null;
+            return (
+              <div key={day.key} className={cn("min-w-0 px-3 py-1 first:pl-0 last:pr-0", index > 0 && "border-l border-line")}>
+                <p className="text-[13px] font-bold capitalize text-text-2">
+                  {day.weekday} <span className="nums ml-1 text-text-3 tabular-nums">{day.date}</span>
+                </p>
+                {item ? (
+                  <div className="mt-5 min-h-[6.75rem]">
+                    <p className="nums text-[13px] font-extrabold text-text tabular-nums">{fmtTimeMsk(item.scheduledAt)}</p>
+                    <p className="mt-1 line-clamp-2 text-[13px] leading-snug text-text-2">{item.topic}</p>
+                    {status && (
+                      <p className={cn("mt-2 flex items-center gap-1.5 text-[12px] font-semibold", published ? "text-success-text" : "text-brand")}>
+                        <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", published ? "bg-success" : "bg-brand")} aria-hidden />
+                        {status}
+                      </p>
+                    )}
+                    {day.items.length > 1 && (
+                      <p className="mt-1 text-[12px] text-text-3">Ещё {day.items.length - 1}</p>
+                    )}
+                  </div>
+                ) : (
+                  <div className="mt-5 min-h-[6.75rem]">
+                    <p className="text-[13px] text-text-3">—</p>
+                    <p className="mt-1 text-[13px] text-text-3">{index >= 5 ? "Выходной" : "Нет публикаций"}</p>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      <div className="p-4 pt-2 sm:p-5 sm:pt-3">
+        <Link href="/app/calendar" className={buttonClassName({ variant: "outline", size: "sm" })}>
+          <CalendarDays className="h-4 w-4" strokeWidth={2} aria-hidden />
+          Смотреть полный календарь
+        </Link>
+      </div>
+    </Card>
+  );
+}
+
+function RecentPublicationCard({ post }: { post: RealPost }) {
+  const mediaUrl = realPostMediaUrl(post.media);
+  const href = realPostUrl(post);
+  const publishedAt = post.published_at ?? post.scheduled_at ?? post.created_at;
+  const content = (
+    <>
+      <div className="flex min-w-0 items-start gap-3">
+        <div className="min-w-0 flex-1">
+          <p className="nums text-[12px] text-text-3 tabular-nums">
+            {new Date(publishedAt).toLocaleDateString("ru-RU", { timeZone: MSK, weekday: "short", day: "numeric", month: "short" })}
+            {" · "}
+            {fmtTimeMsk(publishedAt)}
+          </p>
+          <h3 className="mt-2 line-clamp-3 text-[14px] font-bold leading-snug text-text">
+            {plainPostText(post.text)}
+          </h3>
+        </div>
+        {mediaUrl ? (
+          <Image
+            src={mediaUrl}
+            alt=""
+            width={80}
+            height={80}
+            unoptimized
+            loading="lazy"
+            className="h-20 w-20 shrink-0 rounded-sm object-cover outline outline-1 -outline-offset-1 outline-black/10 dark:outline-white/10"
+          />
+        ) : (
+          <span className="grid h-20 w-20 shrink-0 place-items-center rounded-sm bg-info-soft text-brand outline outline-1 -outline-offset-1 outline-black/10 dark:outline-white/10" aria-hidden>
+            <Send className="h-7 w-7" strokeWidth={1.6} />
+          </span>
+        )}
+      </div>
+      <p className="mt-auto flex items-center gap-1.5 pt-4 text-[12px] font-semibold text-success-text">
+        <span className="h-1.5 w-1.5 rounded-full bg-success" aria-hidden />
+        Опубликовано
+      </p>
+    </>
+  );
+
+  if (href) {
+    return (
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="flex min-h-[10.25rem] flex-col rounded-md bg-surface p-4 shadow-soft ring-1 ring-line transition-[transform,box-shadow] duration-200 hover:-translate-y-0.5 hover:shadow-card focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand motion-reduce:transition-none"
+        aria-label={`Открыть опубликованный пост: ${plainPostText(post.text).slice(0, 80)}`}
+      >
+        {content}
+      </a>
+    );
+  }
+
+  return <article className="flex min-h-[10.25rem] flex-col rounded-md bg-surface p-4 shadow-soft ring-1 ring-line">{content}</article>;
+}
+
+function RecentPublications({ posts, loading }: { posts: RealPost[]; loading: boolean }) {
+  return (
+    <Card
+      as="section"
+      className="p-4 sm:p-5"
+      aria-labelledby="autopilot-recent-title"
+      aria-busy={loading}
+    >
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 id="autopilot-recent-title" className="text-[17px] font-extrabold tracking-tight text-text">
+          Последние публикации
+        </h2>
+        <Link href="/app/calendar" className={buttonClassName({ variant: "outline", size: "sm" })}>
+          Смотреть все
+        </Link>
+      </div>
+      {loading ? (
+        <div className="mt-4 grid gap-3 md:grid-cols-3" role="status" aria-label="Загружаются последние публикации">
+          <div className="skeleton h-[10.25rem] rounded-md" />
+          <div className="skeleton h-[10.25rem] rounded-md" />
+          <div className="skeleton h-[10.25rem] rounded-md" />
+        </div>
+      ) : posts.length > 0 ? (
+        <div className="mt-4 grid gap-3 md:grid-cols-3">
+          {posts.map((post) => <RecentPublicationCard key={post.id} post={post} />)}
+        </div>
+      ) : (
+        <div className="mt-4 rounded-sm bg-surface-inset p-4">
+          <p className="text-[14px] font-semibold text-text">Публикаций Автопилота пока нет</p>
+          <p className="mt-1 max-w-[60ch] text-[13px] leading-relaxed text-text-2">
+            После первой подтверждённой публикации здесь появятся реальные результаты и ссылки на посты.
+          </p>
+        </div>
+      )}
+    </Card>
   );
 }
 
@@ -577,9 +927,12 @@ export default function AutopilotPage() {
   const router = useRouter();
   const reduce = useReducedMotion();
   const [data, setData] = useState<State | null>(null);
+  const [overviewStats, setOverviewStats] = useState<OverviewStats | null>(null);
+  const [overviewStatsLoading, setOverviewStatsLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [autopilotToggleBusy, setAutopilotToggleBusy] = useState(false);
   const [editorBusyIndex, setEditorBusyIndex] = useState<number | null>(null);
   const [expanded, setExpanded] = useState<number | null>(null); // какая карточка раскрыта целиком
   const [quickSettingsOpen, setQuickSettingsOpen] = useState(false);
@@ -675,6 +1028,41 @@ export default function AutopilotPage() {
       loadAbort.current?.abort();
     };
   }, [load]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!chId) {
+      queueMicrotask(() => {
+        if (cancelled) return;
+        setOverviewStats(null);
+        setOverviewStatsLoading(false);
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
+    const controller = new AbortController();
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setOverviewStats(null);
+      setOverviewStatsLoading(true);
+    });
+    void fetch(`/api/stats?channel=${chId}`, { cache: "no-store", signal: controller.signal })
+      .then(async (response) => {
+        const body = await response.json().catch(() => null) as OverviewStats | null;
+        if (response.ok && body) setOverviewStats(body);
+      })
+      .catch((error) => {
+        if ((error as Error)?.name === "AbortError") return;
+      })
+      .finally(() => {
+        if (!controller.signal.aborted && !cancelled) setOverviewStatsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [chId]);
 
   useEffect(() => {
     const moveId = Number(new URLSearchParams(window.location.search).get("growthMove"));
@@ -780,6 +1168,46 @@ export default function AutopilotPage() {
       await load();
     } finally {
       setBusy(false);
+    }
+  };
+
+  const toggleAutopilot = async () => {
+    if (busy || autopilotToggleBusy || !data?.settings || !chId) return;
+    const enabled = !data.settings.enabled;
+    setAutopilotToggleBusy(true);
+    try {
+      const response = await fetch("/api/autopilot/settings", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ channelId: chId, enabled }),
+      });
+      const result = await response.json().catch(() => null) as { ok?: boolean; error?: string } | null;
+      if (response.ok && result?.ok) {
+        s.toast({
+          kind: enabled ? "success" : "info",
+          title: enabled ? "Автопилот возобновлён" : "Автопилот приостановлен",
+          body: enabled
+            ? "Аврора снова будет готовить новые планы по расписанию."
+            : "Уже запланированные публикации остаются в календаре.",
+        });
+      } else {
+        s.toast({
+          kind: "danger",
+          title: enabled ? "Не удалось возобновить Автопилот" : "Не удалось приостановить Автопилот",
+          body: result?.error === "access_denied"
+            ? "У вас нет права менять режим публикации."
+            : "Проверьте подключение и повторите.",
+        });
+      }
+      await load();
+    } catch {
+      s.toast({
+        kind: "danger",
+        title: enabled ? "Не удалось возобновить Автопилот" : "Не удалось приостановить Автопилот",
+        body: "Проверьте подключение и повторите.",
+      });
+    } finally {
+      setAutopilotToggleBusy(false);
     }
   };
 
@@ -1158,10 +1586,15 @@ export default function AutopilotPage() {
 
   if (loading) {
     return (
-      <AppShell title="Автопилот">
-        <div className="space-y-4">
-          <div className="skeleton h-24 rounded-lg" />
-          <div className="skeleton h-64 rounded-lg" />
+      <AppShell title="Автопилот" subtitle="Аврора создаёт контент, публикует и анализирует результаты.">
+        <div className="space-y-5" role="status" aria-label="Загружается обзор Автопилота">
+          <div className="skeleton h-[14.75rem] rounded-lg" />
+          <div className="grid gap-3 md:grid-cols-3">
+            <div className="skeleton h-28 rounded-lg" />
+            <div className="skeleton h-28 rounded-lg" />
+            <div className="skeleton h-28 rounded-lg" />
+          </div>
+          <div className="skeleton h-56 rounded-lg" />
         </div>
       </AppShell>
     );
@@ -1169,7 +1602,7 @@ export default function AutopilotPage() {
 
   if (!data) {
     return (
-      <AppShell title="Автопилот">
+      <AppShell title="Автопилот" subtitle="Аврора создаёт контент, публикует и анализирует результаты.">
         <Card className="p-8 text-center" role="alert">
           <AlertTriangle className="mx-auto h-7 w-7 text-brand" aria-hidden />
           <p className="mt-3 text-[15px] font-semibold text-text">Не удалось загрузить Автопилот</p>
@@ -1190,7 +1623,7 @@ export default function AutopilotPage() {
   // фоне «Сначала подключи канал» мигало бы человеку, у которого канал давно подключён.
   if (!data.hasChannel) {
     return (
-      <AppShell title="Автопилот" subtitle="Выбери любой период от 1 до 12 недель.">
+      <AppShell title="Автопилот" subtitle="Аврора создаёт контент, публикует и анализирует результаты.">
         <Card className="py-4">
           <EmptyState
             icon={<Rocket className="h-6 w-6" strokeWidth={1.75} aria-hidden />}
@@ -1223,7 +1656,7 @@ export default function AutopilotPage() {
     return (
       <AppShell
         title="Автопилот"
-        subtitle="Выбери любой период от 1 до 12 недель."
+        subtitle="Аврора создаёт контент, публикует и анализирует результаты."
       >
         {picker}
         <Card className="py-4">
@@ -1290,11 +1723,73 @@ export default function AutopilotPage() {
     "ru-RU",
     { day: "numeric", month: "long", year: "numeric" },
   );
+  const currentWeekStartKey = mondayDateKey(new Date());
+  const currentWeekEndKey = shiftDateKey(currentWeekStartKey, 7);
+  const recentAutopilotPosts = s.realPosts
+    .filter((post) => (
+      post.channel_id === chId &&
+      post.publication_origin === "autopilot" &&
+      post.status === "published" &&
+      Boolean(post.published_at ?? post.scheduled_at)
+    ))
+    .sort((a, b) => new Date(b.published_at ?? b.scheduled_at ?? b.created_at).getTime() - new Date(a.published_at ?? a.scheduled_at ?? a.created_at).getTime());
+  const weeklyPublishedPosts = recentAutopilotPosts.filter((post) => {
+    const key = moscowDateKey(post.published_at ?? post.scheduled_at ?? post.created_at);
+    return key >= currentWeekStartKey && key < currentWeekEndKey;
+  });
+  const overviewStatsByPost = new Map((overviewStats?.posts ?? []).map((post) => [post.id, post]));
+  const weeklyMeasuredStats = weeklyPublishedPosts
+    .map((post) => overviewStatsByPost.get(post.id))
+    .filter((post): post is OverviewPostStat => Boolean(post && post.views != null));
+  const weeklyViews = weeklyMeasuredStats.reduce((total, post) => total + (post.views ?? 0), 0);
+  const weeklyReactions = weeklyMeasuredStats.reduce((total, post) => total + (post.reactions ?? 0), 0);
+  const weeklyEngagement = weeklyViews > 0 ? `${Math.round((weeklyReactions / weeklyViews) * 1000) / 10}%` : "—";
+  const metricNote = overviewStatsLoading
+    ? "Метрики обновляются"
+    : weeklyMeasuredStats.length > 0
+      ? "за текущую неделю"
+      : "Данных за неделю пока нет";
+  const scheduleReference = visible.find((item) => (
+    moscowDateKey(item.scheduledAt) >= currentWeekStartKey && item.status !== "published"
+  ))?.scheduledAt ?? visible[0]?.scheduledAt ?? new Date();
+  const scheduleWeekStart = mondayDateKey(scheduleReference);
+  const scheduleDays: OverviewScheduleDay[] = Array.from({ length: 7 }, (_, index) => {
+    const key = shiftDateKey(scheduleWeekStart, index);
+    const date = dateForKey(key);
+    return {
+      key,
+      weekday: new Intl.DateTimeFormat("ru-RU", { weekday: "short", timeZone: "UTC" }).format(date).replace(".", ""),
+      date: date.getUTCDate(),
+      items: visible.filter((item) => moscowDateKey(item.scheduledAt) === key),
+    };
+  });
 
   return (
     <AppShell
       title="Автопилот"
-      subtitle="Аврора сама найдёт свежие инфоповоды, выберет интересные темы и подготовит готовые посты."
+      subtitle="Аврора создаёт контент, публикует и анализирует результаты."
+      action={
+        <div className="flex flex-wrap items-center gap-2">
+          <Link
+            href={`/app/settings${chId ? `?channel=${chId}` : ""}`}
+            className={buttonClassName({ variant: "outline", size: "md" })}
+          >
+            <Settings2 className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
+            Настройки
+          </Link>
+          <Button
+            type="button"
+            variant="brand"
+            size="md"
+            onClick={generate}
+            loading={busy}
+            disabled={busy || autopilotToggleBusy || building}
+          >
+            <Play className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
+            {building ? "План собирается" : "Запустить автопилот"}
+          </Button>
+        </div>
+      }
     >
       {picker}
       {growthNotice && (
@@ -1302,43 +1797,57 @@ export default function AutopilotPage() {
           <p className="text-[14px] leading-relaxed text-text">{growthNotice}</p>
         </Card>
       )}
-      {/* Короткое резюме канала. Редкие ограничения и стратегия остаются в полных настройках. */}
-      <Card className="mb-5 p-4 sm:p-5">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge tone={st.enabled ? "success" : "neutral"}>
-                {st.enabled ? "Автопилот включён" : "Автопилот выключен"}
-              </Badge>
-              <Badge tone="neutral">
-                {st.post_frequency} {plural(st.post_frequency, "публикация", "публикации", "публикаций")} в неделю
-              </Badge>
-              <Badge tone="neutral">
-                {st.mode === "full" ? "без подтверждения" : "с подтверждением"}
-              </Badge>
-            </div>
-            <p className="mt-3 min-w-0 text-[13px] leading-relaxed text-text-3">
-              <span className="font-semibold text-text-2">Пишу про: </span>
-              {data.brief?.niche}
-              {data.brief?.audience && (
-                <>
-                  <span className="font-semibold text-text-2"> · для кого: </span>
-                  {data.brief.audience}
-                </>
-              )}
-            </p>
-          </div>
-          <Link
-            href={`/app/settings${chId ? `?channel=${chId}` : ""}`}
-            className={buttonClassName({ variant: "outline", size: "sm", className: "shrink-0" })}
-          >
-            <Settings2 className="h-4 w-4" aria-hidden />
-            Настройки канала
-          </Link>
-        </div>
-      </Card>
 
-      <Card className="mb-5 p-4 sm:p-5">
+      <AutopilotHero
+        enabled={st.enabled}
+        building={building}
+        hasPlan={hasUsablePlan}
+        busy={autopilotToggleBusy}
+        blocked={busy}
+        onToggle={() => void toggleAutopilot()}
+      />
+
+      <div className="mt-5 grid gap-3 md:grid-cols-3">
+        <OverviewMetricCard
+          icon={<Send className="h-6 w-6" strokeWidth={1.75} aria-hidden />}
+          label="Опубликовано"
+          value={s.realReady ? String(weeklyPublishedPosts.length) : "—"}
+          note={s.realReady ? "за текущую неделю" : "Публикации загружаются"}
+          tone="brand"
+        />
+        <OverviewMetricCard
+          icon={<Eye className="h-6 w-6" strokeWidth={1.75} aria-hidden />}
+          label="Просмотры"
+          value={weeklyMeasuredStats.length > 0 ? fmtCompact(weeklyViews) : "—"}
+          note={metricNote}
+          tone="success"
+        />
+        <OverviewMetricCard
+          icon={<BarChart3 className="h-6 w-6" strokeWidth={1.75} aria-hidden />}
+          label="Вовлечённость"
+          value={weeklyEngagement}
+          note={metricNote}
+          tone="violet"
+        />
+      </div>
+
+      <div className="mt-5">
+        <WeekSchedule days={scheduleDays} />
+      </div>
+
+      <div className="mt-5">
+        <RecentPublications posts={recentAutopilotPosts.slice(0, 3)} loading={!s.realReady} />
+      </div>
+
+      <Card as="section" className="mt-5 mb-5 p-4 sm:p-5" aria-labelledby="autopilot-plan-settings-title">
+        <div className="mb-4">
+          <h2 id="autopilot-plan-settings-title" className="text-[17px] font-extrabold tracking-tight text-text">
+            Параметры следующего плана
+          </h2>
+          <p className="mt-1 text-[13px] leading-relaxed text-text-3">
+            Аврора сохранит правила канала и применит эти параметры к новой сборке.
+          </p>
+        </div>
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div className="min-w-0 lg:max-w-xs lg:flex-1">
             <label htmlFor="autopilot-horizon" className="text-[13px] font-semibold text-text">
@@ -1349,7 +1858,7 @@ export default function AutopilotPage() {
               value={planningWeeks}
               onChange={(event) => setPlanningWeeks(Number(event.target.value))}
               disabled={busy || building}
-              className="mt-2 h-11 w-full rounded-md border border-line bg-surface px-3 text-[14px] font-semibold text-text outline-none transition-colors focus-visible:border-brand focus-visible:ring-2 focus-visible:ring-brand/20 disabled:cursor-not-allowed disabled:opacity-60"
+              className="mt-2 h-11 w-full rounded-md border border-line bg-surface px-3 text-base font-semibold text-text outline-none transition-colors focus-visible:border-brand focus-visible:ring-2 focus-visible:ring-brand/20 disabled:cursor-not-allowed disabled:opacity-60 sm:text-[14px]"
             >
               {Array.from(
                 { length: MAX_AUTOPILOT_PLANNING_WEEKS - MIN_AUTOPILOT_PLANNING_WEEKS + 1 },
@@ -1376,16 +1885,6 @@ export default function AutopilotPage() {
             >
               <Settings2 className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
               Настроить посты
-            </Button>
-            <Button
-              variant="brand"
-              onClick={generate}
-              loading={busy}
-              disabled={busy || building}
-              className="min-h-11 shrink-0 lg:min-w-[230px]"
-            >
-              <Sparkles className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
-              {building ? "План собирается" : `${hasUsablePlan ? "Обновить" : "Собрать"} ${plannedCount} ${plural(plannedCount, "пост", "поста", "постов")}`}
             </Button>
           </div>
         </div>

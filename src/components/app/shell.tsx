@@ -90,8 +90,8 @@ const NAV_CHILDREN: Partial<Record<AppNavRouteId, readonly NavChild[]>> = {
     { href: "/app/studio?mode=media", label: "Картинки и видео" },
   ],
   autopilot: [
-    { href: "/app/autopilot", label: "Недельный план" },
-    { href: "/app/autopilot/month", label: "Кампания на месяц" },
+    { href: "/app/autopilot", label: "Обзор" },
+    { href: "/app/autopilot/month", label: "Месяц" },
   ],
   library: [
     { href: "/app/library?tab=hits", label: "Референсы", preserveParams: ["channel"] },

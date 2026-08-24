@@ -55,6 +55,27 @@ describe("Autopilot build UI contract", () => {
     expect(source).not.toContain("Почему такой план");
   });
 
+  it("implements the Autopilot overview hierarchy from the approved design", () => {
+    expect(source).toContain("Аврора создаёт контент, публикует и анализирует результаты.");
+    expect(source).toContain("Контент создаётся и публикуется");
+    expect(source).toContain("Расписание публикаций");
+    expect(source).toContain("Последние публикации");
+    expect(source).toContain("Смотреть полный календарь");
+    expect(source).toContain("Опубликовано");
+    expect(source).toContain("Просмотры");
+    expect(source).toContain("Вовлечённость");
+    expect(source).toContain('publication_origin === "autopilot"');
+    expect(source).not.toContain("12.4K");
+    expect(source).not.toContain("8.7%");
+  });
+
+  it("pauses and resumes through the real server setting", () => {
+    expect(source).toContain('fetch("/api/autopilot/settings"');
+    expect(source).toContain("Автопилот приостановлен");
+    expect(source).toContain("Автопилот возобновлён");
+    expect(source).toContain("Уже запланированные публикации остаются в календаре");
+  });
+
   it("waits for each poll to finish and reports generation/cancel network failures", () => {
     expect(source).not.toContain("setInterval(load, 3000)");
     expect(source).toContain("setTimeout(poll, 3000)");

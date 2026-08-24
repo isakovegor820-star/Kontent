@@ -51,10 +51,20 @@ describe("calendar role-aware interface", () => {
     expect(source).not.toContain("deleteDraftAfterAck");
   });
 
-  it("allows weekly cards to shrink inside a narrow mobile viewport", () => {
-    expect(source).toContain('"group/day min-w-0 flex flex-col rounded-md');
+  it("contains the seven-column board in its own mobile scroll region", () => {
+    expect(source).toContain('"group/day min-w-0 flex min-h-[27rem] flex-col');
     expect(source).toContain('"relative min-w-0 rounded-sm border-l-2');
-    expect(source).toContain('className="grid min-w-0 gap-2 xl:grid-cols-7"');
+    expect(source).toContain('className="-mx-4 overflow-x-auto overscroll-x-contain');
+    expect(source).toContain('className="grid min-w-[64rem] grid-cols-7 gap-2 xl:min-w-0"');
+  });
+
+  it("implements the variant-one calendar hierarchy", () => {
+    expect(source).toContain('type View = "week" | "month" | "list"');
+    expect(source).toContain("Планируйте, публикуйте и отслеживайте контент.");
+    expect(source).toContain("Статистика недели");
+    expect(source).toContain("Ближайшие публикации");
+    expect(source).toContain("Постов на неделе");
+    expect(source).toContain("Вовлечённость");
   });
 
   it("moves eligible weekly cards between future days and persists the new date", () => {
