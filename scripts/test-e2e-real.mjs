@@ -36,8 +36,46 @@ if (!['127.0.0.1', 'localhost'].includes(redisTarget.hostname) || redisTarget.pa
   throw new Error("real E2E requires disposable local Redis database 15");
 }
 
-const webPort = Number(process.env.E2E_WEB_PORT || 43190);
-const fakePort = Number(process.env.E2E_FAKE_PORT || 43191);
+async function reserveEphemeralPorts(count) {
+  const servers = [];
+  try {
+    for (let index = 0; index < count; index += 1) {
+      const server = http.createServer();
+      await new Promise((resolveListen, rejectListen) => {
+        server.once("error", rejectListen);
+        server.listen(0, "127.0.0.1", resolveListen);
+      });
+      servers.push(server);
+    }
+    return servers.map((server) => {
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("unable to reserve an E2E TCP port");
+      return address.port;
+    });
+  } finally {
+    await Promise.all(servers.map((server) => new Promise((resolveClose) => server.close(resolveClose))));
+  }
+}
+
+function configuredPort(name) {
+  const raw = String(process.env[name] || "").trim();
+  if (!raw) return null;
+  const port = Number(raw);
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
+    throw new Error(`${name} must be an integer TCP port between 1 and 65535`);
+  }
+  return port;
+}
+
+const configuredWebPort = configuredPort("E2E_WEB_PORT");
+const configuredFakePort = configuredPort("E2E_FAKE_PORT");
+const automaticPorts = await reserveEphemeralPorts(
+  Number(configuredWebPort == null) + Number(configuredFakePort == null),
+);
+let automaticPortIndex = 0;
+const webPort = configuredWebPort ?? automaticPorts[automaticPortIndex++];
+const fakePort = configuredFakePort ?? automaticPorts[automaticPortIndex++];
+if (webPort === fakePort) throw new Error("E2E web and fake-provider ports must be different");
 const UI_WAIT_TIMEOUT_MS = 30_000;
 const RUNTIME_WAIT_TIMEOUT_MS = 120_000;
 const API_REQUEST_TIMEOUT_MS = RUNTIME_WAIT_TIMEOUT_MS;

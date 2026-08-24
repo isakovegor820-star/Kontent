@@ -28,4 +28,15 @@ describe("real E2E runtime isolation", () => {
     expect(source).toContain("const API_REQUEST_TIMEOUT_MS = RUNTIME_WAIT_TIMEOUT_MS");
     expect(explicitBudgets.length).toBeGreaterThanOrEqual(6);
   });
+
+  it("reserves dynamic ports instead of relying on shared runner defaults", () => {
+    const source = readFileSync(resolve("scripts/test-e2e-real.mjs"), "utf8");
+
+    expect(source).toContain("async function reserveEphemeralPorts(count)");
+    expect(source).toContain('server.listen(0, "127.0.0.1", resolveListen)');
+    expect(source).toContain('configuredPort("E2E_WEB_PORT")');
+    expect(source).toContain('configuredPort("E2E_FAKE_PORT")');
+    expect(source).not.toContain("process.env.E2E_WEB_PORT || 43190");
+    expect(source).not.toContain("process.env.E2E_FAKE_PORT || 43191");
+  });
 });
