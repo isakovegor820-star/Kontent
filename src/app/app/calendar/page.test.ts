@@ -52,7 +52,7 @@ describe("calendar role-aware interface", () => {
   });
 
   it("contains the seven-column board in its own mobile scroll region", () => {
-    expect(source).toContain('"group/day min-w-0 flex min-h-[27rem] flex-col');
+    expect(source).toContain('"group/day relative min-w-0 flex min-h-[27rem] flex-col');
     expect(source).toContain('"relative min-w-0 rounded-sm border-l-2');
     expect(source).toContain('className="-mx-4 overflow-x-auto overscroll-x-contain');
     expect(source).toContain('className="grid min-w-[64rem] grid-cols-7 gap-2 xl:min-w-0"');
@@ -69,25 +69,35 @@ describe("calendar role-aware interface", () => {
 
   it("moves eligible weekly cards between future days and persists the new date", () => {
     expect(source).toContain('data-calendar-draggable={canMove && !moving ? "true" : undefined}');
-    expect(source).toContain('draggable={canMove && !moving}');
-    expect(source).toContain('const CALENDAR_DRAG_MIME = "application/x-aurora-calendar-post"');
+    expect(source).toContain("<CalendarDragOverlay");
+    expect(source).toContain("<LayoutGroup");
+    expect(source).toContain("setOptimisticSchedules");
     expect(source).toContain("resolveCalendarDayMove");
     expect(source).toContain("rescheduleServerDraft");
     expect(source).toContain("reschedulePublication");
-    expect(source).toContain("Перенести сюда");
+    expect(source).toContain("Отпустите здесь");
     expect(source).toContain("Время публикации сохранено");
     expect(source).toContain('role="status" aria-live="polite"');
   });
 
   it("supports long-press pointer dragging on touch screens without breaking scroll", () => {
     expect(source).toContain("createCalendarLongPressDrag");
-    expect(source).toContain("onPointerDown={(event) =>");
-    expect(source).toContain("onPointerMove={(event) =>");
-    expect(source).toContain("onPointerCancel={(event) =>");
+    expect(source).toContain("startPointerSession");
+    expect(source).toContain("onPointerMove={movePointerSession}");
+    expect(source).toContain("onPointerCancel={cancelPointerSession}");
     expect(source).toContain('window.addEventListener("touchmove", blocker, { passive: false })');
     expect(source).toContain('document.elementFromPoint(point.clientX, point.clientY)');
     expect(source).toContain("calendarDragAutoScrollDelta");
-    expect(source).toContain("Удерживайте карточку до подсветки");
+    expect(source).toContain("на телефоне удерживайте карточку");
+    expect(source).toContain("data-calendar-week-scroller");
+  });
+
+  it("offers a keyboard-accessible day picker for movable cards", () => {
+    expect(source).toContain("<CalendarMoveDialog");
+    expect(source).toContain('aria-haspopup="dialog"');
+    expect(source).toContain("Перетащить или выбрать другой день");
+    expect(source).toContain('role="dialog"');
+    expect(source).toContain('if (event.key === "Escape")');
   });
 
   it("only makes scheduled publications draggable", () => {

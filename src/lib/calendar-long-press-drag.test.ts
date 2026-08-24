@@ -98,6 +98,46 @@ describe("calendar long-press drag", () => {
     expect(gesture.hasSession()).toBe(false);
   });
 
+  it("keeps a mouse tap clickable and activates a custom drag only after movement", () => {
+    const callbacks = {
+      onActivate: vi.fn(() => true),
+      onMove: vi.fn(),
+      onDrop: vi.fn(),
+      onCancel: vi.fn(),
+    };
+    const gesture = createCalendarLongPressDrag(callbacks, { mouseActivation: "threshold" });
+
+    expect(gesture.pointerDown({
+      pointerId: 2,
+      pointerType: "mouse",
+      isPrimary: true,
+      point: { clientX: 20, clientY: 20 },
+    })).toBe(true);
+    expect(gesture.pointerUp({
+      pointerId: 2,
+      point: { clientX: 20, clientY: 20 },
+    })).toBe(false);
+    expect(callbacks.onActivate).not.toHaveBeenCalled();
+
+    gesture.pointerDown({
+      pointerId: 3,
+      pointerType: "mouse",
+      isPrimary: true,
+      point: { clientX: 20, clientY: 20 },
+    });
+    expect(gesture.pointerMove({
+      pointerId: 3,
+      point: { clientX: 20 + CALENDAR_LONG_PRESS_TOLERANCE_PX + 1, clientY: 20 },
+    })).toBe("dragging");
+    expect(callbacks.onActivate).toHaveBeenCalledWith({ clientX: 20, clientY: 20 });
+    expect(callbacks.onMove).toHaveBeenCalled();
+    expect(gesture.pointerUp({
+      pointerId: 3,
+      point: { clientX: 60, clientY: 20 },
+    })).toBe(true);
+    expect(callbacks.onDrop).toHaveBeenCalledWith({ clientX: 60, clientY: 20 });
+  });
+
   it("scrolls only near viewport edges and keeps the direction", () => {
     expect(calendarDragAutoScrollDelta(10, 800)).toBeLessThan(0);
     expect(calendarDragAutoScrollDelta(400, 800)).toBe(0);
