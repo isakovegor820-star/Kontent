@@ -1,3 +1,4 @@
+import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 
 import { getSessionUser } from "@/lib/session";
@@ -38,7 +39,7 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const input = parseDraftCreateInput(await req.json());
+    const input = parseDraftCreateInput(await readJsonBodyValue(req));
     const result = await createDraftForUser(user.id, input);
     return NextResponse.json(
       { ok: true, draft: result.draft, created: result.created },

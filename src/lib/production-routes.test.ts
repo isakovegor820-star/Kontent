@@ -33,6 +33,7 @@ describe("production route surface", () => {
       "/quality/:path*",
       "/how/:path*",
       "/cycle/:path*",
+      "/rss/:path*",
     ]) {
       expect(sources.has(source), `${source} must not remain public`).toBe(true);
     }

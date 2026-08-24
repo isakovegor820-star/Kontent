@@ -179,7 +179,7 @@ export function AuthScreen({ mode, intent = "platform" }: { mode: AuthMode; inte
       <div className={styles.shell}>
         <section className={styles.formPanel} aria-labelledby="auth-title">
           <p className={styles.eyebrow}>
-            {isAdmin ? "Защищённый контур" : isRegistration ? "14 дней бесплатно" : "Личный кабинет"}
+            {isAdmin ? "Защищённый контур" : isRegistration ? "Без банковской карты" : "Личный кабинет"}
           </p>
           <h1 id="auth-title">
             {isAdmin ? "Вход в центр управления" : isRegistration ? "Создайте аккаунт" : "С возвращением"}
@@ -296,6 +296,13 @@ export function AuthScreen({ mode, intent = "platform" }: { mode: AuthMode; inte
               {isAdmin ? "Войти в админ-панель" : isRegistration ? "Создать аккаунт" : "Войти в платформу"}
               {!pending ? <ArrowRight aria-hidden="true" /> : null}
             </Button>
+
+            {isRegistration ? (
+              <p className={styles.legalNote}>
+                Создавая аккаунт, вы принимаете <Link href="/terms">условия использования</Link>{" "}
+                и подтверждаете, что ознакомились с <Link href="/privacy">политикой конфиденциальности</Link>.
+              </p>
+            ) : null}
           </form>
 
           {!isAdmin ? (

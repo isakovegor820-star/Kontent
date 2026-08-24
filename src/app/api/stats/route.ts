@@ -157,6 +157,12 @@ export async function GET(req: NextRequest) {
     // --- Человеческий вывод из реальных данных (не зашит) ---
     const cohort = summarizeAnalyticsCohort(posts);
     const verifiedPosts = cohort.verifiedPosts;
+    const serializedPosts = verifiedPosts.map((post) => ({
+      ...post,
+      // Keep analytics identities compatible with /api/posts. Both originate from bigint
+      // columns and must use the same runtime type for metric joins in the dashboard.
+      id: Number(post.id),
+    }));
     const withViews = cohort.withMetrics;
     const totalViews = cohort.totalViews;
     const avgViews = cohort.avgViews;
@@ -202,7 +208,7 @@ export async function GET(req: NextRequest) {
       latestSubs,
       growth7d,
       subscriberSeries: subSeries,
-      posts: verifiedPosts,
+      posts: serializedPosts,
       totals: {
         published: verifiedPosts.length,
         withMetrics: withViews.length,

@@ -5,6 +5,7 @@ import "../v3/v3.css";
 export const metadata: Metadata = {
   title: "4 варианта RSS-лент — Аврора",
   description: "Четыре продуктовых концепции экрана управления RSS-лентами.",
+  robots: { index: false, follow: false },
 };
 
 export default function RssDesignLayout({ children }: { children: React.ReactNode }) {

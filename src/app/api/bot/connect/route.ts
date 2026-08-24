@@ -1,3 +1,4 @@
+import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 
 import {
@@ -24,7 +25,7 @@ function botUsername(): string | null {
 
 async function readBody(req: NextRequest): Promise<ConnectBody | null> {
   try {
-    const value = await req.json();
+    const value = await readJsonBodyValue(req);
     return value && typeof value === "object" && !Array.isArray(value)
       ? value as ConnectBody
       : null;

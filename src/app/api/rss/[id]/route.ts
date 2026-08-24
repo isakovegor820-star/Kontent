@@ -1,5 +1,6 @@
 // RSS-фид по id: DELETE — удалить, PATCH — пауза/возобновление, лимит.
 
+import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 import type { PoolClient } from "pg";
 import { getPool } from "@/lib/db";
@@ -113,7 +114,7 @@ export async function PATCH(req: NextRequest, { params }: Params) {
 
   let body: unknown;
   try {
-    body = await req.json();
+    body = await readJsonBodyValue(req);
   } catch {
     return NextResponse.json({ ok: false, error: "bad_request" }, { status: 400 });
   }

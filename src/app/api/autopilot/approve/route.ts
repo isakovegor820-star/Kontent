@@ -1,6 +1,7 @@
 // Д.9 — безопасное массовое одобрение плана.
 // Сначала сервер возвращает точный preview, затем принимает отдельный confirm с idempotency key.
 
+import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { createHash } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
@@ -166,7 +167,7 @@ export async function POST(req: NextRequest) {
 
   let body: RequestBody;
   try {
-    body = await req.json();
+    body = await readJsonBodyValue(req);
   } catch {
     return NextResponse.json({ ok: false, error: "bad_request" }, { status: 400 });
   }

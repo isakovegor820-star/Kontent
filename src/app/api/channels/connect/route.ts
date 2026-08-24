@@ -2,6 +2,7 @@
 // своего канала → присылает @адрес или id → сервер проверяет, что бот реально
 // имеет доступ и право публикации (getChat + getChatMember), и сохраняет канал.
 
+import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
@@ -44,7 +45,7 @@ export async function POST(req: NextRequest) {
 
   let body: unknown;
   try {
-    body = await req.json();
+    body = await readJsonBodyValue(req);
   } catch {
     return NextResponse.json({ ok: false, error: "bad_request" }, { status: 400 });
   }

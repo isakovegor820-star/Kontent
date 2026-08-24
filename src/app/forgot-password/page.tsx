@@ -63,6 +63,7 @@ export default function ForgotPasswordPage() {
             <Field label="Почта" htmlFor="reset-email">
               <Input
                 id="reset-email"
+                name="email"
                 type="email"
                 autoComplete="email"
                 value={email}

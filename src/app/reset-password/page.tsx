@@ -81,10 +81,10 @@ export default function ResetPasswordPage() {
         ) : (
           <form onSubmit={submit} className="mt-5 space-y-4">
             <Field label="Новый пароль" htmlFor="new-password">
-              <Input id="new-password" type="password" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} />
+              <Input id="new-password" name="password" type="password" autoComplete="new-password" minLength={8} value={password} onChange={(event) => setPassword(event.target.value)} />
             </Field>
             <Field label="Повтори пароль" htmlFor="confirm-password">
-              <Input id="confirm-password" type="password" autoComplete="new-password" value={confirm} onChange={(event) => setConfirm(event.target.value)} />
+              <Input id="confirm-password" name="password-confirmation" type="password" autoComplete="new-password" minLength={8} value={confirm} onChange={(event) => setConfirm(event.target.value)} />
             </Field>
             {error && <p role="alert" className="text-[13px] font-medium text-danger-text">{error}</p>}
             <Button type="submit" variant="brand" size="lg" className="w-full" loading={pending}>

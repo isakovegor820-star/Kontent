@@ -1,3 +1,4 @@
+import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 
 import { getGrowthMove, isGrowthAccessError, updateGrowthMoveStatus } from "@/lib/growth";
@@ -50,7 +51,7 @@ export async function POST(req: NextRequest, { params }: Context) {
 
   let body: { action?: string } = {};
   try {
-    body = await req.json();
+    body = await readJsonBodyValue(req);
   } catch {
     return NextResponse.json({ error: "bad_body" }, { status: 400 });
   }

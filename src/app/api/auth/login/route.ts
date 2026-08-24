@@ -1,6 +1,7 @@
 // Вход по почте и паролю. Проверяем пароль по хешу, при успехе — сессия на 30 дней.
 // На неверную почту и неверный пароль отвечаем одинаково — не подсказываем, что именно не так.
 
+import { JsonBodyReadError, readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { createSession } from "@/lib/session";
@@ -9,6 +10,7 @@ import { checkRateLimit, clientIp, rateLimitResponse } from "@/lib/rate-limit";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 
 export const runtime = "nodejs";
+const AUTH_BODY_MAX_BYTES = 16 * 1024;
 
 export async function POST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req, { requireBrowserOrigin: true })) {
@@ -16,9 +18,11 @@ export async function POST(req: NextRequest) {
   }
   let body: unknown;
   try {
-    body = await req.json();
-  } catch {
-    return NextResponse.json({ ok: false, error: "bad_request" }, { status: 400 });
+    body = await readJsonBodyValue(req, AUTH_BODY_MAX_BYTES);
+  } catch (error) {
+    const status = error instanceof JsonBodyReadError ? error.status : 400;
+    const code = error instanceof JsonBodyReadError ? error.code : "bad_request";
+    return NextResponse.json({ ok: false, error: code }, { status });
   }
 
   const b = body as { email?: unknown; password?: unknown };

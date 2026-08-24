@@ -66,6 +66,42 @@ describe("resolveMediaBytes", () => {
     expect(buffer.length).toBe(3);
   });
 
+  it("downloads only through the pinned public-network client with a byte ceiling", async () => {
+    const fetchPublicBuffer = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      headers: { "content-type": "video/webm; charset=binary" },
+      buffer: Buffer.from("video"),
+    }));
+
+    const resolved = await resolveMediaBytes("https://cdn.example/video.webm", {
+      maxBytes: 16,
+      fetchPublicBuffer,
+    });
+
+    expect(resolved).toMatchObject({ contentType: "video/webm" });
+    expect(fetchPublicBuffer).toHaveBeenCalledWith(
+      "https://cdn.example/video.webm",
+      expect.objectContaining({ maxBytes: 16, httpsOnly: true, maxRedirects: 4 }),
+    );
+  });
+
+  it("rejects private URL targets and oversized in-memory sources", async () => {
+    await expect(resolveMediaBytes("https://127.0.0.1/video.mp4", { maxBytes: 16 }))
+      .rejects.toMatchObject({ code: "private_address" });
+    await expect(resolveMediaBytes(new Uint8Array(17), { maxBytes: 16 }))
+      .rejects.toMatchObject({ code: "youtube_media_too_large" });
+    const oversizedData = `data:video/mp4;base64,${Buffer.alloc(17).toString("base64")}`;
+    await expect(resolveMediaBytes(oversizedData, { maxBytes: 16 }))
+      .rejects.toMatchObject({ code: "youtube_media_too_large" });
+  });
+
+  it("rejects non-video payload declarations", async () => {
+    const dataUrl = `data:text/html;base64,${Buffer.from("<html>").toString("base64")}`;
+    await expect(resolveMediaBytes(dataUrl, { maxBytes: 64 }))
+      .rejects.toMatchObject({ code: "youtube_media_type_invalid" });
+  });
+
   it("бросается на пустой источник", async () => {
     await expect(resolveMediaBytes(null)).rejects.toThrow();
     await expect(resolveMediaBytes({})).rejects.toThrow();

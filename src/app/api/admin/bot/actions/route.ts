@@ -1,3 +1,4 @@
+import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 
 import { hasAuroraAdminAccess } from "@/lib/admin-access";
@@ -28,7 +29,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "access_denied" }, { status: 403 });
   }
 
-  const body = await req.json().catch(() => null) as Record<string, unknown> | null;
+  const body = await readJsonBodyValue(req).catch(() => null) as Record<string, unknown> | null;
   if (!body || typeof body.action !== "string") {
     return NextResponse.json({ error: "invalid_action" }, { status: 400 });
   }

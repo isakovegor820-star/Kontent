@@ -1,3 +1,4 @@
+import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { randomUUID } from "node:crypto";
 
 import { NextRequest, NextResponse } from "next/server";
@@ -47,7 +48,7 @@ export async function POST(req: NextRequest) {
   );
   if (!byIp.allowed) return rateLimitResponse(byIp);
 
-  const body = (await req.json().catch(() => null)) as
+  const body = (await readJsonBodyValue(req).catch(() => null)) as
     | { email?: unknown; password?: unknown; requestKey?: unknown }
     | null;
   const email = String(body?.email ?? "").trim().toLowerCase();

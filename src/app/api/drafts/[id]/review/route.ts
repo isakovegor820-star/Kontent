@@ -1,3 +1,4 @@
+import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 
 import { getSessionUser } from "@/lib/session";
@@ -29,7 +30,7 @@ export async function POST(req: NextRequest, ctx: Context) {
   }
 
   try {
-    const version = parseDraftVersion(await req.json());
+    const version = parseDraftVersion(await readJsonBodyValue(req));
     const draft = await attestDraftReviewForUser(user.id, id, version);
     return NextResponse.json({ ok: true, draft });
   } catch (error) {

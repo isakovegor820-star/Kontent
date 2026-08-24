@@ -584,11 +584,6 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   const toast = useCallback((t: Omit<Toast, "id">) => {
     const id = uid("t");
     setToasts((prev) => [...prev, { ...t, id }]);
-    const timer = setTimeout(() => {
-      setToasts((prev) => prev.filter((x) => x.id !== id));
-      timers.current.delete(timer);
-    }, 5000);
-    timers.current.add(timer);
   }, []);
 
   const dismissToast = useCallback((id: string) => {

@@ -7,6 +7,7 @@
 // (device_id/code_verifier/PKCE) зависят от версии и проверяются на реальном
 // приложении. Структура — по ТЗ (раздел 13.4 / Д.2).
 
+import { JsonBodyReadError, readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 import { findOrCreateUser } from "@/lib/users";
 import { createSession } from "@/lib/session";
@@ -16,6 +17,7 @@ import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 export const runtime = "nodejs";
 
 const VK_TOKEN_EXCHANGE_TIMEOUT_MS = 8_000;
+const AUTH_BODY_MAX_BYTES = 16 * 1024;
 
 export async function POST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req, { requireBrowserOrigin: true })) {
@@ -38,9 +40,11 @@ export async function POST(req: NextRequest) {
 
   let data: { code?: unknown; device_id?: unknown; code_verifier?: unknown };
   try {
-    data = await req.json();
-  } catch {
-    return NextResponse.json({ ok: false, error: "bad_request" }, { status: 400 });
+    data = await readJsonBodyValue(req, AUTH_BODY_MAX_BYTES);
+  } catch (error) {
+    const status = error instanceof JsonBodyReadError ? error.status : 400;
+    const code = error instanceof JsonBodyReadError ? error.code : "bad_request";
+    return NextResponse.json({ ok: false, error: code }, { status });
   }
   const code = typeof data.code === "string" ? data.code : "";
   const deviceId = typeof data.device_id === "string" ? data.device_id.trim() : "";

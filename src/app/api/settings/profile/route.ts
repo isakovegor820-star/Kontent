@@ -1,3 +1,4 @@
+import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { randomUUID } from "node:crypto";
 
 import { NextRequest, NextResponse } from "next/server";
@@ -122,7 +123,7 @@ export async function POST(req: NextRequest) {
   if (!user) return response(requestId, { ok: false, error: "unauthorized" }, 401);
 
   const parsed = parseProfileUpdate(
-    await req.json().catch(() => null),
+    await readJsonBodyValue(req).catch(() => null),
     req.headers.get("idempotency-key"),
   );
   if (!parsed.ok) return response(requestId, { ok: false, error: parsed.error }, 422);

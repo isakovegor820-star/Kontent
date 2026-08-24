@@ -8,21 +8,20 @@ import { useCallback, useEffect, useId, useRef, useState, type CSSProperties } f
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { motion, useReducedMotion } from "motion/react";
+import { useReducedMotion } from "motion/react";
 import {
   AlertTriangle,
   BarChart3,
-  CalendarCheck,
   CalendarDays,
   Check,
   ChevronDown,
   Clock,
   Eye,
   Loader2,
-  Newspaper,
   Pause,
   Pencil,
   Play,
+  RefreshCw,
   Rocket,
   Send,
   Settings2,
@@ -33,6 +32,7 @@ import {
 import { AppShell } from "@/components/app/shell";
 import { EvidenceCard } from "@/components/app/evidence-card";
 import { Button, buttonClassName } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Badge, Card, EmptyState } from "@/components/ui/primitives";
 import { useStore } from "@/lib/store";
 import { RUBRICS, type Brief } from "@/lib/brief";
@@ -57,7 +57,6 @@ import {
   DEFAULT_AUTOPILOT_ENGINE,
   MAX_AUTOPILOT_PLANNING_WEEKS,
   MIN_AUTOPILOT_PLANNING_WEEKS,
-  plannedDailyAutopilotPostCount,
   plannedPostCountForWeeks,
 } from "@/lib/autopilot-config.mjs";
 import {
@@ -201,14 +200,21 @@ interface OverviewStats {
   available?: { views?: boolean; reactions?: boolean; reach?: boolean };
 }
 
+type OverviewScheduleState = "review" | "scheduled" | "published" | "attention";
+
+interface OverviewScheduleItem {
+  id: string;
+  scheduledAt: string;
+  title: string;
+  state: OverviewScheduleState;
+  planIndex?: number;
+}
+
 const MSK = "Europe/Moscow";
 const fmtDayMsk = (iso: string) =>
   new Date(iso).toLocaleDateString("ru-RU", { timeZone: MSK, weekday: "short", day: "numeric" });
 const fmtTimeMsk = (iso: string) =>
   new Date(iso).toLocaleTimeString("ru-RU", { timeZone: MSK, hour: "2-digit", minute: "2-digit" });
-const fmtRangeMsk = (iso: string) =>
-  new Date(iso).toLocaleDateString("ru-RU", { timeZone: MSK, day: "numeric", month: "short" });
-
 const moscowDateKey = (value: string | Date) => {
   const parts = new Intl.DateTimeFormat("en", {
     timeZone: MSK,
@@ -333,6 +339,8 @@ function AutopilotHero({
   enabled,
   building,
   hasPlan,
+  mode,
+  pendingCount,
   busy,
   blocked,
   onToggle,
@@ -340,6 +348,8 @@ function AutopilotHero({
   enabled: boolean;
   building: boolean;
   hasPlan: boolean;
+  mode: Settings["mode"];
+  pendingCount: number;
   busy: boolean;
   blocked: boolean;
   onToggle: () => void;
@@ -347,13 +357,21 @@ function AutopilotHero({
   const status = enabled ? "Автопилот активен" : "Автопилот на паузе";
   const title = building
     ? "Контент-план собирается"
-    : enabled && hasPlan
-      ? "Контент создаётся и публикуется"
+    : enabled && pendingCount > 0
+      ? "План ждёт твоей проверки"
+      : enabled && hasPlan && mode === "full"
+        ? "Контент создаётся и публикуется"
+        : enabled && hasPlan
+          ? "Публикации стоят в расписании"
       : enabled
         ? "Автопилот готов к работе"
         : "Новые планы приостановлены";
   const description = building
     ? "Аврора подбирает темы, пишет посты и проверяет их перед добавлением в расписание."
+    : enabled && pendingCount > 0
+      ? `Проверь ${pendingCount} ${plural(pendingCount, "готовый пост", "готовых поста", "готовых постов")}. Без твоего решения они не попадут в календарь.`
+      : enabled && hasPlan && mode === "confirm"
+        ? "Согласованные публикации уже в календаре. Следующий план Аврора подготовит автоматически."
     : enabled
       ? "Аврора подбирает темы, готовит посты и публикует их по подтверждённому расписанию."
       : "Уже запланированные публикации остаются в календаре. Возобновите Автопилот, когда будете готовы.";
@@ -389,7 +407,7 @@ function AutopilotHero({
           ) : (
             <Play className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
           )}
-          {enabled ? "Приостановить" : "Возобновить"}
+          {enabled ? "Приостановить" : "Включить автопилот"}
         </Button>
       </div>
 
@@ -418,20 +436,17 @@ function OverviewMetricCard({
   label: string;
   value: string;
   note: string;
-  tone: "brand" | "success" | "violet";
+  tone: "brand" | "success" | "info";
 }) {
   return (
     <Card className="p-4 sm:p-5">
       <div className="flex items-center gap-4">
         <span
-          style={tone === "violet" ? {
-            backgroundColor: "color-mix(in oklch, oklch(0.65 0.18 292) 14%, var(--surface))",
-            color: "color-mix(in oklch, oklch(0.68 0.2 292) 78%, var(--text))",
-          } : undefined}
           className={cn(
             "flex h-14 w-14 shrink-0 items-center justify-center rounded-md",
             tone === "brand" && "bg-brand/10 text-brand",
             tone === "success" && "bg-success-soft text-success-text",
+            tone === "info" && "bg-info-soft text-info-text",
           )}
         >
           {icon}
@@ -450,10 +465,16 @@ interface OverviewScheduleDay {
   key: string;
   weekday: string;
   date: number;
-  items: PlanItem[];
+  items: OverviewScheduleItem[];
 }
 
-function WeekSchedule({ days }: { days: OverviewScheduleDay[] }) {
+function WeekSchedule({
+  days,
+  onSelectPlanItem,
+}: {
+  days: OverviewScheduleDay[];
+  onSelectPlanItem: (index: number) => void;
+}) {
   return (
     <Card as="section" className="overflow-hidden p-0" aria-labelledby="autopilot-schedule-title">
       <div className="p-4 pb-0 sm:p-5 sm:pb-0">
@@ -464,34 +485,59 @@ function WeekSchedule({ days }: { days: OverviewScheduleDay[] }) {
       <div className="mt-4 overflow-x-auto overscroll-x-contain px-4 pb-2 sm:px-5">
         <div className="grid min-w-[54rem] grid-cols-7 lg:min-w-0">
           {days.map((day, index) => {
-            const item = day.items[0];
-            const published = item?.status === "published";
-            const scheduled = item?.status === "approved";
-            const status = published
-              ? "Опубликовано"
-              : scheduled
-                ? "Запланировано"
-                : item
-                  ? "Готово к просмотру"
-                  : null;
             return (
               <div key={day.key} className={cn("min-w-0 px-3 py-1 first:pl-0 last:pr-0", index > 0 && "border-l border-line")}>
                 <p className="text-[13px] font-bold capitalize text-text-2">
                   {day.weekday} <span className="nums ml-1 text-text-3 tabular-nums">{day.date}</span>
                 </p>
-                {item ? (
-                  <div className="mt-5 min-h-[6.75rem]">
-                    <p className="nums text-[13px] font-extrabold text-text tabular-nums">{fmtTimeMsk(item.scheduledAt)}</p>
-                    <p className="mt-1 line-clamp-2 text-[13px] leading-snug text-text-2">{item.topic}</p>
-                    {status && (
-                      <p className={cn("mt-2 flex items-center gap-1.5 text-[12px] font-semibold", published ? "text-success-text" : "text-brand")}>
-                        <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", published ? "bg-success" : "bg-brand")} aria-hidden />
-                        {status}
-                      </p>
-                    )}
-                    {day.items.length > 1 && (
-                      <p className="mt-1 text-[12px] text-text-3">Ещё {day.items.length - 1}</p>
-                    )}
+                {day.items.length > 0 ? (
+                  <div className="mt-4 min-h-[6.75rem] space-y-3">
+                    {day.items.map((item) => {
+                      const status = item.state === "published"
+                        ? "Опубликовано"
+                        : item.state === "scheduled"
+                          ? "В календаре"
+                          : item.state === "attention"
+                            ? "Нужно проверить"
+                            : "Ждёт тебя";
+                      const content = (
+                        <>
+                          <span className="nums block text-[13px] font-extrabold text-text tabular-nums">
+                            {fmtTimeMsk(item.scheduledAt)}
+                          </span>
+                          <span className="mt-1 line-clamp-2 block text-[13px] leading-snug text-text-2">
+                            {item.title}
+                          </span>
+                          <span className={cn(
+                            "mt-2 flex items-center gap-1.5 text-[12px] font-semibold",
+                            item.state === "published" && "text-success-text",
+                            item.state === "attention" && "text-danger-text",
+                            (item.state === "scheduled" || item.state === "review") && "text-brand",
+                          )}>
+                            <span className={cn(
+                              "h-1.5 w-1.5 shrink-0 rounded-full",
+                              item.state === "published" && "bg-success",
+                              item.state === "attention" && "bg-danger",
+                              (item.state === "scheduled" || item.state === "review") && "bg-brand",
+                            )} aria-hidden />
+                            {status}
+                          </span>
+                        </>
+                      );
+                      return item.planIndex == null ? (
+                        <div key={item.id}>{content}</div>
+                      ) : (
+                        <button
+                          key={item.id}
+                          type="button"
+                          onClick={() => onSelectPlanItem(item.planIndex!)}
+                          className="-m-2 block w-[calc(100%+1rem)] rounded-sm p-2 text-left transition-colors hover:bg-surface-inset focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand motion-reduce:transition-none"
+                          aria-label={`Открыть пост, который ждёт проверки: ${item.title}`}
+                        >
+                          {content}
+                        </button>
+                      );
+                    })}
                   </div>
                 ) : (
                   <div className="mt-5 min-h-[6.75rem]">
@@ -571,7 +617,17 @@ function RecentPublicationCard({ post }: { post: RealPost }) {
   return <article className="flex min-h-[10.25rem] flex-col rounded-md bg-surface p-4 shadow-soft ring-1 ring-line">{content}</article>;
 }
 
-function RecentPublications({ posts, loading }: { posts: RealPost[]; loading: boolean }) {
+function RecentPublications({
+  posts,
+  loading,
+  error,
+  onRetry,
+}: {
+  posts: RealPost[];
+  loading: boolean;
+  error: boolean;
+  onRetry: () => void;
+}) {
   return (
     <Card
       as="section"
@@ -594,8 +650,26 @@ function RecentPublications({ posts, loading }: { posts: RealPost[]; loading: bo
           <div className="skeleton h-[10.25rem] rounded-md" />
         </div>
       ) : posts.length > 0 ? (
-        <div className="mt-4 grid gap-3 md:grid-cols-3">
-          {posts.map((post) => <RecentPublicationCard key={post.id} post={post} />)}
+        <>
+          <div className="mt-4 grid gap-3 md:grid-cols-3">
+            {posts.map((post) => <RecentPublicationCard key={post.id} post={post} />)}
+          </div>
+          {error && (
+            <p className="mt-3 text-[13px] text-danger-text" role="status">
+              Не удалось обновить список. Показаны последние сохранённые данные.
+            </p>
+          )}
+        </>
+      ) : error ? (
+        <div className="mt-4 rounded-sm bg-danger-soft p-4" role="status">
+          <p className="text-[14px] font-semibold text-danger-text">Не удалось загрузить публикации</p>
+          <p className="mt-1 text-[13px] leading-relaxed text-danger-text">
+            Проверь подключение и повтори загрузку.
+          </p>
+          <Button type="button" variant="secondary" size="sm" onClick={onRetry} className="mt-3">
+            <RefreshCw className="h-4 w-4" strokeWidth={2} aria-hidden />
+            Повторить загрузку
+          </Button>
         </div>
       ) : (
         <div className="mt-4 rounded-sm bg-surface-inset p-4">
@@ -672,16 +746,28 @@ function quickSettingsSummary(settings: AutopilotQuickSettings) {
 function QuickSettingsDialog({
   open,
   settings,
+  planningWeeks,
+  planningSummary,
   disabled,
+  saving,
+  saveError,
   channelId,
   onChange,
+  onPlanningWeeksChange,
+  onSave,
   onClose,
 }: {
   open: boolean;
   settings: AutopilotQuickSettings;
+  planningWeeks: number;
+  planningSummary: string;
   disabled: boolean;
+  saving: boolean;
+  saveError: string | null;
   channelId: number | null;
   onChange: (settings: AutopilotQuickSettings) => void;
+  onPlanningWeeksChange: (weeks: number) => void;
+  onSave: () => void;
   onClose: () => void;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
@@ -710,10 +796,11 @@ function QuickSettingsDialog({
       ref={dialogRef}
       aria-labelledby={titleId}
       aria-describedby={descriptionId}
-      aria-busy={disabled || undefined}
+      aria-busy={disabled || saving || undefined}
       onKeyDown={(event) => {
         if (event.key !== "Escape") return;
         event.preventDefault();
+        if (saving) return;
         onClose();
       }}
       onClose={() => {
@@ -726,10 +813,10 @@ function QuickSettingsDialog({
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
             <h2 id={titleId} className="text-balance text-[18px] font-bold leading-tight text-text">
-              Настройки постов
+              Параметры следующего плана
             </h2>
             <p id={descriptionId} className="mt-1 max-w-[60ch] text-pretty text-[13px] leading-relaxed text-text-3">
-              Эти параметры применятся к следующей сборке. Факты, стоп-темы и правила канала останутся без изменений.
+              Сохрани параметры один раз — их использует и ручная, и автоматическая сборка. Правила канала останутся без изменений.
             </p>
           </div>
           <Button
@@ -738,15 +825,45 @@ function QuickSettingsDialog({
             size="icon"
             aria-label="Закрыть настройки постов"
             onClick={onClose}
+            disabled={saving}
             className="shrink-0"
           >
             <X className="h-4 w-4" aria-hidden />
           </Button>
         </div>
 
-        <fieldset disabled={disabled} className="mt-5">
-          <legend className="sr-only">Параметры следующей сборки</legend>
-          <div className="grid gap-x-6 gap-y-5 sm:grid-cols-2">
+        <div className="mt-5 max-w-sm">
+          <label htmlFor="autopilot-horizon" className="text-[13px] font-semibold text-text">
+            Период
+          </label>
+          <select
+            id="autopilot-horizon"
+            value={planningWeeks}
+            onChange={(event) => onPlanningWeeksChange(Number(event.target.value))}
+            disabled={disabled || saving}
+            aria-describedby="autopilot-horizon-summary"
+            className="mt-2 h-11 w-full rounded-md border border-line bg-surface px-3 text-base font-semibold text-text outline-none transition-colors focus-visible:border-brand focus-visible:ring-2 focus-visible:ring-brand/20 disabled:cursor-not-allowed disabled:opacity-60 sm:text-[14px]"
+          >
+            {Array.from(
+              { length: MAX_AUTOPILOT_PLANNING_WEEKS - MIN_AUTOPILOT_PLANNING_WEEKS + 1 },
+              (_, index) => index + MIN_AUTOPILOT_PLANNING_WEEKS,
+            ).map((weeks) => (
+              <option key={weeks} value={weeks}>
+                {weeks} {plural(weeks, "неделя", "недели", "недель")}
+              </option>
+            ))}
+          </select>
+          <p id="autopilot-horizon-summary" className="mt-1.5 text-[12px] leading-snug text-text-3" aria-live="polite">
+            {planningSummary}
+          </p>
+        </div>
+
+        <fieldset disabled={disabled || saving} className="mt-6">
+          <legend className="text-[14px] font-bold text-text">Настроить посты</legend>
+          <p className="mt-1 text-[12px] leading-snug text-text-3">
+            {quickSettingsSummary(settings)}
+          </p>
+          <div className="mt-4 grid gap-x-6 gap-y-5 sm:grid-cols-2">
             <QuickRange
               id="autopilot-news"
               label="Свежие события"
@@ -755,7 +872,7 @@ function QuickSettingsDialog({
               max={7}
               value={settings.newsPerWeek}
               valueLabel={`${settings.newsPerWeek} из 7`}
-              disabled={disabled}
+              disabled={disabled || saving}
               onChange={(newsPerWeek) => onChange({ ...settings, newsPerWeek })}
             />
             <QuickRange
@@ -766,7 +883,7 @@ function QuickSettingsDialog({
               max={3}
               value={settings.detail}
               valueLabel={settings.detail === 1 ? "коротко" : settings.detail === 3 ? "подробно" : "оптимально"}
-              disabled={disabled}
+              disabled={disabled || saving}
               onChange={(detail) => onChange({ ...settings, detail })}
             />
             <QuickRange
@@ -777,7 +894,7 @@ function QuickSettingsDialog({
               max={3}
               value={settings.energy}
               valueLabel={settings.energy === 1 ? "спокойно" : settings.energy === 3 ? "живо" : "разговорно"}
-              disabled={disabled}
+              disabled={disabled || saving}
               onChange={(energy) => onChange({ ...settings, energy })}
             />
             <QuickRange
@@ -788,11 +905,15 @@ function QuickSettingsDialog({
               max={2}
               value={settings.emoji}
               valueLabel={settings.emoji === 0 ? "без эмодзи" : settings.emoji === 2 ? "заметно" : "умеренно"}
-              disabled={disabled}
+              disabled={disabled || saving}
               onChange={(emoji) => onChange({ ...settings, emoji })}
             />
           </div>
         </fieldset>
+
+        <p className="mt-4 min-h-5 text-[13px] leading-relaxed text-danger-text" role="status" aria-live="polite">
+          {saveError}
+        </p>
 
         <div className="mt-6 flex flex-col-reverse gap-2 border-t border-line pt-4 sm:flex-row sm:items-center sm:justify-between">
           <Link
@@ -801,8 +922,8 @@ function QuickSettingsDialog({
           >
             Настройки канала
           </Link>
-          <Button type="button" variant="brand" onClick={onClose}>
-            Готово
+          <Button type="button" variant="brand" onClick={onSave} loading={saving} disabled={disabled}>
+            Сохранить параметры
           </Button>
         </div>
       </div>
@@ -815,6 +936,7 @@ function BuildAttemptPanel({
   busy,
   reducedMotion,
   onContinue,
+  onRestart,
   onCancel,
   channelId,
 }: {
@@ -822,12 +944,14 @@ function BuildAttemptPanel({
   busy: boolean;
   reducedMotion: boolean | null;
   onContinue: () => void;
+  onRestart: () => void;
   onCancel: () => void;
   channelId: number | null;
 }) {
   const readyCount = Math.min(attempt.readyCount, attempt.publicationTargetCount);
   const remaining = Math.max(0, attempt.publicationTargetCount - readyCount);
   const terminal = attempt.status !== "building";
+  const canContinue = attempt.retryableItemIndexes.length > 0;
   const waitingForProvider = attempt.status === "building" && attempt.recoveryState === "waiting_provider";
   const title = waitingForProvider
     ? "ИИ временно не ответил"
@@ -853,7 +977,9 @@ function BuildAttemptPanel({
           : attempt.recoveryState === "provider_stopped" || attempt.errorReason === "provider"
             ? readyCount > 0
               ? `Готово ${readyCount} из ${attempt.publicationTargetCount}. Готовые посты сохранены; продолжи сборку позже — Аврора возьмёт только недостающие.`
-              : "Готовых постов пока нет. Продолжи сборку позже — Аврора снова попробует подготовить весь план."
+              : canContinue
+                ? "Готовых постов пока нет. Продолжи сборку позже — Аврора снова попробует подготовить весь план."
+                : "Готовых постов пока нет. Запусти новую сборку — Аврора снова попробует подготовить весь план."
             : readyCount > 0
               ? `Готово ${readyCount} из ${attempt.publicationTargetCount}. Продолжи сборку — готовые посты останутся без изменений.`
               : "Готовых постов пока нет. Продолжи сборку — Аврора снова попробует подготовить весь план.";
@@ -865,7 +991,7 @@ function BuildAttemptPanel({
 
   return (
     <Card
-      className="mb-5 overflow-hidden p-4 sm:p-5"
+      className="overflow-hidden p-4 sm:p-5"
       role={terminal ? "alert" : "status"}
       aria-live={terminal ? "assertive" : "polite"}
       aria-atomic="true"
@@ -897,9 +1023,13 @@ function BuildAttemptPanel({
               <Link href={`/app/settings${channelId ? `?channel=${channelId}` : ""}`} className={commonLinkClass}>
                 Открыть настройки качества
               </Link>
-            ) : (
+            ) : canContinue ? (
               <Button variant="primary" size="sm" onClick={onContinue} loading={busy} disabled={busy}>
                 Продолжить сборку
+              </Button>
+            ) : (
+              <Button variant="primary" size="sm" onClick={onRestart} loading={busy} disabled={busy}>
+                Собрать план снова
               </Button>
             )}
           </div>
@@ -929,6 +1059,7 @@ export default function AutopilotPage() {
   const [data, setData] = useState<State | null>(null);
   const [overviewStats, setOverviewStats] = useState<OverviewStats | null>(null);
   const [overviewStatsLoading, setOverviewStatsLoading] = useState(false);
+  const [overviewStatsError, setOverviewStatsError] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -936,6 +1067,8 @@ export default function AutopilotPage() {
   const [editorBusyIndex, setEditorBusyIndex] = useState<number | null>(null);
   const [expanded, setExpanded] = useState<number | null>(null); // какая карточка раскрыта целиком
   const [quickSettingsOpen, setQuickSettingsOpen] = useState(false);
+  const [planSettingsSaving, setPlanSettingsSaving] = useState(false);
+  const [planSettingsError, setPlanSettingsError] = useState<string | null>(null);
   const [generationEngine, setGenerationEngine] = useState(DEFAULT_AUTOPILOT_ENGINE);
   const [planningWeeks, setPlanningWeeks] = useState(DEFAULT_AUTOPILOT_PLANNING_WEEKS);
   const [quickSettings, setQuickSettings] = useState<AutopilotQuickSettings>({
@@ -944,6 +1077,11 @@ export default function AutopilotPage() {
   const [planningAnchorMs] = useState(Date.now);
   const [visibleLimit, setVisibleLimit] = useState(14);
   const approvalBusy = useRef(false);
+  const approvalConfirmationResolver = useRef<((confirmed: boolean) => void) | null>(null);
+  const [approvalConfirmation, setApprovalConfirmation] = useState<{
+    title: string;
+    description: string;
+  } | null>(null);
   const loadSequence = useRef(0);
   const loadAbort = useRef<AbortController | null>(null);
   const activePlanIdentity = useRef<string | null>(null);
@@ -962,6 +1100,11 @@ export default function AutopilotPage() {
   });
   const { tgChannels, channelId: chId } = useChannelChoice(s.realChannels, picked);
   const [growthNotice, setGrowthNotice] = useState<string | null>(null);
+
+  useEffect(() => () => {
+    approvalConfirmationResolver.current?.(false);
+    approvalConfirmationResolver.current = null;
+  }, []);
 
   const load = useCallback(async () => {
     const requestedChannelId = chId;
@@ -1036,31 +1179,53 @@ export default function AutopilotPage() {
         if (cancelled) return;
         setOverviewStats(null);
         setOverviewStatsLoading(false);
+        setOverviewStatsError(false);
       });
       return () => {
         cancelled = true;
       };
     }
-    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let controller: AbortController | null = null;
     queueMicrotask(() => {
       if (cancelled) return;
       setOverviewStats(null);
       setOverviewStatsLoading(true);
+      setOverviewStatsError(false);
     });
-    void fetch(`/api/stats?channel=${chId}`, { cache: "no-store", signal: controller.signal })
-      .then(async (response) => {
+    const refresh = async () => {
+      const requestController = new AbortController();
+      controller = requestController;
+      try {
+        const response = await fetch(`/api/stats?channel=${chId}`, {
+          cache: "no-store",
+          signal: requestController.signal,
+        });
         const body = await response.json().catch(() => null) as OverviewStats | null;
-        if (response.ok && body) setOverviewStats(body);
-      })
-      .catch((error) => {
-        if ((error as Error)?.name === "AbortError") return;
-      })
-      .finally(() => {
-        if (!controller.signal.aborted && !cancelled) setOverviewStatsLoading(false);
-      });
+        if (cancelled || requestController.signal.aborted) return;
+        if (!response.ok || !body) {
+          setOverviewStatsError(true);
+          return;
+        }
+        setOverviewStats(body);
+        setOverviewStatsError(false);
+      } catch (error) {
+        if ((error as Error)?.name !== "AbortError" && !cancelled) setOverviewStatsError(true);
+      } finally {
+        if (!cancelled && !requestController.signal.aborted) {
+          setOverviewStatsLoading(false);
+          timer = setTimeout(() => {
+            setOverviewStatsLoading(true);
+            void refresh();
+          }, 60_000);
+        }
+      }
+    };
+    void refresh();
     return () => {
       cancelled = true;
-      controller.abort();
+      if (timer) clearTimeout(timer);
+      controller?.abort();
     };
   }, [chId]);
 
@@ -1174,6 +1339,7 @@ export default function AutopilotPage() {
   const toggleAutopilot = async () => {
     if (busy || autopilotToggleBusy || !data?.settings || !chId) return;
     const enabled = !data.settings.enabled;
+    const shouldStartFirstPlan = enabled && !data.activePlan && !data.plan && !data.buildAttempt;
     setAutopilotToggleBusy(true);
     try {
       const response = await fetch("/api/autopilot/settings", {
@@ -1190,6 +1356,10 @@ export default function AutopilotPage() {
             ? "Аврора снова будет готовить новые планы по расписанию."
             : "Уже запланированные публикации остаются в календаре.",
         });
+        if (shouldStartFirstPlan) {
+          await generate();
+          return;
+        }
       } else {
         s.toast({
           kind: "danger",
@@ -1208,6 +1378,88 @@ export default function AutopilotPage() {
       });
     } finally {
       setAutopilotToggleBusy(false);
+    }
+  };
+
+  const syncPlanSettingsControls = () => {
+    const saved = data?.settings;
+    if (!saved) return;
+    const savedWeeks = Number(saved.planning_weeks || saved.planning_months * 4);
+    setPlanningWeeks(
+      savedWeeks >= MIN_AUTOPILOT_PLANNING_WEEKS && savedWeeks <= MAX_AUTOPILOT_PLANNING_WEEKS
+        ? savedWeeks
+        : DEFAULT_AUTOPILOT_PLANNING_WEEKS,
+    );
+    setGenerationEngine(
+      AUTOPILOT_ENGINE_OPTIONS.some((option) => option.id === saved.generation_engine)
+        ? saved.generation_engine as typeof DEFAULT_AUTOPILOT_ENGINE
+        : DEFAULT_AUTOPILOT_ENGINE,
+    );
+    setQuickSettings(normalizeAutopilotQuickSettings(saved.quick_settings));
+  };
+
+  const openPlanSettings = () => {
+    syncPlanSettingsControls();
+    setPlanSettingsError(null);
+    setQuickSettingsOpen(true);
+  };
+
+  const closePlanSettings = () => {
+    if (planSettingsSaving) return;
+    syncPlanSettingsControls();
+    setPlanSettingsError(null);
+    setQuickSettingsOpen(false);
+  };
+
+  const savePlanSettings = async () => {
+    if (planSettingsSaving || busy || building || !chId) return;
+    setPlanSettingsSaving(true);
+    setPlanSettingsError(null);
+    try {
+      const response = await fetch("/api/autopilot/settings", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          channelId: chId,
+          generation_engine: generationEngine,
+          planning_weeks: planningWeeks,
+          quick_settings: quickSettings,
+        }),
+      });
+      const result = await response.json().catch(() => null) as {
+        ok?: boolean;
+        error?: string;
+        settings?: Settings;
+      } | null;
+      if (!response.ok || !result?.ok || !result.settings) {
+        const message: Record<string, string> = {
+          access_denied: "У тебя нет права менять параметры контента.",
+          bad_generation_settings: "Проверь период и параметры постов.",
+          no_channel: "Выбранный канал больше недоступен.",
+        };
+        setPlanSettingsError(
+          message[result?.error ?? ""] ?? "Не удалось сохранить параметры. Проверь подключение и повтори.",
+        );
+        return;
+      }
+      const savedSettings: Settings = {
+        ...(data?.settings ?? result.settings),
+        ...result.settings,
+        quick_settings: normalizeAutopilotQuickSettings(result.settings.quick_settings),
+      };
+      setData((current) => current ? { ...current, settings: savedSettings } : current);
+      setQuickSettings(savedSettings.quick_settings);
+      setPlanningWeeks(savedSettings.planning_weeks);
+      setQuickSettingsOpen(false);
+      s.toast({
+        kind: "success",
+        title: "Параметры сохранены",
+        body: "Их использует и ручная, и автоматическая сборка.",
+      });
+    } catch {
+      setPlanSettingsError("Не удалось сохранить параметры. Проверь подключение и повтори.");
+    } finally {
+      setPlanSettingsSaving(false);
     }
   };
 
@@ -1303,6 +1555,44 @@ export default function AutopilotPage() {
     }
   };
 
+  const requestApprovalConfirmation = (preview: AutopilotApprovalPreview) => {
+    const channelName = preview.channel.title ||
+      (preview.channel.handle ? `@${preview.channel.handle}` : `канал #${preview.channel.id}`);
+    const formattedDates = preview.dates.map(({ scheduledAt }) =>
+      new Date(String(scheduledAt)).toLocaleString("ru-RU", {
+        timeZone: MSK,
+        day: "numeric",
+        month: "short",
+        hour: "2-digit",
+        minute: "2-digit",
+      }),
+    );
+    const schedule = formattedDates.length > 1
+      ? `${formattedDates[0]} — ${formattedDates[formattedDates.length - 1]}`
+      : formattedDates[0];
+    const skipped = preview.counts.expired + preview.counts.blocked;
+    setApprovalConfirmation({
+      title: `Добавить ${preview.counts.eligible} ${plural(preview.counts.eligible, "пост", "поста", "постов")} в календарь?`,
+      description: [
+        `Канал: ${channelName}.`,
+        schedule ? `Расписание: ${schedule}.` : "",
+        skipped > 0
+          ? `${skipped} ${plural(skipped, "материал не попадёт", "материала не попадут", "материалов не попадут")} в календарь: они неактуальны или ещё не готовы.`
+          : "После подтверждения публикации встанут в очередь автоматически.",
+      ].filter(Boolean).join(" "),
+    });
+    return new Promise<boolean>((resolve) => {
+      approvalConfirmationResolver.current = resolve;
+    });
+  };
+
+  const settleApprovalConfirmation = (confirmed: boolean) => {
+    const resolve = approvalConfirmationResolver.current;
+    approvalConfirmationResolver.current = null;
+    setApprovalConfirmation(null);
+    resolve?.(confirmed);
+  };
+
   const approveAll = async () => {
     if (approvalBusy.current) return;
     approvalBusy.current = true;
@@ -1332,32 +1622,7 @@ export default function AutopilotPage() {
       if (!preview.token) {
         throw new Error("Не получено подтверждение предварительного просмотра");
       }
-      const channelName = preview.channel.title ||
-        (preview.channel.handle ? `@${preview.channel.handle}` : `канал #${preview.channel.id}`);
-      const dateLines = preview.dates.map(
-        ({ scheduledAt }) =>
-          `• ${new Date(String(scheduledAt)).toLocaleString("ru-RU", {
-            timeZone: MSK,
-            day: "numeric",
-            month: "short",
-            hour: "2-digit",
-            minute: "2-digit",
-          })}`,
-      );
-      const confirmation = [
-        `Канал: ${channelName}`,
-        `Будет поставлено в очередь: ${preview.counts.eligible}`,
-        ...(dateLines.length ? ["Даты:", ...dateLines] : []),
-        ...(preview.counts.expired || preview.counts.blocked
-          ? [
-              `Не попадут в очередь: ${preview.counts.expired} неактуальных, ${preview.counts.blocked} ещё не готово`,
-              "Аврора оставит их вне очереди и заменит при следующем обновлении плана.",
-            ]
-          : []),
-        "",
-        "Подтвердить постановку?",
-      ].join("\n");
-      if (preview.counts.eligible > 0 && !window.confirm(confirmation)) return;
+      if (preview.counts.eligible > 0 && !(await requestApprovalConfirmation(preview))) return;
 
       const previous = approvalAttempt.current;
       const idempotencyKey =
@@ -1404,27 +1669,11 @@ export default function AutopilotPage() {
       if (result?.error === "stale_preview") {
         const fresh = result.preview;
         if (fresh) {
-          const freshChannel = fresh.channel.title ||
-            (fresh.channel.handle ? `@${fresh.channel.handle}` : `канал #${fresh.channel.id}`);
-          const freshDates = fresh.dates.map(
-            ({ scheduledAt }) => `• ${new Date(String(scheduledAt)).toLocaleString("ru-RU", {
-              timeZone: MSK,
-              day: "numeric",
-              month: "short",
-              hour: "2-digit",
-              minute: "2-digit",
-            })}`,
-          );
-          window.alert([
-            "План изменился после preview. Ничего не поставлено в очередь.",
-            "",
-            `Канал: ${freshChannel}`,
-            `Теперь можно поставить: ${fresh.counts.eligible}`,
-            `Неактуально: ${fresh.counts.expired}; ещё не готово: ${fresh.counts.blocked}`,
-            ...(freshDates.length ? ["Новые даты:", ...freshDates] : []),
-            "",
-            "Проверь изменения и нажми «Одобрить всё» ещё раз.",
-          ].join("\n"));
+          s.toast({
+            kind: "info",
+            title: "План изменился",
+            body: `Ничего не поставлено в очередь. Сейчас готовы ${fresh.counts.eligible}; неактуальны ${fresh.counts.expired}; ещё не готовы ${fresh.counts.blocked}. Проверь карточки и повтори действие.`,
+          });
         } else {
           s.toast({
             kind: "info",
@@ -1460,7 +1709,7 @@ export default function AutopilotPage() {
           body: "Ничего дополнительно не поставлено в очередь. Обнови план и попробуй ещё раз.",
         });
       }
-      await load();
+      await Promise.all([load(), s.refreshReal()]);
     } catch {
       // Keep the key after an ambiguous network failure: the next click replays the same
       // server-side result instead of risking a duplicate operation.
@@ -1531,7 +1780,7 @@ export default function AutopilotPage() {
           : "Он выйдет в запланированное время.",
       });
     }
-    await load();
+    await Promise.all([load(), s.refreshReal()]);
   };
 
   const openEditor = async (item: PlanItem) => {
@@ -1700,25 +1949,17 @@ export default function AutopilotPage() {
   const readyPending = pending.filter(
     (item) => !item.draftId && canApproveItem(item) && !isAutopilotHumanReviewItem(item),
   );
-  const approved = items.filter((it) => it.status === "approved" || it.status === "published");
   const canOfferFull = st.approvals_streak >= 2 && st.mode !== "full";
 
   // Отсортированный по времени список для ленты недели и карточек.
   const visible = [...items]
     .sort((a, b) => new Date(a.scheduledAt).getTime() - new Date(b.scheduledAt).getTime());
   const hasUsablePlan = Boolean(plan && visible.length > 0);
-  const rangeLabel =
-    visible.length > 0
-      ? `${fmtRangeMsk(visible[0].scheduledAt)} — ${fmtRangeMsk(visible[visible.length - 1].scheduledAt)}`
-      : "";
-  const allApproved = pending.length === 0 && approved.length > 0;
+  const attentionItems = visible.filter((item) => item.status === "pending");
   const plannedCount = plannedPostCountForWeeks(st.post_frequency, planningWeeks);
-  const missingBuildCount = buildAttempt
-    ? Math.max(0, buildAttempt.publicationTargetCount - buildAttempt.readyCount)
-    : plannedCount;
   const generationWorkCount = autopilotCandidateCount(plannedCount);
   const plannedDuration = fmtBuildEstimate(estimateAutopilotBuildMinutes(generationWorkCount));
-  const renderedVisible = visible.slice(0, visibleLimit);
+  const renderedAttentionItems = attentionItems.slice(0, visibleLimit);
   const planEndLabel = new Date(planningAnchorMs + planningWeeks * 7 * 86_400_000).toLocaleDateString(
     "ru-RU",
     { day: "numeric", month: "long", year: "numeric" },
@@ -1727,7 +1968,7 @@ export default function AutopilotPage() {
   const currentWeekEndKey = shiftDateKey(currentWeekStartKey, 7);
   const recentAutopilotPosts = s.realPosts
     .filter((post) => (
-      post.channel_id === chId &&
+      Number(post.channel_id) === chId &&
       post.publication_origin === "autopilot" &&
       post.status === "published" &&
       Boolean(post.published_at ?? post.scheduled_at)
@@ -1737,22 +1978,51 @@ export default function AutopilotPage() {
     const key = moscowDateKey(post.published_at ?? post.scheduled_at ?? post.created_at);
     return key >= currentWeekStartKey && key < currentWeekEndKey;
   });
-  const overviewStatsByPost = new Map((overviewStats?.posts ?? []).map((post) => [post.id, post]));
+  const overviewStatsByPost = new Map((overviewStats?.posts ?? []).map((post) => [Number(post.id), post]));
   const weeklyMeasuredStats = weeklyPublishedPosts
-    .map((post) => overviewStatsByPost.get(post.id))
+    .map((post) => overviewStatsByPost.get(Number(post.id)))
     .filter((post): post is OverviewPostStat => Boolean(post && post.views != null));
   const weeklyViews = weeklyMeasuredStats.reduce((total, post) => total + (post.views ?? 0), 0);
   const weeklyReactions = weeklyMeasuredStats.reduce((total, post) => total + (post.reactions ?? 0), 0);
   const weeklyEngagement = weeklyViews > 0 ? `${Math.round((weeklyReactions / weeklyViews) * 1000) / 10}%` : "—";
-  const metricNote = overviewStatsLoading
-    ? "Метрики обновляются"
-    : weeklyMeasuredStats.length > 0
-      ? "за текущую неделю"
-      : "Данных за неделю пока нет";
-  const scheduleReference = visible.find((item) => (
-    moscowDateKey(item.scheduledAt) >= currentWeekStartKey && item.status !== "published"
-  ))?.scheduledAt ?? visible[0]?.scheduledAt ?? new Date();
-  const scheduleWeekStart = mondayDateKey(scheduleReference);
+  const metricNote = s.realError || overviewStatsError
+    ? "Не удалось обновить данные"
+    : overviewStatsLoading
+      ? "Метрики обновляются"
+      : weeklyMeasuredStats.length > 0
+        ? "за текущую неделю"
+        : "Данных за неделю пока нет";
+  const realScheduleItems: OverviewScheduleItem[] = s.realPosts
+    .filter((post) => (
+      Number(post.channel_id) === chId &&
+      post.publication_origin === "autopilot" &&
+      Boolean(post.scheduled_at) &&
+      !["draft", "cancelled"].includes(post.status)
+    ))
+    .map((post) => ({
+      id: `real-${post.id}`,
+      scheduledAt: post.scheduled_at!,
+      title: plainPostText(post.text),
+      state: post.status === "published"
+        ? "published"
+        : ["failed_retry", "failed", "quarantined", "missing", "deleted_external"].includes(post.status)
+          ? "attention"
+          : "scheduled",
+    }));
+  const planScheduleItems: OverviewScheduleItem[] = attentionItems.map((item) => ({
+    id: `plan-${plan?.id ?? "active"}-${item.i}`,
+    scheduledAt: item.scheduledAt,
+    title: item.topic,
+    state: "review",
+    planIndex: item.i,
+  }));
+  const scheduleItems = [...realScheduleItems, ...planScheduleItems]
+    .sort((left, right) => new Date(left.scheduledAt).getTime() - new Date(right.scheduledAt).getTime());
+  const todayKey = moscowDateKey(new Date());
+  const nextScheduleItem = scheduleItems.find((item) => moscowDateKey(item.scheduledAt) >= todayKey);
+  const scheduleWeekStart = nextScheduleItem
+    ? mondayDateKey(nextScheduleItem.scheduledAt)
+    : currentWeekStartKey;
   const scheduleDays: OverviewScheduleDay[] = Array.from({ length: 7 }, (_, index) => {
     const key = shiftDateKey(scheduleWeekStart, index);
     const date = dateForKey(key);
@@ -1760,9 +2030,16 @@ export default function AutopilotPage() {
       key,
       weekday: new Intl.DateTimeFormat("ru-RU", { weekday: "short", timeZone: "UTC" }).format(date).replace(".", ""),
       date: date.getUTCDate(),
-      items: visible.filter((item) => moscowDateKey(item.scheduledAt) === key),
+      items: scheduleItems.filter((item) => moscowDateKey(item.scheduledAt) === key),
     };
   });
+  const planningSummary = `До ${planEndLabel} · ${plannedCount} ${plural(plannedCount, "публикация", "публикации", "публикаций")} · сборка — ${plannedDuration}`;
+  const openPlanItemFromSchedule = (index: number) => {
+    setExpanded(index);
+    requestAnimationFrame(() => {
+      document.querySelector<HTMLButtonElement>(`#autopilot-plan-item-${index} button`)?.focus();
+    });
+  };
 
   return (
     <AppShell
@@ -1770,23 +2047,27 @@ export default function AutopilotPage() {
       subtitle="Аврора создаёт контент, публикует и анализирует результаты."
       action={
         <div className="flex flex-wrap items-center gap-2">
-          <Link
-            href={`/app/settings${chId ? `?channel=${chId}` : ""}`}
-            className={buttonClassName({ variant: "outline", size: "md" })}
+          <Button
+            type="button"
+            variant="outline"
+            size="md"
+            onClick={openPlanSettings}
+            disabled={busy || building || planSettingsSaving}
+            aria-haspopup="dialog"
           >
             <Settings2 className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
-            Настройки
-          </Link>
+            Параметры плана
+          </Button>
           <Button
             type="button"
             variant="brand"
             size="md"
             onClick={generate}
             loading={busy}
-            disabled={busy || autopilotToggleBusy || building}
+            disabled={busy || autopilotToggleBusy || planSettingsSaving || building}
           >
             <Play className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
-            {building ? "План собирается" : "Запустить автопилот"}
+            {building ? "План собирается" : hasUsablePlan ? "Собрать новый план" : "Собрать план"}
           </Button>
         </div>
       }
@@ -1802,8 +2083,10 @@ export default function AutopilotPage() {
         enabled={st.enabled}
         building={building}
         hasPlan={hasUsablePlan}
+        mode={st.mode}
+        pendingCount={pending.length}
         busy={autopilotToggleBusy}
-        blocked={busy}
+        blocked={busy || planSettingsSaving}
         onToggle={() => void toggleAutopilot()}
       />
 
@@ -1812,7 +2095,11 @@ export default function AutopilotPage() {
           icon={<Send className="h-6 w-6" strokeWidth={1.75} aria-hidden />}
           label="Опубликовано"
           value={s.realReady ? String(weeklyPublishedPosts.length) : "—"}
-          note={s.realReady ? "за текущую неделю" : "Публикации загружаются"}
+          note={s.realError
+            ? "Не удалось обновить публикации"
+            : s.realReady
+              ? "за текущую неделю"
+              : "Публикации загружаются"}
           tone="brand"
         />
         <OverviewMetricCard
@@ -1827,84 +2114,51 @@ export default function AutopilotPage() {
           label="Вовлечённость"
           value={weeklyEngagement}
           note={metricNote}
-          tone="violet"
+          tone="info"
         />
       </div>
 
       <div className="mt-5">
-        <WeekSchedule days={scheduleDays} />
+        <WeekSchedule days={scheduleDays} onSelectPlanItem={openPlanItemFromSchedule} />
       </div>
 
       <div className="mt-5">
-        <RecentPublications posts={recentAutopilotPosts.slice(0, 3)} loading={!s.realReady} />
+        <RecentPublications
+          posts={recentAutopilotPosts.slice(0, 3)}
+          loading={!s.realReady}
+          error={s.realError}
+          onRetry={() => void s.refreshReal()}
+        />
       </div>
-
-      <Card as="section" className="mt-5 mb-5 p-4 sm:p-5" aria-labelledby="autopilot-plan-settings-title">
-        <div className="mb-4">
-          <h2 id="autopilot-plan-settings-title" className="text-[17px] font-extrabold tracking-tight text-text">
-            Параметры следующего плана
-          </h2>
-          <p className="mt-1 text-[13px] leading-relaxed text-text-3">
-            Аврора сохранит правила канала и применит эти параметры к новой сборке.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-          <div className="min-w-0 lg:max-w-xs lg:flex-1">
-            <label htmlFor="autopilot-horizon" className="text-[13px] font-semibold text-text">
-              Период
-            </label>
-            <select
-              id="autopilot-horizon"
-              value={planningWeeks}
-              onChange={(event) => setPlanningWeeks(Number(event.target.value))}
-              disabled={busy || building}
-              className="mt-2 h-11 w-full rounded-md border border-line bg-surface px-3 text-base font-semibold text-text outline-none transition-colors focus-visible:border-brand focus-visible:ring-2 focus-visible:ring-brand/20 disabled:cursor-not-allowed disabled:opacity-60 sm:text-[14px]"
-            >
-              {Array.from(
-                { length: MAX_AUTOPILOT_PLANNING_WEEKS - MIN_AUTOPILOT_PLANNING_WEEKS + 1 },
-                (_, index) => index + MIN_AUTOPILOT_PLANNING_WEEKS,
-              ).map((weeks) => (
-                <option key={weeks} value={weeks}>
-                  {weeks} {plural(weeks, "неделя", "недели", "недель")}
-                </option>
-              ))}
-            </select>
-            <p className="mt-1.5 text-[12px] text-text-3" aria-live="polite">
-              До {planEndLabel} · {plannedCount} {plural(plannedCount, "публикация", "публикации", "публикаций")}
-              {` · сборка — ${plannedDuration}`}
-            </p>
-          </div>
-          <div className="flex flex-col gap-2 sm:flex-row lg:shrink-0">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setQuickSettingsOpen(true)}
-              disabled={busy || building}
-              aria-haspopup="dialog"
-              className="min-h-11"
-            >
-              <Settings2 className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
-              Настроить посты
-            </Button>
-          </div>
-        </div>
-        <p className="mt-3 [overflow-wrap:anywhere] text-[12px] leading-relaxed text-text-3">
-          {quickSettingsSummary(quickSettings)}
-        </p>
-      </Card>
 
       <QuickSettingsDialog
         open={quickSettingsOpen}
         settings={quickSettings}
+        planningWeeks={planningWeeks}
+        planningSummary={planningSummary}
         disabled={busy || building}
+        saving={planSettingsSaving}
+        saveError={planSettingsError}
         channelId={chId}
         onChange={setQuickSettings}
-        onClose={() => setQuickSettingsOpen(false)}
+        onPlanningWeeksChange={setPlanningWeeks}
+        onSave={() => void savePlanSettings()}
+        onClose={closePlanSettings}
+      />
+
+      <ConfirmDialog
+        open={Boolean(approvalConfirmation)}
+        title={approvalConfirmation?.title ?? "Добавить посты в календарь?"}
+        description={approvalConfirmation?.description ?? "Проверь расписание перед подтверждением."}
+        confirmLabel="Добавить в календарь"
+        confirmVariant="primary"
+        onConfirm={() => settleApprovalConfirmation(true)}
+        onCancel={() => settleApprovalConfirmation(false)}
       />
 
       {/* Предложение полного режима после 2 недель без правок */}
       {canOfferFull && (
-        <div className="mb-5 flex items-start gap-3 rounded-lg bg-info-soft p-4">
+        <div className="mt-5 flex items-start gap-3 rounded-lg bg-info-soft p-4">
           <Sparkles className="mt-0.5 h-5 w-5 shrink-0 text-brand" aria-hidden />
           <div className="flex-1">
             <p className="text-[14px] font-semibold text-text">
@@ -1927,157 +2181,67 @@ export default function AutopilotPage() {
 
       {/* Состояние новой сборки не заменяет пригодный план. */}
       {buildAttempt && (
-        <BuildAttemptPanel
-          attempt={buildAttempt}
-          busy={busy}
-          reducedMotion={reduce}
-          onContinue={() => void continueBuild()}
-          onCancel={() => void cancelBuild()}
-          channelId={chId}
-        />
+        <div className="mt-5">
+          <BuildAttemptPanel
+            attempt={buildAttempt}
+            busy={busy}
+            reducedMotion={reduce}
+            onContinue={() => void continueBuild()}
+            onRestart={() => void generate()}
+            onCancel={() => void cancelBuild()}
+            channelId={chId}
+          />
+        </div>
       )}
       {loadError && buildAttempt?.status === "building" && (
-        <p className="mb-5 text-[13px] text-danger" role="status">
+        <p className="mt-2 text-[13px] text-danger" role="status">
           Прогресс временно не обновляется. Аврора повторит проверку автоматически.
         </p>
       )}
 
-      {!hasUsablePlan ? (
-        <Card className="py-4">
+      {!hasUsablePlan && !buildAttempt && (
+        <Card className="mt-5 py-4">
           <EmptyState
-            icon={<Newspaper className="h-6 w-6" strokeWidth={1.75} aria-hidden />}
-            title={building
-              ? "План собирается"
-              : buildAttempt
-                ? "План появится здесь целиком"
-                : "Готового плана пока нет"}
-            body={building
-              ? `Аврора подготовит все ${plannedCount} ${plural(plannedCount, "пост", "поста", "постов")} и покажет план целиком.`
-              : buildAttempt && buildAttempt.readyCount > 0
-                ? `Осталось подготовить ${missingBuildCount} ${plural(missingBuildCount, "пост", "поста", "постов")}. Готовые тексты уже сохранены.`
-                : buildAttempt
-                  ? `Аврора покажет план, когда все ${buildAttempt.publicationTargetCount} ${plural(buildAttempt.publicationTargetCount, "пост", "поста", "постов")} будут готовы.`
-              : "Выбери период и запусти сборку. Аврора сама найдёт темы, напишет и проверит посты."}
+            icon={<Rocket className="h-6 w-6" strokeWidth={1.75} aria-hidden />}
+            title="Собери первый контент-план"
+            body="Аврора найдёт темы, подготовит посты и покажет их здесь перед добавлением в календарь."
+            action={
+              <Button type="button" variant="primary" onClick={generate} loading={busy}>
+                <Play className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
+                Собрать план
+              </Button>
+            }
           />
         </Card>
-      ) : (
-        <div className="space-y-5">
-          {/* Обзор плана — с одного взгляда: что, когда и что от тебя нужно */}
-          <Card className="p-4 sm:p-5">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="min-w-0">
-                <p className="text-[15px] font-bold text-text">
-                  {allApproved ? "Контент-план в очереди 🚀" : "Контент-план готов"}
-                </p>
-                <p className="mt-0.5 text-[13px] text-text-3">
-                  {visible.length} {plural(visible.length, "пост", "поста", "постов")}
-                  {rangeLabel && <> · {rangeLabel}</>}
-                  {readyPending.length > 0 && (
-                    <>
-                      {" "}
-                      · {readyPending.length} {plural(readyPending.length, "готов", "готовы", "готовы")} к одобрению
-                    </>
-                  )}
-                  {reviewPending.length > 0 && (
-                    <>
-                      {" "}
-                      · {reviewPending.length} на согласовании
-                    </>
-                  )}
-                  {editorPending.length > 0 && (
-                    <>
-                      {" "}
-                      · {editorPending.length} {plural(editorPending.length, "пост", "поста", "постов")} в редакторе
-                    </>
-                  )}
-                  {plan && visible.length === plannedDailyAutopilotPostCount(plan.planningWeeks || 1) && (
-                    <> · по одному посту на каждый день</>
-                  )}
-                </p>
-              </div>
-              {readyPending.length > 0 ? (
-                <Button variant="brand" onClick={approveAll} loading={busy} disabled={busy}>
-                  <Check className="h-[18px] w-[18px]" strokeWidth={2.5} aria-hidden />
-                  Одобрить всё
-                </Button>
-              ) : allApproved ? (
-                <Link
-                  href="/app/calendar"
-                  className={buttonClassName({ variant: "soft", size: "sm" })}
-                >
-                  <CalendarCheck className="h-4 w-4" aria-hidden />
-                  Открыть календарь
-                </Link>
-              ) : null}
-            </div>
+      )}
 
-            {/* Полоса дней. Кликни день — раскроется текст этого поста ниже. */}
-            <div className="mt-4 flex gap-2 overflow-x-auto pb-1">
-              {renderedVisible.map((it) => {
-                const done = it.status === "approved" || it.status === "published";
-                const active = expanded === it.i;
-                return (
-                  <button
-                    key={it.i}
-                    type="button"
-                    onClick={() => setExpanded(active ? null : it.i)}
-                    aria-pressed={active}
-                    aria-label={`${active ? "Свернуть" : "Открыть"} пост «${it.topic}»`}
-                    className={cn(
-                      "flex min-w-[84px] flex-1 flex-col items-center gap-1 rounded-lg border px-2 py-3 text-center transition-colors focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15",
-                      active
-                        ? "border-brand bg-info-soft"
-                        : "border-line bg-surface-inset hover:border-brand/40",
-                    )}
-                  >
-                    <span className="text-[12px] font-semibold capitalize text-text-3">
-                      {fmtDayMsk(it.scheduledAt)}
-                    </span>
-                    <span className="text-[22px] leading-none" aria-hidden>
-                      {topicIcon(it.topic, it.rubric)}
-                    </span>
-                    <span className="nums text-[12px] font-semibold text-text">
-                      {fmtTimeMsk(it.scheduledAt)}
-                    </span>
-                    <span
-                      className={cn(
-                        "mt-0.5 h-1.5 w-1.5 rounded-full",
-                        done
-                          ? "bg-success"
-                          : "bg-brand",
-                      )}
-                      aria-hidden
-                    />
-                  </button>
-                );
-              })}
+      {attentionItems.length > 0 && (
+        <section className="mt-6" aria-labelledby="autopilot-attention-title">
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <div className="min-w-0">
+              <h2 id="autopilot-attention-title" className="text-balance text-[20px] font-extrabold tracking-tight text-text">
+                Требует внимания
+              </h2>
+              <p className="mt-1 max-w-[68ch] text-pretty text-[13px] leading-relaxed text-text-3">
+                {attentionItems.length} {plural(attentionItems.length, "пост ждёт", "поста ждут", "постов ждут")} решения
+                {reviewPending.length > 0 ? ` · ${reviewPending.length} на согласовании` : ""}
+                {editorPending.length > 0 ? ` · ${editorPending.length} в редакторе` : ""}
+              </p>
             </div>
+            {readyPending.length > 0 && (
+              <Button variant="primary" onClick={approveAll} loading={busy} disabled={busy}>
+                <Check className="h-[18px] w-[18px]" strokeWidth={2.5} aria-hidden />
+                Одобрить готовые
+              </Button>
+            )}
+          </div>
 
-            {/* Легенда — чтобы точки на полосе читались */}
-            <div className="mt-2 flex items-center gap-4 text-[12px] text-text-3">
-              <span className="inline-flex items-center gap-1.5">
-                <span className="h-1.5 w-1.5 rounded-full bg-brand" aria-hidden />
-                ждёт тебя
-              </span>
-              <span className="inline-flex items-center gap-1.5">
-                <span className="h-1.5 w-1.5 rounded-full bg-success" aria-hidden />в очереди
-              </span>
-            </div>
-          </Card>
-
-          {/* Посты плана — компактные карточки, раскрываются по клику */}
-          <ul className="space-y-3">
-            {renderedVisible.map((it) => {
-              const done = it.status === "approved" || it.status === "published";
+          <ul className="mt-4 space-y-3">
+            {renderedAttentionItems.map((it) => {
               const isOpen = expanded === it.i;
               return (
-                <motion.li
-                  key={it.i}
-                  initial={reduce ? false : { opacity: 0, y: 6 }}
-                  animate={{ opacity: 1, y: 0 }}
-                >
-                  <Card className="overflow-hidden p-0">
-                    {/* Шапка: иконка темы + тема + когда + статус. Клик — раскрыть/свернуть. */}
+                <li key={it.i} id={`autopilot-plan-item-${it.i}`}>
+                  <Card as="article" className="overflow-hidden p-0">
                     <button
                       type="button"
                       onClick={() => setExpanded(isOpen ? null : it.i)}
@@ -2092,21 +2256,17 @@ export default function AutopilotPage() {
                         {topicIcon(it.topic, it.rubric)}
                       </span>
                       <span className="min-w-0 flex-1">
-                        <span className="block truncate text-[15px] font-semibold text-text">
+                        <span className="line-clamp-2 text-[15px] font-semibold leading-snug text-text">
                           {it.topic}
                         </span>
                         <span className="mt-0.5 flex items-center gap-1.5 text-[13px] text-text-3">
                           <Clock className="h-3.5 w-3.5" aria-hidden />
-                          <span className="nums capitalize">
+                          <span className="nums capitalize tabular-nums">
                             {fmtDayMsk(it.scheduledAt)}, {fmtTimeMsk(it.scheduledAt)}
                           </span>
                         </span>
                       </span>
-                      {done ? (
-                        <Badge tone="success">
-                          <Check className="h-3 w-3" strokeWidth={2.5} aria-hidden />в очереди
-                        </Badge>
-                      ) : it.draftId ? (
+                      {it.draftId ? (
                         <Badge tone="brand">в редакторе</Badge>
                       ) : isAutopilotHumanReviewItem(it) ? (
                         <Badge tone="brand">на согласовании</Badge>
@@ -2119,14 +2279,13 @@ export default function AutopilotPage() {
                       )}
                       <ChevronDown
                         className={cn(
-                          "h-4 w-4 shrink-0 text-text-3 transition-transform",
+                          "h-4 w-4 shrink-0 text-text-3 transition-transform motion-reduce:transition-none",
                           isOpen && "rotate-180",
                         )}
                         aria-hidden
                       />
                     </button>
 
-                    {/* Тело: готовый читательский текст. Исследовательские источники остаются внутри Авроры. */}
                     <div className="px-4 pb-4">
                       <PostPreview text={it.draft} expanded={isOpen} />
 
@@ -2138,10 +2297,7 @@ export default function AutopilotPage() {
 
                       {isAutopilotHumanReviewItem(it) && (
                         <div className="mt-3 flex items-start gap-2 rounded-sm bg-info-soft p-3">
-                          <Sparkles
-                            className="mt-0.5 h-4 w-4 shrink-0 text-info-text"
-                            aria-hidden
-                          />
+                          <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-info-text" aria-hidden />
                           <p className="text-[13px] leading-snug text-info-text">
                             <span className="font-semibold">
                               {it.reviewState === "editorial_review"
@@ -2153,7 +2309,7 @@ export default function AutopilotPage() {
                         </div>
                       )}
 
-                      {it.status === "pending" && it.draftId && (
+                      {it.draftId && (
                         <div className="mt-3 flex items-start gap-2 rounded-sm bg-info-soft p-3">
                           <Pencil className="mt-0.5 h-4 w-4 shrink-0 text-info-text" aria-hidden />
                           <p className="text-[13px] leading-snug text-info-text">
@@ -2162,53 +2318,51 @@ export default function AutopilotPage() {
                         </div>
                       )}
 
-                      {it.status === "pending" && (
-                        <div className="mt-3 flex flex-wrap gap-2">
-                          {!it.draftId && (
-                            <Button
-                              size="sm"
-                              variant="soft"
-                              disabled={!canApproveItem(it)}
-                              onClick={() => itemAction(it.i, "approve")}
-                            >
-                              <Check className="h-4 w-4" aria-hidden />
-                              Одобрить
-                            </Button>
-                          )}
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {!it.draftId && (
                           <Button
                             size="sm"
-                            variant="ghost"
-                            loading={editorBusyIndex === it.i}
-                            disabled={editorBusyIndex != null}
-                            onClick={() => void openEditor(it)}
+                            variant="secondary"
+                            disabled={!canApproveItem(it)}
+                            onClick={() => itemAction(it.i, "approve")}
                           >
-                            <Pencil className="h-4 w-4" aria-hidden />
-                            Открыть в редакторе
+                            <Check className="h-4 w-4" aria-hidden />
+                            Одобрить
                           </Button>
-                          <Button size="sm" variant="ghost" onClick={() => itemAction(it.i, "reject")}>
-                            <X className="h-4 w-4" aria-hidden />
-                            Убрать
-                          </Button>
-                        </div>
-                      )}
+                        )}
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          loading={editorBusyIndex === it.i}
+                          disabled={editorBusyIndex != null}
+                          onClick={() => void openEditor(it)}
+                        >
+                          <Pencil className="h-4 w-4" aria-hidden />
+                          Открыть в редакторе
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={() => itemAction(it.i, "reject")}>
+                          <X className="h-4 w-4" aria-hidden />
+                          Убрать
+                        </Button>
+                      </div>
                     </div>
                   </Card>
-                </motion.li>
+                </li>
               );
             })}
           </ul>
-          {visible.length > renderedVisible.length && (
-            <div className="flex justify-center pt-1">
+          {attentionItems.length > renderedAttentionItems.length && (
+            <div className="flex justify-center pt-4">
               <Button
                 type="button"
                 variant="outline"
-                onClick={() => setVisibleLimit((current) => Math.min(visible.length, current + 14))}
+                onClick={() => setVisibleLimit((current) => Math.min(attentionItems.length, current + 14))}
               >
-                Показать ещё {Math.min(14, visible.length - renderedVisible.length)}
+                Показать ещё {Math.min(14, attentionItems.length - renderedAttentionItems.length)}
               </Button>
             </div>
           )}
-        </div>
+        </section>
       )}
     </AppShell>
   );

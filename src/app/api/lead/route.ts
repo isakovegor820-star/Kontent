@@ -11,6 +11,7 @@
 //   TG_BOT_TOKEN  — токен бота от @BotFather
 //   TG_CHAT_ID    — твой личный chat_id (куда бот шлёт заявки)
 
+import { JsonBodyReadError, readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { parseContact } from "@/lib/leads";
@@ -19,14 +20,17 @@ import { checkRateLimit, clientIp, rateLimitResponse } from "@/lib/rate-limit";
 
 // Node-рантайм: драйвер базы работает в нём стабильно. Обработчик POST не кэшируется.
 export const runtime = "nodejs";
+const LEAD_BODY_MAX_BYTES = 8 * 1024;
 
 export async function POST(request: Request) {
   // 1. Читаем тело запроса.
   let body: unknown;
   try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ ok: false, error: "bad_request" }, { status: 400 });
+    body = await readJsonBodyValue(request, LEAD_BODY_MAX_BYTES);
+  } catch (error) {
+    const status = error instanceof JsonBodyReadError ? error.status : 400;
+    const code = error instanceof JsonBodyReadError ? error.code : "bad_request";
+    return NextResponse.json({ ok: false, error: code }, { status });
   }
 
   const data = (body ?? {}) as Record<string, unknown>;

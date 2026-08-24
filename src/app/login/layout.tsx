@@ -1,8 +1,9 @@
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "Войти",
-  description: "Войдите в Аврору и продолжите работу в SMM-платформе.",
+  title: "Вход",
+  description: "Войдите в рабочее пространство Авроры.",
+  robots: { index: false, follow: false },
 };
 
 export default function LoginLayout({ children }: { children: React.ReactNode }) {

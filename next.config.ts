@@ -19,6 +19,12 @@ const allowedDevOrigins = Array.from(
 );
 const nextConfig: NextConfig = {
   poweredByHeader: false,
+  experimental: {
+    // Proxy clones request bodies before route handlers read them. Keep the global
+    // buffer just above the largest supported multipart upload; JSON endpoints apply
+    // substantially smaller streaming limits in application code.
+    proxyClientMaxBodySize: "11mb",
+  },
   // Browser E2E runs the same full `npm run dev` runtime alongside a developer's server.
   // A separate dist directory prevents both Next instances from sharing a dev lock/cache.
   ...(isolatedDistDir ? { distDir: isolatedDistDir } : {}),
@@ -61,6 +67,7 @@ const nextConfig: NextConfig = {
         { source: "/quality/:path*", destination: "/", permanent: false },
         { source: "/how/:path*", destination: "/", permanent: false },
         { source: "/cycle/:path*", destination: "/", permanent: false },
+        { source: "/rss/:path*", destination: "/", permanent: false },
       );
     }
     return routes;

@@ -1,3 +1,4 @@
+import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 
 import {
@@ -20,7 +21,7 @@ export async function POST(req: NextRequest) {
   if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
   const rate = await checkRateLimit(`growth-events:${user.id}`, 600, 3_600, { failureMode: "closed" });
   if (!rate.allowed) return rateLimitResponse(rate);
-  const body = await req.json().catch(() => null) as {
+  const body = await readJsonBodyValue(req).catch(() => null) as {
     event?: unknown; moveId?: unknown; channelId?: unknown;
   } | null;
   const event = typeof body?.event === "string" && GROWTH_TELEMETRY_EVENTS.includes(body.event as GrowthTelemetryEvent)

@@ -131,7 +131,7 @@ function CompetitorCard({
 }: {
   c: Competitor;
   confirming: boolean;
-  busy: "refresh" | "pause" | "resume" | null;
+  busy: "refresh" | "pause" | "resume" | "delete" | null;
   onAskDelete: () => void;
   onCancelDelete: () => void;
   onDelete: () => void;
@@ -172,12 +172,13 @@ function CompetitorCard({
           Источник и собранные публикации исчезнут. Добавить его снова можно будет по той же ссылке.
         </p>
         <div className="flex flex-wrap justify-center gap-2">
-          <Button ref={confirmDeleteRef} size="sm" variant="danger" onClick={onDelete}>
+          <Button ref={confirmDeleteRef} size="sm" variant="danger" onClick={onDelete} loading={busy === "delete"} disabled={Boolean(busy)}>
             Удалить
           </Button>
           <Button
             size="sm"
             variant="secondary"
+            disabled={Boolean(busy)}
             onClick={() => {
               onCancelDelete();
               requestAnimationFrame(() => deleteButtonRef.current?.focus());
@@ -348,6 +349,7 @@ function lastPostLabel(value: string | null): string {
 function SuggestionPreviewDialog({
   item,
   atLimit,
+  busy,
   fallbackFocusRef,
   onClose,
   onAdd,
@@ -355,6 +357,7 @@ function SuggestionPreviewDialog({
 }: {
   item: Suggestion;
   atLimit: boolean;
+  busy: "add" | "dismiss" | null;
   fallbackFocusRef: React.RefObject<HTMLButtonElement | null>;
   onClose: () => void;
   onAdd: () => void;
@@ -528,10 +531,10 @@ function SuggestionPreviewDialog({
             Открыть канал
             <ExternalLink className="h-3.5 w-3.5" aria-hidden />
           </a>
-          <Button type="button" variant="ghost" onClick={onDismiss}>
+          <Button type="button" variant="ghost" onClick={onDismiss} loading={busy === "dismiss"} disabled={Boolean(busy)}>
             Не подходит
           </Button>
-          <Button type="button" variant="solid" onClick={onAdd} disabled={atLimit}>
+          <Button type="button" variant="solid" onClick={onAdd} loading={busy === "add"} disabled={atLimit || Boolean(busy)}>
             <Plus className="h-4 w-4" aria-hidden />
             Добавить конкурента
           </Button>
@@ -558,6 +561,7 @@ function Suggestions({
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [acting, setActing] = useState<{ id: number; action: "add" | "dismiss" } | null>(null);
   const [preview, setPreview] = useState<Suggestion | null>(null);
   const searchButtonRef = useRef<HTMLButtonElement>(null);
 
@@ -589,9 +593,12 @@ function Suggestions({
   }, [load]);
 
   const search = async () => {
+    if (!channelId || busy) return;
     setBusy(true);
     try {
-      await fetch(`/api/competitors/suggestions?channel=${channelId}`, { method: "POST" });
+      const response = await fetch(`/api/competitors/suggestions?channel=${channelId}`, { method: "POST" });
+      const data = (await response.json().catch(() => null)) as { ok?: boolean } | null;
+      if (!response.ok || !data?.ok) throw new Error("suggestion_search_failed");
       s.toast({
         kind: "info",
         title: "Ищу соседей",
@@ -599,28 +606,49 @@ function Suggestions({
       });
       setTimeout(load, 12_000);
       setTimeout(load, 30_000);
+    } catch {
+      s.toast({
+        kind: "danger",
+        title: "Поиск не запущен",
+        body: "Проверь соединение с сервером и попробуй ещё раз.",
+      });
     } finally {
       setBusy(false);
     }
   };
 
   const act = async (it: Suggestion, action: "add" | "dismiss") => {
-    setPreview(null);
-    setItems((prev) => prev.filter((x) => x.id !== it.id)); // убираем сразу — ждать нечего
-    const r = await fetch("/api/competitors/suggestions", {
-      method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ id: it.id, action }),
-    }).catch(() => null);
-    const d = (await r?.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
-    if (action === "add") {
-      if (d?.error === "limit") {
-        s.toast({ kind: "info", title: "Достигнут лимит", body: "Удали кого-нибудь из списка, чтобы добавить нового." });
-        load();
-        return;
+    if (acting) return;
+    setActing({ id: it.id, action });
+    try {
+      const response = await fetch("/api/competitors/suggestions", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: it.id, action }),
+      });
+      const data = (await response.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
+      if (!response.ok || !data?.ok) {
+        if (data?.error === "limit") {
+          s.toast({ kind: "info", title: "Достигнут лимит", body: "Удали кого-нибудь из списка, чтобы добавить нового." });
+          await load();
+          return;
+        }
+        throw new Error("suggestion_action_failed");
       }
-      s.toast({ kind: "success", title: `@${it.handle} добавлен`, body: "Собираю досье — цифры появятся через минуту." });
-      onAdded();
+      setPreview(null);
+      setItems((prev) => prev.filter((item) => item.id !== it.id));
+      if (action === "add") {
+        s.toast({ kind: "success", title: `@${it.handle} добавлен`, body: "Собираю досье — цифры появятся после синхронизации." });
+        onAdded();
+      }
+    } catch {
+      s.toast({
+        kind: "danger",
+        title: action === "add" ? "Конкурент не добавлен" : "Находка не скрыта",
+        body: "Сервер не подтвердил действие. Проверь соединение и попробуй ещё раз.",
+      });
+    } finally {
+      setActing(null);
     }
   };
 
@@ -676,6 +704,18 @@ function Suggestions({
           Искать ещё
         </Button>
       </div>
+
+      {loadError && (
+        <div className="mt-4 flex flex-wrap items-center gap-3 rounded-sm bg-danger-soft p-3" role="status">
+          <TriangleAlert className="h-4 w-4 shrink-0 text-danger-text" aria-hidden />
+          <p className="min-w-0 flex-1 text-[13px] leading-relaxed text-danger-text">
+            Не удалось обновить рекомендации. Ниже показана последняя подтверждённая загрузка.
+          </p>
+          <Button size="sm" variant="ghost" onClick={() => void load()}>
+            Повторить
+          </Button>
+        </div>
+      )}
 
       <ul className="mt-4 grid gap-2.5 lg:grid-cols-2">
         {items.map((it) => (
@@ -736,6 +776,7 @@ function Suggestions({
         <SuggestionPreviewDialog
           item={preview}
           atLimit={atLimit}
+          busy={acting?.id === preview.id ? acting.action : null}
           fallbackFocusRef={searchButtonRef}
           onClose={() => setPreview(null)}
           onAdd={() => void act(preview, "add")}
@@ -754,6 +795,7 @@ export default function CompetitorsPage() {
 
   const [list, setList] = useState<Competitor[]>([]);
   const [loading, setLoading] = useState(true);
+  const [listLoadError, setListLoadError] = useState(false);
   const [open, setOpen] = useState(false);
   const [network, setNetwork] = useState<CompetitorNetwork>("tg");
   const [value, setValue] = useState("");
@@ -763,9 +805,11 @@ export default function CompetitorsPage() {
   const [submitting, setSubmitting] = useState(false);
   const [sourceBusy, setSourceBusy] = useState<{ id: string; action: "refresh" | "pause" | "resume" } | null>(null);
   const [confirmId, setConfirmId] = useState<string | null>(null);
+  const [removingId, setRemovingId] = useState<string | null>(null);
   const [picked, setPicked] = useState<number | null>(null);
   const competitorNameRef = useRef<HTMLInputElement>(null);
   const competitorLinkRef = useRef<HTMLInputElement>(null);
+  const loadedChannelRef = useRef<number | null>(null);
 
   // Конкуренты живут НА КАНАЛЕ: у кофейного канала и юридического соседи разные.
   // Сервер это уже умеет (`?channel=`), но страница параметр не слала — и человек с тремя
@@ -774,15 +818,27 @@ export default function CompetitorsPage() {
 
   const load = useCallback(async () => {
     if (!channelId) {
+      setList([]);
+      setListLoadError(false);
+      loadedChannelRef.current = null;
       setLoading(false);
       return;
     }
+    const changingChannel = loadedChannelRef.current !== channelId;
+    if (changingChannel) {
+      setLoading(true);
+      setList([]);
+    }
     try {
       const r = await fetch(`/api/competitors?channel=${channelId}`, { cache: "no-store" });
-      const d = (await r.json()) as { competitors?: Competitor[] };
-      setList(d.competitors ?? []);
+      if (!r.ok) throw new Error("competitors_unavailable");
+      const d = (await r.json()) as { competitors?: unknown };
+      if (!Array.isArray(d.competitors)) throw new Error("competitors_invalid_response");
+      setList(d.competitors as Competitor[]);
+      setListLoadError(false);
+      loadedChannelRef.current = channelId;
     } catch {
-      /* сеть — оставляем что было */
+      setListLoadError(true);
     } finally {
       setLoading(false);
     }
@@ -885,16 +941,26 @@ export default function CompetitorsPage() {
   };
 
   const remove = async (id: string) => {
+    if (removingId) return;
     const name = list.find((c) => String(c.id) === id)?.display_title ?? "Конкурент";
-    setConfirmId(null);
-    setList((prev) => prev.filter((c) => String(c.id) !== id));
+    setRemovingId(id);
     try {
-      await fetch(`/api/competitors/${id}`, { method: "DELETE" });
+      const response = await fetch(`/api/competitors/${id}`, { method: "DELETE" });
+      const data = (await response.json().catch(() => null)) as { ok?: boolean } | null;
+      if (!response.ok || !data?.ok) throw new Error("competitor_delete_failed");
+      setConfirmId(null);
+      setList((prev) => prev.filter((competitor) => String(competitor.id) !== id));
+      s.toast({ kind: "info", title: `«${name}» удалён`, body: "Вернуть можно той же ссылкой." });
+      await load();
     } catch {
-      /* всё равно перечитаем */
+      s.toast({
+        kind: "danger",
+        title: "Конкурент не удалён",
+        body: "Сервер не подтвердил удаление. Проверь соединение и попробуй ещё раз.",
+      });
+    } finally {
+      setRemovingId(null);
     }
-    await load();
-    s.toast({ kind: "info", title: `«${name}» удалён`, body: "Вернуть можно той же ссылкой." });
   };
 
   return (
@@ -948,6 +1014,21 @@ export default function CompetitorsPage() {
       )}
 
       <Suggestions onAdded={load} atLimit={atLimit} channelId={channelId} />
+
+      {listLoadError && (
+        <Card className="mb-6 flex flex-wrap items-center gap-x-4 gap-y-3 p-4" role="alert">
+          <TriangleAlert className="h-[18px] w-[18px] shrink-0 text-danger-text" strokeWidth={2} aria-hidden />
+          <div className="min-w-0 flex-1">
+            <p className="text-[14px] font-semibold text-text">Не удалось загрузить конкурентов</p>
+            <p className="mt-0.5 text-[13px] leading-relaxed text-text-2">
+              Сервер не подтвердил актуальный список. Повтори загрузку — сохранённые источники не потеряны.
+            </p>
+          </div>
+          <Button size="sm" variant="soft" onClick={() => void load()} loading={loading}>
+            Повторить
+          </Button>
+        </Card>
+      )}
       {/* Форма добавления */}
       <AnimatePresence initial={false}>
         {open && !atLimit && (
@@ -1082,7 +1163,7 @@ export default function CompetitorsPage() {
             <div key={i} className="skeleton h-44 rounded-lg" />
           ))}
         </div>
-      ) : list.length === 0 ? (
+      ) : listLoadError && list.length === 0 ? null : list.length === 0 ? (
         <Card className="py-4">
           <EmptyState
             icon={<Radar className="h-6 w-6" strokeWidth={1.75} aria-hidden />}
@@ -1111,7 +1192,7 @@ export default function CompetitorsPage() {
                 <CompetitorCard
                   c={c}
                   confirming={confirmId === String(c.id)}
-                  busy={sourceBusy?.id === String(c.id) ? sourceBusy.action : null}
+                  busy={removingId === String(c.id) ? "delete" : sourceBusy?.id === String(c.id) ? sourceBusy.action : null}
                   onAskDelete={() => setConfirmId(String(c.id))}
                   onCancelDelete={() => setConfirmId(null)}
                   onDelete={() => remove(String(c.id))}

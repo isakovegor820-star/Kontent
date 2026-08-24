@@ -3,6 +3,7 @@
 // Честность: не смогли прочитать канал (приватный, пустой, движок молчит) — так и
 // говорим и зовём заполнить руками. Ничего не выдумываем.
 
+import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
@@ -72,7 +73,7 @@ export async function POST(req: NextRequest) {
 
   // Читаем ИМЕННО тот канал, чей бриф настраивают. Раньше здесь всегда был первый канал:
   // человек настраивал второй, жал «прочитай мой канал» — и получал бриф первого.
-  const body = (await req.json().catch(() => ({}))) as { channelId?: number };
+  const body = (await readJsonBodyValue(req).catch(() => ({}))) as { channelId?: number };
   const channelId = await resolveChannel(scope, body.channelId ?? null);
   if (!channelId) return NextResponse.json({ ok: false, error: "no_channel" }, { status: 422 });
 

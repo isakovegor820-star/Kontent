@@ -36,7 +36,11 @@ describe("GET /api/posts project isolation", () => {
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
-      posts: [{ id: "501", text: "Изменения в договорной работе" }],
+      posts: [{
+        id: 501,
+        channel_id: 73,
+        text: "Изменения в договорной работе",
+      }],
     });
     const [dataSql, dataParams] = mocks.query.mock.calls[1];
     const normalizedSql = String(dataSql).replace(/\s+/g, " ");
@@ -47,6 +51,37 @@ describe("GET /api/posts project isolation", () => {
     expect(normalizedSql).toContain("post_author.id = p.user_id");
     expect(normalizedSql).toContain("author_user_id");
     expect(dataParams).toEqual([44]);
+  });
+
+  it("normalizes PostgreSQL bigint identities for strict client-side channel matching", async () => {
+    mocks.query
+      .mockResolvedValueOnce(membership())
+      .mockResolvedValueOnce({
+        rows: [{
+          id: "501",
+          author_user_id: "91",
+          channel_id: "73",
+          tg_message_id: "812",
+          vk_post_id: null,
+          vk_group_id: null,
+          publication_operation_id: "902",
+        }],
+        rowCount: 1,
+      });
+
+    const response = await GET(new NextRequest("http://localhost/api/posts"));
+
+    await expect(response.json()).resolves.toMatchObject({
+      posts: [{
+        id: 501,
+        author_user_id: 91,
+        channel_id: 73,
+        tg_message_id: 812,
+        vk_post_id: null,
+        vk_group_id: null,
+        publication_operation_id: 902,
+      }],
+    });
   });
 
   it("never runs the post query for a user outside the selected project", async () => {

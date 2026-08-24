@@ -1,6 +1,7 @@
 // Д.9 — действие над одним постом плана: одобрить / отклонить / поправить текст.
 // Правка сбрасывает streak (значит план не идеален — полный режим пока рано).
 
+import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { createHash } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
@@ -94,7 +95,7 @@ export async function PATCH(req: NextRequest) {
     idempotencyKey?: unknown;
   };
   try {
-    body = await req.json();
+    body = await readJsonBodyValue(req);
   } catch {
     return NextResponse.json({ ok: false, error: "bad_request" }, { status: 400 });
   }

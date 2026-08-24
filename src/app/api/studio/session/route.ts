@@ -1,3 +1,4 @@
+import { JsonBodyReadError, readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
@@ -41,7 +42,10 @@ export async function PUT(req: NextRequest) {
   }
 
   try {
-    const input = parseStudioChatSaveInput(await req.json(), user.id);
+    const input = parseStudioChatSaveInput(
+      await readJsonBodyValue(req, MAX_STUDIO_CHAT_PAYLOAD_BYTES + 100_000),
+      user.id,
+    );
     const result = await saveStudioChatSessionForUser(user.id, input);
     if (!result.saved) {
       return NextResponse.json({
@@ -59,6 +63,9 @@ export async function PUT(req: NextRequest) {
       updatedAt: result.session.updatedAt,
     });
   } catch (error) {
+    if (error instanceof JsonBodyReadError) {
+      return NextResponse.json({ ok: false, error: error.code }, { status: error.status });
+    }
     if (error instanceof SyntaxError) {
       return NextResponse.json({ ok: false, error: "bad_request" }, { status: 400 });
     }

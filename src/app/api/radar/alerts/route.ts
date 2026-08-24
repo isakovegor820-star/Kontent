@@ -1,5 +1,6 @@
 // Нишевой радар: CRUD алертов по ключевым словам.
 
+import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
@@ -39,7 +40,7 @@ export async function POST(req: NextRequest) {
 
   let body: { keyword?: unknown; channelId?: unknown };
   try {
-    body = await req.json();
+    body = await readJsonBodyValue(req);
   } catch {
     return NextResponse.json({ ok: false, error: "bad_request" }, { status: 400 });
   }

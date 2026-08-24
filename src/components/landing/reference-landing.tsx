@@ -418,7 +418,7 @@ export function ReferenceLanding() {
             <div><strong>Продукт</strong><a href="#features">Возможности</a><a href="#how">Как работает</a><a href="#access">Доступность</a></div>
             <div><strong>Интеграции</strong><a href="#integrations">Telegram и VK</a><a href="#product">Контроль материала</a></div>
             <div><strong>Связь</strong><a href="mailto:hello@avrora.app">Контакты</a><a href="mailto:help@avrora.app">Сообщить об ошибке</a></div>
-            <div><strong>Документы</strong><a href="mailto:legal@avrora.app?subject=Пользовательское%20соглашение">Пользовательское соглашение</a><a href="mailto:legal@avrora.app?subject=Политика%20конфиденциальности">Конфиденциальность</a></div>
+            <div><strong>Документы</strong><a href="/terms">Условия использования</a><a href="/privacy">Конфиденциальность</a></div>
           </div>
           <div className={styles.footerSocial}>
             <strong>Статус интеграций</strong>

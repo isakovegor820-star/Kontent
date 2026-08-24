@@ -3,6 +3,7 @@
 // подделать вход. Виджет Telegram работает только на настоящем домене (не localhost),
 // поэтому вживую заработает на деплое; логика проверки подписи готова и здесь.
 
+import { JsonBodyReadError, readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { findOrCreateUser } from "@/lib/users";
@@ -14,6 +15,7 @@ export const runtime = "nodejs";
 
 const TELEGRAM_AUTH_MAX_AGE_SECONDS = 10 * 60;
 const CLOCK_SKEW_SECONDS = 30;
+const AUTH_BODY_MAX_BYTES = 16 * 1024;
 
 export async function POST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req, { requireBrowserOrigin: true })) {
@@ -34,9 +36,11 @@ export async function POST(req: NextRequest) {
 
   let data: Record<string, unknown>;
   try {
-    data = (await req.json()) as Record<string, unknown>;
-  } catch {
-    return NextResponse.json({ ok: false, error: "bad_request" }, { status: 400 });
+    data = (await readJsonBodyValue(req, AUTH_BODY_MAX_BYTES)) as Record<string, unknown>;
+  } catch (error) {
+    const status = error instanceof JsonBodyReadError ? error.status : 400;
+    const code = error instanceof JsonBodyReadError ? error.code : "bad_request";
+    return NextResponse.json({ ok: false, error: code }, { status });
   }
 
   const hash = typeof data.hash === "string" ? data.hash : "";

@@ -20,7 +20,7 @@ describe("Autopilot build UI contract", () => {
     expect(source).toContain("attempt.publicationTargetCount");
     expect(source).not.toContain("Резерв автоматически не публикуется");
     expect(source).not.toContain("кандидатов");
-    expect(source).toContain("покажет план целиком");
+    expect(source).toContain("Требует внимания");
   });
 
   it("keeps the active plan visible while Autopilot owns internal repair", () => {
@@ -39,19 +39,22 @@ describe("Autopilot build UI contract", () => {
     expect(source).toContain("Готовых постов пока нет");
     expect(source).not.toContain("Эти посты сохранены");
     expect(source).toContain("Продолжить сборку");
-    expect(source).toContain("План появится здесь целиком");
-    expect(source).toContain("Осталось подготовить");
+    expect(source).toContain("const canContinue = attempt.retryableItemIndexes.length > 0");
+    expect(source).toContain("Собрать план снова");
     expect(source).not.toContain("Собрать заново");
     expect(source).toContain("const hasUsablePlan = Boolean(plan && visible.length > 0)");
-    expect(source).toContain("{!hasUsablePlan ? (");
+    expect(source).toContain("{!hasUsablePlan && !buildAttempt && (");
   });
 
   it("keeps quick settings behind a compact accessible dialog", () => {
     expect(source).toContain("Настроить посты");
     expect(source).toContain('aria-haspopup="dialog"');
     expect(source).toContain("dialog.showModal()");
-    expect(source).toContain("Настройки постов");
+    expect(source).toContain("Параметры следующего плана");
     expect(source).toContain('type="range"');
+    expect(source).toContain("Сохранить параметры");
+    expect(source).toContain("quick_settings: quickSettings");
+    expect(source.match(/id="autopilot-horizon"/gu)).toHaveLength(1);
     expect(source).not.toContain("Почему такой план");
   });
 
@@ -74,6 +77,25 @@ describe("Autopilot build UI contract", () => {
     expect(source).toContain("Автопилот приостановлен");
     expect(source).toContain("Автопилот возобновлён");
     expect(source).toContain("Уже запланированные публикации остаются в календаре");
+  });
+
+  it("separates automatic mode from an explicit one-off plan build", () => {
+    expect(source).toContain("Включить автопилот");
+    expect(source).toContain("Собрать новый план");
+    expect(source).not.toContain("Запустить автопилот");
+    expect(source).toContain("onClick={generate}");
+    expect(source).toContain("onToggle={() => void toggleAutopilot()}");
+    expect(source).toContain("const shouldStartFirstPlan = enabled && !data.activePlan && !data.plan && !data.buildAttempt");
+    expect(source).toContain("if (shouldStartFirstPlan)");
+    expect(source).toContain("await generate()");
+  });
+
+  it("uses real scheduled posts as the calendar source and exposes data failures", () => {
+    expect(source).toContain("const realScheduleItems");
+    expect(source).toContain("Number(post.channel_id) === chId");
+    expect(source).toContain('publication_origin === "autopilot"');
+    expect(source).toContain("Не удалось обновить данные");
+    expect(source).toContain("Не удалось загрузить публикации");
   });
 
   it("waits for each poll to finish and reports generation/cancel network failures", () => {
@@ -110,6 +132,13 @@ describe("Autopilot build UI contract", () => {
   it("uses real links styled as buttons without nested interactive controls", () => {
     expect(source).not.toMatch(/<Link\b[^>]*>\s*<Button\b/u);
     expect(source).toContain("buttonClassName");
+  });
+
+  it("uses an accessible in-app confirmation for calendar scheduling", () => {
+    expect(source).toContain("<ConfirmDialog");
+    expect(source).toContain('confirmVariant="primary"');
+    expect(source).not.toContain("window.confirm(");
+    expect(source).not.toContain("window.alert(");
   });
 
   it("announces progress and errors without forcing motion", () => {

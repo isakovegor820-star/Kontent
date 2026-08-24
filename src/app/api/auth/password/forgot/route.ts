@@ -1,3 +1,4 @@
+import { JsonBodyReadError, readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { EMAIL } from "@/lib/leads";
@@ -10,6 +11,7 @@ import { checkRateLimit, clientIp, rateLimitResponse } from "@/lib/rate-limit";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 
 export const runtime = "nodejs";
+const AUTH_BODY_MAX_BYTES = 16 * 1024;
 
 const accepted = () =>
   NextResponse.json(
@@ -41,7 +43,15 @@ export async function POST(req: NextRequest) {
   );
   if (!byIp.allowed) return rateLimitResponse(byIp);
 
-  const body = (await req.json().catch(() => ({}))) as { email?: unknown };
+  let body: { email?: unknown };
+  try {
+    body = await readJsonBodyValue(req, AUTH_BODY_MAX_BYTES);
+  } catch (error) {
+    if (error instanceof JsonBodyReadError && error.code === "payload_too_large") {
+      return NextResponse.json({ ok: false, error: error.code }, { status: error.status });
+    }
+    body = {};
+  }
   const email = String(body.email ?? "").trim().toLowerCase();
   if (!EMAIL.test(email)) return finishAccepted();
 

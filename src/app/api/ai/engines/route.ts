@@ -6,6 +6,7 @@
 //   offline — движок подключён, но не отвечает (напр. Ollama не запущен)
 // Ключи наружу не отдаём никогда — только факт их наличия.
 
+import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
@@ -105,7 +106,7 @@ export async function POST(req: NextRequest) {
 
   let body: { engine?: unknown };
   try {
-    body = await req.json();
+    body = await readJsonBodyValue(req);
   } catch {
     return engineJson(requestId, { ok: false, error: "bad_request", retryable: false }, 400);
   }

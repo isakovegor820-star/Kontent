@@ -52,17 +52,14 @@ describe("worker AI usage integration contract", () => {
 
   it("meters background visible artifacts with deterministic keys and durable outcomes", () => {
     expect(source).toContain('key: workerAiUsageKey("competitor-idea", contentIdeaId)');
-    expect(source).toContain(
-      'key: workerAiUsageCompositeKey("autopilot-weekly", [projectId, channelId, mskPlanningWeek()])',
-    );
+    expect(source).toContain("enqueueWeeklyAutopilotPlan({");
+    expect(source).toContain("queue: autopilotQueue");
     expect(source).toMatch(
       /from autopilot_settings s[\s\S]*member\.project_id = s\.project_id[\s\S]*member\.role in \('owner','author','approver'\)/u,
     );
     expect(source).toContain('key: workerAiUsageCompositeKey("rss-summary", [feed.id, guidHash])');
     expect(source).toContain("commitWorkerAiUsage(tx, comp.user_id, usage.reservationId)");
-    expect(source).toMatch(
-      /buildAutopilotPlan\(\s*projectId,\s*userId,\s*channelId,\s*null,\s*usage\.reservationId/u,
-    );
+    expect(source).not.toMatch(/buildAutopilotPlan\(\s*projectId,\s*userId,\s*channelId,\s*null/u);
     expect(source).toContain(
       'key: workerAiUsageCompositeKey("monthly-campaign-regeneration", [projectId, operationId])',
     );

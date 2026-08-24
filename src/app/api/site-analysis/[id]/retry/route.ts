@@ -1,3 +1,4 @@
+import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { randomUUID } from "node:crypto";
 
 import { NextRequest, NextResponse } from "next/server";
@@ -34,7 +35,7 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
   if (!Number.isSafeInteger(id) || id <= 0) return reply({ error: "bad_id" }, 400, requestId);
   let body: Record<string, unknown>;
   try {
-    body = await req.json();
+    body = await readJsonBodyValue(req);
   } catch {
     return reply({ error: "bad_request" }, 400, requestId);
   }

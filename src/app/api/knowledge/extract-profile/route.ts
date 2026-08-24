@@ -6,6 +6,7 @@
 //        и читать нечего). Различаем kind: авто-извлечённый 'profile' еженедельный крон
 //        может перезаписать свежим; 'profile_edit' — слова самого человека, его НЕ трогаем.
 
+import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
@@ -94,7 +95,7 @@ export async function POST(req: NextRequest) {
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
 
-  const body = (await req.json().catch(() => ({}))) as { channelId?: number };
+  const body = (await readJsonBodyValue(req).catch(() => ({}))) as { channelId?: number };
 
   let reservationId: number | null = null;
   let committed = false;
@@ -177,7 +178,7 @@ export async function PUT(req: NextRequest) {
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
 
-  const body = (await req.json().catch(() => null)) as
+  const body = (await readJsonBodyValue(req).catch(() => null)) as
     | { channelId?: number; profile?: unknown }
     | null;
   if (!body) return NextResponse.json({ ok: false, error: "bad_request" }, { status: 400 });

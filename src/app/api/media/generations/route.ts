@@ -1,3 +1,4 @@
+import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 import { createHash, randomUUID } from "node:crypto";
 
@@ -209,7 +210,7 @@ export async function POST(req: NextRequest) {
 
   let raw: unknown;
   try {
-    raw = await req.json();
+    raw = await readJsonBodyValue(req);
   } catch {
     return mediaResponse(requestId, { error: "bad_request" }, 400);
   }

@@ -1,6 +1,7 @@
 // Универсальное добавление источника конкурента. Сеть выбирает адаптер воркера, а не
 // отдельный API-роут: у Telegram/Instagram одинаковые лимит, жизненный цикл и карточка.
 
+import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
@@ -24,7 +25,7 @@ export async function POST(req: NextRequest) {
 
   let body: { url?: unknown; handle?: unknown; channelId?: unknown; network?: unknown; title?: unknown };
   try {
-    body = await req.json();
+    body = await readJsonBodyValue(req);
   } catch {
     return NextResponse.json({ ok: false, error: "bad_request" }, { status: 400 });
   }

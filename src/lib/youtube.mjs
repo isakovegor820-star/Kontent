@@ -18,10 +18,46 @@ import {
   deliveryUnknown,
   PROVIDER_DELIVERY_OUTCOMES,
 } from "./social-provider-contract.mjs";
+import { fetchPublicBuffer } from "./safe-http.mjs";
 
 const API_BASE = "https://www.googleapis.com";
 const UPLOAD_BASE = "https://www.googleapis.com";
 const TIMEOUT_MS = 30_000;
+export const YOUTUBE_MEDIA_MAX_BYTES = 180 * 1024 * 1024;
+
+function boundedMediaLimit(value) {
+  const limit = Number(value ?? YOUTUBE_MEDIA_MAX_BYTES);
+  if (!Number.isSafeInteger(limit) || limit <= 0 || limit > YOUTUBE_MEDIA_MAX_BYTES) {
+    throw new Error("youtube_media_limit_invalid");
+  }
+  return limit;
+}
+
+function ensureMediaSize(byteLength, maxBytes) {
+  if (byteLength > maxBytes) {
+    const error = new Error("youtube_media_too_large");
+    error.code = "youtube_media_too_large";
+    throw error;
+  }
+}
+
+function responseContentType(headers) {
+  const value = headers?.["content-type"];
+  const first = Array.isArray(value) ? value[0] : value;
+  return typeof first === "string" && first.trim()
+    ? first.split(";", 1)[0].trim().toLowerCase()
+    : "video/mp4";
+}
+
+function videoContentType(value) {
+  const contentType = String(value || "video/mp4").split(";", 1)[0].trim().toLowerCase();
+  if (!contentType.startsWith("video/") && contentType !== "application/octet-stream") {
+    const error = new Error("youtube_media_type_invalid");
+    error.code = "youtube_media_type_invalid";
+    throw error;
+  }
+  return contentType;
+}
 
 /* ------------------------------------------------------------------ чистые */
 
@@ -29,12 +65,14 @@ const TIMEOUT_MS = 30_000;
  * Достаёт байты медиа из разных источников: Buffer/Uint8Array (загрузка из кабинета),
  * http(s)-URL (ссылка на файл) или data:URL. Возвращает { buffer, contentType }.
  */
-export async function resolveMediaBytes(media) {
+export async function resolveMediaBytes(media, options = {}) {
   if (!media) throw new Error("нет медиа для загрузки");
+  const maxBytes = boundedMediaLimit(options.maxBytes);
 
   // Уже байты.
   if (media instanceof Uint8Array) {
-    return { buffer: Buffer.from(media), contentType: media.type || "video/mp4" };
+    ensureMediaSize(media.byteLength, maxBytes);
+    return { buffer: Buffer.from(media), contentType: videoContentType(media.type) };
   }
 
   const url = typeof media === "string" ? media : media.url;
@@ -43,14 +81,28 @@ export async function resolveMediaBytes(media) {
   if (url.startsWith("data:")) {
     const m = /^data:([^;]+);base64,(.*)$/s.exec(url);
     if (!m) throw new Error("некорректный data:URL");
-    return { buffer: Buffer.from(m[2], "base64"), contentType: m[1] };
+    // Reject before decoding so the encoded form cannot force a large temporary buffer.
+    if (m[2].length > Math.ceil(maxBytes / 3) * 4 + 4) ensureMediaSize(maxBytes + 1, maxBytes);
+    const buffer = Buffer.from(m[2], "base64");
+    ensureMediaSize(buffer.byteLength, maxBytes);
+    return { buffer, contentType: videoContentType(m[1]) };
   }
 
   if (/^https?:\/\//i.test(url)) {
-    const res = await fetch(url, { signal: AbortSignal.timeout(TIMEOUT_MS) });
-    if (!res.ok) throw new Error(`не удалось скачать видео: HTTP ${res.status}`);
-    const buf = Buffer.from(await res.arrayBuffer());
-    return { buffer: buf, contentType: res.headers.get("content-type") || "video/mp4" };
+    const fetchBuffer = options.fetchPublicBuffer ?? fetchPublicBuffer;
+    const response = await fetchBuffer(url, {
+      timeoutMs: TIMEOUT_MS,
+      maxBytes,
+      maxRedirects: 4,
+      httpsOnly: true,
+      headers: { accept: "video/*,application/octet-stream;q=0.8" },
+    });
+    if (!response.ok) throw new Error(`не удалось скачать видео: HTTP ${response.status}`);
+    ensureMediaSize(response.buffer.byteLength, maxBytes);
+    return {
+      buffer: Buffer.from(response.buffer),
+      contentType: videoContentType(responseContentType(response.headers)),
+    };
   }
 
   throw new Error("неподдерживаемый источник видео");

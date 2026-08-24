@@ -108,4 +108,44 @@ describe("GET /api/stats availability", () => {
       expect(params).toContain(44);
     }
   });
+
+  it("normalizes published post ids for joins with /api/posts", async () => {
+    mocks.getSessionUser.mockResolvedValueOnce({ id: 7 });
+    mocks.query.mockImplementation(async (sqlValue: string) => {
+      const sql = sqlValue.replace(/\s+/g, " ").trim();
+      if (sql.includes("from user_project_preferences preference")) return membership();
+      if (sql.startsWith("select id, title from channels")) {
+        return { rows: [{ id: "17", title: "Судебная практика" }], rowCount: 1 };
+      }
+      if (sql.includes("sum(stats.subscribers)")) return { rows: [], rowCount: 0 };
+      if (sql.includes("sum(subscribers_delta)")) return { rows: [{ g: 0 }], rowCount: 1 };
+      if (sql.startsWith("select p.id, p.text")) {
+        return {
+          rows: [{
+            id: "501",
+            text: "Опубликованный пост",
+            published_at: "2026-08-24T10:00:00.000Z",
+            status: "published",
+            verification_state: "verified",
+            stats_state: "ok",
+            views: 120,
+            reactions: 12,
+            monthly_campaign_id: null,
+            monthly_campaign_goal: null,
+            monthly_item_id: null,
+            monthly_item_title: null,
+          }],
+          rowCount: 1,
+        };
+      }
+      if (sql.startsWith("select greatest(")) return { rows: [{ t: null }], rowCount: 1 };
+      throw new Error(`unexpected query: ${sql}`);
+    });
+
+    const response = await GET(new NextRequest("http://localhost/api/stats?channel=17"));
+
+    await expect(response.json()).resolves.toMatchObject({
+      posts: [{ id: 501, views: 120, reactions: 12 }],
+    });
+  });
 });

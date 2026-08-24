@@ -31,6 +31,8 @@ describe("production landing page", () => {
     expect(markup).toContain('aria-controls="landing-mobile-menu"');
     expect(markup).toContain('href="/login"');
     expect(markup).toContain('href="/register"');
+    expect(markup).toContain('href="/terms"');
+    expect(markup).toContain('href="/privacy"');
     expect(markup).toContain('id="access"');
     expect(markup).not.toContain("Все соцсети");
     expect(markup).not.toContain("Instagram");

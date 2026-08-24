@@ -52,7 +52,23 @@ export async function GET(req: NextRequest) {
         limit 200`,
       [membership.projectId],
     );
-    return NextResponse.json({ posts: rows.rows });
+    return NextResponse.json({
+      posts: rows.rows.map((post) => ({
+        ...post,
+        // PostgreSQL `bigint` arrives through node-postgres as a string. The client-side
+        // RealPost contract uses numbers and compares channel ids with RealChannel ids, so
+        // normalize every numeric identity once at the API boundary.
+        id: Number(post.id),
+        author_user_id: Number(post.author_user_id),
+        tg_message_id: post.tg_message_id == null ? null : Number(post.tg_message_id),
+        vk_post_id: post.vk_post_id == null ? null : Number(post.vk_post_id),
+        channel_id: post.channel_id == null ? null : Number(post.channel_id),
+        vk_group_id: post.vk_group_id == null ? null : Number(post.vk_group_id),
+        publication_operation_id: post.publication_operation_id == null
+          ? null
+          : Number(post.publication_operation_id),
+      })),
+    });
   } catch (err) {
     if (err instanceof ProjectAccessError) {
       return NextResponse.json({ error: "access_denied" }, { status: 403 });

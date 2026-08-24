@@ -1,3 +1,4 @@
+import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 
 import { ProjectAccessError } from "@/lib/project-permissions";
@@ -29,7 +30,7 @@ export async function PATCH(req: NextRequest, ctx: Context) {
     const draft = await rescheduleDraftForUser(
       user.id,
       id,
-      parseDraftScheduleUpdateInput(await req.json()),
+      parseDraftScheduleUpdateInput(await readJsonBodyValue(req)),
     );
     return NextResponse.json({ ok: true, draft });
   } catch (error) {

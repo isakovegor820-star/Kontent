@@ -1,3 +1,4 @@
+import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 
 import { getPool } from "@/lib/db";
@@ -35,7 +36,7 @@ export async function PATCH(req: NextRequest) {
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
 
-  const body = await req.json().catch(() => null) as {
+  const body = await readJsonBodyValue(req).catch(() => null) as {
     channelId?: unknown;
     enabled?: unknown;
   } | null;

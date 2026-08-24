@@ -1,3 +1,4 @@
+import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 
 import {
@@ -32,7 +33,7 @@ export async function POST(
   if (!idempotencyKey) {
     return NextResponse.json({ ok: false, error: "idempotency_key_required" }, { status: 400 });
   }
-  const body = (await req.json().catch(() => null)) as {
+  const body = (await readJsonBodyValue(req).catch(() => null)) as {
     expectedScheduleRevision?: unknown;
     expectedStatus?: unknown;
   } | null;

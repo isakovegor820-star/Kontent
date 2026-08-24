@@ -1,3 +1,4 @@
+import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
@@ -26,7 +27,7 @@ export async function POST(req: NextRequest, { params }: Context) {
   if (!Number.isSafeInteger(itemId) || itemId <= 0) {
     return NextResponse.json({ ok: false, error: "bad_item" }, { status: 400 });
   }
-  const body = (await req.json().catch(() => null)) as {
+  const body = (await readJsonBodyValue(req).catch(() => null)) as {
     channelId?: unknown;
     variant?: unknown;
   } | null;

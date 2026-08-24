@@ -7,6 +7,7 @@
 // База — НА КАНАЛЕ, как и автопилот: у двух каналов разные ниши, и знание одного
 // не должно течь в посты другого.
 
+import { JsonBodyReadError, readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
@@ -18,6 +19,7 @@ import { channelAiContextFor } from "@/lib/ai-usage";
 export const runtime = "nodejs";
 
 const MAX_TEXT = 40_000; // ~20 страниц за раз; больше — это уже файл, а загрузки файлов пока нет
+const MAX_KNOWLEDGE_BODY_BYTES = MAX_TEXT * 4 + 16_384;
 const KINDS = ["form", "paste", "channel"] as const;
 
 interface SourceRow {
@@ -99,9 +101,11 @@ export async function POST(req: NextRequest) {
 
   let body: { channelId?: unknown; kind?: unknown; title?: unknown; text?: unknown };
   try {
-    body = await req.json();
-  } catch {
-    return NextResponse.json({ ok: false, error: "bad_request" }, { status: 400 });
+    body = await readJsonBodyValue(req, MAX_KNOWLEDGE_BODY_BYTES);
+  } catch (error) {
+    const status = error instanceof JsonBodyReadError ? error.status : 400;
+    const code = error instanceof JsonBodyReadError ? error.code : "bad_request";
+    return NextResponse.json({ ok: false, error: code }, { status });
   }
 
   const kind = String(body.kind ?? "paste");

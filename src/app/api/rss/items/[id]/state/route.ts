@@ -1,3 +1,4 @@
+import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 
 import { getPool } from "@/lib/db";
@@ -21,7 +22,7 @@ export async function POST(req: NextRequest, { params }: Context) {
   if (!Number.isSafeInteger(itemId) || itemId <= 0) {
     return NextResponse.json({ ok: false, error: "bad_item" }, { status: 400 });
   }
-  const body = await req.json().catch(() => null) as { state?: unknown; viewed?: unknown } | null;
+  const body = await readJsonBodyValue(req).catch(() => null) as { state?: unknown; viewed?: unknown } | null;
   const hasState = body != null && Object.prototype.hasOwnProperty.call(body, "state");
   const state = body?.state;
   const viewed = body?.viewed === true;

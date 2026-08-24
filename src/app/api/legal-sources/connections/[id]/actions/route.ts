@@ -1,3 +1,4 @@
+import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { randomUUID } from "node:crypto";
 
 import { NextRequest, NextResponse } from "next/server";
@@ -28,7 +29,7 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
   if (!Number.isSafeInteger(connectionId) || connectionId <= 0) {
     return reply(requestId, { ok: false, error: "bad_id" }, 400);
   }
-  const raw = await req.json().catch(() => null);
+  const raw = await readJsonBodyValue(req).catch(() => null);
   const parsed = parseLegalActionInput(raw, req.headers.get("idempotency-key"));
   if (!parsed.ok) {
     const status = parsed.error === "forbidden_credential_field" ? 422 : 400;

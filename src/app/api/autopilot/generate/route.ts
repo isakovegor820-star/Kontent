@@ -1,6 +1,7 @@
 // Д.9 — собрать план недели сейчас (кнопка «Собрать план») ДЛЯ ВЫБРАННОГО КАНАЛА.
 // Строит воркер (ИИ + аналитика).
 
+import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
@@ -40,7 +41,7 @@ export async function POST(req: NextRequest) {
     const membership = await requireSelectedProjectPermission(pool, user.id, "content.create");
     const projectId = membership.projectId;
     const scope = { actorUserId: user.id, projectId };
-    const body = (await req.json().catch(() => ({}))) as {
+    const body = (await readJsonBodyValue(req).catch(() => ({}))) as {
       channelId?: number;
       generationEngine?: unknown;
       planningMonths?: unknown;
@@ -351,7 +352,7 @@ export async function DELETE(req: NextRequest) {
     const pool = getPool();
     const membership = await requireSelectedProjectPermission(pool, user.id, "content.create");
     const projectId = membership.projectId;
-    const body = (await req.json().catch(() => ({}))) as { channelId?: number };
+    const body = (await readJsonBodyValue(req).catch(() => ({}))) as { channelId?: number };
     const channelId = await resolveChannel(
       { actorUserId: user.id, projectId },
       body.channelId ?? null,

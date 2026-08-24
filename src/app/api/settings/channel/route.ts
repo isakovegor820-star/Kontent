@@ -2,6 +2,7 @@
 // Бриф, редакционный стандарт и режим автопилота меняются одной транзакцией:
 // пользователь либо получает целиком новую конфигурацию, либо остаётся на прежней.
 
+import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 import type { PoolClient } from "pg";
 import { getPool } from "@/lib/db";
@@ -58,7 +59,7 @@ export async function POST(req: NextRequest) {
 
   let body: SettingsBody;
   try {
-    body = (await req.json()) as SettingsBody;
+    body = (await readJsonBodyValue(req)) as SettingsBody;
   } catch {
     return NextResponse.json({ ok: false, error: "bad_request" }, { status: 400 });
   }

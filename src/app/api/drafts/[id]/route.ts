@@ -1,3 +1,4 @@
+import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 
 import { getSessionUser } from "@/lib/session";
@@ -79,7 +80,7 @@ export async function PATCH(req: NextRequest, ctx: Context) {
     return NextResponse.json({ ok: false, error: "bad_id" }, { status: 400 });
   }
   try {
-    const draft = await updateDraftForUser(user.id, id, parseDraftUpdateInput(await req.json()));
+    const draft = await updateDraftForUser(user.id, id, parseDraftUpdateInput(await readJsonBodyValue(req)));
     return NextResponse.json({ ok: true, draft });
   } catch (error) {
     const response = knownError(error);
@@ -102,7 +103,7 @@ export async function DELETE(req: NextRequest, ctx: Context) {
     return NextResponse.json({ ok: false, error: "bad_id" }, { status: 400 });
   }
   try {
-    await deleteDraftForUser(user.id, id, parseDraftVersion(await req.json()));
+    await deleteDraftForUser(user.id, id, parseDraftVersion(await readJsonBodyValue(req)));
     return NextResponse.json({ ok: true });
   } catch (error) {
     const response = knownError(error);

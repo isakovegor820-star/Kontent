@@ -1,3 +1,4 @@
+import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 
 import { ProjectAccessError } from "@/lib/project-permissions";
@@ -17,7 +18,7 @@ export async function POST(req: NextRequest) {
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   try {
-    const body = await req.json() as Record<string, unknown>;
+    const body = await readJsonBodyValue(req) as Record<string, unknown>;
     const channelId = Number(body.channelId);
     if (!Number.isSafeInteger(channelId) || channelId <= 0) throw new TodayActionError("bad_channel");
     const fingerprint = String(body.fingerprint || "");

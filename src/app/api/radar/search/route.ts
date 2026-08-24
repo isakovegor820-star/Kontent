@@ -1,6 +1,7 @@
 // Гибридный радар: локальная выдача возвращается сразу, внешний Telegram-discovery
 // запускается отдельно и никогда не подменяет живую проверку источника текстом ИИ.
 
+import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { randomUUID } from "node:crypto";
 
 import { NextRequest, NextResponse } from "next/server";
@@ -348,7 +349,7 @@ export async function POST(req: NextRequest) {
   if (!user) return json({ error: "unauthorized" }, 401);
   let body: Record<string, unknown>;
   try {
-    body = await req.json();
+    body = await readJsonBodyValue(req);
   } catch {
     return json({ error: "bad_request" }, 400);
   }

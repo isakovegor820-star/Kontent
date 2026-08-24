@@ -4,6 +4,7 @@
 // стиля, но НЕ как источник фактов. Иначе одна прошлая выдумка модели («решение суда от
 // 10 июля») навсегда стала бы «фактом из базы» и закольцевала враньё.
 
+import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
@@ -21,7 +22,7 @@ export async function POST(req: NextRequest) {
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
 
-  const body = (await req.json().catch(() => ({}))) as { channelId?: number };
+  const body = (await readJsonBodyValue(req).catch(() => ({}))) as { channelId?: number };
 
   try {
     const pool = getPool();

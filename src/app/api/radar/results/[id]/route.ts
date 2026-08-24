@@ -2,6 +2,7 @@
 // handle и текст всегда перечитываются из user-scoped строки, поэтому подменить источник
 // или сохранить чужую находку нельзя.
 
+import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 
 import { resolveChannel } from "@/lib/autopilot";
@@ -30,7 +31,7 @@ export async function POST(
   if (!Number.isSafeInteger(resultId) || resultId <= 0) return json({ error: "not_found" }, 404);
   let body: Record<string, unknown>;
   try {
-    body = await req.json();
+    body = await readJsonBodyValue(req);
   } catch {
     return json({ error: "bad_request" }, 400);
   }

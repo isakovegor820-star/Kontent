@@ -1,3 +1,4 @@
+import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 
 import {
@@ -287,7 +288,7 @@ export async function DELETE(
   if (!id) return NextResponse.json({ ok: false, error: "bad_operation" }, { status: 422 });
   const key = normalizeIdempotencyKey(req.headers.get("idempotency-key"));
   if (!key) return NextResponse.json({ ok: false, error: "idempotency_key_required" }, { status: 400 });
-  const body = (await req.json().catch(() => null)) as {
+  const body = (await readJsonBodyValue(req).catch(() => null)) as {
     expectedScheduleRevision?: unknown;
     expectedStatus?: unknown;
   } | null;
@@ -342,7 +343,7 @@ export async function PATCH(
   if (!id) return NextResponse.json({ ok: false, error: "bad_operation" }, { status: 422 });
   const key = normalizeIdempotencyKey(req.headers.get("idempotency-key"));
   if (!key) return NextResponse.json({ ok: false, error: "idempotency_key_required" }, { status: 400 });
-  const body = (await req.json().catch(() => null)) as {
+  const body = (await readJsonBodyValue(req).catch(() => null)) as {
     action?: unknown;
     scheduledAt?: unknown;
     localDate?: unknown;

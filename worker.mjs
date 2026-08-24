@@ -175,6 +175,10 @@ import {
   selectAutopilotCandidates,
 } from "./src/lib/autopilot-candidate-selection.mjs";
 import {
+  enqueueWeeklyAutopilotPlan,
+  reconcileBuildingAutopilotPlans,
+} from "./src/lib/autopilot-weekly-queue.mjs";
+import {
   AiCompletionError,
   completeAiText,
   isRetryableAiCompletionError,
@@ -3022,12 +3026,6 @@ async function answerCb(id, text) {
 // вчерашнюю дату. Он перезаписывал вчерашний (unique по дате), сегодняшний не появлялся
 // вовсе, а прирост считался от позавчера — график роста врал (ревью).
 const mskToday = () => new Date().toLocaleDateString("en-CA", { timeZone: "Europe/Moscow" });
-const mskPlanningWeek = () => {
-  const date = new Date(`${mskToday()}T12:00:00Z`);
-  const day = date.getUTCDay();
-  date.setUTCDate(date.getUTCDate() + (day === 0 ? 1 : 1 - day));
-  return date.toISOString().slice(0, 10);
-};
 
 async function tgMemberCount(chatId) {
   try {
@@ -7485,6 +7483,7 @@ async function enqueuePost(userId, channelId, text, scheduledAt, rssContext = nu
 // свойство канала: можно вести один канал на автопилоте, а второй руками — и наоборот.
 // Канал, который человек отключил (is_active = false), планы не получает.
 async function weeklyPlans() {
+  if (!autopilotQueue) return { queued: 0, skipped: 0, failed: 0 };
   const targets = (
     await pool.query(
       `select s.project_id, s.user_id, s.channel_id from autopilot_settings s
@@ -7496,69 +7495,50 @@ async function weeklyPlans() {
         where s.enabled = true order by s.project_id, s.channel_id`,
     )
   ).rows;
+  const summary = { queued: 0, skipped: 0, failed: 0 };
   for (const t of targets) {
     const projectId = Number(t.project_id);
     const userId = Number(t.user_id);
     const channelId = Number(t.channel_id);
-    const latestPlan = (
-      await pool.query(
-        `select items from autopilot_plan
-          where project_id = $1 and channel_id = $2 and status in ('pending', 'approved')
-          order by created_at desc limit 1`,
-        [projectId, channelId],
-      )
-    ).rows[0];
-    const coverageUntil = (Array.isArray(latestPlan?.items) ? latestPlan.items : [])
-      .map((item) => Date.parse(String(item?.scheduledAt || "")))
-      .filter(Number.isFinite)
-      .reduce((latest, value) => Math.max(latest, value), 0);
-    // A three-month plan must not be overwritten by the Sunday job every week. Refresh only
-    // when less than one week of future content remains.
-    if (coverageUntil > Date.now() + 7 * 86_400_000) continue;
-    const usage = await acquireWorkerAiUsage(pool, {
-      userId,
-      kind: "autopilot-plan",
-      // The Sunday run and all of its retries share one logical weekly operation.
-      key: workerAiUsageCompositeKey("autopilot-weekly", [projectId, channelId, mskPlanningWeek()]),
-    });
-    if (usage.state === "committed" || usage.state === "in_progress") continue;
-    if (usage.state === "limit") {
-      console.warn("[auto] weekly plan quota", {
-        userId,
-        channelId,
-        used: usage.used,
-        limit: usage.limit,
-      });
-      continue;
-    }
-
-    let usageCommitted = false;
-    const stopHeartbeat = startAiUsageHeartbeat(userId, usage.reservationId);
     try {
-      const result = await buildAutopilotPlan(
+      const result = await enqueueWeeklyAutopilotPlan({
+        pool,
+        queue: autopilotQueue,
         projectId,
         userId,
         channelId,
-        null,
-        usage.reservationId,
-      );
-      usageCommitted = result?.usageCommitted === true;
-    } catch (err) {
-      console.error(`[auto] user ${userId}/канал ${channelId} план упал:`, err?.message);
-    } finally {
-      stopHeartbeat();
-      if (!usageCommitted) {
-        await releaseWorkerAiUsage(pool, userId, usage.reservationId).catch((error) => {
-          console.error("[auto] weekly plan quota release", {
-            userId,
-            channelId,
-            errorName: error?.name || "Error",
-          });
+      });
+      if (result.status === "queued") {
+        summary.queued++;
+        console.log("[auto] weekly plan queued", {
+          projectId,
+          channelId,
+          planId: result.planId,
+          publicationTargetCount: result.publicationTargetCount,
+        });
+      } else if (result.status === "skipped") {
+        summary.skipped++;
+      } else {
+        summary.failed++;
+        console.error("[auto] weekly plan enqueue failed", {
+          projectId,
+          channelId,
+          planId: result.planId,
+          reason: result.reason,
         });
       }
-      clearWorkerAiCallCount(usage.reservationId);
+    } catch (error) {
+      summary.failed++;
+      console.error("[auto] weekly plan dispatch failed", {
+        projectId,
+        userId,
+        channelId,
+        errorName: error?.name || "Error",
+        errorMessage: String(error?.message || "weekly dispatch failed").slice(0, 300),
+      });
     }
   }
+  return summary;
 }
 
 // ============================================================================
@@ -10998,6 +10978,9 @@ function recoverFailedAutopilotPlan(job, error) {
   });
 }
 
+const autopilotQueue = MEDIA_ONLY || PUBLICATION_ONLY
+  ? null
+  : new Queue(AUTOPILOT_QUEUE, { connection });
 const autopilotWorker = MEDIA_ONLY || PUBLICATION_ONLY
   ? null
   : new Worker(AUTOPILOT_QUEUE, processAutopilotPlanJob, { connection, concurrency: 2 });
@@ -11378,6 +11361,19 @@ async function reconcileLegalVisualRenders(operationId = null) {
   return result;
 }
 
+async function reconcileAutopilotBuildQueue() {
+  if (!autopilotQueue) return { scanned: 0, enqueued: 0, pending: 0 };
+  const result = await reconcileBuildingAutopilotPlans({
+    pool,
+    queue: autopilotQueue,
+    limit: 250,
+  });
+  if (result.pending) {
+    console.warn("[autopilot] build queue reconciliation pending", result);
+  }
+  return result;
+}
+
 async function reconcilePublicationExtras() {
   const result = await reconcilePublicationExtraRuntime({
     pool,
@@ -11641,6 +11637,7 @@ async function shutdown(sig) {
     await monthlyCampaignRegenerationWorker?.close();
     await monthlyCampaignRegenerationQueue?.close();
     await autopilotWorker?.close();
+    await autopilotQueue?.close();
     await statsWorker?.close();
     await cronWorker?.close();
     await cronQueue?.close();
@@ -11675,6 +11672,22 @@ if (!AUTOPILOT_ONLY && !MEDIA_ONLY && !PUBLICATION_ONLY) {
 // weekly НЕ запускаем: планы не должны перестраиваться при каждом рестарте (лечит баг «плана нет»).
 for (const name of AUTOPILOT_ONLY || MEDIA_ONLY || PUBLICATION_ONLY ? [] : ["stats", "recon", "trend", "today-opportunities", "discover", "exports"]) {
   await cronQueue.add(name, {}, { jobId: `startup-${name}`, removeOnComplete: true }).catch(() => {});
+}
+
+if (autopilotQueue) {
+  await reconcileAutopilotBuildQueue().catch((error) => {
+    console.error("[autopilot] startup build queue reconcile failed", {
+      errorName: error instanceof Error ? error.name : "Error",
+    });
+  });
+  const autopilotBuildQueueTimer = setInterval(() => {
+    reconcileAutopilotBuildQueue().catch((error) => {
+      console.error("[autopilot] build queue reconcile failed", {
+        errorName: error instanceof Error ? error.name : "Error",
+      });
+    });
+  }, 30_000);
+  autopilotBuildQueueTimer.unref();
 }
 
 if (monthlyCampaignRegenerationQueue) {

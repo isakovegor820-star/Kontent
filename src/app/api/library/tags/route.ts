@@ -1,5 +1,6 @@
 // Наборы хэштегов. GET — список, POST — создать, DELETE — удалить.
 
+import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { normalizeLibraryTags } from "@/lib/library";
@@ -40,7 +41,7 @@ export async function POST(req: NextRequest) {
 
   let body: { channelId?: unknown; name?: unknown; tags?: unknown };
   try {
-    body = await req.json();
+    body = await readJsonBodyValue(req);
   } catch {
     return NextResponse.json({ ok: false, error: "bad_request" }, { status: 400 });
   }

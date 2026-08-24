@@ -12,6 +12,9 @@ describe("public authentication flow", () => {
     expect(registerPage).toContain('<AuthScreen mode="register" />');
     expect(loginPage).toContain('<AuthScreen mode="login" />');
     expect(authScreen).toContain('href={isRegistration ? "/login" : "/register"}');
+    expect(authScreen).toContain('href="/terms"');
+    expect(authScreen).toContain('href="/privacy"');
+    expect(authScreen).not.toContain("14 дней бесплатно");
   });
 
   it("creates the correct session and opens the platform after success", () => {

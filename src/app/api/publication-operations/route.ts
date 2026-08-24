@@ -1,3 +1,4 @@
+import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 import type { PoolClient } from "pg";
 import { createHash } from "node:crypto";
@@ -330,7 +331,7 @@ export async function POST(req: NextRequest) {
   }
   const user = await getSessionUser(req);
   if (!user) return operationError("unauthorized", 401);
-  const body = (await req.json().catch(() => null)) as {
+  const body = (await readJsonBodyValue(req).catch(() => null)) as {
     draftId?: unknown;
     draftVersion?: unknown;
     timezone?: unknown;

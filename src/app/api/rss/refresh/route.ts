@@ -2,6 +2,7 @@
 // Крон и так проверяет каждые 30 минут — здесь человеку даём контроль «прямо сейчас».
 // jobId по юзеру: частые клики не плодят задачи, а сливаются в одну (паттерн /api/trends).
 
+import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
@@ -19,7 +20,7 @@ export async function POST(req: NextRequest) {
 
   let body: { channelId?: unknown } = {};
   try {
-    body = await req.json();
+    body = await readJsonBodyValue(req);
   } catch {
     // Старые клиенты могли отправлять пустой body — ниже используем все ленты.
   }

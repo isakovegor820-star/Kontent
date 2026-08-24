@@ -1,3 +1,4 @@
+import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 
 import { getPool } from "@/lib/db";
@@ -16,7 +17,7 @@ export async function POST(req: NextRequest) {
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
 
-  const body = await req.json().catch(() => null) as { channelId?: unknown } | null;
+  const body = await readJsonBodyValue(req).catch(() => null) as { channelId?: unknown } | null;
   const wantedChannelId = Number(body?.channelId);
   if (!Number.isSafeInteger(wantedChannelId) || wantedChannelId <= 0) {
     return NextResponse.json({ ok: false, error: "bad_channel" }, { status: 422 });

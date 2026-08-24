@@ -1,8 +1,9 @@
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "Создать аккаунт",
-  description: "Зарегистрируйтесь в Авроре и перейдите в рабочую SMM-платформу.",
+  title: "Регистрация",
+  description: "Создайте аккаунт Авроры без банковской карты.",
+  robots: { index: false, follow: false },
 };
 
 export default function RegisterLayout({ children }: { children: React.ReactNode }) {

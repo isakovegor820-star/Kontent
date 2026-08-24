@@ -2,6 +2,7 @@
 // проверяем дневной лимит, подкладываем прошлые посты пользователя как образец стиля.
 // Движок скрыт за переходником ai-provider — этот роут не знает, Ollama там или облако.
 
+import { JsonBodyReadError, readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
@@ -1110,9 +1111,11 @@ export async function POST(req: NextRequest) {
     monthlyItemId?: unknown;
   };
   try {
-    body = await req.json();
-  } catch {
-    return aiJson(requestId, { error: "bad_request", retryable: false }, { status: 400 });
+    body = await readJsonBodyValue(req);
+  } catch (error) {
+    const status = error instanceof JsonBodyReadError ? error.status : 400;
+    const code = error instanceof JsonBodyReadError ? error.code : "bad_request";
+    return aiJson(requestId, { error: code, retryable: false }, { status });
   }
 
   const requestKey = req.headers.get("idempotency-key")?.trim() ?? "";

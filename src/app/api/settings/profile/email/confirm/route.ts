@@ -1,3 +1,4 @@
+import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { randomUUID } from "node:crypto";
 
 import { NextRequest, NextResponse } from "next/server";
@@ -23,7 +24,7 @@ export async function POST(req: NextRequest) {
   );
   if (!limit.allowed) return rateLimitResponse(limit);
 
-  const body = (await req.json().catch(() => null)) as { token?: unknown } | null;
+  const body = (await readJsonBodyValue(req).catch(() => null)) as { token?: unknown } | null;
   const token = String(body?.token ?? "").trim();
   if (token.length < 20 || token.length > 200) {
     return NextResponse.json({ ok: false, error: "invalid", requestId }, { status: 422 });

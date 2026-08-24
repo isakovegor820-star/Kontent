@@ -1,3 +1,4 @@
+import { JsonBodyReadError, readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { validatePassword } from "@/lib/password";
@@ -7,6 +8,7 @@ import { clearSessionCookie } from "@/lib/session";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 
 export const runtime = "nodejs";
+const AUTH_BODY_MAX_BYTES = 16 * 1024;
 
 export async function POST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req, { requireBrowserOrigin: true })) {
@@ -19,9 +21,15 @@ export async function POST(req: NextRequest) {
   );
   if (!limit.allowed) return rateLimitResponse(limit);
 
-  const body = (await req.json().catch(() => null)) as
-    | { token?: unknown; password?: unknown }
-    | null;
+  let body: { token?: unknown; password?: unknown } | null;
+  try {
+    body = await readJsonBodyValue(req, AUTH_BODY_MAX_BYTES);
+  } catch (error) {
+    if (error instanceof JsonBodyReadError && error.code === "payload_too_large") {
+      return NextResponse.json({ ok: false, error: error.code }, { status: error.status });
+    }
+    body = null;
+  }
   const token = String(body?.token ?? "").trim();
   const password = String(body?.password ?? "");
   if (token.length < 20 || token.length > 200) {
