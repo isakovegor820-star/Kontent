@@ -5,6 +5,7 @@ import {
   composerAiReviewState,
   draftReviewAssessment,
   draftReviewDecision,
+  isDraftRecoveryAllowedReason,
   normalizeDraftAiValidation,
 } from "./draft-review";
 
@@ -106,5 +107,16 @@ describe("AI draft review policy", () => {
     expect(
       draftReviewDecision(input({ origin: "manual", ai_validation: validation("blocked") })),
     ).toBe("allowed");
+  });
+
+  it("allows an explicit validation takeover only in a personal project", () => {
+    expect(isDraftRecoveryAllowedReason("validation_blocked")).toBe(false);
+    expect(isDraftRecoveryAllowedReason("validation_blocked", {
+      personalResponsibilityTakeover: false,
+    })).toBe(false);
+    expect(isDraftRecoveryAllowedReason("validation_blocked", {
+      personalResponsibilityTakeover: true,
+    })).toBe(true);
+    expect(isDraftRecoveryAllowedReason("legacy_generation_missing")).toBe(true);
   });
 });

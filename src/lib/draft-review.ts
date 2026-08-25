@@ -28,8 +28,13 @@ export type DraftReviewAssessment = {
 
 export function isDraftRecoveryAllowedReason(
   reason: DraftReviewBlockedReason | null | undefined,
+  options: { personalResponsibilityTakeover?: boolean } = {},
 ): boolean {
-  return reason != null && reason !== "validation_blocked";
+  if (reason == null) return false;
+  if (reason === "validation_blocked") {
+    return options.personalResponsibilityTakeover === true;
+  }
+  return true;
 }
 
 function record(value: unknown): value is Record<string, unknown> {

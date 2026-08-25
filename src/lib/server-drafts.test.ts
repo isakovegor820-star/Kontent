@@ -111,6 +111,22 @@ const row = {
   ],
 };
 
+const blockedAiValidation = {
+  version: 1 as const,
+  status: "blocked" as const,
+  requiresReview: false,
+  blockerCodes: ["unsupported_claim"],
+  provenance: {
+    validatorVersion: "fact-ledger-v1",
+    ledgerHash: "fl1-1234abcd",
+    checkedAt: "2026-08-02T10:00:00.000Z",
+    coverage: "deterministic" as const,
+    semanticEntailment: "not_run" as const,
+    rulesRun: ["unsupported_claim"],
+    sourceIds: ["brief:1"],
+  },
+};
+
 beforeEach(() => {
   projectMocks.requireSelectedProjectPermission.mockClear();
   projectMocks.requireSelectedProjectPermission.mockImplementation(async (_db: unknown, userId: number) => ({
@@ -797,6 +813,118 @@ describe("server draft transactions", () => {
       draft: { id: 99 },
     });
     expect(query.mock.calls.some(([sql]) => String(sql).includes("insert into drafts"))).toBe(false);
+  });
+
+  it("lets a personal owner explicitly take responsibility for a validation-blocked version", async () => {
+    const recoveryInput: DraftRecoveryInput = {
+      clientKey: "draft_recovery-validation-1234567890",
+      sourceVersion: 3,
+      acceptResponsibility: true,
+      text: "Проверенный владельцем текст",
+      formatting: [],
+      media: null,
+      scheduledAt: input.scheduledAt,
+      schedule: input.schedule,
+      channelIds: [11],
+      tracking: null,
+    };
+    const sourceRow = {
+      ...row,
+      origin: "ai",
+      purpose: "needs_review",
+      generation_result_id: "81",
+      ai_validation: blockedAiValidation,
+      client_key: "draft_validation-blocked-1234567890",
+    };
+    const recoveredRow = {
+      ...row,
+      id: "99",
+      version: "1",
+      text: recoveryInput.text,
+      origin: "manual",
+      purpose: "publishable",
+      client_key: recoveryInput.clientKey,
+      editorial_state: "draft",
+    };
+    let auditParams: unknown[] | undefined;
+    const query = vi.fn(async (sql: string, params?: unknown[]) => {
+      if (sql === "begin" || sql === "commit" || sql === "rollback") return { rowCount: 0, rows: [] };
+      if (sql.includes("select id from drafts where project_id") && sql.includes("client_key")) {
+        return { rowCount: 0, rows: [] };
+      }
+      if (sql.includes("for share of d")) return { rowCount: 1, rows: [sourceRow] };
+      if (sql.includes("from projects project")) return { rowCount: 1, rows: [{ personal: true }] };
+      if (sql.includes("select id from channels")) return { rowCount: 1, rows: [{ id: "11" }] };
+      if (sql.includes("insert into drafts")) return { rowCount: 1, rows: [{ id: "99" }] };
+      if (sql.includes("draft.recovered_as_manual")) {
+        auditParams = params;
+        return { rowCount: 1, rows: [] };
+      }
+      if (sql.includes("select d.id")) return { rowCount: 1, rows: [recoveredRow] };
+      return { rowCount: 1, rows: [] };
+    });
+    const { pool } = fakePool(query);
+
+    const result = await recoverDraftForUser(5, 41, recoveryInput, pool as never);
+
+    expect(result).toMatchObject({
+      created: true,
+      draft: {
+        id: 99,
+        origin: "manual",
+        purpose: "publishable",
+        generation_result_id: null,
+        ai_validation: null,
+        blocked_reason: null,
+      },
+    });
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining("project.personal_owner_user_id = $2"),
+      [7, 5],
+    );
+    expect(query.mock.calls.some(([sql]) => /^\s*update drafts/u.test(String(sql)))).toBe(false);
+    expect(JSON.parse(String(auditParams?.[4]))).toMatchObject({
+      sourceDraftId: 41,
+      blockedReason: "validation_blocked",
+      responsibilityAccepted: true,
+      responsibilityScope: "personal_project_owner",
+    });
+  });
+
+  it("does not let a team member bypass a validation blocker through manual recovery", async () => {
+    const recoveryInput: DraftRecoveryInput = {
+      clientKey: "draft_recovery-team-validation-123456",
+      sourceVersion: 3,
+      acceptResponsibility: true,
+      text: input.text,
+      media: null,
+      scheduledAt: input.scheduledAt,
+      schedule: input.schedule,
+      channelIds: [11],
+      tracking: null,
+    };
+    const sourceRow = {
+      ...row,
+      origin: "ai",
+      purpose: "needs_review",
+      generation_result_id: "81",
+      ai_validation: blockedAiValidation,
+    };
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes("select id from drafts where project_id") && sql.includes("client_key")) {
+        return { rowCount: 0, rows: [] };
+      }
+      if (sql.includes("for share of d")) return { rowCount: 1, rows: [sourceRow] };
+      if (sql.includes("from projects project")) return { rowCount: 1, rows: [{ personal: false }] };
+      return { rowCount: 0, rows: [] };
+    });
+    const { pool } = fakePool(query);
+
+    await expect(recoverDraftForUser(5, 41, recoveryInput, pool as never)).rejects.toEqual(
+      new DraftValidationError("validation_blocked_requires_new_check"),
+    );
+    expect(query.mock.calls.some(([sql]) => String(sql).includes("insert into drafts"))).toBe(false);
+    expect(query).toHaveBeenCalledWith("rollback");
   });
 
   it("rejects a destination not owned and active before inserting anything", async () => {

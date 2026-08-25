@@ -1337,7 +1337,19 @@ export async function recoverDraftForUser(
     if (!sourceResult.rows[0]) throw new DraftNotFoundError();
     const source = mapDraft(sourceResult.rows[0]);
     if (source.version !== input.sourceVersion) throw new DraftConflictError(source);
-    if (!isDraftRecoveryAllowedReason(source.blocked_reason)) {
+    let personalResponsibilityTakeover = false;
+    if (source.blocked_reason === "validation_blocked") {
+      const personalProject = await tx.query<{ personal: boolean }>(
+        `select (project.personal_owner_user_id = $2) as personal
+           from projects project
+          where project.id = $1
+            and project.is_archived = false
+          limit 1`,
+        [projectId, userId],
+      );
+      personalResponsibilityTakeover = personalProject.rows[0]?.personal === true;
+    }
+    if (!isDraftRecoveryAllowedReason(source.blocked_reason, { personalResponsibilityTakeover })) {
       throw new DraftValidationError(
         source.blocked_reason === "validation_blocked"
           ? "validation_blocked_requires_new_check"
@@ -1402,6 +1414,9 @@ export async function recoverDraftForUser(
             sourceOrigin: source.origin,
             blockedReason: source.blocked_reason,
             responsibilityAccepted: true,
+            responsibilityScope: source.blocked_reason === "validation_blocked"
+              ? "personal_project_owner"
+              : "blocked_draft_recovery",
           }),
           auditKey,
         ],

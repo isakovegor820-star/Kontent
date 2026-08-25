@@ -12,7 +12,7 @@ vi.mock("@/lib/server-drafts", async (importOriginal) => {
   return { ...actual, recoverDraftForUser: mocks.recoverDraftForUser };
 });
 
-import { DraftConflictError } from "@/lib/server-drafts";
+import { DraftConflictError, DraftValidationError } from "@/lib/server-drafts";
 import { ProjectAccessError } from "@/lib/project-permissions";
 import { POST } from "./route";
 
@@ -104,5 +104,17 @@ describe("POST /api/drafts/:id/recover", () => {
     const response = await POST(request(), { params: Promise.resolve({ id: "41" }) });
     expect(response.status).toBe(403);
     await expect(response.json()).resolves.toEqual({ ok: false, error: "access_denied" });
+  });
+
+  it("keeps a validation takeover server-gated when the selected project is not personal", async () => {
+    mocks.recoverDraftForUser.mockRejectedValue(
+      new DraftValidationError("validation_blocked_requires_new_check"),
+    );
+    const response = await POST(request(), { params: Promise.resolve({ id: "41" }) });
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      error: "validation_blocked_requires_new_check",
+    });
   });
 });

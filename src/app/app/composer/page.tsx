@@ -308,6 +308,11 @@ const DRAFT_BLOCKED_COPY: Record<DraftReviewBlockedReason, {
     action: "Создать новый пост из текста",
   },
 };
+const PERSONAL_VALIDATION_TAKEOVER_COPY = {
+  title: "Проверка не подтвердила часть текста",
+  body: "Создайте отдельный ручной пост, если вы проверили текущий текст и готовы отвечать за его содержание. AI-проверка не будет перенесена; исходная версия останется в истории.",
+  action: "Принять и создать пост",
+} as const;
 type ResolvedComposerSchedule = NonNullable<ReturnType<typeof resolveComposerSchedule>>;
 type ComposerTextSnapshot = { text: string; formatting: RichTextEntity[] };
 type ComposerAiPreview = {
@@ -528,7 +533,9 @@ export default function ComposerPage() {
     && recoveryState !== "loading";
   const canRecoverDraft = roleCanEditContent
     && draftId != null
-    && isDraftRecoveryAllowedReason(blockedReason);
+    && isDraftRecoveryAllowedReason(blockedReason, {
+      personalResponsibilityTakeover: personalProject,
+    });
 
   useEffect(() => {
     if (!s.authReady || !s.user) return;
@@ -1877,7 +1884,9 @@ export default function ComposerPage() {
         !roleCanEditContent
         || draftId == null
         || draftVersion == null
-        || !isDraftRecoveryAllowedReason(blockedReason)
+        || !isDraftRecoveryAllowedReason(blockedReason, {
+          personalResponsibilityTakeover: personalProject,
+        })
       ) return;
 
       const snapshot = currentDraftWriteRef.current ?? currentDraftWrite;
@@ -1944,6 +1953,7 @@ export default function ComposerPage() {
     currentDraftWrite,
     draftId,
     draftVersion,
+    personalProject,
     roleCanEditContent,
     router,
     s,
@@ -2511,7 +2521,11 @@ function ComposerActionBar() {
   const barRef = useRef<HTMLDivElement>(null);
   const personal = projects.current?.personal === true;
   const approved = (personal || c.editorialState === "approved") && c.blockedReason == null;
-  const blocked = c.blockedReason ? DRAFT_BLOCKED_COPY[c.blockedReason] : null;
+  const blocked = c.blockedReason
+    ? personal && c.blockedReason === "validation_blocked"
+      ? PERSONAL_VALIDATION_TAKEOVER_COPY
+      : DRAFT_BLOCKED_COPY[c.blockedReason]
+    : null;
   const visible = c.canPublish || blocked != null;
   useLayoutEffect(() => {
     const root = document.documentElement;
@@ -2581,7 +2595,7 @@ function ComposerActionBar() {
                 </p>
               )}
             </div>
-            {c.blockedReason === "validation_blocked" && c.canEditContent ? (
+            {c.blockedReason === "validation_blocked" && !personal && c.canEditContent ? (
               <Button
                 variant="brand"
                 size="sm"
@@ -2598,7 +2612,7 @@ function ComposerActionBar() {
               <Button
                 variant="brand"
                 size="sm"
-                className="w-full shrink-0 sm:w-auto"
+                className="w-full shrink-0 whitespace-normal text-center sm:w-auto"
                 disabled={c.recoveryState === "success"}
                 loading={c.recoveryState === "loading"}
                 onClick={() => void c.recoverDraft()}
