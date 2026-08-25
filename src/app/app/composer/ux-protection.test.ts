@@ -30,7 +30,10 @@ describe("composer UX protection contract", () => {
     expect(source).toContain("Поставить в очередь");
     expect(source).toContain("Добавить в календарь");
     expect(source).toContain("setPublicationSuccess({");
-    expect(source).toContain('className="h-72 sm:h-44 lg:h-28"');
+    expect(source).toContain("--composer-action-bar-clearance");
+    expect(source).toContain("root.style.scrollPaddingBottom = clearance");
+    expect(source).toContain('className="h-[var(--composer-action-bar-clearance,18rem)]"');
+    expect(source).toContain("new ResizeObserver(updateClearance)");
     expect(source).toContain("scroll-mb-72");
   });
 

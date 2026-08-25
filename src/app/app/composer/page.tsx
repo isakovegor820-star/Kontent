@@ -2508,13 +2508,48 @@ function RevisionHistoryPanel() {
 function ComposerActionBar() {
   const c = useComposer();
   const projects = useProjects();
+  const barRef = useRef<HTMLDivElement>(null);
   const personal = projects.current?.personal === true;
   const approved = (personal || c.editorialState === "approved") && c.blockedReason == null;
   const blocked = c.blockedReason ? DRAFT_BLOCKED_COPY[c.blockedReason] : null;
-  if (!c.canPublish && !blocked) return null;
+  const visible = c.canPublish || blocked != null;
+  useLayoutEffect(() => {
+    const root = document.documentElement;
+    const previousClearance = root.style.getPropertyValue("--composer-action-bar-clearance");
+    const previousScrollPadding = root.style.scrollPaddingBottom;
+    const updateClearance = () => {
+      const bar = barRef.current;
+      if (!bar) return;
+      // Keep focused or programmatically revealed controls above the fixed action surface.
+      // Measuring the occupied viewport also covers its mobile navigation/safe-area offset
+      // and the taller recovery/error variants without hard-coded height guesses.
+      const occupiedViewport = window.innerHeight - bar.getBoundingClientRect().top;
+      const clearance = `${Math.ceil(Math.max(0, occupiedViewport) + 16)}px`;
+      root.style.setProperty("--composer-action-bar-clearance", clearance);
+      root.style.scrollPaddingBottom = clearance;
+    };
+
+    updateClearance();
+    const observer = new ResizeObserver(updateClearance);
+    if (barRef.current) observer.observe(barRef.current);
+    window.addEventListener("resize", updateClearance);
+    window.visualViewport?.addEventListener("resize", updateClearance);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", updateClearance);
+      window.visualViewport?.removeEventListener("resize", updateClearance);
+      if (previousClearance) root.style.setProperty("--composer-action-bar-clearance", previousClearance);
+      else root.style.removeProperty("--composer-action-bar-clearance");
+      root.style.scrollPaddingBottom = previousScrollPadding;
+    };
+  }, [visible]);
+  if (!visible) return null;
   const unavailable = !c.hydrated || c.draftSaveState === "saving" || c.typing || c.saving;
   return (
-    <div className="fixed inset-x-4 bottom-[calc(4.5rem+env(safe-area-inset-bottom))] z-30 lg:right-8 lg:left-[calc(260px+2rem)] lg:bottom-4">
+    <div
+      ref={barRef}
+      className="fixed inset-x-4 bottom-[calc(4.5rem+env(safe-area-inset-bottom))] z-30 lg:right-8 lg:left-[calc(260px+2rem)] lg:bottom-4"
+    >
       <div className="mx-auto w-full max-w-5xl rounded-md border border-line bg-surface/95 p-3 shadow-lift backdrop-blur-xl sm:p-4">
         {blocked ? (
           <section
@@ -3821,7 +3856,7 @@ function ComposerInner() {
       </Card>
 
       <ComposerActionBar />
-      <div aria-hidden className="h-72 sm:h-44 lg:h-28" />
+      <div aria-hidden className="h-[var(--composer-action-bar-clearance,18rem)]" />
 
       {canEditContent && (
         <ConfirmDialog
