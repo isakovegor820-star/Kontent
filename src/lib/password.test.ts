@@ -49,7 +49,7 @@ describe("hashPassword / verifyPassword", () => {
 
 describe("validatePassword", () => {
   it("короче минимума — ошибка", () => {
-    expect(validatePassword("a".repeat(PASSWORD_MIN - 1))).toBeDefined();
+    expect(validatePassword("a".repeat(PASSWORD_MIN - 1))).toBe("too_short");
   });
   it("ровно минимум — ок", () => {
     expect(validatePassword("a".repeat(PASSWORD_MIN))).toBeUndefined();
@@ -58,6 +58,11 @@ describe("validatePassword", () => {
     expect(validatePassword("a".repeat(PASSWORD_MAX))).toBeUndefined();
   });
   it("длиннее максимума — ошибка", () => {
-    expect(validatePassword("a".repeat(PASSWORD_MAX + 1))).toBeDefined();
+    expect(validatePassword("a".repeat(PASSWORD_MAX + 1))).toBe("too_long");
+  });
+  it("отклоняет пароль только из Unicode-пробелов, не обрезая смешанный пароль", () => {
+    expect(validatePassword("        ")).toBe("whitespace_only");
+    expect(validatePassword("\t\n\u00a0     ")).toBe("whitespace_only");
+    expect(validatePassword("a       ")).toBeUndefined();
   });
 });

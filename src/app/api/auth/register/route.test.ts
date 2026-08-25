@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   convertLead: vi.fn(),
   createSession: vi.fn(),
   rateLimit: vi.fn(),
+  validatePassword: vi.fn(),
 }));
 
 vi.mock("@/lib/db", () => ({ getPool: () => ({ connect: vi.fn() }) }));
@@ -14,7 +15,7 @@ vi.mock("@/lib/users", () => ({ convertMatchingLeadAfterRegistration: mocks.conv
 vi.mock("@/lib/session", () => ({ createSession: mocks.createSession }));
 vi.mock("@/lib/password", () => ({
   hashPassword: vi.fn(async () => "salt:hash"),
-  validatePassword: vi.fn(() => undefined),
+  validatePassword: mocks.validatePassword,
 }));
 vi.mock("@/lib/rate-limit", () => ({
   checkRateLimit: mocks.rateLimit,
@@ -39,6 +40,7 @@ describe("registration route", () => {
     mocks.register.mockResolvedValue({ ok: true, userId: 19 });
     mocks.convertLead.mockResolvedValue({ converted: false, notified: false });
     mocks.createSession.mockResolvedValue(true);
+    mocks.validatePassword.mockReturnValue(undefined);
   });
   afterEach(() => vi.clearAllMocks());
 
@@ -61,5 +63,19 @@ describe("registration route", () => {
       accountCreated: true,
     });
     expect(mocks.convertLead).toHaveBeenCalledWith(["new@example.test"], "New");
+  });
+
+  it("returns a stable password reason without creating an account", async () => {
+    mocks.validatePassword.mockReturnValue("whitespace_only");
+
+    const response = await POST(request());
+
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      error: "bad_password",
+      reason: "whitespace_only",
+    });
+    expect(mocks.register).not.toHaveBeenCalled();
   });
 });

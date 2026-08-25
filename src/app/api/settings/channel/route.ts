@@ -12,6 +12,7 @@ import { ensureSettings, loadBrief, resolveChannel } from "@/lib/autopilot";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import type { AutopilotSettings } from "@/lib/autopilot";
 import { DEFAULT_AUTOPILOT_ENGINE } from "@/lib/autopilot-config.mjs";
+import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/project-permissions";
 
 export const runtime = "nodejs";
 
@@ -30,19 +31,24 @@ export async function GET(req: NextRequest) {
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
   try {
+    const membership = await requireSelectedProjectPermission(getPool(), user.id, "project.read");
+    const scope = { actorUserId: user.id, projectId: membership.projectId };
     const channelId = await resolveChannel(
-      user.id,
+      scope,
       Number(req.nextUrl.searchParams.get("channel")) || null,
     );
     if (!channelId) {
       return NextResponse.json({ error: "no_channel" }, { status: 422 });
     }
     const [brief, settings] = await Promise.all([
-      loadBrief(user.id, channelId),
-      ensureSettings(user.id, channelId),
+      loadBrief(scope, channelId),
+      ensureSettings(scope, channelId),
     ]);
     return NextResponse.json({ channelId, brief, settings });
   } catch (error) {
+    if (error instanceof ProjectAccessError) {
+      return NextResponse.json({ error: "access_denied" }, { status: 403 });
+    }
     console.error("[/api/settings/channel] GET", {
       errorName: error instanceof Error ? error.name : "Error",
     });
@@ -71,10 +77,20 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "bad_settings" }, { status: 422 });
   }
 
+  const pool = getPool();
   let channelId: number | null;
+  let projectId: number;
   try {
-    channelId = await resolveChannel(user.id, Number(body.channelId) || null);
+    const membership = await requireSelectedProjectPermission(pool, user.id, "project.read");
+    projectId = membership.projectId;
+    channelId = await resolveChannel(
+      { actorUserId: user.id, projectId },
+      Number(body.channelId) || null,
+    );
   } catch (error) {
+    if (error instanceof ProjectAccessError) {
+      return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
+    }
     console.error("[/api/settings/channel] resolve", {
       errorName: error instanceof Error ? error.name : "Error",
     });
@@ -97,7 +113,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "bad_settings" }, { status: 422 });
   }
 
-  const pool = getPool();
   let client: PoolClient;
   try {
     client = await pool.connect();
@@ -110,18 +125,18 @@ export async function POST(req: NextRequest) {
   try {
     await client.query("begin");
     await client.query(
-      `insert into autopilot_settings (user_id, channel_id, generation_engine)
-       values ($1, $2, $3)
-       on conflict (user_id, channel_id) do nothing`,
-      [user.id, channelId, DEFAULT_AUTOPILOT_ENGINE],
+      `insert into autopilot_settings (project_id, user_id, channel_id, generation_engine)
+       values ($1, $2, $3, $4)
+       on conflict do nothing`,
+      [projectId, user.id, channelId, DEFAULT_AUTOPILOT_ENGINE],
     );
     const current = await client.query<AutopilotSettings>(
       `select enabled, mode, post_frequency, approvals_streak, generation_engine,
               planning_months, planning_weeks, news_sources, quick_settings
          from autopilot_settings
-        where user_id = $1 and channel_id = $2
+        where project_id = $1 and channel_id = $2
         for update`,
-      [user.id, channelId],
+      [projectId, channelId],
     );
     const previous = current.rows[0];
     if (!previous) throw new Error("settings_missing");
@@ -133,9 +148,9 @@ export async function POST(req: NextRequest) {
 
     await client.query(
       `insert into content_brief
-         (user_id, channel_id, niche, audience, rubrics, formats, author_role, goal, cta, taboo, profile_answers, quality, ready, source, updated_at)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, true, $13, now())
-       on conflict (user_id, channel_id) do update
+         (project_id, user_id, channel_id, niche, audience, rubrics, formats, author_role, goal, cta, taboo, profile_answers, quality, ready, source, updated_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, true, $14, now())
+       on conflict (project_id, channel_id) do update
          set niche = excluded.niche,
              audience = excluded.audience,
              rubrics = excluded.rubrics,
@@ -150,6 +165,7 @@ export async function POST(req: NextRequest) {
              source = excluded.source,
              updated_at = now()`,
       [
+        projectId,
         user.id,
         channelId,
         brief.niche,
@@ -172,10 +188,10 @@ export async function POST(req: NextRequest) {
               mode = $4,
               post_frequency = $5,
               updated_at = now()
-        where user_id = $1 and channel_id = $2
+        where project_id = $1 and channel_id = $2
         returning enabled, mode, post_frequency, approvals_streak, generation_engine,
                   planning_months, planning_weeks, news_sources, quick_settings`,
-      [user.id, channelId, enabled, mode, postFrequency],
+      [projectId, channelId, enabled, mode, postFrequency],
     );
     await client.query("commit");
     return NextResponse.json({ ok: true, channelId, brief, settings: updated.rows[0] });

@@ -13,6 +13,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { usePathname } from "next/navigation";
 import type {
   AppState,
   AutopilotSlot,
@@ -28,9 +29,12 @@ import type {
 import { seedState } from "./mock";
 import {
   parseAiUsageResponse,
-  startAiUsagePolling,
   type AiUsageStatus,
 } from "./ai-usage-sync";
+import {
+  isWorkspacePollingRoute,
+  startVisibleWorkspacePolling,
+} from "./workspace-polling";
 import {
   createWorkspaceRequestFence,
   isAbortError,
@@ -170,6 +174,7 @@ function mapUser(su: ServerUser): User {
 }
 
 export function StoreProvider({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname();
   const [state, setState] = useState<AppState>(() => seedState());
   const [ready, setReady] = useState(false);
   const [authReady, setAuthReady] = useState(false);
@@ -553,19 +558,16 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     return () => { cancelled = true; };
   }, [activeUserId, authReady, resolveSelectedWorkspace]);
 
-  // Реальные данные и счётчик ИИ начинают обновляться только после подтверждённой
-  // сервером workspace identity. Смена workspace сначала очищает предыдущий экран.
+  // Реальные данные и счётчик ИИ обновляются только внутри продукта, после
+  // подтверждения workspace identity и только пока вкладка видима.
   useEffect(() => {
-    if (!workspaceKey) return;
-    void refreshReal();
-    void refreshAiUsage();
-    const realTimer = setInterval(refreshReal, 8000);
-    const stopAiUsagePolling = startAiUsagePolling(refreshAiUsage);
-    return () => {
-      clearInterval(realTimer);
-      stopAiUsagePolling();
-    };
-  }, [workspaceKey, refreshReal, refreshAiUsage]);
+    if (!workspaceKey || !isWorkspacePollingRoute(pathname)) return;
+    return startVisibleWorkspacePolling({
+      refreshReal,
+      refreshAiUsage,
+      visibility: document,
+    });
+  }, [pathname, workspaceKey, refreshReal, refreshAiUsage]);
 
   useEffect(() => {
     const identity = workspaceRef.current;

@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   query: vi.fn(),
   release: vi.fn(),
   connect: vi.fn(),
+  requireSelectedProjectPermission: vi.fn(),
 }));
 
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
@@ -18,6 +19,13 @@ vi.mock("@/lib/autopilot", () => ({
   ensureSettings: mocks.ensureSettings,
   loadBrief: mocks.loadBrief,
 }));
+vi.mock("@/lib/project-permissions", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/project-permissions")>();
+  return {
+    ...actual,
+    requireSelectedProjectPermission: mocks.requireSelectedProjectPermission,
+  };
+});
 
 import { POST } from "./route";
 
@@ -54,6 +62,7 @@ describe("POST /api/settings/channel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.getSessionUser.mockResolvedValue({ id: 7 });
+    mocks.requireSelectedProjectPermission.mockResolvedValue({ projectId: 12 });
     mocks.resolveChannel.mockResolvedValue(21);
     mocks.connect.mockResolvedValue({ query: mocks.query, release: mocks.release });
     mocks.query.mockImplementation(async (sql: string) => {
@@ -88,8 +97,12 @@ describe("POST /api/settings/channel", () => {
     expect(statements[0]).toBe("begin");
     expect(mocks.query).toHaveBeenCalledWith(
       expect.stringContaining("generation_engine"),
-      [7, 21, "navy-deepseek-flash"],
+      [12, 7, 21, "navy-deepseek-flash"],
     );
+    const settingsInsert = statements.find((sql) => sql.includes("insert into autopilot_settings"));
+    expect(settingsInsert).toContain("on conflict do nothing");
+    expect(statements.some((sql) => sql.includes("on conflict (project_id, channel_id)"))).toBe(true);
+    expect(statements.some((sql) => sql.includes("where user_id = $1 and channel_id = $2"))).toBe(false);
     expect(statements.some((sql) => sql.includes("insert into content_brief"))).toBe(true);
     expect(statements.some((sql) => sql.includes("update autopilot_settings"))).toBe(true);
     expect(statements.at(-1)).toBe("commit");

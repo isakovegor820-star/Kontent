@@ -2,8 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 import { hasTrustedMutationOrigin } from "./request-origin";
 
-function request(headers: Record<string, string>) {
-  return new NextRequest("http://internal:3000/api/drafts", {
+function request(headers: Record<string, string>, url = "http://internal:3000/api/drafts") {
+  return new NextRequest(url, {
     method: "POST",
     headers: { host: "internal:3000", ...headers },
   });
@@ -51,12 +51,38 @@ describe("hasTrustedMutationOrigin", () => {
 
   it("accepts the actual same-origin dev port when APP_URL uses another local port", () => {
     vi.stubEnv("NODE_ENV", "development");
-    vi.stubEnv("APP_URL", "http://internal:3001");
+    vi.stubEnv("APP_URL", "http://localhost:3001");
     expect(hasTrustedMutationOrigin(request({
-      origin: "http://internal:3000",
+      host: "localhost:3000",
+      origin: "http://localhost:3000",
       cookie: "sid=ambient",
       "sec-fetch-site": "same-origin",
     }))).toBe(true);
+  });
+
+  it("accepts a real 127.0.0.1 Host even when Next normalized req.url to localhost", () => {
+    vi.stubEnv("NODE_ENV", "development");
+    vi.stubEnv("APP_URL", "http://localhost:3000");
+    expect(hasTrustedMutationOrigin(request({
+      host: "127.0.0.1:3001",
+      origin: "http://127.0.0.1:3001",
+      cookie: "sid=ambient",
+      "sec-fetch-site": "same-origin",
+    }, "http://localhost:3001/api/auth/login"))).toBe(true);
+  });
+
+  it("rejects loopback suffixes and mismatched local Host values", () => {
+    vi.stubEnv("NODE_ENV", "development");
+    expect(hasTrustedMutationOrigin(request({
+      host: "127.0.0.1:3001",
+      origin: "http://127.0.0.1.evil.example:3001",
+      "sec-fetch-site": "same-origin",
+    }))).toBe(false);
+    expect(hasTrustedMutationOrigin(request({
+      host: "localhost:3001",
+      origin: "http://127.0.0.1:3001",
+      "sec-fetch-site": "same-origin",
+    }))).toBe(false);
   });
 
   it("leaves cookie-less service calls to route authentication but keeps browser-only flows strict", () => {

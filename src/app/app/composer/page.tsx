@@ -213,8 +213,12 @@ function revealComposerProblem(errors: Errors) {
   const details = element.closest("details") as HTMLDetailsElement | null;
   if (details) details.open = true;
   window.requestAnimationFrame(() => {
-    element.scrollIntoView({ behavior: "smooth", block: "center" });
-    if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLButtonElement) {
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    element.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "center" });
+    if (
+      element instanceof HTMLElement
+      && element.matches("input, textarea, button, [contenteditable='true'], [tabindex]")
+    ) {
       element.focus({ preventScroll: true });
     } else {
       element.querySelector<HTMLElement>("input, textarea, button, [tabindex]")?.focus({ preventScroll: true });
@@ -267,7 +271,14 @@ function draftToPost(draft: ServerDraft): Post {
 
 /* ------------------------------------------------------------- ОБЩЕЕ СОСТОЯНИЕ */
 
-type Errors = { text?: string; networks?: string; tracking?: string; when?: string };
+type ComposerTextErrorCode = "empty" | "ai_busy" | "review_required" | "blocked";
+type Errors = {
+  text?: string;
+  textCode?: ComposerTextErrorCode;
+  networks?: string;
+  tracking?: string;
+  when?: string;
+};
 type ComposerAiCommand = "write" | "rewrite" | "shorten" | "script";
 type AiReviewState = "none" | "required" | "blocked";
 type DraftRecoveryState = "idle" | "loading" | "success" | "failed";
@@ -898,6 +909,11 @@ export default function ComposerPage() {
     setRedoStack([]);
     setText(value.text);
     setFormatting(value.formatting);
+    if (value.text.trim()) {
+      setErrors((current) => current.textCode === "empty"
+        ? { ...current, text: undefined, textCode: undefined }
+        : current);
+    }
     if (origin === "ai") {
       setAiValidation(null);
       setAiReview("required");
@@ -1405,8 +1421,14 @@ export default function ComposerPage() {
     (needWhen: boolean) => {
       const next: Errors = {};
 
-      if (typing || cancelRef.current) next.text = "Дождись финальной проверки ИИ или останови генерацию.";
-      if (!text.trim()) next.text = "Пост пустой. Напиши что-нибудь или попроси ИИ.";
+      if (typing || cancelRef.current) {
+        next.text = "Дождись финальной проверки ИИ или останови генерацию.";
+        next.textCode = "ai_busy";
+      }
+      if (!text.trim()) {
+        next.text = "Пост пустой. Напиши что-нибудь или попроси ИИ.";
+        next.textCode = "empty";
+      }
       if (!networks.length) next.networks = "Выбери хотя бы одну сеть — иначе посту некуда идти.";
       if (networks.includes("tg") && channelIds.length === 0) next.networks = "Выбери хотя бы один канал Telegram.";
       if (networks.includes("vk") && vkChannelIds.length === 0) next.networks = "Выбери хотя бы одно сообщество VK.";
@@ -1419,9 +1441,11 @@ export default function ComposerPage() {
         && !personalProject
       ) {
         next.text = "Проверь факты в тексте ИИ и подтверди ручную проверку перед планированием.";
+        next.textCode = "review_required";
       }
       if (needWhen && blockedReason) {
         next.text = DRAFT_BLOCKED_COPY[blockedReason].body;
+        next.textCode = "blocked";
       }
 
       if (needWhen && noDate) {
@@ -1467,7 +1491,7 @@ export default function ComposerPage() {
       if (first) {
         setDraftSaveState("failed");
         if (mode !== "autosave") {
-          s.toast({ kind: "danger", title: "Черновик не сохранён", body: first });
+          revealComposerProblem(bad);
         }
         return Promise.resolve(null);
       }
@@ -1985,7 +2009,6 @@ export default function ComposerPage() {
     const bad = validate(mode === "calendar");
     const first = bad.text ?? bad.networks ?? bad.tracking ?? bad.when;
     if (first) {
-      s.toast({ kind: "danger", title: "Нужно заполнить данные", body: first });
       revealComposerProblem(bad);
       scheduleRequestRef.current = false;
       return;

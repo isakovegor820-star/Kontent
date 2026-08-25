@@ -3,6 +3,13 @@
 // Никогда не логируем и не возвращаем пароль или хеш наружу.
 
 import { randomBytes, scrypt, timingSafeEqual } from "node:crypto";
+export {
+  PASSWORD_MAX,
+  PASSWORD_MIN,
+  passwordProblemMessage,
+  validatePassword,
+  type PasswordProblem,
+} from "./password-policy";
 
 const KEYLEN = 64; // длина производного ключа в байтах
 
@@ -33,16 +40,4 @@ export async function verifyPassword(password: string, stored: string | null): P
   const derived = await scryptAsync(password, salt);
   if (derived.length !== expected.length) return false;
   return timingSafeEqual(derived, expected);
-}
-
-// Требования к паролю: не короче 8 символов (простая, честная планка — не мучаем человека
-// спецсимволами), не длиннее 200 (защита от абсурдно длинного ввода).
-export const PASSWORD_MIN = 8;
-export const PASSWORD_MAX = 200;
-
-/** Проверяет пароль на длину. Возвращает текст ошибки или undefined. */
-export function validatePassword(password: string): string | undefined {
-  if (password.length < PASSWORD_MIN) return `Пароль — минимум ${PASSWORD_MIN} символов.`;
-  if (password.length > PASSWORD_MAX) return "Слишком длинный пароль.";
-  return undefined;
 }

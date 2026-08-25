@@ -82,11 +82,14 @@ npm run build                 # повторный build без зависшег
 npm run test:e2e:real         # production web + PostgreSQL + Redis + publication worker
 ```
 
-`test:e2e:real` требует уже собранный production build, Chromium, явно выделенную локальную
-базу `aurora_e2e_real` в `E2E_DATABASE_URL` и Redis DB 15 в `E2E_REDIS_URL`. Harness
-fail-closed отклоняет другие targets, пересоздаёт схему и очищает Redis, поднимает fake
-AI/Telegram, QA-пользователя и каналы, проверяет критический browser journey и удаляет
-созданные данные. Команда не использует live secrets и не публикует в Telegram.
+`test:e2e:real` требует Chromium, OpenSSL, явно выделенную локальную базу
+`aurora_e2e_real` в `E2E_DATABASE_URL` и Redis DB 15 в `E2E_REDIS_URL`. Harness сам
+создаёт изолированную production-сборку, запускает release entrypoint (`next start` и
+workers) за локальным HTTPS ingress и fail-closed отклоняет другие targets. Он пересоздаёт
+схему и очищает Redis, поднимает fake AI/Telegram, QA-пользователя и каналы, проверяет
+критический browser journey, конкурентную запись настроек и завершает прогон при любом
+first-party HTTP 5xx или необработанной runtime-ошибке. Команда не использует live secrets,
+не публикует в Telegram и удаляет созданные данные.
 Mocked contract suite сохранён отдельно как `npm run test:contracts`; он не считается E2E.
 
 После deployment запусти удалённый production gate:

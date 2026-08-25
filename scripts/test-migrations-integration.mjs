@@ -88,7 +88,13 @@ try {
        (select count(*)::int from information_schema.columns
          where table_schema = 'public' and table_name = 'competitor_suggestions'
            and column_name in ('channel_id','description','last_post_at','posts_per_week','on_topic'))
-         as suggestion_columns`,
+         as suggestion_columns,
+       (select pg_get_constraintdef(oid)
+          from pg_constraint
+         where conrelid = 'autopilot_settings'::regclass
+           and contype = 'p') as autopilot_settings_primary_key,
+       (select to_regclass('autopilot_settings_user_channel_uniq') is not null)
+         as autopilot_settings_rollback_index`,
   );
   const byId = new Map(posts.rows.map((row) => [Number(row.id), row]));
   const summary = checks.rows[0];
@@ -103,12 +109,31 @@ try {
     || Number(summary.required_session_columns) !== 2
     || Number(summary.invalid_session_rows) !== 0
     || Number(summary.suggestion_columns) !== 5
+    || summary.autopilot_settings_primary_key !== "PRIMARY KEY (project_id, channel_id)"
+    || summary.autopilot_settings_rollback_index !== true
     || byId.get(101)?.external_message_id !== "77"
     || byId.get(102)?.external_message_id !== null
     || byId.get(102)?.result !== "duplicate_legacy_external_id"
     || byId.get(103)?.external_message_id !== "77"
   ) {
     throw new Error(`migration integration assertions failed: ${JSON.stringify({ posts: posts.rows, summary })}`);
+  }
+
+  // The previous release names the legacy arbiter explicitly. A forward-schema
+  // application rollback must keep this statement valid after the PK switch.
+  const previousReleaseInsert = `insert into autopilot_settings (user_id, channel_id, generation_engine)
+    select user_id, id, 'navy-deepseek-flash' from channels order by id limit 1
+    on conflict (user_id, channel_id) do nothing`;
+  await pool.query(previousReleaseInsert);
+  await pool.query(previousReleaseInsert);
+  const rollbackCompatibleSettings = Number((await pool.query(
+    `select count(*)::int as n
+       from autopilot_settings settings
+       join channels channel on channel.id = settings.channel_id
+      where settings.user_id = channel.user_id`,
+  )).rows[0]?.n ?? 0);
+  if (rollbackCompatibleSettings !== 1) {
+    throw new Error(`previous release Autopilot insert is not rollback-compatible: ${rollbackCompatibleSettings}`);
   }
 
   const auditQuery = productionLedgerAudit.match(/\n(with relevant_ledger[\s\S]+?)\n\ncommit;/u)?.[1];

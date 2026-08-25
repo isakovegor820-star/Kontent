@@ -29,14 +29,15 @@ export function hasTrustedMutationOrigin(
   }
 
   try {
-    const origin = new URL(supplied).origin;
+    const parsedOrigin = new URL(supplied);
+    const origin = parsedOrigin.origin;
     // `npm run dev` may choose the next free port. Browsers still provide an unforgeable
     // same-origin Fetch Metadata signal; accept that actual local origin only outside
     // production so mutations keep working on the fallback port.
     if (
       process.env.NODE_ENV !== "production"
       && fetchSite === "same-origin"
-      && originFromRequest(req) === origin
+      && trustedDevelopmentRequestOrigin(req, parsedOrigin)
     ) return true;
     const configured = new URL(String(process.env.APP_URL || "").trim());
     if (process.env.NODE_ENV === "production" && configured.protocol !== "https:") return false;
@@ -46,6 +47,33 @@ export function hasTrustedMutationOrigin(
     // APP_URL is configured. Production never derives trust from Host/request metadata.
     return process.env.NODE_ENV !== "production" && originFromRequest(req) === supplied;
   }
+}
+
+function trustedDevelopmentRequestOrigin(req: NextRequest, supplied: URL): boolean {
+  if (!["http:", "https:"].includes(supplied.protocol) || !isLocalDevelopmentHostname(supplied.hostname)) {
+    return false;
+  }
+  const host = req.headers.get("host")?.trim();
+  if (!host || /[\s/@\\]/u.test(host)) return false;
+  try {
+    const actual = new URL(`${supplied.protocol}//${host}`);
+    return isLocalDevelopmentHostname(actual.hostname) && actual.origin === supplied.origin;
+  } catch {
+    return false;
+  }
+}
+
+function isLocalDevelopmentHostname(hostname: string): boolean {
+  const normalized = hostname.replace(/^\[|\]$/gu, "").toLowerCase();
+  if (normalized === "localhost" || normalized === "::1" || normalized === "127.0.0.1") return true;
+  const parts = normalized.split(".").map(Number);
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+    return false;
+  }
+  return parts[0] === 10
+    || (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31)
+    || (parts[0] === 192 && parts[1] === 168)
+    || (parts[0] === 169 && parts[1] === 254);
 }
 
 function originFromRequest(req: NextRequest): string {

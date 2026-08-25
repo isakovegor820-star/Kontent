@@ -22,6 +22,7 @@ const APPROVED_REPLACED_CONSTRAINTS = new Set([
   "publication_outbox_status_check",
   "autopilot_plan_revision_check",
   "autopilot_plan_status_check",
+  "autopilot_settings_pkey",
   "content_brief_source_check",
   "rss_items_skip_reason_check",
   "site_analysis_jobs_status_check",

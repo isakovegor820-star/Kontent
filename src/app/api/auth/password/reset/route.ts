@@ -35,8 +35,12 @@ export async function POST(req: NextRequest) {
   if (token.length < 20 || token.length > 200) {
     return NextResponse.json({ ok: false, error: "invalid" }, { status: 422 });
   }
-  if (validatePassword(password)) {
-    return NextResponse.json({ ok: false, error: "bad_password" }, { status: 422 });
+  const passwordProblem = validatePassword(password);
+  if (passwordProblem) {
+    return NextResponse.json(
+      { ok: false, error: "bad_password", reason: passwordProblem },
+      { status: 422 },
+    );
   }
   if (!process.env.DATABASE_URL) {
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });

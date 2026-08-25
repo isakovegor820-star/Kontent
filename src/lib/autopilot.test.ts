@@ -14,7 +14,7 @@ vi.mock("./queue", () => ({
     `post-${postId}-r${revision}`,
 }));
 
-import { enqueueAutopilotPost, resolveChannel } from "./autopilot";
+import { enqueueAutopilotPost, ensureSettings, resolveChannel } from "./autopilot";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -46,6 +46,32 @@ describe("Autopilot queue delivery", () => {
 });
 
 describe("Autopilot project channel boundary", () => {
+  it("initializes settings only through the project/channel conflict key", async () => {
+    const settings = {
+      enabled: false,
+      mode: "confirm",
+      post_frequency: 5,
+      approvals_streak: 0,
+      generation_engine: "navy-deepseek-flash",
+      planning_months: 1,
+      planning_weeks: 4,
+      news_sources: [],
+      quick_settings: {},
+    };
+    mocks.query
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [settings], rowCount: 1 });
+
+    await expect(ensureSettings({ actorUserId: 4, projectId: 88 }, 99)).resolves.toEqual(settings);
+
+    const insert = String(mocks.query.mock.calls[1][0]);
+    expect(insert).toContain("on conflict do nothing");
+    expect(insert).not.toMatch(/on conflict \([^)]*\)/u);
+    expect(mocks.query.mock.calls[1][1]?.slice(0, 3)).toEqual([88, 4, 99]);
+    expect(mocks.query.mock.calls[2][1]).toEqual([88, 99]);
+  });
+
   it("resolves compatibility callers through the server-selected project", async () => {
     mocks.query
       .mockResolvedValueOnce({

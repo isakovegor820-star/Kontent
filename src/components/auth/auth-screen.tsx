@@ -19,13 +19,18 @@ import { HeroProductScene } from "@/components/landing/hero-product-scene";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/primitives";
 import { hasPendingProjectInvite } from "@/lib/project-invite-client";
+import {
+  PASSWORD_MAX,
+  PASSWORD_MIN,
+  passwordProblemMessage,
+  validatePassword,
+  type PasswordProblem,
+} from "@/lib/password-policy";
 import { useStore } from "@/lib/store";
 import styles from "./auth-screen.module.css";
 
 export type AuthMode = "register" | "login";
 export type AuthIntent = "platform" | "admin";
-
-const PASSWORD_MIN = 8;
 
 function validateEmail(raw: string): string | undefined {
   const value = raw.trim();
@@ -81,10 +86,11 @@ export function AuthScreen({ mode, intent = "platform" }: { mode: AuthMode; inte
         ? "Введите имя — хотя бы 2 символа."
         : undefined;
     const nextEmailError = validateEmail(email);
+    const passwordProblem = isRegistration ? validatePassword(password) : undefined;
     const nextPasswordError = !password
       ? "Введите пароль."
-      : isRegistration && password.length < PASSWORD_MIN
-        ? `Используйте не меньше ${PASSWORD_MIN} символов.`
+      : passwordProblem
+        ? passwordProblemMessage(passwordProblem)
         : undefined;
 
     setNameError(nextNameError);
@@ -119,6 +125,7 @@ export function AuthScreen({ mode, intent = "platform" }: { mode: AuthMode; inte
       const data = (await response.json().catch(() => null)) as {
         ok?: boolean;
         error?: string;
+        reason?: PasswordProblem;
         retryAfter?: number;
         accountCreated?: boolean;
       } | null;
@@ -145,8 +152,10 @@ export function AuthScreen({ mode, intent = "platform" }: { mode: AuthMode; inte
         setEmailError("Проверьте адрес — похоже, в нём опечатка.");
         emailRef.current?.focus();
       } else if (response.status === 422 && data?.error === "bad_password") {
-        setPasswordError(`Используйте не меньше ${PASSWORD_MIN} символов.`);
+        setPasswordError(passwordProblemMessage(data.reason ?? "too_short"));
         passwordRef.current?.focus();
+      } else if (response.status === 403 && data?.error === "forbidden") {
+        setFormError("Откройте страницу и отправьте форму с одного и того же адреса.");
       } else if (
         response.status === 503 &&
         data?.error === "session_creation_failed" &&
@@ -257,6 +266,8 @@ export function AuthScreen({ mode, intent = "platform" }: { mode: AuthMode; inte
                   autoComplete={isRegistration ? "new-password" : "current-password"}
                   placeholder={isRegistration ? "Минимум 8 символов" : "Введите пароль"}
                   value={password}
+                  minLength={isRegistration ? PASSWORD_MIN : undefined}
+                  maxLength={isRegistration ? PASSWORD_MAX : undefined}
                   disabled={pending}
                   aria-invalid={passwordError ? true : undefined}
                   aria-describedby={passwordError ? "password-error" : isRegistration ? "password-hint" : undefined}

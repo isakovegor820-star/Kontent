@@ -142,7 +142,7 @@ export async function ensureSettings(
           select 1 from channels
            where id = $3 and project_id = $1 and network = 'tg' and is_active = true
         )
-       on conflict (project_id, channel_id) do nothing`,
+       on conflict do nothing`,
       [
         scopeOrUserId.projectId,
         scopeOrUserId.actorUserId,

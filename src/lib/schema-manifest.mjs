@@ -5,7 +5,7 @@
  */
 export const SCHEMA_MANIFEST = Object.freeze({
   manifestVersion: 1,
-  schemaVersion: "2026-09-27.99",
+  schemaVersion: "2026-09-28.100",
   migrations: Object.freeze([
     ["20260801_account_onboarding.sql", "ac0e1f10046cf620185570ab5f40437991d08513473f67d4e93bdafa07b86614"],
     ["20260801_ai_usage_reservations.sql", "991c3a92dce16df55011d9df52fb65af1a7f4310b27f61dc519705f05528d7a0"],
@@ -108,6 +108,7 @@ export const SCHEMA_MANIFEST = Object.freeze({
     ["20260925_content_intelligence_release1.sql", "395b7db94bebc24b5debae702c81dea349b6e57636921e69a33f663e5c8b1cca"],
     ["20260926_autopilot_candidate_pool.sql", "734e21f4551c43ee3ca7e241a3e1f28946d8e5cc9f413128cb849d3796b64d27"],
     ["20260927_today_workspace.sql", "d9b7d8a1c86076be12b975230aeb3fb4d3c2e2691768c23654b0eb329c9a9d83"],
+    ["20260928_autopilot_settings_project_key.sql", "91e66808a91965b9ed372216d1b715425e4f39a7736ce37716c4731cb4326ceb"],
   ].map(([name, checksum, acceptedChecksums]) => Object.freeze({
     name,
     checksum,
@@ -882,6 +883,8 @@ export const SCHEMA_MANIFEST = Object.freeze({
     ]),
     indexes: Object.freeze([
       "ai_usage.ai_usage_user_reservation_key_uniq",
+      "autopilot_settings.autopilot_settings_pkey",
+      "autopilot_settings.autopilot_settings_user_channel_uniq",
       "channel_feature_flags.channel_feature_flags_pkey",
       "channel_feature_flags.channel_feature_flags_rollout_idx",
       "growth_moves.growth_moves_id_project_channel_uniq",

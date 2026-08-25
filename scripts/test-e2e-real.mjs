@@ -1,7 +1,8 @@
 import { execFileSync, spawn } from "node:child_process";
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
-import { constants, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { constants, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
+import https from "node:https";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -68,18 +69,23 @@ function configuredPort(name) {
 }
 
 const configuredWebPort = configuredPort("E2E_WEB_PORT");
+const configuredNextPort = configuredPort("E2E_NEXT_PORT");
 const configuredFakePort = configuredPort("E2E_FAKE_PORT");
 const automaticPorts = await reserveEphemeralPorts(
-  Number(configuredWebPort == null) + Number(configuredFakePort == null),
+  Number(configuredWebPort == null) + Number(configuredNextPort == null) + Number(configuredFakePort == null),
 );
 let automaticPortIndex = 0;
 const webPort = configuredWebPort ?? automaticPorts[automaticPortIndex++];
+const nextPort = configuredNextPort ?? automaticPorts[automaticPortIndex++];
 const fakePort = configuredFakePort ?? automaticPorts[automaticPortIndex++];
-if (webPort === fakePort) throw new Error("E2E web and fake-provider ports must be different");
+if (new Set([webPort, nextPort, fakePort]).size !== 3) {
+  throw new Error("E2E HTTPS, Next.js, and fake-provider ports must be different");
+}
 const UI_WAIT_TIMEOUT_MS = 30_000;
 const RUNTIME_WAIT_TIMEOUT_MS = 120_000;
 const API_REQUEST_TIMEOUT_MS = RUNTIME_WAIT_TIMEOUT_MS;
-const baseUrl = `http://127.0.0.1:${webPort}`;
+const baseUrl = `https://127.0.0.1:${webPort}`;
+const runtimeBaseUrl = `http://127.0.0.1:${nextPort}`;
 const fakeBase = `http://127.0.0.1:${fakePort}`;
 const trackedDestination = "https://example.com/consultation";
 const artifactDir = resolve("test-results/e2e-real");
@@ -93,6 +99,8 @@ const redis = new IORedis(redisUrl, { maxRetriesPerRequest: null });
 const children = [];
 const logs = [];
 let fakeServer;
+let tlsProxyServer;
+let tlsDirectory;
 let browser;
 let page;
 let runtimeProcess;
@@ -263,7 +271,31 @@ async function installBrowserDiagnostics(context, label) {
         line: 0,
       });
     });
+    targetPage.on("response", (response) => {
+      const status = response.status();
+      if (status < 500) return;
+      let firstParty = false;
+      try {
+        firstParty = new URL(response.url()).origin === baseUrl;
+      } catch {}
+      if (!firstParty) return;
+      browserIssues.push({
+        context: label,
+        kind: "http.5xx",
+        message: `${response.request().method()} ${response.url()} returned ${status}`,
+        url: response.url(),
+        line: 0,
+      });
+    });
   });
+}
+
+function unexpectedRuntimeLogLines() {
+  const fatalPattern = /\b(?:23505|unhandledrejection|uncaughtException)\b|duplicate key value violates unique constraint/iu;
+  const firstParty5xxPattern = /\b(?:GET|POST|PUT|PATCH|DELETE)\s+\/\S*\s+5\d\d\b/u;
+  return logs
+    .flatMap((entry) => String(entry).split(/\r?\n/u))
+    .filter((line) => fatalPattern.test(line) || firstParty5xxPattern.test(line));
 }
 
 async function waitFor(check, message, timeoutMs = 20_000) {
@@ -770,14 +802,14 @@ const runtimeEnv = {
     String(process.env.NODE_OPTIONS || "").trim(),
     `--import=${pathToFileURL(vkFetchShimPath).href}`,
   ].filter(Boolean).join(" "),
-  NODE_ENV: "development",
+  NODE_ENV: "production",
   DATABASE_URL: databaseUrl,
   REDIS_URL: redisUrl,
   APP_URL: baseUrl,
   NEXT_PUBLIC_APP_URL: baseUrl,
   AURORA_READINESS_TOKEN: "e2e-readiness-token-with-32-characters-minimum",
   HOSTNAME: "127.0.0.1",
-  PORT: String(webPort),
+  PORT: String(nextPort),
   TG_BOT_TOKEN: "9000000000:e2e-fake-token-not-live",
   TG_BOT_USERNAME: "aurora_e2e_bot",
   TG_API_URL: fakeBase,
@@ -808,6 +840,67 @@ const runtimeEnv = {
   PUBLICATION_OVERDUE_GRACE_MS: "300000",
 };
 
+function startHttpsProxy() {
+  tlsDirectory = mkdtempSync(join(tmpdir(), "aurora-e2e-tls-"));
+  const keyPath = join(tlsDirectory, "key.pem");
+  const certificatePath = join(tlsDirectory, "certificate.pem");
+  execFileSync("openssl", [
+    "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-sha256", "-days", "1",
+    "-subj", "/CN=127.0.0.1",
+    "-addext", "subjectAltName=IP:127.0.0.1,DNS:localhost",
+    "-keyout", keyPath,
+    "-out", certificatePath,
+  ], { stdio: "ignore" });
+
+  tlsProxyServer = https.createServer({
+    key: readFileSync(keyPath),
+    cert: readFileSync(certificatePath),
+  }, (incoming, outgoing) => {
+    const upstream = http.request({
+      hostname: "127.0.0.1",
+      port: nextPort,
+      path: incoming.url,
+      method: incoming.method,
+      headers: {
+        ...incoming.headers,
+        "x-forwarded-proto": "https",
+        "x-forwarded-host": incoming.headers.host || `127.0.0.1:${webPort}`,
+        "x-forwarded-for": [incoming.headers["x-forwarded-for"], incoming.socket.remoteAddress]
+          .filter(Boolean)
+          .join(", "),
+      },
+    }, (response) => {
+      outgoing.writeHead(response.statusCode || 502, response.headers);
+      response.pipe(outgoing);
+    });
+    upstream.on("error", () => {
+      if (!outgoing.headersSent) outgoing.writeHead(502, { "content-type": "text/plain" });
+      outgoing.end("runtime unavailable");
+    });
+    incoming.pipe(upstream);
+  });
+  return new Promise((resolveListen, rejectListen) => {
+    tlsProxyServer.once("error", rejectListen);
+    tlsProxyServer.listen(webPort, "127.0.0.1", resolveListen);
+  });
+}
+
+function buildProductionRuntime() {
+  rmSync(resolve(runtimeEnv.AURORA_NEXT_DIST_DIR), { recursive: true, force: true });
+  const output = execFileSync(
+    globalThis.process.platform === "win32" ? "npm.cmd" : "npm",
+    ["run", "build"],
+    {
+      cwd: globalThis.process.cwd(),
+      env: runtimeEnv,
+      encoding: "utf8",
+      maxBuffer: 20 * 1024 * 1024,
+      timeout: 10 * 60_000,
+    },
+  );
+  logs.push(`[production-build:stdout] ${output}`);
+}
+
 function encryptE2eVkToken(userId) {
   const previousMasterKey = process.env.TOKENS_MASTER_KEY;
   const previousKeyId = process.env.TOKENS_KEY_ID;
@@ -824,22 +917,18 @@ function encryptE2eVkToken(userId) {
 }
 
 function startFullRuntime(label) {
-  // A stopped Turbopack process can leave an internally consistent cache whose route
-  // manifest serves every application path as 404. A real release restart also uses a
-  // clean release directory, so remove only this test-owned dist tree before each lifecycle.
-  rmSync(resolve(runtimeEnv.AURORA_NEXT_DIST_DIR), { recursive: true, force: true });
   runtimeProcess = child(
     label,
     globalThis.process.platform === "win32" ? "npm.cmd" : "npm",
-    ["run", "dev", "--", "-H", "127.0.0.1", "-p", String(webPort)],
+    ["run", "start", "--", "-H", "127.0.0.1", "-p", String(nextPort)],
     runtimeEnv,
   );
   return runtimeProcess;
 }
 
-async function waitForFullRuntime(message = "full development readiness did not become ready") {
+async function waitForFullRuntime(message = "full production readiness did not become ready") {
   return waitFor(async () => {
-    const response = await fetch(`${baseUrl}/api/readiness`, {
+    const response = await fetch(`${runtimeBaseUrl}/api/readiness`, {
       cache: "no-store",
       headers: { authorization: `Bearer ${runtimeEnv.AURORA_READINESS_TOKEN}` },
     });
@@ -855,7 +944,7 @@ async function waitForFullRuntime(message = "full development readiness did not 
 async function waitForRuntimeUnavailable() {
   return waitFor(async () => {
     try {
-      await fetch(`${baseUrl}/api/readiness`, {
+      await fetch(`${runtimeBaseUrl}/api/readiness`, {
         cache: "no-store",
         signal: AbortSignal.timeout(750),
       });
@@ -863,7 +952,7 @@ async function waitForRuntimeUnavailable() {
     } catch {
       return true;
     }
-  }, "full development runtime stayed reachable after shutdown", 20_000);
+  }, "full production runtime stayed reachable after shutdown", 20_000);
 }
 
 async function waitForFullWorkerSet() {
@@ -1245,13 +1334,15 @@ try {
   await migrate({ env: { ...runtimeEnv, DATABASE_URL: databaseUrl }, logger: { log() {} } });
   await redis.flushdb();
 
+  buildProductionRuntime();
+
   fakeServer = fakeProvider();
   await new Promise((resolve, reject) => {
     fakeServer.once("error", reject);
     fakeServer.listen(fakePort, "127.0.0.1", resolve);
   });
-  // The supported local runtime is one command and always includes every BullMQ worker.
-  // This deliberately exercises scripts/dev.mjs instead of a web-only or hand-built pair.
+  await startHttpsProxy();
+  // Exercise the release entrypoint: preflight, production Next.js server and every worker.
   startFullRuntime("runtime-initial");
   await waitForFullRuntime();
 
@@ -1278,6 +1369,7 @@ try {
     baseURL: baseUrl,
     viewport: { width: 390, height: 844 },
     reducedMotion: "reduce",
+    ignoreHTTPSErrors: true,
   });
   await installBrowserDiagnostics(context, "main");
   page = await context.newPage();
@@ -1470,7 +1562,7 @@ try {
     "select count(*)::int as n from media_generations where user_id = $1",
     [userId],
   )).rows[0].n);
-  const unauthenticatedMedia = await fetch(`${baseUrl}/api/media/generations`, {
+  const unauthenticatedMedia = await fetch(`${runtimeBaseUrl}/api/media/generations`, {
     method: "POST",
     headers: {
       origin: baseUrl,
@@ -2810,6 +2902,38 @@ try {
              'Обсудить задачу с командой', 'без обещаний результата', $4::jsonb, true, 'manual')`,
     [sharedProjectId, userId, sharedChannelId, JSON.stringify(criticalQuality)],
   );
+  const sharedChannelProfile = {
+    channelId: sharedChannelId,
+    brief: {
+      niche: "Правовые технологии",
+      audience: "руководители юридических команд",
+      rubrics: ["Практика", "Разбор", "Инструменты"],
+      formats: ["Текст", "Карусель"],
+      authorRole: "Редактор legal-tech команды",
+      goal: "объяснять рабочие подходы",
+      cta: "Обсудить задачу с командой",
+      taboo: "без обещаний результата",
+      quality: criticalQuality,
+      ready: true,
+      source: "manual",
+    },
+    settings: { enabled: false, mode: "confirm", post_frequency: 7 },
+  };
+  const concurrentChannelSaves = await Promise.all(
+    Array.from({ length: 8 }, () => authenticatedRequest("/api/settings/channel", {
+      method: "POST",
+      data: sharedChannelProfile,
+    })),
+  );
+  assert(
+    concurrentChannelSaves.every((response) => response.status === 200),
+    `parallel channel settings save returned ${concurrentChannelSaves.map((response) => response.status).join(",")}`,
+  );
+  const sharedChannelSettingsRows = Number((await pool.query(
+    "select count(*)::int as n from autopilot_settings where project_id = $1 and channel_id = $2",
+    [sharedProjectId, sharedChannelId],
+  )).rows[0].n);
+  assert(sharedChannelSettingsRows === 1, "parallel channel settings save created duplicate rows");
   const autopilotSettingsResponse = await authenticatedRequest("/api/autopilot/settings", {
     method: "POST",
     data: {
@@ -2854,7 +2978,7 @@ try {
     await verificationFileInput.inputValue() === trackingConfigured.verificationFileContent,
     "tracking UI did not show the server-owned domain verification challenge",
   );
-  const trackerPing = await fetch(`${baseUrl}/api/tracking/ping`, {
+  const trackerPing = await fetch(`${runtimeBaseUrl}/api/tracking/ping`, {
     method: "POST",
     headers: { origin: fakeBase, "content-type": "application/json" },
     body: JSON.stringify({ publicKey: trackingConfigured.publicKey }),
@@ -2907,6 +3031,7 @@ try {
     baseURL: baseUrl,
     viewport: { width: 390, height: 844 },
     reducedMotion: "reduce",
+    ignoreHTTPSErrors: true,
   });
   await installBrowserDiagnostics(reviewerContext, "reviewer");
   const reviewerRegistration = await reviewerContext.request.post("/api/auth/register", {
@@ -3994,7 +4119,7 @@ try {
 
   expectedBrowserConsoleScopes.add("main");
   expectedBrowserConsoleScopes.add("reviewer");
-  await stopChild(runtimeProcess, "initial full development runtime");
+  await stopChild(runtimeProcess, "initial full production runtime");
   await waitForRuntimeUnavailable();
   await waitForNoRuntimeWorkers();
   const durableWhileStopped = (await pool.query(
@@ -4020,7 +4145,7 @@ try {
   );
 
   startFullRuntime("runtime-restarted");
-  await waitForFullRuntime("restarted full development runtime did not become ready");
+  await waitForFullRuntime("restarted full production runtime did not become ready");
   await waitForFullWorkerSet();
   const jobsAfterRestart = await publishJobsForPost(criticalPostId);
   assert(
@@ -4034,7 +4159,7 @@ try {
   expectedBrowserConsoleScopes.delete("main");
   expectedBrowserConsoleScopes.delete("reviewer");
   interfaceEvidence.runtimeRestart = {
-    command: "npm run dev",
+    command: "npm run start",
     postId: criticalPostId,
     jobId: criticalPublishJobId,
     outboxRows: Number(durableWhileStopped.outbox_rows),
@@ -4321,7 +4446,7 @@ try {
       && /^[0-9a-f]{64}$/u.test(String(trackingSnapshot?.snapshot_hash)),
     "publication did not preserve the exact tracking selection as immutable evidence",
   );
-  const trackedRedirect = await fetch(`${baseUrl}${criticalShortPath}`, {
+  const trackedRedirect = await fetch(`${runtimeBaseUrl}${criticalShortPath}`, {
     redirect: "manual",
     headers: {
       "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 AuroraE2E/1.0",
@@ -4348,7 +4473,7 @@ try {
     occurredAt: new Date().toISOString(),
     idempotencyKey: conversionKey,
   };
-  const recordConversion = () => fetch(`${baseUrl}/api/tracking/conversions`, {
+  const recordConversion = () => fetch(`${runtimeBaseUrl}/api/tracking/conversions`, {
     method: "POST",
     headers: {
       origin: fakeBase,
@@ -4542,10 +4667,18 @@ try {
 
   interfaceEvidence.viewportWidths = await captureViewportEvidence(page);
   interfaceEvidence.keyboardOnly = await runKeyboardOnlyCriticalPass(page);
+  await writeFile(resolve(artifactDir, "process.log"), logs.join("\n").slice(-200_000), "utf8");
   await writeFile(
     resolve(artifactDir, "browser-diagnostics.json"),
     `${JSON.stringify({ issues: browserIssues, interface: interfaceEvidence }, null, 2)}\n`,
     "utf8",
+  );
+  const unexpectedRuntimeErrors = unexpectedRuntimeLogLines();
+  assert(
+    unexpectedRuntimeErrors.length === 0,
+    `production runtime reported ${unexpectedRuntimeErrors.length} unexpected server error(s): ${unexpectedRuntimeErrors
+      .slice(0, 5)
+      .join(" | ")}`,
   );
   assert(
     browserIssues.length === 0,
@@ -4557,7 +4690,7 @@ try {
 
   console.log(JSON.stringify({
     ok: true,
-    runtimeMode: "full",
+    runtimeMode: "production",
     browserRoutes: 4,
     draftRecovered: true,
     media: {
@@ -4739,9 +4872,11 @@ try {
   if (publicationExtraQueue) await publicationExtraQueue.close().catch(() => {});
   if (publicationReviewReminderQueue) await publicationReviewReminderQueue.close().catch(() => {});
   await Promise.all(children.map((subprocess, index) => (
-    stopChild(subprocess, `full development child ${index + 1}`).catch(() => {})
+    stopChild(subprocess, `full production child ${index + 1}`).catch(() => {})
   )));
   if (fakeServer) await new Promise((resolve) => fakeServer.close(resolve)).catch(() => {});
+  if (tlsProxyServer) await new Promise((resolve) => tlsProxyServer.close(resolve)).catch(() => {});
+  if (tlsDirectory) rmSync(tlsDirectory, { recursive: true, force: true });
   await redis.flushdb().catch(() => {});
   await redis.quit().catch(() => {});
   await pool.query("drop schema public cascade").catch(() => {});

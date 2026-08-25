@@ -75,6 +75,13 @@ describe("composer UX protection contract", () => {
     expect(source).not.toContain("Эта версия не привязана к завершённой генерации");
   });
 
+  it("owns local validation inline and focuses the contenteditable root", () => {
+    expect(source).toContain('current.textCode === "empty"');
+    expect(source).toContain("[contenteditable='true']");
+    expect(source).toContain("prefers-reduced-motion: reduce");
+    expect(source).not.toContain('title: "Нужно заполнить данные"');
+  });
+
   it("deletes an existing calendar draft from a visible editor action", () => {
     const actionBar = source.slice(
       source.indexOf("function ComposerActionBar"),

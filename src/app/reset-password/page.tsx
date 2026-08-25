@@ -1,10 +1,17 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { KeyRound } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Button, buttonClassName } from "@/components/ui/button";
 import { Card, Field, Input } from "@/components/ui/primitives";
+import {
+  PASSWORD_MAX,
+  PASSWORD_MIN,
+  passwordProblemMessage,
+  validatePassword,
+  type PasswordProblem,
+} from "@/lib/password-policy";
 
 type ResetState = "loading" | "ready" | "success" | "invalid" | "expired" | "used";
 
@@ -14,7 +21,11 @@ export default function ResetPasswordPage() {
   const [confirm, setConfirm] = useState("");
   const [state, setState] = useState<ResetState>("loading");
   const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string>();
+  const [passwordError, setPasswordError] = useState<string>();
+  const [confirmError, setConfirmError] = useState<string>();
+  const [formError, setFormError] = useState<string>();
+  const passwordRef = useRef<HTMLInputElement>(null);
+  const confirmRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.hash.replace(/^#/, ""));
@@ -30,22 +41,40 @@ export default function ResetPasswordPage() {
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     if (pending || state !== "ready") return;
-    if (password.length < 8) return setError("Пароль — минимум 8 символов.");
-    if (password !== confirm) return setError("Пароли не совпадают.");
+    const passwordProblem = validatePassword(password);
+    if (passwordProblem) {
+      setPasswordError(passwordProblemMessage(passwordProblem));
+      passwordRef.current?.focus();
+      return;
+    }
+    if (password !== confirm) {
+      setConfirmError("Пароли не совпадают.");
+      confirmRef.current?.focus();
+      return;
+    }
     setPending(true);
-    setError(undefined);
+    setPasswordError(undefined);
+    setConfirmError(undefined);
+    setFormError(undefined);
     try {
       const response = await fetch("/api/auth/password/reset", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ token, password }),
       });
-      const data = (await response.json().catch(() => null)) as { ok?: boolean; error?: ResetState | "bad_password" } | null;
+      const data = (await response.json().catch(() => null)) as {
+        ok?: boolean;
+        error?: ResetState | "bad_password";
+        reason?: PasswordProblem;
+      } | null;
       if (response.ok && data?.ok) setState("success");
       else if (data?.error === "expired" || data?.error === "used" || data?.error === "invalid") setState(data.error);
-      else setError("Не удалось сменить пароль. Попробуй ещё раз.");
+      else if (data?.error === "bad_password") {
+        setPasswordError(passwordProblemMessage(data.reason ?? "too_short"));
+        passwordRef.current?.focus();
+      } else setFormError("Не удалось сменить пароль. Попробуйте ещё раз.");
     } catch {
-      setError("Сеть недоступна. Попробуй ещё раз.");
+      setFormError("Сеть недоступна. Попробуйте ещё раз.");
     } finally {
       setPending(false);
     }
@@ -72,21 +101,22 @@ export default function ResetPasswordPage() {
             <p role="status" className="rounded-sm bg-surface-inset p-4 text-[14px] leading-relaxed text-text-2">
               {terminal[state]}
             </p>
-            <Link href={state === "success" ? "/login" : "/forgot-password"}>
-              <Button variant="brand" size="lg" className="mt-5 w-full">
-                {state === "success" ? "Войти" : "Запросить новую ссылку"}
-              </Button>
+            <Link
+              className={buttonClassName({ variant: "primary", size: "lg", className: "mt-5 w-full" })}
+              href={state === "success" ? "/login" : "/forgot-password"}
+            >
+              {state === "success" ? "Войти" : "Запросить новую ссылку"}
             </Link>
           </div>
         ) : (
           <form onSubmit={submit} className="mt-5 space-y-4">
-            <Field label="Новый пароль" htmlFor="new-password">
-              <Input id="new-password" name="password" type="password" autoComplete="new-password" minLength={8} value={password} onChange={(event) => setPassword(event.target.value)} />
+            <Field label="Новый пароль" htmlFor="new-password" error={passwordError} messageId="new-password-error">
+              <Input ref={passwordRef} id="new-password" name="password" type="password" autoComplete="new-password" minLength={PASSWORD_MIN} maxLength={PASSWORD_MAX} value={password} aria-invalid={passwordError ? true : undefined} aria-describedby={passwordError ? "new-password-error" : undefined} onChange={(event) => { setPassword(event.target.value); if (passwordError) setPasswordError(undefined); if (formError) setFormError(undefined); }} />
             </Field>
-            <Field label="Повтори пароль" htmlFor="confirm-password">
-              <Input id="confirm-password" name="password-confirmation" type="password" autoComplete="new-password" minLength={8} value={confirm} onChange={(event) => setConfirm(event.target.value)} />
+            <Field label="Повтори пароль" htmlFor="confirm-password" error={confirmError} messageId="confirm-password-error">
+              <Input ref={confirmRef} id="confirm-password" name="password-confirmation" type="password" autoComplete="new-password" minLength={PASSWORD_MIN} maxLength={PASSWORD_MAX} value={confirm} aria-invalid={confirmError ? true : undefined} aria-describedby={confirmError ? "confirm-password-error" : undefined} onChange={(event) => { setConfirm(event.target.value); if (confirmError) setConfirmError(undefined); if (formError) setFormError(undefined); }} />
             </Field>
-            {error && <p role="alert" className="text-[13px] font-medium text-danger-text">{error}</p>}
+            {formError && <p role="alert" className="text-[13px] font-medium text-danger-text">{formError}</p>}
             <Button type="submit" variant="brand" size="lg" className="w-full" loading={pending}>
               Сменить пароль
             </Button>

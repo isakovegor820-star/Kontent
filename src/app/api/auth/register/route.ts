@@ -38,7 +38,10 @@ export async function POST(req: NextRequest) {
   }
   const pwProblem = validatePassword(password);
   if (pwProblem) {
-    return NextResponse.json({ ok: false, error: "bad_password" }, { status: 422 });
+    return NextResponse.json(
+      { ok: false, error: "bad_password", reason: pwProblem },
+      { status: 422 },
+    );
   }
 
   // Режем массовое создание аккаунтов: не больше 5 регистраций с одного IP в час.

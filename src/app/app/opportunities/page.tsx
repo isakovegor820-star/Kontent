@@ -7,9 +7,14 @@ import { Grid2X2, List, RefreshCw, Sparkles } from "lucide-react";
 
 import { AppShell } from "@/components/app/shell";
 import { EvidenceCard } from "@/components/app/evidence-card";
-import { Button } from "@/components/ui/button";
+import { Button, buttonClassName } from "@/components/ui/button";
 import { Badge, Card } from "@/components/ui/primitives";
 import type { OpportunitySnapshot } from "@/lib/content-intelligence";
+import {
+  classifyOpportunityFailure,
+  opportunityActionError,
+  type OpportunityPageStatus,
+} from "@/lib/opportunities-client-state";
 import { cn } from "@/lib/utils";
 
 const confidenceLabel = { low: "Низкая уверенность", medium: "Средняя уверенность", high: "Высокая уверенность" } as const;
@@ -18,7 +23,8 @@ export default function OpportunitiesPage() {
   const router = useRouter(); const searchParams = useSearchParams();
   const channel = searchParams.get("channel");
   const [items, setItems] = useState<OpportunitySnapshot[]>([]);
-  const [status, setStatus] = useState<"loading" | "ready" | "error" | "disabled">("loading");
+  const [status, setStatus] = useState<OpportunityPageStatus>("loading");
+  const [operationError, setOperationError] = useState<string>();
   const [refreshing, setRefreshing] = useState(false); const [creatingId, setCreatingId] = useState<number | null>(null);
   const [view, setView] = useState<"list" | "map">("list");
   const requested = Number(searchParams.get("opportunity"));
@@ -26,11 +32,24 @@ export default function OpportunitiesPage() {
   const endpoint = `/api/opportunities${channel ? `?channel=${encodeURIComponent(channel)}` : ""}`;
 
   const load = useCallback(async () => {
-    try { const response = await fetch(endpoint, { cache: "no-store" }); const body = await response.json().catch(() => null) as { opportunities?: OpportunitySnapshot[]; error?: string } | null;
-      if (body?.error === "feature_disabled") { setStatus("disabled"); return; }
-      if (!response.ok || !body?.opportunities) throw new Error("load");
-      setItems(body.opportunities); setSelectedId((current) => current && body.opportunities!.some((item) => item.id === current) ? current : body.opportunities![0]?.id ?? null); setStatus("ready");
-    } catch { setStatus("error"); }
+    setOperationError(undefined);
+    try {
+      const response = await fetch(endpoint, { cache: "no-store" });
+      const body = await response.json().catch(() => null) as { opportunities?: OpportunitySnapshot[]; error?: string } | null;
+      if (!response.ok || !Array.isArray(body?.opportunities)) {
+        setItems([]);
+        setSelectedId(null);
+        setStatus(classifyOpportunityFailure(response.status, body?.error));
+        return;
+      }
+      setItems(body.opportunities);
+      setSelectedId((current) => current && body.opportunities!.some((item) => item.id === current) ? current : body.opportunities![0]?.id ?? null);
+      setStatus("ready");
+    } catch {
+      setItems([]);
+      setSelectedId(null);
+      setStatus("initial_error");
+    }
   }, [endpoint]);
   useEffect(() => {
     const timer = window.setTimeout(() => void load(), 0);
@@ -38,14 +57,61 @@ export default function OpportunitiesPage() {
   }, [load]);
   const selected = useMemo(() => items.find((item) => item.id === selectedId) ?? null, [items, selectedId]);
 
-  const refresh = async () => { setRefreshing(true); try { const response = await fetch(endpoint, { method: "POST" }); const body = await response.json().catch(() => null) as { opportunities?: OpportunitySnapshot[] } | null; if (!response.ok || !body?.opportunities) throw new Error("refresh"); setItems(body.opportunities); setSelectedId(body.opportunities[0]?.id ?? null); setStatus("ready"); } catch { setStatus("error"); } finally { setRefreshing(false); } };
-  const create = async (item: OpportunitySnapshot) => { setCreatingId(item.id); try { const response = await fetch(`/api/opportunities/${item.id}/draft`, { method: "POST" }); const body = await response.json().catch(() => null) as { draftId?: number } | null; if (!response.ok || !body?.draftId) throw new Error("draft"); router.push(`/app/studio?draft=${body.draftId}&intent=create`); } catch { setStatus("error"); } finally { setCreatingId(null); } };
+  const refresh = async () => {
+    setRefreshing(true);
+    setOperationError(undefined);
+    try {
+      const response = await fetch(endpoint, { method: "POST" });
+      const body = await response.json().catch(() => null) as { opportunities?: OpportunitySnapshot[]; error?: string } | null;
+      if (!response.ok || !Array.isArray(body?.opportunities)) {
+        const failure = classifyOpportunityFailure(response.status, body?.error);
+        if (failure === "initial_error" && items.length > 0) {
+          setOperationError("Не удалось обновить карту. Показаны ранее загруженные данные.");
+        } else {
+          setItems([]);
+          setSelectedId(null);
+          setStatus(failure);
+        }
+        return;
+      }
+      setItems(body.opportunities);
+      setSelectedId(body.opportunities[0]?.id ?? null);
+      setStatus("ready");
+    } catch {
+      if (items.length > 0) {
+        setOperationError("Не удалось обновить карту. Показаны ранее загруженные данные.");
+      } else setStatus("initial_error");
+    } finally {
+      setRefreshing(false);
+    }
+  };
+  const create = async (item: OpportunitySnapshot) => {
+    setCreatingId(item.id);
+    setOperationError(undefined);
+    try {
+      const response = await fetch(`/api/opportunities/${item.id}/draft`, { method: "POST" });
+      const body = await response.json().catch(() => null) as { draftId?: number; error?: string } | null;
+      if (!response.ok || !body?.draftId) {
+        setOperationError(opportunityActionError(body?.error));
+        return;
+      }
+      router.push(`/app/studio?draft=${body.draftId}&intent=create`);
+    } catch {
+      setOperationError("Сеть недоступна. Проверьте соединение и повторите создание черновика.");
+    } finally {
+      setCreatingId(null);
+    }
+  };
 
   return <AppShell title="Карта возможностей" subtitle="Свежие темы, где у канала есть место для собственного голоса." action={status === "ready" ? <Button onClick={() => void refresh()} loading={refreshing}><RefreshCw className="h-4 w-4" aria-hidden />Обновить карту</Button> : undefined}>
     <div className="mx-auto w-full max-w-[76rem] space-y-6">
       {status === "loading" && <Card className="min-h-64 p-6" role="status"><div className="skeleton h-7 w-56 rounded-xs" /><div className="mt-5 space-y-3"><div className="skeleton h-20 rounded-sm" /><div className="skeleton h-20 rounded-sm" /></div><span className="sr-only">Загружаем возможности</span></Card>}
-      {status === "disabled" && <Card className="p-6"><h2>Функция пока не включена для этого канала</h2><p className="mt-3 max-w-[65ch] text-pretty text-[15px] leading-relaxed text-text-2">Release 1 разворачивается по каналам. Никакие демонстрационные возможности не подставляются.</p></Card>}
-      {status === "error" && <Card className="border-danger/30 p-6" role="alert"><h2>Не удалось загрузить карту</h2><p className="mt-2 text-[15px] text-text-2">Старые данные не изменены. Проверьте соединение и повторите.</p><Button className="mt-4" onClick={() => { setStatus("loading"); void load(); }}>Повторить загрузку</Button></Card>}
+      {status === "no_channel" && <Card className="p-6"><h2>Подключите канал</h2><p className="mt-3 max-w-[65ch] text-pretty text-[15px] leading-relaxed text-text-2">Аврора построит карту возможностей после подключения активного канала.</p><Link className={buttonClassName({ variant: "primary", className: "mt-5" })} href="/app/settings?section=channels">Подключить канал</Link></Card>}
+      {status === "feature_disabled" && <Card className="p-6"><h2>Карта пока не включена для этого канала</h2><p className="mt-3 max-w-[65ch] text-pretty text-[15px] leading-relaxed text-text-2">Сохранённые данные не изменены. Выберите другой канал или вернитесь позже.</p></Card>}
+      {status === "access_denied" && <Card className="border-danger/30 p-6" role="alert"><h2>Нет доступа к карте</h2><p className="mt-2 max-w-[65ch] text-[15px] leading-relaxed text-text-2">Попросите владельца проекта проверить вашу роль.</p><Link className={buttonClassName({ className: "mt-4" })} href="/app/calendar">Вернуться в календарь</Link></Card>}
+      {status === "session_expired" && <Card className="border-danger/30 p-6" role="alert"><h2>Сессия завершилась</h2><p className="mt-2 text-[15px] text-text-2">Войдите снова, чтобы открыть карту возможностей.</p><Link className={buttonClassName({ variant: "primary", className: "mt-4" })} href="/login">Войти снова</Link></Card>}
+      {status === "initial_error" && <Card className="border-danger/30 p-6" role="alert"><h2>Не удалось загрузить карту</h2><p className="mt-2 text-[15px] text-text-2">Сервис временно недоступен. Повторите загрузку.</p><Button className="mt-4" onClick={() => { setStatus("loading"); void load(); }}>Повторить загрузку</Button></Card>}
+      {status === "ready" && operationError && <Card className="border-danger/30 p-4" role="alert"><p className="text-[14px] leading-relaxed text-text-2">{operationError}</p><Button variant="ghost" size="sm" className="mt-2" onClick={() => setOperationError(undefined)}>Закрыть сообщение</Button></Card>}
       {status === "ready" && items.length === 0 && <Card className="p-6"><h2>Возможностей пока нет</h2><p className="mt-3 max-w-[65ch] text-pretty text-[15px] leading-relaxed text-text-2">Добавьте минимум двух конкурентов и обновите карту. Аврора не показывает точный приоритет при недостаточной выборке.</p><Link className="mt-5 inline-flex min-h-11 items-center font-semibold text-brand underline underline-offset-4" href="/app/competitors">Добавить конкурентов</Link></Card>}
       {status === "ready" && items.length > 0 && <>
         <div className="flex flex-wrap items-center justify-between gap-3"><p className="text-[14px] text-text-2">{items.length} {items.length === 1 ? "актуальная возможность" : "актуальные возможности"}</p><div className="hidden rounded-sm bg-surface-inset p-1 md:inline-flex" aria-label="Представление карты"><Button variant={view === "list" ? "secondary" : "ghost"} size="sm" aria-pressed={view === "list"} onClick={() => setView("list")}><List className="h-4 w-4" aria-hidden />Список</Button><Button variant={view === "map" ? "secondary" : "ghost"} size="sm" aria-pressed={view === "map"} onClick={() => setView("map")}><Grid2X2 className="h-4 w-4" aria-hidden />Матрица</Button></div></div>
