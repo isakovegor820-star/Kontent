@@ -13,6 +13,7 @@ import {
   ensureDraftClientKey,
   isRecoverableLegacyDraft,
   isUnownedLegacyDraftCandidate,
+  recoverServerDraft,
   reusableAcknowledgedDraft,
   rescheduleServerDraft,
   resolveAcknowledgedDraftRevision,
@@ -131,6 +132,36 @@ describe("draft client coordination", () => {
     expect(fetchMock).toHaveBeenCalledWith("/api/drafts/41/schedule", expect.objectContaining({
       method: "PATCH",
       body: JSON.stringify(input),
+    }));
+  });
+
+  it("POSTs recovery to the source draft and preserves the stable client key", async () => {
+    const recovery = {
+      clientKey: "draft_recovery-12345678-1234-4234-9234-123456789abc",
+      sourceVersion: 3,
+      acceptResponsibility: true as const,
+      text: "Текущий текст",
+      formatting: [],
+      media: null,
+      scheduledAt: null,
+      schedule: null,
+      channelIds: [11],
+      tracking: null,
+    };
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      ok: true,
+      created: false,
+      draft: { id: 99, origin: "manual" },
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(recoverServerDraft(41, recovery)).resolves.toMatchObject({
+      created: false,
+      draft: { id: 99, origin: "manual" },
+    });
+    expect(fetchMock).toHaveBeenCalledWith("/api/drafts/41/recover", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify(recovery),
     }));
   });
 

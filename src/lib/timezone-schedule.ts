@@ -135,3 +135,31 @@ export function localScheduleFieldsForInstant(scheduledAt: string, timezone: str
     offset: zoned.offset,
   };
 }
+
+/** Rebuilds the complete editable wall-clock choice for an existing instant. */
+export function localScheduleInputForInstant(scheduledAt: string, timezone: string): LocalScheduleInput {
+  const fields = localScheduleFieldsForInstant(scheduledAt, timezone);
+  const inspected = inspectLocalSchedule(fields);
+  let disambiguation: ScheduleDisambiguation = "reject";
+  if (inspected.kind === "ambiguous") {
+    if (inspected.earlier.scheduledAt === new Date(scheduledAt).toISOString()) {
+      disambiguation = "earlier";
+    } else if (inspected.later.scheduledAt === new Date(scheduledAt).toISOString()) {
+      disambiguation = "later";
+    } else {
+      throw new ScheduleValidationError("invalid_schedule");
+    }
+  } else if (inspected.kind !== "valid") {
+    throw new ScheduleValidationError("invalid_schedule");
+  }
+  return { ...fields, disambiguation };
+}
+
+export function addLocalDateDays(localDate: string, days: number): string {
+  if (!Number.isSafeInteger(days)) throw new ScheduleValidationError("invalid_local_time");
+  try {
+    return Temporal.PlainDate.from(localDate, { overflow: "reject" }).add({ days }).toString();
+  } catch {
+    throw new ScheduleValidationError("invalid_local_time");
+  }
+}

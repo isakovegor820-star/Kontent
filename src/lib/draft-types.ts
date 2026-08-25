@@ -3,6 +3,7 @@ import type { FactualValidationProvenance } from "./fact-ledger";
 import type { LocalScheduleInput } from "./timezone-schedule";
 import type { UtmValues } from "./utm";
 import type { RichTextEntity } from "./rich-text.mjs";
+import type { DraftReviewBlockedReason } from "./draft-review";
 
 export interface DraftAiValidation {
   version: 1;
@@ -74,6 +75,8 @@ export interface ServerDraft {
   review_policy_version: 1;
   ai_validation: DraftAiValidation | null;
   human_review: DraftHumanReview | null;
+  /** Computed by the strict server policy; optional only for cached pre-recovery payloads. */
+  blocked_reason?: DraftReviewBlockedReason | null;
   created_at: string;
   updated_at: string;
   destinations: DraftDestination[];
@@ -108,6 +111,15 @@ export interface DraftScheduleUpdateInput {
   version: number;
   scheduledAt: string;
   schedule: LocalScheduleInput;
+}
+
+/** Explicit user-owned recovery of text without carrying trusted AI provenance forward. */
+export interface DraftRecoveryInput extends Omit<
+  DraftCreateInput,
+  "origin" | "sourceRef" | "aiValidation" | "generationResultId" | "growthMoveId"
+> {
+  sourceVersion: number;
+  acceptResponsibility: true;
 }
 
 export type DraftSaveState = "idle" | "pending" | "saving" | "saved" | "failed" | "offline" | "conflict";

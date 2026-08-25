@@ -14,6 +14,23 @@ type ReviewInput = Pick<
 >;
 
 export type DraftReviewDecision = "allowed" | "review_required" | "blocked";
+export type DraftReviewBlockedReason =
+  | "legacy_generation_missing"
+  | "validation_blocked"
+  | "source_context_not_publishable"
+  | "malformed_validation"
+  | "unknown_block";
+
+export type DraftReviewAssessment = {
+  decision: DraftReviewDecision;
+  blockedReason: DraftReviewBlockedReason | null;
+};
+
+export function isDraftRecoveryAllowedReason(
+  reason: DraftReviewBlockedReason | null | undefined,
+): boolean {
+  return reason != null && reason !== "validation_blocked";
+}
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -135,8 +152,11 @@ export function validCurrentHumanReview(
   );
 }
 
-/** Server scheduling policy. Manual-origin drafts deliberately bypass AI review gates. */
-export function draftReviewDecision(input: {
+/**
+ * One strict server/client policy for both the decision and its user-visible reason.
+ * Components must never infer a reason from individual nullable provenance fields.
+ */
+export function draftReviewAssessment(input: {
   origin: Post["origin"];
   purpose: ServerDraft["purpose"];
   generation_result_id: number | null;
@@ -145,31 +165,60 @@ export function draftReviewDecision(input: {
   review_policy_version: number;
   ai_validation: unknown;
   human_review: DraftHumanReview | null;
-}): DraftReviewDecision {
-  if (input.purpose === "source_context") return "blocked";
-  if (input.origin !== "ai") return input.purpose === "publishable" ? "allowed" : "review_required";
+}): DraftReviewAssessment {
+  if (input.purpose === "source_context") {
+    return { decision: "blocked", blockedReason: "source_context_not_publishable" };
+  }
+  // Manual-origin drafts deliberately bypass AI review gates. A non-publishable manual
+  // row still fails closed instead of being silently promoted by the client.
+  if (input.origin !== "ai") {
+    return {
+      decision: input.purpose === "publishable" ? "allowed" : "review_required",
+      blockedReason: null,
+    };
+  }
   // Legacy/client-forged AI rows have no immutable result and can never be attested into
   // publishability. They remain recoverable for inspection, but fail closed forever.
-  if (!input.generation_result_id) return "blocked";
-  if (input.review_policy_version !== DRAFT_REVIEW_POLICY_VERSION) return "review_required";
+  if (!input.generation_result_id) {
+    return { decision: "blocked", blockedReason: "legacy_generation_missing" };
+  }
+  if (input.review_policy_version !== DRAFT_REVIEW_POLICY_VERSION) {
+    return { decision: "review_required", blockedReason: null };
+  }
 
   const validation = normalizeDraftAiValidation(input.ai_validation);
-  if (input.ai_validation != null && !validation) return "review_required";
-  if (validation?.status === "blocked") return "blocked";
+  if (input.ai_validation != null && !validation) {
+    return { decision: "blocked", blockedReason: "malformed_validation" };
+  }
+  if (validation?.status === "blocked") {
+    return { decision: "blocked", blockedReason: "validation_blocked" };
+  }
   // Only a server-bound result that completed every validation gate is immediately
   // publishable. Human review may attest an unavailable/not-checked validator, but it
   // must never override an explicit blocker.
-  if (validation?.status === "passed" && input.generation_binding_valid) return "allowed";
-  return validCurrentHumanReview(input.human_review, input.version)
-    ? "allowed"
-    : "review_required";
+  if (validation?.status === "passed") {
+    return input.generation_binding_valid
+      ? { decision: "allowed", blockedReason: null }
+      : { decision: "blocked", blockedReason: "unknown_block" };
+  }
+  return {
+    decision: validCurrentHumanReview(input.human_review, input.version)
+      ? "allowed"
+      : "review_required",
+    blockedReason: null,
+  };
+}
+
+/** Server scheduling policy. */
+export function draftReviewDecision(input: Parameters<typeof draftReviewAssessment>[0]): DraftReviewDecision {
+  return draftReviewAssessment(input).decision;
 }
 
 export function composerAiReviewState(input: ReviewInput | null | undefined):
   | "none"
   | "required"
   | "blocked" {
-  if (!input || input.origin !== "ai") return "none";
-  const decision = draftReviewDecision(input);
+  if (!input) return "none";
+  const decision = draftReviewAssessment(input).decision;
   return decision === "blocked" ? "blocked" : decision === "allowed" ? "none" : "required";
 }

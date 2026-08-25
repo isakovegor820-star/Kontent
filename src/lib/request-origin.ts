@@ -30,6 +30,14 @@ export function hasTrustedMutationOrigin(
 
   try {
     const origin = new URL(supplied).origin;
+    // `npm run dev` may choose the next free port. Browsers still provide an unforgeable
+    // same-origin Fetch Metadata signal; accept that actual local origin only outside
+    // production so mutations keep working on the fallback port.
+    if (
+      process.env.NODE_ENV !== "production"
+      && fetchSite === "same-origin"
+      && originFromRequest(req) === origin
+    ) return true;
     const configured = new URL(String(process.env.APP_URL || "").trim());
     if (process.env.NODE_ENV === "production" && configured.protocol !== "https:") return false;
     return origin === configured.origin;

@@ -277,6 +277,46 @@ describe("POST /api/posts/create draft destination outcomes", () => {
     expect(mocks.add).not.toHaveBeenCalled();
   });
 
+  it("never publishes a legacy AI draft without an immutable generation result", async () => {
+    const scheduledAt = new Date(Date.now() + 3_600_000).toISOString();
+    mocks.query.mockImplementation(async (sqlValue: string) => {
+      const sql = sqlValue.replace(/\s+/g, " ").trim();
+      if (sql.startsWith("select id from channels")) {
+        return { rowCount: 1, rows: [{ id: 11 }] };
+      }
+      if (sql.startsWith("select d.id, d.text")) {
+        return {
+          rowCount: 1,
+          rows: [{
+            id: 41,
+            text: "Старый AI-текст",
+            scheduled_at: scheduledAt,
+            origin: "ai",
+            purpose: "needs_review",
+            generation_result_id: null,
+            generation_result_hash: null,
+            receipt_result_hash: null,
+            receipt_payload: null,
+            version: "3",
+            review_policy_version: "1",
+            ai_validation: null,
+            // Even a stale/forged human attestation must not replace immutable provenance.
+            human_reviewed_version: "3",
+            human_reviewed_at: "2026-08-01T12:05:00.000Z",
+          }],
+        };
+      }
+      return { rowCount: 0, rows: [] };
+    });
+
+    const response = await POST(request("Старый AI-текст", scheduledAt, 3));
+
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toEqual({ ok: false, error: "ai_draft_blocked" });
+    expect(mocks.query.mock.calls.some(([sql]) => String(sql).includes("insert into posts"))).toBe(false);
+    expect(mocks.add).not.toHaveBeenCalled();
+  });
+
   it("quarantines an immutable generated post with an explicit blocked validation", async () => {
     const scheduledAt = new Date(Date.now() + 3_600_000).toISOString();
     const text = "Готовый AI-текст";

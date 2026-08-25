@@ -18,7 +18,9 @@ describe("publisher scheduling overlay contract", () => {
   );
 
   it("keeps team approval strict while making personal scheduling one action", () => {
-    expect(source).toContain('const canEditContent = projectRole != null && projectRole !== "publisher";');
+    expect(source).toContain('const roleCanEditContent = projectRole != null && projectRole !== "publisher";');
+    expect(source).toContain('const canEditContent = roleCanEditContent');
+    expect(source).toContain('&& blockedReason !== "source_context_not_publishable"');
     expect(source).toContain('const canPublish = projectRole === "owner" || projectRole === "publisher";');
     expect(source).toContain('const scheduleIsPublicationOverlay = canPublish && editorialState === "approved";');
 
@@ -43,7 +45,7 @@ describe("publisher scheduling overlay contract", () => {
 
     expect(source).toContain('&& editorialState !== "approved"');
     expect(source).toContain("&& !personalProject");
-    expect(source).toContain('if (needWhen && aiReview === "blocked")');
+    expect(source).toContain("if (needWhen && blockedReason)");
 
     expect(publish).toContain("publicationOperationRef.current ??=");
     expect(publish).toContain("if (result.fingerprint) operation.fingerprint = result.fingerprint;");

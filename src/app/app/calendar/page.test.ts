@@ -72,6 +72,8 @@ describe("calendar role-aware interface", () => {
     expect(source).toContain("<CalendarDragOverlay");
     expect(source).toContain("<LayoutGroup");
     expect(source).toContain("setOptimisticSchedules");
+    expect(source).toContain("withOptimisticCalendarSchedule");
+    expect(source).toContain("movingPostRef.current");
     expect(source).toContain("resolveCalendarDayMove");
     expect(source).toContain("rescheduleServerDraft");
     expect(source).toContain("reschedulePublication");
@@ -90,6 +92,12 @@ describe("calendar role-aware interface", () => {
     expect(source).toContain("calendarDragAutoScrollDelta");
     expect(source).toContain("на телефоне удерживайте карточку");
     expect(source).toContain("data-calendar-week-scroller");
+    expect(source).toContain("suppressOpenUntilRef.current = Date.now() + 700");
+  });
+
+  it("restores focus after the keyboard move dialog removes inert siblings", () => {
+    expect(source).toContain("after the inert cleanup below");
+    expect(source).toContain("previous.focus({ preventScroll: true })");
   });
 
   it("offers a keyboard-accessible day picker for movable cards", () => {
@@ -103,5 +111,19 @@ describe("calendar role-aware interface", () => {
   it("only makes scheduled publications draggable", () => {
     expect(source).toContain('post.status === "scheduled"');
     expect(source).toContain("canManageCalendarMove(post)");
+  });
+
+  it("preserves stale cards and exposes partial/offline recovery without a reload", () => {
+    expect(source).not.toContain("setServerDrafts([])");
+    expect(source).toContain("calendarPartiallyStale");
+    expect(source).toContain("Уже загруженные карточки сохранены");
+    expect(source).toContain("void s.refreshReal()");
+    expect(source).toContain("void refreshDrafts(s.user)");
+  });
+
+  it("uses the project date for today and advances it while the calendar stays open", () => {
+    expect(source).toContain("calendarDayForInstant(new Date(calendarClock).toISOString(), calendarTimezone)");
+    expect(source).toContain("setAnchor(today)");
+    expect(source).toContain("setInterval(() => setCalendarClock(Date.now()), 60_000)");
   });
 });

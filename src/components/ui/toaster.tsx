@@ -122,7 +122,12 @@ export function Toaster() {
   return (
     <div
       aria-label="Уведомления"
-      className="pointer-events-none fixed inset-x-0 bottom-0 z-[90] flex flex-col items-center gap-2 p-4 sm:inset-x-auto sm:right-6 sm:bottom-6 sm:items-end sm:p-0"
+      className={cn(
+        "pointer-events-none fixed inset-x-0 z-[90] flex flex-col items-center gap-2 p-4 sm:inset-x-auto sm:right-6 sm:items-end sm:p-0",
+        appMode
+          ? "top-[calc(env(safe-area-inset-top)+14.5rem)] bottom-auto sm:top-28 lg:top-24"
+          : "bottom-[env(safe-area-inset-bottom)] sm:bottom-6",
+      )}
     >
       <AnimatePresence initial={false}>
         {toasts.map((toast) => (

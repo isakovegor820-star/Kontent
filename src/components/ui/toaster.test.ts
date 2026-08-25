@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 const toaster = readFileSync(new URL("./toaster.tsx", import.meta.url), "utf8");
 const store = readFileSync(new URL("../../lib/store.tsx", import.meta.url), "utf8");
+const stack = readFileSync(new URL("../../lib/toast-stack.ts", import.meta.url), "utf8");
 
 describe("Toaster interaction contract", () => {
   it("pauses non-critical dismissal while the toast is hovered or focused", () => {
@@ -22,5 +23,17 @@ describe("Toaster interaction contract", () => {
     expect(toaster).toContain("useReducedMotion");
     expect(toaster).toContain("initial={reducedMotion ? false");
     expect(toaster).toContain("min-h-11 min-w-11");
+  });
+
+  it("deduplicates announcements and caps the visible stack at three", () => {
+    expect(store).toContain("stableToastDedupeKey(t)");
+    expect(store).toContain("appendToastStack(prev, next)");
+    expect(stack).toContain("MAX_VISIBLE_TOASTS = 3");
+    expect(stack).toContain("toast.dedupeKey === incoming.dedupeKey");
+  });
+
+  it("keeps app notifications away from sticky bottom action bars", () => {
+    expect(toaster).toContain('top-[calc(env(safe-area-inset-top)+14.5rem)]');
+    expect(toaster).toContain("bottom-auto");
   });
 });

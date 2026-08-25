@@ -74,7 +74,10 @@ import {
   calendarRecordStatus,
 } from "@/lib/calendar-team-filters";
 import type { ClientProjectRole } from "@/lib/project-client";
-import { resolveCalendarDayMove } from "@/lib/calendar-drag-reschedule";
+import {
+  resolveCalendarDayMove,
+  withOptimisticCalendarSchedule,
+} from "@/lib/calendar-drag-reschedule";
 import {
   calendarDragAutoScrollDelta,
   createCalendarLongPressDrag,
@@ -566,7 +569,8 @@ function PostCard({
   };
 
   const cancelPointerSession = (event: ReactPointerEvent<HTMLElement>) => {
-    pointerDragRef.current?.pointerCancel(event.pointerId);
+    const dragged = pointerDragRef.current?.pointerCancel(event.pointerId) === true;
+    if (dragged) suppressOpenUntilRef.current = Date.now() + 700;
     releasePointer(event);
   };
 
@@ -615,9 +619,7 @@ function PostCard({
         onPointerMove={movePointerSession}
         onPointerUp={endPointerSession}
         onPointerCancel={cancelPointerSession}
-        onLostPointerCapture={(event) => {
-          pointerDragRef.current?.pointerCancel(event.pointerId);
-        }}
+        onLostPointerCapture={cancelPointerSession}
         onContextMenu={(event) => {
           if (pointerDragRef.current?.isActive()) event.preventDefault();
         }}
@@ -676,9 +678,7 @@ function PostCard({
                 onPointerMove={movePointerSession}
                 onPointerUp={endPointerSession}
                 onPointerCancel={cancelPointerSession}
-                onLostPointerCapture={(event) => {
-                  pointerDragRef.current?.pointerCancel(event.pointerId);
-                }}
+                onLostPointerCapture={cancelPointerSession}
                 onClick={(event) => {
                   if (Date.now() < suppressOpenUntilRef.current) {
                     event.preventDefault();
@@ -912,7 +912,12 @@ function CalendarMoveDialog({
     const frame = requestAnimationFrame(() => (firstMoveRef.current ?? closeRef.current)?.focus());
     return () => {
       cancelAnimationFrame(frame);
-      if (previousFocusRef.current?.isConnected) previousFocusRef.current.focus();
+      const previous = previousFocusRef.current;
+      // Sibling content is still inert while effect cleanups run. Restore focus on the
+      // next frame, after the inert cleanup below has made the opener interactive again.
+      requestAnimationFrame(() => {
+        if (previous?.isConnected) previous.focus({ preventScroll: true });
+      });
     };
   }, [post]);
 
@@ -1474,15 +1479,21 @@ export default function CalendarPage() {
   const [movePickerPostId, setMovePickerPostId] = useState<string | null>(null);
   const [optimisticSchedules, setOptimisticSchedules] = useState<Record<string, string>>({});
   const [moveAnnouncement, setMoveAnnouncement] = useState("");
+  const [calendarClock, setCalendarClock] = useState(() => Date.now());
   const [showLocalRecovery, setShowLocalRecovery] = useState(false);
   const [showUnownedRecovery, setShowUnownedRecovery] = useState(false);
   const draftQueueHeadingRef = useRef<HTMLHeadingElement>(null);
   const weekScrollerRef = useRef<HTMLDivElement>(null);
   const dragPointRef = useRef<CalendarDragPoint | null>(null);
+  const movingPostRef = useRef<string | null>(null);
   const focusedPostRef = useRef<string | null>(null);
   const anchoredProjectRef = useRef<string | null>(null);
 
   const hasUser = Boolean(s.user);
+  useEffect(() => {
+    const timer = window.setInterval(() => setCalendarClock(Date.now()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
   const refreshDrafts = useCallback(async (owner: User, signal?: AbortSignal) => {
     try {
       const drafts = await listServerDrafts(signal);
@@ -1492,7 +1503,6 @@ export default function CalendarPage() {
       setDraftsError(false);
     } catch (error) {
       if (signal?.aborted) return;
-      setServerDrafts([]);
       setDraftOwner(owner);
       setDraftsError(true);
       if (!(error instanceof DraftRequestError && error.kind === "offline")) {
@@ -1538,8 +1548,8 @@ export default function CalendarPage() {
 
   // Полночь сегодняшнего дня. Считается на клиенте — до s.ready ничего датозависимого не рисуем
   const today = useMemo(
-    () => calendarDayForInstant(new Date().toISOString(), calendarTimezone),
-    [calendarTimezone],
+    () => calendarDayForInstant(new Date(calendarClock).toISOString(), calendarTimezone),
+    [calendarClock, calendarTimezone],
   );
 
   useEffect(() => {
@@ -1787,7 +1797,7 @@ export default function CalendarPage() {
 
   const goToday = () => {
     setDir(0);
-    setAnchor(new Date());
+    setAnchor(today);
   };
 
   const openPost = (post: CalendarPost) => {
@@ -1882,7 +1892,7 @@ export default function CalendarPage() {
 
   const moveCalendarPost = useCallback(async (post: DatedPost, targetDay: Date) => {
     if (
-      movingPostId != null
+      movingPostRef.current != null
       || !canManageCalendarMove(post)
       || calendarDateKeyForInstant(
         post.scheduledAt,
@@ -1890,6 +1900,7 @@ export default function CalendarPage() {
       ) === dayKey(targetDay)
     ) return;
 
+    movingPostRef.current = post.id;
     setMovingPostId(post.id);
     try {
       const draft = post.serverDraftId == null
@@ -1911,54 +1922,64 @@ export default function CalendarPage() {
         throw new ScheduleValidationError("past_time");
       }
 
-      // Карточка переезжает сразу; сервер подтверждает изменение в фоне. При ошибке
-      // optimistic override снимается в finally, и layout-анимация возвращает её назад.
-      setOptimisticSchedules((current) => ({
-        ...current,
-        [post.id]: moved.scheduledAt,
-      }));
-
-      if (draft && post.serverDraftId != null) {
-        const updated = await rescheduleServerDraft(post.serverDraftId, {
-          version: draft.version,
-          scheduledAt: moved.scheduledAt,
-          schedule: {
-            localDate: moved.localDate,
-            localTime: moved.localTime,
-            timezone: moved.timezone,
-            disambiguation: moved.disambiguation,
-            offset: moved.offset,
-          },
-        });
-        setServerDrafts((current) => current.map((candidate) => (
-          candidate.id === updated.id ? updated : candidate
-        )));
-      } else if (
-        post.publicationOperationId != null
-        && post.operationScheduleRevision != null
-        && post.operationStatus
-      ) {
-        const result = await reschedulePublication({
-          operationId: post.publicationOperationId,
-          expectedScheduleRevision: post.operationScheduleRevision,
-          expectedStatus: post.operationStatus,
-          idempotencyKey: crypto.randomUUID(),
-          scheduledAt: moved.scheduledAt,
-          localDate: moved.localDate,
-          localTime: moved.localTime,
-          timezone: moved.timezone,
-          disambiguation: moved.disambiguation,
-          offset: moved.offset,
-        });
-        if (!result.ok) {
-          publicationFailure(result.error);
-          await s.refreshReal();
-          return;
-        }
-        await s.refreshReal();
-      } else {
-        throw new Error("calendar_move_not_supported");
-      }
+      const persisted = await withOptimisticCalendarSchedule({
+        apply: () => setOptimisticSchedules((current) => ({
+          ...current,
+          [post.id]: moved.scheduledAt,
+        })),
+        persist: async () => {
+          if (draft && post.serverDraftId != null) {
+            const updated = await rescheduleServerDraft(post.serverDraftId, {
+              version: draft.version,
+              scheduledAt: moved.scheduledAt,
+              schedule: {
+                localDate: moved.localDate,
+                localTime: moved.localTime,
+                timezone: moved.timezone,
+                disambiguation: moved.disambiguation,
+                offset: moved.offset,
+              },
+            });
+            setServerDrafts((current) => current.map((candidate) => (
+              candidate.id === updated.id ? updated : candidate
+            )));
+            return true;
+          }
+          if (
+            post.publicationOperationId != null
+            && post.operationScheduleRevision != null
+            && post.operationStatus
+          ) {
+            const result = await reschedulePublication({
+              operationId: post.publicationOperationId,
+              expectedScheduleRevision: post.operationScheduleRevision,
+              expectedStatus: post.operationStatus,
+              idempotencyKey: crypto.randomUUID(),
+              scheduledAt: moved.scheduledAt,
+              localDate: moved.localDate,
+              localTime: moved.localTime,
+              timezone: moved.timezone,
+              disambiguation: moved.disambiguation,
+              offset: moved.offset,
+            });
+            if (!result.ok) {
+              publicationFailure(result.error);
+              await s.refreshReal();
+              return false;
+            }
+            await s.refreshReal();
+            return true;
+          }
+          throw new Error("calendar_move_not_supported");
+        },
+        clear: () => setOptimisticSchedules((current) => {
+          if (!(post.id in current)) return current;
+          const next = { ...current };
+          delete next[post.id];
+          return next;
+        }),
+      });
+      if (!persisted) return;
 
       const successBody = `${fmtDateTime(moved.scheduledAt, moved.timezone)}. Время публикации сохранено.`;
       setMoveAnnouncement(
@@ -1989,12 +2010,7 @@ export default function CalendarPage() {
       s.toast({ kind: "danger", title, body });
       if (post.serverDraftId != null && s.user) await refreshDrafts(s.user);
     } finally {
-      setOptimisticSchedules((current) => {
-        if (!(post.id in current)) return current;
-        const next = { ...current };
-        delete next[post.id];
-        return next;
-      });
+      movingPostRef.current = null;
       setMovingPostId(null);
       setDraggedPostId(null);
       setDragOverDay(null);
@@ -2002,7 +2018,6 @@ export default function CalendarPage() {
   }, [
     canManageCalendarMove,
     calendarTimezone,
-    movingPostId,
     currentProjectTimezone,
     publicationFailure,
     refreshDrafts,
@@ -2300,6 +2315,7 @@ export default function CalendarPage() {
 
   // `s.trends` — демонстрационный seed. В авторизованный календарь его не подмешиваем.
   const suggestions = s.user ? [] : s.trends.slice(0, 3);
+  const calendarPartiallyStale = s.realError || draftsError;
 
   return (
     <AppShell
@@ -2325,6 +2341,25 @@ export default function CalendarPage() {
       <div className="flex flex-col gap-8">
         {/* ------------------------------------------------------- СЕТКА */}
         <div className="min-w-0">
+          {s.ready && calendarPartiallyStale && (
+            <div className="mb-4 flex flex-wrap items-center gap-3 rounded-sm bg-fire-soft p-3 text-fire-text" role="status">
+              <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden />
+              <p className="min-w-0 flex-1 text-pretty text-[13px] leading-relaxed font-medium">
+                Не все данные календаря обновились. Уже загруженные карточки сохранены; повторите синхронизацию, когда соединение восстановится.
+              </p>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  void s.refreshReal();
+                  if (s.user) void refreshDrafts(s.user);
+                }}
+              >
+                <RotateCw className="h-3.5 w-3.5" aria-hidden />
+                Обновить календарь
+              </Button>
+            </div>
+          )}
           {!s.ready ? (
             <div className="flex flex-col gap-4">
               <div className="flex items-center justify-between gap-3">
@@ -2719,7 +2754,7 @@ export default function CalendarPage() {
                     <div className="skeleton h-20 w-full" />
                     <div className="skeleton h-20 w-full" />
                   </div>
-                ) : draftsError ? (
+                ) : draftsError && serverDrafts.length === 0 ? (
                   <div className="mt-3 rounded-sm bg-danger-soft p-3">
                     <p className="text-[13px] leading-relaxed font-medium text-danger-text">
                       Серверные черновики не загрузились. Локальные копии ниже не менялись.

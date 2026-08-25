@@ -24,6 +24,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
+  AlertTriangle,
   ArrowLeft,
   ArrowRight,
   Bookmark,
@@ -63,7 +64,7 @@ import {
   EMPTY_COMPOSER_TRACKING,
   type ComposerTrackingValue,
 } from "@/components/app/tracking-builder";
-import { Button } from "@/components/ui/button";
+import { Button, buttonClassName } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { RichTextEditor } from "@/components/ui/rich-text-editor";
 import {
@@ -107,6 +108,7 @@ import {
   ensureDraftClientKey,
   getServerDraft,
   isRecoverableLegacyDraft,
+  recoverServerDraft,
   resolveAcknowledgedDraftRevision,
   runSingleDraftSave,
   reusableAcknowledgedDraft,
@@ -116,6 +118,7 @@ import {
 } from "@/lib/draft-client";
 import type {
   DraftAiValidation,
+  DraftRecoveryInput,
   DraftSaveState,
   DraftTrackingSelection,
   DraftWriteInput,
@@ -130,7 +133,12 @@ import {
   removePendingDraft,
   type PendingDraftRevision,
 } from "@/lib/draft-outbox";
-import { composerAiReviewState } from "@/lib/draft-review";
+import {
+  composerAiReviewState,
+  draftReviewAssessment,
+  isDraftRecoveryAllowedReason,
+  type DraftReviewBlockedReason,
+} from "@/lib/draft-review";
 import {
   approvePersonalDraftForPublication,
   editorialErrorMessage,
@@ -150,15 +158,16 @@ import {
   type BestPublishingTime,
 } from "@/lib/best-publishing-time";
 import {
+  addLocalDateDays,
   inspectLocalSchedule,
+  localScheduleFieldsForInstant,
+  localScheduleInputForInstant,
   resolveLocalSchedule,
   type ScheduleDisambiguation,
 } from "@/lib/timezone-schedule";
 import { useStore } from "@/lib/store";
 import type { Network, Post, RealChannel } from "@/lib/types";
 import {
-  addDays,
-  atTime,
   cn,
   fmtDateTime,
   fmtNum,
@@ -171,12 +180,6 @@ import {
 const VK_LIMIT = 16384;
 
 const NETWORK_ORDER: Network[] = ["tg", "vk"];
-
-const toDateValue = (d: Date) =>
-  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-
-const toTimeValue = (d: Date) =>
-  `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 
 function resolveComposerSchedule(
   date: string,
@@ -267,11 +270,43 @@ function draftToPost(draft: ServerDraft): Post {
 type Errors = { text?: string; networks?: string; tracking?: string; when?: string };
 type ComposerAiCommand = "write" | "rewrite" | "shorten" | "script";
 type AiReviewState = "none" | "required" | "blocked";
+type DraftRecoveryState = "idle" | "loading" | "success" | "failed";
 type DraftPersistMode = "manual" | "autosave" | "schedule";
 type PublicationMode = "calendar" | "now" | "queue";
 type PublicationSuccess = {
   mode: PublicationMode;
   scheduledAt: string;
+};
+const DRAFT_BLOCKED_COPY: Record<DraftReviewBlockedReason, {
+  title: string;
+  body: string;
+  action: string;
+}> = {
+  legacy_generation_missing: {
+    title: "Эта версия создана раньше журнала AI-генераций",
+    body: "Аврора не может подтвердить старую проверку. Создайте из текущего текста отдельный ручной пост; исходная версия останется в истории.",
+    action: "Создать новый пост из текста",
+  },
+  validation_blocked: {
+    title: "Проверка нашла неподтверждённые утверждения",
+    body: "Исправьте текст и запустите новую проверку. Эта версия не будет опубликована без подтверждения.",
+    action: "Перейти к тексту",
+  },
+  source_context_not_publishable: {
+    title: "Это материал-источник",
+    body: "Создайте на его основе отдельный пост. Исходный материал останется без изменений и будет доступен по прежней ссылке.",
+    action: "Создать пост из материала",
+  },
+  malformed_validation: {
+    title: "Проверку этой версии нельзя подтвердить",
+    body: "Данные старой проверки неполны. Создайте отдельный ручной пост из текущего текста; исходная версия останется в истории.",
+    action: "Создать новый пост из текста",
+  },
+  unknown_block: {
+    title: "Связь этой версии с проверкой не подтверждена",
+    body: "Создайте отдельный ручной пост из текущего текста. Аврора не перенесёт старую проверку как доверенную.",
+    action: "Создать новый пост из текста",
+  },
 };
 type ResolvedComposerSchedule = NonNullable<ReturnType<typeof resolveComposerSchedule>>;
 type ComposerTextSnapshot = { text: string; formatting: RichTextEntity[] };
@@ -349,6 +384,11 @@ interface ComposerValue {
   applyAiPreview: () => void;
   dismissAiPreview: () => void;
   aiReview: AiReviewState;
+  blockedReason: DraftReviewBlockedReason | null;
+  canRecoverDraft: boolean;
+  recoveryState: DraftRecoveryState;
+  recoveryError: string;
+  recoverDraft: () => Promise<void>;
   topicOpen: boolean;
   setTopicOpen: (v: boolean) => void;
   topic: string;
@@ -401,9 +441,10 @@ export default function ComposerPage() {
   const composerUserId = s.user?.id ?? null;
   const currentProjectId = projects.current?.id ?? null;
   const projectRole = projects.current?.role ?? null;
-  const canEditContent = projectRole != null && projectRole !== "publisher";
+  const roleCanEditContent = projectRole != null && projectRole !== "publisher";
   const canPublish = projectRole === "owner" || projectRole === "publisher";
   const personalProject = projects.current?.personal === true;
+  const projectTimezone = projects.current?.timezone ?? "UTC";
   const draftWorkspaceId = currentProjectId == null ? null : projectDraftWorkspaceId(currentProjectId);
 
   const [hydrated, setHydrated] = useState(false);
@@ -427,15 +468,16 @@ export default function ComposerPage() {
   const [origin, setOrigin] = useState<Post["origin"]>("manual");
   const [date, setDate] = useState("");
   const [time, setTime] = useState("");
-  const [scheduleTimezone, setScheduleTimezone] = useState(
-    () => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
-  );
+  const [scheduleTimezone, setScheduleTimezone] = useState(projectTimezone);
   const [timeDisambiguation, setTimeDisambiguation] = useState<ScheduleDisambiguation>("reject");
   const [noDate, setNoDate] = useState(false);
   const [aiBusy, setAiBusy] = useState<ComposerAiCommand | null>(null);
   const [typing, setTyping] = useState(false);
   const [aiPreview, setAiPreview] = useState<ComposerAiPreview | null>(null);
   const [aiReview, setAiReview] = useState<AiReviewState>("none");
+  const [blockedReason, setBlockedReason] = useState<DraftReviewBlockedReason | null>(null);
+  const [recoveryState, setRecoveryState] = useState<DraftRecoveryState>("idle");
+  const [recoveryError, setRecoveryError] = useState("");
   const [, setAiValidation] = useState<DraftAiValidation | null>(null);
   const [generationResultId, setGenerationResultId] = useState<number | null>(null);
   const [topicOpen, setTopicOpen] = useState(false);
@@ -465,6 +507,8 @@ export default function ComposerPage() {
   const draftClientKeyRef = useRef<string | null>(null);
   const draftRequestRef = useRef<Promise<ServerDraft | null> | null>(null);
   const draftDeleteRequestRef = useRef<Promise<void> | null>(null);
+  const recoveryRequestRef = useRef<Promise<void> | null>(null);
+  const recoveryClientKeyRef = useRef<string | null>(null);
   const autosaveCancelRef = useRef<(() => void) | null>(null);
   const acknowledgedDraftRef = useRef<ServerDraft | null>(null);
   const scheduleRequestRef = useRef(false);
@@ -479,6 +523,12 @@ export default function ComposerPage() {
   const currentDraftWriteRef = useRef<DraftWriteInput | null>(null);
   const hydratedUserIdRef = useRef<number | null>(null);
   const textHistoryAtRef = useRef(0);
+  const canEditContent = roleCanEditContent
+    && blockedReason !== "source_context_not_publishable"
+    && recoveryState !== "loading";
+  const canRecoverDraft = roleCanEditContent
+    && draftId != null
+    && isDraftRecoveryAllowedReason(blockedReason);
 
   useEffect(() => {
     if (!s.authReady || !s.user) return;
@@ -574,7 +624,10 @@ export default function ComposerPage() {
     setDraftLoadError(null);
     const fallback = new Date(Date.now() + 3600_000);
     fallback.setMinutes(0, 0, 0); // ровный час — по нему легче попадать глазом
-    const when = post?.scheduledAt ? new Date(post.scheduledAt) : fallback;
+    const scheduleFields = localScheduleFieldsForInstant(
+      post?.scheduledAt ?? fallback.toISOString(),
+      draft?.scheduled_timezone ?? projectTimezone,
+    );
 
     const existingMedia = pending?.payload.media ?? post?.media ?? null;
     const generatedMediaChanged = generatedMedia != null
@@ -602,13 +655,13 @@ export default function ComposerPage() {
       s.realChannels.some((channel) => channel.id === id && channel.network === "vk" && channel.is_active),
     ) ?? [];
     const draftTgIds = draft?.destinations
-      .filter((destination) => destination.network === "tg")
+      .filter((destination) => destination.network === "tg" && destination.is_active)
       .map((destination) => destination.channel_id) ?? [];
     const draftVkIds = draft?.destinations
-      .filter((destination) => destination.network === "vk")
+      .filter((destination) => destination.network === "vk" && destination.is_active)
       .map((destination) => destination.channel_id) ?? [];
-    setPickedIds(pending ? pendingTgIds : draft ? draftTgIds : null);
-    setPickedVkIds(pending ? pendingVkIds : draft ? draftVkIds : null);
+    setPickedIds(pending ? pendingTgIds : draft ? (draftTgIds.length ? draftTgIds : null) : null);
+    setPickedVkIds(pending ? pendingVkIds : draft ? (draftVkIds.length ? draftVkIds : null) : null);
     setText(pending?.payload.text ?? post?.text ?? "");
     setFormatting(pending?.payload.formatting ?? draft?.formatting ?? []);
     undoStackRef.current = [];
@@ -618,7 +671,14 @@ export default function ComposerPage() {
     textHistoryAtRef.current = 0;
     setPublicationSuccess(null);
     setPublicationMode(null);
-    setNetworks(pending?.form.networks ?? (post?.networks?.length ? post.networks : (defaultNetworks ?? [])));
+    const admissibleNetworks = pending
+      ? NETWORK_ORDER.filter((network) => network === "tg" ? pendingTgIds.length > 0 : pendingVkIds.length > 0)
+      : draft
+        ? NETWORK_ORDER.filter((network) => network === "tg" ? draftTgIds.length > 0 : draftVkIds.length > 0)
+        : post?.networks?.length
+          ? post.networks
+          : [];
+    setNetworks(admissibleNetworks.length ? admissibleNetworks : (defaultNetworks ?? []));
     setMedia(generatedMedia ?? pending?.payload.media ?? post?.media ?? null);
     setTracking(composerTrackingFromDraft(pending?.payload.tracking ?? draft?.tracking));
     setSourceRef(pending?.payload.sourceRef ?? post?.sourceRef);
@@ -648,13 +708,19 @@ export default function ComposerPage() {
           ? "required"
           : "none",
     );
-    setDate(pending?.form.date ?? draft?.scheduled_local_date ?? d ?? toDateValue(when));
-    setTime(pending?.form.time ?? draft?.scheduled_local_time ?? t ?? toTimeValue(when));
+    setBlockedReason(
+      draft?.blocked_reason
+        ?? (draft ? draftReviewAssessment(draft).blockedReason : null),
+    );
+    setRecoveryState("idle");
+    setRecoveryError("");
+    recoveryClientKeyRef.current = null;
+    setDate(pending?.form.date ?? draft?.scheduled_local_date ?? d ?? scheduleFields.localDate);
+    setTime(pending?.form.time ?? draft?.scheduled_local_time ?? t ?? scheduleFields.localTime);
     setScheduleTimezone(
       pending?.payload.schedule?.timezone
         ?? draft?.scheduled_timezone
-        ?? Intl.DateTimeFormat().resolvedOptions().timeZone
-        ?? "UTC",
+        ?? projectTimezone,
     );
     setTimeDisambiguation(
       pending?.payload.schedule?.disambiguation
@@ -676,7 +742,7 @@ export default function ComposerPage() {
     );
     setDraftSavedAt(generatedMediaChanged || pending ? null : draft?.updated_at ?? null);
     setHydrated(true);
-  }, [s.realChannels]);
+  }, [projectTimezone, s.realChannels]);
 
   const beginHydration = useCallback(() => {
     autosaveCancelRef.current?.();
@@ -700,6 +766,9 @@ export default function ComposerPage() {
     setRedoStack([]);
     setTracking({ ...EMPTY_COMPOSER_TRACKING, utmValues: {} });
     setSourceRef(undefined);
+    setBlockedReason(null);
+    setRecoveryState("idle");
+    setRecoveryError("");
     setHydrated(false);
     setDraftLoadError(reason);
   }, []);
@@ -907,7 +976,7 @@ export default function ComposerPage() {
     setScheduleTimezone(
       typeof restoredSchedule?.timezone === "string"
         ? restoredSchedule.timezone
-        : Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+        : projectTimezone,
     );
     setTimeDisambiguation(
       restoredSchedule?.disambiguation === "earlier" || restoredSchedule?.disambiguation === "later"
@@ -927,7 +996,7 @@ export default function ComposerPage() {
       title: "Версия восстановлена",
       body: "Она стала новым изменением. Старые версии остались в истории.",
     });
-  }, [canEditContent, formatting, markDraftDirty, s, text]);
+  }, [canEditContent, formatting, markDraftDirty, projectTimezone, s, text]);
   const changeNetworks = useCallback((value: Network[]) => {
     if (
       !canEditContent
@@ -1275,29 +1344,53 @@ export default function ComposerPage() {
     if (!canChangeSchedule || saving) return;
     publicationOperationRef.current = null;
     const now = new Date();
-    let target: Date;
+    let resolved;
 
     if (kind === "hour") {
-      target = new Date(now.getTime() + 3600_000);
-      target.setSeconds(0, 0);
+      const target = new Date(now.getTime() + 3600_000);
+      target.setUTCSeconds(0, 0);
+      const local = localScheduleInputForInstant(target.toISOString(), projectTimezone);
+      resolved = resolveLocalSchedule(local);
     } else if (kind === "evening") {
-      target = atTime(now, "19:00");
-      if (target.getTime() <= now.getTime()) target = atTime(addDays(now, 1), "19:00");
+      const current = localScheduleFieldsForInstant(now.toISOString(), projectTimezone);
+      let localDate = current.localDate;
+      resolved = resolveLocalSchedule({
+        localDate,
+        localTime: "19:00",
+        timezone: projectTimezone,
+        disambiguation: "reject",
+      });
+      if (Date.parse(resolved.scheduledAt) <= now.getTime()) {
+        localDate = addLocalDateDays(localDate, 1);
+        resolved = resolveLocalSchedule({
+          localDate,
+          localTime: "19:00",
+          timezone: projectTimezone,
+          disambiguation: "reject",
+        });
+      }
     } else if (kind === "tomorrow") {
-      target = atTime(addDays(now, 1), "10:00");
+      const current = localScheduleFieldsForInstant(now.toISOString(), projectTimezone);
+      resolved = resolveLocalSchedule({
+        localDate: addLocalDateDays(current.localDate, 1),
+        localTime: "10:00",
+        timezone: projectTimezone,
+        disambiguation: "reject",
+      });
     } else {
       if (!bestTime) return;
-      target = nextMoscowPublishingSlot(bestTime.hour, now);
+      const target = nextMoscowPublishingSlot(bestTime.hour, now);
+      resolved = resolveLocalSchedule(localScheduleInputForInstant(target.toISOString(), projectTimezone));
     }
 
     setNoDate(false);
-    setDate(toDateValue(target));
-    setTime(toTimeValue(target));
-    setScheduleTimezone(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
-    setTimeDisambiguation("reject");
+    setDate(resolved.localDate);
+    setTime(resolved.localTime);
+    setScheduleTimezone(resolved.timezone);
+    setTimeDisambiguation(resolved.disambiguation);
     if (!scheduleIsPublicationOverlay) markDraftDirty();
     setErrors((e) => ({ ...e, when: undefined }));
-  }, [bestTime, canChangeSchedule, markDraftDirty, saving, scheduleIsPublicationOverlay]);
+  }, [bestTime, canChangeSchedule, markDraftDirty, projectTimezone, saving, scheduleIsPublicationOverlay]);
 
   /* ------------------------------------------------------------- СОХРАНЕНИЕ */
 
@@ -1320,8 +1413,8 @@ export default function ComposerPage() {
       ) {
         next.text = "Проверь факты в тексте ИИ и подтверди ручную проверку перед планированием.";
       }
-      if (needWhen && aiReview === "blocked") {
-        next.text = "Эта старая версия не привязана к завершённой генерации. Сохрани текст как новый пост.";
+      if (needWhen && blockedReason) {
+        next.text = DRAFT_BLOCKED_COPY[blockedReason].body;
       }
 
       if (needWhen && noDate) {
@@ -1349,7 +1442,7 @@ export default function ComposerPage() {
       setErrors(next);
       return next;
     },
-    [aiReview, channelIds.length, date, editorialState, networks, noDate, personalProject, scheduleTimezone, text, time, timeDisambiguation, tracking, typing, vkChannelIds.length],
+    [aiReview, blockedReason, channelIds.length, date, editorialState, networks, noDate, personalProject, scheduleTimezone, text, time, timeDisambiguation, tracking, typing, vkChannelIds.length],
   );
 
   const persistDraft = useCallback(
@@ -1541,6 +1634,9 @@ export default function ComposerPage() {
           // state; the next versioned autosave will persist it against the returned version.
           setAiValidation(draft.ai_validation);
           setAiReview(composerAiReviewState(draft));
+          setBlockedReason(
+            draft.blocked_reason ?? draftReviewAssessment(draft).blockedReason,
+          );
           setDraftSaveState("saved");
           setDraftSavedAt(draft.updated_at);
           if (mode === "manual") {
@@ -1774,6 +1870,86 @@ export default function ComposerPage() {
     return result ?? await acceptCurrentAcknowledgement(acknowledgedDraftRef.current);
   }, [persistDraft]);
 
+  const recoverDraft = useCallback((): Promise<void> => runSingleDraftSave(
+    recoveryRequestRef,
+    async () => {
+      if (
+        !roleCanEditContent
+        || draftId == null
+        || draftVersion == null
+        || !isDraftRecoveryAllowedReason(blockedReason)
+      ) return;
+
+      const snapshot = currentDraftWriteRef.current ?? currentDraftWrite;
+      const bad = validate(false);
+      // Recovery may deliberately create a destination-less safe copy when every old
+      // channel is now inactive. Ordinary create/update still require destinations.
+      const first = bad.text ?? bad.tracking;
+      if (first) {
+        setRecoveryState("failed");
+        setRecoveryError(first);
+        revealComposerProblem(bad);
+        return;
+      }
+      autosaveCancelRef.current?.();
+      autosaveCancelRef.current = null;
+      setRecoveryState("loading");
+      setRecoveryError("");
+      try {
+        // A save already in flight may legitimately finish first. It is not started by
+        // recovery; waiting only gives the recovery request the latest source version.
+        const pendingSave = draftRequestRef.current;
+        const saved = pendingSave ? await pendingSave.catch(() => null) : null;
+        const sourceVersion = saved?.id === draftId
+          ? saved.version
+          : acknowledgedDraftRef.current?.id === draftId
+            ? acknowledgedDraftRef.current.version
+            : draftVersion;
+        const recovery: DraftRecoveryInput = {
+          clientKey: (recoveryClientKeyRef.current ??= createDraftClientKey()),
+          sourceVersion,
+          acceptResponsibility: true,
+          text: snapshot.text,
+          formatting: snapshot.formatting ?? [],
+          media: snapshot.media,
+          scheduledAt: snapshot.scheduledAt,
+          schedule: snapshot.schedule,
+          channelIds: snapshot.channelIds,
+          tracking: snapshot.tracking ?? null,
+        };
+        const result = await recoverServerDraft(draftId, recovery);
+        setRecoveryState("success");
+        s.toast({
+          kind: "success",
+          dedupeKey: `draft-recovery:${draftId}:${result.draft.id}`,
+          title: result.created ? "Новый пост создан" : "Новый пост уже был создан",
+          body: "Исходная версия сохранена отдельно. Открываем новый ручной черновик.",
+        });
+        router.replace(`/app/composer?draft=${result.draft.id}`);
+      } catch (error) {
+        setRecoveryState("failed");
+        setRecoveryError(
+          error instanceof DraftRequestError && error.kind === "offline"
+            ? "Нет соединения с сервером. Исходная версия и текущий текст не изменены. Повторите после восстановления сети."
+            : error instanceof DraftRequestError && error.kind === "conflict"
+              ? "Исходная версия изменилась в другой вкладке. Откройте её заново и повторите создание поста."
+              : error instanceof DraftRequestError && error.code === "validation_blocked_requires_new_check"
+                ? "Проверка нашла неподтверждённые утверждения. Исправьте текст и запустите новую проверку."
+                : "Новый пост не создан. Исходная версия и текущий текст сохранены — повторите действие.",
+        );
+      }
+    },
+  ), [
+    blockedReason,
+    currentDraftWrite,
+    draftId,
+    draftVersion,
+    roleCanEditContent,
+    router,
+    s,
+    validate,
+  ]);
+
   const publish = useCallback(async (mode: PublicationMode) => {
     if (!canPublish) {
       s.toast({
@@ -1783,14 +1959,9 @@ export default function ComposerPage() {
       });
       return;
     }
-    if (aiReview === "blocked") {
-      s.toast({
-        kind: "danger",
-        title: "Пересохраните старую версию",
-        body: "Эта версия не привязана к завершённой генерации. Сохраните текст как новый пост и повторите публикацию.",
-      });
-      return;
-    }
+    // A known persistent policy block is explained inline by the recovery panel. Keyboard
+    // shortcuts and repeated programmatic calls must not mint duplicate assertive alerts.
+    if (blockedReason != null) return;
     if (!personalProject && editorialState !== "approved") {
       s.toast({
         kind: "info",
@@ -1829,12 +2000,12 @@ export default function ComposerPage() {
           target = new Date(now.getTime() + 3_600_000);
           target.setMinutes(0, 0, 0);
         }
-        const localTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+        const local = localScheduleInputForInstant(target.toISOString(), projectTimezone);
         scheduleOverlay = resolveComposerSchedule(
-          toDateValue(target),
-          toTimeValue(target),
-          localTimezone,
-          "reject",
+          local.localDate,
+          local.localTime,
+          local.timezone,
+          local.disambiguation,
         );
       }
       if (!scheduleOverlay) {
@@ -1934,9 +2105,10 @@ export default function ComposerPage() {
     composerUserId,
     date,
     editorialState,
-    aiReview,
+    blockedReason,
     personalProject,
     persistDraft,
+    projectTimezone,
     router,
     s,
     scheduleTimezone,
@@ -2049,6 +2221,11 @@ export default function ComposerPage() {
       applyAiPreview,
       dismissAiPreview,
       aiReview,
+      blockedReason,
+      canRecoverDraft,
+      recoveryState,
+      recoveryError,
+      recoverDraft,
       topicOpen,
       setTopicOpen,
       topic,
@@ -2089,6 +2266,8 @@ export default function ComposerPage() {
       aiPreview,
       aiReview,
       applyAiPreview,
+      blockedReason,
+      canRecoverDraft,
       canChangeSchedule,
       canEditContent,
       canPublish,
@@ -2140,6 +2319,9 @@ export default function ComposerPage() {
       vkChannelId,
       vkChannelIds,
       quick,
+      recoverDraft,
+      recoveryError,
+      recoveryState,
       removeCurrent,
       runAi,
       saveDraft,
@@ -2327,13 +2509,77 @@ function ComposerActionBar() {
   const c = useComposer();
   const projects = useProjects();
   const personal = projects.current?.personal === true;
-  const approved = (personal || c.editorialState === "approved") && c.aiReview !== "blocked";
-  if (!c.canPublish) return null;
+  const approved = (personal || c.editorialState === "approved") && c.blockedReason == null;
+  const blocked = c.blockedReason ? DRAFT_BLOCKED_COPY[c.blockedReason] : null;
+  if (!c.canPublish && !blocked) return null;
   const unavailable = !c.hydrated || c.draftSaveState === "saving" || c.typing || c.saving;
   return (
     <div className="fixed inset-x-4 bottom-[calc(4.5rem+env(safe-area-inset-bottom))] z-30 lg:right-8 lg:left-[calc(260px+2rem)] lg:bottom-4">
       <div className="mx-auto w-full max-w-5xl rounded-md border border-line bg-surface/95 p-3 shadow-lift backdrop-blur-xl sm:p-4">
-        {c.publicationSuccess ? (
+        {blocked ? (
+          <section
+            aria-labelledby="composer-recovery-title"
+            aria-busy={c.recoveryState === "loading" || undefined}
+            className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center"
+          >
+            <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-fire-soft text-fire-text">
+              <AlertTriangle className="h-5 w-5" aria-hidden />
+            </span>
+            <div className="min-w-0 flex-1">
+              <h2 id="composer-recovery-title" className="text-pretty text-[14px] leading-snug font-bold text-text">
+                {blocked.title}
+              </h2>
+              <p className="mt-1 max-w-[72ch] text-pretty text-[13px] leading-relaxed text-text-2">
+                {blocked.body}
+              </p>
+              <div aria-live="polite" aria-atomic="true" className="min-h-5">
+                {c.recoveryState === "loading" && (
+                  <p className="mt-1 text-[13px] font-medium text-brand">Создаём отдельный пост…</p>
+                )}
+                {c.recoveryState === "success" && (
+                  <p className="mt-1 text-[13px] font-medium text-success-text">Новый пост создан. Открываем редактор…</p>
+                )}
+              </div>
+              {c.recoveryError && (
+                <p role="alert" className="mt-1 text-pretty text-[13px] leading-relaxed font-medium text-danger-text">
+                  {c.recoveryError}
+                </p>
+              )}
+            </div>
+            {c.blockedReason === "validation_blocked" && c.canEditContent ? (
+              <Button
+                variant="brand"
+                size="sm"
+                className="w-full shrink-0 sm:w-auto"
+                onClick={() => {
+                  const editor = document.getElementById("composer-text");
+                  editor?.scrollIntoView({ behavior: "smooth", block: "center" });
+                  editor?.focus({ preventScroll: true });
+                }}
+              >
+                {blocked.action}
+              </Button>
+            ) : c.canRecoverDraft ? (
+              <Button
+                variant="brand"
+                size="sm"
+                className="w-full shrink-0 sm:w-auto"
+                disabled={c.recoveryState === "success"}
+                loading={c.recoveryState === "loading"}
+                onClick={() => void c.recoverDraft()}
+              >
+                {blocked.action}
+              </Button>
+            ) : (
+              <Link
+                href="/app/calendar"
+                className={buttonClassName({ variant: "brand", size: "sm", className: "w-full shrink-0 sm:w-auto" })}
+              >
+                Вернуться в календарь
+              </Link>
+            )}
+          </section>
+        ) : c.publicationSuccess ? (
           <div role="status" aria-live="polite" className="flex flex-wrap items-center gap-3">
             <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-success-soft text-success-text">
               <CheckCircle2 className="h-5 w-5" aria-hidden />
@@ -2357,7 +2603,7 @@ function ComposerActionBar() {
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div className="min-w-0 text-[13px]" aria-live="polite">
               <p className="font-semibold text-text">
-                {approved ? "Готово к публикации" : c.aiReview === "blocked" ? "Нужно пересохранить версию" : "Нужно согласовать пост"}
+                {approved ? "Готово к публикации" : "Нужно согласовать пост"}
               </p>
               <p className="truncate text-text-3">
                 {c.draftSaveState === "offline"
@@ -2458,7 +2704,10 @@ function ComposerInner() {
   const dateParam = dateRaw && /^\d{4}-\d{2}-\d{2}$/.test(dateRaw)
     ? dateRaw
     : dateRaw && !Number.isNaN(new Date(dateRaw).getTime())
-      ? toDateValue(new Date(dateRaw))
+      ? localScheduleFieldsForInstant(
+          new Date(dateRaw).toISOString(),
+          projects.current?.timezone ?? "UTC",
+        ).localDate
       : dateRaw;
   const timeParam = params.get("time");
   const channelParam = Number(params.get("channel")) || null;
@@ -2545,11 +2794,6 @@ function ComposerInner() {
       if (draftParam) {
         try {
           draft = await getServerDraft(draftParam, controller.signal);
-          if (draft.purpose === "source_context") {
-            loadedKey.current = key;
-            failHydration("source_context");
-            return;
-          }
           post = draftToPost(draft);
         } catch (error) {
           if (cancelled) return;
@@ -2664,25 +2908,6 @@ function ComposerInner() {
   }, [c.topicOpen]);
 
   if (!s.ready) return <ComposerSkeleton />;
-  if (draftLoadError === "source_context") {
-    return (
-      <Card className="py-6">
-        <EmptyState
-          icon={<Flame className="h-6 w-6" aria-hidden />}
-          title="Это исходный материал, а не черновик публикации"
-          body="Аврора хранит источник отдельно, чтобы чужой или сырой текст нельзя было случайно отправить в канал. Сначала создай самостоятельный материал в Студии."
-          action={
-            <div className="flex flex-wrap justify-center gap-2">
-              <Link href={draftParam ? `/app/studio?draft=${draftParam}&intent=create` : "/app/studio"}>
-                <Button variant="solid">Создать материал</Button>
-              </Link>
-              <Link href="/app/calendar"><Button variant="ghost">Вернуться в календарь</Button></Link>
-            </div>
-          }
-        />
-      </Card>
-    );
-  }
   if (draftLoadError === "not_found") {
     return (
       <Card className="py-6">
@@ -2692,11 +2917,14 @@ function ComposerInner() {
           body="Его могли удалить или он принадлежит другому аккаунту. Пустой редактор не открыт, чтобы ты случайно не продолжил не тот материал."
           action={
             <div className="flex flex-wrap justify-center gap-2">
-              <Link href="/app/calendar">
-                <Button variant="solid">Вернуться в календарь</Button>
+              <Link href="/app/calendar" className={buttonClassName({ variant: "solid" })}>
+                Вернуться в календарь
               </Link>
-              <Link href={channelParam ? `/app/composer?channel=${channelParam}` : "/app/composer"}>
-                <Button variant="ghost">Создать новый</Button>
+              <Link
+                href={channelParam ? `/app/composer?channel=${channelParam}` : "/app/composer"}
+                className={buttonClassName({ variant: "ghost" })}
+              >
+                Создать новый
               </Link>
             </div>
           }
@@ -2887,7 +3115,11 @@ function ComposerInner() {
 
             {!canEditContent && (
               <p role="status" className="mt-2 text-[13px] leading-relaxed text-text-2">
-                Согласованный текст открыт только для чтения. Публикатор выбирает дату и отправляет именно эту версию.
+                {c.blockedReason === "source_context_not_publishable"
+                  ? "Материал-источник открыт только для чтения. Отдельный пост будет создан только после вашего подтверждения."
+                  : c.recoveryState === "loading"
+                    ? "Текущий текст зафиксирован для создания отдельного поста."
+                    : "Согласованный текст открыт только для чтения. Публикатор выбирает дату и отправляет именно эту версию."}
               </p>
             )}
 
@@ -3232,10 +3464,18 @@ function ComposerInner() {
             )}
           </div>
 
-          {c.tgChannels.length === 0 && c.vkChannels.length === 0 && !tgOn && !vkOn && (
-            <p className="text-[13px] text-text-2">
-              Подключи хотя бы один канал. Серверный черновик всегда хранит точные назначения.
-            </p>
+          {c.tgChannels.length === 0 && c.vkChannels.length === 0 && (
+            <div className="flex flex-wrap items-center gap-3">
+              <p className="min-w-0 flex-1 text-pretty text-[13px] leading-relaxed text-text-2">
+                Подключите хотя бы один канал. Серверный черновик хранит только действующие назначения.
+              </p>
+              <Link
+                href="/app/settings?section=channels"
+                className="inline-flex min-h-11 items-center rounded-xs px-3 text-[13px] font-semibold text-brand underline underline-offset-4 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+              >
+                Настроить каналы
+              </Link>
+            </div>
           )}
 
           {c.errors.networks && (

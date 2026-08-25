@@ -46,3 +46,17 @@ export function resolveCalendarDayMove(input: {
     disambiguation,
   });
 }
+
+/** Keeps the optimistic card position visible only while the server mutation is pending. */
+export async function withOptimisticCalendarSchedule<T>(input: {
+  apply: () => void;
+  persist: () => Promise<T>;
+  clear: () => void;
+}): Promise<T> {
+  input.apply();
+  try {
+    return await input.persist();
+  } finally {
+    input.clear();
+  }
+}

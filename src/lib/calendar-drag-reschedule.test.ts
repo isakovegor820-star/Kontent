@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import { ScheduleValidationError } from "./timezone-schedule";
-import { resolveCalendarDayMove } from "./calendar-drag-reschedule";
+import {
+  resolveCalendarDayMove,
+  withOptimisticCalendarSchedule,
+} from "./calendar-drag-reschedule";
 
 describe("calendar day drag reschedule", () => {
   it("moves only the local date and keeps the local publication time", () => {
@@ -38,5 +41,29 @@ describe("calendar day drag reschedule", () => {
       targetDay: new Date(2026, 2, 29),
       timezone: "Europe/Amsterdam",
     })).toThrowError(new ScheduleValidationError("nonexistent_local_time"));
+  });
+
+  it("clears an optimistic move after success and rolls it back after failure", async () => {
+    const events: string[] = [];
+    await expect(withOptimisticCalendarSchedule({
+      apply: () => events.push("apply"),
+      persist: async () => {
+        events.push("persist");
+        return "saved";
+      },
+      clear: () => events.push("clear"),
+    })).resolves.toBe("saved");
+    expect(events).toEqual(["apply", "persist", "clear"]);
+
+    events.length = 0;
+    await expect(withOptimisticCalendarSchedule({
+      apply: () => events.push("apply"),
+      persist: async () => {
+        events.push("persist");
+        throw new Error("offline");
+      },
+      clear: () => events.push("rollback"),
+    })).rejects.toThrow("offline");
+    expect(events).toEqual(["apply", "persist", "rollback"]);
   });
 });

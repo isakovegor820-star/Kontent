@@ -42,20 +42,24 @@ import {
   type ClientWorkspaceIdentity,
 } from "./client-workspace-isolation";
 import { uid } from "./utils";
+import { appendToastStack, stableToastDedupeKey } from "./toast-stack";
 
 type Toast = {
   id: string;
   kind: "success" | "danger" | "fire" | "info";
   title: string;
   body?: string;
+  dedupeKey: string;
 };
+
+type ToastInput = Omit<Toast, "id" | "dedupeKey"> & { dedupeKey?: string };
 
 interface StoreValue extends AppState {
   ready: boolean; // сервер подтвердил проект, его localStorage поднят (демо-данные)
   authReady: boolean; // /api/auth/me ответил — можно решать лендинг/платформа
   authError: boolean;
   toasts: Toast[];
-  toast: (t: Omit<Toast, "id">) => void;
+  toast: (t: ToastInput) => void;
   dismissToast: (id: string) => void;
 
   /** Перечитать, кто вошёл, с сервера. Зовём после входа и при загрузке. */
@@ -581,9 +585,10 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  const toast = useCallback((t: Omit<Toast, "id">) => {
+  const toast = useCallback((t: ToastInput) => {
     const id = uid("t");
-    setToasts((prev) => [...prev, { ...t, id }]);
+    const next = { ...t, id, dedupeKey: stableToastDedupeKey(t) };
+    setToasts((prev) => appendToastStack(prev, next));
   }, []);
 
   const dismissToast = useCallback((id: string) => {

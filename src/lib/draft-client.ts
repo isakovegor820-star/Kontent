@@ -1,5 +1,6 @@
 import type {
   DraftCreateInput,
+  DraftRecoveryInput,
   DraftSaveState,
   DraftScheduleUpdateInput,
   DraftTrackingSelection,
@@ -344,6 +345,21 @@ export async function createServerDraft(
   input: DraftCreateInput,
 ): Promise<{ draft: ServerDraft; created: boolean }> {
   const response = await request("/api/drafts", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  const body = await jsonOrNull<{ draft?: ServerDraft; created?: boolean } & ErrorBody>(response);
+  if (response.ok && body?.draft) return { draft: body.draft, created: body.created === true };
+  const kind = response.status === 409 ? "conflict" : response.status === 404 ? "not_found" : "failed";
+  throw new DraftRequestError(kind, response.status, body?.error ?? "server", body?.current);
+}
+
+export async function recoverServerDraft(
+  sourceDraftId: number,
+  input: DraftRecoveryInput,
+): Promise<{ draft: ServerDraft; created: boolean }> {
+  const response = await request(`/api/drafts/${sourceDraftId}/recover`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(input),

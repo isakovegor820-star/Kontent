@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { DraftAiValidation } from "./draft-types";
 import {
   composerAiReviewState,
+  draftReviewAssessment,
   draftReviewDecision,
   normalizeDraftAiValidation,
 } from "./draft-review";
@@ -72,7 +73,33 @@ describe("AI draft review policy", () => {
     expect(draftReviewDecision(input({ review_policy_version: 2 }))).toBe("review_required");
     const malformed = { ...validation("passed"), provenance: { validatorVersion: "client-v1" } };
     expect(normalizeDraftAiValidation(malformed)).toBeNull();
-    expect(draftReviewDecision(input({ ai_validation: malformed }))).toBe("review_required");
+    expect(draftReviewDecision(input({ ai_validation: malformed }))).toBe("blocked");
+    expect(draftReviewAssessment(input({ ai_validation: malformed }))).toEqual({
+      decision: "blocked",
+      blockedReason: "malformed_validation",
+    });
+  });
+
+  it("returns exact typed reasons for every permanent block", () => {
+    expect(draftReviewAssessment(input({ generation_result_id: null }))).toEqual({
+      decision: "blocked",
+      blockedReason: "legacy_generation_missing",
+    });
+    expect(draftReviewAssessment(input({ ai_validation: validation("blocked") }))).toEqual({
+      decision: "blocked",
+      blockedReason: "validation_blocked",
+    });
+    expect(draftReviewAssessment(input({ purpose: "source_context", origin: "rss" }))).toEqual({
+      decision: "blocked",
+      blockedReason: "source_context_not_publishable",
+    });
+    expect(draftReviewAssessment(input({
+      ai_validation: validation("passed"),
+      generation_binding_valid: false,
+    }))).toEqual({
+      decision: "blocked",
+      blockedReason: "unknown_block",
+    });
   });
 
   it("never blocks manual-origin drafts", () => {

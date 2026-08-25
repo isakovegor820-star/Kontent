@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   inspectLocalSchedule,
+  addLocalDateDays,
   localScheduleFieldsForInstant,
+  localScheduleInputForInstant,
   resolveLocalSchedule,
   ScheduleValidationError,
 } from "./timezone-schedule";
@@ -71,6 +73,20 @@ describe("timezone-aware schedules", () => {
       timezone: "Europe/Amsterdam",
       offset: "+02:00",
     });
+  });
+
+  it("restores the exact earlier/later choice for an ambiguous instant", () => {
+    expect(localScheduleInputForInstant(
+      "2026-10-25T01:30:00.000Z",
+      "Europe/Amsterdam",
+    )).toEqual({
+      localDate: "2026-10-25",
+      localTime: "02:30",
+      timezone: "Europe/Amsterdam",
+      offset: "+01:00",
+      disambiguation: "later",
+    });
+    expect(addLocalDateDays("2026-03-28", 1)).toBe("2026-03-29");
   });
 
   it("rejects invalid zones, forged instants and forged offsets", () => {

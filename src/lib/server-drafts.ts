@@ -1,10 +1,12 @@
 import type { Pool, PoolClient } from "pg";
 import { isDeepStrictEqual } from "node:util";
+import { createHash } from "node:crypto";
 
 import { getPool } from "./db";
 import type {
   DraftCreateInput,
   DraftDestination,
+  DraftRecoveryInput,
   DraftScheduleUpdateInput,
   DraftTrackingSelection,
   DraftUpdateInput,
@@ -13,6 +15,8 @@ import type {
 } from "./draft-types";
 import {
   DRAFT_REVIEW_POLICY_VERSION,
+  draftReviewAssessment,
+  isDraftRecoveryAllowedReason,
   normalizeDraftAiValidation,
 } from "./draft-review";
 import {
@@ -294,8 +298,12 @@ function nullableSourceRef(value: unknown): Post["sourceRef"] | null {
   return sourceRef;
 }
 
-function channelIds(value: unknown): number[] {
-  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_DESTINATIONS) {
+function channelIds(value: unknown, allowEmpty = false): number[] {
+  if (
+    !Array.isArray(value)
+    || (!allowEmpty && value.length === 0)
+    || value.length > MAX_DESTINATIONS
+  ) {
     throw new DraftValidationError("no_destinations");
   }
   const ids = [...new Set(value.map(Number))];
@@ -428,7 +436,10 @@ function schedule(value: Record<string, unknown>) {
 }
 
 /** Строгий парсер границы API: неизвестные/неверные значения до SQL не доходят. */
-export function parseDraftWriteInput(value: unknown): DraftWriteInput {
+export function parseDraftWriteInput(
+  value: unknown,
+  options: { allowEmptyDestinations?: boolean } = {},
+): DraftWriteInput {
   if (!isRecord(value)) throw new DraftValidationError("bad_request");
   const origin = value.origin;
   if (typeof origin !== "string" || !ORIGINS.has(origin as Post["origin"])) {
@@ -456,7 +467,7 @@ export function parseDraftWriteInput(value: unknown): DraftWriteInput {
     sourceRef: origin === "trend" || origin === "idea" || origin === "competitor" || origin === "rss"
       ? nullableSourceRef(value.sourceRef)
       : null,
-    channelIds: channelIds(value.channelIds),
+    channelIds: channelIds(value.channelIds, options.allowEmptyDestinations === true),
     aiValidation: null,
     generationResultId,
   };
@@ -465,11 +476,14 @@ export function parseDraftWriteInput(value: unknown): DraftWriteInput {
   return parsed;
 }
 
-export function parseDraftCreateInput(value: unknown): DraftCreateInput {
+export function parseDraftCreateInput(
+  value: unknown,
+  options: { allowEmptyDestinations?: boolean } = {},
+): DraftCreateInput {
   if (!isRecord(value)) throw new DraftValidationError("bad_request");
   const clientKey = typeof value.clientKey === "string" ? value.clientKey : "";
   if (!CLIENT_KEY_RE.test(clientKey)) throw new DraftValidationError("bad_client_key");
-  const parsed = parseDraftWriteInput(value);
+  const parsed = parseDraftWriteInput(value, options);
   const growthMoveId = value.growthMoveId == null ? null : Number(value.growthMoveId);
   if (growthMoveId != null && (!Number.isSafeInteger(growthMoveId) || growthMoveId <= 0)) {
     throw new DraftValidationError("bad_growth_move");
@@ -477,6 +491,36 @@ export function parseDraftCreateInput(value: unknown): DraftCreateInput {
   return growthMoveId == null
     ? { ...parsed, tracking: parsed.tracking ?? null, clientKey }
     : { ...parsed, tracking: parsed.tracking ?? null, clientKey, growthMoveId };
+}
+
+export function parseDraftRecoveryInput(value: unknown): DraftRecoveryInput {
+  if (!isRecord(value)) throw new DraftValidationError("bad_request");
+  const sourceVersion = Number(value.sourceVersion);
+  if (!Number.isSafeInteger(sourceVersion) || sourceVersion <= 0) {
+    throw new DraftValidationError("bad_version");
+  }
+  if (value.acceptResponsibility !== true) {
+    throw new DraftValidationError("responsibility_confirmation_required");
+  }
+  const parsed = parseDraftCreateInput({
+    ...value,
+    origin: "manual",
+    sourceRef: null,
+    aiValidation: null,
+    generationResultId: null,
+  }, { allowEmptyDestinations: true });
+  return {
+    clientKey: parsed.clientKey,
+    text: parsed.text,
+    ...(parsed.formatting === undefined ? {} : { formatting: parsed.formatting }),
+    media: parsed.media,
+    scheduledAt: parsed.scheduledAt,
+    schedule: parsed.schedule,
+    channelIds: parsed.channelIds,
+    tracking: parsed.tracking ?? null,
+    sourceVersion,
+    acceptResponsibility: true,
+  };
 }
 
 export function parseDraftUpdateInput(value: unknown): DraftUpdateInput {
@@ -565,6 +609,26 @@ function mapDraft(row: DraftRow): ServerDraft {
     && row.generation_result_hash === row.receipt_result_hash
     && generationResultHash(row.text) === row.generation_result_hash
     && JSON.stringify(normalizedValidation) === JSON.stringify(receiptValidation);
+  const humanReview = Number.isSafeInteger(humanReviewVersion) &&
+    humanReviewVersion > 0 && row.human_reviewed_at != null
+      ? {
+          policy_version: DRAFT_REVIEW_POLICY_VERSION,
+          draft_version: humanReviewVersion,
+          attested_at: toIso(row.human_reviewed_at),
+        } as const
+      : null;
+  const blockedReason = draftReviewAssessment({
+    origin: row.origin,
+    purpose,
+    generation_result_id: generationResultId,
+    generation_binding_valid: generationBindingValid,
+    version: Number(row.version),
+    review_policy_version: Number(row.review_policy_version),
+    // Use the raw row here so malformed persisted validation cannot be mistaken for
+    // an ordinary missing/not-checked receipt after normalization.
+    ai_validation: row.ai_validation,
+    human_review: humanReview,
+  }).blockedReason;
   return {
     id: Number(row.id),
     ...(Number.isSafeInteger(authorUserId) && authorUserId > 0
@@ -602,16 +666,8 @@ function mapDraft(row: DraftRow): ServerDraft {
     version: Number(row.version),
     review_policy_version: Number(row.review_policy_version) as 1,
     ai_validation: normalizedValidation,
-    human_review:
-      Number.isSafeInteger(humanReviewVersion) &&
-      humanReviewVersion > 0 &&
-      row.human_reviewed_at != null
-        ? {
-            policy_version: DRAFT_REVIEW_POLICY_VERSION,
-            draft_version: humanReviewVersion,
-            attested_at: toIso(row.human_reviewed_at),
-          }
-        : null,
+    human_review: humanReview,
+    blocked_reason: blockedReason,
     created_at: toIso(row.created_at),
     updated_at: toIso(row.updated_at),
     destinations: normalizeDestinations(row.destinations),
@@ -1218,6 +1274,154 @@ export async function createDraftForUser(
   }
 }
 
+function draftRecoveryAuditKey(sourceDraftId: number, clientKey: string): string {
+  const digest = createHash("sha256").update(clientKey, "utf8").digest("hex");
+  return `draft-recovery:${sourceDraftId}:${digest}`;
+}
+
+/**
+ * Creates a separate manual draft after an explicit responsibility acknowledgement.
+ * The source row is locked only for a version check and is never updated or deleted.
+ */
+export async function recoverDraftForUser(
+  userId: number,
+  sourceDraftId: number,
+  input: DraftRecoveryInput,
+  pool: TransactionPool = getPool(),
+): Promise<{ draft: ServerDraft; created: boolean }> {
+  const tx = await pool.connect();
+  try {
+    await tx.query("begin");
+    const membership = await requireSelectedProjectPermission(tx, userId, "content.create");
+    const projectId = membership.projectId;
+    const auditKey = draftRecoveryAuditKey(sourceDraftId, input.clientKey);
+
+    const findReplay = async () => {
+      const replay = await tx.query<{ id: number | string }>(
+        `select recovered.id
+           from drafts recovered
+           join audit_events event
+             on event.project_id = recovered.project_id
+            and event.entity_type = 'draft'
+            and event.entity_id = recovered.id::text
+            and event.action = 'draft.recovered_as_manual'
+            and event.idempotency_key = $4
+            and event.safe_data ->> 'sourceDraftId' = $3
+          where recovered.project_id = $1
+            and recovered.user_id = $2
+            and recovered.client_key = $5
+          limit 1`,
+        [projectId, userId, String(sourceDraftId), auditKey, input.clientKey],
+      );
+      const id = replay.rows[0] ? Number(replay.rows[0].id) : null;
+      return id && Number.isSafeInteger(id) ? id : null;
+    };
+
+    const clientKeyOwner = await tx.query<{ id: number | string }>(
+      `select id from drafts where project_id = $1 and user_id = $2 and client_key = $3 limit 1`,
+      [projectId, userId, input.clientKey],
+    );
+    if (clientKeyOwner.rows[0]) {
+      const replayId = await findReplay();
+      if (replayId == null) throw new DraftValidationError("recovery_key_conflict");
+      const replay = await selectDraft(tx, projectId, replayId);
+      if (!replay) throw new DraftNotFoundError();
+      await tx.query("commit");
+      return { draft: replay, created: false };
+    }
+
+    const sourceResult = await tx.query<DraftRow>(
+      `${DRAFT_SELECT} where d.id = $1 and d.project_id = $2 for share of d`,
+      [sourceDraftId, projectId],
+    );
+    if (!sourceResult.rows[0]) throw new DraftNotFoundError();
+    const source = mapDraft(sourceResult.rows[0]);
+    if (source.version !== input.sourceVersion) throw new DraftConflictError(source);
+    if (!isDraftRecoveryAllowedReason(source.blocked_reason)) {
+      throw new DraftValidationError(
+        source.blocked_reason === "validation_blocked"
+          ? "validation_blocked_requires_new_check"
+          : "draft_recovery_not_required",
+      );
+    }
+
+    await assertProjectActiveChannels(tx, projectId, input.channelIds);
+    await assertOwnedMedia(tx, projectId, input.media);
+    const trustedTracking = await resolveProjectTracking(tx, projectId, input.tracking);
+    const inserted = await tx.query<{ id: number | string }>(
+      `insert into drafts
+         (user_id, project_id, text, media, tracking, scheduled_at, origin, purpose, source_ref,
+          client_key, review_policy_version, ai_validation, generation_result_id,
+          scheduled_timezone, scheduled_local_date, scheduled_local_time,
+          scheduled_offset, scheduled_disambiguation, formatting)
+       values ($1, $2, $3, $4::jsonb, $5::jsonb, $6, 'manual', 'publishable', null,
+               $7, $8, null, null, $9, $10, $11, $12, $13, $14::jsonb)
+       on conflict (user_id, client_key) do nothing
+       returning id`,
+      [
+        userId,
+        projectId,
+        input.text,
+        input.media == null ? null : JSON.stringify(input.media),
+        JSON.stringify(trustedTracking ?? {}),
+        input.scheduledAt,
+        input.clientKey,
+        DRAFT_REVIEW_POLICY_VERSION,
+        input.schedule?.timezone ?? null,
+        input.schedule?.localDate ?? null,
+        input.schedule?.localTime ?? null,
+        input.schedule?.offset ?? null,
+        input.schedule?.disambiguation ?? null,
+        JSON.stringify(input.formatting ?? []),
+      ],
+    );
+    const created = inserted.rowCount === 1;
+    let recoveredId = inserted.rows[0] ? Number(inserted.rows[0].id) : null;
+    if (created && recoveredId != null) {
+      await replaceDestinations(tx, recoveredId, input.channelIds);
+      await recordDraftRevisionInTransaction(tx, {
+        draftId: recoveredId,
+        actorUserId: userId,
+        projectId,
+      });
+      await tx.query(
+        `insert into audit_events (
+           project_id, actor_user_id, action, entity_type, entity_id,
+           before_version, after_version, safe_data, idempotency_key
+         ) values ($1, $2, 'draft.recovered_as_manual', 'draft', $3::text,
+                   $4, 1, $5::jsonb, $6)
+         on conflict (project_id, idempotency_key) where idempotency_key is not null do nothing`,
+        [
+          projectId,
+          userId,
+          String(recoveredId),
+          source.version,
+          JSON.stringify({
+            sourceDraftId,
+            sourceVersion: source.version,
+            sourceOrigin: source.origin,
+            blockedReason: source.blocked_reason,
+            responsibilityAccepted: true,
+          }),
+          auditKey,
+        ],
+      );
+    } else {
+      recoveredId = await findReplay();
+    }
+    if (recoveredId == null) throw new DraftValidationError("recovery_key_conflict");
+    const recovered = await selectDraft(tx, projectId, recoveredId);
+    if (!recovered) throw new Error("recovered draft lookup failed");
+    await tx.query("commit");
+    return { draft: recovered, created };
+  } catch (error) {
+    await tx.query("rollback").catch(() => {});
+    throw error;
+  } finally {
+    tx.release();
+  }
+}
+
 export async function updateDraftForUser(
   userId: number,
   draftId: number,
@@ -1485,7 +1689,7 @@ export async function attestDraftReviewForUser(
     if (row.ai_validation != null && current.ai_validation == null) {
       throw new DraftValidationError("bad_ai_validation");
     }
-    if (current.ai_validation?.status === "blocked") {
+    if (current.blocked_reason != null || current.ai_validation?.status === "blocked") {
       throw new DraftValidationError("review_blocked");
     }
 

@@ -42,6 +42,29 @@ describe("composer UX protection contract", () => {
     expect(source).toContain('accept="image/jpeg,image/png,image/webp"');
     expect(source).toContain("c.toggleChannelId(ch.id)");
     expect(source).toContain("c.toggleVkChannelId(ch.id)");
+    expect(source).toContain("recoverServerDraft(draftId, recovery)");
+    expect(source).toContain("runSingleDraftSave(");
+    expect(source).toContain("recoveryRequestRef,");
+    expect(source).toContain("Создать новый пост из текста");
+    expect(source).toContain("Создать пост из материала");
+    expect(source).toContain("acceptResponsibility: true");
+    expect(source).toContain("Исходная версия сохранена отдельно");
+    expect(source).toContain('href="/app/settings?section=channels"');
+    expect(source).toContain("destination-less safe copy");
+  });
+
+  it("replaces guaranteed-failure publication actions with one inline recovery action", () => {
+    const actionBar = source.slice(
+      source.indexOf("function ComposerActionBar"),
+      source.indexOf("/* ---------------------------------------------------------------- РЕДАКТОР */"),
+    );
+    expect(actionBar).toContain("const blocked = c.blockedReason");
+    expect(actionBar).toContain("c.canRecoverDraft");
+    expect(actionBar).toContain("void c.recoverDraft()");
+    expect(actionBar).toContain('aria-live="polite"');
+    expect(source).toContain("if (blockedReason != null) return;");
+    expect(source).not.toContain("Пересохраните старую версию");
+    expect(source).not.toContain("Эта версия не привязана к завершённой генерации");
   });
 
   it("deletes an existing calendar draft from a visible editor action", () => {

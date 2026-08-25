@@ -21,7 +21,7 @@ vi.mock("./project-permissions", async (importOriginal) => {
   return { ...actual, requireSelectedProjectPermission: projectMocks.requireSelectedProjectPermission };
 });
 
-import type { DraftCreateInput, DraftUpdateInput } from "./draft-types";
+import type { DraftCreateInput, DraftRecoveryInput, DraftUpdateInput } from "./draft-types";
 import { ProjectAccessError } from "./project-permissions";
 import {
   attestDraftReviewForUser,
@@ -34,9 +34,11 @@ import {
   getDraftForUser,
   listDraftsForUser,
   parseDraftCreateInput,
+  parseDraftRecoveryInput,
   parseDraftScheduleUpdateInput,
   parseDraftUpdateInput,
   rescheduleDraftForUser,
+  recoverDraftForUser,
   updateDraftForUser,
 } from "./server-drafts";
 
@@ -144,6 +146,38 @@ describe("draft input boundary", () => {
     expect(() => parseDraftUpdateInput({ ...input, version: 0 })).toThrowError(
       new DraftValidationError("bad_version"),
     );
+  });
+
+  it("requires explicit responsibility for a recovery and forces manual provenance", () => {
+    expect(parseDraftRecoveryInput({
+      ...input,
+      sourceVersion: 3,
+      acceptResponsibility: true,
+      origin: "ai",
+      generationResultId: 81,
+      aiValidation: { forged: true },
+    })).toEqual({
+      clientKey: input.clientKey,
+      text: input.text,
+      media: input.media,
+      scheduledAt: input.scheduledAt,
+      schedule: input.schedule,
+      channelIds: input.channelIds,
+      tracking: null,
+      sourceVersion: 3,
+      acceptResponsibility: true,
+    });
+    expect(() => parseDraftRecoveryInput({
+      ...input,
+      sourceVersion: 3,
+      acceptResponsibility: false,
+    })).toThrowError(new DraftValidationError("responsibility_confirmation_required"));
+    expect(parseDraftRecoveryInput({
+      ...input,
+      channelIds: [],
+      sourceVersion: 3,
+      acceptResponsibility: true,
+    }).channelIds).toEqual([]);
   });
 
   it("accepts canonical rich-text ranges and rejects unsafe formatting", () => {
@@ -651,6 +685,118 @@ describe("server draft transactions", () => {
     expect(query.mock.calls.some(([sql]) => String(sql).includes("delete from draft_destinations"))).toBe(false);
     expect(query).toHaveBeenCalledWith("commit");
     expect(release).toHaveBeenCalledOnce();
+  });
+
+  it("recovers a legacy AI draft as a separate manual draft without mutating the source", async () => {
+    const recoveryInput: DraftRecoveryInput = {
+      clientKey: "draft_recovery-12345678-1234-4234-9234-123456789abc",
+      sourceVersion: 3,
+      acceptResponsibility: true,
+      text: "Текущий принятый человеком текст",
+      formatting: [{ type: "bold", offset: 0, length: 7 }],
+      media: null,
+      scheduledAt: input.scheduledAt,
+      schedule: input.schedule,
+      channelIds: [11],
+      tracking: null,
+    };
+    const sourceRow = {
+      ...row,
+      origin: "ai",
+      purpose: "needs_review",
+      generation_result_id: null,
+      client_key: "draft_legacy-ai-1234567890",
+    };
+    const recoveredRow = {
+      ...row,
+      id: "99",
+      version: "1",
+      text: recoveryInput.text,
+      formatting: recoveryInput.formatting,
+      origin: "manual",
+      purpose: "publishable",
+      client_key: recoveryInput.clientKey,
+      editorial_state: "draft",
+    };
+    let insertParams: unknown[] | undefined;
+    let auditParams: unknown[] | undefined;
+    const query = vi.fn(async (sql: string, params?: unknown[]) => {
+      if (sql === "begin" || sql === "commit" || sql === "rollback") return { rowCount: 0, rows: [] };
+      if (sql.includes("select id from drafts where project_id") && sql.includes("client_key")) {
+        return { rowCount: 0, rows: [] };
+      }
+      if (sql.includes("for share of d")) return { rowCount: 1, rows: [sourceRow] };
+      if (sql.includes("select id from channels")) return { rowCount: 1, rows: [{ id: "11" }] };
+      if (sql.includes("insert into drafts")) {
+        insertParams = params;
+        return { rowCount: 1, rows: [{ id: "99" }] };
+      }
+      if (sql.includes("draft.recovered_as_manual")) {
+        auditParams = params;
+        return { rowCount: 1, rows: [] };
+      }
+      if (sql.includes("select d.id")) return { rowCount: 1, rows: [recoveredRow] };
+      return { rowCount: 1, rows: [] };
+    });
+    const { pool } = fakePool(query);
+
+    const result = await recoverDraftForUser(5, 41, recoveryInput, pool as never);
+
+    expect(result).toMatchObject({ created: true, draft: {
+      id: 99,
+      origin: "manual",
+      purpose: "publishable",
+      generation_result_id: null,
+      ai_validation: null,
+      blocked_reason: null,
+    } });
+    expect(insertParams?.[2]).toBe(recoveryInput.text);
+    expect(insertParams).not.toContain("ai");
+    expect(query.mock.calls.some(([sql]) => /^\s*update drafts/u.test(String(sql)))).toBe(false);
+    expect(query.mock.calls.some(([sql]) => /^\s*delete from drafts\b/u.test(String(sql)))).toBe(false);
+    expect(auditParams?.slice(0, 5)).toEqual([7, 5, "99", 3, expect.any(String)]);
+    expect(JSON.parse(String(auditParams?.[4]))).toMatchObject({
+      sourceDraftId: 41,
+      sourceVersion: 3,
+      blockedReason: "legacy_generation_missing",
+      responsibilityAccepted: true,
+    });
+  });
+
+  it("returns the same recovered draft for an idempotency replay", async () => {
+    const recoveryInput: DraftRecoveryInput = {
+      clientKey: "draft_recovery-12345678-1234-4234-9234-123456789abc",
+      sourceVersion: 3,
+      acceptResponsibility: true,
+      text: input.text,
+      media: null,
+      scheduledAt: input.scheduledAt,
+      schedule: input.schedule,
+      channelIds: [11],
+      tracking: null,
+    };
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes("select id from drafts where project_id") && sql.includes("client_key")) {
+        return { rowCount: 1, rows: [{ id: "99" }] };
+      }
+      if (sql.includes("draft.recovered_as_manual")) return { rowCount: 1, rows: [{ id: "99" }] };
+      if (sql.includes("select d.id")) return { rowCount: 1, rows: [{
+        ...row,
+        id: "99",
+        version: "1",
+        origin: "manual",
+        purpose: "publishable",
+        client_key: recoveryInput.clientKey,
+      }] };
+      return { rowCount: 0, rows: [] };
+    });
+    const { pool } = fakePool(query);
+
+    await expect(recoverDraftForUser(5, 41, recoveryInput, pool as never)).resolves.toMatchObject({
+      created: false,
+      draft: { id: 99 },
+    });
+    expect(query.mock.calls.some(([sql]) => String(sql).includes("insert into drafts"))).toBe(false);
   });
 
   it("rejects a destination not owned and active before inserting anything", async () => {
