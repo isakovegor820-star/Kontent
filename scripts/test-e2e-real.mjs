@@ -1940,11 +1940,11 @@ try {
   await page.waitForURL((url) => url.pathname === "/app/studio" && url.searchParams.get("draft") === String(libraryReferenceDraftId));
   assert(!new URL(page.url()).searchParams.has("intent"), "browser Back restarted the completed paid generation");
   await desktopSidebar
-    .locator('a[aria-current="page"]')
-    .waitFor({ state: "detached", timeout: UI_WAIT_TIMEOUT_MS });
+    .getByRole("link", { name: "Студия контента", exact: true })
+    .waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   assert(
-    await desktopSidebar.getByRole("link", { name: "Студия контента", exact: true }).count() === 0,
-    "experimental Studio leaked into stable desktop navigation",
+    await desktopSidebar.getByRole("link", { name: "Студия контента", exact: true }).getAttribute("aria-current") === "page",
+    "restored Studio is not active in desktop navigation",
   );
   await page.goBack();
   await page.waitForURL((url) => url.pathname === "/app/library" && url.searchParams.get("channel") === String(channels[0]));
@@ -1968,11 +1968,11 @@ try {
   )).rows[0];
   assert(Number(studioDestination?.channel_id) === channels[0], "Studio draft lost selected channel id");
   await desktopSidebar
-    .locator('a[aria-current="page"]')
-    .waitFor({ state: "detached", timeout: UI_WAIT_TIMEOUT_MS });
+    .getByRole("link", { name: "Студия контента", exact: true })
+    .waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   assert(
-    await desktopSidebar.getByRole("link", { name: "Студия контента", exact: true }).count() === 0,
-    "Studio action exposed an experimental desktop navigation item",
+    await desktopSidebar.getByRole("link", { name: "Студия контента", exact: true }).getAttribute("aria-current") === "page",
+    "Studio action did not activate the restored desktop navigation item",
   );
   await page.goBack();
   await page.waitForURL((url) => url.pathname === "/app/library" && url.searchParams.get("channel") === String(channels[0]));
@@ -2043,22 +2043,21 @@ try {
   await mobileDrawer.getByRole("button", { name: "Закрыть меню", exact: true }).click();
   const mobileNav = page.locator('nav[aria-label="Основные разделы"]');
   assert(
-    await mobileNav.getByRole("link", { name: "Редактор", exact: true }).count() === 1
-      && await mobileNav.getByRole("link", { name: "Студия", exact: true }).count() === 0,
-    "mobile navigation diverged from the stable release scope",
+    await mobileNav.getByRole("link", { name: "Редактор", exact: true }).count() === 0
+      && await mobileNav.getByRole("link", { name: "Студия", exact: true }).count() === 1,
+    "mobile navigation did not expose the restored Studio destination",
   );
   await page.goto("/app/studio");
   assert(
-    await mobileNav.locator('a[aria-current="page"]').count() === 0,
-    "experimental Studio appeared active in stable mobile navigation",
+    await mobileNav.getByRole("link", { name: "Студия", exact: true }).getAttribute("aria-current") === "page",
+    "restored Studio is not active in mobile navigation",
   );
   await page.goBack();
   await page.waitForURL((url) => url.pathname === "/app/library" && url.searchParams.get("channel") === String(channels[0]));
   await page.goto(`/app/trends?channel=${channels[0]}`);
   assert(
-    await mobileNav.getByRole("link", { name: "Разведка", exact: true }).count() === 0
-      && await mobileNav.locator('a[aria-current="page"]').count() === 0,
-    "experimental Trends leaked into stable mobile navigation",
+    await mobileNav.getByRole("link", { name: "Разведка", exact: true }).getAttribute("aria-current") === "page",
+    "restored Trends route did not activate the mobile market hub",
   );
   await page.goBack();
   await page.waitForURL((url) => url.pathname === "/app/library" && url.searchParams.get("channel") === String(channels[0]));
