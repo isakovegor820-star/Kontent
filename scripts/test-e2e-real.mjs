@@ -1925,15 +1925,14 @@ try {
     "validation-blocked personal draft still exposes the removed takeover",
   );
   assert(
-    await page.getByRole("button", { name: "Опубликовать сейчас", exact: true }).count() === 0,
-    "validation-blocked source still exposes publication",
+    await page.getByRole("button", { name: "Перейти к тексту", exact: true }).count() === 0,
+    "trusted validation receipt still exposes the removed blocking recovery action",
   );
-  const returnToTextButton = page.getByRole("button", { name: "Перейти к тексту", exact: true });
-  await returnToTextButton.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
-  await returnToTextButton.click();
+  const publishNowButton = page.getByRole("button", { name: "Опубликовать сейчас", exact: true }).last();
+  await publishNowButton.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   assert(
-    await page.evaluate(() => document.activeElement?.id) === "composer-text",
-    "validation-blocked recovery action did not focus the text editor",
+    await publishNowButton.isEnabled(),
+    "trusted validation receipt did not restore publication controls",
   );
 
   await page.goBack();
