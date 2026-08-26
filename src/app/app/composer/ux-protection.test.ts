@@ -60,6 +60,15 @@ describe("composer UX protection contract", () => {
     expect(source).toContain("destination-less safe copy");
   });
 
+  it("creates media inside the editor instead of navigating to a hidden experimental page", () => {
+    expect(source).toContain("<MediaGenerator");
+    expect(source).toContain('id="composer-media-generator"');
+    expect(source).toContain("onUse={useGeneratedMedia}");
+    expect(source).toContain('title: "Медиа добавлено к посту"');
+    expect(source).not.toContain("/app/studio/visuals?draft=");
+    expect(source).not.toContain("EXPERIMENTAL_ROUTES_ENABLED");
+  });
+
   it("replaces guaranteed-failure publication actions with one inline recovery action", () => {
     const actionBar = source.slice(
       source.indexOf("function ComposerActionBar"),
@@ -69,6 +78,8 @@ describe("composer UX protection contract", () => {
     expect(actionBar).toContain('c.blockedReason === "validation_blocked" && c.canEditContent');
     expect(actionBar).toContain("c.canRecoverDraft");
     expect(actionBar).toContain("void c.recoverDraft()");
+    expect(actionBar).toContain("c.canEditContent && c.editingId");
+    expect(actionBar).toContain("c.setConfirmDelete(true)");
     expect(actionBar).toContain('aria-live="polite"');
     expect(source).not.toContain("Принять и создать пост");
     expect(source).not.toContain("personalResponsibilityTakeover");
@@ -98,7 +109,8 @@ describe("composer UX protection contract", () => {
     expect(source).toContain('title="Удалить черновик из календаря?"');
     expect(source).toContain('confirmLabel="Удалить из календаря"');
     expect(source).toContain("draftDeleteRequestRef");
-    expect(source).toContain("await deleteServerDraft(draftId, draftVersion)");
+    expect(source).toContain("await draftRequestRef.current?.catch(() => null)");
+    expect(source).toContain("await deleteServerDraft(currentDraftId, currentDraftVersion)");
     expect(source).toContain('router.push("/app/calendar")');
     expect(source).not.toContain("Да, удалить");
   });

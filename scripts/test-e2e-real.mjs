@@ -3595,9 +3595,18 @@ try {
   assert(await readEditableText(criticalComposerText) === finalEditorialText, "source approval changed the corrected Composer text");
 
   const composerMedia = await openComposerSection(page, "composer-media");
-  const openVisualStudio = composerMedia.getByRole("button", { name: "Создать с ИИ", exact: true });
-  await assertTouch(openVisualStudio, "open legal visual studio");
-  await openVisualStudio.click();
+  const openMediaGenerator = composerMedia.getByRole("button", { name: "Создать с ИИ", exact: true });
+  await assertTouch(openMediaGenerator, "open inline media generator");
+  await openMediaGenerator.click();
+  await composerMedia.getByRole("region", { name: "Чат с дизайнером", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  assert(
+    new URL(page.url()).pathname === "/app/composer",
+    "inline media generation navigated away from the Composer",
+  );
+
+  // Legal visuals remain a separately verified internal release surface, but Composer no
+  // longer sends users there from the ordinary media action.
+  await page.goto(`/app/studio/visuals?draft=${monthlyDraftId}&returnTo=autopilot-month`);
   await page.waitForURL(new RegExp(`/app/studio/visuals\\?draft=${monthlyDraftId}&returnTo=autopilot-month$`, "u"));
   const brandKit = page.locator("details").filter({ hasText: "Фирменный стиль проекта" }).first();
   await brandKit.locator("summary").click();

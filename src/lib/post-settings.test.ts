@@ -6,6 +6,7 @@ import {
   POST_PRESETS,
   POST_TARGET_RULES,
   applyPostPreset,
+  automaticPostSettings,
   buildPostSettingsSummary,
   buildPostRepairInstructions,
   buildPostSettingsPrompt,
@@ -14,6 +15,7 @@ import {
   normalizePostSettings,
   patchPostSettings,
   postLengthRange,
+  postSettingsAreAutomatic,
   postSettingsOutputTokens,
   postSettingsQualityOverrides,
   resolvePostProfanityMode,
@@ -44,6 +46,28 @@ describe("настройки публикации", () => {
     expect(normalizePostSettings({ version: 0, platform: "tg", tone: "старое поле" })).toEqual(DEFAULT_POST_SETTINGS);
     expect(DEFAULT_POST_SETTINGS.profanityMode).toBe("auto");
     expect(compactPostSettings(DEFAULT_POST_SETTINGS)).toEqual({ version: 1 });
+  });
+
+  it("полный автоматический выбор очищает быстрые и скрытые ручные ограничения", () => {
+    const manual = normalizePostSettings({
+      target: "instagram_post",
+      preset: "custom",
+      mainIdea: "Продать консультацию",
+      audience: "юристы",
+      structure: "problem_solution",
+      requiredFacts: ["Цена — 9 900 ₽"],
+      forbiddenWords: ["бесплатно"],
+      proofs: [{ id: "proof-1", type: "case", text: "Подтверждённый кейс", required: true }],
+      qualityMode: "maximum",
+    });
+
+    expect(postSettingsAreAutomatic(manual)).toBe(false);
+    const automatic = automaticPostSettings();
+    expect(automatic).toEqual(DEFAULT_POST_SETTINGS);
+    expect(automatic.requiredFacts).toEqual([]);
+    expect(automatic.forbiddenWords).toEqual([]);
+    expect(automatic.proofs).toEqual([]);
+    expect(postSettingsAreAutomatic(automatic)).toBe(true);
   });
 
   it("сохраняет режим мата и отбрасывает неизвестное значение", () => {

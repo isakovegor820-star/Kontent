@@ -57,6 +57,10 @@ import { AppShell } from "@/components/app/shell";
 import { EvidenceCard } from "@/components/app/evidence-card";
 import { EditorialReviewPanel } from "@/components/app/editorial-review-panel";
 import { useProjects } from "@/components/app/project-provider";
+import {
+  MediaGenerator,
+  type MediaGeneration,
+} from "@/components/studio/media-generator";
 import { PostSettingsMenu } from "@/components/studio/post-settings-menu";
 import {
   composerTrackingDraftSelection,
@@ -97,7 +101,6 @@ import {
   composerReturnTarget,
   composerSource,
 } from "@/lib/app-routes";
-import { experimentalRoutesEnabled } from "@/lib/release-scope";
 import {
   activeComposerNetworks,
   createDraftClientKey,
@@ -179,10 +182,6 @@ import {
 /* ------------------------------------------------------------------ ХЕЛПЕРЫ */
 
 const VK_LIMIT = 16384;
-const EXPERIMENTAL_ROUTES_ENABLED = experimentalRoutesEnabled(
-  process.env.NEXT_PUBLIC_AURORA_EXPERIMENTAL_ROUTES,
-);
-
 const NETWORK_ORDER: Network[] = ["tg", "vk"];
 
 function resolveComposerSchedule(
@@ -2163,10 +2162,17 @@ export default function ComposerPage() {
       if (!canEditContent || !editingId) return;
       autosaveCancelRef.current?.();
       autosaveCancelRef.current = null;
-      if (draftId != null && draftVersion != null) {
+      // A save that started just before the confirmation may already have advanced the
+      // optimistic version. Wait for its ACK and delete the latest acknowledged version,
+      // otherwise the user's own autosave turns a valid delete into a false 409 conflict.
+      await draftRequestRef.current?.catch(() => null);
+      const acknowledged = acknowledgedDraftRef.current;
+      const currentDraftId = acknowledged?.id ?? draftId;
+      const currentDraftVersion = acknowledged?.version ?? draftVersion;
+      if (currentDraftId != null && currentDraftVersion != null) {
         setDraftSaveState("saving");
         try {
-          await deleteServerDraft(draftId, draftVersion);
+          await deleteServerDraft(currentDraftId, currentDraftVersion);
           acknowledgedDraftRef.current = null;
           if (composerUserId != null && draftClientKeyRef.current) {
             removePendingDraft(composerUserId, draftClientKeyRef.current);
@@ -2614,38 +2620,53 @@ function ComposerActionBar() {
                 </p>
               )}
             </div>
-            {c.blockedReason === "validation_blocked" && c.canEditContent ? (
-              <Button
-                variant="brand"
-                size="sm"
-                className="w-full shrink-0 sm:w-auto"
-                onClick={() => {
-                  const editor = document.getElementById("composer-text");
-                  editor?.scrollIntoView({ behavior: "smooth", block: "center" });
-                  editor?.focus({ preventScroll: true });
-                }}
-              >
-                {blocked.action}
-              </Button>
-            ) : c.canRecoverDraft ? (
-              <Button
-                variant="brand"
-                size="sm"
-                className="w-full shrink-0 whitespace-normal text-center sm:w-auto"
-                disabled={c.recoveryState === "success"}
-                loading={c.recoveryState === "loading"}
-                onClick={() => void c.recoverDraft()}
-              >
-                {blocked.action}
-              </Button>
-            ) : (
-              <Link
-                href="/app/calendar"
-                className={buttonClassName({ variant: "brand", size: "sm", className: "w-full shrink-0 sm:w-auto" })}
-              >
-                Вернуться в календарь
-              </Link>
-            )}
+            <div className="flex w-full shrink-0 flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:justify-end">
+              {c.blockedReason === "validation_blocked" && c.canEditContent ? (
+                <Button
+                  variant="brand"
+                  size="sm"
+                  className="w-full shrink-0 sm:w-auto"
+                  onClick={() => {
+                    const editor = document.getElementById("composer-text");
+                    editor?.scrollIntoView({ behavior: "smooth", block: "center" });
+                    editor?.focus({ preventScroll: true });
+                  }}
+                >
+                  {blocked.action}
+                </Button>
+              ) : c.canRecoverDraft ? (
+                <Button
+                  variant="brand"
+                  size="sm"
+                  className="w-full shrink-0 whitespace-normal text-center sm:w-auto"
+                  disabled={c.recoveryState === "success"}
+                  loading={c.recoveryState === "loading"}
+                  onClick={() => void c.recoverDraft()}
+                >
+                  {blocked.action}
+                </Button>
+              ) : (
+                <Link
+                  href="/app/calendar"
+                  className={buttonClassName({ variant: "brand", size: "sm", className: "w-full shrink-0 sm:w-auto" })}
+                >
+                  Вернуться в календарь
+                </Link>
+              )}
+              {c.canEditContent && c.editingId && (
+                <Button
+                  variant="danger"
+                  size="sm"
+                  className="w-full shrink-0 sm:w-auto"
+                  aria-haspopup="dialog"
+                  disabled={unavailable}
+                  onClick={() => c.setConfirmDelete(true)}
+                >
+                  <Trash2 className="h-4 w-4" aria-hidden />
+                  Удалить из календаря
+                </Button>
+              )}
+            </div>
           </section>
         ) : c.publicationSuccess ? (
           <div role="status" aria-live="polite" className="flex flex-wrap items-center gap-3">
@@ -2781,12 +2802,12 @@ function ComposerActionBar() {
 function ComposerInner() {
   const s = useStore();
   const projects = useProjects();
-  const router = useRouter();
   const params = useSearchParams();
   const reduce = useReducedMotion();
   const c = useComposer();
   const [publicOrigin, setPublicOrigin] = useState("");
   const [mediaLibraryOpen, setMediaLibraryOpen] = useState(false);
+  const [mediaGeneratorOpen, setMediaGeneratorOpen] = useState(false);
   const [mediaLibraryLoading, setMediaLibraryLoading] = useState(false);
   const [mediaUploading, setMediaUploading] = useState(false);
   const [mediaLibraryError, setMediaLibraryError] = useState("");
@@ -3131,6 +3152,22 @@ function ComposerInner() {
     }
   };
 
+  const useGeneratedMedia = (generation: MediaGeneration) => {
+    if (!generation.assetId || !generation.assetUrl) return;
+    c.setMedia({
+      kind: generation.kind,
+      label: generation.kind === "video"
+        ? `Видео ${generation.seconds ?? 6} сек.`
+        : `Изображение ${generation.aspectRatio}`,
+      hue: generation.kind === "video" ? 42 : 48,
+      assetId: generation.assetId,
+      url: generation.assetUrl,
+      mimeType: generation.mimeType ?? undefined,
+    });
+    setMediaGeneratorOpen(false);
+    s.toast({ kind: "success", title: "Медиа добавлено к посту" });
+  };
+
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     if (c.canPublish && (e.metaKey || e.ctrlKey) && e.key === "Enter") {
       e.preventDefault();
@@ -3426,19 +3463,32 @@ function ComposerInner() {
               <ImageIcon className="h-4 w-4" aria-hidden />
               {c.media?.kind === "image" ? "Заменить из медиатеки" : "Выбрать из медиатеки"}
             </Button>
-            {EXPERIMENTAL_ROUTES_ENABLED && (
-              <Button variant={suggestMedia && !c.media ? "primary" : "outline"} size="sm" disabled={!canEditContent} onClick={() => {
-                const returnSource = mediaReturnSource ?? composerSource(params.get("from"));
-                const returnSuffix = returnSource ? `&returnTo=${returnSource}` : "";
-                router.push(currentDraftId
-                  ? `/app/studio/visuals?draft=${currentDraftId}${returnSuffix}`
-                  : `/app/studio/visuals${returnSource ? `?returnTo=${returnSource}` : ""}`);
-              }}>
-                <Layers3 className="h-4 w-4" aria-hidden />
-                Создать с ИИ
-              </Button>
-            )}
+            <Button
+              variant={suggestMedia && !c.media ? "primary" : "outline"}
+              size="sm"
+              disabled={!canEditContent}
+              aria-expanded={mediaGeneratorOpen}
+              aria-controls={mediaGeneratorOpen ? "composer-media-generator" : undefined}
+              onClick={() => setMediaGeneratorOpen((open) => !open)}
+            >
+              <Sparkles className="h-4 w-4" aria-hidden />
+              {mediaGeneratorOpen ? "Скрыть создание с ИИ" : "Создать с ИИ"}
+            </Button>
           </div>
+
+          {mediaGeneratorOpen && (
+            <div
+              id="composer-media-generator"
+              className="overflow-hidden rounded-md border border-line bg-surface [--studio-h:min(760px,calc(100dvh-10rem))]"
+            >
+              <MediaGenerator
+                initialKind="image"
+                channelId={c.channelId ?? c.vkChannelId}
+                sourceText={c.text}
+                onUse={useGeneratedMedia}
+              />
+            </div>
+          )}
 
           {mediaLibraryOpen && (
             <div className="rounded-sm border border-line bg-surface-2 p-3">

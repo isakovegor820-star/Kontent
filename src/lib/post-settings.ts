@@ -780,6 +780,15 @@ export function normalizePostSettings(raw: unknown): PostSettings {
   };
 }
 
+/** A complete automatic profile, including every advanced field and list. */
+export function automaticPostSettings(): PostSettings {
+  return normalizePostSettings(DEFAULT_POST_SETTINGS);
+}
+
+export function postSettingsAreAutomatic(raw: unknown): boolean {
+  return JSON.stringify(normalizePostSettings(raw)) === JSON.stringify(automaticPostSettings());
+}
+
 /** Сохраняем только отличия от Auto: в jsonb нет пустых декоративных значений. */
 export function compactPostSettings(raw: unknown): Record<string, unknown> {
   const value = normalizePostSettings(raw);

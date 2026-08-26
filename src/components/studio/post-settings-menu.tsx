@@ -10,10 +10,12 @@ import {
   POST_TARGET_OPTIONS,
   POST_TARGET_RULES,
   applyPostPreset,
+  automaticPostSettings,
   buildPostSettingsSummary,
   normalizePostSettings,
   patchPostSettings,
   postLengthRange,
+  postSettingsAreAutomatic,
   resolvePostTarget,
   validatePostSettingsConflicts,
   type PostPresetId,
@@ -258,6 +260,8 @@ export function PostSettingsMenu({
   const [draft, setDraft] = useState<PostSettings>(() => persisted);
   const settings = normalizePostSettings(draft);
   const dirty = JSON.stringify(settings) !== JSON.stringify(persisted);
+  const automatic = postSettingsAreAutomatic(settings);
+  const automaticSaved = automatic && !dirty;
   const target = resolvePostTarget(settings, network);
   const rule = POST_TARGET_RULES[target];
   const [minChars, maxChars] = postLengthRange(settings, network);
@@ -360,29 +364,12 @@ export function PostSettingsMenu({
     : [[settings.audience, "Свой сегмент · настроен в расширенном режиме"], ...AUDIENCE_PRESETS];
 
   const useAutomaticQuickSettings = () => {
-    setDraft(normalizePostSettings({
-      ...settings,
-      target: "auto",
-      preset: "auto",
-      goal: "auto",
-      mainIdea: "",
-      audience: "",
-      length: "auto",
-      formality: "auto",
-      address: "auto",
-      energy: "auto",
-      humor: "auto",
-      language: "auto",
-      emojiMode: "auto",
-      hashtags: "auto",
-      profanityMode: "auto",
-      cta: "auto",
-      similarityLevel: "moderate",
-      requireNewAngle: true,
-      qualityMode: "fast",
-      autoImprove: false,
-      qualityThreshold: 8,
-    }));
+    const next = automaticPostSettings();
+    setDraft(next);
+    // This is deliberately a one-click action. Requiring a second save button made the
+    // control look broken, especially when the visible quick fields were already Auto
+    // while hidden advanced constraints remained manual.
+    onChange(next);
   };
 
   return (
@@ -419,6 +406,7 @@ export function PostSettingsMenu({
           ref={panelRef}
           id={panelId}
           role="dialog"
+          aria-modal="true"
           aria-label="Настройки публикации"
           className="fixed inset-x-3 top-3 bottom-[calc(env(safe-area-inset-bottom)+5.5rem)] z-50 flex w-auto flex-col overflow-hidden rounded-lg border border-line-strong bg-surface-2 shadow-lift sm:inset-x-auto sm:right-4 sm:top-1/2 sm:bottom-auto sm:max-h-[calc(100dvh-2rem)] sm:w-[540px] sm:max-w-[calc(100vw-1.5rem)] sm:-translate-y-1/2"
         >
@@ -473,10 +461,29 @@ export function PostSettingsMenu({
                     <p className="text-[12px] font-extrabold text-text">Тему напиши сообщением в чате</p>
                     <p className="mt-0.5 text-[11px] leading-relaxed text-text-3">Аврора возьмёт задачу из сообщения — дублировать её в настройках не нужно.</p>
                   </div>
-                  <Button type="button" variant="outline" size="sm" className="min-h-11 shrink-0" onClick={useAutomaticQuickSettings}>
-                    <Sparkles className="h-4 w-4" aria-hidden />
-                    Выбрать всё автоматически
-                  </Button>
+                  <div className="shrink-0 sm:text-right">
+                    <Button
+                      type="button"
+                      variant={automaticSaved ? "soft" : "outline"}
+                      size="sm"
+                      className="min-h-11"
+                      onClick={useAutomaticQuickSettings}
+                    >
+                      {automaticSaved
+                        ? <Check className="h-4 w-4" aria-hidden />
+                        : <Sparkles className="h-4 w-4" aria-hidden />}
+                      {automaticSaved ? "Выбрано автоматически" : "Выбрать всё автоматически"}
+                    </Button>
+                    <p role="status" aria-live="polite" className="mt-1.5 max-w-[30ch] text-[10px] leading-relaxed text-text-3">
+                      {saving && automatic
+                        ? "Сохраняем автоматический выбор…"
+                        : automaticSaved
+                          ? "Готово: ручные ограничения очищены, параметры подберёт Аврора."
+                          : automatic
+                            ? "Автоматический выбор пока не сохранён. Повторите действие."
+                            : "Нажатие сразу применит и сохранит автоматический выбор."}
+                    </p>
+                  </div>
                 </div>
 
                 <QuickGroup title="Основа публикации">
