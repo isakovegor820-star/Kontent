@@ -2041,15 +2041,15 @@ try {
   assert((await mobileDrawerActive.textContent())?.includes("Идеи и примеры"), "mobile drawer lost active Library item");
   await mobileDrawer.getByRole("button", { name: "Закрыть меню", exact: true }).click();
   const mobileNav = page.locator('nav[aria-label="Основные разделы"]');
+  const mobileStudioLink = mobileNav.locator('a[href="/app/studio"]');
   assert(
     await mobileNav.getByRole("link", { name: "Редактор", exact: true }).count() === 0
-      && await mobileNav.getByRole("link", { name: "Студия", exact: true }).count() === 1,
+      && await mobileNav.getByRole("link", { name: "Студия контента", exact: true }).count() === 1
+      && await mobileStudioLink.count() === 1,
     "mobile navigation did not expose the restored Studio destination",
   );
   await page.goto("/app/studio");
-  const activeMobileStudioLink = mobileNav
-    .locator('a[aria-current="page"]')
-    .filter({ hasText: "Студия" });
+  const activeMobileStudioLink = mobileNav.locator('a[href="/app/studio"][aria-current="page"]');
   await activeMobileStudioLink.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   assert(
     await activeMobileStudioLink.count() === 1,
@@ -2058,12 +2058,11 @@ try {
   await page.goBack();
   await page.waitForURL((url) => url.pathname === "/app/library" && url.searchParams.get("channel") === String(channels[0]));
   await page.goto(`/app/trends?channel=${channels[0]}`);
-  const activeMobileMarketLink = mobileNav
-    .locator('a[aria-current="page"]')
-    .filter({ hasText: "Разведка" });
+  const activeMobileMarketLink = mobileNav.locator('a[href="/app/competitors"][aria-current="page"]');
   await activeMobileMarketLink.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   assert(
-    await activeMobileMarketLink.count() === 1,
+    await activeMobileMarketLink.count() === 1
+      && await mobileNav.getByRole("link", { name: "Конкуренты и тренды", exact: true }).count() === 1,
     "restored Trends route did not activate the mobile market hub",
   );
   await page.goBack();
