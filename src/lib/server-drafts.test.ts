@@ -1247,13 +1247,15 @@ describe("server draft transactions", () => {
     );
   });
 
-  it("deletes only from the selected project and treats user id as the actor", async () => {
+  it("removes a lineage-linked draft from the calendar without a physical delete", async () => {
     const query = vi.fn(async (sql: string, params?: unknown[]) => {
-      if (sql.includes("delete from drafts")) {
+      if (sql.includes("update drafts")) {
         expect(sql).toContain("project_id = $2");
-        expect(sql).not.toContain("user_id = $2");
+        expect(sql).toContain("scheduled_at = null");
+        expect(sql).toContain("purpose = 'source_context'");
+        expect(sql).toContain("version = version + 1");
         expect(params).toEqual([41, 7, 3]);
-        return { rowCount: 1, rows: [{ id: "41" }] };
+        return { rowCount: 1, rows: [{ id: "41", version: "4" }] };
       }
       return { rowCount: 0, rows: [] };
     });
@@ -1265,13 +1267,14 @@ describe("server draft transactions", () => {
       23,
       "content.edit",
     );
+    expect(query.mock.calls.some(([sql]) => /^\s*delete from drafts\b/u.test(String(sql)))).toBe(false);
     const audit = query.mock.calls.find(([sql]) => String(sql).includes("draft.deleted"));
-    expect(audit?.[1]).toEqual([7, 23, "41", 3, "draft:41:deleted:3"]);
+    expect(audit?.[1]).toEqual([7, 23, "41", 3, 4, "draft:41:deleted:3"]);
   });
 
   it("returns not found instead of crossing projects on a delete miss", async () => {
     const query = vi.fn(async (sql: string) => {
-      if (sql.includes("delete from drafts")) return { rowCount: 0, rows: [] };
+      if (sql.includes("update drafts")) return { rowCount: 0, rows: [] };
       if (sql.includes("select d.id")) return { rowCount: 0, rows: [] };
       return { rowCount: 0, rows: [] };
     });
