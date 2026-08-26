@@ -1338,11 +1338,7 @@ export async function recoverDraftForUser(
     const source = mapDraft(sourceResult.rows[0]);
     if (source.version !== input.sourceVersion) throw new DraftConflictError(source);
     if (!isDraftRecoveryAllowedReason(source.blocked_reason)) {
-      throw new DraftValidationError(
-        source.blocked_reason === "validation_blocked"
-          ? "validation_blocked_requires_new_check"
-          : "draft_recovery_not_required",
-      );
+      throw new DraftValidationError("draft_recovery_not_required");
     }
 
     await assertProjectActiveChannels(tx, projectId, input.channelIds);
@@ -1682,14 +1678,15 @@ export async function attestDraftReviewForUser(
       current.origin !== "ai"
       || current.purpose === "source_context"
       || current.generation_result_id == null
-      || (current.ai_validation?.status === "passed" && current.generation_binding_valid)
+      || ((current.ai_validation?.status === "passed" || current.ai_validation?.status === "blocked")
+        && current.generation_binding_valid)
     ) {
       throw new DraftValidationError("review_not_required");
     }
     if (row.ai_validation != null && current.ai_validation == null) {
       throw new DraftValidationError("bad_ai_validation");
     }
-    if (current.blocked_reason != null || current.ai_validation?.status === "blocked") {
+    if (current.blocked_reason != null) {
       throw new DraftValidationError("review_blocked");
     }
 
@@ -1748,8 +1745,26 @@ export async function deleteDraftForUser(
     await tx.query("begin");
     const membership = await requireSelectedProjectPermission(tx, userId, "content.edit");
     const projectId = membership.projectId;
+    // A calendar draft can already be durable lineage for onboarding, a monthly plan,
+    // generated media, legal content or a publication review. Physical DELETE then fails
+    // on the intentional RESTRICT foreign keys. Retain an immutable source-context
+    // tombstone instead: ordinary draft readers already exclude source_context rows, while
+    // historical relations keep resolving to the exact material the user removed.
     const deleted = await tx.query<{ id: number | string; version: number | string }>(
-      `delete from drafts where id = $1 and project_id = $2 and version = $3 returning id, version`,
+      `update drafts
+          set scheduled_at = null,
+              scheduled_timezone = null,
+              scheduled_local_date = null,
+              scheduled_local_time = null,
+              scheduled_offset = null,
+              scheduled_disambiguation = null,
+              purpose = 'source_context',
+              human_reviewed_version = null,
+              human_reviewed_at = null,
+              version = version + 1,
+              updated_at = now()
+        where id = $1 and project_id = $2 and version = $3
+        returning id, version`,
       [draftId, projectId, version],
     );
     if (deleted.rowCount !== 1) {
@@ -1760,15 +1775,16 @@ export async function deleteDraftForUser(
     await tx.query(
       `insert into audit_events (
          project_id, actor_user_id, action, entity_type, entity_id,
-         before_version, safe_data, idempotency_key
+         before_version, after_version, safe_data, idempotency_key
        ) values ($1, $2, 'draft.deleted', 'draft', $3::text,
-                 $4, '{}'::jsonb, $5)
+                 $4, $5, '{"retainedForLineage":true}'::jsonb, $6)
        on conflict (project_id, idempotency_key) where idempotency_key is not null do nothing`,
       [
         projectId,
         userId,
         String(draftId),
-        Number(deleted.rows[0]?.version ?? version),
+        version,
+        Number(deleted.rows[0]?.version ?? version + 1),
         `draft:${draftId}:deleted:${version}`,
       ],
     );

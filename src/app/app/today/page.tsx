@@ -30,6 +30,7 @@ import { Button, buttonClassName } from "@/components/ui/button";
 import { Badge, Card } from "@/components/ui/primitives";
 import type {
   TodayBoard,
+  TodayCompletedItem,
   TodayItem,
   TodayItemType,
   TodayPulse,
@@ -198,7 +199,12 @@ function PulseArtwork({ muted = false }: { muted?: boolean }) {
   );
 }
 
-function ChannelPulse({ pulse, refreshing, onRefresh }: { pulse: TodayPulse; refreshing: boolean; onRefresh: () => void }) {
+function ChannelPulse({ pulse, channelId, refreshing, onRefresh }: {
+  pulse: TodayPulse;
+  channelId: number | null;
+  refreshing: boolean;
+  onRefresh: () => void;
+}) {
   if (pulse.state === "unavailable") {
     return (
       <Card as="section" className="overflow-hidden p-5 sm:p-6" aria-labelledby="today-pulse-title">
@@ -227,7 +233,12 @@ function ChannelPulse({ pulse, refreshing, onRefresh }: { pulse: TodayPulse; ref
                 : "Публикации есть, но статистика по ним ещё не получена. Исходные материалы остаются без изменений."}
             </p>
             {pulse.state === "no_posts" ? (
-              <Link className={buttonClassName({ variant: "secondary", size: "sm", className: "mt-4" })} href="/app/composer">Создать материал</Link>
+              <Link
+                className={buttonClassName({ variant: "primary", size: "sm", className: "mt-4" })}
+                href={`/app/autopilot${channelId ? `?channel=${channelId}` : ""}`}
+              >
+                Создать план в автопилоте
+              </Link>
             ) : (
               <Button variant="secondary" size="sm" className="mt-4" loading={refreshing} onClick={onRefresh}>Обновить статистику</Button>
             )}
@@ -283,6 +294,72 @@ function TodaySummaryMetrics({ board, items }: { board: TodayBoard; items: Today
         );
       })}
     </dl>
+  );
+}
+
+function completedTimeLabel(value: string, timezone: string): string {
+  try {
+    return new Intl.DateTimeFormat("ru-RU", {
+      timeZone: timezone,
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(new Date(value));
+  } catch {
+    return "сегодня";
+  }
+}
+
+function completedItemForClient(item: TodayItem, completedAt: string): TodayCompletedItem {
+  return {
+    fingerprint: item.fingerprint,
+    type: item.type,
+    title: item.title,
+    whyNow: item.whyNow,
+    channelLabel: item.channelLabel,
+    sourceLabel: item.sourceLabel,
+    completedAt,
+  };
+}
+
+function CompletedToday({ items, timezone }: { items: TodayCompletedItem[]; timezone: string }) {
+  if (items.length === 0) return null;
+  return (
+    <section aria-labelledby="today-completed-title">
+      <Card className="overflow-hidden">
+        <div className="flex flex-col gap-2 border-b border-line px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 id="today-completed-title">Готовые сегодня</h2>
+              <Badge tone="success">{items.length}</Badge>
+            </div>
+            <p className="mt-1 text-[14px] leading-relaxed text-text-3">Здесь сохраняются решения, которые вы уже завершили сегодня.</p>
+          </div>
+        </div>
+        <ol className="divide-y divide-line">
+          {items.map((item) => (
+            <li key={item.fingerprint}>
+              <details className="group px-5 py-4 sm:px-6">
+                <summary className="flex min-h-11 cursor-pointer list-none items-center gap-3 rounded-xs focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-brand [&::-webkit-details-marker]:hidden">
+                  <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-success-soft text-success-text">
+                    <Check className="h-4 w-4" aria-hidden />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block break-words text-[15px] font-semibold text-text">{item.title}</span>
+                    <span className="mt-0.5 block type-caption text-text-3">{item.channelLabel} · готово в {completedTimeLabel(item.completedAt, timezone)}</span>
+                  </span>
+                  <span className="type-caption shrink-0 font-semibold text-brand group-open:hidden">Посмотреть</span>
+                  <span className="type-caption hidden shrink-0 font-semibold text-brand group-open:inline">Скрыть</span>
+                </summary>
+                <div className="mt-3 rounded-sm bg-surface-inset px-4 py-3 text-[14px] leading-relaxed text-text-2">
+                  <p>{item.whyNow}</p>
+                  <p className="mt-2 type-caption text-text-3">Источник: {item.sourceLabel}</p>
+                </div>
+              </details>
+            </li>
+          ))}
+        </ol>
+      </Card>
+    </section>
   );
 }
 
@@ -390,6 +467,7 @@ function TodayPageContent() {
   const [busy, setBusy] = useState<string | null>(null);
   const [itemErrors, setItemErrors] = useState<Record<string, string>>({});
   const [refreshError, setRefreshError] = useState("");
+  const [refreshNotice, setRefreshNotice] = useState("");
   const [undo, setUndo] = useState<UndoNotice | null>(null);
   const [announcement, setAnnouncement] = useState("");
   const [pendingFocus, setPendingFocus] = useState<string | "summary" | null>(null);
@@ -431,7 +509,7 @@ function TodayPageContent() {
       const query = channelId == null ? "" : `?channel=${channelId}`;
       const response = await fetch(`/api/today${query}`, { cache: "no-store", signal: controller.signal });
        const body = await response.json().catch(() => null) as TodayBoard | null;
-       if (!response.ok || !body?.items || !Array.isArray(body.channels)) throw new Error("today_unavailable");
+       if (!response.ok || !body?.items || !Array.isArray(body.channels) || !Array.isArray(body.completedItems)) throw new Error("today_unavailable");
        if (controller.signal.aborted || sequence !== requestSequence.current) return false;
        const previous = boardRef.current;
        const failedSources = new Set(body.partialErrors.map((error) => error.source));
@@ -475,7 +553,7 @@ function TodayPageContent() {
   useEffect(() => {
     const handleProjectChange = () => {
       mutationController.current?.abort(); stateController.current?.abort(); feedbackController.current?.abort(); actionController.current?.abort();
-      setBusy(null); setUndo(null); setItemErrors({}); setQuickMode(false); setQuickCompleted(0);
+      setBusy(null); setUndo(null); setItemErrors({}); setRefreshNotice(""); setQuickMode(false); setQuickCompleted(0);
       setAnnouncement("Проект изменён. Обновляем решения на сегодня.");
       void load({ clear: true, channelId: null });
     };
@@ -516,7 +594,13 @@ function TodayPageContent() {
     const sequence = ++stateSequence.current;
     setBusy(item.fingerprint); setItemErrors((errors) => ({ ...errors, [item.fingerprint]: "" }));
     setPendingFocus(next?.fingerprint ?? "summary");
-    commitBoard({ ...current, items: current.items.filter((candidate) => candidate.fingerprint !== item.fingerprint) });
+    commitBoard({
+      ...current,
+      items: current.items.filter((candidate) => candidate.fingerprint !== item.fingerprint),
+      completedItems: nextState === "done"
+        ? [completedItemForClient(item, new Date().toISOString()), ...current.completedItems.filter((candidate) => candidate.fingerprint !== item.fingerprint)]
+        : current.completedItems,
+    });
     setUndo({ kind: "state", item, channelId, state: nextState });
     if (quickMode) setQuickCompleted((value) => Math.min(quickTotal, value + 1));
     setAnnouncement(nextState === "done" ? `«${item.title}» отмечено готовым.` : `«${item.title}» отложено до завтра, 09:00.`);
@@ -529,7 +613,12 @@ function TodayPageContent() {
       const latest = boardRef.current;
       if (latest?.channelId === channelId && !latest.items.some((candidate) => candidate.fingerprint === item.fingerprint)) {
         const restored = [...latest.items]; restored.splice(Math.min(originalIndex, restored.length), 0, item);
-        commitBoard({ ...latest, items: restored }); setPendingFocus(item.fingerprint);
+        commitBoard({
+          ...latest,
+          items: restored,
+          completedItems: latest.completedItems.filter((candidate) => candidate.fingerprint !== item.fingerprint),
+        });
+        setPendingFocus(item.fingerprint);
       }
       setUndo((notice) => notice?.item.fingerprint === item.fingerprint ? null : notice);
       setItemErrors((errors) => ({ ...errors, [item.fingerprint]: nextState === "done"
@@ -580,7 +669,12 @@ function TodayPageContent() {
       if (quickMode) setQuickCompleted((value) => Math.max(0, value - 1));
       const current = boardRef.current;
       if (current?.channelId === notice.channelId && !current.items.some((item) => item.fingerprint === notice.item.fingerprint)) {
-        commitBoard({ ...current, items: [notice.item, ...current.items] }); setPendingFocus(notice.item.fingerprint);
+        commitBoard({
+          ...current,
+          items: [notice.item, ...current.items],
+          completedItems: current.completedItems.filter((candidate) => candidate.fingerprint !== notice.item.fingerprint),
+        });
+        setPendingFocus(notice.item.fingerprint);
       }
       void load({ channelId: notice.channelId });
     } catch {
@@ -702,9 +796,11 @@ function TodayPageContent() {
     if (busy) return;
     const current = boardRef.current;
     if (!current?.channelId) { void load(); return; }
+    const previousItems = current.items.map((item) => item.fingerprint).join(":");
+    const previousPulse = JSON.stringify(current.pulse);
     mutationController.current?.abort();
     const controller = new AbortController(); mutationController.current = controller;
-    const sequence = ++mutationSequence.current; setRefreshing(true); setRefreshError("");
+    const sequence = ++mutationSequence.current; setRefreshing(true); setRefreshError(""); setRefreshNotice("");
     try {
       const response = await fetch("/api/today/refresh", {
         method: "POST", headers: { "content-type": "application/json" },
@@ -714,13 +810,23 @@ function TodayPageContent() {
       const result = await response.json() as { availability?: string };
       if (controller.signal.aborted || sequence !== mutationSequence.current) return;
       const loaded = await load({ channelId: current.channelId });
-      if (loaded) setAnnouncement(result.availability === "unavailable"
-        ? "Ни один источник не обновился. Показаны последние успешные данные."
-        : result.availability === "partial"
-          ? "Решения обновлены частично. Доступные источники показаны."
-          : "Решения обновлены.");
+      if (loaded) {
+        const latest = boardRef.current;
+        const changed = latest?.items.map((item) => item.fingerprint).join(":") !== previousItems
+          || JSON.stringify(latest?.pulse) !== previousPulse;
+        const message = result.availability === "unavailable"
+          ? "Ни один источник не обновился. Показаны последние успешные данные."
+          : result.availability === "partial"
+            ? "Решения обновлены частично. Доступные источники показаны."
+            : changed
+              ? "Решения обновлены — новые данные уже в списке."
+              : "Всё актуально — новых решений пока нет.";
+        setRefreshNotice(message);
+        setAnnouncement(message);
+      }
     } catch {
       if (controller.signal.aborted || sequence !== mutationSequence.current) return;
+      setRefreshNotice("");
       setRefreshError("Не удалось обновить источники. Последние успешные данные сохранены — повторите попытку.");
     } finally { if (sequence === mutationSequence.current) setRefreshing(false); }
   }, [busy, load]);
@@ -728,7 +834,7 @@ function TodayPageContent() {
   const handleChannelChange = (value: string) => {
     const channelId = safeChannelId(value); if (channelId == null) return;
     mutationController.current?.abort(); stateController.current?.abort(); feedbackController.current?.abort(); actionController.current?.abort();
-    setBusy(null); setUndo(null); setItemErrors({}); setQuickMode(false); setQuickCompleted(0);
+    setBusy(null); setUndo(null); setItemErrors({}); setRefreshNotice(""); setQuickMode(false); setQuickCompleted(0);
     const params = new URLSearchParams(searchString); params.set("channel", String(channelId));
     router.replace(`${pathname}?${params.toString()}`, { scroll: false });
   };
@@ -832,8 +938,9 @@ function TodayPageContent() {
 
             <TodaySummaryMetrics board={board} items={actionableItems} />
 
-            <ChannelPulse pulse={board.pulse} refreshing={refreshing} onRefresh={() => void refreshSources()} />
+            <ChannelPulse pulse={board.pulse} channelId={board.channelId} refreshing={refreshing} onRefresh={() => void refreshSources()} />
 
+            {refreshNotice ? <div role="status" className="rounded-sm border border-success/25 bg-success-soft px-4 py-3 text-[14px] text-success-text">{refreshNotice}</div> : null}
             {refreshError ? <div role="alert" className="rounded-sm border border-danger/25 bg-danger-soft px-4 py-3 text-[14px] text-danger-text">{refreshError}</div> : null}
 
             {undo ? (
@@ -944,6 +1051,8 @@ function TodayPageContent() {
                 })}
               </div>
             ) : null}
+
+            {!quickMode ? <CompletedToday items={board.completedItems} timezone={board.timezone} /> : null}
           </>
         ) : null}
       </div>

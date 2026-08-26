@@ -42,9 +42,9 @@ const input = (overrides: Record<string, unknown> = {}) => ({
 });
 
 describe("AI draft review policy", () => {
-  it("allows only a passed immutable result and keeps explicit blockers quarantined", () => {
+  it("keeps validation diagnostics without quarantining an immutable result", () => {
     expect(draftReviewDecision(input({ ai_validation: validation("passed") }))).toBe("allowed");
-    expect(draftReviewDecision(input({ ai_validation: validation("blocked") }))).toBe("blocked");
+    expect(draftReviewDecision(input({ ai_validation: validation("blocked") }))).toBe("allowed");
     const reviewableBlocked = { ...validation("blocked"), requiresReview: true };
     expect(normalizeDraftAiValidation(reviewableBlocked)).toEqual(reviewableBlocked);
     const current = {
@@ -52,8 +52,8 @@ describe("AI draft review policy", () => {
       draft_version: 4,
       attested_at: "2026-08-02T10:05:00.000Z",
     };
-    expect(draftReviewDecision(input({ ai_validation: reviewableBlocked, human_review: current }))).toBe("blocked");
-    expect(composerAiReviewState(input({ ai_validation: reviewableBlocked, human_review: current }))).toBe("blocked");
+    expect(draftReviewDecision(input({ ai_validation: reviewableBlocked, human_review: current }))).toBe("allowed");
+    expect(composerAiReviewState(input({ ai_validation: reviewableBlocked, human_review: current }))).toBe("none");
   });
 
   it("accepts human review only for the exact current draft version", () => {
@@ -87,8 +87,8 @@ describe("AI draft review policy", () => {
       blockedReason: "legacy_generation_missing",
     });
     expect(draftReviewAssessment(input({ ai_validation: validation("blocked") }))).toEqual({
-      decision: "blocked",
-      blockedReason: "validation_blocked",
+      decision: "allowed",
+      blockedReason: null,
     });
     expect(draftReviewAssessment(input({ purpose: "source_context", origin: "rss" }))).toEqual({
       decision: "blocked",
@@ -109,8 +109,8 @@ describe("AI draft review policy", () => {
     ).toBe("allowed");
   });
 
-  it("never allows recovery to bypass an explicit validation blocker", () => {
-    expect(isDraftRecoveryAllowedReason("validation_blocked")).toBe(false);
+  it("allows recovery only for permanent structural blocks", () => {
     expect(isDraftRecoveryAllowedReason("legacy_generation_missing")).toBe(true);
+    expect(isDraftRecoveryAllowedReason(null)).toBe(false);
   });
 });

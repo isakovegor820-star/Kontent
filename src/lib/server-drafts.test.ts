@@ -22,6 +22,7 @@ vi.mock("./project-permissions", async (importOriginal) => {
 });
 
 import type { DraftCreateInput, DraftRecoveryInput, DraftUpdateInput } from "./draft-types";
+import { generationResultHash } from "./generation-artifacts";
 import { ProjectAccessError } from "./project-permissions";
 import {
   attestDraftReviewForUser,
@@ -799,7 +800,7 @@ describe("server draft transactions", () => {
     expect(query.mock.calls.some(([sql]) => String(sql).includes("insert into drafts"))).toBe(false);
   });
 
-  it("does not let recovery bypass an explicit validation blocker", async () => {
+  it("does not offer recovery for an immutable result with validation diagnostics", async () => {
     const recoveryInput: DraftRecoveryInput = {
       clientKey: "draft_recovery-team-validation-123456",
       sourceVersion: 3,
@@ -811,26 +812,31 @@ describe("server draft transactions", () => {
       channelIds: [11],
       tracking: null,
     };
+    const blockedValidation = {
+      version: 1,
+      status: "blocked",
+      requiresReview: false,
+      blockerCodes: ["unsupported_claim"],
+      provenance: {
+        validatorVersion: "fact-ledger-v1",
+        ledgerHash: "fl1-1234abcd",
+        checkedAt: "2026-08-02T10:00:00.000Z",
+        coverage: "deterministic",
+        semanticEntailment: "not_run",
+        rulesRun: ["unsupported_claim"],
+        sourceIds: ["brief:1"],
+      },
+    };
+    const resultHash = generationResultHash(row.text);
     const sourceRow = {
       ...row,
       origin: "ai",
       purpose: "needs_review",
       generation_result_id: "81",
-      ai_validation: {
-        version: 1,
-        status: "blocked",
-        requiresReview: false,
-        blockerCodes: ["unsupported_claim"],
-        provenance: {
-          validatorVersion: "fact-ledger-v1",
-          ledgerHash: "fl1-1234abcd",
-          checkedAt: "2026-08-02T10:00:00.000Z",
-          coverage: "deterministic",
-          semanticEntailment: "not_run",
-          rulesRun: ["unsupported_claim"],
-          sourceIds: ["brief:1"],
-        },
-      },
+      generation_result_hash: resultHash,
+      receipt_result_hash: resultHash,
+      receipt_payload: blockedValidation,
+      ai_validation: blockedValidation,
     };
     const query = vi.fn(async (sql: string) => {
       if (sql.includes("select id from drafts where project_id") && sql.includes("client_key")) {
@@ -842,7 +848,7 @@ describe("server draft transactions", () => {
     const { pool } = fakePool(query);
 
     await expect(recoverDraftForUser(5, 41, recoveryInput, pool as never)).rejects.toEqual(
-      new DraftValidationError("validation_blocked_requires_new_check"),
+      new DraftValidationError("draft_recovery_not_required"),
     );
     expect(query.mock.calls.some(([sql]) => String(sql).includes("insert into drafts"))).toBe(false);
     expect(query).toHaveBeenCalledWith("rollback");
@@ -1247,13 +1253,15 @@ describe("server draft transactions", () => {
     );
   });
 
-  it("deletes only from the selected project and treats user id as the actor", async () => {
+  it("removes a lineage-linked draft from the calendar without a physical delete", async () => {
     const query = vi.fn(async (sql: string, params?: unknown[]) => {
-      if (sql.includes("delete from drafts")) {
+      if (sql.includes("update drafts")) {
         expect(sql).toContain("project_id = $2");
-        expect(sql).not.toContain("user_id = $2");
+        expect(sql).toContain("scheduled_at = null");
+        expect(sql).toContain("purpose = 'source_context'");
+        expect(sql).toContain("version = version + 1");
         expect(params).toEqual([41, 7, 3]);
-        return { rowCount: 1, rows: [{ id: "41" }] };
+        return { rowCount: 1, rows: [{ id: "41", version: "4" }] };
       }
       return { rowCount: 0, rows: [] };
     });
@@ -1265,13 +1273,14 @@ describe("server draft transactions", () => {
       23,
       "content.edit",
     );
+    expect(query.mock.calls.some(([sql]) => /^\s*delete from drafts\b/u.test(String(sql)))).toBe(false);
     const audit = query.mock.calls.find(([sql]) => String(sql).includes("draft.deleted"));
-    expect(audit?.[1]).toEqual([7, 23, "41", 3, "draft:41:deleted:3"]);
+    expect(audit?.[1]).toEqual([7, 23, "41", 3, 4, "draft:41:deleted:3"]);
   });
 
   it("returns not found instead of crossing projects on a delete miss", async () => {
     const query = vi.fn(async (sql: string) => {
-      if (sql.includes("delete from drafts")) return { rowCount: 0, rows: [] };
+      if (sql.includes("update drafts")) return { rowCount: 0, rows: [] };
       if (sql.includes("select d.id")) return { rowCount: 0, rows: [] };
       return { rowCount: 0, rows: [] };
     });

@@ -106,15 +106,15 @@ describe("POST /api/drafts/:id/recover", () => {
     await expect(response.json()).resolves.toEqual({ ok: false, error: "access_denied" });
   });
 
-  it("returns a required-new-check error for a validation-blocked recovery", async () => {
+  it("returns not-required when a draft no longer needs recovery", async () => {
     mocks.recoverDraftForUser.mockRejectedValue(
-      new DraftValidationError("validation_blocked_requires_new_check"),
+      new DraftValidationError("draft_recovery_not_required"),
     );
     const response = await POST(request(), { params: Promise.resolve({ id: "41" }) });
     expect(response.status).toBe(422);
     await expect(response.json()).resolves.toEqual({
       ok: false,
-      error: "validation_blocked_requires_new_check",
+      error: "draft_recovery_not_required",
     });
   });
 });

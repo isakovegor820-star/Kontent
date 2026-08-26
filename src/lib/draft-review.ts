@@ -16,7 +16,6 @@ type ReviewInput = Pick<
 export type DraftReviewDecision = "allowed" | "review_required" | "blocked";
 export type DraftReviewBlockedReason =
   | "legacy_generation_missing"
-  | "validation_blocked"
   | "source_context_not_publishable"
   | "malformed_validation"
   | "unknown_block";
@@ -29,7 +28,7 @@ export type DraftReviewAssessment = {
 export function isDraftRecoveryAllowedReason(
   reason: DraftReviewBlockedReason | null | undefined,
 ): boolean {
-  return reason != null && reason !== "validation_blocked";
+  return reason != null;
 }
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -110,8 +109,8 @@ export function normalizeDraftAiValidation(value: unknown): DraftAiValidation | 
         blockerCodes.length > 0 ||
         coverage !== "deterministic+semantic" ||
         semanticEntailment !== "passed")) ||
-    // A blocked generation remains useful as a durable editing draft, but can never be
-    // attested into publishability. The text must be changed and validated as a new result.
+    // Blocker codes are retained as diagnostics even though they no longer quarantine a
+    // draft or require a separate confirmation flow in the editor.
     (status === "blocked" && blockerCodes.length === 0) ||
     (status === "not_checked" &&
       (!value.requiresReview || semanticEntailment !== "not_checked"))
@@ -191,11 +190,12 @@ export function draftReviewAssessment(input: {
     return { decision: "blocked", blockedReason: "malformed_validation" };
   }
   if (validation?.status === "blocked") {
-    return { decision: "blocked", blockedReason: "validation_blocked" };
+    return input.generation_binding_valid
+      ? { decision: "allowed", blockedReason: null }
+      : { decision: "blocked", blockedReason: "unknown_block" };
   }
   // Only a server-bound result that completed every validation gate is immediately
-  // publishable. Human review may attest an unavailable/not-checked validator, but it
-  // must never override an explicit blocker.
+  // publishable. Missing validation can still use the existing human-review workflow.
   if (validation?.status === "passed") {
     return input.generation_binding_valid
       ? { decision: "allowed", blockedReason: null }

@@ -48,6 +48,7 @@ describe("Today page resilience and interface contract", () => {
     expect(source).toContain('method: "POST"');
     expect(source).toContain("const loaded = await load");
     expect(source).toContain("Обновить решения");
+    expect(source).toContain("Всё актуально — новых решений пока нет.");
   });
 
   it("retains the last successful cards for a source-specific refresh failure", () => {
@@ -64,6 +65,15 @@ describe("Today page resilience and interface contract", () => {
     expect(source).toContain("Разобрать за 5 минут");
     expect(source).toContain("Быстрый разбор завершён");
     expect(source).toContain("Только реальные данные");
+    expect(source).toContain("Создать план в автопилоте");
+    expect(source).toContain("/app/autopilot");
+  });
+
+  it("shows durable completed decisions inside Today", () => {
+    expect(source).toContain("function CompletedToday");
+    expect(source).toContain("Готовые сегодня");
+    expect(source).toContain("board.completedItems");
+    expect(source).toContain("Здесь сохраняются решения, которые вы уже завершили сегодня.");
   });
 
   it("keeps the Today command center compact, data-backed and keyboard discoverable", () => {

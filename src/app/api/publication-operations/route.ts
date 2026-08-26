@@ -773,8 +773,8 @@ export async function POST(req: NextRequest) {
     if (review === "blocked") {
       return operationError("ai_draft_blocked", 422);
     }
-    // Exact editorial approval can satisfy a review-required/not-checked result, but an
-    // explicit AI blocker remains quarantined and has already returned above.
+    // Exact editorial approval can satisfy a review-required/not-checked result. Validation
+    // diagnostics are preserved on the draft but no longer create a separate publish gate.
     let typographySnapshot;
     try {
       typographySnapshot = await recheckTypographyForPublication({

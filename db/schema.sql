@@ -3456,6 +3456,7 @@ create table if not exists today_item_states (
   ranking_version varchar(80) not null,
   state text not null,
   snoozed_until timestamptz,
+  item_snapshot jsonb,
   state_version bigint not null default 1,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
@@ -3466,9 +3467,11 @@ create table if not exists today_item_states (
   constraint today_item_states_ranking_check check (length(btrim(ranking_version)) between 1 and 80),
   constraint today_item_states_state_check check (state in ('active','done','dismissed','snoozed','expired','superseded')),
   constraint today_item_states_snooze_check check ((state = 'snoozed' and snoozed_until is not null) or (state <> 'snoozed' and snoozed_until is null)),
+  constraint today_item_states_snapshot_check check (item_snapshot is null or (state = 'done' and jsonb_typeof(item_snapshot) = 'object')),
   constraint today_item_states_version_check check (state_version > 0)
 );
 create index if not exists today_item_states_user_active_idx on today_item_states (user_id, project_id, channel_id, state, updated_at desc);
+create index if not exists today_item_states_user_done_today_idx on today_item_states (user_id, project_id, channel_id, updated_at desc) where state = 'done';
 
 -- Daily workspace provisioning and per-source refresh health. Explicit feature rows are
 -- preserved on conflict so an administrator can still roll the workspace back safely.

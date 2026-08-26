@@ -54,6 +54,13 @@ export type TodayItem = {
   recommendationKind: TodayRecommendationKind | null;
 };
 
+export type TodayCompletedItem = Pick<
+  TodayItem,
+  "fingerprint" | "type" | "title" | "whyNow" | "channelLabel" | "sourceLabel"
+> & {
+  completedAt: string;
+};
+
 export type TodayBoard = {
   enabled: boolean;
   projectId: number;
@@ -65,6 +72,7 @@ export type TodayBoard = {
   lastSuccessfulAt: string | null;
   availability: "ready" | "partial" | "unavailable";
   items: TodayItem[];
+  completedItems: TodayCompletedItem[];
   partialErrors: Array<{ source: TodaySource; message: string }>;
   sourceStatuses: Array<{
     source: TodaySource;
@@ -300,33 +308,31 @@ async function opportunityItems(
 }
 
 async function reviewItems(db: Queryable, scope: { projectId: number; channelId: number }, label: string): Promise<TodayItem[]> {
-  const rows = (await db.query<{ id: string; version: string; updated_at: string; editorial_state: string; ai_validation: unknown }>(
+  const rows = (await db.query<{ id: string; version: string; updated_at: string; editorial_state: string }>(
     `select draft.id, draft.version, draft.updated_at::text,
-            coalesce(workflow.state, 'draft') as editorial_state, draft.ai_validation
+            coalesce(workflow.state, 'draft') as editorial_state
        from drafts draft
        join draft_destinations destination on destination.draft_id = draft.id and destination.channel_id = $2
        left join draft_editorial_workflows workflow on workflow.draft_id = draft.id and workflow.project_id = draft.project_id
       where draft.project_id = $1 and draft.purpose <> 'source_context'
-        and (workflow.state in ('in_review','changes_requested') or draft.purpose = 'needs_review'
-          or draft.ai_validation->>'status' = 'blocked')
+        and (workflow.state in ('in_review','changes_requested') or draft.purpose = 'needs_review')
       order by draft.updated_at desc limit 2`, [scope.projectId, scope.channelId])).rows;
   return rows.map((row) => {
-    const blocked = row.ai_validation && typeof row.ai_validation === "object" && (row.ai_validation as { status?: unknown }).status === "blocked";
     return {
       fingerprint: sha(`today:${TODAY_RANKING_VERSION}:review:${row.id}:${row.version}`),
-      type: blocked ? "risk" as const : "review" as const,
-      title: blocked ? "Исправьте заблокированный черновик" : row.editorial_state === "changes_requested" ? "Внесите запрошенные правки" : "Проверьте черновик",
-      whyNow: blocked ? "Точная версия содержит блокирующее утверждение." : "Материал ждёт решения и не исчезнет после открытия.",
-      channelId: scope.channelId, channelLabel: label, confidence: blocked ? "high" as const : "medium" as const,
-      epistemicState: blocked ? "blocked" as const : "observed" as const, freshness: hoursAgo(row.updated_at),
-      priority: blocked ? 100 : 90,
+      type: "review" as const,
+      title: row.editorial_state === "changes_requested" ? "Внесите запрошенные правки" : "Проверьте черновик",
+      whyNow: "Материал ждёт решения и не исчезнет после открытия.",
+      channelId: scope.channelId, channelLabel: label, confidence: "medium" as const,
+      epistemicState: "observed" as const, freshness: hoursAgo(row.updated_at),
+      priority: 90,
       primaryAction: {
-        label: blocked || row.editorial_state === "changes_requested" ? "Исправить сейчас" : "Проверить черновик",
+        label: row.editorial_state === "changes_requested" ? "Исправить сейчас" : "Проверить черновик",
         href: `/app/composer?draft=${row.id}&from=today`,
       },
       secondaryAction: { label: "Напомнить завтра", state: "snoozed" as const },
       evidence: { kind: "draft" as const, id: Number(row.id) },
-      sourceLabel: blocked ? "Проверка утверждений" : "Редакционный процесс",
+      sourceLabel: "Редакционный процесс",
       smartAction: null,
       recommendationKind: null,
     };
@@ -588,6 +594,73 @@ async function applyUserState(db: Queryable, userId: number, scope: { projectId:
   });
 }
 
+const TODAY_ITEM_TYPES = new Set<TodayItemType>(["opportunity", "review", "result", "risk", "onboarding"]);
+
+function completedItemFromSnapshot(value: unknown, completedAt: string): TodayCompletedItem | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const snapshot = value as Record<string, unknown>;
+  if (
+    typeof snapshot.fingerprint !== "string"
+    || !/^[0-9a-f]{64}$/u.test(snapshot.fingerprint)
+    || typeof snapshot.type !== "string"
+    || !TODAY_ITEM_TYPES.has(snapshot.type as TodayItemType)
+    || typeof snapshot.title !== "string"
+    || typeof snapshot.whyNow !== "string"
+    || typeof snapshot.channelLabel !== "string"
+    || typeof snapshot.sourceLabel !== "string"
+  ) return null;
+  return {
+    fingerprint: snapshot.fingerprint,
+    type: snapshot.type as TodayItemType,
+    title: snapshot.title,
+    whyNow: snapshot.whyNow,
+    channelLabel: snapshot.channelLabel,
+    sourceLabel: snapshot.sourceLabel,
+    completedAt,
+  };
+}
+
+function completedItemFromTodayItem(item: TodayItem, completedAt: string): TodayCompletedItem {
+  return {
+    fingerprint: item.fingerprint,
+    type: item.type,
+    title: item.title,
+    whyNow: item.whyNow,
+    channelLabel: item.channelLabel,
+    sourceLabel: item.sourceLabel,
+    completedAt,
+  };
+}
+
+async function loadCompletedItems(
+  db: Queryable,
+  input: { projectId: number; channelId: number; userId: number; timezone: string },
+  currentItems: TodayItem[],
+): Promise<TodayCompletedItem[]> {
+  const rows = (await db.query<{
+    fingerprint: string;
+    item_snapshot: unknown;
+    updated_at: string;
+  }>(
+    `select fingerprint, item_snapshot, updated_at::text
+       from today_item_states
+      where project_id = $1 and channel_id = $2 and user_id = $3
+        and state = 'done'
+        and updated_at >= (date_trunc('day', now() at time zone $4) at time zone $4)
+      order by updated_at desc
+      limit 20`,
+    [input.projectId, input.channelId, input.userId, input.timezone],
+  )).rows;
+  const currentByFingerprint = new Map(currentItems.map((item) => [item.fingerprint, item]));
+  return rows.flatMap((row) => {
+    const completedAt = new Date(row.updated_at).toISOString();
+    const stored = completedItemFromSnapshot(row.item_snapshot, completedAt);
+    if (stored) return [stored];
+    const current = currentByFingerprint.get(row.fingerprint);
+    return current ? [completedItemFromTodayItem(current, completedAt)] : [];
+  });
+}
+
 export async function loadTodayBoard(input: { actorUserId: number; channelId: number | null }, db: Queryable = getPool()): Promise<TodayBoard> {
   const scope = await scopeFor(db, input.actorUserId, input.channelId);
   const shared = {
@@ -607,6 +680,7 @@ export async function loadTodayBoard(input: { actorUserId: number; channelId: nu
       sourceStatuses: [],
       lastSuccessfulAt: null,
       items: [],
+      completedItems: [],
       pulse: EMPTY_PULSE,
       readiness: {
         state: "no_channel", competitorCount: 0, opportunityCount: 0, publishedCount: 0, statsCount: 0,
@@ -620,6 +694,7 @@ export async function loadTodayBoard(input: { actorUserId: number; channelId: nu
     enabled: false,
     availability: "ready",
     items: [],
+    completedItems: [],
     partialErrors: [],
     sourceStatuses: [],
     lastSuccessfulAt: null,
@@ -679,6 +754,12 @@ export async function loadTodayBoard(input: { actorUserId: number; channelId: nu
       { projectId: scope.projectId, channelId },
       collected,
     ));
+  const completedItems = await loadCompletedItems(db, {
+    projectId: scope.projectId,
+    channelId,
+    userId: input.actorUserId,
+    timezone: scope.timezone,
+  }, collected).catch(() => []);
   const readinessData = await loadReadiness(db, {
     projectId: scope.projectId,
     channelId,
@@ -698,6 +779,7 @@ export async function loadTodayBoard(input: { actorUserId: number; channelId: nu
     enabled,
     availability,
     items,
+    completedItems,
     partialErrors,
     sourceStatuses,
     lastSuccessfulAt: successfulTimes.at(-1) ?? null,
@@ -775,14 +857,20 @@ export async function updateTodayItemState(input: {
     ? new Date(input.snoozedUntil || nextTodayReminderAt(board.timezone))
     : null;
   if (snoozedUntil && (!Number.isFinite(snoozedUntil.getTime()) || snoozedUntil.getTime() <= Date.now())) throw new TodayError("bad_snooze");
+  const item = board.items.find((candidate) => candidate.fingerprint === input.fingerprint);
+  if (!item) throw new TodayError("item_not_found");
+  const itemSnapshot = input.state === "done"
+    ? JSON.stringify(completedItemFromTodayItem(item, new Date().toISOString()))
+    : null;
   await db.query(
     `insert into today_item_states
-       (project_id, channel_id, user_id, fingerprint, ranking_version, state, snoozed_until)
-     values ($1, $2, $3, $4, $5, $6, $7)
+       (project_id, channel_id, user_id, fingerprint, ranking_version, state, snoozed_until, item_snapshot)
+     values ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
      on conflict (project_id, channel_id, user_id, fingerprint) do update
        set state = excluded.state, snoozed_until = excluded.snoozed_until,
-           ranking_version = excluded.ranking_version, state_version = today_item_states.state_version + 1,
+           item_snapshot = excluded.item_snapshot, ranking_version = excluded.ranking_version,
+           state_version = today_item_states.state_version + 1,
            updated_at = now()`,
-    [board.projectId, input.channelId, input.actorUserId, input.fingerprint, TODAY_RANKING_VERSION, input.state, snoozedUntil],
+    [board.projectId, input.channelId, input.actorUserId, input.fingerprint, TODAY_RANKING_VERSION, input.state, snoozedUntil, itemSnapshot],
   );
 }

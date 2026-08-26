@@ -75,7 +75,7 @@ describe("composer UX protection contract", () => {
       source.indexOf("/* ---------------------------------------------------------------- РЕДАКТОР */"),
     );
     expect(actionBar).toContain("const blocked = c.blockedReason");
-    expect(actionBar).toContain('c.blockedReason === "validation_blocked" && c.canEditContent');
+    expect(actionBar).not.toContain('c.blockedReason === "validation_blocked"');
     expect(actionBar).toContain("c.canRecoverDraft");
     expect(actionBar).toContain("void c.recoverDraft()");
     expect(actionBar).toContain("c.canEditContent && c.editingId");
@@ -86,6 +86,7 @@ describe("composer UX protection contract", () => {
     expect(source).toContain("if (blockedReason != null) return;");
     expect(source).not.toContain("Пересохраните старую версию");
     expect(source).not.toContain("Эта версия не привязана к завершённой генерации");
+    expect(source).not.toContain("Проверка нашла неподтверждённые утверждения");
   });
 
   it("owns local validation inline and focuses the contenteditable root", () => {

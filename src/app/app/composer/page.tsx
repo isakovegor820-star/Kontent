@@ -301,11 +301,6 @@ const DRAFT_BLOCKED_COPY: Record<DraftReviewBlockedReason, {
     body: "Аврора не может подтвердить старую проверку. Создайте из текущего текста отдельный ручной пост; исходная версия останется в истории.",
     action: "Создать новый пост из текста",
   },
-  validation_blocked: {
-    title: "Проверка нашла неподтверждённые утверждения",
-    body: "Исправьте текст и запустите новую проверку. Эта версия не будет опубликована без подтверждения.",
-    action: "Перейти к тексту",
-  },
   source_context_not_publishable: {
     title: "Это материал-источник",
     body: "Создайте на его основе отдельный пост. Исходный материал останется без изменений и будет доступен по прежней ссылке.",
@@ -1960,9 +1955,7 @@ export default function ComposerPage() {
             ? "Нет соединения с сервером. Исходная версия и текущий текст не изменены. Повторите после восстановления сети."
             : error instanceof DraftRequestError && error.kind === "conflict"
               ? "Исходная версия изменилась в другой вкладке. Откройте её заново и повторите создание поста."
-              : error instanceof DraftRequestError && error.code === "validation_blocked_requires_new_check"
-                ? "Проверка нашла неподтверждённые утверждения. Исправьте текст и запустите новую проверку."
-                : "Новый пост не создан. Исходная версия и текущий текст сохранены — повторите действие.",
+            : "Новый пост не создан. Исходная версия и текущий текст сохранены — повторите действие.",
         );
       }
     },
@@ -2621,20 +2614,7 @@ function ComposerActionBar() {
               )}
             </div>
             <div className="flex w-full shrink-0 flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:justify-end">
-              {c.blockedReason === "validation_blocked" && c.canEditContent ? (
-                <Button
-                  variant="brand"
-                  size="sm"
-                  className="w-full shrink-0 sm:w-auto"
-                  onClick={() => {
-                    const editor = document.getElementById("composer-text");
-                    editor?.scrollIntoView({ behavior: "smooth", block: "center" });
-                    editor?.focus({ preventScroll: true });
-                  }}
-                >
-                  {blocked.action}
-                </Button>
-              ) : c.canRecoverDraft ? (
+              {c.canRecoverDraft ? (
                 <Button
                   variant="brand"
                   size="sm"

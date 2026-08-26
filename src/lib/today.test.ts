@@ -60,6 +60,7 @@ function todayDb(options: {
   hiddenPreference?: boolean;
   postFrequency?: number | null;
   occupiedDates?: string[];
+  completedRows?: Array<Record<string, unknown>>;
 } = {}) {
   return {
     query: vi.fn(async (...args: [sql: string, values?: unknown[]]) => {
@@ -119,6 +120,9 @@ function todayDb(options: {
       }
       if (sql.includes("delete from today_item_states")) {
         return { rows: [{ fingerprint: "c".repeat(64) }] };
+      }
+      if (sql.includes("state = 'done'") && sql.includes("item_snapshot")) {
+        return { rows: options.completedRows ?? [] };
       }
       if (sql.includes("from today_item_states")) {
         const fingerprints = values[3] as string[] | undefined;
@@ -267,7 +271,43 @@ describe("Today board states", () => {
       state: "done",
     }, db as never);
     const insert = db.query.mock.calls.find(([sql]) => String(sql).includes("insert into today_item_states"));
-    expect(insert?.[1]).toEqual([7, 11, 9, board.items[0].fingerprint, "today-rank-v1", "done", null]);
+    expect(insert?.[1]).toEqual([
+      7,
+      11,
+      9,
+      board.items[0].fingerprint,
+      "today-rank-v1",
+      "done",
+      null,
+      expect.stringContaining(`"fingerprint":"${board.items[0].fingerprint}"`),
+    ]);
+  });
+
+  it("returns completed decisions from their durable snapshots", async () => {
+    const fingerprint = "d".repeat(64);
+    const board = await loadTodayBoard(
+      { actorUserId: 9, channelId: 11 },
+      todayDb({
+        completedRows: [{
+          fingerprint,
+          updated_at: "2026-08-23T10:15:00.000Z",
+          item_snapshot: {
+            fingerprint,
+            type: "review",
+            title: "Проверить черновик",
+            whyNow: "Материал ждал решения.",
+            channelLabel: "Первый канал",
+            sourceLabel: "Редакционный процесс",
+          },
+        }],
+      }) as never,
+    );
+
+    expect(board.completedItems).toEqual([expect.objectContaining({
+      fingerprint,
+      title: "Проверить черновик",
+      completedAt: "2026-08-23T10:15:00.000Z",
+    })]);
   });
 
   it("builds a real seven-day pulse and compares normalized results", () => {

@@ -5,7 +5,7 @@
  */
 export const SCHEMA_MANIFEST = Object.freeze({
   manifestVersion: 1,
-  schemaVersion: "2026-09-29.100",
+  schemaVersion: "2026-09-30.100",
   migrations: Object.freeze([
     ["20260801_account_onboarding.sql", "ac0e1f10046cf620185570ab5f40437991d08513473f67d4e93bdafa07b86614"],
     ["20260801_ai_usage_reservations.sql", "991c3a92dce16df55011d9df52fb65af1a7f4310b27f61dc519705f05528d7a0"],
@@ -110,6 +110,7 @@ export const SCHEMA_MANIFEST = Object.freeze({
     ["20260927_today_workspace.sql", "d9b7d8a1c86076be12b975230aeb3fb4d3c2e2691768c23654b0eb329c9a9d83"],
     ["20260928_autopilot_settings_project_key.sql", "91e66808a91965b9ed372216d1b715425e4f39a7736ce37716c4731cb4326ceb"],
     ["20260929_onboarding_progress.sql", "8ac675cd156edfc221045dd6b4d55878e2edc40f3f83bd696a65593881218720"],
+    ["20260930_today_completed_items.sql", "da7713e17cedc595dcbf0b058bf4c7e35e2143bd2a44db38935cda4e1383ef27"],
   ].map(([name, checksum, acceptedChecksums]) => Object.freeze({
     name,
     checksum,
@@ -256,6 +257,7 @@ export const SCHEMA_MANIFEST = Object.freeze({
       "today_item_states.user_id",
       "today_item_states.fingerprint",
       "today_item_states.state",
+      "today_item_states.item_snapshot",
       "today_source_refreshes.project_id",
       "today_source_refreshes.channel_id",
       "today_source_refreshes.source",
@@ -885,6 +887,7 @@ export const SCHEMA_MANIFEST = Object.freeze({
       "today_item_states.today_item_states_member_fk",
       "today_item_states.today_item_states_channel_project_fk",
       "today_item_states.today_item_states_state_check",
+      "today_item_states.today_item_states_snapshot_check",
       "today_source_refreshes.today_source_refreshes_channel_project_fk",
       "today_source_refreshes.today_source_refreshes_source_check",
       "today_source_refreshes.today_source_refreshes_state_check",
@@ -907,6 +910,7 @@ export const SCHEMA_MANIFEST = Object.freeze({
       "opportunity_snapshots.opportunity_snapshots_channel_fresh_idx",
       "today_item_states.today_item_states_pkey",
       "today_item_states.today_item_states_user_active_idx",
+      "today_item_states.today_item_states_user_done_today_idx",
       "today_source_refreshes.today_source_refreshes_pkey",
       "today_source_refreshes.today_source_refreshes_health_idx",
       "onboarding_progress.onboarding_progress_project_updated_idx",

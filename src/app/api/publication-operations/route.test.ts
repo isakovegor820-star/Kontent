@@ -34,6 +34,7 @@ vi.mock("@/lib/typography-service", async (original) => ({
 
 import { POST } from "./route";
 import { EditorialValidationError } from "@/lib/editorial-approval";
+import { generationResultHash } from "@/lib/generation-artifacts";
 import { ProjectAccessError } from "@/lib/project-permissions";
 
 function request(origin?: string, overrides: Record<string, unknown> = {}) {
@@ -649,8 +650,10 @@ describe("POST /api/publication-operations readiness gate", () => {
     });
   });
 
-  it("keeps an approved generated post quarantined when AI validation was blocked", async () => {
+  it("publishes an approved generated post while retaining validation diagnostics", async () => {
     mocks.probePublication.mockResolvedValue({ redis: "up", publicationWorker: "up" });
+    const validation = blockedAiValidation();
+    const resultHash = generationResultHash("Проверенный материал");
     const tx = {
       query: vi.fn(async (sql: string, params?: unknown[]) => {
         if (sql === "begin" || sql === "commit") return { rows: [], rowCount: null };
@@ -661,9 +664,13 @@ describe("POST /api/publication-operations readiness gate", () => {
         if (sql.includes("from drafts d")) {
           return {
             rows: [mutableDraftSnapshot({
+              text: "Проверенный материал",
               origin: "ai",
               generation_result_id: "77",
-              ai_validation: blockedAiValidation(),
+              generation_result_hash: resultHash,
+              receipt_result_hash: resultHash,
+              receipt_payload: validation,
+              ai_validation: validation,
             })],
             rowCount: 1,
           };
@@ -735,17 +742,18 @@ describe("POST /api/publication-operations readiness gate", () => {
 
     const response = await POST(request());
 
-    expect(response.status).toBe(422);
+    expect(response.status).toBe(201);
     await expect(response.json()).resolves.toMatchObject({
-      ok: false,
-      result: "operation_not_created",
-      error: "ai_draft_blocked",
+      ok: true,
+      operationId: 91,
+      operationStatus: "queued",
+      destinations: [{ postId: 81, channelId: 12 }],
     });
     expect(mocks.requireCurrentDraftApproval).toHaveBeenCalledWith(tx, 5, 23, 41);
-    expect(mocks.recheckTypographyForPublication).not.toHaveBeenCalled();
+    expect(mocks.recheckTypographyForPublication).toHaveBeenCalled();
     expect(tx.query.mock.calls.some(([sql]) =>
-      String(sql).includes("insert into publication_operations"))).toBe(false);
-    expect(tx.query).toHaveBeenCalledWith("rollback");
+      String(sql).includes("insert into publication_operations"))).toBe(true);
+    expect(tx.query).toHaveBeenCalledWith("commit");
   });
 
   it("converges concurrent publication attempts by two publishers on one approved revision", async () => {
