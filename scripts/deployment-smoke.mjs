@@ -6,7 +6,7 @@ const MAX_JSON_BYTES = 256 * 1024;
 const MAX_HTML_BYTES = 2 * 1024 * 1024;
 const MAX_READINESS_AGE_MS = 5 * 60 * 1_000;
 const REQUEST_TIMEOUT_MS = 10_000;
-const HTML_PATHS = ["/", "/bot"];
+const HTML_PATHS = ["/", "/login"];
 const FULL_CAPABILITIES = [
   "schemaReady",
   "webReady",

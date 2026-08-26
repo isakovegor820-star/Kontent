@@ -82,7 +82,7 @@ describe("deployment smoke", () => {
       host: "aurora.example",
       profile: "full",
       readinessStatus: "ready",
-      checkedPages: ["/", "/bot"],
+      checkedPages: ["/", "/login"],
     });
     expect(fetchImpl).toHaveBeenCalledTimes(4);
     for (const [, options] of fetchImpl.mock.calls) {
