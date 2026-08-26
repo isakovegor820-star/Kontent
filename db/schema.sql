@@ -3473,6 +3473,23 @@ create table if not exists today_item_states (
 create index if not exists today_item_states_user_active_idx on today_item_states (user_id, project_id, channel_id, state, updated_at desc);
 create index if not exists today_item_states_user_done_today_idx on today_item_states (user_id, project_id, channel_id, updated_at desc) where state = 'done';
 
+-- Preserve rollback compatibility with releases that predate item_snapshot. Their
+-- legacy state UPSERT does not clear the column when moving an item out of done.
+create or replace function aurora_clear_inactive_today_item_snapshot()
+returns trigger language plpgsql as $$
+begin
+  if new.state <> 'done' then
+    new.item_snapshot := null;
+  end if;
+  return new;
+end
+$$;
+
+drop trigger if exists today_item_states_clear_inactive_snapshot_before_write on today_item_states;
+create trigger today_item_states_clear_inactive_snapshot_before_write
+  before insert or update of state, item_snapshot on today_item_states
+  for each row execute function aurora_clear_inactive_today_item_snapshot();
+
 -- Daily workspace provisioning and per-source refresh health. Explicit feature rows are
 -- preserved on conflict so an administrator can still roll the workspace back safely.
 create or replace function aurora_provision_today_feature()
