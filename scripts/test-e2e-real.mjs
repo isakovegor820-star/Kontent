@@ -1939,11 +1939,12 @@ try {
   await page.goBack();
   await page.waitForURL((url) => url.pathname === "/app/studio" && url.searchParams.get("draft") === String(libraryReferenceDraftId));
   assert(!new URL(page.url()).searchParams.has("intent"), "browser Back restarted the completed paid generation");
-  await desktopSidebar
-    .getByRole("link", { name: "Студия контента", exact: true })
-    .waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  const activeStudioLink = desktopSidebar
+    .locator('a[aria-current="page"]')
+    .filter({ hasText: "Студия контента" });
+  await activeStudioLink.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   assert(
-    await desktopSidebar.getByRole("link", { name: "Студия контента", exact: true }).getAttribute("aria-current") === "page",
+    await activeStudioLink.count() === 1,
     "restored Studio is not active in desktop navigation",
   );
   await page.goBack();
@@ -1967,11 +1968,9 @@ try {
     [studioDraftId, userId],
   )).rows[0];
   assert(Number(studioDestination?.channel_id) === channels[0], "Studio draft lost selected channel id");
-  await desktopSidebar
-    .getByRole("link", { name: "Студия контента", exact: true })
-    .waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  await activeStudioLink.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   assert(
-    await desktopSidebar.getByRole("link", { name: "Студия контента", exact: true }).getAttribute("aria-current") === "page",
+    await activeStudioLink.count() === 1,
     "Studio action did not activate the restored desktop navigation item",
   );
   await page.goBack();
@@ -2048,15 +2047,23 @@ try {
     "mobile navigation did not expose the restored Studio destination",
   );
   await page.goto("/app/studio");
+  const activeMobileStudioLink = mobileNav
+    .locator('a[aria-current="page"]')
+    .filter({ hasText: "Студия" });
+  await activeMobileStudioLink.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   assert(
-    await mobileNav.getByRole("link", { name: "Студия", exact: true }).getAttribute("aria-current") === "page",
+    await activeMobileStudioLink.count() === 1,
     "restored Studio is not active in mobile navigation",
   );
   await page.goBack();
   await page.waitForURL((url) => url.pathname === "/app/library" && url.searchParams.get("channel") === String(channels[0]));
   await page.goto(`/app/trends?channel=${channels[0]}`);
+  const activeMobileMarketLink = mobileNav
+    .locator('a[aria-current="page"]')
+    .filter({ hasText: "Разведка" });
+  await activeMobileMarketLink.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   assert(
-    await mobileNav.getByRole("link", { name: "Разведка", exact: true }).getAttribute("aria-current") === "page",
+    await activeMobileMarketLink.count() === 1,
     "restored Trends route did not activate the mobile market hub",
   );
   await page.goBack();
