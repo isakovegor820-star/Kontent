@@ -1897,7 +1897,7 @@ try {
   assert(generatedDraft?.text === libraryComposerResult && generatedDraft?.origin === "ai", "Studio result was not persisted as an AI draft");
   assert(String(generatedDraft?.source_ref?.id) === String(libraryReferenceId), "generated post lost reference provenance");
   const composerActive = desktopSidebar.locator('a[aria-current="page"]');
-  assert((await composerActive.textContent())?.includes("Календарь"), "Composer alias did not activate desktop Calendar");
+  assert((await composerActive.textContent())?.includes("Редактор"), "Composer did not activate desktop Editor");
 
   const blockedValidation = {
     ...generatedDraft.ai_validation,
@@ -1981,10 +1981,11 @@ try {
   await page.goBack();
   await page.waitForURL((url) => url.pathname === "/app/studio" && url.searchParams.get("draft") === String(libraryReferenceDraftId));
   assert(!new URL(page.url()).searchParams.has("intent"), "browser Back restarted the completed paid generation");
-  await desktopSidebar
-    .locator('a[aria-current="page"]')
-    .filter({ hasText: "Студия" })
-    .waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  assert(
+    await desktopSidebar.getByRole("link", { name: "Студия контента", exact: true }).count() === 0
+      && await desktopSidebar.locator('a[aria-current="page"]').count() === 0,
+    "experimental Studio leaked into stable desktop navigation",
+  );
   await page.goBack();
   await page.waitForURL((url) => url.pathname === "/app/library" && url.searchParams.get("channel") === String(channels[0]));
   const discussReference = libraryReferenceCard.getByRole("button", { name: "Обсудить с Авророй", exact: true });
@@ -2006,7 +2007,11 @@ try {
     [studioDraftId, userId],
   )).rows[0];
   assert(Number(studioDestination?.channel_id) === channels[0], "Studio draft lost selected channel id");
-  assert((await desktopSidebar.locator('a[aria-current="page"]').textContent())?.includes("Студия"), "Studio action did not activate desktop Studio");
+  assert(
+    await desktopSidebar.getByRole("link", { name: "Студия контента", exact: true }).count() === 0
+      && await desktopSidebar.locator('a[aria-current="page"]').count() === 0,
+    "Studio action exposed an experimental desktop navigation item",
+  );
   await page.goBack();
   await page.waitForURL((url) => url.pathname === "/app/library" && url.searchParams.get("channel") === String(channels[0]));
 
@@ -2074,13 +2079,25 @@ try {
   const mobileDrawerActive = mobileDrawer.locator('a[aria-current="page"]');
   assert((await mobileDrawerActive.textContent())?.includes("Идеи и примеры"), "mobile drawer lost active Library item");
   await mobileDrawer.getByRole("button", { name: "Закрыть меню", exact: true }).click();
-  await page.locator('nav[aria-label="Основные разделы"]').getByRole("link", { name: "Студия контента", exact: true }).click();
-  await page.waitForURL((url) => url.pathname === "/app/studio");
-  assert((await page.locator('nav[aria-label="Основные разделы"] a[aria-current="page"]').textContent())?.includes("Студия"), "mobile Studio item is not active");
+  const mobileNav = page.locator('nav[aria-label="Основные разделы"]');
+  assert(
+    await mobileNav.getByRole("link", { name: "Редактор", exact: true }).count() === 1
+      && await mobileNav.getByRole("link", { name: "Студия", exact: true }).count() === 0,
+    "mobile navigation diverged from the stable release scope",
+  );
+  await page.goto("/app/studio");
+  assert(
+    await mobileNav.locator('a[aria-current="page"]').count() === 0,
+    "experimental Studio appeared active in stable mobile navigation",
+  );
   await page.goBack();
   await page.waitForURL((url) => url.pathname === "/app/library" && url.searchParams.get("channel") === String(channels[0]));
   await page.goto(`/app/trends?channel=${channels[0]}`);
-  assert((await page.locator('nav[aria-label="Основные разделы"] a[aria-current="page"]').textContent())?.includes("Разведка"), "mobile Trends alias did not activate Recon");
+  assert(
+    await mobileNav.getByRole("link", { name: "Разведка", exact: true }).count() === 0
+      && await mobileNav.locator('a[aria-current="page"]').count() === 0,
+    "experimental Trends leaked into stable mobile navigation",
+  );
   await page.goBack();
   await page.waitForURL((url) => url.pathname === "/app/library" && url.searchParams.get("channel") === String(channels[0]));
 
