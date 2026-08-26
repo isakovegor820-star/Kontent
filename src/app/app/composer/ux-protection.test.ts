@@ -54,9 +54,6 @@ describe("composer UX protection contract", () => {
     expect(source).toContain("recoveryRequestRef,");
     expect(source).toContain("Создать новый пост из текста");
     expect(source).toContain("Создать пост из материала");
-    expect(source).toContain("Принять и создать пост");
-    expect(source).toContain("если вы проверили текущий текст и готовы отвечать за его содержание");
-    expect(source).toContain("personalResponsibilityTakeover: personalProject");
     expect(source).toContain("acceptResponsibility: true");
     expect(source).toContain("Исходная версия сохранена отдельно");
     expect(source).toContain('href="/app/settings?section=channels"');
@@ -69,11 +66,12 @@ describe("composer UX protection contract", () => {
       source.indexOf("/* ---------------------------------------------------------------- РЕДАКТОР */"),
     );
     expect(actionBar).toContain("const blocked = c.blockedReason");
-    expect(actionBar).toContain('personal && c.blockedReason === "validation_blocked"');
-    expect(actionBar).toContain('c.blockedReason === "validation_blocked" && !personal');
+    expect(actionBar).toContain('c.blockedReason === "validation_blocked" && c.canEditContent');
     expect(actionBar).toContain("c.canRecoverDraft");
     expect(actionBar).toContain("void c.recoverDraft()");
     expect(actionBar).toContain('aria-live="polite"');
+    expect(source).not.toContain("Принять и создать пост");
+    expect(source).not.toContain("personalResponsibilityTakeover");
     expect(source).toContain("if (blockedReason != null) return;");
     expect(source).not.toContain("Пересохраните старую версию");
     expect(source).not.toContain("Эта версия не привязана к завершённой генерации");

@@ -106,7 +106,7 @@ describe("POST /api/drafts/:id/recover", () => {
     await expect(response.json()).resolves.toEqual({ ok: false, error: "access_denied" });
   });
 
-  it("keeps a validation takeover server-gated when the selected project is not personal", async () => {
+  it("returns a required-new-check error for a validation-blocked recovery", async () => {
     mocks.recoverDraftForUser.mockRejectedValue(
       new DraftValidationError("validation_blocked_requires_new_check"),
     );

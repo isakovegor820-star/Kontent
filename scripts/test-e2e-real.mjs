@@ -1890,7 +1890,7 @@ try {
   await libraryComposerText.waitFor();
   assert(await readEditableText(libraryComposerText) === libraryComposerResult, "Composer did not hydrate the terminal Studio result");
   const generatedDraft = (await pool.query(
-    `select text, origin, source_ref, version, generation_result_id, ai_validation
+    `select text, origin, source_ref, generation_result_id, ai_validation
        from drafts where id = $1 and user_id = $2`,
     [libraryComposerDraftId, userId],
   )).rows[0];
@@ -1920,63 +1920,21 @@ try {
     [generatedDraft.generation_result_id, JSON.stringify(blockedValidation)],
   );
   await page.reload();
-  const takeoverButton = page.getByRole("button", { name: "Принять и создать пост", exact: true });
-  await takeoverButton.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
-  assert(await takeoverButton.isEnabled(), "personal validation takeover is not available");
-  assert(await page.getByRole("button", { name: "Опубликовать сейчас", exact: true }).count() === 0, "blocked source still exposes publication");
-  await takeoverButton.dblclick();
-  await page.waitForURL((url) => {
-    const recoveredId = Number(url.searchParams.get("draft"));
-    return url.pathname === "/app/composer"
-      && Number.isSafeInteger(recoveredId)
-      && recoveredId > 0
-      && recoveredId !== libraryComposerDraftId;
-  });
-  const recoveredValidationDraftId = Number(new URL(page.url()).searchParams.get("draft"));
-  const recoveredValidationDraft = (await pool.query(
-    `select id, text, origin, purpose, generation_result_id, ai_validation, client_key
-       from drafts
-      where id = $1 and user_id = $2`,
-    [recoveredValidationDraftId, userId],
-  )).rows[0];
-  assert(recoveredValidationDraft?.text === libraryComposerResult, "validation takeover lost the current text");
   assert(
-    recoveredValidationDraft?.origin === "manual"
-      && recoveredValidationDraft?.purpose === "publishable"
-      && recoveredValidationDraft?.generation_result_id == null
-      && recoveredValidationDraft?.ai_validation == null,
-    "validation takeover carried trusted AI provenance into the manual draft",
+    await page.getByRole("button", { name: "Принять и создать пост", exact: true }).count() === 0,
+    "validation-blocked personal draft still exposes the removed takeover",
   );
-  const validationSourceAfter = (await pool.query(
-    "select version, text, origin, generation_result_id, ai_validation from drafts where id = $1",
-    [libraryComposerDraftId],
-  )).rows[0];
   assert(
-    Number(validationSourceAfter?.version) === Number(generatedDraft.version)
-      && validationSourceAfter?.text === libraryComposerResult
-      && validationSourceAfter?.origin === "ai"
-      && Number(validationSourceAfter?.generation_result_id) === Number(generatedDraft.generation_result_id)
-      && validationSourceAfter?.ai_validation?.status === "blocked",
-    "validation takeover mutated the source draft",
+    await page.getByRole("button", { name: "Опубликовать сейчас", exact: true }).count() === 0,
+    "validation-blocked source still exposes publication",
   );
-  const validationRecoveryAudit = (await pool.query(
-    `select count(*)::int as count, min(safe_data::text) as safe_data
-       from audit_events
-      where action = 'draft.recovered_as_manual'
-        and entity_type = 'draft'
-        and entity_id = $1::text`,
-    [recoveredValidationDraftId],
-  )).rows[0];
-  assert(Number(validationRecoveryAudit?.count) === 1, "double click created duplicate recovery audit events");
-  const validationRecoverySafeData = JSON.parse(String(validationRecoveryAudit.safe_data));
+  const returnToTextButton = page.getByRole("button", { name: "Перейти к тексту", exact: true });
+  await returnToTextButton.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  await returnToTextButton.click();
   assert(
-    Number(validationRecoverySafeData.sourceDraftId) === libraryComposerDraftId
-      && validationRecoverySafeData.blockedReason === "validation_blocked"
-      && validationRecoverySafeData.responsibilityAccepted === true
-      && validationRecoverySafeData.responsibilityScope === "personal_project_owner",
-    "validation takeover audit lost its source or responsibility boundary",
+    await page.evaluate(() => document.activeElement?.id) === "composer-text",
+    "validation-blocked recovery action did not focus the text editor",
   );
-  await page.getByRole("button", { name: "Опубликовать сейчас", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
 
   await page.goBack();
   await page.waitForURL((url) => url.pathname === "/app/studio" && url.searchParams.get("draft") === String(libraryReferenceDraftId));
@@ -4797,7 +4755,7 @@ try {
       },
       composer: {
         humanAdoptionPreservedDraftId: true,
-        personalValidationTakeover: true,
+        validationTakeoverAbsent: true,
         simplifiedAdvancedPanelsAbsent: true,
         trackingShortPath: criticalShortPath,
         carouselCards: Number(legalRenderEvidence.cards),

@@ -109,14 +109,8 @@ describe("AI draft review policy", () => {
     ).toBe("allowed");
   });
 
-  it("allows an explicit validation takeover only in a personal project", () => {
+  it("never allows recovery to bypass an explicit validation blocker", () => {
     expect(isDraftRecoveryAllowedReason("validation_blocked")).toBe(false);
-    expect(isDraftRecoveryAllowedReason("validation_blocked", {
-      personalResponsibilityTakeover: false,
-    })).toBe(false);
-    expect(isDraftRecoveryAllowedReason("validation_blocked", {
-      personalResponsibilityTakeover: true,
-    })).toBe(true);
     expect(isDraftRecoveryAllowedReason("legacy_generation_missing")).toBe(true);
   });
 });
