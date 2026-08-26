@@ -11,8 +11,6 @@ export const TELEGRAM_BOT_COMMANDS = Object.freeze([
   { command: "results", description: "Результаты последних постов" },
   { command: "calendar", description: "Ближайшие публикации" },
   { command: "stats", description: "Цифры канала за неделю" },
-  { command: "plan", description: "План недели от автопилота" },
-  { command: "trends", description: "Что зашло у конкурентов" },
   { command: "notifications", description: "Настроить уведомления" },
   { command: "disconnect", description: "Отключить этот чат" },
   { command: "cancel", description: "Закрыть текущий диалог" },

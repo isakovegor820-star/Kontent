@@ -8,6 +8,7 @@ export interface OnboardingQuizAnswers {
   cta: string;
   taboo: string;
   tone: string;
+  firstMaterial: string;
 }
 
 export interface OnboardingRecovery {
@@ -38,6 +39,7 @@ export function parseOnboardingRecovery(raw: string | null): OnboardingRecovery 
       (quiz.cta != null && typeof quiz.cta !== "string") ||
       (quiz.taboo != null && typeof quiz.taboo !== "string") ||
       (quiz.tone != null && typeof quiz.tone !== "string") ||
+      (quiz.firstMaterial != null && typeof quiz.firstMaterial !== "string") ||
       !Number.isFinite(value?.step)
     ) {
       return null;
@@ -53,6 +55,7 @@ export function parseOnboardingRecovery(raw: string | null): OnboardingRecovery 
         cta: quiz.cta ?? "",
         taboo: quiz.taboo ?? "",
         tone: quiz.tone ?? "",
+        firstMaterial: quiz.firstMaterial ?? "",
       },
       step: Math.min(5, Math.max(1, Math.round(Number(value?.step)))),
       channelId:

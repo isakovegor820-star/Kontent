@@ -31,6 +31,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge, Card, EmptyState, Toggle } from "@/components/ui/primitives";
 import { Caption, H2, H3, SecondaryText } from "@/components/ui/typography";
+import { appDraftActionHref } from "@/lib/app-routes";
 import {
   isLegalOpportunityPostNetwork,
   type LegalOpportunityPostVariant,
@@ -676,7 +677,7 @@ function LegalOpportunitiesScreen() {
         entry.id === item.id ? { ...entry, opportunity_state: "used" } : entry
       )));
       setPostDialogItem(null);
-      router.push(`/app/studio?draft=${draftId}&intent=create`);
+      router.push(appDraftActionHref("create", draftId));
     } catch {
       store.toast({
         kind: "danger",

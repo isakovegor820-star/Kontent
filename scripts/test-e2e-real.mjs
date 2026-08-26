@@ -807,6 +807,7 @@ const runtimeEnv = {
   REDIS_URL: redisUrl,
   APP_URL: baseUrl,
   NEXT_PUBLIC_APP_URL: baseUrl,
+  NEXT_PUBLIC_AURORA_EXPERIMENTAL_ROUTES: "1",
   AURORA_READINESS_TOKEN: "e2e-readiness-token-with-32-characters-minimum",
   HOSTNAME: "127.0.0.1",
   PORT: String(nextPort),

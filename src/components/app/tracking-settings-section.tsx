@@ -67,7 +67,7 @@ const EMPTY_TEMPLATE_VALUES: TemplateFormValues = {
 const UTM_FIELD_COPY: Record<UtmField, { label: string; hint: string; placeholder: string }> = {
   utm_source: {
     label: "Источник",
-    hint: "Откуда пришёл переход: Telegram, VK или рассылка.",
+    hint: "Откуда пришёл переход: Telegram, сайт или рассылка.",
     placeholder: "telegram",
   },
   utm_medium: {

@@ -21,7 +21,7 @@ describe("composer UX protection contract", () => {
     expect(source).not.toContain("Нужно исправить текст");
   });
 
-  it("exposes the three working publication paths in one sticky action bar", () => {
+  it("exposes three publication paths without covering the mobile editor", () => {
     expect(source).toContain('void publish("calendar")');
     expect(source).toContain('void publish("now")');
     expect(source).toContain('void publish("queue")');
@@ -32,7 +32,11 @@ describe("composer UX protection contract", () => {
     expect(source).toContain("setPublicationSuccess({");
     expect(source).toContain("--composer-action-bar-clearance");
     expect(source).toContain("root.style.scrollPaddingBottom = clearance");
-    expect(source).toContain('className="h-[var(--composer-action-bar-clearance,18rem)]"');
+    expect(source).toContain('className="relative z-10 mt-4 lg:fixed');
+    expect(source).toContain('className="hidden h-[var(--composer-action-bar-clearance,18rem)] lg:block"');
+    expect(source).toContain('window.matchMedia("(min-width: 1024px)")');
+    expect(source).toContain("Другие действия");
+    expect(source).toContain('className="hidden flex-wrap gap-2 sm:flex"');
     expect(source).toContain("new ResizeObserver(updateClearance)");
     expect(source).toContain("scroll-mb-72");
   });

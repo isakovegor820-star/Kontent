@@ -5,7 +5,7 @@
  */
 export const SCHEMA_MANIFEST = Object.freeze({
   manifestVersion: 1,
-  schemaVersion: "2026-09-28.100",
+  schemaVersion: "2026-09-29.100",
   migrations: Object.freeze([
     ["20260801_account_onboarding.sql", "ac0e1f10046cf620185570ab5f40437991d08513473f67d4e93bdafa07b86614"],
     ["20260801_ai_usage_reservations.sql", "991c3a92dce16df55011d9df52fb65af1a7f4310b27f61dc519705f05528d7a0"],
@@ -109,6 +109,7 @@ export const SCHEMA_MANIFEST = Object.freeze({
     ["20260926_autopilot_candidate_pool.sql", "734e21f4551c43ee3ca7e241a3e1f28946d8e5cc9f413128cb849d3796b64d27"],
     ["20260927_today_workspace.sql", "d9b7d8a1c86076be12b975230aeb3fb4d3c2e2691768c23654b0eb329c9a9d83"],
     ["20260928_autopilot_settings_project_key.sql", "91e66808a91965b9ed372216d1b715425e4f39a7736ce37716c4731cb4326ceb"],
+    ["20260929_onboarding_progress.sql", "8ac675cd156edfc221045dd6b4d55878e2edc40f3f83bd696a65593881218720"],
   ].map(([name, checksum, acceptedChecksums]) => Object.freeze({
     name,
     checksum,
@@ -229,9 +230,17 @@ export const SCHEMA_MANIFEST = Object.freeze({
       "opportunity_snapshots",
       "today_item_states",
       "today_source_refreshes",
+      "onboarding_progress",
     ]),
     columns: Object.freeze([
       "users.onboarding_completed_at",
+      "onboarding_progress.project_id",
+      "onboarding_progress.step",
+      "onboarding_progress.channel_id",
+      "onboarding_progress.first_draft_id",
+      "onboarding_progress.skipped_first_source",
+      "onboarding_progress.version",
+      "onboarding_progress.completed_at",
       "channel_feature_flags.project_id",
       "channel_feature_flags.channel_id",
       "channel_feature_flags.feature_key",
@@ -880,6 +889,12 @@ export const SCHEMA_MANIFEST = Object.freeze({
       "today_source_refreshes.today_source_refreshes_source_check",
       "today_source_refreshes.today_source_refreshes_state_check",
       "today_source_refreshes.today_source_refreshes_error_check",
+      "onboarding_progress.onboarding_progress_member_fk",
+      "onboarding_progress.onboarding_progress_channel_project_fk",
+      "onboarding_progress.onboarding_progress_draft_project_fk",
+      "onboarding_progress.onboarding_progress_step_check",
+      "onboarding_progress.onboarding_progress_version_check",
+      "onboarding_progress.onboarding_progress_completion_check",
     ]),
     indexes: Object.freeze([
       "ai_usage.ai_usage_user_reservation_key_uniq",
@@ -894,6 +909,7 @@ export const SCHEMA_MANIFEST = Object.freeze({
       "today_item_states.today_item_states_user_active_idx",
       "today_source_refreshes.today_source_refreshes_pkey",
       "today_source_refreshes.today_source_refreshes_health_idx",
+      "onboarding_progress.onboarding_progress_project_updated_idx",
       "ai_usage.ai_usage_operation_id_uniq",
       "posts.posts_channel_external_message_uniq",
       "posts.posts_user_idempotency_key_uniq",

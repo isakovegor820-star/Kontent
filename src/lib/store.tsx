@@ -69,7 +69,7 @@ interface StoreValue extends AppState {
   /** Перечитать, кто вошёл, с сервера. Зовём после входа и при загрузке. */
   refreshAuth: () => Promise<void>;
   signOut: () => void;
-  finishOnboarding: () => Promise<boolean>;
+  finishOnboarding: (input: { channelId: number; draftId: number }) => Promise<boolean>;
 
   /* --- Настоящий постинг (Д.3): каналы и посты из базы --- */
   realChannels: RealChannel[];
@@ -613,9 +613,13 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   }, [beginWorkspaceTransition]);
 
   const finishOnboarding = useCallback<StoreValue["finishOnboarding"]>(
-    async () => {
+    async (input) => {
       try {
-        const response = await fetch("/api/onboarding/complete", { method: "POST" });
+        const response = await fetch("/api/onboarding/complete", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(input),
+        });
         const body = (await response.json().catch(() => null)) as { ok?: boolean } | null;
         if (!response.ok || !body?.ok) return false;
         patch((s) => ({

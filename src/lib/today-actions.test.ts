@@ -50,7 +50,7 @@ describe("Today smart actions", () => {
       actorUserId: 9, channelId: 11, fingerprint: "a".repeat(64), actionKind: "fill_calendar_gap",
     });
     expect(mocks.createOpportunitySourceContext).toHaveBeenCalledWith({ actorUserId: 9, opportunityId: 71 });
-    expect(result.href).toBe("/app/studio?draft=41&intent=create&calendarDate=2026-08-25");
+    expect(result.href).toBe("/app/composer?draft=41&intent=create&calendarDate=2026-08-25");
   });
 
   it.each([
@@ -62,7 +62,7 @@ describe("Today smart actions", () => {
       actorUserId: 9, channelId: 11, fingerprint: "a".repeat(64), actionKind: kind,
     });
     expect(mocks.createPublishedPostSourceContext).toHaveBeenCalledWith({ actorUserId: 9, postId: 91, channelId: 11, mode });
-    expect(result.href).toBe("/app/studio?draft=42&intent=create");
+    expect(result.href).toBe("/app/composer?draft=42&intent=create");
   });
 
   it("preserves a missing source as a recoverable action error", async () => {

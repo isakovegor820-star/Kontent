@@ -31,10 +31,9 @@ import {
   Input,
   TelegramIcon,
   Textarea,
-  VkIcon,
 } from "@/components/ui/primitives";
 import { useStore } from "@/lib/store";
-import type { Network, RealChannel } from "@/lib/types";
+import type { RealChannel } from "@/lib/types";
 import {
   isMeaningfulProfile,
   normalizeProfile,
@@ -45,6 +44,13 @@ import { handleErrorText, parseHandle } from "@/lib/competitors";
 import { cn, initials, weekdayShort } from "@/lib/utils";
 import { RUBRICS } from "@/lib/brief";
 import { PROFILE_FORMAT_OPTIONS } from "@/lib/profile";
+import { appDraftActionHref } from "@/lib/app-routes";
+import { createServerDraft, DraftRequestError, updateServerDraft } from "@/lib/draft-client";
+import { onboardingDraftReplayAction } from "@/lib/onboarding-first-material";
+import {
+  completedOnboardingFallbackRoute,
+  onboardingEntryWasIncomplete,
+} from "@/lib/onboarding-navigation";
 import {
   onboardingRecoveryKey,
   parseOnboardingRecovery,
@@ -118,7 +124,7 @@ function StepFooter({
             Назад
           </Button>
         )}
-        <div className="ml-auto flex items-center gap-2">{children}</div>
+        <div className="ms-auto flex flex-wrap items-center justify-end gap-2">{children}</div>
       </div>
       {hint && (
         <p className="mt-3 text-[13px] leading-relaxed text-text-3 sm:text-right">{hint}</p>
@@ -179,7 +185,7 @@ function StepQuiz({
 
   return (
     <>
-      <StepHead time="2 минуты" title="Дай Авроре контекст">
+      <StepHead time="2 минуты" title="Настрой проект">
         Чем точнее ответы, тем меньше общих фраз и выдумок. Обязательны только тема и
         аудитория — остальные поля заметно улучшают голос, пользу и конверсию постов.
       </StepHead>
@@ -431,9 +437,6 @@ function Flow({ channel }: { channel?: RealChannel }) {
             <span className="flex h-9 w-9 items-center justify-center rounded-xs bg-info-soft text-info-text">
               <TelegramIcon className="h-[18px] w-[18px]" />
             </span>
-            <span className="flex h-9 w-9 items-center justify-center rounded-xs bg-info-soft text-info-text">
-              <VkIcon className="h-[18px] w-[18px]" />
-            </span>
           </div>
           <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-success-soft text-success-text">
             <Check className="h-4 w-4" strokeWidth={3} aria-hidden />
@@ -516,38 +519,18 @@ function connectError(code?: string): string {
   }
 }
 
-// Ошибки подключения VK-сообщества (connect-vk). Токен сообщества — проверяем его
-// сразу на живом API, поэтому «не подходит» означает ровно то, что написано.
-function connectVkError(code?: string): string {
-  switch (code) {
-    case "invalid_token":
-      return "Ключ не подошёл. Проверь, что создал ключ сообщества (не личный) и включил право «Стена» в «Управление → Работа с API».";
-    case "taken":
-      return "Это сообщество уже подключено к другому аккаунту Авроры. Одно сообщество — один аккаунт: так посты не задвоятся.";
-    case "empty":
-      return "Вставь ключ доступа сообщества.";
-    case "server":
-      return "Сервер не смог зашифровать ключ. Напиши в поддержку — это чинится на нашей стороне.";
-    case "unauthorized":
-      return "Сессия истекла — зайди заново.";
-    default:
-      return "Не получилось подключить. Попробуй ещё раз.";
-  }
-}
-
 function RealChannelRow({ channel }: { channel: RealChannel }) {
-  const isVk = channel.network === "vk";
   return (
     <li className="flex items-center gap-3 rounded-sm border border-line bg-surface p-3">
       <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xs bg-info-soft text-info-text">
-        {isVk ? <VkIcon className="h-5 w-5" /> : <TelegramIcon className="h-5 w-5" />}
+        <TelegramIcon className="h-5 w-5" />
       </span>
       <div className="min-w-0 flex-1">
         <p className="truncate text-[15px] font-bold -tracking-[0.01em] text-text">
           {channel.title || channel.handle}
         </p>
         <p className="truncate text-[13px] text-text-3">
-          {channel.handle ? `@${channel.handle}` : isVk ? "VK" : "Telegram"}
+          {channel.handle ? `@${channel.handle}` : "Telegram"}
         </p>
       </div>
       <Badge tone="success">
@@ -558,17 +541,17 @@ function RealChannelRow({ channel }: { channel: RealChannel }) {
   );
 }
 
-function StepConnect({ onNext }: { onNext: () => void | Promise<void> }) {
+function StepConnect({ onBack, onNext }: { onBack: () => void; onNext: () => void | Promise<void> }) {
   const s = useStore();
-  const [network, setNetwork] = useState<Network>("tg");
   const [handle, setHandle] = useState("");
-  const [vkToken, setVkToken] = useState("");
   const [connecting, setConnecting] = useState(false);
   const [advancing, setAdvancing] = useState(false);
   const [error, setError] = useState<string>();
 
-  const channels = s.realChannels.filter((channel) => channel.is_active);
-  const hasTelegram = channels.some((channel) => channel.network === "tg");
+  const channels = s.realChannels.filter(
+    (channel) => channel.is_active && channel.network === "tg",
+  );
+  const hasTelegram = channels.length > 0;
 
   async function continueOnboarding() {
     if (advancing || !hasTelegram) return;
@@ -583,38 +566,28 @@ function StepConnect({ onNext }: { onNext: () => void | Promise<void> }) {
     setError(undefined);
     setConnecting(true);
 
-    const res =
-      network === "vk"
-        ? await s.connectVkChannel(vkToken.trim())
-        : await s.connectChannel(handle.trim());
+    const res = await s.connectChannel(handle.trim());
 
     setConnecting(false);
     if (res.ok) {
       s.toast({
         kind: "success",
-        title: `Канал «${res.title ?? (network === "vk" ? "VK" : handle.trim())}» подключён`,
+        title: `Канал «${res.title ?? handle.trim()}» подключён`,
         body: "Теперь сюда можно постить с сервера.",
       });
       setHandle("");
-      setVkToken("");
 
       // Профиль будет извлечён на следующем шаге с явным channelId. Не запускаем
       // неадресную индексацию: при нескольких каналах она могла выбрать чужой канал.
     } else {
-      setError(network === "vk" ? connectVkError(res.error) : connectError(res.error));
+      setError(connectError(res.error));
     }
-  }
-
-  function pick(n: Network) {
-    if (n === network) return;
-    setNetwork(n);
-    setError(undefined);
   }
 
   return (
     <>
-      <StepHead time="2 минуты" title="Подключи канал">
-        Выбери сеть и добавь доступ — публиковать будет сервер, твой компьютер не нужен.
+      <StepHead time="2 минуты" title="Подключи Telegram">
+        Добавь канал и проверь доступ — публиковать будет сервер, твой компьютер не нужен.
       </StepHead>
 
       <div className="mt-7">
@@ -627,89 +600,32 @@ function StepConnect({ onNext }: { onNext: () => void | Promise<void> }) {
       <form onSubmit={connect} className="mt-7">
         <SubHead>Твой канал</SubHead>
 
-        {/* Переключатель сети: у TG и VK разные способы подключения */}
-        <div className="mt-3 inline-flex rounded-sm border border-line bg-surface p-1">
-          {(["tg", "vk"] as const).map((n) => (
-            <button
-              key={n}
-              type="button"
-              onClick={() => pick(n)}
-              aria-pressed={network === n}
-              className={cn(
-                "flex items-center gap-1.5 rounded-[3px] px-3 py-1.5 text-[13px] font-semibold transition-colors",
-                network === n ? "bg-info-soft text-info-text" : "text-text-3 hover:text-text",
-              )}
-            >
-              {n === "vk" ? <VkIcon className="h-4 w-4" /> : <TelegramIcon className="h-4 w-4" />}
-              {n === "vk" ? "VK" : "Telegram"}
-            </button>
-          ))}
+        <p className="mt-3 text-[13px] leading-relaxed text-text-3">
+          Добавь нашего бота <b className="font-bold text-text">{BOT_USERNAME}</b>{" "}
+          администратором Telegram-канала с правом публикации — потом вставь сюда @адрес.
+        </p>
+        <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+          <Input
+            value={handle}
+            disabled={connecting}
+            placeholder="@my_channel"
+            aria-label="Адрес твоего Telegram-канала"
+            aria-invalid={error ? true : undefined}
+            onChange={(e) => {
+              setHandle(e.target.value);
+              if (error) setError(undefined);
+            }}
+          />
+          <Button
+            type="submit"
+            variant="solid"
+            size="lg"
+            loading={connecting}
+            className="shrink-0"
+          >
+            Подключить Telegram
+          </Button>
         </div>
-
-        {network === "tg" ? (
-          <>
-            <p className="mt-3 text-[13px] leading-relaxed text-text-3">
-              Добавь нашего бота <b className="font-bold text-text">{BOT_USERNAME}</b>{" "}
-              администратором своего Telegram-канала с правом публикации — потом вставь сюда @адрес
-              канала.
-            </p>
-            <div className="mt-3 flex flex-col gap-2 sm:flex-row">
-              <Input
-                value={handle}
-                disabled={connecting}
-                placeholder="@my_channel"
-                aria-label="Адрес твоего Telegram-канала"
-                aria-invalid={error ? true : undefined}
-                onChange={(e) => {
-                  setHandle(e.target.value);
-                  if (error) setError(undefined);
-                }}
-              />
-              <Button
-                type="submit"
-                variant="solid"
-                size="lg"
-                loading={connecting}
-                className="shrink-0"
-              >
-                Подключить
-              </Button>
-            </div>
-          </>
-        ) : (
-          <>
-            <p className="mt-3 text-[13px] leading-relaxed text-text-3">
-              В VK зайди в сообщество → <b className="font-semibold text-text">Управление → Работа с
-              API</b> → «Создать ключ» и включи право{" "}
-              <b className="font-semibold text-text">«Стена»</b>. Вставь ключ сюда — мы проверим его
-              и сами определим сообщество. Ключ шифруется и виден только тебе.
-            </p>
-            <div className="mt-3 flex flex-col gap-2 sm:flex-row">
-              <Input
-                value={vkToken}
-                disabled={connecting}
-                type="password"
-                autoComplete="off"
-                placeholder="Ключ доступа сообщества"
-                aria-label="Ключ доступа VK-сообщества"
-                aria-invalid={error ? true : undefined}
-                onChange={(e) => {
-                  setVkToken(e.target.value);
-                  if (error) setError(undefined);
-                }}
-              />
-              <Button
-                type="submit"
-                variant="solid"
-                size="lg"
-                loading={connecting}
-                className="shrink-0"
-              >
-                Подключить
-              </Button>
-            </div>
-          </>
-        )}
 
         {error && (
           <p role="alert" className="mt-2 text-[13px] leading-relaxed font-medium text-danger-text">
@@ -726,7 +642,7 @@ function StepConnect({ onNext }: { onNext: () => void | Promise<void> }) {
         )}
       </form>
 
-      <StepFooter>
+      <StepFooter onBack={onBack}>
         <Button variant="brand" size="lg" onClick={() => void continueOnboarding()} loading={advancing} disabled={!hasTelegram}>
           Дальше
           <ArrowRight className="h-4 w-4" strokeWidth={2.5} aria-hidden />
@@ -734,7 +650,7 @@ function StepConnect({ onNext }: { onNext: () => void | Promise<void> }) {
       </StepFooter>
       {!hasTelegram && (
         <p className="mt-3 text-center text-[13px] text-text-3">
-          Для профиля и безопасного автопилота подключи Telegram-канал.
+          Чтобы проверить канал и сохранить первый материал, подключи Telegram.
         </p>
       )}
     </>
@@ -1183,9 +1099,9 @@ function StepCompetitors({
           «мы найдём твоих конкурентов» из пустоты нельзя — у Telegram нет поиска каналов,
           и свежий канал чаще всего не упоминает никого (проверено на живых). Один живой сосед
           — и дальше находки появляются сами: у юр. канала из одного @made4lawyers выросло шесть. */}
-      <StepHead time="1 минута" title="Назови одного конкурента">
-        Дальше я сам: посмотрю, на кого он ссылается, проверю каждого и принесу список соседей
-        по нише. Одного хватит — но если знаешь ещё, добавь.
+      <StepHead time="1 минута" title="Добавь первый источник">
+        Укажи один публичный канал по своей теме. Аврора сохранит его как отправную точку
+        для доказательств и примеров. Если источника пока нет, этот шаг можно пропустить.
       </StepHead>
 
       <form
@@ -1248,7 +1164,7 @@ function StepCompetitors({
             <EmptyState
               icon={<Radar className="h-5 w-5" strokeWidth={1.75} aria-hidden />}
               title="Пока никого"
-              body="Вставь ссылку на один чужой канал из твоей темы — этого хватит, чтобы разведка началась."
+              body="Вставь ссылку на один публичный канал из твоей темы — этого хватит для первых примеров и доказательств."
             />
           </div>
         ) : (
@@ -1265,7 +1181,7 @@ function StepCompetitors({
                 >
                   @{normHandle(h)}
                 </span>
-                <span className="ml-auto shrink-0 text-[12px] text-text-3">собираю досье</span>
+                <span className="ms-auto shrink-0 text-[12px] text-text-3">источник добавлен</span>
               </li>
             ))}
           </ul>
@@ -1274,7 +1190,7 @@ function StepCompetitors({
 
       <StepFooter
         onBack={onBack}
-        hint="Можно и без конкурентов, но тогда разведка не заработает — а это главное в платформе."
+        hint="Шаг необязательный: источник можно добавить позже в разделе «Источники»."
       >
         <Button variant="ghost" onClick={onSkip}>
           Пропустить
@@ -1293,42 +1209,124 @@ function StepCompetitors({
 function StepFinish({
   quiz,
   userId,
+  channelId,
+  onMaterialChange,
   onBack,
 }: {
   quiz: QuizAnswers;
   userId: number;
+  channelId: number | null;
+  onMaterialChange: (value: string) => void;
   onBack: () => void;
 }) {
   const s = useStore();
   const router = useRouter();
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [savedDraftId, setSavedDraftId] = useState<number | null>(null);
+  const materialRef = useRef<HTMLTextAreaElement>(null);
 
-  const finish = async () => {
-    if (saving) return;
+  async function completeAndOpen(draftId: number) {
+    if (!channelId) return;
     setSaving(true);
-    const completed = await s.finishOnboarding();
+    setError(null);
+    const completed = await s.finishOnboarding({ channelId, draftId });
     if (!completed) {
       setSaving(false);
-      s.toast({
-        kind: "danger",
-        title: "Онбординг не завершён",
-        body: "Сервер не подтвердил результат. Ответы сохранены в этой учётной записи браузера — повтори.",
-      });
+      setError("Материал сохранён, но сервер не подтвердил завершение настройки. Повтори — дубликат не появится.");
       return;
     }
     clearQuizLS(userId);
     s.toast({
       kind: "success",
       title: "Всё готово",
-      body: "Календарь ждёт. Первый пост создаётся кликом в день.",
+      body: "Первый материал сохранён. Можно продолжить в редакторе.",
     });
-    router.push("/app/calendar");
+    router.push(appDraftActionHref("editor", draftId));
+  }
+
+  const finish = async () => {
+    if (saving) return;
+    if (!channelId) {
+      setError("Вернись к подключению и выбери активный Telegram-канал.");
+      return;
+    }
+    if (quiz.firstMaterial.trim().length < 3) {
+      setError("Напиши хотя бы одну короткую мысль для первого материала.");
+      materialRef.current?.focus();
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    setSavedDraftId(null);
+    let draftId: number;
+    try {
+      const progressResponse = await fetch("/api/onboarding/progress", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ step: 5, channelId }),
+      });
+      const progressBody = (await progressResponse.json().catch(() => null)) as { ok?: boolean } | null;
+      if (!progressResponse.ok || !progressBody?.ok) throw new Error("progress_not_confirmed");
+
+      const result = await createServerDraft({
+        clientKey: `onboarding:first-material:${userId}:${channelId}`,
+        text: quiz.firstMaterial,
+        formatting: [],
+        media: null,
+        scheduledAt: null,
+        origin: "manual",
+        sourceRef: null,
+        channelIds: [channelId],
+        aiValidation: null,
+      });
+
+      draftId = result.draft.id;
+      const replayAction = onboardingDraftReplayAction({
+        created: result.created,
+        requestedText: quiz.firstMaterial,
+        draftText: result.draft.text,
+        draftVersion: result.draft.version,
+      });
+      if (replayAction === "conflict") {
+        setSaving(false);
+        setSavedDraftId(draftId);
+        setError("Этот черновик уже изменён в редакторе. Открой сохранённую версию — текст из редактора не будет перезаписан.");
+        return;
+      }
+      if (replayAction === "update") {
+        await updateServerDraft(draftId, {
+          version: result.draft.version,
+          text: quiz.firstMaterial,
+          formatting: [],
+          media: result.draft.media,
+          scheduledAt: result.draft.scheduled_at,
+          origin: "manual",
+          sourceRef: null,
+          channelIds: [channelId],
+          aiValidation: null,
+          tracking: result.draft.tracking ?? null,
+        });
+      }
+    } catch (caught) {
+      setSaving(false);
+      if (caught instanceof DraftRequestError && caught.kind === "conflict") {
+        setSavedDraftId(caught.current?.id ?? null);
+        setError("Черновик изменился в другой вкладке. Открой сохранённую версию и продолжи работу там.");
+      } else {
+        setError("Не удалось сохранить материал. Проверь соединение и повтори.");
+      }
+      return;
+    }
+
+    await completeAndOpen(draftId);
   };
 
   return (
     <>
-      <StepHead time="готово" title="Профиль канала сохранён">
-        Проверь короткое резюме. Аврора завершит настройку только после подтверждения сервера.
+      <StepHead time="2 минуты" title="Создай первый материал">
+        Запиши одну полезную мысль для аудитории. Аврора сохранит её как обычный черновик
+        и откроет в редакторе после серверной проверки всех шагов.
       </StepHead>
 
       <div className="mt-7 grid gap-3 rounded-md border border-line bg-surface-inset p-5 text-[14px] leading-relaxed">
@@ -1339,9 +1337,45 @@ function StepFinish({
         {quiz.tone && <p><span className="font-semibold text-text">Голос:</span> <span className="text-text-2">{quiz.tone}</span></p>}
       </div>
 
+      <Field
+        label="Текст первого материала"
+        htmlFor="onboarding-first-material"
+        required
+        error={error ?? undefined}
+        messageId="onboarding-first-material-message"
+      >
+        <Textarea
+          ref={materialRef}
+          id="onboarding-first-material"
+          className="mt-2 min-h-40 text-base sm:text-sm"
+          value={quiz.firstMaterial}
+          maxLength={16_384}
+          aria-invalid={error ? true : undefined}
+          aria-describedby={error ? "onboarding-first-material-message" : undefined}
+          onChange={(event) => {
+            onMaterialChange(event.target.value);
+            if (error) {
+              setError(null);
+              setSavedDraftId(null);
+            }
+          }}
+          placeholder="Например: три пункта договора, которые стоит проверить до подписания…"
+        />
+      </Field>
+
+      {savedDraftId != null && (
+        <Button
+          variant="secondary"
+          loading={saving}
+          onClick={() => void completeAndOpen(savedDraftId)}
+        >
+          Использовать сохранённую версию
+        </Button>
+      )}
+
       <StepFooter onBack={onBack}>
         <Button variant="brand" size="lg" onClick={() => void finish()} loading={saving}>
-          Готово — в календарь
+          Сохранить и открыть редактор
           <ArrowRight className="h-4 w-4" strokeWidth={2.5} aria-hidden />
         </Button>
       </StepFooter>
@@ -1410,7 +1444,46 @@ function Wizard({ userId }: { userId: number }) {
     cta: "",
     taboo: "",
     tone: "",
+    firstMaterial: "",
   });
+  const [progressState, setProgressState] = useState<"loading" | "ready" | "saving" | "error">("loading");
+  const [progressReload, setProgressReload] = useState(0);
+  const progressQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const progressSequenceRef = useRef(0);
+  const lastProgressPayloadRef = useRef<{
+    step: StepNo;
+    channelId: number | null;
+    skippedFirstSource?: boolean;
+  } | null>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void fetch("/api/onboarding/progress", { cache: "no-store", signal: controller.signal })
+      .then(async (response) => {
+        const body = (await response.json().catch(() => null)) as {
+          ok?: boolean;
+          progress?: { step?: unknown; channelId?: unknown };
+        } | null;
+        if (!response.ok || !body?.ok) throw new Error("progress_unavailable");
+        const serverStep = Number(body.progress?.step);
+        const serverChannelId = body.progress?.channelId == null
+          ? null
+          : Number(body.progress.channelId);
+        if (Number.isSafeInteger(serverStep) && serverStep >= 1 && serverStep <= 5) {
+          setStepRaw((current) => Math.max(current, serverStep) as StepNo);
+        }
+        if (Number.isSafeInteger(serverChannelId) && Number(serverChannelId) > 0) {
+          setPickedChannelId(Number(serverChannelId));
+          if (serverStep >= 3) setLockedChannelId(Number(serverChannelId));
+        }
+        setProgressState("ready");
+      })
+      .catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        setProgressState("error");
+      });
+    return () => controller.abort();
+  }, [progressReload, userId]);
 
   const lockedChannelExists =
     lockedChannelId == null || tgChannels.some((channel) => channel.id === lockedChannelId);
@@ -1426,10 +1499,40 @@ function Wizard({ userId }: { userId: number }) {
     return () => window.clearTimeout(reset);
   }, [channelId, lockedChannelExists, quiz, s.realError, s.realReady, step, userId]);
 
-  // Обёртки: сохраняем в localStorage при каждом изменении.
-  const setStep = (v: StepNo) => {
+  function persistProgress(payload: {
+    step: StepNo;
+    channelId: number | null;
+    skippedFirstSource?: boolean;
+  }) {
+    lastProgressPayloadRef.current = payload;
+    const sequence = ++progressSequenceRef.current;
+    setProgressState("saving");
+    progressQueueRef.current = progressQueueRef.current
+      .catch(() => {})
+      .then(async () => {
+        const response = await fetch("/api/onboarding/progress", {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const body = (await response.json().catch(() => null)) as { ok?: boolean } | null;
+        if (!response.ok || !body?.ok) throw new Error("progress_not_saved");
+        if (progressSequenceRef.current === sequence) setProgressState("ready");
+      })
+      .catch(() => {
+        if (progressSequenceRef.current === sequence) setProgressState("error");
+      });
+  }
+
+  // Browser recovery is immediate; the same transition is serialized to the server.
+  const setStep = (v: StepNo, options: { skippedFirstSource?: boolean } = {}) => {
     setStepRaw(v);
     saveQuizToLS(userId, quiz, v, effectiveChannelId);
+    persistProgress({
+      step: v,
+      channelId: effectiveChannelId,
+      ...(options.skippedFirstSource ? { skippedFirstSource: true } : {}),
+    });
   };
   const setQuiz = (v: QuizAnswers) => {
     setQuizRaw(v);
@@ -1474,6 +1577,8 @@ function Wizard({ userId }: { userId: number }) {
     }
   };
 
+  if (progressState === "loading") return <WizardSkeleton />;
+
   return (
     <>
       {/* Прогресс: заполняется scaleX от левого края — только transform, без width */}
@@ -1502,6 +1607,30 @@ function Wizard({ userId }: { userId: number }) {
         Шаг {step} из {TOTAL}
       </p>
 
+      <div className="mt-3 min-h-11" aria-live="polite">
+        {progressState === "saving" ? (
+          <p role="status" className="text-center text-[13px] text-text-3">Сохраняем прогресс…</p>
+        ) : progressState === "error" ? (
+          <div role="alert" className="flex flex-wrap items-center justify-center gap-2 rounded-sm bg-danger-soft px-3 py-2 text-[13px] text-danger-text">
+            <span>Сервер не подтвердил прогресс. Локальная копия сохранена.</span>
+            <button
+              type="button"
+              className="min-h-11 rounded-xs px-3 font-semibold underline underline-offset-4 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+              onClick={() => {
+                const payload = lastProgressPayloadRef.current;
+                if (payload) persistProgress(payload);
+                else {
+                  setProgressState("loading");
+                  setProgressReload((value) => value + 1);
+                }
+              }}
+            >
+              Повторить сохранение
+            </button>
+          </div>
+        ) : null}
+      </div>
+
       {step === 2 && (
         <ChannelPicker
           channels={tgChannels}
@@ -1510,7 +1639,7 @@ function Wizard({ userId }: { userId: number }) {
             setPickedChannelId(nextChannelId);
             saveQuizToLS(userId, quiz, step, nextChannelId);
           }}
-          label="Канал для профиля и автопилота"
+          label="Канал для профиля и публикации"
           className="mt-5 rounded-md border border-line bg-surface p-4"
         />
       )}
@@ -1519,7 +1648,7 @@ function Wizard({ userId }: { userId: number }) {
         strong
         className="mt-6 flex min-h-[520px] w-full flex-col overflow-hidden rounded-xl p-6 sm:p-8"
       >
-        <AnimatePresence mode="wait">
+        <AnimatePresence mode="wait" initial={false}>
           <motion.div
             key={step}
             initial={reduced ? { opacity: 0 } : { opacity: 0, x: 24 }}
@@ -1533,6 +1662,7 @@ function Wizard({ userId }: { userId: number }) {
             )}
             {step === 2 && (
               <StepConnect
+                onBack={() => setStep(1)}
                 onNext={async () => {
                   if (await saveBrief()) {
                     setLockedChannelId(effectiveChannelId);
@@ -1557,13 +1687,15 @@ function Wizard({ userId }: { userId: number }) {
                 channelId={effectiveChannelId}
                 onBack={() => setStep(3)}
                 onNext={() => setStep(5)}
-                onSkip={() => setStep(5)}
+                onSkip={() => setStep(5, { skippedFirstSource: true })}
               />
             )}
             {step === 5 && (
               <StepFinish
                 quiz={quiz}
                 userId={userId}
+                channelId={effectiveChannelId}
+                onMaterialChange={(firstMaterial) => setQuiz({ ...quiz, firstMaterial })}
                 onBack={() => setStep(4)}
               />
             )}
@@ -1620,12 +1752,25 @@ function WizardSkeleton() {
 export default function OnboardingPage() {
   const s = useStore();
   const router = useRouter();
+  const startedIncompleteRef = useRef<boolean | null>(null);
 
   useEffect(() => {
     if (!s.authReady) return;
     if (s.authError) return;
     if (!s.user) router.replace("/login");
-    else if (s.user.onboarded) router.replace("/app/calendar");
+    else {
+      if (startedIncompleteRef.current == null) {
+        startedIncompleteRef.current = onboardingEntryWasIncomplete(null, s.user.onboarded);
+      }
+      // A user who opened an already completed onboarding should leave immediately.
+      // During a fresh completion, StepFinish owns the exact draft-aware navigation;
+      // redirecting here would race it and incorrectly land in the calendar.
+      const fallbackRoute = completedOnboardingFallbackRoute(
+        s.user.onboarded,
+        startedIncompleteRef.current,
+      );
+      if (fallbackRoute) router.replace(fallbackRoute);
+    }
   }, [router, s.authReady, s.authError, s.user]);
 
   const user = s.user;

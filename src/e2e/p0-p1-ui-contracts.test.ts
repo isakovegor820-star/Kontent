@@ -70,7 +70,7 @@ function registryItem(overrides: Partial<LibraryRegistryItem> = {}): LibraryRegi
 }
 
 describe("P0 desktop/mobile navigation and Library action contract", () => {
-  it("uses one active-route registry on desktop and mobile, including aliases", () => {
+  it("uses one stable active-route registry on desktop and mobile", () => {
     const desktopRouteIds = APP_NAV_GROUPS.flatMap((group) => group.routeIds);
     expect(new Set(desktopRouteIds).size).toBe(desktopRouteIds.length);
 
@@ -81,14 +81,10 @@ describe("P0 desktop/mobile navigation and Library action contract", () => {
 
     const cases = [
       ["/app/calendar", "calendar"],
-      ["/app/composer?draft=901", "calendar"],
-      ["/app/studio?draft=901", "studio"],
+      ["/app/composer?draft=901", "composer"],
       ["/app/library?channel=18", "library"],
-      ["/app/competitors/42?channel=18", "recon"],
-      ["/app/trends?channel=18", "recon"],
-      ["/app/radar", "recon"],
-      ["/app/site-analysis/9", "siteAnalysis"],
-      ["/app/growth", "growth"],
+      ["/app/analytics", "analytics"],
+      ["/app/settings", "settings"],
     ] as const;
     for (const [url, routeId] of cases) {
       expect(isAppRouteActive(new URL(url, "https://aurora.test").pathname, routeId)).toBe(true);
@@ -124,8 +120,8 @@ describe("P0 desktop/mobile navigation and Library action contract", () => {
     const create = new URL(appDraftActionHref("create", 901), "https://aurora.test");
     const discuss = new URL(appDraftActionHref("discuss", 901), "https://aurora.test");
     expect(editor.pathname).toBe("/app/composer");
-    expect(create.pathname).toBe("/app/studio");
-    expect(discuss.pathname).toBe("/app/studio");
+    expect(create.pathname).toBe("/app/composer");
+    expect(discuss.pathname).toBe("/app/composer");
     for (const target of [editor, create, discuss]) {
       expect(target.searchParams.get("draft")).toBe("901");
       expect(target.href).not.toContain(encodeURIComponent(longReference.slice(0, 80)));

@@ -19,6 +19,7 @@ import {
   ChevronDown,
   LogOut,
   Menu,
+  Pencil,
   SearchCode,
   Rocket,
   Scale,
@@ -69,9 +70,10 @@ type NavItem = {
   children?: readonly NavChild[];
 };
 
-const NAV_ICONS: Record<AppNavRouteId, LucideIcon> = {
+const NAV_ICONS: Record<AppNavRouteId, LucideIcon> & Partial<Record<keyof typeof APP_ROUTES, LucideIcon>> = {
   today: Sunrise,
   calendar: Calendar,
+  composer: Pencil,
   studio: Sparkles,
   autopilot: Rocket,
   library: Bookmark,
@@ -83,7 +85,7 @@ const NAV_ICONS: Record<AppNavRouteId, LucideIcon> = {
   settings: Settings,
 };
 
-const NAV_CHILDREN: Partial<Record<AppNavRouteId, readonly NavChild[]>> = {
+const NAV_CHILDREN: Partial<Record<keyof typeof APP_ROUTES, readonly NavChild[]>> = {
   studio: [
     { href: "/app/studio?mode=chat", label: "Чат" },
     { href: "/app/studio/questions", label: "Запросы аудитории" },

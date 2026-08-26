@@ -379,6 +379,7 @@ const REDIS_URL = process.env.REDIS_URL || "redis://127.0.0.1:6379";
 const DATABASE_URL = process.env.DATABASE_URL;
 const TOKEN = process.env.TG_BOT_TOKEN;
 const OWNER_CHAT = process.env.TG_CHAT_ID;
+const EXPERIMENTAL_ROUTES_ENABLED = process.env.NEXT_PUBLIC_AURORA_EXPERIMENTAL_ROUTES === "1";
 // Repair mode for local incidents: process manual/background jobs without starting the
 // publication queue, cron or Telegram polling. It lets us recover Autopilot without an
 // overdue scheduled post suddenly going live. Normal `npm run worker` remains full mode.
@@ -2702,6 +2703,9 @@ async function botSendMenu(chatId, userId) {
 }
 
 async function botSendPrimaryAction(chatId, userId, action) {
+  if (!EXPERIMENTAL_ROUTES_ENABLED && new Set(["clients", "plan", "trends"]).has(action)) {
+    return tgSend(chatId, "Эта возможность не входит в стабильный релиз. Доступны календарь, редактор, согласование и результаты.");
+  }
   if (action === "menu") return botSendMenu(chatId, userId);
   if (action === "connection") {
     const status = await botConnectionStatus(userId);
@@ -2732,12 +2736,14 @@ async function botSendPrimaryAction(chatId, userId, action) {
     return tgSend(chatId, clients.text, clients.buttons);
   }
   if (action === "more") {
-    const candidateMiniAppUrl = botAppUrl("/bot");
+    const candidateMiniAppUrl = EXPERIMENTAL_ROUTES_ENABLED ? botAppUrl("/bot") : null;
     const miniAppUrl = candidateMiniAppUrl?.startsWith("https://") ? candidateMiniAppUrl : null;
     return tgSend(chatId, "Ещё возможности Авроры", [
       [{ text: "Открыть календарь", data: "menu:calendar" }, { text: "Показать аналитику", data: "menu:stats" }],
-      [{ text: "Проверить план", data: "menu:plan" }, { text: "Показать тренды", data: "menu:trends" }],
-      [{ text: "Вопросы клиентов", data: "menu:clients" }],
+      ...(EXPERIMENTAL_ROUTES_ENABLED ? [
+        [{ text: "Проверить план", data: "menu:plan" }, { text: "Показать тренды", data: "menu:trends" }],
+        [{ text: "Вопросы клиентов", data: "menu:clients" }],
+      ] : []),
       [{ text: "Настроить уведомления", data: "menu:notifications" }],
       ...(miniAppUrl ? [[{ text: "Открыть кабинет в Telegram", webApp: miniAppUrl }]] : []),
       [{ text: "Показать помощь", data: "menu:help" }],
@@ -10117,6 +10123,15 @@ async function handleUpdate(u) {
       }
 
       if (kind === "menu") {
+        if (!EXPERIMENTAL_ROUTES_ENABLED && new Set(["clients", "plan", "trends"]).has(action)) {
+          await answerCb(cb.id, "Недоступно в стабильном релизе");
+          return void (await tgReplaceOrSend(
+            chatId,
+            cb.message?.message_id,
+            "Эта возможность не входит в стабильный релиз. Доступны календарь, редактор, согласование и результаты.",
+            [[{ text: "Вернуться в меню", data: "menu:home" }]],
+          ));
+        }
         await answerCb(cb.id, "Открываю…");
         if (action === "home") {
           if (cb.message?.message_id) {

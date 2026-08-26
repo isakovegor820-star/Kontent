@@ -23,30 +23,27 @@ describe("app route registry", () => {
     }
   });
 
-  it("keeps Today permanently discoverable in desktop and mobile navigation", () => {
+  it("keeps the release navigation on the approved core workflow", () => {
     const workGroup = APP_NAV_GROUPS.find((group) => group.id === "work");
-    const shell = readFileSync(new URL("../components/app/shell.tsx", import.meta.url), "utf8");
-
-    expect(workGroup?.routeIds[0]).toBe("today");
-    expect(APP_BOTTOM_NAV_ROUTE_IDS).toContain("today");
-    expect(shell).not.toContain("useTodayNavigationAvailability");
-    expect(shell).not.toContain("summary=availability");
-    expect(shell).not.toContain('routeId !== "today"');
+    expect(workGroup?.routeIds).toEqual(["calendar", "composer", "library", "rss"]);
+    expect(APP_BOTTOM_NAV_ROUTE_IDS).toEqual(["calendar", "composer", "library", "analytics"]);
+    expect(workGroup?.routeIds).not.toContain("today");
+    expect(workGroup?.routeIds).not.toContain("studio");
+    expect(workGroup?.routeIds).not.toContain("autopilot");
   });
 
-  it("puts Growth in results and keeps it off the four-item mobile bar", () => {
+  it("keeps only basic analytics and settings in results", () => {
     expect(APP_NAV_GROUPS.find((group) => group.id === "results")?.routeIds).toEqual([
-      "growth",
       "analytics",
       "settings",
     ]);
-    expect(APP_ROUTES.growth).toMatchObject({ href: "/app/growth", label: "Развитие" });
     expect(APP_BOTTOM_NAV_ROUTE_IDS).toHaveLength(4);
     expect(APP_BOTTOM_NAV_ROUTE_IDS).not.toContain("growth");
   });
 
   it("uses the same aliases for desktop and mobile active state", () => {
-    expect(isAppRouteActive("/app/composer", "calendar")).toBe(true);
+    expect(isAppRouteActive("/app/composer", "composer")).toBe(true);
+    expect(isAppRouteActive("/app/composer", "calendar")).toBe(false);
     expect(isAppRouteActive("/app/competitors/41", "recon")).toBe(true);
     expect(isAppRouteActive("/app/trends", "recon")).toBe(true);
     expect(isAppRouteActive("/app/radar", "recon")).toBe(true);
@@ -65,10 +62,10 @@ describe("app route registry", () => {
 });
 
 describe("app action registry", () => {
-  it("splits editor/create, discuss, and original destinations exactly", () => {
+  it("keeps draft-backed stable actions inside the editor", () => {
     expect(APP_ACTIONS.editor).toMatchObject({ destination: "composer", routeId: "composer" });
-    expect(APP_ACTIONS.create).toMatchObject({ destination: "studio", routeId: "studio", intent: "create" });
-    expect(APP_ACTIONS.discuss).toMatchObject({ destination: "studio", routeId: "studio", intent: "discuss" });
+    expect(APP_ACTIONS.create).toMatchObject({ destination: "composer", routeId: "composer", intent: "create" });
+    expect(APP_ACTIONS.discuss).toMatchObject({ destination: "composer", routeId: "composer", intent: "discuss" });
     expect(APP_ACTIONS.original).toEqual({ destination: "external", routeId: null });
   });
 
@@ -78,6 +75,7 @@ describe("app action registry", () => {
     for (const action of ["editor", "create", "discuss"] as const) {
       const href = appDraftActionHref(action, 41);
       const url = new URL(href, "https://aurora.test");
+      expect(url.pathname).toBe("/app/composer");
       expect(url.searchParams.get("draft")).toBe("41");
       expect([...url.searchParams.keys()].sort()).toEqual(
         action === "editor" ? ["draft"] : ["draft", "intent"],

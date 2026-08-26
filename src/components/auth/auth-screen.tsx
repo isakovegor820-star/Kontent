@@ -41,7 +41,7 @@ function validateEmail(raw: string): string | undefined {
   return undefined;
 }
 
-function signedInDestination(intent: AuthIntent) {
+function signedInDestination(intent: AuthIntent, onboarded = true) {
   if (intent === "admin") return "/admin#overview";
   if (hasPendingProjectInvite(typeof window === "undefined" ? null : window.sessionStorage)) {
     return "/invite";
@@ -50,6 +50,7 @@ function signedInDestination(intent: AuthIntent) {
     const requested = new URLSearchParams(window.location.search).get("next");
     if (requested === "/bot/connect") return requested;
   }
+  if (!onboarded) return "/app/onboarding";
   return "/app/calendar";
 }
 
@@ -74,7 +75,9 @@ export function AuthScreen({ mode, intent = "platform" }: { mode: AuthMode; inte
   const isAdmin = intent === "admin";
 
   useEffect(() => {
-    if (store.authReady && store.user) router.replace(signedInDestination(intent));
+    if (store.authReady && store.user) {
+      router.replace(signedInDestination(intent, store.user.onboarded));
+    }
   }, [intent, router, store.authReady, store.user]);
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
@@ -137,7 +140,6 @@ export function AuthScreen({ mode, intent = "platform" }: { mode: AuthMode; inte
           title: isRegistration ? "Аккаунт создан" : "Вход выполнен",
           body: isAdmin ? "Открываем центр управления." : "Открываем платформу.",
         });
-        router.replace(signedInDestination(intent));
         return;
       }
 
@@ -381,12 +383,12 @@ export function AuthScreen({ mode, intent = "platform" }: { mode: AuthMode; inte
               <span><Check aria-hidden="true" />Всё готово к работе</span>
               <h2>
                 {isRegistration
-                  ? "Из регистрации — сразу в рабочий календарь"
+                  ? "Из регистрации — в понятную настройку"
                   : "Всё на месте — продолжайте с календаря"}
               </h2>
               <p>
                 {isRegistration
-                  ? "Подключите каналы, соберите первую неделю и опубликуйте пост без лишних настроек."
+                  ? "Настройте проект, подключите Telegram и сохраните первый материал за пять коротких шагов."
                   : "Вернитесь к контент-плану, согласованиям и аналитике без повторной настройки."}
               </p>
             </div>

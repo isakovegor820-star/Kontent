@@ -17,9 +17,10 @@ describe("public authentication flow", () => {
     expect(authScreen).not.toContain("14 дней бесплатно");
   });
 
-  it("creates the correct session and opens the platform after success", () => {
+  it("creates the correct session and routes unfinished accounts to onboarding", () => {
     expect(authScreen).toContain('isRegistration ? "/api/auth/register" : "/api/auth/login"');
-    expect(authScreen).toContain("router.replace(signedInDestination(intent))");
+    expect(authScreen).toContain("router.replace(signedInDestination(intent, store.user.onboarded))");
+    expect(authScreen).toContain('if (!onboarded) return "/app/onboarding"');
     expect(authScreen).toContain('"/app/calendar"');
   });
 

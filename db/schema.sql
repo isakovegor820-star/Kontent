@@ -2860,6 +2860,43 @@ create unique index if not exists posts_id_project_uniq on posts (id, project_id
 create unique index if not exists publication_operations_id_project_uniq
   on publication_operations (id, project_id);
 
+-- ------------------------------------------------ Stable onboarding progress
+
+-- The migration remains the deployment authority. Keeping the same additive shape in
+-- schema.sql lets fresh development databases start at the identical release boundary.
+-- This block follows the project backfill and composite unique keys because its tenant
+-- foreign keys need channels.project_id and drafts.project_id on a fresh bootstrap.
+create table if not exists onboarding_progress (
+  user_id              bigint primary key references users (id) on delete cascade,
+  project_id           bigint not null,
+  step                 smallint not null default 1,
+  channel_id           bigint,
+  first_draft_id       bigint,
+  skipped_first_source boolean not null default false,
+  version              bigint not null default 1,
+  completed_at         timestamptz,
+  created_at           timestamptz not null default now(),
+  updated_at           timestamptz not null default now(),
+  constraint onboarding_progress_member_fk
+    foreign key (project_id, user_id)
+    references project_members (project_id, user_id) on delete cascade,
+  constraint onboarding_progress_channel_project_fk
+    foreign key (channel_id, project_id)
+    references channels (id, project_id) on delete restrict,
+  constraint onboarding_progress_draft_project_fk
+    foreign key (first_draft_id, project_id)
+    references drafts (id, project_id) on delete restrict,
+  constraint onboarding_progress_step_check check (step between 1 and 5),
+  constraint onboarding_progress_version_check check (version > 0),
+  constraint onboarding_progress_completion_check check (
+    completed_at is null
+    or (step = 5 and channel_id is not null and first_draft_id is not null)
+  )
+);
+
+create index if not exists onboarding_progress_project_updated_idx
+  on onboarding_progress (project_id, updated_at desc);
+
 -- Durable one-at-a-time Telegram composer. Its composite tenant keys require the
 -- project columns and unique keys above to exist first on a fresh bootstrap.
 create table if not exists bot_conversations (

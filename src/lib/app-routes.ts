@@ -1,3 +1,5 @@
+import { experimentalRoutesEnabled } from "./release-scope";
+
 export type AppPath = `/app${string}`;
 
 type AppRouteDefinition = Readonly<{
@@ -17,7 +19,7 @@ export const APP_ROUTES = {
     href: "/app/calendar",
     label: "Календарь",
     mobileLabel: "План",
-    activeAliases: ["/app/composer"],
+    activeAliases: [],
   },
   composer: {
     href: "/app/composer",
@@ -102,17 +104,12 @@ export const APP_NAV_GROUPS = [
   {
     id: "work",
     title: "Работа",
-    routeIds: ["today", "calendar", "studio", "autopilot", "library", "rss"],
-  },
-  {
-    id: "market",
-    title: "Рынок",
-    routeIds: ["recon", "siteAnalysis"],
+    routeIds: ["calendar", "composer", "library", "rss"],
   },
   {
     id: "results",
     title: "Итоги",
-    routeIds: ["growth", "analytics", "settings"],
+    routeIds: ["analytics", "settings"],
   },
 ] as const satisfies readonly {
   id: string;
@@ -123,9 +120,9 @@ export const APP_NAV_GROUPS = [
 export type AppNavRouteId = (typeof APP_NAV_GROUPS)[number]["routeIds"][number];
 
 export const APP_BOTTOM_NAV_ROUTE_IDS = [
-  "today",
-  "studio",
-  "recon",
+  "calendar",
+  "composer",
+  "library",
   "analytics",
 ] as const satisfies readonly AppNavRouteId[];
 
@@ -153,10 +150,18 @@ type InternalActionDefinition = Readonly<{
   intent?: "create" | "discuss";
 }>;
 
+const experimentalActionsEnabled = experimentalRoutesEnabled(
+  process.env.NEXT_PUBLIC_AURORA_EXPERIMENTAL_ROUTES,
+);
+
 export const APP_ACTIONS = {
   editor: { destination: "composer", routeId: "composer" },
-  create: { destination: "studio", routeId: "studio", intent: "create" },
-  discuss: { destination: "studio", routeId: "studio", intent: "discuss" },
+  create: experimentalActionsEnabled
+    ? { destination: "studio", routeId: "studio", intent: "create" }
+    : { destination: "composer", routeId: "composer", intent: "create" },
+  discuss: experimentalActionsEnabled
+    ? { destination: "studio", routeId: "studio", intent: "discuss" }
+    : { destination: "composer", routeId: "composer", intent: "discuss" },
   original: { destination: "external", routeId: null },
 } as const satisfies Record<
   "editor" | "create" | "discuss",

@@ -59,6 +59,7 @@ import { getAiUsageMetrics } from "@/lib/ai-usage-sync";
 import type { Network } from "@/lib/types";
 import { NETWORK_LABEL, cn, fmtNum, plural } from "@/lib/utils";
 import { parseBotLinkStatusResponse, requireBotUnlinkSuccess } from "@/lib/bot-link-client";
+import { experimentalRoutesEnabled } from "@/lib/release-scope";
 import {
   hasComposerPayloadSupport,
   type OAuthProviderCapability,
@@ -66,6 +67,9 @@ import {
 import type { TenChatIntegrationReadiness } from "@/lib/tenchat-integration.mjs";
 
 const EASE = [0.22, 1, 0.36, 1] as const;
+const EXPERIMENTAL_ROUTES_ENABLED = experimentalRoutesEnabled(
+  process.env.NEXT_PUBLIC_AURORA_EXPERIMENTAL_ROUTES,
+);
 
 /* --------------------------------------------------------------- СЕКЦИЯ */
 // Единая рамка для всех блоков: иконка, заголовок, объяснение — и тело.
@@ -139,7 +143,10 @@ function ChannelsSection({ index }: { index: number }) {
   const s = useStore();
   const router = useRouter();
   const [disconnecting, setDisconnecting] = useState<number | null>(null);
-  const channels = s.realChannels.filter((channel) => channel.status !== "disconnected");
+  const channels = s.realChannels.filter((channel) => (
+    channel.status !== "disconnected"
+    && (EXPERIMENTAL_ROUTES_ENABLED || channel.network === "tg")
+  ));
   const addMore = () => router.push("/app/onboarding");
   const disconnect = async (channelId: number) => {
     if (disconnecting != null) return;
@@ -174,8 +181,10 @@ function ChannelsSection({ index }: { index: number }) {
     <Section
       icon={Link2}
       index={index}
-      title="Подключённые сети"
-      description="Telegram и VK публикуют с сервера. Для остальных сетей здесь явно указан текущий статус поддержки."
+      title={EXPERIMENTAL_ROUTES_ENABLED ? "Подключённые сети" : "Подключённые Telegram-каналы"}
+      description={EXPERIMENTAL_ROUTES_ENABLED
+        ? "Telegram и VK публикуют с сервера. Для остальных сетей здесь явно указан текущий статус поддержки."
+        : "Telegram публикует с сервера, даже когда ваш компьютер выключен."}
     >
       {s.realError && (
         <div
@@ -199,11 +208,13 @@ function ChannelsSection({ index }: { index: number }) {
         <EmptyState
           icon={<Link2 className="h-6 w-6" strokeWidth={1.75} />}
           title="Ни одной сети"
-          body="Подключи Telegram или VK — без этого посты некуда отправлять."
+          body={EXPERIMENTAL_ROUTES_ENABLED
+            ? "Подключи Telegram или VK — без этого посты некуда отправлять."
+            : "Подключи Telegram — без канала посты некуда отправлять."}
           action={
             <Button variant="outline" onClick={addMore}>
               <Plus className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
-              Подключить сеть
+              {EXPERIMENTAL_ROUTES_ENABLED ? "Подключить сеть" : "Подключить Telegram"}
             </Button>
           }
         />
@@ -281,21 +292,25 @@ function ChannelsSection({ index }: { index: number }) {
         <div className="mt-5 flex flex-wrap items-center gap-3">
           <Button variant="outline" onClick={addMore}>
             <Plus className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
-            Подключить ещё
+            {EXPERIMENTAL_ROUTES_ENABLED ? "Подключить ещё" : "Подключить ещё Telegram"}
           </Button>
         </div>
       )}
 
-      <Divider className="my-6" />
+      {EXPERIMENTAL_ROUTES_ENABLED && (
+        <>
+          <Divider className="my-6" />
 
-      {/* Настоящее подключение VK-сообщества (аналог TG bot-link): ключ доступа сообщества. */}
-      <VkConnect />
+          {/* Настоящее подключение VK-сообщества (аналог TG bot-link): ключ доступа сообщества. */}
+          <VkConnect />
 
-      {/* TenChat остаётся частью общей системы каналов, но не притворяется live-интеграцией. */}
-      <TenChatIntegration />
+          {/* TenChat остаётся частью общей системы каналов, но не притворяется live-интеграцией. */}
+          <TenChatIntegration />
 
-      {/* Зарубежные сети (YouTube, Instagram, ...) — подключение в один клик через OAuth. */}
-      <OAuthNetworks />
+          {/* Зарубежные сети (YouTube, Instagram, ...) — подключение в один клик через OAuth. */}
+          <OAuthNetworks />
+        </>
+      )}
 
       {/* ТЗ 9: токены — только зашифрованными; никаких публикаций без ведома пользователя */}
       <p className="mt-5 flex items-start gap-2 text-[13px] leading-relaxed text-text-3">
@@ -848,7 +863,7 @@ function BotLink() {
       </p>
       <p className="mt-1.5 text-[14px] leading-relaxed text-text-2">
         {botAvailable
-          ? "Принимает команды и кнопки, сообщает о публикациях, залётах и готовом плане недели. Команды: /stats, /plan, /trends."
+          ? "Принимает команды и кнопки, сообщает о публикациях и результатах. Команды: /stats, /calendar, /approvals."
           : botStatus === "not_configured"
             ? "Связь с аккаунтом сохранена, но Telegram-бот не настроен на сервере. Переподключать чат не нужно."
             : botStatus === "conflict"
@@ -1202,7 +1217,7 @@ function SettingsContent() {
               <span>
                 <span className="block text-[15px] font-extrabold text-text">Настройки постов</span>
                 <span className="mt-1 block text-[12px] leading-relaxed text-text-3">
-                  Голос, стиль, структура, автопилот и правила публикаций.
+                  Голос, стиль, структура и правила публикаций.
                 </span>
               </span>
             </button>

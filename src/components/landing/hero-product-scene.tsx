@@ -115,8 +115,7 @@ export function HeroProductScene() {
 
       <div className={styles.socialRail}>
         <span className={styles.socialTelegram}>TG</span>
-        <span className={styles.socialVk}>VK</span>
-        <b>Telegram · VK после настройки</b>
+        <b>Telegram после настройки</b>
       </div>
     </div>
   );

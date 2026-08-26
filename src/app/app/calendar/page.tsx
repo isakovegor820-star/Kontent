@@ -2940,15 +2940,14 @@ export default function CalendarPage() {
                   </h2>
                 </header>
                 <p className="mt-1 text-[13px] leading-relaxed text-text-2">
-                  Пример, как это работает. Настоящие залёты твоих конкурентов — в разделе «Сними
-                  это», когда добавишь каналы в «Разведке».
+                  Здесь появляются подтверждённые примеры из добавленных публичных источников.
                 </p>
 
                 {suggestions.length === 0 ? (
                   <EmptyState
                     icon={<Sparkles className="h-5 w-5" strokeWidth={1.5} aria-hidden />}
                     title="Пока нечего предложить"
-                    body="Как только у конкурентов что-то залетит, идея появится здесь."
+                    body="Добавьте публичный источник, и подтверждённые примеры появятся здесь."
                   />
                 ) : (
                   <ul className="mt-3 flex flex-col gap-2">

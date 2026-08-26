@@ -97,6 +97,7 @@ import {
   composerReturnTarget,
   composerSource,
 } from "@/lib/app-routes";
+import { experimentalRoutesEnabled } from "@/lib/release-scope";
 import {
   activeComposerNetworks,
   createDraftClientKey,
@@ -178,6 +179,9 @@ import {
 /* ------------------------------------------------------------------ ХЕЛПЕРЫ */
 
 const VK_LIMIT = 16384;
+const EXPERIMENTAL_ROUTES_ENABLED = experimentalRoutesEnabled(
+  process.env.NEXT_PUBLIC_AURORA_EXPERIMENTAL_ROUTES,
+);
 
 const NETWORK_ORDER: Network[] = ["tg", "vk"];
 
@@ -2557,9 +2561,15 @@ function ComposerActionBar() {
     const updateClearance = () => {
       const bar = barRef.current;
       if (!bar) return;
+      if (!window.matchMedia("(min-width: 1024px)").matches) {
+        root.style.setProperty("--composer-action-bar-clearance", "0px");
+        root.style.scrollPaddingBottom = previousScrollPadding;
+        return;
+      }
       // Keep focused or programmatically revealed controls above the fixed action surface.
-      // Measuring the occupied viewport also covers its mobile navigation/safe-area offset
-      // and the taller recovery/error variants without hard-coded height guesses.
+      // Measuring the occupied viewport covers taller recovery/error variants without
+      // hard-coded height guesses. On mobile the actions stay in document flow so they
+      // never cover the editor or compete with the bottom navigation.
       const occupiedViewport = window.innerHeight - bar.getBoundingClientRect().top;
       const clearance = `${Math.ceil(Math.max(0, occupiedViewport) + 16)}px`;
       root.style.setProperty("--composer-action-bar-clearance", clearance);
@@ -2585,7 +2595,7 @@ function ComposerActionBar() {
   return (
     <div
       ref={barRef}
-      className="fixed inset-x-4 bottom-[calc(4.5rem+env(safe-area-inset-bottom))] z-30 lg:right-8 lg:left-[calc(260px+2rem)] lg:bottom-4"
+      className="relative z-10 mt-4 lg:fixed lg:right-8 lg:bottom-4 lg:left-[calc(260px+2rem)] lg:mt-0"
     >
       <div className="mx-auto w-full max-w-5xl rounded-md border border-line bg-surface/95 p-3 shadow-lift backdrop-blur-xl sm:p-4">
         {blocked ? (
@@ -2687,11 +2697,11 @@ function ComposerActionBar() {
                       : "Изменения сохраняются автоматически"}
               </p>
             </div>
-            <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap lg:justify-end">
+            <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap lg:justify-end">
               <Button
                 variant="brand"
                 size="sm"
-                className="col-span-2"
+                className="w-full sm:w-auto"
                 disabled={unavailable}
                 loading={c.publicationMode === "calendar"}
                 onClick={c.schedule}
@@ -2699,41 +2709,79 @@ function ComposerActionBar() {
                 {c.publicationMode !== "calendar" && <CalendarClock className="h-4 w-4" aria-hidden />}
                 Добавить в календарь
               </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={unavailable}
-                loading={c.publicationMode === "now"}
-                onClick={c.publishNow}
-              >
-                {c.publicationMode !== "now" && <Send className="h-4 w-4" aria-hidden />}
-                <span className="sm:hidden">Сейчас</span>
-                <span className="hidden sm:inline">Опубликовать сейчас</span>
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={unavailable}
-                loading={c.publicationMode === "queue"}
-                onClick={c.enqueue}
-              >
-                {c.publicationMode !== "queue" && <ListEnd className="h-4 w-4" aria-hidden />}
-                <span className="sm:hidden">В очередь</span>
-                <span className="hidden sm:inline">Поставить в очередь</span>
-              </Button>
-              {c.canEditContent && c.editingId && (
+              <details className="rounded-sm border border-line bg-surface-inset sm:hidden">
+                <summary className="flex min-h-11 cursor-pointer items-center justify-center px-3 text-[13px] font-semibold text-text focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
+                  Другие действия
+                </summary>
+                <div className="grid gap-2 border-t border-line p-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={unavailable}
+                    loading={c.publicationMode === "now"}
+                    onClick={c.publishNow}
+                  >
+                    {c.publicationMode !== "now" && <Send className="h-4 w-4" aria-hidden />}
+                    Опубликовать сейчас
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={unavailable}
+                    loading={c.publicationMode === "queue"}
+                    onClick={c.enqueue}
+                  >
+                    {c.publicationMode !== "queue" && <ListEnd className="h-4 w-4" aria-hidden />}
+                    Поставить в очередь
+                  </Button>
+                  {c.canEditContent && c.editingId && (
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      aria-haspopup="dialog"
+                      disabled={unavailable}
+                      onClick={() => c.setConfirmDelete(true)}
+                    >
+                      <Trash2 className="h-4 w-4" aria-hidden />
+                      Удалить из календаря
+                    </Button>
+                  )}
+                </div>
+              </details>
+              <div className="hidden flex-wrap gap-2 sm:flex">
                 <Button
-                  variant="danger"
+                  variant="outline"
                   size="sm"
-                  className="col-span-2"
-                  aria-haspopup="dialog"
                   disabled={unavailable}
-                  onClick={() => c.setConfirmDelete(true)}
+                  loading={c.publicationMode === "now"}
+                  onClick={c.publishNow}
                 >
-                  <Trash2 className="h-4 w-4" aria-hidden />
-                  Удалить из календаря
+                  {c.publicationMode !== "now" && <Send className="h-4 w-4" aria-hidden />}
+                  Опубликовать сейчас
                 </Button>
-              )}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={unavailable}
+                  loading={c.publicationMode === "queue"}
+                  onClick={c.enqueue}
+                >
+                  {c.publicationMode !== "queue" && <ListEnd className="h-4 w-4" aria-hidden />}
+                  Поставить в очередь
+                </Button>
+                {c.canEditContent && c.editingId && (
+                  <Button
+                    variant="danger"
+                    size="sm"
+                    aria-haspopup="dialog"
+                    disabled={unavailable}
+                    onClick={() => c.setConfirmDelete(true)}
+                  >
+                    <Trash2 className="h-4 w-4" aria-hidden />
+                    Удалить из календаря
+                  </Button>
+                )}
+              </div>
             </div>
           </div>
         )}
@@ -3392,16 +3440,18 @@ function ComposerInner() {
               <ImageIcon className="h-4 w-4" aria-hidden />
               {c.media?.kind === "image" ? "Заменить из медиатеки" : "Выбрать из медиатеки"}
             </Button>
-            <Button variant={suggestMedia && !c.media ? "primary" : "outline"} size="sm" disabled={!canEditContent} onClick={() => {
-              const returnSource = mediaReturnSource ?? composerSource(params.get("from"));
-              const returnSuffix = returnSource ? `&returnTo=${returnSource}` : "";
-              router.push(currentDraftId
-                ? `/app/studio/visuals?draft=${currentDraftId}${returnSuffix}`
-                : `/app/studio/visuals${returnSource ? `?returnTo=${returnSource}` : ""}`);
-            }}>
-              <Layers3 className="h-4 w-4" aria-hidden />
-              Создать с ИИ
-            </Button>
+            {EXPERIMENTAL_ROUTES_ENABLED && (
+              <Button variant={suggestMedia && !c.media ? "primary" : "outline"} size="sm" disabled={!canEditContent} onClick={() => {
+                const returnSource = mediaReturnSource ?? composerSource(params.get("from"));
+                const returnSuffix = returnSource ? `&returnTo=${returnSource}` : "";
+                router.push(currentDraftId
+                  ? `/app/studio/visuals?draft=${currentDraftId}${returnSuffix}`
+                  : `/app/studio/visuals${returnSource ? `?returnTo=${returnSource}` : ""}`);
+              }}>
+                <Layers3 className="h-4 w-4" aria-hidden />
+                Создать с ИИ
+              </Button>
+            )}
           </div>
 
           {mediaLibraryOpen && (
@@ -3412,7 +3462,7 @@ function ComposerInner() {
               ) : mediaLibraryError ? (
                 <p role="alert" className="mt-3 text-[13px] font-medium text-danger-text">{mediaLibraryError}</p>
               ) : mediaLibraryAssets.length === 0 ? (
-                <p className="mt-3 text-[13px] text-text-3">Пока пусто. Создайте карусель или загрузите изображение в визуальной студии.</p>
+                <p className="mt-3 text-[13px] text-text-3">Пока пусто. Загрузите изображение, и оно появится здесь для повторного использования.</p>
               ) : (
                 <div className="mt-3 flex snap-x gap-3 overflow-x-auto pb-2" role="list" aria-label="Изображения проекта">
                   {mediaLibraryAssets.map((asset) => (
@@ -3486,7 +3536,7 @@ function ComposerInner() {
           </AnimatePresence>
 
           <p className="text-[13px] text-text-3">
-            Готовые изображения и видео из ИИ-студии сохраняются вместе с постом.
+            Выбранные изображения и видео сохраняются вместе с постом.
           </p>
         </div>
         </EditorSection>
@@ -3893,7 +3943,7 @@ function ComposerInner() {
       </Card>
 
       <ComposerActionBar />
-      <div aria-hidden className="h-[var(--composer-action-bar-clearance,18rem)]" />
+      <div aria-hidden className="hidden h-[var(--composer-action-bar-clearance,18rem)] lg:block" />
 
       {canEditContent && (
         <ConfirmDialog
