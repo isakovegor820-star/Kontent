@@ -1909,7 +1909,10 @@ try {
   assert(generatedDraft.generation_result_id && blockedValidation.provenance, "Studio draft has no trusted validation fixture");
   await pool.query(
     `update drafts
-        set purpose = 'needs_review', ai_validation = $2::jsonb
+        set purpose = 'needs_review',
+            ai_validation = $2::jsonb,
+            version = version + 1,
+            updated_at = now()
       where id = $1`,
     [libraryComposerDraftId, JSON.stringify(blockedValidation)],
   );
