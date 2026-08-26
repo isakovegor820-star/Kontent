@@ -3,6 +3,7 @@ import type { PoolClient } from "pg";
 
 import { getPool } from "@/lib/db";
 import { normalizeIdempotencyKey } from "@/lib/publication-idempotency";
+import { ProjectAccessError, requireProjectPermission } from "@/lib/project-permissions";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import { getSessionUser } from "@/lib/session";
 
@@ -30,17 +31,24 @@ export async function DELETE(req: NextRequest, context: { params: Promise<{ id: 
     await client.query("begin");
     const channel = (await client.query<{
       id: string;
+      project_id: string;
       status: string;
       oauth_token_id: string | null;
     }>(
-      `select id, status, oauth_token_id from channels
-        where id = $1 and user_id = $2 for update`,
-      [channelId, user.id],
+      `select id, project_id, status, oauth_token_id from channels
+        where id = $1 for update`,
+      [channelId],
     )).rows[0];
     if (!channel) {
       await client.query("rollback");
       return NextResponse.json({ ok: false, error: "channel_not_found" }, { status: 404 });
     }
+    await requireProjectPermission(
+      client,
+      user.id,
+      Number(channel.project_id),
+      "project.manage",
+    );
     const replay = (await client.query(
       `select 1 from channel_events
         where channel_id = $1 and request_id = $2 and action = 'disconnected'`,
@@ -107,6 +115,9 @@ export async function DELETE(req: NextRequest, context: { params: Promise<{ id: 
     return NextResponse.json({ ok: true, status: "disconnected", replayed: false });
   } catch (error) {
     await client?.query("rollback").catch(() => {});
+    if (error instanceof ProjectAccessError) {
+      return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
+    }
     console.error("[/api/channels/:id] DELETE", {
       errorName: error instanceof Error ? error.name : "Error",
       channelId,

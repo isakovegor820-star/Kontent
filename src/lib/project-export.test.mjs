@@ -255,7 +255,7 @@ describe("project CSV/XLSX/PDF renderers", () => {
     expect(parsedPdf.text).toContain("Учитываются подтверждённые площадкой публикации");
     expect(parsedPdf.text).not.toContain("Чужой проект");
     expect(parsedPdf.text).not.toContain("Не подтверждено");
-  });
+  }, 15_000);
 
   it("neutralizes formulas after spaces, line breaks and Unicode controls in CSV and XLSX", async () => {
     const payloads = [

@@ -7,6 +7,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
 import { getStatsQueue } from "@/lib/queue";
+import {
+  ProjectAccessError,
+  requireProjectPermission,
+  requireSelectedProjectPermission,
+} from "@/lib/project-permissions";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import { transitionChannelHealth } from "@/lib/channel-health.mjs";
 
@@ -41,6 +46,16 @@ export async function POST(req: NextRequest) {
   const user = await getSessionUser(req);
   if (!user) {
     return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
+  }
+  const pool = getPool();
+  let projectId: number;
+  try {
+    projectId = (await requireSelectedProjectPermission(pool, user.id, "project.manage")).projectId;
+  } catch (error) {
+    if (error instanceof ProjectAccessError) {
+      return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
+    }
+    throw error;
   }
 
   let body: unknown;
@@ -78,26 +93,28 @@ export async function POST(req: NextRequest) {
 
   // 3. Сохраняем (или обновляем) канал пользователя.
   //
-  // Канал принадлежит ровно одному аккаунту (частичный unique в схеме на активных).
+  // Канал принадлежит ровно одному проекту (частичный unique в схеме на активных).
   // Проверку делаем И запросом, И ловлей 23505: между select и insert есть окно, в которое
   // канал может занять другой аккаунт, и защитой от этой гонки может быть только база.
   try {
-    const pool = getPool();
+    // Provider checks can take several seconds. Recheck the captured project rather
+    // than trusting a selection that may have changed in another browser tab.
+    await requireProjectPermission(pool, user.id, projectId, "project.manage");
     const existing = await pool.query<{ id: number }>(
-      `select id from channels where user_id = $1 and tg_chat_id = $2`,
-      [user.id, chat.id],
+      `select id from channels where project_id = $1 and tg_chat_id = $2`,
+      [projectId, chat.id],
     );
     if (existing.rowCount) {
       await pool.query(
         `update channels
             set title = $2, handle = $3, tg_discussion_chat_id = $4, updated_at = now()
-          where id = $1`,
+          where id = $1 and project_id = $5`,
         [existing.rows[0].id, chat.title ?? null, chat.username ?? handle,
-          Number.isSafeInteger(chat.linked_chat_id) ? chat.linked_chat_id : null],
+          Number.isSafeInteger(chat.linked_chat_id) ? chat.linked_chat_id : null, projectId],
       );
       await transitionChannelHealth(pool, {
         channelId: existing.rows[0].id,
-        userId: user.id,
+        userId: null,
         actorUserId: user.id,
         status: "active",
         action: "reconnected",
@@ -105,9 +122,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true, channelId: existing.rows[0].id, title: chat.title });
     }
     const ins = await pool.query<{ id: number }>(
-      `insert into channels (user_id, network, tg_chat_id, title, handle, tg_discussion_chat_id)
-       values ($1, 'tg', $2, $3, $4, $5) returning id`,
-      [user.id, chat.id, chat.title ?? null, chat.username ?? handle,
+      `insert into channels
+         (project_id, user_id, network, tg_chat_id, title, handle, tg_discussion_chat_id)
+       values ($1, $2, 'tg', $3, $4, $5, $6) returning id`,
+      [projectId, user.id, chat.id, chat.title ?? null, chat.username ?? handle,
         Number.isSafeInteger(chat.linked_chat_id) ? chat.linked_chat_id : null],
     );
     await pool.query(
@@ -137,6 +155,9 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ ok: true, channelId: ins.rows[0].id, title: chat.title });
   } catch (err) {
+    if (err instanceof ProjectAccessError) {
+      return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
+    }
     // 23505 — канал уже держит другой аккаунт. Это не сбой сервера, а понятная ситуация,
     // и человек должен узнать причину, а не увидеть «что-то пошло не так».
     if ((err as { code?: string }).code === "23505") {

@@ -12,6 +12,8 @@ export {
 } from "./password-policy";
 
 const KEYLEN = 64; // длина производного ключа в байтах
+const DUMMY_SALT = Buffer.alloc(16);
+const DUMMY_EXPECTED = Buffer.alloc(KEYLEN);
 
 function scryptAsync(password: string, salt: Buffer): Promise<Buffer> {
   return new Promise((resolve, reject) => {
@@ -31,13 +33,15 @@ export async function hashPassword(password: string): Promise<string> {
 
 /** Сверяет пароль с сохранённым хешем. Сравнение — constant-time. */
 export async function verifyPassword(password: string, stored: string | null): Promise<boolean> {
-  if (!stored) return false;
-  const [saltHex, hashHex] = stored.split(":");
-  if (!saltHex || !hashHex) return false;
-
-  const salt = Buffer.from(saltHex, "hex");
-  const expected = Buffer.from(hashHex, "hex");
+  const [saltHex, hashHex, extra] = String(stored ?? "").split(":");
+  const validStored = extra === undefined
+    && /^[a-f0-9]{32}$/iu.test(saltHex ?? "")
+    && /^[a-f0-9]{128}$/iu.test(hashHex ?? "");
+  // Unknown accounts and malformed legacy rows must pay the same scrypt cost as a
+  // normal wrong password; otherwise response latency becomes an email oracle.
+  const salt = validStored ? Buffer.from(saltHex, "hex") : DUMMY_SALT;
+  const expected = validStored ? Buffer.from(hashHex, "hex") : DUMMY_EXPECTED;
   const derived = await scryptAsync(password, salt);
-  if (derived.length !== expected.length) return false;
-  return timingSafeEqual(derived, expected);
+  const matches = timingSafeEqual(derived, expected);
+  return validStored && matches;
 }

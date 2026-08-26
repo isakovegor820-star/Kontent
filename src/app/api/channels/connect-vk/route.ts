@@ -11,6 +11,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
 import { checkRateLimit, clientIp, rateLimitResponse } from "@/lib/rate-limit";
+import {
+  ProjectAccessError,
+  requireProjectPermission,
+  requireSelectedProjectPermission,
+} from "@/lib/project-permissions";
 import { resolveGroupByToken } from "@/lib/vk";
 import { encryptToken } from "@/lib/token-crypto.mjs";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
@@ -25,6 +30,16 @@ export async function POST(req: NextRequest) {
   const user = await getSessionUser(req);
   if (!user) {
     return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
+  }
+  const pool = getPool();
+  let projectId: number;
+  try {
+    projectId = (await requireSelectedProjectPermission(pool, user.id, "project.manage")).projectId;
+  } catch (error) {
+    if (error instanceof ProjectAccessError) {
+      return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
+    }
+    throw error;
   }
 
   let body: unknown;
@@ -41,7 +56,7 @@ export async function POST(req: NextRequest) {
 
   // Чувствительный роут (работа с чужими токенами): режем частые переборы по IP.
   const ip = clientIp(req);
-  const byIp = await checkRateLimit(`connect-vk:ip:${ip}`, 10, 900);
+  const byIp = await checkRateLimit(`connect-vk:ip:${ip}`, 10, 900, { failureMode: "closed" });
   if (!byIp.allowed) return rateLimitResponse(byIp);
 
   if (!process.env.TOKENS_MASTER_KEY) {
@@ -62,19 +77,21 @@ export async function POST(req: NextRequest) {
   // 3. Сохраняем/обновляем канал. Группа принадлежит одному аккаунту (частичный unique
   //    в схеме на активных); гонку между select и insert ловим кодом 23505, как у TG.
   try {
-    const pool = getPool();
+    await requireProjectPermission(pool, user.id, projectId, "project.manage");
     const existing = await pool.query<{ id: number }>(
-      `select id from channels where user_id = $1 and vk_group_id = $2`,
-      [user.id, group.groupId],
+      `select id from channels where project_id = $1 and vk_group_id = $2`,
+      [projectId, group.groupId],
     );
     if (existing.rowCount) {
       await pool.query(
-        `update channels set title = $2, handle = $3, vk_token = $4, updated_at = now() where id = $1`,
-        [existing.rows[0].id, group.name || null, group.screenName || null, encrypted],
+        `update channels
+            set title = $2, handle = $3, vk_token = $4, updated_at = now()
+          where id = $1 and project_id = $5`,
+        [existing.rows[0].id, group.name || null, group.screenName || null, encrypted, projectId],
       );
       await transitionChannelHealth(pool, {
         channelId: existing.rows[0].id,
-        userId: user.id,
+        userId: null,
         actorUserId: user.id,
         status: "active",
         action: "reconnected",
@@ -82,9 +99,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true, channelId: existing.rows[0].id, title: group.name });
     }
     const ins = await pool.query<{ id: number }>(
-      `insert into channels (user_id, network, vk_group_id, vk_token, title, handle)
-       values ($1, 'vk', $2, $3, $4, $5) returning id`,
-      [user.id, group.groupId, encrypted, group.name || null, group.screenName || null],
+      `insert into channels (project_id, user_id, network, vk_group_id, vk_token, title, handle)
+       values ($1, $2, 'vk', $3, $4, $5, $6) returning id`,
+      [projectId, user.id, group.groupId, encrypted, group.name || null, group.screenName || null],
     );
     await pool.query(
       `insert into channel_events (channel_id, actor_user_id, action, from_status, to_status)
@@ -93,6 +110,9 @@ export async function POST(req: NextRequest) {
     );
     return NextResponse.json({ ok: true, channelId: ins.rows[0].id, title: group.name });
   } catch (err) {
+    if (err instanceof ProjectAccessError) {
+      return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
+    }
     if ((err as { code?: string }).code === "23505") {
       return NextResponse.json({ ok: false, error: "taken" }, { status: 409 });
     }

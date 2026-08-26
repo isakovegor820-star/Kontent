@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   query: vi.fn(),
   release: vi.fn(),
   connect: vi.fn(),
+  requireProjectPermission: vi.fn(),
   requireSelectedProjectPermission: vi.fn(),
 }));
 
@@ -23,6 +24,7 @@ vi.mock("@/lib/project-permissions", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/project-permissions")>();
   return {
     ...actual,
+    requireProjectPermission: mocks.requireProjectPermission,
     requireSelectedProjectPermission: mocks.requireSelectedProjectPermission,
   };
 });
@@ -63,6 +65,7 @@ describe("POST /api/settings/channel", () => {
     vi.clearAllMocks();
     mocks.getSessionUser.mockResolvedValue({ id: 7 });
     mocks.requireSelectedProjectPermission.mockResolvedValue({ projectId: 12 });
+    mocks.requireProjectPermission.mockResolvedValue({ projectId: 12 });
     mocks.resolveChannel.mockResolvedValue(21);
     mocks.connect.mockResolvedValue({ query: mocks.query, release: mocks.release });
     mocks.query.mockImplementation(async (sql: string) => {
@@ -94,6 +97,17 @@ describe("POST /api/settings/channel", () => {
       settings,
     });
     const statements = mocks.query.mock.calls.map(([sql]) => String(sql).trim());
+    expect(mocks.requireSelectedProjectPermission).toHaveBeenCalledWith(
+      expect.anything(),
+      7,
+      "content.edit",
+    );
+    expect(mocks.requireProjectPermission).toHaveBeenCalledWith(
+      expect.anything(),
+      7,
+      12,
+      "content.publish",
+    );
     expect(statements[0]).toBe("begin");
     expect(mocks.query).toHaveBeenCalledWith(
       expect.stringContaining("generation_engine"),
@@ -107,6 +121,18 @@ describe("POST /api/settings/channel", () => {
     expect(statements.some((sql) => sql.includes("update autopilot_settings"))).toBe(true);
     expect(statements.at(-1)).toBe("commit");
     expect(mocks.release).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a member without publication permission before opening a transaction", async () => {
+    const { ProjectAccessError } = await import("@/lib/project-permissions");
+    mocks.requireProjectPermission.mockRejectedValueOnce(new ProjectAccessError("permission_denied"));
+
+    const response = await POST(request({ channelId: 21, brief, settings }));
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({ error: "access_denied" });
+    expect(mocks.connect).not.toHaveBeenCalled();
+    expect(mocks.query).not.toHaveBeenCalled();
   });
 
   it("rolls back the whole profile when full auto is still locked", async () => {

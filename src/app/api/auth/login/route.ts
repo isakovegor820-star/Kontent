@@ -54,7 +54,7 @@ export async function POST(req: NextRequest) {
       )
     ).rows[0];
 
-    const ok = row ? await verifyPassword(password, row.password_hash) : false;
+    const ok = await verifyPassword(password, row?.password_hash ?? null);
     if (!ok || !row) {
       return NextResponse.json({ ok: false, error: "invalid" }, { status: 401 });
     }

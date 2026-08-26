@@ -12,7 +12,11 @@ import { ensureSettings, loadBrief, resolveChannel } from "@/lib/autopilot";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import type { AutopilotSettings } from "@/lib/autopilot";
 import { DEFAULT_AUTOPILOT_ENGINE } from "@/lib/autopilot-config.mjs";
-import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/project-permissions";
+import {
+  ProjectAccessError,
+  requireProjectPermission,
+  requireSelectedProjectPermission,
+} from "@/lib/project-permissions";
 
 export const runtime = "nodejs";
 
@@ -81,7 +85,8 @@ export async function POST(req: NextRequest) {
   let channelId: number | null;
   let projectId: number;
   try {
-    const membership = await requireSelectedProjectPermission(pool, user.id, "project.read");
+    const membership = await requireSelectedProjectPermission(pool, user.id, "content.edit");
+    await requireProjectPermission(pool, user.id, membership.projectId, "content.publish");
     projectId = membership.projectId;
     channelId = await resolveChannel(
       { actorUserId: user.id, projectId },
@@ -124,6 +129,11 @@ export async function POST(req: NextRequest) {
   }
   try {
     await client.query("begin");
+    // This endpoint changes both the editorial brief and publication automation.
+    // Recheck both capabilities in the write transaction so a stale role decision
+    // cannot authorize either half of the combined mutation.
+    await requireProjectPermission(client, user.id, projectId, "content.edit");
+    await requireProjectPermission(client, user.id, projectId, "content.publish");
     await client.query(
       `insert into autopilot_settings (project_id, user_id, channel_id, generation_engine)
        values ($1, $2, $3, $4)
