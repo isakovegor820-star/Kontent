@@ -113,6 +113,7 @@ let publicationExtraQueue;
 let publicationReviewReminderQueue;
 const browserIssues = [];
 const expectedBrowserConsoleScopes = new Set();
+const expectedBrowser5xxScopes = new Set();
 const interfaceEvidence = {
   reducedMotion: { main: false, reviewer: false },
   viewportWidths: [],
@@ -279,6 +280,7 @@ async function installBrowserDiagnostics(context, label) {
         firstParty = new URL(response.url()).origin === baseUrl;
       } catch {}
       if (!firstParty) return;
+      if (expectedBrowser5xxScopes.has(label)) return;
       browserIssues.push({
         context: label,
         kind: "http.5xx",
@@ -4115,6 +4117,8 @@ try {
 
   expectedBrowserConsoleScopes.add("main");
   expectedBrowserConsoleScopes.add("reviewer");
+  expectedBrowser5xxScopes.add("main");
+  expectedBrowser5xxScopes.add("reviewer");
   await stopChild(runtimeProcess, "initial full production runtime");
   await waitForRuntimeUnavailable();
   await waitForNoRuntimeWorkers();
@@ -4154,6 +4158,8 @@ try {
   await reviewerPage.getByRole("heading", { name: "Календарь", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   expectedBrowserConsoleScopes.delete("main");
   expectedBrowserConsoleScopes.delete("reviewer");
+  expectedBrowser5xxScopes.delete("main");
+  expectedBrowser5xxScopes.delete("reviewer");
   interfaceEvidence.runtimeRestart = {
     command: "npm run start",
     postId: criticalPostId,
