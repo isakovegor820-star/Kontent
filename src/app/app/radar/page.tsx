@@ -1,5 +1,15 @@
-import { redirect } from "next/navigation";
+"use client";
+
+import { AppShell } from "@/components/app/shell";
+import { RadarInner } from "./radar-inner";
 
 export default function RadarPage() {
-  redirect("/app/trends?scope=internet");
+  return (
+    <AppShell
+      title="Радар"
+      subtitle="Ищи Telegram-каналы, публикации и тренды по своей нише."
+    >
+      <RadarInner />
+    </AppShell>
+  );
 }

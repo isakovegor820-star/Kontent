@@ -9,6 +9,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
 import { getStatsQueue } from "@/lib/queue";
+import { enqueueKnowledgeIndex } from "@/lib/knowledge-index-queue.mjs";
 import { resolveChannel } from "@/lib/autopilot";
 import { fetchPublicPosts } from "@/lib/tg-public";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
@@ -71,12 +72,7 @@ export async function POST(req: NextRequest) {
       tx.release();
     }
 
-    await getStatsQueue()
-      .add(
-        "knowledge-index",
-        { sourceId },
-        { removeOnComplete: true, attempts: 3, backoff: { type: "fixed", delay: 20000 } },
-      )
+    await enqueueKnowledgeIndex(getStatsQueue(), sourceId)
       .catch(() => {});
 
     return NextResponse.json({ ok: true, posts: posts.length });

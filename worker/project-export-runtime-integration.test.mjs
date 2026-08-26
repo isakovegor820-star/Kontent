@@ -15,6 +15,8 @@ describe("project export worker runtime wiring", () => {
     expect(source).toContain("reconcileProjectExportOutbox({");
     expect(source).toContain("expireProjectExportArtifacts(pool, 500)");
     expect(source).toContain('{ name: "exports",  pattern: "* * * * *" }');
-    expect(source).toContain('["stats", "recon", "trend", "today-opportunities", "discover", "exports"]');
+    expect(source).toContain(
+      '["stats", "recon", "trend", "today-opportunities", "knowledge-index", "discover", "exports"]',
+    );
   });
 });

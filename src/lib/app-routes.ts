@@ -52,7 +52,7 @@ export const APP_ROUTES = {
     href: "/app/competitors",
     label: "Конкуренты и тренды",
     mobileLabel: "Разведка",
-    activeAliases: ["/app/trends", "/app/radar", "/app/recon", "/app/opportunities"],
+    activeAliases: ["/app/trends", "/app/recon"],
   },
   opportunities: {
     href: "/app/opportunities",
@@ -77,7 +77,13 @@ export const APP_ROUTES = {
   },
   radar: {
     href: "/app/radar",
-    label: "Поиск",
+    label: "Радар",
+    activeAliases: [],
+  },
+  knowledge: {
+    href: "/app/knowledge",
+    label: "База знаний",
+    mobileLabel: "Знания",
     activeAliases: [],
   },
   growth: {
@@ -104,12 +110,17 @@ export const APP_NAV_GROUPS = [
   {
     id: "work",
     title: "Работа",
-    routeIds: ["calendar", "composer", "library", "rss"],
+    routeIds: ["today", "calendar", "studio", "autopilot", "composer", "library", "rss", "knowledge"],
+  },
+  {
+    id: "market",
+    title: "Рынок",
+    routeIds: ["recon", "opportunities", "radar", "siteAnalysis"],
   },
   {
     id: "results",
     title: "Итоги",
-    routeIds: ["analytics", "settings"],
+    routeIds: ["growth", "analytics", "settings"],
   },
 ] as const satisfies readonly {
   id: string;
@@ -120,9 +131,10 @@ export const APP_NAV_GROUPS = [
 export type AppNavRouteId = (typeof APP_NAV_GROUPS)[number]["routeIds"][number];
 
 export const APP_BOTTOM_NAV_ROUTE_IDS = [
-  "calendar",
-  "composer",
-  "library",
+  "today",
+  "studio",
+  "autopilot",
+  "recon",
   "analytics",
 ] as const satisfies readonly AppNavRouteId[];
 

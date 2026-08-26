@@ -474,6 +474,12 @@ export function ProjectNotificationsInbox() {
           event.preventDefault();
           closeInbox();
         }}
+        onKeyDown={(event) => {
+          if (event.key !== "Escape") return;
+          event.preventDefault();
+          event.stopPropagation();
+          closeInbox();
+        }}
         onClose={() => {
           setOpen(false);
           triggerRef.current?.focus();

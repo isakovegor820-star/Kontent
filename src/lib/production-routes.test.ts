@@ -6,21 +6,18 @@ import { buildContentSecurityPolicy } from "./content-security-policy";
 afterEach(() => vi.unstubAllEnvs());
 
 describe("production route surface", () => {
-  it("redirects every internal design-lab family away from production", async () => {
+  it("keeps product Radar public while redirecting internal design-lab families", async () => {
     vi.stubEnv("NODE_ENV", "production");
     const redirects = await nextConfig.redirects?.();
     const sources = new Set((redirects ?? []).map((route) => route.source));
 
     expect(redirects ?? []).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        source: "/app/radar",
-        destination: "/app/trends?scope=internet",
-      }),
-      expect.objectContaining({
         source: "/app/recon",
         destination: "/app/trends?scope=internet",
       }),
     ]));
+    expect(sources.has("/app/radar")).toBe(false);
 
     for (const source of [
       "/v2/:path*",

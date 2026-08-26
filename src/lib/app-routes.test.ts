@@ -23,21 +23,34 @@ describe("app route registry", () => {
     }
   });
 
-  it("keeps the release navigation on the approved core workflow", () => {
+  it("keeps every authenticated product section in the release navigation", () => {
     const workGroup = APP_NAV_GROUPS.find((group) => group.id === "work");
-    expect(workGroup?.routeIds).toEqual(["calendar", "composer", "library", "rss"]);
-    expect(APP_BOTTOM_NAV_ROUTE_IDS).toEqual(["calendar", "composer", "library", "analytics"]);
-    expect(workGroup?.routeIds).not.toContain("today");
-    expect(workGroup?.routeIds).not.toContain("studio");
-    expect(workGroup?.routeIds).not.toContain("autopilot");
+    expect(workGroup?.routeIds).toEqual([
+      "today",
+      "calendar",
+      "studio",
+      "autopilot",
+      "composer",
+      "library",
+      "rss",
+      "knowledge",
+    ]);
+    expect(APP_NAV_GROUPS.find((group) => group.id === "market")?.routeIds).toEqual([
+      "recon",
+      "opportunities",
+      "radar",
+      "siteAnalysis",
+    ]);
+    expect(APP_BOTTOM_NAV_ROUTE_IDS).toEqual(["today", "studio", "autopilot", "recon", "analytics"]);
   });
 
-  it("keeps only basic analytics and settings in results", () => {
+  it("keeps growth and reporting together in results", () => {
     expect(APP_NAV_GROUPS.find((group) => group.id === "results")?.routeIds).toEqual([
+      "growth",
       "analytics",
       "settings",
     ]);
-    expect(APP_BOTTOM_NAV_ROUTE_IDS).toHaveLength(4);
+    expect(APP_BOTTOM_NAV_ROUTE_IDS).toHaveLength(5);
     expect(APP_BOTTOM_NAV_ROUTE_IDS).not.toContain("growth");
   });
 
@@ -46,17 +59,19 @@ describe("app route registry", () => {
     expect(isAppRouteActive("/app/composer", "calendar")).toBe(false);
     expect(isAppRouteActive("/app/competitors/41", "recon")).toBe(true);
     expect(isAppRouteActive("/app/trends", "recon")).toBe(true);
-    expect(isAppRouteActive("/app/radar", "recon")).toBe(true);
+    expect(isAppRouteActive("/app/radar", "recon")).toBe(false);
     expect(isAppRouteActive("/app/recon", "recon")).toBe(true);
-    expect(isAppRouteActive("/app/opportunities", "recon")).toBe(true);
+    expect(isAppRouteActive("/app/opportunities", "recon")).toBe(false);
+    expect(isAppRouteActive("/app/radar", "radar")).toBe(true);
+    expect(isAppRouteActive("/app/opportunities", "opportunities")).toBe(true);
     expect(isAppRouteActive("/app/reconnaissance", "recon")).toBe(false);
     expect(APP_ROUTES.recon.href).toBe("/app/competitors");
-    expect(APP_ROUTES.recon.activeAliases).toEqual(["/app/trends", "/app/radar", "/app/recon", "/app/opportunities"]);
+    expect(APP_ROUTES.recon.activeAliases).toEqual(["/app/trends", "/app/recon"]);
     const shell = readFileSync(new URL("../components/app/shell.tsx", import.meta.url), "utf8");
     expect(shell).not.toContain('{ href: "/app/recon", label: "Поиск" }');
     expect(shell).toContain('{ href: "/app/competitors", label: "Конкуренты" }');
     expect(shell).toContain('{ href: "/app/trends", label: "Тренды" }');
-    expect(shell).toContain('{ href: "/app/opportunities", label: "Карта возможностей", preserveParams: ["channel"] }');
+    expect(APP_ROUTES.knowledge.href).toBe("/app/knowledge");
     expect(isAppRouteActive("/app/site-analysis/41", "siteAnalysis")).toBe(true);
   });
 });

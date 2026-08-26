@@ -1,7 +1,7 @@
 /**
- * Stable release boundary. Experimental pages stay in the repository for controlled
- * development, but production does not expose them unless the release owner opts in
- * explicitly at build/runtime with NEXT_PUBLIC_AURORA_EXPERIMENTAL_ROUTES=1.
+ * Stable release boundary. Every authenticated product section is part of Aurora's
+ * production surface. The preview flag is reserved for legacy/public design variants;
+ * it must never make the signed-in application look partially empty.
  */
 
 export const STABLE_RELEASE_CAPABILITIES = Object.freeze([
@@ -17,20 +17,17 @@ export const STABLE_RELEASE_CAPABILITIES = Object.freeze([
   "operation-history",
   "basic-analytics",
   "settings",
+  "today",
+  "studio",
+  "autopilot",
+  "trends-and-recon",
+  "opportunities",
+  "site-analysis",
+  "growth",
+  "knowledge",
 ] as const);
 
-export const EXPERIMENTAL_APP_PATH_PREFIXES = Object.freeze([
-  "/app/today",
-  "/app/studio",
-  "/app/autopilot",
-  "/app/trends",
-  "/app/radar",
-  "/app/recon",
-  "/app/opportunities",
-  "/app/site-analysis",
-  "/app/growth",
-  "/app/knowledge",
-] as const);
+export const EXPERIMENTAL_APP_PATH_PREFIXES = Object.freeze([] as const);
 
 export const EXPERIMENTAL_PUBLIC_PATH_PREFIXES = Object.freeze([
   "/old",
@@ -49,32 +46,7 @@ export const EXPERIMENTAL_PUBLIC_PATH_PREFIXES = Object.freeze([
   "/rss",
 ] as const);
 
-export const EXPERIMENTAL_API_PATH_PREFIXES = Object.freeze([
-  "/api/audience-assistant",
-  "/api/audience-questions",
-  "/api/autopilot",
-  "/api/channels/connect-vk",
-  "/api/channels/oauth",
-  "/api/channels/tenchat",
-  "/api/growth",
-  "/api/ideas",
-  "/api/knowledge",
-  "/api/legal-video-scripts",
-  "/api/legal-visuals",
-  "/api/monthly-campaigns",
-  "/api/opportunities",
-  "/api/radar",
-  "/api/site-analysis",
-  "/api/studio",
-  "/api/today",
-  "/api/trends",
-  "/api/typography",
-] as const);
-
-export const STABLE_API_PATH_EXCEPTIONS = Object.freeze([
-  "/api/autopilot/brief",
-  "/api/knowledge/extract-profile",
-] as const);
+export const EXPERIMENTAL_API_PATH_PREFIXES = Object.freeze([] as const);
 
 function pathMatchesPrefix(pathname: string, prefix: string): boolean {
   return pathname === prefix || pathname.startsWith(`${prefix}/`);
@@ -90,9 +62,6 @@ export function isExperimentalReleasePath(pathname: string): boolean {
 }
 
 export function isExperimentalReleaseApiPath(pathname: string): boolean {
-  if (STABLE_API_PATH_EXCEPTIONS.includes(pathname as (typeof STABLE_API_PATH_EXCEPTIONS)[number])) {
-    return false;
-  }
   return EXPERIMENTAL_API_PATH_PREFIXES.some((prefix) => pathMatchesPrefix(pathname, prefix));
 }
 

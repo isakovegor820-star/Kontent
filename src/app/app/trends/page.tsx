@@ -322,6 +322,7 @@ function PostPhoto({ src, link }: { src: string; link: string }) {
       href={link}
       target="_blank"
       rel="noopener noreferrer"
+      aria-label="Открыть изображение публикации в источнике"
       className={cn(
         "group relative block aspect-[4/3] overflow-hidden bg-surface-inset",
         state === "loading" && "skeleton",
@@ -742,12 +743,14 @@ export default function TrendsPage() {
     if (query.length < 2) {
       setInternetSearchState("invalid");
       setInternetSearchMessage("Введи минимум два символа.");
+      internetSearchInputRef.current?.focus();
       return;
     }
     const destinationChannelId = Number(channelId);
     if (!Number.isSafeInteger(destinationChannelId) || destinationChannelId <= 0) {
       setInternetSearchState("error");
       setInternetSearchMessage("Сначала выбери активный канал.");
+      internetSearchInputRef.current?.focus();
       return;
     }
 

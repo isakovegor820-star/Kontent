@@ -272,7 +272,7 @@ export default function KnowledgePage() {
         )}
       </Card>
 
-      <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
+      <div className="grid min-w-0 gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
         <AddPanel channelId={channelId!} mode={mode} onMode={setMode} onDone={load} store={store} />
         <SourceList sources={data?.sources ?? []} onDelete={load} store={store} />
       </div>
@@ -298,6 +298,10 @@ function AddPanel({
   const [title, setTitle] = useState("");
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
+  const [pasteError, setPasteError] = useState("");
+  const [formError, setFormError] = useState("");
+  const textRef = useRef<HTMLTextAreaElement>(null);
+  const aboutRef = useRef<HTMLTextAreaElement>(null);
 
   // Форма «о себе» — не свободный текст, а вопросы: человек не знает, что писать в пустое
   // поле, а на конкретный вопрос отвечает. Ответы склеиваем в один источник.
@@ -307,6 +311,8 @@ function AddPanel({
     setTitle("");
     setText("");
     setForm({ about: "", services: "", prices: "", taboo: "" });
+    setPasteError("");
+    setFormError("");
   };
 
   const submit = async () => {
@@ -321,7 +327,9 @@ function AddPanel({
         form.taboo && `Чего я НЕ обещаю и о чём не пишу: ${form.taboo}`,
       ].filter(Boolean);
       if (!parts.length) {
+        setFormError("Заполни хотя бы одно поле, чтобы добавить материал.");
         store.toast({ kind: "info", title: "Заполни хотя бы одно поле" });
+        aboutRef.current?.focus();
         return;
       }
       payload = { kind: "form", title: "О себе и услугах", text: parts.join("\n\n") };
@@ -361,7 +369,9 @@ function AddPanel({
     } else {
       const t = text.trim();
       if (!t) {
+        setPasteError("Вставь текст, который нужно добавить в базу.");
         store.toast({ kind: "info", title: "Вставь текст" });
+        textRef.current?.focus();
         return;
       }
       payload = { kind: "paste", title: title.trim() || "Без названия", text: t };
@@ -392,23 +402,55 @@ function AddPanel({
   };
 
   return (
-    <Card className="space-y-4 p-5">
-      <Tabs value={mode} onChange={onMode} items={MODES} />
+    <Card className="min-w-0 space-y-4 p-5">
+      <div className="max-w-full min-w-0 overflow-x-auto pb-1">
+        <Tabs
+          value={mode}
+          onChange={(nextMode) => {
+            setPasteError("");
+            setFormError("");
+            onMode(nextMode);
+          }}
+          items={MODES}
+          className="min-w-max"
+        />
+      </div>
 
       {mode === "paste" && (
         <div className="space-y-4">
-          <Field label="Название" hint="Чтобы потом найти в списке — например «ФЗ-127: сроки».">
-            <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Закон и процедура" />
+          <Field
+            label="Название"
+            htmlFor="knowledge-source-title"
+            hint="Чтобы потом найти в списке — например «ФЗ-127: сроки»."
+            messageId="knowledge-source-title-message"
+          >
+            <Input
+              id="knowledge-source-title"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="Закон и процедура"
+              aria-describedby="knowledge-source-title-message"
+            />
           </Field>
           <Field
             label="Текст"
-            hint="Законы, разборы, реальные кейсы, частые вопросы клиентов с ответами. Разделяй факты пустой строкой — каждый станет отдельной опорой."
+            htmlFor="knowledge-source-text"
+            error={pasteError || undefined}
+            hint={pasteError ? undefined : "Законы, разборы, реальные кейсы, частые вопросы клиентов с ответами. Разделяй факты пустой строкой — каждый станет отдельной опорой."}
+            messageId="knowledge-source-text-message"
           >
             <Textarea
+              ref={textRef}
+              id="knowledge-source-text"
               value={text}
-              onChange={(e) => setText(e.target.value)}
+              onChange={(e) => {
+                setText(e.target.value);
+                if (pasteError) setPasteError("");
+              }}
               rows={9}
               placeholder={"Процедура реализации имущества вводится на шесть месяцев…\n\nЕдинственное жильё не включается в конкурсную массу — статья 446 ГПК РФ…"}
+              aria-invalid={Boolean(pasteError)}
+              aria-describedby="knowledge-source-text-message"
             />
           </Field>
         </div>
@@ -416,48 +458,70 @@ function AddPanel({
 
       {mode === "form" && (
         <div className="space-y-4">
-          <Field label="Кто ты и о чём канал">
+          <Field
+            label="Кто ты и о чём канал"
+            htmlFor="knowledge-about"
+            error={formError || undefined}
+            messageId="knowledge-about-message"
+          >
             <Textarea
+              ref={aboutRef}
+              id="knowledge-about"
               value={form.about}
               onChange={(event) => {
                 const value = event.currentTarget.value;
                 setForm((current) => ({ ...current, about: value }));
+                if (formError) setFormError("");
               }}
               rows={2}
               placeholder="Юрист по банкротству физлиц, 8 лет практики, веду дела по всей России."
+              aria-invalid={Boolean(formError)}
+              aria-describedby={formError ? "knowledge-about-message" : undefined}
             />
           </Field>
-          <Field label="Услуги — что именно делаешь">
+          <Field label="Услуги — что именно делаешь" htmlFor="knowledge-services">
             <Textarea
+              id="knowledge-services"
               value={form.services}
               onChange={(event) => {
                 const value = event.currentTarget.value;
                 setForm((current) => ({ ...current, services: value }));
+                if (formError) setFormError("");
               }}
               rows={2}
               placeholder="Банкротство под ключ, сопровождение в суде, защита единственного жилья."
             />
           </Field>
-          <Field label="Цены и сроки">
+          <Field label="Цены и сроки" htmlFor="knowledge-prices">
             <Textarea
+              id="knowledge-prices"
               value={form.prices}
               onChange={(event) => {
                 const value = event.currentTarget.value;
                 setForm((current) => ({ ...current, prices: value }));
+                if (formError) setFormError("");
               }}
               rows={2}
               placeholder="Банкротство под ключ — 120 000 ₽, рассрочка 10 месяцев. Срок — 6–9 месяцев."
             />
           </Field>
-          <Field label="Чего НЕ обещаешь" hint="Важно: удержит ИИ от обещаний, за которые тебе потом отвечать.">
+          <Field
+            label="Чего НЕ обещаешь"
+            htmlFor="knowledge-taboos"
+            hint="Важно: удержит ИИ от обещаний, за которые тебе потом отвечать."
+            messageId="knowledge-taboos-message"
+          >
             <Textarea
+              id="knowledge-taboos"
               value={form.taboo}
               onChange={(event) => {
                 const value = event.currentTarget.value;
                 setForm((current) => ({ ...current, taboo: value }));
+                if (formError) setFormError("");
               }}
               rows={2}
               placeholder="Не гарантирую стопроцентное списание — оно зависит от ситуации."
+              aria-describedby="knowledge-taboos-message"
             />
           </Field>
         </div>

@@ -2436,8 +2436,11 @@ function StudioPageInner() {
                     </div>
                   )}
                   {pendingEngineSuggestion && !pendingBrief && (
-                    <div role="status" className="flex items-center justify-between gap-3 border-b border-line px-4 py-3 text-[11px]">
-                      <p className="text-text-2">
+                    <div
+                      role="status"
+                      className="flex flex-col items-stretch gap-3 border-b border-line px-4 py-3 text-[11px] sm:flex-row sm:items-center sm:justify-between"
+                    >
+                      <p className="min-w-0 text-pretty text-text-2">
                         <span className="font-extrabold text-text">Готова модель {pendingEngineSuggestion.label}.</span>{" "}
                         Текущий выбор не изменится без подтверждения.
                       </p>
@@ -2445,7 +2448,7 @@ function StudioPageInner() {
                         type="button"
                         size="sm"
                         variant="soft"
-                        className="shrink-0"
+                        className="w-full whitespace-normal text-pretty sm:w-auto sm:shrink-0"
                         onClick={() => void pickEngine(pendingEngineSuggestion)}
                       >
                         Переключиться на {pendingEngineSuggestion.label}

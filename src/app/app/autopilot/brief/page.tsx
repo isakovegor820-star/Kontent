@@ -13,7 +13,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, Check, Loader2, ShieldCheck, SlidersHorizontal, Sparkles, Wand2 } from "lucide-react";
 import { AppShell } from "@/components/app/shell";
-import { Button } from "@/components/ui/button";
+import { Button, buttonClassName } from "@/components/ui/button";
 import { Badge, Card, Field, Input, Textarea, Toggle } from "@/components/ui/primitives";
 import { useStore } from "@/lib/store";
 import { EMPTY_BRIEF, briefComplete, type Brief } from "@/lib/brief";
@@ -185,11 +185,9 @@ function BriefInner() {
       title="Настройка автопилота"
       subtitle="Объясни один раз, что за канал, — и автопилот перестанет писать наугад. Правится в любой момент."
       action={
-        <Link href="/app/autopilot">
-          <Button variant="ghost" size="sm">
-            <ArrowLeft className="h-4 w-4" aria-hidden />
-            К автопилоту
-          </Button>
+        <Link href="/app/autopilot" className={buttonClassName({ variant: "ghost", size: "sm" })}>
+          <ArrowLeft className="h-4 w-4" aria-hidden />
+          К автопилоту
         </Link>
       }
     >

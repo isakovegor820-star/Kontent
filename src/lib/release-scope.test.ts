@@ -23,6 +23,14 @@ describe("stable release scope", () => {
       "operation-history",
       "basic-analytics",
       "settings",
+      "today",
+      "studio",
+      "autopilot",
+      "trends-and-recon",
+      "opportunities",
+      "site-analysis",
+      "growth",
+      "knowledge",
     ]);
   });
 
@@ -33,20 +41,21 @@ describe("stable release scope", () => {
     expect(experimentalRoutesEnabled("1")).toBe(true);
   });
 
-  it("redirects experimental product and landing paths to stable destinations", () => {
-    expect(isExperimentalReleasePath("/app/autopilot/month")).toBe(true);
-    expect(stableReleaseRedirect("/app/autopilot/month")).toBe("/app/calendar");
+  it("keeps every signed-in product section released while hiding public previews", () => {
+    expect(isExperimentalReleasePath("/app/autopilot/month")).toBe(false);
+    expect(stableReleaseRedirect("/app/autopilot/month")).toBeNull();
+    expect(isExperimentalReleasePath("/variants")).toBe(true);
     expect(stableReleaseRedirect("/variants")).toBe("/");
     expect(stableReleaseRedirect("/app/composer")).toBeNull();
     expect(stableReleaseRedirect("/app/settings")).toBeNull();
   });
 
-  it("blocks experimental API families without blocking the stable workflow", () => {
-    expect(isExperimentalReleaseApiPath("/api/autopilot/approve")).toBe(true);
-    expect(isExperimentalReleasePath("/api/channels/connect-vk")).toBe(true);
+  it("keeps APIs for released product sections available", () => {
+    expect(isExperimentalReleaseApiPath("/api/autopilot/approve")).toBe(false);
+    expect(isExperimentalReleasePath("/api/channels/connect-vk")).toBe(false);
     expect(isExperimentalReleaseApiPath("/api/onboarding/progress")).toBe(false);
     expect(isExperimentalReleaseApiPath("/api/autopilot/brief")).toBe(false);
-    expect(isExperimentalReleaseApiPath("/api/autopilot/brief/suggest")).toBe(true);
+    expect(isExperimentalReleaseApiPath("/api/autopilot/brief/suggest")).toBe(false);
     expect(isExperimentalReleaseApiPath("/api/knowledge/extract-profile")).toBe(false);
     expect(isExperimentalReleaseApiPath("/api/drafts/41")).toBe(false);
     expect(isExperimentalReleaseApiPath("/api/publication-operations")).toBe(false);

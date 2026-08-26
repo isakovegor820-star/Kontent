@@ -12,6 +12,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
 import { getStatsQueue } from "@/lib/queue";
+import { enqueueKnowledgeIndex } from "@/lib/knowledge-index-queue.mjs";
 import { resolveChannel } from "@/lib/autopilot";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import { channelAiContextFor } from "@/lib/ai-usage";
@@ -134,14 +135,9 @@ export async function POST(req: NextRequest) {
 
     // Векторы считает воркер: это поход наружу (Ollama/облако), у него очередь и повторы.
     // Роут ждать не должен — человек увидит «считаю» и через секунды «готово».
-    await getStatsQueue()
-      .add(
-        "knowledge-index",
-        { sourceId: id },
-        { removeOnComplete: true, attempts: 3, backoff: { type: "fixed", delay: 20000 } },
-      )
+    await enqueueKnowledgeIndex(getStatsQueue(), id)
       .catch(() => {
-        /* очередь легла — источник сохранён и висит pending, суточный цикл подберёт */
+        /* Источник сохранён в pending; периодическая DB→queue сверка подберёт его позже. */
       });
 
     return NextResponse.json({ ok: true, id });

@@ -11,6 +11,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
 import { getStatsQueue } from "@/lib/queue";
+import { enqueueKnowledgeIndex } from "@/lib/knowledge-index-queue.mjs";
 import { resolveChannel } from "@/lib/autopilot";
 import { fetchPublicPosts } from "@/lib/tg-public";
 import { completeAiText } from "@/lib/ai-completion-service.mjs";
@@ -77,14 +78,9 @@ async function saveProfileSource(
   } finally {
     tx.release();
   }
-  await getStatsQueue()
-    .add(
-      "knowledge-index",
-      { sourceId },
-      { removeOnComplete: true, attempts: 3, backoff: { type: "fixed", delay: 20000 } },
-    )
+  await enqueueKnowledgeIndex(getStatsQueue(), sourceId)
     .catch(() => {
-      /* очередь легла — источник висит pending, суточный цикл подберёт */
+      /* Источник сохранён в pending; периодическая DB→queue сверка подберёт его позже. */
     });
 }
 

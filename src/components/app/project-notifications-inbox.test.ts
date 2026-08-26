@@ -132,6 +132,8 @@ describe("ProjectNotificationsInbox interface", () => {
     expect(source).toContain("currentProjectRef.current !== expectedProjectId");
     expect(source).toContain("window.setInterval(refresh, 60_000)");
     expect(source).toContain("onCancel=");
+    expect(source).toContain('event.key !== "Escape"');
+    expect(source).toContain("event.stopPropagation()");
     expect(source).toContain("focus-visible:ring-4");
     expect(source).not.toContain("transition-all");
   });

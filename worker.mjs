@@ -79,6 +79,10 @@ import { processLegalVisualRender } from "./worker/legal-visual-render-worker.mj
 import { createSiteAnalysisWorker } from "./worker/site-analysis-worker.mjs";
 import { createProjectExportWorker } from "./worker/project-export-worker.mjs";
 import { materializeAllOpportunitySnapshots } from "./src/lib/opportunity-snapshot-materializer.mjs";
+import {
+  KNOWLEDGE_INDEX_JOB,
+  reconcilePendingKnowledgeSources,
+} from "./src/lib/knowledge-index-queue.mjs";
 import { ensureDraftEditorialBootstrap } from "./worker/draft-editorial-bootstrap.mjs";
 import {
   expireProjectExportArtifacts,
@@ -11003,6 +11007,9 @@ autopilotWorker?.on("error", (error) => console.error("[autopilot] worker error"
 autopilotWorker?.on("failed", recoverFailedAutopilotPlan);
 
 // Отдельная очередь ручных задач аналитики (кнопка «обновить», недельный отчёт) и разведки.
+const statsProducerQueue = MEDIA_ONLY || AUTOPILOT_ONLY || PUBLICATION_ONLY
+  ? null
+  : new Queue("stats", { connection });
 const statsWorker = MEDIA_ONLY || AUTOPILOT_ONLY || PUBLICATION_ONLY ? null : new Worker(
   "stats",
   async (job) => {
@@ -11069,7 +11076,7 @@ const statsWorker = MEDIA_ONLY || AUTOPILOT_ONLY || PUBLICATION_ONLY ? null : ne
         throw new Error("rss-now: bad channelId");
       }
       await collectRss(userId, channelId);
-    } else if (job.name === "knowledge-index") {
+    } else if (job.name === KNOWLEDGE_INDEX_JOB) {
       // Человек добавил материал в базу знаний — считаем векторы сейчас, а не суточным
       // циклом: он вернётся на экран через минуту и должен увидеть «готово».
       const r = await indexSource(job.data.sourceId);
@@ -11451,6 +11458,7 @@ const CRON_SCHEDULES = [
   { name: "recon",    pattern: "0 */2 * * *" },  // разведка конкурентов, каждые 2ч
   { name: "trend",    pattern: "15 */2 * * *" }, // насмотренность, каждые 2ч (сдвиг 15мин от recon)
   { name: "today-opportunities", pattern: "30 */2 * * *" }, // снимки возможностей, каждые 2ч
+  { name: "knowledge-index", pattern: "*/5 * * * *" }, // восстановление pending-источников базы знаний
   { name: "discover", pattern: "0 4 * * *" },    // поиск соседей по нише, 04:00 МСК
   { name: "weekly",   pattern: "0 21 * * 0" },   // недельные планы, вс 21:00 МСК
   { name: "cleanup",  pattern: "0 3 * * *" },    // чистка протухших sessions/bot_links, 03:00 МСК
@@ -11468,6 +11476,7 @@ const cronWorker = AUTOPILOT_ONLY || MEDIA_ONLY || PUBLICATION_ONLY ? null : new
       case "recon":    await collectCompetitors(); return checkNicheAlerts();
       case "trend":    return collectTrendSources();
       case "today-opportunities": return materializeAllOpportunitySnapshots(pool);
+      case "knowledge-index": return reconcilePendingKnowledgeSources(pool, statsProducerQueue);
       case "discover": return discoverAll();
       case "weekly":   return weeklyPlans();
       case "cleanup":  return cleanupExpired();
@@ -11654,6 +11663,7 @@ async function shutdown(sig) {
     await autopilotWorker?.close();
     await autopilotQueue?.close();
     await statsWorker?.close();
+    await statsProducerQueue?.close();
     await cronWorker?.close();
     await cronQueue?.close();
   } catch {
@@ -11685,7 +11695,7 @@ if (!AUTOPILOT_ONLY && !MEDIA_ONLY && !PUBLICATION_ONLY) {
 // Стартовая свежесть: разовые задачи сразу после запуска, чтобы не ждать первого тика.
 // Идут через ту же очередь (concurrency: 1) — не долбят t.me все разом при старте.
 // weekly НЕ запускаем: планы не должны перестраиваться при каждом рестарте (лечит баг «плана нет»).
-for (const name of AUTOPILOT_ONLY || MEDIA_ONLY || PUBLICATION_ONLY ? [] : ["stats", "recon", "trend", "today-opportunities", "discover", "exports"]) {
+for (const name of AUTOPILOT_ONLY || MEDIA_ONLY || PUBLICATION_ONLY ? [] : ["stats", "recon", "trend", "today-opportunities", "knowledge-index", "discover", "exports"]) {
   await cronQueue.add(name, {}, { jobId: `startup-${name}`, removeOnComplete: true }).catch(() => {});
 }
 
