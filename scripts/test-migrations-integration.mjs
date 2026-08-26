@@ -136,6 +136,46 @@ try {
     throw new Error(`previous release Autopilot insert is not rollback-compatible: ${rollbackCompatibleSettings}`);
   }
 
+  // The previous release omits item_snapshot from its Today state UPSERT. A rollback
+  // after the snapshot migration must still be able to move a completed item to snoozed;
+  // the compatibility trigger clears the now-inactive snapshot before constraints run.
+  const legacyTodayScope = (await pool.query(
+    "select project_id, user_id from channels where id = 10",
+  )).rows[0];
+  if (!legacyTodayScope) throw new Error("legacy Today rollback fixture has no channel 10");
+  const legacyTodayFingerprint = "e".repeat(64);
+  await pool.query(
+    `insert into today_item_states (
+       project_id, channel_id, user_id, fingerprint, ranking_version,
+       state, snoozed_until, item_snapshot
+     ) values ($1, 10, $2, $3, 'today-ranking-v1', 'done', null, $4::jsonb)`,
+    [
+      legacyTodayScope.project_id,
+      legacyTodayScope.user_id,
+      legacyTodayFingerprint,
+      JSON.stringify({ title: "Legacy rollback fixture" }),
+    ],
+  );
+  await pool.query(
+    `insert into today_item_states
+       (project_id, channel_id, user_id, fingerprint, ranking_version, state, snoozed_until)
+     values ($1, 10, $2, $3, 'today-ranking-v1', 'snoozed', now() + interval '1 day')
+     on conflict (project_id, channel_id, user_id, fingerprint) do update
+       set state = excluded.state, snoozed_until = excluded.snoozed_until,
+           ranking_version = excluded.ranking_version,
+           state_version = today_item_states.state_version + 1,
+           updated_at = now()`,
+    [legacyTodayScope.project_id, legacyTodayScope.user_id, legacyTodayFingerprint],
+  );
+  const legacyTodayState = (await pool.query(
+    `select state, item_snapshot from today_item_states
+      where project_id = $1 and channel_id = 10 and user_id = $2 and fingerprint = $3`,
+    [legacyTodayScope.project_id, legacyTodayScope.user_id, legacyTodayFingerprint],
+  )).rows[0];
+  if (legacyTodayState?.state !== "snoozed" || legacyTodayState?.item_snapshot !== null) {
+    throw new Error(`previous release Today UPSERT is not rollback-compatible: ${JSON.stringify(legacyTodayState)}`);
+  }
+
   const auditQuery = productionLedgerAudit.match(/\n(with relevant_ledger[\s\S]+?)\n\ncommit;/u)?.[1];
   if (!auditQuery) throw new Error("production ledger audit query could not be extracted");
   const auditClient = await pool.connect();
