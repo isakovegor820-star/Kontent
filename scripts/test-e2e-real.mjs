@@ -1981,9 +1981,11 @@ try {
   await page.goBack();
   await page.waitForURL((url) => url.pathname === "/app/studio" && url.searchParams.get("draft") === String(libraryReferenceDraftId));
   assert(!new URL(page.url()).searchParams.has("intent"), "browser Back restarted the completed paid generation");
+  await desktopSidebar
+    .locator('a[aria-current="page"]')
+    .waitFor({ state: "detached", timeout: UI_WAIT_TIMEOUT_MS });
   assert(
-    await desktopSidebar.getByRole("link", { name: "Студия контента", exact: true }).count() === 0
-      && await desktopSidebar.locator('a[aria-current="page"]').count() === 0,
+    await desktopSidebar.getByRole("link", { name: "Студия контента", exact: true }).count() === 0,
     "experimental Studio leaked into stable desktop navigation",
   );
   await page.goBack();
@@ -2007,9 +2009,11 @@ try {
     [studioDraftId, userId],
   )).rows[0];
   assert(Number(studioDestination?.channel_id) === channels[0], "Studio draft lost selected channel id");
+  await desktopSidebar
+    .locator('a[aria-current="page"]')
+    .waitFor({ state: "detached", timeout: UI_WAIT_TIMEOUT_MS });
   assert(
-    await desktopSidebar.getByRole("link", { name: "Студия контента", exact: true }).count() === 0
-      && await desktopSidebar.locator('a[aria-current="page"]').count() === 0,
+    await desktopSidebar.getByRole("link", { name: "Студия контента", exact: true }).count() === 0,
     "Studio action exposed an experimental desktop navigation item",
   );
   await page.goBack();
