@@ -54,4 +54,11 @@ describe("real E2E runtime isolation", () => {
     expect(source).not.toContain("process.env.E2E_WEB_PORT || 43190");
     expect(source).not.toContain("process.env.E2E_FAKE_PORT || 43191");
   });
+
+  it("opts experimental-route E2E harnesses into preview without opening production", () => {
+    for (const script of ["scripts/test-e2e-real.mjs", "scripts/test-trends-hydration-e2e.mjs"]) {
+      const source = readFileSync(resolve(script), "utf8");
+      expect(source).toContain('NEXT_PUBLIC_AURORA_EXPERIMENTAL_ROUTES: "1"');
+    }
+  });
 });

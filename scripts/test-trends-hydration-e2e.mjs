@@ -34,6 +34,7 @@ const runtimeEnv = {
   NEXT_PUBLIC_APP_URL: baseUrl,
   HOSTNAME: "127.0.0.1",
   PORT: String(port),
+  NEXT_PUBLIC_AURORA_EXPERIMENTAL_ROUTES: "1",
   TOKENS_MASTER_KEY: "trends-e2e-only-master-key-with-enough-entropy-2026",
   TOKENS_KEY_ID: "1",
 };
