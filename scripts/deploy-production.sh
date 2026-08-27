@@ -17,6 +17,8 @@ CLEANUP_RELEASE_SHA="${AURORA_INCOMPLETE_RELEASE_SHA:-}"
 HEALTH_URL="${AURORA_HEALTH_URL:-http://127.0.0.1:3002/api/health}"
 HEALTH_ATTEMPTS="${AURORA_HEALTH_ATTEMPTS:-30}"
 HEALTH_SLEEP_SECS="${AURORA_HEALTH_SLEEP_SECS:-2}"
+WORKER_SERVICE="aurora-worker.service"
+worker_paused_for_build=0
 
 if [[ ! "$DEPLOY_SHA" =~ ^[0-9a-f]{40}$ ]]; then
   echo "AURORA_DEPLOY_SHA must be an exact 40-character git SHA" >&2
@@ -137,9 +139,22 @@ if [[ -e "$release" ]]; then
   exit 1
 fi
 
+resume_worker_after_build() {
+  [[ "$worker_paused_for_build" -eq 1 ]] || return 0
+  echo "RESUME_WORKER_AFTER_BUILD"
+  systemctl start "$WORKER_SERVICE"
+  worker_paused_for_build=0
+}
+
 cleanup_failed_release() {
   local status="$?" current=""
   trap - EXIT
+  if [[ "$worker_paused_for_build" -eq 1 ]]; then
+    if ! resume_worker_after_build; then
+      echo "failed to resume $WORKER_SERVICE after interrupted build" >&2
+      status=1
+    fi
+  fi
   current="$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)"
   if [[ "$status" -ne 0 && -n "$release" && -d "$release" && "$current" != "$release" ]]; then
     echo "PRUNE_FAILED $release" >&2
@@ -195,7 +210,15 @@ set -a
 # shellcheck disable=SC1091
 . ./.env.production
 set +a
+if systemctl is-active --quiet "$WORKER_SERVICE"; then
+  # Keep the live web service available while temporarily reclaiming the worker's
+  # memory for Next/Sentry compilation on the fixed-size production VPS.
+  worker_paused_for_build=1
+  echo "PAUSE_WORKER_FOR_BUILD"
+  systemctl stop "$WORKER_SERVICE"
+fi
 npm run build
+resume_worker_after_build
 
 echo "MIGRATE"
 bash scripts/run-production-migrations.sh

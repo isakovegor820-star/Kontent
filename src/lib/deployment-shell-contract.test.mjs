@@ -146,4 +146,16 @@ describe("production deployment shell contract", () => {
     expect(script).toContain('rm -rf -- "$release"');
     expect(script).toContain('rm -f -- "$state_file"');
   });
+
+  it("reclaims worker memory for the VPS build and always restores the worker", () => {
+    const pause = script.indexOf('echo "PAUSE_WORKER_FOR_BUILD"');
+    const build = script.indexOf("npm run build");
+    const resume = script.indexOf("resume_worker_after_build", build);
+    expect(pause).toBeGreaterThan(0);
+    expect(pause).toBeLessThan(build);
+    expect(resume).toBeGreaterThan(build);
+    expect(script).toContain('systemctl stop "$WORKER_SERVICE"');
+    expect(script).toContain('systemctl start "$WORKER_SERVICE"');
+    expect(script).toMatch(/cleanup_failed_release\(\)[\s\S]*resume_worker_after_build/u);
+  });
 });
