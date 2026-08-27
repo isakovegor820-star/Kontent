@@ -23,10 +23,10 @@ function stop(signal, exitCode) {
   force.unref();
 }
 
-function start(label, args) {
+function start(label, args, env = process.env) {
   const child = spawn(process.execPath, args, {
     cwd: process.cwd(),
-    env: process.env,
+    env,
     stdio: "inherit",
   });
   children.add(child);
@@ -53,5 +53,6 @@ try {
   process.exit(1);
 }
 
-start("worker", ["worker.mjs"]);
-start("web", ["node_modules/next/dist/bin/next", "start", ...process.argv.slice(2)]);
+const productionEnv = { ...process.env, NODE_ENV: "production" };
+start("worker", ["worker.mjs"], productionEnv);
+start("web", ["node_modules/next/dist/bin/next", "start", ...process.argv.slice(2)], productionEnv);

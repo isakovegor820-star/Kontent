@@ -52,3 +52,7 @@ next-env.d.ts
 
 # Blender backup files; keep authored .blend sources and exported web assets.
 *.blend1
+
+# Sentry Config File
+.env.sentry-build-plugin
+.env.sentry-api

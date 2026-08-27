@@ -4,6 +4,7 @@
 // Тон сообщения — по ТЗ 7.5: что случилось, что мы уже делаем, нужно ли что-то от тебя.
 
 import { AlertTriangle } from "lucide-react";
+import * as Sentry from "@sentry/nextjs";
 import { useEffect } from "react";
 import { Button } from "@/components/ui/button";
 
@@ -15,6 +16,7 @@ export default function ErrorBoundary({
   unstable_retry: () => void;
 }) {
   useEffect(() => {
+    Sentry.captureException(error);
     console.error("[interface-error-boundary]", error);
   }, [error]);
 
