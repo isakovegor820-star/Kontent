@@ -160,6 +160,7 @@ function LibraryInner() {
   const [newNote, setNewNote] = useState("");
   const [newTags, setNewTags] = useState("");
   const [saving, setSaving] = useState(false);
+  const [deletingPostId, setDeletingPostId] = useState<number | null>(null);
   const [savingReferenceId, setSavingReferenceId] = useState<number | null>(null);
   const [expandedCardIds, setExpandedCardIds] = useState<Set<string>>(() => new Set());
   const [draftActionBusy, setDraftActionBusy] = useState<string | null>(null);
@@ -167,6 +168,8 @@ function LibraryInner() {
     promise: Promise<void> | null;
     clientKeys: Map<string, string>;
   }>({ promise: null, clientKeys: new Map() });
+  const postsRequestSequence = useRef(0);
+  const postsAbortRef = useRef<AbortController | null>(null);
   const savedReferenceIds = useMemo(
     () => new Set(posts.filter((post) => post.kind === "reference" && post.source_post_id).map((post) => String(post.source_post_id))),
     [posts],
@@ -207,56 +210,53 @@ function LibraryInner() {
   }, [channelId, setHits, setHitsError]);
 
   const loadPosts = useCallback(async (query?: string) => {
+    const sequence = ++postsRequestSequence.current;
+    postsAbortRef.current?.abort();
+    const controller = new AbortController();
+    postsAbortRef.current = controller;
     if (!channelId) {
-      setPosts([]);
+      if (sequence === postsRequestSequence.current) {
+        setPosts([]);
+        setLoadError(false);
+        setLoading(false);
+      }
       return;
     }
+    setLoading(true);
     try {
       const params = new URLSearchParams({ channel: String(channelId) });
       if (query) params.set("q", query);
       const url = `/api/library/posts?${params.toString()}`;
-      const r = await fetch(url, { cache: "no-store" });
+      const r = await fetch(url, { cache: "no-store", signal: controller.signal });
+      if (sequence !== postsRequestSequence.current || controller.signal.aborted) return;
       if (r.ok) {
         const d = await r.json();
+        if (sequence !== postsRequestSequence.current || controller.signal.aborted) return;
         setPosts(d.posts ?? []);
+        setLoadError(false);
       } else {
         setLoadError(true);
       }
-    } catch { setLoadError(true); }
-  }, [channelId, setLoadError, setPosts]);
-
-  const reload = useCallback(() => {
-    setLoadError(false);
-    setLoading(true);
-    setHitsLoading(true);
-    setHits([]);
-    setPosts([]);
-    setHitsError(null);
-    Promise.all([loadHits(), loadPosts()]).finally(() => {
-      setLoading(false);
-      setHitsLoading(false);
-    });
-  }, [
-    loadHits,
-    loadPosts,
-    setHits,
-    setHitsError,
-    setHitsLoading,
-    setLoadError,
-    setLoading,
-    setPosts,
-  ]);
-
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    reload();
-  }, [reload]);
+    } catch (error) {
+      if (
+        sequence === postsRequestSequence.current
+        && !controller.signal.aborted
+        && (!(error instanceof Error) || error.name !== "AbortError")
+      ) setLoadError(true);
+    } finally {
+      if (sequence === postsRequestSequence.current && !controller.signal.aborted) setLoading(false);
+    }
+  }, [channelId]);
 
   // Поиск по своим постам (debounce)
   useEffect(() => {
     if (tab !== "posts") return;
-    const t = setTimeout(() => loadPosts(q.trim() || undefined), 300);
-    return () => clearTimeout(t);
+    const t = window.setTimeout(() => void loadPosts(q.trim() || undefined), q.trim() ? 300 : 0);
+    return () => {
+      window.clearTimeout(t);
+      postsRequestSequence.current += 1;
+      postsAbortRef.current?.abort();
+    };
   }, [q, tab, loadPosts]);
 
   const savePost = async () => {
@@ -274,7 +274,7 @@ function LibraryInner() {
         setNewText("");
         setNewNote("");
         setNewTags("");
-        await loadPosts();
+        await loadPosts(q.trim() || undefined);
         s.toast({ kind: "success", title: `Сохранено для «${selectedChannelName}»` });
       } else {
         s.toast({ kind: "danger", title: "Не удалось сохранить", body: "Проверь канал и попробуй ещё раз." });
@@ -286,10 +286,14 @@ function LibraryInner() {
     }
   };
 
-  const deletePost = async (id: number) => {
-    const response = await fetch(`/api/library/posts?id=${id}`, { method: "DELETE" }).catch(() => null);
-    if (response?.ok) setPosts((prev) => prev.filter((p) => p.id !== id));
+  const deletePost = async (post: SavedPost) => {
+    const label = post.kind === "reference" ? "референс" : "свой текст";
+    if (!window.confirm(`Удалить ${label} из коллекции? Это действие нельзя отменить.`)) return;
+    setDeletingPostId(post.id);
+    const response = await fetch(`/api/library/posts?id=${post.id}`, { method: "DELETE" }).catch(() => null);
+    if (response?.ok) setPosts((prev) => prev.filter((item) => item.id !== post.id));
     else s.toast({ kind: "danger", title: "Не удалось удалить запись" });
+    setDeletingPostId(null);
   };
 
   const saveReference = async (hit: Hit) => {
@@ -438,11 +442,11 @@ function LibraryInner() {
       </section>
 
       {/* Ошибка загрузки своих данных */}
-      {loadError && (
+      {tab === "posts" && loadError && (
         <Card className="mt-5 p-4">
           <div className="flex items-center justify-between">
             <p className="text-[14px] text-text">Не удалось загрузить данные</p>
-            <Button variant="soft" size="sm" onClick={reload}>
+            <Button variant="soft" size="sm" onClick={() => void loadPosts(q.trim() || undefined)}>
               <RefreshCw className="h-4 w-4" />
               Повторить
             </Button>
@@ -807,7 +811,9 @@ function LibraryInner() {
                     <Button
                       variant="danger"
                       size="sm"
-                      onClick={() => deletePost(p.id)}
+                      onClick={() => void deletePost(p)}
+                      loading={deletingPostId === p.id}
+                      disabled={deletingPostId !== null && deletingPostId !== p.id}
                       aria-label="Удалить запись"
                       title="Удалить запись"
                     >

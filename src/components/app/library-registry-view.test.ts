@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { libraryFilterPayload, libraryRegistryQuery } from "./library-registry-view";
+import {
+  libraryFilterPayload,
+  libraryRegistryEmptyState,
+  libraryRegistryQuery,
+} from "./library-registry-view";
 
 const filters = {
   q: "договор",
@@ -47,5 +51,27 @@ describe("library analytical registry client contract", () => {
     expect(params.get("liftMin")).toBe("5");
     expect(params.get("ratingMin")).toBe("4");
     expect(params.get("scoreMin")).toBe("80");
+  });
+
+  it("distinguishes a new channel from an empty filtered result", () => {
+    const diagnostics = {
+      competitorCount: 0,
+      sourcePostCount: 0,
+      readyIdeaCount: 0,
+      pendingIdeaCount: 0,
+      savedCount: 0,
+      totalItemCount: 0,
+      aiEngine: "local",
+      aiEngineLabel: "Hermes 3",
+      aiConfigured: true,
+    };
+    expect(libraryRegistryEmptyState(diagnostics, 0)).toMatchObject({
+      kind: "competitors",
+      title: "Добавь конкурентов для первых примеров",
+    });
+    expect(libraryRegistryEmptyState({ ...diagnostics, totalItemCount: 4 }, 1)).toMatchObject({
+      kind: "filtered",
+      title: "По этим условиям ничего нет",
+    });
   });
 });

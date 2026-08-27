@@ -79,4 +79,16 @@ describe("library filters", () => {
     expect(filterAndSortLibraryItems(rows, desc).map((entry) => entry.id)).toEqual(["high", "low", "missing"]);
     expect(filterAndSortLibraryItems(rows, asc).map((entry) => entry.id)).toEqual(["low", "high", "missing"]);
   });
+
+  it("keeps only analytically confirmed hits across references, ideas and saved items", () => {
+    const filters = parseLibraryFilters({ hit: "only" });
+    const result = filterAndSortLibraryItems([
+      item({ id: "reference:1", kind: "reference", isHit: true }),
+      item({ id: "idea:2", kind: "idea", isHit: false }),
+      item({ id: "saved:3", kind: "saved", saved: true, isHit: false }),
+      item({ id: "idea:4", kind: "idea", isHit: true }),
+      item({ id: "saved:5", kind: "saved", saved: true, isHit: true }),
+    ], filters);
+    expect(result.map((entry) => entry.id).sort()).toEqual(["idea:4", "reference:1", "saved:5"]);
+  });
 });

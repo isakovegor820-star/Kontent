@@ -38,7 +38,9 @@ describe("POST /api/library/exports", () => {
     mocks.hasTrustedMutationOrigin.mockReturnValue(true);
     mocks.getSessionUser.mockResolvedValue({ id: 7 });
     mocks.buildLibraryRegistrySnapshot.mockResolvedValue(snapshot);
-    mocks.query.mockResolvedValueOnce({ rows: [{ id: "41" }] });
+    mocks.query
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ id: "41", snapshot }] });
   });
 
   it("creates one immutable snapshot and six download links", async () => {
@@ -53,10 +55,31 @@ describe("POST /api/library/exports", () => {
 
   it("replays the same snapshot for the same idempotency key", async () => {
     mocks.query.mockReset();
-    mocks.query.mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({ rows: [{ id: "41" }] });
+    mocks.query.mockResolvedValueOnce({ rows: [{ id: "41", snapshot }] });
     const response = await POST(request());
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ replay: true, id: 41 });
+    expect(mocks.buildLibraryRegistrySnapshot).not.toHaveBeenCalled();
+    expect(mocks.query).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns metadata from the stored snapshot on a replay", async () => {
+    mocks.query.mockReset();
+    mocks.query.mockResolvedValueOnce({
+      rows: [{
+        id: "41",
+        snapshot: { ...snapshot, formulaVersion: "stored-v1", items: [] },
+      }],
+    });
+
+    const response = await POST(request());
+
+    await expect(response.json()).resolves.toMatchObject({
+      replay: true,
+      formulaVersion: "stored-v1",
+      count: 0,
+    });
+    expect(mocks.buildLibraryRegistrySnapshot).not.toHaveBeenCalled();
   });
 
   it("rejects weak idempotency keys before building a snapshot", async () => {

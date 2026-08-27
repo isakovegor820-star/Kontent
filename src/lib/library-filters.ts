@@ -75,6 +75,18 @@ export type LibraryRegistryItem = {
   };
 };
 
+export type LibraryRegistryDiagnostics = {
+  competitorCount: number;
+  sourcePostCount: number;
+  readyIdeaCount: number;
+  pendingIdeaCount: number;
+  savedCount: number;
+  totalItemCount: number;
+  aiEngine: string;
+  aiEngineLabel: string;
+  aiConfigured: boolean;
+};
+
 type QueryLike = URLSearchParams | Record<string, unknown>;
 
 function values(query: QueryLike, key: string): string[] {
@@ -182,7 +194,7 @@ export function filterAndSortLibraryItems(items: LibraryRegistryItem[], filters:
     if (!inRange(item.analyticsScore, filters.scoreMin, filters.scoreMax)) return false;
     if (filters.qualities.length && (!item.dataQuality || !filters.qualities.includes(item.dataQuality))) return false;
     if (filters.maturities.length && (!item.dataMaturity || !filters.maturities.includes(item.dataMaturity))) return false;
-    if (filters.hitOnly && item.kind === "reference" && !item.isHit) return false;
+    if (filters.hitOnly && !item.isHit) return false;
     return true;
   });
   const direction = filters.direction === "asc" ? 1 : -1;

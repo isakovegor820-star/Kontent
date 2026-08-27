@@ -56,6 +56,17 @@ export type LibraryScoredItem = LibraryScoringInput & {
   isHit: boolean;
 };
 
+export type LibraryScoreExplanationInput = {
+  score: number | null;
+  format: "text" | "photo" | "video";
+  lift: number | null;
+  erBayes: number | null;
+  velocity: number | null;
+  freshness: number | null;
+  formulaVersion: string;
+  missingMetrics: string[];
+};
+
 export function libraryMedian(values: unknown[]): number | null;
 export function libraryQuantile(values: unknown[], proportion: number): number | null;
 export function libraryPercentileRank(values: unknown[], target: unknown): number | null;
@@ -64,4 +75,4 @@ export function scoreLibraryCohorts(
   rows: LibraryScoringInput[],
   options?: Record<string, unknown>,
 ): LibraryScoredItem[];
-export function explainLibraryScore(item: LibraryScoredItem | null | undefined): string;
+export function explainLibraryScore(item: LibraryScoreExplanationInput | null | undefined): string;

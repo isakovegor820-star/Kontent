@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   ArrowDownAZ,
@@ -30,6 +31,7 @@ import type {
   LibraryFormat,
   LibraryMaturity,
   LibraryQuality,
+  LibraryRegistryDiagnostics,
   LibraryRegistryItem,
   LibrarySavedFilter,
   LibrarySort,
@@ -69,6 +71,7 @@ type RegistryResponse = {
   items?: LibraryRegistryItem[];
   formulaVersion?: string;
   exportedAt?: string;
+  diagnostics?: LibraryRegistryDiagnostics;
   error?: string;
 };
 
@@ -135,6 +138,40 @@ function finite(value: string) {
 function versionLabel(value: string | null | undefined) {
   const version = value?.match(/\d+(?:\.\d+)*/u)?.[0];
   return version || "текущая";
+}
+
+export function libraryRegistryEmptyState(
+  diagnostics: LibraryRegistryDiagnostics | null,
+  activeFilterCount: number,
+) {
+  if (activeFilterCount > 0 || (diagnostics?.totalItemCount ?? 0) > 0) {
+    return {
+      kind: "filtered" as const,
+      title: "По этим условиям ничего нет",
+      body: "Ослабь диапазон или сбрось фильтры. Исходные данные не удалены.",
+    };
+  }
+  if (!diagnostics || diagnostics.competitorCount === 0) {
+    return {
+      kind: "competitors" as const,
+      title: "Добавь конкурентов для первых примеров",
+      body: "Аврора соберёт их открытые публикации, сравнит результаты внутри каждого источника и покажет подтверждённые механики.",
+    };
+  }
+  if (diagnostics.sourcePostCount === 0) {
+    return {
+      kind: "collecting" as const,
+      title: "Собираем первые публикации",
+      body: "Конкуренты подключены, но их материалы ещё не появились. Обычно они приходят после ближайшего прохода разведки.",
+    };
+  }
+  return {
+    kind: "waiting" as const,
+    title: "Готовых материалов пока нет",
+    body: diagnostics.pendingIdeaCount > 0
+      ? `ИИ ещё готовит ${diagnostics.pendingIdeaCount} ${diagnostics.pendingIdeaCount === 1 ? "идею" : "идеи"}. Референсы появятся после завершения сбора.`
+      : "Разведка уже видит публикации, но пока не нашла материалов с достаточными данными для этого реестра.",
+  };
 }
 
 export function libraryFilterPayload(channelId: number, filters: Filters) {
@@ -228,6 +265,7 @@ export function LibraryRegistryView({ channelId, channelName }: { channelId: num
   const [items, setItems] = useState<LibraryRegistryItem[]>([]);
   const [sourceOptions, setSourceOptions] = useState<Array<{ id: string; title: string }>>([]);
   const [formulaVersion, setFormulaVersion] = useState<string | null>(null);
+  const [diagnostics, setDiagnostics] = useState<LibraryRegistryDiagnostics | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
@@ -250,6 +288,7 @@ export function LibraryRegistryView({ channelId, channelName }: { channelId: num
       if (sequence !== requestSequence.current) return;
       setItems(body.items);
       setFormulaVersion(body.formulaVersion || null);
+      setDiagnostics(body.diagnostics ?? null);
       setSourceOptions((current) => {
         const options = new Map(current.map((item) => [item.id, item.title]));
         for (const item of body.items || []) {
@@ -408,6 +447,7 @@ export function LibraryRegistryView({ channelId, channelName }: { channelId: num
     return plain + filters.formats.length + filters.qualities.length + filters.maturities.length
       + (filters.saved !== "all" ? 1 : 0) + (filters.viewed !== "all" ? 1 : 0) + (filters.hitOnly ? 1 : 0);
   }, [filters]);
+  const emptyState = libraryRegistryEmptyState(diagnostics, activeFilterCount);
 
   return (
     <div className="mt-5 min-w-0 space-y-4">
@@ -544,6 +584,26 @@ export function LibraryRegistryView({ channelId, channelName }: { channelId: num
         </details>
       </Card>
 
+      {diagnostics && diagnostics.pendingIdeaCount > 0 && (
+        <Card className="border-brand/20 bg-brand-soft p-4">
+          <div className="flex flex-wrap items-center gap-3">
+            <Sparkles className="h-5 w-5 shrink-0 text-brand" aria-hidden />
+            <div className="min-w-0 flex-1">
+              <p className="text-[13px] font-extrabold text-text">Диагностика ИИ</p>
+              <p className="mt-1 text-[12px] leading-relaxed text-text-2">
+                {diagnostics.pendingIdeaCount} {diagnostics.pendingIdeaCount === 1 ? "идея ожидает" : "идеи ожидают"} завершения в «{diagnostics.aiEngineLabel}».
+                {diagnostics.aiConfigured
+                  ? " Если число не уменьшается после следующего прохода разведки, проверь доступность выбранного ИИ."
+                  : " Выбранный ИИ не подключён — идеи не смогут завершиться."}
+              </p>
+            </div>
+            <Link href="/app/settings">
+              <Button variant="outline" size="sm">Проверить ИИ</Button>
+            </Link>
+          </div>
+        </Card>
+      )}
+
       {error ? (
         <Card className="p-5">
           <div className="flex flex-wrap items-center gap-3">
@@ -557,7 +617,20 @@ export function LibraryRegistryView({ channelId, channelName }: { channelId: num
           {[0, 1, 2, 3].map((item) => <div key={item} className="skeleton h-72 rounded-md" />)}
         </div>
       ) : items.length === 0 ? (
-        <Card><EmptyState icon={<Filter className="h-6 w-6" />} title="По этим условиям ничего нет" body="Ослабь диапазон или сбрось фильтры. Исходные данные не удалены." action={<Button variant="outline" size="sm" onClick={() => setFilters(DEFAULT_FILTERS)}>Сбросить фильтры</Button>} /></Card>
+        <Card>
+          <EmptyState
+            icon={emptyState.kind === "competitors" ? <Search className="h-6 w-6" /> : <Filter className="h-6 w-6" />}
+            title={emptyState.title}
+            body={emptyState.body}
+            action={emptyState.kind === "filtered"
+              ? <Button variant="outline" size="sm" onClick={() => setFilters(DEFAULT_FILTERS)}>Сбросить фильтры</Button>
+              : (
+                <Link href={`/app/competitors?channel=${channelId}`}>
+                  <Button variant="solid" size="sm">Добавить конкурентов</Button>
+                </Link>
+              )}
+          />
+        </Card>
       ) : (
         <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-3 lg:grid-cols-2">
           {items.map((item) => {
