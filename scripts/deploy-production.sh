@@ -14,11 +14,11 @@ RELEASES_DIR="${AURORA_RELEASES_DIR:-/opt/aurora-releases}"
 CURRENT_LINK="${AURORA_CURRENT_LINK:-/opt/aurora-current}"
 KEEP_RELEASES="${AURORA_KEEP_RELEASES:-2}"
 CLEANUP_RELEASE_SHA="${AURORA_INCOMPLETE_RELEASE_SHA:-}"
+BUILD_ARCHIVE="${AURORA_BUILD_ARCHIVE:-}"
+BUILD_ARCHIVE_SHA256="${AURORA_BUILD_ARCHIVE_SHA256:-}"
 HEALTH_URL="${AURORA_HEALTH_URL:-http://127.0.0.1:3002/api/health}"
 HEALTH_ATTEMPTS="${AURORA_HEALTH_ATTEMPTS:-30}"
 HEALTH_SLEEP_SECS="${AURORA_HEALTH_SLEEP_SECS:-2}"
-WORKER_SERVICE="aurora-worker.service"
-worker_paused_for_build=0
 
 if [[ ! "$DEPLOY_SHA" =~ ^[0-9a-f]{40}$ ]]; then
   echo "AURORA_DEPLOY_SHA must be an exact 40-character git SHA" >&2
@@ -31,6 +31,17 @@ fi
 if [[ "$DEPLOY_ACTION" != "deploy" && "$DEPLOY_ACTION" != "rollback" ]]; then
   echo "AURORA_DEPLOY_ACTION must be deploy or rollback" >&2
   exit 1
+fi
+if [[ "$DEPLOY_ACTION" == "deploy" ]]; then
+  expected_build_archive="/tmp/aurora-build-${DEPLOY_SHA}.tar.gz"
+  if [[ "$BUILD_ARCHIVE" != "$expected_build_archive" ]]; then
+    echo "AURORA_BUILD_ARCHIVE must equal $expected_build_archive" >&2
+    exit 1
+  fi
+  if [[ ! "$BUILD_ARCHIVE_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "AURORA_BUILD_ARCHIVE_SHA256 must be an exact lowercase SHA-256" >&2
+    exit 1
+  fi
 fi
 
 mkdir -p "$RELEASES_DIR"
@@ -139,22 +150,10 @@ if [[ -e "$release" ]]; then
   exit 1
 fi
 
-resume_worker_after_build() {
-  [[ "$worker_paused_for_build" -eq 1 ]] || return 0
-  echo "RESUME_WORKER_AFTER_BUILD"
-  systemctl start "$WORKER_SERVICE"
-  worker_paused_for_build=0
-}
-
 cleanup_failed_release() {
   local status="$?" current=""
   trap - EXIT
-  if [[ "$worker_paused_for_build" -eq 1 ]]; then
-    if ! resume_worker_after_build; then
-      echo "failed to resume $WORKER_SERVICE after interrupted build" >&2
-      status=1
-    fi
-  fi
+  [[ -z "$BUILD_ARCHIVE" ]] || rm -f -- "$BUILD_ARCHIVE"
   current="$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)"
   if [[ "$status" -ne 0 && -n "$release" && -d "$release" && "$current" != "$release" ]]; then
     echo "PRUNE_FAILED $release" >&2
@@ -202,23 +201,31 @@ node "${release}/scripts/verify-rollback-boundary.mjs" \
   "$previous_sha" "$DEPLOY_SHA"
 
 cd "$release"
-echo "INSTALL"
-npm ci --no-audit --no-fund
+echo "INSTALL_RUNTIME"
+npm ci --omit=dev --no-audit --no-fund
 
-echo "BUILD"
-set -a
-# shellcheck disable=SC1091
-. ./.env.production
-set +a
-if systemctl is-active --quiet "$WORKER_SERVICE"; then
-  # Keep the live web service available while temporarily reclaiming the worker's
-  # memory for Next/Sentry compilation on the fixed-size production VPS.
-  worker_paused_for_build=1
-  echo "PAUSE_WORKER_FOR_BUILD"
-  systemctl stop "$WORKER_SERVICE"
+echo "INSTALL_BUILD_ARTIFACT"
+if [[ ! -f "$BUILD_ARCHIVE" ]]; then
+  echo "missing production build artifact: $BUILD_ARCHIVE" >&2
+  exit 1
 fi
-npm run build
-resume_worker_after_build
+printf '%s  %s\n' "$BUILD_ARCHIVE_SHA256" "$BUILD_ARCHIVE" | sha256sum --check --status
+archive_manifest="${release}/.build-artifact-manifest"
+if ! tar -tzf "$BUILD_ARCHIVE" > "$archive_manifest" \
+  || [[ ! -s "$archive_manifest" ]] \
+  || grep -Eq '(^/|(^|/)\.\.(/|$))' "$archive_manifest" \
+  || grep -Evq '^\.next(/|$)' "$archive_manifest"; then
+  echo "production build artifact contains invalid paths" >&2
+  exit 1
+fi
+tar --no-same-owner --no-same-permissions -xzf "$BUILD_ARCHIVE" -C "$release"
+rm -f -- "$archive_manifest"
+rm -f -- "$BUILD_ARCHIVE"
+BUILD_ARCHIVE=""
+if [[ ! -f "${release}/.next/BUILD_ID" ]]; then
+  echo "production build artifact is missing .next/BUILD_ID" >&2
+  exit 1
+fi
 
 echo "MIGRATE"
 bash scripts/run-production-migrations.sh

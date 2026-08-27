@@ -110,6 +110,52 @@ jobs:
             exit 1
           }
 
+      - name: Build production release artifact
+        env:
+          PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
+          PRODUCTION_SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
+          AURORA_DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          DATABASE_URL: "postgres://user:pass@localhost:5432/db"
+          REDIS_URL: "redis://127.0.0.1:6380"
+          TG_BOT_TOKEN: "0000000000:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+          TG_BOT_USERNAME: "aurora_test_bot"
+          TG_CHAT_ID: "-1000000000000"
+          AI_API_KEY: "deploy-build-key"
+          AI_DAILY_LIMIT: "30"
+          TOKENS_MASTER_KEY: "deploy-build-master-key-not-for-production-runtime"
+          TOKENS_KEY_ID: "1"
+          VK_APP_ID: "0"
+          VK_APP_SECRET: "deploy-build-vk-secret"
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          CI: "true"
+        run: |
+          test -n "$PRODUCTION_SSH_USER"
+          test -n "$SENTRY_AUTH_TOKEN"
+          [[ "$AURORA_DEPLOY_SHA" =~ ^[0-9a-f]{40}$ ]]
+          build_env="${RUNNER_TEMP}/aurora-public-build.env"
+          cleanup_build_env() {
+            rm -f -- "$build_env"
+          }
+          trap cleanup_build_env EXIT
+          ssh -i ~/.ssh/deploy_key \
+            -o StrictHostKeyChecking=yes \
+            -o IdentitiesOnly=yes \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=8 \
+            "${PRODUCTION_SSH_USER}@${PRODUCTION_SSH_HOST}" \
+            'current_path="$(readlink -f /opt/aurora-current)"; set -a; . "${current_path}/.env.production"; set +a; for name in NEXT_PUBLIC_AURORA_EXPERIMENTAL_ROUTES NEXT_PUBLIC_APP_URL NEXT_PUBLIC_SENTRY_ENABLE_DEV NEXT_PUBLIC_SENTRY_ENVIRONMENT NEXT_PUBLIC_SENTRY_TRACES_SAMPLE_RATE; do printf "%s=%q\n" "$name" "${!name:-}"; done' \
+            > "$build_env"
+          chmod 600 "$build_env"
+          set -a
+          # shellcheck disable=SC1090
+          . "$build_env"
+          set +a
+          npm ci --no-audit --no-fund
+          npm run build
+          tar --exclude='.next/cache' \
+            -czf "${RUNNER_TEMP}/aurora-build-${AURORA_DEPLOY_SHA}.tar.gz" \
+            .next
+
       - name: Deploy release
         env:
           PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
@@ -118,10 +164,9 @@ jobs:
           AURORA_SCHEMA_ROLLBACK_AUDIT: ${{ vars.SCHEMA_ROLLBACK_AUDIT }}
           AURORA_ALLOW_LOCAL_PEER_MIGRATIONS: ${{ vars.ALLOW_LOCAL_PEER_MIGRATIONS }}
           AURORA_INCOMPLETE_RELEASE_SHA: ${{ vars.INCOMPLETE_RELEASE_SHA }}
-          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
         run: |
           test -n "$PRODUCTION_SSH_USER"
-          test -n "$SENTRY_AUTH_TOKEN"
+          [[ "$AURORA_DEPLOY_SHA" =~ ^[0-9a-f]{40}$ ]]
           if [[ -n "$AURORA_SCHEMA_ROLLBACK_AUDIT" \
             && ! "$AURORA_SCHEMA_ROLLBACK_AUDIT" =~ ^[0-9a-f]{40}:[0-9a-f]{40}$ ]]; then
             echo "SCHEMA_ROLLBACK_AUDIT must be an exact previous:target SHA pair" >&2
@@ -132,13 +177,32 @@ jobs:
             echo "ALLOW_LOCAL_PEER_MIGRATIONS must be true or false" >&2
             exit 1
           fi
+          build_archive="${RUNNER_TEMP}/aurora-build-${AURORA_DEPLOY_SHA}.tar.gz"
+          remote_archive="/tmp/aurora-build-${AURORA_DEPLOY_SHA}.tar.gz"
+          test -f "$build_archive"
+          build_archive_sha256="$(sha256sum "$build_archive" | cut -d ' ' -f1)"
+          cleanup_remote_archive() {
+            ssh -i ~/.ssh/deploy_key \
+              -o StrictHostKeyChecking=yes \
+              -o IdentitiesOnly=yes \
+              "${PRODUCTION_SSH_USER}@${PRODUCTION_SSH_HOST}" \
+              "rm -f -- ${remote_archive}" || true
+          }
+          trap cleanup_remote_archive EXIT
+          scp -i ~/.ssh/deploy_key \
+            -o StrictHostKeyChecking=yes \
+            -o IdentitiesOnly=yes \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=8 \
+            "$build_archive" \
+            "${PRODUCTION_SSH_USER}@${PRODUCTION_SSH_HOST}:${remote_archive}"
           ssh -i ~/.ssh/deploy_key \
             -o StrictHostKeyChecking=yes \
             -o IdentitiesOnly=yes \
             -o ServerAliveInterval=15 \
             -o ServerAliveCountMax=8 \
             "${PRODUCTION_SSH_USER}@${PRODUCTION_SSH_HOST}" \
-            "AURORA_DEPLOY_SHA=${AURORA_DEPLOY_SHA} AURORA_SCHEMA_ROLLBACK_AUDIT=${AURORA_SCHEMA_ROLLBACK_AUDIT} AURORA_ALLOW_LOCAL_PEER_MIGRATIONS=${AURORA_ALLOW_LOCAL_PEER_MIGRATIONS} AURORA_INCOMPLETE_RELEASE_SHA=${AURORA_INCOMPLETE_RELEASE_SHA} SENTRY_AUTH_TOKEN=${SENTRY_AUTH_TOKEN} bash -s" \
+            "AURORA_DEPLOY_SHA=${AURORA_DEPLOY_SHA} AURORA_SCHEMA_ROLLBACK_AUDIT=${AURORA_SCHEMA_ROLLBACK_AUDIT} AURORA_ALLOW_LOCAL_PEER_MIGRATIONS=${AURORA_ALLOW_LOCAL_PEER_MIGRATIONS} AURORA_INCOMPLETE_RELEASE_SHA=${AURORA_INCOMPLETE_RELEASE_SHA} AURORA_BUILD_ARCHIVE=${remote_archive} AURORA_BUILD_ARCHIVE_SHA256=${build_archive_sha256} bash -s" \
             < scripts/deploy-production.sh
 
       - name: Verify production deployment

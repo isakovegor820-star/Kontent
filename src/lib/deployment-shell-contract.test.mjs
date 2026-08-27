@@ -8,8 +8,8 @@ const workflow = await readFile(resolve(".github/workflows/deploy-production.yml
 const workflowDirectory = resolve(".github/workflows");
 
 describe("production deployment shell contract", () => {
-  it("keeps build and migration failures before the live symlink switch", () => {
-    const build = script.indexOf("npm run build");
+  it("keeps artifact and migration failures before the live symlink switch", () => {
+    const build = script.indexOf("INSTALL_BUILD_ARTIFACT");
     const migrate = script.indexOf("bash scripts/run-production-migrations.sh");
     const state = script.indexOf("rollback-compatible\" > \"$state_file");
     const swap = script.indexOf('swap_current "$release"');
@@ -87,6 +87,9 @@ describe("production deployment shell contract", () => {
     expect(workflow).toContain("actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1");
     expect(workflow).toContain("actions/setup-node@820762786026740c76f36085b0efc47a31fe5020");
     expect(workflow).toContain("verify-required-ci-checks.mjs");
+    expect(workflow).toContain("Build production release artifact");
+    expect(workflow).toContain("npm run build");
+    expect(workflow).toContain("AURORA_BUILD_ARCHIVE_SHA256");
     expect(workflow).not.toContain("ssh-keyscan");
     expect(workflow).toContain("PRODUCTION_SSH_HOST_FINGERPRINT");
     expect(workflow).toContain("verify-ssh-host-identity.sh");
@@ -147,15 +150,22 @@ describe("production deployment shell contract", () => {
     expect(script).toContain('rm -f -- "$state_file"');
   });
 
-  it("reclaims worker memory for the VPS build and always restores the worker", () => {
-    const pause = script.indexOf('echo "PAUSE_WORKER_FOR_BUILD"');
-    const build = script.indexOf("npm run build");
-    const resume = script.indexOf("resume_worker_after_build", build);
-    expect(pause).toBeGreaterThan(0);
-    expect(pause).toBeLessThan(build);
-    expect(resume).toBeGreaterThan(build);
-    expect(script).toContain('systemctl stop "$WORKER_SERVICE"');
-    expect(script).toContain('systemctl start "$WORKER_SERVICE"');
-    expect(script).toMatch(/cleanup_failed_release\(\)[\s\S]*resume_worker_after_build/u);
+  it("installs a checksum-bound runner artifact without compiling on the VPS", () => {
+    expect(script).not.toContain("npm run build");
+    expect(script).not.toContain("PAUSE_WORKER_FOR_BUILD");
+    expect(script).toContain('expected_build_archive="/tmp/aurora-build-${DEPLOY_SHA}.tar.gz"');
+    expect(script).toContain("sha256sum --check --status");
+    expect(script).toContain("production build artifact contains invalid paths");
+    expect(script).toContain('npm ci --omit=dev --no-audit --no-fund');
+    expect(script).toContain('${release}/.next/BUILD_ID');
+    expect(workflow).toContain("tar --exclude='.next/cache'");
+    expect(workflow).toContain('-czf "${RUNNER_TEMP}/aurora-build-${AURORA_DEPLOY_SHA}.tar.gz"');
+    expect(workflow).toContain('"${PRODUCTION_SSH_USER}@${PRODUCTION_SSH_HOST}:${remote_archive}"');
+    expect(workflow).toContain('build_env="${RUNNER_TEMP}/aurora-public-build.env"');
+    expect(workflow).toContain("NEXT_PUBLIC_AURORA_EXPERIMENTAL_ROUTES");
+    expect(workflow).not.toContain(
+      '"${PRODUCTION_SSH_USER}@${PRODUCTION_SSH_HOST}:/opt/aurora-current/.env.production"',
+    );
+    expect(workflow).not.toContain('install -m 0600 "$build_env" .env.production');
   });
 });
