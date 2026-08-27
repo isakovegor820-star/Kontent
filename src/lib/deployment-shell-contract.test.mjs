@@ -163,6 +163,7 @@ describe("production deployment shell contract", () => {
     expect(workflow).toContain('"${PRODUCTION_SSH_USER}@${PRODUCTION_SSH_HOST}:${remote_archive}"');
     expect(workflow).toContain('build_env="${RUNNER_TEMP}/aurora-public-build.env"');
     expect(workflow).toContain("NEXT_PUBLIC_AURORA_EXPERIMENTAL_ROUTES");
+    expect(workflow).toContain("NEXT_PUBLIC_TREND_REFERENCE_STUDIO");
     expect(workflow).not.toContain(
       '"${PRODUCTION_SSH_USER}@${PRODUCTION_SSH_HOST}:/opt/aurora-current/.env.production"',
     );

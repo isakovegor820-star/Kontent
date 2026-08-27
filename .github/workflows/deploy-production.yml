@@ -143,7 +143,7 @@ jobs:
             -o ServerAliveInterval=15 \
             -o ServerAliveCountMax=8 \
             "${PRODUCTION_SSH_USER}@${PRODUCTION_SSH_HOST}" \
-            'current_path="$(readlink -f /opt/aurora-current)"; set -a; . "${current_path}/.env.production"; set +a; for name in NEXT_PUBLIC_AURORA_EXPERIMENTAL_ROUTES NEXT_PUBLIC_APP_URL NEXT_PUBLIC_SENTRY_ENABLE_DEV NEXT_PUBLIC_SENTRY_ENVIRONMENT NEXT_PUBLIC_SENTRY_TRACES_SAMPLE_RATE; do printf "%s=%q\n" "$name" "${!name:-}"; done' \
+            'current_path="$(readlink -f /opt/aurora-current)"; set -a; . "${current_path}/.env.production"; set +a; for name in NEXT_PUBLIC_AURORA_EXPERIMENTAL_ROUTES NEXT_PUBLIC_APP_URL NEXT_PUBLIC_SENTRY_ENABLE_DEV NEXT_PUBLIC_SENTRY_ENVIRONMENT NEXT_PUBLIC_SENTRY_TRACES_SAMPLE_RATE NEXT_PUBLIC_TREND_REFERENCE_STUDIO; do printf "%s=%q\n" "$name" "${!name:-}"; done' \
             > "$build_env"
           chmod 600 "$build_env"
           set -a
