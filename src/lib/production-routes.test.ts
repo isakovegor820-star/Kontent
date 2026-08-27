@@ -52,7 +52,7 @@ describe("production route surface", () => {
 
     expect(csp).toContain("default-src 'self'");
     expect(csp).toMatch(/script-src 'self' 'nonce-[^']+' 'strict-dynamic'/u);
-    expect(csp).toContain("connect-src 'self'");
+    expect(csp).toContain("connect-src 'self' https://o4511981780402176.ingest.de.sentry.io");
     expect(csp).toContain("frame-ancestors 'none'");
     expect(csp).toContain("object-src 'none'");
     expect(csp).not.toMatch(/script-src[^;]*unsafe-inline/u);

@@ -31,6 +31,15 @@ describe("strict content security policy", () => {
     expect(buildContentSecurityPolicy(nonce)).toContain("upgrade-insecure-requests");
   });
 
+  it("allows telemetry only through Aurora's exact Sentry ingest origin", () => {
+    const policy = buildContentSecurityPolicy(nonce);
+
+    expect(policy).toContain(
+      "connect-src 'self' https://o4511981780402176.ingest.de.sentry.io",
+    );
+    expect(policy).not.toContain("connect-src *");
+  });
+
   it("rejects values that could inject another directive", () => {
     expect(() => buildContentSecurityPolicy("value'; connect-src *"))
       .toThrowError("invalid_csp_nonce");

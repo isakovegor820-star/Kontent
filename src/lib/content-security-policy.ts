@@ -20,7 +20,7 @@ export function buildContentSecurityPolicy(nonce: string, development = false): 
     "img-src 'self' data: blob: https:",
     "media-src 'self' blob: https:",
     "font-src 'self' data:",
-    "connect-src 'self'",
+    "connect-src 'self' https://o4511981780402176.ingest.de.sentry.io",
     "worker-src 'self' blob:",
     "manifest-src 'self'",
     ...(development ? [] : ["upgrade-insecure-requests"]),
