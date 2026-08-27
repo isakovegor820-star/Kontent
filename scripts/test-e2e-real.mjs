@@ -2073,39 +2073,59 @@ try {
   await page.waitForURL((url) => url.pathname === "/app/library" && url.searchParams.get("channel") === String(channels[0]));
 
   await page.setViewportSize({ width: 1280, height: 900 });
-  await page.goto("/app/settings?section=general");
-  await page.getByRole("heading", { name: "Профиль и исходный бриф", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
-  await page.getByRole("textbox", { name: /^Имя/u }).fill("Анна E2E");
-  await page.getByRole("textbox", { name: /^Ниша/u }).fill("Юридическая безопасность бизнеса");
-  await page.getByRole("textbox", { name: /^Аудитория/u }).fill("Владельцы компаний и legal operations");
-  await page.getByLabel("Цель", { exact: true }).fill("Объяснять проверяемые изменения без обещаний");
-  await page.getByLabel("Роль автора", { exact: true }).fill("Управляющий партнёр и автор");
-  await page.getByLabel("Рубрики", { exact: true }).fill("Практика, Разборы");
-  await page.getByLabel("Форматы", { exact: true }).fill("Текст, Видео");
-  await page.getByText("Есть несохранённые изменения", { exact: true }).waitFor();
+  await page.goto("/app/settings?section=profile");
+  await page.getByRole("heading", { name: "Профиль", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  await page.getByLabel("Имя", { exact: true }).fill("Анна");
+  await page.getByLabel(/^Отображаемое имя/u).fill("Анна E2E");
+  await page.getByText("Не сохранено", { exact: true }).waitFor();
   await page.getByRole("button", { name: "Сохранить профиль", exact: true }).click();
-  await page.getByText("Профиль и исходный бриф сохранены.", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  await page.getByText("Профиль сохранён.", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  await page.reload();
+  await page.getByRole("heading", { name: "Профиль", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  assert(await page.getByLabel("Имя", { exact: true }).inputValue() === "Анна", "profile first name did not survive reload");
+  assert(await page.getByLabel(/^Отображаемое имя/u).inputValue() === "Анна E2E", "profile display name did not survive reload");
+
+  await page.goto(`/app/settings?section=content&channel=${channels[0]}`);
+  await page.getByRole("heading", { name: "Как Аврора пишет", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  await page.getByLabel(/^Тема и ниша/u).fill("Юридическая безопасность бизнеса");
+  await page.getByLabel(/^Аудитория и её задача/u).fill("Владельцы компаний и legal operations");
+  await page.getByLabel("Цель канала", { exact: true }).fill("Объяснять проверяемые изменения без обещаний");
+  await page.getByLabel("Роль и экспертиза автора", { exact: true }).fill("Управляющий партнёр и автор");
+  const formatOptions = ["Текст", "Фото", "Карусель", "Видео", "Короткое видео", "Аудио", "Опрос"];
+  for (const format of formatOptions) {
+    const button = page.getByRole("button", { name: format, exact: true });
+    const expected = format === "Текст" || format === "Видео";
+    if ((await button.getAttribute("aria-pressed")) !== String(expected)) await button.click();
+  }
+  await page.getByText("Есть несохранённые изменения", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "Сохранить контент и стиль", exact: true }).click();
+  await page.getByText("Настройки сохранены", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const persistedProfile = (await pool.query(
-    `select u.name, brief.niche, brief.audience, brief.goal, brief.rubrics,
+    `select u.name, account.first_name, account.display_name,
+            brief.niche, brief.audience, brief.goal,
             brief.formats, brief.author_role, brief.source
-       from users u join content_brief brief on brief.user_id = u.id
+       from users u
+       join user_account_settings account on account.user_id = u.id
+       join content_brief brief on brief.user_id = u.id
       where u.id = $1 and brief.channel_id = $2`,
     [userId, channels[0]],
   )).rows[0];
   assert(persistedProfile?.name === "Анна E2E", "profile name was not persisted");
+  assert(persistedProfile?.first_name === "Анна", "profile first name was not persisted");
+  assert(persistedProfile?.display_name === "Анна E2E", "profile display name was not persisted");
   assert(persistedProfile?.niche === "Юридическая безопасность бизнеса", "profile niche was not persisted in content_brief");
   assert(JSON.stringify(persistedProfile?.formats) === JSON.stringify(["Текст", "Видео"]), "profile formats were not persisted");
   assert(persistedProfile?.author_role === "Управляющий партнёр и автор", "profile author role was not persisted");
   assert(persistedProfile?.source === "manual", "profile edit did not update the existing brief authority");
   await page.reload();
-  await page.getByRole("heading", { name: "Профиль и исходный бриф", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
-  assert(await page.getByRole("textbox", { name: /^Имя/u }).inputValue() === "Анна E2E", "profile name did not survive reload");
-  assert(await page.getByRole("textbox", { name: /^Ниша/u }).inputValue() === "Юридическая безопасность бизнеса", "profile brief did not survive reload");
-  assert(await page.getByLabel("Форматы", { exact: true }).inputValue() === "Текст, Видео", "profile formats did not survive reload");
-  const savedGoal = await page.getByLabel("Цель", { exact: true }).inputValue();
-  await page.getByLabel("Цель", { exact: true }).fill(`${savedGoal} — черновик`);
+  await page.getByRole("heading", { name: "Как Аврора пишет", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  assert(await page.getByLabel(/^Тема и ниша/u).inputValue() === "Юридическая безопасность бизнеса", "profile brief did not survive reload");
+  assert(await page.getByRole("button", { name: "Текст", exact: true }).getAttribute("aria-pressed") === "true", "text format did not survive reload");
+  assert(await page.getByRole("button", { name: "Видео", exact: true }).getAttribute("aria-pressed") === "true", "video format did not survive reload");
+  const savedGoal = await page.getByLabel("Цель канала", { exact: true }).inputValue();
+  await page.getByLabel("Цель канала", { exact: true }).fill(`${savedGoal} — черновик`);
   await page.getByText("Есть несохранённые изменения", { exact: true }).waitFor();
-  await page.getByLabel("Цель", { exact: true }).fill(savedGoal);
+  await page.getByLabel("Цель канала", { exact: true }).fill(savedGoal);
   await page.getByText("Есть несохранённые изменения", { exact: true }).waitFor({ state: "detached" });
   assert(
     await desktopSidebar.getByRole("link", { name: "Настройки", exact: true }).getAttribute("aria-current") === "page",
@@ -2832,7 +2852,7 @@ try {
   assert(Number.isSafeInteger(legacyProjectId) && legacyProjectId > 0, "legacy selected project is missing");
 
   await page.setViewportSize({ width: 1280, height: 900 });
-  await page.goto("/app/settings?section=general");
+  await page.goto("/app/settings?section=project");
   await page.getByRole("heading", { name: "Настройки", exact: true }).waitFor();
   await assertNoHorizontalOverflow(page, "project settings desktop");
   const projectNameInput = page.locator("#project-team-name");
@@ -2950,6 +2970,7 @@ try {
     "autopilot generation settings were not persisted in the shared project",
   );
 
+  await page.goto("/app/settings?section=integrations");
   const trackingOriginInput = page.getByRole("textbox", { name: "Адрес сайта", exact: true });
   await trackingOriginInput.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await trackingOriginInput.fill(fakeBase);
@@ -2993,6 +3014,8 @@ try {
     "authenticated well-known challenge verification did not activate tracking",
   );
 
+  await page.goto("/app/settings?section=project");
+  await page.getByRole("heading", { name: "Проект и команда", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const inviteEmailInput = page.locator("#project-invite-email");
   await inviteEmailInput.fill(reviewerEmail);
   await page.locator("#project-invite-role").selectOption("approver");
@@ -3066,7 +3089,7 @@ try {
   const reviewerLegacyDraft = await authenticatedRequestViaContext(reviewerContext.request, `/api/drafts/${draftId}`);
   assert([403, 404].includes(reviewerLegacyDraft.status), "selected-project isolation exposed the owner's legacy draft to the reviewer");
 
-  await page.goto("/app/settings?section=posts");
+  await page.goto("/app/settings?section=dictionary");
   const publicationBlocksSection = page.locator("#publication-blocks");
   await publicationBlocksSection.waitFor();
   const createPublicationBlock = async (kind, name, content) => {
@@ -3984,7 +4007,7 @@ try {
     "editorial role decisions are missing from the immutable project audit",
   );
 
-  await page.goto("/app/settings?section=general");
+  await page.goto("/app/settings?section=project");
   const reviewerRoleSelect = page.getByLabel(`Роль участника ${reviewerName}`, { exact: true });
   await reviewerRoleSelect.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await reviewerRoleSelect.selectOption("publisher");

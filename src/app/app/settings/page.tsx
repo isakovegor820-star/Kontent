@@ -45,6 +45,7 @@ import { BrandDictionarySection } from "@/components/app/brand-dictionary-sectio
 import { ChannelSettingsCenter } from "@/components/app/channel-settings-center";
 import { LegalSourcesSection } from "@/components/app/legal-sources-section";
 import { NotificationSecuritySettings } from "@/components/app/notification-security-settings";
+import { ProjectTeamSection } from "@/components/app/project-team-section";
 import { PublicationBlocksSection } from "@/components/app/publication-blocks-section";
 import {
   ChannelCopySection,
@@ -1225,7 +1226,7 @@ function SettingsContent() {
 
           <main id={`settings-${activeSection}-panel`} aria-label={SETTINGS_SECTIONS.find((item) => item.id === activeSection)?.label}>
             {activeSection === "profile" ? <AccountProfileSettings /> : null}
-            {activeSection === "project" ? <div className="space-y-5"><ProjectBasicsSection /><AiSection index={1} /></div> : null}
+            {activeSection === "project" ? <div className="space-y-5"><ProjectBasicsSection /><ProjectTeamSection /><AiSection index={1} /></div> : null}
             {activeSection === "channels" ? <div className="space-y-5"><ChannelsSection index={0} /><ChannelCopySection /></div> : null}
             {activeSection === "content" ? <><SettingsPreviewPanel /><ChannelSettingsCenter view="content" /></> : null}
             {activeSection === "autopilot" ? <ChannelSettingsCenter view="autopilot" /> : null}
