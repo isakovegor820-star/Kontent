@@ -49,7 +49,7 @@ jobs:
             "$PRODUCTION_SSH_HOST" \
             "$PRODUCTION_SSH_HOST_FINGERPRINT"
 
-      - name: Restart web process to establish fresh AI evidence
+      - name: Restart production processes to establish fresh readiness evidence
         env:
           PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
           PRODUCTION_SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
@@ -71,17 +71,22 @@ jobs:
           current_sha="$(git -C "$current_path" rev-parse --verify HEAD)"
           [[ "$current_sha" =~ ^[0-9a-f]{40}$ ]]
           test -f "$current_path/.env.production"
-          systemctl is-active --quiet aurora-worker.service
-          systemctl restart aurora-web.service
+          if ! systemctl restart aurora-worker.service aurora-web.service; then
+            journalctl -u aurora-worker.service -u aurora-web.service \
+              --since '-2 minutes' --no-pager -n 80 >&2
+            exit 1
+          fi
           for _ in $(seq 1 30); do
-            if systemctl is-active --quiet aurora-web.service \
+            if systemctl is-active --quiet aurora-worker.service \
+              && systemctl is-active --quiet aurora-web.service \
               && curl -fsS --max-time 5 http://127.0.0.1:3002/api/health >/dev/null; then
               printf 'AI_READINESS_RECOVERY_RESTART_OK sha=%s\n' "$current_sha"
               exit 0
             fi
             sleep 2
           done
-          journalctl -u aurora-web.service --since '-2 minutes' --no-pager -n 40 >&2
+          journalctl -u aurora-worker.service -u aurora-web.service \
+            --since '-2 minutes' --no-pager -n 80 >&2
           exit 1
           REMOTE
 
