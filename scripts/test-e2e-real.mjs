@@ -4418,8 +4418,8 @@ try {
       )).rows[0]?.n) === 1,
     "unpin reconciliation replay duplicated the provider action",
   );
-  await publicationDialog.getByRole("button", { name: "Обновить", exact: true }).click();
-  const unpinFollowup = publicationDialog.locator("li").filter({ hasText: "Открепление" }).last();
+  await publicationEditor.getByRole("button", { name: "Обновить", exact: true }).click();
+  const unpinFollowup = publicationEditor.locator("li").filter({ hasText: "Открепление" }).last();
   await unpinFollowup.getByText("Выполнено", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
 
   const monthlyPublishedLineage = (await pool.query(
