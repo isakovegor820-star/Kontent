@@ -25,6 +25,13 @@ const nextConfig: NextConfig = {
     // buffer just above the largest supported multipart upload; JSON endpoints apply
     // substantially smaller streaming limits in application code.
     proxyClientMaxBodySize: "11mb",
+    // The production VPS builds releases beside the still-running web and worker
+    // services. Keep webpack/Sentry compilation below that fixed memory envelope
+    // without dropping source maps or observability instrumentation. Sentry supplies
+    // a custom webpack config, so the separate webpack build worker is intentionally
+    // left disabled; Next cannot safely serialize that patched config to the worker.
+    cpus: 1,
+    webpackMemoryOptimizations: true,
   },
   // Browser E2E runs the same full `npm run dev` runtime alongside a developer's server.
   // A separate dist directory prevents both Next instances from sharing a dev lock/cache.
