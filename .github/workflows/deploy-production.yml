@@ -214,9 +214,16 @@ jobs:
           PRODUCTION_SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
           AURORA_DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
-          if npm run test:deployment-smoke; then
-            exit 0
-          fi
+          smoke_attempts=12
+          for attempt in $(seq 1 "$smoke_attempts"); do
+            if npm run test:deployment-smoke; then
+              exit 0
+            fi
+            if [[ "$attempt" -lt "$smoke_attempts" ]]; then
+              echo "release readiness has not converged (attempt ${attempt}/${smoke_attempts}); retrying" >&2
+              sleep 5
+            fi
+          done
           echo "release smoke failed; initiating schema-boundary-verified rollback" >&2
           ssh -i ~/.ssh/deploy_key \
             -o StrictHostKeyChecking=yes \

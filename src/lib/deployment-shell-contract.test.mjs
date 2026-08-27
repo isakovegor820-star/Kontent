@@ -67,6 +67,18 @@ describe("production deployment shell contract", () => {
     expect(workflow).toContain("schema-boundary-verified rollback");
   });
 
+  it("allows bounded post-restart readiness convergence before rollback", () => {
+    const verify = workflow.indexOf("Verify production deployment");
+    const retry = workflow.indexOf('smoke_attempts=12', verify);
+    const smoke = workflow.indexOf("if npm run test:deployment-smoke; then", retry);
+    const wait = workflow.indexOf("sleep 5", smoke);
+    const rollback = workflow.indexOf("AURORA_DEPLOY_ACTION=rollback", wait);
+    expect(retry).toBeGreaterThan(verify);
+    expect(smoke).toBeGreaterThan(retry);
+    expect(wait).toBeGreaterThan(smoke);
+    expect(rollback).toBeGreaterThan(wait);
+  });
+
   it("autodeploys only the exact main SHA that completed CI successfully", () => {
     expect(workflow).toContain("workflow_run:");
     expect(workflow).toContain('workflows: ["CI"]');
