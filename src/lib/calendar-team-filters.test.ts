@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   calendarAuthorOptions,
+  calendarRecordIsVisible,
   calendarRecordMatches,
   calendarRecordStatus,
 } from "./calendar-team-filters";
@@ -16,6 +17,12 @@ describe("shared calendar team filters", () => {
   it("uses editorial state for drafts and publication state for posts", () => {
     expect(calendarRecordStatus(records[0])).toBe("in_review");
     expect(calendarRecordStatus(records[2])).toBe("published");
+  });
+
+  it("hides cancelled publications without hiding editable drafts", () => {
+    expect(calendarRecordIsVisible({ status: "cancelled" })).toBe(false);
+    expect(calendarRecordIsVisible({ status: "scheduled", calendarStatus: "cancelled" })).toBe(false);
+    expect(calendarRecordIsVisible({ status: "draft" })).toBe(true);
   });
 
   it("combines author and status without leaking another author's material", () => {
