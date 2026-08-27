@@ -98,11 +98,14 @@ export async function GET(
       status: string;
       scheduled_at: Date | string;
       timezone: string;
+      schedule_offset: string | null;
+      schedule_disambiguation: "reject" | "earlier" | "later";
       schedule_revision: number | string;
       created_at: Date | string;
       updated_at: Date | string;
     }>(
       `select id, draft_id, draft_version, status, scheduled_at, timezone,
+              schedule_offset, coalesce(schedule_disambiguation, 'reject') as schedule_disambiguation,
               schedule_revision, created_at, updated_at
          from publication_operations
         where id = $1 and project_id = $2`,
@@ -208,6 +211,8 @@ export async function GET(
         status: row.status,
         scheduledAt: new Date(row.scheduled_at).toISOString(),
         timezone: row.timezone,
+        scheduleOffset: row.schedule_offset,
+        scheduleDisambiguation: row.schedule_disambiguation,
         scheduleRevision: Number(row.schedule_revision),
         createdAt: new Date(row.created_at).toISOString(),
         updatedAt: new Date(row.updated_at).toISOString(),

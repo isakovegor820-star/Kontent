@@ -161,6 +161,8 @@ describe("publication lifecycle mutation route", () => {
           status: "queued",
           scheduled_at: "2026-08-20T08:15:00.000Z",
           timezone: "Europe/Amsterdam",
+          schedule_offset: "+02:00",
+          schedule_disambiguation: "reject",
           schedule_revision: "2",
           created_at: "2026-08-11T10:00:00.000Z",
           updated_at: "2026-08-11T10:10:00.000Z",
@@ -221,6 +223,8 @@ describe("publication lifecycle mutation route", () => {
       operation: {
         id: 7,
         draftId: 41,
+        scheduleOffset: "+02:00",
+        scheduleDisambiguation: "reject",
         scheduleRevision: 2,
         destinations: [{
           postId: 81,

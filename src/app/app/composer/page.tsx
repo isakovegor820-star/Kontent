@@ -57,6 +57,7 @@ import { AppShell } from "@/components/app/shell";
 import { EvidenceCard } from "@/components/app/evidence-card";
 import { EditorialReviewPanel } from "@/components/app/editorial-review-panel";
 import { useProjects } from "@/components/app/project-provider";
+import { PublicationFollowupSection } from "@/components/app/publication-followup-section";
 import {
   MediaGenerator,
   type MediaGeneration,
@@ -149,6 +150,15 @@ import {
   type ClientEditorialState,
 } from "@/lib/editorial-client";
 import { publicationOperationFailureFeedback } from "@/lib/publication-operation-feedback";
+import {
+  cancelPublication,
+  getPublicationOperationEditorContext,
+  publicationEditorMutationKind,
+  publicationOperationIsSettled,
+  reschedulePublication,
+  restorePublicationToDraft,
+  type PublicationOperationEditorContext,
+} from "@/lib/publication-lifecycle-client";
 import { renderPublicationTracking } from "@/lib/publication-tracking";
 import {
   DEFAULT_POST_SETTINGS,
@@ -419,6 +429,18 @@ interface ComposerValue {
   saving: boolean;
   publicationMode: PublicationMode | null;
   publicationSuccess: PublicationSuccess | null;
+  activePublicationRequested: boolean;
+  activePublicationLoading: boolean;
+  activePublicationError: string;
+  activePublication: PublicationOperationEditorContext | null;
+  beginActivePublicationLoad: () => void;
+  setActivePublication: (value: PublicationOperationEditorContext) => void;
+  failActivePublicationLoad: () => void;
+  clearActivePublication: () => void;
+  confirmCancelPublication: boolean;
+  setConfirmCancelPublication: (value: boolean) => void;
+  cancelActivePublication: () => Promise<void>;
+  cloneActivePublication: () => Promise<void>;
   clearPublicationSuccess: () => void;
   runAi: (cmd: ComposerAiCommand) => void;
   stopAi: () => void;
@@ -504,6 +526,11 @@ export default function ComposerPage() {
   const redoStackRef = useRef<ComposerTextSnapshot[]>([]);
   const [publicationMode, setPublicationMode] = useState<PublicationMode | null>(null);
   const [publicationSuccess, setPublicationSuccess] = useState<PublicationSuccess | null>(null);
+  const [activePublicationRequested, setActivePublicationRequested] = useState(false);
+  const [activePublicationLoading, setActivePublicationLoading] = useState(false);
+  const [activePublicationError, setActivePublicationError] = useState("");
+  const [activePublication, setActivePublicationState] = useState<PublicationOperationEditorContext | null>(null);
+  const [confirmCancelPublication, setConfirmCancelPublication] = useState(false);
   const [draftRevision, setDraftRevision] = useState(0);
   const [lastSavedRevision, setLastSavedRevision] = useState(0);
   const [lastAttemptedRevision, setLastAttemptedRevision] = useState(0);
@@ -517,6 +544,7 @@ export default function ComposerPage() {
   const draftRequestRef = useRef<Promise<ServerDraft | null> | null>(null);
   const draftDeleteRequestRef = useRef<Promise<void> | null>(null);
   const recoveryRequestRef = useRef<Promise<void> | null>(null);
+  const activePublicationRequestRef = useRef<Promise<void> | null>(null);
   const recoveryClientKeyRef = useRef<string | null>(null);
   const autosaveCancelRef = useRef<(() => void) | null>(null);
   const acknowledgedDraftRef = useRef<ServerDraft | null>(null);
@@ -608,6 +636,41 @@ export default function ComposerPage() {
         human_review: null,
       };
     }
+  }, []);
+
+  const beginActivePublicationLoad = useCallback(() => {
+    setActivePublicationRequested(true);
+    setActivePublicationLoading(true);
+    setActivePublicationError("");
+    setActivePublicationState(null);
+  }, []);
+
+  const setActivePublication = useCallback((value: PublicationOperationEditorContext) => {
+    setActivePublicationRequested(true);
+    setActivePublicationLoading(false);
+    setActivePublicationError("");
+    setActivePublicationState(value);
+    const local = localScheduleFieldsForInstant(value.scheduledAt, value.timezone);
+    setDate(local.localDate);
+    setTime(local.localTime);
+    setScheduleTimezone(value.timezone);
+    setTimeDisambiguation(value.scheduleDisambiguation);
+    setNoDate(false);
+  }, []);
+
+  const failActivePublicationLoad = useCallback(() => {
+    setActivePublicationRequested(true);
+    setActivePublicationLoading(false);
+    setActivePublicationError("Состояние публикации не загрузилось. Обновление отключено, чтобы не создать дубликат.");
+    setActivePublicationState(null);
+  }, []);
+
+  const clearActivePublication = useCallback(() => {
+    setActivePublicationRequested(false);
+    setActivePublicationLoading(false);
+    setActivePublicationError("");
+    setActivePublicationState(null);
+    setConfirmCancelPublication(false);
   }, []);
 
   // Уходим со страницы — гасим печать ИИ, чтобы не сыпать setState в пустоту
@@ -1982,6 +2045,14 @@ export default function ComposerPage() {
     // A known persistent policy block is explained inline by the recovery panel. Keyboard
     // shortcuts and repeated programmatic calls must not mint duplicate assertive alerts.
     if (blockedReason != null) return;
+    if (activePublicationRequested && !activePublication) {
+      s.toast({
+        kind: "danger",
+        title: "Публикация ещё не готова к изменению",
+        body: activePublicationError || "Дождитесь загрузки актуального состояния и повторите.",
+      });
+      return;
+    }
     if (!personalProject && editorialState !== "approved") {
       s.toast({
         kind: "info",
@@ -2000,6 +2071,7 @@ export default function ComposerPage() {
       return;
     }
 
+    let previousPublicationCancelled = false;
     setSaving(true);
     setPublicationMode(mode);
     setPublicationSuccess(null);
@@ -2060,6 +2132,119 @@ export default function ComposerPage() {
         });
         return;
       }
+
+      if (
+        activePublication?.draftId != null
+        && activePublication.draftId !== draft.id
+      ) {
+        s.toast({
+          kind: "danger",
+          title: "Открыта другая версия публикации",
+          body: "Редактор не стал менять очередь. Вернитесь в календарь и откройте карточку заново.",
+        });
+        return;
+      }
+
+      const activeSettled = activePublication == null
+        ? false
+        : publicationOperationIsSettled(activePublication);
+      const activeMutationKind = activePublication == null
+        ? null
+        : publicationEditorMutationKind(activePublication, draft.id, draft.version);
+
+      // A publisher may change only the scheduling overlay of an approved revision. Reuse
+      // the existing operation in that case; minting another operation for the same immutable
+      // revision would either replay the old one or risk duplicate delivery.
+      if (activePublication && activeMutationKind === "reschedule") {
+        const moved = await reschedulePublication({
+          operationId: activePublication.operationId,
+          expectedScheduleRevision: activePublication.scheduleRevision,
+          expectedStatus: activePublication.status,
+          idempotencyKey: crypto.randomUUID(),
+          scheduledAt: scheduleOverlay.scheduledAt,
+          localDate: scheduleOverlay.localDate,
+          localTime: scheduleOverlay.localTime,
+          timezone: scheduleOverlay.timezone,
+          disambiguation: scheduleOverlay.disambiguation,
+          offset: scheduleOverlay.offset,
+        });
+        const schedulePersisted = moved.ok || moved.status === "scheduled";
+        if (!schedulePersisted) {
+          s.toast({
+            kind: "danger",
+            title: moved.error === "publication_in_progress"
+              ? "Публикация уже отправляется"
+              : "Публикация не обновлена",
+            body: moved.error === "publication_in_progress"
+              ? "Отправка уже началась, поэтому сервер не менял публикацию. Дождитесь результата."
+              : "Состояние могло измениться в другой вкладке. Старая публикация оставлена без изменений.",
+          });
+          await s.refreshReal();
+          return;
+        }
+        setActivePublicationState({
+          ...activePublication,
+          status: moved.operationStatus ?? activePublication.status,
+          scheduledAt: moved.scheduledAt ?? scheduleOverlay.scheduledAt,
+          timezone: scheduleOverlay.timezone,
+          scheduleRevision: moved.scheduleRevision ?? activePublication.scheduleRevision,
+          scheduleOffset: scheduleOverlay.offset,
+          scheduleDisambiguation: scheduleOverlay.disambiguation,
+        });
+        await s.refreshReal();
+        router.push("/app/calendar");
+        s.toast({
+          kind: moved.ok ? "success" : "info",
+          title: moved.ok
+            ? activePublication.status === "cancelled"
+              ? "Публикация запланирована снова"
+              : "Время публикации обновлено"
+            : "Время сохранено, очередь восстанавливается",
+          body: moved.ok
+            ? `${fmtDateTime(moved.scheduledAt ?? scheduleOverlay.scheduledAt, scheduleOverlay.timezone)}. Старая дата больше не действует.`
+            : "Новая дата сохранена. Сервис планирования восстановит очередь автоматически.",
+        });
+        return;
+      }
+
+      if (activePublication && activeMutationKind === "clone_required") {
+        s.toast({
+          kind: "info",
+          title: "Сначала измените опубликованный пост",
+          body: "Для точной копии используйте «Создать новый пост». Новая публикация появится только после отдельного подтверждения.",
+        });
+        return;
+      }
+
+      // The queued operation owns an immutable approved snapshot. Once a newer draft revision
+      // is ready, fence the old delivery before creating the replacement. If creation fails,
+      // the outcome is fail-closed: the old text will not be sent and the edited draft remains.
+      if (activePublication && !activeSettled && activePublication.status !== "cancelled") {
+        const cancelled = await cancelPublication({
+          operationId: activePublication.operationId,
+          expectedScheduleRevision: activePublication.scheduleRevision,
+          expectedStatus: activePublication.status,
+          idempotencyKey: crypto.randomUUID(),
+        });
+        if (!cancelled.ok || cancelled.scheduleRevision == null) {
+          s.toast({
+            kind: "danger",
+            title: cancelled.error === "publication_in_progress"
+              ? "Публикация уже отправляется"
+              : "Старая публикация не остановлена",
+            body: "Новую версию не ставили в очередь, поэтому дубля не будет. Обновите календарь и повторите с актуальным состоянием.",
+          });
+          await s.refreshReal();
+          return;
+        }
+        previousPublicationCancelled = true;
+        setActivePublicationState({
+          ...activePublication,
+          status: "cancelled",
+          scheduleRevision: cancelled.scheduleRevision,
+        });
+      }
+
       if (publicationOperationRef.current?.mode !== mode) publicationOperationRef.current = null;
       const operation = (publicationOperationRef.current ??= {
         key: crypto.randomUUID(),
@@ -2094,22 +2279,32 @@ export default function ComposerPage() {
         }
         s.toast({
           kind: "success",
-          title: mode === "now" ? "Публикация принята" : mode === "queue" ? "Пост поставлен в очередь" : "Пост добавлен в календарь",
+          title: activePublication
+            ? "Публикация обновлена"
+            : mode === "now" ? "Публикация принята" : mode === "queue" ? "Пост поставлен в очередь" : "Пост добавлен в календарь",
           body: `${fmtDateTime(result.scheduledAt ?? scheduleOverlay.scheduledAt)}. Повторное нажатие не создаст дубликат.`,
         });
       } else {
         const feedback = publicationOperationFailureFeedback(result);
         s.toast({
           kind: "danger",
-          title: feedback.title,
-          body: feedback.body,
+          title: previousPublicationCancelled
+            ? "Старая публикация остановлена, новая ещё не создана"
+            : feedback.title,
+          body: previousPublicationCancelled
+            ? "Изменённый черновик сохранён. Повторите «Обновить публикацию» — старый текст уже не будет отправлен."
+            : feedback.body,
         });
       }
     } catch (error) {
       s.toast({
         kind: "danger",
-        title: "Не удалось добавить пост в календарь",
-        body: personalProject
+        title: previousPublicationCancelled
+          ? "Старая публикация остановлена, новая ещё не создана"
+          : "Не удалось добавить пост в календарь",
+        body: previousPublicationCancelled
+          ? "Изменённый черновик сохранён. Повторите «Обновить публикацию» — старый текст уже не будет отправлен."
+          : personalProject
           ? editorialErrorMessage(error)
           : "Сервер не подтвердил операцию. Черновик остался в редакторе — повтори попытку.",
       });
@@ -2119,6 +2314,9 @@ export default function ComposerPage() {
       scheduleRequestRef.current = false;
     }
   }, [
+    activePublication,
+    activePublicationError,
+    activePublicationRequested,
     bestTime,
     canPublish,
     composerUserId,
@@ -2148,6 +2346,82 @@ export default function ComposerPage() {
   const clearPublicationSuccess = useCallback(() => {
     setPublicationSuccess(null);
   }, []);
+
+  const cancelActivePublication = useCallback(() => runSingleDraftSave(
+    activePublicationRequestRef,
+    async () => {
+      const target = activePublication;
+      if (!target || saving || publicationOperationIsSettled(target)) return;
+      setSaving(true);
+      try {
+        const result = await cancelPublication({
+          operationId: target.operationId,
+          expectedScheduleRevision: target.scheduleRevision,
+          expectedStatus: target.status,
+          idempotencyKey: crypto.randomUUID(),
+        });
+        if (!result.ok || result.scheduleRevision == null) {
+          s.toast({
+            kind: "danger",
+            title: result.error === "publication_in_progress"
+              ? "Публикация уже отправляется"
+              : "Публикация не отменена",
+            body: "Сервер не подтвердил отмену. Текущая очередь оставлена без изменений.",
+          });
+          await s.refreshReal();
+          return;
+        }
+        setActivePublicationState({
+          ...target,
+          status: "cancelled",
+          scheduleRevision: result.scheduleRevision,
+        });
+        setConfirmCancelPublication(false);
+        await s.refreshReal();
+        s.toast({
+          kind: "success",
+          title: "Публикация отменена",
+          body: "Черновик остался в редакторе. Его можно изменить и запланировать снова.",
+        });
+      } finally {
+        setSaving(false);
+      }
+    },
+  ), [activePublication, s, saving]);
+
+  const cloneActivePublication = useCallback(() => runSingleDraftSave(
+    activePublicationRequestRef,
+    async () => {
+      const target = activePublication;
+      if (!target || saving || !publicationOperationIsSettled(target)) return;
+      setSaving(true);
+      try {
+        const result = await restorePublicationToDraft({
+          operationId: target.operationId,
+          expectedScheduleRevision: target.scheduleRevision,
+          expectedStatus: target.status,
+          idempotencyKey: crypto.randomUUID(),
+        });
+        if (!result.ok || result.draftId == null) {
+          s.toast({
+            kind: "danger",
+            title: "Новый пост не создан",
+            body: "Опубликованная версия не изменена. Обновите страницу и повторите.",
+          });
+          return;
+        }
+        clearActivePublication();
+        router.replace(`/app/composer?draft=${result.draftId}&from=calendar`);
+        s.toast({
+          kind: "success",
+          title: "Новый пост создан",
+          body: "Это отдельный черновик. Опубликованная версия останется без изменений.",
+        });
+      } finally {
+        setSaving(false);
+      }
+    },
+  ), [activePublication, clearActivePublication, router, s, saving]);
 
   const removeCurrent = useCallback(() => runSingleDraftSave(
     draftDeleteRequestRef,
@@ -2273,6 +2547,18 @@ export default function ComposerPage() {
       saving,
       publicationMode,
       publicationSuccess,
+      activePublicationRequested,
+      activePublicationLoading,
+      activePublicationError,
+      activePublication,
+      beginActivePublicationLoad,
+      setActivePublication,
+      failActivePublicationLoad,
+      clearActivePublication,
+      confirmCancelPublication,
+      setConfirmCancelPublication,
+      cancelActivePublication,
+      cloneActivePublication,
       clearPublicationSuccess,
       runAi,
       stopAi,
@@ -2291,7 +2577,12 @@ export default function ComposerPage() {
       aiBusy,
       aiPreview,
       aiReview,
+      activePublication,
+      activePublicationError,
+      activePublicationLoading,
+      activePublicationRequested,
       applyAiPreview,
+      beginActivePublicationLoad,
       blockedReason,
       canRecoverDraft,
       canChangeSchedule,
@@ -2309,6 +2600,10 @@ export default function ComposerPage() {
       changeTime,
       changeTimeDisambiguation,
       changeVkChannelId,
+      clearActivePublication,
+      cloneActivePublication,
+      cancelActivePublication,
+      confirmCancelPublication,
       toggleChannelId,
       toggleVkChannelId,
       confirmDelete,
@@ -2331,6 +2626,7 @@ export default function ComposerPage() {
       beginHydration,
       editingId,
       errors,
+      failActivePublicationLoad,
       failHydration,
       formatting,
       hydrate,
@@ -2355,6 +2651,7 @@ export default function ComposerPage() {
       saving,
       publicationMode,
       publicationSuccess,
+      setActivePublication,
       clearPublicationSuccess,
       schedule,
       publishNow,
@@ -2538,6 +2835,9 @@ function ComposerActionBar() {
   const personal = projects.current?.personal === true;
   const approved = (personal || c.editorialState === "approved") && c.blockedReason == null;
   const blocked = c.blockedReason ? DRAFT_BLOCKED_COPY[c.blockedReason] : null;
+  const activeSettled = c.activePublication == null
+    ? false
+    : publicationOperationIsSettled(c.activePublication);
   const visible = c.canPublish || blocked != null;
   useLayoutEffect(() => {
     const root = document.documentElement;
@@ -2648,6 +2948,27 @@ function ComposerActionBar() {
               )}
             </div>
           </section>
+        ) : c.activePublicationRequested && (c.activePublicationLoading || c.activePublicationError) ? (
+          <div role="status" aria-live="polite" className="flex flex-wrap items-center gap-3">
+            <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-fire-soft text-fire-text">
+              <AlertTriangle className="h-5 w-5" aria-hidden />
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className="text-[14px] font-bold text-text">
+                {c.activePublicationLoading ? "Проверяем публикацию…" : "Публикация не загрузилась"}
+              </p>
+              <p className="text-[13px] text-text-3">
+                {c.activePublicationLoading
+                  ? "Получаем актуальный статус перед изменением очереди."
+                  : c.activePublicationError}
+              </p>
+            </div>
+            {c.activePublicationError && (
+              <Link href="/app/calendar" className={buttonClassName({ variant: "ghost", size: "sm" })}>
+                Вернуться в календарь
+              </Link>
+            )}
+          </div>
         ) : c.publicationSuccess ? (
           <div role="status" aria-live="polite" className="flex flex-wrap items-center gap-3">
             <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-success-soft text-success-text">
@@ -2666,6 +2987,69 @@ function ComposerActionBar() {
             <div className="flex flex-wrap gap-2">
               <Link href="/app/calendar"><Button variant="solid" size="sm">Открыть календарь</Button></Link>
               <Link href="/app/composer"><Button variant="ghost" size="sm" onClick={c.clearPublicationSuccess}>Создать ещё пост</Button></Link>
+            </div>
+          </div>
+        ) : c.activePublication ? (
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div className="min-w-0 text-[13px]" aria-live="polite">
+              <p className="font-semibold text-text">
+                {activeSettled
+                  ? "Публикация уже завершена"
+                  : c.activePublication.status === "cancelled"
+                    ? "Публикация отменена"
+                    : approved
+                      ? "Изменения готовы к обновлению публикации"
+                      : "Сначала согласуйте изменённую версию"}
+              </p>
+              <p className="truncate text-text-3">
+                {activeSettled
+                  ? "Опубликованный пост не изменится — можно создать отдельный новый черновик."
+                  : `${fmtDateTime(c.activePublication.scheduledAt, c.activePublication.timezone)} · ${c.draftSaveState === "saved" ? "изменения сохранены" : "сохраняем изменения"}`}
+              </p>
+            </div>
+            <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap lg:justify-end">
+              {activeSettled ? (
+                <Button
+                  variant="brand"
+                  size="sm"
+                  className="w-full sm:w-auto"
+                  disabled={unavailable}
+                  loading={c.saving}
+                  onClick={() => void c.cloneActivePublication()}
+                >
+                  {!c.saving && <Bookmark className="h-4 w-4" aria-hidden />}
+                  Создать новый пост
+                </Button>
+              ) : (
+                <>
+                  <Button
+                    variant="brand"
+                    size="sm"
+                    className="w-full sm:w-auto"
+                    disabled={unavailable}
+                    loading={c.publicationMode === "calendar"}
+                    onClick={c.schedule}
+                  >
+                    {c.publicationMode !== "calendar" && <CalendarClock className="h-4 w-4" aria-hidden />}
+                    {c.activePublication.status === "cancelled"
+                      ? "Запланировать снова"
+                      : "Обновить публикацию"}
+                  </Button>
+                  {c.activePublication.status !== "cancelled" && (
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      className="w-full sm:w-auto"
+                      disabled={unavailable}
+                      aria-haspopup="dialog"
+                      onClick={() => c.setConfirmCancelPublication(true)}
+                    >
+                      <Trash2 className="h-4 w-4" aria-hidden />
+                      Отменить публикацию
+                    </Button>
+                  )}
+                </>
+              )}
             </div>
           </div>
         ) : (
@@ -2782,6 +3166,7 @@ function ComposerActionBar() {
 function ComposerInner() {
   const s = useStore();
   const projects = useProjects();
+  const router = useRouter();
   const params = useSearchParams();
   const reduce = useReducedMotion();
   const c = useComposer();
@@ -2806,6 +3191,10 @@ function ComposerInner() {
 
   const idParam = params.get("id");
   const draftParam = Number(params.get("draft")) || null;
+  const publicationValue = Number(params.get("publication"));
+  const publicationParam = Number.isSafeInteger(publicationValue) && publicationValue > 0
+    ? publicationValue
+    : null;
   const legacyParam = params.get("legacy") ?? idParam;
   const dateRaw = params.get("date");
   const dateParam = dateRaw && /^\d{4}-\d{2}-\d{2}$/.test(dateRaw)
@@ -2840,6 +3229,10 @@ function ComposerInner() {
     setChannelId: setComposerChannelId,
     setVkChannelId: setComposerVkChannelId,
     setNetworks: setComposerNetworks,
+    beginActivePublicationLoad,
+    setActivePublication,
+    failActivePublicationLoad,
+    clearActivePublication,
   } = c;
   const taRef = useRef<HTMLDivElement>(null);
   const topicRef = useRef<HTMLInputElement>(null);
@@ -3003,6 +3396,36 @@ function ComposerInner() {
     storeReady,
     timeParam,
     toast,
+  ]);
+
+  useEffect(() => {
+    if (!publicationParam) {
+      clearActivePublication();
+      return;
+    }
+    if (!hydrated || currentDraftId == null) return;
+    const controller = new AbortController();
+    beginActivePublicationLoad();
+    void getPublicationOperationEditorContext(publicationParam, controller.signal)
+      .then((operation) => {
+        if (operation.draftId !== currentDraftId) {
+          failActivePublicationLoad();
+          return;
+        }
+        setActivePublication(operation);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) failActivePublicationLoad();
+      });
+    return () => controller.abort();
+  }, [
+    beginActivePublicationLoad,
+    clearActivePublication,
+    currentDraftId,
+    failActivePublicationLoad,
+    hydrated,
+    publicationParam,
+    setActivePublication,
   ]);
 
   // ИИ печатает — держим видимым хвост текста
@@ -3184,6 +3607,48 @@ function ComposerInner() {
       <Card
         className="mx-auto w-full max-w-5xl min-w-0 space-y-6 p-5 sm:p-6"
       >
+        {c.activePublicationRequested && (
+          <div
+            role="status"
+            className={cn(
+              "flex flex-wrap items-center gap-3 rounded-sm border px-3 py-2.5",
+              c.activePublicationError
+                ? "border-danger/30 bg-danger-soft"
+                : "border-brand/20 bg-brand/5",
+            )}
+          >
+            <CalendarClock
+              className={cn(
+                "h-4 w-4 shrink-0",
+                c.activePublicationError ? "text-danger" : "text-brand",
+              )}
+              aria-hidden
+            />
+            <p className="min-w-0 flex-1 text-[13px] leading-relaxed text-text-2">
+              {c.activePublicationLoading
+                ? "Загружаем актуальное состояние публикации…"
+                : c.activePublicationError
+                  ? c.activePublicationError
+                  : c.activePublication
+                    ? publicationOperationIsSettled(c.activePublication)
+                      ? "Публикация завершена. Редактор показывает её исходную версию; новый пост будет создан отдельно."
+                      : c.activePublication.status === "cancelled"
+                        ? "Публикация отменена. Черновик можно изменить и запланировать снова."
+                        : `Запланировано на ${fmtDateTime(c.activePublication.scheduledAt, c.activePublication.timezone)}. Изменения попадут в очередь только после «Обновить публикацию».`
+                    : "Публикация не выбрана."}
+            </p>
+            {c.activePublication && (
+              <Badge tone={publicationOperationIsSettled(c.activePublication) ? "success" : "brand"}>
+                {publicationOperationIsSettled(c.activePublication)
+                  ? "Опубликовано"
+                  : c.activePublication.status === "cancelled"
+                    ? "Отменено"
+                    : "Запланировано"}
+              </Badge>
+            )}
+          </div>
+        )}
+
         {c.sourceRef && <SourcePlate source={c.sourceRef} />}
 
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -3958,6 +4423,18 @@ function ComposerInner() {
         </EditorSection>
       </Card>
 
+      {c.activePublication && publicationOperationIsSettled(c.activePublication) && (
+        <Card className="mx-auto w-full max-w-5xl min-w-0 p-5 sm:p-6">
+          <PublicationFollowupSection
+            operationId={c.activePublication.operationId}
+            onUpdateRequested={(nextDraftId) => {
+              c.clearActivePublication();
+              router.push(`/app/composer?draft=${nextDraftId}&from=calendar`);
+            }}
+          />
+        </Card>
+      )}
+
       <ComposerActionBar />
       <div aria-hidden className="hidden h-[var(--composer-action-bar-clearance,18rem)] lg:block" />
 
@@ -3975,6 +4452,19 @@ function ComposerInner() {
           onConfirm={() => void c.removeCurrent()}
         />
       )}
+
+      <ConfirmDialog
+        open={c.confirmCancelPublication}
+        title="Отменить запланированную публикацию?"
+        description="Сервер остановит ещё не начавшуюся отправку. Черновик останется в редакторе, и его можно будет запланировать снова."
+        confirmLabel="Отменить публикацию"
+        cancelLabel="Оставить запланированной"
+        busy={c.saving}
+        onCancel={() => {
+          if (!c.saving) c.setConfirmCancelPublication(false);
+        }}
+        onConfirm={() => void c.cancelActivePublication()}
+      />
 
     </>
   );

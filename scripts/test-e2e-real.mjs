@@ -4350,18 +4350,19 @@ try {
   await reviewerPage.reload();
   const publishedCalendarCard = reviewerPage.locator(`#calendar-real-${criticalPostId}`);
   await publishedCalendarCard.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
-  await publishedCalendarCard.getByRole("button", { name: /^Открыть публикацию:/u }).click();
-  const publicationDialog = reviewerPage.getByRole("dialog", { name: "Управление публикацией", exact: true });
-  await publicationDialog.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
-  const unpinDecision = publicationDialog.getByRole("button", { name: "Открепить", exact: true });
+  await publishedCalendarCard.getByRole("button", { name: /^Открыть публикацию в редакторе:/u }).click();
+  await reviewerPage.waitForURL(/\/app\/composer\?[^#]*publication=/u, { timeout: UI_WAIT_TIMEOUT_MS });
+  const publicationEditor = reviewerPage.getByRole("main");
+  await publicationEditor.getByText("После публикации", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  const unpinDecision = publicationEditor.getByRole("button", { name: "Открепить", exact: true });
   await unpinDecision.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await assertTouch(unpinDecision, "decide to unpin a reviewed publication");
   await unpinDecision.click();
-  await publicationDialog.getByText(
+  await publicationEditor.getByText(
     "Решение сохранено. Открепление выполняется отдельно от основной публикации.",
     { exact: true },
   ).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
-  await publicationDialog.getByText("Запрошено открепление", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  await publicationEditor.getByText("Запрошено открепление", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const unpinDecisionEvidence = await waitFor(async () => {
     const task = (await pool.query(
       `select status, decision, decided_by_user_id, version

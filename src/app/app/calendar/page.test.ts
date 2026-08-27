@@ -24,14 +24,14 @@ describe("calendar role-aware interface", () => {
     expect(source).toContain('return { kind: "open", label: "Открыть" }');
   });
 
-  it("keeps editing and active-publication controls behind role gates", () => {
+  it("keeps editing and calendar rescheduling behind role gates without a publication modal", () => {
     expect(source).toContain("{canEdit && (");
     expect(source).toContain("onAdd={canEdit ? () => addPostOn(day) : undefined}");
     expect(source).toContain("onRetry={canPublish");
     expect(source).toContain("onReschedule={canPublish");
-    expect(source).toContain("{canInspectPublication && (");
-    expect(source).toContain("<PublicationActionsDialog");
-    expect(source).toContain("canManageSchedule={canPublish}");
+    expect(source).toContain("canManageCalendarMove(post)");
+    expect(source).not.toContain("<PublicationActionsDialog");
+    expect(source).not.toContain("Управление публикацией");
     expect(source).not.toContain('className="w-9 px-0"');
   });
 
@@ -43,9 +43,12 @@ describe("calendar role-aware interface", () => {
     expect(source).toContain("Открыть черновик в редакторе:");
   });
 
-  it("opens server drafts directly in the editor and keeps deletion out of the calendar", () => {
-    expect(source).toContain("router.push(`/app/composer?draft=${post.serverDraftId}&from=calendar`)");
+  it("opens drafts and linked publications directly in the editor and keeps deletion out of the calendar", () => {
+    expect(source).toContain("serverDraftId: rp.publication_draft_id ?? undefined");
+    expect(source).toContain("`&publication=${post.publicationOperationId}`");
+    expect(source).toContain("router.push(`/app/composer?draft=${post.serverDraftId}${publication}&from=calendar`)");
     expect(source).toContain('id={`calendar-open-${post.id}`}');
+    expect(source).toContain("Открыть публикацию в редакторе:");
     expect(source).not.toContain("CalendarDraftActionsDialog");
     expect(source).not.toContain('aria-label="Удалить черновик"');
     expect(source).not.toContain("deleteDraftAfterAck");

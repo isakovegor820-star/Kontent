@@ -48,6 +48,7 @@ describe("GET /api/posts project isolation", () => {
     expect(normalizedSql).not.toContain("where p.user_id = $1");
     expect(normalizedSql).toContain("c.project_id = p.project_id");
     expect(normalizedSql).toContain("operation.project_id = p.project_id");
+    expect(normalizedSql).toContain("operation.draft_id as publication_draft_id");
     expect(normalizedSql).toContain("post_author.id = p.user_id");
     expect(normalizedSql).toContain("author_user_id");
     expect(dataParams).toEqual([44]);
@@ -65,6 +66,7 @@ describe("GET /api/posts project isolation", () => {
           vk_post_id: null,
           vk_group_id: null,
           publication_operation_id: "902",
+          publication_draft_id: "41",
         }],
         rowCount: 1,
       });
@@ -80,6 +82,7 @@ describe("GET /api/posts project isolation", () => {
         vk_post_id: null,
         vk_group_id: null,
         publication_operation_id: 902,
+        publication_draft_id: 41,
       }],
     });
   });

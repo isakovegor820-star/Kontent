@@ -107,13 +107,13 @@ describe("publication review server authority", () => {
     expect(parsePublicationReviewDecisionResponse({ ok: false, draftId: 91 })).toBeNull();
   });
 
-  it("keeps schedule management separate, omits restore-to-editor, and routes review updates by draft id", async () => {
+  it("keeps follow-up actions in the editor after calendar clicks bypass the removed modal", async () => {
     const section = await readFile(
       new URL("../components/app/publication-followup-section.tsx", import.meta.url),
       "utf8",
     );
-    const dialog = await readFile(
-      new URL("../components/app/publication-actions-dialog.tsx", import.meta.url),
+    const composer = await readFile(
+      new URL("../app/app/composer/page.tsx", import.meta.url),
       "utf8",
     );
     const calendar = await readFile(
@@ -127,12 +127,13 @@ describe("publication review server authority", () => {
     expect(section).toContain("onUpdateRequested(parsed.draftId)");
     expect(section).toContain("aria-busy={loading || Boolean(busyKey) || undefined}");
     expect(section).toContain("loading={busyKey === `review:${destination.review.id}:update`}");
-    expect(dialog).toContain("onUpdateRequested={onOpenReviewDraft}");
-    expect(dialog).not.toContain("onEdit");
-    expect(dialog).not.toContain("Аврора сначала отменит запланированную отправку");
+    expect(composer).toContain("<PublicationFollowupSection");
+    expect(composer).toContain("onUpdateRequested={(nextDraftId)");
+    expect(composer).toContain("restorePublicationToDraft");
+    expect(composer).toContain("Обновить публикацию");
     expect(calendar).not.toContain("restorePublicationToDraft");
-    expect(calendar).not.toContain("editTargetPublication");
-    expect(calendar).toContain("router.push(`/app/composer?draft=${draftId}&from=calendar`)");
+    expect(calendar).not.toContain("PublicationActionsDialog");
+    expect(calendar).toContain("`&publication=${post.publicationOperationId}`");
   });
 });
 

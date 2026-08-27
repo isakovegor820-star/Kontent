@@ -247,6 +247,8 @@ export interface RealPost {
   scheduled_offset: string | null;
   scheduled_disambiguation: "reject" | "earlier" | "later" | null;
   publication_operation_id: number | null;
+  /** Исходный серверный черновик активной или завершённой публикации. */
+  publication_draft_id?: number | null;
   publication_operation_status: string | null;
   operation_schedule_revision: number | null;
   created_at: string;

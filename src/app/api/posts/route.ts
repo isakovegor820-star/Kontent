@@ -27,7 +27,8 @@ export async function GET(req: NextRequest) {
               coalesce(p.scheduled_offset, operation.schedule_offset) as scheduled_offset,
               coalesce(p.scheduled_disambiguation, operation.schedule_disambiguation, 'reject')
                 as scheduled_disambiguation,
-              p.publication_operation_id, operation.status as publication_operation_status,
+              p.publication_operation_id, operation.draft_id as publication_draft_id,
+              operation.status as publication_operation_status,
               operation.schedule_revision as operation_schedule_revision,
               p.channel_id, c.network, c.title as channel_title, c.handle, c.vk_group_id,
               coalesce(parts.items, '[]'::jsonb) as publication_parts
@@ -67,6 +68,9 @@ export async function GET(req: NextRequest) {
         publication_operation_id: post.publication_operation_id == null
           ? null
           : Number(post.publication_operation_id),
+        publication_draft_id: post.publication_draft_id == null
+          ? null
+          : Number(post.publication_draft_id),
       })),
     });
   } catch (err) {

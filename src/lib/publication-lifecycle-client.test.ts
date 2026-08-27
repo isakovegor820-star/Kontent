@@ -2,6 +2,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   cancelPublication,
+  getPublicationOperationEditorContext,
+  parsePublicationOperationEditorContext,
+  publicationEditorMutationKind,
+  publicationOperationIsSettled,
   reschedulePublication,
   restorePublicationToDraft,
 } from "./publication-lifecycle-client";
@@ -9,6 +13,56 @@ import {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("publication lifecycle client", () => {
+  const editorResponse = (postStatus = "scheduled") => ({
+    ok: true,
+    operation: {
+      id: 7,
+      draftId: 41,
+      draftVersion: 3,
+      status: "queued",
+      scheduledAt: "2026-08-29T10:00:00.000Z",
+      timezone: "Europe/Saratov",
+      scheduleRevision: 2,
+      scheduleOffset: "+04:00",
+      scheduleDisambiguation: "reject",
+      destinations: [{ postId: 81, postStatus }],
+    },
+  });
+
+  it("loads a strict editor context for the publication-linked draft", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(Response.json(editorResponse()));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getPublicationOperationEditorContext(7)).resolves.toMatchObject({
+      operationId: 7,
+      draftId: 41,
+      draftVersion: 3,
+      scheduleRevision: 2,
+    });
+    expect(fetchMock).toHaveBeenCalledWith("/api/publication-operations/7", {
+      cache: "no-store",
+      signal: undefined,
+    });
+  });
+
+  it("rejects malformed editor contexts and recognizes delivered destinations", () => {
+    expect(parsePublicationOperationEditorContext({
+      ...editorResponse(),
+      operation: { ...editorResponse().operation, draftId: "41" },
+    })).toMatchObject({ draftId: 41 });
+    expect(parsePublicationOperationEditorContext({
+      ...editorResponse(),
+      operation: { ...editorResponse().operation, scheduleDisambiguation: "guess" },
+    })).toBeNull();
+    const published = parsePublicationOperationEditorContext(editorResponse("published"));
+    expect(published && publicationOperationIsSettled(published)).toBe(true);
+    expect(published && publicationEditorMutationKind(published, 41, 3)).toBe("clone_required");
+    expect(published && publicationEditorMutationKind(published, 41, 4)).toBe("replace");
+    const scheduled = parsePublicationOperationEditorContext(editorResponse());
+    expect(scheduled && publicationEditorMutationKind(scheduled, 41, 3)).toBe("reschedule");
+    expect(scheduled && publicationEditorMutationKind(scheduled, 41, 4)).toBe("replace");
+  });
+
   it("sends revision, status and idempotency for cancel", async () => {
     const fetchMock = vi.fn().mockResolvedValue(Response.json({
       ok: true,

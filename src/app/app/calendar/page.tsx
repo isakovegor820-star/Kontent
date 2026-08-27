@@ -45,11 +45,6 @@ import {
   calendarProjectExportPeriod,
   ProjectExportButton,
 } from "@/components/app/project-export-button";
-import {
-  PublicationActionsDialog,
-  type PublicationActionTarget,
-  type PublicationRescheduleInput,
-} from "@/components/app/publication-actions-dialog";
 import { Button, buttonClassName } from "@/components/ui/button";
 import {
   Badge,
@@ -90,10 +85,7 @@ import {
   calendarDayForInstant,
 } from "@/lib/calendar-timezone";
 import { useStore } from "@/lib/store";
-import {
-  cancelPublication,
-  reschedulePublication,
-} from "@/lib/publication-lifecycle-client";
+import { reschedulePublication } from "@/lib/publication-lifecycle-client";
 import type { Network, Post, RealPost, Trend, User } from "@/lib/types";
 import { ScheduleValidationError } from "@/lib/timezone-schedule";
 import {
@@ -264,6 +256,7 @@ function realToPost(rp: RealPost): CalendarPost {
     postUrl: postUrlFor(rp),
     verificationState: rp.verification_state,
     publicationParts: rp.publication_parts,
+    serverDraftId: rp.publication_draft_id ?? undefined,
     publicationOperationId: rp.publication_operation_id ?? undefined,
     operationStatus: rp.publication_operation_status ?? undefined,
     operationScheduleRevision: rp.operation_schedule_revision ?? undefined,
@@ -622,9 +615,11 @@ function PostCard({
         onContextMenu={(event) => {
           if (pointerDragRef.current?.isActive()) event.preventDefault();
         }}
-        aria-label={post.serverDraftId != null
-          ? `Открыть черновик в редакторе: ${post.text.slice(0, 60)}`
-          : `Открыть публикацию: ${post.text.slice(0, 60)}`}
+        aria-label={post.publicationOperationId != null
+          ? `Открыть публикацию в редакторе: ${post.text.slice(0, 60)}`
+          : post.serverDraftId != null
+            ? `Открыть черновик в редакторе: ${post.text.slice(0, 60)}`
+            : `Открыть публикацию: ${post.text.slice(0, 60)}`}
         aria-describedby={canMove ? CALENDAR_DRAG_HELP_ID : undefined}
         title={!canMove ? moveBlockedReason : undefined}
         className={cn(
@@ -1402,7 +1397,7 @@ function UpcomingPublications({
                 type="button"
                 onClick={() => onOpen(post)}
                 className="grid min-h-11 w-full grid-cols-[auto_auto_minmax(0,1fr)] items-center gap-x-3 gap-y-1 rounded-xs px-1 py-2.5 text-left transition-colors duration-150 hover:bg-surface-inset focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand motion-reduce:transition-none sm:grid-cols-[auto_auto_minmax(0,1fr)_auto]"
-                aria-label={`Открыть публикацию: ${post.text.slice(0, 60)}`}
+                aria-label={`Открыть публикацию в редакторе: ${post.text.slice(0, 60)}`}
               >
                 <span className="text-[12px] font-semibold text-text-3">{fmtDate(post.scheduledAt)}</span>
                 <span className="nums text-[13px] font-bold text-text tabular-nums">
@@ -1457,8 +1452,6 @@ export default function CalendarPage() {
     ?? Intl.DateTimeFormat().resolvedOptions().timeZone
     ?? "UTC";
   const { canEdit, canPublish } = calendarRoleCapabilities(currentRole);
-  const canInspectPublication = currentRole != null;
-
   const [view, setView] = useState<View>("week");
   const [dir, setDir] = useState(0);
   const [anchor, setAnchor] = useState<Date>(() => calendarDayForInstant(
@@ -1469,8 +1462,6 @@ export default function CalendarPage() {
   const [draftOwner, setDraftOwner] = useState<User | null>(null);
   const [draftsReady, setDraftsReady] = useState(false);
   const [draftsError, setDraftsError] = useState(false);
-  const [publicationTarget, setPublicationTarget] = useState<PublicationActionTarget | null>(null);
-  const [publicationBusy, setPublicationBusy] = useState(false);
   const [draggedPostId, setDraggedPostId] = useState<string | null>(null);
   const [dragPreview, setDragPreview] = useState<CalendarDragPreview | null>(null);
   const [dragOverDay, setDragOverDay] = useState<string | null>(null);
@@ -1662,7 +1653,7 @@ export default function CalendarPage() {
   }), [gridPosts, optimisticSchedules]);
 
   const canManageCalendarMove = useCallback((post: CalendarPost) => {
-    if (post.serverDraftId != null) {
+    if (post.serverDraftId != null && post.publicationOperationId == null) {
       const draft = serverDrafts.find((candidate) => candidate.id === post.serverDraftId);
       return canEdit && post.draftVersion != null && draft?.purpose !== "source_context";
     }
@@ -1677,17 +1668,16 @@ export default function CalendarPage() {
   const canStartCalendarMove = useCallback(
     (post: CalendarPost) => (
       movingPostId == null
-      && !publicationBusy
       && canManageCalendarMove(post)
     ),
-    [canManageCalendarMove, movingPostId, publicationBusy],
+    [canManageCalendarMove, movingPostId],
   );
 
   const calendarMoveBlockedReason = useCallback((post: CalendarPost) => {
-    if (movingPostId != null || publicationBusy) {
+    if (movingPostId != null) {
       return "Дождитесь завершения текущего действия.";
     }
-    if (post.serverDraftId != null) {
+    if (post.serverDraftId != null && post.publicationOperationId == null) {
       const draft = serverDrafts.find((candidate) => candidate.id === post.serverDraftId);
       if (!canEdit) return "Для переноса черновика нужно право редактирования.";
       if (draft?.purpose === "source_context") {
@@ -1709,7 +1699,7 @@ export default function CalendarPage() {
       return "Обновите календарь, чтобы получить актуальные данные публикации.";
     }
     return undefined;
-  }, [canEdit, canPublish, movingPostId, publicationBusy, serverDrafts]);
+  }, [canEdit, canPublish, movingPostId, serverDrafts]);
 
   const draggedPost = useMemo(() => {
     if (!draggedPostId) return null;
@@ -1801,32 +1791,14 @@ export default function CalendarPage() {
 
   const openPost = (post: CalendarPost) => {
     if (post.serverDraftId != null) {
-      router.push(`/app/composer?draft=${post.serverDraftId}&from=calendar`);
+      const publication = post.publicationOperationId == null
+        ? ""
+        : `&publication=${post.publicationOperationId}`;
+      router.push(`/app/composer?draft=${post.serverDraftId}${publication}&from=calendar`);
       return;
     }
     if ((post.status === "draft" || post.status === "queued") && !post.id.startsWith("real-")) {
       router.push(`/app/composer?legacy=${encodeURIComponent(post.id)}&from=calendar`);
-      return;
-    }
-    if (
-      canInspectPublication
-      && post.publicationOperationId != null
-      && post.operationScheduleRevision != null
-      && post.operationStatus
-      && post.scheduledAt
-      && post.scheduleTimezone
-    ) {
-      setPublicationTarget({
-        operationId: post.publicationOperationId,
-        operationStatus: post.operationStatus,
-        postStatus: post.status,
-        scheduleRevision: post.operationScheduleRevision,
-        scheduledAt: post.scheduledAt,
-        timezone: post.scheduleTimezone,
-        scheduledOffset: post.scheduledOffset ?? null,
-        scheduleDisambiguation: post.scheduleDisambiguation ?? "reject",
-        text: post.text,
-      });
       return;
     }
     const title =
@@ -1902,7 +1874,7 @@ export default function CalendarPage() {
     movingPostRef.current = post.id;
     setMovingPostId(post.id);
     try {
-      const draft = post.serverDraftId == null
+      const draft = post.serverDraftId == null || post.publicationOperationId != null
         ? null
         : serverDrafts.find((candidate) => candidate.id === post.serverDraftId) ?? null;
       const timezone = draft?.scheduled_timezone
@@ -2158,70 +2130,6 @@ export default function CalendarPage() {
     window.addEventListener("keydown", cancelWithEscape);
     return () => window.removeEventListener("keydown", cancelWithEscape);
   }, [cancelPostPointerDrag, draggedPostId]);
-
-  const cancelTargetPublication = useCallback(async () => {
-    const target = publicationTarget;
-    if (!target || publicationBusy) return;
-    setPublicationBusy(true);
-    try {
-      const result = await cancelPublication({
-        operationId: target.operationId,
-        expectedScheduleRevision: target.scheduleRevision,
-        expectedStatus: target.operationStatus,
-        idempotencyKey: crypto.randomUUID(),
-      });
-      if (!result.ok) {
-        publicationFailure(result.error);
-        await s.refreshReal();
-        return;
-      }
-      await s.refreshReal();
-      setPublicationTarget(null);
-      s.toast({
-        kind: "success",
-        title: "Публикация отменена",
-        body: "Отмена подтверждена сервером. Даже если старая задача осталась в очереди, она ничего не отправит.",
-      });
-    } finally {
-      setPublicationBusy(false);
-    }
-  }, [publicationBusy, publicationFailure, publicationTarget, s]);
-
-  const rescheduleTargetPublication = useCallback(async (schedule: PublicationRescheduleInput) => {
-    const target = publicationTarget;
-    if (!target || publicationBusy) return;
-    setPublicationBusy(true);
-    try {
-      const result = await reschedulePublication({
-        operationId: target.operationId,
-        expectedScheduleRevision: target.scheduleRevision,
-        expectedStatus: target.operationStatus,
-        idempotencyKey: crypto.randomUUID(),
-        scheduledAt: schedule.scheduledAt,
-        localDate: schedule.localDate,
-        localTime: schedule.localTime,
-        timezone: schedule.timezone,
-        disambiguation: schedule.disambiguation,
-        offset: schedule.offset,
-      });
-      if (!result.ok && result.status !== "scheduled") {
-        publicationFailure(result.error);
-        await s.refreshReal();
-        return;
-      }
-      await s.refreshReal();
-      setPublicationTarget(null);
-      s.toast({
-        kind: result.ok ? "success" : "info",
-        title: result.ok ? "Публикация перенесена" : "Дата сохранена, очередь восстанавливается",
-        body: result.scheduledAt
-          ? `${fmtDateTime(result.scheduledAt, schedule.timezone)}. Предыдущая дата больше не действует.`
-          : "Новая дата сохранена; сервис планирования восстановит очередь.",
-      });
-    } finally {
-      setPublicationBusy(false);
-    }
-  }, [publicationBusy, publicationFailure, publicationTarget, s]);
 
   const removeLocalRecovery = (post: Post) => {
     s.removePost(post.id);
@@ -2934,26 +2842,6 @@ export default function CalendarPage() {
           )}
         </section>
       </div>
-
-      {canInspectPublication && (
-        <PublicationActionsDialog
-          key={publicationTarget
-            ? `${publicationTarget.operationId}:${publicationTarget.scheduleRevision}`
-            : "closed-publication-actions"}
-          target={publicationTarget}
-          busy={publicationBusy}
-          onClose={() => {
-            if (!publicationBusy) setPublicationTarget(null);
-          }}
-          onOpenReviewDraft={(draftId) => {
-            setPublicationTarget(null);
-            router.push(`/app/composer?draft=${draftId}&from=calendar`);
-          }}
-          onCancel={() => void cancelTargetPublication()}
-          onReschedule={(value) => void rescheduleTargetPublication(value)}
-          canManageSchedule={canPublish}
-        />
-      )}
 
       <CalendarMoveDialog
         post={movePickerPost}

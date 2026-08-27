@@ -41,6 +41,19 @@ describe("composer UX protection contract", () => {
     expect(source).toContain("scroll-mb-72");
   });
 
+  it("edits calendar publications without reopening the removed management modal", () => {
+    expect(source).toContain('params.get("publication")');
+    expect(source).toContain("getPublicationOperationEditorContext(publicationParam");
+    expect(source).toContain("Обновить публикацию");
+    expect(source).toContain("Запланировать снова");
+    expect(source).toContain("Отменить запланированную публикацию?");
+    expect(source).toContain("publicationOperationIsSettled(activePublication)");
+    expect(source).toContain("await cancelPublication({");
+    expect(source).toContain("await reschedulePublication({");
+    expect(source).toContain("Старая публикация остановлена, новая ещё не создана");
+    expect(source).toContain("<PublicationFollowupSection");
+  });
+
   it("provides recovery, upload, and multi-destination controls", () => {
     expect(source).toContain("c.undoText");
     expect(source).toContain("c.redoText");
