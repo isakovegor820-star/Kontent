@@ -66,15 +66,24 @@ jobs:
           (( target >= 10485760 && target <= 11010048 ))
           command -v nginx >/dev/null
           systemctl is-active --quiet nginx.service
-          mapfile -t candidates < <(grep -RIl \
-            --include='*.conf' \
-            -E 'client_max_body_size[[:space:]]+5505024[[:space:]]*;' \
-            /etc/nginx)
+          mapfile -t candidates < <(nginx -T 2>&1 | awk '
+            /^# configuration file / {
+              file = $4
+              sub(/:$/, "", file)
+            }
+            /client_max_body_size[[:space:]]+5505024[[:space:]]*;/ {
+              print file
+            }
+          ' | sort -u)
           if [[ "${#candidates[@]}" -ne 1 ]]; then
             echo "expected exactly one Aurora 5505024-byte nginx ingress directive" >&2
             exit 1
           fi
-          config="${candidates[0]}"
+          config="$(readlink -f "${candidates[0]}")"
+          if [[ "$config" != /etc/nginx/* || ! -f "$config" ]]; then
+            echo "resolved Aurora nginx config is outside /etc/nginx" >&2
+            exit 1
+          fi
           matches="$(grep -Ec \
             'client_max_body_size[[:space:]]+5505024[[:space:]]*;' \
             "$config")"
