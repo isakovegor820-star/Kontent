@@ -44,6 +44,19 @@ describe("production deployment shell contract", () => {
     );
   });
 
+  it("injects the bounded avatar ingress contract into only the target release", () => {
+    const copyEnvironment = script.indexOf('cp --preserve=mode,ownership "${CURRENT_LINK}/.env.production"');
+    const targetEnvironment = script.indexOf('runtime_env="${release}/.env.production"', copyEnvironment);
+    const migrate = script.indexOf("bash scripts/run-production-migrations.sh", targetEnvironment);
+    expect(script).toContain('AVATAR_BODY_LIMIT_BYTES="${AURORA_AVATAR_BODY_LIMIT_BYTES:-}"');
+    expect(script).toContain("AVATAR_BODY_LIMIT_BYTES < 10485760");
+    expect(script).toContain("AVATAR_BODY_LIMIT_BYTES > 11010048");
+    expect(targetEnvironment).toBeGreaterThan(copyEnvironment);
+    expect(migrate).toBeGreaterThan(targetEnvironment);
+    expect(workflow).toContain("AURORA_AVATAR_BODY_LIMIT_BYTES: ${{ vars.AVATAR_BODY_LIMIT_BYTES }}");
+    expect(workflow).toContain("AURORA_AVATAR_BODY_LIMIT_BYTES=${AURORA_AVATAR_BODY_LIMIT_BYTES}");
+  });
+
   it("rolls back restart, health, and partial web/worker activation failures", () => {
     expect(script).toContain("if ! systemctl restart aurora-web.service aurora-worker.service");
     expect(script).toContain("if ! wait_for_health");

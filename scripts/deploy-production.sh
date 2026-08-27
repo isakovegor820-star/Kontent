@@ -16,6 +16,7 @@ KEEP_RELEASES="${AURORA_KEEP_RELEASES:-2}"
 CLEANUP_RELEASE_SHA="${AURORA_INCOMPLETE_RELEASE_SHA:-}"
 BUILD_ARCHIVE="${AURORA_BUILD_ARCHIVE:-}"
 BUILD_ARCHIVE_SHA256="${AURORA_BUILD_ARCHIVE_SHA256:-}"
+AVATAR_BODY_LIMIT_BYTES="${AURORA_AVATAR_BODY_LIMIT_BYTES:-}"
 HEALTH_URL="${AURORA_HEALTH_URL:-http://127.0.0.1:3002/api/health}"
 HEALTH_ATTEMPTS="${AURORA_HEALTH_ATTEMPTS:-30}"
 HEALTH_SLEEP_SECS="${AURORA_HEALTH_SLEEP_SECS:-2}"
@@ -40,6 +41,11 @@ if [[ "$DEPLOY_ACTION" == "deploy" ]]; then
   fi
   if [[ ! "$BUILD_ARCHIVE_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
     echo "AURORA_BUILD_ARCHIVE_SHA256 must be an exact lowercase SHA-256" >&2
+    exit 1
+  fi
+  if [[ ! "$AVATAR_BODY_LIMIT_BYTES" =~ ^[0-9]+$ ]] \
+    || (( AVATAR_BODY_LIMIT_BYTES < 10485760 || AVATAR_BODY_LIMIT_BYTES > 11010048 )); then
+    echo "AURORA_AVATAR_BODY_LIMIT_BYTES must be between 10485760 and 11010048" >&2
     exit 1
   fi
 fi
@@ -189,6 +195,26 @@ if [[ "$checked_out_sha" != "$DEPLOY_SHA" ]]; then
 fi
 
 cp --preserve=mode,ownership "${CURRENT_LINK}/.env.production" "${release}/.env.production"
+
+# The avatar ingress contract is release-specific. Keep the previous release's env
+# untouched so a rollback can still boot its smaller upload contract.
+runtime_env="${release}/.env.production"
+runtime_env_next="$(mktemp "${release}/.env.production.next.XXXXXX")"
+awk -v value="$AVATAR_BODY_LIMIT_BYTES" '
+  BEGIN { written = 0 }
+  /^AURORA_AVATAR_BODY_LIMIT_BYTES=/ {
+    if (!written) print "AURORA_AVATAR_BODY_LIMIT_BYTES=" value
+    written = 1
+    next
+  }
+  { print }
+  END {
+    if (!written) print "AURORA_AVATAR_BODY_LIMIT_BYTES=" value
+  }
+' "$runtime_env" > "$runtime_env_next"
+chmod --reference="$runtime_env" "$runtime_env_next"
+chown --reference="$runtime_env" "$runtime_env_next"
+mv -f -- "$runtime_env_next" "$runtime_env"
 
 if [[ -n "${AURORA_SCHEMA_ROLLBACK_AUDIT:-}" \
   && ! "${AURORA_SCHEMA_ROLLBACK_AUDIT}" =~ ^[0-9a-f]{40}:[0-9a-f]{40}$ ]]; then

@@ -1,0 +1,99 @@
+name: Configure production avatar ingress
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  configure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Configure SSH
+        env:
+          PRODUCTION_SSH_KEY: ${{ secrets.PRODUCTION_SSH_KEY }}
+          PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
+          PRODUCTION_SSH_KNOWN_HOSTS: ${{ secrets.PRODUCTION_SSH_KNOWN_HOSTS }}
+          PRODUCTION_SSH_HOST_FINGERPRINT: ${{ secrets.PRODUCTION_SSH_HOST_FINGERPRINT }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$PRODUCTION_SSH_KEY"
+          test -n "$PRODUCTION_SSH_HOST"
+          test -n "$PRODUCTION_SSH_KNOWN_HOSTS"
+          test -n "$PRODUCTION_SSH_HOST_FINGERPRINT"
+          umask 077
+          mkdir -p ~/.ssh
+          printf '%s\n' "$PRODUCTION_SSH_KEY" > ~/.ssh/deploy_key
+          printf '%s\n' "$PRODUCTION_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          bash scripts/verify-ssh-host-identity.sh \
+            ~/.ssh/known_hosts \
+            "$PRODUCTION_SSH_HOST" \
+            "$PRODUCTION_SSH_HOST_FINGERPRINT"
+
+      - name: Configure bounded nginx avatar ingress
+        env:
+          PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
+          PRODUCTION_SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
+          AURORA_AVATAR_BODY_LIMIT_BYTES: ${{ vars.AVATAR_BODY_LIMIT_BYTES }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          [[ "$AURORA_AVATAR_BODY_LIMIT_BYTES" =~ ^[0-9]+$ ]]
+          (( AURORA_AVATAR_BODY_LIMIT_BYTES >= 10485760 ))
+          (( AURORA_AVATAR_BODY_LIMIT_BYTES <= 11010048 ))
+          ssh -i ~/.ssh/deploy_key \
+            -o StrictHostKeyChecking=yes \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=4 \
+            "${PRODUCTION_SSH_USER}@${PRODUCTION_SSH_HOST}" \
+            "AURORA_AVATAR_BODY_LIMIT_BYTES=${AURORA_AVATAR_BODY_LIMIT_BYTES} bash -s" <<'REMOTE'
+          set -Eeuo pipefail
+          target="$AURORA_AVATAR_BODY_LIMIT_BYTES"
+          [[ "$target" =~ ^[0-9]+$ ]]
+          (( target >= 10485760 && target <= 11010048 ))
+          command -v nginx >/dev/null
+          systemctl is-active --quiet nginx.service
+          mapfile -t candidates < <(grep -RIl \
+            --include='*.conf' \
+            -E 'client_max_body_size[[:space:]]+5505024[[:space:]]*;' \
+            /etc/nginx)
+          if [[ "${#candidates[@]}" -ne 1 ]]; then
+            echo "expected exactly one Aurora 5505024-byte nginx ingress directive" >&2
+            exit 1
+          fi
+          config="${candidates[0]}"
+          matches="$(grep -Ec \
+            'client_max_body_size[[:space:]]+5505024[[:space:]]*;' \
+            "$config")"
+          if [[ "$matches" -ne 1 ]]; then
+            echo "expected exactly one 5505024-byte directive in the Aurora nginx config" >&2
+            exit 1
+          fi
+          backup="${config}.aurora-avatar.$(date -u +%Y%m%dT%H%M%SZ).bak"
+          cp --preserve=all -- "$config" "$backup"
+          sed -E -i \
+            "s/(client_max_body_size[[:space:]]+)5505024([[:space:]]*;)/\\1${target}\\2/" \
+            "$config"
+          if ! nginx -t; then
+            cp --preserve=all -- "$backup" "$config"
+            nginx -t
+            exit 1
+          fi
+          systemctl reload nginx.service
+          nginx -T 2>/dev/null | grep -Eq \
+            "client_max_body_size[[:space:]]+${target}[[:space:]]*;"
+          printf 'AVATAR_INGRESS_OK bytes=%s\n' "$target"
+          REMOTE
