@@ -9,6 +9,10 @@ export function calendarRecordStatus(record: CalendarTeamRecord) {
   return record.calendarStatus || record.status;
 }
 
+export function calendarRecordIsVisible(record: CalendarTeamRecord) {
+  return record.status !== "cancelled" && calendarRecordStatus(record) !== "cancelled";
+}
+
 export function calendarRecordMatches(
   record: CalendarTeamRecord,
   filters: { author: string; status: string },

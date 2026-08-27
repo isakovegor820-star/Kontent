@@ -51,6 +51,13 @@ describe("calendar role-aware interface", () => {
     expect(source).not.toContain("deleteDraftAfterAck");
   });
 
+  it("removes cancelled publications from every calendar view while keeping drafts", () => {
+    const gridStatuses = source.match(/const GRID_STATUSES:[\s\S]*?\n\];/)?.[0] ?? "";
+    expect(source).toContain(".filter(calendarRecordIsVisible)");
+    expect(gridStatuses).not.toContain('"cancelled"');
+    expect(gridStatuses).toContain('"draft"');
+  });
+
   it("contains the seven-column board in its own mobile scroll region", () => {
     expect(source).toContain('"group/day relative min-w-0 flex min-h-[27rem] flex-col');
     expect(source).toContain('"relative min-w-0 rounded-sm border-l-2');

@@ -70,6 +70,7 @@ import {
 import type { ServerDraft } from "@/lib/draft-types";
 import {
   calendarAuthorOptions,
+  calendarRecordIsVisible,
   calendarRecordMatches,
   calendarRecordStatus,
 } from "@/lib/calendar-team-filters";
@@ -146,7 +147,6 @@ const GRID_STATUSES: Post["status"][] = [
   "deleted_external",
   "failed_retry",
   "quarantined",
-  "cancelled",
   "failed",
 ];
 
@@ -1610,7 +1610,7 @@ export default function CalendarPage() {
   );
 
   const allCalendarPosts = useMemo<CalendarPost[]>(
-    () => [...s.realPosts.map(realToPost), ...serverDraftPosts],
+    () => [...s.realPosts.map(realToPost), ...serverDraftPosts].filter(calendarRecordIsVisible),
     [s.realPosts, serverDraftPosts],
   );
   const calendarAuthors = useMemo(() => {
