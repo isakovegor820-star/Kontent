@@ -77,7 +77,6 @@ export type AudienceAssistantStats = {
 };
 
 export type AudienceAssistantCapabilities = {
-  canCreate: boolean;
   canEdit: boolean;
   canSend: boolean;
 };
@@ -152,30 +151,11 @@ function safeKey(value: unknown): string {
   return value;
 }
 
-function safeSource(value: unknown): AudienceInquirySource {
-  if (!AUDIENCE_INQUIRY_SOURCES.includes(value as AudienceInquirySource) || value === "telegram_business") {
-    throw new AudienceAssistantError("invalid_request");
-  }
-  return value as AudienceInquirySource;
-}
-
 function safeStatus(value: unknown): AudienceInquiryStatus {
   if (!AUDIENCE_INQUIRY_STATUSES.includes(value as AudienceInquiryStatus)) {
     throw new AudienceAssistantError("invalid_request");
   }
   return value as AudienceInquiryStatus;
-}
-
-function safeUrl(value: unknown): string | null {
-  const clean = cleanText(value, 2_048);
-  if (!clean) return null;
-  try {
-    const url = new URL(clean);
-    if (url.protocol !== "https:") throw new Error("protocol");
-    return url.toString();
-  } catch {
-    throw new AudienceAssistantError("invalid_request");
-  }
 }
 
 function iso(value: unknown): string {
@@ -295,7 +275,6 @@ export async function listAudienceInquiries(input: {
       highRisk: Number(stats?.high_risk ?? 0),
     },
     capabilities: {
-      canCreate: roleAllows(membership.role, "content.create"),
       canEdit: roleAllows(membership.role, "content.edit"),
       canSend: canDeliverReply,
     },
@@ -319,70 +298,6 @@ export async function getAudienceInquiry(input: {
   );
   if (!inquiry) throw new AudienceAssistantError("not_found");
   return inquiry;
-}
-
-export async function createAudienceInquiry(input: {
-  actorUserId: number;
-  requestKey: unknown;
-  sourceType: unknown;
-  sourceLabel?: unknown;
-  sourceUrl?: unknown;
-  authorName?: unknown;
-  incomingText: unknown;
-  context?: unknown;
-  pool?: TransactionPool;
-}): Promise<{ inquiry: AudienceInquiryRecord; duplicate: boolean }> {
-  const requestKey = safeKey(input.requestKey);
-  const sourceType = safeSource(input.sourceType);
-  const sourceLabel = cleanText(input.sourceLabel, 200);
-  const sourceUrl = safeUrl(input.sourceUrl);
-  const authorName = cleanText(input.authorName, 200);
-  const incomingText = cleanText(input.incomingText, 8_000, true) as string;
-  const context = cleanText(input.context, 4_000);
-  const pool = input.pool ?? getPool();
-  const db = await pool.connect();
-  try {
-    await db.query("begin");
-    const membership = await requireSelectedProjectPermission(db, input.actorUserId, "content.create");
-    await db.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [
-      `audience-inquiry:${membership.projectId}:${requestKey}`,
-    ]);
-    const replay = (await db.query<InquiryRow>(
-      `${INQUIRY_SELECT} where inquiry.project_id = $1 and inquiry.request_key = $2 limit 1`,
-      [membership.projectId, requestKey],
-    )).rows[0];
-    if (replay) {
-      await db.query("commit");
-      return {
-        inquiry: mapInquiry(replay, roleAllows(membership.role, "audience.reply.send")),
-        duplicate: true,
-      };
-    }
-    const inserted = (await db.query<{ id: number | string }>(
-      `insert into bot_client_inquiries (
-         project_id, request_key, source_type, source_label, source_url,
-         author_name, incoming_text, context, created_by_user_id
-       ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-       returning id`,
-      [membership.projectId, requestKey, sourceType, sourceLabel, sourceUrl,
-        authorName, incomingText, context, input.actorUserId],
-    )).rows[0];
-    const inquiry = await selectInquiry(
-      db,
-      membership.projectId,
-      Number(inserted.id),
-      "",
-      roleAllows(membership.role, "audience.reply.send"),
-    );
-    if (!inquiry) throw new AudienceAssistantError("not_found");
-    await db.query("commit");
-    return { inquiry, duplicate: false };
-  } catch (error) {
-    await db.query("rollback").catch(() => undefined);
-    throw error;
-  } finally {
-    db.release();
-  }
 }
 
 export async function updateAudienceInquiry(input: {

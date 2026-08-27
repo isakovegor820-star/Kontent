@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   audienceDeliveryLeaseExpired,
-  createAudienceInquiry,
   deliverAudienceReply,
   listAudienceInquiries,
   updateAudienceInquiry,
@@ -65,39 +64,8 @@ describe("audience assistant", () => {
           canSendViaTelegram: false,
         })],
         stats: { waiting: 2, ready: 1, answered: 4, dismissed: 3, highRisk: 1 },
-        capabilities: { canCreate: true, canEdit: true, canSend: true },
+        capabilities: { canEdit: true, canSend: true },
       });
-  });
-
-  it("creates a manual inbox item idempotently inside the selected project", async () => {
-    const query = vi.fn(async (sql: string) => {
-      if (["begin", "commit", "rollback"].includes(sql)) return { rows: [], rowCount: 0 };
-      if (sql.includes("from user_project_preferences")) return { rows: [membership], rowCount: 1 };
-      if (sql.includes("pg_advisory_xact_lock")) return { rows: [{}], rowCount: 1 };
-      if (sql.includes("inquiry.request_key")) return { rows: [], rowCount: 0 };
-      if (sql.includes("insert into bot_client_inquiries")) return { rows: [{ id: 41 }], rowCount: 1 };
-      if (sql.includes("inquiry.id = $2")) return { rows: [baseRow], rowCount: 1 };
-      throw new Error(`unexpected query: ${sql}`);
-    });
-    const release = vi.fn();
-    const pool = { connect: vi.fn(async () => ({ query, release })) };
-
-    await expect(createAudienceInquiry({
-      actorUserId: 3,
-      requestKey: "audience-inquiry:11111111-1111-4111-8111-111111111111",
-      sourceType: "comment",
-      sourceLabel: "VK · пост о запуске",
-      sourceUrl: "https://example.com/post/1",
-      authorName: "Анна",
-      incomingText: "А сколько это стоит?",
-      context: "Комментарий под анонсом",
-      pool: pool as never,
-    })).resolves.toMatchObject({ duplicate: false, inquiry: { id: 41 } });
-    expect(query).toHaveBeenCalledWith(
-      expect.stringContaining("insert into bot_client_inquiries"),
-      expect.arrayContaining([7, "comment", "А сколько это стоит?"]),
-    );
-    expect(release).toHaveBeenCalledOnce();
   });
 
   it("does not mark an inquiry answered without an actual reply", async () => {

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   ArrowUpRight,
@@ -10,7 +10,6 @@ import {
   CheckCircle2,
   Clipboard,
   MessageCircle,
-  Plus,
   RotateCcw,
   Send,
   ShieldCheck,
@@ -19,7 +18,7 @@ import {
 } from "lucide-react";
 
 import { Button, buttonClassName } from "@/components/ui/button";
-import { Badge, Card, Field, Input, Textarea } from "@/components/ui/primitives";
+import { Badge, Card, Field, Textarea } from "@/components/ui/primitives";
 import type {
   AudienceAssistantCapabilities,
   AudienceAssistantStats,
@@ -44,7 +43,6 @@ const EMPTY_STATS: AudienceAssistantStats = {
 };
 
 const EMPTY_CAPABILITIES: AudienceAssistantCapabilities = {
-  canCreate: false,
   canEdit: false,
   canSend: false,
 };
@@ -79,12 +77,6 @@ const RISK_LABELS: Record<AudienceReplyRisk, string> = {
   medium: "Нужна проверка",
   high: "Высокий риск",
 };
-
-const SELECT_CLASS = cn(
-  "type-input h-12 w-full rounded-xs border border-line bg-surface px-4 text-text",
-  "transition-colors hover:border-line-strong focus:border-brand focus:outline-none",
-  "focus-visible:ring-4 focus-visible:ring-brand/15",
-);
 
 function assistantError(code: string | undefined): string {
   if (code === "version_conflict") return "Обращение изменилось в другой вкладке. Обновите список и повторите.";
@@ -362,8 +354,6 @@ function InquiryCard({
 }
 
 export function AudienceAssistantPanel() {
-  const incomingRef = useRef<HTMLTextAreaElement>(null);
-  const formErrorRef = useRef<HTMLParagraphElement>(null);
   const [inquiries, setInquiries] = useState<AudienceInquiryRecord[]>([]);
   const [stats, setStats] = useState<AudienceAssistantStats>(EMPTY_STATS);
   const [capabilities, setCapabilities] = useState<AudienceAssistantCapabilities | null>(null);
@@ -371,16 +361,7 @@ export function AudienceAssistantPanel() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [statusMessage, setStatusMessage] = useState("");
-  const [busyId, setBusyId] = useState<number | "create" | null>(null);
-  const [formError, setFormError] = useState("");
-  const [incomingError, setIncomingError] = useState("");
-  const [urlError, setUrlError] = useState("");
-  const [sourceType, setSourceType] = useState<Exclude<AudienceInquirySource, "telegram_business">>("comment");
-  const [authorName, setAuthorName] = useState("");
-  const [incomingText, setIncomingText] = useState("");
-  const [sourceLabel, setSourceLabel] = useState("");
-  const [sourceUrl, setSourceUrl] = useState("");
-  const [context, setContext] = useState("");
+  const [busyId, setBusyId] = useState<number | null>(null);
 
   const load = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -414,10 +395,6 @@ export function AudienceAssistantPanel() {
     };
   }, [busyId, load]);
 
-  useEffect(() => {
-    if (formError) formErrorRef.current?.focus();
-  }, [formError]);
-
   const visible = useMemo(() => inquiries.filter((item) => {
     if (view === "waiting") return item.status === "pending" || item.status === "failed";
     if (view === "ready") return item.status === "reply_ready" || item.status === "approved";
@@ -428,62 +405,6 @@ export function AudienceAssistantPanel() {
     setInquiries((current) => current.some((item) => item.id === next.id)
       ? current.map((item) => item.id === next.id ? next : item)
       : [next, ...current]);
-  };
-
-  const createInquiry = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if (!capabilities?.canCreate) return;
-    setFormError("");
-    setIncomingError("");
-    setUrlError("");
-    setStatusMessage("");
-    if (!incomingText.trim()) {
-      setIncomingError("Вставьте текст комментария или сообщения.");
-      incomingRef.current?.focus();
-      return;
-    }
-    if (sourceUrl.trim()) {
-      try {
-        if (new URL(sourceUrl.trim()).protocol !== "https:") throw new Error("protocol");
-      } catch {
-        setUrlError("Введите полную защищённую ссылку, которая начинается с https://");
-        document.getElementById("assistant-source-url")?.focus();
-        return;
-      }
-    }
-    setBusyId("create");
-    try {
-      const result = await json<{ inquiry: AudienceInquiryRecord; duplicate: boolean }>(
-        "/api/audience-assistant",
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            requestKey: `audience-inquiry:${createClientUuid()}`,
-            sourceType,
-            sourceLabel: sourceLabel || null,
-            sourceUrl: sourceUrl || null,
-            authorName: authorName || null,
-            incomingText,
-            context: context || null,
-          }),
-        },
-      );
-      replaceInquiry(result.inquiry);
-      setAuthorName("");
-      setIncomingText("");
-      setSourceLabel("");
-      setSourceUrl("");
-      setContext("");
-      setView("waiting");
-      setStatusMessage(result.duplicate ? "Это обращение уже добавлено." : "Обращение добавлено. Аврора готова подготовить ответ.");
-      await load(true);
-      incomingRef.current?.focus();
-    } catch (error) {
-      setFormError((error as Error).message);
-    } finally {
-      setBusyId(null);
-    }
   };
 
   const generate = async (inquiry: AudienceInquiryRecord) => {
@@ -653,7 +574,7 @@ export function AudienceAssistantPanel() {
               </h3>
               <p className="mx-auto mt-2 max-w-md text-pretty text-[14px] leading-relaxed text-text-3">
                 {view === "waiting"
-                  ? "После подключения бота новые сообщения и комментарии из группы обсуждений появятся здесь автоматически. Ранее отправленные обращения можно добавить справа."
+                  ? "После подключения бота новые сообщения и комментарии из группы обсуждений появятся здесь автоматически."
                   : view === "ready"
                     ? "Выберите новое обращение и попросите Аврору подготовить ответ."
                     : "После ответа отметьте обращение закрытым, чтобы сохранить историю работы."}
@@ -662,113 +583,12 @@ export function AudienceAssistantPanel() {
           )}
         </section>
 
-        <aside className="space-y-4 lg:sticky lg:top-24" aria-labelledby="add-inquiry-heading">
-          <Card className="p-5 md:p-6">
-            <div className="flex items-center gap-3">
-              <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-sm bg-info-soft text-brand" aria-hidden>
-                <Plus className="h-5 w-5" />
-              </span>
-              <div>
-                <h2 id="add-inquiry-heading" className="text-xl font-bold text-text">Добавить входящее</h2>
-                <p className="type-caption mt-0.5 text-text-3">Для площадок без автоматического импорта</p>
-              </div>
-            </div>
-
-            {capabilities == null ? (
-              <p role="status" className="mt-6 text-[14px] text-text-3">Проверяем права проекта…</p>
-            ) : capabilities.canCreate ? (
-            <form className="mt-6 space-y-4" onSubmit={createInquiry} noValidate>
-              {formError && (
-                <p
-                  ref={formErrorRef}
-                  role="alert"
-                  tabIndex={-1}
-                  className="rounded-sm bg-danger-soft px-3 py-2.5 text-[13px] font-semibold text-danger-text outline-none focus-visible:ring-4 focus-visible:ring-danger/15"
-                >
-                  {formError}
-                </p>
-              )}
-              <Field label="Источник" htmlFor="assistant-source">
-                <select
-                  id="assistant-source"
-                  className={SELECT_CLASS}
-                  value={sourceType}
-                  onChange={(event) => setSourceType(event.target.value as Exclude<AudienceInquirySource, "telegram_business">)}
-                >
-                  {(["comment", "direct_message", "support", "review", "other"] as const).map((source) => (
-                    <option key={source} value={source}>{SOURCE_LABELS[source]}</option>
-                  ))}
-                </select>
-              </Field>
-              <Field label="Имя автора" htmlFor="assistant-author" hint="Можно оставить пустым">
-                <Input id="assistant-author" value={authorName} maxLength={200} placeholder="Анна" onChange={(event) => setAuthorName(event.target.value)} />
-              </Field>
-              <Field
-                label="Комментарий или сообщение"
-                htmlFor="assistant-incoming"
-                required
-                error={incomingError || undefined}
-                messageId="assistant-incoming-error"
-              >
-                <Textarea
-                  ref={incomingRef}
-                  id="assistant-incoming"
-                  rows={5}
-                  value={incomingText}
-                  maxLength={8_000}
-                  aria-invalid={Boolean(incomingError) || undefined}
-                  aria-describedby={incomingError ? "assistant-incoming-error" : undefined}
-                  placeholder="Вставьте сообщение человека без изменений"
-                  onChange={(event) => { setIncomingText(event.target.value); setIncomingError(""); setFormError(""); }}
-                />
-              </Field>
-              <details className="rounded-sm bg-surface-inset p-4">
-                <summary className="min-h-11 cursor-pointer py-2 text-[14px] font-semibold text-text">Добавить источник и контекст</summary>
-                <div className="mt-3 space-y-4">
-                  <Field label="Название площадки" htmlFor="assistant-source-label">
-                    <Input id="assistant-source-label" value={sourceLabel} maxLength={200} placeholder="VK · пост о запуске" onChange={(event) => setSourceLabel(event.target.value)} />
-                  </Field>
-                  <Field
-                    label="Ссылка на сообщение"
-                    htmlFor="assistant-source-url"
-                    error={urlError || undefined}
-                    messageId="assistant-source-url-error"
-                  >
-                    <Input
-                      id="assistant-source-url"
-                      type="url"
-                      inputMode="url"
-                      value={sourceUrl}
-                      maxLength={2_048}
-                      placeholder="https://…"
-                      aria-invalid={Boolean(urlError) || undefined}
-                      aria-describedby={urlError ? "assistant-source-url-error" : undefined}
-                      onChange={(event) => { setSourceUrl(event.target.value); setUrlError(""); }}
-                    />
-                  </Field>
-                  <Field label="Контекст" htmlFor="assistant-context" hint="Например, о каком товаре или публикации речь">
-                    <Textarea id="assistant-context" rows={3} value={context} maxLength={4_000} onChange={(event) => setContext(event.target.value)} />
-                  </Field>
-                </div>
-              </details>
-              <Button type="submit" variant="primary" className="w-full" loading={busyId === "create"}>
-                {busyId !== "create" && <Plus className="h-4 w-4" aria-hidden />}
-                Добавить входящее
-              </Button>
-            </form>
-            ) : (
-              <div className="mt-6 flex gap-3 rounded-sm bg-info-soft p-4 text-[13px] leading-relaxed text-info-text">
-                <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-                <p>Добавить входящее может автор, согласующий или владелец проекта. Вы можете просматривать очередь и выполнять доступные вашей роли действия.</p>
-              </div>
-            )}
-          </Card>
-
+        <aside className="space-y-4 lg:sticky lg:top-24" aria-labelledby="telegram-discussion-heading">
           <Card className="p-5 md:p-6">
             <div className="flex gap-3">
               <BellRing className="mt-0.5 h-5 w-5 shrink-0 text-brand" aria-hidden />
               <div>
-                <h3 className="font-bold text-text">Подключите группу Telegram</h3>
+                <h3 id="telegram-discussion-heading" className="font-bold text-text">Подключите группу Telegram</h3>
                 <p className="mt-1 text-[13px] leading-relaxed text-text-3">
                   Добавьте бота Авроры администратором в группу обсуждений канала. Новые сообщения и комментарии появятся здесь автоматически.
                 </p>
