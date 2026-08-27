@@ -174,11 +174,14 @@ describe("POST /api/autopilot/settings", () => {
     expect(mocks.query).not.toHaveBeenCalled();
   });
 
-  it("keeps full-auto locked until two approval streaks", async () => {
+  it("rejects blind full-auto even for legacy clients", async () => {
     const response = await POST(request({ channelId: 22, mode: "full" }));
 
     expect(response.status).toBe(422);
-    await expect(response.json()).resolves.toMatchObject({ ok: false, error: "streak_required" });
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      error: "human_approval_required",
+    });
     expect(mocks.query).not.toHaveBeenCalled();
   });
 

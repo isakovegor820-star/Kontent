@@ -46,6 +46,8 @@ export interface AutopilotApprovalPreview {
   revision: number;
   hash: string;
   channel: { id: number; title: string | null; handle: string | null };
+  expectedCount: number;
+  complete: boolean;
   counts: { total: number; eligible: number; expired: number; blocked: number };
   dates: Array<{ index: number; scheduledAt: string | null }>;
   blockers: Array<{
@@ -91,6 +93,7 @@ export function buildAutopilotApprovalPreview(input: {
   channel: { id: number; title?: string | null; handle?: string | null };
   planId: number;
   planRevision?: number;
+  expectedCount?: number;
   expiresAtMs?: number;
   actor?: "human" | "system";
 }): AutopilotApprovalPreview;

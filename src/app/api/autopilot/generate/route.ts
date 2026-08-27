@@ -267,9 +267,9 @@ export async function POST(req: NextRequest) {
               (project_id, user_id, channel_id, week_start, status, generation_engine,
               generation_post_frequency, expected_post_count, publication_target_count,
               candidate_count, planning_months, planning_weeks, monthly_campaign_plan_id,
-              quick_settings, build_activity_at)
+              quick_settings, build_report, build_activity_at)
              values ($1, $2, $3, current_date, 'building', $4, $5, $6, $6, $7,
-                     $8, $9, $10, $11::jsonb, now())
+                     $8, $9, $10, $11::jsonb, '{"requestedBy":"human"}'::jsonb, now())
              returning id`,
           [
             projectId, user.id, channelId, generationEngine, generationPostFrequency,

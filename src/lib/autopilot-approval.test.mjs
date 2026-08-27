@@ -187,6 +187,47 @@ describe("Autopilot approval policy", () => {
     expect(systemPreview.counts).toEqual({ total: 1, eligible: 0, expired: 0, blocked: 1 });
   });
 
+  it("never offers confirmation until the complete requested set is eligible", () => {
+    const preview = buildAutopilotApprovalPreview({
+      items: [item()],
+      expectedCount: 2,
+      nowMs: NOW,
+      channel: { id: 7, title: "Канал" },
+      planId: 9,
+      actor: "human",
+    });
+
+    expect(preview).toMatchObject({
+      expectedCount: 2,
+      complete: false,
+      requiresConfirmation: false,
+      counts: { total: 1, eligible: 1, expired: 0, blocked: 0 },
+    });
+  });
+
+  it("allows a durable retry for untouched posts without rescheduling completed checkpoints", () => {
+    const preview = buildAutopilotApprovalPreview({
+      items: [
+        item({ i: 0, status: "approved", postId: 71 }),
+        item({ i: 1 }),
+        item({ i: 2 }),
+      ],
+      expectedCount: 3,
+      nowMs: NOW,
+      channel: { id: 7, title: "Канал" },
+      planId: 9,
+      actor: "human",
+    });
+
+    expect(preview).toMatchObject({
+      expectedCount: 3,
+      complete: true,
+      requiresConfirmation: true,
+      counts: { total: 2, eligible: 2, expired: 0, blocked: 0 },
+    });
+    expect(preview.dates.map((entry) => entry.index)).toEqual([1, 2]);
+  });
+
   it("blocks failed quality and empty drafts", () => {
     const result = evaluateAutopilotItem(
       item({

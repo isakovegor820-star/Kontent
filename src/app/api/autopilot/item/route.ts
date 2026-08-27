@@ -1,30 +1,21 @@
-// Д.9 — действие над одним постом плана: одобрить / отклонить / поправить текст.
-// Правка сбрасывает streak (значит план не идеален — полный режим пока рано).
+// Действия над одним постом плана: заменить, отклонить или поправить текст.
+// Одобрение всегда идёт через batch preview/confirm: один пост не может обойти проверку всего плана.
 
 import { readJsonBodyValue } from "@/lib/bounded-request-body";
-import { createHash } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
-import { enqueueAutopilotPost, resolveChannel } from "@/lib/autopilot";
+import { resolveChannel } from "@/lib/autopilot";
 import { getPublishQueue, jobIdForPost } from "@/lib/queue";
 import { normalizePostQuality, type QualityResult } from "@/lib/post-quality.mjs";
 import { assessAutopilotDraft } from "@/lib/autopilot-quality.mjs";
+import { findAutopilotNearDuplicate } from "@/lib/autopilot-config.mjs";
+import { isAutopilotReaderReadyItem } from "@/lib/autopilot-review.mjs";
 import {
-  annotateAutopilotItems,
-  attestAutopilotItemForHumanApproval,
-  evaluateAutopilotItem,
   type ApprovalBlocker,
+  type AutopilotApprovalItem,
 } from "@/lib/autopilot-approval.mjs";
-import {
-  abortAutopilotApproval,
-  AutopilotScheduleBlockedError,
-  claimAutopilotPlan,
-  finalizeAutopilotApproval,
-  reclaimStaleAutopilotApprovals,
-  resolvedAutopilotPlanStatus,
-  scheduleAutopilotItem,
-} from "@/lib/autopilot-scheduling.mjs";
+import { reclaimStaleAutopilotApprovals } from "@/lib/autopilot-scheduling.mjs";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import {
   ProjectAccessError,
@@ -41,6 +32,7 @@ interface PlanItem {
   draft: string;
   status: string;
   postId?: number;
+  draftId?: number;
   sources?: { id: number; text: string }[];
   invented?: string[];
   cited?: number | null;
@@ -48,33 +40,10 @@ interface PlanItem {
   quality?: QualityResult;
   qualityOrigin?: "automatic" | "human_attested";
   approvalBlockers?: ApprovalBlocker[];
-}
-
-const validKey = (value: unknown) => {
-  const key = typeof value === "string" ? value.trim() : "";
-  return /^[A-Za-z0-9._:-]{8,128}$/.test(key) ? key : null;
-};
-
-function projectIdempotencyKey(projectId: number, clientKey: string): string {
-  const prefix = `project:${projectId}:`;
-  if (prefix.length + clientKey.length <= 128) return `${prefix}${clientKey}`;
-  return `${prefix}sha256:${createHash("sha256").update(clientKey).digest("hex")}`;
-}
-
-async function finishApprovalOperation(
-  id: number,
-  projectId: number,
-  userId: number,
-  status: "completed" | "partial" | "failed",
-  result: Record<string, unknown>,
-  httpStatus: number,
-) {
-  await getPool().query(
-    `update autopilot_approval_operations
-        set status = $4, result = $5, http_status = $6, completed_at = now()
-      where id = $1 and project_id = $2 and user_id = $3`,
-    [id, projectId, userId, status, JSON.stringify(result), httpStatus],
-  );
+  news?: unknown;
+  candidateIndex?: number;
+  replacementHistory?: number[];
+  humanAttestation?: AutopilotApprovalItem["humanAttestation"];
 }
 
 export async function PATCH(req: NextRequest) {
@@ -109,18 +78,17 @@ export async function PATCH(req: NextRequest) {
     !Number.isSafeInteger(itemId) || itemId !== index ||
     !Number.isSafeInteger(requestedPlanId) || requestedPlanId <= 0 ||
     !Number.isSafeInteger(requestedRevision) || requestedRevision <= 0 ||
-    !["approve", "reject", "edit"].includes(action)
+    !["approve", "reject", "edit", "replace"].includes(action)
   ) {
     return NextResponse.json({ ok: false, error: "bad_action" }, { status: 422 });
   }
+  if (action === "approve") {
+    return NextResponse.json(
+      { ok: false, error: "plan_approval_required" },
+      { status: 409 },
+    );
+  }
 
-  let claimedApproval: {
-    planId: number;
-    projectId: number;
-    userId: number;
-    channelId: number;
-    operationId: number;
-  } | null = null;
   try {
     const pool = getPool();
     const permission = action === "edit" ? "content.edit" : "content.publish";
@@ -136,7 +104,13 @@ export async function PATCH(req: NextRequest) {
     // План ищем в пределах канала: иначе, открыв план канала Б, человек правил бы более
     // свежий план канала А — тот же список на экране, чужие посты в базе.
     const plan = (
-      await pool.query<{ id: number; items: PlanItem[]; channel_id: number; status: string; revision: number }>(
+      await pool.query<{
+        id: number;
+        items: PlanItem[];
+        channel_id: number;
+        status: string;
+        revision: number;
+      }>(
         `select id, items, channel_id, status, revision from autopilot_plan
           where project_id = $1 and channel_id = $2 and id = $3 and revision = $4
             and status in ('pending', 'approved')`,
@@ -152,222 +126,93 @@ export async function PATCH(req: NextRequest) {
       await requireProjectPermission(pool, user.id, projectId, "content.publish");
     }
 
-    if (action === "approve") {
-      const idempotencyKey = validKey(body.idempotencyKey);
-      if (!idempotencyKey) {
-        return NextResponse.json({ ok: false, error: "bad_confirmation" }, { status: 422 });
+    if (action === "replace") {
+      if (it.postId || it.status !== "pending") {
+        return NextResponse.json({ ok: false, error: "item_unavailable" }, { status: 409 });
       }
-      const scopedIdempotencyKey = projectIdempotencyKey(projectId, idempotencyKey);
-
-      const replay = (
-        await pool.query<{
-          channel_id: number;
-          plan_id: number | null;
-          request_snapshot: { index?: number; planRevision?: number };
-          result: Record<string, unknown> | null;
-          http_status: number;
-        }>(
-          `select channel_id, plan_id, request_snapshot, result, http_status
-             from autopilot_approval_operations
-            where project_id = $1 and user_id = $2 and idempotency_key = $3`,
-          [projectId, user.id, scopedIdempotencyKey],
+      const candidateRow = (
+        await pool.query<{ candidate_items: PlanItem[] }>(
+          `select candidate_items from autopilot_plan
+            where id = $1 and project_id = $2 and channel_id = $3 and revision = $4
+              and status = 'pending'`,
+          [plan.id, projectId, plan.channel_id, requestedRevision],
         )
       ).rows[0];
-      if (replay) {
-        if (
-          Number(replay.channel_id) !== Number(plan.channel_id) ||
-          Number(replay.plan_id) !== Number(plan.id) ||
-          Number(replay.request_snapshot?.index) !== index ||
-          Number(replay.request_snapshot?.planRevision) !== requestedRevision
-        ) {
-          return NextResponse.json({ ok: false, error: "idempotency_conflict" }, { status: 409 });
-        }
-        if (replay.result) {
-          return NextResponse.json(replay.result, { status: replay.http_status });
-        }
-        return NextResponse.json({ ok: false, error: "approval_in_progress" }, { status: 409 });
-      }
-
-      const operation = await pool.query<{ id: number }>(
-        `insert into autopilot_approval_operations
-           (project_id, user_id, channel_id, plan_id, idempotency_key, actor_type, status, request_snapshot)
-         values ($1, $2, $3, $4, $5, 'web', 'processing', $6)
-         on conflict do nothing
-         returning id`,
-        [
-          projectId,
-          user.id,
-          plan.channel_id,
-          plan.id,
-          scopedIdempotencyKey,
-          JSON.stringify({
-            channelId: plan.channel_id,
-            planId: plan.id,
-            planRevision: requestedRevision,
-            index,
-          }),
-        ],
+      const candidates = Array.isArray(candidateRow?.candidate_items)
+        ? candidateRow.candidate_items
+        : [];
+      const usedCandidateIndexes = new Set(
+        items.map((entry) => Number(entry.candidateIndex ?? entry.i)),
       );
-      if (!operation.rowCount) {
-        return NextResponse.json({ ok: false, error: "approval_in_progress" }, { status: 409 });
+      const rejectedCandidateIndexes = new Set(
+        items.flatMap((entry) => Array.isArray(entry.replacementHistory)
+          ? entry.replacementHistory.map(Number)
+          : []),
+      );
+      rejectedCandidateIndexes.add(Number(it.candidateIndex ?? it.i));
+      const otherItems = items
+        .filter((entry) => entry !== it)
+        .map((entry) => ({ topic: entry.topic, draft: entry.draft }));
+      const replacement = candidates
+        .filter((candidate) => {
+          const candidateIndex = Number(candidate.i);
+          return Number.isSafeInteger(candidateIndex) &&
+            !usedCandidateIndexes.has(candidateIndex) &&
+            !rejectedCandidateIndexes.has(candidateIndex) &&
+            isAutopilotReaderReadyItem(candidate) &&
+            !findAutopilotNearDuplicate(candidate, otherItems);
+        })
+        .sort((left, right) =>
+          Number(Boolean(right.news) === Boolean(it.news)) -
+            Number(Boolean(left.news) === Boolean(it.news)) ||
+          Number(right.quality?.score || 0) - Number(left.quality?.score || 0) ||
+          Number(left.i) - Number(right.i),
+        )[0];
+      if (!replacement) {
+        return NextResponse.json(
+          { ok: false, error: "replacement_unavailable" },
+          { status: 409 },
+        );
       }
-      const operationId = Number(operation.rows[0].id);
 
-      // Serialize item approvals through the plan row. The exact user/channel predicate is
-      // repeated here so a stale UI cannot claim another channel's plan by id.
-      const claim = await claimAutopilotPlan(pool, {
-        planId: plan.id,
-        projectId,
-        userId: user.id,
-        channelId: plan.channel_id,
-        operationId,
-        allowedStatuses: ["pending", "approved"],
-        expectedRevision: requestedRevision,
-      }) as { items: PlanItem[]; channel_id: number } | null;
-      if (!claim) {
-        const result = { ok: false, error: "approval_in_progress", retryable: true };
-        await finishApprovalOperation(operationId, projectId, user.id, "failed", result, 409);
-        return NextResponse.json(result, { status: 409 });
-      }
-      const approvalContext = {
-        planId: plan.id,
-        projectId,
-        userId: user.id,
-        channelId: Number(plan.channel_id),
-        operationId,
+      const candidateIndex = Number(replacement.i);
+      const replacementHistory = [
+        ...(Array.isArray(it.replacementHistory) ? it.replacementHistory.map(Number) : []),
+        Number(it.candidateIndex ?? it.i),
+      ].filter((value, position, values) =>
+        Number.isSafeInteger(value) && value >= 0 && values.indexOf(value) === position,
+      );
+      const nextItem: PlanItem = {
+        ...replacement,
+        i: it.i,
+        candidateIndex,
+        replacementHistory,
+        scheduledAt: it.scheduledAt,
+        status: "pending",
       };
-      claimedApproval = approvalContext;
+      delete nextItem.postId;
+      delete nextItem.draftId;
+      delete nextItem.humanAttestation;
+      delete nextItem.approvalBlockers;
+      items.splice(items.indexOf(it), 1, nextItem);
 
-      const approvalTime = Date.now();
-      const claimedItems = claim.items.map((entry) =>
-        entry.i === index
-          ? attestAutopilotItemForHumanApproval(entry, {
-              userId: user.id,
-              attestedAt: new Date(approvalTime).toISOString(),
-            })
-          : entry,
+      const saved = await pool.query<{ revision: number }>(
+        `update autopilot_plan
+            set items = $5::jsonb, edited = true, revision = revision + 1
+          where id = $1 and project_id = $2 and channel_id = $3 and revision = $4
+            and status = 'pending'
+          returning revision`,
+        [plan.id, projectId, plan.channel_id, requestedRevision, JSON.stringify(items)],
       );
-      const claimedItem = claimedItems.find((entry) => entry.i === index);
-      if (!claimedItem) {
-        const result = { ok: false, error: "no_item" };
-        await finalizeAutopilotApproval({
-          pool,
-          ...approvalContext,
-          items: claimedItems,
-          planStatus: resolvedAutopilotPlanStatus(claimedItems),
-          operationStatus: "failed",
-          result,
-          httpStatus: 404,
-        });
-        claimedApproval = null;
-        return NextResponse.json(result, { status: 404 });
+      if (saved.rowCount !== 1) {
+        return NextResponse.json({ ok: false, error: "stale_plan" }, { status: 409 });
       }
-
-      const evaluation = evaluateAutopilotItem(claimedItem, approvalTime);
-      const safeItems = annotateAutopilotItems(claimedItems, approvalTime) as PlanItem[];
-      const safeItem = safeItems.find((entry) => entry.i === index)!;
-      if (!evaluation.actionable) {
-        const unresolved = safeItems.some(
-          (entry) => entry.status === "pending" || entry.status === "expired",
-        );
-        const result = { ok: true, already: true, postId: safeItem.postId ?? null };
-        await finalizeAutopilotApproval({
-          pool,
-          ...approvalContext,
-          items: safeItems,
-          planStatus: unresolved ? "pending" : "approved",
-          operationStatus: "completed",
-          result,
-          httpStatus: 200,
-        });
-        claimedApproval = null;
-        return NextResponse.json(result);
-      }
-      if (!evaluation.eligible || !evaluation.scheduledAt) {
-        const nextStatus = safeItems.some(
-          (entry) => entry.status === "pending" || entry.status === "expired",
-        )
-          ? "pending"
-          : "approved";
-        const result = {
-          ok: false,
-          error: "approval_blocked",
-          status: safeItem.status,
-          blockers: evaluation.blockers.map((entry) => entry.message),
-          blockerDetails: evaluation.blockers,
-        };
-        await finalizeAutopilotApproval({
-          pool,
-          ...approvalContext,
-          items: safeItems,
-          planStatus: nextStatus,
-          operationStatus: "completed",
-          result,
-          httpStatus: 422,
-        });
-        claimedApproval = null;
-        return NextResponse.json(result, { status: 422 });
-      }
-
-      try {
-        const checkpoint = await scheduleAutopilotItem({
-          pool,
-          enqueue: enqueueAutopilotPost,
-          planId: plan.id,
-          projectId,
-          userId: user.id,
-          channelId: Number(claim.channel_id),
-          operationId,
-          index,
-          approvedItem: claimedItem,
-          nowMs: approvalTime,
-        });
-        safeItem.postId = checkpoint.postId;
-        safeItem.status = "approved";
-        const unresolved = safeItems.some(
-          (entry) => entry.status === "pending" || entry.status === "expired",
-        );
-        const result = {
-          ok: true,
-          postId: safeItem.postId,
-          scheduledAt: checkpoint.scheduledAt,
-          reconciliationPending: checkpoint.queuePending,
-        };
-        await finalizeAutopilotApproval({
-          pool,
-          ...approvalContext,
-          items: safeItems,
-          planStatus: unresolved ? "pending" : "approved",
-          operationStatus: "completed",
-          result,
-          httpStatus: 200,
-        });
-        claimedApproval = null;
-        return NextResponse.json(result);
-      } catch (error) {
-        const blocked = error instanceof AutopilotScheduleBlockedError;
-        const result = blocked
-          ? {
-              ok: false,
-              error: "approval_blocked",
-              retryable: false,
-              blockers: error.blockers.map((entry: { message?: string }) => entry.message).filter(Boolean),
-              blockerDetails: error.blockers,
-            }
-          : { ok: false, error: "scheduling_failed", retryable: true };
-        await finalizeAutopilotApproval({
-          pool,
-          ...approvalContext,
-          items: safeItems,
-          planStatus: "pending",
-          operationStatus: "failed",
-          result,
-          httpStatus: blocked ? 422 : 503,
-        });
-        claimedApproval = null;
-        console.error("[/api/autopilot/item] checkpoint", error);
-        return NextResponse.json(result, { status: blocked ? 422 : 503 });
-      }
+      return NextResponse.json({
+        ok: true,
+        revision: Number(saved.rows[0].revision),
+        index,
+        topic: nextItem.topic,
+      });
     }
 
     let edited = false;
@@ -542,14 +387,6 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
     }
     console.error("[/api/autopilot/item]", err);
-    if (claimedApproval) {
-      await abortAutopilotApproval({
-        pool: getPool(),
-        ...claimedApproval,
-        result: { ok: false, error: "server", retryable: true },
-        httpStatus: 500,
-      }).catch(() => {});
-    }
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
 }

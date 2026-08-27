@@ -197,7 +197,9 @@ export async function GET(req: NextRequest) {
       : null;
     const publicSettings = {
       enabled: settings.enabled,
-      mode: settings.mode,
+      // Calendar mutation always requires an explicit human confirmation. Keep the legacy
+      // database value private so an old `full` row cannot re-enable blind scheduling.
+      mode: "confirm",
       post_frequency: settings.post_frequency,
       approvals_streak: settings.approvals_streak,
       generation_engine: settings.generation_engine,

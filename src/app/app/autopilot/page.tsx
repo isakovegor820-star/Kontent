@@ -7,7 +7,6 @@
 import { useCallback, useEffect, useId, useRef, useState, type CSSProperties } from "react";
 import Image from "next/image";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { useReducedMotion } from "motion/react";
 import {
   AlertTriangle,
@@ -98,6 +97,7 @@ interface PlanItem {
   reviewRequired?: boolean;
   reviewState?: "semantic_only_review" | "editorial_review" | "quality_review";
   reviewReason?: string;
+  postId?: number;
   draftId?: number;
 }
 interface Settings {
@@ -1098,7 +1098,6 @@ function BuildAttemptPanel({
 
 export default function AutopilotPage() {
   const s = useStore();
-  const router = useRouter();
   const reduce = useReducedMotion();
   const [data, setData] = useState<State | null>(null);
   const [overviewStats, setOverviewStats] = useState<OverviewStats | null>(null);
@@ -1108,8 +1107,10 @@ export default function AutopilotPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [autopilotToggleBusy, setAutopilotToggleBusy] = useState(false);
-  const [editorBusyIndex, setEditorBusyIndex] = useState<number | null>(null);
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [editingText, setEditingText] = useState("");
   const [expanded, setExpanded] = useState<number | null>(null); // какая карточка раскрыта целиком
+  const [reviewedIndexes, setReviewedIndexes] = useState<Set<number>>(() => new Set());
   const [quickSettingsOpen, setQuickSettingsOpen] = useState(false);
   const [planSettingsSaving, setPlanSettingsSaving] = useState(false);
   const [planSettingsError, setPlanSettingsError] = useState<string | null>(null);
@@ -1126,6 +1127,7 @@ export default function AutopilotPage() {
     title: string;
     description: string;
   } | null>(null);
+  const [cancelBuildConfirmation, setCancelBuildConfirmation] = useState(false);
   const loadSequence = useRef(0);
   const loadAbort = useRef<AbortController | null>(null);
   const activePlanIdentity = useRef<string | null>(null);
@@ -1185,7 +1187,14 @@ export default function AutopilotPage() {
       const nextPlanIdentity = usablePlan
         ? `${d.channelId}:${usablePlan.id}:${usablePlan.revision}`
         : null;
-      if (activePlanIdentity.current !== nextPlanIdentity) setVisibleLimit(14);
+      if (activePlanIdentity.current !== nextPlanIdentity) {
+        setVisibleLimit(14);
+        // A confirmation belongs to the exact plan revision the person actually read.
+        // Editing or replacing even one post invalidates the previous review checklist.
+        setReviewedIndexes(new Set());
+        setEditingIndex(null);
+        setEditingText("");
+      }
       activePlanIdentity.current = nextPlanIdentity;
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
@@ -1204,7 +1213,8 @@ export default function AutopilotPage() {
       setLoading(true);
       setData(null);
       setLoadError(null);
-      setEditorBusyIndex(null);
+      setEditingIndex(null);
+      setEditingText("");
       setExpanded(null);
       activePlanIdentity.current = null;
       void load();
@@ -1649,6 +1659,25 @@ export default function AutopilotPage() {
 
   const approveAll = async () => {
     if (approvalBusy.current) return;
+    const currentPlan = data?.activePlan ?? data?.plan;
+    const reviewable = currentPlan?.items.filter((item) => item.status === "pending") ?? [];
+    const scheduledCheckpoints = currentPlan?.items.filter((item) =>
+      Boolean(item.postId) && ["approved", "published"].includes(item.status),
+    ).length ?? 0;
+    const reviewComplete = Boolean(
+      currentPlan &&
+      reviewable.length > 0 &&
+      reviewable.length + scheduledCheckpoints === currentPlan.publicationTargetCount &&
+      reviewable.every((item) => reviewedIndexes.has(item.i)),
+    );
+    if (!reviewComplete) {
+      s.toast({
+        kind: "info",
+        title: "Сначала проверь весь план",
+        body: `Отметь каждый из ${reviewable.length} оставшихся постов после просмотра текста. До этого календарь не изменится.`,
+      });
+      return;
+    }
     approvalBusy.current = true;
     setBusy(true);
     try {
@@ -1676,7 +1705,15 @@ export default function AutopilotPage() {
       if (!preview.token) {
         throw new Error("Не получено подтверждение предварительного просмотра");
       }
-      if (preview.counts.eligible > 0 && !(await requestApprovalConfirmation(preview))) return;
+      if (!preview.complete) {
+        s.toast({
+          kind: "info",
+          title: "План ещё не готов целиком",
+          body: `Готово ${preview.counts.eligible} из ${preview.expectedCount}. Ничего не добавлено в календарь. Исправь или замени проблемные посты.`,
+        });
+        return;
+      }
+      if (!(await requestApprovalConfirmation(preview))) return;
 
       const previous = approvalAttempt.current;
       const idempotencyKey =
@@ -1735,6 +1772,13 @@ export default function AutopilotPage() {
             body: "Ничего не поставлено в очередь. План уже обрабатывается или больше не доступен.",
           });
         }
+      } else if (result?.error === "incomplete_plan") {
+        s.toast({
+          kind: "info",
+          title: "План изменился и снова требует проверки",
+          body: "Ничего не добавлено в календарь. Проверь актуальные версии всех постов.",
+        });
+        setReviewedIndexes(new Set());
       } else if (result?.ok) {
         const skipped = Number(result.blocked || 0) + Number(result.expired || 0);
         s.toast({
@@ -1794,7 +1838,6 @@ export default function AutopilotPage() {
         planId: plan.id,
         planRevision: plan.revision,
         itemId: index,
-        idempotencyKey: action === "approve" ? `item-${crypto.randomUUID()}` : undefined,
       }),
     }).catch(() => null);
     const result = (await r?.json().catch(() => null)) as
@@ -1807,84 +1850,26 @@ export default function AutopilotPage() {
         }
       | null;
     if (activePlanIdentity.current !== identity) return;
-    if (result?.error === "approval_blocked") {
-      s.toast({
-        kind: "danger",
-        title: "Пост нельзя поставить в очередь",
-        body: result.blockers?.[0] ?? "Выбери новую дату, исправь замечания или пересобери план.",
-      });
-    } else if (result?.error === "scheduling_failed") {
-      s.toast({
-        kind: "danger",
-        title: "Не удалось добавить пост в календарь",
-        body: "Пост не создан. Обнови план и безопасно повтори.",
-      });
-    } else if (result?.error === "stale_plan") {
+    if (result?.error === "stale_plan") {
       s.toast({
         kind: "info",
         title: "План уже изменился",
         body: "Обновил карточки. Повтори действие для актуальной версии плана.",
       });
-    } else if (result?.ok && action === "approve") {
+    } else if (result?.error === "replacement_unavailable") {
+      s.toast({
+        kind: "info",
+        title: "Запасные варианты закончились",
+        body: "Собери новый план — готовые публикации в календаре при этом не изменятся.",
+      });
+    } else if (result?.ok && action === "replace") {
       s.toast({
         kind: "success",
-        title: "Пост добавлен в календарь",
-        body: result.reconciliationPending
-          ? "Дата сохранена. Отправку в очередь Аврора повторит автоматически."
-          : "Он выйдет в запланированное время.",
+        title: "Пост заменён",
+        body: "Проверь новый текст. После замены весь актуальный план требует подтверждения заново.",
       });
     }
     await Promise.all([load(), s.refreshReal()]);
-  };
-
-  const openEditor = async (item: PlanItem) => {
-    const plan = data?.activePlan ?? data?.plan;
-    const channelId = data?.channelId;
-    if (!plan || !channelId || channelId !== chId || editorBusyIndex != null) return;
-    setEditorBusyIndex(item.i);
-    try {
-      const response = await fetch("/api/autopilot/item/draft", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          channelId,
-          planId: plan.id,
-          planRevision: plan.revision,
-          index: item.i,
-        }),
-      });
-      const result = (await response.json().catch(() => null)) as
-        | { ok?: boolean; error?: string; draftId?: number }
-        | null;
-      if (response.ok && result?.ok && Number.isSafeInteger(result.draftId)) {
-        const params = new URLSearchParams({
-          draft: String(result.draftId),
-          channel: String(channelId),
-          from: "autopilot",
-        });
-        router.push(`/app/composer?${params.toString()}`);
-        return;
-      }
-      const copy: Record<string, string> = {
-        stale_plan: "План уже изменился. Обновляю карточки — открой редактор ещё раз.",
-        item_unavailable: "Этот пост уже обработан и больше не доступен для правки.",
-        empty_draft: "В этом посте пока нет текста для редактора.",
-      };
-      s.toast({
-        kind: "danger",
-        title: "Не удалось открыть редактор",
-        body: copy[result?.error ?? ""] ?? "Проверь подключение и повтори.",
-      });
-      await load();
-    } catch {
-      s.toast({
-        kind: "danger",
-        title: "Не удалось открыть редактор",
-        body: "Проверь подключение и повтори.",
-      });
-    } finally {
-      setEditorBusyIndex(null);
-    }
   };
 
   if (loading) {
@@ -2000,16 +1985,23 @@ export default function AutopilotPage() {
   const reviewPending = pending.filter(
     (item) => !item.draftId && isAutopilotHumanReviewItem(item),
   );
-  const readyPending = pending.filter(
-    (item) => !item.draftId && canApproveItem(item) && !isAutopilotHumanReviewItem(item),
-  );
-  const canOfferFull = st.approvals_streak >= 2 && st.mode !== "full";
-
   // Отсортированный по времени список для ленты недели и карточек.
   const visible = [...items]
     .sort((a, b) => new Date(a.scheduledAt).getTime() - new Date(b.scheduledAt).getTime());
   const hasUsablePlan = Boolean(plan && visible.length > 0);
   const attentionItems = visible.filter((item) => item.status === "pending");
+  const scheduledPlanCheckpoints = planItems.filter((item) =>
+    Boolean(item.postId) && ["approved", "published"].includes(item.status),
+  ).length;
+  const reviewedCount = attentionItems.filter((item) => reviewedIndexes.has(item.i)).length;
+  const planReviewComplete = Boolean(
+    plan &&
+    attentionItems.length > 0 &&
+    attentionItems.length + scheduledPlanCheckpoints === plan.publicationTargetCount &&
+    attentionItems.every((item) =>
+      reviewedIndexes.has(item.i) && !item.draftId && canApproveItem(item),
+    ),
+  );
   const plannedCount = plannedPostCountForWeeks(st.post_frequency, planningWeeks);
   const generationWorkCount = autopilotCandidateCount(plannedCount);
   const plannedDuration = fmtBuildEstimate(estimateAutopilotBuildMinutes(generationWorkCount));
@@ -2210,28 +2202,18 @@ export default function AutopilotPage() {
         onCancel={() => settleApprovalConfirmation(false)}
       />
 
-      {/* Предложение полного режима после 2 недель без правок */}
-      {canOfferFull && (
-        <div className="mt-5 flex items-start gap-3 rounded-lg bg-info-soft p-4">
-          <Sparkles className="mt-0.5 h-5 w-5 shrink-0 text-brand" aria-hidden />
-          <div className="flex-1">
-            <p className="text-[14px] font-semibold text-text">
-              Ты 2 недели одобрял планы без правок — можно доверить полностью
-            </p>
-            <p className="mt-1 text-[13px] text-text-2">
-              В полном режиме посты будут выходить без твоего подтверждения. В любой момент вернёшь.
-            </p>
-            <div className="mt-3">
-              <Link
-                href={`/app/settings${chId ? `?channel=${chId}` : ""}`}
-                className={buttonClassName({ size: "sm", variant: "brand" })}
-              >
-                Проверить и включить в настройках
-              </Link>
-            </div>
-          </div>
-        </div>
-      )}
+      <ConfirmDialog
+        open={cancelBuildConfirmation}
+        title="Остановить текущую сборку?"
+        description="Готовые тексты сохранятся, но недостающие посты перестанут собираться. Новые публикации в календарь не добавятся."
+        confirmLabel="Остановить сборку"
+        confirmVariant="danger"
+        onConfirm={() => {
+          setCancelBuildConfirmation(false);
+          void cancelBuild();
+        }}
+        onCancel={() => setCancelBuildConfirmation(false)}
+      />
 
       {/* Состояние новой сборки не заменяет пригодный план. */}
       {buildAttempt && (
@@ -2242,7 +2224,7 @@ export default function AutopilotPage() {
             reducedMotion={reduce}
             onContinue={() => void continueBuild()}
             onRestart={() => void generate()}
-            onCancel={() => void cancelBuild()}
+            onCancel={() => setCancelBuildConfirmation(true)}
             channelId={chId}
           />
         </div>
@@ -2282,10 +2264,17 @@ export default function AutopilotPage() {
                 {editorPending.length > 0 ? ` · ${editorPending.length} в редакторе` : ""}
               </p>
             </div>
-            {readyPending.length > 0 && (
-              <Button variant="primary" onClick={approveAll} loading={busy} disabled={busy}>
+            {attentionItems.length > 0 && (
+              <Button
+                variant="primary"
+                onClick={approveAll}
+                loading={busy}
+                disabled={busy || !planReviewComplete}
+              >
                 <Check className="h-[18px] w-[18px]" strokeWidth={2.5} aria-hidden />
-                Одобрить готовые
+                {planReviewComplete
+                  ? `Одобрить ${attentionItems.length} и добавить в календарь`
+                  : `Проверено ${reviewedCount} из ${attentionItems.length}`}
               </Button>
             )}
           </div>
@@ -2293,6 +2282,7 @@ export default function AutopilotPage() {
           <ul className="mt-4 space-y-3">
             {renderedAttentionItems.map((it) => {
               const isOpen = expanded === it.i;
+              const reviewed = reviewedIndexes.has(it.i);
               return (
                 <li key={it.i} id={`autopilot-plan-item-${it.i}`}>
                   <Card as="article" className="overflow-hidden p-0">
@@ -2320,7 +2310,9 @@ export default function AutopilotPage() {
                           </span>
                         </span>
                       </span>
-                      {it.draftId ? (
+                      {reviewed ? (
+                        <Badge tone="success">проверен</Badge>
+                      ) : it.draftId ? (
                         <Badge tone="brand">в редакторе</Badge>
                       ) : isAutopilotHumanReviewItem(it) ? (
                         <Badge tone="brand">на согласовании</Badge>
@@ -2341,7 +2333,25 @@ export default function AutopilotPage() {
                     </button>
 
                     <div className="px-4 pb-4">
-                      <PostPreview text={it.draft} expanded={isOpen} />
+                      {editingIndex === it.i ? (
+                        <div className="mt-1">
+                          <label htmlFor={`autopilot-edit-${it.i}`} className="text-[13px] font-semibold text-text">
+                            Текст поста
+                          </label>
+                          <textarea
+                            id={`autopilot-edit-${it.i}`}
+                            value={editingText}
+                            onChange={(event) => setEditingText(event.target.value)}
+                            rows={12}
+                            className="mt-2 w-full resize-y rounded-md border border-line bg-surface px-3 py-2 text-[14px] leading-relaxed text-text outline-none focus-visible:border-brand focus-visible:ring-2 focus-visible:ring-brand/20"
+                          />
+                          <p className="mt-1 text-[12px] text-text-3">
+                            После сохранения Аврора заново проверит качество, а весь план потребуется просмотреть ещё раз.
+                          </p>
+                        </div>
+                      ) : (
+                        <PostPreview text={it.draft} expanded={isOpen} />
+                      )}
 
                       {it.draftId && (
                         <div className="mt-3">
@@ -2373,30 +2383,80 @@ export default function AutopilotPage() {
                       )}
 
                       <div className="mt-3 flex flex-wrap gap-2">
-                        {!it.draftId && (
+                        {!it.draftId && canApproveItem(it) && (
                           <Button
                             size="sm"
-                            variant="secondary"
-                            disabled={!canApproveItem(it)}
-                            onClick={() => itemAction(it.i, "approve")}
+                            variant={reviewed ? "primary" : "secondary"}
+                            aria-pressed={reviewed}
+                            onClick={() => setReviewedIndexes((current) => {
+                              const next = new Set(current);
+                              if (next.has(it.i)) next.delete(it.i);
+                              else next.add(it.i);
+                              return next;
+                            })}
                           >
                             <Check className="h-4 w-4" aria-hidden />
-                            Одобрить
+                            {reviewed ? "Проверен" : "Подтвердить просмотр"}
                           </Button>
+                        )}
+                        {!it.draftId && editingIndex !== it.i && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            disabled={busy || editingIndex != null}
+                            onClick={() => {
+                              setEditingIndex(it.i);
+                              setEditingText(it.draft);
+                              setReviewedIndexes((current) => {
+                                const next = new Set(current);
+                                next.delete(it.i);
+                                return next;
+                              });
+                            }}
+                          >
+                            <Pencil className="h-4 w-4" aria-hidden />
+                            Редактировать
+                          </Button>
+                        )}
+                        {editingIndex === it.i && (
+                          <>
+                            <Button
+                              size="sm"
+                              variant="primary"
+                              loading={busy}
+                              disabled={busy || !editingText.trim() || editingText.trim() === it.draft.trim()}
+                              onClick={() => {
+                                setBusy(true);
+                                void itemAction(it.i, "edit", editingText).finally(() => {
+                                  setBusy(false);
+                                  setEditingIndex(null);
+                                  setEditingText("");
+                                });
+                              }}
+                            >
+                              Сохранить и проверить
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              disabled={busy}
+                              onClick={() => {
+                                setEditingIndex(null);
+                                setEditingText("");
+                              }}
+                            >
+                              Отмена
+                            </Button>
+                          </>
                         )}
                         <Button
                           size="sm"
                           variant="ghost"
-                          loading={editorBusyIndex === it.i}
-                          disabled={editorBusyIndex != null}
-                          onClick={() => void openEditor(it)}
+                          disabled={busy || editingIndex != null}
+                          onClick={() => itemAction(it.i, "replace")}
                         >
-                          <Pencil className="h-4 w-4" aria-hidden />
-                          Открыть в редакторе
-                        </Button>
-                        <Button size="sm" variant="ghost" onClick={() => itemAction(it.i, "reject")}>
-                          <X className="h-4 w-4" aria-hidden />
-                          Убрать
+                          <RefreshCw className="h-4 w-4" aria-hidden />
+                          Заменить пост
                         </Button>
                       </div>
                     </div>

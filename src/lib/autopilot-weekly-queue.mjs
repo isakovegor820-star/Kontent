@@ -82,7 +82,7 @@ function recoveryDescriptor(row, { force = false, nowMs = Date.now() } = {}) {
     : {};
   const recoveryJobId = String(recovery.jobId || "").toLowerCase();
   if (
-    row?.enabled !== true ||
+    (row?.enabled !== true && report.requestedBy !== "human") ||
     !isAutopilotAutoRecoveryStrategy(row?.repair_strategy || report.primaryFix) ||
     !UUID.test(recoveryJobId)
   ) return null;
@@ -97,7 +97,8 @@ async function ensurePartialRecoveryState(pool, row, { force = false, nowMs = Da
     return { ...row, descriptor: existing };
   }
   if (
-    row?.status !== "partial" || row?.enabled !== true ||
+    row?.status !== "partial" ||
+    (row?.enabled !== true && row?.build_report?.requestedBy !== "human") ||
     !isAutopilotAutoRecoveryStrategy(row?.repair_strategy || row?.build_report?.primaryFix)
   ) return null;
   const buildReport = autopilotAutoRecoveryReport(row.build_report, {
@@ -129,7 +130,11 @@ async function ensurePartialRecoveryState(pool, row, { force = false, nowMs = Da
     )
   ).rows[0];
   if (!updated) return null;
-  const prepared = { ...row, ...updated, enabled: true };
+  const prepared = {
+    ...row,
+    ...updated,
+    enabled: row?.enabled === true || updated?.build_report?.requestedBy === "human",
+  };
   return { ...prepared, descriptor: recoveryDescriptor(prepared, { force, nowMs }) };
 }
 
@@ -225,7 +230,8 @@ export async function reconcileBuildingAutopilotPlans({ pool, queue, limit = 250
         where (
              plan.status = 'building'
            or (
-             plan.status = 'partial' and settings.enabled = true
+             plan.status = 'partial'
+             and (settings.enabled = true or plan.build_report->>'requestedBy' = 'human')
              and plan.repair_strategy in ('deterministic_format', 'provider_retry', 'rewrite')
            )
         )

@@ -116,15 +116,19 @@ describe("Autopilot build UI contract", () => {
     expect(source).toContain("growthMoveId,");
   });
 
-  it("shows only reader-ready publication states instead of validator diagnostics", () => {
+  it("requires an explicit review of every reader-ready post before calendar approval", () => {
     expect(source).toContain("готов к просмотру");
     expect(source).toContain("на согласовании");
     expect(source).toContain("isAutopilotReaderReadyItem(item)");
     expect(source).not.toContain("Источники и контекст");
-    expect(source).toContain("Открыть в редакторе");
-    expect(source).toContain('from: "autopilot"');
-    expect(source).toContain("!isAutopilotHumanReviewItem(item)");
-    expect(source).toContain("!item.draftId && canApproveItem(item)");
+    expect(source).toContain("reviewedIndexes");
+    expect(source).toContain("Подтвердить просмотр");
+    expect(source).toContain("attentionItems.length + scheduledPlanCheckpoints === plan.publicationTargetCount");
+    expect(source).toContain("добавить в календарь");
+    expect(source).toContain("Проверено ${reviewedCount} из");
+    expect(source).toContain("Редактировать");
+    expect(source).toContain("Сохранить и проверить");
+    expect(source).toContain("Заменить пост");
     expect(source).toContain("Поставь пост в календарь оттуда");
     expect(source).toContain("max-w-[68ch]");
     expect(source).not.toContain("нужна правка");
@@ -141,6 +145,8 @@ describe("Autopilot build UI contract", () => {
   it("uses an accessible in-app confirmation for calendar scheduling", () => {
     expect(source).toContain("<ConfirmDialog");
     expect(source).toContain('confirmVariant="primary"');
+    expect(source).toContain('confirmVariant="danger"');
+    expect(source).toContain("Остановить текущую сборку?");
     expect(source).not.toContain("window.confirm(");
     expect(source).not.toContain("window.alert(");
   });

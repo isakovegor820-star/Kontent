@@ -208,12 +208,21 @@ export function buildAutopilotApprovalPreview({
   channel,
   planId,
   planRevision = 1,
+  expectedCount: expectedCountValue = null,
   expiresAtMs = nowMs + AUTOPILOT_PREVIEW_TTL_MS,
   actor,
 }) {
-  const evaluations = (Array.isArray(items) ? items : [])
+  const planItems = Array.isArray(items) ? items : [];
+  const evaluations = planItems
     .map((item) => ({ item, evaluation: evaluateAutopilotItem(item, nowMs, { actor }) }))
     .filter(({ evaluation }) => evaluation.actionable);
+  // A durable retry can legitimately contain checkpoints already scheduled by the same
+  // full-plan confirmation. Count those slots toward completeness, but never schedule them
+  // twice. Rejected, expired, or post-less rows do not satisfy the requested target.
+  const scheduledCheckpoints = planItems.filter((item) =>
+    Number.isSafeInteger(Number(item?.postId)) &&
+    ["approved", "published"].includes(String(item?.status || "")),
+  ).length;
 
   const dates = [];
   const blockers = [];
@@ -240,6 +249,15 @@ export function buildAutopilotApprovalPreview({
     });
   }
 
+  const expectedCount = expectedCountValue == null
+    ? evaluations.length
+    : Math.max(0, Math.round(Number(expectedCountValue) || 0));
+  const complete = expectedCount > 0 &&
+    evaluations.length + scheduledCheckpoints === expectedCount &&
+    eligible === evaluations.length &&
+    expired === 0 &&
+    blocked === 0;
+
   const snapshot = canonicalAutopilotPlanSnapshot({
     items,
     planId,
@@ -255,13 +273,15 @@ export function buildAutopilotApprovalPreview({
       title: channel?.title || null,
       handle: channel?.handle || null,
     },
+    expectedCount,
+    complete,
     counts: { total: evaluations.length, eligible, expired, blocked },
     dates,
     blockers,
     items: snapshot.items,
     generatedAt: new Date(nowMs).toISOString(),
     expiresAt: new Date(expiresAtMs).toISOString(),
-    requiresConfirmation: eligible > 0,
+    requiresConfirmation: complete && eligible > 0,
   };
 }
 

@@ -141,218 +141,28 @@ function mockTransaction(
 }
 
 describe("PATCH /api/autopilot/item approve", () => {
-  it("persists an expired status and never shifts the item to now + 120 seconds", async () => {
-    const originalDate = new Date(Date.now() - 60_000).toISOString();
-    const source = [{
-      i: 2,
-      scheduledAt: originalDate,
-      topic: "Просроченная тема",
-      draft: "Проверенный текст",
-      status: "pending",
-      quality,
-    }];
-    const calls: Array<{ sql: string; params: unknown[] }> = [];
-    mocks.claimPlan.mockResolvedValue({ items: source, channel_id: 7 });
-    mocks.query.mockImplementation(async (sqlValue: string, params: unknown[] = []) => {
-      const sql = sqlValue.replace(/\s+/g, " ").trim();
-      calls.push({ sql, params });
-      if (sql.startsWith("select id, items, channel_id, status, revision from autopilot_plan")) {
-        return { rows: [{ id: 44, items: source, channel_id: 7, status: "pending" }], rowCount: 1 };
-      }
-      if (sql.includes("from autopilot_approval_operations where project_id")) {
-        return { rows: [], rowCount: 0 };
-      }
-      if (sql.startsWith("insert into autopilot_approval_operations")) {
-        return { rows: [{ id: 91 }], rowCount: 1 };
-      }
-      return { rows: [], rowCount: 1 };
-    });
-
-    const response = await PATCH(
-      new NextRequest("http://localhost/api/autopilot/item", {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          channelId: 7,
-          index: 2,
-          action: "approve",
-          idempotencyKey: "item-expired-key",
-          ...planBinding,
-        }),
+  it("rejects legacy one-item scheduling before any plan or queue side effect", async () => {
+    const response = await PATCH(new NextRequest("http://localhost/api/autopilot/item", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        channelId: 7,
+        index: 2,
+        action: "approve",
+        idempotencyKey: "legacy-item-key",
+        ...planBinding,
       }),
-    );
-    const body = await response.json();
+    }));
 
-    expect(response.status).toBe(422);
-    expect(body).toMatchObject({ ok: false, error: "approval_blocked", status: "expired" });
-    expect(body.blockerDetails[0]).toMatchObject({ code: "expired" });
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      error: "plan_approval_required",
+    });
+    expect(mocks.requireSelectedProjectPermission).not.toHaveBeenCalled();
+    expect(mocks.query).not.toHaveBeenCalled();
+    expect(mocks.claimPlan).not.toHaveBeenCalled();
     expect(mocks.scheduleItem).not.toHaveBeenCalled();
-    const finalized = mocks.finalizeApproval.mock.calls[0][0];
-    const savedItem = finalized.items[0];
-    expect(savedItem).toMatchObject({ status: "expired", scheduledAt: originalDate });
-    expect(finalized).toMatchObject({ planStatus: "pending", operationStatus: "completed", httpStatus: 422 });
-    const operation = calls.find((call) => call.sql.startsWith("insert into autopilot_approval_operations"));
-    expect(operation?.params.slice(0, 5)).toEqual([
-      88,
-      3,
-      7,
-      44,
-      "project:88:item-expired-key",
-    ]);
-    expect(mocks.claimPlan).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-      projectId: 88,
-      planId: 44,
-      channelId: 7,
-    }));
-  });
-
-  it("returns success with the durable post id when queue reconciliation is pending", async () => {
-    const source = [{
-      ...approvedItem,
-      status: "pending",
-      postId: undefined,
-      scheduledAt: new Date(Date.now() + 60 * 60_000).toISOString(),
-    }];
-    mocks.claimPlan.mockResolvedValue({ items: source, channel_id: 7 });
-    mocks.scheduleItem.mockResolvedValue({
-      postId: 501,
-      scheduledAt: source[0].scheduledAt,
-      queuePending: true,
-    });
-    mocks.query.mockImplementation(async (sqlValue: string) => {
-      const sql = sqlValue.replace(/\s+/g, " ").trim();
-      if (sql.startsWith("select id, items, channel_id, status, revision from autopilot_plan")) {
-        return { rows: [{ id: 44, items: source, channel_id: 7, status: "pending" }], rowCount: 1 };
-      }
-      if (sql.includes("from autopilot_approval_operations where project_id")) {
-        return { rows: [], rowCount: 0 };
-      }
-      if (sql.startsWith("insert into autopilot_approval_operations")) {
-        return { rows: [{ id: 91 }], rowCount: 1 };
-      }
-      return { rows: [], rowCount: 1 };
-    });
-
-    const response = await PATCH(
-      new NextRequest("http://localhost/api/autopilot/item", {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          channelId: 7,
-          index: 2,
-          action: "approve",
-          idempotencyKey: "item-outbox-key",
-          ...planBinding,
-        }),
-      }),
-    );
-
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({
-      ok: true,
-      postId: 501,
-      reconciliationPending: true,
-    });
-    expect(mocks.finalizeApproval).toHaveBeenCalledWith(expect.objectContaining({
-      planStatus: "approved",
-      operationStatus: "completed",
-      items: [expect.objectContaining({ status: "approved", postId: 501 })],
-    }));
-  });
-
-  it("lets a person approve a review-only draft after attaching a human attestation", async () => {
-    const reviewQuality = {
-      ...quality,
-      score: 91,
-      passed: true,
-      blockers: [],
-      violations: [{
-        code: "semantic_review_required",
-        message: "Смысл фактических утверждений не проверен. Нужна ручная проверка перед публикацией.",
-        blocker: false,
-        penalty: 0,
-      }],
-      semantic: {
-        ...quality.semantic,
-        status: "not_checked",
-        passed: false,
-        requiresReview: true,
-        claimVerdicts: [{
-          claimId: "claim-1",
-          claim: "Проверенный текст",
-          verdict: "unknown",
-          reasonCode: "semantic_provider_unavailable",
-          riskCodes: [],
-          sourceSpans: [],
-        }],
-        provenance: {
-          ...quality.semantic.provenance,
-          provider: "unavailable",
-          terminalVerdict: "not_checked",
-        },
-      },
-    };
-    const source = [{
-      ...approvedItem,
-      status: "pending",
-      postId: undefined,
-      scheduledAt: new Date(Date.now() + 60 * 60_000).toISOString(),
-      quality: reviewQuality,
-      qualityBlocked: true,
-      reviewRequired: true,
-      reviewState: "semantic_only_review",
-    }];
-    mocks.claimPlan.mockResolvedValue({ items: source, channel_id: 7 });
-    mocks.scheduleItem.mockResolvedValue({
-      postId: 612,
-      scheduledAt: source[0].scheduledAt,
-      queuePending: false,
-    });
-    mocks.query.mockImplementation(async (sqlValue: string) => {
-      const sql = sqlValue.replace(/\s+/g, " ").trim();
-      if (sql.startsWith("select id, items, channel_id, status, revision from autopilot_plan")) {
-        return { rows: [{ id: 44, items: source, channel_id: 7, status: "pending" }], rowCount: 1 };
-      }
-      if (sql.includes("from autopilot_approval_operations where project_id")) {
-        return { rows: [], rowCount: 0 };
-      }
-      if (sql.startsWith("insert into autopilot_approval_operations")) {
-        return { rows: [{ id: 92 }], rowCount: 1 };
-      }
-      return { rows: [], rowCount: 1 };
-    });
-
-    const response = await PATCH(
-      new NextRequest("http://localhost/api/autopilot/item", {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          channelId: 7,
-          index: 2,
-          action: "approve",
-          idempotencyKey: "item-review-key",
-          ...planBinding,
-        }),
-      }),
-    );
-
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({ ok: true, postId: 612 });
-    expect(mocks.scheduleItem).toHaveBeenCalledOnce();
-    expect(mocks.scheduleItem).toHaveBeenCalledWith(expect.objectContaining({
-      approvedItem: expect.objectContaining({
-        humanAttestation: expect.objectContaining({ kind: "human_review", userId: 3 }),
-      }),
-    }));
-    const saved = mocks.finalizeApproval.mock.calls[0][0].items[0];
-    expect(saved.humanAttestation).toMatchObject({
-      kind: "human_review",
-      reviewState: "semantic_only_review",
-      userId: 3,
-    });
-    expect(saved.quality).toEqual(reviewQuality);
-    expect(saved.qualityBlocked).toBe(true);
-    expect(saved.qualityOrigin).toBe("human_attested");
   });
 });
 
@@ -456,6 +266,90 @@ describe("PATCH /api/autopilot/item reject", () => {
     });
     expect(transactionCalls.at(-1)?.sql).toBe("commit");
     expect(mocks.release).toHaveBeenCalledOnce();
+  });
+});
+
+describe("PATCH /api/autopilot/item replace", () => {
+  it("swaps only the requested slot with a checked reserve candidate and preserves its date", async () => {
+    const originalDate = new Date(Date.now() + 2 * 60 * 60_000).toISOString();
+    const source = [
+      {
+        ...approvedItem,
+        i: 2,
+        candidateIndex: 2,
+        status: "pending",
+        postId: undefined,
+        scheduledAt: originalDate,
+        topic: "Старая тема",
+        draft: "Старый текст для замены.",
+      },
+      {
+        ...approvedItem,
+        i: 3,
+        candidateIndex: 3,
+        status: "pending",
+        postId: undefined,
+        topic: "Другая тема",
+        draft: "Другой проверенный текст.",
+      },
+    ];
+    const reserve = {
+      ...approvedItem,
+      i: 12,
+      status: "pending",
+      postId: undefined,
+      aiReady: true,
+      topic: "Новая тема из резерва",
+      draft: "Отдельный качественный текст о новой теме без повторов.",
+    };
+    const calls: Array<{ sql: string; params: unknown[] }> = [];
+    mocks.query.mockImplementation(async (sqlValue: string, params: unknown[] = []) => {
+      const sql = sqlValue.replace(/\s+/g, " ").trim();
+      calls.push({ sql, params });
+      if (sql.startsWith("select id, items, channel_id, status, revision from autopilot_plan")) {
+        return {
+          rows: [{ id: 44, items: source, channel_id: 7, status: "pending", revision: 3 }],
+          rowCount: 1,
+        };
+      }
+      if (sql.startsWith("select candidate_items from autopilot_plan")) {
+        return { rows: [{ candidate_items: [...source, reserve] }], rowCount: 1 };
+      }
+      if (sql.startsWith("update autopilot_plan")) {
+        return { rows: [{ revision: 4 }], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 1 };
+    });
+
+    const response = await PATCH(new NextRequest("http://localhost/api/autopilot/item", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        channelId: 7,
+        index: 2,
+        action: "replace",
+        ...planBinding,
+      }),
+    }));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      revision: 4,
+      index: 2,
+      topic: reserve.topic,
+    });
+    const update = calls.find((call) => call.sql.startsWith("update autopilot_plan"));
+    const savedItems = JSON.parse(String(update?.params[4]));
+    expect(savedItems[0]).toMatchObject({
+      i: 2,
+      candidateIndex: 12,
+      replacementHistory: [2],
+      scheduledAt: originalDate,
+      topic: reserve.topic,
+      status: "pending",
+    });
+    expect(savedItems[1]).toMatchObject({ i: 3, topic: "Другая тема" });
   });
 });
 

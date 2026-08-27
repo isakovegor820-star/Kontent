@@ -8,9 +8,8 @@ describe("Autopilot ready-plan generation contract", () => {
     expect(source).not.toContain('acceptLengthLimitedOutput: surface === "autopilot-plan"');
   });
 
-  // План доходит до человека в обоих режимах, но только после reader-ready фильтра.
-  // Право на выпуск считается отдельно для каждого оставшегося сильного поста.
-  it("delivers only reader-ready posts and gates publication per post", () => {
+  // План доходит до человека только после reader-ready фильтра.
+  it("delivers only reader-ready posts and never enables blind publication", () => {
     expect(source).not.toContain("AUTOPILOT_QUALITY_REWRITE_ATTEMPTS");
     expect(source).toContain("boundedAutopilotRewriteAttempts(itemQuality.retryLimit)");
     expect(source).toContain("boundedAutopilotRewriteAttempts(quality.retryLimit) - Number(item._rewriteAttempts || 0)");
@@ -19,7 +18,8 @@ describe("Autopilot ready-plan generation contract", () => {
     expect(source.match(/isAutopilotReaderReadyItem\(item\)/g)?.length).toBeGreaterThanOrEqual(2);
     expect(source).not.toContain("full\n    ? autopilotBuildComplete(N, topics, items)");
     expect(source).not.toMatch(/full\s*\n?\s*\?\s*autopilotBuildComplete\(N, topics, items\)/);
-    expect(source).toContain("fullAtCommit && item.autoApprove && evaluation.eligible");
+    expect(source).toContain("const full = false;");
+    expect(source).toContain("const fullAtCommit = false;");
   });
 
   // Повтор дешевле предотвратить правилом, чем поймать проверкой и выбросить всю сборку.
@@ -64,10 +64,10 @@ describe("Autopilot ready-plan generation contract", () => {
     expect(source).toContain('generationEngine === "navy-minimax-m3" ? 2 : 3');
   });
 
-  it("rechecks full-auto eligibility while locking settings before publication", () => {
+  it("keeps the settings mutex while requiring a separate human approval", () => {
     expect(source).toMatch(/select enabled, mode, approvals_streak[\s\S]*?for update/);
-    expect(source).toContain("fullAtCommit && item.autoApprove");
-    expect(source).not.toContain("if (item.autoApprove && evaluation.eligible");
+    expect(source).toContain("Publication itself always waits for");
+    expect(source).not.toMatch(/fullAtCommit\s*=\s*true/u);
   });
 
   // Строгий профиль использует и базу знаний, и найденные новости. Только отсутствие обоих

@@ -154,6 +154,45 @@ describe("Autopilot public serialization", () => {
     expect(attempt).toMatchObject({ readyCount: 4, failedCount: 3, publicationTargetCount: 5 });
   });
 
+  it("uses the selected publication count instead of reporting a ready reserve as 7 of 7", () => {
+    const readyItems = Array.from({ length: 7 }, (_, i) => ({
+      i,
+      topic: `Готовая тема ${i}`,
+      draft: `Готовый пост ${i}.`,
+      scheduledAt: `2026-08-${22 + i}T10:00:00.000Z`,
+      status: "pending",
+      aiReady: true,
+      quality: readyQuality,
+    }));
+    const failedReserve = Array.from({ length: 3 }, (_, offset) => ({
+      i: offset + 7,
+      topic: `Резерв ${offset}`,
+      draft: "",
+      status: "pending",
+      aiReady: false,
+      buildState: "failed",
+    }));
+
+    const attempt = autopilotBuildAttemptDto({
+      id: 94,
+      revision: 3,
+      status: "partial",
+      expected_post_count: 7,
+      publication_target_count: 7,
+      candidate_count: 10,
+      build_report: { selectedCount: 6, selectionDeficit: 1 },
+      items: [...readyItems, ...failedReserve],
+      created_at: "2026-08-21T10:00:00.000Z",
+    }, 10);
+
+    expect(attempt).toMatchObject({
+      readyCount: 6,
+      publicationTargetCount: 7,
+      progress: { percent: 86 },
+    });
+    expect(attempt.retryableItemIndexes).toHaveLength(1);
+  });
+
   it("exposes automatic provider recovery without counting waiting slots as bad posts", () => {
     const attempt = autopilotBuildAttemptDto({
       id: 93,

@@ -92,6 +92,8 @@ function projectIdempotencyKey(projectId: number, clientKey: string): string {
 
 function approvalSemantics(preview: AutopilotApprovalPreview) {
   return JSON.stringify({
+    expectedCount: preview.expectedCount,
+    complete: preview.complete,
     counts: preview.counts,
     dates: preview.dates,
     blockers: preview.blockers,
@@ -105,8 +107,13 @@ async function createStoredPreview(
   channel: AutopilotApprovalPreview["channel"],
 ) {
   const plan = (
-    await pool.query<{ id: string; items: PlanItem[]; revision: string }>(
-      `select id, items, revision from autopilot_plan
+    await pool.query<{
+      id: string;
+      items: PlanItem[];
+      revision: string;
+      publication_target_count: string | null;
+    }>(
+      `select id, items, revision, publication_target_count from autopilot_plan
         where project_id = $1 and channel_id = $2 and status = 'pending'
         order by created_at desc limit 1`,
       [projectId, channel.id],
@@ -120,6 +127,7 @@ async function createStoredPreview(
     channel,
     planId: Number(plan.id),
     planRevision: Number(plan.revision),
+    expectedCount: Number(plan.publication_target_count) || plan.items.length,
     actor: "human",
   });
   const token = createAutopilotPreviewToken();
@@ -268,8 +276,13 @@ export async function POST(req: NextRequest) {
     ).rows[0];
 
     const currentPlan = (
-      await pool.query<{ items: PlanItem[]; revision: string; status: string }>(
-        `select items, revision, status from autopilot_plan
+      await pool.query<{
+        items: PlanItem[];
+        revision: string;
+        status: string;
+        publication_target_count: string | null;
+      }>(
+        `select items, revision, status, publication_target_count from autopilot_plan
           where id = $1 and project_id = $2 and channel_id = $3`,
         [planId, projectId, channelId],
       )
@@ -290,6 +303,7 @@ export async function POST(req: NextRequest) {
           channel: channelSnapshot,
           planId,
           planRevision: currentRevision,
+          expectedCount: Number(currentPlan.publication_target_count) || currentPlan.items.length,
           actor: "human",
         })
       : null;
@@ -302,6 +316,12 @@ export async function POST(req: NextRequest) {
       const freshPreview = await createStoredPreview(pool, projectId, user.id, channelSnapshot);
       return NextResponse.json(
         { ok: false, error: "stale_preview", preview: freshPreview },
+        { status: 409 },
+      );
+    }
+    if (!currentPreview.complete) {
+      return NextResponse.json(
+        { ok: false, error: "incomplete_plan", preview: currentPreview },
         { status: 409 },
       );
     }
@@ -369,8 +389,30 @@ export async function POST(req: NextRequest) {
       channel: channelSnapshot,
       planId,
       planRevision: Number(plan.revision || planRevision + 1),
+      expectedCount: previewRecord.snapshot.expectedCount,
       actor: "human",
     });
+    if (!preview.complete) {
+      const result = {
+        ok: false,
+        error: "incomplete_plan",
+        scheduled: 0,
+        blocked: preview.counts.blocked,
+        expired: preview.counts.expired,
+        planId,
+        channel: channelSnapshot,
+        preview,
+      };
+      await abortAutopilotApproval({
+        pool,
+        ...claimedContext,
+        operationId,
+        result,
+        httpStatus: 409,
+      });
+      claimedContext = null;
+      return NextResponse.json(result, { status: 409 });
+    }
     await pool.query(
       `update autopilot_approval_operations
           set request_snapshot = $4

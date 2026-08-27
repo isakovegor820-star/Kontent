@@ -150,12 +150,23 @@ export function autopilotBuildAttemptDto(row, expected) {
     publicationTargetCount,
     Number(expected ?? row.candidate_count ?? row.expected_post_count) || items.length,
   );
+  const persistedReport = row.build_report && typeof row.build_report === "object"
+    ? row.build_report
+    : null;
   // Candidate reserve is an internal quality mechanism. Public progress follows the
-  // promise the person made: the exact number of posts requested for publication.
+  // promise the person made: the exact number of posts selected for publication. Counting
+  // every reader-ready reserve candidate made a partial 6/7 plan look like "7 из 7".
   const targetCount = publicationTargetCount;
   const report = autopilotQualityFailureReport(items, candidateCount);
   const measuredProgress = autopilotBuildProgress(items, candidateCount);
-  const readyForPlan = Math.min(publicationTargetCount, measuredProgress.ready);
+  const selectedCount = Number(persistedReport?.selectedCount);
+  const readyForPlan = Math.min(
+    publicationTargetCount,
+    Math.max(
+      0,
+      Number.isFinite(selectedCount) ? selectedCount : measuredProgress.ready,
+    ),
+  );
   const progress = {
     ...measuredProgress,
     completed: readyForPlan,
@@ -170,12 +181,12 @@ export function autopilotBuildAttemptDto(row, expected) {
         ? "generating"
         : "preparing",
   };
-  const persistedReport = row.build_report && typeof row.build_report === "object"
-    ? row.build_report
-    : null;
+  const persistedDeficit = Number(persistedReport?.selectionDeficit);
   const selectionDeficit = Math.max(
     0,
-    Number(persistedReport?.selectionDeficit) || publicationTargetCount - progress.ready,
+    Number.isFinite(persistedDeficit)
+      ? persistedDeficit
+      : publicationTargetCount - progress.ready,
   );
   const retryableItemIndexes = autopilotRetryableItemIndexes(items)
     .sort((left, right) => Number(items[right]?.news === true) - Number(items[left]?.news === true))

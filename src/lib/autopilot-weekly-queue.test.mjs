@@ -329,6 +329,39 @@ describe("weekly Autopilot queue dispatch", () => {
     );
   });
 
+  it("continues a manually requested build even while recurring Autopilot is paused", async () => {
+    const recoveryJobId = "433229a4-6c97-4ad0-90c9-0dc8d5c598a3";
+    const row = {
+      id: "704",
+      project_id: "4",
+      user_id: "9",
+      channel_id: "12",
+      status: "partial",
+      enabled: false,
+      repair_strategy: "rewrite",
+      build_report: autopilotAutoRecoveryReport(
+        { primaryFix: "rewrite", requestedBy: "human" },
+        {
+          recoveryJobId,
+          nowMs: Date.parse("2026-08-27T07:00:00.000Z"),
+        },
+      ),
+    };
+    const pool = { query: vi.fn(async () => ({ rows: [row], rowCount: 1 })) };
+    const queue = { add: vi.fn(async () => ({})) };
+
+    await expect(reconcileBuildingAutopilotPlans({ pool, queue })).resolves.toEqual({
+      scanned: 1,
+      enqueued: 1,
+      pending: 0,
+    });
+    expect(queue.add).toHaveBeenCalledWith(
+      AUTOPILOT_CONTINUATION_JOB,
+      { projectId: 4, userId: 9, channelId: 12, planId: 704, recoveryJobId },
+      expect.objectContaining({ jobId: `autopilot-continue-704-${recoveryJobId}` }),
+    );
+  });
+
   it("leaves a failed reconciliation row pending for the next tick", async () => {
     const pool = {
       query: vi.fn(async () => ({

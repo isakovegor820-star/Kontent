@@ -123,6 +123,7 @@ function approvalDb(
     currentItems?: ReturnType<typeof planItem>[];
     currentRevision?: number;
     currentStatus?: string;
+    publicationTargetCount?: number;
   } = {},
 ) {
   const calls: Array<{ sql: string; params: unknown[] }> = [];
@@ -130,11 +131,13 @@ function approvalDb(
   const currentItems = options.currentItems ?? items;
   const currentRevision = options.currentRevision ?? 1;
   const currentStatus = options.currentStatus ?? "pending";
+  const publicationTargetCount = options.publicationTargetCount ?? items.length;
   const preview = buildAutopilotApprovalPreview({
     items,
     channel: { id: 7, title: "Канал А", handle: "channel_a" },
     planId: 44,
     planRevision: 1,
+    expectedCount: publicationTargetCount,
   });
   mocks.claimPlan.mockResolvedValue({ id: "44", items: currentItems, edited: false, channel_id: "7", revision: "2" });
   mocks.query.mockImplementation(async (sqlValue: string, params: unknown[] = []) => {
@@ -152,14 +155,27 @@ function approvalDb(
         rowCount: 1,
       };
     }
-    if (sql.includes("select id, items, revision from autopilot_plan")) {
+    if (sql.includes("select id, items, revision, publication_target_count from autopilot_plan")) {
       return currentStatus === "pending"
-        ? { rows: [{ id: "44", items: currentItems, revision: String(currentRevision) }], rowCount: 1 }
+        ? {
+            rows: [{
+              id: "44",
+              items: currentItems,
+              revision: String(currentRevision),
+              publication_target_count: String(publicationTargetCount),
+            }],
+            rowCount: 1,
+          }
         : { rows: [], rowCount: 0 };
     }
-    if (sql.includes("select items, revision, status from autopilot_plan")) {
+    if (sql.includes("select items, revision, status, publication_target_count from autopilot_plan")) {
       return {
-        rows: [{ items: currentItems, revision: String(currentRevision), status: currentStatus }],
+        rows: [{
+          items: currentItems,
+          revision: String(currentRevision),
+          status: currentStatus,
+          publication_target_count: String(publicationTargetCount),
+        }],
         rowCount: 1,
       };
     }
@@ -206,7 +222,14 @@ describe("POST /api/autopilot/approve", () => {
     const body = await response.json();
 
     expect(response.status).toBe(200);
-    expect(body.preview).toMatchObject({ planId: 44, revision: 1, counts: { eligible: 1 } });
+    expect(body.preview).toMatchObject({
+      planId: 44,
+      revision: 1,
+      expectedCount: 1,
+      complete: true,
+      requiresConfirmation: true,
+      counts: { eligible: 1 },
+    });
     expect(body.preview.hash).toMatch(/^[a-f0-9]{64}$/);
     expect(body.preview.token).toMatch(/^[A-Za-z0-9_-]{16,64}$/);
     const stored = calls.find((call) => call.sql.startsWith("insert into autopilot_approval_previews"));
@@ -237,7 +260,29 @@ describe("POST /api/autopilot/approve", () => {
     expect(mocks.scheduleItem).not.toHaveBeenCalled();
   });
 
-  it("turns three expired items into explicit expired drafts without creating posts/jobs", async () => {
+  it("never treats 13 stored posts as complete when the durable target is 14", async () => {
+    const items = Array.from({ length: 13 }, (_, index) => planItem(index));
+    const calls = approvalDb(items, null, { publicationTargetCount: 14 });
+
+    const response = await POST(confirmRequest("web-deficit-key"));
+    const body = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(body).toMatchObject({
+      ok: false,
+      error: "incomplete_plan",
+      preview: {
+        expectedCount: 14,
+        complete: false,
+        counts: { total: 13, eligible: 13 },
+      },
+    });
+    expect(calls.some((call) => call.sql.startsWith("insert into autopilot_approval_operations"))).toBe(false);
+    expect(mocks.claimPlan).not.toHaveBeenCalled();
+    expect(mocks.scheduleItem).not.toHaveBeenCalled();
+  });
+
+  it("rejects a plan with expired slots before creating posts, jobs, or an approval operation", async () => {
     const calls = approvalDb(
       [0, 1, 2].map((i) =>
         planItem(i, { scheduledAt: new Date(Date.now() - (i + 1) * 60_000).toISOString() }),
@@ -247,35 +292,21 @@ describe("POST /api/autopilot/approve", () => {
     const response = await POST(confirmRequest());
     const body = await response.json();
 
-    expect(response.status).toBe(200);
-    expect(body).toMatchObject({ ok: true, scheduled: 0, expired: 3, blocked: 0 });
-    expect(mocks.scheduleItem).not.toHaveBeenCalled();
-    const finalized = mocks.finalizeApproval.mock.calls[0][0];
-    expect(finalized.planStatus).toBe("pending");
-    expect(finalized.items.map((item: { status: string }) => item.status)).toEqual([
-      "expired",
-      "expired",
-      "expired",
-    ]);
-    expect(mocks.claimPlan).toHaveBeenCalledWith(expect.anything(), {
-      planId: 44,
-      projectId: 88,
-      userId: 3,
-      channelId: 7,
-      operationId: 91,
-      allowedStatuses: ["pending"],
-      expectedRevision: 1,
+    expect(response.status).toBe(409);
+    expect(body).toMatchObject({
+      ok: false,
+      error: "incomplete_plan",
+      preview: {
+        expectedCount: 3,
+        complete: false,
+        requiresConfirmation: false,
+        counts: { eligible: 0, expired: 3, blocked: 0 },
+      },
     });
-    const audit = calls.find((call) => call.sql.startsWith("insert into autopilot_approval_operations"));
-    expect(audit?.params.slice(0, 7)).toEqual([
-      88,
-      3,
-      7,
-      44,
-      1,
-      expect.stringMatching(/^[a-f0-9]{64}$/),
-      "project:88:web-test-key-1",
-    ]);
+    expect(mocks.scheduleItem).not.toHaveBeenCalled();
+    expect(mocks.claimPlan).not.toHaveBeenCalled();
+    expect(mocks.finalizeApproval).not.toHaveBeenCalled();
+    expect(calls.some((call) => call.sql.startsWith("insert into autopilot_approval_operations"))).toBe(false);
   });
 
   it("blocks a missing quality result with a stable, understandable reason", async () => {
@@ -284,8 +315,17 @@ describe("POST /api/autopilot/approve", () => {
     const response = await POST(confirmRequest("web-test-key-2"));
     const body = await response.json();
 
-    expect(body).toMatchObject({ ok: true, scheduled: 0, blocked: 1, expired: 0 });
-    expect(body.blockerDetails[0].reasons[0]).toMatchObject({ code: "quality_missing" });
+    expect(response.status).toBe(409);
+    expect(body).toMatchObject({
+      ok: false,
+      error: "incomplete_plan",
+      preview: {
+        complete: false,
+        counts: { eligible: 0, blocked: 1, expired: 0 },
+      },
+    });
+    expect(body.preview.blockers[0].reasons[0]).toMatchObject({ code: "quality_missing" });
+    expect(mocks.claimPlan).not.toHaveBeenCalled();
     expect(mocks.scheduleItem).not.toHaveBeenCalled();
   });
 

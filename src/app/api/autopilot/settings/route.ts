@@ -78,7 +78,13 @@ export async function POST(req: NextRequest) {
 
     const cur = await ensureSettings(scope, channelId);
     const enabled = typeof body.enabled === "boolean" ? body.enabled : null;
-    const mode = body.mode === "confirm" || body.mode === "full" ? body.mode : null;
+    if (body.mode === "full") {
+      return NextResponse.json(
+        { ok: false, error: "human_approval_required" },
+        { status: 422 },
+      );
+    }
+    const mode = body.mode === "confirm" ? "confirm" : null;
 
   // Включать автопилот можно только с готовым брифом — иначе он начнёт писать наугад (ТЗ Д.9).
   // Проверяем на СЕРВЕРЕ: гейт в интерфейсе обходится прямым запросом.
@@ -89,12 +95,6 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: false, error: "no_brief" }, { status: 422 });
       }
       selectedNewsSources = JSON.stringify(selectAutopilotNewsSources(brief));
-    }
-
-  // Полный режим (публикация без подтверждения) — только после 2 недель одобрений без правок.
-  // Проверяем на СЕРВЕРЕ, а не только в UI, иначе гейт обходится прямым запросом (ревью).
-    if (mode === "full" && cur.mode !== "full" && cur.approvals_streak < 2) {
-      return NextResponse.json({ ok: false, error: "streak_required" }, { status: 422 });
     }
 
     const requestedFrequency = Number(body.post_frequency);
@@ -181,7 +181,8 @@ export async function POST(req: NextRequest) {
                   || '{"recoveryState":"paused","nextRetryAt":null}'::jsonb,
                 build_activity_at = now(), revision = revision + 1
           where project_id = $1 and channel_id = $2 and status = 'partial'
-            and build_report ? 'autoRecovery'`,
+            and build_report ? 'autoRecovery'
+            and coalesce(build_report->>'requestedBy', 'schedule') <> 'human'`,
         [membership.projectId, channelId],
       ).catch((error) => {
         // The continuation claim also checks settings.enabled and will refuse to run. This

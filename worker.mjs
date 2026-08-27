@@ -5,6 +5,7 @@
 // Запуск:  npm run worker   (== node --env-file=.env.local worker.mjs)
 // На деплое переезжает на Railway/Render/свой сервер (Vercel для него не подходит).
 
+import "./sentry.worker.config.mjs";
 import { Worker, Queue, UnrecoverableError } from "bullmq";
 import IORedis from "ioredis";
 import pg from "pg";
@@ -5739,7 +5740,7 @@ async function buildAutopilotPlan(
       `select generation_engine, generation_post_frequency, expected_post_count,
               publication_target_count, candidate_count,
               planning_months, planning_weeks, monthly_campaign_plan_id, items, quick_settings,
-              repair_attempt
+              repair_attempt, build_report
          from autopilot_plan
         where id = $1 and project_id = $2 and channel_id = $3 and status = 'building'`,
       [expectedPlanId, projectId, channelId],
@@ -5922,8 +5923,9 @@ async function buildAutopilotPlan(
   // published загрязнялась тестами и случайными постами, а worker затем тиражировал их голос.
   const samples = quality.styleExamples;
 
-  // Полный режим требует и mode='full', и заслуженный streak (защита в глубину, ревью).
-  const full = (st?.mode || "confirm") === "full" && (st?.approvals_streak ?? 0) >= 2;
+  // Every publication plan crosses a human-review boundary. Legacy `mode=full` values are
+  // deliberately ignored: generation may be automatic, calendar mutation may not.
+  const full = false;
   const planMood = await userMood(userId); // настроение агента для постов плана
   // Время постов считаем заранее на весь выбранный горизонт: раскладка зависит от их числа.
   let slots = monthlyContext
@@ -6625,6 +6627,7 @@ async function buildAutopilotPlan(
     const qualityReport = autopilotQualityFailureReport(durableCandidateItems, N);
     const report = {
       ...qualityReport,
+      requestedBy: expectedPlan?.build_report?.requestedBy === "human" ? "human" : "schedule",
       publicationTargetCount,
       candidateCount: N,
       readyCount: variedPairs.length,
@@ -6718,12 +6721,13 @@ async function buildAutopilotPlan(
         },
       );
     }
+    const recoveryAllowed = st?.enabled === true || report.requestedBy === "human";
     const autoRecoveryEnabled = expectedPlanId != null &&
       automaticRepairIndexes.length > 0 &&
       isAutopilotAutoRecoveryStrategy(report.primaryFix);
     const persistedPartialReport = autoRecoveryEnabled
       ? autopilotAutoRecoveryReport(report, {
-          enabled: st?.enabled === true,
+          enabled: recoveryAllowed,
           attemptNumber: Math.max(1, Number(expectedPlan?.repair_attempt || 0) + 1),
         })
       : report;
@@ -6840,7 +6844,7 @@ async function buildAutopilotPlan(
     } finally {
       partialTx.release();
     }
-    if (st?.enabled === true && recoveryJobId && autopilotQueue) {
+    if (recoveryAllowed && recoveryJobId && autopilotQueue) {
       await dispatchAutopilotContinuation({
         queue: autopilotQueue,
         row: {
@@ -6851,7 +6855,7 @@ async function buildAutopilotPlan(
           status: "partial",
           build_report: persistedPartialReport,
           repair_strategy: report.primaryFix,
-          enabled: true,
+          enabled: recoveryAllowed,
         },
       }).catch((error) => {
         // PostgreSQL remains authoritative. The 30-second reconciler will replay the same
@@ -6931,23 +6935,18 @@ async function buildAutopilotPlan(
   let fullApprovalPreview = null;
   let queuePendingReconciliation = 0;
   let usageCommitted = false;
-  let fullAtCommit = false;
+  const fullAtCommit = false;
   try {
     await tx.query("begin");
     // The settings row is the per-channel mutex also used by POST /api/autopilot/generate.
     // It closes the race where an old worker finishes just as the user starts a new build.
-    // Read the publication controls under that lock: a mode change made during generation
-    // must take effect before any scheduled post is created.
-    const lockedSettings = (
-      await tx.query(
+    // Keep the settings row as the per-channel mutex. Publication itself always waits for
+    // the separate human preview/confirm operation, regardless of legacy mode values.
+    await tx.query(
       `select enabled, mode, approvals_streak from autopilot_settings
         where project_id = $1 and channel_id = $2 for update`,
       [projectId, channelId],
-      )
-    ).rows[0];
-    fullAtCommit = lockedSettings?.enabled === true
-      && lockedSettings?.mode === "full"
-      && Number(lockedSettings?.approvals_streak || 0) >= 2;
+    );
     const building = (
       await tx.query(
         `select id from autopilot_plan
@@ -10811,7 +10810,7 @@ async function claimAutopilotContinuationJob(job) {
       where plan.id = $1 and plan.project_id = $2 and plan.user_id = $3
         and plan.channel_id = $4 and plan.status = 'partial'
         and settings.project_id = plan.project_id and settings.channel_id = plan.channel_id
-        and settings.enabled = true
+        and (settings.enabled = true or plan.build_report->>'requestedBy' = 'human')
         and plan.build_report #>> '{autoRecovery,jobId}' = $5
       returning plan.id`,
     [planId, projectId, userId, channelId, recoveryJobId],
@@ -10825,7 +10824,7 @@ async function claimAutopilotContinuationJob(job) {
          on settings.project_id = plan.project_id and settings.channel_id = plan.channel_id
       where plan.id = $1 and plan.project_id = $2 and plan.user_id = $3
         and plan.channel_id = $4 and plan.status = 'building'
-        and settings.enabled = true
+        and (settings.enabled = true or plan.build_report->>'requestedBy' = 'human')
         and plan.build_report #>> '{autoRecovery,jobId}' = $5`,
     [planId, projectId, userId, channelId, recoveryJobId],
   );
@@ -10844,6 +10843,7 @@ async function claimAutopilotContinuationJob(job) {
         and plan.channel_id = $4 and plan.status in ('building', 'partial')
         and settings.project_id = plan.project_id and settings.channel_id = plan.channel_id
         and settings.enabled = false
+        and coalesce(plan.build_report->>'requestedBy', 'schedule') <> 'human'
         and plan.build_report #>> '{autoRecovery,jobId}' = $5`,
     [planId, projectId, userId, channelId, recoveryJobId],
   ).catch(() => {});
