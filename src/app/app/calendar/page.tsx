@@ -92,7 +92,6 @@ import { useStore } from "@/lib/store";
 import {
   cancelPublication,
   reschedulePublication,
-  restorePublicationToDraft,
 } from "@/lib/publication-lifecycle-client";
 import type { Network, Post, RealPost, Trend, User } from "@/lib/types";
 import { ScheduleValidationError } from "@/lib/timezone-schedule";
@@ -2224,54 +2223,6 @@ export default function CalendarPage() {
     }
   }, [publicationBusy, publicationFailure, publicationTarget, s]);
 
-  const editTargetPublication = useCallback(async () => {
-    const target = publicationTarget;
-    if (!target || publicationBusy) return;
-    setPublicationBusy(true);
-    try {
-      let revision = target.scheduleRevision;
-      let status = target.operationStatus;
-      const publicationSettled = ["published", "published_unverified", "missing", "deleted_external"]
-        .includes(target.postStatus);
-      if (!publicationSettled && status !== "cancelled") {
-        const cancelled = await cancelPublication({
-          operationId: target.operationId,
-          expectedScheduleRevision: revision,
-          expectedStatus: status,
-          idempotencyKey: crypto.randomUUID(),
-        });
-        if (!cancelled.ok || cancelled.scheduleRevision == null) {
-          publicationFailure(cancelled.error);
-          await s.refreshReal();
-          return;
-        }
-        revision = cancelled.scheduleRevision;
-        status = "cancelled";
-      }
-      const restored = await restorePublicationToDraft({
-        operationId: target.operationId,
-        expectedScheduleRevision: revision,
-        expectedStatus: status,
-        idempotencyKey: crypto.randomUUID(),
-      });
-      await s.refreshReal();
-      if (!restored.ok || restored.draftId == null) {
-        s.toast({
-          kind: "danger",
-          title: publicationSettled ? "Новая версия не создана" : "Публикация остановлена, черновик не создан",
-          body: publicationSettled
-            ? "Опубликованный пост не изменён. Повторите действие, чтобы создать новый черновик."
-            : "Старая отправка безопасно отменена. Повторите «Редактировать», чтобы восстановить сохранённый текст в новый черновик.",
-        });
-        return;
-      }
-      setPublicationTarget(null);
-      router.push(`/app/composer?draft=${restored.draftId}&from=calendar`);
-    } finally {
-      setPublicationBusy(false);
-    }
-  }, [publicationBusy, publicationFailure, publicationTarget, router, s]);
-
   const removeLocalRecovery = (post: Post) => {
     s.removePost(post.id);
     s.toast({ kind: "info", title: "Локальная копия удалена из этого браузера" });
@@ -2994,7 +2945,6 @@ export default function CalendarPage() {
           onClose={() => {
             if (!publicationBusy) setPublicationTarget(null);
           }}
-          onEdit={() => void editTargetPublication()}
           onOpenReviewDraft={(draftId) => {
             setPublicationTarget(null);
             router.push(`/app/composer?draft=${draftId}&from=calendar`);
