@@ -10,11 +10,13 @@ const workflowDirectory = resolve(".github/workflows");
 describe("production deployment shell contract", () => {
   it("keeps artifact and migration failures before the live symlink switch", () => {
     const build = script.indexOf("INSTALL_BUILD_ARTIFACT");
+    const runtimeEnv = script.indexOf("LOAD_RUNTIME_ENV");
     const migrate = script.indexOf("bash scripts/run-production-migrations.sh");
     const state = script.indexOf("rollback-compatible\" > \"$state_file");
     const swap = script.indexOf('swap_current "$release"');
     expect(build).toBeGreaterThan(0);
-    expect(migrate).toBeGreaterThan(build);
+    expect(runtimeEnv).toBeGreaterThan(build);
+    expect(migrate).toBeGreaterThan(runtimeEnv);
     expect(state).toBeGreaterThan(migrate);
     expect(swap).toBeGreaterThan(state);
   });
@@ -27,6 +29,19 @@ describe("production deployment shell contract", () => {
     expect(migrationScript).toContain("production-local-migration-url.mjs");
     expect(migrationScript).toContain("no privileged production migration identity configured");
     expect(migrationScript).not.toContain('DATABASE_URL="$DATABASE_URL" npm run db:migrate');
+  });
+
+  it("loads the release environment for migrations without overriding the operator gate", () => {
+    const sourceEnvironment = script.indexOf('. "${release}/.env.production"');
+    const migrate = script.indexOf("bash scripts/run-production-migrations.sh");
+    expect(sourceEnvironment).toBeGreaterThan(0);
+    expect(sourceEnvironment).toBeLessThan(migrate);
+    expect(script).toContain(
+      'migration_allow_local_peer="${AURORA_ALLOW_LOCAL_PEER_MIGRATIONS:-false}"',
+    );
+    expect(script).toContain(
+      'AURORA_ALLOW_LOCAL_PEER_MIGRATIONS="$migration_allow_local_peer"',
+    );
   });
 
   it("rolls back restart, health, and partial web/worker activation failures", () => {
@@ -168,5 +183,6 @@ describe("production deployment shell contract", () => {
       '"${PRODUCTION_SSH_USER}@${PRODUCTION_SSH_HOST}:/opt/aurora-current/.env.production"',
     );
     expect(workflow).not.toContain('install -m 0600 "$build_env" .env.production');
+    expect(script).toMatch(/LOAD_RUNTIME_ENV[\s\S]*\. \.\/\.env\.production[\s\S]*MIGRATE/u);
   });
 });
