@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { CalendarClock, Pencil, Trash2 } from "lucide-react";
+import { CalendarClock, Trash2 } from "lucide-react";
 
 import { PublicationFollowupSection } from "@/components/app/publication-followup-section";
 import { Button } from "@/components/ui/button";
@@ -43,7 +43,6 @@ export function PublicationActionsDialog({
   target,
   busy,
   onClose,
-  onEdit,
   onOpenReviewDraft,
   onCancel,
   onReschedule,
@@ -52,7 +51,6 @@ export function PublicationActionsDialog({
   target: PublicationActionTarget | null;
   busy: boolean;
   onClose: () => void;
-  onEdit: () => void;
   onOpenReviewDraft: (draftId: number) => void;
   onCancel: () => void;
   onReschedule: (schedule: PublicationRescheduleInput) => void;
@@ -61,7 +59,7 @@ export function PublicationActionsDialog({
   const titleId = useId();
   const descriptionId = useId();
   const dialogRef = useRef<HTMLDivElement>(null);
-  const firstActionRef = useRef<HTMLButtonElement>(null);
+  const firstActionRef = useRef<HTMLInputElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const [localDateTime, setLocalDateTime] = useState(() =>
     localDateTimeValue(target),
@@ -163,7 +161,7 @@ export function PublicationActionsDialog({
         </H2>
         <SecondaryText id={descriptionId} className="mt-2 text-pretty">
           {cancelled
-            ? "Публикация отменена и больше не будет отправлена старой задачей. Её можно перенести или вернуть в редактор."
+            ? "Публикация отменена и больше не будет отправлена старой задачей. Её можно перенести на новое время."
             : publicationSettled
               ? "Основная отправка завершена или требует внешней сверки. Дополнительные действия показаны отдельно ниже."
               : `Запланировано на ${fmtDateTime(target.scheduledAt)}. Действия применяются ко всем каналам этой публикации.`}
@@ -174,23 +172,6 @@ export function PublicationActionsDialog({
 
         {!publicationSettled && canManageSchedule && <div className="mt-5 grid gap-3">
           <div className="rounded-sm border border-line p-3">
-            <H3>Редактировать</H3>
-            <SecondaryText className="mt-1 text-pretty">
-              Аврора сначала отменит запланированную отправку, а затем создаст новый черновик с тем же текстом и медиа.
-            </SecondaryText>
-            <Button
-              ref={firstActionRef}
-              variant="soft"
-              className="mt-3 w-full sm:w-auto"
-              disabled={busy}
-              onClick={onEdit}
-            >
-              <Pencil className="h-4 w-4" aria-hidden />
-              Редактировать
-            </Button>
-          </div>
-
-          <div className="rounded-sm border border-line p-3">
             <label htmlFor={`${titleId}-when`} className="type-label text-text">
               Перенести
             </label>
@@ -199,6 +180,7 @@ export function PublicationActionsDialog({
             </SecondaryText>
             <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-end">
               <Input
+                ref={firstActionRef}
                 id={`${titleId}-when`}
                 type="datetime-local"
                 value={localDateTime}
