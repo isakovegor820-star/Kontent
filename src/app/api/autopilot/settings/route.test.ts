@@ -9,6 +9,8 @@ const mocks = vi.hoisted(() => ({
   query: vi.fn(),
   requireSelectedProjectPermission: vi.fn(),
   checkRateLimit: vi.fn(),
+  getAutopilotQueue: vi.fn(),
+  resumeAutopilotPartialPlan: vi.fn(),
 }));
 
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
@@ -26,6 +28,10 @@ vi.mock("@/lib/rate-limit", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/rate-limit")>();
   return { ...actual, checkRateLimit: mocks.checkRateLimit };
 });
+vi.mock("@/lib/queue", () => ({ getAutopilotQueue: mocks.getAutopilotQueue }));
+vi.mock("@/lib/autopilot-weekly-queue.mjs", () => ({
+  resumeAutopilotPartialPlan: mocks.resumeAutopilotPartialPlan,
+}));
 
 import { POST } from "./route";
 
@@ -76,6 +82,8 @@ describe("POST /api/autopilot/settings", () => {
       planning_weeks: 4,
     });
     mocks.loadBrief.mockResolvedValue(readyBrief);
+    mocks.getAutopilotQueue.mockReturnValue({ add: vi.fn() });
+    mocks.resumeAutopilotPartialPlan.mockResolvedValue({ status: "skipped" });
     mocks.query.mockResolvedValue({
       rows: [{ enabled: true, mode: "confirm", post_frequency: 5, approvals_streak: 0 }],
       rowCount: 1,
@@ -181,6 +189,7 @@ describe("POST /api/autopilot/settings", () => {
     await expect(response.json()).resolves.toEqual({
       ok: true,
       settings: { enabled: true, mode: "confirm", post_frequency: 5, approvals_streak: 0 },
+      resumedPartialPlan: false,
     });
     expect(mocks.query).toHaveBeenCalledWith(expect.stringContaining("returning enabled"), [
       88,
@@ -194,6 +203,39 @@ describe("POST /api/autopilot/settings", () => {
       expect.stringContaining('"id"'),
       null,
     ]);
+  });
+
+  it("immediately resumes a partial plan when Autopilot is enabled", async () => {
+    mocks.resumeAutopilotPartialPlan.mockResolvedValue({ status: "queued", planId: 91 });
+
+    const response = await POST(request({ channelId: 22, enabled: true }));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ ok: true, resumedPartialPlan: true });
+    expect(mocks.resumeAutopilotPartialPlan).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: 88,
+      userId: 4,
+      channelId: 22,
+    }));
+  });
+
+  it("marks a delayed partial recovery as paused as soon as Autopilot is disabled", async () => {
+    mocks.query
+      .mockResolvedValueOnce({
+        rows: [{ enabled: false, mode: "confirm", post_frequency: 5, approvals_streak: 0 }],
+        rowCount: 1,
+      })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+    const response = await POST(request({ channelId: 22, enabled: false }));
+
+    expect(response.status).toBe(200);
+    expect(mocks.query).toHaveBeenNthCalledWith(
+      2,
+      expect.stringContaining('"recoveryState":"paused"'),
+      [88, 22],
+    );
+    expect(mocks.resumeAutopilotPartialPlan).not.toHaveBeenCalled();
   });
 
   it("saves an Autopilot model and planning horizon", async () => {

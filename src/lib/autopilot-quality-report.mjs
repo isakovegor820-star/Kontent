@@ -127,8 +127,8 @@ const QUALITY_FAILURE_COPY = {
   },
   semantic_review_required: {
     title: "Автопроверка фактов не дала заключения",
-    action: "Прочитай текст и нажми «Одобрить» — это и есть проверка. Публикация без чтения для такого поста закрыта.",
-    fix: "review",
+    action: "Аврора повторит проверку автоматически. Пока заключения нет, текст не попадёт в готовый план.",
+    fix: "retry",
   },
   insufficient_content: {
     title: "В тексте недостаточно содержательной мысли",
@@ -176,7 +176,9 @@ const QUALITY_FAILURE_AXES = Object.freeze({
   weak_sources: ["blocked", "add_knowledge"],
   invented: ["blocked", "rewrite"],
   unsupported_semantic_claim: ["blocked", "rewrite"],
-  semantic_review_required: ["confirmation_required", "human_review"],
+  // Autopilot promises finished publications, not an editor task. When semantic validation
+  // is temporarily unavailable, keep the draft internal and retry the provider automatically.
+  semantic_review_required: ["confirmation_required", "provider_retry"],
   insufficient_content: ["blocked", "provider_retry"],
   platform_limit: ["blocked", "deterministic_format"],
   quality_threshold: ["confirmation_required", "settings_change"],
@@ -236,7 +238,9 @@ function itemPassed(item) {
   return item?.aiReady === true &&
     String(item?.draft || "").trim().length > 0 &&
     item?.quality?.passed === true &&
-    item?.quality?.publicationDisposition !== "blocked";
+    !["confirmation_required", "blocked"].includes(item?.quality?.publicationDisposition) &&
+    item?.qualityBlocked !== true &&
+    item?.reviewRequired !== true;
 }
 
 /**

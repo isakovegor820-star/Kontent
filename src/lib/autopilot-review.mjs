@@ -60,19 +60,19 @@ export function isAutopilotHumanReviewItem(item) {
 }
 
 /**
- * Reader-ready is the public product boundary: a deterministic pass or a clean draft whose
- * only remaining gate is an unavailable semantic provider. Quality-review drafts, missing
- * text and invented specifics stay inside the generator instead of becoming user work.
+ * Reader-ready is the public product boundary: every automatic editorial and semantic gate
+ * has passed. A draft that still needs a person is useful diagnostic material, but it is not
+ * one of the promised ready publications and stays inside the generator.
  */
 export function isAutopilotReaderReadyItem(item) {
   if (item?.aiReady !== true || !String(item?.draft || "").trim()) return false;
   if (!hasVerifiedQualityMetadata(item?.quality)) return false;
   if (Array.isArray(item?.invented) && item.invented.length > 0) return false;
-  if (isAutopilotHumanReviewItem(item)) return true;
   return Boolean(
-    item?.qualityBlocked !== true &&
+      item?.qualityBlocked !== true &&
       item?.reviewRequired !== true &&
       item?.quality?.passed === true &&
+      !["confirmation_required", "blocked"].includes(item.quality.publicationDisposition) &&
       Number(item.quality.score) >= Number(item.quality.threshold) &&
       hardQualityViolations(item.quality).length === 0,
   );

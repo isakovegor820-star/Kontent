@@ -228,6 +228,8 @@ export async function POST(req: NextRequest) {
           `update autopilot_plan
               set status = 'building', repair_attempt = $5,
                   last_repair_job_id = $4::uuid, terminal_outcome = null,
+                  build_report = (coalesce(build_report, '{}'::jsonb) - 'autoRecovery')
+                    || '{"recoveryState":"manual_repair","nextRetryAt":null}'::jsonb,
                   build_activity_at = now(), revision = revision + 1
             where id = $1 and project_id = $2 and channel_id = $3 and revision = $6
             returning revision`,

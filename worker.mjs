@@ -179,7 +179,11 @@ import {
   selectAutopilotCandidates,
 } from "./src/lib/autopilot-candidate-selection.mjs";
 import {
+  AUTOPILOT_CONTINUATION_JOB,
+  autopilotAutoRecoveryReport,
+  dispatchAutopilotContinuation,
   enqueueWeeklyAutopilotPlan,
+  isAutopilotAutoRecoveryStrategy,
   reconcileBuildingAutopilotPlans,
 } from "./src/lib/autopilot-weekly-queue.mjs";
 import {
@@ -5769,7 +5773,7 @@ async function buildAutopilotPlan(
 
   const st = (
     await pool.query(
-      `select post_frequency, mode, approvals_streak, generation_engine,
+      `select enabled, post_frequency, mode, approvals_streak, generation_engine,
               planning_months, planning_weeks, news_sources, quick_settings
          from autopilot_settings
         where project_id = $1 and channel_id = $2`,
@@ -6602,6 +6606,15 @@ async function buildAutopilotPlan(
     .sort((left, right) =>
       Date.parse(String(left.item.scheduledAt || "")) - Date.parse(String(right.item.scheduledAt || "")),
     );
+  if (!monthlyContext && selectedPairs.length === publicationTargetCount) {
+    // Candidate slots belong to the larger quality reserve (7 requested publications become
+    // 10 candidates). Keeping those timestamps after selection can put seven winners into
+    // five days. Rebuild the publication schedule only after the final seven are known.
+    const publicationSlots = periodSlots(publicationTargetCount, planWeeks, bestHour);
+    selectedPairs.forEach((pair, index) => {
+      pair.item.scheduledAt = publicationSlots[index];
+    });
+  }
   const selectionDeficit = Math.max(
     0,
     publicationTargetCount - selectedPairs.length,
@@ -6705,6 +6718,18 @@ async function buildAutopilotPlan(
         },
       );
     }
+    const autoRecoveryEnabled = expectedPlanId != null &&
+      automaticRepairIndexes.length > 0 &&
+      isAutopilotAutoRecoveryStrategy(report.primaryFix);
+    const persistedPartialReport = autoRecoveryEnabled
+      ? autopilotAutoRecoveryReport(report, {
+          enabled: st?.enabled === true,
+          attemptNumber: Math.max(1, Number(expectedPlan?.repair_attempt || 0) + 1),
+        })
+      : report;
+    const recoveryJobId = typeof persistedPartialReport?.autoRecovery?.jobId === "string"
+      ? persistedPartialReport.autoRecovery.jobId
+      : null;
     const aiCallCount = Math.max(0, workerAiCallCount(usageReservationId) - aiCallsBefore);
     const partialTx = await pool.connect();
     let partialPlanId = expectedPlanId == null ? null : Number(expectedPlanId);
@@ -6722,6 +6747,7 @@ async function buildAutopilotPlan(
                   repair_strategy = $7,
                   terminal_outcome = 'partial',
                   ai_call_count = ai_call_count + $8,
+                  last_repair_job_id = $9::uuid,
                   build_activity_at = now(),
                   revision = revision + 1
             where id = $1 and project_id = $2 and channel_id = $3 and status = 'building'
@@ -6732,9 +6758,10 @@ async function buildAutopilotPlan(
             channelId,
             JSON.stringify(durableCandidateItems),
             rule,
-            JSON.stringify(report),
+            JSON.stringify(persistedPartialReport),
             report.primaryFix,
             aiCallCount,
+            recoveryJobId,
           ],
         );
         if (!saved.rowCount) {
@@ -6813,6 +6840,30 @@ async function buildAutopilotPlan(
     } finally {
       partialTx.release();
     }
+    if (st?.enabled === true && recoveryJobId && autopilotQueue) {
+      await dispatchAutopilotContinuation({
+        queue: autopilotQueue,
+        row: {
+          id: partialPlanId,
+          project_id: projectId,
+          user_id: userId,
+          channel_id: channelId,
+          status: "partial",
+          build_report: persistedPartialReport,
+          repair_strategy: report.primaryFix,
+          enabled: true,
+        },
+      }).catch((error) => {
+        // PostgreSQL remains authoritative. The 30-second reconciler will replay the same
+        // continuation id without regenerating reader-ready checkpoints.
+        console.warn("[autopilot] automatic continuation pending reconciliation", {
+          projectId,
+          channelId,
+          planId: partialPlanId,
+          errorName: error?.name || "Error",
+        });
+      });
+    }
     console.info("[autopilot] build", {
       projectId,
       channelId,
@@ -6826,7 +6877,7 @@ async function buildAutopilotPlan(
       attemptNumber: Number(expectedPlan?.repair_attempt || 0) + 1,
       generationEngine,
       durationMs: Date.now() - buildStartedAt,
-      terminalOutcome: "partial",
+      terminalOutcome: autoRecoveryEnabled ? "recovering" : "partial",
       aiCallCount,
     });
     return {
@@ -6856,7 +6907,7 @@ async function buildAutopilotPlan(
   };
   const scheduleSummary = generationPostFrequency > 7
     ? "Публикации распределены с 9:00 до 21:00 МСК без выхода пачкой."
-    : `Время публикации — ${String(bestHour).padStart(2, "0")}:00 МСК.`;
+    : `Публикации распределены по дням и разным часам рядом с пиком ${String(bestHour).padStart(2, "0")}:00 МСК.`;
   rule = `В плане ${selectedNewsCount} ` +
     `${plural(selectedNewsCount, "свежее событие", "свежих события", "свежих событий")} и ` +
     `${selectedEvergreenCount} ${plural(selectedEvergreenCount, "полезный разбор", "полезных разбора", "полезных разборов")}. ` +
@@ -10717,8 +10768,93 @@ function autopilotTerminalOutcomeForError(error) {
   return "provider_error";
 }
 
+const AUTOPILOT_RECOVERY_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+
+function delayUntilNextAutopilotQuotaWindow(nowMs = Date.now()) {
+  const now = Temporal.Instant.fromEpochMilliseconds(nowMs).toZonedDateTimeISO("Europe/Moscow");
+  const nextWindow = now.add({ days: 1 }).with({
+    hour: 0,
+    minute: 5,
+    second: 0,
+    millisecond: 0,
+    microsecond: 0,
+    nanosecond: 0,
+  });
+  return Math.max(5 * 60_000, nextWindow.epochMilliseconds - nowMs);
+}
+
+async function claimAutopilotContinuationJob(job) {
+  if (job?.name !== AUTOPILOT_CONTINUATION_JOB) return true;
+  const projectId = Number(job.data?.projectId);
+  const userId = Number(job.data?.userId);
+  const channelId = Number(job.data?.channelId);
+  const planId = Number(job.data?.planId);
+  const recoveryJobId = String(job.data?.recoveryJobId || "").toLowerCase();
+  if (
+    !Number.isSafeInteger(projectId) || projectId <= 0 ||
+    !Number.isSafeInteger(userId) || userId <= 0 ||
+    !Number.isSafeInteger(channelId) || channelId <= 0 ||
+    !Number.isSafeInteger(planId) || planId <= 0 ||
+    !AUTOPILOT_RECOVERY_UUID.test(recoveryJobId)
+  ) throw new UnrecoverableError("autopilot-continue: bad_scope");
+
+  const claimed = await pool.query(
+    `update autopilot_plan plan
+        set status = 'building', repair_attempt = repair_attempt + 1,
+            last_repair_job_id = $5::uuid,
+            build_report = jsonb_set(
+              coalesce(plan.build_report, '{}'::jsonb),
+              '{recoveryState}', '"auto_repair_running"'::jsonb, true
+            ),
+            build_activity_at = now(), revision = revision + 1
+       from autopilot_settings settings
+      where plan.id = $1 and plan.project_id = $2 and plan.user_id = $3
+        and plan.channel_id = $4 and plan.status = 'partial'
+        and settings.project_id = plan.project_id and settings.channel_id = plan.channel_id
+        and settings.enabled = true
+        and plan.build_report #>> '{autoRecovery,jobId}' = $5
+      returning plan.id`,
+    [planId, projectId, userId, channelId, recoveryJobId],
+  );
+  if (claimed.rowCount) return true;
+
+  const active = await pool.query(
+    `select plan.id
+       from autopilot_plan plan
+       join autopilot_settings settings
+         on settings.project_id = plan.project_id and settings.channel_id = plan.channel_id
+      where plan.id = $1 and plan.project_id = $2 and plan.user_id = $3
+        and plan.channel_id = $4 and plan.status = 'building'
+        and settings.enabled = true
+        and plan.build_report #>> '{autoRecovery,jobId}' = $5`,
+    [planId, projectId, userId, channelId, recoveryJobId],
+  );
+  if (active.rowCount) return true;
+
+  await pool.query(
+    `update autopilot_plan plan
+        set status = 'partial',
+            build_report = jsonb_set(
+              coalesce(plan.build_report, '{}'::jsonb),
+              '{recoveryState}', '"paused"'::jsonb, true
+            ),
+            build_activity_at = now(), revision = revision + 1
+       from autopilot_settings settings
+      where plan.id = $1 and plan.project_id = $2 and plan.user_id = $3
+        and plan.channel_id = $4 and plan.status in ('building', 'partial')
+        and settings.project_id = plan.project_id and settings.channel_id = plan.channel_id
+        and settings.enabled = false
+        and plan.build_report #>> '{autoRecovery,jobId}' = $5`,
+    [planId, projectId, userId, channelId, recoveryJobId],
+  ).catch(() => {});
+  return false;
+}
+
 async function processAutopilotPlanJob(job) {
   const jobStartedAt = Date.now();
+  if (!(await claimAutopilotContinuationJob(job))) {
+    return { ok: true, paused: true, planId: Number(job.data?.planId) || null };
+  }
   let scope;
   try {
     scope = await requireAutopilotPlanJobScope(pool, job.data);
@@ -10734,6 +10870,9 @@ async function processAutopilotPlanJob(job) {
     : null;
   const repairIndexes = job.name === "autopilot-repair" && Array.isArray(job.data?.repairIndexes)
     ? job.data.repairIndexes.map(Number)
+    : null;
+  const continuationRecoveryJobId = job.name === AUTOPILOT_CONTINUATION_JOB
+    ? String(job.data?.recoveryJobId || "").toLowerCase()
     : null;
   if (
     job.name === "autopilot-repair" &&
@@ -10768,19 +10907,48 @@ async function processAutopilotPlanJob(job) {
     userId,
     kind: "autopilot-plan",
     key: workerAiUsageCompositeKey(
-      repairOperationId == null ? "autopilot-plan" : "autopilot-repair",
-      repairOperationId == null ? [projectId, planId] : [projectId, planId, repairOperationId],
+      repairOperationId != null
+        ? "autopilot-repair"
+        : continuationRecoveryJobId
+          ? "autopilot-continue"
+          : "autopilot-plan",
+      repairOperationId != null
+        ? [projectId, planId, repairOperationId]
+        : continuationRecoveryJobId
+          ? [projectId, planId, continuationRecoveryJobId]
+          : [projectId, planId],
     ),
   });
   if (usage.state === "committed") return { ok: true, replayed: true, planId };
   if (usage.state === "in_progress") return { ok: true, inProgress: true, planId };
   if (usage.state === "limit") {
-    await pool.query(
+    const recoverySource = (
+      await pool.query(
+        `select plan.build_report, plan.repair_attempt, settings.enabled
+           from autopilot_plan plan
+           join autopilot_settings settings
+             on settings.project_id = plan.project_id and settings.channel_id = plan.channel_id
+          where plan.id = $1 and plan.project_id = $2 and plan.channel_id = $3
+            and plan.status = 'building'`,
+        [planId, projectId, channelId],
+      )
+    ).rows[0];
+    const recoveryReport = autopilotAutoRecoveryReport(recoverySource?.build_report, {
+      enabled: recoverySource?.enabled === true,
+      attemptNumber: Math.max(1, Number(recoverySource?.repair_attempt || 0) + 1),
+      delayMs: delayUntilNextAutopilotQuotaWindow(),
+      recoveryState: "waiting_quota",
+    });
+    const recoveryJobId = String(recoveryReport.autoRecovery?.jobId || "");
+    const savedPartial = await pool.query(
       `update autopilot_plan
-          set status = 'error', rules = 'ai_usage_limit', terminal_outcome = 'quota',
+          set status = 'partial', rules = 'ai_usage_limit', terminal_outcome = 'partial',
+              build_report = $4::jsonb, repair_strategy = 'provider_retry',
+              last_repair_job_id = $5::uuid, build_activity_at = now(),
               revision = revision + 1
-        where id = $1 and project_id = $2 and channel_id = $3 and status = 'building'`,
-      [planId, projectId, channelId],
+        where id = $1 and project_id = $2 and channel_id = $3 and status = 'building'
+        returning id`,
+      [planId, projectId, channelId, JSON.stringify(recoveryReport), recoveryJobId],
     );
     if (repairOperationId != null) {
       await pool.query(
@@ -10791,6 +10959,28 @@ async function processAutopilotPlanJob(job) {
           where id = $1 and project_id = $2 and status = 'processing'`,
         [repairOperationId, projectId],
       );
+    }
+    if (savedPartial.rowCount && recoverySource?.enabled === true && autopilotQueue) {
+      await dispatchAutopilotContinuation({
+        queue: autopilotQueue,
+        row: {
+          id: planId,
+          project_id: projectId,
+          user_id: userId,
+          channel_id: channelId,
+          status: "partial",
+          build_report: recoveryReport,
+          repair_strategy: "provider_retry",
+          enabled: true,
+        },
+      }).catch((error) => {
+        console.warn("[autopilot] quota continuation pending reconciliation", {
+          projectId,
+          channelId,
+          planId,
+          errorName: error?.name || "Error",
+        });
+      });
     }
     console.warn("[autopilot] build", {
       projectId,
@@ -10954,7 +11144,7 @@ async function processAutopilotPlanJob(job) {
 }
 
 function recoverFailedAutopilotPlan(job, error) {
-  if (!["autopilot-plan", "autopilot-repair"].includes(job?.name)) return;
+  if (!["autopilot-plan", "autopilot-repair", AUTOPILOT_CONTINUATION_JOB].includes(job?.name)) return;
   const planId = Number(job.data?.planId);
   const projectId = Number(job.data?.projectId);
   const userId = Number(job.data?.userId);

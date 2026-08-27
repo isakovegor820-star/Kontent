@@ -158,7 +158,15 @@ interface BuildAttempt {
     | "provider_retry"
     | "settings_change"
     | null;
-  recoveryState: "waiting_provider" | "provider_stopped" | null;
+  recoveryState:
+    | "waiting_provider"
+    | "provider_stopped"
+    | "auto_retry_scheduled"
+    | "auto_repair_running"
+    | "paused"
+    | "waiting_quota"
+    | "manual_repair"
+    | null;
   providerFailureCode: string | null;
   attemptNumber: number;
   maxAttempts: number;
@@ -399,7 +407,7 @@ function AutopilotHero({
           size="md"
           onClick={onToggle}
           loading={busy}
-          disabled={busy || blocked || building}
+          disabled={busy || blocked}
           className="mt-6 bg-surface/85"
         >
           {enabled ? (
@@ -950,39 +958,55 @@ function BuildAttemptPanel({
 }) {
   const readyCount = Math.min(attempt.readyCount, attempt.publicationTargetCount);
   const remaining = Math.max(0, attempt.publicationTargetCount - readyCount);
-  const terminal = attempt.status !== "building";
-  const canContinue = attempt.retryableItemIndexes.length > 0;
+  const automaticRecovery = ["auto_retry_scheduled", "auto_repair_running"].includes(
+    String(attempt.recoveryState || ""),
+  );
+  const waitingForQuota = attempt.recoveryState === "waiting_quota";
+  const pausedRecovery = attempt.recoveryState === "paused";
+  const terminal = attempt.status !== "building" && !automaticRecovery && !waitingForQuota;
+  const canContinue = attempt.retryableItemIndexes.length > 0 &&
+    !automaticRecovery && !waitingForQuota && !pausedRecovery;
   const waitingForProvider = attempt.status === "building" && attempt.recoveryState === "waiting_provider";
-  const title = waitingForProvider
-    ? "ИИ временно не ответил"
-    : attempt.status === "building"
-      ? `Готово ${readyCount} из ${attempt.publicationTargetCount}`
-      : attempt.status === "partial"
-        ? "Нужно дополнить план"
-        : "Сборка остановилась";
-  const description = waitingForProvider
-    ? readyCount > 0
-      ? `Готово ${readyCount} из ${attempt.publicationTargetCount}. Готовые посты сохранены; недостающие Аврора продолжит собирать автоматически.`
-      : "Готовых постов пока нет. Аврора продолжит сборку автоматически, как только ИИ снова ответит."
-    : attempt.status === "building"
-      ? remaining > 0
-        ? `Аврора пишет и проверяет ещё ${remaining} ${plural(remaining, "пост", "поста", "постов")}. Готовые тексты не пересобираются.`
-        : "Тексты готовы. Аврора завершает проверку и раскладывает их по расписанию."
-    : attempt.errorReason === "quota"
-      ? "Дневной лимит генераций закончился до завершения плана. Запусти сборку после обновления лимита."
-      : attempt.errorReason === "cancelled"
-        ? "Сборка остановлена. Когда будешь готов, запусти её снова."
-        : attempt.primaryFix === "add_knowledge"
-          ? "По выбранным темам не хватило подтверждённых материалов. Добавь факты о канале и собери план снова."
-          : attempt.recoveryState === "provider_stopped" || attempt.errorReason === "provider"
-            ? readyCount > 0
-              ? `Готово ${readyCount} из ${attempt.publicationTargetCount}. Готовые посты сохранены; продолжи сборку позже — Аврора возьмёт только недостающие.`
-              : canContinue
-                ? "Готовых постов пока нет. Продолжи сборку позже — Аврора снова попробует подготовить весь план."
-                : "Готовых постов пока нет. Запусти новую сборку — Аврора снова попробует подготовить весь план."
-            : readyCount > 0
-              ? `Готово ${readyCount} из ${attempt.publicationTargetCount}. Продолжи сборку — готовые посты останутся без изменений.`
-              : "Готовых постов пока нет. Продолжи сборку — Аврора снова попробует подготовить весь план.";
+  const title = automaticRecovery
+    ? `Аврора добирает план: ${readyCount} из ${attempt.publicationTargetCount}`
+    : waitingForQuota || pausedRecovery
+      ? `Сохранено ${readyCount} из ${attempt.publicationTargetCount}`
+      : waitingForProvider
+        ? "ИИ временно не ответил"
+        : attempt.status === "building"
+          ? `Готово ${readyCount} из ${attempt.publicationTargetCount}`
+          : attempt.status === "partial"
+            ? "Нужно дополнить план"
+            : "Сборка остановилась";
+  const description = automaticRecovery
+    ? `Готовые тексты сохранены. Недостающие ${remaining} ${plural(remaining, "пост", "поста", "постов")} Аврора переписывает и проверяет сама.`
+    : waitingForQuota
+      ? "Готовые тексты сохранены. Добор продолжится автоматически после обновления дневного лимита."
+      : pausedRecovery
+        ? "Готовые тексты сохранены. Включи Автопилот — он сам доберёт недостающие публикации."
+        : waitingForProvider
+          ? readyCount > 0
+            ? `Готово ${readyCount} из ${attempt.publicationTargetCount}. Готовые посты сохранены; недостающие Аврора продолжит собирать автоматически.`
+            : "Готовых постов пока нет. Аврора продолжит сборку автоматически, как только ИИ снова ответит."
+          : attempt.status === "building"
+            ? remaining > 0
+              ? `Аврора пишет и проверяет ещё ${remaining} ${plural(remaining, "пост", "поста", "постов")}. Готовые тексты не пересобираются.`
+              : "Тексты готовы. Аврора завершает проверку и раскладывает их по расписанию."
+            : attempt.errorReason === "quota"
+              ? "Дневной лимит генераций закончился до завершения плана. Запусти сборку после обновления лимита."
+              : attempt.errorReason === "cancelled"
+                ? "Сборка остановлена. Когда будешь готов, запусти её снова."
+                : attempt.primaryFix === "add_knowledge"
+                  ? "По выбранным темам не хватило подтверждённых материалов. Добавь факты о канале и собери план снова."
+                  : attempt.recoveryState === "provider_stopped" || attempt.errorReason === "provider"
+                    ? readyCount > 0
+                      ? `Готово ${readyCount} из ${attempt.publicationTargetCount}. Готовые посты сохранены; продолжи сборку позже — Аврора возьмёт только недостающие.`
+                      : canContinue
+                        ? "Готовых постов пока нет. Продолжи сборку позже — Аврора снова попробует подготовить весь план."
+                        : "Готовых постов пока нет. Запусти новую сборку — Аврора снова попробует подготовить весь план."
+                    : readyCount > 0
+                      ? `Готово ${readyCount} из ${attempt.publicationTargetCount}. Продолжи сборку — готовые посты останутся без изменений.`
+                      : "Готовых постов пока нет. Продолжи сборку — Аврора снова попробует подготовить весь план.";
   const commonLinkClass = buttonClassName({
     variant: "primary",
     size: "sm",
@@ -995,10 +1019,10 @@ function BuildAttemptPanel({
       role={terminal ? "alert" : "status"}
       aria-live={terminal ? "assertive" : "polite"}
       aria-atomic="true"
-      aria-busy={attempt.status === "building" || undefined}
+      aria-busy={attempt.status === "building" || automaticRecovery || waitingForQuota || undefined}
     >
       <div className="flex min-w-0 items-start gap-3">
-        {attempt.status === "building" ? (
+        {attempt.status === "building" || automaticRecovery || waitingForQuota ? (
           <Loader2
             className={cn("mt-0.5 h-5 w-5 shrink-0 text-brand", autopilotBuildSpinnerClass(reducedMotion))}
             aria-hidden
@@ -1009,8 +1033,28 @@ function BuildAttemptPanel({
         <div className="min-w-0 flex-1">
           <p className="text-[15px] font-semibold leading-snug text-text tabular-nums">{title}</p>
           <p className="mt-1 text-[13px] leading-relaxed text-text-3">{description}</p>
+          {attempt.causes.length > 0 && attempt.status !== "building" && (
+            <ul className="mt-3 space-y-2" aria-label="Причины незавершённой сборки">
+              {attempt.causes.map((cause) => (
+                <li key={cause.code} className="rounded-md border border-line bg-surface-inset px-3 py-2">
+                  <p className="text-[13px] font-medium text-text">
+                    {cause.title}{cause.count > 1 ? ` · ${cause.count}` : ""}
+                  </p>
+                  <p className="mt-0.5 text-[12px] leading-relaxed text-text-3">{cause.action}</p>
+                </li>
+              ))}
+            </ul>
+          )}
           <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
-            {attempt.status === "building" ? (
+            {automaticRecovery || waitingForQuota ? (
+              <p className="text-[12px] font-medium text-brand" role="status">
+                Можно закрыть страницу — работа продолжится в фоне.
+              </p>
+            ) : pausedRecovery ? (
+              <p className="text-[12px] font-medium text-text-3">
+                Возобнови Автопилот в верхнем блоке — отдельный повтор не нужен.
+              </p>
+            ) : attempt.status === "building" ? (
               <Button variant="secondary" size="sm" onClick={onCancel} loading={busy} disabled={busy}>
                 <X className="h-4 w-4" aria-hidden />
                 Остановить сборку
@@ -1252,7 +1296,11 @@ export default function AutopilotPage() {
     return () => controller.abort();
   }, []);
 
-  const building = data?.buildAttempt?.status === "building";
+  const building = data?.buildAttempt?.status === "building" || [
+    "auto_retry_scheduled",
+    "auto_repair_running",
+    "waiting_quota",
+  ].includes(String(data?.buildAttempt?.recoveryState || ""));
   useEffect(() => {
     if (!building) return;
     let cancelled = false;
@@ -1347,13 +1395,19 @@ export default function AutopilotPage() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ channelId: chId, enabled }),
       });
-      const result = await response.json().catch(() => null) as { ok?: boolean; error?: string } | null;
+      const result = await response.json().catch(() => null) as {
+        ok?: boolean;
+        error?: string;
+        resumedPartialPlan?: boolean;
+      } | null;
       if (response.ok && result?.ok) {
         s.toast({
           kind: enabled ? "success" : "info",
           title: enabled ? "Автопилот возобновлён" : "Автопилот приостановлен",
           body: enabled
-            ? "Аврора снова будет готовить новые планы по расписанию."
+            ? result.resumedPartialPlan
+              ? "Недособранный план уже продолжает добираться в фоне. Готовые тексты сохранены."
+              : "Аврора снова будет готовить новые планы по расписанию."
             : "Уже запланированные публикации остаются в календаре.",
         });
         if (shouldStartFirstPlan) {

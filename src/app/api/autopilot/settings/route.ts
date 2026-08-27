@@ -17,6 +17,8 @@ import { BoundedBodyError, readRequestBodyLimited } from "@/lib/bounded-request-
 import { checkRateLimit, rateLimitResponse } from "@/lib/rate-limit";
 import { selectAutopilotNewsSources } from "@/lib/autopilot-source-selection";
 import { normalizeAutopilotQuickSettings } from "@/lib/autopilot-style.mjs";
+import { getAutopilotQueue } from "@/lib/queue";
+import { resumeAutopilotPartialPlan } from "@/lib/autopilot-weekly-queue.mjs";
 
 export const runtime = "nodejs";
 
@@ -153,7 +155,50 @@ export async function POST(req: NextRequest) {
     if (!updated.rows[0]) {
       return NextResponse.json({ ok: false, error: "not_found" }, { status: 404 });
     }
-    return NextResponse.json({ ok: true, settings: updated.rows[0] });
+    let resumedPartialPlan = false;
+    if (enabled === true) {
+      const resumed = await resumeAutopilotPartialPlan({
+        pool,
+        queue: getAutopilotQueue(),
+        projectId: membership.projectId,
+        userId: user.id,
+        channelId,
+      }).catch((error) => {
+        // The settings change is already durable. The worker's 30-second reconciler will
+        // retry the same partial plan, so a temporary Redis outage must not roll back enable.
+        console.warn("[/api/autopilot/settings] partial resume pending", {
+          projectId: membership.projectId,
+          channelId,
+          errorName: error instanceof Error ? error.name : "Error",
+        });
+        return null;
+      });
+      resumedPartialPlan = resumed?.status === "queued";
+    } else if (enabled === false) {
+      await pool.query(
+        `update autopilot_plan
+            set build_report = coalesce(build_report, '{}'::jsonb)
+                  || '{"recoveryState":"paused","nextRetryAt":null}'::jsonb,
+                build_activity_at = now(), revision = revision + 1
+          where project_id = $1 and channel_id = $2 and status = 'partial'
+            and build_report ? 'autoRecovery'`,
+        [membership.projectId, channelId],
+      ).catch((error) => {
+        // The continuation claim also checks settings.enabled and will refuse to run. This
+        // write only makes the paused state visible immediately if PostgreSQL was transiently
+        // unavailable after the authoritative settings update.
+        console.warn("[/api/autopilot/settings] partial pause display pending", {
+          projectId: membership.projectId,
+          channelId,
+          errorName: error instanceof Error ? error.name : "Error",
+        });
+      });
+    }
+    return NextResponse.json({
+      ok: true,
+      settings: updated.rows[0],
+      resumedPartialPlan,
+    });
   } catch (err) {
     if (err instanceof ProjectAccessError) {
       return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });

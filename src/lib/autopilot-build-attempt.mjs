@@ -184,7 +184,15 @@ export function autopilotBuildAttemptDto(row, expected) {
     ? persistedReport.causes
     : report.causes;
   const status = String(row.status || "building");
-  const recoveryState = ["waiting_provider", "provider_stopped"].includes(
+  const recoveryState = [
+    "waiting_provider",
+    "provider_stopped",
+    "auto_retry_scheduled",
+    "auto_repair_running",
+    "paused",
+    "waiting_quota",
+    "manual_repair",
+  ].includes(
     String(persistedReport?.recoveryState || ""),
   )
     ? String(persistedReport.recoveryState)

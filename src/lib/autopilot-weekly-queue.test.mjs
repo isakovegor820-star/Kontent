@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  AUTOPILOT_CONTINUATION_JOB,
+  autopilotAutoRecoveryReport,
   enqueueWeeklyAutopilotPlan,
   reconcileBuildingAutopilotPlans,
+  resumeAutopilotPartialPlan,
 } from "./autopilot-weekly-queue.mjs";
 
 function harness({ plans = [], queueRejects = false } = {}) {
@@ -23,7 +26,7 @@ function harness({ plans = [], queueRejects = false } = {}) {
           rowCount: 1,
         };
       }
-      if (normalized.startsWith("select id, status, items")) return { rows: plans, rowCount: plans.length };
+      if (normalized.startsWith("select id, project_id, user_id")) return { rows: plans, rowCount: plans.length };
       if (normalized.startsWith("insert into autopilot_plan")) return { rows: [{ id: "701" }], rowCount: 1 };
       throw new Error(`unexpected tx query: ${normalized}`);
     }),
@@ -31,7 +34,24 @@ function harness({ plans = [], queueRejects = false } = {}) {
   };
   const pool = {
     connect: vi.fn(async () => tx),
-    query: vi.fn(async () => ({ rows: [], rowCount: 1 })),
+    query: vi.fn(async (sql, params = []) => {
+      const normalized = String(sql).replace(/\s+/gu, " ").trim();
+      if (normalized.startsWith("update autopilot_plan") && normalized.includes("returning id, project_id")) {
+        const source = plans.find((plan) => Number(plan.id) === Number(params[0]));
+        if (!source) return { rows: [], rowCount: 0 };
+        return {
+          rows: [{
+            ...source,
+            project_id: source.project_id ?? "4",
+            user_id: source.user_id ?? "9",
+            channel_id: source.channel_id ?? "12",
+            build_report: JSON.parse(String(params[3])),
+          }],
+          rowCount: 1,
+        };
+      }
+      return { rows: [], rowCount: 1 };
+    }),
   };
   const queue = {
     add: queueRejects
@@ -42,6 +62,30 @@ function harness({ plans = [], queueRejects = false } = {}) {
 }
 
 describe("weekly Autopilot queue dispatch", () => {
+  it("persists a delayed recovery token without changing the quality diagnosis", () => {
+    const report = autopilotAutoRecoveryReport(
+      { passed: 4, failed: 6, primaryFix: "rewrite" },
+      {
+        recoveryJobId: "113229a4-6c97-4ad0-90c9-0dc8d5c598a3",
+        attemptNumber: 2,
+        nowMs: Date.parse("2026-08-27T07:00:00.000Z"),
+      },
+    );
+
+    expect(report).toMatchObject({
+      passed: 4,
+      failed: 6,
+      primaryFix: "rewrite",
+      recoveryState: "auto_retry_scheduled",
+      attemptNumber: 2,
+      nextRetryAt: "2026-08-27T07:01:00.000Z",
+      autoRecovery: {
+        jobId: "113229a4-6c97-4ad0-90c9-0dc8d5c598a3",
+        nextRetryAt: "2026-08-27T07:01:00.000Z",
+      },
+    });
+  });
+
   it("creates a durable placeholder and uses the dedicated retrying queue", async () => {
     const { tx, pool, queue } = harness();
 
@@ -106,6 +150,96 @@ describe("weekly Autopilot queue dispatch", () => {
     );
   });
 
+  it("resumes the newest partial plan instead of creating a replacement", async () => {
+    const items = Array.from({ length: 10 }, (_, i) => ({
+      i,
+      topic: `Тема ${i + 1}`,
+      draft: i < 4 ? `Готовый текст ${i + 1}` : "",
+      aiReady: i < 4,
+      scheduledAt: `2026-08-${String(28 + Math.floor(i / 2)).padStart(2, "0")}T16:00:00.000Z`,
+    }));
+    const { tx, pool, queue } = harness({
+      plans: [{
+        id: "46",
+        project_id: "4",
+        user_id: "9",
+        channel_id: "12",
+        status: "partial",
+        items,
+        build_report: { passed: 4, primaryFix: "rewrite" },
+        repair_strategy: "rewrite",
+        repair_attempt: 0,
+        publication_target_count: 7,
+        candidate_count: 10,
+      }],
+    });
+
+    const result = await enqueueWeeklyAutopilotPlan({
+      pool,
+      queue,
+      projectId: 4,
+      userId: 9,
+      channelId: 12,
+      nowMs: Date.parse("2026-08-27T07:00:00.000Z"),
+    });
+
+    expect(result).toMatchObject({
+      status: "queued",
+      planId: 46,
+      publicationTargetCount: 7,
+      candidateCount: 10,
+      recovered: true,
+    });
+    expect(queue.add).toHaveBeenCalledWith(
+      AUTOPILOT_CONTINUATION_JOB,
+      expect.objectContaining({ projectId: 4, userId: 9, channelId: 12, planId: 46 }),
+      expect.objectContaining({ jobId: expect.stringContaining("autopilot-continue-46-") }),
+    );
+    expect(tx.query.mock.calls.some(([sql]) => String(sql).startsWith("insert into autopilot_plan"))).toBe(false);
+    expect(pool.query.mock.calls.some(([sql]) => String(sql).includes("set build_report"))).toBe(true);
+  });
+
+  it("lets another permitted actor re-enable the original owner's partial plan", async () => {
+    const row = {
+      id: "47",
+      project_id: "4",
+      user_id: "9",
+      channel_id: "12",
+      status: "partial",
+      build_report: { passed: 4, primaryFix: "rewrite" },
+      repair_strategy: "rewrite",
+      repair_attempt: 1,
+      enabled: true,
+    };
+    const pool = {
+      query: vi.fn()
+        .mockResolvedValueOnce({ rows: [row], rowCount: 1 })
+        .mockResolvedValueOnce({
+          rows: [{
+            ...row,
+            build_report: autopilotAutoRecoveryReport(row.build_report, {
+              recoveryJobId: "223229a4-6c97-4ad0-90c9-0dc8d5c598a3",
+              attemptNumber: 2,
+              nowMs: Date.parse("2026-08-27T07:00:00.000Z"),
+            }),
+          }],
+          rowCount: 1,
+        }),
+    };
+    const queue = { add: vi.fn(async () => ({})) };
+
+    await expect(resumeAutopilotPartialPlan({
+      pool,
+      queue,
+      projectId: 4,
+      userId: 15,
+      channelId: 12,
+      nowMs: Date.parse("2026-08-27T07:00:00.000Z"),
+    })).resolves.toMatchObject({ status: "queued", planId: 47, delay: 0 });
+    expect(pool.query.mock.calls[0][0]).not.toContain("plan.user_id = $2");
+    expect(queue.add.mock.calls[0][1]).toMatchObject({ userId: 9, planId: 47 });
+  });
+
   it("keeps sufficient future coverage instead of replacing an active plan", async () => {
     const { pool, queue } = harness({
       plans: [{
@@ -156,12 +290,42 @@ describe("weekly Autopilot queue dispatch", () => {
       enqueued: 2,
       pending: 0,
     });
-    expect(pool.query).toHaveBeenCalledWith(expect.stringContaining("where plan.status = 'building'"), [50]);
+    expect(pool.query).toHaveBeenCalledWith(expect.stringContaining("plan.status = 'building'"), [50]);
     expect(queue.add).toHaveBeenNthCalledWith(
       2,
       "autopilot-plan",
       { projectId: 4, userId: 9, channelId: 13, planId: 702 },
       expect.objectContaining({ jobId: "autopilot-plan-702" }),
+    );
+  });
+
+  it("reconciles a recoverable partial plan as a continuation", async () => {
+    const recoveryJobId = "333229a4-6c97-4ad0-90c9-0dc8d5c598a3";
+    const row = {
+      id: "703",
+      project_id: "4",
+      user_id: "9",
+      channel_id: "12",
+      status: "partial",
+      enabled: true,
+      repair_strategy: "rewrite",
+      build_report: autopilotAutoRecoveryReport({ primaryFix: "rewrite" }, {
+        recoveryJobId,
+        nowMs: Date.parse("2026-08-27T07:00:00.000Z"),
+      }),
+    };
+    const pool = { query: vi.fn(async () => ({ rows: [row], rowCount: 1 })) };
+    const queue = { add: vi.fn(async () => ({})) };
+
+    await expect(reconcileBuildingAutopilotPlans({ pool, queue })).resolves.toEqual({
+      scanned: 1,
+      enqueued: 1,
+      pending: 0,
+    });
+    expect(queue.add).toHaveBeenCalledWith(
+      AUTOPILOT_CONTINUATION_JOB,
+      { projectId: 4, userId: 9, channelId: 12, planId: 703, recoveryJobId },
+      expect.objectContaining({ jobId: `autopilot-continue-703-${recoveryJobId}` }),
     );
   });
 

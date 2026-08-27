@@ -130,7 +130,8 @@ describe("Autopilot ready-plan generation contract", () => {
     expect(source).toContain("targetedRepairIndexes && !targetedRepairIndexes.has(i)");
     expect(source).toContain("const reusedCheckpointIndexes = new Set()");
     expect(source).toContain("if (reusedCheckpointIndexes.has(index))");
-    expect(source).toContain('repairOperationId == null ? "autopilot-plan" : "autopilot-repair"');
+    expect(source).toContain('? "autopilot-repair"');
+    expect(source).toContain('? "autopilot-continue"');
     expect(source).toContain("ai_call_count = $5");
     expect(source).toContain("clearWorkerAiCallCount(usage.reservationId)");
     expect(source).toContain("const checkpointDraft = targetedRepairIndexes?.has(i)");
@@ -147,6 +148,22 @@ describe("Autopilot ready-plan generation contract", () => {
     expect(source).toContain("readyCount: variedPairs.length");
     expect(source).toContain("failedCount: N - variedPairs.length");
     expect(source).toContain("targetCount: publicationTargetCount");
+  });
+
+  it("rebuilds the final publication schedule after selecting winners from the reserve", () => {
+    expect(source).toContain("const publicationSlots = periodSlots(publicationTargetCount, planWeeks, bestHour)");
+    expect(source).toContain("pair.item.scheduledAt = publicationSlots[index]");
+    expect(source.indexOf("const candidateSelection = selectAutopilotCandidates(")).toBeLessThan(
+      source.indexOf("const publicationSlots = periodSlots(publicationTargetCount, planWeeks, bestHour)"),
+    );
+  });
+
+  it("turns an unfinished quality pass into a durable automatic continuation", () => {
+    expect(source).toContain("autopilotAutoRecoveryReport(report");
+    expect(source).toContain("dispatchAutopilotContinuation({");
+    expect(source).toContain("claimAutopilotContinuationJob(job)");
+    expect(source).toContain("status = 'partial'");
+    expect(source).toContain("last_repair_job_id = $9::uuid");
   });
 
   it("records repair completion in the same transaction as plan completion", () => {

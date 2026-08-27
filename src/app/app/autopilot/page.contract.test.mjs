@@ -77,6 +77,10 @@ describe("Autopilot build UI contract", () => {
     expect(source).toContain("Автопилот приостановлен");
     expect(source).toContain("Автопилот возобновлён");
     expect(source).toContain("Уже запланированные публикации остаются в календаре");
+    expect(source).toContain("disabled={busy || blocked}");
+    expect(source).not.toContain("disabled={busy || blocked || building}");
+    expect(source).toContain("!automaticRecovery && !waitingForQuota && !pausedRecovery");
+    expect(source).toContain("отдельный повтор не нужен");
   });
 
   it("separates automatic mode from an explicit one-off plan build", () => {

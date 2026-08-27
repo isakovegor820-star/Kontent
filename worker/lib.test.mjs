@@ -183,10 +183,14 @@ describe("citedShare / stripCites", () => {
 });
 
 describe("weekSlots", () => {
-  it("до 7 постов — все в лучший час", () => {
-    const slots = weekSlots(5, 19);
-    expect(slots).toHaveLength(5);
-    for (const s of slots) expect(s).toMatch(/T19:00:00\+03:00$/);
+  it("до 7 постов — часы различаются, но остаются рядом с лучшим окном", () => {
+    const slots = weekSlots(7, 19);
+    expect(slots).toHaveLength(7);
+    const hours = slots.map((slot) => Number(slot.slice(11, 13)));
+    expect(hours[0]).toBe(19);
+    expect(new Set(hours).size).toBe(7);
+    expect(Math.min(...hours)).toBeGreaterThanOrEqual(9);
+    expect(Math.max(...hours)).toBeLessThanOrEqual(21);
   });
   it("больше 7 — часы разведены по окну 9–21", () => {
     const slots = weekSlots(14, 19);
@@ -204,6 +208,13 @@ describe("weekSlots", () => {
 });
 
 describe("periodSlots", () => {
+  it("places a seven-post weekly plan on seven dates at seven different times", () => {
+    const slots = periodSlots(7, 1, 19);
+    expect(slots).toHaveLength(7);
+    expect(new Set(slots.map((slot) => slot.slice(0, 10))).size).toBe(7);
+    expect(new Set(slots.map((slot) => slot.slice(11, 16))).size).toBe(7);
+  });
+
   it("spreads a three-month plan across the complete 12-week horizon", () => {
     const slots = periodSlots(84, 12, 19);
     expect(slots).toHaveLength(84);
@@ -282,7 +293,7 @@ describe("autopilotBuildComplete", () => {
     expect(autopilotBuildComplete(2, topics, [items[0], blocked])).toBe(false);
   });
 
-  it("допускает только чистую семантическую проверку, но не слабый черновик", () => {
+  it("не считает готовым даже сильный текст, если он ждёт ручной проверки", () => {
     const review = {
       aiReady: true,
       draft: "Черновик для ручной проверки",
@@ -292,7 +303,7 @@ describe("autopilotBuildComplete", () => {
       quality: { passed: true },
     };
     expect(autopilotBuildComplete(2, topics, [items[0], review])).toBe(false);
-    expect(autopilotDraftsDeliverable(2, topics, [items[0], review])).toBe(true);
+    expect(autopilotDraftsDeliverable(2, topics, [items[0], review])).toBe(false);
     // Обычный провал редакционного порога остаётся внутри сборки и не превращает
     // пользователя в бесплатного корректора Автопилота.
     expect(autopilotDraftsDeliverable(2, topics, [items[0], {

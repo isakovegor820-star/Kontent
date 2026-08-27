@@ -107,9 +107,9 @@ export function autopilotBuildComplete(expected, topics, items = null) {
     );
 }
 
-// Публичный план содержит только reader-ready тексты. Заблокированный провал редактора —
-// внутренняя работа Автопилота, а безопасный редакционный недочёт после исчерпания ретраев
-// можно отдать на явное подтверждение. Оба ручных состояния остаются закрыты для full-auto.
+// Публичный план содержит только полностью готовые тексты. Любое ручное подтверждение — это
+// незавершённая работа Автопилота, поэтому такой кандидат остаётся внутри сборки и не может
+// занять одно из обещанных мест плана.
 export function autopilotDraftsDeliverable(expected, topics, items = null) {
   const count = Number(expected);
   if (!Number.isInteger(count) || count < 1) return false;
@@ -122,20 +122,10 @@ export function autopilotDraftsDeliverable(expected, topics, items = null) {
       String(item?.draft || "").trim().length > 0 &&
       item?.quality?.passed === true &&
       !(Array.isArray(item?.invented) && item.invented.length > 0) &&
-      (
-        (item?.qualityBlocked !== true && item?.reviewRequired !== true) ||
-        (
-          item?.qualityBlocked === true &&
-          item?.reviewRequired === true &&
-          ["semantic_only_review", "editorial_review"].includes(item?.reviewState) &&
-          (
-            item?.quality?.publicationDisposition === "confirmation_required" ||
-            (
-              item?.reviewState === "semantic_only_review" &&
-              item?.quality?.publicationDisposition == null
-            )
-          )
-        )
+      item?.qualityBlocked !== true &&
+      item?.reviewRequired !== true &&
+      !["confirmation_required", "blocked"].includes(
+        item?.quality?.publicationDisposition,
       ),
     );
 }
@@ -354,6 +344,18 @@ export function citedShare(text) {
 }
 
 // ── Раскладка постов по неделе ───────────────────────────────────────────────
+function variedSinglePostHours(bestHour) {
+  const preferred = Math.max(9, Math.min(21, Math.round(Number(bestHour) || 19)));
+  const hours = [preferred];
+  for (let distance = 1; hours.length < 7 && distance <= 12; distance++) {
+    const earlier = preferred - distance;
+    const later = preferred + distance;
+    if (earlier >= 9) hours.push(earlier);
+    if (hours.length < 7 && later <= 21) hours.push(later);
+  }
+  return hours;
+}
+
 /**
  * Раскладка N постов по НЕДЕЛЕ (7 дней), а не по N дням.
  * Раньше пост i вставал на день i+1: пять постов — пять дней, семь — семь. Поэтому и стоял
@@ -365,6 +367,7 @@ export function periodSlots(n, weeks, bestHour) {
   const count = Math.max(0, Math.round(Number(n) || 0));
   const days = Math.max(7, Math.round(Number(weeks) || 1) * 7);
   const byDay = new Map();
+  const singlePostHours = variedSinglePostHours(bestHour);
   for (let i = 0; i < count; i++) {
     // Evenly span the complete horizon. The old `i / perDay` layout put a capped
     // 90-post plan into the first half of its 12-week period and left the rest empty.
@@ -380,7 +383,10 @@ export function periodSlots(n, weeks, bestHour) {
     for (let slot = 0; slot < perDay; slot++) {
       let hour;
       if (perDay === 1) {
-        hour = bestHour; // один пост в день — ставим в лучший час по аналитике
+        // Лучший час остаётся первым приоритетом, остальные дни получают соседние окна.
+        // Так недельный план не выглядит как семь одинаковых таймеров и одновременно
+        // остаётся рядом с реальным пиком аудитории.
+        hour = singlePostHours[(day - 1) % singlePostHours.length];
       } else {
         // Несколько постов в день — разносим равномерно по дневному окну 9:00–21:00.
         // Впритык друг к другу их ставить нельзя: подписчик получит пачку уведомлений.
