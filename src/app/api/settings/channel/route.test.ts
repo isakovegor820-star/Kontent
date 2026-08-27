@@ -135,16 +135,23 @@ describe("POST /api/settings/channel", () => {
     expect(mocks.query).not.toHaveBeenCalled();
   });
 
-  it("rolls back the whole profile when full auto is still locked", async () => {
+  it("normalizes a legacy full-auto value to mandatory human confirmation", async () => {
     const response = await POST(request({
       channelId: 21,
       brief,
       settings: { ...settings, mode: "full" },
     }));
 
-    expect(response.status).toBe(422);
-    await expect(response.json()).resolves.toMatchObject({ error: "streak_required" });
-    expect(mocks.query).toHaveBeenCalledWith("rollback");
-    expect(mocks.query.mock.calls.some(([sql]) => String(sql).includes("content_brief"))).toBe(false);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      settings: { mode: "confirm" },
+    });
+    expect(mocks.query).toHaveBeenCalledWith(
+      expect.stringContaining("update autopilot_settings"),
+      [12, 21, false, "confirm", 7],
+    );
+    expect(mocks.query).toHaveBeenCalledWith("commit");
+    expect(mocks.query).not.toHaveBeenCalledWith("rollback");
   });
 });

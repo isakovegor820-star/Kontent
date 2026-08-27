@@ -455,7 +455,7 @@ describe("channelAiContextFor", () => {
     const pool = {
       query: vi.fn(async (sql: string) => {
         if (sql.includes("from channels")) {
-          return { rows: [{ id: "18", title: "Право и технологии", handle: "legaltech", network: "tg" }] };
+          return { rows: [{ id: "18", title: "Право и технологии", handle: "legaltech", network: "tg", project_id: "3" }] };
         }
         if (sql.includes("kind in ('profile_edit', 'profile')")) {
           return {
@@ -501,6 +501,9 @@ describe("channelAiContextFor", () => {
             }],
           };
         }
+        if (sql.includes("from project_brand_dictionary_entries")) {
+          return { rows: [{ kind: "canonical", term: "legal tech", replacement: "LegalTech", expansion: null, case_sensitive: false }] };
+        }
         if (sql.includes("kind in ('form', 'paste')")) return { rows: [] };
         if (sql.includes("select text from posts")) return { rows: [{ text: "Проверенный голос канала" }] };
         if (sql.includes("select count(*)::text as count from posts")) return { rows: [{ count: "7" }] };
@@ -515,6 +518,7 @@ describe("channelAiContextFor", () => {
     expect(context?.profile).toContain("Роль автора: Основатель legal-tech продукта");
     expect(context?.profile).toContain("Следующий шаг читателя: Записаться на разбор договора");
     expect(context?.profile).toContain("Канал объясняет, как технологии меняют юридическую практику.");
+    expect(context?.profile).toContain("LegalTech");
     expect(context?.profile).not.toContain("аоао");
     expect(context?.profileProvenance.niche).toMatchObject({
       sourceId: "content-brief",
@@ -531,5 +535,7 @@ describe("channelAiContextFor", () => {
       "Ручной пример голоса автора для выбранного канала.",
       "Проверенный голос канала",
     ]);
+    const dictionaryQuery = pool.query.mock.calls.find(([sql]) => String(sql).includes("project_brand_dictionary_entries"));
+    expect(String(dictionaryQuery?.[0])).toContain("is_active = true");
   });
 });

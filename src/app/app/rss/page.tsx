@@ -819,7 +819,7 @@ function LegalOpportunitiesScreen() {
               title="Подключите канал для готовых материалов"
               body="Аврора уже умеет находить юридические события. Подключите Telegram или VK, чтобы она адаптировала инфоповоды под вашу аудиторию."
               action={
-                <Button variant="brand" size="sm" onClick={() => router.push("/app/settings?section=general")}>
+                <Button variant="brand" size="sm" onClick={() => router.push("/app/settings?section=channels")}>
                   Подключить канал
                 </Button>
               }
@@ -905,7 +905,7 @@ function LegalOpportunitiesScreen() {
                   )}
 
                   <Link
-                    href="/app/settings?section=posts"
+                    href="/app/settings?section=content"
                     className="type-caption mt-2 inline-flex min-h-11 items-center gap-1.5 font-semibold text-brand underline-offset-4 hover:underline focus-visible:rounded-xs focus-visible:ring-4 focus-visible:ring-brand/15"
                   >
                     Настроить профиль контента

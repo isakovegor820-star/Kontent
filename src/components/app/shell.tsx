@@ -116,8 +116,8 @@ const NAV_CHILDREN: Partial<Record<keyof typeof APP_ROUTES, readonly NavChild[]>
     { href: "/app/trends", label: "Тренды" },
   ],
   settings: [
-    { href: "/app/settings?section=posts", label: "Настройки постов" },
-    { href: "/app/settings?section=general", label: "Общие настройки" },
+    { href: "/app/settings?section=profile", label: "Профиль" },
+    { href: "/app/settings?section=content", label: "Контент и стиль" },
   ],
 };
 
@@ -295,12 +295,17 @@ function UserRow({ user, onSignOut }: { user: User; onSignOut: () => void }) {
 
   return (
     <div className="flex items-center gap-2">
-      <span
-        aria-hidden
-        className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-brand-gradient text-[15px] font-bold text-white shadow-glow"
-      >
-        {initial}
-      </span>
+      {user.avatar ? (
+        // eslint-disable-next-line @next/next/no-img-element -- authenticated account asset
+        <img src={user.avatar} alt="" className="h-9 w-9 shrink-0 rounded-full object-cover shadow-glow ring-1 ring-line" />
+      ) : (
+        <span
+          aria-hidden
+          className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-brand-gradient text-[15px] font-bold text-white shadow-glow"
+        >
+          {initial}
+        </span>
+      )}
       <div className="min-w-0 flex-1">
         <p className="truncate text-[14px] font-semibold text-text">{user.name}</p>
         <p className="truncate text-[13px] text-text-3">{user.email}</p>

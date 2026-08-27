@@ -17,27 +17,40 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { motion, useReducedMotion } from "motion/react";
 import {
+  Bell,
   Bot,
+  BookOpen,
   Check,
   Clock,
   Download,
   ExternalLink,
+  FolderKanban,
   Link2,
   Lock,
-  LogOut,
   Moon,
+  Palette,
+  Plug,
   Plus,
+  Radio,
+  Rocket,
+  Search,
   Sparkles,
   TriangleAlert,
+  UserRound,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { AppShell } from "@/components/app/shell";
+import { AccountProfileSettings } from "@/components/app/account-profile-settings";
 import { BrandDictionarySection } from "@/components/app/brand-dictionary-section";
 import { ChannelSettingsCenter } from "@/components/app/channel-settings-center";
 import { LegalSourcesSection } from "@/components/app/legal-sources-section";
-import { ProfileBriefSection } from "@/components/app/profile-brief-section";
+import { NotificationSecuritySettings } from "@/components/app/notification-security-settings";
 import { PublicationBlocksSection } from "@/components/app/publication-blocks-section";
-import { ProjectTeamSection } from "@/components/app/project-team-section";
+import {
+  ChannelCopySection,
+  ProjectBasicsSection,
+  SettingsPreviewPanel,
+} from "@/components/app/settings-sections";
 import { TrackingSettingsSection } from "@/components/app/tracking-settings-section";
 import { Button } from "@/components/ui/button";
 import {
@@ -1053,79 +1066,62 @@ function AiSection({ index }: { index: number }) {
   );
 }
 
-/* ------------------------------------------------------- 7. ОПАСНАЯ ЗОНА */
-
-function DangerSection({ index }: { index: number }) {
-  const s = useStore();
-  const router = useRouter();
-
-  // Сначала уходим с экрана, и только потом завершаем серверную сессию: AppShell
-  // не успевает показать промежуточный экран входа поверх текущей страницы.
-  const onLeave = useRef<(() => void) | null>(null);
-  useEffect(() => () => onLeave.current?.(), []);
-
-  const leave = () => {
-    onLeave.current = s.signOut;
-    s.toast({
-      kind: "info",
-      title: "Вышли из аккаунта",
-      body: "Серверные данные останутся на месте — войдёшь снова и продолжишь.",
-    });
-    router.push("/");
-  };
-
-  return (
-    <Section
-      icon={TriangleAlert}
-      index={index}
-      title="Сессия"
-      description="Завершить работу на этом устройстве. Посты и настройки аккаунта не удаляются."
-    >
-      <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
-        <div className="min-w-0 max-w-md">
-          <p className="text-[15px] font-semibold text-text">Выйти</p>
-          <p className="mt-1 text-[13px] leading-relaxed text-text-2">
-            Серверные данные останутся на месте. Локальные старые черновики не удаляются.
-          </p>
-        </div>
-        <Button variant="outline" onClick={leave}>
-          <LogOut className="h-[18px] w-[18px]" strokeWidth={1.75} aria-hidden />
-          Выйти
-        </Button>
-      </div>
-    </Section>
-  );
-}
-
 /* ------------------------------------------------------------- СКЕЛЕТОН */
 // Пока состояние поднимается из localStorage — форма экрана, а не пустота (ТЗ 7.4)
 
 function SettingsSkeleton() {
-  // Повторяет боевую раскладку (две колонки), чтобы при гидрации не было скачка.
-  const card = (key: number) => (
-    <div key={key} className="card-plain rounded-md p-6" aria-hidden>
-      <div className="flex gap-3.5">
-        <div className="skeleton h-10 w-10 rounded-sm" />
-        <div className="flex-1 space-y-2">
-          <div className="skeleton h-5 w-44" />
-          <div className="skeleton h-4 w-3/4" />
-        </div>
-      </div>
-      <div className="skeleton mt-7 h-12 w-full rounded-sm" />
-      <div className="skeleton mt-3 h-12 w-full rounded-sm" />
-    </div>
-  );
-
   return (
-    <div className="grid items-start gap-5 lg:grid-cols-2" role="status" aria-busy="true">
+    <div className="grid items-start gap-5 lg:grid-cols-[15.5rem_minmax(0,1fr)]" role="status" aria-busy="true">
       <span className="sr-only">Открываем настройки</span>
-      <div className="flex flex-col gap-5">{[0, 1, 2].map(card)}</div>
-      <div className="flex flex-col gap-5">{[3, 4, 5].map(card)}</div>
+      <div className="card-plain space-y-2 rounded-md p-3" aria-hidden>
+        <div className="skeleton h-11 rounded-sm" />
+        {[0, 1, 2, 3, 4, 5].map((item) => <div key={item} className="skeleton h-14 rounded-sm" />)}
+      </div>
+      <div className="card-plain rounded-md p-6" aria-hidden>
+        <div className="flex gap-3.5"><div className="skeleton h-10 w-10 rounded-sm" /><div className="flex-1 space-y-2"><div className="skeleton h-5 w-44" /><div className="skeleton h-4 w-3/4" /></div></div>
+        <div className="skeleton mt-7 h-12 w-full rounded-sm" />
+        <div className="skeleton mt-3 h-28 w-full rounded-sm" />
+      </div>
     </div>
   );
 }
 
 /* ----------------------------------------------------------------- ЭКРАН */
+
+type SettingsSectionId =
+  | "profile"
+  | "project"
+  | "channels"
+  | "content"
+  | "autopilot"
+  | "dictionary"
+  | "integrations"
+  | "notifications";
+
+const SETTINGS_SECTIONS: Array<{
+  id: SettingsSectionId;
+  label: string;
+  description: string;
+  keywords: string;
+  icon: LucideIcon;
+}> = [
+  { id: "profile", label: "Профиль", description: "Фото, имя, контакты и внешний вид", keywords: "аккаунт аватар email телефон язык часовой пояс тема", icon: UserRound },
+  { id: "project", label: "Проект", description: "Название, время и лимиты", keywords: "личный проект генерации ии бюджет", icon: FolderKanban },
+  { id: "channels", label: "Каналы", description: "Подключения и копирование", keywords: "telegram vk сеть канал перенести настройки", icon: Radio },
+  { id: "content", label: "Контент и стиль", description: "Голос, структура и тест поста", keywords: "тон юмор длина формат автор аудитория ограничения проверить", icon: Palette },
+  { id: "autopilot", label: "Автопилот", description: "Планирование с подтверждением", keywords: "расписание частота режим план публикация", icon: Rocket },
+  { id: "dictionary", label: "Словарь бренда", description: "Термины и блоки публикаций", keywords: "правила слова канон замена подпись комментарий", icon: BookOpen },
+  { id: "integrations", label: "Интеграции", description: "Бот, аналитика и источники", keywords: "telegram бот пиксель utm метрика право oauth", icon: Plug },
+  { id: "notifications", label: "Уведомления и безопасность", description: "Email, Telegram, пароль и выход", keywords: "оповещения тихие часы сессия безопасность", icon: Bell },
+];
+
+const SETTINGS_SECTION_IDS = new Set<SettingsSectionId>(SETTINGS_SECTIONS.map((item) => item.id));
+
+function normalizeSection(value: string | null): SettingsSectionId {
+  if (value === "posts") return "content";
+  if (value === "general") return "profile";
+  return SETTINGS_SECTION_IDS.has(value as SettingsSectionId) ? value as SettingsSectionId : "profile";
+}
 
 function SettingsContent() {
   const s = useStore();
@@ -1136,9 +1132,12 @@ function SettingsContent() {
   const { ready, toast, refreshReal } = s;
   const router = useRouter();
   const searchParams = useSearchParams();
-  const activeSection = searchParams.get("section") === "general" ? "general" : "posts";
+  const activeSection = normalizeSection(searchParams.get("section"));
+  const [query, setQuery] = useState("");
 
-  const selectSection = (section: "posts" | "general") => {
+  const selectSection = (section: SettingsSectionId) => {
+    if (section === activeSection) return;
+    if (document.querySelector('[data-settings-dirty="true"]') && !window.confirm("Перейти в другой раздел? Несохранённые изменения останутся только на этом экране и будут потеряны.")) return;
     const params = new URLSearchParams(searchParams.toString());
     params.set("section", section);
     params.delete("connected");
@@ -1146,6 +1145,11 @@ function SettingsContent() {
     params.delete("network");
     router.replace(`/app/settings?${params.toString()}`, { scroll: false });
   };
+
+  const normalizedQuery = query.trim().toLocaleLowerCase("ru-RU");
+  const visibleSections = normalizedQuery
+    ? SETTINGS_SECTIONS.filter((item) => `${item.label} ${item.description} ${item.keywords}`.toLocaleLowerCase("ru-RU").includes(normalizedQuery))
+    : SETTINGS_SECTIONS;
 
   // Возврат из OAuth-редиректа: показываем итог подключения и чистим URL.
   useEffect(() => {
@@ -1177,7 +1181,7 @@ function SettingsContent() {
     }
     // URL без параметров, чтобы тост не всплыл повторно при обновлении страницы.
     // После очистки searchParams эффект перезапустится и молча выйдет (нет параметров).
-    router.replace("/app/settings?section=general", { scroll: false });
+    router.replace("/app/settings?section=integrations", { scroll: false });
   }, [searchParams, ready, toast, refreshReal, router]);
 
   return (
@@ -1188,118 +1192,47 @@ function SettingsContent() {
       {!s.ready ? (
         <SettingsSkeleton />
       ) : (
-        <div className="space-y-6">
-          <nav
-            className="grid gap-3 rounded-md border border-line bg-surface/82 p-2 shadow-soft backdrop-blur-xl sm:grid-cols-2"
-            role="tablist"
-            aria-label="Разделы настроек Авроры"
-          >
-            <button
-              type="button"
-              role="tab"
-              id="settings-posts-tab"
-              aria-selected={activeSection === "posts"}
-              aria-controls="settings-posts-panel"
-              onClick={() => selectSection("posts")}
-              className={cn(
-                "flex min-h-20 items-start gap-3 rounded-sm border px-4 py-4 text-left transition-[border-color,background-color,box-shadow,transform] duration-200",
-                activeSection === "posts"
-                  ? "border-brand/35 bg-info-soft text-info-text shadow-[0_10px_30px_rgba(79,70,229,.10)]"
-                  : "border-transparent bg-transparent text-text-2 hover:border-line hover:bg-surface",
-              )}
-            >
-              <span className={cn(
-                "grid h-10 w-10 shrink-0 place-items-center rounded-sm",
-                activeSection === "posts" ? "bg-surface text-brand" : "bg-surface-inset text-text-2",
-              )}>
-                <Sparkles className="h-5 w-5" aria-hidden />
-              </span>
-              <span>
-                <span className="block text-[15px] font-extrabold text-text">Настройки постов</span>
-                <span className="mt-1 block text-[12px] leading-relaxed text-text-3">
-                  Голос, стиль, структура и правила публикаций.
-                </span>
-              </span>
-            </button>
+        <div className="grid items-start gap-5 lg:grid-cols-[15.5rem_minmax(0,1fr)]">
+          <aside className="rounded-md border border-line bg-surface/86 p-3 shadow-soft backdrop-blur-xl lg:sticky lg:top-5">
+            <label className="relative block">
+              <span className="sr-only">Найти настройку</span>
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-3" aria-hidden />
+              <Input value={query} onChange={(event) => setQuery(event.currentTarget.value)} className="pl-9" placeholder="Найти настройку" />
+            </label>
+            <nav className="mt-3 grid grid-cols-2 gap-1 lg:grid-cols-1" aria-label="Разделы настроек Авроры">
+              {visibleSections.map((item) => {
+                const Icon = item.icon;
+                const active = item.id === activeSection;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    aria-current={active ? "page" : undefined}
+                    onClick={() => selectSection(item.id)}
+                    className={cn(
+                      "flex min-h-14 items-start gap-3 rounded-sm border px-3 py-3 text-left transition-colors",
+                      active ? "border-brand/30 bg-info-soft text-info-text" : "border-transparent text-text-2 hover:border-line hover:bg-surface-inset hover:text-text",
+                    )}
+                  >
+                    <span className={cn("mt-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-xs", active ? "bg-surface text-brand" : "bg-surface-inset text-text-3")}><Icon className="h-4 w-4" aria-hidden /></span>
+                    <span className="min-w-0"><span className="block text-[13px] font-extrabold text-text">{item.label}</span><span className="mt-0.5 hidden text-[11px] leading-snug text-text-3 sm:block">{item.description}</span></span>
+                  </button>
+                );
+              })}
+              {visibleSections.length === 0 ? <p className="rounded-sm bg-surface-inset p-3 text-[12px] text-text-3">Ничего не найдено. Попробуй «юмор», «аватар» или «Telegram».</p> : null}
+            </nav>
+          </aside>
 
-            <button
-              type="button"
-              role="tab"
-              id="settings-general-tab"
-              aria-selected={activeSection === "general"}
-              aria-controls="settings-general-panel"
-              onClick={() => selectSection("general")}
-              className={cn(
-                "flex min-h-20 items-start gap-3 rounded-sm border px-4 py-4 text-left transition-[border-color,background-color,box-shadow,transform] duration-200",
-                activeSection === "general"
-                  ? "border-brand/35 bg-info-soft text-info-text shadow-[0_10px_30px_rgba(79,70,229,.10)]"
-                  : "border-transparent bg-transparent text-text-2 hover:border-line hover:bg-surface",
-              )}
-            >
-              <span className={cn(
-                "grid h-10 w-10 shrink-0 place-items-center rounded-sm",
-                activeSection === "general" ? "bg-surface text-brand" : "bg-surface-inset text-text-2",
-              )}>
-                <Link2 className="h-5 w-5" aria-hidden />
-              </span>
-              <span>
-                <span className="block text-[15px] font-extrabold text-text">Общие настройки</span>
-                <span className="mt-1 block text-[12px] leading-relaxed text-text-3">
-                  Подключения, проекты, команда, лимиты и аккаунт.
-                </span>
-              </span>
-            </button>
-          </nav>
-
-          <section
-            id="settings-posts-panel"
-            role="tabpanel"
-            aria-labelledby="settings-posts-tab"
-            hidden={activeSection !== "posts"}
-          >
-            <BrandDictionarySection />
-            <PublicationBlocksSection />
-            <ChannelSettingsCenter />
-          </section>
-
-          <section
-            id="settings-general-panel"
-            role="tabpanel"
-            aria-labelledby="settings-general-tab"
-            hidden={activeSection !== "general"}
-          >
-            <ProfileBriefSection />
-            <LegalSourcesSection className="mb-5" />
-            <div className="mb-4">
-              <h2 className="text-[18px] font-extrabold tracking-tight text-text">Общие настройки</h2>
-              <p className="mt-1 text-[13px] leading-relaxed text-text-3">
-                Технические подключения и аккаунт сохраняются отдельно и сразу.
-              </p>
-            </div>
-            <div className="mb-5">
-              <TrackingSettingsSection />
-            </div>
-            <div className="columns-1 gap-5 lg:columns-2">
-              <div className="mb-5 break-inside-avoid">
-                <ChannelsSection index={0} />
-              </div>
-              <div className="mb-5 break-inside-avoid">
-                <BotSection index={1} />
-              </div>
-              <div className="mb-5 break-inside-avoid">
-                <ProjectTeamSection />
-              </div>
-              <div className="mb-5 break-inside-avoid">
-                <QuietSection index={3} />
-              </div>
-              <div className="mb-5 break-inside-avoid">
-                <AiSection index={4} />
-              </div>
-              <div className="mb-5 break-inside-avoid">
-                <DangerSection index={5} />
-              </div>
-            </div>
-          </section>
+          <main id={`settings-${activeSection}-panel`} aria-label={SETTINGS_SECTIONS.find((item) => item.id === activeSection)?.label}>
+            {activeSection === "profile" ? <AccountProfileSettings /> : null}
+            {activeSection === "project" ? <div className="space-y-5"><ProjectBasicsSection /><AiSection index={1} /></div> : null}
+            {activeSection === "channels" ? <div className="space-y-5"><ChannelsSection index={0} /><ChannelCopySection /></div> : null}
+            {activeSection === "content" ? <><SettingsPreviewPanel /><ChannelSettingsCenter view="content" /></> : null}
+            {activeSection === "autopilot" ? <ChannelSettingsCenter view="autopilot" /> : null}
+            {activeSection === "dictionary" ? <div className="space-y-5"><BrandDictionarySection /><PublicationBlocksSection /></div> : null}
+            {activeSection === "integrations" ? <div className="space-y-5"><TrackingSettingsSection /><LegalSourcesSection /><BotSection index={2} /></div> : null}
+            {activeSection === "notifications" ? <div className="space-y-5"><NotificationSecuritySettings /><QuietSection index={2} /></div> : null}
+          </main>
         </div>
       )}
     </AppShell>

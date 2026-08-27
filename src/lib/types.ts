@@ -200,6 +200,7 @@ export interface User {
   id: number;
   name: string;
   email: string;
+  avatar: string | null;
   provider: "email" | "google" | "vk" | "telegram";
   onboarded: boolean;
 }

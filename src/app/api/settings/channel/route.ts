@@ -48,7 +48,7 @@ export async function GET(req: NextRequest) {
       loadBrief(scope, channelId),
       ensureSettings(scope, channelId),
     ]);
-    return NextResponse.json({ channelId, brief, settings });
+    return NextResponse.json({ channelId, brief, settings: { ...settings, mode: "confirm" } });
   } catch (error) {
     if (error instanceof ProjectAccessError) {
       return NextResponse.json({ error: "access_denied" }, { status: 403 });
@@ -111,7 +111,7 @@ export async function POST(req: NextRequest) {
   const postFrequency = 7;
   const enabled = typeof body.settings.enabled === "boolean" ? body.settings.enabled : null;
   const mode = body.settings.mode === "confirm" || body.settings.mode === "full"
-    ? body.settings.mode
+    ? "confirm"
     : null;
 
   if (enabled == null || mode == null) {
@@ -140,22 +140,6 @@ export async function POST(req: NextRequest) {
        on conflict do nothing`,
       [projectId, user.id, channelId, DEFAULT_AUTOPILOT_ENGINE],
     );
-    const current = await client.query<AutopilotSettings>(
-      `select enabled, mode, post_frequency, approvals_streak, generation_engine,
-              planning_months, planning_weeks, news_sources, quick_settings
-         from autopilot_settings
-        where project_id = $1 and channel_id = $2
-        for update`,
-      [projectId, channelId],
-    );
-    const previous = current.rows[0];
-    if (!previous) throw new Error("settings_missing");
-
-    if (mode === "full" && previous.mode !== "full" && previous.approvals_streak < 2) {
-      await client.query("rollback");
-      return NextResponse.json({ ok: false, error: "streak_required" }, { status: 422 });
-    }
-
     await client.query(
       `insert into content_brief
          (project_id, user_id, channel_id, niche, audience, rubrics, formats, author_role, goal, cta, taboo, profile_answers, quality, ready, source, updated_at)

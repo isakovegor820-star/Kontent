@@ -88,7 +88,7 @@ function requestError(code?: string): string {
 function avatarUploadError(code?: string): string {
   switch (code) {
     case "unsupported_type": return "Выбери фотографию в формате JPEG, PNG или WebP.";
-    case "too_large": return "Выбери фотографию размером не больше 5 МБ.";
+    case "too_large": return "Выбери фотографию размером не больше 10 МБ.";
     case "invalid_image": return "Файл не удалось прочитать как фотографию. Выбери другое изображение.";
     case "missing_file": return "Выбери фотографию и повтори загрузку.";
     default: return "Не удалось загрузить фотографию. Проверь соединение и попробуй ещё раз.";
@@ -483,7 +483,7 @@ export function ProfileBriefSection() {
                         )}
                       </div>
                       <p id={`${uid}-avatar-hint`} className="mt-2 max-w-2xl text-[13px] leading-relaxed text-text-3">
-                        JPEG, PNG или WebP до 5 МБ. Фото автоматически обрежется до квадрата.
+                        JPEG, PNG или WebP до 10 МБ. Фото автоматически обрежется до квадрата.
                       </p>
                       <div className="mt-2 min-h-5" aria-live="polite">
                         {avatarErrorText ? (

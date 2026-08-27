@@ -6,6 +6,7 @@ vi.mock("./project-permissions", () => ({
 }));
 
 import {
+  brandDictionaryPrompt,
   createProjectBrandDictionaryEntry,
   getProjectBrandDictionary,
 } from "./brand-dictionary-service";
@@ -14,6 +15,23 @@ describe("brand dictionary service", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.permission.mockResolvedValue({ projectId: 23, userId: 5, role: "owner" });
+  });
+
+  it("turns every dictionary rule into an explicit generation instruction", () => {
+    const prompt = brandDictionaryPrompt([
+      { kind: "canonical", term: "legal tech", replacement: "LegalTech", expansion: null, caseSensitive: false },
+      { kind: "prohibited", term: "гарантируем победу", replacement: "оценим перспективы", expansion: null, caseSensitive: true },
+      { kind: "abbreviation", term: "Конституционный Суд", replacement: "КС РФ", expansion: "Конституционный Суд Российской Федерации", caseSensitive: false },
+      { kind: "allowed", term: "юртех", replacement: null, expansion: null, caseSensitive: false },
+      { kind: "exception", term: "Legal tech", replacement: null, expansion: null, caseSensitive: false },
+    ]);
+
+    expect(prompt).toContain("Словарь бренда проекта");
+    expect(prompt).toContain("«legal tech» → «LegalTech»");
+    expect(prompt).toContain("не используй «гарантируем победу»");
+    expect(prompt).toContain("расшифровка: «Конституционный Суд Российской Федерации»");
+    expect(prompt).toContain("допустимый вариант: «юртех»");
+    expect(prompt).toContain("исключение: вариант «Legal tech» разрешён");
   });
 
   it("reads only the server-selected project and maps all legal dictionary kinds", async () => {

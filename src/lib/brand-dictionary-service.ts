@@ -23,6 +23,37 @@ export type ProjectBrandDictionary = {
   updatedAt: string | null;
 };
 
+/**
+ * Converts active project terminology into an explicit model instruction. The same
+ * dictionary is still rechecked by the deterministic typographer before publication;
+ * adding it to generation prevents avoidable violations in the first draft.
+ */
+export function brandDictionaryPrompt(
+  entries: Array<Pick<ProjectBrandDictionaryEntry, "kind" | "term" | "replacement" | "expansion" | "caseSensitive">>,
+): string {
+  const lines = entries.slice(0, 200).flatMap((entry) => {
+    const suffix = entry.caseSensitive ? " (учитывай регистр)" : "";
+    if (entry.kind === "canonical" && entry.replacement) {
+      return [`— каноническое написание: «${entry.term}» → «${entry.replacement}»${suffix}`];
+    }
+    if (entry.kind === "prohibited" && entry.replacement) {
+      return [`— запрещённый вариант: не используй «${entry.term}»; замени на «${entry.replacement}»${suffix}`];
+    }
+    if (entry.kind === "abbreviation" && entry.replacement) {
+      const expansion = entry.expansion ? `; расшифровка: «${entry.expansion}»` : "";
+      return [`— аббревиатура: «${entry.term}» → «${entry.replacement}»${expansion}${suffix}`];
+    }
+    if (entry.kind === "exception") {
+      return [`— исключение: вариант «${entry.term}» разрешён${suffix}`];
+    }
+    if (entry.kind === "allowed") {
+      return [`— допустимый вариант: «${entry.term}»${suffix}`];
+    }
+    return [];
+  });
+  return lines.length ? `Словарь бренда проекта:\n${lines.join("\n")}` : "";
+}
+
 export class BrandDictionaryError extends Error {
   readonly code:
     | "invalid_kind"

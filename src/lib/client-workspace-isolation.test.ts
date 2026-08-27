@@ -61,6 +61,7 @@ describe("client workspace isolation", () => {
       id: 7,
       name: "Егор",
       email: "egor@example.test",
+      avatar: null,
       provider: "email",
       onboarded: true,
     };

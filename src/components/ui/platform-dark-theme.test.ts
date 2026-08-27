@@ -82,11 +82,11 @@ describe("platform appearance themes", () => {
     expect(css).not.toContain(".app-v3 .bg-brand {");
   });
 
-  it("offers one persistent icon control for light and dark themes", () => {
+  it("offers one persistent icon control for light, dark and system themes", () => {
     expect(themeSelector).toContain("Moon");
     expect(themeSelector).toContain("Sun");
     expect(themeSelector).toContain("aria-label={label}");
-    expect(themeSelector).not.toContain("Система");
+    expect(themeSelector).toContain("Monitor");
     expect(themeSelector).not.toContain("<fieldset>");
     expect(shell).toMatch(/<AppThemeSelector\s*\/>[\s\S]*?<LogOut/);
     expect(shell).not.toContain(
@@ -94,7 +94,7 @@ describe("platform appearance themes", () => {
     );
     expect(themeProvider).toContain("Max-Age=31536000");
     expect(themeProvider).toContain("SameSite=Lax");
-    expect(themeProvider).not.toContain("window.matchMedia");
+    expect(themeProvider).toContain("window.matchMedia");
     expect(themeProvider).toContain('meta[name="theme-color"]');
   });
 

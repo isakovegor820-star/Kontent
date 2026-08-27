@@ -40,7 +40,7 @@ runner заранее проверяет additive policy и транзакцио
 только SHA-256 verifier.
 
 Ingress/reverse proxy обязан жёстко ограничивать body запроса аватара до значения
-`AURORA_AVATAR_BODY_LIMIT_BYTES` (от 5 242 880 до 5 767 168 байт) и закрывать соединение
+`AURORA_AVATAR_BODY_LIMIT_BYTES` (от 10 485 760 до 11 010 048 байт) и закрывать соединение
 до передачи превышения в Next.js. В production переменная обязательна: startup/readiness
 останавливает web при её отсутствии или значении вне диапазона. Route дополнительно читает
 chunked multipart потоково с тем же пределом, не доверяет `Content-Length` и допускает не

@@ -168,6 +168,7 @@ function mapUser(su: ServerUser): User {
     id: Number(su.id),
     name: su.name || su.email?.split("@")[0] || "Ты",
     email: su.email || (su.tg_id ? `Telegram` : su.vk_id ? `VK` : ""),
+    avatar: su.avatar,
     provider,
     onboarded: Boolean(su.onboarding_completed_at),
   };

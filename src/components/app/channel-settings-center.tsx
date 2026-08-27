@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type CSSProperties } from "react";
 import { useSearchParams } from "next/navigation";
 import {
   Check,
@@ -39,6 +39,10 @@ type ChannelConfiguration = {
   brief: Brief;
   settings: AutopilotSettings;
 };
+
+type ChannelSettingsView = "content" | "autopilot";
+
+const ChannelSettingsViewContext = createContext<ChannelSettingsView>("content");
 
 const HUMOR_LABEL: Record<PostQuality["humor"], string> = {
   none: "без юмора",
@@ -170,15 +174,19 @@ function SettingsGroup({
   description,
   icon,
   defaultOpen = false,
+  kind = "content",
   children,
 }: {
   title: string;
   description: string;
   icon: React.ReactNode;
   defaultOpen?: boolean;
+  kind?: ChannelSettingsView;
   children: React.ReactNode;
 }) {
+  const view = useContext(ChannelSettingsViewContext);
   const [open, setOpen] = useState(defaultOpen);
+  if (view !== kind) return null;
   return (
     <details
       open={open}
@@ -331,11 +339,11 @@ function configurationSummary(data: ChannelConfiguration) {
     `${settings.post_frequency} ${plural(settings.post_frequency, "пост", "поста", "постов")} в неделю`,
     `${brief.quality.minChars}–${brief.quality.maxChars} знаков`,
     HUMOR_LABEL[brief.quality.humor],
-    settings.mode === "full" ? "публикация без подтверждения" : "с подтверждением",
+    "с обязательным подтверждением",
   ];
 }
 
-export function ChannelSettingsCenter() {
+export function ChannelSettingsCenter({ view = "content" }: { view?: ChannelSettingsView }) {
   const store = useStore();
   const requestedChannel = Number(useSearchParams().get("channel")) || null;
   const [picked, setPicked] = useState<number | null>(requestedChannel);
@@ -448,9 +456,7 @@ export function ChannelSettingsCenter() {
         | ({ ok?: boolean; error?: string } & Partial<ChannelConfiguration>)
         | null;
       if (!response.ok || !body?.ok || !body.brief || !body.settings) {
-        const reason = body?.error === "streak_required"
-          ? "Полный режим откроется после двух недель одобрений без правок."
-          : body?.error === "incomplete"
+        const reason = body?.error === "incomplete"
             ? "Заполни тему канала и аудиторию."
             : "Сервер не подтвердил изменения. Черновик остался на экране.";
         throw new Error(reason);
@@ -550,7 +556,8 @@ export function ChannelSettingsCenter() {
   }
 
   return (
-    <div className="space-y-5">
+    <ChannelSettingsViewContext.Provider value={view}>
+    <div className="space-y-5" data-settings-dirty={dirty ? "true" : "false"}>
       <ChannelPicker
         channels={tgChannels}
         value={channelId}
@@ -579,9 +586,13 @@ export function ChannelSettingsCenter() {
                   </Badge>
                   <Badge tone="brand">Сохранено на сервере</Badge>
                 </div>
-                <h2 className="mt-3 text-[20px] font-extrabold tracking-tight text-text">Мои настройки</h2>
+                <h2 className="mt-3 text-[20px] font-extrabold tracking-tight text-text">
+                  {view === "autopilot" ? "Автопилот канала" : "Контент и стиль канала"}
+                </h2>
                 <p className="mt-1 max-w-2xl text-[13px] leading-relaxed text-text-2">
-                  Так Аврора понимает канал «{activeChannel ? channelName(activeChannel) : "Канал"}» и пишет для него.
+                  {view === "autopilot"
+                    ? `План и обязательное подтверждение для «${activeChannel ? channelName(activeChannel) : "канала"}».`
+                    : `Так Аврора понимает канал «${activeChannel ? channelName(activeChannel) : "Канал"}» и пишет для него.`}
                 </p>
                 <div className="mt-4 flex flex-wrap gap-2">
                   {configurationSummary(saved).map((item) => <Badge key={item} tone="neutral">{item}</Badge>)}
@@ -592,7 +603,7 @@ export function ChannelSettingsCenter() {
                   <Settings2 className="h-4 w-4" aria-hidden />
                   Изменить
                 </Button>
-                {tgChannels.length > 1 && (
+                {view === "content" && tgChannels.length > 1 && (
                   <Button variant="ghost" size="sm" onClick={() => setCopyOpen((current) => !current)}>
                     <Copy className="h-4 w-4" aria-hidden />
                     Скопировать
@@ -600,7 +611,7 @@ export function ChannelSettingsCenter() {
                 )}
               </div>
             </div>
-            {copyOpen && (
+            {view === "content" && copyOpen && (
               <div className="border-t border-line bg-surface/65 px-5 py-4 sm:px-6">
                 <p className="text-[12px] font-bold text-text">В какой канал скопировать профиль?</p>
                 <div className="mt-2 flex flex-wrap gap-2">
@@ -622,9 +633,11 @@ export function ChannelSettingsCenter() {
                   <SlidersHorizontal className="h-5 w-5" aria-hidden />
                 </span>
                 <div>
-                  <h2 className="text-[17px] font-extrabold text-text">Как Аврора пишет и публикует</h2>
+                  <h2 className="text-[17px] font-extrabold text-text">
+                    {view === "autopilot" ? "Как Аврора планирует" : "Как Аврора пишет"}
+                  </h2>
                   <p className="mt-1 text-[13px] leading-relaxed text-text-2">
-                    Все изменения остаются черновиком, пока ты не нажмёшь «Сохранить настройки».
+                    Изменения этого раздела остаются черновиком до отдельного сохранения.
                   </p>
                 </div>
               </div>
@@ -1343,6 +1356,7 @@ export function ChannelSettingsCenter() {
               title="Автопилот"
               description="Частота плана и уровень контроля перед публикацией."
               icon={<Sparkles className="h-4 w-4" aria-hidden />}
+              kind="autopilot"
               defaultOpen
             >
               <Toggle
@@ -1358,20 +1372,12 @@ export function ChannelSettingsCenter() {
                   Один пост в день — 7 готовых публикаций на каждую неделю плана.
                 </p>
               </div>
-              <Segments
-                label="Контроль публикации"
-                value={draft.settings.mode}
-                onChange={(value) => setAutopilot("mode", value)}
-                options={[
-                  { value: "confirm", label: "С подтверждением", description: "Сначала покажет план" },
-                  {
-                    value: "full",
-                    label: "Полный автопилот",
-                    description: draft.settings.approvals_streak >= 2 ? "Публикует сам" : "После 2 недель без правок",
-                    disabled: draft.settings.approvals_streak < 2 && saved.settings.mode !== "full",
-                  },
-                ]}
-              />
+              <div className="rounded-sm border border-brand/20 bg-info-soft p-4">
+                <p className="text-[13px] font-bold text-text">Публикация только после проверки</p>
+                <p className="mt-1 text-[13px] leading-relaxed text-text-3">
+                  Аврора подготовит весь план и предложит расписание. В календарь попадёт только точная версия, которую ты просмотрел и одобрил.
+                </p>
+              </div>
             </SettingsGroup>
 
             <SettingsGroup
@@ -1515,7 +1521,7 @@ export function ChannelSettingsCenter() {
                 )}
                 <Button variant="brand" size="sm" loading={saving} disabled={!dirty || saving} onClick={() => void save()}>
                   <Save className="h-4 w-4" aria-hidden />
-                  Сохранить настройки
+                  {view === "autopilot" ? "Сохранить автопилот" : "Сохранить контент и стиль"}
                 </Button>
               </div>
             </div>
@@ -1544,5 +1550,6 @@ export function ChannelSettingsCenter() {
         onConfirm={() => void copyConfiguration()}
       />
     </div>
+    </ChannelSettingsViewContext.Provider>
   );
 }

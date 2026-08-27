@@ -19,7 +19,7 @@ describe("avatar ingress deployment contract", () => {
   it("accepts only the supported multipart limit range", () => {
     expect(avatarIngressConfigured({
       NODE_ENV: "production",
-      AURORA_AVATAR_BODY_LIMIT_BYTES: String(5 * 1024 * 1024 + 256 * 1024),
+      AURORA_AVATAR_BODY_LIMIT_BYTES: String(10 * 1024 * 1024 + 256 * 1024),
     })).toBe(true);
     expect(avatarIngressConfigured({
       NODE_ENV: "production",

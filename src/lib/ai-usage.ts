@@ -12,6 +12,7 @@ import {
   type ProfileCandidate,
 } from "./effective-ai-context";
 import { authorProfileContext } from "./author-profile.mjs";
+import { brandDictionaryPrompt } from "./brand-dictionary-service";
 import { normalizePostQuality, type PostQuality } from "./post-quality.mjs";
 
 export const AI_DAILY_LIMIT = Number(process.env.AI_DAILY_LIMIT || 30);
@@ -835,16 +836,16 @@ export async function channelAiContextFor(
 ): Promise<ChannelAiContext | null> {
   const channel = wantedChannelId
     ? (
-        await pool.query<{ id: string; title: string | null; handle: string | null; network: string }>(
-          `select id, title, handle, network
+        await pool.query<{ id: string; title: string | null; handle: string | null; network: string; project_id: string }>(
+          `select id, title, handle, network, project_id
              from channels
             where id = $1 and user_id = $2 and is_active = true`,
           [wantedChannelId, userId],
         )
       ).rows[0]
     : (
-        await pool.query<{ id: string; title: string | null; handle: string | null; network: string }>(
-          `select id, title, handle, network
+        await pool.query<{ id: string; title: string | null; handle: string | null; network: string; project_id: string }>(
+          `select id, title, handle, network, project_id
              from channels
             where user_id = $1 and is_active = true
             order by id
@@ -940,6 +941,29 @@ export async function channelAiContextFor(
   const detailedProfile = authorProfileContext(brief?.profile_answers);
   if (detailedProfile) profileLines.push(detailedProfile);
   const profile = profileLines.join("\n\n");
+  const dictionaryRows = (
+    await pool.query<{
+      kind: "canonical" | "allowed" | "prohibited" | "exception" | "abbreviation";
+      term: string;
+      replacement: string | null;
+      expansion: string | null;
+      case_sensitive: boolean;
+    }>(
+      `select kind, term, replacement, expansion, case_sensitive
+         from project_brand_dictionary_entries
+        where project_id = $1 and is_active = true
+        order by id
+        limit 200`,
+      [Number(channel.project_id)],
+    )
+  ).rows;
+  const dictionary = brandDictionaryPrompt(dictionaryRows.map((entry) => ({
+    kind: entry.kind,
+    term: entry.term,
+    replacement: entry.replacement,
+    expansion: entry.expansion,
+    caseSensitive: entry.case_sensitive,
+  })));
   const quality = normalizePostQuality(brief?.quality);
   const facts = (
     await pool.query<{ raw_text: string }>(
@@ -966,7 +990,7 @@ export async function channelAiContextFor(
     id: channelId,
     title: channel.title || channel.handle || `Канал ${channelId}`,
     network: channel.network,
-    profile: profile.trim().slice(0, 24_000),
+    profile: [profile, dictionary].filter(Boolean).join("\n\n").trim().slice(0, 24_000),
     profileProvenance: effectiveProfile,
     quality,
     postIndex: Number.isSafeInteger(publishedCount) && publishedCount >= 0 ? publishedCount : 0,

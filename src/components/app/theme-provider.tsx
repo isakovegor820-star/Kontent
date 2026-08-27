@@ -41,6 +41,7 @@ export function AppThemeProvider({
   initialPreference: AppThemePreference;
 }) {
   const [preference, setPreferenceState] = useState(initialPreference);
+  const [prefersDark, setPrefersDark] = useState(false);
 
   const setPreference = useCallback((nextPreference: AppThemePreference) => {
     setPreferenceState(nextPreference);
@@ -48,14 +49,24 @@ export function AppThemeProvider({
   }, []);
 
   useEffect(() => {
-    updateBrowserThemeColor(preference);
-  }, [preference]);
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    const sync = () => setPrefersDark(media.matches);
+    sync();
+    media.addEventListener("change", sync);
+    return () => media.removeEventListener("change", sync);
+  }, []);
+
+  const resolvedTheme = resolveAppTheme(preference, prefersDark);
+
+  useEffect(() => {
+    updateBrowserThemeColor(preference === "system" ? resolvedTheme : preference);
+  }, [preference, resolvedTheme]);
 
   const value = useMemo(() => ({ preference, setPreference }), [preference, setPreference]);
 
   return (
     <AppThemeContext.Provider value={value}>
-      <div className="app-v3" data-theme={preference}>{children}</div>
+      <div className="app-v3" data-theme={resolvedTheme} data-theme-preference={preference}>{children}</div>
     </AppThemeContext.Provider>
   );
 }

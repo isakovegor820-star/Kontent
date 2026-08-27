@@ -14,8 +14,11 @@ export function completeAiText(
     user?: string;
     messages?: Array<{ role: "system" | "user" | "assistant"; content: string }>;
     engine?: EngineId | null;
+    providerRequestKey?: string;
+    providerRequestId?: string;
     temperature?: number;
     maxTokens?: number;
+    acceptLengthLimitedOutput?: boolean;
   },
   options?: {
     env?: Record<string, string | undefined>;

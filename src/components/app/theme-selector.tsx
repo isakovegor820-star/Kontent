@@ -1,7 +1,7 @@
 "use client";
 
 import { useAppTheme } from "@/components/app/theme-provider";
-import { Moon, Sun } from "lucide-react";
+import { Monitor, Moon, Sun } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { nextAppThemePreference } from "@/lib/app-theme";
 
@@ -10,7 +10,9 @@ export function AppThemeSelector() {
   const nextPreference = nextAppThemePreference(preference);
   const label = nextPreference === "light"
     ? "Включить светлую тему"
-    : "Включить тёмную тему";
+    : nextPreference === "dark"
+      ? "Включить тёмную тему"
+      : "Использовать тему системы";
 
   return (
     <Button
@@ -21,7 +23,9 @@ export function AppThemeSelector() {
       aria-label={label}
       title={label}
     >
-      {preference === "dark" ? (
+      {preference === "system" ? (
+        <Monitor className="h-[18px] w-[18px]" strokeWidth={1.75} aria-hidden />
+      ) : preference === "dark" ? (
         <Sun className="h-[18px] w-[18px]" strokeWidth={1.75} aria-hidden />
       ) : (
         <Moon className="h-[18px] w-[18px]" strokeWidth={1.75} aria-hidden />

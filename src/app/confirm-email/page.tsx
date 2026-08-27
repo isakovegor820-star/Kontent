@@ -78,7 +78,7 @@ export default function ConfirmEmailPage() {
           <p className="mt-3 font-mono text-[12px] text-text-3">Номер запроса: {requestId}</p>
         )}
         {state !== "loading" && (
-          <Link href="/app/settings?section=general">
+          <Link href="/app/settings?section=profile">
             <Button variant="brand" size="lg" className="mt-6 w-full">
               Открыть профиль
             </Button>
