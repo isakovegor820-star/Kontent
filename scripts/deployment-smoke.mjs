@@ -167,9 +167,42 @@ function requireNoStore(response, surface) {
 
 function parseJsonResponse(result, surface, allowedStatuses = [200]) {
   if (!allowedStatuses.includes(result.response.status)) {
+    let readiness;
+    if (surface === "readiness") {
+      try {
+        const report = JSON.parse(result.body);
+        const safeReason = (value) => {
+          const reason = String(value || "");
+          return /^[a-z0-9_.:-]{1,160}$/u.test(reason) ? reason : "invalid_readiness_reason";
+        };
+        readiness = {
+          status: ["ready", "degraded", "not_ready"].includes(report?.status)
+            ? report.status
+            : "unknown",
+          databaseReady: report?.databaseReady === true,
+          schemaReady: report?.schemaReady === true,
+          webReady: report?.webReady === true,
+          uploadReady: report?.uploadReady === true,
+          reasons: Array.isArray(report?.reasons)
+            ? report.reasons.slice(0, 20).map(safeReason)
+            : [],
+          checks: {
+            database: safeReason(report?.checks?.database),
+            schemaReady: report?.checks?.schema?.ready === true,
+            schemaReasons: Array.isArray(report?.checks?.schema?.reasons)
+              ? report.checks.schema.reasons.slice(0, 20).map(safeReason)
+              : [],
+            uploadIngress: safeReason(report?.checks?.uploadIngress),
+          },
+        };
+      } catch {
+        // The status and surface remain actionable when the failure body is not JSON.
+      }
+    }
     throw new DeploymentSmokeError("deployment_smoke_http_failure", {
       surface,
       status: result.response.status,
+      ...(readiness ? { readiness } : {}),
     });
   }
   if (!(result.response.headers.get("content-type") || "").toLowerCase().includes("application/json")) {

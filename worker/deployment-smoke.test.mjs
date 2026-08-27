@@ -207,7 +207,30 @@ describe("deployment smoke", () => {
       now: new Date("2026-08-17T12:01:00.000Z"),
     })).rejects.toMatchObject({
       code: "deployment_smoke_http_failure",
-      details: { surface: "readiness", status: 503 },
+      details: {
+        surface: "readiness",
+        status: 503,
+        readiness: {
+          status: "not_ready",
+          databaseReady: true,
+          schemaReady: false,
+          webReady: false,
+          uploadReady: true,
+          reasons: [
+            migrationReason,
+            "publication_worker_unavailable",
+            "telegram_polling_unavailable",
+            "ai_unobserved",
+            "mail_delivery_not_configured",
+          ],
+          checks: {
+            database: "up",
+            schemaReady: false,
+            schemaReasons: [migrationReason],
+            uploadIngress: "up",
+          },
+        },
+      },
     });
 
     await expect(runDeploymentSmoke({

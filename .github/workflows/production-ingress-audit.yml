@@ -1,0 +1,85 @@
+name: Production ingress audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-release-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Configure SSH
+        env:
+          PRODUCTION_SSH_KEY: ${{ secrets.PRODUCTION_SSH_KEY }}
+          PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
+          PRODUCTION_SSH_KNOWN_HOSTS: ${{ secrets.PRODUCTION_SSH_KNOWN_HOSTS }}
+          PRODUCTION_SSH_HOST_FINGERPRINT: ${{ secrets.PRODUCTION_SSH_HOST_FINGERPRINT }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$PRODUCTION_SSH_KEY"
+          test -n "$PRODUCTION_SSH_HOST"
+          test -n "$PRODUCTION_SSH_KNOWN_HOSTS"
+          test -n "$PRODUCTION_SSH_HOST_FINGERPRINT"
+          umask 077
+          mkdir -p ~/.ssh
+          printf '%s\n' "$PRODUCTION_SSH_KEY" > ~/.ssh/deploy_key
+          printf '%s\n' "$PRODUCTION_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          bash scripts/verify-ssh-host-identity.sh \
+            ~/.ssh/known_hosts \
+            "$PRODUCTION_SSH_HOST" \
+            "$PRODUCTION_SSH_HOST_FINGERPRINT"
+
+      - name: Collect redacted ingress state
+        env:
+          PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
+          PRODUCTION_SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          report_b64="$(ssh -i ~/.ssh/deploy_key \
+            -o StrictHostKeyChecking=yes \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=4 \
+            "${PRODUCTION_SSH_USER}@${PRODUCTION_SSH_HOST}" 'bash -s' <<'REMOTE' | base64 | tr -d '\n'
+          set -Eeuo pipefail
+          current_path="$(readlink -f /opt/aurora-current)"
+          current_sha="$(git -C "$current_path" rev-parse --verify HEAD)"
+          avatar_limit="$(sed -n 's/^AURORA_AVATAR_BODY_LIMIT_BYTES=//p' "$current_path/.env.production" | tail -n 1)"
+          [[ "$avatar_limit" =~ ^[0-9]+$ ]] || avatar_limit="missing_or_invalid"
+          nginx_state="$(systemctl is-active nginx.service 2>/dev/null || true)"
+          caddy_state="$(systemctl is-active caddy.service 2>/dev/null || true)"
+          apache_state="$(systemctl is-active apache2.service 2>/dev/null || true)"
+          nginx_limits="none"
+          if command -v nginx >/dev/null 2>&1; then
+            nginx_limits="$(nginx -T 2>/dev/null \
+              | sed -n 's/^[[:space:]]*client_max_body_size[[:space:]]\+\([^;[:space:]]\+\);.*/\1/p' \
+              | sort -u \
+              | paste -sd, -)"
+            nginx_limits="${nginx_limits:-none}"
+          fi
+          printf 'current_sha=%s\n' "$current_sha"
+          printf 'avatar_body_limit_bytes=%s\n' "$avatar_limit"
+          printf 'nginx_service=%s\n' "${nginx_state:-not_found}"
+          printf 'nginx_client_max_body_size=%s\n' "$nginx_limits"
+          printf 'caddy_service=%s\n' "${caddy_state:-not_found}"
+          printf 'apache_service=%s\n' "${apache_state:-not_found}"
+          printf 'web_service=%s\n' "$(systemctl is-active aurora-web.service 2>/dev/null || true)"
+          printf 'worker_service=%s\n' "$(systemctl is-active aurora-worker.service 2>/dev/null || true)"
+          REMOTE
+          )"
+          test -n "$report_b64"
+          echo "::notice title=Production ingress audit (base64)::${report_b64}"
