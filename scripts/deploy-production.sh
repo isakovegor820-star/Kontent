@@ -227,19 +227,14 @@ if [[ ! -f "${release}/.next/BUILD_ID" ]]; then
   exit 1
 fi
 
-echo "LOAD_RUNTIME_ENV"
-set -a
-# shellcheck disable=SC1091
-. ./.env.production
-set +a
-
-echo "MIGRATE"
 migration_allow_local_peer="${AURORA_ALLOW_LOCAL_PEER_MIGRATIONS:-false}"
 (
+  echo "LOAD_RUNTIME_ENV"
   set -a
   # shellcheck disable=SC1091
-  . "${release}/.env.production"
+  . ./.env.production
   set +a
+  echo "MIGRATE"
   AURORA_ALLOW_LOCAL_PEER_MIGRATIONS="$migration_allow_local_peer" \
     bash scripts/run-production-migrations.sh
 )

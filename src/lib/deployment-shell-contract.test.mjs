@@ -32,7 +32,7 @@ describe("production deployment shell contract", () => {
   });
 
   it("loads the release environment for migrations without overriding the operator gate", () => {
-    const sourceEnvironment = script.indexOf('. "${release}/.env.production"');
+    const sourceEnvironment = script.indexOf(". ./.env.production");
     const migrate = script.indexOf("bash scripts/run-production-migrations.sh");
     expect(sourceEnvironment).toBeGreaterThan(0);
     expect(sourceEnvironment).toBeLessThan(migrate);
