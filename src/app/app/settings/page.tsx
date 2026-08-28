@@ -72,7 +72,12 @@ import { useStore } from "@/lib/store";
 import { getAiUsageMetrics } from "@/lib/ai-usage-sync";
 import type { Network } from "@/lib/types";
 import { NETWORK_LABEL, cn, fmtNum, plural } from "@/lib/utils";
-import { parseBotLinkStatusResponse, requireBotUnlinkSuccess } from "@/lib/bot-link-client";
+import {
+  parseBotLinkStatusResponse,
+  requestTelegramChannelConnection,
+  requireBotUnlinkSuccess,
+  telegramChannelConnectionSnapshot,
+} from "@/lib/bot-link-client";
 import { experimentalRoutesEnabled } from "@/lib/release-scope";
 import {
   hasComposerPayloadSupport,
@@ -155,13 +160,147 @@ function Section({
 
 function ChannelsSection({ index }: { index: number }) {
   const s = useStore();
-  const router = useRouter();
+  const { refreshReal, toast } = s;
   const [disconnecting, setDisconnecting] = useState<number | null>(null);
+  const [connectionPhase, setConnectionPhase] = useState<"idle" | "opening" | "waiting" | "connected" | "error">("idle");
+  const [connectionMessage, setConnectionMessage] = useState("");
+  const connectionBaseline = useRef("");
+  const connectionDeadline = useRef(0);
+  const connectionTimer = useRef<number | null>(null);
+  const connectionChecking = useRef(false);
   const channels = s.realChannels.filter((channel) => (
     channel.status !== "disconnected"
     && (EXPERIMENTAL_ROUTES_ENABLED || channel.network === "tg")
   ));
-  const addMore = () => router.push("/app/onboarding");
+
+  const stopConnectionPolling = useCallback(() => {
+    if (connectionTimer.current != null) window.clearInterval(connectionTimer.current);
+    connectionTimer.current = null;
+    connectionChecking.current = false;
+  }, []);
+
+  const checkTelegramConnection = useCallback(async () => {
+    if (connectionChecking.current) return;
+    if (Date.now() >= connectionDeadline.current) {
+      stopConnectionPolling();
+      window.sessionStorage.removeItem("aurora:telegram-channel-connection");
+      setConnectionPhase("error");
+      setConnectionMessage("Telegram не подтвердил канал. Проверь, что выбрал именно канал и оставил право «Публикация сообщений», затем повтори.");
+      return;
+    }
+    connectionChecking.current = true;
+    try {
+      const response = await fetch("/api/channels", { cache: "no-store" });
+      const body = await response.json().catch(() => null) as { channels?: import("@/lib/types").RealChannel[] } | null;
+      if (!response.ok || !Array.isArray(body?.channels)) return;
+      const nextSnapshot = telegramChannelConnectionSnapshot(body.channels);
+      const activeTelegram = body.channels.filter((channel) => channel.network === "tg" && channel.is_active);
+      const baselineStates = new Set(connectionBaseline.current ? connectionBaseline.current.split("|") : []);
+      const connected = activeTelegram.find((channel) => (
+        !baselineStates.has(telegramChannelConnectionSnapshot([channel]))
+      ));
+      if (nextSnapshot === connectionBaseline.current || !connected) return;
+
+      stopConnectionPolling();
+      window.sessionStorage.removeItem("aurora:telegram-channel-connection");
+      await refreshReal();
+      const label = connected.title || (connected.handle ? `@${connected.handle}` : "Telegram-канал");
+      setConnectionPhase("connected");
+      setConnectionMessage(`Канал «${label}» подключён и готов к публикациям.`);
+      toast({
+        kind: "success",
+        title: "Telegram-канал подключён",
+        body: `Аврора проверила право публикации для «${label}».`,
+      });
+    } catch {
+      // A short network interruption must not cancel an otherwise valid Telegram flow.
+      // The next interval or window-focus event will retry until the deadline.
+    } finally {
+      connectionChecking.current = false;
+    }
+  }, [refreshReal, stopConnectionPolling, toast]);
+
+  const startConnectionPolling = useCallback((baseline: string, deadline: number) => {
+    stopConnectionPolling();
+    connectionBaseline.current = baseline;
+    connectionDeadline.current = deadline;
+    setConnectionPhase("waiting");
+    setConnectionMessage("Жду подтверждение Telegram. Выбери канал, оставь право публикации и вернись в Аврору — список обновится сам.");
+    void checkTelegramConnection();
+    connectionTimer.current = window.setInterval(() => void checkTelegramConnection(), 1_000);
+  }, [checkTelegramConnection, stopConnectionPolling]);
+
+  useEffect(() => {
+    let resumeTimer: number | null = null;
+    const pending = window.sessionStorage.getItem("aurora:telegram-channel-connection");
+    if (pending) {
+      try {
+        const value = JSON.parse(pending) as { baseline?: unknown; deadline?: unknown };
+        const deadline = Number(value.deadline);
+        if (typeof value.baseline === "string" && Number.isFinite(deadline) && deadline > Date.now()) {
+          resumeTimer = window.setTimeout(() => startConnectionPolling(value.baseline as string, deadline), 0);
+        } else {
+          window.sessionStorage.removeItem("aurora:telegram-channel-connection");
+        }
+      } catch {
+        window.sessionStorage.removeItem("aurora:telegram-channel-connection");
+      }
+    }
+    const checkWhenVisible = () => {
+      if (document.visibilityState === "visible" && connectionTimer.current != null) {
+        void checkTelegramConnection();
+      }
+    };
+    window.addEventListener("focus", checkWhenVisible);
+    document.addEventListener("visibilitychange", checkWhenVisible);
+    return () => {
+      if (resumeTimer != null) window.clearTimeout(resumeTimer);
+      window.removeEventListener("focus", checkWhenVisible);
+      document.removeEventListener("visibilitychange", checkWhenVisible);
+      stopConnectionPolling();
+    };
+  }, [checkTelegramConnection, startConnectionPolling, stopConnectionPolling]);
+
+  const connectTelegram = async () => {
+    if (connectionPhase === "opening") return;
+    stopConnectionPolling();
+    window.sessionStorage.removeItem("aurora:telegram-channel-connection");
+    setConnectionPhase("opening");
+    setConnectionMessage("");
+    // Open synchronously while this still is a trusted click. Async window.open calls are
+    // commonly blocked on mobile Safari and leave the user thinking nothing happened.
+    const telegramWindow = window.open("about:blank", "aurora-telegram-channel");
+    try {
+      const launch = await requestTelegramChannelConnection();
+      const baseline = telegramChannelConnectionSnapshot(s.realChannels);
+      const deadline = Date.now() + 90_000;
+      window.sessionStorage.setItem(
+        "aurora:telegram-channel-connection",
+        JSON.stringify({ baseline, deadline }),
+      );
+      startConnectionPolling(baseline, deadline);
+      if (telegramWindow && !telegramWindow.closed) {
+        telegramWindow.opener = null;
+        telegramWindow.location.replace(launch.url);
+      } else {
+        window.location.assign(launch.url);
+      }
+    } catch (reason) {
+      telegramWindow?.close();
+      const code = reason instanceof Error ? reason.message : "unknown";
+      const message = code === "bot_conflict"
+        ? "Бота сейчас слушает второй процесс. Аврора не открывает подключение, пока команды могут потеряться."
+        : code === "bot_down"
+          ? "Бот временно не принимает команды. Повтори через несколько секунд."
+          : code === "bot_not_configured"
+            ? "Telegram-бот не настроен на сервере."
+            : "Не удалось открыть Telegram. Проверь соединение и повтори.";
+      setConnectionPhase("error");
+      setConnectionMessage(message);
+    }
+  };
+
+  const addMore = () => void connectTelegram();
   const disconnect = async (channelId: number) => {
     if (disconnecting != null) return;
     if (!window.confirm("Отключить канал? История останется. Если есть запланированные публикации, Аврора сначала попросит отменить их.")) return;
@@ -200,6 +339,39 @@ function ChannelsSection({ index }: { index: number }) {
         ? "Telegram и VK публикуют с сервера. Для остальных сетей здесь явно указан текущий статус поддержки."
         : "Telegram публикует с сервера, даже когда ваш компьютер выключен."}
     >
+      <div className="mb-5 rounded-md border border-brand/20 bg-info-soft p-4">
+        <p className="text-[15px] font-bold text-text">Подключение без перехода в мастер</p>
+        <p className="mt-1.5 text-[13px] leading-relaxed text-text-2">
+          Аврора откроет Telegram, попросит выбрать канал и проверит право публикации. Эта страница останется открытой и сама покажет результат.
+        </p>
+        <Button
+          type="button"
+          variant="brand"
+          size="sm"
+          loading={connectionPhase === "opening"}
+          onClick={() => void connectTelegram()}
+          className="mt-3"
+        >
+          <TelegramIcon className="h-4 w-4" aria-hidden />
+          {channels.some((channel) => channel.network === "tg") ? "Подключить ещё канал" : "Выбрать канал в Telegram"}
+        </Button>
+        {connectionMessage ? (
+          <p
+            role={connectionPhase === "error" ? "alert" : "status"}
+            aria-live="polite"
+            className={cn(
+              "mt-3 text-[13px] leading-relaxed font-medium",
+              connectionPhase === "error"
+                ? "text-danger-text"
+                : connectionPhase === "connected"
+                  ? "text-success-text"
+                  : "text-text-2",
+            )}
+          >
+            {connectionMessage}
+          </p>
+        ) : null}
+      </div>
       {s.realError && (
         <div
           role="alert"

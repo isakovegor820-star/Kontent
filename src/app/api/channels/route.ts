@@ -16,7 +16,7 @@ export async function GET(req: NextRequest) {
     const rows = await pool.query(
       `select id, network, title, handle,
               (is_active and status = 'active') as is_active,
-              status, last_auth_error_code, last_auth_error_at
+              status, last_auth_error_code, last_auth_error_at, updated_at
          from channels
         where project_id = $1 and status <> 'disconnected'
         order by id`,

@@ -279,11 +279,7 @@ import {
 } from "./worker/telegram-polling-heartbeat.mjs";
 import { telegramPollingConflictCooldownMs } from "./worker/telegram-polling-conflict.mjs";
 import {
-  TELEGRAM_POLLING_GUARD_CHECK_INTERVAL_MS,
-  TELEGRAM_POLLING_GUARD_RETRY_MS,
   telegramPollingGuardConfiguration,
-  telegramPollingGuardMatches,
-  telegramPollingGuardPendingCount,
 } from "./worker/telegram-polling-guard.mjs";
 import { telegramSafeErrorDescription } from "./worker/telegram-safe-error.mjs";
 import {
@@ -321,6 +317,7 @@ import {
   createBotConnectionSession,
   disconnectBotChat,
   maskBotAccountEmail,
+  parseLegacyBotStartPayload,
 } from "./src/lib/bot-connection.mjs";
 import {
   markTelegramChannelUnavailable,
@@ -2542,10 +2539,10 @@ worker?.on("failed", (job, err) =>
 // ============================================================================
 // БОТ: приём команд и кнопок.
 //
-// Команды остаются в очереди Telegram за внутренним guard-webhook. Основной worker на
-// короткое время открывает очередь, забирает накопившийся batch через getUpdates и сразу
-// закрывает её снова. Это не требует публичного домена и не даёт забытому внешнему poller
-// перехватывать пользовательские команды.
+// Основной worker держит быстрый getUpdates long poll под Redis singleton-lease. Перед
+// открытием receive mode guard-webhook один раз сбивает забытый in-flight poller; при 409
+// guard возвращается на время cooldown. Это не требует публичного webhook-домена и не
+// добавляет секундный pending-count цикл перед каждым ответом.
 // ============================================================================
 
 const BOT_POLL = !AUTOPILOT_ONLY && !MEDIA_ONLY && !PUBLICATION_ONLY;
@@ -2555,6 +2552,7 @@ const TELEGRAM_POLLING_GUARD = BOT_POLL && TOKEN
   : null;
 let telegramPollingLeaseHeld = false;
 let telegramPollingLeaseTimer = null;
+let telegramPollingQueueOpen = false;
 if (BOT_POLL && process.env.TG_WEBHOOK_URL) {
   console.warn("[bot] TG_WEBHOOK_URL игнорируется: webhook ingress не реализован, продолжаю long polling");
 }
@@ -2564,10 +2562,14 @@ function startTelegramPollingLeaseRenewal() {
   telegramPollingLeaseTimer = setInterval(() => {
     renewTelegramPollingLease(connection, TELEGRAM_POLLING_OWNER)
       .then((renewed) => {
-        if (!renewed) telegramPollingLeaseHeld = false;
+        if (!renewed) {
+          telegramPollingLeaseHeld = false;
+          telegramPollingQueueOpen = false;
+        }
       })
       .catch(() => {
         telegramPollingLeaseHeld = false;
+        telegramPollingQueueOpen = false;
       });
   }, TELEGRAM_POLLING_LEASE_RENEW_MS);
   telegramPollingLeaseTimer.unref();
@@ -2616,41 +2618,15 @@ async function enableTelegramPollingGuard() {
   return response?.ok === true;
 }
 
-async function readTelegramPollingGuard() {
-  const response = await tg("getWebhookInfo", {}, 8_000).catch(() => null);
-  if (response?.ok !== true) return null;
-  return {
-    active: telegramPollingGuardMatches(response.result, TOKEN),
-    pending: telegramPollingGuardPendingCount(response.result),
-  };
-}
-
-async function drainTelegramPollingGuard(offset) {
-  // Re-arm immediately before opening the queue. This forces any in-flight getUpdates
-  // request from a forgotten process to fail before our bounded drain begins.
+async function openTelegramPollingQueue() {
+  // Arm the guard once before switching receive modes. This cancels an old in-flight
+  // getUpdates request; the Redis lease then keeps normal Aurora workers singular.
   if (!(await enableTelegramPollingGuard())) {
-    return { response: null, guardRestored: false };
+    return false;
   }
   const opened = await tg("deleteWebhook", { drop_pending_updates: false }, 10_000).catch(() => null);
-  if (opened?.ok !== true) return { response: opened, guardRestored: false };
-
-  let response = null;
-  try {
-    response = await tg("getUpdates", { offset, timeout: 0, limit: 100 }, 8_000);
-  } catch {
-    response = null;
-  }
-  // Restore the gate before processing. If the worker dies while handling the batch,
-  // Telegram retains the unconfirmed updates and the durable DB offset replays them.
-  let guardRestored = false;
-  for (let attempt = 0; attempt < 3 && !guardRestored; attempt += 1) {
-    guardRestored = await enableTelegramPollingGuard();
-    if (!guardRestored && attempt < 2) await sleep(250 * (attempt + 1));
-  }
-  if (!guardRestored) {
-    console.error("[bot] не удалось закрыть очередь Telegram после чтения");
-  }
-  return { response, guardRestored };
+  telegramPollingQueueOpen = opened?.ok === true;
+  return telegramPollingQueueOpen;
 }
 
 async function botProject(userId, explicitProjectId = null) {
@@ -3011,10 +2987,15 @@ async function userByChat(chatId) {
   )).rows[0] ?? null;
 }
 
-async function botChannelConnectPrompt(userId) {
+async function botChannelConnectPrompt(userId, options = {}) {
   const project = await botProject(userId);
   const url = telegramChannelAdminUrl(process.env.TG_BOT_USERNAME);
-  if (!project || project.role !== "owner" || Number(project.channel_count || 0) > 0 || !url) return null;
+  if (
+    !project
+    || project.role !== "owner"
+    || (!options.force && Number(project.channel_count || 0) > 0)
+    || !url
+  ) return null;
   return {
     text: formatBotChannelConnectPrompt({ projectName: project.name }),
     buttons: [[{ text: "Выбрать канал", url }]],
@@ -3135,8 +3116,10 @@ async function handleStart(chatId, from, code) {
     return botSendConnectionOnboarding(chatId, from);
   }
 
+  const startPayload = parseLegacyBotStartPayload(code);
+
   const link = await consumeLegacyBotLink(pool, {
-    code,
+    code: startPayload.code,
     telegramChatId: Number(chatId),
   });
 
@@ -3159,7 +3142,9 @@ async function handleStart(chatId, from, code) {
       "• план недели от автопилота — с кнопкой подтверждения\n\n" +
       "Начнём со сводки на сегодня.",
   );
-  const channelPrompt = await botChannelConnectPrompt(Number(link.userId));
+  const channelPrompt = await botChannelConnectPrompt(Number(link.userId), {
+    force: startPayload.intent === "channel",
+  });
   if (channelPrompt) {
     await tgSend(chatId, channelPrompt.text, channelPrompt.buttons);
   } else {
@@ -10983,13 +10968,15 @@ async function handleUpdate(u) {
   }
 }
 
-/** Защищённый опрос. Смещение — в базе: после рестарта незавершённые нажатия повторяются. */
+/**
+ * Быстрый long polling. Смещение — в базе: после рестарта незавершённые нажатия
+ * повторяются. Раньше worker раз в секунду проверял pending_update_count и для каждого
+ * batch переключал webhook туда-обратно; это добавляло несколько Telegram API round-trip
+ * перед любым ответом. Теперь один singleton-owner держит getUpdates открытым, поэтому
+ * Telegram отдаёт команду сразу после её появления.
+ */
 async function pollUpdates() {
   if (!TOKEN || !BOT_POLL) return;
-  const initialGuard = await enableTelegramPollingGuard();
-  if (!initialGuard) {
-    console.error("[bot] очередь Telegram пока не защищена, повторю настройку в фоне");
-  }
   const discussionSync = await syncTelegramDiscussionChats(pool, tg).catch((error) => {
     console.error("[bot] не удалось сверить группы обсуждений:", error?.message);
     return null;
@@ -11004,7 +10991,7 @@ async function pollUpdates() {
   if (commandSetup?.ok !== true) {
     console.error("[bot] не удалось обновить меню команд Telegram");
   }
-  console.log("[bot] готов принять lease для команд (защищённая очередь Telegram)");
+  console.log("[bot] готов принять lease для команд (быстрый Telegram long polling)");
   const updateFailures = new Map();
   let consecutivePollingConflicts = 0;
 
@@ -11014,36 +11001,25 @@ async function pollUpdates() {
         await sleep(5_000);
         continue;
       }
-      let guard = await readTelegramPollingGuard();
-      if (!guard?.active) {
-        const guarded = await enableTelegramPollingGuard();
-        if (!guarded) {
-          await sleep(TELEGRAM_POLLING_GUARD_RETRY_MS);
-          continue;
-        }
-        guard = await readTelegramPollingGuard();
-        if (!guard?.active) {
-          await sleep(TELEGRAM_POLLING_GUARD_RETRY_MS);
-          continue;
-        }
-      }
-
-      // A successful guard probe proves that this process owns the receive mode and is
-      // watching Telegram. Incoming updates stay queued until the guarded drain below.
-      await refreshTelegramPollingHeartbeat();
-      if (guard.pending <= 0) {
-        await sleep(TELEGRAM_POLLING_GUARD_CHECK_INTERVAL_MS);
+      if (!telegramPollingQueueOpen && !(await openTelegramPollingQueue())) {
+        await sleep(2_000);
         continue;
       }
 
+      await refreshTelegramPollingHeartbeat();
       const offset =
         Number((await pool.query(`select last_update from bot_state where id = 1`)).rows[0]?.last_update ?? 0) + 1;
-      const drained = await drainTelegramPollingGuard(offset);
-      const r = drained.response;
+      const r = await tg(
+        "getUpdates",
+        { offset, timeout: 25, limit: 100 },
+        35_000,
+      ).catch(() => null);
       if (!r?.ok) {
+        telegramPollingQueueOpen = false;
         if (/conflict/i.test(r?.description || "")) {
           consecutivePollingConflicts += 1;
           const cooldownMs = telegramPollingConflictCooldownMs(consecutivePollingConflicts);
+          await enableTelegramPollingGuard();
           await refreshTelegramPollingHeartbeat("conflict");
           console.error("[bot] конфликт: Telegram-команды получает другой polling-процесс", {
             consecutiveConflicts: consecutivePollingConflicts,
@@ -11057,9 +11033,9 @@ async function pollUpdates() {
       }
       consecutivePollingConflicts = 0;
       // If the Redis lease expired while Telegram was answering, do not execute the batch.
-      // The durable offset stays unchanged and the guard keeps it queued for the next owner.
+      // The durable offset stays unchanged, so Telegram replays it for the next owner.
       if (!telegramPollingLeaseHeld) continue;
-      for (const u of r.result) {
+      for (const u of Array.isArray(r.result) ? r.result : []) {
         const outcome = await handleUpdate(u);
         if (outcome?.retry) {
           const failure = nextTelegramUpdateFailure(updateFailures.get(u.update_id));
@@ -12375,8 +12351,12 @@ async function shutdown(sig) {
   stopPublicationHeartbeat();
   stopTelegramPollingLeaseRenewal();
   if (telegramPollingLeaseHeld && TELEGRAM_POLLING_OWNER) {
+    // Cancel the in-flight long poll and leave Telegram retaining unconfirmed updates
+    // while the replacement worker starts during a deploy.
+    await enableTelegramPollingGuard().catch(() => false);
     await releaseTelegramPollingLease(connection, TELEGRAM_POLLING_OWNER).catch(() => false);
     telegramPollingLeaseHeld = false;
+    telegramPollingQueueOpen = false;
   }
   try {
     await worker?.close();

@@ -216,6 +216,7 @@ export interface RealChannel {
   status?: "active" | "needs_reconnect" | "permission_lost" | "revoked" | "disconnected";
   last_auth_error_code?: string | null;
   last_auth_error_at?: string | null;
+  updated_at?: string | null;
   reconnect_required?: boolean;
 }
 

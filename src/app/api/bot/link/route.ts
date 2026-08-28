@@ -70,10 +70,12 @@ export async function POST(req: NextRequest) {
     // Замена старого кода и выпуск нового происходят одной транзакцией: при сбое
     // предыдущая рабочая ссылка не исчезнет без новой ссылки на замену.
     const link = await createLegacyBotLink(getPool(), { userId: user.id });
+    const body = await req.json().catch(() => null) as { intent?: unknown } | null;
+    const startPayload = body?.intent === "channel" ? `${link.code}_channel` : link.code;
 
     return NextResponse.json({
       ok: true,
-      url: `https://t.me/${bot}?start=${link.code}`,
+      url: `https://t.me/${bot}?start=${startPayload}`,
       expiresInMin: link.expiresInMinutes,
     });
   } catch (err) {

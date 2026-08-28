@@ -103,6 +103,19 @@ describe("GET /api/bot/link", () => {
     });
   });
 
+  it("preserves channel intent through the one-time Telegram start link", async () => {
+    const response = await POST(new NextRequest("http://localhost/api/bot/link", {
+      method: "POST",
+      headers: { origin: "http://localhost", "content-type": "application/json" },
+      body: JSON.stringify({ intent: "channel" }),
+    }));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      url: `https://t.me/aurora_bot?start=${"a".repeat(32)}_channel`,
+    });
+  });
+
   it("does not create a broken link for an invalid configured bot username", async () => {
     vi.stubEnv("TG_BOT_USERNAME", "https://t.me/not-a-username");
     const response = await POST(new NextRequest("http://localhost/api/bot/link", {

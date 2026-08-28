@@ -10,6 +10,7 @@ import {
   inspectBotConnectionSession,
   maskBotAccountEmail,
   normalizeTelegramBotUsername,
+  parseLegacyBotStartPayload,
 } from "./bot-connection.mjs";
 
 const NOW = Date.parse("2026-08-18T12:00:00.000Z");
@@ -127,6 +128,13 @@ describe("Telegram account labels", () => {
 });
 
 describe("legacy Telegram connection links", () => {
+  it("keeps the channel intent separate from the one-time secret", () => {
+    const code = "a".repeat(32);
+    expect(parseLegacyBotStartPayload(`${code}_channel`)).toEqual({ code, intent: "channel" });
+    expect(parseLegacyBotStartPayload(code)).toEqual({ code, intent: null });
+    expect(parseLegacyBotStartPayload("unexpected")).toEqual({ code: "unexpected", intent: null });
+  });
+
   it("replaces an old link and creates the new link in one transaction", async () => {
     const queries = [];
     const client = {

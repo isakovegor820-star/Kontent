@@ -9,6 +9,10 @@ export function createBotConnectionToken(): string;
 export function hashBotConnectionToken(rawToken: unknown): string | null;
 export function maskBotAccountEmail(value: unknown): string;
 export function normalizeTelegramBotUsername(value: unknown): string | null;
+export function parseLegacyBotStartPayload(value: unknown): {
+  code: string;
+  intent: "channel" | null;
+};
 
 export function createLegacyBotLink(pool: Pool, input: {
   userId: number;

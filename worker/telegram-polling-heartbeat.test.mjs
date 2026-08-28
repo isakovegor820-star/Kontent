@@ -64,33 +64,27 @@ describe("telegram polling heartbeat", () => {
     expect(parseTelegramPollingHeartbeat("not-json", { nowMs: NOW })).toBeNull();
   });
 
-  it("is refreshed only while the guarded Telegram queue is owned", () => {
+  it("is refreshed only while the fast Telegram queue is owned", () => {
     const source = readFileSync(new URL("../worker.mjs", import.meta.url), "utf8");
     const polling = source.slice(
       source.indexOf("async function pollUpdates()"),
       source.indexOf("function parseMonthlyCampaignRegenerationJson"),
     );
-    const drain = source.slice(
-      source.indexOf("async function drainTelegramPollingGuard"),
+    const opening = source.slice(
+      source.indexOf("async function openTelegramPollingQueue"),
       source.indexOf("async function botProject"),
     );
-    expect(polling).toContain("readTelegramPollingGuard()");
+    expect(polling).toContain("openTelegramPollingQueue()");
     expect(polling.indexOf("ensureTelegramPollingLease()")).toBeLessThan(
-      polling.indexOf("readTelegramPollingGuard()"),
-    );
-    expect(polling.indexOf("if (!guard?.active)")).toBeLessThan(
-      polling.indexOf("await refreshTelegramPollingHeartbeat();"),
+      polling.indexOf("openTelegramPollingQueue()"),
     );
     expect(polling).toContain('await refreshTelegramPollingHeartbeat("conflict")');
     expect(polling.indexOf("await refreshTelegramPollingHeartbeat();")).toBeLessThan(
-      polling.indexOf("if (guard.pending <= 0)"),
+      polling.indexOf('"getUpdates"'),
     );
-    expect(drain.indexOf('tg("deleteWebhook"')).toBeLessThan(
-      drain.indexOf('tg("getUpdates"'),
-    );
-    const getUpdatesIndex = drain.indexOf('tg("getUpdates"');
-    expect(getUpdatesIndex).toBeLessThan(
-      drain.indexOf("enableTelegramPollingGuard()", getUpdatesIndex),
+    expect(polling).toContain("{ offset, timeout: 25, limit: 100 }");
+    expect(opening.indexOf("enableTelegramPollingGuard()")).toBeLessThan(
+      opening.indexOf('tg("deleteWebhook"'),
     );
   });
 });

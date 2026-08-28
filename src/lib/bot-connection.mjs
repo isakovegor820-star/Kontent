@@ -37,6 +37,13 @@ export function normalizeTelegramBotUsername(value) {
   return /^[A-Za-z0-9_]{5,32}$/u.test(username) ? username : null;
 }
 
+export function parseLegacyBotStartPayload(value) {
+  const match = String(value || "").trim().toLowerCase()
+    .match(/^([a-f0-9]{32})(?:_(channel))?$/u);
+  if (!match) return { code: String(value || "").trim(), intent: null };
+  return { code: match[1], intent: match[2] || null };
+}
+
 export async function createLegacyBotLink(pool, input) {
   const userId = safeUserId(input?.userId);
   const code = randomBytes(16).toString("hex");

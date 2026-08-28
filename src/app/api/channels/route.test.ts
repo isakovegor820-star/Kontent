@@ -46,6 +46,7 @@ describe("GET /api/channels project isolation", () => {
           status: "active",
           last_auth_error_code: null,
           last_auth_error_at: null,
+          updated_at: "2026-08-28T10:00:00.000Z",
         }],
         rowCount: 1,
       });
@@ -54,7 +55,7 @@ describe("GET /api/channels project isolation", () => {
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
-      channels: [{ id: 73, title: "Практика банкротства" }],
+      channels: [{ id: 73, title: "Практика банкротства", updated_at: "2026-08-28T10:00:00.000Z" }],
     });
     expect(mocks.query).toHaveBeenCalledTimes(2);
     const [authorizationSql, authorizationParams] = mocks.query.mock.calls[0];
