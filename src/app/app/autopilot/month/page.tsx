@@ -5,7 +5,7 @@ export default function MonthlyAutopilotPage() {
   return (
     <AppShell
       title="Кампания на месяц"
-      subtitle="Сетка тем на весь месяц. Полные тексты первой недели — только после согласования."
+      subtitle="Запас тем на каждый день месяца. После согласования Аврора готовит выбранный темп постов на первую неделю."
     >
       <MonthlyCampaignPlanner />
     </AppShell>

@@ -330,9 +330,15 @@ export function MonthlyCampaignPlanner() {
   }, [channelId]);
 
   const plan = latestPlan(detail);
-  const hasActiveRegeneration = detail?.regenerations.some((operation) =>
-    !REGENERATION_TERMINAL.has(operation.status),
-  ) ?? false;
+  const latestRegeneration = plan
+    ? detail?.regenerations.find((operation) => operation.planId === plan.id) ?? null
+    : null;
+  const hasActiveRegeneration = latestRegeneration
+    ? !REGENERATION_TERMINAL.has(latestRegeneration.status)
+    : false;
+  const regenerationFailed = latestRegeneration?.status === "failed"
+    || latestRegeneration?.status === "stale"
+    || latestRegeneration?.status === "cancelled";
 
   useEffect(() => {
     if (!campaignId || !hasActiveRegeneration) return;
@@ -515,9 +521,15 @@ export function MonthlyCampaignPlanner() {
     }
   };
 
-  const regenerate = async (scope: "item" | "week", item: MonthlyCampaignClientItem) => {
+  const regenerate = async (
+    scope: "item" | "week" | "month",
+    item?: MonthlyCampaignClientItem,
+  ) => {
     if (!detail || !plan || busy) return;
-    const key = scope === "item" ? `regen:item:${item.id}` : `regen:week:${item.scheduledFor}`;
+    if (scope !== "month" && !item) return;
+    const key = scope === "item"
+      ? `regen:item:${item?.id}`
+      : scope === "week" ? `regen:week:${item?.scheduledFor}` : "regen:month";
     setBusy(key);
     try {
       const response = await fetch(`/api/monthly-campaigns/${detail.campaign.id}/plans/${plan.id}/regenerate`, {
@@ -525,7 +537,9 @@ export function MonthlyCampaignPlanner() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           scope,
-          ...(scope === "item" ? { itemId: item.id } : { weekStartsOn: item.scheduledFor }),
+          ...(scope === "item"
+            ? { itemId: item?.id }
+            : scope === "week" ? { weekStartsOn: item?.scheduledFor } : {}),
           expectedPlanVersion: plan.version,
           idempotencyKey: `monthly-${key}:${crypto.randomUUID()}`,
         }),
@@ -533,7 +547,14 @@ export function MonthlyCampaignPlanner() {
       const payload = await response.json().catch(() => null);
       if (!response.ok || payload?.ok !== true) throw new Error(payload?.error || "server");
       await loadDetail(detail.campaign.id, true);
-      setMessage({ kind: "info", text: scope === "item" ? "Пересобираю только выбранную тему." : "Пересобираю только эту неделю." });
+      setMessage({
+        kind: "info",
+        text: scope === "item"
+          ? "Пересобираю только выбранную тему."
+          : scope === "week"
+            ? "Пересобираю только эту неделю."
+            : "Пересобираю весь месяц. Появится новая черновая версия плана; текущая останется в истории.",
+      });
     } catch (error) {
       setMessage({ kind: "error", text: apiError(error instanceof Error ? error.message : undefined) });
       await loadDetail(detail.campaign.id, true).catch(() => {});
@@ -941,7 +962,22 @@ export function MonthlyCampaignPlanner() {
                   {textsReady > 0 ? ` · ${textsReady} с текстом` : null}
                 </p>
               </div>
-              {primaryAction && <div className="flex flex-wrap gap-2">{primaryAction}</div>}
+              {(canEdit || primaryAction) && (
+                <div className="flex flex-wrap gap-2">
+                  {canEdit && plan && (
+                    <Button
+                      variant="secondary"
+                      onClick={() => regenerate("month")}
+                      loading={busy === "regen:month"}
+                      disabled={Boolean(busy) || hasActiveRegeneration || plan.stale}
+                    >
+                      <RefreshCw className="h-4 w-4" aria-hidden />
+                      Пересобрать весь месяц
+                    </Button>
+                  )}
+                  {primaryAction}
+                </div>
+              )}
             </div>
 
             <div className="mt-4">
@@ -968,6 +1004,13 @@ export function MonthlyCampaignPlanner() {
             </div>
           )}
 
+          {regenerationFailed && (
+            <div role="alert" className="flex items-start gap-2 rounded-sm bg-danger-soft p-4 text-[14px] leading-relaxed text-danger-text">
+              <CircleAlert className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+              <span>Пересборка не завершилась. Исходная версия сохранена — можно запустить пересборку ещё раз.</span>
+            </div>
+          )}
+
           {hasActiveRegeneration && (
             <div role="status" aria-live="polite" className="flex items-start gap-2 rounded-sm bg-info-soft p-4 text-[14px] leading-relaxed text-info-text">
               <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin motion-reduce:animate-none" aria-hidden />
@@ -981,7 +1024,7 @@ export function MonthlyCampaignPlanner() {
                 <div className="min-w-0 max-w-xl">
                   <h3 className="text-[15px] font-bold text-text">Тексты первой недели</h3>
                   <p className="mt-1 text-[14px] leading-relaxed text-text-2">
-                    Сетка уже согласована. Аврора напишет полные материалы только на ближайшие семь дней — остальные даты останутся темами.
+                    Сетка уже согласована. Аврора выберет заданный темп тем из первых семи дней месяца и напишет по ним полные материалы — остальные даты останутся темами.
                   </p>
                 </div>
                 <Button
@@ -1011,20 +1054,26 @@ export function MonthlyCampaignPlanner() {
           )}
 
           {plan && (
-            <PlanBoard
-              key={selectedCampaign.id}
-              campaign={selectedCampaign}
-              plan={plan}
-              canEdit={canEdit}
-              busy={busy}
-              hasActiveRegeneration={hasActiveRegeneration}
-              draggedId={draggedId}
-              onDragStart={setDraggedId}
-              onDragEnd={() => setDraggedId(null)}
-              onMove={moveItem}
-              onRegenerate={regenerate}
-              onOpenTopic={openTopic}
-            />
+            <>
+              <div className="rounded-sm bg-surface-inset px-4 py-3 text-[13px] leading-relaxed text-text-2">
+                <strong className="text-text">Как работает месяц:</strong>{" "}
+                сетка хранит одну запасную тему на каждый календарный день. После согласования Аврора возьмёт из первых семи тем {selectedCampaign.postsPerWeek} {plural(selectedCampaign.postsPerWeek, "тему", "темы", "тем")} и подготовит из них полные посты. Остальные темы останутся планом следующих выпусков.
+              </div>
+              <PlanBoard
+                key={selectedCampaign.id}
+                campaign={selectedCampaign}
+                plan={plan}
+                canEdit={canEdit}
+                busy={busy}
+                hasActiveRegeneration={hasActiveRegeneration}
+                draggedId={draggedId}
+                onDragStart={setDraggedId}
+                onDragEnd={() => setDraggedId(null)}
+                onMove={moveItem}
+                onRegenerate={regenerate}
+                onOpenTopic={openTopic}
+              />
+            </>
           )}
         </section>
       )}

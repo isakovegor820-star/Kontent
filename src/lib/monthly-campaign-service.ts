@@ -19,7 +19,7 @@ export const MONTHLY_CAMPAIGN_FUNNEL_STAGES = [
 export type MonthlyCampaignFunnelStage = (typeof MONTHLY_CAMPAIGN_FUNNEL_STAGES)[number];
 export type MonthlyCampaignPlanStatus = "draft" | "in_review" | "approved";
 export type MonthlyCampaignItemState = "topic" | "detailed";
-export type MonthlyCampaignRegenerationScope = "item" | "week";
+export type MonthlyCampaignRegenerationScope = "item" | "week" | "month";
 
 type TransactionPool = Pick<Pool, "connect">;
 type QueryPool = Pick<Pool, "query">;
@@ -1188,7 +1188,7 @@ export async function requestMonthlyCampaignRegeneration(input: {
   planVersion: number;
   targetItemIds: number[];
 }> {
-  if (input.scope !== "item" && input.scope !== "week") {
+  if (input.scope !== "item" && input.scope !== "week" && input.scope !== "month") {
     throw new MonthlyCampaignServiceError("invalid_regeneration_scope");
   }
   const scope = input.scope;
@@ -1240,13 +1240,20 @@ export async function requestMonthlyCampaignRegeneration(input: {
         `${ITEM_SELECT} where id = $1 and plan_id = $2 and project_id = $3 for update`,
         [itemId, planRow.id, projectId],
       )
-      : await client.query<Record<string, unknown>>(
-        `${ITEM_SELECT}
-          where plan_id = $1 and project_id = $2
-            and scheduled_for >= $3::date and scheduled_for < $3::date + 7
-          order by scheduled_for, position, id for update`,
-        [planRow.id, projectId, weekStartsOn],
-      );
+      : scope === "week"
+        ? await client.query<Record<string, unknown>>(
+          `${ITEM_SELECT}
+            where plan_id = $1 and project_id = $2
+              and scheduled_for >= $3::date and scheduled_for < $3::date + 7
+            order by scheduled_for, position, id for update`,
+          [planRow.id, projectId, weekStartsOn],
+        )
+        : await client.query<Record<string, unknown>>(
+          `${ITEM_SELECT}
+            where plan_id = $1 and project_id = $2
+            order by scheduled_for, position, id for update`,
+          [planRow.id, projectId],
+        );
     if (!targetResult.rows.length) throw new MonthlyCampaignServiceError("no_regeneration_targets");
     const operation = await client.query<{ id: number | string; status: string }>(
       `insert into monthly_campaign_regeneration_operations (

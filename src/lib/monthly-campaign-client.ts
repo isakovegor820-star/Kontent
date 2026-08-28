@@ -51,7 +51,7 @@ export type MonthlyCampaignClientDetail = {
   regenerations: {
     id: number;
     planId: number;
-    scope: "item" | "week";
+    scope: "item" | "week" | "month";
     weekStartsOn: string | null;
     status: "pending" | "processing" | "completed" | "stale" | "retryable_failed" | "failed" | "cancelled";
     targetItemIds: number[];
@@ -225,13 +225,13 @@ export function parseMonthlyCampaignDetail(value: unknown): MonthlyCampaignClien
       ? operation.targetItemIds.map(positive)
       : [];
     if (!operation || !id || !planId || targetItemIds.some((item) => item === null)
-        || !["item", "week"].includes(String(operation.scope))
+        || !["item", "week", "month"].includes(String(operation.scope))
         || !["pending", "processing", "completed", "stale", "retryable_failed", "failed", "cancelled"]
           .includes(String(operation.status))) return null;
     return {
       id,
       planId,
-      scope: operation.scope as "item" | "week",
+      scope: operation.scope as "item" | "week" | "month",
       weekStartsOn: operation.weekStartsOn == null ? null : dateOnly(operation.weekStartsOn),
       status: operation.status as MonthlyCampaignClientDetail["regenerations"][number]["status"],
       targetItemIds: targetItemIds as number[],

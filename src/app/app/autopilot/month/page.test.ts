@@ -11,7 +11,10 @@ const studio = readFileSync(new URL("../../studio/page.tsx", import.meta.url), "
 describe("monthly campaign page contract", () => {
   it("keeps the editorial-month purpose in the shell", () => {
     expect(source).toContain("Кампания на месяц");
-    expect(source).toContain("Сетка тем на весь месяц");
+    expect(source).toContain("Запас тем на каждый день месяца");
+    expect(planner).toContain("Как работает месяц:");
+    expect(planner).toContain("Пересобрать весь месяц");
+    expect(planner).toContain('regenerate("month")');
   });
 
   it("opens Composer and Studio by campaign ids, not by putting the prompt in the URL", () => {

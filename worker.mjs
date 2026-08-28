@@ -10613,7 +10613,7 @@ async function generateMonthlyCampaignRegeneration(context, usageReservationId) 
       usageReservationId,
       system,
       attempt === 0 ? user : `${user}\n\nПредыдущий ответ не прошёл JSON-контракт. Верни исправленный полный массив.`,
-      Math.min(2_400, Math.max(600, context.targets.length * 220)),
+      Math.min(9_000, Math.max(600, context.targets.length * 220)),
       null,
       0.55,
     );
@@ -11916,6 +11916,8 @@ if (monthlyCampaignRegenerationQueue) {
   }).catch((error) => {
     console.error("[monthly-campaign-regeneration] startup reconcile failed", error?.message);
   });
+  // This is a user-triggered editor action. Keep dispatch close to the UI poll cadence so
+  // "Пересобрать" does not look stuck while the durable outbox is waiting for a cron tick.
   const monthlyCampaignRegenerationTimer = setInterval(() => {
     reconcileMonthlyCampaignRegenerationOutbox({
       pool,
@@ -11924,7 +11926,7 @@ if (monthlyCampaignRegenerationQueue) {
     }).catch((error) => {
       console.error("[monthly-campaign-regeneration] reconcile failed", error?.message);
     });
-  }, 30_000);
+  }, 5_000);
   monthlyCampaignRegenerationTimer.unref();
 }
 

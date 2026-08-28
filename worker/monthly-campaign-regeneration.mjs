@@ -5,6 +5,7 @@ export const MONTHLY_CAMPAIGN_REGENERATION_DUPLICATE_THRESHOLD = 0.78;
 
 const terminalStatuses = new Set(["completed", "stale", "failed", "cancelled"]);
 const retryableStatuses = new Set(["pending", "processing", "retryable_failed"]);
+const MAX_REGENERATION_DELIVERY_ATTEMPTS = 3;
 const funnelStages = new Set(["awareness", "consideration", "consultation"]);
 const itemStates = new Set(["topic", "detailed"]);
 
@@ -320,10 +321,23 @@ export function buildMonthlyRegenerationRevisionItems(items, generated) {
 
 async function markOperation(pool, projectId, operationId, status, errorCode) {
   const retryable = status === "retryable_failed";
-  const outboxStatus = retryable ? "retryable_failed" : "failed";
   const tx = await pool.connect();
   try {
     await tx.query("begin");
+    const delivery = retryable
+      ? await tx.query(
+        `select attempts
+           from monthly_campaign_regeneration_outbox
+          where operation_id = $1 and project_id = $2
+          for update`,
+        [operationId, projectId],
+      )
+      : { rows: [] };
+    const effectiveStatus = retryable
+      && Number(delivery.rows?.[0]?.attempts ?? 0) < MAX_REGENERATION_DELIVERY_ATTEMPTS
+      ? "retryable_failed"
+      : status === "retryable_failed" ? "failed" : status;
+    const outboxStatus = effectiveStatus === "retryable_failed" ? "retryable_failed" : "failed";
     const marked = await tx.query(
       `update monthly_campaign_regeneration_operations
           set status = $3, error_code = $4, updated_at = now(),
@@ -331,7 +345,7 @@ async function markOperation(pool, projectId, operationId, status, errorCode) {
         where id = $1 and project_id = $2
           and status in ('pending','processing','retryable_failed')
         returning id`,
-      [operationId, projectId, status, String(errorCode || "regeneration_failed").slice(0, 100)],
+      [operationId, projectId, effectiveStatus, String(errorCode || "regeneration_failed").slice(0, 100)],
     );
     if (marked.rowCount !== 1) {
       await tx.query("rollback");

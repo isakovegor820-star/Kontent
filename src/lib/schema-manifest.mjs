@@ -5,7 +5,7 @@
  */
 export const SCHEMA_MANIFEST = Object.freeze({
   manifestVersion: 1,
-  schemaVersion: "2026-10-02.102",
+  schemaVersion: "2026-10-03.103",
   migrations: Object.freeze([
     ["20260801_account_onboarding.sql", "ac0e1f10046cf620185570ab5f40437991d08513473f67d4e93bdafa07b86614"],
     ["20260801_ai_usage_reservations.sql", "991c3a92dce16df55011d9df52fb65af1a7f4310b27f61dc519705f05528d7a0"],
@@ -113,6 +113,7 @@ export const SCHEMA_MANIFEST = Object.freeze({
     ["20260930_today_completed_items.sql", "da7713e17cedc595dcbf0b058bf4c7e35e2143bd2a44db38935cda4e1383ef27"],
     ["20261001_today_item_snapshot_rollback_compat.sql", "bb104c1eb2bda1855cee5dcaa1091b6c54630dfad0c8f4669271005bb56d3c85"],
     ["20261002_account_settings_and_previews.sql", "c7518d050c4916c960ad1d202ea9cbe76538bf63357d7879b2d171eb6d0ecd61"],
+    ["20261003_monthly_campaign_full_regeneration.sql", "d09148b6259b12048a187106d8b281541bc97ae3a9daa3bc165d93fc68b7e9c2"],
   ].map(([name, checksum, acceptedChecksums]) => Object.freeze({
     name,
     checksum,

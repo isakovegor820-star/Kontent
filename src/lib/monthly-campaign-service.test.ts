@@ -419,6 +419,34 @@ describe("monthly campaign project service", () => {
     expect(markerSql).not.toMatch(/title\s*=|approval_status\s*=|approved_content_version\s*=/u);
   });
 
+  it("captures the whole source plan for a full-month regeneration", async () => {
+    const targets = [itemRow(62, 0), itemRow(63, 1), itemRow(64, 2)];
+    const h = transactionHarness((sql) => {
+      if (sql.includes("from monthly_campaigns")) return { rows: [campaignRow()] };
+      if (sql.includes("from monthly_campaign_plans")) return { rows: [planRow({ status: "approved" })] };
+      if (sql.startsWith("select id, request_hash, status")) return { rows: [] };
+      if (sql.includes("from content_brief")) return { rows: [] };
+      if (sql.includes("from monthly_campaign_items") && sql.includes("order by scheduled_for")
+          && sql.includes("for update")) return { rows: targets };
+      if (sql.startsWith("insert into monthly_campaign_regeneration_operations")) {
+        return { rows: [{ id: 93, status: "pending" }] };
+      }
+      if (sql.startsWith("update monthly_campaign_plans")) return { rows: [{ version: 5 }] };
+      if (sql.startsWith("insert into monthly_campaign_regeneration_targets")
+          || sql.startsWith("update monthly_campaign_items")
+          || sql.startsWith("insert into monthly_campaign_regeneration_outbox")
+          || sql.startsWith("insert into audit_events")) return { rows: [] };
+      throw new Error(`unexpected SQL: ${sql}`);
+    });
+    const result = await requestMonthlyCampaignRegeneration({
+      pool: h.pool as never, actorUserId: 11, campaignId: 41, planId: 52,
+      expectedPlanVersion: 4, scope: "month",
+      idempotencyKey: "regenerate:month:2026-09",
+    });
+    expect(result.targetItemIds).toEqual([62, 63, 64]);
+    expect(result.status).toBe("pending");
+  });
+
   it("reuses an already linked topic draft instead of inserting another", async () => {
     const h = transactionHarness((sql) => {
       if (sql.includes("from monthly_campaigns")) return { rows: [campaignRow()] };

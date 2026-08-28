@@ -60,8 +60,16 @@ describe("monthly campaign client contract", () => {
           regenerationStatus: "idle",
         }],
       }],
-      regenerations: [],
-    })).toMatchObject({ plans: [{ items: [{ id: 7 }] }] });
+      regenerations: [{
+        id: 9,
+        planId: 5,
+        scope: "month",
+        weekStartsOn: null,
+        status: "pending",
+        targetItemIds: [7],
+        errorCode: null,
+      }],
+    })).toMatchObject({ plans: [{ items: [{ id: 7 }] }], regenerations: [{ scope: "month" }] });
     expect(parseMonthlyCampaignDetail({ ok: true, campaign, plans: [{ id: 5, items: [{}] }], regenerations: [] }))
       .toBeNull();
   });
