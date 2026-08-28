@@ -4534,6 +4534,7 @@ try {
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto("/app/analytics");
   await page.getByRole("heading", { name: "Статистика", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  await page.getByText("Главный вывод периода", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await page.getByRole("button", { name: "Переходы", exact: true }).click();
   await page.getByRole("heading", { name: "Переходы и заявки", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const trackingFunnel = page.locator('ol[aria-label="Воронка переходов и заявок"]');
