@@ -2334,7 +2334,7 @@ try {
      values ($1, current_date, 10, 1), ($2, current_date - 30, 10000, 100)`,
     [nowPostId, oldPostId],
   );
-  const analytics = await authenticatedRequest(`/api/stats?channel=${channels[0]}`);
+  const analytics = await authenticatedRequest(`/api/stats?channel=${channels[0]}&days=7`);
   assert(analytics.ok, `analytics failed with ${analytics.status}`);
   const analyticsBody = JSON.parse(analytics.text);
   assert(analyticsBody.period?.days === 7 && analyticsBody.totals?.totalViews === 10, "old high-performing post polluted weekly analytics");
