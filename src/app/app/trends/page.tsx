@@ -28,7 +28,7 @@ import {
   Users,
 } from "lucide-react";
 import { AppShell } from "@/components/app/shell";
-import { ChannelPicker, useChannelChoice } from "@/components/app/channel-picker";
+import { ChannelPicker, channelName, useChannelChoice } from "@/components/app/channel-picker";
 import { TrendStatistics } from "@/app/app/trends/trend-statistics";
 import { Button } from "@/components/ui/button";
 import { Badge, Card, Checkbox, EmptyState, Input, Tabs } from "@/components/ui/primitives";
@@ -53,6 +53,7 @@ import {
   type TrendFeedScope,
   type TrendPeriod,
 } from "@/lib/trend-period";
+import type { TrendStatSource } from "@/lib/trend-statistics";
 import { cn, fmtAgo, fmtCompact, plural } from "@/lib/utils";
 
 const EASE = [0.22, 1, 0.36, 1] as const;
@@ -125,6 +126,14 @@ interface Data {
 
 type TrendView = "feed" | "statistics";
 type InternetSearchState = "idle" | "invalid" | "searching" | "ready" | "error";
+
+function trendStatSourceFromScope(scope: TrendFeedScope): TrendStatSource {
+  return scope === "internet" ? "internet" : scope === "global" ? "collection" : "own";
+}
+
+function trendFeedScopeFromStatSource(source: TrendStatSource): TrendFeedScope {
+  return source === "internet" ? "internet" : source === "collection" ? "global" : "niche";
+}
 
 function trendsInternetQueryFromUrl(): string {
   if (typeof window === "undefined") return "";
@@ -1264,6 +1273,8 @@ export default function TrendsPage() {
   const st = data?.status;
   const global = scope === "global";
   const internet = scope === "internet";
+  const statisticsSource = trendStatSourceFromScope(scope);
+  const selectedChannel = tgChannels.find((channel) => channel.id === channelId) ?? null;
   const noCompetitors = !!st && st.competitors === 0;
   // Находки ждут подтверждения — только у «своей ниши»: у глобальных источников
   // канала нет, и находок для них не бывает.
@@ -1295,7 +1306,28 @@ export default function TrendsPage() {
 
       {view === "statistics" ? (
         <div className="mt-5">
-          <TrendStatistics channelId={channelId} channelTopic={niche} />
+          <TrendStatistics
+            channelId={channelId}
+            channelTopic={niche}
+            channelLabel={selectedChannel ? channelName(selectedChannel) : null}
+            channelControl={(
+              <ChannelPicker
+                channels={tgChannels}
+                value={channelId}
+                onChange={switchChannel}
+                label="Выбранный канал"
+                className="mt-2"
+              />
+            )}
+            source={statisticsSource}
+            initialTopic={internet ? internetAppliedQuery : ""}
+            onSourceChange={(nextSource) => switchScope(trendFeedScopeFromStatSource(nextSource))}
+            onOpenFeed={(nextSource) => {
+              const nextScope = trendFeedScopeFromStatSource(nextSource);
+              if (nextScope !== scopeRef.current) switchScope(nextScope);
+              switchView("feed");
+            }}
+          />
         </div>
       ) : (
         <>

@@ -59,6 +59,7 @@ describe("GET /api/trends/stats", () => {
       period: "week",
       topic: "рыбалка",
       channelId: 11,
+      comparison: { previousPosts: 8, previousViews: 2100 },
       summary: { posts: 12, postsChange: 50, viewsChange: 100 },
       topItems: [{ id: "42", ratio: 1.8 }],
     });
@@ -66,6 +67,7 @@ describe("GET /api/trends/stats", () => {
       expect.stringContaining("competitor.channel_id = $1"),
       [11, "рыбалка"],
     );
+    expect(mocks.query.mock.calls[0][0]).toContain("having count(*) >= 5");
   });
 
   it("keeps internet statistics user- and channel-scoped", async () => {

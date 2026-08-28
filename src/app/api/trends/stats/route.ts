@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { resolveChannel } from "@/lib/autopilot";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
-import { TREND_BASELINE_DAYS, TREND_MATURE_HOURS } from "@/lib/trend-period";
+import { TREND_BASELINE_DAYS, TREND_MATURE_HOURS, TREND_MIN_MATURE } from "@/lib/trend-period";
 import {
   normalizeTrendTopic,
   parseTrendStatPeriod,
@@ -80,6 +80,7 @@ function sourceCte(source: TrendStatSource, topicParam: number) {
            and post.posted_at < now() - interval '${TREND_MATURE_HOURS} hours'
            and post.collected_at >= post.posted_at + interval '${TREND_MATURE_HOURS} hours'
          group by post.source_id
+        having count(*) >= ${TREND_MIN_MATURE}
       ), base as (
         select post.id::text as item_id,
                source.id::text as source_id,
@@ -118,6 +119,7 @@ function sourceCte(source: TrendStatSource, topicParam: number) {
          and post.posted_at < now() - interval '${TREND_MATURE_HOURS} hours'
          and post.collected_at >= post.posted_at + interval '${TREND_MATURE_HOURS} hours'
        group by post.competitor_id
+      having count(*) >= ${TREND_MIN_MATURE}
     ), base as (
       select post.id::text as item_id,
              competitor.id::text as source_id,
@@ -258,6 +260,7 @@ export async function GET(req: NextRequest) {
       topic,
       channelId,
       window: { from: payload.from ?? null, to: payload.to ?? null },
+      comparison: { previousPosts, previousViews },
       summary: {
         posts,
         sources: asNumber(summary.sources),
