@@ -6,6 +6,7 @@ import {
   formatBotCalendar,
   formatBotApprovals,
   formatBotClientInbox,
+  formatBotChannelConnectPrompt,
   formatBotConnectionOnboarding,
   formatBotConnectionStatus,
   formatBotDisconnectConfirmation,
@@ -56,10 +57,18 @@ describe("Telegram daily control summary", () => {
     expect(BOT_HELP_TEXT).toContain("Создать пост");
     expect(BOT_HELP_TEXT).toContain("Уведомления");
     expect(BOT_HELP_TEXT).not.toContain("/menu");
+    expect(BOT_HELP_TEXT).toContain("добавить Telegram-канал прямо из бота");
   });
 });
 
 describe("Telegram connection center copy", () => {
+  it("explains the no-website native channel connection", () => {
+    const message = formatBotChannelConnectPrompt({ projectName: "Аврора" });
+    expect(message).toContain("Проект: Аврора");
+    expect(message).toContain("Возвращаться на сайт");
+    expect(message).toContain("публиковать сообщения");
+  });
+
   it("names every independent connection state in plain language", () => {
     const message = formatBotConnectionStatus({
       accountLabel: "eg***@example.com",

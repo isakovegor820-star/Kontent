@@ -2,7 +2,7 @@
 export const TELEGRAM_BOT_COMMANDS = Object.freeze([
   { command: "menu", description: "Открыть главный экран" },
   { command: "status", description: "Проверить подключение" },
-  { command: "connect", description: "Подключить аккаунт Авроры" },
+  { command: "connect", description: "Проверить связь и подключить канал" },
   { command: "projects", description: "Выбрать текущий проект" },
   { command: "today", description: "Публикации и задачи на сегодня" },
   { command: "create", description: "Создать новую публикацию" },

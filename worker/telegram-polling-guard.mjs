@@ -5,6 +5,13 @@ export const TELEGRAM_POLLING_GUARD_RETRY_MS = 2_000;
 
 const TELEGRAM_POLLING_GUARD_ORIGIN = "https://api.telegram.org";
 
+export const TELEGRAM_POLLING_ALLOWED_UPDATES = Object.freeze([
+  "message",
+  "callback_query",
+  "my_chat_member",
+  "business_message",
+]);
+
 function guardDigest(token, purpose) {
   return createHash("sha256")
     .update(`aurora-telegram-polling-guard\0${purpose}\0${token}`)
@@ -24,6 +31,7 @@ export function telegramPollingGuardConfiguration(token) {
     secret_token: guardDigest(normalizedToken, "secret"),
     max_connections: 1,
     drop_pending_updates: false,
+    allowed_updates: TELEGRAM_POLLING_ALLOWED_UPDATES,
   };
 }
 

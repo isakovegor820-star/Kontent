@@ -17,6 +17,11 @@ vi.mock("@/lib/bot-connection.mjs", () => ({
     return /^[A-Za-z0-9_]{5,32}$/u.test(username) ? username : null;
   },
 }));
+vi.mock("@/lib/telegram-channel-connect.mjs", () => ({
+  telegramChannelAdminUrl: (value: unknown) => value
+    ? `https://t.me/${String(value)}?startchannel&admin=post_messages`
+    : null,
+}));
 vi.mock("@/lib/readiness-probes", () => ({
   probeRedisAndPublicationWorker: mocks.probeRedisAndPublicationWorker,
 }));
@@ -65,6 +70,7 @@ describe("GET /api/bot/link", () => {
     await expect(response.json()).resolves.toEqual({
       linked: true,
       bot: "aurora_bot",
+      channelConnectUrl: "https://t.me/aurora_bot?startchannel&admin=post_messages",
       botStatus: "down",
     });
   });

@@ -5,14 +5,29 @@ describe("bot link client responses", () => {
   it("accepts only a successful, explicit link status", async () => {
     await expect(
       parseBotLinkStatusResponse(
-        Response.json({ linked: true, bot: "aurora_bot", botStatus: "up" }, { status: 200 }),
+        Response.json({
+          linked: true,
+          bot: "aurora_bot",
+          channelConnectUrl: "https://t.me/aurora_bot?startchannel&admin=post_messages",
+          botStatus: "up",
+        }, { status: 200 }),
       ),
-    ).resolves.toEqual({ linked: true, bot: "aurora_bot", botStatus: "up" });
+    ).resolves.toEqual({
+      linked: true,
+      bot: "aurora_bot",
+      channelConnectUrl: "https://t.me/aurora_bot?startchannel&admin=post_messages",
+      botStatus: "up",
+    });
     await expect(
       parseBotLinkStatusResponse(
         Response.json({ linked: true, bot: "aurora_bot", botStatus: "conflict" }, { status: 200 }),
       ),
-    ).resolves.toEqual({ linked: true, bot: "aurora_bot", botStatus: "conflict" });
+    ).resolves.toEqual({
+      linked: true,
+      bot: "aurora_bot",
+      channelConnectUrl: null,
+      botStatus: "conflict",
+    });
 
     await expect(
       parseBotLinkStatusResponse(Response.json({ error: "server" }, { status: 500 })),

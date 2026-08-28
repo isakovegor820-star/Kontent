@@ -314,6 +314,12 @@ import {
   disconnectBotChat,
   maskBotAccountEmail,
 } from "./src/lib/bot-connection.mjs";
+import {
+  markTelegramChannelUnavailable,
+  saveVerifiedTelegramChannel,
+  telegramChannelAdminUrl,
+  telegramChannelMembershipChange,
+} from "./src/lib/telegram-channel-connect.mjs";
 import { parseTelegramBotCommand } from "./worker/bot-command.mjs";
 import {
   botCallbackInteraction,
@@ -347,6 +353,7 @@ import {
   COMPETITOR_MECHANIC_ACTION_LABEL,
   formatBotCalendar,
   formatBotApprovals,
+  formatBotChannelConnectPrompt,
   formatBotClientInbox,
   formatBotConnectionOnboarding,
   formatBotConnectionStatus,
@@ -2795,9 +2802,16 @@ function botAppUrl(pathname, options = {}) {
   }
 }
 
-function botConnectionButtons() {
+function botConnectionButtons(input = {}) {
   const settingsUrl = botAppUrl("/app/settings");
+  const channelConnectUrl = input.canManageChannels
+    ? telegramChannelAdminUrl(process.env.TG_BOT_USERNAME)
+    : null;
   return [
+    ...(channelConnectUrl ? [[{
+      text: input.activeChannels > 0 ? "Добавить ещё канал" : "Подключить Telegram-канал",
+      url: channelConnectUrl,
+    }]] : []),
     [{ text: "Проверить снова", data: "connection:status" }],
     [{ text: "Выбрать проект", data: "connection:projects" }, { text: "Настроить уведомления", data: "menu:notifications" }],
     ...(settingsUrl ? [[{ text: "Открыть Аврору", url: settingsUrl }]] : []),
@@ -2866,7 +2880,10 @@ async function botConnectionStatus(userId) {
       notificationState,
       checkedAt,
     }),
-    buttons: botConnectionButtons(),
+    buttons: botConnectionButtons({
+      canManageChannels: project?.role === "owner",
+      activeChannels: Number(project?.channel_count || 0),
+    }),
   };
 }
 
@@ -2986,6 +3003,124 @@ async function userByChat(chatId) {
   )).rows[0] ?? null;
 }
 
+async function botChannelConnectPrompt(userId) {
+  const project = await botProject(userId);
+  const url = telegramChannelAdminUrl(process.env.TG_BOT_USERNAME);
+  if (!project || project.role !== "owner" || Number(project.channel_count || 0) > 0 || !url) return null;
+  return {
+    text: formatBotChannelConnectPrompt({ projectName: project.name }),
+    buttons: [[{ text: "Выбрать канал", url }]],
+  };
+}
+
+async function handleTelegramChannelMembership(update) {
+  const change = telegramChannelMembershipChange(update);
+  if (change.state === "ignored") return false;
+
+  const membership = change.membership;
+  const chatId = Number(membership.chat?.id);
+  const actorChatId = Number(membership.from?.id);
+  const botUser = Number.isSafeInteger(actorChatId) && actorChatId > 0
+    ? await userByChat(actorChatId)
+    : null;
+  const userId = Number(botUser?.id || 0) || null;
+  const requestId = `telegram-my-chat-member:${Number(update?.update_id) || "unknown"}`;
+
+  if (change.state !== "ready") {
+    const unavailable = await markTelegramChannelUnavailable(pool, {
+      chatId,
+      status: change.state,
+      actorUserId: userId,
+      requestId,
+    });
+    const accessibleProject = userId && unavailable.projectId
+      ? await botProject(userId, unavailable.projectId)
+      : null;
+    if (botUser?.enabled !== false && accessibleProject) {
+      await tgSend(
+        actorChatId,
+        change.state === "revoked"
+          ? `Канал «${membership.chat?.title || "Telegram"}» отключён: бот удалён из администраторов. Публикации в него остановлены, история сохранена.`
+          : `У канала «${membership.chat?.title || "Telegram"}» нет права «Публикация сообщений». Аврора остановила отправку, чтобы посты не терялись. Верни право и выбери канал ещё раз.`,
+        [[{ text: "Проверить подключение", data: "connection:status" }]],
+      );
+    }
+    return true;
+  }
+
+  // Telegram identifies the administrator who added the bot. A channel is connected
+  // automatically only when that person has already linked this private chat to Aurora.
+  if (!botUser) {
+    console.warn("[bot] channel add ignored: Telegram actor is not linked", { chatId });
+    return true;
+  }
+  if (botUser.enabled === false) {
+    await tgSend(actorChatId, "Доступ к боту приостановлен администратором Авроры. Канал не подключён.");
+    return true;
+  }
+
+  const project = await botProject(userId);
+  if (!project) {
+    const projects = await botProjects(userId);
+    await tgSend(actorChatId, "Канал пока не подключён: сначала выбери проект для команд Telegram.", projects.buttons);
+    return true;
+  }
+  if (project.role !== "owner") {
+    await tgSend(
+      actorChatId,
+      `Канал пока не подключён к проекту «${project.name}». Подключать каналы может только владелец проекта.`,
+      [[{ text: "Выбрать другой проект", data: "connection:projects" }]],
+    );
+    return true;
+  }
+
+  const verified = await tg("getChat", { chat_id: chatId }, 8_000).catch(() => null);
+  const chat = verified?.ok === true ? verified.result : membership.chat;
+  const saved = await saveVerifiedTelegramChannel(pool, {
+    userId,
+    projectId: Number(project.id),
+    chat,
+    requestId,
+  });
+
+  if (saved.state === "taken") {
+    await tgSend(
+      actorChatId,
+      "Этот канал уже подключён к другому проекту Авроры. Я не перенёс его автоматически — так публикации не задвоятся.",
+      [[{ text: "Проверить подключение", data: "connection:status" }]],
+    );
+    return true;
+  }
+  if (saved.state === "access_denied") {
+    await tgSend(actorChatId, "Права в проекте изменились, поэтому канал не подключён. Выбери проект заново.");
+    return true;
+  }
+
+  const channelId = Number(saved.channelId);
+  if (statsProducerQueue && Number.isSafeInteger(channelId) && channelId > 0) {
+    await statsProducerQueue.add(
+      "discover",
+      { userId, channelId },
+      {
+        jobId: `discover-${userId}-${channelId}`,
+        removeOnComplete: true,
+        attempts: 2,
+        backoff: { type: "fixed", delay: 15_000 },
+      },
+    ).catch(() => {});
+  }
+  const label = saved.title || (saved.username ? `@${saved.username}` : "Telegram-канал");
+  await tgSend(
+    actorChatId,
+    `${saved.state === "already_connected" ? "Подключение подтверждено" : "Готово"}: канал «${label}» связан с проектом «${project.name}». Право публикации проверено.`,
+    [
+      [{ text: "Создать первый пост", data: "menu:create" }],
+      [{ text: "Проверить подключение", data: "connection:status" }],
+    ],
+  );
+  return true;
+}
+
 /** /start <код> — привязка чата к аккаунту. Код одноразовый и живёт 15 минут. */
 async function handleStart(chatId, from, code) {
   if (!code) {
@@ -3016,8 +3151,13 @@ async function handleStart(chatId, from, code) {
       "• план недели от автопилота — с кнопкой подтверждения\n\n" +
       "Начнём со сводки на сегодня.",
   );
-  const overview = await botToday(Number(link.userId));
-  await tgSend(chatId, overview.text, overview.buttons);
+  const channelPrompt = await botChannelConnectPrompt(Number(link.userId));
+  if (channelPrompt) {
+    await tgSend(chatId, channelPrompt.text, channelPrompt.buttons);
+  } else {
+    const overview = await botToday(Number(link.userId));
+    await tgSend(chatId, overview.text, overview.buttons);
+  }
   await botSendMenu(chatId, Number(link.userId));
   console.log(`[bot] чат ${chatId} привязан к user ${link.userId}`);
 }
@@ -9991,6 +10131,10 @@ async function observeBotInteraction(update, userId, interaction) {
 /** Одно обновление от Telegram. Ошибка превращается в retry-сигнал и не роняет polling. */
 async function handleUpdate(u) {
   try {
+    if (u.my_chat_member) {
+      await handleTelegramChannelMembership(u);
+      return;
+    }
     if (u.business_message) {
       await botCaptureBusinessInquiry(u.business_message);
       return;

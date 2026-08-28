@@ -45,6 +45,7 @@ import { cn, initials, weekdayShort } from "@/lib/utils";
 import { RUBRICS } from "@/lib/brief";
 import { PROFILE_FORMAT_OPTIONS } from "@/lib/profile";
 import { appDraftActionHref } from "@/lib/app-routes";
+import { parseBotLinkStatusResponse } from "@/lib/bot-link-client";
 import { createServerDraft, DraftRequestError, updateServerDraft } from "@/lib/draft-client";
 import { onboardingDraftReplayAction } from "@/lib/onboarding-first-material";
 import {
@@ -498,12 +499,10 @@ function Flow({ channel }: { channel?: RealChannel }) {
   );
 }
 
-const BOT_USERNAME = "@kontenfkv_bot";
-
 function connectError(code?: string): string {
   switch (code) {
     case "no_access":
-      return `Бот не видит этот канал. Проверь, что добавил ${BOT_USERNAME} администратором.`;
+      return "Бот не видит этот канал. Проверь, что добавил бота Авроры администратором.";
     case "not_admin":
       return "Бот в канале, но без права публикации. Дай ему право «Публикация сообщений».";
     // Канал уже держит другой аккаунт. Говорим что случилось и что делать (ТЗ 7.5),
@@ -543,15 +542,91 @@ function RealChannelRow({ channel }: { channel: RealChannel }) {
 
 function StepConnect({ onBack, onNext }: { onBack: () => void; onNext: () => void | Promise<void> }) {
   const s = useStore();
+  const refreshReal = s.refreshReal;
   const [handle, setHandle] = useState("");
   const [connecting, setConnecting] = useState(false);
+  const [fastConnecting, setFastConnecting] = useState(false);
   const [advancing, setAdvancing] = useState(false);
   const [error, setError] = useState<string>();
+  const [botUsername, setBotUsername] = useState<string | null>(null);
+  const refreshTimers = useRef<number[]>([]);
 
   const channels = s.realChannels.filter(
     (channel) => channel.is_active && channel.network === "tg",
   );
   const hasTelegram = channels.length > 0;
+
+  useEffect(() => {
+    let active = true;
+    void fetch("/api/bot/link", { cache: "no-store" })
+      .then(parseBotLinkStatusResponse)
+      .then((status) => {
+        if (active) setBotUsername(status.bot);
+      })
+      .catch(() => {});
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === "visible") void refreshReal();
+    };
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      active = false;
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+      for (const timer of refreshTimers.current) window.clearTimeout(timer);
+    };
+  }, [refreshReal]);
+
+  function scheduleChannelRefresh() {
+    for (const timer of refreshTimers.current) window.clearTimeout(timer);
+    refreshTimers.current = [3_000, 8_000, 15_000, 30_000].map((delay) => (
+      window.setTimeout(() => void refreshReal(), delay)
+    ));
+  }
+
+  async function fastConnect() {
+    if (fastConnecting) return;
+    setError(undefined);
+    setFastConnecting(true);
+    try {
+      const status = await parseBotLinkStatusResponse(
+        await fetch("/api/bot/link", { cache: "no-store" }),
+      );
+      setBotUsername(status.bot);
+      let url = status.channelConnectUrl;
+      let linkingAccount = false;
+      if (!status.linked) {
+        const response = await fetch("/api/bot/link", { method: "POST" });
+        const body = (await response.json().catch(() => null)) as {
+          ok?: boolean;
+          url?: string;
+          error?: string;
+        } | null;
+        if (!response.ok || body?.ok !== true || !body.url) {
+          throw new Error(body?.error || "bot_link_failed");
+        }
+        url = body.url;
+        linkingAccount = true;
+      }
+      if (!url) throw new Error("bot_not_configured");
+
+      scheduleChannelRefresh();
+      s.toast({
+        kind: "info",
+        title: linkingAccount ? "Открой бота Авроры" : "Выбери Telegram-канал",
+        body: linkingAccount
+          ? "Нажми «Начать», затем «Выбрать канал». Возвращаться на сайт не понадобится."
+          : "Telegram добавит бота с правом публикации, а Аврора проверит и сохранит канал сама.",
+      });
+      window.location.assign(url);
+    } catch (reason) {
+      setError(
+        reason instanceof Error && reason.message === "bot_not_configured"
+          ? "Telegram-бот Авроры пока не настроен. Используй ручное подключение ниже."
+          : "Не удалось открыть быстрое подключение. Используй ручной способ ниже или повтори попытку.",
+      );
+    } finally {
+      setFastConnecting(false);
+    }
+  }
 
   async function continueOnboarding() {
     if (advancing || !hasTelegram) return;
@@ -597,50 +672,68 @@ function StepConnect({ onBack, onNext }: { onBack: () => void; onNext: () => voi
         </div>
       </div>
 
-      <form onSubmit={connect} className="mt-7">
+      <div className="mt-7 rounded-md border border-brand/20 bg-info-soft p-4 sm:p-5">
         <SubHead>Твой канал</SubHead>
-
-        <p className="mt-3 text-[13px] leading-relaxed text-text-3">
-          Добавь нашего бота <b className="font-bold text-text">{BOT_USERNAME}</b>{" "}
-          администратором Telegram-канала с правом публикации — потом вставь сюда @адрес.
+        <p className="mt-2 text-[14px] leading-relaxed text-text-2">
+          Аврора откроет Telegram, попросит выбрать канал и сама проверит право публикации.
+          Вводить адрес и возвращаться для подтверждения не нужно.
         </p>
-        <div className="mt-3 flex flex-col gap-2 sm:flex-row">
-          <Input
-            value={handle}
-            disabled={connecting}
-            placeholder="@my_channel"
-            aria-label="Адрес твоего Telegram-канала"
-            aria-invalid={error ? true : undefined}
-            onChange={(e) => {
-              setHandle(e.target.value);
-              if (error) setError(undefined);
-            }}
-          />
-          <Button
-            type="submit"
-            variant="solid"
-            size="lg"
-            loading={connecting}
-            className="shrink-0"
-          >
-            Подключить Telegram
-          </Button>
-        </div>
+        <Button
+          variant="brand"
+          size="lg"
+          loading={fastConnecting}
+          onClick={() => void fastConnect()}
+          className="mt-4"
+        >
+          <TelegramIcon className="h-[18px] w-[18px]" />
+          Выбрать канал в Telegram
+        </Button>
+        {botUsername && (
+          <p className="mt-2 text-[12px] text-text-3">Бот: @{botUsername}</p>
+        )}
+      </div>
 
-        {error && (
-          <p role="alert" className="mt-2 text-[13px] leading-relaxed font-medium text-danger-text">
-            {error}
+      {error && (
+        <p role="alert" className="mt-2 text-[13px] leading-relaxed font-medium text-danger-text">
+          {error}
+        </p>
+      )}
+
+      <details className="mt-4 rounded-sm border border-line bg-surface px-4 py-3">
+        <summary className="cursor-pointer text-[13px] font-semibold text-text-2">
+          Подключить вручную по @адресу
+        </summary>
+        <form onSubmit={connect} className="mt-3">
+          <p className="text-[13px] leading-relaxed text-text-3">
+            Добавь {botUsername ? `@${botUsername}` : "бота Авроры"} администратором с правом
+            «Публикация сообщений», затем укажи публичный @адрес или числовой ID канала.
           </p>
-        )}
+          <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+            <Input
+              value={handle}
+              disabled={connecting}
+              placeholder="@my_channel"
+              aria-label="Адрес твоего Telegram-канала"
+              aria-invalid={error ? true : undefined}
+              onChange={(e) => {
+                setHandle(e.target.value);
+                if (error) setError(undefined);
+              }}
+            />
+            <Button type="submit" variant="solid" size="lg" loading={connecting} className="shrink-0">
+              Проверить и подключить
+            </Button>
+          </div>
+        </form>
+      </details>
 
-        {channels.length > 0 && (
-          <ul className="mt-4 space-y-2">
-            {channels.map((ch) => (
-              <RealChannelRow key={ch.id} channel={ch} />
-            ))}
-          </ul>
-        )}
-      </form>
+      {channels.length > 0 && (
+        <ul className="mt-4 space-y-2">
+          {channels.map((ch) => (
+            <RealChannelRow key={ch.id} channel={ch} />
+          ))}
+        </ul>
+      )}
 
       <StepFooter onBack={onBack}>
         <Button variant="brand" size="lg" onClick={() => void continueOnboarding()} loading={advancing} disabled={!hasTelegram}>

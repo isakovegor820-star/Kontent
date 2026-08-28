@@ -13,7 +13,7 @@ import {
   requireSelectedProjectPermission,
 } from "@/lib/project-permissions";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
-import { transitionChannelHealth } from "@/lib/channel-health.mjs";
+import { saveVerifiedTelegramChannel } from "@/lib/telegram-channel-connect.mjs";
 
 export const runtime = "nodejs";
 
@@ -100,39 +100,21 @@ export async function POST(req: NextRequest) {
     // Provider checks can take several seconds. Recheck the captured project rather
     // than trusting a selection that may have changed in another browser tab.
     await requireProjectPermission(pool, user.id, projectId, "project.manage");
-    const existing = await pool.query<{ id: number }>(
-      `select id from channels where project_id = $1 and tg_chat_id = $2`,
-      [projectId, chat.id],
-    );
-    if (existing.rowCount) {
-      await pool.query(
-        `update channels
-            set title = $2, handle = $3, tg_discussion_chat_id = $4, updated_at = now()
-          where id = $1 and project_id = $5`,
-        [existing.rows[0].id, chat.title ?? null, chat.username ?? handle,
-          Number.isSafeInteger(chat.linked_chat_id) ? chat.linked_chat_id : null, projectId],
-      );
-      await transitionChannelHealth(pool, {
-        channelId: existing.rows[0].id,
-        userId: null,
-        actorUserId: user.id,
-        status: "active",
-        action: "reconnected",
-      });
-      return NextResponse.json({ ok: true, channelId: existing.rows[0].id, title: chat.title });
+    const saved = await saveVerifiedTelegramChannel(pool, {
+      userId: user.id,
+      projectId,
+      chat: {
+        ...chat,
+        username: chat.username ?? handle,
+      },
+    });
+    if (saved.state === "access_denied") {
+      return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
     }
-    const ins = await pool.query<{ id: number }>(
-      `insert into channels
-         (project_id, user_id, network, tg_chat_id, title, handle, tg_discussion_chat_id)
-       values ($1, $2, 'tg', $3, $4, $5, $6) returning id`,
-      [projectId, user.id, chat.id, chat.title ?? null, chat.username ?? handle,
-        Number.isSafeInteger(chat.linked_chat_id) ? chat.linked_chat_id : null],
-    );
-    await pool.query(
-      `insert into channel_events (channel_id, actor_user_id, action, from_status, to_status)
-       values ($1, $2, 'connected', null, 'active')`,
-      [ins.rows[0].id, user.id],
-    );
+    if (saved.state === "taken") {
+      return NextResponse.json({ ok: false, error: "taken" }, { status: 409 });
+    }
+    const channelId = Number(saved.channelId);
 
     // Подключил канал — ищем соседей сразу, не дожидаясь суточного цикла. Человек идёт в
     // «Конкуренты» через минуту после подключения, и там должно быть не пусто.
@@ -141,9 +123,9 @@ export async function POST(req: NextRequest) {
     await getStatsQueue()
       .add(
         "discover",
-        { userId: user.id, channelId: ins.rows[0].id },
+        { userId: user.id, channelId },
         {
-          jobId: `discover-${user.id}-${ins.rows[0].id}`,
+          jobId: `discover-${user.id}-${channelId}`,
           removeOnComplete: true,
           attempts: 2,
           backoff: { type: "fixed", delay: 15000 },
@@ -153,7 +135,7 @@ export async function POST(req: NextRequest) {
         /* очередь недоступна — канал всё равно подключён, поиск пойдёт суточным циклом */
       });
 
-    return NextResponse.json({ ok: true, channelId: ins.rows[0].id, title: chat.title });
+    return NextResponse.json({ ok: true, channelId, title: chat.title });
   } catch (err) {
     if (err instanceof ProjectAccessError) {
       return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });

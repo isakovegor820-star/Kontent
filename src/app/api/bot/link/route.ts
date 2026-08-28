@@ -10,6 +10,7 @@ import {
   createLegacyBotLink,
   normalizeTelegramBotUsername,
 } from "@/lib/bot-connection.mjs";
+import { telegramChannelAdminUrl } from "@/lib/telegram-channel-connect.mjs";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
@@ -35,9 +36,11 @@ export async function GET(req: NextRequest) {
       probeRedisAndPublicationWorker(),
     ]);
     const row = result.rows[0];
+    const bot = botUsername();
     return NextResponse.json({
       linked: !!row?.tg_chat_id,
-      bot: botUsername(),
+      bot,
+      channelConnectUrl: telegramChannelAdminUrl(bot),
       botStatus: runtime.telegramPolling,
     });
   } catch (err) {

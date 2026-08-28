@@ -16,6 +16,7 @@ describe("Telegram polling guard", () => {
     expect(first).toMatchObject({
       max_connections: 1,
       drop_pending_updates: false,
+      allowed_updates: ["message", "callback_query", "my_chat_member", "business_message"],
     });
     expect(first.url).toMatch(/^https:\/\/api\.telegram\.org\/aurora-polling-guard-[a-f0-9]{64}$/u);
     expect(first.secret_token).toMatch(/^[a-f0-9]{64}$/u);

@@ -1,6 +1,7 @@
 export interface BotLinkStatus {
   linked: boolean;
   bot: string | null;
+  channelConnectUrl: string | null;
   botStatus: "up" | "down" | "not_configured" | "conflict";
 }
 
@@ -20,6 +21,9 @@ export async function parseBotLinkStatusResponse(response: Response): Promise<Bo
   if (body.bot != null && typeof body.bot !== "string") {
     throw new Error("bot_link_status_invalid");
   }
+  if (body.channelConnectUrl != null && typeof body.channelConnectUrl !== "string") {
+    throw new Error("bot_link_status_invalid");
+  }
   if (
     typeof body.botStatus !== "string"
     || !new Set(["up", "down", "not_configured", "conflict"]).has(body.botStatus)
@@ -29,6 +33,7 @@ export async function parseBotLinkStatusResponse(response: Response): Promise<Bo
   return {
     linked: body.linked,
     bot: body.bot ?? null,
+    channelConnectUrl: body.channelConnectUrl ?? null,
     botStatus: body.botStatus as BotLinkStatus["botStatus"],
   };
 }
