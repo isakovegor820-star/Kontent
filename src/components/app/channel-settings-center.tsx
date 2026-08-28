@@ -33,6 +33,12 @@ import { PROFILE_FORMAT_OPTIONS } from "@/lib/profile";
 import { analyzeStyleSamples, type StyleTrainingResult } from "@/lib/style-training";
 import { useStore } from "@/lib/store";
 import type { AutopilotSettings } from "@/lib/autopilot";
+import {
+  AUTOPILOT_ENGINE_OPTIONS,
+  MAX_AUTOPILOT_PLANNING_WEEKS,
+  MIN_AUTOPILOT_PLANNING_WEEKS,
+} from "@/lib/autopilot-config.mjs";
+import { normalizeAutopilotQuickSettings } from "@/lib/autopilot-style.mjs";
 import { cn, plural } from "@/lib/utils";
 
 type ChannelConfiguration = {
@@ -187,6 +193,9 @@ function SettingsGroup({
   const view = useContext(ChannelSettingsViewContext);
   const [open, setOpen] = useState(defaultOpen);
   if (view !== kind) return null;
+  if (kind === "autopilot") {
+    return <div className="space-y-5 px-5 py-6 sm:px-6">{children}</div>;
+  }
   return (
     <details
       open={open}
@@ -343,6 +352,20 @@ function configurationSummary(data: ChannelConfiguration) {
   ];
 }
 
+function autopilotSummary(settings: AutopilotSettings) {
+  const quick = normalizeAutopilotQuickSettings(settings.quick_settings);
+  const engine = AUTOPILOT_ENGINE_OPTIONS.find((option) => option.id === settings.generation_engine);
+  const detail = quick.detail === 1 ? "короткие" : quick.detail === 3 ? "подробные" : "средние";
+  const energy = quick.energy === 1 ? "спокойная подача" : quick.energy === 3 ? "живая подача" : "разговорная подача";
+  return [
+    `${settings.post_frequency} ${plural(settings.post_frequency, "пост", "поста", "постов")} в неделю`,
+    `${settings.planning_weeks} ${plural(settings.planning_weeks, "неделя", "недели", "недель")} в плане`,
+    `${detail} посты`,
+    energy,
+    engine?.label ?? "Автоматический движок",
+  ];
+}
+
 export function ChannelSettingsCenter({ view = "content" }: { view?: ChannelSettingsView }) {
   const store = useStore();
   const requestedChannel = Number(useSearchParams().get("channel")) || null;
@@ -358,6 +381,7 @@ export function ChannelSettingsCenter({ view = "content" }: { view?: ChannelSett
   const [pendingChannel, setPendingChannel] = useState<number | null>(null);
   const [copyTarget, setCopyTarget] = useState<number | null>(null);
   const [copyOpen, setCopyOpen] = useState(false);
+  const [editing, setEditing] = useState(view === "content");
   const editorRef = useRef<HTMLDivElement>(null);
 
   const dirty = Boolean(saved && draft && JSON.stringify(saved) !== JSON.stringify(draft));
@@ -376,10 +400,25 @@ export function ChannelSettingsCenter({ view = "content" }: { view?: ChannelSett
       .then(async (response) => {
         const body = (await response.json().catch(() => null)) as ChannelConfiguration | null;
         if (!response.ok || !body?.brief || !body.settings) throw new Error("load_failed");
-        setSaved(body);
-        setDraft(body);
-        setStyleText(body.brief.quality.styleExamples.join("\n---\n"));
+        const normalized = {
+          ...body,
+          settings: {
+            ...body.settings,
+            planning_weeks: Math.max(
+              MIN_AUTOPILOT_PLANNING_WEEKS,
+              Math.min(
+                MAX_AUTOPILOT_PLANNING_WEEKS,
+                Number(body.settings.planning_weeks || body.settings.planning_months * 4) || 1,
+              ),
+            ),
+            quick_settings: normalizeAutopilotQuickSettings(body.settings.quick_settings),
+          },
+        };
+        setSaved(normalized);
+        setDraft(normalized);
+        setStyleText(normalized.brief.quality.styleExamples.join("\n---\n"));
         setAnalysis(null);
+        setEditing(view === "content");
       })
       .catch((error) => {
         if ((error as Error)?.name !== "AbortError") setLoadError(true);
@@ -388,7 +427,7 @@ export function ChannelSettingsCenter({ view = "content" }: { view?: ChannelSett
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [channelId]);
+  }, [channelId, view]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   useEffect(() => {
@@ -399,6 +438,14 @@ export function ChannelSettingsCenter({ view = "content" }: { view?: ChannelSett
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
   }, [dirty]);
+
+  useEffect(() => {
+    if (view !== "autopilot" || !editing) return;
+    editorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    requestAnimationFrame(() => {
+      document.getElementById("channel-autopilot-enabled")?.focus();
+    });
+  }, [editing, view]);
 
   const setBrief = <K extends keyof Brief>(key: K, value: Brief[K]) => {
     setDraft((current) => current
@@ -437,6 +484,64 @@ export function ChannelSettingsCenter({ view = "content" }: { view?: ChannelSett
 
   const save = async () => {
     if (!draft || !channelId || saving) return;
+    if (view === "autopilot") {
+      setSaving(true);
+      try {
+        const response = await fetch("/api/autopilot/settings", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            channelId,
+            enabled: draft.settings.enabled,
+            mode: "confirm",
+            post_frequency: draft.settings.post_frequency,
+            generation_engine: draft.settings.generation_engine,
+            planning_weeks: draft.settings.planning_weeks,
+            quick_settings: normalizeAutopilotQuickSettings(draft.settings.quick_settings),
+          }),
+        });
+        const body = (await response.json().catch(() => null)) as {
+          ok?: boolean;
+          error?: string;
+          settings?: Partial<AutopilotSettings>;
+        } | null;
+        if (!response.ok || !body?.ok || !body.settings) {
+          const messages: Record<string, string> = {
+            no_brief: "Сначала заполни тему канала и аудиторию в разделе «Контент и стиль».",
+            bad_generation_settings: "Проверь частоту, период и параметры постов.",
+            access_denied: "У тебя нет права менять автопилот этого проекта.",
+            no_channel: "Выбранный канал больше недоступен.",
+          };
+          throw new Error(messages[body?.error ?? ""] ?? "Сервер не подтвердил настройки. Черновик остался на экране.");
+        }
+        const nextSettings: AutopilotSettings = {
+          ...draft.settings,
+          ...body.settings,
+          mode: "confirm",
+          quick_settings: normalizeAutopilotQuickSettings(
+            body.settings.quick_settings ?? draft.settings.quick_settings,
+          ),
+        };
+        const next = { brief: draft.brief, settings: nextSettings };
+        setSaved(next);
+        setDraft(next);
+        setEditing(false);
+        store.toast({
+          kind: "success",
+          title: "Автопилот настроен",
+          body: "Новые параметры применятся к следующей сборке постов.",
+        });
+      } catch (error) {
+        store.toast({
+          kind: "danger",
+          title: "Автопилот не сохранён",
+          body: error instanceof Error ? error.message : "Попробуй ещё раз.",
+        });
+      } finally {
+        setSaving(false);
+      }
+      return;
+    }
     if (draft.brief.niche.trim().length < 3 || draft.brief.audience.trim().length < 3) {
       store.toast({
         kind: "info",
@@ -595,13 +700,22 @@ export function ChannelSettingsCenter({ view = "content" }: { view?: ChannelSett
                     : `Так Аврора понимает канал «${activeChannel ? channelName(activeChannel) : "Канал"}» и пишет для него.`}
                 </p>
                 <div className="mt-4 flex flex-wrap gap-2">
-                  {configurationSummary(saved).map((item) => <Badge key={item} tone="neutral">{item}</Badge>)}
+                  {(view === "autopilot" ? autopilotSummary(saved.settings) : configurationSummary(saved))
+                    .map((item) => <Badge key={item} tone="neutral">{item}</Badge>)}
                 </div>
               </div>
               <div className="flex shrink-0 flex-wrap gap-2">
-                <Button variant="outline" size="sm" onClick={() => editorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={saving}
+                  onClick={() => {
+                    if (view === "autopilot" && !editing) setEditing(true);
+                    else editorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+                  }}
+                >
                   <Settings2 className="h-4 w-4" aria-hidden />
-                  Изменить
+                  {view === "autopilot" && editing ? "К настройкам" : "Изменить"}
                 </Button>
                 {view === "content" && tgChannels.length > 1 && (
                   <Button variant="ghost" size="sm" onClick={() => setCopyOpen((current) => !current)}>
@@ -625,7 +739,7 @@ export function ChannelSettingsCenter({ view = "content" }: { view?: ChannelSett
             )}
           </Card>
 
-          <div ref={editorRef} className="scroll-mt-24">
+          {(view === "content" || editing) && <div ref={editorRef} className="scroll-mt-24">
           <Card className="overflow-hidden" as="section">
             <div className="border-b border-line px-5 py-5 sm:px-6">
               <div className="flex items-start gap-3">
@@ -1354,7 +1468,7 @@ export function ChannelSettingsCenter({ view = "content" }: { view?: ChannelSett
 
             <SettingsGroup
               title="Автопилот"
-              description="Частота плана и уровень контроля перед публикацией."
+              description="Частота, период, качество и подача будущих публикаций."
               icon={<Sparkles className="h-4 w-4" aria-hidden />}
               kind="autopilot"
               defaultOpen
@@ -1364,14 +1478,128 @@ export function ChannelSettingsCenter({ view = "content" }: { view?: ChannelSett
                 checked={draft.settings.enabled}
                 onChange={(value) => setAutopilot("enabled", value)}
                 label="Включить автопилот для этого канала"
-                description="Аврора будет собирать план недели по сохранённому профилю."
+                description="Аврора будет собирать новые планы по расписанию и сохранённому профилю канала."
               />
-              <div className="rounded-sm border border-line bg-surface/80 p-4">
-                <p className="text-[13px] font-bold text-text">Ритм публикаций</p>
-                <p className="mt-1 text-[13px] leading-relaxed text-text-3">
-                  Один пост в день — 7 готовых публикаций на каждую неделю плана.
-                </p>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <RangeSetting
+                  id="channel-autopilot-frequency"
+                  label="Постов в неделю"
+                  min={1}
+                  max={7}
+                  value={draft.settings.post_frequency}
+                  valueLabel={`${draft.settings.post_frequency} ${plural(draft.settings.post_frequency, "пост", "поста", "постов")}`}
+                  startLabel="редко"
+                  endLabel="каждый день"
+                  onChange={(post_frequency) => setDraft((current) => current ? {
+                    ...current,
+                    settings: {
+                      ...current.settings,
+                      post_frequency,
+                      quick_settings: {
+                        ...normalizeAutopilotQuickSettings(current.settings.quick_settings),
+                        newsPerWeek: Math.min(
+                          post_frequency,
+                          normalizeAutopilotQuickSettings(current.settings.quick_settings).newsPerWeek,
+                        ),
+                      },
+                    },
+                  } : current)}
+                />
+                <RangeSetting
+                  id="channel-autopilot-weeks"
+                  label="Период одного плана"
+                  min={MIN_AUTOPILOT_PLANNING_WEEKS}
+                  max={MAX_AUTOPILOT_PLANNING_WEEKS}
+                  value={draft.settings.planning_weeks}
+                  valueLabel={`${draft.settings.planning_weeks} ${plural(draft.settings.planning_weeks, "неделя", "недели", "недель")}`}
+                  startLabel="1 неделя"
+                  endLabel="3 месяца"
+                  onChange={(value) => setAutopilot("planning_weeks", value)}
+                />
+                <RangeSetting
+                  id="channel-autopilot-news"
+                  label="Свежих событий в неделю"
+                  min={0}
+                  max={draft.settings.post_frequency}
+                  value={Math.min(
+                    draft.settings.post_frequency,
+                    normalizeAutopilotQuickSettings(draft.settings.quick_settings).newsPerWeek,
+                  )}
+                  valueLabel={`${Math.min(draft.settings.post_frequency, normalizeAutopilotQuickSettings(draft.settings.quick_settings).newsPerWeek)} из ${draft.settings.post_frequency}`}
+                  startLabel="только вечнозелёные темы"
+                  endLabel="больше новостей"
+                  onChange={(newsPerWeek) => setAutopilot("quick_settings", {
+                    ...normalizeAutopilotQuickSettings(draft.settings.quick_settings),
+                    newsPerWeek,
+                  })}
+                />
+                <RangeSetting
+                  id="channel-autopilot-detail"
+                  label="Объём постов"
+                  min={1}
+                  max={3}
+                  value={normalizeAutopilotQuickSettings(draft.settings.quick_settings).detail}
+                  valueLabel={normalizeAutopilotQuickSettings(draft.settings.quick_settings).detail === 1
+                    ? "короткие"
+                    : normalizeAutopilotQuickSettings(draft.settings.quick_settings).detail === 3
+                      ? "подробные"
+                      : "средние"}
+                  startLabel="коротко"
+                  endLabel="подробно"
+                  onChange={(detail) => setAutopilot("quick_settings", {
+                    ...normalizeAutopilotQuickSettings(draft.settings.quick_settings),
+                    detail,
+                  })}
+                />
+                <RangeSetting
+                  id="channel-autopilot-energy"
+                  label="Подача"
+                  min={1}
+                  max={3}
+                  value={normalizeAutopilotQuickSettings(draft.settings.quick_settings).energy}
+                  valueLabel={normalizeAutopilotQuickSettings(draft.settings.quick_settings).energy === 1
+                    ? "спокойная"
+                    : normalizeAutopilotQuickSettings(draft.settings.quick_settings).energy === 3
+                      ? "живая"
+                      : "разговорная"}
+                  startLabel="спокойно"
+                  endLabel="живо"
+                  onChange={(energy) => setAutopilot("quick_settings", {
+                    ...normalizeAutopilotQuickSettings(draft.settings.quick_settings),
+                    energy,
+                  })}
+                />
+                <RangeSetting
+                  id="channel-autopilot-emoji"
+                  label="Эмодзи"
+                  min={0}
+                  max={2}
+                  value={normalizeAutopilotQuickSettings(draft.settings.quick_settings).emoji}
+                  valueLabel={normalizeAutopilotQuickSettings(draft.settings.quick_settings).emoji === 0
+                    ? "без эмодзи"
+                    : normalizeAutopilotQuickSettings(draft.settings.quick_settings).emoji === 2
+                      ? "заметно"
+                      : "умеренно"}
+                  startLabel="без эмодзи"
+                  endLabel="заметно"
+                  onChange={(emoji) => setAutopilot("quick_settings", {
+                    ...normalizeAutopilotQuickSettings(draft.settings.quick_settings),
+                    emoji,
+                  })}
+                />
               </div>
+              <Field label="Модель для постов" htmlFor="channel-autopilot-engine" hint="Если выбранная модель временно недоступна, Аврора попробует резервную и не потеряет готовые посты.">
+                <select
+                  id="channel-autopilot-engine"
+                  value={draft.settings.generation_engine}
+                  onChange={(event) => setAutopilot("generation_engine", event.target.value)}
+                  className="min-h-11 w-full rounded-xs border border-line bg-surface px-3 text-base text-text focus:border-brand focus:outline-none focus-visible:ring-4 focus-visible:ring-brand/15 sm:text-[14px]"
+                >
+                  {AUTOPILOT_ENGINE_OPTIONS.map((option) => (
+                    <option key={option.id} value={option.id}>{option.label} — {option.note}</option>
+                  ))}
+                </select>
+              </Field>
               <div className="rounded-sm border border-brand/20 bg-info-soft p-4">
                 <p className="text-[13px] font-bold text-text">Публикация только после проверки</p>
                 <p className="mt-1 text-[13px] leading-relaxed text-text-3">
@@ -1526,7 +1754,7 @@ export function ChannelSettingsCenter({ view = "content" }: { view?: ChannelSett
               </div>
             </div>
           </Card>
-          </div>
+          </div>}
         </>
       )}
 

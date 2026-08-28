@@ -5336,6 +5336,7 @@ async function askAI(
       engine: selectedEngine,
       temperature: temp,
       maxTokens: numPredict,
+      acceptLengthLimitedOutput: options?.acceptLengthLimitedOutput === true,
     }, {
       timeoutMs: surface === "autopilot-plan"
         ? AUTOPILOT_AI_ATTEMPT_TIMEOUT_MS
@@ -6655,7 +6656,7 @@ async function buildAutopilotPlan(
       null,
       0.45,
       generationEngine,
-      { throwOnUnavailable: true },
+      { throwOnUnavailable: true, acceptLengthLimitedOutput: true },
     );
     let aiDraft = candidateRaw
       ? checkpointDraft
@@ -6730,7 +6731,7 @@ async function buildAutopilotPlan(
         null,
         0.35,
         generationEngine,
-        { throwOnUnavailable: true },
+        { throwOnUnavailable: true, acceptLengthLimitedOutput: true },
       );
       aiDraft = candidateRaw
         ? prepareAutopilotDraftForm(
@@ -6998,7 +6999,7 @@ async function buildAutopilotPlan(
           null,
           0.6,
           generationEngine,
-          { throwOnUnavailable: true },
+          { throwOnUnavailable: true, acceptLengthLimitedOutput: true },
         );
       } catch (error) {
         if (!isRetryableAiCompletionError(error)) throw error;

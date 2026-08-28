@@ -149,7 +149,7 @@ describe("POST /api/settings/channel", () => {
     });
     expect(mocks.query).toHaveBeenCalledWith(
       expect.stringContaining("update autopilot_settings"),
-      [12, 21, false, "confirm", 7],
+      [12, 21, false, "confirm", 5],
     );
     expect(mocks.query).toHaveBeenCalledWith("commit");
     expect(mocks.query).not.toHaveBeenCalledWith("rollback");

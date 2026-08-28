@@ -136,8 +136,14 @@ export function prepareAutopilotDraftForm(text, rawQuality) {
     minChars: desiredMinChars,
     maxChars: desiredMaxChars,
   };
+  // Normalize against the effective Autopilot length band. This lets the form boundary
+  // remove a provider-cut tail once the already-complete part is long enough for the
+  // selected detail level, instead of comparing it with an unrelated channel maximum.
   const normalized = normalizePostForm(text, formQuality);
   if (!normalized) return "";
+  // Never let a padding question or a mandatory disclaimer hide an incomplete model
+  // sentence. The quality gate will classify this as `truncated` and retry only this post.
+  if (!/[.!?…»”*)\]]$/u.test(normalized)) return normalized;
   const reserved = reservedFormChars(normalized, formQuality);
   const fitted = fitAutopilotDraftLength(
     normalized,
