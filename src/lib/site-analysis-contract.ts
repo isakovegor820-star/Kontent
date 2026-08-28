@@ -7,6 +7,28 @@ export type SiteAnalysisStatus =
   | "ready"
   | "failed";
 
+const RETRYABLE_SITE_ANALYSIS_ERRORS = new Set([
+  "queue_unconfirmed",
+  "robots_unavailable",
+  "timeout",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "provider_timeout",
+  "network_error",
+  "rate_limited",
+  "stream_truncated",
+  "empty_generation",
+  "analysis_in_progress",
+  "quota_commit_failed",
+  "worker_failed",
+]);
+
+export function siteAnalysisErrorRetryable(code: string): boolean {
+  return RETRYABLE_SITE_ANALYSIS_ERRORS.has(code);
+}
+
 /** Безопасные для клиента сообщения без серверных зависимостей. */
 export function siteAnalysisErrorMessage(code: string): string {
   switch (code) {
@@ -28,6 +50,20 @@ export function siteAnalysisErrorMessage(code: string): string {
       return "Не удалось получить ни одной открытой страницы сайта.";
     case "redirect_forbidden":
       return "Сайт перенаправил анализ за пределы подтверждённого домена.";
+    case "timeout":
+      return "Сайт не ответил в пределах безопасного времени.";
+    case "ENOTFOUND":
+      return "DNS не нашёл указанный домен. Проверь адрес сайта и повтори позже.";
+    case "EAI_AGAIN":
+      return "DNS сайта временно не ответил. Повтори анализ позже.";
+    case "ECONNREFUSED":
+      return "Сайт отклонил подключение crawler. Проверь доступность HTTPS с сервера.";
+    case "ECONNRESET":
+      return "Сайт разорвал соединение во время проверки. Повтори анализ позже.";
+    case "tls_invalid":
+      return "Не удалось подтвердить TLS-сертификат сайта. Небезопасное соединение не анализируется.";
+    case "queue_unconfirmed":
+      return "Фоновая очередь не подтвердила запуск анализа. Повтори действие.";
     case "ai_usage_limit":
       return "Лимит ИИ на сегодня исчерпан. Незавершённый анализ не был списан.";
     case "provider_timeout":
@@ -42,6 +78,12 @@ export function siteAnalysisErrorMessage(code: string): string {
       return "Ответ аналитика не прошёл проверку доказательств. Лимит ИИ не списан.";
     case "engine_not_connected":
       return "Аналитическая модель не подключена. Лимит ИИ не списан.";
+    case "engine_unsupported":
+      return "Выбранная аналитическая модель не поддерживается. Лимит ИИ не списан.";
+    case "empty_generation":
+      return "Аналитическая модель не вернула результат. Лимит ИИ не списан.";
+    case "analysis_in_progress":
+      return "Этот анализ уже выполняется другим worker. Обнови статус через несколько секунд.";
     case "quota_commit_failed":
       return "Готовый отчёт и списание лимита не удалось подтвердить одной операцией. Лимит ИИ не списан.";
     default:

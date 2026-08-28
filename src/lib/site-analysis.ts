@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { normalizeSiteLimits } from "./site-crawler.mjs";
+import { siteAnalysisErrorMessage, siteAnalysisErrorRetryable } from "./site-analysis-contract";
 export { siteAnalysisErrorMessage, type SiteAnalysisStatus } from "./site-analysis-contract";
 import type { SiteAnalysisStatus } from "./site-analysis-contract";
 
@@ -71,7 +72,11 @@ export function serializeSiteAnalysis(row: SiteAnalysisRow, includeResult = fals
     detail: row.progress_detail,
     limits: row.limits,
     error: row.error_code
-      ? { code: row.error_code, message: row.error_message || "Анализ не завершён" }
+      ? {
+          code: row.error_code,
+          message: siteAnalysisErrorMessage(row.error_code),
+          retryable: siteAnalysisErrorRetryable(row.error_code),
+        }
       : null,
     attempts: Number(row.attempts),
     runRevision: Number(row.run_revision),

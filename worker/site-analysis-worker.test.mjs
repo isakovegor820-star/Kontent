@@ -242,8 +242,40 @@ describe("site analysis BullMQ worker core", () => {
       2,
       "robots_denied",
       "robots.txt запрещает анализ указанной страницы.",
+      "Этап остановки: Проверка robots.txt",
       expect.any(String),
     ]);
+  });
+
+  it.each([
+    ["ECONNREFUSED", "Сайт отклонил подключение crawler. Проверь доступность HTTPS с сервера."],
+    ["ENOTFOUND", "DNS не нашёл указанный домен. Проверь адрес сайта и повтори позже."],
+  ])("keeps the safe network failure code %s instead of collapsing it to worker_failed", async (code, message) => {
+    const pool = {
+      query: vi.fn()
+        .mockResolvedValueOnce({ rows: [analysisRow()] })
+        .mockResolvedValueOnce({ rows: [] }),
+    };
+    await expect(processSiteAnalysisJob(pool, { analysisId: 41, runRevision: 2 }, {
+      finalAttempt: true,
+      crawl: vi.fn().mockRejectedValue(new SiteCrawlerError(code, "private diagnostic")),
+    })).rejects.toMatchObject({ code, message });
+    expect(pool.query.mock.calls[1][1]).toEqual([
+      41, 2, code, message, "Этап остановки: Проверка robots.txt", expect.any(String),
+    ]);
+  });
+
+  it("normalizes certificate failures to a safe TLS code", async () => {
+    const pool = {
+      query: vi.fn()
+        .mockResolvedValueOnce({ rows: [analysisRow()] })
+        .mockResolvedValueOnce({ rows: [] }),
+    };
+    await expect(processSiteAnalysisJob(pool, { analysisId: 41, runRevision: 2 }, {
+      finalAttempt: true,
+      crawl: vi.fn().mockRejectedValue(new SiteCrawlerError("CERT_HAS_EXPIRED", "certificate details")),
+    })).rejects.toMatchObject({ code: "tls_invalid" });
+    expect(JSON.stringify(pool.query.mock.calls[1])).not.toContain("certificate details");
   });
 
   it("does not recrawl after an unexpected terminal saving failure and exposes only safe diagnostics", async () => {

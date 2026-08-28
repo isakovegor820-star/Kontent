@@ -45,8 +45,67 @@ describe("site analysis API contract", () => {
       id: 41,
       requestId: "req-41",
       progress: 52,
-      error: { code: "robots_denied" },
+      error: {
+        code: "robots_denied",
+        message: "Правила сайта запрещают анализ указанной страницы.",
+        retryable: false,
+      },
       result: null,
+    });
+  });
+
+  it("marks transient network failures as retryable", () => {
+    const serialized = serializeSiteAnalysis({
+      id: "42",
+      request_id: "req-42",
+      target_url: "https://example.com/",
+      confirmed_domain: "example.com",
+      status: "failed",
+      stage: "failed",
+      progress: "5",
+      progress_detail: "Этап остановки: Проверка robots.txt",
+      limits: {},
+      error_code: "ECONNREFUSED",
+      error_message: "Сайт отклонил подключение",
+      attempts: "2",
+      run_revision: "1",
+      queue_confirmed_at: null,
+      created_at: "2026-08-05T00:00:00.000Z",
+      updated_at: "2026-08-05T00:01:00.000Z",
+      completed_at: "2026-08-05T00:01:00.000Z",
+    });
+    expect(serialized.error).toMatchObject({
+      code: "ECONNREFUSED",
+      message: "Сайт отклонил подключение crawler. Проверь доступность HTTPS с сервера.",
+      retryable: true,
+    });
+    expect(serialized.detail).toBe("Этап остановки: Проверка robots.txt");
+  });
+
+  it("never exposes a stored technical error message to the browser", () => {
+    const serialized = serializeSiteAnalysis({
+      id: "43",
+      request_id: "req-43",
+      target_url: "https://example.com/",
+      confirmed_domain: "example.com",
+      status: "failed",
+      stage: "failed",
+      progress: "10",
+      progress_detail: "Этап остановки: подключение по HTTPS",
+      limits: {},
+      error_code: "tls_invalid",
+      error_message: "certificate verify failed: internal host details",
+      attempts: "1",
+      run_revision: "1",
+      queue_confirmed_at: null,
+      created_at: "2026-08-05T00:00:00.000Z",
+      updated_at: "2026-08-05T00:01:00.000Z",
+      completed_at: "2026-08-05T00:01:00.000Z",
+    });
+    expect(serialized.error).toEqual({
+      code: "tls_invalid",
+      message: "Не удалось подтвердить TLS-сертификат сайта. Небезопасное соединение не анализируется.",
+      retryable: false,
     });
   });
 });

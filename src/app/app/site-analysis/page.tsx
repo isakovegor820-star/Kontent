@@ -187,7 +187,7 @@ type Analysis = {
   stage: string;
   progress: number;
   detail: string | null;
-  error: { code: string; message: string } | null;
+  error: { code: string; message: string; retryable?: boolean } | null;
   attempts: number;
   runRevision: number;
   startedAt: string | null;
@@ -1480,12 +1480,24 @@ export default function SiteAnalysisPage() {
                   </ol>
                 )}
                 {current.status === "failed" && (
-                  <div className="mt-4 flex flex-wrap items-center gap-3 rounded-sm bg-danger-soft p-4">
+                  <div className="mt-4 flex flex-wrap items-start gap-3 rounded-sm bg-danger-soft p-4">
                     <AlertTriangle className="h-5 w-5 shrink-0 text-danger-text" aria-hidden />
-                    <p className="min-w-0 flex-1 text-[13px] text-text">{current.error?.message || "Анализ остановлен."}</p>
-                    <Button type="button" variant="outline" size="sm" loading={submitting} onClick={() => void retry()}>
-                      <RefreshCw className="h-4 w-4" aria-hidden /> Повторить
-                    </Button>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-[13px] text-text">{current.error?.message || "Анализ остановлен."}</p>
+                      <details className="mt-2 text-[11px] text-text-3">
+                        <summary className="cursor-pointer font-bold">Технические детали</summary>
+                        <dl className="nums mt-2 grid gap-1">
+                          <div><dt className="inline font-semibold">Код: </dt><dd className="inline">{current.error?.code || "worker_failed"}</dd></div>
+                          <div><dt className="inline font-semibold">Запрос: </dt><dd className="inline">{current.requestId}</dd></div>
+                          {current.detail && <div><dt className="inline font-semibold">Этап: </dt><dd className="inline">{current.detail}</dd></div>}
+                        </dl>
+                      </details>
+                    </div>
+                    {current.error?.retryable !== false && (
+                      <Button type="button" variant="outline" size="sm" loading={submitting} onClick={() => void retry()}>
+                        <RefreshCw className="h-4 w-4" aria-hidden /> Повторить
+                      </Button>
+                    )}
                   </div>
                 )}
               </div>

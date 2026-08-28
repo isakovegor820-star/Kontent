@@ -29,6 +29,15 @@ const RETRYABLE_CODES = new Set([
   "quota_commit_failed",
 ]);
 
+const TLS_ERROR_CODES = new Set([
+  "CERT_HAS_EXPIRED",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "ERR_TLS_CERT_ALTNAME_INVALID",
+  "SELF_SIGNED_CERT_IN_CHAIN",
+  "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+]);
+
 const SAFE_INTERVIEW_CODES = new Set([
   "ai_usage_limit",
   "provider_timeout",
@@ -57,6 +66,11 @@ function publicErrorMessage(code) {
     case "crawl_too_large": return "Сайт превысил безопасный лимит анализа.";
     case "no_pages": return "Не удалось получить ни одной публичной HTML-страницы.";
     case "timeout": return "Сайт не ответил в пределах безопасного времени.";
+    case "ENOTFOUND": return "DNS не нашёл указанный домен. Проверь адрес сайта и повтори позже.";
+    case "EAI_AGAIN": return "DNS сайта временно не ответил. Аврора сможет повторить анализ.";
+    case "ECONNREFUSED": return "Сайт отклонил подключение crawler. Проверь доступность HTTPS с сервера.";
+    case "ECONNRESET": return "Сайт разорвал соединение во время проверки. Аврора сможет повторить анализ.";
+    case "tls_invalid": return "Не удалось подтвердить TLS-сертификат сайта. Анализ небезопасного соединения остановлен.";
     case "ai_usage_limit": return "Лимит ИИ на сегодня исчерпан. Анализ не был списан повторно.";
     case "provider_timeout": return "Аналитическая модель не ответила вовремя. Лимит ИИ не списан.";
     case "network_error": return "Связь с аналитической моделью оборвалась. Лимит ИИ не списан.";
@@ -74,10 +88,28 @@ function publicErrorMessage(code) {
 }
 
 function errorCode(error) {
-  if (error instanceof SiteCrawlerError && error.code) return String(error.code);
+  if (error instanceof SiteCrawlerError && error.code) {
+    const code = String(error.code);
+    return TLS_ERROR_CODES.has(code) ? "tls_invalid" : code;
+  }
   if (error instanceof SiteInterviewWorkerError && SAFE_INTERVIEW_CODES.has(String(error.code))) return String(error.code);
   const candidate = typeof error?.code === "string" ? error.code : "worker_failed";
   return RETRYABLE_CODES.has(candidate) ? candidate : "worker_failed";
+}
+
+function publicFailureStage(stage) {
+  switch (stage) {
+    case "robots": return "Проверка robots.txt";
+    case "sitemap": return "Чтение карты сайта";
+    case "crawling": return "Загрузка публичных страниц";
+    case "extracting": return "Извлечение доказательств";
+    case "resolving_entities": return "Связывание сущностей";
+    case "answering": return "Аналитическое интервью";
+    case "validating": return "Проверка доказательств";
+    case "planning": return "Формирование плана";
+    case "saving": return "Сохранение результата";
+    default: return "Фоновый анализ";
+  }
 }
 
 function safeTechnicalError(error) {
@@ -181,6 +213,7 @@ export async function processSiteAnalysisJob(pool, data, dependencies = {}) {
   const interviewRunner = dependencies.runInterview || runSiteInterview;
   const finalizeUsage = dependencies.finalizeUsage || finalizeWorkerAiUsage;
   let interviewRun = null;
+  let failureStage = "robots";
   const heartbeat = setInterval(() => {
     void pool.query(
       `update site_analysis_jobs set worker_heartbeat_at = now(), updated_at = now()
@@ -198,6 +231,7 @@ export async function processSiteAnalysisJob(pool, data, dependencies = {}) {
       limits: analysis.limits,
     }, {
       onProgress: async ({ stage, progress, detail }) => {
+        failureStage = stage;
         if (["analyzing", "planning", "ready"].includes(stage)) return;
         const boundedProgress = Math.min(58, Math.max(1, Number(progress || 0)));
         await pool.query(
@@ -220,12 +254,14 @@ export async function processSiteAnalysisJob(pool, data, dependencies = {}) {
           and status not in ('ready', 'failed')`,
       [analysisId, runRevision, leaseToken],
     );
+    failureStage = "extracting";
     const snapshot = buildSnapshot({
       confirmedDomain: analysis.confirmed_domain,
       pages: output.pages,
       checkedAt: analysis.created_at || new Date().toISOString(),
       coverageMode: "site_only",
     });
+    failureStage = "resolving_entities";
     await pool.query(
       `update site_analysis_jobs
           set status = 'analyzing', stage = 'resolving_entities', progress = 64,
@@ -255,6 +291,7 @@ export async function processSiteAnalysisJob(pool, data, dependencies = {}) {
     }, {
       completeAiText: dependencies.completeAiText || completeAiText,
       onProgress: async ({ progress, detail }) => {
+        failureStage = "answering";
         await pool.query(
           `update site_analysis_jobs
               set status = 'analyzing', stage = 'answering', progress = $4,
@@ -266,6 +303,7 @@ export async function processSiteAnalysisJob(pool, data, dependencies = {}) {
       },
       telemetry: dependencies.telemetry,
     });
+    failureStage = "validating";
     await pool.query(
       `update site_analysis_jobs
           set status = 'analyzing', stage = 'validating', progress = 91,
@@ -288,6 +326,7 @@ export async function processSiteAnalysisJob(pool, data, dependencies = {}) {
           and status not in ('ready', 'failed')`,
       [analysisId, runRevision, leaseToken],
     );
+    failureStage = "planning";
 
     const terminalProjection = {
       ...output.report,
@@ -304,6 +343,7 @@ export async function processSiteAnalysisJob(pool, data, dependencies = {}) {
           and status not in ('ready', 'failed')`,
       [analysisId, runRevision, leaseToken],
     );
+    failureStage = "saving";
 
     const client = await pool.connect();
     try {
@@ -537,12 +577,12 @@ export async function processSiteAnalysisJob(pool, data, dependencies = {}) {
             where id = $1 and run_revision = $2 and worker_lease_token = $3 and status <> 'ready'`
         : `update site_analysis_jobs
               set status = 'failed', stage = 'failed', error_code = $3, error_message = $4,
-                  progress_detail = null, completed_at = now(),
+                  progress_detail = $5, completed_at = now(),
                   worker_lease_token = null, worker_heartbeat_at = null, updated_at = now()
-            where id = $1 and run_revision = $2 and worker_lease_token = $5 and status <> 'ready'`,
+            where id = $1 and run_revision = $2 and worker_lease_token = $6 and status <> 'ready'`,
       retry
         ? [analysisId, runRevision, leaseToken]
-        : [analysisId, runRevision, code, publicErrorMessage(code), leaseToken],
+        : [analysisId, runRevision, code, publicErrorMessage(code), `Этап остановки: ${publicFailureStage(failureStage)}`, leaseToken],
     );
     const wrapped = new Error(publicErrorMessage(code));
     wrapped.code = code;
