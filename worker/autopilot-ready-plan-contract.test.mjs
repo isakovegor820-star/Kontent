@@ -4,8 +4,12 @@ import { describe, expect, it } from "vitest";
 const source = await readFile(new URL("../worker.mjs", import.meta.url), "utf8");
 
 describe("Autopilot ready-plan generation contract", () => {
-  it("never accepts a provider response stopped at the token limit", () => {
+  it("accepts a usable length-limited post only on paths guarded by the quality gate", () => {
     expect(source).not.toContain('acceptLengthLimitedOutput: surface === "autopilot-plan"');
+    expect(source).toContain("acceptLengthLimitedOutput: options?.acceptLengthLimitedOutput === true");
+    expect(source.match(/acceptLengthLimitedOutput: true/g)?.length).toBe(3);
+    expect(source).toContain("prepareAutopilotDraftForm(");
+    expect(source).toContain("assessAutopilotDraft(");
   });
 
   // План доходит до человека только после reader-ready фильтра.
@@ -58,7 +62,7 @@ describe("Autopilot ready-plan generation contract", () => {
     expect(source).toContain('buildState === "waiting_provider"');
     expect(source).toContain('recoveryState: "waiting_provider"');
     expect(source).toContain("isRetryableAiCompletionError(error)");
-    expect(source).toContain("{ throwOnUnavailable: true }");
+    expect(source).toContain("{ throwOnUnavailable: true, acceptLengthLimitedOutput: true }");
     expect(source).toContain("coalesce(build_report, '{}'::jsonb) || $4::jsonb");
     expect(source).toContain("process.env.AUTOPILOT_SEMANTIC_ENGINE || DEFAULT_AUTOPILOT_ENGINE");
     expect(source).toContain('generationEngine === "navy-minimax-m3" ? 2 : 3');

@@ -108,13 +108,18 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "incomplete" }, { status: 422 });
   }
 
-  const postFrequency = 7;
+  const requestedPostFrequency = Number(body.settings.post_frequency);
+  const postFrequency = Number.isSafeInteger(requestedPostFrequency)
+    && requestedPostFrequency >= 1
+    && requestedPostFrequency <= 7
+    ? requestedPostFrequency
+    : null;
   const enabled = typeof body.settings.enabled === "boolean" ? body.settings.enabled : null;
   const mode = body.settings.mode === "confirm" || body.settings.mode === "full"
     ? "confirm"
     : null;
 
-  if (enabled == null || mode == null) {
+  if (enabled == null || mode == null || postFrequency == null) {
     return NextResponse.json({ ok: false, error: "bad_settings" }, { status: 422 });
   }
 

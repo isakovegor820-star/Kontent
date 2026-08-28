@@ -69,6 +69,34 @@ describe("форма поста приводится кодом, а не зам�
     expect(codesOf(polished, legal)).not.toContain("disclaimer");
   });
 
+  it("не маскирует оборванное предложение добивкой или дисклеймером", () => {
+    const legal = {
+      ...presetQuality("legal"),
+      desiredMinChars: 300,
+      desiredMaxChars: 700,
+    };
+    const truncated = `${"Первый законченный тезис даёт читателю полезный контекст. ".repeat(4)}Но последняя мысль обрывается на`;
+    const polished = prepareAutopilotDraftForm(truncated, legal);
+
+    expect(polished).toMatch(/обрывается на$/u);
+    expect(polished).not.toContain(legal.disclaimerText);
+    expect(codesOf(polished, legal)).toContain("truncated");
+  });
+
+  it("удаляет оборванный хвост, когда законченной части уже достаточно", () => {
+    const expert = {
+      ...presetQuality("expert"),
+      desiredMinChars: 300,
+      desiredMaxChars: 900,
+    };
+    const complete = "Законченная полезная мысль для читателя. ".repeat(9).trim();
+    const polished = prepareAutopilotDraftForm(`${complete} Незаконченный хвост без`, expert);
+
+    expect(polished).not.toContain("Незаконченный хвост");
+    expect(polished).toMatch(/[.!?…»”*)\]]$/u);
+    expect(codesOf(polished, expert)).not.toContain("truncated");
+  });
+
   it("жирное выделение ставит код, если профиль его требует", () => {
     const quality = { ...presetQuality("expert"), boldPolicy: "required" };
     const finished = finishPostForm("Первый абзац.\n\nВторой абзац.\n\nВывод короткий.", quality);
