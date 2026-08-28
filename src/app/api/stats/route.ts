@@ -1,23 +1,27 @@
-// Д.5 — данные аналитики для экрана. Всё из реальных снимков (post_stats/channel_stats).
-// Чего нет в базе (охват, комментарии) — помечаем недоступным, не выдумываем.
+// Единый read model для «Результатов»: публикации, рост и публичные ориентиры
+// конкурентов используют один канал, период, timezone и подтверждённый cohort.
 
 import { NextRequest, NextResponse } from "next/server";
+
+import {
+  parseAnalyticsPeriodDays,
+  subscriberGrowth,
+  summarizeDashboardPeriod,
+} from "@/lib/analytics-dashboard";
+import { summarizeBestPublishingTime } from "@/lib/best-publishing-time";
 import { getPool } from "@/lib/db";
 import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/project-permissions";
 import { getSessionUser } from "@/lib/session";
 import { plural } from "@/lib/utils";
-import { analyticsConfidence, summarizeAnalyticsCohort } from "@/lib/analytics-cohort";
-import { summarizeBestPublishingTime } from "@/lib/best-publishing-time";
 
 export const runtime = "nodejs";
 
 interface PostRow {
-  id: number;
+  id: number | string;
   text: string;
   published_at: string;
   status: string;
   verification_state: string | null;
-  /** Почему статистики нет: 'ok' | 'gone' (удалён) | 'private' (канал без публичной страницы) */
   stats_state: string | null;
   views: number | null;
   reactions: number | null;
@@ -25,6 +29,28 @@ interface PostRow {
   monthly_campaign_goal: string | null;
   monthly_item_id: number | null;
   monthly_item_title: string | null;
+  period_bucket: "current" | "previous";
+}
+
+interface CompetitorRow {
+  id: number | string;
+  network: string;
+  handle: string;
+  title: string | null;
+  custom_title: string | null;
+  subscribers: number | null;
+  status: string;
+  collected_at: string | null;
+  posts_count: number | string;
+  with_views: number | string;
+  median_views: number | string | null;
+  avg_interactions: number | string | null;
+  first_subscribers: number | string | null;
+  latest_subscribers: number | string | null;
+}
+
+function reportPeriodLabel(days: number): string {
+  return `${days} ${plural(days, "календарный день", "календарных дня", "календарных дней")}`;
 }
 
 export async function GET(req: NextRequest) {
@@ -51,57 +77,41 @@ export async function GET(req: NextRequest) {
     const pool = getPool();
     const membership = await requireSelectedProjectPermission(pool, user.id, "project.read");
     const channels = (
-      await pool.query<{ id: string; title: string | null }>(
-        `select id, title
-           from channels
-          where project_id = $1 and network = 'tg' and is_active = true
-          order by id`,
+      await pool.query<{ id: string; title: string | null; timezone: string }>(
+        `select channel.id, channel.title, project.timezone
+           from channels channel
+           join projects project on project.id = channel.project_id
+          where channel.project_id = $1 and channel.network = 'tg' and channel.is_active = true
+          order by channel.id`,
         [membership.projectId],
       )
     ).rows;
     if (channels.length === 0) return NextResponse.json({ hasChannel: false });
 
-    // Считаем по ОДНОМУ каналу, а не по всем сразу.
-    // Раньше здесь было channel_id = any(все каналы): график подписчиков складывал
-    // юридический канал с кофейным, а «лучшее время 19:00» выводилось из смешанной
-    // аудитории — то есть было неверно сразу для обоих. Сумма подписчиков ещё имеет смысл,
-    // а вот выводы «что зашло» и «когда постить» существуют только внутри одного канала.
     const requestedChannelId = Number(req.nextUrl.searchParams.get("channel"));
     const selectedChannel = Number.isSafeInteger(requestedChannelId) && requestedChannelId > 0
       ? channels.find((channel) => Number(channel.id) === requestedChannelId)
       : channels[0];
     if (!selectedChannel) return NextResponse.json({ hasChannel: false });
-    const channelId = Number(selectedChannel.id);
-    const chIds = [channelId];
 
-    // Ряд подписчиков по дням (сумма по каналам за дату) — для графика роста.
+    const channelId = Number(selectedChannel.id);
+    const timezone = selectedChannel.timezone || "Europe/Moscow";
+    const days = parseAnalyticsPeriodDays(req.nextUrl.searchParams.get("days"));
+
     const subSeries = (
       await pool.query<{ snapshot_date: string; subscribers: number }>(
-        `select to_char(snapshot_date, 'YYYY-MM-DD') as snapshot_date,
-                sum(stats.subscribers)::int as subscribers
+        `select to_char(stats.snapshot_date, 'YYYY-MM-DD') as snapshot_date,
+                stats.subscribers::int as subscribers
            from channel_stats stats
            join channels channel
              on channel.id = stats.channel_id and channel.project_id = $2
-          where stats.channel_id = any($1)
-          group by stats.snapshot_date order by stats.snapshot_date`,
-        [chIds, membership.projectId],
+          where stats.channel_id = $1
+            and stats.snapshot_date >= ((now() at time zone $3)::date - ($4::int - 1))
+          order by stats.snapshot_date`,
+        [channelId, membership.projectId, timezone, days],
       )
     ).rows;
 
-    const latestSubs = subSeries.length ? subSeries[subSeries.length - 1].subscribers : null;
-
-    const growth7d = (
-      await pool.query<{ g: number }>(
-        `select coalesce(sum(subscribers_delta), 0)::int as g
-           from channel_stats stats
-           join channels channel
-             on channel.id = stats.channel_id and channel.project_id = $2
-          where stats.channel_id = any($1) and stats.snapshot_date > current_date - 7`,
-        [chIds, membership.projectId],
-      )
-    ).rows[0].g;
-
-    // Опубликованные посты + последние известные просмотры/реакции.
     const posts = (
       await pool.query<PostRow>(
         `select p.id, p.text, p.published_at, p.status, p.verification_state,
@@ -109,11 +119,17 @@ export async function GET(req: NextRequest) {
                 monthly.campaign_id as monthly_campaign_id,
                 monthly.campaign_goal as monthly_campaign_goal,
                 monthly.item_id as monthly_item_id,
-                monthly.item_title as monthly_item_title
+                monthly.item_title as monthly_item_title,
+                case when p.published_at >= (
+                  date_trunc('day', now() at time zone $3) - (($4::int - 1) * interval '1 day')
+                ) at time zone $3 then 'current' else 'previous' end as period_bucket
            from posts p
            left join lateral (
-             select views, reactions from post_stats where post_id = p.id
-             order by snapshot_date desc limit 1
+             select views, reactions
+               from post_stats
+              where project_id = p.project_id and post_id = p.id
+              order by snapshot_date desc, collected_at desc, id desc
+              limit 1
           ) ps on true
           left join lateral (
             select campaign.id as campaign_id, campaign.goal as campaign_goal,
@@ -127,14 +143,57 @@ export async function GET(req: NextRequest) {
              order by plan.revision desc, item.id desc
              limit 1
           ) monthly on true
-          where p.channel_id = any($1)
+          where p.channel_id = $1
             and p.project_id = $2
             and p.status in ('published', 'published_unverified', 'missing', 'deleted_external')
             and p.published_at >= (
-              date_trunc('day', now() at time zone 'Europe/Moscow') - interval '6 days'
-            ) at time zone 'Europe/Moscow'
+              date_trunc('day', now() at time zone $3) - (($4::int * 2 - 1) * interval '1 day')
+            ) at time zone $3
           order by p.published_at desc`,
-        [chIds, membership.projectId],
+        [channelId, membership.projectId, timezone, days],
+      )
+    ).rows;
+
+    const competitorRows = (
+      await pool.query<CompetitorRow>(
+        `select competitor.id, competitor.network, competitor.handle, competitor.title,
+                competitor.custom_title, competitor.subscribers, competitor.status,
+                competitor.collected_at,
+                count(post.id) filter (where post.posted_at >= (
+                  date_trunc('day', now() at time zone $3) - (($4::int - 1) * interval '1 day')
+                ) at time zone $3)::int as posts_count,
+                count(post.views) filter (where post.views is not null and post.posted_at >= (
+                  date_trunc('day', now() at time zone $3) - (($4::int - 1) * interval '1 day')
+                ) at time zone $3)::int as with_views,
+                percentile_cont(0.5) within group (order by post.views) filter (
+                  where post.views is not null and post.posted_at >= (
+                    date_trunc('day', now() at time zone $3) - (($4::int - 1) * interval '1 day')
+                  ) at time zone $3
+                ) as median_views,
+                round(avg(coalesce(post.like_count, post.reactions, 0) + coalesce(post.comments_count, 0))
+                  filter (where post.posted_at >= (
+                    date_trunc('day', now() at time zone $3) - (($4::int - 1) * interval '1 day')
+                  ) at time zone $3))::int as avg_interactions,
+                (select snapshot.subscribers
+                   from competitor_stats snapshot
+                  where snapshot.competitor_id = competitor.id
+                    and snapshot.snapshot_date >= ((now() at time zone $3)::date - ($4::int - 1))
+                  order by snapshot.snapshot_date asc limit 1) as first_subscribers,
+                (select snapshot.subscribers
+                   from competitor_stats snapshot
+                  where snapshot.competitor_id = competitor.id
+                    and snapshot.snapshot_date >= ((now() at time zone $3)::date - ($4::int - 1))
+                  order by snapshot.snapshot_date desc limit 1) as latest_subscribers
+           from competitors competitor
+           join channels owner_channel
+             on owner_channel.id = competitor.channel_id and owner_channel.project_id = $2
+           left join competitor_posts post on post.competitor_id = competitor.id
+          where competitor.channel_id = $1
+            and competitor.is_active = true
+            and competitor.network in ('tg', 'instagram')
+          group by competitor.id
+          order by competitor.collected_at desc nulls last, competitor.id`,
+        [channelId, membership.projectId, timezone, days],
       )
     ).rows;
 
@@ -145,95 +204,119 @@ export async function GET(req: NextRequest) {
                      from channel_stats stats
                      join channels channel
                        on channel.id = stats.channel_id and channel.project_id = $2
-                    where stats.channel_id = any($1)),
-                  (select max(s.collected_at)
-                     from post_stats s join posts p on p.id = s.post_id
-                    where p.channel_id = any($1) and p.project_id = $2)
+                    where stats.channel_id = $1),
+                  (select max(snapshot.collected_at)
+                     from post_stats snapshot
+                     join posts post
+                       on post.id = snapshot.post_id and post.project_id = snapshot.project_id
+                    where post.channel_id = $1 and post.project_id = $2),
+                  (select max(competitor.collected_at)
+                     from competitors competitor where competitor.channel_id = $1)
                 ) as t`,
-        [chIds, membership.projectId],
+        [channelId, membership.projectId],
       )
-    ).rows[0].t;
+    ).rows[0]?.t ?? null;
 
-    // --- Человеческий вывод из реальных данных (не зашит) ---
-    const cohort = summarizeAnalyticsCohort(posts);
-    const verifiedPosts = cohort.verifiedPosts;
+    const currentPosts = posts.filter((post) => post.period_bucket === "current");
+    const previousPosts = posts.filter((post) => post.period_bucket === "previous");
+    const summary = summarizeDashboardPeriod(currentPosts, previousPosts);
+    const verifiedPosts = summary.current.verifiedPosts;
+    const withViews = summary.current.withMetrics;
     const serializedPosts = verifiedPosts.map((post) => ({
       ...post,
-      // Keep analytics identities compatible with /api/posts. Both originate from bigint
-      // columns and must use the same runtime type for metric joins in the dashboard.
       id: Number(post.id),
+      engagementRate: post.views != null && post.views > 0 && Number.isFinite(post.reactions)
+        ? Number((((post.reactions as number) / post.views) * 100).toFixed(1))
+        : null,
     }));
-    const withViews = cohort.withMetrics;
-    const totalViews = cohort.totalViews;
-    const avgViews = cohort.avgViews;
-    const confidence = analyticsConfidence(withViews.length);
+    const subscriberDelta = subscriberGrowth(subSeries);
+    const latestSubs = subSeries.at(-1)?.subscribers ?? null;
+    const bestPostRow = withViews.length
+      ? withViews.reduce((best, post) => post.views > best.views ? post : best)
+      : null;
+    const bestPost = bestPostRow ? {
+      id: Number(bestPostRow.id),
+      text: bestPostRow.text,
+      views: bestPostRow.views,
+      reactions: bestPostRow.reactions,
+    } : null;
     const bestTime = summarizeBestPublishingTime(withViews);
 
-    const vw = (n: number) => plural(n, "просмотр", "просмотра", "просмотров");
-
     const insight: string[] = [];
-    let bestPost: { text: string; views: number } | null = null;
     if (withViews.length === 1) {
-      // Один пост — сравнивать не с чем, честно ставим точку отсчёта.
-      const only = withViews[0];
-      bestPost = { text: only.text, views: only.views };
-      insight.push(
-        `Первый пост набрал ${only.views} ${vw(only.views)} — это твоя точка отсчёта. ` +
-          `Публикуй ещё, и я покажу, что заходит лучше.`,
-      );
+      insight.push(`Первая подтверждённая публикация набрала ${withViews[0].views.toLocaleString("ru-RU")} ${plural(withViews[0].views, "просмотр", "просмотра", "просмотров")} — это точка отсчёта.`);
     } else if (withViews.length > 1) {
-      const best = withViews.reduce((a, b) => (b.views > a.views ? b : a));
-      bestPost = { text: best.text, views: best.views };
-      insight.push(
-        confidence === "low"
-          ? `Пока лидирует пост с ${best.views} ${vw(best.views)}, но выборка из ${withViews.length} постов ещё слишком мала для рекомендации.`
-          : `Лучший пост недели собрал ${best.views} ${vw(best.views)}; это наблюдение стоит проверить следующими публикациями.`,
-      );
-      if (avgViews != null) insight.push(`В среднем ${avgViews} ${vw(avgViews)} на пост.`);
-
-      if (bestTime && bestTime.sampleSize >= 3) {
-        insight.push(
-          `Лучшее время — около ${bestTime.hour}:00 МСК; ` +
-          `оценка по ${bestTime.sampleSize} ${plural(bestTime.sampleSize, "посту", "постам", "постам")} в этом часовом окне.`,
-        );
+      const comparison = summary.comparisons.averageViewsPercent;
+      if (comparison != null && Math.abs(comparison) >= 10) {
+        insight.push(`Средние просмотры на публикацию ${comparison > 0 ? "выросли" : "снизились"} на ${Math.abs(comparison)}% к предыдущему периоду.`);
+      } else if (bestPost) {
+        insight.push(`Лучший результат периода — ${bestPost.views.toLocaleString("ru-RU")} ${plural(bestPost.views, "просмотр", "просмотра", "просмотров")}.`);
       }
     }
-    if (growth7d !== 0) {
-      insight.push(`Подписчиков за неделю: ${growth7d > 0 ? "+" : ""}${growth7d}.`);
+    if (subscriberDelta != null && subscriberDelta !== 0) {
+      insight.push(`Подписчики: ${subscriberDelta > 0 ? "+" : ""}${subscriberDelta.toLocaleString("ru-RU")} за период.`);
     }
+
+    const competitors = competitorRows.map((competitor) => {
+      const firstSubscribers = competitor.first_subscribers == null ? null : Number(competitor.first_subscribers);
+      const latestSubscribers = competitor.latest_subscribers == null ? null : Number(competitor.latest_subscribers);
+      const withMetrics = Number(competitor.with_views ?? 0);
+      return {
+        id: Number(competitor.id),
+        label: competitor.custom_title || competitor.title || `@${competitor.handle}`,
+        network: competitor.network,
+        handle: competitor.handle,
+        subscribers: competitor.subscribers == null ? null : Number(competitor.subscribers),
+        subscriberGrowth: firstSubscribers != null && latestSubscribers != null
+          ? latestSubscribers - firstSubscribers
+          : null,
+        posts: Number(competitor.posts_count ?? 0),
+        postsWithMetrics: withMetrics,
+        medianViews: competitor.median_views == null ? null : Math.round(Number(competitor.median_views)),
+        averageInteractions: competitor.avg_interactions == null ? null : Number(competitor.avg_interactions),
+        confidence: withMetrics >= 10 ? "high" : withMetrics >= 5 ? "medium" : withMetrics >= 2 ? "low" : "insufficient",
+        status: competitor.status,
+        collectedAt: competitor.collected_at,
+      };
+    });
 
     return NextResponse.json({
       hasChannel: true,
       channelTitle: selectedChannel.title,
       latestSubs,
-      growth7d,
+      growth7d: days === 7 ? subscriberDelta : null,
+      subscriberGrowth: subscriberDelta,
       subscriberSeries: subSeries,
       posts: serializedPosts,
       totals: {
         published: verifiedPosts.length,
         withMetrics: withViews.length,
-        missing: cohort.missing,
-        unverified: cohort.unverified,
-        totalViews,
-        avgViews,
+        missing: summary.current.missing,
+        unverified: summary.current.unverified,
+        totalViews: summary.current.totalViews,
+        avgViews: summary.current.avgViews,
+        medianViews: summary.medianViews,
+        totalReactions: summary.totalReactions,
+        engagementRate: summary.engagementRate,
       },
+      comparisons: summary.comparisons,
       cohort: {
-        label: `${withViews.length} подтверждённых ${plural(withViews.length, "пост", "поста", "постов")} с метриками за 7 дней`,
+        label: `${withViews.length} из ${verifiedPosts.length} подтверждённых ${plural(verifiedPosts.length, "публикации", "публикаций", "публикаций")} с просмотрами`,
         verifiedPosts: verifiedPosts.length,
         withMetrics: withViews.length,
-        missing: cohort.missing,
-        unverified: cohort.unverified,
-        averageFormula: withViews.length ? `${totalViews} / ${withViews.length}` : null,
-        confidence,
+        missing: summary.current.missing,
+        unverified: summary.current.unverified,
+        averageFormula: withViews.length ? `${summary.current.totalViews} / ${withViews.length}` : null,
+        confidence: summary.confidence,
       },
-      period: { days: 7, timeZone: "Europe/Moscow", label: "7 календарных дней" },
+      period: { days, timeZone: timezone, label: reportPeriodLabel(days) },
       bestPost,
       bestTime,
       insight: insight.length ? insight.join(" ") : null,
-      // Честность: что Telegram отдаёт, а что нет.
-      available: { views: true, reactions: true, reach: false, comments: false },
+      competitors,
+      available: { views: true, reactions: true, subscribers: true, reach: false, comments: false },
       collectedAt,
-    });
+    }, { headers: { "Cache-Control": "no-store" } });
   } catch (err) {
     if (err instanceof ProjectAccessError) {
       return NextResponse.json(
