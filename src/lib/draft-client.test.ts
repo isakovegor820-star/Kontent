@@ -109,12 +109,16 @@ describe("draft client coordination", () => {
   });
 
   it("creates a library draft by opaque item key without sending card text", async () => {
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
-      ok: true,
-      created: true,
-      requestId: "req-library-1",
-      draft: { id: 51 },
-    }), { status: 201, headers: { "content-type": "application/json" } }));
+    const fetchMock = vi.fn(async (_request: RequestInfo | URL, _init?: RequestInit) => {
+      void _request;
+      void _init;
+      return new Response(JSON.stringify({
+        ok: true,
+        created: true,
+        requestId: "req-library-1",
+        draft: { id: 51 },
+      }), { status: 201, headers: { "content-type": "application/json" } });
+    });
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(createLibraryServerDraft({
