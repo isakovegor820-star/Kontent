@@ -4,6 +4,7 @@
 
 import { parseRss } from "./lib.mjs";
 import { fetchPublicText } from "../src/lib/safe-http.mjs";
+import { decodeRssResponse } from "../src/lib/rss-text.mjs";
 
 const RSS_USER_AGENT = "Aurora-RSS/1.0";
 const RSS_FETCH_TIMEOUT_MS = 15_000;
@@ -86,7 +87,7 @@ export async function collectRssPipeline({
         headers: { "user-agent": RSS_USER_AGENT },
       });
       if (!res.ok) continue;
-      const items = parseRss(await res.text()).slice(0, RSS_BATCH_SIZE);
+      const items = parseRss(await decodeRssResponse(res)).slice(0, RSS_BATCH_SIZE);
 
       for (const item of items) {
         const scheduleKey = `${feed.user_id}:${feed.channel_id}`;
@@ -98,6 +99,8 @@ export async function collectRssPipeline({
              set title = excluded.title, link = excluded.link, summary = excluded.summary,
                  published_at = excluded.published_at
              where rss_items.status = 'new'
+                or strpos(coalesce(rss_items.title, ''), chr(65533)) > 0
+                or strpos(coalesce(rss_items.summary, ''), chr(65533)) > 0
            returning id`,
           [feed.id, item.guid, item.title, item.link, item.summary, item.publishedAt],
         );

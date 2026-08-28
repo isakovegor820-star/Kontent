@@ -5,6 +5,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
 import { fetchPublicText } from "@/lib/safe-http.mjs";
+import { decodeRssResponse } from "@/lib/rss-text.mjs";
 import { parseRss } from "../../../../worker/lib.mjs";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 
@@ -121,7 +122,7 @@ export async function POST(req: NextRequest) {
       headers: { "user-agent": "Aurora-RSS/1.0" },
     });
     if (!res.ok) return NextResponse.json({ ok: false, error: "fetch_failed" }, { status: 422 });
-    const xml = await res.text();
+    const xml = await decodeRssResponse(res);
     const parsedItems = parseRss(xml);
     if (!parsedItems.length) {
       return NextResponse.json({ ok: false, error: "not_feed" }, { status: 422 });

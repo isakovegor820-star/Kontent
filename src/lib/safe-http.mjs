@@ -268,6 +268,7 @@ export async function fetchPublicText(value, options = {}) {
       url: url.toString(),
       headers: result.headers,
       byteLength: result.body.byteLength,
+      bytes: async () => Uint8Array.from(result.body),
       text: async () => result.body.toString("utf8"),
     };
   }
