@@ -4331,13 +4331,21 @@ async function buildRadarOsintProfile({ runId, userId, query, sources }) {
     text: sanitizeRadarPublicText(source.text, 3_000) || null,
     verification: source.fetched ? "page_fetched" : "search_index",
   }));
-  const handle = radarIdentityHandle(query);
+  const requestedHandle = radarIdentityHandle(query);
+  const correctedHandle = sources
+    .map((source) => source?.rank?.correctedIdentity)
+    .find((value) => typeof value === "string" && value.length >= 3) || null;
+  const handle = correctedHandle || requestedHandle;
   const best = sources[0];
+  const identityAliases = [...new Set([
+    ...(handle ? [`@${handle}`] : []),
+    ...(requestedHandle && requestedHandle !== handle ? [`@${requestedHandle} (исходный запрос)`] : []),
+  ])];
   let profile = {
     displayName: best.title || (handle ? `@${handle}` : query),
     bio: best.description || sanitizeRadarPublicText(best.text, 1_000) || null,
     facts: [],
-    aliases: handle ? [`@${handle}`] : [],
+    aliases: identityAliases,
     ambiguities: ["Аврора не смогла независимо подтвердить, что все найденные страницы относятся к одному объекту."],
     confidence: "low",
   };
@@ -4370,7 +4378,10 @@ async function buildRadarOsintProfile({ runId, userId, query, sources }) {
         );
         const parsed = parseRadarOsintProfile(raw, evidence.length);
         if (parsed) {
-          profile = parsed;
+          profile = {
+            ...parsed,
+            aliases: [...new Set([...(parsed.aliases || []), ...identityAliases])],
+          };
           aiStatus = "ready";
         } else {
           aiStatus = "invalid_output";
@@ -4417,6 +4428,9 @@ async function buildRadarOsintProfile({ runId, userId, query, sources }) {
         distinctDomains,
         sources: evidence.map(({ id, url, domain, title, verification }) => ({ id, url, domain, title, verification })),
         ambiguities: profile.ambiguities,
+        queryCorrection: correctedHandle && requestedHandle && correctedHandle !== requestedHandle
+          ? { from: requestedHandle, to: correctedHandle }
+          : null,
         aiStatus,
         privacy: "public_professional_data_contacts_redacted",
       },
@@ -4502,6 +4516,9 @@ async function runRadarWebOsint({ runId, userId, query, expandedQueries }) {
       rank: source.rank,
       rawData: {
         matchMode: source.rank.exactIdentity ? "web_exact_identity" : "web_content",
+        queryCorrection: source.rank.correctedIdentity
+          ? { from: radarIdentityHandle(query), to: source.rank.correctedIdentity }
+          : null,
         domain: source.domain,
         sourceKind: source.rank.sourceKind,
         verificationMode: source.fetched ? "fetched" : "search_index",

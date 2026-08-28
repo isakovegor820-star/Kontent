@@ -4,15 +4,15 @@
 
 export const RADAR_SEARCH_CACHE_MS = 24 * 60 * 60 * 1000;
 export const RADAR_DISCOVERY_BUDGET = Object.freeze({
-  maxPages: 12,
+  maxPages: 24,
   maxCandidates: 250,
   maxQueries: 8,
   maxResponseBytes: 2 * 1024 * 1024,
   deadlineMs: 15_000,
 });
 export const RADAR_WEB_DISCOVERY_BUDGET = Object.freeze({
-  maxPages: 8,
-  maxCandidates: 60,
+  maxPages: 18,
+  maxCandidates: 200,
   maxQueries: 5,
   maxResponseBytes: 2 * 1024 * 1024,
   deadlineMs: 12_000,
@@ -79,10 +79,15 @@ const SPAM_WORDS = [
 ];
 const WEB_SEARCH_HOSTS = new Set([
   "bing.com",
+  "brave.com",
+  "cdn.search.brave.com",
   "duckduckgo.com",
   "google.com",
   "html.duckduckgo.com",
+  "imgs.search.brave.com",
+  "search.brave.com",
   "search.yahoo.com",
+  "r.search.yahoo.com",
   "www.bing.com",
   "www.google.com",
 ]);
@@ -236,6 +241,8 @@ export function buildRadarWebDiscoveryQueries(query, expanded = []) {
   } else {
     const compact = radarDiscoveryPhrase(normalized);
     if (compact && compact !== normalized) values.push(compact);
+    const topic = compact || normalized;
+    if (topic) values.push(`${topic} новости`, `${topic} тренды`);
     values.push(...(Array.isArray(expanded) ? expanded : []));
   }
   return [...new Set(values.map((value) => String(value || "").trim()).filter((value) => value.length >= 2))];
@@ -247,10 +254,30 @@ function decodeHtml(value) {
     .replace(/&#(\d+);/gu, (_match, code) => String.fromCodePoint(Number(code)))
     .replace(/&nbsp;/giu, " ")
     .replace(/&amp;/giu, "&")
+    .replace(/&(?:mdash|#8212);/giu, "—")
+    .replace(/&(?:ndash|#8211);/giu, "–")
+    .replace(/&(?:bull|#8226);/giu, "•")
+    .replace(/&(?:copy|#169);/giu, "©")
     .replace(/&quot;/giu, '"')
     .replace(/&#0?39;/giu, "'")
     .replace(/&lt;/giu, "<")
     .replace(/&gt;/giu, ">");
+}
+
+function decodeJavascriptString(value) {
+  const source = String(value ?? "");
+  try {
+    return JSON.parse(`"${source}"`);
+  } catch {
+    return source
+      .replace(/\\u([0-9a-f]{4})/giu, (_match, code) => String.fromCodePoint(Number.parseInt(code, 16)))
+      .replace(/\\(["\\/])/gu, "$1");
+  }
+}
+
+export function parseBraveSearchCorrection(payload) {
+  const match = String(payload || "").match(/\baltered:"((?:\\.|[^"\\])*)"/u);
+  return match ? sanitizeRadarPublicText(decodeJavascriptString(match[1]), 200) || null : null;
 }
 
 function stripMarkup(value) {
@@ -265,6 +292,17 @@ function unwrapWebSearchRedirect(raw) {
   if (value.startsWith("//")) value = `https:${value}`;
   try {
     const url = new URL(value);
+    if (/(?:^|\.)r\.search\.yahoo\.com$/iu.test(url.hostname)) {
+      const yahooTarget = url.pathname.match(/\/RU=([^/]+)\/(?:RK|RS)=/iu)?.[1];
+      if (yahooTarget) {
+        try {
+          const decoded = decodeURIComponent(yahooTarget);
+          if (/^https?:\/\//iu.test(decoded)) return decoded;
+        } catch {
+          // Повреждённый redirect будет отклонён общей нормализацией ниже.
+        }
+      }
+    }
     const redirected = url.searchParams.get("uddg") || url.searchParams.get("url") || url.searchParams.get("u");
     if (redirected && /^https?:\/\//iu.test(redirected)) return redirected;
   } catch {
@@ -339,6 +377,83 @@ export function parseBingRssWebCandidates(payload, provider = "bing-rss-web") {
   return candidates;
 }
 
+export function parseBraveWebCandidates(payload, provider = "brave-html-web") {
+  const source = String(payload || "");
+  const correctedQuery = parseBraveSearchCorrection(source);
+  const candidates = new Map();
+
+  // Brave renders ordinary links, but also includes a compact serialized copy of the
+  // result list. The latter is more stable than generated CSS class names and contains
+  // the same public title, snippet and publication date shown in the browser.
+  const resultPattern = /full_title:"((?:\\.|[^"\\])*)",url:"((?:\\.|[^"\\])*)"([\s\S]{0,5000}?)(?=full_title:|$)/gu;
+  for (const match of source.matchAll(resultPattern)) {
+    const tail = match[3] || "";
+    const description = tail.match(/\bdescription:"((?:\\.|[^"\\])*)"/u)?.[1];
+    const publishedAt = tail.match(/\bpage_age:"((?:\\.|[^"\\])*)"/u)?.[1];
+    const candidate = normalizeRadarWebCandidate(decodeJavascriptString(match[2]), {
+      title: stripMarkup(decodeJavascriptString(match[1])),
+      snippet: stripMarkup(decodeJavascriptString(description || "")),
+      publishedAt: publishedAt ? decodeJavascriptString(publishedAt) : null,
+      provider,
+    });
+    if (!candidate) continue;
+    candidates.set(candidate.canonicalUrl, { ...candidate, correctedQuery });
+  }
+
+  // Keep a DOM fallback for intentionally simplified HTML and for provider markup
+  // changes. Search assets are rejected by normalizeRadarWebCandidate above.
+  if (candidates.size === 0) {
+    for (const match of source.matchAll(/<a\b([^>]*)href\s*=\s*["'](https?:\/\/[^"']+)["']([^>]*)>([\s\S]{0,1800}?)<\/a>/giu)) {
+      const attrs = `${match[1]} ${match[3]}`;
+      if (!/(?:\bresult\b|\bl1\b|data-testid\s*=\s*["']result)/iu.test(attrs)) continue;
+      const title = stripMarkup(match[4]);
+      const tail = source.slice((match.index || 0) + match[0].length, (match.index || 0) + match[0].length + 1_800);
+      const snippet = tail.match(/class\s*=\s*["'][^"']*(?:snippet|description)[^"']*["'][^>]*>([\s\S]*?)<\/(?:div|p|span)>/iu)?.[1];
+      const candidate = normalizeRadarWebCandidate(decodeHtml(match[2]), {
+        title,
+        snippet: stripMarkup(snippet || ""),
+        provider,
+      });
+      if (!candidate) continue;
+      candidates.set(candidate.canonicalUrl, { ...candidate, correctedQuery });
+    }
+  }
+  return [...candidates.values()];
+}
+
+export function parseYahooSearchCorrection(payload) {
+  const source = decodeHtml(payload);
+  const match = source.match(/[?&]p=([^&"']+)&fr2=12642/iu);
+  if (!match) return null;
+  try {
+    return sanitizeRadarPublicText(decodeURIComponent(match[1].replace(/\+/gu, " ")), 200) || null;
+  } catch {
+    return sanitizeRadarPublicText(match[1], 200) || null;
+  }
+}
+
+export function parseYahooWebCandidates(payload, provider = "yahoo-html-web") {
+  const source = String(payload || "");
+  const correctedQuery = parseYahooSearchCorrection(source);
+  const candidates = new Map();
+  for (const match of source.matchAll(/<li\b[^>]*>([\s\S]*?)<\/li>/giu)) {
+    const item = match[1];
+    if (!/class\s*=\s*["'][^"']*\balgo\b/iu.test(item)) continue;
+    const rawUrl = item.match(/href\s*=\s*["']([^"']+)["']/iu)?.[1];
+    const title = item.match(/<h3\b[^>]*>([\s\S]*?)<\/h3>/iu)?.[1];
+    if (!rawUrl || !title) continue;
+    const snippet = item.match(/class\s*=\s*["'][^"']*\bcompText\b[^"']*["'][\s\S]*?<p\b[^>]*>([\s\S]*?)<\/p>/iu)?.[1];
+    const candidate = normalizeRadarWebCandidate(decodeHtml(rawUrl), {
+      title: stripMarkup(title),
+      snippet: stripMarkup(snippet || ""),
+      provider,
+    });
+    if (!candidate) continue;
+    candidates.set(candidate.canonicalUrl, { ...candidate, correctedQuery });
+  }
+  return [...candidates.values()];
+}
+
 export function parseDuckDuckGoWebCandidates(payload, provider = "duckduckgo-html-web") {
   const source = String(payload || "");
   const candidates = [];
@@ -359,7 +474,7 @@ export function parseDuckDuckGoWebCandidates(payload, provider = "duckduckgo-htm
 }
 
 function unwrapSearchRedirect(raw) {
-  let value = decodeHtml(raw).trim();
+  let value = unwrapWebSearchRedirect(raw);
   if (value.startsWith("//")) value = `https:${value}`;
   try {
     const url = new URL(value);
@@ -682,6 +797,77 @@ export function createSearxngTelegramProvider({ endpoint, fetchImpl = fetch } = 
   };
 }
 
+export function createBraveHtmlTelegramProvider({ fetchImpl = fetch } = {}) {
+  return {
+    name: "brave-html",
+    async search(query, context = {}) {
+      const budget = context.budget;
+      if (budget && !budget.takePage()) return [];
+      const url = new URL("https://search.brave.com/search");
+      url.searchParams.set("q", `${query} Telegram каналы`);
+      url.searchParams.set("source", "web");
+      const payload = await readSearchResponse(
+        fetchImpl,
+        providerRequest(url, {}, budget),
+        "brave_html",
+        budget,
+      );
+      const correctedQuery = parseBraveSearchCorrection(payload);
+      return parseTelegramCandidates(payload, "brave-html").map((candidate) => ({
+        ...candidate,
+        correctedQuery,
+      }));
+    },
+  };
+}
+
+export function createYahooHtmlTelegramProvider({ fetchImpl = fetch } = {}) {
+  return {
+    name: "yahoo-html",
+    async search(query, context = {}) {
+      const budget = context.budget;
+      if (budget && !budget.takePage()) return [];
+      const url = new URL("https://search.yahoo.com/search");
+      url.searchParams.set("p", `${query} Telegram каналы`);
+      const payload = await readSearchResponse(
+        fetchImpl,
+        providerRequest(url, {}, budget),
+        "yahoo_html",
+        budget,
+      );
+      const correctedQuery = parseYahooSearchCorrection(payload);
+      return parseTelegramCandidates(payload, "yahoo-html").map((candidate) => ({
+        ...candidate,
+        correctedQuery,
+      }));
+    },
+  };
+}
+
+export function createPublicHtmlTelegramProvider({ fetchImpl = fetch } = {}) {
+  const yahoo = createYahooHtmlTelegramProvider({ fetchImpl });
+  const brave = createBraveHtmlTelegramProvider({ fetchImpl });
+  return {
+    name: "public-html",
+    async search(query, context = {}) {
+      let yahooCompleted = false;
+      try {
+        const candidates = await yahoo.search(query, context);
+        yahooCompleted = true;
+        if (candidates.length > 0) return candidates;
+      } catch {
+        // Brave ниже — независимый резерв на случай блокировки Yahoo.
+      }
+      try {
+        return await brave.search(query, context);
+      } catch (error) {
+        if (yahooCompleted) return [];
+        throw error;
+      }
+    },
+  };
+}
+
 export function createBingRssTelegramProvider({ fetchImpl = fetch } = {}) {
   return {
     name: "bing-rss",
@@ -697,8 +883,11 @@ export function createBingRssTelegramProvider({ fetchImpl = fetch } = {}) {
       const found = new Map();
       const seenPages = new Set();
       let first = 1;
+      let pageCount = 0;
       for (;;) {
+        if (pageCount >= 1) break;
         if (budget && !budget.takePage()) break;
+        pageCount += 1;
         url.searchParams.set("first", String(first));
         let payload;
         try {
@@ -739,8 +928,11 @@ export function createDuckDuckGoTelegramProvider({ fetchImpl = fetch } = {}) {
       const found = new Map();
       const seenOffsets = new Set();
       let offset = "0";
+      let pageCount = 0;
       for (;;) {
+        if (pageCount >= 1) break;
         if (budget && !budget.takePage()) break;
+        pageCount += 1;
         if (offset === "0") url.searchParams.delete("s");
         else url.searchParams.set("s", offset);
         let payload;
@@ -815,6 +1007,69 @@ export function createSearxngWebProvider({ endpoint, fetchImpl = fetch } = {}) {
   };
 }
 
+export function createBraveHtmlWebProvider({ fetchImpl = fetch } = {}) {
+  return {
+    name: "brave-html-web",
+    async search(query, context = {}) {
+      const budget = context.budget;
+      if (budget && !budget.takePage()) return [];
+      const url = new URL("https://search.brave.com/search");
+      url.searchParams.set("q", query);
+      url.searchParams.set("source", "web");
+      const payload = await readSearchResponse(
+        fetchImpl,
+        providerRequest(url, {}, budget),
+        "brave_html_web",
+        budget,
+      );
+      return parseBraveWebCandidates(payload, "brave-html-web");
+    },
+  };
+}
+
+export function createYahooHtmlWebProvider({ fetchImpl = fetch } = {}) {
+  return {
+    name: "yahoo-html-web",
+    async search(query, context = {}) {
+      const budget = context.budget;
+      if (budget && !budget.takePage()) return [];
+      const url = new URL("https://search.yahoo.com/search");
+      url.searchParams.set("p", query);
+      const payload = await readSearchResponse(
+        fetchImpl,
+        providerRequest(url, {}, budget),
+        "yahoo_html_web",
+        budget,
+      );
+      return parseYahooWebCandidates(payload, "yahoo-html-web");
+    },
+  };
+}
+
+export function createPublicHtmlWebProvider({ fetchImpl = fetch } = {}) {
+  const yahoo = createYahooHtmlWebProvider({ fetchImpl });
+  const brave = createBraveHtmlWebProvider({ fetchImpl });
+  return {
+    name: "public-html-web",
+    async search(query, context = {}) {
+      let yahooCompleted = false;
+      try {
+        const candidates = await yahoo.search(query, context);
+        yahooCompleted = true;
+        if (candidates.length > 0) return candidates;
+      } catch {
+        // Brave ниже — независимый резерв на случай блокировки Yahoo.
+      }
+      try {
+        return await brave.search(query, context);
+      } catch (error) {
+        if (yahooCompleted) return [];
+        throw error;
+      }
+    },
+  };
+}
+
 export function createBingRssWebProvider({ fetchImpl = fetch } = {}) {
   return {
     name: "bing-rss-web",
@@ -827,8 +1082,11 @@ export function createBingRssWebProvider({ fetchImpl = fetch } = {}) {
       const found = new Map();
       const seenPages = new Set();
       let first = 1;
+      let pageCount = 0;
       for (;;) {
+        if (pageCount >= 1) break;
         if (budget && !budget.takePage()) break;
+        pageCount += 1;
         url.searchParams.set("first", String(first));
         let payload;
         try {
@@ -863,8 +1121,11 @@ export function createDuckDuckGoWebProvider({ fetchImpl = fetch } = {}) {
       const found = new Map();
       const seenOffsets = new Set();
       let offset = "0";
+      let pageCount = 0;
       for (;;) {
+        if (pageCount >= 1) break;
         if (budget && !budget.takePage()) break;
+        pageCount += 1;
         if (offset === "0") url.searchParams.delete("s");
         else url.searchParams.set("s", offset);
         let payload;
@@ -892,6 +1153,7 @@ export async function discoverRadarWebCandidates(query, options = {}) {
   if (normalizeRadarQuery(raw).length < 2) throw new RadarDiscoveryError("query_too_short");
   const providers = options.providers || [
     createSearxngWebProvider({ endpoint: options.searxngUrl, fetchImpl: options.fetchImpl }),
+    createPublicHtmlWebProvider({ fetchImpl: options.fetchImpl }),
     createBingRssWebProvider({ fetchImpl: options.fetchImpl }),
     createDuckDuckGoWebProvider({ fetchImpl: options.fetchImpl }),
   ].filter(Boolean);
@@ -969,6 +1231,7 @@ export async function discoverTelegramCandidates(query, options = {}) {
   if (normalized.length < 2) throw new RadarDiscoveryError("query_too_short");
   const providers = options.providers || [
     createSearxngTelegramProvider({ endpoint: options.searxngUrl, fetchImpl: options.fetchImpl }),
+    createPublicHtmlTelegramProvider({ fetchImpl: options.fetchImpl }),
     createBingRssTelegramProvider({ fetchImpl: options.fetchImpl }),
     createDuckDuckGoTelegramProvider({ fetchImpl: options.fetchImpl }),
   ].filter(Boolean);
@@ -1000,11 +1263,16 @@ export async function discoverTelegramCandidates(query, options = {}) {
         for (const candidate of accepted) {
           if (!candidate?.handle) continue;
           const current = found.get(candidate.handle);
+          const correctedQuery = normalizeRadarQuery(candidate.correctedQuery);
           found.set(candidate.handle, {
             ...(current || candidate),
             ...candidate,
             matchedQuery: discoveryQuery,
-            matchedQueries: [...new Set([...(current?.matchedQueries || []), discoveryQuery])],
+            matchedQueries: [...new Set([
+              ...(current?.matchedQueries || []),
+              discoveryQuery,
+              ...(correctedQuery.length >= 2 ? [correctedQuery] : []),
+            ])],
             providers: [...new Set([...(current?.providers || []), candidate.provider || result.value.provider.name])],
           });
         }
@@ -1237,6 +1505,45 @@ function radarWebDomainTrust(domain, sourceKind) {
   return 62;
 }
 
+function boundedEditDistance(leftValue, rightValue, maxDistance = 2) {
+  const left = String(leftValue || "");
+  const right = String(rightValue || "");
+  if (left === right) return 0;
+  if (Math.abs(left.length - right.length) > maxDistance) return maxDistance + 1;
+  let previous = Array.from({ length: right.length + 1 }, (_value, index) => index);
+  for (let row = 1; row <= left.length; row += 1) {
+    const current = [row];
+    let rowMinimum = row;
+    for (let column = 1; column <= right.length; column += 1) {
+      const value = Math.min(
+        current[column - 1] + 1,
+        previous[column] + 1,
+        previous[column - 1] + (left[row - 1] === right[column - 1] ? 0 : 1),
+      );
+      current[column] = value;
+      rowMinimum = Math.min(rowMinimum, value);
+    }
+    if (rowMinimum > maxDistance) return maxDistance + 1;
+    previous = current;
+  }
+  return previous[right.length];
+}
+
+function correctedIdentityHandle(requestedHandle, correction, corpus) {
+  const requested = String(requestedHandle || "").toLowerCase();
+  if (!requested || !correction) return null;
+  const tokens = normalizeRadarQuery(correction)
+    .split(/\s+/u)
+    .map((token) => token.replace(/^@/u, ""))
+    .filter((token) => HANDLE_QUERY.test(token));
+  for (const token of tokens) {
+    if (token === requested || !String(corpus || "").includes(token)) continue;
+    const maxDistance = Math.max(requested.length, token.length) >= 8 ? 2 : 1;
+    if (boundedEditDistance(requested, token, maxDistance) <= maxDistance) return token;
+  }
+  return null;
+}
+
 export function rankRadarWebSource(query, source = {}) {
   const intent = source.intent || detectRadarQueryIntent(query);
   const handle = radarIdentityHandle(query);
@@ -1254,6 +1561,7 @@ export function rankRadarWebSource(query, source = {}) {
     posts: body ? [{ text: body }] : [],
   });
   let exactIdentity = false;
+  let correctedIdentity = null;
   try {
     const requestedUrl = new URL(String(query || "").trim());
     const sourceUrl = new URL(String(source.url || source.canonicalUrl || ""));
@@ -1269,8 +1577,14 @@ export function rankRadarWebSource(query, source = {}) {
   }
   if (handle) {
     const normalizedHandle = searchableText(handle);
-    exactIdentity = exactIdentity || [urlText, title, description, body].some((value) => value.includes(normalizedHandle));
+    const identityCorpus = [urlText, title, description, body].join(" ");
+    exactIdentity = exactIdentity || identityCorpus.includes(normalizedHandle);
+    correctedIdentity = exactIdentity
+      ? null
+      : correctedIdentityHandle(normalizedHandle, source.correctedQuery, identityCorpus);
+    if (correctedIdentity) exactIdentity = true;
     if (exactIdentity) relevance = Math.max(relevance, urlText.includes(normalizedHandle) ? 96 : 82);
+    if (correctedIdentity) relevance = Math.max(relevance, urlText.includes(correctedIdentity) ? 92 : 80);
   }
   const trust = radarWebDomainTrust(domain, sourceKind);
   const fetched = source.fetched === true;
@@ -1283,10 +1597,14 @@ export function rankRadarWebSource(query, source = {}) {
     ? (exactIdentity || relevance >= 48) && score >= 45
     : relevance >= 35 && score >= 40;
   const reason = fetched
-    ? exactIdentity
+    ? correctedIdentity
+      ? `Публичная страница открыта; поисковик исправил ник на @${correctedIdentity}`
+      : exactIdentity
       ? "Публичная страница открыта; ник точно совпадает с запросом"
       : "Публичная страница открыта и её содержание совпадает с запросом"
-    : exactIdentity
+    : correctedIdentity
+      ? `Поисковик исправил ник на @${correctedIdentity}; совпадение подтверждено открытым индексом`
+      : exactIdentity
       ? "Ник точно совпадает в открытом поисковом индексе; сайт не дал дочитать страницу"
       : "Источник найден в открытом поисковом индексе и совпадает с запросом";
   return {
@@ -1297,6 +1615,7 @@ export function rankRadarWebSource(query, source = {}) {
     trust,
     completeness: Math.round((completeness / 3) * 100),
     exactIdentity,
+    correctedIdentity,
     accepted,
     sourceKind,
     reason,

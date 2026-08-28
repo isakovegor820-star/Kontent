@@ -7,6 +7,8 @@ import {
   createBingRssTelegramProvider,
   createDuckDuckGoTelegramProvider,
   createSearxngTelegramProvider,
+  createYahooHtmlTelegramProvider,
+  createYahooHtmlWebProvider,
   detectRadarQueryIntent,
   discoverRadarWebCandidates,
   discoverTelegramCandidates,
@@ -14,6 +16,8 @@ import {
   normalizeRadarWebCandidate,
   normalizeTelegramCandidate,
   parseBingRssWebCandidates,
+  parseYahooSearchCorrection,
+  parseYahooWebCandidates,
   parseRadarOsintProfile,
   parseTelegramCandidates,
   radarIdentityHandle,
@@ -46,6 +50,14 @@ describe("radar hybrid-search core", () => {
       '"@plinoffcial"',
       '"plinoffcial" биография',
       '"plinoffcial" официальный',
+    ]);
+  });
+
+  it("adds news and trend formulations for a general web topic", () => {
+    expect(buildRadarWebDiscoveryQueries("строительство на Волге")).toEqual([
+      "строительство на волге",
+      "строительство на волге новости",
+      "строительство на волге тренды",
     ]);
   });
 
@@ -85,6 +97,57 @@ describe("radar hybrid-search core", () => {
     });
     expect(result).toHaveLength(1);
     expect(result[0].providers).toEqual(["one", "two"]);
+  });
+
+  it("uses a search-engine spelling correction for an identity without hiding it", async () => {
+    const yahoo = `
+      <a href="https://search.yahoo.com/search?p=Plinofficial&amp;fr2=12642"><strong>Plinofficial</strong></a>
+      <ol><li><div class="dd algo algo-sr">
+        <a href="https://r.search.yahoo.com/x/RU=https%3A%2F%2Fwww.instagram.com%2Fplinofficial%2F/RK=2/RS=x">
+          <h3><span>Plinofficial (@plinofficial) • Instagram</span></h3>
+        </a>
+        <div class="compText"><p>Official public profile for Plinofficial.</p></div>
+      </div></li></ol>`;
+    expect(parseYahooSearchCorrection(yahoo)).toBe("Plinofficial");
+    const parsed = parseYahooWebCandidates(yahoo);
+    expect(parsed).toMatchObject([{
+      canonicalUrl: "https://www.instagram.com/plinofficial",
+      correctedQuery: "Plinofficial",
+    }]);
+    expect(rankRadarWebSource("Plinoffcial", parsed[0])).toMatchObject({
+      accepted: true,
+      exactIdentity: true,
+      correctedIdentity: "plinofficial",
+    });
+
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: { get: () => null },
+      text: async () => yahoo,
+    });
+    await expect(createYahooHtmlWebProvider({ fetchImpl }).search("Plinoffcial"))
+      .resolves.toHaveLength(1);
+  });
+
+  it("carries a corrected identity into Telegram verification queries", async () => {
+    const yahoo = `
+      <a href="https://search.yahoo.com/search?p=Plinofficial+Telegram+%D0%BA%D0%B0%D0%BD%D0%B0%D0%BB%D1%8B&amp;fr2=12642">corrected</a>
+      <a href="https://r.search.yahoo.com/x/RU=https%3A%2F%2Ft.me%2Fplinofficial/RK=2/RS=x">Telegram</a>`;
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: { get: () => null },
+      text: async () => yahoo,
+    });
+    const provider = createYahooHtmlTelegramProvider({ fetchImpl });
+    const results = await discoverTelegramCandidates("Plinoffcial", {
+      providers: [provider],
+      budget: { maxQueries: 1, maxPages: 1, deadlineMs: 500 },
+    });
+    expect(results).toMatchObject([{
+      handle: "plinofficial",
+      correctedQuery: "Plinofficial Telegram каналы",
+      matchedQueries: ["plinoffcial", "plinofficial telegram каналы"],
+    }]);
   });
 
   it("ranks an exact public username match and redacts contacts before persistence", () => {

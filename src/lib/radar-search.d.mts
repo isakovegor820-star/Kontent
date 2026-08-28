@@ -4,6 +4,9 @@ export type TelegramCandidate = {
   canonicalUrl: string;
   canonicalKey: string;
   provider?: string;
+  correctedQuery?: string | null;
+  matchedQueries?: string[];
+  providers?: string[];
 };
 export type RadarWebCandidate = {
   canonicalUrl: string;
@@ -13,6 +16,7 @@ export type RadarWebCandidate = {
   snippet: string | null;
   publishedAt: string | null;
   provider: string;
+  correctedQuery?: string | null;
   matchedQueries?: string[];
   providers?: string[];
 };
@@ -58,12 +62,22 @@ export function buildRadarWebDiscoveryQueries(query: unknown, expanded?: unknown
 export function normalizeTelegramCandidate(rawUrl: unknown): TelegramCandidate | null;
 export function parseTelegramCandidates(payload: unknown, provider?: string): TelegramCandidate[];
 export function createSearxngTelegramProvider(options?: Record<string, unknown>): unknown;
+export function createBraveHtmlTelegramProvider(options?: Record<string, unknown>): unknown;
+export function createYahooHtmlTelegramProvider(options?: Record<string, unknown>): unknown;
+export function createPublicHtmlTelegramProvider(options?: Record<string, unknown>): unknown;
 export function createBingRssTelegramProvider(options?: Record<string, unknown>): unknown;
 export function createDuckDuckGoTelegramProvider(options?: Record<string, unknown>): unknown;
 export function normalizeRadarWebCandidate(rawUrl: unknown, metadata?: Record<string, unknown>): RadarWebCandidate | null;
 export function parseBingRssWebCandidates(payload: unknown, provider?: string): RadarWebCandidate[];
+export function parseBraveSearchCorrection(payload: unknown): string | null;
+export function parseBraveWebCandidates(payload: unknown, provider?: string): RadarWebCandidate[];
+export function parseYahooSearchCorrection(payload: unknown): string | null;
+export function parseYahooWebCandidates(payload: unknown, provider?: string): RadarWebCandidate[];
 export function parseDuckDuckGoWebCandidates(payload: unknown, provider?: string): RadarWebCandidate[];
 export function createSearxngWebProvider(options?: Record<string, unknown>): unknown;
+export function createBraveHtmlWebProvider(options?: Record<string, unknown>): unknown;
+export function createYahooHtmlWebProvider(options?: Record<string, unknown>): unknown;
+export function createPublicHtmlWebProvider(options?: Record<string, unknown>): unknown;
 export function createBingRssWebProvider(options?: Record<string, unknown>): unknown;
 export function createDuckDuckGoWebProvider(options?: Record<string, unknown>): unknown;
 export function discoverRadarWebCandidates(query: unknown, options?: Record<string, unknown>): Promise<Array<RadarWebCandidate> & {
@@ -89,6 +103,7 @@ export function radarWebSourceKind(value: unknown): "social" | "reference" | "pr
 export function rankRadarWebSource(query: unknown, source?: Record<string, unknown>): RadarRank & {
   sourceKind: string;
   exactIdentity: boolean;
+  correctedIdentity: string | null;
 };
 export function parseRadarOsintProfile(raw: unknown, sourceCount: number): null | {
   displayName: string | null;
