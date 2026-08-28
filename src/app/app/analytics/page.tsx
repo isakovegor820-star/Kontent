@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import {
   Activity,
   ArrowRight,
@@ -34,6 +35,11 @@ import { cn, fmtNum } from "@/lib/utils";
 
 type AnalyticsSection = "overview" | "posts" | "growth" | "competitors" | "tracking";
 type PostMetric = "views" | "reactions" | "engagement";
+
+function safeChannelId(value: string | null): number | null {
+  const channelId = Number(value);
+  return Number.isSafeInteger(channelId) && channelId > 0 ? channelId : null;
+}
 
 interface SubscriberPoint {
   snapshot_date: string;
@@ -515,18 +521,28 @@ function AnalyticsContent({ data, section, onSectionChange, metric, onMetricChan
   return <OverviewSection data={data} onOpen={onSectionChange} />;
 }
 
-export default function AnalyticsPage() {
+function AnalyticsPageContent() {
   const store = useStore();
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const searchString = searchParams.toString();
+  const requestedChannelId = safeChannelId(searchParams.get("channel"));
   const [data, setData] = useState<StatsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [sending, setSending] = useState(false);
-  const [picked, setPicked] = useState<number | null>(null);
   const [periodDays, setPeriodDays] = useState<AnalyticsPeriodDays>(30);
   const [section, setSection] = useState<AnalyticsSection>("overview");
   const [postMetric, setPostMetric] = useState<PostMetric>("views");
-  const { tgChannels, channelId } = useChannelChoice(store.realChannels, picked);
+  const { tgChannels, channelId } = useChannelChoice(store.realChannels, requestedChannelId);
+
+  const handleChannelChange = (nextChannelId: number) => {
+    const params = new URLSearchParams(searchString);
+    params.set("channel", String(nextChannelId));
+    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+  };
 
   const requestUrl = useMemo(() => channelId ? `/api/stats?channel=${channelId}&days=${periodDays}` : null, [channelId, periodDays]);
 
@@ -599,7 +615,7 @@ export default function AnalyticsPage() {
         <div className="sr-only" aria-live="polite">{loading ? "Загружаем статистику выбранного канала." : loadError ? "Не удалось загрузить статистику." : `Открыт раздел ${SECTIONS.find((item) => item.id === section)?.label}.`}</div>
         <Card className="p-4 sm:p-5">
           <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
-            <div className="min-w-0"><h2 id="channel-statistics-heading" className="text-balance text-[20px] leading-tight font-bold text-text">Аналитика канала</h2><p className="mt-1 max-w-[64ch] text-pretty text-[14px] leading-relaxed text-text-3">Каждый раздел отвечает на отдельный вопрос и использует только фактические данные.</p><ChannelPicker channels={tgChannels} value={channelId} onChange={setPicked} label="Канал" className="mt-4" /></div>
+            <div className="min-w-0"><h2 id="channel-statistics-heading" className="text-balance text-[20px] leading-tight font-bold text-text">Аналитика канала</h2><p className="mt-1 max-w-[64ch] text-pretty text-[14px] leading-relaxed text-text-3">Каждый раздел отвечает на отдельный вопрос и использует только фактические данные.</p><ChannelPicker channels={tgChannels} value={channelId} onChange={handleChannelChange} label="Канал" className="mt-4" /></div>
             <div className="w-full lg:w-56"><label htmlFor="analytics-period" className="mb-2 block text-[13px] font-semibold text-text-2">Период</label><select id="analytics-period" className={selectClassName()} value={periodDays} onChange={(event) => setPeriodDays(Number(event.target.value) as AnalyticsPeriodDays)}><option value={7}>Последние 7 дней</option><option value={30}>Последние 30 дней</option><option value={90}>Последние 90 дней</option></select></div>
           </div>
           <nav className="mt-5 flex max-w-full gap-2 overflow-x-auto border-t border-line pt-4" aria-label="Разделы статистики">
@@ -616,4 +632,19 @@ export default function AnalyticsPage() {
       </section>
     </AppShell>
   );
+}
+
+function AnalyticsPageFallback() {
+  return (
+    <AppShell title="Статистика" subtitle="Публикации, рост, конкуренты и переходы — по одному каналу и периоду.">
+      <div className="space-y-4" aria-busy="true">
+        <div className="skeleton h-32 rounded-md" />
+        <div className="skeleton h-72 rounded-md" />
+      </div>
+    </AppShell>
+  );
+}
+
+export default function AnalyticsPage() {
+  return <Suspense fallback={<AnalyticsPageFallback />}><AnalyticsPageContent /></Suspense>;
 }

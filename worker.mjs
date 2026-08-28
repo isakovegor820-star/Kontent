@@ -12186,7 +12186,7 @@ const cronQueue = AUTOPILOT_ONLY || MEDIA_ONLY || PUBLICATION_ONLY ? null : new 
 // Расписания в московском времени. trend сдвинут на 15 мин относительно recon, чтобы не
 // долбить t.me обеими задачами в одну секунду.
 const CRON_SCHEDULES = [
-  { name: "stats",    pattern: "0 1 * * *" },    // суточный снимок аналитики, 01:00 МСК
+  { name: "stats",    pattern: "0 */6 * * *" },  // статистика каждые 6ч: один временный сбой не ломает весь день
   { name: "recon",    pattern: "0 */2 * * *" },  // разведка конкурентов, каждые 2ч
   { name: "trend",    pattern: "15 */2 * * *" }, // насмотренность, каждые 2ч (сдвиг 15мин от recon)
   { name: "today-opportunities", pattern: "30 */2 * * *" }, // снимки возможностей, каждые 2ч

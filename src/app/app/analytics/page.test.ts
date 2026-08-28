@@ -13,6 +13,8 @@ describe("analytics dashboard interface contract", () => {
     expect(source).toContain("<ChannelPicker");
     expect(source).toContain('id="analytics-period"');
     expect(source).toContain("&days=${periodDays}");
+    expect(source).toContain('safeChannelId(searchParams.get("channel"))');
+    expect(source).toContain("useChannelChoice(store.realChannels, requestedChannelId)");
   });
 
   it("renders only data-driven charts with useful empty states", () => {

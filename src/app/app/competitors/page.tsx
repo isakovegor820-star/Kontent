@@ -4,9 +4,10 @@
 // добавляешь ссылку → воркер собирает статистику постов (t.me/s/ + Bot API). Лимит 20,
 // свободно добавлять/удалять. Словесные выводы ИИ подключим отдельно (пока — честная статистика).
 
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
   Activity,
@@ -52,6 +53,11 @@ import { cn, fmtCompact, fmtNum, plural } from "@/lib/utils";
 
 const EASE = [0.22, 1, 0.36, 1] as const;
 const MAX = 20;
+
+function safeChannelId(value: string | null): number | null {
+  const channelId = Number(value);
+  return Number.isSafeInteger(channelId) && channelId > 0 ? channelId : null;
+}
 
 interface Competitor {
   id: number | string;
@@ -354,6 +360,7 @@ function SuggestionPreviewDialog({
   onClose,
   onAdd,
   onDismiss,
+  onManageLimit,
 }: {
   item: Suggestion;
   atLimit: boolean;
@@ -362,6 +369,7 @@ function SuggestionPreviewDialog({
   onClose: () => void;
   onAdd: () => void;
   onDismiss: () => void;
+  onManageLimit: () => void;
 }) {
   const titleId = useId();
   const descriptionId = useId();
@@ -534,10 +542,17 @@ function SuggestionPreviewDialog({
           <Button type="button" variant="ghost" onClick={onDismiss} loading={busy === "dismiss"} disabled={Boolean(busy)}>
             Не подходит
           </Button>
-          <Button type="button" variant="solid" onClick={onAdd} loading={busy === "add"} disabled={atLimit || Boolean(busy)}>
-            <Plus className="h-4 w-4" aria-hidden />
-            Добавить конкурента
-          </Button>
+          {atLimit ? (
+            <Button type="button" variant="secondary" onClick={onManageLimit} disabled={Boolean(busy)}>
+              <Trash2 className="h-4 w-4" aria-hidden />
+              Выбрать, кого заменить
+            </Button>
+          ) : (
+            <Button type="button" variant="solid" onClick={onAdd} loading={busy === "add"} disabled={Boolean(busy)}>
+              <Plus className="h-4 w-4" aria-hidden />
+              Добавить конкурента
+            </Button>
+          )}
         </div>
       </div>
     </div>
@@ -548,10 +563,12 @@ function SuggestionPreviewDialog({
 
 function Suggestions({
   onAdded,
+  onManageLimit,
   atLimit,
   channelId,
 }: {
   onAdded: () => void;
+  onManageLimit: () => void;
   atLimit: boolean;
   channelId: number | null;
 }) {
@@ -781,6 +798,10 @@ function Suggestions({
           onClose={() => setPreview(null)}
           onAdd={() => void act(preview, "add")}
           onDismiss={() => void act(preview, "dismiss")}
+          onManageLimit={() => {
+            setPreview(null);
+            onManageLimit();
+          }}
         />
       )}
     </Card>
@@ -789,9 +810,14 @@ function Suggestions({
 
 /* ----------------------------------------------------------------- ЭКРАН */
 
-export default function CompetitorsPage() {
+function CompetitorsPageContent() {
   const s = useStore();
   const reduced = useReducedMotion();
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const searchString = searchParams.toString();
+  const requestedChannelId = safeChannelId(searchParams.get("channel"));
 
   const [list, setList] = useState<Competitor[]>([]);
   const [loading, setLoading] = useState(true);
@@ -806,15 +832,30 @@ export default function CompetitorsPage() {
   const [sourceBusy, setSourceBusy] = useState<{ id: string; action: "refresh" | "pause" | "resume" } | null>(null);
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const [removingId, setRemovingId] = useState<string | null>(null);
-  const [picked, setPicked] = useState<number | null>(null);
   const competitorNameRef = useRef<HTMLInputElement>(null);
   const competitorLinkRef = useRef<HTMLInputElement>(null);
   const loadedChannelRef = useRef<number | null>(null);
+  const competitorListRef = useRef<HTMLUListElement>(null);
 
   // Конкуренты живут НА КАНАЛЕ: у кофейного канала и юридического соседи разные.
   // Сервер это уже умеет (`?channel=`), но страница параметр не слала — и человек с тремя
   // каналами всегда видел соседей первого, без возможности переключиться.
-  const { tgChannels, channelId } = useChannelChoice(s.realChannels, picked);
+  const { tgChannels, channelId } = useChannelChoice(s.realChannels, requestedChannelId);
+
+  const handleChannelChange = (nextChannelId: number) => {
+    const params = new URLSearchParams(searchString);
+    params.set("channel", String(nextChannelId));
+    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+  };
+
+  const manageCompetitorLimit = () => {
+    window.setTimeout(() => {
+      competitorListRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      competitorListRef.current
+        ?.querySelector<HTMLButtonElement>('button[aria-label^="Удалить источник"]')
+        ?.focus();
+    }, 0);
+  };
 
   const load = useCallback(async () => {
     if (!channelId) {
@@ -978,7 +1019,7 @@ export default function CompetitorsPage() {
       <ChannelPicker
         channels={tgChannels}
         value={channelId}
-        onChange={setPicked}
+        onChange={handleChannelChange}
         label="Конкуренты канала"
         className="mb-3"
       />
@@ -1013,7 +1054,7 @@ export default function CompetitorsPage() {
         </div>
       )}
 
-      <Suggestions onAdded={load} atLimit={atLimit} channelId={channelId} />
+      <Suggestions onAdded={load} onManageLimit={manageCompetitorLimit} atLimit={atLimit} channelId={channelId} />
 
       {listLoadError && (
         <Card className="mb-6 flex flex-wrap items-center gap-x-4 gap-y-3 p-4" role="alert">
@@ -1178,7 +1219,7 @@ export default function CompetitorsPage() {
           />
         </Card>
       ) : (
-        <motion.ul layout="position" className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+        <motion.ul ref={competitorListRef} id="competitor-list" layout="position" className="scroll-mt-24 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
           <AnimatePresence initial={false}>
             {list.map((c) => (
               <motion.li
@@ -1217,4 +1258,18 @@ export default function CompetitorsPage() {
       )}
     </AppShell>
   );
+}
+
+function CompetitorsPageFallback() {
+  return (
+    <AppShell title="Конкуренты" subtitle="Ищи и веди соседей по нише.">
+      <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3" aria-busy="true">
+        {[0, 1, 2].map((item) => <div key={item} className="skeleton h-44 rounded-lg" />)}
+      </div>
+    </AppShell>
+  );
+}
+
+export default function CompetitorsPage() {
+  return <Suspense fallback={<CompetitorsPageFallback />}><CompetitorsPageContent /></Suspense>;
 }

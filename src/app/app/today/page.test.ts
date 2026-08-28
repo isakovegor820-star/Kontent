@@ -65,8 +65,11 @@ describe("Today page resilience and interface contract", () => {
     expect(source).toContain("Разобрать за 5 минут");
     expect(source).toContain("Быстрый разбор завершён");
     expect(source).toContain("Только реальные данные");
+    expect(source).toContain("Развернуть статистику");
+    expect(source).toContain("Открыть все графики");
     expect(source).toContain("Создать план в автопилоте");
     expect(source).toContain("/app/autopilot");
+    expect(source).toContain("/app/competitors?channel=");
   });
 
   it("shows durable completed decisions inside Today", () => {

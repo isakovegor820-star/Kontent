@@ -56,6 +56,7 @@ function todayDb(options: {
   noChannels?: boolean;
   readiness?: Partial<{ competitor_count: string; opportunity_count: string; published_count: string; stats_count: string }>;
   opportunityRows?: Array<Record<string, unknown>>;
+  reviewRows?: Array<Record<string, unknown>>;
   resultRows?: Array<Record<string, unknown>>;
   hiddenPreference?: boolean;
   postFrequency?: number | null;
@@ -99,7 +100,7 @@ function todayDb(options: {
       }
       if (sql.includes("from drafts draft")) {
         if (options.failSources?.includes("reviews")) throw new Error("reviews unavailable");
-        return { rows: [{
+        return { rows: options.reviewRows ?? [{
           id: "81",
           version: "3",
           updated_at: "2026-08-23T08:00:00.000Z",
@@ -208,6 +209,33 @@ describe("Today board states", () => {
     );
     expect(board.readiness.state).toBe(expected);
     expect(board.items).toEqual([]);
+  });
+
+  it("turns missing prerequisites into a real daily decision for the selected channel", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-23T12:00:00.000Z"));
+    const db = todayDb({
+      reviewRows: [],
+      opportunityRows: [],
+      resultRows: [],
+      readiness: { competitor_count: "0", opportunity_count: "0", published_count: "0", stats_count: "0" },
+    });
+    const board = await loadTodayBoard(
+      { actorUserId: 9, channelId: 11 },
+      db as never,
+    );
+
+    expect(board.readiness.state).toBe("has_items");
+    expect(board.items).toEqual([expect.objectContaining({
+      type: "risk",
+      title: "Добавьте двух конкурентов",
+      primaryAction: { label: "Добавить конкурентов", href: "/app/competitors?channel=11" },
+      sourceLabel: "Готовность канала",
+    })]);
+    const readinessQuery = db.query.mock.calls.find(([sql]) => String(sql).includes("as competitor_count"));
+    expect(String(readinessQuery?.[0])).toContain("competitor.channel_id = $2");
+    expect(String(readinessQuery?.[0])).not.toContain("competitor.project_id");
+    vi.useRealTimers();
   });
 
   it("keeps an administrator-disabled channel recoverable without loading sources", async () => {

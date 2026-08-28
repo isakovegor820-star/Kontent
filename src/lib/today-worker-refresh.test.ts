@@ -10,6 +10,10 @@ describe("Today background refresh worker contract", () => {
     expect(worker).toContain('case "today-opportunities": return materializeAllOpportunitySnapshots(pool)');
   });
 
+  it("retries channel statistics during the day instead of waiting until tomorrow", () => {
+    expect(worker).toContain('{ name: "stats",    pattern: "0 */6 * * *" }');
+  });
+
   it("records successful result refreshes only after project-scoped statistics complete", () => {
     const collectBlock = worker.slice(worker.indexOf('if (job.name === "collect")'), worker.indexOf('} else if (job.name === "report")'));
     expect(collectBlock).toContain("await collectStats(scope.projectId)");

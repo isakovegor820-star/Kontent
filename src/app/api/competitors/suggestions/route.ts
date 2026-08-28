@@ -159,14 +159,25 @@ export async function PATCH(req: NextRequest) {
     const sug = (
       await pool.query<{ handle: string; channel_id: number }>(
         `select handle, channel_id from competitor_suggestions
-          where id = $1 and user_id = $2 and status = 'new'`,
-        [id, user.id],
+          where id = $1 and status = 'new'`,
+        [id],
       )
     ).rows[0];
     if (!sug) return NextResponse.json({ ok: false, error: "not_found" }, { status: 404 });
+    // Находка принадлежит каналу проекта, а не человеку, который первым запустил
+    // поиск. Любой текущий участник того же выбранного проекта должен иметь
+    // возможность принять её; чужой канал по-прежнему отсекает серверный scope.
+    const channelId = await resolveChannel(user.id, Number(sug.channel_id));
+    if (channelId !== Number(sug.channel_id)) {
+      return NextResponse.json({ ok: false, error: "not_found" }, { status: 404 });
+    }
 
     if (action === "dismiss") {
-      await pool.query(`update competitor_suggestions set status = 'dismissed' where id = $1`, [id]);
+      await pool.query(
+        `update competitor_suggestions set status = 'dismissed'
+          where id = $1 and channel_id = $2 and status = 'new'`,
+        [id, channelId],
+      );
       return NextResponse.json({ ok: true });
     }
 
@@ -189,7 +200,11 @@ export async function PATCH(req: NextRequest) {
        returning id`,
       [user.id, sug.channel_id, sug.handle],
     );
-    await pool.query(`update competitor_suggestions set status = 'added' where id = $1`, [id]);
+    await pool.query(
+      `update competitor_suggestions set status = 'added'
+        where id = $1 and channel_id = $2 and status = 'new'`,
+      [id, channelId],
+    );
 
     // Собираем досье сразу — иначе карточка висела бы пустой до следующего цикла.
     if (ins.rows[0]) {

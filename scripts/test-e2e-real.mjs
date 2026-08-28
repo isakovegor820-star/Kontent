@@ -1119,6 +1119,9 @@ async function runTodayWorkspacePass(targetPage, channels, draftId) {
   await targetPage.goto(`/app/today?channel=${channels[0]}`);
   await targetPage.getByRole("heading", { name: "Сегодня", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await targetPage.getByRole("heading", { name: "Пульс канала за 7 дней", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  const pulseDisclosure = targetPage.getByText("Развернуть статистику", { exact: true });
+  await pulseDisclosure.click();
+  await targetPage.getByText("Последний сбор", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const reviewHeading = targetPage.getByRole("heading", { name: "Проверьте черновик", exact: true }).first();
   await reviewHeading.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await assertNoHorizontalOverflow(targetPage, "Today mobile");
@@ -1168,7 +1171,7 @@ async function runTodayWorkspacePass(targetPage, channels, draftId) {
   const selector = targetPage.locator("#today-channel");
   await selector.selectOption(String(channels[1]));
   await targetPage.waitForURL((url) => url.pathname === "/app/today" && url.searchParams.get("channel") === String(channels[1]));
-  await targetPage.getByRole("heading", { name: "Добавьте конкурентов", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  await targetPage.getByRole("heading", { name: "Добавьте двух конкурентов", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
 
   let refreshCalls = 0;
   await targetPage.route("**/api/today/refresh", async (route) => {

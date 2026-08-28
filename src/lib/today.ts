@@ -514,7 +514,7 @@ async function loadReadiness(db: Queryable, input: {
   }>(
     `select
        (select count(*)::int from competitors competitor
-         where competitor.project_id = $1 and competitor.channel_id = $2 and competitor.is_active = true) as competitor_count,
+         where competitor.channel_id = $2 and competitor.is_active = true) as competitor_count,
        (select count(*)::int from opportunity_snapshots snapshot
          where snapshot.project_id = $1 and snapshot.channel_id = $2 and snapshot.expires_at > now()) as opportunity_count,
        (select count(*)::int from posts post
@@ -539,6 +539,75 @@ async function loadReadiness(db: Queryable, input: {
     statsCount: Number(row?.stats_count ?? 0),
     doneToday: Number(row?.done_today ?? 0),
     snoozed: Number(row?.snoozed ?? 0),
+  };
+}
+
+async function dailyReadinessDecision(
+  db: Queryable,
+  scope: { projectId: number; channelId: number },
+  label: string,
+  timezone: string,
+  readiness: Awaited<ReturnType<typeof loadReadiness>>,
+): Promise<TodayItem | null> {
+  const localDay = Temporal.Now.instant().toZonedDateTimeISO(timezone).toPlainDate().toString();
+  const base = {
+    channelId: scope.channelId,
+    channelLabel: label,
+    confidence: "high" as const,
+    epistemicState: "observed" as const,
+    freshness: "На сегодня",
+    priority: 65,
+    secondaryAction: { label: "Напомнить завтра", state: "snoozed" as const },
+    evidence: null,
+    sourceLabel: "Готовность канала",
+    smartAction: null,
+    recommendationKind: null,
+  };
+
+  if (readiness.competitorCount < 2) {
+    const missing = 2 - readiness.competitorCount;
+    return {
+      ...base,
+      fingerprint: sha(`today:${TODAY_RANKING_VERSION}:readiness:competitors:${scope.channelId}:${localDay}`),
+      type: "risk",
+      title: missing === 1 ? "Добавьте ещё одного конкурента" : "Добавьте двух конкурентов",
+      whyNow: `Сейчас у канала ${readiness.competitorCount} ${readiness.competitorCount === 1 ? "конкурент" : "конкурентов"}. Для ежедневных возможностей нужны минимум два активных источника.`,
+      primaryAction: { label: "Добавить конкурентов", href: `/app/competitors?channel=${scope.channelId}` },
+    };
+  }
+
+  if (readiness.publishedCount === 0) {
+    return {
+      ...base,
+      fingerprint: sha(`today:${TODAY_RANKING_VERSION}:readiness:first-post:${scope.channelId}:${localDay}`),
+      type: "risk",
+      title: "Подготовьте ближайшую публикацию",
+      whyNow: "У выбранного канала ещё нет подтверждённых публикаций. Без них нельзя оценить результат и предложить следующий шаг по фактам.",
+      primaryAction: { label: "Создать материал", href: `/app/composer?channel=${scope.channelId}&from=today` },
+    };
+  }
+
+  if (readiness.statsCount === 0) {
+    return {
+      ...base,
+      fingerprint: sha(`today:${TODAY_RANKING_VERSION}:readiness:stats:${scope.channelId}:${localDay}`),
+      type: "risk",
+      title: "Получите статистику публикаций",
+      whyNow: "Публикации уже есть, но просмотры и реакции ещё не подтверждены. Запустите сбор и проверьте подключение канала.",
+      primaryAction: { label: "Открыть статистику", href: `/app/analytics?channel=${scope.channelId}` },
+    };
+  }
+
+  const gap = await nextCalendarGap(db, scope, timezone).catch(() => null);
+  if (!gap) return null;
+  return {
+    ...base,
+    fingerprint: sha(`today:${TODAY_RANKING_VERSION}:readiness:calendar:${scope.channelId}:${localDay}:${gap}`),
+    type: "risk",
+    title: "Закройте свободное окно в контент-плане",
+    whyNow: `В ближайшие семь дней свободно ${localDateLabel(gap)}. Решение основано на фактическом расписании канала.`,
+    primaryAction: { label: "Открыть автопилот", href: `/app/autopilot?channel=${scope.channelId}` },
+    sourceLabel: "Контент-план",
   };
 }
 
@@ -752,30 +821,33 @@ export async function loadTodayBoard(input: { actorUserId: number; channelId: nu
     : partialErrors.length > 0
       ? "partial"
       : "ready";
-  const items = availability === "unavailable"
-    ? []
-    : rankTodayItems(await applyUserState(
-      db,
-      input.actorUserId,
-      { projectId: scope.projectId, channelId },
-      collected,
-    ));
+  const readinessData = await loadReadiness(db, {
+    projectId: scope.projectId,
+    channelId,
+    userId: input.actorUserId,
+    timezone: scope.timezone,
+  }).catch(() => null);
+  const safeReadiness = readinessData
+    ?? { competitorCount: 0, opportunityCount: 0, publishedCount: 0, statsCount: 0, doneToday: 0, snoozed: 0 };
+  const fallbackDecision = collected.length === 0 && readinessData
+    ? await dailyReadinessDecision(db, sourceScope, scope.label, scope.timezone, readinessData).catch(() => null)
+    : null;
+  const items = rankTodayItems(await applyUserState(
+    db,
+    input.actorUserId,
+    { projectId: scope.projectId, channelId },
+    fallbackDecision ? [fallbackDecision] : collected,
+  ));
   const completedItems = await loadCompletedItems(db, {
     projectId: scope.projectId,
     channelId,
     userId: input.actorUserId,
     timezone: scope.timezone,
   }, collected).catch(() => []);
-  const readinessData = await loadReadiness(db, {
-    projectId: scope.projectId,
-    channelId,
-    userId: input.actorUserId,
-    timezone: scope.timezone,
-  }).catch(() => ({ competitorCount: 0, opportunityCount: 0, publishedCount: 0, statsCount: 0, doneToday: 0, snoozed: 0 }));
   const readinessState = items.length > 0 ? "has_items" as const
-    : readinessData.opportunityCount === 0 && readinessData.competitorCount < 2 ? "need_competitors" as const
-      : readinessData.publishedCount === 0 ? "need_posts" as const
-        : readinessData.statsCount === 0 ? "need_stats" as const : "complete" as const;
+    : safeReadiness.opportunityCount === 0 && safeReadiness.competitorCount < 2 ? "need_competitors" as const
+      : safeReadiness.publishedCount === 0 ? "need_posts" as const
+        : safeReadiness.statsCount === 0 ? "need_stats" as const : "complete" as const;
   const successfulTimes = sourceStatuses
     .map((status) => status.lastSuccessfulAt)
     .filter((value): value is string => Boolean(value))
@@ -791,12 +863,12 @@ export async function loadTodayBoard(input: { actorUserId: number; channelId: nu
     lastSuccessfulAt: successfulTimes.at(-1) ?? null,
     readiness: {
       state: readinessState,
-      competitorCount: readinessData.competitorCount,
-      opportunityCount: readinessData.opportunityCount,
-      publishedCount: readinessData.publishedCount,
-      statsCount: readinessData.statsCount,
+      competitorCount: safeReadiness.competitorCount,
+      opportunityCount: safeReadiness.opportunityCount,
+      publishedCount: safeReadiness.publishedCount,
+      statsCount: safeReadiness.statsCount,
     },
-    summary: { doneToday: readinessData.doneToday, snoozed: readinessData.snoozed },
+    summary: { doneToday: safeReadiness.doneToday, snoozed: safeReadiness.snoozed },
     pulse: loaded.find((result) => result.source === "results")?.pulse ?? EMPTY_PULSE,
   };
 }

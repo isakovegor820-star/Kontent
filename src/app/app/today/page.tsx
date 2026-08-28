@@ -10,6 +10,7 @@ import {
   BrainCircuit,
   Check,
   CheckCircle2,
+  ChevronDown,
   Clock3,
   Compass,
   Database,
@@ -119,6 +120,7 @@ function orderedItems(items: TodayItem[]): TodayItem[] {
 }
 
 function sourceForItem(item: TodayItem): TodaySource | null {
+  if (item.sourceLabel === "Готовность канала" || item.sourceLabel === "Контент-план") return null;
   if (item.type === "risk" || item.type === "review") return "reviews";
   if (item.type === "opportunity") return "opportunities";
   if (item.type === "result") return "results";
@@ -210,6 +212,63 @@ function PulseEmptyGraphic({ text }: { text: string }) {
   return <div className="grid min-h-28 place-items-center rounded-sm bg-surface-inset px-5 text-center"><div><BarChart3 className="mx-auto h-5 w-5 text-text-3" aria-hidden /><p className="mt-2 type-caption text-text-3">{text}</p></div></div>;
 }
 
+function pulseCollectedLabel(value: string | null): string {
+  if (!value) return "Ещё не получена";
+  try {
+    return new Intl.DateTimeFormat("ru-RU", {
+      day: "numeric",
+      month: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(new Date(value));
+  } catch {
+    return "Получена ранее";
+  }
+}
+
+function PulseDetails({ pulse, channelId }: { pulse: TodayPulse; channelId: number | null }) {
+  const hasMetrics = pulse.postsWithStats > 0;
+  const hasCohort = pulse.state !== "unavailable";
+  const values = [
+    { label: "Публикации", value: hasCohort ? metric(pulse.publishedCount) : "—" },
+    { label: "Со статистикой", value: hasCohort ? metric(pulse.postsWithStats) : "—" },
+    { label: "Просмотры", value: hasMetrics ? metric(pulse.views) : "—" },
+    { label: "Реакции", value: hasMetrics ? metric(pulse.reactions) : "—" },
+    { label: "Вовлечённость", value: pulse.engagementRate == null ? "—" : `${pulse.engagementRate.toLocaleString("ru-RU")}%` },
+    { label: "Последний сбор", value: pulseCollectedLabel(pulse.collectedAt) },
+  ];
+  const analyticsHref = channelId ? `/app/analytics?channel=${channelId}` : "/app/analytics";
+
+  return (
+    <details className="group mt-5 border-t border-line pt-4">
+      <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 rounded-xs px-1 text-[14px] font-semibold text-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand [&::-webkit-details-marker]:hidden">
+        <span>Развернуть статистику</span>
+        <ChevronDown className="h-4 w-4 shrink-0 transition-transform group-open:rotate-180" aria-hidden />
+      </summary>
+      <div className="pt-3">
+        <dl className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+          {values.map((entry) => (
+            <div key={entry.label} className="min-w-0 rounded-sm bg-surface-inset p-3">
+              <dt className="type-caption text-text-3">{entry.label}</dt>
+              <dd className="mt-1 break-words font-bold tabular-nums text-text">{entry.value}</dd>
+            </div>
+          ))}
+        </dl>
+        <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-[13px] leading-relaxed text-text-3">
+            {hasMetrics
+              ? "Здесь всегда доступна последняя подтверждённая сводка по выбранному каналу."
+              : "Показываем доступные факты и не подменяем отсутствующие показатели нулями."}
+          </p>
+          <Link className={buttonClassName({ variant: "secondary", size: "sm", className: "shrink-0" })} href={analyticsHref}>
+            Открыть все графики
+          </Link>
+        </div>
+      </div>
+    </details>
+  );
+}
+
 function ChannelPulse({ pulse, channelId, refreshing, onRefresh }: {
   pulse: TodayPulse;
   channelId: number | null;
@@ -228,6 +287,7 @@ function ChannelPulse({ pulse, channelId, refreshing, onRefresh }: {
           </div>
           <div className="min-w-0"><PulseEmptyGraphic text="Последние подтверждённые данные сохранены" /></div>
         </div>
+        <PulseDetails pulse={pulse} channelId={channelId} />
       </Card>
     );
   }
@@ -256,6 +316,7 @@ function ChannelPulse({ pulse, channelId, refreshing, onRefresh }: {
           </div>
           <div className="min-w-0"><PulseEmptyGraphic text={pulse.state === "no_posts" ? "График появится после первой публикации" : "График появится после получения просмотров"} /></div>
         </div>
+        <PulseDetails pulse={pulse} channelId={channelId} />
       </Card>
     );
   }
@@ -276,6 +337,7 @@ function ChannelPulse({ pulse, channelId, refreshing, onRefresh }: {
         </div>
         <div className="min-w-0" role="img" aria-label={`${pulse.publishedCount} публикаций за 7 дней, ${pulse.postsWithStats} со статистикой. Линия построена по просмотрам публикаций.`}>{pulse.series.length > 0 ? <PulseArtwork values={pulse.series.map((point) => point.views)} /> : <PulseEmptyGraphic text="Просмотры пока недоступны" />}</div>
       </div>
+      <PulseDetails pulse={pulse} channelId={channelId} />
     </Card>
   );
 }
@@ -986,7 +1048,7 @@ function TodayPageContent() {
             {board.availability !== "unavailable" && actionableItems.length === 0 && !quickMode ? (
               <Card className="p-7 text-center sm:p-10">
                 {board.readiness.state === "need_competitors" ? (
-                  <><Compass className="mx-auto h-8 w-8 text-brand" aria-hidden /><h2 className="mt-4">Добавьте конкурентов</h2><p className="mx-auto mt-2 max-w-[55ch] text-pretty text-[15px] leading-relaxed text-text-2">Для поиска устойчивых возможностей нужны минимум два конкурента. Сейчас добавлено: {board.readiness.competitorCount}.</p><Link className={buttonClassName({ className: "mt-5 min-h-11" })} href="/app/competitors">Добавить конкурентов</Link></>
+                  <><Compass className="mx-auto h-8 w-8 text-brand" aria-hidden /><h2 className="mt-4">Добавьте конкурентов</h2><p className="mx-auto mt-2 max-w-[55ch] text-pretty text-[15px] leading-relaxed text-text-2">Для поиска устойчивых возможностей нужны минимум два конкурента. Сейчас добавлено: {board.readiness.competitorCount}.</p><Link className={buttonClassName({ className: "mt-5 min-h-11" })} href={`/app/competitors?channel=${board.channelId ?? ""}`}>Добавить конкурентов</Link></>
                 ) : board.readiness.state === "need_posts" ? (
                   <><FileCheck2 className="mx-auto h-8 w-8 text-brand" aria-hidden /><h2 className="mt-4">Создайте первый материал</h2><p className="mx-auto mt-2 max-w-[55ch] text-pretty text-[15px] leading-relaxed text-text-2">После публикации здесь появятся решения по результатам и реакции аудитории.</p><Link className={buttonClassName({ className: "mt-5 min-h-11" })} href={`/app/composer?channel=${board.channelId ?? ""}&from=calendar`}>Создать первый материал</Link></>
                 ) : board.readiness.state === "need_stats" ? (

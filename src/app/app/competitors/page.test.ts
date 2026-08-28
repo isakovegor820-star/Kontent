@@ -31,4 +31,12 @@ describe("competitors client confirmations", () => {
     expect(source).toContain("Не удалось загрузить конкурентов");
     expect(source).toContain("listLoadError && list.length === 0 ? null");
   });
+
+  it("keeps the channel from Today and turns a full list into an actionable replacement flow", () => {
+    expect(source).toContain('safeChannelId(searchParams.get("channel"))');
+    expect(source).toContain("useChannelChoice(s.realChannels, requestedChannelId)");
+    expect(source).toContain("Выбрать, кого заменить");
+    expect(source).toContain('button[aria-label^="Удалить источник"]');
+    expect(source).not.toContain('disabled={atLimit || Boolean(busy)}');
+  });
 });
