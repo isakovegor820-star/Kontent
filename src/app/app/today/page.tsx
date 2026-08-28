@@ -163,40 +163,51 @@ function comparisonLabel(value: number | null, suffix = "%"): string {
   return `${value > 0 ? "+" : "−"}${Math.abs(value).toLocaleString("ru-RU")}${suffix} к прошлым 7 дням`;
 }
 
-function PulseArtwork({ muted = false }: { muted?: boolean }) {
+function PulseArtwork({ values }: { values: number[] }) {
+  if (values.length === 0) return null;
+  const width = 360;
+  const height = 128;
+  const padX = 12;
+  const padY = 12;
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const span = max - min || 1;
+  const x = (index: number) => values.length === 1 ? width / 2 : padX + (index / (values.length - 1)) * (width - padX * 2);
+  const y = (value: number) => max === min ? height / 2 : height - padY - ((value - min) / span) * (height - padY * 2);
+  const points = values.map((value, index) => `${x(index)},${y(value)}`).join(" ");
+  const area = `${x(0)},${height - padY} ${points} ${x(values.length - 1)},${height - padY}`;
   return (
     <svg
       aria-hidden="true"
       className="h-28 w-full overflow-visible"
-      viewBox="0 0 360 128"
+      viewBox={`0 0 ${width} ${height}`}
       fill="none"
       preserveAspectRatio="none"
     >
       <defs>
         <linearGradient id="today-pulse-fill" x1="180" y1="26" x2="180" y2="128" gradientUnits="userSpaceOnUse">
-          <stop stopColor="var(--brand-1)" stopOpacity={muted ? 0.12 : 0.3} />
+          <stop stopColor="var(--brand-1)" stopOpacity={0.3} />
           <stop offset="1" stopColor="var(--brand-1)" stopOpacity="0" />
         </linearGradient>
       </defs>
-      <path
-        d="M10 103L40 83L70 89L100 87L130 70L160 79L190 61L220 45L250 59L280 39L310 25L350 7V128H10Z"
-        fill="url(#today-pulse-fill)"
-      />
-      <path
-        d="M10 103L40 83L70 89L100 87L130 70L160 79L190 61L220 45L250 59L280 39L310 25L350 7"
+      <polygon points={area} fill="url(#today-pulse-fill)" />
+      <polyline
+        points={points}
         stroke="var(--brand-1)"
-        strokeOpacity={muted ? 0.45 : 0.95}
+        strokeOpacity={0.95}
         strokeWidth="2.5"
+        fill="none"
         strokeLinecap="round"
         strokeLinejoin="round"
         vectorEffect="non-scaling-stroke"
       />
-      {[10, 40, 70, 100, 130, 160, 190, 220, 250, 280, 310, 350].map((x, index) => {
-        const y = [103, 83, 89, 87, 70, 79, 61, 45, 59, 39, 25, 7][index];
-        return <circle key={x} cx={x} cy={y} r="3" fill="var(--surface)" stroke="var(--brand-1)" strokeWidth="2" vectorEffect="non-scaling-stroke" />;
-      })}
+      {values.map((value, index) => <circle key={`${index}:${value}`} cx={x(index)} cy={y(value)} r="3" fill="var(--surface)" stroke="var(--brand-1)" strokeWidth="2" vectorEffect="non-scaling-stroke" />)}
     </svg>
   );
+}
+
+function PulseEmptyGraphic({ text }: { text: string }) {
+  return <div className="grid min-h-28 place-items-center rounded-sm bg-surface-inset px-5 text-center"><div><BarChart3 className="mx-auto h-5 w-5 text-text-3" aria-hidden /><p className="mt-2 type-caption text-text-3">{text}</p></div></div>;
 }
 
 function ChannelPulse({ pulse, channelId, refreshing, onRefresh }: {
@@ -215,7 +226,7 @@ function ChannelPulse({ pulse, channelId, refreshing, onRefresh }: {
             <p className="mt-2 max-w-[55ch] text-pretty text-[14px] leading-relaxed text-text-2">Статистика временно недоступна. Остальные решения можно продолжать разбирать.</p>
             <Button variant="secondary" size="sm" className="mt-4" loading={refreshing} onClick={onRefresh}>Обновить статистику</Button>
           </div>
-          <div className="min-w-0 opacity-60"><PulseArtwork muted /></div>
+          <div className="min-w-0"><PulseEmptyGraphic text="Последние подтверждённые данные сохранены" /></div>
         </div>
       </Card>
     );
@@ -243,7 +254,7 @@ function ChannelPulse({ pulse, channelId, refreshing, onRefresh }: {
               <Button variant="secondary" size="sm" className="mt-4" loading={refreshing} onClick={onRefresh}>Обновить статистику</Button>
             )}
           </div>
-          <div className="min-w-0"><PulseArtwork muted /></div>
+          <div className="min-w-0"><PulseEmptyGraphic text={pulse.state === "no_posts" ? "График появится после первой публикации" : "График появится после получения просмотров"} /></div>
         </div>
       </Card>
     );
@@ -263,7 +274,7 @@ function ChannelPulse({ pulse, channelId, refreshing, onRefresh }: {
             <Link className="mt-4 inline-flex min-h-11 items-center break-words text-[14px] font-semibold leading-relaxed text-brand underline decoration-brand/35 underline-offset-4 hover:decoration-brand focus-visible:rounded-xs" href={pulse.bestPost.href}>Открыть лучший результат</Link>
           ) : null}
         </div>
-        <div className="min-w-0" role="img" aria-label={`${pulse.publishedCount} публикаций за 7 дней, ${pulse.postsWithStats} со статистикой`}><PulseArtwork /></div>
+        <div className="min-w-0" role="img" aria-label={`${pulse.publishedCount} публикаций за 7 дней, ${pulse.postsWithStats} со статистикой. Линия построена по просмотрам публикаций.`}>{pulse.series.length > 0 ? <PulseArtwork values={pulse.series.map((point) => point.views)} /> : <PulseEmptyGraphic text="Просмотры пока недоступны" />}</div>
       </div>
     </Card>
   );

@@ -75,6 +75,8 @@ type TrackingViewProps = {
   onPeriodChange: (days: number) => void;
   onRetry: () => void;
   className?: string;
+  preferredChannelId?: number | null;
+  showPeriodControl?: boolean;
 };
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -283,9 +285,11 @@ export function TrackingAnalyticsView({
   onPeriodChange,
   onRetry,
   className,
+  preferredChannelId = null,
+  showPeriodControl = true,
 }: TrackingViewProps) {
   const [campaign, setCampaign] = useState(ALL);
-  const [channel, setChannel] = useState(ALL);
+  const [channel, setChannel] = useState(preferredChannelId == null ? ALL : channelValue(preferredChannelId));
   const [post, setPost] = useState(ALL);
 
   const campaignOptions = useMemo(() => {
@@ -355,7 +359,7 @@ export function TrackingAnalyticsView({
       </div>
 
       <div className="card-plain min-w-0 rounded-md p-4 sm:p-5">
-        <div className="max-w-xs">
+        {showPeriodControl ? <div className="max-w-xs">
           <label htmlFor="tracking-period" className="mb-2 block text-[13px] font-semibold text-text-2">
             Период отчёта
           </label>
@@ -370,7 +374,7 @@ export function TrackingAnalyticsView({
             <option value="30">Последние 30 дней</option>
             <option value="90">Последние 90 дней</option>
           </select>
-        </div>
+        </div> : null}
 
         <div className="sr-only" role="status" aria-live="polite">
           {loading
@@ -581,9 +585,20 @@ export function TrackingAnalyticsView({
   );
 }
 
-export function TrackingAnalyticsSection({ className }: { className?: string }) {
+export function TrackingAnalyticsSection({
+  className,
+  periodDays: controlledPeriodDays,
+  channelId = null,
+  showPeriodControl = true,
+}: {
+  className?: string;
+  periodDays?: number;
+  channelId?: number | null;
+  showPeriodControl?: boolean;
+}) {
   const { current, ready, error: projectError, refresh: refreshProjects } = useProjects();
-  const [periodDays, setPeriodDays] = useState(30);
+  const [localPeriodDays, setLocalPeriodDays] = useState(30);
+  const periodDays = controlledPeriodDays ?? localPeriodDays;
   const [state, setState] = useState<{
     key: string | null;
     report: TrackingReport | null;
@@ -591,12 +606,12 @@ export function TrackingAnalyticsSection({ className }: { className?: string }) 
   }>({ key: null, report: null, status: "loading" });
   const requestSequence = useRef(0);
   const projectId = current?.id ?? null;
-  const requestKey = projectId == null ? null : `${projectId}:${periodDays}`;
+  const requestKey = projectId == null ? null : `${projectId}:${periodDays}:${channelId ?? "all"}`;
 
   const load = useCallback(async (signal?: AbortSignal) => {
     if (projectId == null) return;
     const sequence = ++requestSequence.current;
-    const key = `${projectId}:${periodDays}`;
+    const key = `${projectId}:${periodDays}:${channelId ?? "all"}`;
     setState({ key, report: null, status: "loading" });
     const period = trackingPeriod(periodDays);
     const search = new URLSearchParams({ from: period.from, to: period.to });
@@ -611,7 +626,7 @@ export function TrackingAnalyticsSection({ className }: { className?: string }) 
       if (sequence !== requestSequence.current || signal?.aborted || (error instanceof Error && error.name === "AbortError")) return;
       setState({ key, report: null, status: "error" });
     }
-  }, [periodDays, projectId]);
+  }, [channelId, periodDays, projectId]);
 
   useEffect(() => {
     if (projectId == null) return;
@@ -644,9 +659,11 @@ export function TrackingAnalyticsSection({ className }: { className?: string }) 
       loading={loading}
       error={error}
       periodDays={periodDays}
-      onPeriodChange={setPeriodDays}
+      onPeriodChange={setLocalPeriodDays}
       onRetry={retry}
       className={className}
+      preferredChannelId={channelId}
+      showPeriodControl={showPeriodControl}
     />
   );
 }

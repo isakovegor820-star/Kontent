@@ -32,6 +32,7 @@ export type TodayPulse = {
     engagementPoints: number | null;
   };
   bestPost: { id: number; title: string; views: number | null; reactions: number | null; href: string } | null;
+  series: Array<{ postId: number; publishedAt: string; views: number }>;
   insight: string;
   collectedAt: string | null;
 };
@@ -114,6 +115,7 @@ const EMPTY_PULSE: TodayPulse = {
   engagementRate: null,
   comparison: { viewsPerPostPercent: null, reactionsPerPostPercent: null, engagementPoints: null },
   bestPost: null,
+  series: [],
   insight: "Пульс появится, когда станут доступны публикации и их статистика.",
   collectedAt: null,
 };
@@ -408,6 +410,10 @@ export function buildTodayPulse(rows: ResultRow[], timezone: string): TodayPulse
     bestPost: best ? {
       id: Number(best.post_id), title: shortPostTitle(best.post_text), views: best.views, reactions: best.reactions, href: "/app/analytics",
     } : null,
+    series: current
+      .filter((row): row is ResultRow & { views: number } => Number.isFinite(row.views))
+      .sort((a, b) => new Date(a.published_at).getTime() - new Date(b.published_at).getTime())
+      .map((row) => ({ postId: Number(row.post_id), publishedAt: row.published_at, views: row.views })),
     insight,
     collectedAt: measured.map((row) => row.collected_at).filter((value): value is string => Boolean(value)).sort().at(-1) ?? null,
   };

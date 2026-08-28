@@ -320,6 +320,7 @@ describe("Today board states", () => {
     expect(pulse).toMatchObject({ state: "ready", publishedCount: 1, postsWithStats: 1, views: 300, reactions: 30 });
     expect(pulse.comparison.viewsPerPostPercent).toBe(200);
     expect(pulse.bestPost?.title).toBe("Новый пост");
+    expect(pulse.series).toEqual([{ postId: 1, publishedAt: "2026-08-23T08:00:00.000Z", views: 300 }]);
     vi.useRealTimers();
   });
 
