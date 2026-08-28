@@ -1,24 +1,122 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  buildRadarWebDiscoveryQueries,
   buildRadarDiscoveryQueries,
   competitorDiscoveryQuery,
   createBingRssTelegramProvider,
   createDuckDuckGoTelegramProvider,
   createSearxngTelegramProvider,
+  detectRadarQueryIntent,
+  discoverRadarWebCandidates,
   discoverTelegramCandidates,
   normalizeRadarQuery,
+  normalizeRadarWebCandidate,
   normalizeTelegramCandidate,
+  parseBingRssWebCandidates,
+  parseRadarOsintProfile,
   parseTelegramCandidates,
+  radarIdentityHandle,
+  rankRadarWebSource,
   rankVerifiedTelegramSource,
   rankVerifiedTelegramSourceAcrossQueries,
   scoreRadarRelevance,
   scoreRadarSemanticSimilarity,
+  sanitizeRadarPublicText,
 } from "./radar-search.mjs";
 
 describe("radar hybrid-search core", () => {
   it("normalizes arbitrary Russian queries without losing their meaning", () => {
     expect(normalizeRadarQuery("  Рыбалка — на Волге!!! ")).toBe("рыбалка на волге");
+  });
+
+  it("recognizes a username, person request and direct URL as OSINT identity searches", () => {
+    expect(detectRadarQueryIntent("plinoffcial")).toBe("identity");
+    expect(detectRadarQueryIntent("кто такой Иван Петров")).toBe("identity");
+    expect(detectRadarQueryIntent("Иван Петров")).toBe("identity");
+    expect(detectRadarQueryIntent("https://example.com/team/ivan")).toBe("identity");
+    expect(detectRadarQueryIntent("строительство на Волге")).toBe("topic");
+    expect(radarIdentityHandle("@plinoffcial")).toBe("plinoffcial");
+  });
+
+  it("builds bounded identity formulations without inventing accounts", () => {
+    expect(buildRadarWebDiscoveryQueries("plinoffcial")).toEqual([
+      "plinoffcial",
+      '"plinoffcial"',
+      '"@plinoffcial"',
+      '"plinoffcial" биография',
+      '"plinoffcial" официальный',
+    ]);
+  });
+
+  it("normalizes public web results, strips tracking and rejects local targets", () => {
+    expect(normalizeRadarWebCandidate("https://example.com/person/?utm_source=test#bio", {
+      title: "Иван",
+      provider: "test",
+    })).toMatchObject({
+      canonicalUrl: "https://example.com/person",
+      domain: "example.com",
+      title: "Иван",
+    });
+    expect(normalizeRadarWebCandidate("http://127.0.0.1/private")).toBeNull();
+    expect(normalizeRadarWebCandidate("https://t.me/public_channel")).toBeNull();
+  });
+
+  it("parses generic Bing results and deduplicates a multi-provider OSINT search", async () => {
+    const rss = `<?xml version="1.0"?><channel>
+      <item><title>Plin Official — биография</title><link>https://example.com/plinoffcial/123456789012</link><description>Автор и музыкант</description></item>
+    </channel>`;
+    expect(parseBingRssWebCandidates(rss)).toMatchObject([{
+      domain: "example.com",
+      title: "Plin Official — биография",
+      canonicalUrl: "https://example.com/plinoffcial/123456789012",
+    }]);
+    const candidate = normalizeRadarWebCandidate("https://example.com/plinoffcial", {
+      title: "Plin Official",
+      snippet: "Биография автора plinoffcial",
+      provider: "one",
+    });
+    const result = await discoverRadarWebCandidates("plinoffcial", {
+      providers: [
+        { name: "one", search: vi.fn().mockResolvedValue([candidate]) },
+        { name: "two", search: vi.fn().mockResolvedValue([{ ...candidate, provider: "two" }]) },
+      ],
+      budget: { maxQueries: 1, maxPages: 2, deadlineMs: 500 },
+    });
+    expect(result).toHaveLength(1);
+    expect(result[0].providers).toEqual(["one", "two"]);
+  });
+
+  it("ranks an exact public username match and redacts contacts before persistence", () => {
+    const rank = rankRadarWebSource("plinoffcial", {
+      url: "https://example.com/plinoffcial",
+      title: "Plin Official",
+      description: "Публичная биография plinoffcial",
+      fetched: true,
+      intent: "identity",
+    });
+    expect(rank).toMatchObject({ accepted: true, exactIdentity: true });
+    expect(rank.score).toBeGreaterThan(70);
+    expect(sanitizeRadarPublicText("Почта me@example.com, телефон +7 (900) 123-45-67"))
+      .toBe("Почта [email скрыт], телефон [телефон скрыт]");
+  });
+
+  it("keeps only cited OSINT facts and downgrades confidence with one source", () => {
+    expect(parseRadarOsintProfile(JSON.stringify({
+      displayName: "Plin Official",
+      bio: "Публичный автор.",
+      aliases: ["plinoffcial"],
+      confidence: "high",
+      facts: [
+        { text: "Публикует музыку", sourceIds: [1] },
+        { text: "Неподтверждённый факт", sourceIds: [] },
+        { text: "Чужой источник", sourceIds: [99] },
+      ],
+      ambiguities: ["Настоящее имя не подтверждено"],
+    }), 1)).toMatchObject({
+      confidence: "low",
+      facts: [{ text: "Публикует музыку", sourceIds: [1] }],
+    });
   });
 
   it("builds a competitor web-search query from the channel brief, not from invented handles", () => {

@@ -7,7 +7,7 @@ export default function RadarPage() {
   return (
     <AppShell
       title="Радар"
-      subtitle="Ищи Telegram-каналы, публикации и тренды по своей нише."
+      subtitle="Ищи людей, бренды, сайты, Telegram-каналы, публикации и тренды в открытых источниках."
     >
       <RadarInner />
     </AppShell>

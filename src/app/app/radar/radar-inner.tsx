@@ -1,7 +1,7 @@
 "use client";
 
 // Гибридный поиск: локальная база отвечает сразу, внешний discovery работает в фоне.
-// В карточки попадают только URL, которые воркер повторно проверил на публичной t.me/s.
+// OSINT-досье отделено от первичных источников и всегда показывает уверенность.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -23,7 +23,7 @@ import { Badge, Card, EmptyState, Input, Tabs } from "@/components/ui/primitives
 import { useStore } from "@/lib/store";
 import { cn, fmtAgo, fmtCompact, fmtNum, plural } from "@/lib/utils";
 
-type ResultKind = "channel" | "post" | "trend";
+type ResultKind = "profile" | "source" | "channel" | "post" | "trend";
 type ResultTab = "all" | ResultKind;
 
 type SearchResult = {
@@ -44,6 +44,17 @@ type SearchResult = {
   views: number | null;
   reactions: number | null;
   indexedPostsCount: number | null;
+  domain: string | null;
+  confidence: "low" | "medium" | "high" | null;
+  sourceCount: number | null;
+  verificationMode: "fetched" | "search_index" | null;
+  evidenceSources: Array<{
+    id: number;
+    url: string;
+    domain: string;
+    title: string | null;
+    verification: string;
+  }>;
   score: number;
   reason: string;
   verified: boolean;
@@ -64,12 +75,16 @@ type SearchRun = {
 
 const RESULT_TABS: { value: ResultTab; label: string }[] = [
   { value: "all", label: "Все" },
+  { value: "profile", label: "Досье" },
+  { value: "source", label: "Веб-источники" },
   { value: "channel", label: "Каналы" },
   { value: "post", label: "Посты" },
   { value: "trend", label: "Тренды" },
 ];
 
 const KIND_LABELS: Record<ResultKind, string> = {
+  profile: "OSINT-досье",
+  source: "Веб-источник",
   channel: "Канал",
   post: "Пост",
   trend: "Тренд",
@@ -82,12 +97,12 @@ function mergeResults(current: SearchResult[], incoming: SearchResult[]) {
       ?.toLowerCase()
       .replace("https://t.me/s/", "https://t.me/")
       .replace(/\/$/u, "");
-    const key = canonicalUrl || `${item.kind}:${item.id}`;
+    const key = item.kind === "profile" ? `profile:${item.id}` : canonicalUrl || `${item.kind}:${item.id}`;
     const previous = merged.get(key);
     if (!previous) merged.set(key, item);
     else {
-      const itemPriority = item.score * 10 + (item.kind === "trend" ? 2 : item.kind === "post" ? 1 : 0);
-      const previousPriority = previous.score * 10 + (previous.kind === "trend" ? 2 : previous.kind === "post" ? 1 : 0);
+      const itemPriority = item.score * 10 + (item.kind === "profile" ? 3 : item.kind === "trend" ? 2 : item.kind === "post" ? 1 : 0);
+      const previousPriority = previous.score * 10 + (previous.kind === "profile" ? 3 : previous.kind === "trend" ? 2 : previous.kind === "post" ? 1 : 0);
       const stronger = itemPriority > previousPriority ? item : previous;
       merged.set(key, {
         ...stronger,
@@ -104,12 +119,12 @@ function runMessage(run: SearchRun) {
   if (run.status === "failed") return run.errorMessage || "Не удалось расширить поиск. Локальные результаты сохранены.";
   if (run.status === "ready") {
     return run.externalCount > 0
-      ? `Доступный открытый индекс и публичная история каналов проверены. Добавлено ${run.externalCount} ${plural(run.externalCount, "проверенный результат", "проверенных результата", "проверенных результатов")}.`
-      : "Доступный открытый индекс и публичная история каналов проверены, новых совпадений нет.";
+      ? `Открытые веб-источники и публичная история каналов проверены. Добавлено ${run.externalCount} ${plural(run.externalCount, "результат", "результата", "результатов")}.`
+      : "Доступные открытые источники проверены, новых совпадений нет.";
   }
-  if (run.stage === "verifying") return "Читаю всю доступную публичную историю найденных каналов. Результаты появляются по мере проверки…";
-  if (run.stage === "ranking") return "Убираю дубли и ранжирую результаты…";
-  if (run.stage === "discovering") return "Обхожу страницы открытого поиска по исходному запросу и близким формулировкам…";
+  if (run.stage === "verifying") return "Открываю публичные страницы и читаю доступную историю найденных каналов…";
+  if (run.stage === "ranking") return "Сопоставляю источники, отмечаю противоречия и собираю досье…";
+  if (run.stage === "discovering") return "Ищу совпадения по исходному запросу, никам и близким формулировкам…";
   return "Запускаю расширенный поиск…";
 }
 
@@ -126,19 +141,27 @@ function ResultCard({
   completedAction: boolean;
   onAction: (item: SearchResult) => void;
 }) {
-  const action = item.kind === "channel" ? "add_competitor" : "save_idea";
+  const action = item.kind === "channel"
+    ? "add_competitor"
+    : item.kind === "profile" || item.kind === "source"
+      ? "save_reference"
+      : "save_idea";
   const canAct = Boolean(item.actionId && channelId);
   const date = item.postedAt || item.lastPostAt;
   return (
     <Card as="article" className="flex h-full min-w-0 flex-col p-4 sm:p-5">
       <div className="flex flex-wrap items-center gap-2">
-        <Badge tone={item.kind === "trend" ? "fire" : item.kind === "channel" ? "brand" : "neutral"}>
+        <Badge tone={item.kind === "trend" ? "fire" : item.kind === "channel" || item.kind === "profile" ? "brand" : "neutral"}>
           {KIND_LABELS[item.kind]}
         </Badge>
         {item.verified && (
           <span className="inline-flex items-center gap-1 text-[12px] font-semibold text-success-text">
             <ShieldCheck className="h-3.5 w-3.5" aria-hidden />
-            Проверено
+            {item.kind === "profile"
+              ? "Сводка по источникам"
+              : item.kind === "source" && item.verificationMode === "search_index"
+                ? "Открытый индекс"
+                : "Публичный источник"}
           </span>
         )}
         <span className="ml-auto nums text-[12px] font-semibold text-text-3">
@@ -147,17 +170,39 @@ function ResultCard({
       </div>
 
       <h3 className="mt-3 line-clamp-2 text-[16px] leading-snug font-bold text-text">
-        {item.title || (item.handle ? `@${item.handle}` : "Telegram")}
+        {item.title || (item.handle ? `@${item.handle}` : item.domain || "Публичный источник")}
       </h3>
       {item.handle && <p className="mt-0.5 break-all text-[13px] text-text-3">@{item.handle}</p>}
 
-      {item.description && item.kind === "channel" && (
+      {item.description && (item.kind === "channel" || (item.kind === "source" && !item.text)) && (
         <p className="mt-3 line-clamp-3 break-words text-[14px] leading-relaxed text-text-2">{item.description}</p>
       )}
       {item.text && item.kind !== "channel" && (
-        <p className="mt-3 line-clamp-5 break-words whitespace-pre-wrap text-[14px] leading-relaxed text-text">
+        <p className={cn(
+          "mt-3 break-words whitespace-pre-wrap text-[14px] leading-relaxed text-text",
+          item.kind === "profile" ? "line-clamp-none" : "line-clamp-5",
+        )}>
           {item.text}
         </p>
+      )}
+      {item.kind === "profile" && item.evidenceSources.length > 0 && (
+        <div className="mt-3 rounded-xs border border-border-subtle bg-surface-inset px-3 py-2.5">
+          <p className="text-[12px] font-semibold text-text-2">Источники к отметкам [1], [2]…</p>
+          <ol className="mt-1.5 space-y-1 text-[12px] text-text-3">
+            {item.evidenceSources.map((source) => (
+              <li key={`${source.id}:${source.url}`} className="min-w-0">
+                <a
+                  href={source.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="break-words underline decoration-border-strong underline-offset-2 hover:text-text"
+                >
+                  [{source.id}] {source.title || source.domain || "Публичная страница"}
+                </a>
+              </li>
+            ))}
+          </ol>
+        </div>
       )}
 
       <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[12px] text-text-3">
@@ -166,6 +211,13 @@ function ResultCard({
         {item.kind === "channel" && item.indexedPostsCount != null && item.indexedPostsCount > 0 && (
           <span>{item.indexedPostsCount} {plural(item.indexedPostsCount, "пост изучен", "поста изучено", "постов изучено")}</span>
         )}
+        {item.kind === "profile" && item.sourceCount != null && (
+          <span>{item.sourceCount} {plural(item.sourceCount, "источник", "источника", "источников")}</span>
+        )}
+        {item.kind === "profile" && item.confidence && (
+          <span>Уверенность: {item.confidence === "high" ? "высокая" : item.confidence === "medium" ? "средняя" : "низкая"}</span>
+        )}
+        {item.kind === "source" && item.domain && <span>{item.domain}</span>}
         {item.views != null && (
           <span className="inline-flex items-center gap-1">
             <Eye className="h-3.5 w-3.5" aria-hidden />
@@ -216,7 +268,11 @@ function ResultCard({
             )}
             {completedAction
               ? action === "add_competitor" ? "Добавлен" : "Сохранено"
-              : action === "add_competitor" ? "Добавить в конкуренты" : "Сохранить идею"}
+              : action === "add_competitor"
+                ? "Добавить в конкуренты"
+                : action === "save_reference"
+                  ? "Сохранить источник"
+                  : "Сохранить идею"}
           </Button>
         )}
       </div>
@@ -357,7 +413,11 @@ export function RadarInner() {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          action: item.kind === "channel" ? "add_competitor" : "save_idea",
+          action: item.kind === "channel"
+            ? "add_competitor"
+            : item.kind === "profile" || item.kind === "source"
+              ? "save_reference"
+              : "save_idea",
           channelId,
         }),
       });
@@ -373,7 +433,9 @@ export function RadarInner() {
         kind: "success",
         title: item.kind === "channel"
           ? data?.alreadyAdded ? "Канал уже среди конкурентов" : "Канал добавлен в конкуренты"
-          : "Идея сохранена в библиотеку",
+          : item.kind === "profile" || item.kind === "source"
+            ? "Источник сохранён в библиотеку"
+            : "Идея сохранена в библиотеку",
       });
     } catch (error) {
       store.toast({
@@ -417,7 +479,7 @@ export function RadarInner() {
                   setQuery(event.target.value);
                   if (queryError) setQueryError(null);
                 }}
-                placeholder="Например: где искать клиентов юристу, строительство или @канал"
+                placeholder="Например: plinoffcial, имя человека, сайт или тема"
                 className="pl-10"
                 autoComplete="off"
                 enterKeyHint="search"
@@ -436,7 +498,7 @@ export function RadarInner() {
           aria-live="polite"
           className={cn("mt-3 text-[12px] leading-relaxed", queryError ? "font-medium text-danger-text" : "text-text-3")}
         >
-          {queryError || "Пиши обычными словами. Аврора обойдёт доступную открытую выдачу, проверит близкие формулировки и прочитает публичную историю найденных Telegram-каналов. Для широких тем поиск может занять больше времени."}
+          {queryError || "Можно ввести ник, имя, компанию, URL или обычный вопрос. Аврора найдёт публичные веб-страницы и Telegram-источники, отделит подтверждённые факты от неоднозначностей и скроет контактные данные."}
         </p>
       </Card>
 

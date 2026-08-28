@@ -36,7 +36,9 @@ export async function POST(
     return json({ error: "bad_request" }, 400);
   }
   const action = String(body.action || "");
-  if (!["add_competitor", "save_idea"].includes(action)) return json({ error: "bad_action" }, 422);
+  if (!["add_competitor", "save_idea", "save_reference"].includes(action)) {
+    return json({ error: "bad_action" }, 422);
+  }
 
   const wantedChannel = Number(body.channelId) || null;
   const channelId = await resolveChannel(user.id, wantedChannel);
@@ -55,9 +57,10 @@ export async function POST(
         url: string;
         reason: string;
         query: string;
+        raw_data: Record<string, unknown>;
       }>(
         `select result.id, result.result_type, result.handle, result.title, result.description,
-                result.subscribers, result.text, result.url, result.reason, run.query
+                result.subscribers, result.text, result.url, result.reason, result.raw_data, run.query
            from radar_search_results result
            join radar_search_runs run on run.id = result.run_id and run.user_id = $2
           where result.id = $1 and result.user_id = $2
@@ -111,7 +114,19 @@ export async function POST(
       return json({ ok: true, id: competitorId, handle: result.handle });
     }
 
-    const text = String(result.text || result.description || result.title || "").trim();
+    const evidenceSources = Array.isArray(result.raw_data?.sources)
+      ? result.raw_data.sources.flatMap((source, index) => {
+          if (!source || typeof source !== "object" || Array.isArray(source)) return [];
+          const record = source as Record<string, unknown>;
+          const url = String(record.url || "");
+          if (!/^https?:\/\//iu.test(url)) return [];
+          return [`[${Number(record.id) || index + 1}] ${String(record.title || record.domain || "Источник")} — ${url}`];
+        }).slice(0, 8)
+      : [];
+    const baseText = String(result.text || result.description || result.title || "").trim();
+    const text = [baseText, evidenceSources.length ? `Источники:\n${evidenceSources.join("\n")}` : ""]
+      .filter(Boolean)
+      .join("\n\n");
     if (!text) return json({ error: "empty_result" }, 422);
     const saved = await pool.query<{ id: string }>(
       `insert into saved_posts
@@ -127,7 +142,7 @@ export async function POST(
       [
         user.id,
         channelId,
-        result.title || (result.handle ? `@${result.handle}` : "Telegram"),
+        result.title || (result.handle ? `@${result.handle}` : "Публичный источник"),
         result.url,
         text.slice(0, 16_384),
         `Найдено по запросу «${result.query}». ${result.reason}`.slice(0, 300),

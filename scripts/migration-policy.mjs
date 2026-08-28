@@ -38,6 +38,8 @@ const APPROVED_REPLACED_CONSTRAINTS = new Set([
   "bot_conversations_state_check",
   "monthly_campaign_regeneration_scope_check",
   "monthly_campaign_regeneration_week_check",
+  "radar_search_results_type_check",
+  "radar_search_results_url_check",
 ]);
 
 function withoutSqlComments(sql) {

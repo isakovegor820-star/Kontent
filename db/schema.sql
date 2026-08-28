@@ -2371,6 +2371,40 @@ create index if not exists discovered_sources_content_tsv_idx on discovered_sour
 create index if not exists discovered_sources_content_embedding_idx
   on discovered_sources using hnsw (content_embedding vector_cosine_ops);
 
+-- Накопительный индекс публичных веб-источников для OSINT-поиска. Контактные данные
+-- удаляются до записи приложением; пользовательские запросы здесь не хранятся.
+create table if not exists radar_public_sources (
+  id                  bigint generated always as identity primary key,
+  canonical_url       text not null,
+  domain              text not null,
+  source_kind         text not null default 'other',
+  title               text,
+  description         text,
+  content_sample      text,
+  provider            text not null,
+  verification_status text not null,
+  trust_score         smallint not null default 0,
+  raw_data             jsonb not null default '{}'::jsonb,
+  first_seen_at        timestamptz not null default now(),
+  last_seen_at         timestamptz not null default now(),
+  verified_at          timestamptz,
+  tsv                  tsvector generated always as (
+    to_tsvector('russian', coalesce(title, '') || ' ' || coalesce(description, '') || ' '
+      || coalesce(content_sample, '') || ' ' || coalesce(domain, ''))
+  ) stored,
+  constraint radar_public_sources_url_key unique (canonical_url),
+  constraint radar_public_sources_url_check check (canonical_url ~ '^https?://'),
+  constraint radar_public_sources_domain_check check (length(domain) between 1 and 253 and domain !~ '[/?#@]'),
+  constraint radar_public_sources_kind_check
+    check (source_kind in ('social','reference','profile','article','organization','other')),
+  constraint radar_public_sources_status_check check (verification_status in ('fetched','search_index')),
+  constraint radar_public_sources_trust_check check (trust_score between 0 and 100),
+  constraint radar_public_sources_raw_data_check check (jsonb_typeof(raw_data) = 'object')
+);
+create index if not exists radar_public_sources_tsv_idx on radar_public_sources using gin (tsv);
+create index if not exists radar_public_sources_domain_seen_idx
+  on radar_public_sources (domain, last_seen_at desc);
+
 create table if not exists radar_search_runs (
   id                bigint generated always as identity primary key,
   user_id           bigint not null references users (id) on delete cascade,
@@ -2425,6 +2459,7 @@ create table if not exists radar_search_results (
   run_id              bigint not null references radar_search_runs (id) on delete cascade,
   user_id             bigint not null references users (id) on delete cascade,
   discovered_source_id bigint references discovered_sources (id) on delete set null,
+  public_source_id    bigint references radar_public_sources (id) on delete set null,
   result_type         text not null,
   provider            text not null,
   canonical_key       text not null,
@@ -2454,8 +2489,8 @@ create table if not exists radar_search_results (
   ) stored,
   created_at           timestamptz not null default now(),
   constraint radar_search_results_run_key unique (run_id, canonical_key),
-  constraint radar_search_results_type_check check (result_type in ('channel','post','trend')),
-  constraint radar_search_results_url_check check (url ~ '^https://t\.me/'),
+  constraint radar_search_results_type_check check (result_type in ('channel','post','trend','profile','source')),
+  constraint radar_search_results_url_check check (url ~ '^https?://'),
   constraint radar_search_results_verification_check check (verification_status in ('verified')),
   constraint radar_search_results_scores_check check (
     relevance_score between 0 and 100 and freshness_score between 0 and 100
@@ -2467,6 +2502,8 @@ create table if not exists radar_search_results (
 create index if not exists radar_search_results_run_score_idx on radar_search_results (run_id, result_type, quality_score desc, id);
 create index if not exists radar_search_results_user_idx on radar_search_results (user_id, created_at desc);
 create index if not exists radar_search_results_tsv_idx on radar_search_results using gin (tsv);
+create index if not exists radar_search_results_public_source_idx
+  on radar_search_results (public_source_id, created_at desc) where public_source_id is not null;
 
 create unique index if not exists saved_posts_discovery_source_uniq
   on saved_posts (user_id, channel_id, source_url)

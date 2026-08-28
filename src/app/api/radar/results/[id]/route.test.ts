@@ -78,6 +78,33 @@ describe("radar result actions", () => {
     expect(mocks.query).toHaveBeenCalledWith(expect.stringContaining("on conflict (user_id, channel_id, source_url)"), expect.any(Array));
   });
 
+  it("saves a public OSINT dossier as a reference instead of a competitor", async () => {
+    mocks.query.mockImplementation(async (sql: string) => {
+      if (sql.includes("from radar_search_results")) return {
+        rowCount: 1,
+        rows: [{
+          ...channelResult,
+          result_type: "profile",
+          handle: "plinoffcial",
+          title: "Plin Official",
+          text: "Био\nПубличный автор",
+          url: "https://example.com/plinoffcial",
+          query: "plinoffcial",
+        }],
+      };
+      if (sql.includes("insert into saved_posts")) return { rowCount: 1, rows: [{ id: "56" }] };
+      return { rowCount: 0, rows: [] };
+    });
+    const response = await POST(new NextRequest("http://localhost/api/radar/results/41", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "save_reference", channelId: 11 }),
+    }), ctx);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ ok: true, id: 56, saved: true });
+    expect(mocks.queueAdd).not.toHaveBeenCalled();
+  });
+
   it("returns not found instead of acting on another user's result", async () => {
     mocks.query.mockResolvedValue({ rowCount: 0, rows: [] });
     const response = await POST(new NextRequest("http://localhost/api/radar/results/41", {

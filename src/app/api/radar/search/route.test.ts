@@ -135,6 +135,63 @@ describe("hybrid radar search route", () => {
     });
   });
 
+  it("returns an OSINT profile and its primary page as separate results", async () => {
+    const readyRun = {
+      ...queuedRun,
+      query: "plinoffcial",
+      normalized_query: "plinoffcial",
+      status: "ready",
+      stage: "ready",
+      progress: 100,
+      external_count: 2,
+    };
+    mocks.query.mockImplementation(async (sql: string) => {
+      if (sql.includes("from radar_search_runs where id")) return { rowCount: 1, rows: [readyRun] };
+      if (sql.includes("from radar_search_results")) {
+        const shared = {
+          provider: "web",
+          title: "Plin Official",
+          url: "https://example.com/plinoffcial",
+          relevance_score: 96,
+          quality_score: 78,
+          reason: "Публичные источники сопоставлены",
+          verified: true,
+        };
+        return { rowCount: 2, rows: [
+          {
+            ...shared,
+            id: "501",
+            action_id: "501",
+            kind: "profile",
+            text: "Био\nПубличный автор",
+            match_mode: "identity_profile",
+            confidence: "medium",
+            source_count: 3,
+          },
+          {
+            ...shared,
+            id: "502",
+            action_id: "502",
+            kind: "source",
+            text: "Публичная биография plinoffcial",
+            match_mode: "web_exact_identity",
+            domain: "example.com",
+            verification_mode: "fetched",
+          },
+        ] };
+      }
+      return { rowCount: 0, rows: [] };
+    });
+    const response = await GET(new NextRequest("http://localhost/api/radar/search?run=91"));
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      results: [
+        { kind: "profile", confidence: "medium", sourceCount: 3 },
+        { kind: "source", domain: "example.com", verificationMode: "fetched" },
+      ],
+    });
+  });
+
   it("creates a user-scoped background run and returns immediately", async () => {
     const response = await POST(new NextRequest("http://localhost/api/radar/search", {
       method: "POST",

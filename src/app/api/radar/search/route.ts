@@ -1,5 +1,5 @@
-// Гибридный радар: локальная выдача возвращается сразу, внешний Telegram-discovery
-// запускается отдельно и никогда не подменяет живую проверку источника текстом ИИ.
+// Гибридный радар: локальная выдача возвращается сразу, а worker расширяет её
+// проверенными Telegram-данными и доказательным OSINT по публичным веб-источникам.
 
 import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { randomUUID } from "node:crypto";
@@ -88,6 +88,23 @@ function serializeResult(row: Record<string, unknown>) {
     views: row.views == null ? null : Number(row.views),
     reactions: row.reactions == null ? null : Number(row.reactions),
     indexedPostsCount: row.indexed_posts_count == null ? null : Number(row.indexed_posts_count),
+    domain: row.domain ?? null,
+    confidence: row.confidence ?? null,
+    sourceCount: row.source_count == null ? null : Number(row.source_count),
+    verificationMode: row.verification_mode ?? null,
+    evidenceSources: (Array.isArray(row.sources) ? row.sources : []).flatMap((source) => {
+      if (!source || typeof source !== "object" || Array.isArray(source)) return [];
+      const record = source as Record<string, unknown>;
+      const url = String(record.url || "");
+      if (!/^https?:\/\//iu.test(url)) return [];
+      return [{
+        id: Number(record.id) || 0,
+        url,
+        domain: String(record.domain || ""),
+        title: record.title == null ? null : String(record.title),
+        verification: String(record.verification || "search_index"),
+      }];
+    }).slice(0, 8),
     score: Number(row.quality_score ?? row.score ?? 55),
     reason: row.reason ?? "Найдено в уже собранных данных",
     verified: row.verified == null ? origin !== "web-cache" : Boolean(row.verified),
@@ -103,14 +120,14 @@ function deduplicateSerializedResults(items: ReturnType<typeof serializeResult>[
         .replace("https://t.me/s/", "https://t.me/")
         .replace(/\/$/u, "")
       : null;
-    const key = canonicalUrl || `${item.kind}:${item.id}`;
+    const key = item.kind === "profile" ? `profile:${item.id}` : canonicalUrl || `${item.kind}:${item.id}`;
     const previous = results.get(key);
     if (!previous) {
       results.set(key, item);
       continue;
     }
-    const itemPriority = item.score * 10 + (item.kind === "trend" ? 2 : item.kind === "post" ? 1 : 0);
-    const previousPriority = previous.score * 10 + (previous.kind === "trend" ? 2 : previous.kind === "post" ? 1 : 0);
+    const itemPriority = item.score * 10 + (item.kind === "profile" ? 3 : item.kind === "trend" ? 2 : item.kind === "post" ? 1 : 0);
+    const previousPriority = previous.score * 10 + (previous.kind === "profile" ? 3 : previous.kind === "trend" ? 2 : previous.kind === "post" ? 1 : 0);
     const stronger = itemPriority > previousPriority ? item : previous;
     results.set(key, {
       ...stronger,
@@ -128,8 +145,9 @@ function deduplicateResults(rows: Record<string, unknown>[]) {
 }
 
 function isFocusedResult(row: Record<string, unknown>, query: string) {
+  if (String(row.match_mode || "") === "identity_profile") return true;
   if (
-    String(row.match_mode || "") === "semantic_content"
+    ["semantic_content", "web_exact_identity", "web_content"].includes(String(row.match_mode || ""))
     && Number(row.relevance_score) >= 35
   ) {
     return true;
@@ -149,7 +167,7 @@ async function searchLocal(pool: Db, userId: number, channelId: number | null, q
   const textQuery = radarTsQuery(query);
   if (!textQuery) return [];
 
-  const [competitors, trends, directory, cached] = await Promise.all([
+  const [competitors, trends, directory, webDirectory, cached] = await Promise.all([
     pool.query(
       `select post.id, post.text, post.views, post.reactions, post.posted_at,
               competitor.title, competitor.handle,
@@ -204,11 +222,35 @@ async function searchLocal(pool: Db, userId: number, channelId: number | null, q
       [textQuery],
     ),
     pool.query(
+      `select source.id, source.title, source.description,
+              coalesce(source.content_sample, source.description) as search_text,
+              source.canonical_url as url, source.domain, source.verified_at,
+              source.verification_status as verification_mode,
+              'source' as kind, 'web-directory' as origin,
+              'web-directory:' || source.id as result_key,
+              source.trust_score as quality_score,
+              case
+                when source.verification_status = 'fetched'
+                  then 'Публичная страница ранее открыта и добавлена в общий OSINT-индекс'
+                else 'Источник ранее найден в открытом поисковом индексе'
+              end as reason,
+              source.verification_status = 'fetched' as verified
+         from radar_public_sources source
+        where source.tsv @@ to_tsquery('russian', $1)
+        order by ts_rank(source.tsv, to_tsquery('russian', $1)) desc, source.last_seen_at desc`,
+      [textQuery],
+    ),
+    pool.query(
       `select result.id, result.result_type as kind, result.provider as origin,
               result.title, result.handle, result.description, result.text, result.url,
               result.posted_at, result.last_post_at, result.verified_at,
               result.subscribers, result.posts_per_week, result.views, result.reactions,
               nullif(result.raw_data->>'indexedPostsCount', '')::integer as indexed_posts_count,
+              result.raw_data->>'domain' as domain,
+              result.raw_data->>'confidence' as confidence,
+              nullif(result.raw_data->>'sourceCount', '')::integer as source_count,
+              result.raw_data->>'verificationMode' as verification_mode,
+              result.raw_data->'sources' as sources,
               result.raw_data->>'matchMode' as match_mode, result.relevance_score,
               result.quality_score, result.reason, result.id as action_id,
               'radar-result:' || result.id as result_key, true as verified
@@ -234,11 +276,13 @@ async function searchLocal(pool: Db, userId: number, channelId: number | null, q
     }))
     .filter((row) => Number(row.quality_score) >= 35);
   const focusedDirectory = directory.rows.filter((row) => isFocusedResult(row, query));
+  const focusedWebDirectory = webDirectory.rows.filter((row) => isFocusedResult(row, query));
   const focusedCached = cached.rows.filter((row) => isFocusedResult(row, query));
 
   return deduplicateResults([
     ...focusedLocal,
     ...focusedDirectory,
+    ...focusedWebDirectory,
     ...focusedCached,
   ]);
 }
@@ -259,6 +303,11 @@ async function loadRunResults(pool: Db, userId: number, runId: number, afterId =
             description, text, url, posted_at, last_post_at, verified_at, subscribers,
             posts_per_week, views, reactions,
             nullif(raw_data->>'indexedPostsCount', '')::integer as indexed_posts_count,
+            raw_data->>'domain' as domain,
+            raw_data->>'confidence' as confidence,
+            nullif(raw_data->>'sourceCount', '')::integer as source_count,
+            raw_data->>'verificationMode' as verification_mode,
+            raw_data->'sources' as sources,
             raw_data->>'matchMode' as match_mode, relevance_score,
             quality_score, reason,
             'radar-result:' || id as result_key, true as verified
@@ -293,7 +342,7 @@ export async function GET(req: NextRequest) {
     }
 
     const query = normalizeRadarQuery(req.nextUrl.searchParams.get("q"));
-    if (!query) return json({ results: [], groups: { channels: 0, posts: 0, trends: 0 } });
+    if (!query) return json({ results: [], groups: { profiles: 0, sources: 0, channels: 0, posts: 0, trends: 0 } });
     if (query.length < 2) return json({ error: "query_too_short" }, 422);
     const wantedChannel = Number(req.nextUrl.searchParams.get("channel")) || null;
     const channelId = await resolveChannel(user.id, wantedChannel);
@@ -330,6 +379,8 @@ export async function GET(req: NextRequest) {
       // несколько знакомых каналов не означают, что вся ниша уже найдена.
       shouldExpand: !latest,
       groups: {
+        profiles: combinedResults.filter((item) => item.kind === "profile").length,
+        sources: combinedResults.filter((item) => item.kind === "source").length,
         channels: combinedResults.filter((item) => item.kind === "channel").length,
         posts: combinedResults.filter((item) => item.kind === "post").length,
         trends: combinedResults.filter((item) => item.kind === "trend").length,

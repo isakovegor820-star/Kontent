@@ -10,6 +10,13 @@ export const RADAR_DISCOVERY_BUDGET = Object.freeze({
   maxResponseBytes: 2 * 1024 * 1024,
   deadlineMs: 15_000,
 });
+export const RADAR_WEB_DISCOVERY_BUDGET = Object.freeze({
+  maxPages: 8,
+  maxCandidates: 60,
+  maxQueries: 5,
+  maxResponseBytes: 2 * 1024 * 1024,
+  deadlineMs: 12_000,
+});
 
 const TELEGRAM_HANDLE = /^[a-z][a-z0-9_]{3,31}$/u;
 const TELEGRAM_STOP_HANDLES = new Set([
@@ -70,6 +77,20 @@ const SPAM_WORDS = [
   "гарантированный доход",
   "18+",
 ];
+const WEB_SEARCH_HOSTS = new Set([
+  "bing.com",
+  "duckduckgo.com",
+  "google.com",
+  "html.duckduckgo.com",
+  "search.yahoo.com",
+  "www.bing.com",
+  "www.google.com",
+]);
+const SENSITIVE_QUERY_PARAM = /^(?:access[_-]?token|api[_-]?key|auth(?:orization)?|code|cookie|credential|jwt|password|refresh[_-]?token|session(?:id)?|sid|signature|token|utm_.+|fbclid|gclid)$/iu;
+const IDENTITY_PROMPT = /(?:^|\s)(?:биография|био|кто\s+(?:такой|такая)|найди\s+(?:про|человека)|официальн(?:ый|ая|ое)|профиль|аккаунт)(?:\s|$)/iu;
+const HANDLE_QUERY = /^@?[a-z][a-z0-9_.-]{2,63}$/iu;
+const PERSON_NAME_QUERY = /^\p{Lu}[\p{L}'’-]{1,}(?:\s+\p{Lu}[\p{L}'’-]{1,}){1,3}$/u;
+const SOCIAL_HOSTS = /(?:^|\.)(?:dzen\.ru|facebook\.com|instagram\.com|linkedin\.com|ok\.ru|rutube\.ru|tiktok\.com|vk\.com|x\.com|youtube\.com)$/iu;
 
 export class RadarDiscoveryError extends Error {
   constructor(code, message = code) {
@@ -87,6 +108,48 @@ export function normalizeRadarQuery(value) {
     .replace(/\s+/gu, " ")
     .trim()
     .slice(0, 200);
+}
+
+export function radarIdentityHandle(value) {
+  const raw = String(value ?? "").normalize("NFKC").trim();
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    const parts = url.pathname.split("/").filter(Boolean);
+    const candidate = parts.find((part) => HANDLE_QUERY.test(part));
+    if (candidate) return candidate.replace(/^@/u, "").toLowerCase();
+  } catch {
+    // Ниже проверим обычный username без URL.
+  }
+  return HANDLE_QUERY.test(raw) ? raw.replace(/^@/u, "").toLowerCase() : null;
+}
+
+export function detectRadarQueryIntent(value) {
+  const raw = String(value ?? "").normalize("NFKC").trim();
+  if (!raw) return "topic";
+  try {
+    const url = new URL(raw);
+    if (url.protocol === "http:" || url.protocol === "https:") return "identity";
+  } catch {
+    // Не URL — применяем текстовые сигналы.
+  }
+  return radarIdentityHandle(raw) || IDENTITY_PROMPT.test(raw) || PERSON_NAME_QUERY.test(raw)
+    ? "identity"
+    : "topic";
+}
+
+export function sanitizeRadarPublicText(value, maxLength = 12_000) {
+  const limit = Number.isSafeInteger(Number(maxLength))
+    ? Math.max(0, Math.min(24_000, Number(maxLength)))
+    : 12_000;
+  return String(value ?? "")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu, " ")
+    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/giu, "[email скрыт]")
+    .replace(/(?<!\d)(?:\+?\d[\s().-]*){10,15}(?!\d)/gu, "[телефон скрыт]")
+    .replace(/[ \t]+/gu, " ")
+    .replace(/\n{3,}/gu, "\n\n")
+    .trim()
+    .slice(0, limit);
 }
 
 function tokenStem(value) {
@@ -158,13 +221,141 @@ export function buildRadarDiscoveryQueries(query, expanded = []) {
   return [...new Set(values)];
 }
 
+export function buildRadarWebDiscoveryQueries(query, expanded = []) {
+  const raw = String(query ?? "").normalize("NFKC").trim();
+  const normalized = normalizeRadarQuery(raw);
+  const handle = radarIdentityHandle(raw);
+  const intent = detectRadarQueryIntent(raw);
+  const values = [];
+  if (raw && /^https?:\/\//iu.test(raw)) values.push(raw);
+  if (normalized) values.push(normalized);
+  if (handle) {
+    values.push(`"${handle}"`, `"@${handle}"`, `"${handle}" биография`, `"${handle}" официальный`);
+  } else if (intent === "identity") {
+    values.push(`"${normalized}" биография`, `"${normalized}" официальный профиль`);
+  } else {
+    const compact = radarDiscoveryPhrase(normalized);
+    if (compact && compact !== normalized) values.push(compact);
+    values.push(...(Array.isArray(expanded) ? expanded : []));
+  }
+  return [...new Set(values.map((value) => String(value || "").trim()).filter((value) => value.length >= 2))];
+}
+
 function decodeHtml(value) {
   return String(value ?? "")
+    .replace(/&#x([0-9a-f]+);/giu, (_match, code) => String.fromCodePoint(Number.parseInt(code, 16)))
+    .replace(/&#(\d+);/gu, (_match, code) => String.fromCodePoint(Number(code)))
+    .replace(/&nbsp;/giu, " ")
     .replace(/&amp;/giu, "&")
     .replace(/&quot;/giu, '"')
     .replace(/&#0?39;/giu, "'")
     .replace(/&lt;/giu, "<")
     .replace(/&gt;/giu, ">");
+}
+
+function stripMarkup(value) {
+  return sanitizeRadarPublicText(
+    decodeHtml(String(value ?? "").replace(/<[^>]+>/gu, " ")).replace(/\s+/gu, " "),
+    4_000,
+  );
+}
+
+function unwrapWebSearchRedirect(raw) {
+  let value = decodeHtml(raw).trim();
+  if (value.startsWith("//")) value = `https:${value}`;
+  try {
+    const url = new URL(value);
+    const redirected = url.searchParams.get("uddg") || url.searchParams.get("url") || url.searchParams.get("u");
+    if (redirected && /^https?:\/\//iu.test(redirected)) return redirected;
+  } catch {
+    return value;
+  }
+  return value;
+}
+
+function obviousPrivateHostname(hostname) {
+  const host = String(hostname || "").toLowerCase().replace(/^\[|\]$/gu, "");
+  if (!host || host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal")) {
+    return true;
+  }
+  if (/^(?:0|10|127)\./u.test(host) || /^169\.254\./u.test(host) || /^192\.168\./u.test(host)) return true;
+  const private172 = host.match(/^172\.(\d+)\./u);
+  if (private172 && Number(private172[1]) >= 16 && Number(private172[1]) <= 31) return true;
+  return host === "::1" || host.startsWith("fc") || host.startsWith("fd") || host.startsWith("fe80:");
+}
+
+export function normalizeRadarWebCandidate(rawUrl, metadata = {}) {
+  const unwrapped = unwrapWebSearchRedirect(rawUrl);
+  let url;
+  try {
+    url = new URL(unwrapped);
+  } catch {
+    return null;
+  }
+  if (!/^https?:$/u.test(url.protocol) || url.username || url.password || obviousPrivateHostname(url.hostname)) return null;
+  const hostname = url.hostname.toLowerCase().replace(/^www\./u, "");
+  if (WEB_SEARCH_HOSTS.has(url.hostname.toLowerCase()) || WEB_SEARCH_HOSTS.has(hostname)) return null;
+  if (hostname === "t.me" || hostname === "telegram.me") return null;
+  url.username = "";
+  url.password = "";
+  url.hash = "";
+  for (const key of [...url.searchParams.keys()]) {
+    if (SENSITIVE_QUERY_PARAM.test(key)) url.searchParams.delete(key);
+  }
+  if (url.pathname !== "/") url.pathname = url.pathname.replace(/\/+$/u, "") || "/";
+  const canonicalUrl = url.toString();
+  return {
+    canonicalUrl,
+    canonicalKey: `web:${canonicalUrl}`,
+    domain: hostname,
+    title: sanitizeRadarPublicText(metadata.title, 500) || null,
+    snippet: sanitizeRadarPublicText(metadata.snippet, 2_000) || null,
+    publishedAt: metadata.publishedAt || null,
+    provider: String(metadata.provider || "web").slice(0, 80),
+  };
+}
+
+function xmlRawTag(payload, tag) {
+  const match = String(payload || "").match(new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)<\\/${tag}>`, "iu"));
+  return decodeHtml(String(match?.[1] || "").replace(/^<!\[CDATA\[|\]\]>$/gu, "")).trim();
+}
+
+function xmlTag(payload, tag) {
+  return stripMarkup(xmlRawTag(payload, tag));
+}
+
+export function parseBingRssWebCandidates(payload, provider = "bing-rss-web") {
+  const candidates = [];
+  for (const match of String(payload || "").matchAll(/<item\b[\s\S]*?<\/item>/giu)) {
+    const item = match[0];
+    const candidate = normalizeRadarWebCandidate(xmlRawTag(item, "link"), {
+      title: xmlTag(item, "title"),
+      snippet: xmlTag(item, "description"),
+      publishedAt: xmlTag(item, "pubDate") || null,
+      provider,
+    });
+    if (candidate) candidates.push(candidate);
+  }
+  return candidates;
+}
+
+export function parseDuckDuckGoWebCandidates(payload, provider = "duckduckgo-html-web") {
+  const source = String(payload || "");
+  const candidates = [];
+  for (const match of source.matchAll(/<a\b([^>]*)class\s*=\s*["'][^"']*result__a[^"']*["']([^>]*)>([\s\S]*?)<\/a>/giu)) {
+    const attrs = `${match[1]} ${match[2]}`;
+    const href = attrs.match(/href\s*=\s*["']([^"']+)["']/iu)?.[1];
+    if (!href) continue;
+    const tail = source.slice((match.index || 0) + match[0].length, (match.index || 0) + match[0].length + 1_500);
+    const snippet = tail.match(/class\s*=\s*["'][^"']*result__snippet[^"']*["'][^>]*>([\s\S]*?)<\/(?:a|div|span)>/iu)?.[1];
+    const candidate = normalizeRadarWebCandidate(href, {
+      title: stripMarkup(match[3]),
+      snippet: stripMarkup(snippet || ""),
+      provider,
+    });
+    if (candidate) candidates.push(candidate);
+  }
+  return candidates;
 }
 
 function unwrapSearchRedirect(raw) {
@@ -357,7 +548,7 @@ export function createRadarDiscoveryBudget(input = {}) {
     acceptCandidates(candidates) {
       const accepted = [];
       for (const candidate of Array.isArray(candidates) ? candidates : []) {
-        const key = String(candidate?.handle || "").toLowerCase();
+        const key = String(candidate?.handle || candidate?.canonicalUrl || candidate?.canonicalKey || "").toLowerCase();
         if (!key) continue;
         if (!acceptedCandidates.has(key) && acceptedCandidates.size >= limits.maxCandidates) {
           reasons.add("max_candidates");
@@ -569,6 +760,208 @@ export function createDuckDuckGoTelegramProvider({ fetchImpl = fetch } = {}) {
       return [...found.values()];
     },
   };
+}
+
+export function createSearxngWebProvider({ endpoint, fetchImpl = fetch } = {}) {
+  const base = String(endpoint || "").trim();
+  if (!base) return null;
+  return {
+    name: "searxng-web",
+    async search(query, context = {}) {
+      const budget = context.budget;
+      const url = new URL(base);
+      if (!/\/search\/?$/u.test(url.pathname)) url.pathname = `${url.pathname.replace(/\/$/u, "")}/search`;
+      url.searchParams.set("q", query);
+      url.searchParams.set("format", "json");
+      url.searchParams.set("language", "ru-RU");
+      const found = new Map();
+      const seenPages = new Set();
+      for (let page = 1; ; page += 1) {
+        if (budget && !budget.takePage()) break;
+        url.searchParams.set("pageno", String(page));
+        let response;
+        try {
+          response = await fetchImpl(url, providerRequest(url, {}, budget).init);
+        } catch (error) {
+          if (found.size) break;
+          throw error;
+        }
+        if (!response.ok) {
+          if (found.size) break;
+          throw new RadarDiscoveryError(`searxng_web_http_${response.status}`);
+        }
+        const payloadText = await responseText(response, budget);
+        let json;
+        try { json = JSON.parse(payloadText); } catch { throw new RadarDiscoveryError("searxng_web_invalid_json"); }
+        const pageResults = Array.isArray(json?.results) ? json.results : [];
+        if (!pageResults.length) break;
+        const signature = pageSignature(pageResults.map((item) => item?.url));
+        if (!signature || seenPages.has(signature)) break;
+        seenPages.add(signature);
+        for (const item of pageResults) {
+          const candidate = normalizeRadarWebCandidate(item?.url, {
+            title: item?.title,
+            snippet: item?.content,
+            publishedAt: item?.publishedDate,
+            provider: "searxng-web",
+          });
+          if (candidate) found.set(candidate.canonicalUrl, candidate);
+        }
+        const total = Number(json?.number_of_results);
+        if (Number.isFinite(total) && total > 0 && page * pageResults.length >= total) break;
+      }
+      return [...found.values()];
+    },
+  };
+}
+
+export function createBingRssWebProvider({ fetchImpl = fetch } = {}) {
+  return {
+    name: "bing-rss-web",
+    async search(query, context = {}) {
+      const budget = context.budget;
+      const url = new URL("https://www.bing.com/search");
+      url.searchParams.set("format", "rss");
+      url.searchParams.set("q", query);
+      url.searchParams.set("count", "50");
+      const found = new Map();
+      const seenPages = new Set();
+      let first = 1;
+      for (;;) {
+        if (budget && !budget.takePage()) break;
+        url.searchParams.set("first", String(first));
+        let payload;
+        try {
+          payload = await readSearchResponse(fetchImpl, providerRequest(url, {}, budget), "bing_rss_web", budget);
+        } catch (error) {
+          if (found.size) break;
+          throw error;
+        }
+        const pageCandidates = parseBingRssWebCandidates(payload);
+        for (const candidate of pageCandidates) found.set(candidate.canonicalUrl, candidate);
+        const itemCount = xmlItemCount(payload);
+        if (!itemCount) break;
+        const signature = pageSignature(pageCandidates.map((candidate) => candidate.canonicalUrl));
+        if (!signature || seenPages.has(signature)) break;
+        seenPages.add(signature);
+        const total = xmlTotalResults(payload);
+        first += itemCount;
+        if (total != null && first > total) break;
+      }
+      return [...found.values()];
+    },
+  };
+}
+
+export function createDuckDuckGoWebProvider({ fetchImpl = fetch } = {}) {
+  return {
+    name: "duckduckgo-html-web",
+    async search(query, context = {}) {
+      const budget = context.budget;
+      const url = new URL("https://html.duckduckgo.com/html/");
+      url.searchParams.set("q", query);
+      const found = new Map();
+      const seenOffsets = new Set();
+      let offset = "0";
+      for (;;) {
+        if (budget && !budget.takePage()) break;
+        if (offset === "0") url.searchParams.delete("s");
+        else url.searchParams.set("s", offset);
+        let payload;
+        try {
+          payload = await readSearchResponse(fetchImpl, providerRequest(url, {}, budget), "duckduckgo_web", budget);
+        } catch (error) {
+          if (found.size) break;
+          throw error;
+        }
+        for (const candidate of parseDuckDuckGoWebCandidates(payload)) {
+          found.set(candidate.canonicalUrl, candidate);
+        }
+        const nextOffset = duckDuckGoNextOffset(payload);
+        if (!nextOffset || nextOffset === offset || seenOffsets.has(nextOffset)) break;
+        seenOffsets.add(offset);
+        offset = nextOffset;
+      }
+      return [...found.values()];
+    },
+  };
+}
+
+export async function discoverRadarWebCandidates(query, options = {}) {
+  const raw = String(query ?? "").normalize("NFKC").trim();
+  if (normalizeRadarQuery(raw).length < 2) throw new RadarDiscoveryError("query_too_short");
+  const providers = options.providers || [
+    createSearxngWebProvider({ endpoint: options.searxngUrl, fetchImpl: options.fetchImpl }),
+    createBingRssWebProvider({ fetchImpl: options.fetchImpl }),
+    createDuckDuckGoWebProvider({ fetchImpl: options.fetchImpl }),
+  ].filter(Boolean);
+  if (providers.length === 0) throw new RadarDiscoveryError("provider_not_configured");
+
+  const budget = createRadarDiscoveryBudget({
+    ...RADAR_WEB_DISCOVERY_BUDGET,
+    ...(options.budget || {}),
+    signal: options.signal,
+  });
+  const found = new Map();
+  const failures = [];
+  let completed = 0;
+  const allQueries = buildRadarWebDiscoveryQueries(raw, options.expandedQueries);
+  const discoveryQueries = allQueries.slice(0, budget.limits.maxQueries);
+  if (allQueries.length > discoveryQueries.length) budget.mark("max_queries");
+  try {
+    const direct = /^https?:\/\//iu.test(raw)
+      ? normalizeRadarWebCandidate(raw, { provider: "direct-url" })
+      : null;
+    if (direct) found.set(direct.canonicalUrl, { ...direct, matchedQueries: [raw], providers: ["direct-url"] });
+    for (const discoveryQuery of discoveryQueries) {
+      if (budget.expired()) break;
+      const settled = await Promise.allSettled(
+        providers.map(async (provider) => ({
+          provider,
+          candidates: await budget.run(provider.search(discoveryQuery, { budget, signal: budget.signal })),
+        })),
+      );
+      for (const result of settled) {
+        if (result.status === "rejected") {
+          failures.push(result.reason?.code || result.reason?.message || "provider_failed");
+          continue;
+        }
+        completed += 1;
+        const accepted = budget.acceptCandidates(result.value.candidates || []);
+        for (const candidate of accepted) {
+          if (!candidate?.canonicalUrl) continue;
+          const current = found.get(candidate.canonicalUrl);
+          found.set(candidate.canonicalUrl, {
+            ...(current || candidate),
+            ...candidate,
+            matchedQueries: [...new Set([...(current?.matchedQueries || []), discoveryQuery])],
+            providers: [...new Set([...(current?.providers || []), candidate.provider || result.value.provider.name])],
+          });
+        }
+      }
+    }
+    const summary = budget.summary();
+    if (completed === 0 && !direct && summary.reasons.length === 0) {
+      throw new RadarDiscoveryError("all_providers_unavailable", failures.join(", "));
+    }
+    if (failures.length > 0 && (completed > 0 || direct)) budget.mark("provider_failed");
+    const finalSummary = budget.summary();
+    const domainCounts = new Map();
+    const result = [...found.values()].filter((candidate) => {
+      const count = domainCounts.get(candidate.domain) || 0;
+      if (count >= 3) return false;
+      domainCounts.set(candidate.domain, count + 1);
+      return true;
+    });
+    Object.defineProperties(result, {
+      status: { value: finalSummary.reasons.length > 0 ? "partial" : "complete", enumerable: false },
+      partialReasons: { value: finalSummary.reasons, enumerable: false },
+      budget: { value: finalSummary, enumerable: false },
+    });
+    return result;
+  } finally {
+    budget.finish();
+  }
 }
 
 export async function discoverTelegramCandidates(query, options = {}) {
@@ -816,6 +1209,139 @@ export function rankVerifiedTelegramPost(query, post, channelRank, now = Date.no
       ? "публикация напрямую отвечает теме запроса"
       : "публикация найдена в проверенном тематическом канале",
   };
+}
+
+export function radarWebSourceKind(value) {
+  let hostname = "";
+  let pathname = "";
+  try {
+    const url = new URL(String(value || ""));
+    hostname = url.hostname.toLowerCase();
+    pathname = url.pathname.toLowerCase();
+  } catch {
+    return "other";
+  }
+  if (SOCIAL_HOSTS.test(hostname)) return "social";
+  if (/(?:^|\.)wikipedia\.org$/u.test(hostname) || /(?:^|\.)wikidata\.org$/u.test(hostname)) return "reference";
+  if (/(?:about|bio|author|people|person|profile|team)/u.test(pathname)) return "profile";
+  if (/(?:news|blog|article|post|publication)/u.test(pathname)) return "article";
+  return "organization";
+}
+
+function radarWebDomainTrust(domain, sourceKind) {
+  const hostname = String(domain || "").toLowerCase();
+  if (/(?:^|\.)wikipedia\.org$/u.test(hostname) || /(?:^|\.)wikidata\.org$/u.test(hostname)) return 88;
+  if (sourceKind === "social") return 82;
+  if (/\.(?:gov|edu)(?:\.[a-z]{2})?$/u.test(hostname)) return 92;
+  if (sourceKind === "profile" || sourceKind === "organization") return 74;
+  return 62;
+}
+
+export function rankRadarWebSource(query, source = {}) {
+  const intent = source.intent || detectRadarQueryIntent(query);
+  const handle = radarIdentityHandle(query);
+  const urlText = searchableText(source.url || source.canonicalUrl || "");
+  const title = searchableText(source.title || "");
+  const description = searchableText(source.description || source.snippet || "");
+  const body = searchableText(source.text || "");
+  const sourceKind = source.sourceKind || radarWebSourceKind(source.url || source.canonicalUrl);
+  const domain = source.domain || (() => {
+    try { return new URL(String(source.url || source.canonicalUrl)).hostname; } catch { return ""; }
+  })();
+  let relevance = scoreRadarRelevance(query, {
+    title,
+    description,
+    posts: body ? [{ text: body }] : [],
+  });
+  let exactIdentity = false;
+  try {
+    const requestedUrl = new URL(String(query || "").trim());
+    const sourceUrl = new URL(String(source.url || source.canonicalUrl || ""));
+    if (
+      requestedUrl.hostname.toLowerCase() === sourceUrl.hostname.toLowerCase()
+      && requestedUrl.pathname.replace(/\/+$/u, "") === sourceUrl.pathname.replace(/\/+$/u, "")
+    ) {
+      exactIdentity = true;
+      relevance = Math.max(relevance, 100);
+    }
+  } catch {
+    // Обычный текстовый запрос.
+  }
+  if (handle) {
+    const normalizedHandle = searchableText(handle);
+    exactIdentity = exactIdentity || [urlText, title, description, body].some((value) => value.includes(normalizedHandle));
+    if (exactIdentity) relevance = Math.max(relevance, urlText.includes(normalizedHandle) ? 96 : 82);
+  }
+  const trust = radarWebDomainTrust(domain, sourceKind);
+  const fetched = source.fetched === true;
+  const completeness = [source.title, source.description || source.snippet, source.text]
+    .filter((value) => String(value || "").trim()).length;
+  const score = Math.round(Math.max(0, Math.min(100,
+    relevance * 0.62 + trust * 0.23 + (fetched ? 10 : 3) + completeness * 1.5,
+  )));
+  const accepted = intent === "identity"
+    ? (exactIdentity || relevance >= 48) && score >= 45
+    : relevance >= 35 && score >= 40;
+  const reason = fetched
+    ? exactIdentity
+      ? "Публичная страница открыта; ник точно совпадает с запросом"
+      : "Публичная страница открыта и её содержание совпадает с запросом"
+    : exactIdentity
+      ? "Ник точно совпадает в открытом поисковом индексе; сайт не дал дочитать страницу"
+      : "Источник найден в открытом поисковом индексе и совпадает с запросом";
+  return {
+    score,
+    relevance,
+    freshness: scoreRadarFreshness(source.publishedAt),
+    activity: 0,
+    trust,
+    completeness: Math.round((completeness / 3) * 100),
+    exactIdentity,
+    accepted,
+    sourceKind,
+    reason,
+  };
+}
+
+function boundedString(value, maxLength) {
+  const text = sanitizeRadarPublicText(value, maxLength);
+  return text || null;
+}
+
+export function parseRadarOsintProfile(raw, sourceCountValue) {
+  const sourceCount = Math.max(0, Math.min(50, Number(sourceCountValue) || 0));
+  const source = String(raw || "").trim().replace(/^```(?:json)?\s*/iu, "").replace(/\s*```$/u, "");
+  let parsed;
+  try { parsed = JSON.parse(source); } catch { return null; }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const facts = (Array.isArray(parsed.facts) ? parsed.facts : []).flatMap((fact) => {
+    if (!fact || typeof fact !== "object") return [];
+    const text = boundedString(fact.text, 600);
+    const sourceIds = [...new Set((Array.isArray(fact.sourceIds) ? fact.sourceIds : [])
+      .map(Number)
+      .filter((id) => Number.isSafeInteger(id) && id >= 1 && id <= sourceCount))].slice(0, 6);
+    return text && sourceIds.length ? [{ text, sourceIds }] : [];
+  }).slice(0, 12);
+  const ambiguities = (Array.isArray(parsed.ambiguities) ? parsed.ambiguities : [])
+    .map((value) => boundedString(value, 500))
+    .filter(Boolean)
+    .slice(0, 8);
+  const aliases = (Array.isArray(parsed.aliases) ? parsed.aliases : [])
+    .map((value) => boundedString(value, 120))
+    .filter(Boolean)
+    .slice(0, 10);
+  const displayName = boundedString(parsed.displayName, 180);
+  const bio = boundedString(parsed.bio, 1_600);
+  if (!displayName && !bio && facts.length === 0) return null;
+  const requestedConfidence = ["low", "medium", "high"].includes(parsed.confidence)
+    ? parsed.confidence
+    : "low";
+  const confidence = sourceCount < 2
+    ? "low"
+    : sourceCount < 3 && requestedConfidence === "high"
+      ? "medium"
+      : requestedConfidence;
+  return { displayName, bio, facts, aliases, ambiguities, confidence };
 }
 
 export function median(values) {

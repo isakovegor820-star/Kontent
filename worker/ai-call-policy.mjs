@@ -16,6 +16,7 @@ export const WORKER_AI_SURFACES = Object.freeze({
   "profile-refresh": Object.freeze({ billing: "system", purpose: "background_context_maintenance" }),
   "radar-query-expansion": Object.freeze({ billing: "system", purpose: "search_query_expansion" }),
 
+  "radar-osint-profile": Object.freeze({ billing: "user", purpose: "visible_osint_profile" }),
   "competitor-idea": Object.freeze({ billing: "user", purpose: "visible_content_idea" }),
   "rss-summary": Object.freeze({ billing: "user", purpose: "scheduled_user_post" }),
   "autopilot-plan": Object.freeze({ billing: "user", purpose: "visible_content_plan" }),

@@ -13,6 +13,7 @@ describe("worker AI call policy", () => {
       "bot-intake",
       "competitor-idea",
       "media-generation",
+      "radar-osint-profile",
       "rss-summary",
       "site-analysis-interview",
     ]);
@@ -21,6 +22,10 @@ describe("worker AI call policy", () => {
       purpose: "scheduled_user_post",
     });
     expect(() => assertWorkerAiCallPolicy("rss-summary")).toThrow(/reservation/u);
+    expect(assertWorkerAiCallPolicy("radar-osint-profile", 92)).toMatchObject({
+      billing: "user",
+      purpose: "visible_osint_profile",
+    });
   });
 
   it("marks only internal classification, retrieval and maintenance as non-billable", () => {

@@ -44,6 +44,7 @@ describe("worker AI usage integration contract", () => {
       "competitor-niche-classifier",
       "competitor-reader-classifier",
       "profile-refresh",
+      "radar-osint-profile",
       "radar-query-expansion",
       "rss-summary",
     ]));
@@ -55,6 +56,7 @@ describe("worker AI usage integration contract", () => {
 
   it("meters background visible artifacts with deterministic keys and durable outcomes", () => {
     expect(source).toContain('key: workerAiUsageKey("competitor-idea", contentIdeaId)');
+    expect(source).toContain('key: workerAiUsageKey("radar-osint-profile", runId)');
     expect(source).toContain("enqueueWeeklyAutopilotPlan({");
     expect(source).toContain("queue: autopilotQueue");
     expect(source).toMatch(
