@@ -40,12 +40,11 @@ import {
 } from "@/lib/app-routes";
 import {
   createDraftClientKey,
-  createServerDraft,
-  DraftRequestError,
+  createLibraryServerDraft,
+  libraryDraftErrorMessage,
 } from "@/lib/draft-client";
 import {
   analyzeLibraryHit,
-  buildLibraryDraftContext,
   normalizeLibraryLabels,
 } from "@/lib/library";
 import { useStore } from "@/lib/store";
@@ -322,8 +321,6 @@ function LibraryInner() {
   const openDraftAction = (
     action: DraftBackedAppAction,
     cardId: string,
-    text: string,
-    reference?: { sourcePostId: number | string; sourceLabel: string } | null,
   ) => {
     if (!channelId || draftActionsRef.current.promise) return;
     const actionKey = `${action}:${cardId}:channel:${channelId}`;
@@ -333,21 +330,17 @@ function LibraryInner() {
 
     const request = (async () => {
       try {
-        const result = await createServerDraft(buildLibraryDraftContext({
-          text,
+        const result = await createLibraryServerDraft({
+          itemKey: cardId,
           channelId,
           clientKey,
-          reference,
-        }));
+        });
         router.push(appDraftActionHref(action, result.draft.id));
       } catch (error) {
         s.toast({
           kind: "danger",
           title: "Черновик не создан",
-          body:
-            error instanceof DraftRequestError && error.kind === "offline"
-              ? "Нет связи с сервером. Текст остался в библиотеке — повтори после восстановления сети."
-              : "Контекст не удалось сохранить. Текст остался в библиотеке, действие можно безопасно повторить.",
+          body: libraryDraftErrorMessage(error),
         });
       } finally {
         draftActionsRef.current.promise = null;
@@ -530,11 +523,10 @@ function LibraryInner() {
                   ? `https://t.me/${h.handle.replace(/^@/u, "")}/${h.tg_msg_id}`
                   : null;
                 const referenceSaved = savedReferenceIds.has(String(h.id));
-                const cardId = `hit:${h.id}`;
+                const cardId = `reference:${h.id}`;
                 const contentId = libraryCardContentId("hit", h.id);
                 const expanded = expandedCardIds.has(cardId);
                 const sourceLabel = h.source_title || (h.handle ? `@${h.handle}` : "Конкурент");
-                const reference = { sourcePostId: h.id, sourceLabel };
                 const createActionKey = `create:${cardId}:channel:${channelId}`;
                 const discussActionKey = `discuss:${cardId}:channel:${channelId}`;
                 const analysis = analyzeLibraryHit({
@@ -602,7 +594,7 @@ function LibraryInner() {
                       <Button
                         variant="primary"
                         size="sm"
-                        onClick={() => openDraftAction("create", cardId, h.text, reference)}
+                        onClick={() => openDraftAction("create", cardId)}
                         loading={draftActionBusy === createActionKey}
                         disabled={draftActionBusy !== null && draftActionBusy !== createActionKey}
                       >
@@ -612,7 +604,7 @@ function LibraryInner() {
                       <Button
                         variant="ghost"
                         size="sm"
-                        onClick={() => openDraftAction("discuss", cardId, h.text, reference)}
+                        onClick={() => openDraftAction("discuss", cardId)}
                         loading={draftActionBusy === discussActionKey}
                         disabled={draftActionBusy !== null && draftActionBusy !== discussActionKey}
                       >
@@ -723,16 +715,10 @@ function LibraryInner() {
           ) : (
             <div className="grid gap-3 lg:grid-cols-2">
               {posts.map((p) => {
-                const cardId = `post:${p.id}`;
+                const cardId = `saved:${p.id}`;
                 const contentId = libraryCardContentId("post", p.id);
                 const expanded = expandedCardIds.has(cardId);
                 const isReference = p.kind === "reference";
-                const reference = isReference
-                  ? {
-                      sourcePostId: p.source_post_id ?? p.id,
-                      sourceLabel: p.source_title || "Конкурент",
-                    }
-                  : null;
                 const action = isReference ? "create" : "editor";
                 const primaryActionKey = `${action}:${cardId}:channel:${channelId}`;
                 const discussActionKey = `discuss:${cardId}:channel:${channelId}`;
@@ -766,7 +752,7 @@ function LibraryInner() {
                     <Button
                       variant="primary"
                       size="sm"
-                      onClick={() => openDraftAction(action, cardId, p.text, reference)}
+                      onClick={() => openDraftAction(action, cardId)}
                       loading={draftActionBusy === primaryActionKey}
                       disabled={draftActionBusy !== null && draftActionBusy !== primaryActionKey}
                     >
@@ -779,7 +765,7 @@ function LibraryInner() {
                       <Button
                         variant="ghost"
                         size="sm"
-                        onClick={() => openDraftAction("discuss", cardId, p.text, reference)}
+                        onClick={() => openDraftAction("discuss", cardId)}
                         loading={draftActionBusy === discussActionKey}
                         disabled={draftActionBusy !== null && draftActionBusy !== discussActionKey}
                       >

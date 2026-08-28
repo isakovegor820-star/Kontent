@@ -4,6 +4,7 @@ import {
   activeComposerNetworks,
   attestServerDraftReview,
   claimUnownedLegacyDraft,
+  createLibraryServerDraft,
   createServerDraft,
   createDraftClientKey,
   deleteDraftAfterAck,
@@ -13,6 +14,7 @@ import {
   ensureDraftClientKey,
   isRecoverableLegacyDraft,
   isUnownedLegacyDraftCandidate,
+  libraryDraftErrorMessage,
   recoverServerDraft,
   reusableAcknowledgedDraft,
   rescheduleServerDraft,
@@ -104,6 +106,41 @@ describe("draft client coordination", () => {
     expect(new URL(String(requestUrl), "https://aurora.test").search).toBe("");
     expect(JSON.parse(String(init?.body))).toEqual(input);
     expect(String(requestUrl)).not.toContain(text);
+  });
+
+  it("creates a library draft by opaque item key without sending card text", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      ok: true,
+      created: true,
+      requestId: "req-library-1",
+      draft: { id: 51 },
+    }), { status: 201, headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(createLibraryServerDraft({
+      itemKey: "saved:63",
+      channelId: 11,
+      clientKey: "draft_library-saved-1234567890",
+    })).resolves.toMatchObject({ draft: { id: 51 }, created: true });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/library/drafts");
+    expect(JSON.parse(String(init?.body))).toEqual({
+      itemKey: "saved:63",
+      channelId: 11,
+      clientKey: "draft_library-saved-1234567890",
+    });
+  });
+
+  it("shows an actionable library error with its correlation id", () => {
+    const error = new DraftRequestError(
+      "failed",
+      422,
+      "library_channel_unavailable",
+      undefined,
+      "req-library-2",
+    );
+    expect(libraryDraftErrorMessage(error)).toContain("другому проекту");
+    expect(libraryDraftErrorMessage(error)).toContain("req-library-2");
   });
 
   it("PATCHes only the versioned schedule when a calendar card moves", async () => {

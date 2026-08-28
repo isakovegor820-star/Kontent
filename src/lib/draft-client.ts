@@ -14,6 +14,7 @@ import { buildTrackedDestination } from "./utm";
 type ErrorBody = {
   error?: string;
   current?: ServerDraft;
+  requestId?: string;
 };
 
 export class DraftRequestError extends Error {
@@ -22,6 +23,7 @@ export class DraftRequestError extends Error {
     public readonly status: number,
     public readonly code: string,
     public readonly current?: ServerDraft,
+    public readonly requestId?: string,
   ) {
     super(code);
     this.name = "DraftRequestError";
@@ -99,7 +101,7 @@ async function checked(response: Response): Promise<ServerDraft> {
   const body = await jsonOrNull<{ draft?: ServerDraft } & ErrorBody>(response);
   if (response.ok && body?.draft) return body.draft;
   const kind = response.status === 409 ? "conflict" : response.status === 404 ? "not_found" : "failed";
-  throw new DraftRequestError(kind, response.status, body?.error ?? "server", body?.current);
+  throw new DraftRequestError(kind, response.status, body?.error ?? "server", body?.current, body?.requestId);
 }
 
 async function request(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
@@ -352,7 +354,41 @@ export async function createServerDraft(
   const body = await jsonOrNull<{ draft?: ServerDraft; created?: boolean } & ErrorBody>(response);
   if (response.ok && body?.draft) return { draft: body.draft, created: body.created === true };
   const kind = response.status === 409 ? "conflict" : response.status === 404 ? "not_found" : "failed";
-  throw new DraftRequestError(kind, response.status, body?.error ?? "server", body?.current);
+  throw new DraftRequestError(kind, response.status, body?.error ?? "server", body?.current, body?.requestId);
+}
+
+export async function createLibraryServerDraft(input: {
+  itemKey: string;
+  channelId: number;
+  clientKey: string;
+}): Promise<{ draft: ServerDraft; created: boolean }> {
+  const response = await request("/api/library/drafts", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  const body = await jsonOrNull<{ draft?: ServerDraft; created?: boolean } & ErrorBody>(response);
+  if (response.ok && body?.draft) return { draft: body.draft, created: body.created === true };
+  const kind = response.status === 409 ? "conflict" : response.status === 404 ? "not_found" : "failed";
+  throw new DraftRequestError(kind, response.status, body?.error ?? "server", body?.current, body?.requestId);
+}
+
+export function libraryDraftErrorMessage(error: unknown): string {
+  if (!(error instanceof DraftRequestError)) return "Не удалось сохранить контекст. Попробуй ещё раз.";
+  if (error.kind === "offline") return "Нет связи. Карточка осталась на месте — повтори после восстановления сети.";
+  const message = (() => {
+    switch (error.code) {
+      case "library_item_not_found": return "Материал изменился или больше недоступен. Обнови библиотеку и выбери его снова.";
+      case "library_channel_unavailable":
+      case "bad_destinations": return "Выбранный канал отключён или относится к другому проекту. Обнови страницу и выбери активный канал.";
+      case "access_denied": return "В этом проекте недостаточно прав для создания публикации.";
+      case "forbidden_origin": return "Сессия открыта с недоверенного адреса. Перезагрузи Аврору по основному адресу приложения.";
+      case "source_context_not_found": return "Исходный материал больше не найден. Обнови библиотеку и повтори действие.";
+      case "source_topic_missing": return "У идеи не заполнена тема. Допиши тему или выбери другой материал.";
+      default: return "Не удалось сохранить контекст. Действие можно безопасно повторить.";
+    }
+  })();
+  return error.requestId ? `${message} Номер запроса: ${error.requestId}` : message;
 }
 
 export async function recoverServerDraft(
@@ -367,7 +403,7 @@ export async function recoverServerDraft(
   const body = await jsonOrNull<{ draft?: ServerDraft; created?: boolean } & ErrorBody>(response);
   if (response.ok && body?.draft) return { draft: body.draft, created: body.created === true };
   const kind = response.status === 409 ? "conflict" : response.status === 404 ? "not_found" : "failed";
-  throw new DraftRequestError(kind, response.status, body?.error ?? "server", body?.current);
+  throw new DraftRequestError(kind, response.status, body?.error ?? "server", body?.current, body?.requestId);
 }
 
 export async function updateServerDraft(id: number, input: DraftUpdateInput): Promise<ServerDraft> {

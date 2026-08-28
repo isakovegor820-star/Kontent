@@ -26,7 +26,7 @@ import { LibraryCardText, libraryCardContentId, toggleExpandedCardId } from "@/c
 import { Button } from "@/components/ui/button";
 import { Badge, Card, EmptyState, Input } from "@/components/ui/primitives";
 import { appDraftActionHref, type DraftBackedAppAction } from "@/lib/app-routes";
-import { createDraftClientKey, createServerDraft, DraftRequestError } from "@/lib/draft-client";
+import { createDraftClientKey, createLibraryServerDraft, libraryDraftErrorMessage } from "@/lib/draft-client";
 import type {
   LibraryFormat,
   LibraryMaturity,
@@ -37,7 +37,6 @@ import type {
   LibrarySort,
   LibraryViewedFilter,
 } from "@/lib/library-filters";
-import { buildLibraryDraftContext } from "@/lib/library";
 import { useStore } from "@/lib/store";
 import { cn, fmtAgo, fmtNum } from "@/lib/utils";
 
@@ -380,38 +379,17 @@ export function LibraryRegistryView({ channelId, channelName }: { channelId: num
     draftKeys.current.set(key, clientKey);
     setDraftBusy(key);
     try {
-      const identity = itemIdentity(item);
-      const material = identity.id && (item.kind === "idea" || item.kind === "reference")
-        ? {
-            kind: item.kind,
-            id: identity.id,
-            sourceLabel: item.kind === "idea" ? "Идея Авроры" : item.sourceTitle,
-            provenanceLabel: item.sourceTitle,
-            sourceId: item.sourceId,
-            sourceUrl: item.sourceUrl,
-            topic: item.idea?.topic,
-            hook: item.idea?.hook,
-            structure: item.idea?.structure,
-            whyItWorked: item.idea?.whyItWorked,
-          }
-        : null;
-      const result = await createServerDraft(buildLibraryDraftContext({
-        text: item.text,
+      const result = await createLibraryServerDraft({
+        itemKey: item.id,
         channelId,
         clientKey,
-        material,
-        reference: !material && item.sourceId
-          ? { sourcePostId: item.sourceId, sourceLabel: item.sourceTitle }
-          : null,
-      }));
+      });
       router.push(appDraftActionHref(action, result.draft.id));
     } catch (error) {
       store.toast({
         kind: "danger",
         title: "Контекст не сохранён",
-        body: error instanceof DraftRequestError && error.kind === "offline"
-          ? "Нет связи. Карточка осталась на месте — повтори после восстановления сети."
-          : "Действие можно безопасно повторить без повторного ввода текста.",
+        body: libraryDraftErrorMessage(error),
       });
     } finally {
       setDraftBusy(null);
