@@ -42,6 +42,18 @@ export function isAutopilotHumanReviewItem(item) {
   const semanticOnlyViolation = (Array.isArray(item.quality.violations)
     ? item.quality.violations
     : []).some((violation) => violation?.code === "semantic_review_required");
+  const semanticProviderUnavailable =
+    semantic?.provenance?.provider === "unavailable" &&
+    Array.isArray(semantic.claimVerdicts) &&
+    semantic.claimVerdicts.every((verdict) =>
+      verdict?.verdict === "unknown" && verdict?.reasonCode === "semantic_provider_unavailable"
+    );
+  const semanticProviderFailed =
+    semantic?.provenance?.provider === "aurora-semantic-ai-v1" &&
+    Array.isArray(semantic.claimVerdicts) &&
+    semantic.claimVerdicts.every((verdict) =>
+      verdict?.verdict === "unknown" && verdict?.reasonCode === "semantic_provider_failed"
+    );
   return Boolean(
     semanticOnlyViolation &&
       semantic && typeof semantic === "object" &&
@@ -50,12 +62,10 @@ export function isAutopilotHumanReviewItem(item) {
       semantic.passed === false &&
       semantic.requiresReview === true &&
       semantic.provenance?.validatorVersion === "semantic-publication-v1" &&
-      semantic.provenance?.provider === "unavailable" &&
       semantic.provenance?.terminalVerdict === "not_checked" &&
       Array.isArray(semantic.claimVerdicts) &&
-      semantic.claimVerdicts.every((verdict) =>
-        verdict?.verdict === "unknown" && verdict?.reasonCode === "semantic_provider_unavailable",
-      )
+      semantic.claimVerdicts.length > 0 &&
+      (semanticProviderUnavailable || semanticProviderFailed)
   );
 }
 

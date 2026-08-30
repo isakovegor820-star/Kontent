@@ -3,6 +3,11 @@
 // сам worker.mjs при импорте поднимает пул, Redis и BullMQ, что для тестов неприемлемо.
 // Тела функций НЕ менялись при переносе — только добавлен export.
 
+import {
+  isAutopilotHumanReviewItem,
+  isAutopilotReaderReadyItem,
+} from "../src/lib/autopilot-review.mjs";
+
 // ── Нарезка текста на куски для базы знаний (RAG) ───────────────────────────
 // Куски базы знаний — это НЕ «нарезка стены текста по N знаков». Материал юриста сам
 // состоит из готовых единиц: один кейс, один вопрос с ответом, одна услуга, один факт.
@@ -107,25 +112,20 @@ export function autopilotBuildComplete(expected, topics, items = null) {
     );
 }
 
-// Публичный план содержит только полностью готовые тексты. Любое ручное подтверждение — это
-// незавершённая работа Автопилота, поэтому такой кандидат остаётся внутри сборки и не может
-// занять одно из обещанных мест плана.
+// Confirm-план может содержать как полностью готовые тексты, так и безопасные черновики,
+// которым нужно явное решение человека. Внутренний идеальный критерий выше остаётся строже.
 export function autopilotDraftsDeliverable(expected, topics, items = null) {
   const count = Number(expected);
   if (!Number.isInteger(count) || count < 1) return false;
   if (!Array.isArray(topics) || topics.length !== count) return false;
-  if (items == null) return true;
   return Array.isArray(items) &&
     items.length === count &&
     items.every((item) =>
       item?.aiReady === true &&
       String(item?.draft || "").trim().length > 0 &&
-      item?.quality?.passed === true &&
-      !(Array.isArray(item?.invented) && item.invented.length > 0) &&
-      item?.qualityBlocked !== true &&
-      item?.reviewRequired !== true &&
-      !["confirmation_required", "blocked"].includes(
-        item?.quality?.publicationDisposition,
+      (
+        isAutopilotReaderReadyItem(item) ||
+        isAutopilotHumanReviewItem(item)
       ),
     );
 }

@@ -43,7 +43,7 @@ export function selectAutopilotCandidates(candidates, { targetCount, newsQuota =
     newsQuota: quota,
     selectedNewsCount: selected.filter((candidate) => Boolean(candidate?.news)).length,
     newsQuotaSatisfied: selected.filter((candidate) => Boolean(candidate?.news)).length >= quota,
-    complete: selected.length === target &&
-      selected.filter((candidate) => Boolean(candidate?.news)).length >= quota,
+    // News is a composition goal, not a hard delivery gate. A full evergreen set is usable.
+    complete: selected.length === target,
   };
 }

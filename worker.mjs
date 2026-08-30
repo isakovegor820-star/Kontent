@@ -174,7 +174,10 @@ import {
   normalizeAutopilotQuickSettings,
 } from "./src/lib/autopilot-style.mjs";
 import { autopilotQualityFailureReport } from "./src/lib/autopilot-quality-report.mjs";
-import { isAutopilotReaderReadyItem } from "./src/lib/autopilot-review.mjs";
+import {
+  isAutopilotHumanReviewItem,
+  isAutopilotReaderReadyItem,
+} from "./src/lib/autopilot-review.mjs";
 import {
   autopilotCandidateCount,
   selectAutopilotCandidates,
@@ -6902,16 +6905,18 @@ async function buildAutopilotPlan(
 
   // Ready checkpoints remain in place while failed checkpoints continue through targeted
   // repair. Never reindex here: the original item index is the durable repair identity.
-  const readerReadyPairs = items
+  const deliverablePairs = items
     .map((item, index) => ({ item, topic: topics[index] }))
-    .filter(({ item }) => isAutopilotReaderReadyItem(item));
-  if (readerReadyPairs.length !== N) {
+    .filter(({ item }) =>
+      isAutopilotReaderReadyItem(item) || isAutopilotHumanReviewItem(item),
+    );
+  if (deliverablePairs.length !== N) {
     const missing = items.filter((item) => !item.aiReady).length;
     const report = autopilotQualityFailureReport(items, N);
     console.log(
       missing
         ? `[auto] user ${userId}: модель не завершила ни одного готового поста (${missing}/${N} пустых)`
-        : `[auto] user ${userId}: готово только ${readerReadyPairs.length}/${N} reader-ready постов` +
+        : `[auto] user ${userId}: готово только ${deliverablePairs.length}/${N} доставляемых постов` +
           ` (${report.causes.map((cause) => `${cause.code}×${cause.count}`).join(", ") || "без разбора"})`,
     );
   }
@@ -7126,12 +7131,13 @@ async function buildAutopilotPlan(
     }
   }
 
-  // План отдаётся в обоих режимах. В полном автомате право на выпуск считается по каждому
-  // reader-ready посту отдельно (item.autoApprove ниже). То, что не прошло редакционную
-  // границу после проверки разнообразия, остаётся внутренним результатом сборки.
+  // Confirm-план получает и reader-ready тексты, и безопасные тексты на согласовании.
+  // Автопубликация остаётся закрытой независимо от состава плана.
   const variedPairs = items
     .map((item, index) => ({ item, topic: topics[index] }))
-    .filter(({ item }) => isAutopilotReaderReadyItem(item));
+    .filter(({ item }) =>
+      isAutopilotReaderReadyItem(item) || isAutopilotHumanReviewItem(item),
+    );
   const candidateSelection = selectAutopilotCandidates(
     variedPairs.map((pair) => ({
       pair,
@@ -7161,7 +7167,6 @@ async function buildAutopilotPlan(
   const selectionDeficit = Math.max(
     0,
     publicationTargetCount - selectedPairs.length,
-    selectionNewsQuota - candidateSelection.selectedNewsCount,
   );
   const durableCandidateItems = items.map((item) => autopilotCheckpointItem(item));
   if (!candidateSelection.complete) {
@@ -7176,6 +7181,7 @@ async function buildAutopilotPlan(
       selectionDeficit,
       newsQuota: selectionNewsQuota,
       selectedNewsCount: candidateSelection.selectedNewsCount,
+      newsQuotaShortfall: Math.max(0, selectionNewsQuota - candidateSelection.selectedNewsCount),
     };
     const providerWaitingItems = durableCandidateItems.filter(
       (item) => item?.buildState === "waiting_provider",
@@ -7448,6 +7454,7 @@ async function buildAutopilotPlan(
     reserveCount: Math.max(0, variedPairs.length - items.length),
     newsQuota: selectionNewsQuota,
     selectedNewsCount,
+    newsQuotaShortfall: Math.max(0, selectionNewsQuota - selectedNewsCount),
     selectedCandidateIndexes: items.map((item) => Number(item.i)),
   };
   const scheduleSummary = generationPostFrequency > 7

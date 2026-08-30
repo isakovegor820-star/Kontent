@@ -250,6 +250,10 @@ describe("transactional Autopilot scheduling", () => {
     const planLock = statements.find((sql) => sql.startsWith("select items from autopilot_plan"));
     expect(planLock).toContain("c.network = 'tg' and c.is_active = true");
     expect(planLock).toContain("op.status = 'processing'");
+    const planCheckpoint = statements.find((sql) =>
+      sql.startsWith("update autopilot_plan") && sql.includes("approval_heartbeat_at"),
+    );
+    expect(planCheckpoint).toContain("user_id = $3");
   });
 
   it("keeps the committed outcome retryable when DB acknowledgement fails after enqueue", async () => {

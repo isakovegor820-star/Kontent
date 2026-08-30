@@ -265,14 +265,34 @@ describe("mapConcurrent", () => {
 
 describe("autopilotBuildComplete", () => {
   const topics = [{ topic: "Один" }, { topic: "Два" }];
+  const verifiedMetadata = {
+    checkedAt: "2026-08-30T08:00:00.000Z",
+    rules: { id: "aurora-post-quality", version: 1, profileVersion: 1 },
+    provenance: {
+      kind: "deterministic",
+      validator: "validatePostQuality",
+      trigger: "generation",
+    },
+  };
+  const readerReadyQuality = {
+    passed: true,
+    score: 95,
+    threshold: 85,
+    blockers: [],
+    violations: [],
+    publicationDisposition: "ready",
+    metadata: verifiedMetadata,
+  };
   const items = [
-    { aiReady: true, draft: "Готовый первый пост", qualityBlocked: false, quality: { passed: true } },
-    { aiReady: true, draft: "Готовый второй пост", qualityBlocked: false, quality: { passed: true } },
+    { aiReady: true, draft: "Готовый первый пост", qualityBlocked: false, quality: readerReadyQuality },
+    { aiReady: true, draft: "Готовый второй пост", qualityBlocked: false, quality: readerReadyQuality },
   ];
 
   it("принимает только план точного размера с готовыми ИИ-текстами", () => {
     expect(autopilotBuildComplete(2, topics)).toBe(true);
     expect(autopilotBuildComplete(2, topics, items)).toBe(true);
+    expect(autopilotDraftsDeliverable(2, topics)).toBe(false);
+    expect(autopilotDraftsDeliverable(2, topics, items)).toBe(true);
   });
 
   it("не принимает неполный список тем", () => {
@@ -293,23 +313,61 @@ describe("autopilotBuildComplete", () => {
     expect(autopilotBuildComplete(2, topics, [items[0], blocked])).toBe(false);
   });
 
-  it("не считает готовым даже сильный текст, если он ждёт ручной проверки", () => {
+  it("доставляет confirm-план с semantic-only review, не считая его полностью готовым", () => {
     const review = {
       aiReady: true,
       draft: "Черновик для ручной проверки",
       qualityBlocked: true,
       reviewRequired: true,
       reviewState: "semantic_only_review",
-      quality: { passed: true },
+      quality: {
+        ...readerReadyQuality,
+        publicationDisposition: "confirmation_required",
+        violations: [{
+          code: "semantic_review_required",
+          message: "Смысл требует ручного подтверждения",
+          blocker: false,
+          penalty: 0,
+        }],
+        semantic: {
+          version: 1,
+          status: "not_checked",
+          passed: false,
+          requiresReview: true,
+          blockers: [],
+          claimVerdicts: [{
+            claimId: "claim-1",
+            claim: "Черновик для ручной проверки",
+            verdict: "unknown",
+            reasonCode: "semantic_provider_unavailable",
+            riskCodes: [],
+            sourceSpans: [],
+          }],
+          provenance: {
+            validatorVersion: "semantic-publication-v1",
+            checkedAt: "2026-08-30T08:00:00.000Z",
+            provider: "unavailable",
+            model: null,
+            sourceIds: [],
+            rejectedSourceSpans: [],
+            terminalVerdict: "not_checked",
+          },
+        },
+      },
     };
     expect(autopilotBuildComplete(2, topics, [items[0], review])).toBe(false);
-    expect(autopilotDraftsDeliverable(2, topics, [items[0], review])).toBe(false);
-    // Обычный провал редакционного порога остаётся внутри сборки и не превращает
-    // пользователя в бесплатного корректора Автопилота.
+    expect(autopilotDraftsDeliverable(2, topics, [items[0], review])).toBe(true);
+
+    // Обычный провал редакционного порога остаётся внутри сборки.
     expect(autopilotDraftsDeliverable(2, topics, [items[0], {
       ...review,
       reviewState: "quality_review",
-      quality: { passed: false },
+      quality: { ...readerReadyQuality, passed: false },
+    }])).toBe(false);
+
+    expect(autopilotDraftsDeliverable(2, topics, [items[0], {
+      ...review,
+      invented: ["несуществующий факт"],
     }])).toBe(false);
   });
 
@@ -319,7 +377,7 @@ describe("autopilotBuildComplete", () => {
       draft: "Черновик, который не прошёл проверку",
       qualityBlocked: true,
       reviewRequired: false,
-      quality: { passed: false },
+      quality: { ...readerReadyQuality, passed: false },
     };
     expect(autopilotDraftsDeliverable(2, topics, [items[0], silentlyBroken])).toBe(false);
     expect(autopilotBuildComplete(2, topics, [items[0], silentlyBroken])).toBe(false);
@@ -332,7 +390,7 @@ describe("autopilotBuildComplete", () => {
       draft: `Готовый текст поста ${index + 1}`,
       qualityBlocked: false,
       reviewRequired: false,
-      quality: { passed: true, score: 100 },
+      quality: { ...readerReadyQuality, score: 100 },
     }));
     fiveDrafts[4] = {
       ...fiveDrafts[4],

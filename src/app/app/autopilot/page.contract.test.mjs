@@ -116,10 +116,12 @@ describe("Autopilot build UI contract", () => {
     expect(source).toContain("growthMoveId,");
   });
 
-  it("requires an explicit review of every reader-ready post before calendar approval", () => {
+  it("shows every deliverable post, including human-review cards, before calendar approval", () => {
     expect(source).toContain("готов к просмотру");
     expect(source).toContain("на согласовании");
     expect(source).toContain("isAutopilotReaderReadyItem(item)");
+    expect(source).toContain("isAutopilotReaderReadyItem(item) || isAutopilotHumanReviewItem(item)");
+    expect(source).toContain("const hasUsablePlan = Boolean(plan && visible.length > 0)");
     expect(source).not.toContain("Источники и контекст");
     expect(source).toContain("reviewedIndexes");
     expect(source).toContain("Подтвердить просмотр");

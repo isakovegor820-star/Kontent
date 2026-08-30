@@ -62,6 +62,10 @@ export interface AutopilotApprovalPreview {
   requiresConfirmation: boolean;
 }
 
+export function autopilotApprovalSemantics(
+  preview: Partial<AutopilotApprovalPreview> | null | undefined,
+): string;
+
 export function createAutopilotPreviewToken(bytes?: number): string;
 export function hashAutopilotPreviewToken(token: string): string;
 export function autopilotPlanRevisionHash(input: {

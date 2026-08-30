@@ -36,7 +36,7 @@ describe("Autopilot candidate selection", () => {
     });
   });
 
-  it("does not call a pool complete when the requested news quota is missing", () => {
+  it("treats the news quota as a goal when enough evergreen posts fill the plan", () => {
     const result = selectAutopilotCandidates([
       { i: 0, topic: "Разбор A", draft: "Уникальный разбор A.", qualityScore: 96 },
       { i: 1, topic: "Разбор B", draft: "Уникальный разбор B.", qualityScore: 95 },
@@ -46,7 +46,7 @@ describe("Autopilot candidate selection", () => {
     expect(result.selected).toHaveLength(2);
     expect(result.selectedNewsCount).toBe(1);
     expect(result.newsQuotaSatisfied).toBe(false);
-    expect(result.complete).toBe(false);
+    expect(result.complete).toBe(true);
   });
 
   it("finalizes five publications from six ready candidates and keeps one reserve", () => {

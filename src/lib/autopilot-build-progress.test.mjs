@@ -23,6 +23,40 @@ const readyQuality = {
     provenance: { kind: "deterministic", validator: "validatePostQuality", trigger: "generation" },
   },
 };
+const reviewQuality = {
+  ...readyQuality,
+  publicationDisposition: "confirmation_required",
+  violations: [{
+    code: "semantic_review_required",
+    message: "Нужна ручная проверка",
+    blocker: false,
+    penalty: 0,
+  }],
+  semantic: {
+    version: 1,
+    status: "not_checked",
+    passed: false,
+    requiresReview: true,
+    blockers: [],
+    claimVerdicts: [{
+      claimId: "claim-1",
+      claim: "Текст на согласовании",
+      verdict: "unknown",
+      reasonCode: "semantic_provider_unavailable",
+      riskCodes: [],
+      sourceSpans: [],
+    }],
+    provenance: {
+      validatorVersion: "semantic-publication-v1",
+      checkedAt: "2026-08-18T08:00:00.000Z",
+      provider: "unavailable",
+      model: null,
+      sourceIds: [],
+      rejectedSourceSpans: [],
+      terminalVerdict: "not_checked",
+    },
+  },
+};
 
 describe("Autopilot durable build progress", () => {
   it("stores topic shells and strips private prompt context from completed checkpoints", () => {
@@ -88,6 +122,34 @@ describe("Autopilot durable build progress", () => {
       .toBe("2026-08-18T08:02:00.000Z");
   });
 
+  it("preserves human-review checkpoints as deliverable and never retries them", () => {
+    const topic = {
+      i: 1,
+      topic: "Тема на согласовании",
+      scheduledAt: "2026-08-19T10:00:00.000Z",
+    };
+    const checkpoint = autopilotCheckpointItem({
+      ...topic,
+      status: "pending",
+      aiReady: true,
+      draft: "Текст на согласовании",
+      qualityBlocked: true,
+      reviewRequired: true,
+      reviewState: "semantic_only_review",
+      quality: reviewQuality,
+    }, now);
+
+    expect(checkpoint.buildState).toBe("confirmation_required");
+    expect(reusableAutopilotCheckpoint(checkpoint, topic, topic.scheduledAt)).toBe(true);
+    expect(autopilotBuildProgress([checkpoint], 1)).toMatchObject({
+      completed: 1,
+      ready: 1,
+      failed: 0,
+      reviewRequired: 1,
+    });
+    expect(autopilotRetryableItemIndexes([checkpoint])).toEqual([]);
+  });
+
   it("shows a conservative duration range that shrinks with completed posts", () => {
     expect(estimateAutopilotBuildMinutes(5)).toEqual({ min: 1, max: 1 });
     expect(estimateAutopilotBuildMinutes(30)).toEqual({ min: 3, max: 4 });
@@ -96,7 +158,7 @@ describe("Autopilot durable build progress", () => {
     expect(estimateAutopilotBuildMinutes(90)).toEqual({ min: 9, max: 12 });
   });
 
-  it("never retries reader-ready, approved, or published checkpoints", () => {
+  it("never retries deliverable, approved, or published checkpoints", () => {
     expect(autopilotRetryableItemIndexes([
       { i: 0, aiReady: true, draft: "Готовый пост.", quality: readyQuality },
       { i: 1, aiReady: false, buildState: "failed", status: "pending" },

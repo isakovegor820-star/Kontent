@@ -8,6 +8,7 @@ import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
 import { enqueueAutopilotPost, resolveChannel } from "@/lib/autopilot";
 import {
+  autopilotApprovalSemantics,
   autopilotPlanRevisionHash,
   buildAutopilotApprovalPreview,
   createAutopilotPreviewToken,
@@ -88,16 +89,6 @@ function projectIdempotencyKey(projectId: number, clientKey: string): string {
   const prefix = `project:${projectId}:`;
   if (prefix.length + clientKey.length <= 128) return `${prefix}${clientKey}`;
   return `${prefix}sha256:${createHash("sha256").update(clientKey).digest("hex")}`;
-}
-
-function approvalSemantics(preview: AutopilotApprovalPreview) {
-  return JSON.stringify({
-    expectedCount: preview.expectedCount,
-    complete: preview.complete,
-    counts: preview.counts,
-    dates: preview.dates,
-    blockers: preview.blockers,
-  });
 }
 
 async function createStoredPreview(
@@ -311,7 +302,8 @@ export async function POST(req: NextRequest) {
       !previewRecord || !currentPlan || currentPlan.status !== "pending" ||
       Number(previewRecord.plan_revision) !== planRevision || previewRecord.preview_hash !== previewHash ||
       currentRevision !== planRevision || currentHash !== previewHash ||
-      !currentPreview || approvalSemantics(currentPreview) !== approvalSemantics(previewRecord.snapshot);
+      !currentPreview ||
+      autopilotApprovalSemantics(currentPreview) !== autopilotApprovalSemantics(previewRecord.snapshot);
     if (previewIsStale) {
       const freshPreview = await createStoredPreview(pool, projectId, user.id, channelSnapshot);
       return NextResponse.json(

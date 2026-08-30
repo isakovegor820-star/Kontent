@@ -5,6 +5,7 @@ import {
   serializeAutopilotActivePlan,
   serializeAutopilotPublicItem,
 } from "./autopilot-build-attempt.mjs";
+import { isAutopilotHumanReviewItem } from "./autopilot-review.mjs";
 
 const readyQuality = {
   passed: true,
@@ -64,6 +65,45 @@ describe("Autopilot public serialization", () => {
       "private-provider",
     ]) expect(serialized).not.toContain(secret);
     expect(serialized).toContain("supported");
+  });
+
+  it("keeps the trusted failed-closed semantic provenance usable in the browser", () => {
+    const item = serializeAutopilotPublicItem({
+      i: 0,
+      topic: "Тема на согласовании",
+      draft: "Готовый текст для проверки человеком.",
+      scheduledAt: "2026-08-22T10:00:00.000Z",
+      status: "pending",
+      aiReady: true,
+      qualityBlocked: true,
+      reviewRequired: true,
+      reviewState: "semantic_only_review",
+      quality: {
+        ...readyQuality,
+        publicationDisposition: "confirmation_required",
+        violations: [{ code: "semantic_review_required", blocker: false }],
+        semantic: {
+          version: 1,
+          status: "not_checked",
+          passed: false,
+          requiresReview: true,
+          claimVerdicts: [{
+            verdict: "unknown",
+            reasonCode: "semantic_provider_failed",
+            sourceSpans: [],
+          }],
+          provenance: {
+            validatorVersion: "semantic-publication-v1",
+            checkedAt: "2026-08-21T10:00:00.000Z",
+            provider: "aurora-semantic-ai-v1",
+            terminalVerdict: "not_checked",
+          },
+        },
+      },
+    });
+
+    expect(item.quality.semantic.provenance.provider).toBe("aurora-semantic-ai-v1");
+    expect(isAutopilotHumanReviewItem(item)).toBe(true);
   });
 
   it("separates a usable active plan from partial build progress", () => {

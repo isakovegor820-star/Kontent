@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   annotateAutopilotItems,
   attestAutopilotItemForHumanApproval,
+  autopilotApprovalSemantics,
   autopilotPlanRevisionHash,
   buildAutopilotApprovalPreview,
   evaluateAutopilotItem,
@@ -94,6 +95,25 @@ const reviewQuality = {
 };
 
 describe("Autopilot approval policy", () => {
+  it("compares preview semantics independently of PostgreSQL jsonb key order", () => {
+    const left = {
+      expectedCount: 3,
+      complete: true,
+      counts: { total: 3, eligible: 3, expired: 0, blocked: 0 },
+      dates: [{ index: 0, scheduledAt: "2026-08-01T13:00:00.000Z" }],
+      blockers: [],
+    };
+    const fromJsonb = {
+      complete: true,
+      blockers: [],
+      dates: [{ scheduledAt: "2026-08-01T13:00:00.000Z", index: 0 }],
+      counts: { total: 3, blocked: 0, expired: 0, eligible: 3 },
+      expectedCount: 3,
+    };
+
+    expect(autopilotApprovalSemantics(left)).toBe(autopilotApprovalSemantics(fromJsonb));
+  });
+
   it("makes three expired items ineligible and marks immutable copies expired", () => {
     const source = [
       item({ i: 0, scheduledAt: "2026-08-01T11:00:00.000Z" }),
@@ -310,6 +330,34 @@ describe("Autopilot approval policy", () => {
     expect(calls).toEqual([0]);
     expect(result.scheduled).toBe(1);
     expect(result.items[0]).toMatchObject({ status: "approved", postId: 77, qualityOrigin: "human_attested" });
+  });
+
+  it("does not persist a process-local attestation when scheduling fails", async () => {
+    const reviewItem = item({
+      quality: reviewQuality,
+      qualityBlocked: true,
+      reviewRequired: true,
+      reviewState: "semantic_only_review",
+    });
+    const result = await executeAutopilotApproval({
+      items: [reviewItem],
+      nowMs: NOW,
+      attestor: { userId: 3, attestedAt: "2026-08-01T12:01:00.000Z" },
+      schedule: async () => {
+        throw new Error("database unavailable");
+      },
+    });
+
+    expect(result.error).toBeInstanceOf(Error);
+    expect(result.scheduled).toBe(0);
+    expect(result.items[0]).toEqual(reviewItem);
+    expect(buildAutopilotApprovalPreview({
+      items: result.items,
+      nowMs: NOW,
+      channel: { id: 7, title: "Канал" },
+      planId: 9,
+      actor: "human",
+    }).complete).toBe(true);
   });
 
   it.each([

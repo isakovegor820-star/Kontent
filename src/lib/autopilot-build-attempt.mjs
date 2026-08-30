@@ -80,7 +80,11 @@ function serializePublicQuality(source) {
           provenance: {
             validatorVersion: semantic.provenance?.validatorVersion,
             checkedAt: semantic.provenance?.checkedAt,
-            provider: semantic.provenance?.provider === "unavailable" ? "unavailable" : "verified",
+            provider: ["unavailable", "aurora-semantic-ai-v1"].includes(
+              semantic.provenance?.provider,
+            )
+              ? semantic.provenance.provider
+              : "verified",
             terminalVerdict: semantic.provenance?.terminalVerdict,
           },
         }

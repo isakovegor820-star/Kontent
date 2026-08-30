@@ -3,7 +3,10 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { resolveChannel } from "@/lib/autopilot";
 import { autopilotRetryableItemIndexes } from "@/lib/autopilot-build-progress.mjs";
-import { isAutopilotReaderReadyItem } from "@/lib/autopilot-review.mjs";
+import {
+  isAutopilotHumanReviewItem,
+  isAutopilotReaderReadyItem,
+} from "@/lib/autopilot-review.mjs";
 import { getPool } from "@/lib/db";
 import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/project-permissions";
 import { getAutopilotQueue } from "@/lib/queue";
@@ -150,7 +153,9 @@ export async function POST(req: NextRequest) {
       }
 
       const items = Array.isArray(plan.items) ? plan.items : [];
-      const readyCount = items.filter(isAutopilotReaderReadyItem).length;
+      const readyCount = items.filter((item: Record<string, unknown>) =>
+        isAutopilotReaderReadyItem(item) || isAutopilotHumanReviewItem(item),
+      ).length;
       const publicationTargetCount = Math.max(
         1,
         Number(plan.publication_target_count || plan.expected_post_count) || 1,

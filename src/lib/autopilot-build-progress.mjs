@@ -1,3 +1,8 @@
+import {
+  isAutopilotHumanReviewItem,
+  isAutopilotReaderReadyItem,
+} from "./autopilot-review.mjs";
+
 const PRIVATE_ITEM_KEYS = new Set([
   "_support",
   "_system",
@@ -29,6 +34,9 @@ const PROVIDER_WAITING_DISCARDED_KEYS = new Set([
 // several drafts are generated in parallel. Keep a range instead of showing a precise
 // countdown: provider load and fallback attempts can legitimately move the finish time.
 const AUTOPILOT_BUILD_SECONDS_PER_POST = Object.freeze({ min: 6, max: 8 });
+
+const isAutopilotDeliverableItem = (item) =>
+  isAutopilotReaderReadyItem(item) || isAutopilotHumanReviewItem(item);
 
 export function estimateAutopilotBuildMinutes(total, completed = 0) {
   const safeTotal = Math.max(0, Math.floor(Number(total) || 0));
@@ -74,11 +82,11 @@ export function autopilotCheckpointItem(item, now = () => new Date()) {
     ...checkpoint,
     buildState: item?.buildState === "waiting_provider"
       ? "waiting_provider"
-      : isAutopilotReaderReadyItem(item)
-        ? item?.reviewRequired === true
-          ? "confirmation_required"
-          : "ready"
-        : "failed",
+      : isAutopilotHumanReviewItem(item)
+        ? "confirmation_required"
+        : isAutopilotReaderReadyItem(item)
+          ? "ready"
+          : "failed",
     checkpointedAt: now().toISOString(),
   };
 }
@@ -123,7 +131,7 @@ export function autopilotProviderWaitingItem({
 
 export function reusableAutopilotCheckpoint(item, topic, scheduledAt) {
   if (!item || !["ready", "confirmation_required", "review_required"].includes(item.buildState)) return false;
-  if (!isAutopilotReaderReadyItem(item)) return false;
+  if (!isAutopilotDeliverableItem(item)) return false;
   if (String(item.topic || "") !== String(topic?.topic || "")) return false;
   return String(item.scheduledAt || "") === String(scheduledAt || "");
 }
@@ -131,11 +139,11 @@ export function reusableAutopilotCheckpoint(item, topic, scheduledAt) {
 export function autopilotBuildProgress(items, expected) {
   const list = Array.isArray(items) ? items : [];
   const total = Math.max(0, Number(expected) || list.length);
-  const completed = list.filter((item) => isAutopilotReaderReadyItem(item)).length;
+  const completed = list.filter((item) => isAutopilotDeliverableItem(item)).length;
   const failed = list.filter((item) =>
     item?.buildState === "failed" || (
       item?.aiReady === true && String(item?.draft || "").trim() &&
-      !isAutopilotReaderReadyItem(item)
+      !isAutopilotDeliverableItem(item)
     ),
   ).length;
   const reviewRequired = list.filter((item) => item?.reviewRequired === true).length;
@@ -153,7 +161,7 @@ export function autopilotBuildProgress(items, expected) {
 export function autopilotRetryableItemIndexes(items) {
   return (Array.isArray(items) ? items : [])
     .flatMap((item, index) =>
-      !isAutopilotReaderReadyItem(item) &&
+      !isAutopilotDeliverableItem(item) &&
       item?.status !== "approved" &&
       item?.status !== "published" &&
       !Number(item?.postId)
@@ -170,4 +178,3 @@ export function autopilotBuildActivityAt(createdAt, items) {
   }
   return Number.isFinite(latest) ? new Date(latest) : new Date(createdAt);
 }
-import { isAutopilotReaderReadyItem } from "./autopilot-review.mjs";

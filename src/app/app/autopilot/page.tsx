@@ -1971,13 +1971,13 @@ export default function AutopilotPage() {
   const plan = data.activePlan ?? data.plan;
   const buildAttempt = data.buildAttempt;
   const planItems = plan?.items ?? [];
-  // Legacy plans may contain internal quality-review drafts. The reader-facing product
-  // boundary is stricter: show only verified material (plus already published history).
+  // Confirm-план показывает и reader-ready тексты, и безопасные тексты на согласовании.
+  // Hard-block и внутренние quality-review черновики остаются скрыты.
   const items = planItems.filter((item) =>
     item.status !== "expired" && item.status !== "rejected" &&
       (
         item.status === "approved" || item.status === "published" ||
-        isAutopilotReaderReadyItem(item)
+        isAutopilotReaderReadyItem(item) || isAutopilotHumanReviewItem(item)
       ),
   );
   const pending = items.filter((it) => it.status === "pending");

@@ -443,7 +443,7 @@ export async function scheduleAutopilotItem({
     const saved = await tx.query(
       `update autopilot_plan
           set items = $6::jsonb, approval_heartbeat_at = now(), revision = revision + 1
-        where id = $1 and project_id = $2 and channel_id = $4
+        where id = $1 and project_id = $2 and user_id = $3 and channel_id = $4
           and status = 'approving' and approval_operation_id = $5
         returning id`,
       [planId, projectId, userId, channelId, operationId, JSON.stringify(items)],

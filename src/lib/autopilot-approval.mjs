@@ -36,6 +36,16 @@ function stableValue(value) {
   return value ?? null;
 }
 
+export function autopilotApprovalSemantics(preview) {
+  return JSON.stringify(stableValue({
+    expectedCount: preview?.expectedCount,
+    complete: preview?.complete,
+    counts: preview?.counts,
+    dates: preview?.dates,
+    blockers: preview?.blockers,
+  }));
+}
+
 export function canonicalAutopilotPlanSnapshot({ items, planId, planRevision, channelId }) {
   return stableValue({
     planId: Number(planId),
@@ -296,7 +306,8 @@ export async function executeAutopilotApproval({
   onCheckpoint,
   attestor,
 }) {
-  const prepared = (Array.isArray(items) ? items : []).map((item) => (
+  const sourceItems = Array.isArray(items) ? items : [];
+  const prepared = sourceItems.map((item) => (
     attestor
       ? attestAutopilotItemForHumanApproval(item, {
           userId: attestor.userId,
@@ -321,6 +332,20 @@ export async function executeAutopilotApproval({
     }
     return { items: safeItems, scheduled, error: null };
   } catch (error) {
+    // A human attestation authorizes this exact in-process scheduling attempt. If a
+    // checkpoint fails, do not persist that process-local proof on untouched items:
+    // a later browser retry must review and attest them again instead of inheriting a
+    // marker that cannot survive JSON serialization.
+    for (let index = 0; index < safeItems.length; index += 1) {
+      const item = safeItems[index];
+      const source = sourceItems[index];
+      if (
+        item?.status === "pending" && !item?.postId &&
+        item?.humanAttestation != null && source?.humanAttestation == null
+      ) {
+        safeItems[index] = { ...source };
+      }
+    }
     return { items: safeItems, scheduled, error };
   }
 }
