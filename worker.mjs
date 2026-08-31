@@ -5,6 +5,12 @@
 // Запуск:  npm run worker   (== node --env-file=.env.local worker.mjs)
 // На деплое переезжает на Railway/Render/свой сервер (Vercel для него не подходит).
 
+// This process is the worker by definition, so it owns its runtime role rather than
+// inheriting one. Production launches `node worker.mjs` from a systemd unit whose
+// EnvironmentFile is shared with the web unit, which declares the web role for the
+// role-less `next start` process; without this line the worker would silently adopt it.
+process.env.AURORA_RUNTIME_ROLE = "worker";
+
 import "./sentry.worker.config.mjs";
 import { Worker, Queue, UnrecoverableError } from "bullmq";
 import IORedis from "ioredis";
@@ -100,6 +106,7 @@ import {
   reconcileMonthlyCampaignRegenerationOutbox,
   recoverStaleMonthlyCampaignRegenerations,
 } from "./worker/monthly-campaign-regeneration.mjs";
+import { readContentProfileHash } from "./src/lib/content-profile-hash.mjs";
 import {
   enqueuePublicationExtraJob,
   PUBLICATION_EXTRA_QUEUE,
@@ -6197,19 +6204,7 @@ async function loadMonthlyAutopilotContext(projectId, monthlyPlanId, bestHour) {
       code: "MONTHLY_PLAN_UNAVAILABLE",
     });
   }
-  const profileRows = (
-    await pool.query(
-      `select channel_id, niche, audience, rubrics, formats, author_role, goal, cta, taboo,
-              profile_answers, quality, ready, source, updated_at
-         from content_brief
-        where project_id = $1
-        order by channel_id`,
-      [projectId],
-    )
-  ).rows;
-  const currentProfileHash = createHash("sha256")
-    .update(JSON.stringify(profileRows), "utf8")
-    .digest("hex");
+  const currentProfileHash = await readContentProfileHash(pool, projectId);
   if (
     String(plan.source_brief_hash) !== String(plan.brief_hash)
     || String(plan.source_profile_hash) !== String(plan.profile_hash)

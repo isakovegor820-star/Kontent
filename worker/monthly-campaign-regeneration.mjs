@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 
+import { readContentProfileHash } from "../src/lib/content-profile-hash.mjs";
+
 export const MONTHLY_CAMPAIGN_REGENERATION_QUEUE = "monthly-campaign-regeneration";
 export const MONTHLY_CAMPAIGN_REGENERATION_DUPLICATE_THRESHOLD = 0.78;
 
@@ -138,16 +140,7 @@ async function readContext(db, projectId, operationId) {
       [operationId, operation.plan_id, projectId],
     )
   ).rows ?? [];
-  const profileRows = (
-    await db.query(
-      `select channel_id, niche, audience, rubrics, formats, author_role, goal, cta, taboo,
-              profile_answers, quality, ready, source, updated_at
-         from content_brief
-        where project_id = $1
-        order by channel_id`,
-      [projectId],
-    )
-  ).rows ?? [];
+  const profileHash = await readContentProfileHash(db, projectId);
   const historicalTitles = (
     await db.query(
       `select candidate.title
@@ -173,7 +166,7 @@ async function readContext(db, projectId, operationId) {
     items,
     targets: items.filter((item) => item.targeted === true),
     historicalTitles,
-    profileHash: hashJson(profileRows),
+    profileHash,
   };
 }
 

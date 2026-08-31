@@ -151,7 +151,7 @@ function apiError(code: string | undefined): string {
     duplicate_topics: "Несколько тем слишком похожи на прошлые материалы. Пересобери план.",
     version_conflict: "План изменился в другой вкладке. Данные обновлены — повтори действие.",
     regeneration_in_progress: "Дождись завершения пересборки. Аврора покажет новую версию плана автоматически.",
-    stale_campaign: "Профиль проекта изменился. Обнови кампанию перед продолжением.",
+    stale_campaign: "Настройки канала изменились. Пересобери весь месяц — отдельную тему или неделю по устаревшему брифу собрать нельзя.",
     access_denied: "Для этого действия недостаточно прав в выбранном проекте.",
     worker_unavailable: "Фоновая подготовка сейчас недоступна. Запусти приложение вместе с обработчиком задач и повтори.",
     engine_unavailable: "Для выбранной модели не настроено подключение.",
@@ -966,10 +966,10 @@ export function MonthlyCampaignPlanner() {
                 <div className="flex flex-wrap gap-2">
                   {canEdit && plan && (
                     <Button
-                      variant="secondary"
+                      variant={plan.stale ? "primary" : "secondary"}
                       onClick={() => regenerate("month")}
                       loading={busy === "regen:month"}
-                      disabled={Boolean(busy) || hasActiveRegeneration || plan.stale}
+                      disabled={Boolean(busy) || hasActiveRegeneration}
                     >
                       <RefreshCw className="h-4 w-4" aria-hidden />
                       Пересобрать весь месяц
@@ -998,9 +998,14 @@ export function MonthlyCampaignPlanner() {
           </Card>
 
           {plan?.stale && (
-            <div role="alert" className="flex items-start gap-2 rounded-sm bg-danger-soft p-4 text-[14px] text-danger-text">
+            <div role="alert" className="flex items-start gap-2 rounded-sm bg-danger-soft p-4 text-[14px] leading-relaxed text-danger-text">
               <CircleAlert className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-              Настройки проекта изменились после создания этого плана. Согласование и подготовка текстов остановлены, чтобы не использовать устаревший бриф.
+              <span>
+                Настройки канала изменились после создания этого плана. Согласование и подготовка текстов остановлены, чтобы не использовать устаревший бриф.{" "}
+                {canEdit
+                  ? "Нажми «Пересобрать весь месяц» — Аврора соберёт темы по актуальным настройкам, а текущая версия останется в истории."
+                  : "Автор или владелец проекта может пересобрать месяц по актуальным настройкам."}
+              </span>
             </div>
           )}
 
@@ -1337,7 +1342,13 @@ function WeekSection({
           </span>
         </button>
         {canEdit && (
-          <Button size="sm" variant="ghost" onClick={() => week.items[0] && onRegenerate("week", week.items[0])} disabled={Boolean(busy) || hasActiveRegeneration}>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => week.items[0] && onRegenerate("week", week.items[0])}
+            disabled={Boolean(busy) || hasActiveRegeneration || plan.stale}
+            title={plan.stale ? "Бриф канала изменился — сначала пересобери весь месяц" : undefined}
+          >
             <RefreshCw className="h-4 w-4" aria-hidden />
             Пересобрать неделю
           </Button>
@@ -1359,6 +1370,7 @@ function WeekSection({
                 canEdit={canEdit}
                 busy={busy}
                 hasActiveRegeneration={hasActiveRegeneration}
+                staleBrief={plan.stale}
                 dragged={draggedId === item.id}
                 onToggle={() => onOpenItem(item.id)}
                 onDragStart={() => onDragStart(item.id)}
@@ -1387,6 +1399,7 @@ function TopicRow({
   canEdit,
   busy,
   hasActiveRegeneration,
+  staleBrief,
   dragged,
   onToggle,
   onDragStart,
@@ -1403,6 +1416,7 @@ function TopicRow({
   canEdit: boolean;
   busy: string | null;
   hasActiveRegeneration: boolean;
+  staleBrief: boolean;
   dragged: boolean;
   onToggle: () => void;
   onDragStart: () => void;
@@ -1485,7 +1499,14 @@ function TopicRow({
               <Button size="sm" variant="ghost" onClick={() => next && onMove(item, next)} disabled={!next || Boolean(busy) || hasActiveRegeneration} aria-label={`Перенести тему «${item.title}» на день позже`}>
                 <ArrowDown className="h-4 w-4" aria-hidden />Позже
               </Button>
-              <Button size="sm" variant="ghost" onClick={() => onRegenerate("item", item)} disabled={Boolean(busy) || regenerating || hasActiveRegeneration} aria-label={`Пересобрать только тему «${item.title}»`}>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => onRegenerate("item", item)}
+                disabled={Boolean(busy) || regenerating || hasActiveRegeneration || staleBrief}
+                title={staleBrief ? "Бриф канала изменился — сначала пересобери весь месяц" : undefined}
+                aria-label={`Пересобрать только тему «${item.title}»`}
+              >
                 <RefreshCw className="h-4 w-4" aria-hidden />Только эту тему
               </Button>
             </>

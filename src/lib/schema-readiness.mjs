@@ -2,9 +2,34 @@ import { SCHEMA_MANIFEST } from "./schema-manifest.mjs";
 
 const asSet = (values) => new Set((values || []).map((value) => String(value)));
 
+/**
+ * A rollback reverts code but never un-applies a migration, so the release that a
+ * rollback lands on always meets a database that is newer than its own manifest.
+ * Treating that as fatal turned every rollback into a permanent worker outage: the
+ * runtime gate exits, systemd restarts, the BullMQ consumer and the weekly Autopilot
+ * cron never come up, and the platform stays down until someone rolls forward.
+ *
+ * Migrations are additive by enforced policy (see `scripts/migration-policy.mjs`: no
+ * DROP TABLE/COLUMN, no TRUNCATE/DELETE, DROP CONSTRAINT only from an allowlist) and
+ * are named with a sortable `YYYYMMDD_` prefix, so a migration sorting after everything
+ * this build knows about can only be a newer release's additive schema. Accepting it
+ * keeps the required-capability checks below as the real contract: anything this build
+ * actually reads or writes must still exist.
+ *
+ * An unknown migration that sorts *before* the newest known one is not a newer release
+ * — it is drift or a foreign writer, and stays fatal.
+ */
+function newestExpectedMigration(manifest) {
+  return manifest.migrations.reduce(
+    (newest, migration) => (migration.name > newest ? migration.name : newest),
+    "",
+  );
+}
+
 /** Pure comparison used by unit tests and by the database-backed probe. */
 export function evaluateSchemaSnapshot(snapshot, manifest = SCHEMA_MANIFEST) {
   const reasons = [];
+  const forwardMigrations = [];
   const applied = new Map(
     (snapshot.migrations || []).map((migration) => [
       String(migration.name),
@@ -12,6 +37,7 @@ export function evaluateSchemaSnapshot(snapshot, manifest = SCHEMA_MANIFEST) {
     ]),
   );
   const expectedNames = new Set(manifest.migrations.map((migration) => migration.name));
+  const newestExpected = newestExpectedMigration(manifest);
 
   if (!snapshot.schemaMigrationsTable) reasons.push("schema_migrations_table_missing");
   for (const migration of manifest.migrations) {
@@ -25,7 +51,9 @@ export function evaluateSchemaSnapshot(snapshot, manifest = SCHEMA_MANIFEST) {
     }
   }
   for (const name of [...applied.keys()].sort()) {
-    if (!expectedNames.has(name)) reasons.push(`migration_unexpected:${name}`);
+    if (expectedNames.has(name)) continue;
+    if (name > newestExpected) forwardMigrations.push(name);
+    else reasons.push(`migration_unexpected:${name}`);
   }
 
   for (const [kind, expectedValues] of Object.entries(manifest.capabilities)) {
@@ -35,13 +63,17 @@ export function evaluateSchemaSnapshot(snapshot, manifest = SCHEMA_MANIFEST) {
     }
   }
 
+  const ready = reasons.length === 0;
   return {
-    ready: reasons.length === 0,
+    ready,
     expectedVersion: manifest.schemaVersion,
-    actualVersion: reasons.length === 0 ? manifest.schemaVersion : null,
+    actualVersion: ready ? manifest.schemaVersion : null,
     appliedMigrations: applied.size,
     expectedMigrations: manifest.migrations.length,
-    reasons,
+    forwardMigrations,
+    // Surfaced so `/api/readiness` reports the drift an operator must still resolve by
+    // rolling forward, without pretending the schema is identical to this build's.
+    reasons: [...reasons, ...forwardMigrations.map((name) => `schema_forward:${name}`)],
   };
 }
 

@@ -208,8 +208,12 @@ cp --preserve=mode,ownership "${CURRENT_LINK}/.env.production" "${release}/.env.
 # release's env untouched so rollback boots against its original configuration.
 runtime_env="${release}/.env.production"
 runtime_env_next="$(mktemp "${release}/.env.production.next.XXXXXX")"
+# The web unit launches `next start` directly, so no npm script injects a runtime role
+# and the process would resolve the role-less "shared" pool budget — which is not
+# configured — and fail every database query. Declare the role in the shared runtime env;
+# worker.mjs overrides it for itself because that unit reads the same file.
 awk -v avatar="$AVATAR_BODY_LIMIT_BYTES" -v web_pool="$DB_POOL_MAX_WEB" -v worker_pool="$DB_POOL_MAX_WORKER" '
-  BEGIN { avatar_written = 0; web_pool_written = 0; worker_pool_written = 0 }
+  BEGIN { avatar_written = 0; web_pool_written = 0; worker_pool_written = 0; role_written = 0 }
   /^AURORA_AVATAR_BODY_LIMIT_BYTES=/ {
     if (!avatar_written) print "AURORA_AVATAR_BODY_LIMIT_BYTES=" avatar
     avatar_written = 1
@@ -225,11 +229,17 @@ awk -v avatar="$AVATAR_BODY_LIMIT_BYTES" -v web_pool="$DB_POOL_MAX_WEB" -v worke
     worker_pool_written = 1
     next
   }
+  /^AURORA_RUNTIME_ROLE=/ {
+    if (!role_written) print "AURORA_RUNTIME_ROLE=web"
+    role_written = 1
+    next
+  }
   { print }
   END {
     if (!avatar_written) print "AURORA_AVATAR_BODY_LIMIT_BYTES=" avatar
     if (!web_pool_written) print "AURORA_DB_POOL_MAX_WEB=" web_pool
     if (!worker_pool_written) print "AURORA_DB_POOL_MAX_WORKER=" worker_pool
+    if (!role_written) print "AURORA_RUNTIME_ROLE=web"
   }
 ' "$runtime_env" > "$runtime_env_next"
 chmod --reference="$runtime_env" "$runtime_env_next"

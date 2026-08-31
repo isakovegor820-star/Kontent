@@ -23,6 +23,8 @@ export interface SchemaReadinessState {
   actualVersion: string | null;
   appliedMigrations: number;
   expectedMigrations: number;
+  /** Additive migrations applied by a newer release than the one serving this request. */
+  forwardMigrations: string[];
   reasons: string[];
 }
 

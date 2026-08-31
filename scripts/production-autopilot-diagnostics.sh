@@ -160,6 +160,74 @@ if [[ -n "$current_path" && -f "$current_path/.env.production" ]]; then
   ) || echo "(redis probe failed)"
 fi
 
+section "AI PROVIDER PROBE (bounded, opt-in)"
+# Autopilot plans fail with `empty_generation`, which means the provider returned a
+# response carrying no visible content. Reasoning-capable models can spend the entire
+# output budget before emitting any, so the diagnosis needs the raw finish_reason and
+# token accounting per request shape. Prompts and completions are never printed.
+if [[ "${AURORA_DIAG_PROBE_PROVIDER:-false}" != "true" ]]; then
+  echo "(skipped: set probe_provider=true to spend a few provider calls)"
+elif [[ -z "$current_path" || ! -f "$current_path/.env.production" ]]; then
+  echo "(skipped: no runtime env)"
+else
+  (
+    cd "$current_path"
+    set -a
+    # shellcheck disable=SC1091
+    . ./.env.production
+    set +a
+    node --input-type=module -e '
+      const key = process.env.NAVYAI_API_KEY || "";
+      if (!key) { console.log("NAVYAI_API_KEY absent; probe skipped"); process.exit(0); }
+      const messages = [
+        { role: "system", content: "Ты редактор Telegram-канала. Пиши по-русски." },
+        { role: "user", content: "Напиши один короткий пост (3 предложения) о пользе чек-листов в работе юриста." },
+      ];
+      const variants = [
+        { label: "gpt-5.4 max_tokens=3000 (production shape)", model: "gpt-5.4", body: { max_tokens: 3000 } },
+        { label: "gpt-5.4 max_tokens=3000 effort=none", model: "gpt-5.4", body: { max_tokens: 3000, reasoning_effort: "none" } },
+        { label: "gpt-5.4 max_tokens=3000 effort=low", model: "gpt-5.4", body: { max_tokens: 3000, reasoning_effort: "low" } },
+        { label: "gpt-5.4 max_completion_tokens=8000", model: "gpt-5.4", body: { max_completion_tokens: 8000 } },
+        { label: "deepseek-v4-pro max_tokens=3000 effort=none", model: "deepseek-v4-pro", body: { max_tokens: 3000, reasoning_effort: "none" } },
+      ];
+      for (const variant of variants) {
+        const started = Date.now();
+        try {
+          const response = await fetch("https://api.navy/v1/chat/completions", {
+            method: "POST",
+            headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
+            signal: AbortSignal.timeout(90_000),
+            body: JSON.stringify({ model: variant.model, temperature: 0.4, messages, ...variant.body }),
+          });
+          const raw = await response.text();
+          let parsed = null;
+          try { parsed = JSON.parse(raw); } catch { /* keep raw shape below */ }
+          const choice = parsed?.choices?.[0];
+          const message = choice?.message ?? {};
+          console.log(JSON.stringify({
+            variant: variant.label,
+            httpStatus: response.status,
+            elapsedMs: Date.now() - started,
+            finishReason: choice?.finish_reason ?? null,
+            contentChars: String(message.content ?? "").length,
+            reasoningChars: String(message.reasoning ?? message.reasoning_content ?? "").length,
+            usage: parsed?.usage ?? null,
+            providerError: parsed?.error?.message ? String(parsed.error.message).slice(0, 200) : null,
+            unparsedBodyChars: parsed ? null : raw.length,
+          }));
+        } catch (error) {
+          console.log(JSON.stringify({
+            variant: variant.label,
+            elapsedMs: Date.now() - started,
+            failure: String(error?.name || "Error"),
+            message: String(error?.message || error).slice(0, 200),
+          }));
+        }
+      }
+    ' 2>&1 | redact
+  ) || echo "(provider probe failed)"
+fi
+
 section "AUTOPILOT DATABASE STATE (read-only transaction)"
 if [[ -n "${AURORA_DIAG_SQL_B64:-}" && -n "$current_path" && -f "$current_path/.env.production" ]]; then
   (

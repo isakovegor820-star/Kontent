@@ -27,6 +27,7 @@ function schemaNotChecked(reason: string): SchemaReadinessState {
     actualVersion: null,
     appliedMigrations: 0,
     expectedMigrations: SCHEMA_MANIFEST.migrations.length,
+    forwardMigrations: [],
     reasons: [reason],
   };
 }

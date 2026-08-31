@@ -21,8 +21,39 @@ describe("runtime schema manifest", () => {
       actualVersion: SCHEMA_MANIFEST.schemaVersion,
       appliedMigrations: SCHEMA_MANIFEST.migrations.length,
       expectedMigrations: SCHEMA_MANIFEST.migrations.length,
+      forwardMigrations: [],
       reasons: [],
     });
+  });
+
+  it("stays ready on the newer additive schema a rollback always lands on", () => {
+    const snapshot = completeSnapshot();
+    snapshot.migrations.push({ name: "29991231_future_release.sql", checksum: "a".repeat(64) });
+
+    const result = evaluateSchemaSnapshot(snapshot);
+    expect(result.ready).toBe(true);
+    expect(result.forwardMigrations).toEqual(["29991231_future_release.sql"]);
+    expect(result.reasons).toEqual(["schema_forward:29991231_future_release.sql"]);
+  });
+
+  it("fails closed on an unknown migration that is not a newer release", () => {
+    const snapshot = completeSnapshot();
+    snapshot.migrations.push({ name: "20000101_foreign_writer.sql", checksum: "b".repeat(64) });
+
+    const result = evaluateSchemaSnapshot(snapshot);
+    expect(result.ready).toBe(false);
+    expect(result.forwardMigrations).toEqual([]);
+    expect(result.reasons).toEqual(["migration_unexpected:20000101_foreign_writer.sql"]);
+  });
+
+  it("keeps required capabilities authoritative even on a newer schema", () => {
+    const snapshot = completeSnapshot();
+    snapshot.migrations.push({ name: "29991231_future_release.sql", checksum: "a".repeat(64) });
+    snapshot.columns = snapshot.columns.filter((name) => name !== "drafts.ai_validation");
+
+    const result = evaluateSchemaSnapshot(snapshot);
+    expect(result.ready).toBe(false);
+    expect(result.reasons).toContain("capability_missing:column:drafts.ai_validation");
   });
 
   it("reports an exact missing capability on a partial schema", () => {

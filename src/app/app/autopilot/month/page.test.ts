@@ -17,6 +17,14 @@ describe("monthly campaign page contract", () => {
     expect(planner).toContain('regenerate("month")');
   });
 
+  it("keeps the month rebuild reachable when the channel brief drifted", () => {
+    const rebuild = planner.slice(planner.indexOf('regenerate("month")'));
+    const disabled = rebuild.slice(rebuild.indexOf("disabled="), rebuild.indexOf(">", rebuild.indexOf("disabled=")));
+    expect(disabled).toContain("hasActiveRegeneration");
+    expect(disabled).not.toContain("stale");
+    expect(planner).toContain("Нажми «Пересобрать весь месяц»");
+  });
+
   it("opens Composer and Studio by campaign ids, not by putting the prompt in the URL", () => {
     expect(planner).toContain('destination === "studio"');
     expect(planner).toContain("monthlyCampaign");

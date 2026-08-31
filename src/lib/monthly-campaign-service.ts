@@ -6,6 +6,7 @@ import {
   requireSelectedProjectPermission,
   type ProjectPermission,
 } from "./project-permissions";
+import { CONTENT_PROFILE_HASH_SELECT, contentProfileHash } from "./content-profile-hash.mjs";
 import { DRAFT_REVIEW_POLICY_VERSION } from "./draft-review";
 import { normalizeIdempotencyKey } from "./publication-idempotency";
 import { titleSimilarity } from "./monthly-campaign";
@@ -478,15 +479,8 @@ export async function readProjectContentProfileHash(
   db: Pick<PoolClient, "query">,
   projectId: number,
 ): Promise<string> {
-  const result = await db.query<Record<string, unknown>>(
-    `select channel_id, niche, audience, rubrics, formats, author_role, goal, cta, taboo,
-            profile_answers, quality, ready, source, updated_at
-       from content_brief
-      where project_id = $1
-      order by channel_id`,
-    [projectId],
-  );
-  return hashJson(result.rows);
+  const result = await db.query<Record<string, unknown>>(CONTENT_PROFILE_HASH_SELECT, [projectId]);
+  return contentProfileHash(result.rows);
 }
 
 async function authorizeSelected(
@@ -518,6 +512,46 @@ function ensureCampaignFresh(
       || campaign.profileHash !== currentProfileHash) {
     throw new MonthlyCampaignServiceError("stale_campaign");
   }
+}
+
+/**
+ * Building topics from scratch is what resolves a drifted profile, so the campaign is
+ * re-stamped with the profile it is about to be built from instead of being refused.
+ * Callers must already hold the campaign row lock.
+ */
+async function rebaseCampaignProfile(
+  client: Pick<PoolClient, "query">,
+  projectId: number,
+  campaignId: number,
+  currentProfileHash: string,
+): Promise<void> {
+  await client.query(
+    `update monthly_campaigns set profile_hash = $3, updated_at = now()
+      where id = $1 and project_id = $2 and profile_hash <> $3`,
+    [campaignId, projectId, currentProfileHash],
+  );
+}
+
+/**
+ * A full-month rebuild replaces every topic, so it also carries the source plan onto the
+ * current brief and profile. Without this the background worker would drop its own request
+ * as stale and the campaign would stay unusable.
+ */
+async function rebaseCampaignPlanProfile(
+  client: Pick<PoolClient, "query">,
+  projectId: number,
+  campaign: MonthlyCampaignSummary,
+  planId: number,
+  currentProfileHash: string,
+): Promise<void> {
+  await rebaseCampaignProfile(client, projectId, campaign.id, currentProfileHash);
+  await client.query(
+    `update monthly_campaign_plans
+        set source_brief_hash = $3, source_profile_hash = $4, updated_at = now()
+      where id = $1 and project_id = $2
+        and (source_brief_hash <> $3 or source_profile_hash <> $4)`,
+    [planId, projectId, campaign.briefHash, currentProfileHash],
+  );
 }
 
 const CAMPAIGN_SELECT = `
@@ -914,7 +948,7 @@ export async function createMonthlyCampaignPlan(input: {
       };
     }
     if (campaign.version !== expectedCampaignVersion) throw new MonthlyCampaignServiceError("version_conflict");
-    if (campaign.profileHash !== currentProfileHash) throw new MonthlyCampaignServiceError("stale_campaign");
+    await rebaseCampaignProfile(client, projectId, campaign.id, currentProfileHash);
     const revision = Number((await client.query<{ next_revision: number | string }>(
       `select coalesce(max(revision), 0) + 1 as next_revision
          from monthly_campaign_plans where campaign_id = $1 and project_id = $2`,
@@ -988,9 +1022,12 @@ async function lockedPlanContext(
   projectId: number,
   campaignId: number,
   planId: number,
+  // Callers that also write the campaign row take it first: every other monthly writer and
+  // the regeneration worker lock campaign before plan, and reversing that order deadlocks.
+  lockCampaign = false,
 ): Promise<{ campaign: MonthlyCampaignSummary; planRow: Record<string, unknown> }> {
   const campaignResult = await client.query<Record<string, unknown>>(
-    `${CAMPAIGN_SELECT} where id = $1 and project_id = $2 limit 1`,
+    `${CAMPAIGN_SELECT} where id = $1 and project_id = $2 ${lockCampaign ? "for update" : "limit 1"}`,
     [campaignId, projectId],
   );
   if (!campaignResult.rows[0]) throw new MonthlyCampaignServiceError("not_found");
@@ -1205,7 +1242,7 @@ export async function requestMonthlyCampaignRegeneration(input: {
   return withTransaction(input.pool, async (client) => {
     const projectId = await authorizeSelected(client, input.actorUserId, "content.edit");
     const { campaign, planRow } = await lockedPlanContext(
-      client, projectId, positiveId(input.campaignId), positiveId(input.planId),
+      client, projectId, positiveId(input.campaignId), positiveId(input.planId), scope === "month",
     );
     const replay = await client.query<{
       id: number | string; request_hash: string; status: string; base_plan_version: number | string;
@@ -1233,8 +1270,17 @@ export async function requestMonthlyCampaignRegeneration(input: {
       };
     }
     if (Number(planRow.version) !== expectedPlanVersion) throw new MonthlyCampaignServiceError("version_conflict");
+    if (campaign.archived) throw new MonthlyCampaignServiceError("archived");
     const currentProfileHash = await readProjectContentProfileHash(client, projectId);
-    ensureCampaignFresh(campaign, planRow, currentProfileHash);
+    // A month rebuild is the way out of a drifted profile; a single topic or week is not,
+    // because the topics it leaves untouched would still belong to the previous brief.
+    if (scope === "month") {
+      await rebaseCampaignPlanProfile(
+        client, projectId, campaign, Number(planRow.id), currentProfileHash,
+      );
+    } else {
+      ensureCampaignFresh(campaign, planRow, currentProfileHash);
+    }
     const targetResult = scope === "item"
       ? await client.query<Record<string, unknown>>(
         `${ITEM_SELECT} where id = $1 and plan_id = $2 and project_id = $3 for update`,

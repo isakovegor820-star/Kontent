@@ -1,0 +1,59 @@
+Aurora audit runtime evidence — 2026-08-25, local development runtime on port 3001
+
+AUTH / ORIGIN
+
+POST http://127.0.0.1:3001/api/auth/login
+Origin: http://127.0.0.1:3001
+Sec-Fetch-Site: same-origin
+Result: 403 {"ok":false,"error":"forbidden"}
+
+Control request with the same synthetic credentials:
+POST http://localhost:3001/api/auth/login
+Origin: http://localhost:3001
+Sec-Fetch-Site: same-origin
+Result: 401 {"ok":false,"error":"invalid"}
+
+The 127.0.0.1 request returned 403 in both the browser and a separate direct HTTP attempt.
+The browser rendered: "Не удалось продолжить. Проверьте соединение и попробуйте снова."
+
+PASSWORD VALIDATION
+
+POST /api/auth/register with password represented as [8 ASCII spaces]
+qa-whitespace-password-20260825@aurora.test -> 200 {"ok":true}
+qa-whitespace-password-2-20260825@aurora.test -> 200 {"ok":true}
+POST /api/auth/login with the first address and [8 ASCII spaces] -> 200 {"ok":true}
+
+POST /api/auth/register with a 201-character password -> 422 {"ok":false,"error":"bad_password"}
+POST /api/auth/register with an existing synthetic address -> 409 {"ok":false,"error":"email_taken"}
+Malformed JSON to /api/auth/login -> 400 {"ok":false,"error":"bad_request"}
+Invalid login attempts 1–5 -> 401; attempts 6–7 -> 429 with retryAfter=900.
+
+PUBLIC LANDING POLLING WHILE SIGNED IN
+
+After navigation to GET /, the server recorded:
+GET /api/auth/me 200
+GET /api/projects/current 200
+GET /api/channels 200
+GET /api/ai/usage 200
+GET /api/posts 200
+
+Then the following triplet repeated on the 8-second interval while the public landing remained open:
+GET /api/channels 200
+GET /api/ai/usage 200
+GET /api/posts 200
+
+OPPORTUNITIES WITHOUT AN ACTIVE CHANNEL
+
+GET /app/opportunities -> 200
+GET /api/opportunities -> 422
+Visible alert, reproduced on two page loads:
+"Не удалось загрузить карту. Старые данные не изменены. Проверьте соединение и повторите."
+
+HEALTH / SECURITY HEADERS
+
+GET /api/health -> 200 {"ok":true,"status":"alive"}
+Two GET / responses -> 200/200, CSP present, per-response nonce present and different.
+Headers observed: X-Frame-Options=DENY; X-Content-Type-Options=nosniff;
+Referrer-Policy=strict-origin-when-cross-origin;
+Permissions-Policy=camera=(), microphone=(), geolocation=(), payment=();
+Strict-Transport-Security=max-age=63072000; includeSubDomains; preload.

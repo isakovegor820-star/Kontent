@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 const script = await readFile(resolve("scripts/deploy-production.sh"), "utf8");
 const migrationScript = await readFile(resolve("scripts/run-production-migrations.sh"), "utf8");
 const workflow = await readFile(resolve(".github/workflows/deploy-production.yml"), "utf8");
+const worker = await readFile(resolve("worker.mjs"), "utf8");
 const workflowDirectory = resolve(".github/workflows");
 
 describe("production deployment shell contract", () => {
@@ -72,6 +73,13 @@ describe("production deployment shell contract", () => {
     expect(workflow).toContain("AURORA_DB_POOL_MAX_WORKER: ${{ vars.DB_POOL_MAX_WORKER }}");
     expect(workflow).toContain("AURORA_DB_POOL_MAX_WEB=${AURORA_DB_POOL_MAX_WEB}");
     expect(workflow).toContain("AURORA_DB_POOL_MAX_WORKER=${AURORA_DB_POOL_MAX_WORKER}");
+  });
+
+  it("declares a runtime role so the role-less web unit resolves a configured pool budget", () => {
+    // systemd runs `next start` directly, so only the runtime env file can carry the role.
+    expect(script).toContain('print "AURORA_RUNTIME_ROLE=web"');
+    expect(script).toContain("/^AURORA_RUNTIME_ROLE=/");
+    expect(worker).toContain('process.env.AURORA_RUNTIME_ROLE = "worker"');
   });
 
   it("rolls back restart, health, and partial web/worker activation failures", () => {
