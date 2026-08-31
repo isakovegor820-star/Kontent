@@ -384,6 +384,11 @@ import {
 } from "./worker/bot-copy.mjs";
 import { reconcilePasswordResetOutbox } from "./worker/password-reset-outbox.mjs";
 import { persistCompetitorLibraryAnalytics } from "./worker/library-analytics.mjs";
+import {
+  RECON_CRON_PATTERN,
+  selectDueCompetitorSources,
+} from "./worker/reconnaissance-schedule.mjs";
+import { telegramHistoryPageDecision } from "./worker/reconnaissance-pagination.mjs";
 import { reconcilePublicationOutbox } from "./src/lib/publication-outbox.mjs";
 import { TELEGRAM_BOT_COMMANDS } from "./src/lib/telegram-bot-commands.mjs";
 import { resolveTranscriptionRuntime } from "./src/lib/transcription-runtime.mjs";
@@ -3658,11 +3663,10 @@ function parseTelegramPublicPage(html) {
   return posts;
 }
 
-// Обычная разведка читает свежую публичную страницу. Поиск по нише передаёт
-// exhaustive=true и идёт назад через `before`, пока Telegram действительно не вернёт
-// пустую/повторную страницу. Остановка зависит от исчерпания открытой ленты, а не от
-// заранее выбранного количества постов.
-async function fetchCompetitorPage(handle, { exhaustive = false } = {}) {
+// Обычная разведка читает одну свежую страницу, но при разрыве догружает историю до
+// afterPostId. Поиск по нише передаёт exhaustive=true и идёт назад через `before`, пока Telegram не вернёт
+// пустую/повторную страницу. Оба режима останавливаются по фактической границе, а не по лимиту постов.
+async function fetchCompetitorPage(handle, { exhaustive = false, afterPostId = null } = {}) {
   const normalizedHandle = String(handle).replace(/^@/, "");
   const out = {
     ok: false,
@@ -3670,7 +3674,7 @@ async function fetchCompetitorPage(handle, { exhaustive = false } = {}) {
     description: null,
     subscribers: null,
     posts: [],
-    historyComplete: !exhaustive,
+    historyComplete: false,
   };
   const seenPostIds = new Set();
   const seenBoundaries = new Set();
@@ -3699,18 +3703,19 @@ async function fetchCompetitorPage(handle, { exhaustive = false } = {}) {
         out.posts.push(post);
         added += 1;
       }
-      if (!exhaustive) break;
-      if (!pagePosts.length || added === 0) {
-        out.historyComplete = true;
+      const decision = telegramHistoryPageDecision({
+        pagePostIds: pagePosts.map((post) => post.msgId),
+        added,
+        exhaustive,
+        afterPostId,
+        seenBoundaries,
+      });
+      if (decision.done) {
+        out.historyComplete = decision.historyComplete;
         break;
       }
-      const oldestId = Math.min(...pagePosts.map((post) => post.msgId));
-      if (!Number.isSafeInteger(oldestId) || oldestId <= 0 || seenBoundaries.has(oldestId)) {
-        out.historyComplete = true;
-        break;
-      }
-      seenBoundaries.add(oldestId);
-      before = oldestId;
+      seenBoundaries.add(decision.nextBefore);
+      before = decision.nextBefore;
       await sleep(180);
     }
     out.posts.sort((left, right) => right.msgId - left.msgId);
@@ -3875,7 +3880,13 @@ async function collectTelegramCompetitor(comp) {
   }
   let subscribers = await tgMemberCount(ref);
 
-  const page = await fetchCompetitorPage(comp.handle);
+  const latestStoredPostId = (
+    await pool.query(
+      `select max(tg_msg_id)::text as latest_post_id from competitor_posts where competitor_id = $1`,
+      [comp.id],
+    )
+  ).rows[0]?.latest_post_id ?? null;
+  const page = await fetchCompetitorPage(comp.handle, { afterPostId: latestStoredPostId });
   if (title == null) title = page.title;
   if (subscribers == null) subscribers = page.subscribers;
 
@@ -5579,14 +5590,7 @@ async function detectHits(comp) {
 // Обойти конкурентов, которым пора обновиться: новые (pending) сразу, остальные — раз в ~2 часа
 // (свежие посты). Полный проход и так идёт каждые 2 часа по таймеру ниже.
 async function collectCompetitors() {
-  const rows = (
-    await pool.query(
-      `select id, user_id, channel_id, network, handle, title, is_active from competitors
-        where network in ('tg','instagram') and is_active
-          and (status in ('pending','refreshing') or collected_at is null
-               or collected_at < now() - interval '2 hours')`,
-    )
-  ).rows;
+  const rows = await selectDueCompetitorSources(pool);
   await mapConcurrent(rows, RECON_CONCURRENCY, async (c) => {
     try {
       await collectCompetitor(c);
@@ -5633,7 +5637,13 @@ async function discoverAll() {
 // ============================================================================
 
 async function collectTrendSource(src) {
-  const page = await fetchCompetitorPage(src.handle);
+  const latestStoredPostId = (
+    await pool.query(
+      `select max(tg_msg_id)::text as latest_post_id from trend_posts where source_id = $1`,
+      [src.id],
+    )
+  ).rows[0]?.latest_post_id ?? null;
+  const page = await fetchCompetitorPage(src.handle, { afterPostId: latestStoredPostId });
 
   if (!page.ok || (page.posts.length === 0 && page.title == null)) {
     await pool.query(
@@ -12183,7 +12193,7 @@ const cronQueue = AUTOPILOT_ONLY || MEDIA_ONLY || PUBLICATION_ONLY ? null : new 
 // долбить t.me обеими задачами в одну секунду.
 const CRON_SCHEDULES = [
   { name: "stats",    pattern: "0 */6 * * *" },  // статистика каждые 6ч: один временный сбой не ломает весь день
-  { name: "recon",    pattern: "0 */2 * * *" },  // разведка конкурентов, каждые 2ч
+  { name: "recon",    pattern: RECON_CRON_PATTERN }, // разведка конкурентов, каждые 2ч
   { name: "trend",    pattern: "15 */2 * * *" }, // насмотренность, каждые 2ч (сдвиг 15мин от recon)
   { name: "today-opportunities", pattern: "30 */2 * * *" }, // снимки возможностей, каждые 2ч
   { name: "knowledge-index", pattern: "*/5 * * * *" }, // восстановление pending-источников базы знаний

@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -32,6 +34,13 @@ const filters = {
 };
 
 describe("library analytical registry client contract", () => {
+  it("does not render internal AI diagnostics or registry implementation labels", () => {
+    const source = readFileSync(new URL("./library-registry-view.tsx", import.meta.url), "utf8");
+    expect(source).not.toContain("Диагностика ИИ");
+    expect(source).not.toContain("Формула: {formulaVersion");
+    expect(source).not.toContain("{items.length} записей");
+  });
+
   it("keeps user rating and analytical Score as separate filter fields", () => {
     expect(libraryFilterPayload(11, filters)).toMatchObject({
       channel: 11,

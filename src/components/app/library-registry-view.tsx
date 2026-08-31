@@ -429,16 +429,12 @@ export function LibraryRegistryView({ channelId, channelName }: { channelId: num
 
   return (
     <div className="mt-5 min-w-0 space-y-4">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+      <div>
         <div>
           <h2 className="text-[18px] font-extrabold text-text">Аналитический реестр</h2>
           <p className="mt-1 max-w-3xl text-[13px] leading-relaxed text-text-3">
             Сравнение идёт только внутри одного источника, формата и временного окна. Ваша оценка 1–5 не влияет на аналитическую оценку 0–100.
           </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Badge tone="neutral">Формула: {formulaVersion || "—"}</Badge>
-          <Badge tone="brand">{items.length} записей</Badge>
         </div>
       </div>
 
@@ -561,26 +557,6 @@ export function LibraryRegistryView({ channelId, channelName }: { channelId: num
           )}
         </details>
       </Card>
-
-      {diagnostics && diagnostics.pendingIdeaCount > 0 && (
-        <Card className="border-brand/20 bg-brand-soft p-4">
-          <div className="flex flex-wrap items-center gap-3">
-            <Sparkles className="h-5 w-5 shrink-0 text-brand" aria-hidden />
-            <div className="min-w-0 flex-1">
-              <p className="text-[13px] font-extrabold text-text">Диагностика ИИ</p>
-              <p className="mt-1 text-[12px] leading-relaxed text-text-2">
-                {diagnostics.pendingIdeaCount} {diagnostics.pendingIdeaCount === 1 ? "идея ожидает" : "идеи ожидают"} завершения в «{diagnostics.aiEngineLabel}».
-                {diagnostics.aiConfigured
-                  ? " Если число не уменьшается после следующего прохода разведки, проверь доступность выбранного ИИ."
-                  : " Выбранный ИИ не подключён — идеи не смогут завершиться."}
-              </p>
-            </div>
-            <Link href="/app/settings">
-              <Button variant="outline" size="sm">Проверить ИИ</Button>
-            </Link>
-          </div>
-        </Card>
-      )}
 
       {error ? (
         <Card className="p-5">

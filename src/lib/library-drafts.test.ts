@@ -80,6 +80,39 @@ describe("server-owned library draft context", () => {
     });
   });
 
+  it("repairs a legacy ready idea topic from its server-owned source post", async () => {
+    const db = dbWith({
+      idea: {
+        id: "53",
+        topic: null,
+        hook: "Хук",
+        structure: "Структура",
+        why_it_worked: null,
+        source_id: "9",
+        source_title: "Источник",
+        handle: "source",
+        tg_msg_id: "72",
+        source_text: "Нейроюрист теперь работает прямо в Microsoft Word.\n\nБольше не нужно переключаться между вкладками.",
+      },
+    });
+    const context = await buildServerLibraryDraftContext({
+      db: db as never,
+      userId: 7,
+      projectId: 3,
+      channelId: 11,
+      itemKey: "idea:53",
+      clientKey: "draft_library-idea-legacy-123456",
+    });
+
+    expect(context).toMatchObject({
+      origin: "idea",
+      sourceRef: {
+        kind: "idea",
+        topic: "Нейроюрист теперь работает прямо в Microsoft Word.",
+      },
+    });
+  });
+
   it("opens a saved server snapshot even when its original source disappeared", async () => {
     const db = dbWith({ saved: { id: "63", text: "Сохранённый снимок" } });
     const context = await buildServerLibraryDraftContext({

@@ -83,16 +83,29 @@ export function sanitizeSemanticIntent(value: unknown, max = 320): string {
 export function topicFromSourceText(value: unknown): string {
   const source = cleanText(value, 4_000);
   if (!source) return "";
-  const nonEmptyLines = source.split(/\n+/u).map((line) => line.trim()).filter(Boolean);
-  const sentences = source.split(/(?<=[.!?])\s+/u).map((sentence) => sentence.trim()).filter(Boolean);
-  // Never infer a subject by ranking arbitrary sentences or treating a hook as a title.
-  // Only a source that consists entirely of one short statement is unambiguous enough;
-  // everything else needs server-owned structured topic metadata and fails closed without it.
-  const bounded = nonEmptyLines.length === 1 && sentences.length === 1 ? sentences[0] : "";
-  const candidate = sanitizeSemanticIntent(bounded, 320);
-  const words = candidate.match(/[\p{L}]{3,}/gu) ?? [];
-  const genericHook = /^(?:а\s+)?(?:вы|ты|кто|почему|зачем|когда|что|знаете\s+ли)(?!\p{L})/iu.test(candidate);
-  return !genericHook && words.length >= 2 && words.length <= 24 ? candidate : "";
+  const fragments = source
+    .split(/\n+|(?<=[.!?])\s+/u)
+    .map((fragment) => sanitizeSemanticIntent(fragment, 320))
+    .filter(Boolean);
+  const usable = fragments.map((candidate) => ({
+    candidate,
+    words: candidate.match(/[\p{L}]{2,}/gu) ?? [],
+    genericHook: /^(?:а\s+)?(?:вы|ты|кто|почему|зачем|когда|что|знаете\s+ли)(?!\p{L})/iu.test(candidate),
+  })).filter(({ words }) => words.length >= 2 && words.length <= 40);
+
+  // The resolver calls this only for text reloaded from an authenticated server source.
+  // Prefer the first declarative fragment, so a generic hook cannot replace the subject.
+  // The result remains semantic intent: dates, names, amounts and links were removed above
+  // and it is never promoted to factual evidence.
+  const declarative = usable.find(({ genericHook }) => !genericHook);
+  if (declarative) return declarative.candidate;
+  if (usable[0]) return usable[0].candidate;
+
+  // Long one-sentence sources still need an actionable discussion topic. Keep a bounded,
+  // sanitized prefix instead of rejecting the entire server-owned card.
+  const fallback = sanitizeSemanticIntent(source, 320);
+  const words = fallback.match(/[\p{L}]{2,}/gu) ?? [];
+  return words.length >= 2 ? fallback : "";
 }
 
 function adaptationKind(draft: ServerDraft): ReferenceAdaptationKind | null {

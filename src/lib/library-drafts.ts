@@ -2,6 +2,7 @@ import "server-only";
 
 import type { DraftCreateInput } from "./draft-types";
 import { buildLibraryDraftContext } from "./library";
+import { topicFromSourceText } from "./reference-adaptation";
 
 type Queryable = {
   query<T = Record<string, unknown>>(sql: string, values?: unknown[]): Promise<{ rows: T[]; rowCount?: number | null }>;
@@ -76,11 +77,11 @@ export async function buildServerLibraryDraftContext(input: {
     const row = (await db.query<{
       id: string; topic: string | null; hook: string | null; structure: string | null;
       why_it_worked: string | null; source_id: string | null; source_title: string | null;
-      handle: string | null; tg_msg_id: string | null;
+      handle: string | null; tg_msg_id: string | null; source_text: string | null;
     }>(
       `select idea.id, idea.topic, idea.hook, idea.structure, idea.why_it_worked,
               competitor.id as source_id, competitor.title as source_title,
-              competitor.handle, post.tg_msg_id
+              competitor.handle, post.tg_msg_id, post.text as source_text
          from content_ideas idea
          join competitors competitor on competitor.id = idea.competitor_id
          join channels channel on channel.id = competitor.channel_id
@@ -90,8 +91,9 @@ export async function buildServerLibraryDraftContext(input: {
           and idea.status = 'new' and idea.ai_status = 'ready'`,
       [item.id, userId, channelId, projectId],
     )).rows[0];
-    const text = [row?.topic, row?.hook, row?.structure, row?.why_it_worked].filter(Boolean).join("\n\n").trim();
-    if (!row || !text || !row.topic?.trim()) throw new LibraryDraftError("library_item_not_found");
+    const topic = row?.topic?.trim() || topicFromSourceText(row?.source_text);
+    const text = [topic, row?.hook, row?.structure, row?.why_it_worked].filter(Boolean).join("\n\n").trim();
+    if (!row || !text || !topic) throw new LibraryDraftError("library_item_not_found");
     const label = row.source_title || (row.handle ? `@${row.handle}` : "Идея Авроры");
     const handle = row.handle?.replace(/^@/u, "");
     return buildLibraryDraftContext({
@@ -105,7 +107,7 @@ export async function buildServerLibraryDraftContext(input: {
         provenanceLabel: label,
         sourceId: row.source_id,
         sourceUrl: handle && row.tg_msg_id ? `https://t.me/${handle}/${row.tg_msg_id}` : null,
-        topic: row.topic,
+        topic,
         hook: row.hook,
         structure: row.structure,
         whyItWorked: row.why_it_worked,

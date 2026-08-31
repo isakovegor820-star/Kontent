@@ -70,13 +70,13 @@ describe("buildTrendReferenceDraft", () => {
     })).toThrow("trend reference text is required");
   });
 
-  it("rejects ambiguous source prose when no structured topic exists", () => {
-    expect(() => buildTrendReferenceDraft({
+  it("keeps a new trend discussable when only canonical source prose exists", () => {
+    expect(buildTrendReferenceDraft({
       trendId: 44,
       channelId: 7,
       clientKey: "draft_trend_reference_44",
       sourceLabel: "Источник",
       text: "Вы это знали? Затем текст перескакивает на банкротство. А потом на конференцию.",
-    })).toThrow("trend reference topic is required");
+    }).sourceRef?.topic).toBe("Затем текст перескакивает на банкротство.");
   });
 });

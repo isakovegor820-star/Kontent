@@ -16,6 +16,7 @@ import {
 } from "./library-scoring.mjs";
 import { configuredServiceEngine, resolveAiEngineRuntime } from "./ai-engine-policy.mjs";
 import { resolveLibraryChannel } from "./library-server";
+import { topicFromSourceText } from "./reference-adaptation";
 
 type SourcePostRow = {
   id: string;
@@ -57,6 +58,7 @@ type IdeaRow = {
   source_title: string | null;
   handle: string | null;
   tg_msg_id: string | null;
+  source_text: string | null;
   viewed_at: Date | string | null;
   rating: number | string | null;
 };
@@ -93,10 +95,6 @@ function iso(value: Date | string | null | undefined) {
 function telegramUrl(handle: string | null, messageId: string | null) {
   const clean = handle?.replace(/^@/u, "");
   return clean && messageId ? `https://t.me/${clean}/${messageId}` : null;
-}
-
-function ideaText(row: IdeaRow) {
-  return [row.topic, row.hook, row.structure, row.why_it_worked].filter(Boolean).join("\n\n");
 }
 
 function quality(value: string | null | undefined): LibraryQuality | null {
@@ -194,7 +192,7 @@ export async function buildLibraryRegistrySnapshot(
       `select idea.id, idea.source_post_id, competitor.id as source_id,
               idea.topic, idea.hook, idea.structure, idea.why_it_worked,
               idea.created_at, competitor.title as source_title, competitor.handle,
-              post.tg_msg_id, state.viewed_at, state.rating
+              post.tg_msg_id, post.text as source_text, state.viewed_at, state.rating
          from content_ideas idea
          join competitors competitor on competitor.id = idea.competitor_id
          left join competitor_posts post on post.id = idea.source_post_id
@@ -259,6 +257,7 @@ export async function buildLibraryRegistrySnapshot(
 
   const ideas = ideasResult.rows.map((row): LibraryRegistryItem => {
     const source = row.source_post_id ? sourceByPost.get(String(row.source_post_id)) : undefined;
+    const topic = row.topic?.trim() || topicFromSourceText(row.source_text);
     return {
       id: `idea:${row.id}`,
       kind: "idea",
@@ -268,9 +267,9 @@ export async function buildLibraryRegistrySnapshot(
       sourceTitle: row.source_title || row.handle || "Идея Авроры",
       sourceUrl: telegramUrl(row.handle, row.tg_msg_id),
       sourceData: "aurora_idea_from_public_source",
-      text: ideaText(row),
+      text: [topic, row.hook, row.structure, row.why_it_worked].filter(Boolean).join("\n\n"),
       idea: {
-        topic: row.topic?.trim() || "Идея Авроры",
+        topic: topic || "Идея Авроры",
         ...(row.hook?.trim() ? { hook: row.hook.trim() } : {}),
         ...(row.structure?.trim() ? { structure: row.structure.trim() } : {}),
         ...(row.why_it_worked?.trim() ? { whyItWorked: row.why_it_worked.trim() } : {}),

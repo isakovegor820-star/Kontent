@@ -83,6 +83,7 @@ describe("buildLibraryRegistrySnapshot", () => {
             source_title: "Конкурент",
             handle: "competitor",
             tg_msg_id: "501",
+            source_text: sourcePost.text,
             viewed_at: null,
             rating: null,
           }],
@@ -133,5 +134,34 @@ describe("buildLibraryRegistrySnapshot", () => {
       .map(([sql]) => String(sql))
       .find((sql) => sql.includes("from competitor_posts p"));
     expect(sourceSql).toContain("p.analytics_score");
+  });
+
+  it("shows a recovered topic for a legacy ready idea", async () => {
+    mocks.query.mockImplementation(async (sql: string) => {
+      if (sql.includes("select title from channels")) return { rows: [{ title: "Канал" }] };
+      if (sql.includes("as competitor_count")) {
+        return { rows: [{ competitor_count: "1", source_post_count: "1", pending_idea_count: "0", ai_engine: "local" }] };
+      }
+      if (sql.includes("from competitor_posts p") && sql.includes("join competitors c")) {
+        return { rows: [{ ...sourcePost, text: "Нейроюрист работает прямо в Microsoft Word.\n\nВторой абзац." }] };
+      }
+      if (sql.includes("from content_ideas idea") && sql.includes("select idea.id")) {
+        return { rows: [{
+          id: "302", source_post_id: "101", source_id: "21", topic: null, hook: "Хук",
+          structure: null, why_it_worked: null, created_at: "2026-08-27T10:00:00.000Z",
+          source_title: "Конкурент", handle: "competitor", tg_msg_id: "501",
+          source_text: "Нейроюрист работает прямо в Microsoft Word.\n\nВторой абзац.",
+          viewed_at: null, rating: null,
+        }] };
+      }
+      if (sql.includes("from saved_posts saved") && sql.includes("select saved.id")) return { rows: [] };
+      throw new Error(`Unexpected query: ${sql}`);
+    });
+
+    const snapshot = await buildLibraryRegistrySnapshot(7, parseLibraryFilters({ channel: 11 }));
+    expect(snapshot?.items.find((item) => item.kind === "idea")).toMatchObject({
+      text: expect.stringMatching(/^Нейроюрист работает/u),
+      idea: { topic: "Нейроюрист работает прямо в Microsoft Word." },
+    });
   });
 });

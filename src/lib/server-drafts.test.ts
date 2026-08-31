@@ -475,6 +475,65 @@ describe("server draft transactions", () => {
     );
   });
 
+  it("creates and discusses a multi-paragraph library reference without an AI topic", async () => {
+    const sourceText = "Рубль утром повышается в паре с юанем на фоне дорожающей нефти.\n\n"
+      + "По итогам первой минуты торгов курс составил 12,8725 руб.";
+    const canonicalRef = {
+      kind: "reference",
+      id: "56",
+      label: "Финансовые новости",
+      topic: "Рубль утром повышается в паре с юанем на фоне дорожающей нефти.",
+      provenance: {
+        kind: "competitor_post",
+        id: "56",
+        label: "Финансовые новости",
+        url: "https://t.me/finance/78",
+      },
+    };
+    let insertedParams: unknown[] | undefined;
+    const query = vi.fn(async (sql: string, params?: unknown[]) => {
+      if (sql.includes("select id from channels")) return { rowCount: 1, rows: [{ id: "11" }] };
+      if (sql.includes("from competitor_posts post")) {
+        return { rowCount: 1, rows: [{
+          id: "56",
+          text: sourceText,
+          title: "Финансовые новости",
+          handle: "finance",
+          tg_msg_id: "78",
+          topic: null,
+        }] };
+      }
+      if (sql.includes("insert into drafts")) {
+        insertedParams = params;
+        return { rowCount: 1, rows: [{ id: "42", project_id: "7" }] };
+      }
+      if (sql.includes("select d.id")) {
+        return { rowCount: 1, rows: [{
+          ...row,
+          id: "42",
+          text: sourceText,
+          origin: "competitor",
+          purpose: "source_context",
+          source_ref: canonicalRef,
+        }] };
+      }
+      return { rowCount: 1, rows: [] };
+    });
+    const { pool } = fakePool(query);
+
+    await expect(createDraftForUser(5, {
+      ...input,
+      clientKey: "draft_library-reference-without-ai-topic",
+      origin: "competitor",
+      text: "Клиентский текст не должен победить",
+      sourceRef: { kind: "reference", id: "56", label: "Клиентская подпись" },
+    }, pool as never)).resolves.toMatchObject({
+      created: true,
+      draft: { source_ref: canonicalRef },
+    });
+    expect(JSON.parse(String(insertedParams?.[8]))).toEqual(canonicalRef);
+  });
+
   it("rebuilds a published channel post as a separate immutable source context", async () => {
     let insertedParams: unknown[] | undefined;
     const canonicalRef = {

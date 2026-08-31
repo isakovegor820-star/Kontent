@@ -5,6 +5,7 @@ import {
   buildReferenceAdaptationTask,
   referenceAdaptationContextFromDraft,
   sanitizeSemanticIntent,
+  topicFromSourceText,
   validateTopicAlignment,
   type TopicAlignmentAdapter,
 } from "./reference-adaptation";
@@ -54,6 +55,22 @@ function draft(overrides: Partial<ServerDraft> = {}): ServerDraft {
 }
 
 describe("reference adaptation context", () => {
+  it("derives a sanitized topic from a multi-paragraph server source", () => {
+    const topic = topicFromSourceText(
+      "Рубль утром повышается в паре с юанем на фоне дорожающей нефти.\n\n"
+      + "По итогам первой минуты торгов курс составил 12,8725 руб.",
+    );
+
+    expect(topic).toBe("Рубль утром повышается в паре с юанем на фоне дорожающей нефти.");
+    expect(topic).not.toContain("12,8725");
+  });
+
+  it("skips a generic hook and uses the first declarative source fragment", () => {
+    expect(topicFromSourceText(
+      "Вы тоже это делаете?\n\nИсполнительский иммунитет защищает необходимое имущество должника.",
+    )).toBe("Исполнительский иммунитет защищает необходимое имущество должника.");
+  });
+
   it("keeps a server-owned trend topic and rejects an unrelated conference post", async () => {
     const context = referenceAdaptationContextFromDraft(draft())!;
     const task = buildReferenceAdaptationTask(context, "Технологии Права");

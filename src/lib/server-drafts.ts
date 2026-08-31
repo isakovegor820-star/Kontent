@@ -902,8 +902,9 @@ async function resolveSourceContext(
           and (competitor.id is null or competitor.channel_id = $3)`,
       [sourceId, userId, channelId],
     )).rows[0];
-    const canonicalText = [row?.topic, row?.hook, row?.structure].filter(Boolean).join("\n\n").trim();
-    if (!row || !canonicalText) throw new DraftValidationError("source_context_not_found");
+    const topic = row?.topic?.trim() || topicFromSourceText(row?.source_text);
+    const canonicalText = [topic, row?.hook, row?.structure, row?.why_it_worked].filter(Boolean).join("\n\n").trim();
+    if (!row || !topic || !canonicalText) throw new DraftValidationError("source_context_not_found");
     const provenanceLabel = row.source_title || (row.source_handle ? `@${row.source_handle}` : "Источник идеи");
     return {
       ...input,
@@ -913,7 +914,7 @@ async function resolveSourceContext(
         kind: "idea",
         id: String(row.id),
         label: "Идея Авроры",
-        topic: requiredTopic(row.topic),
+        topic: requiredTopic(topic),
         ...(row.hook?.trim() ? { hook: row.hook } : {}),
         ...(row.structure?.trim() ? { structure: row.structure } : {}),
         ...(row.why_it_worked?.trim() ? { whyItWorked: row.why_it_worked } : {}),
