@@ -183,12 +183,32 @@ else
         { role: "system", content: "Ты редактор Telegram-канала. Пиши по-русски." },
         { role: "user", content: "Напиши один короткий пост (3 предложения) о пользе чек-листов в работе юриста." },
       ];
+      // Which model slugs does this account actually serve? A retired slug and a broken
+      // account look identical from a single failing completion.
+      try {
+        const catalog = await fetch("https://api.navy/v1/models", {
+          headers: { authorization: `Bearer ${key}` },
+          signal: AbortSignal.timeout(30_000),
+        });
+        const body = await catalog.json().catch(() => null);
+        const ids = (body?.data ?? []).map((entry) => String(entry?.id || "")).filter(Boolean);
+        console.log(JSON.stringify({
+          catalogStatus: catalog.status,
+          modelCount: ids.length,
+          auroraEnginesPresent: ["gpt-5.4", "deepseek-v4-pro", "deepseek-v4-flash", "qwen3.6-27b", "minimax-m3"]
+            .filter((id) => ids.includes(id)),
+          sample: ids.slice(0, 40),
+        }));
+      } catch (error) {
+        console.log(JSON.stringify({ catalogFailure: String(error?.message || error).slice(0, 200) }));
+      }
+
       const variants = [
-        { label: "gpt-5.4 max_tokens=3000 (production shape)", model: "gpt-5.4", body: { max_tokens: 3000 } },
-        { label: "gpt-5.4 max_tokens=3000 effort=none", model: "gpt-5.4", body: { max_tokens: 3000, reasoning_effort: "none" } },
-        { label: "gpt-5.4 max_tokens=3000 effort=low", model: "gpt-5.4", body: { max_tokens: 3000, reasoning_effort: "low" } },
-        { label: "gpt-5.4 max_completion_tokens=8000", model: "gpt-5.4", body: { max_completion_tokens: 8000 } },
-        { label: "deepseek-v4-pro max_tokens=3000 effort=none", model: "deepseek-v4-pro", body: { max_tokens: 3000, reasoning_effort: "none" } },
+        { label: "gpt-5.4 (production shape)", model: "gpt-5.4", body: { max_tokens: 3000 } },
+        { label: "deepseek-v4-pro effort=none", model: "deepseek-v4-pro", body: { max_tokens: 3000, reasoning_effort: "none" } },
+        { label: "deepseek-v4-flash effort=none", model: "deepseek-v4-flash", body: { max_tokens: 3000, reasoning_effort: "none" } },
+        { label: "qwen3.6-27b", model: "qwen3.6-27b", body: { max_tokens: 1200 } },
+        { label: "minimax-m3", model: "minimax-m3", body: { max_tokens: 1200 } },
       ];
       for (const variant of variants) {
         const started = Date.now();
@@ -196,7 +216,7 @@ else
           const response = await fetch("https://api.navy/v1/chat/completions", {
             method: "POST",
             headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
-            signal: AbortSignal.timeout(90_000),
+            signal: AbortSignal.timeout(45_000),
             body: JSON.stringify({ model: variant.model, temperature: 0.4, messages, ...variant.body }),
           });
           const raw = await response.text();
