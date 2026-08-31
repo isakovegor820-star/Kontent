@@ -254,6 +254,73 @@ describe("shared direct/background AI completion service", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
+  it("does not blame an engine for the caller's own overall deadline", async () => {
+    // Autopilot builds several posts concurrently against one process-global circuit map and
+    // gives each build one overall budget. Charging `overall_timeout` to whichever engine was
+    // in flight meant one slow build wrote a failure per concurrent post against the same
+    // healthy engine, hit the threshold at once and opened its circuit. Later posts skipped
+    // it as `circuit_open`, the fleet ran out of candidates, and the plan failed
+    // `ai_unavailable` while the route was fine.
+    const hang = vi.fn((_url, init) => new Promise((_resolve, reject) => {
+      init.signal.addEventListener("abort", () => reject(init.signal.reason), { once: true });
+    }));
+    for (let concurrentPost = 0; concurrentPost < 3; concurrentPost++) {
+      await expect(completeAiText({ ...request, engine: "navy-deepseek-flash" }, {
+        env: { NAVYAI_API_KEY: "secret" },
+        fetchImpl: hang,
+        allowFallback: false,
+        timeoutMs: 1_000,
+        overallTimeoutMs: 50,
+        circuitFailureThreshold: 1,
+        circuitOpenMs: 30_000,
+      })).rejects.toMatchObject({ code: "overall_timeout" });
+    }
+
+    const telemetry = vi.fn();
+    const fetchImpl = vi.fn(async () => Response.json({
+      choices: [{ message: { content: "READY" }, finish_reason: "stop" }],
+    }));
+    await expect(completeAiText({ ...request, engine: "navy-deepseek-flash" }, {
+      env: { NAVYAI_API_KEY: "secret" },
+      fetchImpl,
+      telemetry,
+      circuitFailureThreshold: 1,
+      circuitOpenMs: 30_000,
+    })).resolves.toMatchObject({ engine: "navy-deepseek-flash", text: "READY" });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(telemetry).not.toHaveBeenCalledWith(expect.objectContaining({ code: "circuit_open" }));
+  });
+
+  it("still opens a circuit when the engine itself times out an attempt", async () => {
+    // The counterpart to the case above: `provider_timeout` is this engine failing to answer
+    // inside its own attempt budget, which is exactly the evidence the breaker exists for.
+    const hang = vi.fn((_url, init) => new Promise((_resolve, reject) => {
+      init.signal.addEventListener("abort", () => reject(init.signal.reason), { once: true });
+    }));
+    await expect(completeAiText({ ...request, engine: "navy-deepseek-flash" }, {
+      env: { NAVYAI_API_KEY: "secret" },
+      fetchImpl: hang,
+      allowFallback: false,
+      timeoutMs: 40,
+      overallTimeoutMs: 5_000,
+      circuitFailureThreshold: 1,
+      circuitOpenMs: 30_000,
+    })).rejects.toMatchObject({ code: "provider_timeout" });
+
+    const telemetry = vi.fn();
+    await expect(completeAiText({ ...request, engine: "navy-deepseek-flash" }, {
+      env: { NAVYAI_API_KEY: "secret" },
+      fetchImpl: vi.fn(async () => Response.json({
+        choices: [{ message: { content: "READY" }, finish_reason: "stop" }],
+      })),
+      telemetry,
+      allowFallback: false,
+      circuitFailureThreshold: 1,
+      circuitOpenMs: 30_000,
+    })).rejects.toMatchObject({ code: "provider_unavailable" });
+    expect(telemetry).toHaveBeenCalledWith(expect.objectContaining({ code: "circuit_open" }));
+  });
+
   it("falls back when a background plan contains only an internal think block", async () => {
     const env = {
       NAVYAI_API_KEY: "secret",

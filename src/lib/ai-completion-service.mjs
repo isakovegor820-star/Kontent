@@ -21,6 +21,25 @@ export const isRetryableAiCompletionError = (error) => error instanceof AiComple
   ["provider_timeout", "overall_timeout", "network_error", "stream_truncated", "empty_generation", "reasoning_without_content"].includes(error.code)
 );
 
+/**
+ * Whether a failure is evidence about the engine itself, and may therefore count towards
+ * opening its circuit.
+ *
+ * `overall_timeout` is not. It means the caller spent the budget it granted the whole
+ * fallback chain, which says nothing about the route that happened to be in flight when the
+ * deadline landed. Autopilot builds several posts concurrently against one process-global
+ * circuit map, so a single slow build charged one `overall_timeout` per concurrent post to
+ * the same healthy engine, reached the threshold immediately and opened its circuit. Every
+ * later post then skipped that engine as `circuit_open`, the fleet ran out of candidates and
+ * the plan failed `ai_unavailable` — with nothing actually wrong upstream.
+ *
+ * `provider_timeout` stays a health signal: that is one attempt's own timeout elapsing while
+ * this engine failed to answer.
+ */
+const isEngineHealthSignal = (error) => (
+  isRetryableAiCompletionError(error) && error.code !== "overall_timeout"
+);
+
 const canRetryNavyModelRejection = (error, fromEngine) => (
   error instanceof AiCompletionError
   && String(fromEngine).startsWith("navy-")
@@ -64,7 +83,7 @@ export function resetAiCompletionCircuits() {
 }
 
 function recordCircuitFailure(engine, error, now, threshold, openMs) {
-  if (!isRetryableAiCompletionError(error)) return;
+  if (!isEngineHealthSignal(error)) return;
   const previous = completionCircuits.get(engine);
   const failures = (previous?.resetAt > now ? previous.failures : 0) + 1;
   completionCircuits.set(engine, {

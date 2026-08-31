@@ -305,12 +305,24 @@ else
         console.log(JSON.stringify({ catalogFailure: String(error?.message || error).slice(0, 200) }));
       }
 
+      // Autopilot fails with `reasoning_without_content` (cut off mid-`<think>`) and
+      // `empty_generation` (no `content` at all) in roughly equal measure across every
+      // engine, so the question is not which model is broken but which request shape gets a
+      // visible answer out of this endpoint. Each variant isolates one knob: the deployed
+      // shape, an explicit thinking-disable, and a budget large enough to finish reasoning
+      // *and* answer. `reasoningChars` says whether the text is merely in the other field.
+      const thinkingOff = { chat_template_kwargs: { enable_thinking: false } };
       const variants = [
-        { label: "gpt-5.4 (production shape)", model: "gpt-5.4", body: { max_tokens: 3000 } },
-        { label: "deepseek-v4-pro effort=none", model: "deepseek-v4-pro", body: { max_tokens: 3000, reasoning_effort: "none" } },
-        { label: "deepseek-v4-flash effort=none", model: "deepseek-v4-flash", body: { max_tokens: 3000, reasoning_effort: "none" } },
-        { label: "qwen3.6-27b", model: "qwen3.6-27b", body: { max_tokens: 1200 } },
-        { label: "minimax-m3", model: "minimax-m3", body: { max_tokens: 1200 } },
+        { label: "deepseek-v4-flash deployed shape", model: "deepseek-v4-flash", body: { max_tokens: 3000, reasoning_effort: "none" } },
+        { label: "deepseek-v4-flash budget=8000", model: "deepseek-v4-flash", body: { max_tokens: 8000, reasoning_effort: "none" } },
+        { label: "qwen3.6-27b deployed shape", model: "qwen3.6-27b", body: { max_tokens: 3000 } },
+        { label: "qwen3.6-27b enable_thinking=false", model: "qwen3.6-27b", body: { max_tokens: 3000, ...thinkingOff } },
+        { label: "qwen3.6-27b budget=8000", model: "qwen3.6-27b", body: { max_tokens: 8000 } },
+        { label: "minimax-m3 deployed shape", model: "minimax-m3", body: { max_tokens: 3000 } },
+        { label: "minimax-m3 enable_thinking=false", model: "minimax-m3", body: { max_tokens: 3000, ...thinkingOff } },
+        { label: "minimax-m3 budget=8000", model: "minimax-m3", body: { max_tokens: 8000 } },
+        { label: "gpt-5.4 deployed shape", model: "gpt-5.4", body: { max_tokens: 3000 } },
+        { label: "gpt-5.4 effort=none", model: "gpt-5.4", body: { max_tokens: 3000, reasoning_effort: "none" } },
       ];
       for (const variant of variants) {
         const started = Date.now();
