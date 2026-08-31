@@ -228,6 +228,57 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
+function AutomaticSettingsAction({
+  pending,
+  saved,
+  saving,
+  advanced = false,
+  onSelect,
+}: {
+  pending: boolean;
+  saved: boolean;
+  saving?: boolean;
+  advanced?: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <div className="flex flex-col gap-3 rounded-md bg-surface-inset px-3.5 py-3 sm:flex-row sm:items-center sm:justify-between">
+      <div>
+        <p className="text-[12px] font-extrabold text-text">
+          {advanced ? "Автоподбор всех расширенных настроек" : "Тему напиши сообщением в чате"}
+        </p>
+        <p className="mt-0.5 text-[11px] leading-relaxed text-text-3">
+          {advanced
+            ? "Аврора очистит ручные ограничения и заново подберёт каждый параметр по задаче, площадке и голосу канала."
+            : "Аврора возьмёт задачу из сообщения — дублировать её в настройках не нужно."}
+        </p>
+      </div>
+      <div className="shrink-0 sm:text-right">
+        <Button
+          type="button"
+          variant={pending || saved ? "soft" : "outline"}
+          size="sm"
+          className="min-h-11"
+          disabled={saving}
+          onClick={onSelect}
+        >
+          {pending ? <Check className="h-4 w-4" aria-hidden /> : <Sparkles className="h-4 w-4" aria-hidden />}
+          {pending ? "Автоподбор готов" : saved ? "Подобрать заново" : "Выбрать автоматически"}
+        </Button>
+        <p role="status" aria-live="polite" className="mt-1.5 max-w-[34ch] text-[10px] leading-relaxed text-text-3">
+          {saving && pending
+            ? "Сохраняем автоматический выбор…"
+            : pending
+              ? "Нажми «Сохранить настройки», чтобы применить новый автоподбор."
+              : saved
+                ? "Автоматический режим сохранён. Его можно запустить и сохранить повторно."
+                : "Автоподбор подготовит новый профиль; сохранение останется отдельным действием."}
+        </p>
+      </div>
+    </div>
+  );
+}
+
 const proofTypes = [
   ["number", "Цифра"], ["statistic", "Статистика"], ["case", "Кейс"], ["review", "Отзыв"],
   ["quote", "Цитата"], ["experience", "Личный опыт"], ["research", "Исследование"],
@@ -251,6 +302,7 @@ export function PostSettingsMenu({
 }) {
   const [open, setOpen] = useState(Boolean(initialOpen));
   const [tab, setTab] = useState<SettingsTab>("quick");
+  const [automaticSelectionPending, setAutomaticSelectionPending] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -261,7 +313,8 @@ export function PostSettingsMenu({
   const settings = normalizePostSettings(draft);
   const dirty = JSON.stringify(settings) !== JSON.stringify(persisted);
   const automatic = postSettingsAreAutomatic(settings);
-  const automaticSaved = automatic && !dirty;
+  const automaticSaved = automatic && !dirty && !automaticSelectionPending;
+  const hasPendingChanges = dirty || automaticSelectionPending;
   const target = resolvePostTarget(settings, network);
   const rule = POST_TARGET_RULES[target];
   const [minChars, maxChars] = postLengthRange(settings, network);
@@ -323,6 +376,7 @@ export function PostSettingsMenu({
   }, [open]);
 
   const update = (patch: Partial<PostSettings>, keepPreset = false) => {
+    setAutomaticSelectionPending(false);
     setDraft(
       keepPreset
         ? normalizePostSettings({ ...settings, ...patch, preset: settings.preset })
@@ -366,10 +420,9 @@ export function PostSettingsMenu({
   const useAutomaticQuickSettings = () => {
     const next = automaticPostSettings();
     setDraft(next);
-    // This is deliberately a one-click action. Requiring a second save button made the
-    // control look broken, especially when the visible quick fields were already Auto
-    // while hidden advanced constraints remained manual.
-    onChange(next);
+    // Even when Auto is already persisted, this is a fresh user action. Keep an explicit
+    // pending marker so the Save button remains available and the profile is written again.
+    setAutomaticSelectionPending(true);
   };
 
   return (
@@ -382,6 +435,7 @@ export function PostSettingsMenu({
           if (open) setOpen(false);
           else {
             setDraft(normalizePostSettings(value));
+            setAutomaticSelectionPending(false);
             setOpen(true);
           }
         }}
@@ -419,8 +473,8 @@ export function PostSettingsMenu({
             </div>
             <div className="flex shrink-0 items-center gap-2">
               <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-text-3">
-                {!saving && !dirty && <Check className="h-3.5 w-3.5 text-success-text" aria-hidden />}
-                {saving ? "Сохраняю…" : dirty ? "Есть изменения" : "Сохранено"}
+                {!saving && !hasPendingChanges && <Check className="h-3.5 w-3.5 text-success-text" aria-hidden />}
+                {saving ? "Сохраняю…" : hasPendingChanges ? "Есть изменения" : "Сохранено"}
               </span>
               <button
                 type="button"
@@ -456,35 +510,12 @@ export function PostSettingsMenu({
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4 sm:max-h-[min(52dvh,540px)]">
             {tab === "quick" ? (
               <div className="grid gap-4">
-                <div className="flex flex-col gap-3 rounded-md bg-surface-inset px-3.5 py-3 sm:flex-row sm:items-center sm:justify-between">
-                  <div>
-                    <p className="text-[12px] font-extrabold text-text">Тему напиши сообщением в чате</p>
-                    <p className="mt-0.5 text-[11px] leading-relaxed text-text-3">Аврора возьмёт задачу из сообщения — дублировать её в настройках не нужно.</p>
-                  </div>
-                  <div className="shrink-0 sm:text-right">
-                    <Button
-                      type="button"
-                      variant={automaticSaved ? "soft" : "outline"}
-                      size="sm"
-                      className="min-h-11"
-                      onClick={useAutomaticQuickSettings}
-                    >
-                      {automaticSaved
-                        ? <Check className="h-4 w-4" aria-hidden />
-                        : <Sparkles className="h-4 w-4" aria-hidden />}
-                      {automaticSaved ? "Выбрано автоматически" : "Выбрать всё автоматически"}
-                    </Button>
-                    <p role="status" aria-live="polite" className="mt-1.5 max-w-[30ch] text-[10px] leading-relaxed text-text-3">
-                      {saving && automatic
-                        ? "Сохраняем автоматический выбор…"
-                        : automaticSaved
-                          ? "Готово: ручные ограничения очищены, параметры подберёт Аврора."
-                          : automatic
-                            ? "Автоматический выбор пока не сохранён. Повторите действие."
-                            : "Нажатие сразу применит и сохранит автоматический выбор."}
-                    </p>
-                  </div>
-                </div>
+                <AutomaticSettingsAction
+                  pending={automaticSelectionPending && automatic}
+                  saved={automaticSaved}
+                  saving={saving}
+                  onSelect={useAutomaticQuickSettings}
+                />
 
                 <QuickGroup title="Основа публикации">
                   <div className="sm:col-span-2">
@@ -496,6 +527,7 @@ export function PostSettingsMenu({
                       hint="готовый набор настроек"
                       value={settings.preset}
                       onChange={(next) => {
+                        setAutomaticSelectionPending(false);
                         if (next === "auto") setDraft(normalizePostSettings({ ...settings, preset: "auto" }));
                         else if (next !== "custom") setDraft(applyPostPreset(settings, next as Exclude<PostPresetId, "auto" | "custom">));
                       }}
@@ -564,6 +596,14 @@ export function PostSettingsMenu({
               </div>
             ) : (
               <div className="grid gap-5">
+                <AutomaticSettingsAction
+                  pending={automaticSelectionPending && automatic}
+                  saved={automaticSaved}
+                  saving={saving}
+                  advanced
+                  onSelect={useAutomaticQuickSettings}
+                />
+
                 <Section title="Задача поста">
                   <TextField label="Главная мысль" value={settings.mainIdea} onChange={(next) => update({ mainIdea: next })} />
                   <SelectField label="Длина" value={settings.length} onChange={(next) => update({ length: next as PostSettings["length"] })} options={LENGTHS} />
@@ -800,16 +840,17 @@ export function PostSettingsMenu({
           </div>
           <div className="flex flex-col gap-2 border-t border-line bg-surface px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
             <p className="text-[11px] leading-relaxed text-text-3">
-              {dirty ? "Изменения пока не применены к следующим публикациям." : "Все настройки публикации сохранены."}
+              {hasPendingChanges ? "Изменения пока не применены к следующим публикациям." : "Все настройки публикации сохранены."}
             </p>
             <div className="flex shrink-0 gap-2">
               <Button
                 variant="ghost"
                 size="sm"
                 className="min-h-11"
-                disabled={!dirty || saving}
+                disabled={!hasPendingChanges || saving}
                 onClick={() => {
                   setDraft(persisted);
+                  setAutomaticSelectionPending(false);
                   setOpen(false);
                   triggerRef.current?.focus();
                 }}
@@ -820,9 +861,10 @@ export function PostSettingsMenu({
                 variant="brand"
                 size="sm"
                 className="min-h-11"
-                disabled={!dirty || saving}
+                disabled={!hasPendingChanges || saving}
                 onClick={() => {
                   onChange(settings);
+                  setAutomaticSelectionPending(false);
                   setOpen(false);
                   triggerRef.current?.focus();
                 }}

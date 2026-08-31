@@ -251,7 +251,6 @@ export function classifyE2eExpectedSessionExpiryWebKitPageError({
   }
   if (
     current.origin !== base.origin
-    || current.pathname !== "/app/calendar"
     || base.hostname !== "127.0.0.1"
     || Number(base.port) !== port
   ) return null;
@@ -259,7 +258,17 @@ export function classifyE2eExpectedSessionExpiryWebKitPageError({
   const originPrefix = `/127.0.0.1:${port}`;
   if (!requestTarget.startsWith(`${originPrefix}/`)) return null;
   const pathAndQuery = requestTarget.slice(originPrefix.length);
-  if (!["/api/drafts", "/api/projects", "/api/projects/current"].includes(pathAndQuery)) {
+  const expectedPaths = {
+    "/app/calendar": ["/api/drafts", "/api/projects", "/api/projects/current"],
+    "/app/studio": [
+      "/api/studio/session",
+      "/api/settings",
+      "/api/ai/engines",
+      "/api/channels",
+      "/api/posts",
+    ],
+  }[current.pathname];
+  if (!expectedPaths?.includes(pathAndQuery)) {
     return null;
   }
   return { kind: "session-expiry.webkit-cancelled-api-request", detail: pathAndQuery };

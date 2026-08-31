@@ -24,7 +24,6 @@ import {
   RefreshCw,
   Sparkles,
   Timer,
-  Video,
 } from "lucide-react";
 
 import { AppShell } from "@/components/app/shell";
@@ -34,7 +33,6 @@ import { Card, Textarea } from "@/components/ui/primitives";
 import {
   MediaGenerator,
   type MediaGeneration,
-  type MediaKind,
 } from "@/components/studio/media-generator";
 import { PostSettingsMenu } from "@/components/studio/post-settings-menu";
 import { requiresBriefConfirmation } from "@/lib/brief-confirmation";
@@ -67,6 +65,7 @@ import {
   parseMonthlyCampaignDetail,
 } from "@/lib/monthly-campaign-client";
 import { studioReferenceGenerationIdentity } from "@/lib/studio-reference-generation";
+import { readyStudioEngines } from "@/lib/studio-engine-options";
 import {
   DEFAULT_POST_SETTINGS,
   buildPostSettingsSummary,
@@ -173,8 +172,8 @@ type Quick = {
   draft?: string;
   /** выполнить сразу, дописывать нечего */
   instant?: string;
-  /** открыть настоящий генератор медиа, а не текстовый промпт */
-  mediaKind?: MediaKind;
+  /** открыть настоящий генератор изображений, а не текстовый промпт */
+  opensImages?: boolean;
 };
 
 const QUICK: Quick[] = [
@@ -212,13 +211,7 @@ const QUICK: Quick[] = [
     id: "image",
     label: "Картинка",
     icon: <ImageIcon className={ICON} strokeWidth={2} aria-hidden />,
-    mediaKind: "image",
-  },
-  {
-    id: "video",
-    label: "Создать рилс",
-    icon: <Video className={ICON} strokeWidth={2} aria-hidden />,
-    mediaKind: "video",
+    opensImages: true,
   },
   {
     id: "rewrite-last",
@@ -409,13 +402,6 @@ function MessageRow({
             className="mt-3 max-w-[72ch] rounded-sm border border-line bg-surface-inset px-3 py-2 text-[12px] leading-relaxed text-text-2"
           >
             {msg.statusMessage}
-          </p>
-        )}
-
-        {!msg.streaming && msg.fallbackUsed && msg.requestedEngine && msg.effectiveEngine && (
-          <p className="mt-2 max-w-[72ch] rounded-sm bg-info-soft px-3 py-2 text-[11px] text-info-text">
-            Запрошенная модель: {msg.requestedEngine}. Итоговый проход: {msg.effectiveEngine}.
-            В ходе генерации использовался резервный маршрут; выбор в настройках не менялся.
           </p>
         )}
 
@@ -736,7 +722,7 @@ function ModelMenu({
 }) {
   const [open, setOpen] = useState(false);
   const activeEngine = engines.find((engine) => engine.id === current);
-  const label = loading ? "Модель…" : activeEngine?.label ?? "Выбрать модель";
+  const label = loading ? "Модель…" : activeEngine ? `Модель · ${activeEngine.label}` : "Выбрать модель";
 
   return (
     <div className="relative min-w-0">
@@ -765,13 +751,11 @@ function ModelMenu({
 
         <div className="grid gap-1">
           {engines.map((engine) => {
-            const ready = engine.supported && engine.status === "ready";
             const selected = engine.id === current;
             return (
                 <button
                   key={engine.id}
                   type="button"
-                  disabled={!ready}
                   aria-pressed={selected}
                   onClick={() => {
                     setOpen(false);
@@ -780,21 +764,21 @@ function ModelMenu({
                   className={cn(
                     "flex min-h-11 w-full cursor-pointer items-center gap-2.5 rounded-sm px-3 text-left transition-colors",
                     selected ? "bg-info-soft" : "hover:bg-surface-inset",
-                    !ready && "cursor-not-allowed opacity-45",
                   )}
                 >
                   <span className={cn("h-2 w-2 shrink-0 rounded-full", engineDot(engine.status))} aria-hidden />
                   <span className="min-w-0 flex-1 truncate text-[12px] font-semibold text-text">{engine.label}</span>
                   {selected ? (
                     <Check className="h-4 w-4 shrink-0 text-text" strokeWidth={2.5} aria-hidden />
-                  ) : !ready ? (
-                    <span className="shrink-0 text-[10px] text-text-3">
-                      {engine.status === "offline" ? "Ошибка" : "Не подключена"}
-                    </span>
                   ) : null}
                 </button>
             );
           })}
+          {!loading && engines.length === 0 && (
+            <p role="status" className="rounded-sm bg-danger-soft px-3 py-2.5 text-[11px] leading-relaxed text-danger-text">
+              Сейчас нет доступных моделей. Обнови страницу или проверь подключение провайдера.
+            </p>
+          )}
         </div>
 
       </Popover>
@@ -822,7 +806,6 @@ function StudioPageInner() {
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("chat");
   const [chatSessionOwner, setChatSessionOwner] = useState<number | null>(null);
   const [chatPersistenceStatus, setChatPersistenceStatus] = useState<ChatPersistenceStatus>("loading");
-  const [mediaKind, setMediaKind] = useState<MediaKind>("image");
   const [pickedChannelId, setPickedChannelId] = useState<number | null>(() => {
     if (typeof window === "undefined") return null;
     const value = Number(new URLSearchParams(window.location.search).get("channel"));
@@ -1416,9 +1399,9 @@ function StudioPageInner() {
           return;
         }
         setEngineStatusError(null);
-        const availableEngines = d.engines ?? [];
+        const availableEngines = readyStudioEngines(d.engines ?? []);
         setEngines(availableEngines);
-        setEngine(d.current ?? null);
+        setEngine(availableEngines.some((item) => item.id === d.current) ? d.current ?? null : null);
         setPendingEngineSuggestion(
           d.suggestedEngine?.id
             ? availableEngines.find((item) => item.id === d.suggestedEngine?.id && item.status === "ready") ?? null
@@ -2232,8 +2215,7 @@ function StudioPageInner() {
   const onQuick = (q: Quick) => {
     if (busy) return;
 
-    if (q.mediaKind) {
-      setMediaKind(q.mediaKind);
+    if (q.opensImages) {
       setWorkspaceMode("studio");
       return;
     }
@@ -2501,7 +2483,7 @@ function StudioPageInner() {
                       data-aurora-action="requested"
                       className="ml-auto shrink-0 rounded-full"
                       aria-label="Отправить"
-                      disabled={busy || (draft.trim().length === 0 && postSettings.mainIdea.trim().length === 0)}
+                      disabled={busy || enginesLoading || !engine || (draft.trim().length === 0 && postSettings.mainIdea.trim().length === 0)}
                       onClick={() => ask(draft)}
                     >
                       <ArrowUp className="h-[18px] w-[18px]" strokeWidth={2.5} aria-hidden />
@@ -2524,7 +2506,7 @@ function StudioPageInner() {
 
           <div
             id="studio-workspace"
-            aria-label="Режим Картинки и видео"
+            aria-label="Режим Картинки"
             ref={attachDesignShell}
             className={cn(
               "mx-auto w-full max-w-[1180px]",
@@ -2532,8 +2514,6 @@ function StudioPageInner() {
             )}
           >
             <MediaGenerator
-              key={mediaKind}
-              initialKind={mediaKind}
               channelId={channelId}
               sourceText={primaryPublication([...messages].reverse().find((message) => message.role === "ai" && message.postable)?.text ?? "")}
               onUse={useGeneratedMedia}

@@ -3988,7 +3988,6 @@ function ComposerInner() {
               className="overflow-hidden rounded-md border border-line bg-surface [--studio-h:min(760px,calc(100dvh-10rem))]"
             >
               <MediaGenerator
-                {...{ initialKind: "image" as const }}
                 channelId={c.channelId ?? c.vkChannelId}
                 sourceText={c.text}
                 onUse={useGeneratedMedia}

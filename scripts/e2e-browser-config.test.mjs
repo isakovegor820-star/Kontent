@@ -311,6 +311,19 @@ describe("real E2E browser configuration", () => {
         message: `/127.0.0.1:43190${path} due to access control checks.`,
       })?.detail).toBe(path);
     }
+    for (const path of [
+      "/api/studio/session",
+      "/api/settings",
+      "/api/ai/engines",
+      "/api/channels",
+      "/api/posts",
+    ]) {
+      expect(classifyE2eExpectedSessionExpiryWebKitPageError({
+        ...input,
+        currentUrl: `${baseUrl}/app/studio`,
+        message: `/127.0.0.1:43190${path} due to access control checks.`,
+      })?.detail).toBe(path);
+    }
     for (const override of [
       { active: false },
       { engine: "firefox" },
@@ -319,6 +332,7 @@ describe("real E2E browser configuration", () => {
       { message: "/127.0.0.1:43191/api/drafts due to access control checks." },
       { message: "/127.0.0.1:43190/api/drafts failed with 500" },
       { currentUrl: `${baseUrl}/app/today` },
+      { currentUrl: `${baseUrl}/app/studio`, message: "/127.0.0.1:43190/api/drafts due to access control checks." },
       { currentUrl: "https://example.com/app/calendar" },
       { baseUrl: "https://localhost:43190" },
       { webPort: 43191 },
