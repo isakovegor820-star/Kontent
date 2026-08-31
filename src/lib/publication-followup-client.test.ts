@@ -133,7 +133,9 @@ describe("publication review server authority", () => {
     expect(composer).toContain("Обновить публикацию");
     expect(calendar).not.toContain("restorePublicationToDraft");
     expect(calendar).not.toContain("PublicationActionsDialog");
-    expect(calendar).toContain("`&publication=${post.publicationOperationId}`");
+    expect(calendar).toContain("const linkedOperationId = post.publicationOperationId");
+    expect(calendar).toContain("activePublicationOperationForDraft(realCalendarPosts, post.serverDraftId)");
+    expect(calendar).toContain("`&publication=${linkedOperationId}`");
   });
 });
 

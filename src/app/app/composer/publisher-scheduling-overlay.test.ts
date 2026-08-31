@@ -36,7 +36,8 @@ describe("publisher scheduling overlay contract", () => {
     expect(publish).toContain(": acknowledgedDraftRef.current;");
     expect(publish).toContain("await approvePersonalDraftForPublication(draft.id, draft.version)");
     expect(publish).toContain("await s.createPublicationOperation");
-    expect(publish).toContain('result.ok && result.operationStatus === "queued"');
+    expect(publish).toContain("publicationOperationReachedCalendar(result)");
+    expect(publish).toContain('const queued = result.ok && result.operationStatus === "queued";');
     expect(publish).not.toContain("result.destinations?.length === draft.destinations.length");
     expect(publish).toContain('router.push("/app/calendar")');
     expect(publish).toContain("setPublicationSuccess({");
@@ -51,12 +52,12 @@ describe("publisher scheduling overlay contract", () => {
     expect(publish).toContain("if (result.fingerprint) operation.fingerprint = result.fingerprint;");
     const success = section(
       publish,
-      'if (result.ok && result.operationStatus === "queued")',
+      "if (publicationOperationReachedCalendar(result))",
       "} else {",
     );
     expect(success.indexOf('router.push("/app/calendar")'))
       .toBeLessThan(success.indexOf("removePendingDraft"));
-    const failureStart = publish.indexOf("} else {", publish.indexOf('if (result.ok && result.operationStatus === "queued")'));
+    const failureStart = publish.indexOf("} else {", publish.indexOf("if (publicationOperationReachedCalendar(result))"));
     const failure = publish.slice(failureStart, publish.indexOf("} finally {", failureStart));
     expect(failure).not.toContain("publicationOperationRef.current = null");
 
