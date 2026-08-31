@@ -75,6 +75,23 @@ journalctl -u aurora-worker.service --since '-3 hours' --no-pager -o cat 2>/dev/
   | grep -aE '^\[(auto|autopilot|worker ai)\]|нет брифа|канал .* недоступен|устарела|no_brief|no_channel' \
   | tail -n 80 | redact || echo "(no Autopilot journal lines)"
 
+section "AI TELEMETRY CODE HISTOGRAM (worker, last 6 h)"
+# `[worker ai]` logs an object, so journalctl renders `code:`/`engine:` on their own lines
+# and a plain grep for the prefix returns only `[worker ai] {`. The code is the whole
+# diagnosis: `provider_error` means the upstream route answered, `overall_timeout` means the
+# build ran out of its own budget, and `circuit_open` means a previous failure is still
+# suppressing an engine that may itself be healthy.
+worker_ai_log="$(journalctl -u aurora-worker.service --since '-6 hours' --no-pager -o cat 2>/dev/null || true)"
+if [[ -z "$worker_ai_log" ]]; then
+  echo "(no journal)"
+else
+  printf '%s\n' "$worker_ai_log" \
+    | grep -aA 9 -E '^\[worker ai\]' \
+    | grep -aE '^\s+(code|engine|surface|outcome|event|toEngine):' \
+    | sed -E 's/^\s+//; s/,$//' \
+    | sort | uniq -c | sort -rn | head -40 || echo "(no [worker ai] telemetry)"
+fi
+
 section "WORKER JOURNAL (unfiltered tail since the newest restart)"
 # The prefix filter above answers "did the gate fail". It cannot answer "how far did
 # startup get", and a worker that is `active (running)` while registering no BullMQ
