@@ -1,10 +1,16 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 
 import { selectFreshJourneyFailureDetail } from "./e2e-stability-artifacts.mjs";
+import {
+  E2E_BOT_CONNECT_TOKEN_CANARY,
+  inspectE2eCanaryBuffer,
+  inspectE2eNetworkEvents,
+  inspectE2eTextEvidence,
+} from "./e2e-evidence-safety.mjs";
 import { captureE2eInputSnapshot, changedE2eInputPaths } from "./e2e-input-snapshot.mjs";
 import { createE2eStabilityPlan } from "./e2e-stability-config.mjs";
 
@@ -64,6 +70,80 @@ async function artifactInventory(directory) {
   })));
 }
 
+const E2E_TEXT_EVIDENCE_SUFFIXES = Object.freeze([
+  ".csv",
+  ".html",
+  ".json",
+  ".log",
+  ".md",
+  ".txt",
+]);
+const E2E_ARCHIVE_EVIDENCE_SUFFIXES = Object.freeze([".xlsx", ".zip"]);
+const E2E_EVIDENCE_CANARIES = Object.freeze([
+  Object.freeze({ label: "bot-connect-token", value: E2E_BOT_CONNECT_TOKEN_CANARY }),
+]);
+
+function extractArchiveContent(path) {
+  return new Promise((resolveExtract, rejectExtract) => {
+    execFile(
+      "unzip",
+      ["-p", path],
+      { encoding: "buffer", maxBuffer: 256 * 1024 * 1024 },
+      (error, stdout, stderr) => {
+        if (error) {
+          rejectExtract(new Error(
+            `unable to inspect archive ${path}: ${String(stderr || error.message).trim()}`,
+          ));
+          return;
+        }
+        resolveExtract(Buffer.from(stdout));
+      },
+    );
+  });
+}
+
+async function scanJourneyEvidence(directory, inventory, networkEvents) {
+  const findings = [...inspectE2eNetworkEvents(networkEvents)];
+  let textFilesScanned = 0;
+  let archivesExpanded = 0;
+  for (const entry of inventory) {
+    const path = join(directory, entry.path);
+    const content = await readFile(path);
+    findings.push(...inspectE2eCanaryBuffer(entry.path, content, E2E_EVIDENCE_CANARIES));
+    if (E2E_TEXT_EVIDENCE_SUFFIXES.some((suffix) => entry.path.endsWith(suffix))) {
+      textFilesScanned += 1;
+      findings.push(...inspectE2eTextEvidence(entry.path, content.toString("utf8")));
+    }
+    if (E2E_ARCHIVE_EVIDENCE_SUFFIXES.some((suffix) => entry.path.endsWith(suffix))) {
+      archivesExpanded += 1;
+      const expanded = await extractArchiveContent(path);
+      findings.push(...inspectE2eCanaryBuffer(
+        `${entry.path}::expanded`,
+        expanded,
+        E2E_EVIDENCE_CANARIES,
+      ));
+    }
+  }
+  if (findings.length > 0) {
+    const detail = findings.slice(0, 20).map((finding) => [
+      finding.kind,
+      finding.path,
+      Number.isSafeInteger(finding.index) ? `event:${finding.index}` : null,
+      finding.parameter ? `parameter:${finding.parameter}` : null,
+      finding.label ? `canary:${finding.label}` : null,
+    ].filter(Boolean).join("/")).join(", ");
+    throw new Error(`E2E evidence safety scan found ${findings.length} issue(s): ${detail}`);
+  }
+  return {
+    filesScanned: inventory.length,
+    textFilesScanned,
+    archivesExpanded,
+    networkEventsScanned: networkEvents.length,
+    canaries: E2E_EVIDENCE_CANARIES.map(({ label }) => label),
+    findings: 0,
+  };
+}
+
 async function assertStableE2eInputs() {
   const current = await captureE2eInputSnapshot();
   if (current.digest === baselineInputSnapshot.digest) return;
@@ -119,6 +199,7 @@ async function verifyJourney(directory) {
   if (!Array.isArray(network.events) || network.events.length === 0) {
     throw new Error("network log is empty");
   }
+  const evidenceSafety = await scanJourneyEvidence(directory, inventory, network.events);
   return {
     result: {
       ok: result.ok,
@@ -133,6 +214,7 @@ async function verifyJourney(directory) {
       observations: diagnostics.observations?.length ?? 0,
     },
     networkEvents: network.events.length,
+    evidenceSafety,
     inventory,
   };
 }

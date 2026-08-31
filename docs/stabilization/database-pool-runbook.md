@@ -38,6 +38,26 @@ Endpoint защищён существующим operator bearer или global-a
 `Cache-Control: no-store`. Он не агрегирует несколько web/worker processes и не заменяет
 DB/PgBouncer dashboard.
 
+## Локальная DB timeout integration — 2026-08-31
+
+Команда `npm run test:database-pool-timeout:integration` создаёт новый изолированный
+PostgreSQL 16 cluster в системном temp, запускает приложение с pool max `1` и проверяет
+фактические границы без подключения к существующей БД:
+
+- второй `pool.connect()` завершается acquire timeout при занятом единственном connection;
+- `select pg_sleep(1)` отменяется PostgreSQL по `statement_timeout` (`57014`);
+- idle transaction завершается сервером по `idle_in_transaction_session_timeout`
+  (`25P03`), после чего pool создаёт рабочее соединение и `select 1` проходит;
+- snapshot не содержит текст исключения и показывает acquire timeout/error counters.
+
+Фактический прогон: 1 test file, 3 tests — pass. Успешный временный cluster остановлен,
+а его evidence-каталог сохранён по пути
+`/var/folders/l8/4bbq39ws6vz8d9h3dlt95k180000gn/T/aurora-db-pool-timeout-dt3WQA`.
+Существующие `aurora_e2e_real`, Redis и production/live targets не использовались.
+Это подтверждает только timeout/recovery contract одного локального процесса; тест не
+создаёт PgBouncer, controlled saturation/load profile, multi-process aggregation или
+production alert route.
+
 ## Диагностика
 
 1. Зафиксировать immutable application SHA, runtime role и snapshot каждого process.
@@ -74,7 +94,7 @@ heartbeat, queue recovery и data reconciliation. Сброс или очистк
 BLK-02 можно закрыть только после приложения:
 
 - утверждённого connection budget и PgBouncer/equivalent topology;
-- DB timeout integration и controlled saturation result;
+- DB timeout integration (локальный isolated test есть) и controlled saturation result;
 - dashboard с pool/DB/slow-query/transaction signals и рабочим alert route;
 - load/soak evidence: pool wait p95 <50 ms, нет connection exhaustion, есть 30% запас;
 - повторного identical run и подписей Backend + SRE.

@@ -35,6 +35,7 @@ import {
   sanitizeE2eNetworkUrl,
 } from "./e2e-browser-config.mjs";
 import { captureE2eInputSnapshot, changedE2eInputPaths } from "./e2e-input-snapshot.mjs";
+import { E2E_BOT_CONNECT_TOKEN_CANARY } from "./e2e-evidence-safety.mjs";
 import {
   enqueuePublicationReviewReminderJob,
   processDuePublicationReviews,
@@ -178,6 +179,7 @@ const interfaceEvidence = {
   analyticsUi: null,
   todayUi: null,
   adminOperationsUi: null,
+  botConnectTokenHygiene: null,
 };
 
 function assert(value, message) {
@@ -1898,16 +1900,73 @@ try {
       recordVideo: { dir: videoDirectory, size: E2E_EVIDENCE_VIDEO_SIZE },
     } : {}),
   });
-  if (captureBrowserArtifacts) {
-    await context.tracing.start(E2E_EVIDENCE_TRACE_OPTIONS);
-    mainTraceStarted = true;
-  }
   await installBrowserDiagnostics(context, "main");
   page = await context.newPage();
   interfaceEvidence.reducedMotion.main = await page.evaluate(
     () => globalThis.matchMedia("(prefers-reduced-motion: reduce)").matches,
   );
   assert(interfaceEvidence.reducedMotion.main, "main browser context did not emulate reduced motion");
+
+  const botConnectNetworkUrls = [];
+  const recordBotConnectNetworkUrl = (request) => {
+    botConnectNetworkUrls.push(sanitizeE2eNetworkUrl(request.url(), baseUrl));
+  };
+  page.on("request", recordBotConnectNetworkUrl);
+  try {
+    await page.goto(
+      `/bot/connect?source=telegram#token=${E2E_BOT_CONNECT_TOKEN_CANARY}`,
+      { waitUntil: "domcontentloaded", timeout: 90_000 },
+    );
+    await page.getByRole("heading", { name: "Ссылка недействительна", exact: true })
+      .waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+    await waitForFirstPartyNetworkIdle(page, "bot connect token hygiene");
+  } finally {
+    page.off("request", recordBotConnectNetworkUrl);
+  }
+  const botConnectCleanUrl = new URL(page.url());
+  const botConnectDom = await page.content();
+  const botConnectHistory = await page.evaluate(
+    () => globalThis.sessionStorage.getItem("__aurora_e2e_history_events") || "[]",
+  );
+  const botConnectDiagnostics = JSON.stringify({
+    browserIssues,
+    browserObservations,
+    logs,
+  });
+  assert(
+    botConnectCleanUrl.pathname === "/bot/connect"
+      && botConnectCleanUrl.search === "?source=telegram"
+      && botConnectCleanUrl.hash === "",
+    "bot connection token remained in the visible URL",
+  );
+  assert(!botConnectDom.includes(E2E_BOT_CONNECT_TOKEN_CANARY), "bot connection token leaked into DOM");
+  assert(!botConnectHistory.includes(E2E_BOT_CONNECT_TOKEN_CANARY), "bot connection token leaked into browser history evidence");
+  assert(
+    !botConnectNetworkUrls.some((url) => url.includes(E2E_BOT_CONNECT_TOKEN_CANARY)),
+    "bot connection token leaked into a recorded network URL",
+  );
+  assert(
+    !botConnectDiagnostics.includes(E2E_BOT_CONNECT_TOKEN_CANARY),
+    "bot connection token leaked into browser or runtime diagnostics",
+  );
+  interfaceEvidence.botConnectTokenHygiene = {
+    route: "/bot/connect?source=telegram",
+    visibleUrlClean: true,
+    domClean: true,
+    historyEvidenceClean: true,
+    networkUrlsClean: true,
+    diagnosticsClean: true,
+    traceCaptureStartedAfterTokenConsumption: true,
+  };
+
+  // The one-time token is intentionally posted to the first-party inspection API.
+  // Start trace capture only after that bounded flow so the credential is not retained
+  // in a portable trace archive; the URL/DOM/history/network/log assertions above remain
+  // part of every browser-engine journey.
+  if (captureBrowserArtifacts) {
+    await context.tracing.start(E2E_EVIDENCE_TRACE_OPTIONS);
+    mainTraceStarted = true;
+  }
 
   const authenticatedRequestFrom = (targetPage, path, { method = "GET", headers = {}, data } = {}) => targetPage.evaluate(
     async ({ path, method, headers, data }) => {
@@ -5656,6 +5715,7 @@ try {
         analyticsUi: interfaceEvidence.analyticsUi,
         todayUi: interfaceEvidence.todayUi,
         adminOperationsUi: interfaceEvidence.adminOperationsUi,
+        botConnectTokenHygiene: interfaceEvidence.botConnectTokenHygiene,
         browserRuntimeErrors: browserIssues.length,
         browserKnownObservations: browserObservations.length,
         touchTargets: true,
