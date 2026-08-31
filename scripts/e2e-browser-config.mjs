@@ -176,6 +176,53 @@ export function classifyE2eKnownWebKitRequestCancellation({
   return observation ? { ...observation, message: rawMessage } : null;
 }
 
+export function classifyE2eKnownWebKitDocumentNavigationCancellation({
+  engine,
+  requestUrl,
+  requestMethod,
+  resourceType,
+  failure,
+  documentRequestUrl,
+  elapsedMs,
+  baseUrl,
+  webPort,
+} = {}) {
+  if (
+    resolveE2eBrowserEngine(engine) !== "webkit"
+    || String(requestMethod || "").toUpperCase() !== "GET"
+    || String(resourceType || "") !== "fetch"
+    || String(failure || "") !== "cancelled"
+  ) {
+    return null;
+  }
+  const elapsed = Number(elapsedMs);
+  if (!Number.isFinite(elapsed) || elapsed < 0 || elapsed > 250) return null;
+  let request;
+  let documentRequest;
+  let expectedBase;
+  try {
+    request = new URL(String(requestUrl || ""));
+    documentRequest = new URL(String(documentRequestUrl || ""));
+    expectedBase = new URL(String(baseUrl || ""));
+  } catch {
+    return null;
+  }
+  const port = Number(webPort);
+  if (
+    request.origin !== expectedBase.origin
+    || documentRequest.origin !== expectedBase.origin
+    || request.hostname !== "127.0.0.1"
+    || Number(request.port) !== port
+    || !/^\/api(?:\/|$)/u.test(request.pathname)
+    || !/^\/app(?:\/|$)/u.test(documentRequest.pathname)
+  ) return null;
+  return {
+    kind: "webkit.cancelled-api-document-navigation",
+    detail: `${request.pathname}${request.search}`,
+    message: `/${request.hostname}:${request.port}${request.pathname}${request.search}${WEBKIT_CANCELLED_REQUEST_SUFFIX}`,
+  };
+}
+
 export function classifyE2eExpectedSessionExpiryConsole({
   active = false,
   message,

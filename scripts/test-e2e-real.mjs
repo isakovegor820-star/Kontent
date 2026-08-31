@@ -23,6 +23,7 @@ import {
   e2eBrowserExecutableCandidates,
   classifyE2eExpectedSessionExpiryConsole,
   classifyE2eKnownBrowserObservation,
+  classifyE2eKnownWebKitDocumentNavigationCancellation,
   classifyE2eKnownWebKitRequestCancellation,
   resolveE2eAdvanceSchedule,
   resolveE2eBuildMode,
@@ -166,6 +167,7 @@ const expectedBrowserConsoleScopes = new Set();
 const expectedBrowser5xxScopes = new Set();
 const expectedSessionExpiryConsoleScopes = new Set();
 const WEBKIT_DEFERRED_CANCELLATION_WINDOW_MS = 120_000;
+const WEBKIT_DOCUMENT_CANCELLATION_WINDOW_MS = 250;
 const interfaceEvidence = {
   reducedMotion: { main: false, reviewer: false },
   viewportWidths: [],
@@ -333,7 +335,29 @@ async function installBrowserDiagnostics(context, label) {
   context.on("page", (targetPage) => {
     const pendingRequests = new Set();
     const deferredKnownWebKitPageErrors = new Map();
+    const pendingWebKitDocumentCancellations = [];
+    let recentDocumentRequest = null;
     browserPendingRequests.set(targetPage, pendingRequests);
+    const queueDeferredWebKitPageError = (observation) => {
+      const queued = deferredKnownWebKitPageErrors.get(observation.message) || [];
+      queued.push({ recordedAt: Date.now(), observation });
+      deferredKnownWebKitPageErrors.set(observation.message, queued);
+    };
+    const correlateDocumentCancellation = (candidate, documentRequestUrl, elapsedMs) => {
+      const observation = classifyE2eKnownWebKitDocumentNavigationCancellation({
+        engine: browserEngine,
+        requestUrl: candidate.requestUrl,
+        requestMethod: candidate.requestMethod,
+        resourceType: candidate.resourceType,
+        failure: candidate.failure,
+        documentRequestUrl,
+        elapsedMs,
+        baseUrl,
+        webPort,
+      });
+      if (observation) queueDeferredWebKitPageError(observation);
+      return Boolean(observation);
+    };
     const firstPartyRequest = (request) => {
       try {
         const url = new URL(request.url());
@@ -343,6 +367,21 @@ async function installBrowserDiagnostics(context, label) {
       }
     };
     targetPage.on("request", (request) => {
+      if (request.resourceType() === "document") {
+        const documentAt = Date.now();
+        recentDocumentRequest = { at: documentAt, url: request.url() };
+        const remaining = [];
+        for (const candidate of pendingWebKitDocumentCancellations) {
+          const elapsedMs = documentAt - candidate.recordedAt;
+          if (elapsedMs > WEBKIT_DOCUMENT_CANCELLATION_WINDOW_MS) continue;
+          if (!correlateDocumentCancellation(candidate, request.url(), elapsedMs)) remaining.push(candidate);
+        }
+        pendingWebKitDocumentCancellations.splice(
+          0,
+          pendingWebKitDocumentCancellations.length,
+          ...remaining,
+        );
+      }
       if (firstPartyRequest(request)) pendingRequests.add(request);
       if (!browserTeardownStarted && captureBrowserArtifacts) {
         browserNetworkEvents.push({
@@ -369,9 +408,27 @@ async function installBrowserDiagnostics(context, label) {
         webPort,
       });
       if (knownCancellation) {
-        const queued = deferredKnownWebKitPageErrors.get(knownCancellation.message) || [];
-        queued.push({ recordedAt: Date.now(), observation: knownCancellation });
-        deferredKnownWebKitPageErrors.set(knownCancellation.message, queued);
+        queueDeferredWebKitPageError(knownCancellation);
+      } else if (
+        browserEngine === "webkit"
+        && request.method() === "GET"
+        && request.resourceType() === "fetch"
+        && failure === "cancelled"
+        && sanitizeE2eNetworkUrl(request.url(), baseUrl).startsWith("/api/")
+      ) {
+        const candidate = {
+          recordedAt: Date.now(),
+          requestUrl: request.url(),
+          requestMethod: request.method(),
+          resourceType: request.resourceType(),
+          failure,
+        };
+        const elapsedMs = recentDocumentRequest ? candidate.recordedAt - recentDocumentRequest.at : Infinity;
+        if (
+          !recentDocumentRequest
+          || elapsedMs > WEBKIT_DOCUMENT_CANCELLATION_WINDOW_MS
+          || !correlateDocumentCancellation(candidate, recentDocumentRequest.url, elapsedMs)
+        ) pendingWebKitDocumentCancellations.push(candidate);
       }
       if (!browserTeardownStarted && captureBrowserArtifacts) {
         browserNetworkEvents.push({

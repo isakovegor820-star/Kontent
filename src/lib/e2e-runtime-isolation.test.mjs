@@ -126,7 +126,10 @@ describe("real E2E runtime isolation", () => {
     expect(source).toContain('targetPage.on("requestfinished", settleRequest)');
     expect(source).toContain('targetPage.on("requestfailed", settleRequest)');
     expect(source).toContain("classifyE2eKnownWebKitRequestCancellation({");
+    expect(source).toContain("classifyE2eKnownWebKitDocumentNavigationCancellation({");
     expect(source).toContain("WEBKIT_DEFERRED_CANCELLATION_WINDOW_MS = 120_000");
+    expect(source).toContain("WEBKIT_DOCUMENT_CANCELLATION_WINDOW_MS = 250");
+    expect(source).toContain('request.resourceType() === "document"');
     expect(source).toContain("deferredKnownWebKitPageErrors.delete(rawMessage)");
     expect(source).toContain('!url.searchParams.has("_rsc")');
     expect(source.match(/await waitForRestoredLibrary\(page, channels\[0\]\)/gu)).toHaveLength(4);

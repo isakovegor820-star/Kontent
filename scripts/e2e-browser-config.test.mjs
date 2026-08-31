@@ -5,6 +5,7 @@ import {
   E2E_BROWSER_ENGINES,
   classifyE2eExpectedSessionExpiryConsole,
   classifyE2eKnownBrowserObservation,
+  classifyE2eKnownWebKitDocumentNavigationCancellation,
   classifyE2eKnownWebKitRequestCancellation,
   e2eBrowserExecutableCandidates,
   resolveE2eAdvanceSchedule,
@@ -190,6 +191,47 @@ describe("real E2E browser configuration", () => {
         webPort: 43190,
         ...override,
       })).toBeNull();
+    }
+  });
+
+  it("correlates only a cancelled first-party GET loader with a simultaneous same-origin document navigation", () => {
+    const baseUrl = "https://127.0.0.1:43190";
+    const input = {
+      engine: "webkit",
+      requestUrl: `${baseUrl}/api/rss/items?summary=unread`,
+      requestMethod: "GET",
+      resourceType: "fetch",
+      failure: "cancelled",
+      documentRequestUrl: `${baseUrl}/app/studio?draft=3&intent=create`,
+      elapsedMs: 0,
+      baseUrl,
+      webPort: 43190,
+    };
+    expect(classifyE2eKnownWebKitDocumentNavigationCancellation(input)).toEqual({
+      kind: "webkit.cancelled-api-document-navigation",
+      detail: "/api/rss/items?summary=unread",
+      message: "/127.0.0.1:43190/api/rss/items?summary=unread due to access control checks.",
+    });
+    expect(classifyE2eKnownWebKitDocumentNavigationCancellation({
+      ...input,
+      requestUrl: `${baseUrl}/api/channels`,
+    })).toMatchObject({
+      kind: "webkit.cancelled-api-document-navigation",
+      detail: "/api/channels",
+    });
+    for (const override of [
+      { elapsedMs: 251 },
+      { elapsedMs: -1 },
+      { documentRequestUrl: "https://example.com/app/studio" },
+      { documentRequestUrl: `${baseUrl}/api/projects` },
+      { requestUrl: `${baseUrl}/app/calendar` },
+      { requestMethod: "POST" },
+      { resourceType: "xhr" },
+      { failure: "Failed to load resource" },
+      { engine: "firefox" },
+    ]) {
+      expect(classifyE2eKnownWebKitDocumentNavigationCancellation({ ...input, ...override }))
+        .toBeNull();
     }
   });
 
