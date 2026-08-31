@@ -26,6 +26,7 @@ const readySchema = {
   actualVersion: "aurora-test",
   appliedMigrations: 1,
   expectedMigrations: 1,
+  forwardMigrations: [],
   reasons: [],
 };
 
@@ -111,6 +112,7 @@ describe("readiness model", () => {
         actualVersion: null,
         appliedMigrations: 0,
         expectedMigrations: 1,
+        forwardMigrations: [],
         reasons: ["capability_missing:table:drafts"],
       },
       redis: "up",

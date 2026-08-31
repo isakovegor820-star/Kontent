@@ -20,6 +20,13 @@ describe("autopilot planning config", () => {
     expect(DEFAULT_AUTOPILOT_ENGINE).toBe("navy-deepseek-flash");
     expect(AUTOPILOT_FAST_FALLBACK_FLEET[0]).toBe("navy-deepseek-flash");
     expect(autopilotFallbackEngines("navy-gpt-5-4")[0]).toBe("navy-deepseek-flash");
+    // Recovery must not spend an attempt on the least reliable route first.
+    expect(AUTOPILOT_FAST_FALLBACK_FLEET.at(-1)).toBe("navy-gpt-5-4");
+    expect(autopilotFallbackEngines("navy-deepseek-flash")).toEqual([
+      "navy-qwen-3-6",
+      "navy-minimax-m3",
+      "navy-gpt-5-4",
+    ]);
     expect(autopilotAiTimeouts({}).attemptTimeoutMs).toBe(30_000);
     expect(autopilotAiTimeouts({}).overallTimeoutMs).toBe(90_000);
     expect(autopilotAiTimeouts({ AUTOPILOT_AI_ATTEMPT_TIMEOUT_MS: "15000" }).attemptTimeoutMs)
