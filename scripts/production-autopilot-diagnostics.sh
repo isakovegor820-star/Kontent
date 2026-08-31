@@ -198,6 +198,45 @@ if [[ -n "$current_path" && -f "$current_path/.env.production" ]]; then
   ) || echo "(redis probe failed)"
 fi
 
+section "WEB READINESS (AI capability detail)"
+# `aiReady` gates every release: the deploy workflow refuses to ship onto a host that
+# reports it false. It is computed from the web process's in-memory provider circuit
+# snapshot and demands that *every* engine ever called reports a successful last outcome,
+# so one dead engine reached through a fallback keeps production degraded until a restart.
+# The engine ids and their last outcome are what explain a red gate.
+if [[ -z "$current_path" || ! -f "$current_path/.env.production" ]]; then
+  echo "(skipped: no runtime env)"
+else
+  (
+    cd "$current_path"
+    set -a
+    # shellcheck disable=SC1091
+    . ./.env.production
+    set +a
+    if [[ -z "${AURORA_READINESS_TOKEN:-}" ]]; then
+      echo "(skipped: AURORA_READINESS_TOKEN absent)"
+      exit 0
+    fi
+    payload="$(curl -fsS --max-time 10 \
+      -H "Authorization: Bearer ${AURORA_READINESS_TOKEN}" \
+      http://127.0.0.1:3002/api/readiness 2>/dev/null || true)"
+    if [[ -z "$payload" ]]; then
+      echo "(readiness request failed)"
+      exit 0
+    fi
+    AURORA_DIAG_READINESS="$payload" node --input-type=module -e '
+      const report = JSON.parse(process.env.AURORA_DIAG_READINESS);
+      console.log(JSON.stringify({
+        status: report.status,
+        aiReady: report.aiReady,
+        aiConfigured: report.checks?.aiConfigured,
+        reasons: report.reasons,
+        aiProviders: report.checks?.aiProviders,
+      }, null, 2));
+    '
+  ) | redact || echo "(readiness probe failed)"
+fi
+
 section "AI PROVIDER PROBE (bounded, opt-in)"
 # Autopilot plans fail with `empty_generation`, which means the provider returned a
 # response carrying no visible content. Reasoning-capable models can spend the entire

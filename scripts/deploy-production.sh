@@ -19,6 +19,10 @@ BUILD_ARCHIVE_SHA256="${AURORA_BUILD_ARCHIVE_SHA256:-}"
 AVATAR_BODY_LIMIT_BYTES="${AURORA_AVATAR_BODY_LIMIT_BYTES:-}"
 DB_POOL_MAX_WEB="${AURORA_DB_POOL_MAX_WEB:-}"
 DB_POOL_MAX_WORKER="${AURORA_DB_POOL_MAX_WORKER:-}"
+AI_SERVICE_ENGINE="${AURORA_AI_SERVICE_ENGINE:-}"
+AI_FALLBACK_ENGINES="${AURORA_AI_FALLBACK_ENGINES:-}"
+AI_SEMANTIC_ENGINE="${AURORA_AI_SEMANTIC_ENGINE:-}"
+AI_SEMANTIC_FALLBACK_ENGINES="${AURORA_AI_SEMANTIC_FALLBACK_ENGINES:-}"
 HEALTH_URL="${AURORA_HEALTH_URL:-http://127.0.0.1:3002/api/health}"
 HEALTH_ATTEMPTS="${AURORA_HEALTH_ATTEMPTS:-30}"
 HEALTH_SLEEP_SECS="${AURORA_HEALTH_SLEEP_SECS:-2}"
@@ -53,6 +57,20 @@ if [[ "$DEPLOY_ACTION" == "deploy" ]]; then
   for pool_max in "$DB_POOL_MAX_WEB" "$DB_POOL_MAX_WORKER"; do
     if [[ ! "$pool_max" =~ ^[0-9]+$ ]] || (( pool_max < 1 || pool_max > 100 )); then
       echo "AURORA_DB_POOL_MAX_WEB and AURORA_DB_POOL_MAX_WORKER must be integers between 1 and 100" >&2
+      exit 1
+    fi
+  done
+  # These values are written verbatim into .env.production, which this script later sources
+  # with `set -a`, so they are restricted to the engine-id charset rather than trusted.
+  for engine_id in "$AI_SERVICE_ENGINE" "$AI_SEMANTIC_ENGINE"; do
+    if [[ -n "$engine_id" && ! "$engine_id" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+      echo "AURORA_AI_SERVICE_ENGINE and AURORA_AI_SEMANTIC_ENGINE must be single engine ids" >&2
+      exit 1
+    fi
+  done
+  for engine_list in "$AI_FALLBACK_ENGINES" "$AI_SEMANTIC_FALLBACK_ENGINES"; do
+    if [[ -n "$engine_list" && ! "$engine_list" =~ ^[a-z0-9][a-z0-9,-]*$ ]]; then
+      echo "AURORA_AI_FALLBACK_ENGINES and AURORA_AI_SEMANTIC_FALLBACK_ENGINES must be comma-separated engine ids" >&2
       exit 1
     fi
   done
@@ -212,8 +230,43 @@ runtime_env_next="$(mktemp "${release}/.env.production.next.XXXXXX")"
 # and the process would resolve the role-less "shared" pool budget — which is not
 # configured — and fail every database query. Declare the role in the shared runtime env;
 # worker.mjs overrides it for itself because that unit reads the same file.
-awk -v avatar="$AVATAR_BODY_LIMIT_BYTES" -v web_pool="$DB_POOL_MAX_WEB" -v worker_pool="$DB_POOL_MAX_WORKER" '
-  BEGIN { avatar_written = 0; web_pool_written = 0; worker_pool_written = 0; role_written = 0 }
+#
+# The AI engine keys are release-managed for the same reason: an engine whose upstream route
+# stops answering has to be routable away from without a hand-edit on the box, and a stale
+# value pinned to a dead route takes Autopilot and /api/readiness down with it. An empty
+# variable leaves the deployed value untouched.
+awk -v avatar="$AVATAR_BODY_LIMIT_BYTES" -v web_pool="$DB_POOL_MAX_WEB" -v worker_pool="$DB_POOL_MAX_WORKER" \
+    -v ai_service="$AI_SERVICE_ENGINE" -v ai_fallbacks="$AI_FALLBACK_ENGINES" \
+    -v ai_semantic="$AI_SEMANTIC_ENGINE" -v ai_semantic_fallbacks="$AI_SEMANTIC_FALLBACK_ENGINES" '
+  BEGIN {
+    avatar_written = 0; web_pool_written = 0; worker_pool_written = 0; role_written = 0
+    ai_service_written = 0; ai_fallbacks_written = 0
+    ai_semantic_written = 0; ai_semantic_fallbacks_written = 0
+  }
+  /^AI_SERVICE_ENGINE=/ {
+    if (ai_service == "") { print; next }
+    if (!ai_service_written) print "AI_SERVICE_ENGINE=" ai_service
+    ai_service_written = 1
+    next
+  }
+  /^AI_FALLBACK_ENGINES=/ {
+    if (ai_fallbacks == "") { print; next }
+    if (!ai_fallbacks_written) print "AI_FALLBACK_ENGINES=" ai_fallbacks
+    ai_fallbacks_written = 1
+    next
+  }
+  /^AI_SEMANTIC_ENGINE=/ {
+    if (ai_semantic == "") { print; next }
+    if (!ai_semantic_written) print "AI_SEMANTIC_ENGINE=" ai_semantic
+    ai_semantic_written = 1
+    next
+  }
+  /^AI_SEMANTIC_FALLBACK_ENGINES=/ {
+    if (ai_semantic_fallbacks == "") { print; next }
+    if (!ai_semantic_fallbacks_written) print "AI_SEMANTIC_FALLBACK_ENGINES=" ai_semantic_fallbacks
+    ai_semantic_fallbacks_written = 1
+    next
+  }
   /^AURORA_AVATAR_BODY_LIMIT_BYTES=/ {
     if (!avatar_written) print "AURORA_AVATAR_BODY_LIMIT_BYTES=" avatar
     avatar_written = 1
@@ -240,6 +293,12 @@ awk -v avatar="$AVATAR_BODY_LIMIT_BYTES" -v web_pool="$DB_POOL_MAX_WEB" -v worke
     if (!web_pool_written) print "AURORA_DB_POOL_MAX_WEB=" web_pool
     if (!worker_pool_written) print "AURORA_DB_POOL_MAX_WORKER=" worker_pool
     if (!role_written) print "AURORA_RUNTIME_ROLE=web"
+    if (ai_service != "" && !ai_service_written) print "AI_SERVICE_ENGINE=" ai_service
+    if (ai_fallbacks != "" && !ai_fallbacks_written) print "AI_FALLBACK_ENGINES=" ai_fallbacks
+    if (ai_semantic != "" && !ai_semantic_written) print "AI_SEMANTIC_ENGINE=" ai_semantic
+    if (ai_semantic_fallbacks != "" && !ai_semantic_fallbacks_written) {
+      print "AI_SEMANTIC_FALLBACK_ENGINES=" ai_semantic_fallbacks
+    }
   }
 ' "$runtime_env" > "$runtime_env_next"
 chmod --reference="$runtime_env" "$runtime_env_next"
