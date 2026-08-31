@@ -24,6 +24,7 @@ import {
   RefreshCw,
   Sparkles,
   Timer,
+  Video,
 } from "lucide-react";
 
 import { AppShell } from "@/components/app/shell";
@@ -33,6 +34,7 @@ import { Card, Textarea } from "@/components/ui/primitives";
 import {
   MediaGenerator,
   type MediaGeneration,
+  type MediaKind,
 } from "@/components/studio/media-generator";
 import { PostSettingsMenu } from "@/components/studio/post-settings-menu";
 import { requiresBriefConfirmation } from "@/lib/brief-confirmation";
@@ -172,8 +174,8 @@ type Quick = {
   draft?: string;
   /** выполнить сразу, дописывать нечего */
   instant?: string;
-  /** открыть настоящий генератор изображений, а не текстовый промпт */
-  opensImages?: boolean;
+  /** открыть настоящий генератор медиа, а не текстовый промпт */
+  mediaKind?: MediaKind;
 };
 
 const QUICK: Quick[] = [
@@ -211,7 +213,13 @@ const QUICK: Quick[] = [
     id: "image",
     label: "Картинка",
     icon: <ImageIcon className={ICON} strokeWidth={2} aria-hidden />,
-    opensImages: true,
+    mediaKind: "image",
+  },
+  {
+    id: "video",
+    label: "Создать рилс",
+    icon: <Video className={ICON} strokeWidth={2} aria-hidden />,
+    mediaKind: "video",
   },
   {
     id: "rewrite-last",
@@ -402,6 +410,13 @@ function MessageRow({
             className="mt-3 max-w-[72ch] rounded-sm border border-line bg-surface-inset px-3 py-2 text-[12px] leading-relaxed text-text-2"
           >
             {msg.statusMessage}
+          </p>
+        )}
+
+        {!msg.streaming && msg.fallbackUsed && msg.requestedEngine && msg.effectiveEngine && (
+          <p className="mt-2 max-w-[72ch] rounded-sm bg-info-soft px-3 py-2 text-[11px] text-info-text">
+            Запрошенная модель: {msg.requestedEngine}. Итоговый проход: {msg.effectiveEngine}.
+            В ходе генерации использовался резервный маршрут; выбор в настройках не менялся.
           </p>
         )}
 
@@ -806,6 +821,7 @@ function StudioPageInner() {
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("chat");
   const [chatSessionOwner, setChatSessionOwner] = useState<number | null>(null);
   const [chatPersistenceStatus, setChatPersistenceStatus] = useState<ChatPersistenceStatus>("loading");
+  const [mediaKind, setMediaKind] = useState<MediaKind>("image");
   const [pickedChannelId, setPickedChannelId] = useState<number | null>(() => {
     if (typeof window === "undefined") return null;
     const value = Number(new URLSearchParams(window.location.search).get("channel"));
@@ -2215,7 +2231,8 @@ function StudioPageInner() {
   const onQuick = (q: Quick) => {
     if (busy) return;
 
-    if (q.opensImages) {
+    if (q.mediaKind) {
+      setMediaKind(q.mediaKind);
       setWorkspaceMode("studio");
       return;
     }
@@ -2506,7 +2523,7 @@ function StudioPageInner() {
 
           <div
             id="studio-workspace"
-            aria-label="Режим Картинки"
+            aria-label="Режим Картинки и видео"
             ref={attachDesignShell}
             className={cn(
               "mx-auto w-full max-w-[1180px]",
@@ -2514,6 +2531,8 @@ function StudioPageInner() {
             )}
           >
             <MediaGenerator
+              key={mediaKind}
+              initialKind={mediaKind}
               channelId={channelId}
               sourceText={primaryPublication([...messages].reverse().find((message) => message.role === "ai" && message.postable)?.text ?? "")}
               onUse={useGeneratedMedia}

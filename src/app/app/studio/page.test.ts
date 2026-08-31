@@ -20,10 +20,10 @@ describe("Studio responsive recovery controls", () => {
     );
   });
 
-  it("does not render provider fallback provenance as permanent message text", () => {
-    expect(pageSource).not.toContain("Запрошенная модель:");
-    expect(pageSource).not.toContain("Итоговый проход:");
-    expect(pageSource).not.toContain("В ходе генерации использовался резервный маршрут");
+  it("keeps provider fallback provenance visible on completed messages", () => {
+    expect(pageSource).toContain("Запрошенная модель:");
+    expect(pageSource).toContain("Итоговый проход:");
+    expect(pageSource).toContain("В ходе генерации использовался резервный маршрут");
   });
 
   it("shows only ready text models in a clearly separate model control", () => {
@@ -32,12 +32,11 @@ describe("Studio responsive recovery controls", () => {
     expect(pageSource).toContain("Сейчас нет доступных моделей");
   });
 
-  it("exposes the media workspace as images only", () => {
-    expect(shellSource).toContain('{ href: "/app/studio?mode=media", label: "Картинки" }');
-    expect(shellSource).not.toContain("Картинки и видео");
-    expect(pageSource).toContain('aria-label="Режим Картинки"');
-    expect(pageSource).not.toContain('id: "video"');
-    expect(pageSource).not.toContain("Создать рилс");
-    expect(pageSource).not.toContain("initialKind={mediaKind}");
+  it("keeps image and video generation available through the media workspace", () => {
+    expect(shellSource).toContain('{ href: "/app/studio?mode=media", label: "Картинки и видео" }');
+    expect(pageSource).toContain('aria-label="Режим Картинки и видео"');
+    expect(pageSource).toContain('id: "video"');
+    expect(pageSource).toContain("Создать рилс");
+    expect(pageSource).toContain("initialKind={mediaKind}");
   });
 });
