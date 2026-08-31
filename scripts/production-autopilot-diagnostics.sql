@@ -33,17 +33,47 @@ settings_rows as (
    order by s.updated_at desc
    limit 20
 ),
+-- `worker_would_load` replays loadBriefW() exactly. A build whose brief fails it returns
+-- `no_brief` as an ordinary value, so the BullMQ job completes, `removeOnComplete` deletes
+-- it and the plan row stays `building` with nothing in any queue and no failure recorded.
+-- Without this column that stall is invisible from both the queue and the plan table.
 brief_rows as (
-  select b.user_id,
+  select b.project_id,
+         b.channel_id,
+         b.user_id,
          b.ready,
          b.source,
-         (nullif(btrim(coalesce(b.niche, '')), '') is not null) as has_niche,
-         (nullif(btrim(coalesce(b.audience, '')), '') is not null) as has_audience,
+         length(btrim(coalesce(b.niche, ''))) as niche_chars,
+         length(btrim(coalesce(b.audience, ''))) as audience_chars,
+         (
+           b.ready is true
+           and length(btrim(coalesce(b.niche, ''))) >= 3
+           and length(btrim(coalesce(b.audience, ''))) >= 3
+         ) as worker_would_load,
          coalesce(array_length(b.rubrics, 1), 0) as rubric_count,
          b.updated_at
     from public.content_brief as b
    order by b.updated_at desc
    limit 20
+),
+-- Every channel a `building` plan is waiting on, with whether its brief passes the gate.
+building_plan_briefs as (
+  select distinct p.channel_id,
+         p.project_id,
+         (
+           select count(*) from public.autopilot_plan as q
+            where q.channel_id = p.channel_id and q.project_id = p.project_id
+              and q.status = 'building'
+         ) as building_plans,
+         exists (
+           select 1 from public.content_brief as b
+            where b.project_id = p.project_id and b.channel_id = p.channel_id
+              and b.ready is true
+              and length(btrim(coalesce(b.niche, ''))) >= 3
+              and length(btrim(coalesce(b.audience, ''))) >= 3
+         ) as brief_passes_worker_gate
+    from public.autopilot_plan as p
+   where p.status = 'building'
 ),
 plan_status_counts as (
   select status, count(*)::bigint as plans
@@ -130,6 +160,10 @@ select jsonb_pretty(jsonb_build_object(
   'ledgerTail', coalesce((select jsonb_agg(to_jsonb(e) order by e.name desc) from ledger_tail as e), '[]'::jsonb),
   'autopilotSettings', coalesce((select jsonb_agg(to_jsonb(e)) from settings_rows as e), '[]'::jsonb),
   'contentBriefs', coalesce((select jsonb_agg(to_jsonb(e)) from brief_rows as e), '[]'::jsonb),
+  'buildingPlanBriefs', coalesce(
+    (select jsonb_agg(to_jsonb(e) order by e.channel_id) from building_plan_briefs as e),
+    '[]'::jsonb
+  ),
   'planStatusCounts', coalesce((select jsonb_agg(to_jsonb(e) order by e.status) from plan_status_counts as e), '[]'::jsonb),
   'recentPlans', coalesce((select jsonb_agg(to_jsonb(e)) from plan_rows as e), '[]'::jsonb),
   'stuckBuilding', (select to_jsonb(e) from stuck_building as e),

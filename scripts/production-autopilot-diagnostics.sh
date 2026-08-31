@@ -67,6 +67,14 @@ journalctl -u aurora-worker.service --since '-25 min' --no-pager -o cat 2>/dev/n
   | grep -aE '^\[(worker|start|autopilot)\]|schema preflight|preflight failed|database_pool|Error:|error:|ECONNREFUSED|ENOTFOUND|listen|ready' \
   | tail -n 60 | redact || echo "(no matching journal lines)"
 
+section "WORKER JOURNAL (Autopilot build decisions, last 3 h)"
+# `[bot] конфликт` repeats every 10 s while a second Telegram poller holds the lease, which
+# is enough to push every Autopilot line out of any plain tail. These are the lines that say
+# whether a build even started and why it stopped, so they get their own window.
+journalctl -u aurora-worker.service --since '-3 hours' --no-pager -o cat 2>/dev/null \
+  | grep -aE '^\[(auto|autopilot|worker ai)\]|нет брифа|канал .* недоступен|устарела|no_brief|no_channel' \
+  | tail -n 80 | redact || echo "(no Autopilot journal lines)"
+
 section "WORKER JOURNAL (unfiltered tail since the newest restart)"
 # The prefix filter above answers "did the gate fail". It cannot answer "how far did
 # startup get", and a worker that is `active (running)` while registering no BullMQ
