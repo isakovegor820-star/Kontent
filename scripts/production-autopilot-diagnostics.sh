@@ -67,6 +67,19 @@ journalctl -u aurora-worker.service --since '-25 min' --no-pager -o cat 2>/dev/n
   | grep -aE '^\[(worker|start|autopilot)\]|schema preflight|preflight failed|database_pool|Error:|error:|ECONNREFUSED|ENOTFOUND|listen|ready' \
   | tail -n 60 | redact || echo "(no matching journal lines)"
 
+section "WORKER JOURNAL (unfiltered tail since the newest restart)"
+# The prefix filter above answers "did the gate fail". It cannot answer "how far did
+# startup get", and a worker that is `active (running)` while registering no BullMQ
+# consumer has stopped somewhere in top-level initialization that logs nothing matching
+# those prefixes. Every line is redacted, same contract as the rest of this report.
+worker_since="$(systemctl show aurora-worker.service -p ActiveEnterTimestamp --value 2>/dev/null || true)"
+if [[ -n "$worker_since" ]]; then
+  journalctl -u aurora-worker.service --since "$worker_since" --no-pager -o cat 2>/dev/null \
+    | tail -n 120 | redact || echo "(no journal lines since restart)"
+else
+  journalctl -u aurora-worker.service --no-pager -o cat -n 120 2>/dev/null | redact || true
+fi
+
 section "WEB JOURNAL (Aurora log prefixes only, last 25 min)"
 journalctl -u aurora-web.service --since '-25 min' --no-pager -o cat 2>/dev/null \
   | grep -aE '^\[(worker|start|web)\]|preflight|database_pool|Error:|error:' \
@@ -164,6 +177,12 @@ if [[ -n "$current_path" && -f "$current_path/.env.production" ]]; then
       done
       printf 'autopilot_meta_keys=%s\n' \
         "$(redis-cli -u "$REDIS_URL" --scan --pattern 'bull:autopilot-plans:*' --count 200 2>/dev/null | wc -l)"
+      # Which BullMQ consumers exist at all. The worker builds them in a fixed order, so
+      # the set that registered says how far top-level startup actually got.
+      printf 'registered_bull_consumers=%s\n' \
+        "$(redis-cli -u "$REDIS_URL" --no-raw client list 2>/dev/null \
+            | sed -nE 's/.*[[:space:]]name=(bull:[^[:space:]]+).*/\1/p' \
+            | sort | uniq -c | awk '{printf "%s(%s) ", $2, $1}' || true)"
     fi
   ) || echo "(redis probe failed)"
 fi
