@@ -76,10 +76,19 @@ import {
   withOptimisticCalendarSchedule,
 } from "@/lib/calendar-drag-reschedule";
 import {
+  buildCalendarDailySuggestions,
+  calendarSuggestionComposerHref,
+  type CalendarTrendCandidate,
+} from "@/lib/calendar-daily-suggestions";
+import {
   calendarDragAutoScrollDelta,
   createCalendarLongPressDrag,
   type CalendarDragPoint,
 } from "@/lib/calendar-long-press-drag";
+import {
+  activePublicationOperationForDraft,
+  collapsePublishedDraftDuplicates,
+} from "@/lib/calendar-records";
 import {
   calendarDateKey,
   calendarDateKeyForInstant,
@@ -87,7 +96,7 @@ import {
 } from "@/lib/calendar-timezone";
 import { useStore } from "@/lib/store";
 import { reschedulePublication } from "@/lib/publication-lifecycle-client";
-import type { Network, Post, RealPost, Trend, User } from "@/lib/types";
+import type { Network, Post, RealPost, User } from "@/lib/types";
 import { ScheduleValidationError } from "@/lib/timezone-schedule";
 import {
   addDays,
@@ -608,7 +617,7 @@ function PostCard({
           }
           onOpen();
         }}
-        onPointerDown={(event) => startPointerSession(event, false)}
+        onPointerDown={(event) => startPointerSession(event, true)}
         onPointerMove={movePointerSession}
         onPointerUp={endPointerSession}
         onPointerCancel={cancelPointerSession}
@@ -1471,6 +1480,10 @@ export default function CalendarPage() {
   const [optimisticSchedules, setOptimisticSchedules] = useState<Record<string, string>>({});
   const [moveAnnouncement, setMoveAnnouncement] = useState("");
   const [calendarClock, setCalendarClock] = useState(() => Date.now());
+  const [suggestionFeed, setSuggestionFeed] = useState<{
+    niche: string | null;
+    items: CalendarTrendCandidate[];
+  } | null>(null);
   const [showLocalRecovery, setShowLocalRecovery] = useState(false);
   const [showUnownedRecovery, setShowUnownedRecovery] = useState(false);
   const draftQueueHeadingRef = useRef<HTMLHeadingElement>(null);
@@ -1585,6 +1598,40 @@ export default function CalendarPage() {
   const [authorFilter, setAuthorFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
   const multiChannel = tgChannels.length > 1;
+  const suggestionChannel = useMemo(
+    () => tgChannels.find((channel) => channel.network === "tg") ?? tgChannels[0] ?? null,
+    [tgChannels],
+  );
+
+  useEffect(() => {
+    if (!s.user || !suggestionChannel) {
+      queueMicrotask(() => setSuggestionFeed(null));
+      return;
+    }
+    const controller = new AbortController();
+    void fetch(
+      `/api/trends?scope=niche&period=week&channel=${suggestionChannel.id}`,
+      { cache: "no-store", signal: controller.signal },
+    )
+      .then(async (response) => {
+        if (!response.ok) throw new Error("calendar_suggestions_unavailable");
+        return response.json() as Promise<{
+          status?: { niche?: string | null };
+          items?: CalendarTrendCandidate[];
+        }>;
+      })
+      .then((payload) => {
+        if (controller.signal.aborted) return;
+        setSuggestionFeed({
+          niche: payload.status?.niche ?? null,
+          items: Array.isArray(payload.items) ? payload.items.slice(0, 12) : [],
+        });
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setSuggestionFeed(null);
+      });
+    return () => controller.abort();
+  }, [s.user, suggestionChannel]);
 
   const toggleChannel = useCallback((id: number) => {
     setHidden((prev) => {
@@ -1601,9 +1648,13 @@ export default function CalendarPage() {
     [draftOwner, s.user, serverDrafts],
   );
 
+  const realCalendarPosts = useMemo(() => s.realPosts.map(realToPost), [s.realPosts]);
   const allCalendarPosts = useMemo<CalendarPost[]>(
-    () => [...s.realPosts.map(realToPost), ...serverDraftPosts].filter(calendarRecordIsVisible),
-    [s.realPosts, serverDraftPosts],
+    () => collapsePublishedDraftDuplicates([
+      ...realCalendarPosts,
+      ...serverDraftPosts,
+    ]).filter(calendarRecordIsVisible),
+    [realCalendarPosts, serverDraftPosts],
   );
   const calendarAuthors = useMemo(() => {
     return calendarAuthorOptions(allCalendarPosts);
@@ -1792,9 +1843,11 @@ export default function CalendarPage() {
 
   const openPost = (post: CalendarPost) => {
     if (post.serverDraftId != null) {
-      const publication = post.publicationOperationId == null
+      const linkedOperationId = post.publicationOperationId
+        ?? activePublicationOperationForDraft(realCalendarPosts, post.serverDraftId);
+      const publication = linkedOperationId == null
         ? ""
-        : `&publication=${post.publicationOperationId}`;
+        : `&publication=${linkedOperationId}`;
       router.push(`/app/composer?draft=${post.serverDraftId}${publication}&from=calendar`);
       return;
     }
@@ -2159,22 +2212,17 @@ export default function CalendarPage() {
     });
   };
 
-  const makeDraft = (trend: Trend) => {
-    s.trendToDraft(trend);
-    s.toast({
-      kind: "success",
-      title: "Черновик готов",
-      body: "Лежит в очереди — поставь дату, когда захочешь.",
-    });
-  };
-
   const periodKey =
     view === "month"
       ? `m${anchor.getFullYear()}-${anchor.getMonth()}`
       : `${view}-${weekStart.getTime()}`;
 
-  // `s.trends` — демонстрационный seed. В авторизованный календарь его не подмешиваем.
-  const suggestions = s.user ? [] : s.trends.slice(0, 3);
+  const suggestions = buildCalendarDailySuggestions({
+    localDate: dayKey(today),
+    niche: suggestionFeed?.niche,
+    channelLabel: suggestionChannel?.title ?? suggestionChannel?.handle,
+    trends: suggestionFeed?.items,
+  });
   const calendarPartiallyStale = s.realError || draftsError;
 
   return (
@@ -2426,7 +2474,7 @@ export default function CalendarPage() {
                     <GripVertical className="h-4 w-4 shrink-0 text-brand" strokeWidth={2} />
                     <p>
                       <span className="font-semibold text-text">Переносите публикации между днями.</span>{" "}
-                      Мышью тяните за ручку, на телефоне удерживайте карточку. Время сохранится.
+                      Мышью зажмите и потяните карточку, на телефоне удерживайте её. Время сохранится.
                     </p>
                   </div>
                 </>
@@ -2806,44 +2854,43 @@ export default function CalendarPage() {
                   </h2>
                 </header>
                 <p className="mt-1 text-[13px] leading-relaxed text-text-2">
-                  Здесь появляются подтверждённые примеры из добавленных публичных источников.
+                  Каждый день — новый сценарий, тренд-разбор и ещё один формат для вашего канала.
                 </p>
 
-                {suggestions.length === 0 ? (
-                  <EmptyState
-                    icon={<Sparkles className="h-5 w-5" strokeWidth={1.5} aria-hidden />}
-                    title="Пока нечего предложить"
-                    body="Добавьте публичный источник, и подтверждённые примеры появятся здесь."
-                  />
-                ) : (
-                  <ul className="mt-3 flex flex-col gap-2">
-                    {suggestions.map((t) => (
-                      <li key={t.id} className="rounded-sm bg-surface-2 p-3 ring-1 ring-line">
-                        <div className="flex items-start justify-between gap-2">
-                          <p className="line-2 text-[14px] leading-snug font-semibold text-text">
-                            {t.title}
+                <ul className="mt-3 flex flex-col gap-2">
+                  {suggestions.map((suggestion) => (
+                    <li key={suggestion.id} className="rounded-sm bg-surface-2 p-3 ring-1 ring-line">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="text-[12px] font-bold uppercase tracking-wide text-brand">
+                            {suggestion.label}
                           </p>
+                          <p className="mt-1 line-2 text-[14px] leading-snug font-semibold text-text">
+                            {suggestion.title}
+                          </p>
+                        </div>
+                        {suggestion.multiplier != null && (
                           <Badge tone="fire" className="shrink-0">
                             <Flame className="h-3 w-3" strokeWidth={2.5} aria-hidden />
-                            {fmtMultiplier(t.multiplier)}
+                            {fmtMultiplier(suggestion.multiplier)}
                           </Badge>
-                        </div>
-
-                        {canEdit && (
-                          <Button
-                            variant="soft"
-                            size="sm"
-                            className="mt-2.5 w-full"
-                            onClick={() => makeDraft(t)}
-                          >
-                            <Sparkles className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />
-                            Сделать черновик
-                          </Button>
                         )}
-                      </li>
-                    ))}
-                  </ul>
-                )}
+                      </div>
+
+                      {canEdit && (
+                        <Button
+                          variant="soft"
+                          size="sm"
+                          className="mt-2.5 w-full"
+                          onClick={() => router.push(calendarSuggestionComposerHref(suggestion))}
+                        >
+                          <Sparkles className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />
+                          {suggestion.actionLabel}
+                        </Button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
               </Card>
             </div>
           )}

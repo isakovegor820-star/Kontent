@@ -86,6 +86,10 @@ import {
 import { H2, HelperText } from "@/components/ui/typography";
 import { parseAiStreamBuffer, type AiStreamEvent } from "@/lib/ai-stream";
 import {
+  AiClientStreamTimeoutError,
+  readAiStreamWithDeadline,
+} from "@/lib/ai-stream-reader";
+import {
   aiDraftPhaseLabel,
   createAiDraftProjection,
   projectAiDraftEvent,
@@ -149,7 +153,10 @@ import {
   editorialErrorMessage,
   type ClientEditorialState,
 } from "@/lib/editorial-client";
-import { publicationOperationFailureFeedback } from "@/lib/publication-operation-feedback";
+import {
+  publicationOperationFailureFeedback,
+  publicationOperationReachedCalendar,
+} from "@/lib/publication-operation-feedback";
 import {
   cancelPublication,
   getPublicationOperationEditorContext,
@@ -293,6 +300,8 @@ type Errors = {
   when?: string;
 };
 type ComposerAiCommand = "write" | "rewrite" | "shorten" | "script";
+const AI_CLIENT_IDLE_TIMEOUT_MS = 75_000;
+const AI_CLIENT_OVERALL_TIMEOUT_MS = 310_000;
 type AiReviewState = "none" | "required" | "blocked";
 type DraftRecoveryState = "idle" | "loading" | "success" | "failed";
 type DraftPersistMode = "manual" | "autosave" | "schedule";
@@ -1301,14 +1310,17 @@ export default function ComposerPage() {
         }
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const parsed = parseAiStreamBuffer(buffer);
-          buffer = parsed.rest;
-          parsed.events.forEach(applyEvent);
-        }
+        await readAiStreamWithDeadline({
+          reader,
+          idleTimeoutMs: AI_CLIENT_IDLE_TIMEOUT_MS,
+          overallTimeoutMs: AI_CLIENT_OVERALL_TIMEOUT_MS,
+          onChunk: (value) => {
+            buffer += decoder.decode(value, { stream: true });
+            const parsed = parseAiStreamBuffer(buffer);
+            buffer = parsed.rest;
+            parsed.events.forEach(applyEvent);
+          },
+        });
         buffer += decoder.decode();
         if (buffer.trim()) parseAiStreamBuffer(`${buffer}\n`).events.forEach(applyEvent);
 
@@ -1357,7 +1369,14 @@ export default function ComposerPage() {
         aiRequestRef.current = null;
       } catch (error) {
         updatePreview("interrupted");
-        if ((error as Error)?.name !== "AbortError") {
+        if (error instanceof AiClientStreamTimeoutError) {
+          controller.abort();
+          s.toast({
+            kind: "danger",
+            title: "Генерация остановлена по тайм-ауту",
+            body: "ИИ слишком долго не присылал результат. Исходный текст и готовая часть сохранены — запрос можно повторить.",
+          });
+        } else if ((error as Error)?.name !== "AbortError") {
           s.toast({
             kind: "danger",
             title: "Связь с ИИ прервалась",
@@ -2260,7 +2279,8 @@ export default function ComposerPage() {
         schedule: scheduleOverlay,
       });
       if (result.fingerprint) operation.fingerprint = result.fingerprint;
-      if (result.ok && result.operationStatus === "queued") {
+      if (publicationOperationReachedCalendar(result)) {
+        const queued = result.ok && result.operationStatus === "queued";
         publicationOperationRef.current = null;
         router.push("/app/calendar");
         if (mode !== "calendar") {
@@ -2278,11 +2298,17 @@ export default function ComposerPage() {
           removePendingDraft(composerUserId, draftClientKeyRef.current);
         }
         s.toast({
-          kind: "success",
-          title: activePublication
-            ? "Публикация обновлена"
-            : mode === "now" ? "Публикация принята" : mode === "queue" ? "Пост поставлен в очередь" : "Пост добавлен в календарь",
-          body: `${fmtDateTime(result.scheduledAt ?? scheduleOverlay.scheduledAt)}. Повторное нажатие не создаст дубликат.`,
+          kind: queued ? "success" : "info",
+          title: queued
+            ? activePublication
+              ? "Публикация обновлена"
+              : mode === "now" ? "Публикация принята" : mode === "queue" ? "Пост поставлен в очередь" : "Пост добавлен в календарь"
+            : activePublication
+              ? "Изменённый пост сохранён в календаре"
+              : "Пост сохранён в календаре",
+          body: queued
+            ? `${fmtDateTime(result.scheduledAt ?? scheduleOverlay.scheduledAt)}. Повторное нажатие не создаст дубликат.`
+            : `${fmtDateTime(result.scheduledAt ?? scheduleOverlay.scheduledAt)}. Сервер сохранил новую версию; очередь завершит постановку автоматически.`,
         });
       } else {
         const feedback = publicationOperationFailureFeedback(result);
@@ -3221,6 +3247,10 @@ function ComposerInner() {
   const channelParam = Number(params.get("channel")) || null;
   const fromMedia = params.get("fromMedia") === "1";
   const suggestMedia = params.get("suggestMedia") === "1";
+  const ideaParam = params.get("idea")?.trim().slice(0, 1_000) ?? "";
+  const suggestedCommand: ComposerAiCommand = params.get("assistant") === "script"
+    ? "script"
+    : "write";
   const mediaReturnSource = params.get("from") === "studio-visuals"
     ? composerSource(params.get("returnTo"))
     : null;
@@ -3249,6 +3279,7 @@ function ComposerInner() {
   const taRef = useRef<HTMLDivElement>(null);
   const topicRef = useRef<HTMLInputElement>(null);
   const loadedKey = useRef<string | null>(null);
+  const seededSuggestionRef = useRef("");
   const storeReady = s.ready;
   const authReady = s.authReady;
   const realReady = s.realReady;
@@ -3439,6 +3470,20 @@ function ComposerInner() {
     publicationParam,
     setActivePublication,
   ]);
+
+  useEffect(() => {
+    if (
+      !hydrated
+      || currentDraftId != null
+      || legacyParam
+      || !ideaParam
+      || text.trim()
+      || seededSuggestionRef.current === ideaParam
+    ) return;
+    seededSuggestionRef.current = ideaParam;
+    c.setTopic(ideaParam);
+    c.setTopicOpen(true);
+  }, [c, currentDraftId, hydrated, ideaParam, legacyParam, text]);
 
   // ИИ печатает — держим видимым хвост текста
   useEffect(() => {
@@ -3779,7 +3824,7 @@ function ComposerInner() {
                   onKeyDown={(e) => {
                     if (e.key === "Enter") {
                       e.preventDefault();
-                      c.runAi("write");
+                      c.runAi(suggestedCommand);
                     }
                     if (e.key === "Escape") c.setTopicOpen(false);
                   }}
@@ -3788,9 +3833,9 @@ function ComposerInner() {
                   className="min-w-0 flex-1"
                   aria-label="Тема поста"
                 />
-                <Button variant="soft" disabled={!canEditContent} onClick={() => c.runAi("write")} className="shrink-0">
+                <Button variant="soft" disabled={!canEditContent} onClick={() => c.runAi(suggestedCommand)} className="shrink-0">
                   <Sparkles className="h-[18px] w-[18px]" aria-hidden />
-                  Написать
+                  {suggestedCommand === "script" ? "Сценарий" : "Написать"}
                 </Button>
               </motion.div>
             )}
@@ -3939,7 +3984,6 @@ function ComposerInner() {
               className="overflow-hidden rounded-md border border-line bg-surface [--studio-h:min(760px,calc(100dvh-10rem))]"
             >
               <MediaGenerator
-                initialKind="image"
                 channelId={c.channelId ?? c.vkChannelId}
                 sourceText={c.text}
                 onUse={useGeneratedMedia}

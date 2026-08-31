@@ -45,7 +45,9 @@ describe("calendar role-aware interface", () => {
 
   it("opens drafts and linked publications directly in the editor and keeps deletion out of the calendar", () => {
     expect(source).toContain("serverDraftId: rp.publication_draft_id ?? undefined");
-    expect(source).toContain("`&publication=${post.publicationOperationId}`");
+    expect(source).toContain("activePublicationOperationForDraft(realCalendarPosts, post.serverDraftId)");
+    expect(source).toContain("`&publication=${linkedOperationId}`");
+    expect(source).toContain("collapsePublishedDraftDuplicates");
     expect(source).toContain("router.push(`/app/composer?draft=${post.serverDraftId}${publication}&from=calendar`)");
     expect(source).toContain('id={`calendar-open-${post.id}`}');
     expect(source).toContain("Открыть публикацию в редакторе:");
@@ -100,7 +102,8 @@ describe("calendar role-aware interface", () => {
     expect(source).toContain('window.addEventListener("touchmove", blocker, { passive: false })');
     expect(source).toContain('document.elementFromPoint(point.clientX, point.clientY)');
     expect(source).toContain("calendarDragAutoScrollDelta");
-    expect(source).toContain("на телефоне удерживайте карточку");
+    expect(source).toContain("на телефоне удерживайте её");
+    expect(source).toContain("startPointerSession(event, true)");
     expect(source).toContain("data-calendar-week-scroller");
     expect(source).toContain("suppressOpenUntilRef.current = Date.now() + 700");
   });
@@ -135,5 +138,12 @@ describe("calendar role-aware interface", () => {
     expect(source).toContain("calendarDayForInstant(new Date(calendarClock).toISOString(), calendarTimezone)");
     expect(source).toContain("setAnchor(today)");
     expect(source).toContain("setInterval(() => setCalendarClock(Date.now()), 60_000)");
+  });
+
+  it("shows daily scenario, trend and rotating format suggestions for signed-in projects", () => {
+    expect(source).toContain("buildCalendarDailySuggestions");
+    expect(source).toContain("calendarSuggestionComposerHref");
+    expect(source).toContain("Каждый день — новый сценарий, тренд-разбор");
+    expect(source).not.toContain("const suggestions = s.user ? []");
   });
 });

@@ -1,9 +1,19 @@
 type PublicationOperationFailure = {
+  ok?: boolean;
   result?: "operation_not_created" | "partial" | "queued" | "conflict" | "worker_unavailable";
   error?: string;
   operationId?: number;
   destinations?: Array<unknown>;
 };
+
+/** A committed operation already has a calendar record even if queue dispatch is pending. */
+export function publicationOperationReachedCalendar(result: PublicationOperationFailure) {
+  return result.ok === true
+    || (
+      result.operationId != null
+      && (result.result === "partial" || result.result === "worker_unavailable")
+    );
+}
 
 export function publicationOperationFailureFeedback(result: PublicationOperationFailure) {
   if (result.error === "typography_review_required") {

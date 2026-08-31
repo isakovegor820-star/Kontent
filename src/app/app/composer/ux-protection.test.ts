@@ -21,6 +21,17 @@ describe("composer UX protection contract", () => {
     expect(source).not.toContain("Нужно исправить текст");
   });
 
+  it("bounds AI streams and safely seeds a requested daily suggestion", () => {
+    expect(source).toContain("readAiStreamWithDeadline({");
+    expect(source).toContain("idleTimeoutMs: AI_CLIENT_IDLE_TIMEOUT_MS");
+    expect(source).toContain("overallTimeoutMs: AI_CLIENT_OVERALL_TIMEOUT_MS");
+    expect(source).toContain("error instanceof AiClientStreamTimeoutError");
+    expect(source).toContain("Исходный текст и готовая часть сохранены");
+    expect(source).toContain('params.get("idea")?.trim().slice(0, 1_000)');
+    expect(source).toContain('params.get("assistant") === "script"');
+    expect(source).toContain("seededSuggestionRef.current === ideaParam");
+  });
+
   it("exposes three publication paths without covering the mobile editor", () => {
     expect(source).toContain('void publish("calendar")');
     expect(source).toContain('void publish("now")');
@@ -51,7 +62,18 @@ describe("composer UX protection contract", () => {
     expect(source).toContain("await cancelPublication({");
     expect(source).toContain("await reschedulePublication({");
     expect(source).toContain("Старая публикация остановлена, новая ещё не создана");
+    expect(source).toContain("publicationOperationReachedCalendar(result)");
+    expect(source).toContain("Изменённый пост сохранён в календаре");
     expect(source).toContain("<PublicationFollowupSection");
+  });
+
+  it("bounds stalled AI streams and opens daily calendar ideas in the requested mode", () => {
+    expect(source).toContain("readAiStreamWithDeadline");
+    expect(source).toContain("AI_CLIENT_IDLE_TIMEOUT_MS");
+    expect(source).toContain("Генерация остановлена по тайм-ауту");
+    expect(source).toContain('params.get("idea")');
+    expect(source).toContain('params.get("assistant") === "script"');
+    expect(source).toContain('c.runAi(suggestedCommand)');
   });
 
   it("provides recovery, upload, and multi-destination controls", () => {

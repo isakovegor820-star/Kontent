@@ -1,8 +1,23 @@
 import { describe, expect, it } from "vitest";
 
-import { publicationOperationFailureFeedback } from "./publication-operation-feedback";
+import {
+  publicationOperationFailureFeedback,
+  publicationOperationReachedCalendar,
+} from "./publication-operation-feedback";
 
 describe("publication operation failure feedback", () => {
+  it("returns to the calendar when the operation committed before queue dispatch degraded", () => {
+    expect(publicationOperationReachedCalendar({
+      ok: false,
+      result: "partial",
+      operationId: 81,
+    })).toBe(true);
+    expect(publicationOperationReachedCalendar({
+      ok: false,
+      result: "worker_unavailable",
+    })).toBe(false);
+  });
+
   it("points a failed publication recheck back to the contextual typographer", () => {
     expect(publicationOperationFailureFeedback({ error: "typography_review_required" })).toEqual({
       title: "Проверь оформление текста",
