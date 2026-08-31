@@ -170,10 +170,21 @@ if [[ -n "$current_path" && -f "$current_path/.env.production" ]]; then
           "$(redis-cli -u "$REDIS_URL" zcard "bull:${queue}:failed" 2>/dev/null)" \
           "$(redis-cli -u "$REDIS_URL" zcard "bull:${queue}:completed" 2>/dev/null)" \
           "$(redis-cli -u "$REDIS_URL" exists "bull:${queue}:paused" 2>/dev/null)"
-        # A registered BullMQ consumer is exactly what /api/autopilot/generate counts.
+        # A registered BullMQ consumer is exactly what /api/autopilot/generate counts, and
+        # BullMQ names that client after the base64 of the queue name, not the queue name.
+        # Matching the plain name reported zero consumers for a fully healthy worker.
+        queue_b64="$(printf '%s' "$queue" | base64 -w0)"
         printf '%s consumers=%s\n' \
           "$queue" \
-          "$(redis-cli -u "$REDIS_URL" --no-raw client list 2>/dev/null | grep -c "bull:${queue}" || echo 0)"
+          "$(redis-cli -u "$REDIS_URL" --no-raw client list 2>/dev/null \
+              | grep -c "name=bull:${queue_b64}" || echo 0)"
+        # A job that exhausted its attempts keeps its deterministic id, and BullMQ ignores a
+        # later `add` for an id it already holds, so these ids are what silently swallows
+        # every replay of the matching plan.
+        printf '%s failed_job_ids=%s\n' \
+          "$queue" \
+          "$(redis-cli -u "$REDIS_URL" zrange "bull:${queue}:failed" 0 -1 2>/dev/null \
+              | paste -sd, - || true)"
       done
       printf 'autopilot_meta_keys=%s\n' \
         "$(redis-cli -u "$REDIS_URL" --scan --pattern 'bull:autopilot-plans:*' --count 200 2>/dev/null | wc -l)"

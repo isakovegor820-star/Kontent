@@ -150,6 +150,59 @@ describe("weekly Autopilot queue dispatch", () => {
     );
   });
 
+  it("retires a build that exhausted its attempts so the replay is not deduplicated away", async () => {
+    // Production wedged exactly here: BullMQ ignores `add` for an id it already holds, so a
+    // terminally failed job made every later replay a silent no-op and the plan stayed
+    // `building` for eight days while each reconciliation reported success.
+    const remove = vi.fn(async () => {});
+    const { pool, queue } = harness({
+      plans: [{
+        id: "44",
+        status: "building",
+        items: [],
+        publication_target_count: 5,
+        candidate_count: 7,
+      }],
+    });
+    queue.getJob = vi.fn(async () => ({
+      isFailed: async () => true,
+      isCompleted: async () => false,
+      remove,
+    }));
+
+    await enqueueWeeklyAutopilotPlan({ pool, queue, projectId: 4, userId: 9, channelId: 12 });
+
+    expect(queue.getJob).toHaveBeenCalledWith("autopilot-plan-44");
+    expect(remove).toHaveBeenCalledOnce();
+    expect(queue.add).toHaveBeenCalledWith(
+      "autopilot-plan",
+      { projectId: 4, userId: 9, channelId: 12, planId: 44 },
+      expect.objectContaining({ jobId: "autopilot-plan-44" }),
+    );
+  });
+
+  it("leaves a build that is still queued to the job that already owns it", async () => {
+    const remove = vi.fn(async () => {});
+    const { pool, queue } = harness({
+      plans: [{
+        id: "44",
+        status: "building",
+        items: [],
+        publication_target_count: 5,
+        candidate_count: 7,
+      }],
+    });
+    queue.getJob = vi.fn(async () => ({
+      isFailed: async () => false,
+      isCompleted: async () => false,
+      remove,
+    }));
+
+    await enqueueWeeklyAutopilotPlan({ pool, queue, projectId: 4, userId: 9, channelId: 12 });
+
+    expect(remove).not.toHaveBeenCalled();
+  });
+
   it("resumes the newest partial plan instead of creating a replacement", async () => {
     const items = Array.from({ length: 10 }, (_, i) => ({
       i,

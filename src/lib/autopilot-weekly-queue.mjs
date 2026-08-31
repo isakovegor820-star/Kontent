@@ -185,6 +185,25 @@ function autopilotPlanJobOptions(planId) {
   };
 }
 
+/**
+ * BullMQ keeps a job that exhausted its attempts under the same deterministic id and
+ * silently ignores a later `add` for an id that already exists. Every Autopilot retry path
+ * replays this exact id — startup reconciliation, the 30s ticker and the weekly cron — so
+ * one terminally failed build used to wedge that plan forever while each replay still
+ * reported success. Retire a finished job before replaying it; a job that is still waiting,
+ * delayed or active keeps owning the build and must not be disturbed.
+ */
+async function retireFinishedPlanJob(queue, jobId) {
+  if (typeof queue?.getJob !== "function") return;
+  const job = await queue.getJob(jobId).catch(() => null);
+  if (!job) return;
+  const [failed, completed] = await Promise.all([
+    typeof job.isFailed === "function" ? job.isFailed().catch(() => false) : false,
+    typeof job.isCompleted === "function" ? job.isCompleted().catch(() => false) : false,
+  ]);
+  if (failed || completed) await job.remove().catch(() => {});
+}
+
 export async function dispatchAutopilotPlanJob({
   queue,
   projectId: rawProjectId,
@@ -197,12 +216,14 @@ export async function dispatchAutopilotPlanJob({
   const channelId = positiveInteger(rawChannelId, "channel_id");
   const planId = positiveInteger(rawPlanId, "plan_id");
   if (!queue?.add) throw new Error("autopilot_queue_missing");
+  const jobId = `autopilot-plan-${planId}`;
+  await retireFinishedPlanJob(queue, jobId);
   await queue.add(
     "autopilot-plan",
     { projectId, userId, channelId, planId },
     autopilotPlanJobOptions(planId),
   );
-  return { jobId: `autopilot-plan-${planId}` };
+  return { jobId };
 }
 
 /**
