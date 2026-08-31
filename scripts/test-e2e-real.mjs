@@ -22,6 +22,7 @@ import { reconcilePublicationExtraRuntime } from "../worker/publication-extra-ru
 import {
   e2eBrowserExecutableCandidates,
   classifyE2eExpectedSessionExpiryConsole,
+  classifyE2eExpectedSessionExpiryWebKitPageError,
   classifyE2eKnownBrowserObservation,
   classifyE2eKnownWebKitDocumentNavigationCancellation,
   classifyE2eKnownWebKitRequestCancellation,
@@ -524,7 +525,16 @@ async function installBrowserDiagnostics(context, label) {
       const deferredObservation = deferred.shift()?.observation || null;
       if (deferred.length > 0) deferredKnownWebKitPageErrors.set(rawMessage, deferred);
       else deferredKnownWebKitPageErrors.delete(rawMessage);
-      const knownObservation = deferredObservation || classifyE2eKnownBrowserObservation({
+      const expectedSessionExpiry = classifyE2eExpectedSessionExpiryWebKitPageError({
+        active: expectedSessionExpiryConsoleScopes.has(label),
+        engine: browserEngine,
+        eventKind: "pageerror",
+        message: rawMessage,
+        currentUrl: targetPage.url(),
+        baseUrl,
+        webPort,
+      });
+      const knownObservation = deferredObservation || expectedSessionExpiry || classifyE2eKnownBrowserObservation({
         engine: browserEngine,
         eventKind: "pageerror",
         message: rawMessage,
@@ -5391,6 +5401,7 @@ try {
   await ownerSecondPage.getByRole("heading", { name: "Календарь", exact: true }).waitFor({
     timeout: UI_WAIT_TIMEOUT_MS,
   });
+  await waitForFirstPartyNetworkIdle(ownerSecondPage, "owner second Calendar before expiry");
   const activeOwnerSessions = Number((await pool.query(
     "select count(*)::int as n from sessions where user_id = $1 and expires_at > now()",
     [userId],

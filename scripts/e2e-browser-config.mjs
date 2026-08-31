@@ -223,6 +223,48 @@ export function classifyE2eKnownWebKitDocumentNavigationCancellation({
   };
 }
 
+export function classifyE2eExpectedSessionExpiryWebKitPageError({
+  active = false,
+  engine,
+  eventKind,
+  message,
+  currentUrl,
+  baseUrl,
+  webPort,
+} = {}) {
+  if (
+    !active
+    || resolveE2eBrowserEngine(engine) !== "webkit"
+    || eventKind !== "pageerror"
+  ) return null;
+  const rawMessage = String(message || "");
+  if (!rawMessage.endsWith(WEBKIT_CANCELLED_REQUEST_SUFFIX)) return null;
+  const port = Number(webPort);
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) return null;
+  let current;
+  let base;
+  try {
+    current = new URL(String(currentUrl || ""));
+    base = new URL(String(baseUrl || ""));
+  } catch {
+    return null;
+  }
+  if (
+    current.origin !== base.origin
+    || current.pathname !== "/app/calendar"
+    || base.hostname !== "127.0.0.1"
+    || Number(base.port) !== port
+  ) return null;
+  const requestTarget = rawMessage.slice(0, -WEBKIT_CANCELLED_REQUEST_SUFFIX.length);
+  const originPrefix = `/127.0.0.1:${port}`;
+  if (!requestTarget.startsWith(`${originPrefix}/`)) return null;
+  const pathAndQuery = requestTarget.slice(originPrefix.length);
+  if (!["/api/drafts", "/api/projects", "/api/projects/current"].includes(pathAndQuery)) {
+    return null;
+  }
+  return { kind: "session-expiry.webkit-cancelled-api-request", detail: pathAndQuery };
+}
+
 export function classifyE2eExpectedSessionExpiryConsole({
   active = false,
   message,

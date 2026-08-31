@@ -127,6 +127,7 @@ describe("real E2E runtime isolation", () => {
     expect(source).toContain('targetPage.on("requestfailed", settleRequest)');
     expect(source).toContain("classifyE2eKnownWebKitRequestCancellation({");
     expect(source).toContain("classifyE2eKnownWebKitDocumentNavigationCancellation({");
+    expect(source).toContain("classifyE2eExpectedSessionExpiryWebKitPageError({");
     expect(source).toContain("WEBKIT_DEFERRED_CANCELLATION_WINDOW_MS = 120_000");
     expect(source).toContain("WEBKIT_DOCUMENT_CANCELLATION_WINDOW_MS = 250");
     expect(source).toContain('request.resourceType() === "document"');
@@ -221,10 +222,13 @@ describe("real E2E runtime isolation", () => {
     expect(source).toContain("const expiredNavigationResults = await Promise.allSettled");
     expect(source).toContain('/app/calendar" is interrupted by another navigation to "${baseUrl}/login"');
     expect(source).toContain('waitForFirstPartyNetworkIdle(page, "expired owner main tab")');
+    expect(source).toContain('waitForFirstPartyNetworkIdle(ownerSecondPage, "owner second Calendar before expiry")');
     expect(source).toContain("tabsRedirected: 2");
     expect(source).not.toContain("update sessions set expires_at = now() + interval");
     expect(source.indexOf('expectedSessionExpiryConsoleScopes.add("main")', source.indexOf("const activeOwnerSessions")))
       .toBeLessThan(source.indexOf("update sessions set expires_at = now() - interval '1 second'"));
+    expect(source.indexOf('waitForFirstPartyNetworkIdle(ownerSecondPage, "owner second Calendar before expiry")'))
+      .toBeLessThan(source.indexOf("const activeOwnerSessions"));
   });
 
   it("finalizes browser evidence before freezing the successful diagnostic result", () => {

@@ -4,6 +4,7 @@ import {
   E2E_BUILD_MODES,
   E2E_BROWSER_ENGINES,
   classifyE2eExpectedSessionExpiryConsole,
+  classifyE2eExpectedSessionExpiryWebKitPageError,
   classifyE2eKnownBrowserObservation,
   classifyE2eKnownWebKitDocumentNavigationCancellation,
   classifyE2eKnownWebKitRequestCancellation,
@@ -287,6 +288,44 @@ describe("real E2E browser configuration", () => {
       sourceUrl: `${baseUrl}/_next/static/chunks/app/app/calendar/page.js`,
       baseUrl,
     })).toBeNull();
+  });
+
+  it("classifies only exact WebKit loader cancellations inside the Calendar expiry window", () => {
+    const baseUrl = "https://127.0.0.1:43190";
+    const input = {
+      active: true,
+      engine: "webkit",
+      eventKind: "pageerror",
+      message: "/127.0.0.1:43190/api/drafts due to access control checks.",
+      currentUrl: `${baseUrl}/app/calendar`,
+      baseUrl,
+      webPort: 43190,
+    };
+    expect(classifyE2eExpectedSessionExpiryWebKitPageError(input)).toEqual({
+      kind: "session-expiry.webkit-cancelled-api-request",
+      detail: "/api/drafts",
+    });
+    for (const path of ["/api/projects", "/api/projects/current"]) {
+      expect(classifyE2eExpectedSessionExpiryWebKitPageError({
+        ...input,
+        message: `/127.0.0.1:43190${path} due to access control checks.`,
+      })?.detail).toBe(path);
+    }
+    for (const override of [
+      { active: false },
+      { engine: "firefox" },
+      { eventKind: "console" },
+      { message: "/127.0.0.1:43190/api/channels due to access control checks." },
+      { message: "/127.0.0.1:43191/api/drafts due to access control checks." },
+      { message: "/127.0.0.1:43190/api/drafts failed with 500" },
+      { currentUrl: `${baseUrl}/app/today` },
+      { currentUrl: "https://example.com/app/calendar" },
+      { baseUrl: "https://localhost:43190" },
+      { webPort: 43191 },
+    ]) {
+      expect(classifyE2eExpectedSessionExpiryWebKitPageError({ ...input, ...override }))
+        .toBeNull();
+    }
   });
 
   it("uses system Chrome fallbacks only for Chromium", () => {
