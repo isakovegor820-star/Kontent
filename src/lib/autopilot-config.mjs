@@ -2,16 +2,21 @@
 // Keep this module dependency-free: worker.mjs imports it directly and the client bundles
 // the public option lists.
 
+// This list is also the order the channel settings dropdown renders, so the first entry
+// reads as the recommendation. DeepSeek Pro used to lead it while being the one model that
+// does not answer inside the worker attempt budget at all, and a channel that picked it
+// spent every draft's first attempt waiting for a timeout. Reliability decides the order,
+// and the notes say plainly what a slow model costs.
 export const AUTOPILOT_ENGINE_OPTIONS = Object.freeze([
-  {
-    id: "navy-deepseek-pro",
-    label: "DeepSeek V4 Pro",
-    note: "Лучше держит длинный план, стиль и редакционные ограничения.",
-  },
   {
     id: "navy-deepseek-flash",
     label: "DeepSeek V4 Flash",
-    note: "Быстрее собирает черновики и короткие форматы.",
+    note: "Быстро и надёжно доводит план до конца — вариант по умолчанию.",
+  },
+  {
+    id: "navy-minimax-m3",
+    label: "MiniMax M3",
+    note: "Длинный контекст и вариативная подача, отвечает медленнее.",
   },
   {
     id: "navy-gpt-5-4",
@@ -24,9 +29,9 @@ export const AUTOPILOT_ENGINE_OPTIONS = Object.freeze([
     note: "Экономный вариант для коротких постов и подборок.",
   },
   {
-    id: "navy-minimax-m3",
-    label: "MiniMax M3",
-    note: "Подходит для длинного контекста и вариативных подач.",
+    id: "navy-deepseek-pro",
+    label: "DeepSeek V4 Pro",
+    note: "Самый подробный, но часто не укладывается в отведённое время.",
   },
 ]);
 

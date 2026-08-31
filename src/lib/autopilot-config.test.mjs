@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  AUTOPILOT_ENGINE_OPTIONS,
   AUTOPILOT_FAST_FALLBACK_FLEET,
   DEFAULT_AUTOPILOT_ENGINE,
   applyAutopilotPresentation,
@@ -16,6 +17,20 @@ import {
 } from "./autopilot-config.mjs";
 
 describe("autopilot planning config", () => {
+  it("offers the engine it recommends first and demotes the one that cannot finish", () => {
+    // The dropdown renders this order, so leading with a model that never answers inside the
+    // attempt budget is how a channel ends up spending every draft on a timeout.
+    expect(AUTOPILOT_ENGINE_OPTIONS[0].id).toBe(DEFAULT_AUTOPILOT_ENGINE);
+    expect(AUTOPILOT_ENGINE_OPTIONS.at(-1).id).toBe("navy-deepseek-pro");
+    expect(AUTOPILOT_ENGINE_OPTIONS.map((option) => option.id)).toEqual([
+      "navy-deepseek-flash",
+      "navy-minimax-m3",
+      "navy-gpt-5-4",
+      "navy-qwen-3-6",
+      "navy-deepseek-pro",
+    ]);
+  });
+
   it("uses the fast healthy engine for new plans and keeps slow models as later fallbacks", () => {
     expect(DEFAULT_AUTOPILOT_ENGINE).toBe("navy-deepseek-flash");
     expect(AUTOPILOT_FAST_FALLBACK_FLEET[0]).toBe("navy-deepseek-flash");
