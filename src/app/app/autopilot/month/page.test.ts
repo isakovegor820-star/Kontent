@@ -54,4 +54,18 @@ describe("monthly campaign page contract", () => {
     expect(studio).not.toContain("setPendingMonthlyCampaignGeneration");
     expect(studio).not.toContain("pendingMonthlyCampaignGeneration");
   });
+
+  it("finishes the initial detail load before enabling the campaign detail effect", () => {
+    const createCampaign = planner.slice(
+      planner.indexOf("const createCampaign = async () =>"),
+      planner.indexOf("const createPlan = async () =>"),
+    );
+    expect(createCampaign.indexOf("await loadCampaigns(created.id)")).toBeGreaterThan(-1);
+    expect(createCampaign.indexOf("await loadDetail(created.id)")).toBeGreaterThan(
+      createCampaign.indexOf("await loadCampaigns(created.id)"),
+    );
+    expect(createCampaign.indexOf("setCreating(false)")).toBeGreaterThan(
+      createCampaign.indexOf("await loadDetail(created.id)"),
+    );
+  });
 });

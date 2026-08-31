@@ -244,7 +244,11 @@ export function MonthlyCampaignPlanner() {
         setDetail(parsed);
       }
     } catch (error) {
-      if (!isAbortError(error)) throw error;
+      // WebKit can surface an intentionally aborted fetch as a generic
+      // TypeError instead of DOMException("AbortError"). The request fence is
+      // the source of truth: only suppress the error when this ticket was
+      // actually cancelled by a newer detail request.
+      if (!ticket.signal.aborted && !isAbortError(error)) throw error;
     } finally {
       if (!quiet && isCurrentMonthlyDetailRequest(detailRequestFence, ticket, campaignIdRef.current)) {
         setLoading(false);
@@ -436,9 +440,9 @@ export function MonthlyCampaignPlanner() {
       });
       const planPayload = await planResponse.json().catch(() => null);
       if (!planResponse.ok || planPayload?.ok !== true) throw new Error(planPayload?.error || "server");
-      setCreating(false);
       await loadCampaigns(created.id);
       await loadDetail(created.id);
+      setCreating(false);
       setMessage({ kind: "success", text: "Сетка собрана. Проверь темы и отправь план на согласование." });
     } catch (error) {
       setMessage({ kind: "error", text: apiError(error instanceof Error ? error.message : undefined) });
