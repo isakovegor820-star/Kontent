@@ -5,6 +5,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { parseAccountProfileUpdate } from "@/lib/account-settings";
 import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { getPool } from "@/lib/db";
+import { phoneVerificationMode } from "@/lib/phone-verification-mode.mjs";
 import { normalizeAvatar, profileReauthMethod } from "@/lib/profile";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import { getSessionUser } from "@/lib/session";
@@ -62,6 +63,7 @@ export async function GET(req: NextRequest) {
       )
     ).rows[0];
     if (!row) return json(requestId, { ok: false, error: "unavailable" }, 503);
+    const phoneMode = phoneVerificationMode();
     const pendingEmail = (
       await pool.query<{ target_email: string; expires_at: Date | string }>(
         `select target_email, expires_at
@@ -88,10 +90,11 @@ export async function GET(req: NextRequest) {
         theme: row.theme,
       },
       reauthMethod: profileReauthMethod(row),
+      phoneVerification: { state: phoneMode, temporary: phoneMode === "temporary" },
       pendingEmail: pendingEmail
         ? { email: pendingEmail.target_email, expiresAt: new Date(pendingEmail.expires_at).toISOString() }
         : null,
-      pendingPhone: row.pending_phone && row.phone_verification_expires_at
+      pendingPhone: phoneMode === "temporary" && row.pending_phone && row.phone_verification_expires_at
         ? { phone: row.pending_phone, expiresAt: new Date(row.phone_verification_expires_at).toISOString() }
         : null,
       savedAt: new Date(row.updated_at).toISOString(),

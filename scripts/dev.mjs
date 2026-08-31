@@ -51,10 +51,11 @@ try {
 // RSS and analytics silently have no BullMQ consumer.
 start("worker", process.execPath, ["--env-file-if-exists=.env.local", "worker.mjs"], {
   ...process.env,
+  AURORA_RUNTIME_ROLE: "worker",
   AURORA_WORKER_MODE: "full",
 });
 start("web", process.execPath, [
   "node_modules/next/dist/bin/next",
   "dev",
   ...process.argv.slice(2),
-]);
+], { ...process.env, AURORA_RUNTIME_ROLE: "web" });

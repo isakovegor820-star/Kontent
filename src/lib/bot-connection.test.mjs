@@ -77,6 +77,56 @@ describe("Telegram initiated connection tokens", () => {
     });
   });
 
+  it.each([
+    ["expired", { expires_at: "2026-08-18T11:59:59.000Z", used_at: null, revoked_at: null }],
+    ["confirmed", { expires_at: FUTURE, used_at: "2026-08-18T11:55:00.000Z", revoked_at: null }],
+    ["revoked", { expires_at: FUTURE, used_at: null, revoked_at: "2026-08-18T11:55:00.000Z" }],
+  ])("reports a %s token without inspecting account linkage", async (state, tokenState) => {
+    const token = "d".repeat(43);
+    const query = vi.fn().mockResolvedValueOnce({ rows: [{
+      telegram_user_id: "123",
+      telegram_chat_id: "123",
+      telegram_username: "anna",
+      telegram_display_name: "Анна",
+      confirmed_user_id: state === "confirmed" ? "7" : null,
+      ...tokenState,
+    }] });
+
+    await expect(inspectBotConnectionSession({ query }, { token, userId: 7, nowMs: NOW }))
+      .resolves.toMatchObject({ state });
+    expect(query).toHaveBeenCalledOnce();
+  });
+
+  it("rejects reuse by another account while preserving the original confirmation", async () => {
+    const token = "e".repeat(43);
+    const queries = [];
+    const client = {
+      query: vi.fn(async (sql) => {
+        const text = String(sql);
+        queries.push(text);
+        if (text.includes("from bot_connection_sessions") && text.includes("for update")) {
+          return { rows: [{
+            telegram_chat_id: "123",
+            expires_at: FUTURE,
+            used_at: "2026-08-18T11:55:00.000Z",
+            revoked_at: null,
+            confirmed_user_id: "8",
+          }] };
+        }
+        return { rows: [], rowCount: 0 };
+      }),
+      release: vi.fn(),
+    };
+
+    await expect(confirmBotConnectionSession({ connect: async () => client }, {
+      token,
+      userId: 7,
+      nowMs: NOW,
+    })).resolves.toEqual({ state: "used" });
+    expect(queries.at(-1)).toBe("rollback");
+    expect(queries.some((sql) => sql.includes("set tg_chat_id = case"))).toBe(false);
+  });
+
   it("does not replace an existing chat until the move is explicitly confirmed", async () => {
     const token = "b".repeat(43);
     const queries = [];

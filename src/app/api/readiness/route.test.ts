@@ -84,6 +84,14 @@ describe("GET /api/readiness", () => {
       webReady: true,
       publicationReady: false,
       telegramBotReady: true,
+      databasePool: {
+        schemaVersion: 1,
+        max: 3,
+        active: 0,
+        idle: 0,
+        waiting: 0,
+        acquireWaitP95Ms: null,
+      },
     });
   });
 

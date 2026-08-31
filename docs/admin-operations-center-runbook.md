@@ -1,0 +1,79 @@
+# Операционный центр `/admin`
+
+## Доступ и граница безопасности
+
+Операционный центр доступен только live session из глобального allowlist
+`AURORA_ADMIN_USER_IDS` / `AURORA_ADMIN_EMAILS`. Проектная роль owner сама по себе не
+даёт доступ. Оба API read-only, rate-limited, возвращают `Cache-Control: no-store` и
+пишут content-free запись в `admin_observation_events`.
+
+Запрещённые действия намеренно отсутствуют: restart, очистка Redis, массовый retry,
+запуск миграций, изменение env и удаление событий.
+
+## «Система»
+
+URL: `/admin?system=<component>#system`.
+
+Каждая из 15 независимых проверок возвращает `state`, `checkedAt`, `durationMs`,
+`evidence`, `safeErrorCode`, `lastSuccessAt`. Probes запускаются через
+`Promise.allSettled`; один отказ не скрывает остальные. Допустимы только состояния
+`healthy`, `degraded`, `down`, `unobserved`, `not_configured`, `conflict`. Healthy
+требует свежего успешного доказательства.
+
+При инциденте:
+
+1. Откройте красную/жёлтую карточку и проверьте evidence, возраст heartbeat/PING и safe code.
+2. Для очереди сравните workers, waiting/active/delayed/failed и возраст старейшей задачи.
+3. Перейдите по безопасной ссылке в публикации, журнал или затронутый раздел.
+4. Скопируйте request ID из аналитики и используйте его в logs/Sentry без поиска по контенту.
+5. Не трактуйте `unobserved` или `not_configured` как подтверждённый healthy.
+
+Ручное обновление всегда доступно; автообновление выключено, 30 секунд или 1 минута.
+Back/forward и reload сохраняют выбранный компонент.
+
+## «Аналитика Авроры»
+
+URL: `/admin?<filters>&analyticsSection=<section>&analyticsTab=<tab>#aurora-analytics`.
+
+Карточки строятся для всех 15 разделов из `APP_ROUTES`. Активность, техническое
+здоровье и полезный доменный результат разделены. Фильтры: 24h/7d/30d/custom,
+project, role segment, new/returning, device, app version и release. Если доменная
+таблица не содержит выбранное измерение device/version/release, результат маркируется
+`not_filterable` и не приписывается фильтру.
+
+Вкладки:
+
+- «Обзор»: сравнение периода, p50 до completed result, проблемы и релизы.
+- «Воронка»: opening → action → server confirmation → domain result → further use.
+- «Ошибки»: safe code, stage/source, affected users/projects, request ID, release,
+  dependency и опциональная Sentry search link.
+- «Скорость»: p50/p95/p99 по operation kind/release и отдельный SLO для page/API/
+  queue/worker/provider.
+- «События»: максимум 100 allowlisted raw rows без metadata dump и контента.
+
+Рейтинг использует только прозрачные правила `affectedUsers × frequency × severity`.
+Он выделяет рост ошибок, provider/release regression, падение conversion, page SLO,
+действия без доменного результата и latest non-terminal stage старше 15 минут.
+
+## Конфигурация
+
+- `AURORA_RELEASE`, `AURORA_RELEASE_SHA`, `AURORA_DEPLOYED_AT` — server release marker.
+- `NEXT_PUBLIC_AURORA_APP_VERSION` — безопасная browser version dimension.
+- `AURORA_PRODUCT_EVENT_RETENTION_DAYS` — raw retention, 7–365, default 90.
+- `SENTRY_ORG_SLUG`, `SENTRY_PROJECT_ID` — только построение validated issue-search URL;
+  auth token и stack traces в API не передаются.
+
+## Проверки перед выпуском
+
+```text
+npm run test:migrations
+npx tsc --noEmit
+npm test
+npm run lint
+npm run build
+```
+
+PostgreSQL integration выполняется только на локальной disposable базе
+`aurora_migration_test`; real E2E — через `npm run test:e2e:real` с изолированными
+E2E_DATABASE_URL/E2E_REDIS_URL. Production deploy выполняется только существующим
+GitHub Actions workflow.

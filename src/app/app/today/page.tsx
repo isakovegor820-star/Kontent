@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
@@ -471,18 +471,18 @@ function TodayItemCard({ item, featured, actionsDisabled, actionLoading, error, 
         <div className="mt-5 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
           <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
             {item.smartAction ? (
-              <Button variant="primary" className="h-auto min-h-11 whitespace-normal text-center" disabled={actionsDisabled} loading={actionLoading} onClick={() => onPrimary(item)}>
+              <Button variant="primary" data-aurora-feature="work_item" data-aurora-action="task_selected" className="h-auto min-h-11 whitespace-normal text-center" disabled={actionsDisabled} loading={actionLoading} onClick={() => onPrimary(item)}>
                 <Sparkles className="h-4 w-4 shrink-0" aria-hidden />{item.primaryAction.label}
               </Button>
             ) : (
-              <Link className={buttonClassName({ variant: "primary", className: "h-auto min-h-11 whitespace-normal text-center" })} href={item.primaryAction.href}>
+              <Link data-aurora-feature="work_item" data-aurora-action="task_selected" className={buttonClassName({ variant: "primary", className: "h-auto min-h-11 whitespace-normal text-center" })} href={item.primaryAction.href}>
                 {item.primaryAction.label}
               </Link>
             )}
             {item.evidence ? <EvidenceCard kind={item.evidence.kind} id={item.evidence.id} compact /> : null}
           </div>
           <div className="flex items-center justify-end gap-2">
-            <Button variant="secondary" size="sm" className="min-h-11" disabled={actionsDisabled} loading={!item.smartAction && actionLoading} onClick={() => onDone(item)}>
+            <Button variant="secondary" size="sm" data-aurora-feature="work_item" data-aurora-action="task_completed" className="min-h-11" disabled={actionsDisabled} loading={!item.smartAction && actionLoading} onClick={() => onDone(item)}>
               <Check className="h-4 w-4" aria-hidden />Готово
             </Button>
             <details className="group/more relative">
@@ -490,7 +490,7 @@ function TodayItemCard({ item, featured, actionsDisabled, actionLoading, error, 
                 <MoreHorizontal className="h-5 w-5" aria-hidden />
               </summary>
               <div className="card-plain absolute right-0 bottom-[calc(100%+0.5rem)] z-20 w-64 rounded-sm p-2 shadow-float">
-                <Button variant="ghost" size="sm" className="w-full justify-start whitespace-normal text-left" disabled={actionsDisabled} onClick={() => onSnooze(item)}>
+                <Button variant="ghost" size="sm" data-aurora-feature="work_item" data-aurora-action="task_deferred" className="w-full justify-start whitespace-normal text-left" disabled={actionsDisabled} onClick={() => onSnooze(item)}>
                   <Clock3 className="h-4 w-4 shrink-0" aria-hidden />Напомнить завтра
                 </Button>
                 {item.recommendationKind ? (
@@ -559,6 +559,17 @@ function TodayPageContent() {
   const actionController = useRef<AbortController | null>(null);
   const titleRefs = useRef(new Map<string, HTMLHeadingElement>());
   const summaryRef = useRef<HTMLHeadingElement>(null);
+  const undoButtonRef = useRef<HTMLButtonElement>(null);
+
+  const routeUndoFromDecisionFocus = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "Tab" || event.shiftKey || !undo || refreshing || busy !== null || !undoButtonRef.current) return;
+    const target = event.target;
+    const isDecisionFocus = target === summaryRef.current
+      || Array.from(titleRefs.current.values()).includes(target as HTMLHeadingElement);
+    if (!isDecisionFocus) return;
+    event.preventDefault();
+    undoButtonRef.current.focus();
+  }, [busy, refreshing, undo]);
 
   const commitBoard = useCallback((next: TodayBoard) => { boardRef.current = next; setBoard(next); }, []);
 
@@ -932,7 +943,7 @@ function TodayPageContent() {
 
   return (
     <AppShell title="Сегодня" subtitle="Приоритетные решения по выбранному каналу.">
-      <div className="mx-auto w-full max-w-[68rem] space-y-6" aria-busy={refreshing}>
+      <div className="mx-auto w-full max-w-[68rem] space-y-6" aria-busy={refreshing} onKeyDownCapture={routeUndoFromDecisionFocus}>
         <p className="sr-only" aria-live="polite" aria-atomic="true">{announcement}</p>
         {status === "loading" ? <TodayLoadingCard /> : null}
 
@@ -1027,7 +1038,7 @@ function TodayPageContent() {
                     {itemErrors[undo.item.fingerprint] ? <p className="mt-2 text-[13px] font-semibold text-danger-text" role="alert">{itemErrors[undo.item.fingerprint]}</p> : null}
                   </div>
                   <div className="flex flex-col gap-2 sm:flex-row">
-                     <Button variant="secondary" size="sm" className="min-h-11" disabled={refreshing || busy === undo.item.fingerprint} loading={busy === `undo:${undo.item.fingerprint}` || busy === `undo-feedback:${undo.item.fingerprint}`} onClick={() => void restore()}><RotateCcw className="h-4 w-4" aria-hidden />Вернуть</Button>
+                    <Button ref={undoButtonRef} variant="secondary" size="sm" className="min-h-11" disabled={refreshing || busy !== null} loading={busy === `undo:${undo.item.fingerprint}` || busy === `undo-feedback:${undo.item.fingerprint}`} onClick={() => void restore()}><RotateCcw className="h-4 w-4" aria-hidden />Вернуть</Button>
                     <Button variant="ghost" size="sm" className="min-h-11" disabled={refreshing || busy !== null} onClick={() => setUndo(null)}>Скрыть сообщение</Button>
                   </div>
                 </div>

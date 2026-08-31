@@ -111,5 +111,15 @@ export async function saveStudioChatSessionForUser(
   );
   const saved = storedRow(userId, result.rows[0]);
   if (saved) return { saved: true, session: saved };
-  return { saved: false, current: await loadStudioChatSessionForUser(userId) };
+  const current = await loadStudioChatSessionForUser(userId);
+  // A normal save and the pagehide keepalive can race with the same snapshot.
+  // Treat the exact stale replay as idempotent success; a different payload remains
+  // a revision conflict and must still be merged by the client.
+  const currentSession = current
+    ? parseStudioChatSession(JSON.stringify(current.payload), userId)
+    : null;
+  if (current && currentSession && JSON.stringify(currentSession) === JSON.stringify(input.session)) {
+    return { saved: true, session: current };
+  }
+  return { saved: false, current };
 }

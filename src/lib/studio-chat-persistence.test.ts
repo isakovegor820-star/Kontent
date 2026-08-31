@@ -61,4 +61,38 @@ describe("studio chat persistence", () => {
       [7, JSON.stringify(payload), 3],
     );
   });
+
+  it("считает точный повтор снимка идемпотентным после гонки revision", async () => {
+    const payload = JSON.parse(serializeStudioChatSession(7, session));
+    const input = parseStudioChatSaveInput({ expectedRevision: 3, session: payload }, 7);
+    mocks.query
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({
+        rows: [{ payload, revision: "4", updated_at: "2026-08-10T10:00:00.000Z" }],
+      });
+
+    await expect(saveStudioChatSessionForUser(7, input)).resolves.toMatchObject({
+      saved: true,
+      session: { revision: 4, payload: { messages: session.messages, draft: "" } },
+    });
+  });
+
+  it("сохраняет revision-конфликт, если устаревший повтор содержит другой снимок", async () => {
+    const payload = JSON.parse(serializeStudioChatSession(7, session));
+    const input = parseStudioChatSaveInput({ expectedRevision: 3, session: payload }, 7);
+    const currentPayload = JSON.parse(serializeStudioChatSession(7, {
+      ...session,
+      draft: "Более новый текст",
+    }));
+    mocks.query
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({
+        rows: [{ payload: currentPayload, revision: "4", updated_at: "2026-08-10T10:00:00.000Z" }],
+      });
+
+    await expect(saveStudioChatSessionForUser(7, input)).resolves.toMatchObject({
+      saved: false,
+      current: { revision: 4, payload: { messages: session.messages, draft: "Более новый текст" } },
+    });
+  });
 });

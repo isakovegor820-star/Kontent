@@ -13,6 +13,7 @@ import {
 } from "@/lib/readiness-probes";
 import { evaluateReadiness } from "@/lib/readiness";
 import { getSessionUser } from "@/lib/session";
+import { getDatabasePoolSnapshot } from "@/lib/db";
 
 export const runtime = "nodejs";
 
@@ -61,7 +62,7 @@ export async function GET(req: NextRequest) {
     tokenEncryption: database.tokenEncryption,
     trackingSecrets: probeTrackingSecretsConfiguration(),
   });
-  return NextResponse.json(report, {
+  return NextResponse.json({ ...report, databasePool: getDatabasePoolSnapshot() }, {
     status: report.webReady ? 200 : 503,
     headers: { "Cache-Control": "no-store" },
   });

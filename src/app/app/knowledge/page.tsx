@@ -540,7 +540,7 @@ function AddPanel({
         </div>
       )}
 
-      <Button variant="brand" onClick={submit} loading={busy} disabled={busy} className="w-full">
+      <Button variant="brand" data-aurora-feature="source" data-aurora-action="added" onClick={submit} loading={busy} disabled={busy} className="w-full">
         {mode === "channel" ? "Прочитать канал" : "Добавить в базу"}
       </Button>
     </Card>

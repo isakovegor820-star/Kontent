@@ -11,9 +11,7 @@ import {
 } from "lucide-react";
 
 import { buttonClassName, Button } from "@/components/ui/button";
-
-const STORAGE_KEY = "aurora:bot-connection-token:v1";
-const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
+import { clearBotConnectionToken, consumeBotConnectionToken } from "@/lib/bot-connect-token";
 
 type InspectionState = "invalid" | "pending" | "expired" | "revoked" | "confirmed";
 
@@ -33,15 +31,11 @@ type Inspection = {
 type ViewState = "loading" | "ready" | "confirming" | "connected" | "invalid" | "expired" | "revoked" | "used" | "disabled" | "error";
 
 function readStoredToken(): string | null {
-  const fragment = new URLSearchParams(window.location.hash.replace(/^#/u, "")).get("token");
-  const candidate = fragment || window.sessionStorage.getItem(STORAGE_KEY) || "";
-  if (window.location.hash) window.history.replaceState(null, "", window.location.pathname);
-  if (!TOKEN_PATTERN.test(candidate)) {
-    window.sessionStorage.removeItem(STORAGE_KEY);
-    return null;
-  }
-  window.sessionStorage.setItem(STORAGE_KEY, candidate);
-  return candidate;
+  return consumeBotConnectionToken({
+    location: window.location,
+    history: window.history,
+    storage: window.sessionStorage,
+  });
 }
 
 function telegramUrl(bot: string | null | undefined): string {
@@ -80,14 +74,22 @@ export default function BotConnectPage() {
   }, []);
 
   useEffect(() => {
-    queueMicrotask(() => {
+    let mounted = true;
+    const readTokenAndInspect = () => {
+      if (!mounted) return;
       try {
         tokenRef.current = readStoredToken();
       } catch {
         tokenRef.current = null;
       }
       void inspect();
-    });
+    };
+    queueMicrotask(readTokenAndInspect);
+    window.addEventListener("hashchange", readTokenAndInspect);
+    return () => {
+      mounted = false;
+      window.removeEventListener("hashchange", readTokenAndInspect);
+    };
   }, [inspect]);
 
   async function confirm() {
@@ -106,7 +108,7 @@ export default function BotConnectPage() {
       });
       const body = await response.json().catch(() => null) as { ok?: boolean; error?: string; bot?: string | null } | null;
       if (response.ok && body?.ok) {
-        window.sessionStorage.removeItem(STORAGE_KEY);
+        clearBotConnectionToken(window.sessionStorage);
         setInspection((current) => ({ ...current, bot: body.bot ?? current?.bot }));
         setView("connected");
         return;

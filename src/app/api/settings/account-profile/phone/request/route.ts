@@ -6,6 +6,7 @@ import { normalizePhone } from "@/lib/account-settings";
 import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { getPool } from "@/lib/db";
 import { createPhoneVerificationCode, PHONE_CODE_TTL_MS } from "@/lib/phone-verification";
+import { phoneVerificationMode } from "@/lib/phone-verification-mode.mjs";
 import { checkRateLimit, rateLimitResponse } from "@/lib/rate-limit";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import { getSessionUser } from "@/lib/session";
@@ -19,19 +20,17 @@ export async function POST(req: NextRequest) {
   }
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ ok: false, error: "unauthorized", requestId }, { status: 401 });
-  const rate = await checkRateLimit(`profile:phone:user:${user.id}`, 5, 3_600, { failureMode: "closed" });
-  if (!rate.allowed) return rateLimitResponse(rate);
-  const body = await readJsonBodyValue(req).catch(() => null) as { phone?: unknown } | null;
-  const phone = normalizePhone(body?.phone);
-  if (!phone) return NextResponse.json({ ok: false, error: "bad_phone", requestId }, { status: 422 });
-  const temporaryMode = process.env.NODE_ENV !== "production"
-    || process.env.AURORA_TEMPORARY_PHONE_VERIFICATION === "true";
-  if (!temporaryMode) {
+  if (phoneVerificationMode() !== "temporary") {
     return NextResponse.json(
       { ok: false, error: "phone_delivery_unavailable", requestId },
       { status: 503, headers: { "cache-control": "no-store" } },
     );
   }
+  const rate = await checkRateLimit(`profile:phone:user:${user.id}`, 5, 3_600, { failureMode: "closed" });
+  if (!rate.allowed) return rateLimitResponse(rate);
+  const body = await readJsonBodyValue(req).catch(() => null) as { phone?: unknown } | null;
+  const phone = normalizePhone(body?.phone);
+  if (!phone) return NextResponse.json({ ok: false, error: "bad_phone", requestId }, { status: 422 });
   const challenge = createPhoneVerificationCode();
   const expiresAt = new Date(Date.now() + PHONE_CODE_TTL_MS);
   try {

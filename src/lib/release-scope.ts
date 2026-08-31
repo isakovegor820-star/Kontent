@@ -46,13 +46,22 @@ export const EXPERIMENTAL_PUBLIC_PATH_PREFIXES = Object.freeze([
   "/rss",
 ] as const);
 
+export const STABLE_PUBLIC_PATHS = Object.freeze([
+  "/bot/connect",
+] as const);
+
 export const EXPERIMENTAL_API_PATH_PREFIXES = Object.freeze([] as const);
 
 function pathMatchesPrefix(pathname: string, prefix: string): boolean {
   return pathname === prefix || pathname.startsWith(`${prefix}/`);
 }
 
+function isStablePublicPath(pathname: string): boolean {
+  return STABLE_PUBLIC_PATHS.some((path) => pathname === path);
+}
+
 export function isExperimentalReleasePath(pathname: string): boolean {
+  if (isStablePublicPath(pathname)) return false;
   return [
     ...EXPERIMENTAL_APP_PATH_PREFIXES,
     ...EXPERIMENTAL_PUBLIC_PATH_PREFIXES,
@@ -70,6 +79,7 @@ export function experimentalRoutesEnabled(value: string | undefined): boolean {
 }
 
 export function stableReleaseRedirect(pathname: string): "/app/calendar" | "/" | null {
+  if (isStablePublicPath(pathname)) return null;
   if (EXPERIMENTAL_APP_PATH_PREFIXES.some((prefix) => pathMatchesPrefix(pathname, prefix))) {
     return "/app/calendar";
   }

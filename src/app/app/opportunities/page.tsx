@@ -103,7 +103,7 @@ export default function OpportunitiesPage() {
     }
   };
 
-  return <AppShell title="Карта возможностей" subtitle="Свежие темы, где у канала есть место для собственного голоса." action={status === "ready" ? <Button onClick={() => void refresh()} loading={refreshing}><RefreshCw className="h-4 w-4" aria-hidden />Обновить карту</Button> : undefined}>
+  return <AppShell title="Карта возможностей" subtitle="Свежие темы, где у канала есть место для собственного голоса." action={status === "ready" ? <Button data-aurora-feature="map" data-aurora-action="built" onClick={() => void refresh()} loading={refreshing}><RefreshCw className="h-4 w-4" aria-hidden />Обновить карту</Button> : undefined}>
     <div className="mx-auto w-full max-w-[76rem] space-y-6">
       {status === "loading" && <Card className="min-h-64 p-6" role="status"><div className="skeleton h-7 w-56 rounded-xs" /><div className="mt-5 space-y-3"><div className="skeleton h-20 rounded-sm" /><div className="skeleton h-20 rounded-sm" /></div><span className="sr-only">Загружаем возможности</span></Card>}
       {status === "no_channel" && <Card className="p-6"><h2>Подключите канал</h2><p className="mt-3 max-w-[65ch] text-pretty text-[15px] leading-relaxed text-text-2">Аврора построит карту возможностей после подключения активного канала.</p><Link className={buttonClassName({ variant: "primary", className: "mt-5" })} href="/app/settings?section=channels">Подключить канал</Link></Card>}

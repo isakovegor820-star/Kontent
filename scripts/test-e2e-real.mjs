@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
-import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { constants, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import https from "node:https";
@@ -10,14 +10,28 @@ import { pathToFileURL } from "node:url";
 import { Queue } from "bullmq";
 import IORedis from "ioredis";
 import pg from "pg";
-import { chromium } from "playwright-core";
+import { chromium, firefox, webkit } from "playwright-core";
 
 import { findAutopilotNearDuplicate } from "../src/lib/autopilot-config.mjs";
 import { MEDIA_PROMPT_POLICY } from "../src/lib/media-generation.mjs";
 import { enqueuePublicationExtraJob } from "../src/lib/publication-extra-queue.mjs";
 import { SITE_INTERVIEW_QUESTIONS } from "../src/lib/site-analysis/questions.data.mjs";
 import { encryptToken } from "../src/lib/token-crypto.mjs";
+import { acquireBuildLock } from "./build-lock.mjs";
 import { reconcilePublicationExtraRuntime } from "../worker/publication-extra-runtime.mjs";
+import {
+  e2eBrowserExecutableCandidates,
+  classifyE2eExpectedSessionExpiryConsole,
+  classifyE2eKnownBrowserObservation,
+  resolveE2eAdvanceSchedule,
+  resolveE2eBuildMode,
+  resolveE2eBuildTimeoutMs,
+  resolveE2eBrowserEngine,
+  resolveE2eCaptureArtifacts,
+  resolveE2eTabKey,
+  sanitizeE2eNetworkUrl,
+} from "./e2e-browser-config.mjs";
+import { captureE2eInputSnapshot, changedE2eInputPaths } from "./e2e-input-snapshot.mjs";
 import {
   enqueuePublicationReviewReminderJob,
   processDuePublicationReviews,
@@ -28,6 +42,14 @@ import { migrate } from "./migrate.mjs";
 const databaseUrl = String(process.env.E2E_DATABASE_URL || "").trim();
 const redisUrl = String(process.env.E2E_REDIS_URL || "").trim();
 if (!databaseUrl || !redisUrl) throw new Error("E2E_DATABASE_URL and E2E_REDIS_URL are required");
+const browserEngine = resolveE2eBrowserEngine(process.env.E2E_BROWSER);
+const buildMode = resolveE2eBuildMode(process.env.E2E_BUILD_MODE);
+const buildTimeoutMs = resolveE2eBuildTimeoutMs(process.env.E2E_BUILD_TIMEOUT_MS);
+const advanceScheduleAfterRestart = resolveE2eAdvanceSchedule(
+  process.env.E2E_ADVANCE_SCHEDULE_AFTER_RESTART,
+);
+const captureBrowserArtifacts = resolveE2eCaptureArtifacts(process.env.E2E_CAPTURE_ARTIFACTS);
+const browserType = { chromium, firefox, webkit }[browserEngine];
 const dbTarget = new URL(databaseUrl);
 const redisTarget = new URL(redisUrl);
 if (!['127.0.0.1', 'localhost'].includes(dbTarget.hostname) || dbTarget.pathname.slice(1) !== "aurora_e2e_real") {
@@ -36,6 +58,11 @@ if (!['127.0.0.1', 'localhost'].includes(dbTarget.hostname) || dbTarget.pathname
 if (!['127.0.0.1', 'localhost'].includes(redisTarget.hostname) || redisTarget.pathname !== "/15") {
   throw new Error("real E2E requires disposable local Redis database 15");
 }
+const inheritedBuildLockToken = String(process.env.AURORA_BUILD_LOCK_TOKEN || "").trim();
+if (inheritedBuildLockToken && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(inheritedBuildLockToken)) {
+  throw new Error("AURORA_BUILD_LOCK_TOKEN must be a UUID");
+}
+const e2eBuildLockToken = inheritedBuildLockToken || globalThis.crypto.randomUUID();
 
 async function reserveEphemeralPorts(count) {
   const servers = [];
@@ -84,18 +111,29 @@ if (new Set([webPort, nextPort, fakePort]).size !== 3) {
 const UI_WAIT_TIMEOUT_MS = 30_000;
 const RUNTIME_WAIT_TIMEOUT_MS = 120_000;
 const API_REQUEST_TIMEOUT_MS = RUNTIME_WAIT_TIMEOUT_MS;
+const E2E_EVIDENCE_VIDEO_SIZE = Object.freeze({ width: 640, height: 360 });
+const E2E_EVIDENCE_TRACE_OPTIONS = Object.freeze({
+  screenshots: true,
+  snapshots: false,
+  sources: false,
+});
 const baseUrl = `https://127.0.0.1:${webPort}`;
 const runtimeBaseUrl = `http://127.0.0.1:${nextPort}`;
 const fakeBase = `http://127.0.0.1:${fakePort}`;
 const trackedDestination = "https://example.com/consultation";
-const artifactDir = resolve("test-results/e2e-real");
+const artifactDir = resolve(
+  String(process.env.E2E_ARTIFACT_DIR || `test-results/e2e-real/${browserEngine}`),
+);
 await mkdir(artifactDir, { recursive: true });
+const videoDirectory = resolve(artifactDir, "video");
+if (captureBrowserArtifacts) await mkdir(videoDirectory, { recursive: true });
 const brandLogoPath = resolve(artifactDir, "critical-brand-logo.png");
 const invalidBrandLogoPath = resolve(artifactDir, "invalid-brand-logo.png");
 const vkFetchShimPath = resolve(artifactDir, "vk-fetch-redirect.mjs");
+const e2eInputSnapshot = await captureE2eInputSnapshot();
 
-const pool = new pg.Pool({ connectionString: databaseUrl, ssl: false, max: 12 });
-const redis = new IORedis(redisUrl, { maxRetriesPerRequest: null });
+let pool;
+let redis;
 const children = [];
 const logs = [];
 let fakeServer;
@@ -103,6 +141,8 @@ let tlsProxyServer;
 let tlsDirectory;
 let browser;
 let page;
+let context;
+let reviewerContext;
 let runtimeProcess;
 let publishQueue;
 let mediaQueue;
@@ -112,15 +152,27 @@ let projectExportQueue;
 let publicationExtraQueue;
 let publicationReviewReminderQueue;
 const browserIssues = [];
+const browserObservations = [];
+const browserPendingRequests = new WeakMap();
+const browserNetworkEvents = [];
+let browserScreenshotDepth = 0;
+let browserTeardownStarted = false;
+let mainTraceStarted = false;
+let reviewerTraceStarted = false;
+let browserArtifactsFinalized = false;
+let browserArtifactEvidence = { enabled: false, traces: [], videos: [], networkLog: null };
 const expectedBrowserConsoleScopes = new Set();
 const expectedBrowser5xxScopes = new Set();
+const expectedSessionExpiryConsoleScopes = new Set();
 const interfaceEvidence = {
   reducedMotion: { main: false, reviewer: false },
   viewportWidths: [],
   keyboardOnly: false,
   runtimeRestart: null,
+  sessionExpiry: null,
   analyticsUi: null,
   todayUi: null,
+  adminOperationsUi: null,
 };
 
 function assert(value, message) {
@@ -186,48 +238,138 @@ function child(label, command, args, env) {
   return subprocess;
 }
 
+function processTreeAlive(subprocess) {
+  if (!subprocess) return false;
+  if (globalThis.process.platform !== "win32" && subprocess.pid) {
+    try {
+      globalThis.process.kill(-subprocess.pid, 0);
+      return true;
+    } catch (error) {
+      if (error?.code === "EPERM") return true;
+      if (error?.code === "ESRCH") return false;
+    }
+  }
+  return subprocess.exitCode == null && subprocess.signalCode == null;
+}
+
 function signalChild(subprocess, signal) {
-  if (!subprocess || subprocess.exitCode != null || subprocess.signalCode != null) return;
+  if (!subprocess) return;
   if (globalThis.process.platform !== "win32" && subprocess.pid) {
     try {
       globalThis.process.kill(-subprocess.pid, signal);
       return;
-    } catch {}
+    } catch (error) {
+      if (error?.code === "ESRCH") return;
+    }
   }
+  if (subprocess.exitCode != null || subprocess.signalCode != null) return;
   subprocess.kill(signal);
 }
 
 async function stopChild(subprocess, label, timeoutMs = 12_000) {
-  if (!subprocess || subprocess.exitCode != null || subprocess.signalCode != null) return;
-  const exited = new Promise((resolveExit) => {
-    if (subprocess.exitCode != null || subprocess.signalCode != null) resolveExit();
-    else subprocess.once("exit", resolveExit);
-  });
+  if (!processTreeAlive(subprocess)) return { forced: false };
   signalChild(subprocess, "SIGTERM");
-  const graceful = await Promise.race([
-    exited.then(() => true),
-    new Promise((resolveTimeout) => setTimeout(() => resolveTimeout(false), timeoutMs)),
-  ]);
-  if (graceful) return;
+  const graceful = await waitFor(
+    () => !processTreeAlive(subprocess),
+    `${label} process group remained after SIGTERM`,
+    timeoutMs,
+  ).then(() => true).catch(() => false);
+  if (graceful) return { forced: false };
   signalChild(subprocess, "SIGKILL");
-  const killed = await Promise.race([
-    exited.then(() => true),
-    new Promise((resolveTimeout) => setTimeout(() => resolveTimeout(false), 5_000)),
-  ]);
+  const killed = await waitFor(
+    () => !processTreeAlive(subprocess),
+    `${label} process group remained after SIGKILL`,
+    5_000,
+  ).then(() => true).catch(() => false);
   assert(killed, `${label} did not terminate after SIGKILL`);
+  return { forced: true };
 }
 
 async function installBrowserDiagnostics(context, label) {
   await context.addInitScript(() => {
+    const historyStorageKey = "__aurora_e2e_history_events";
+    const recordHistory = (method, url) => {
+      try {
+        const events = JSON.parse(globalThis.sessionStorage.getItem(historyStorageKey) || "[]");
+        events.push({
+          method,
+          from: `${globalThis.location.pathname}${globalThis.location.search}`,
+          to: url == null ? null : String(url),
+          length: globalThis.history.length,
+          stateKeys: Object.keys(globalThis.history.state || {}).sort(),
+        });
+        globalThis.sessionStorage.setItem(historyStorageKey, JSON.stringify(events.slice(-80)));
+      } catch {}
+    };
+    for (const method of ["pushState", "replaceState"]) {
+      const original = globalThis.history[method].bind(globalThis.history);
+      globalThis.history[method] = (state, title, url) => {
+        recordHistory(method, url);
+        return original(state, title, url);
+      };
+    }
+    globalThis.addEventListener("popstate", () => recordHistory("popstate", null));
+    recordHistory("init", null);
     globalThis.addEventListener("unhandledrejection", (event) => {
       const reason = event.reason instanceof Error
         ? `${event.reason.name}: ${event.reason.message}`
         : String(event.reason ?? "unknown rejection");
       console.error(`__AURORA_E2E_UNHANDLED_REJECTION__${reason}`);
     });
+    globalThis.addEventListener("securitypolicyviolation", (event) => {
+      console.error(`__AURORA_E2E_CSP_VIOLATION__${JSON.stringify({
+        blockedURI: event.blockedURI,
+        violatedDirective: event.violatedDirective,
+        effectiveDirective: event.effectiveDirective,
+        sourceFile: event.sourceFile,
+        lineNumber: event.lineNumber,
+        sample: event.sample,
+        disposition: event.disposition,
+      })}`);
+    });
   });
   context.on("page", (targetPage) => {
+    const pendingRequests = new Set();
+    browserPendingRequests.set(targetPage, pendingRequests);
+    const firstPartyRequest = (request) => {
+      try {
+        const url = new URL(request.url());
+        return url.origin === baseUrl && !url.searchParams.has("_rsc");
+      } catch {
+        return false;
+      }
+    };
+    targetPage.on("request", (request) => {
+      if (firstPartyRequest(request)) pendingRequests.add(request);
+      if (!browserTeardownStarted && captureBrowserArtifacts) {
+        browserNetworkEvents.push({
+          at: new Date().toISOString(),
+          context: label,
+          event: "request",
+          method: request.method(),
+          resourceType: request.resourceType(),
+          url: sanitizeE2eNetworkUrl(request.url(), baseUrl),
+        });
+      }
+    });
+    const settleRequest = (request) => pendingRequests.delete(request);
+    targetPage.on("requestfinished", settleRequest);
+    targetPage.on("requestfailed", settleRequest);
+    targetPage.on("requestfailed", (request) => {
+      if (!browserTeardownStarted && captureBrowserArtifacts) {
+        browserNetworkEvents.push({
+          at: new Date().toISOString(),
+          context: label,
+          event: "requestfailed",
+          method: request.method(),
+          resourceType: request.resourceType(),
+          url: sanitizeE2eNetworkUrl(request.url(), baseUrl),
+          failure: String(request.failure()?.errorText || "request_failed").slice(0, 500),
+        });
+      }
+    });
     targetPage.on("crash", () => {
+      if (browserTeardownStarted) return;
       browserIssues.push({
         context: label,
         kind: "page.crash",
@@ -237,7 +379,7 @@ async function installBrowserDiagnostics(context, label) {
       });
     });
     targetPage.on("close", () => {
-      if (browser?.isConnected()) {
+      if (!browserTeardownStarted && browser?.isConnected()) {
         browserIssues.push({
           context: label,
           kind: "page.close",
@@ -248,32 +390,98 @@ async function installBrowserDiagnostics(context, label) {
       }
     });
     targetPage.on("console", (message) => {
+      if (browserTeardownStarted) return;
       if (message.type() !== "error") return;
       const rawText = message.text();
-      const unhandled = rawText.startsWith("__AURORA_E2E_UNHANDLED_REJECTION__");
-      if (!unhandled && expectedBrowserConsoleScopes.has(label)) return;
+      const knownObservation = classifyE2eKnownBrowserObservation({
+        engine: browserEngine,
+        eventKind: "console",
+        message: rawText,
+        currentUrl: targetPage.url(),
+        webPort,
+        screenshotInProgress: browserScreenshotDepth > 0,
+      });
+      if (knownObservation) {
+        browserObservations.push({
+          context: label,
+          ...knownObservation,
+          message: rawText,
+          url: targetPage.url(),
+        });
+        return;
+      }
       const location = message.location();
+      const expectedSessionExpiry = classifyE2eExpectedSessionExpiryConsole({
+        active: expectedSessionExpiryConsoleScopes.has(label),
+        message: rawText,
+        sourceUrl: location?.url,
+        baseUrl,
+      });
+      if (expectedSessionExpiry) {
+        browserObservations.push({
+          context: label,
+          ...expectedSessionExpiry,
+          message: rawText,
+          url: location?.url || targetPage.url(),
+        });
+        return;
+      }
+      const unhandled = rawText.startsWith("__AURORA_E2E_UNHANDLED_REJECTION__");
+      const cspViolation = rawText.startsWith("__AURORA_E2E_CSP_VIOLATION__");
+      if (!unhandled && !cspViolation && expectedBrowserConsoleScopes.has(label)) return;
       browserIssues.push({
         context: label,
-        kind: unhandled ? "unhandledrejection" : "console.error",
+        kind: unhandled ? "unhandledrejection" : cspViolation ? "securitypolicyviolation" : "console.error",
         message: unhandled
           ? rawText.slice("__AURORA_E2E_UNHANDLED_REJECTION__".length)
+          : cspViolation
+            ? rawText.slice("__AURORA_E2E_CSP_VIOLATION__".length)
           : rawText,
         url: location?.url || targetPage.url(),
         line: Number(location?.lineNumber || 0),
       });
     });
     targetPage.on("pageerror", (error) => {
+      if (browserTeardownStarted) return;
+      const rawMessage = String(error?.message || error);
+      const knownObservation = classifyE2eKnownBrowserObservation({
+        engine: browserEngine,
+        eventKind: "pageerror",
+        message: rawMessage,
+        currentUrl: targetPage.url(),
+        webPort,
+      });
+      if (knownObservation) {
+        browserObservations.push({
+          context: label,
+          ...knownObservation,
+          message: rawMessage,
+          url: targetPage.url(),
+        });
+        return;
+      }
       browserIssues.push({
         context: label,
         kind: "pageerror",
-        message: String(error?.message || error),
+        message: rawMessage,
         url: targetPage.url(),
         line: 0,
       });
     });
     targetPage.on("response", (response) => {
       const status = response.status();
+      if (!browserTeardownStarted && captureBrowserArtifacts) {
+        browserNetworkEvents.push({
+          at: new Date().toISOString(),
+          context: label,
+          event: "response",
+          method: response.request().method(),
+          resourceType: response.request().resourceType(),
+          url: sanitizeE2eNetworkUrl(response.url(), baseUrl),
+          status,
+        });
+      }
+      if (browserTeardownStarted) return;
       if (status < 500) return;
       let firstParty = false;
       try {
@@ -292,6 +500,43 @@ async function installBrowserDiagnostics(context, label) {
   });
 }
 
+async function finalizeBrowserArtifacts({ requireComplete = true } = {}) {
+  if (!captureBrowserArtifacts || browserArtifactsFinalized) return browserArtifactEvidence;
+  // The browser journey is complete before trace/video flushing begins. Ignore
+  // console and lifecycle events emitted solely by Playwright's teardown so the
+  // persisted diagnostics and the final result describe the same boundary.
+  browserTeardownStarted = true;
+  const traces = [];
+  if (reviewerTraceStarted && reviewerContext) {
+    const path = resolve(artifactDir, "reviewer-trace.zip");
+    await reviewerContext.tracing.stop({ path });
+    reviewerTraceStarted = false;
+    traces.push(path);
+  }
+  if (mainTraceStarted && context) {
+    const path = resolve(artifactDir, "main-trace.zip");
+    await context.tracing.stop({ path });
+    mainTraceStarted = false;
+    traces.push(path);
+  }
+
+  if (reviewerContext) await reviewerContext.close();
+  if (context) await context.close();
+  const videos = (await readdir(videoDirectory, { withFileTypes: true }))
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".webm"))
+    .map((entry) => resolve(videoDirectory, entry.name))
+    .sort();
+  if (requireComplete) {
+    assert(traces.length === 2, `browser evidence produced ${traces.length} trace(s), expected 2`);
+    assert(videos.length >= 2, `browser evidence produced ${videos.length} video(s), expected at least 2`);
+  }
+  const networkLog = resolve(artifactDir, "network-log.json");
+  await writeFile(networkLog, `${JSON.stringify({ events: browserNetworkEvents }, null, 2)}\n`, "utf8");
+  browserArtifactEvidence = { enabled: true, traces, videos, networkLog };
+  browserArtifactsFinalized = true;
+  return browserArtifactEvidence;
+}
+
 function unexpectedRuntimeLogLines() {
   const fatalPattern = /\b(?:23505|unhandledrejection|uncaughtException)\b|duplicate key value violates unique constraint/iu;
   const firstParty5xxPattern = /\b(?:GET|POST|PUT|PATCH|DELETE)\s+\/\S*\s+5\d\d\b/u;
@@ -301,25 +546,33 @@ function unexpectedRuntimeLogLines() {
 }
 
 async function waitFor(check, message, timeoutMs = 20_000) {
-  const deadline = Date.now() + timeoutMs;
+  const intervalMs = 150;
+  const attempts = Math.max(1, Math.ceil(timeoutMs / intervalMs));
   let last;
-  while (Date.now() < deadline) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
       const value = await check();
       if (value) return value;
     } catch (error) {
       last = error;
     }
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
   throw new Error(`${message}${last ? `: ${last.message}` : ""}`);
+}
+
+async function reloadInBrowser(targetPage, timeoutMs = 60_000) {
+  await Promise.all([
+    targetPage.waitForNavigation({ waitUntil: "domcontentloaded", timeout: timeoutMs }),
+    targetPage.evaluate(() => globalThis.location.reload()),
+  ]);
 }
 
 async function reloadAfterRuntimeRestart(targetPage, label) {
   let lastError;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
-      await targetPage.reload({ waitUntil: "domcontentloaded", timeout: 60_000 });
+      await reloadInBrowser(targetPage);
       return;
     } catch (error) {
       lastError = error;
@@ -340,20 +593,21 @@ async function reloadAfterRuntimeRestart(targetPage, label) {
 
 async function browserExecutable() {
   const requested = String(process.env.E2E_BROWSER_EXECUTABLE || "").trim();
-  const candidates = [
+  const candidates = e2eBrowserExecutableCandidates({
+    engine: browserEngine,
     requested,
-    chromium.executablePath(),
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    "/usr/bin/google-chrome",
-    "/usr/bin/chromium",
-  ].filter(Boolean);
+    bundled: browserType.executablePath(),
+    platform: globalThis.process.platform,
+  });
   for (const candidate of candidates) {
     try {
       await access(candidate, constants.X_OK);
       return candidate;
     } catch {}
   }
-  throw new Error("Chromium executable is unavailable; run playwright-core install chromium");
+  throw new Error(
+    `${browserEngine} executable is unavailable; run playwright-core install ${browserEngine}`,
+  );
 }
 
 const fakeState = {
@@ -810,6 +1064,16 @@ const runtimeEnv = {
   APP_URL: baseUrl,
   NEXT_PUBLIC_APP_URL: baseUrl,
   NEXT_PUBLIC_AURORA_EXPERIMENTAL_ROUTES: "1",
+  AURORA_SENTRY_DISABLED: "1",
+  NEXT_PUBLIC_AURORA_SENTRY_DISABLED: "1",
+  SENTRY_AUTH_TOKEN: "",
+  SENTRY_ORG: "",
+  SENTRY_PROJECT: "",
+  SENTRY_URL: "",
+  AURORA_ADMIN_EMAILS: "qa-e2e@aurora.test",
+  AURORA_RELEASE: "e2e-release",
+  AURORA_RELEASE_SHA: "0123456789abcdef0123456789abcdef01234567",
+  NEXT_PUBLIC_AURORA_APP_VERSION: "e2e-web",
   AURORA_READINESS_TOKEN: "e2e-readiness-token-with-32-characters-minimum",
   HOSTNAME: "127.0.0.1",
   PORT: String(nextPort),
@@ -837,7 +1101,10 @@ const runtimeEnv = {
   AURORA_E2E_VK_API_URL: fakeBase,
   AURORA_AVATAR_BODY_LIMIT_BYTES: String(10 * 1024 * 1024 + 512 * 1024),
   AURORA_WORKER_MODE: "full",
+  AURORA_DB_POOL_MAX_WEB: "3",
+  AURORA_DB_POOL_MAX_WORKER: "3",
   AURORA_NEXT_DIST_DIR: ".next-e2e-real",
+  AURORA_BUILD_LOCK_TOKEN: e2eBuildLockToken,
   TG_WEBHOOK_URL: "",
   RETRY_DELAYS_MS: "500,500,500",
   PUBLICATION_OVERDUE_GRACE_MS: "300000",
@@ -888,20 +1155,75 @@ function startHttpsProxy() {
   });
 }
 
-function buildProductionRuntime() {
-  rmSync(resolve(runtimeEnv.AURORA_NEXT_DIST_DIR), { recursive: true, force: true });
-  const output = execFileSync(
+async function buildProductionRuntime() {
+  const distDirectory = resolve(runtimeEnv.AURORA_NEXT_DIST_DIR);
+  const provenancePath = resolve(distDirectory, ".aurora-e2e-input-digest");
+  if (buildMode === "reuse") {
+    const buildId = readFileSync(resolve(distDirectory, "BUILD_ID"), "utf8").trim();
+    if (!buildId) throw new Error("E2E_BUILD_MODE=reuse requires a non-empty .next-e2e-real/BUILD_ID");
+    readFileSync(resolve(distDirectory, "build-manifest.json"), "utf8");
+    let builtFromDigest = "";
+    try {
+      builtFromDigest = readFileSync(provenancePath, "utf8").trim();
+    } catch {}
+    assert(
+      builtFromDigest === e2eInputSnapshot.digest,
+      "E2E_BUILD_MODE=reuse requires .next-e2e-real built from the current E2E input snapshot",
+    );
+    logs.push(`[production-build] reused ${runtimeEnv.AURORA_NEXT_DIST_DIR} build ${buildId}`);
+    return;
+  }
+  rmSync(distDirectory, { recursive: true, force: true });
+  const buildProcess = child(
+    "production-build",
     globalThis.process.platform === "win32" ? "npm.cmd" : "npm",
     ["run", "build"],
-    {
-      cwd: globalThis.process.cwd(),
-      env: runtimeEnv,
-      encoding: "utf8",
-      maxBuffer: 20 * 1024 * 1024,
-      timeout: 10 * 60_000,
-    },
+    runtimeEnv,
   );
-  logs.push(`[production-build:stdout] ${output}`);
+  const buildExit = new Promise((resolveExit) => {
+    buildProcess.once("exit", (code, signal) => resolveExit({ code, signal }));
+  });
+  const buildDeadline = Date.now() + buildTimeoutMs;
+  while (processTreeAlive(buildProcess)) {
+    const remainingMs = buildDeadline - Date.now();
+    if (remainingMs <= 0) {
+      await stopChild(buildProcess, "production build");
+      throw new Error(`production build exceeded ${buildTimeoutMs}ms`);
+    }
+    const outcome = await Promise.race([
+      buildExit,
+      new Promise((resolvePoll) => setTimeout(() => resolvePoll(null), Math.min(2_000, remainingMs))),
+    ]);
+    if (outcome) {
+      const buildFailureDetail = logs
+        .filter((line) => line.startsWith("[production-build:"))
+        .slice(-12)
+        .join(" ")
+        .replace(/\s+/gu, " ")
+        .slice(-2_000);
+      assert(
+        outcome.code === 0,
+        `production build failed with code ${outcome.code ?? "none"}${outcome.signal ? ` (${outcome.signal})` : ""}${buildFailureDetail ? `: ${buildFailureDetail}` : ""}`,
+      );
+      break;
+    }
+    const duringBuildSnapshot = await captureE2eInputSnapshot();
+    const changedDuringBuild = changedE2eInputPaths(e2eInputSnapshot, duringBuildSnapshot);
+    if (changedDuringBuild.length > 0) {
+      await stopChild(buildProcess, "production build");
+      throw new Error(
+        `E2E inputs changed during production build: ${changedDuringBuild.slice(0, 20).join(", ")}`,
+      );
+    }
+  }
+  const currentInputSnapshot = await captureE2eInputSnapshot();
+  const changedInputs = changedE2eInputPaths(e2eInputSnapshot, currentInputSnapshot);
+  assert(
+    changedInputs.length === 0,
+    `E2E inputs changed during production build: ${changedInputs.slice(0, 20).join(", ")}`,
+  );
+  writeFileSync(provenancePath, `${e2eInputSnapshot.digest}\n`, "utf8");
+  logs.push(`[production-build] created ${runtimeEnv.AURORA_NEXT_DIST_DIR} from ${e2eInputSnapshot.digest}`);
 }
 
 function encryptE2eVkToken(userId) {
@@ -1013,11 +1335,40 @@ async function publishJobsForPost(postId) {
 
 async function tabTo(targetPage, target, label, { reverse = false, limit = 100 } = {}) {
   await target.waitFor({ state: "visible", timeout: UI_WAIT_TIMEOUT_MS });
+  const tabKey = resolveE2eTabKey({ engine: browserEngine, platform: globalThis.process.platform, reverse });
+  const focusTrail = [];
   for (let index = 0; index <= limit; index += 1) {
     if (await target.evaluate((element) => element === document.activeElement)) return index;
-    await targetPage.keyboard.press(reverse ? "Shift+Tab" : "Tab");
+    focusTrail.push(await targetPage.evaluate(() => {
+      const element = document.activeElement;
+      if (!(element instanceof HTMLElement)) return String(element?.nodeName || "unknown");
+      return [
+        element.tagName.toLowerCase(),
+        element.getAttribute("aria-label") || element.getAttribute("name") || "",
+        element.innerText?.replace(/\s+/gu, " ").trim().slice(0, 80) || "",
+      ].filter(Boolean).join(":");
+    }));
+    await targetPage.keyboard.press(tabKey);
   }
-  throw new Error(`${label} was not reachable with ${reverse ? "Shift+Tab" : "Tab"}`);
+  const compactTrail = focusTrail.filter((entry, index) => index === 0 || entry !== focusTrail[index - 1]).slice(0, 20);
+  throw new Error(
+    `${label} was not reachable with ${tabKey}; focus trail: ${compactTrail.join(" -> ")}`,
+  );
+}
+
+async function focusKeyboardStart(targetPage) {
+  await targetPage.evaluate(() => {
+    document.body.setAttribute("tabindex", "-1");
+    document.body.focus();
+  });
+  assert(
+    await targetPage.evaluate(() => document.activeElement === document.body),
+    "keyboard pass could not establish a deterministic page start",
+  );
+}
+
+async function releaseKeyboardStart(targetPage) {
+  await targetPage.evaluate(() => document.body.removeAttribute("tabindex"));
 }
 
 async function captureViewportEvidence(targetPage) {
@@ -1041,24 +1392,80 @@ async function captureViewportEvidence(targetPage) {
     const measuredWidth = await targetPage.evaluate(() => globalThis.innerWidth);
     assert(measuredWidth === viewport.width, `${viewport.label} rendered at ${measuredWidth}px`);
     const file = resolve(artifactDir, `interface-${viewport.label}.png`);
-    await targetPage.screenshot({ path: file, fullPage: true });
+    await captureE2eScreenshot(targetPage, { path: file, fullPage: true });
     evidence.push({ ...viewport, measuredWidth, file });
   }
   return evidence;
+}
+
+async function captureE2eScreenshot(targetPage, options) {
+  browserScreenshotDepth += 1;
+  try {
+    return await targetPage.screenshot(options);
+  } finally {
+    // Flush console and securitypolicyviolation events before closing the narrowly
+    // scoped Playwright/WebKit screenshot-instrumentation window.
+    await targetPage.evaluate(() => undefined).catch(() => undefined);
+    browserScreenshotDepth -= 1;
+  }
+}
+
+async function waitForRestoredLibrary(targetPage, channelId) {
+  await targetPage.waitForURL((url) => (
+    url.pathname === "/app/library"
+    && url.searchParams.get("channel") === String(channelId)
+  ));
+  // URL changes before a history-restored document has necessarily completed the
+  // session refresh. Waiting for protected content prevents the next navigation from
+  // cancelling /api/auth/me and turning WebKit's cancellation into a false runtime error.
+  await targetPage.getByRole("heading", { name: "Идеи и примеры", exact: true }).waitFor({
+    timeout: UI_WAIT_TIMEOUT_MS,
+  });
+  await waitForFirstPartyNetworkIdle(targetPage, "history-restored Library");
+}
+
+async function waitForFirstPartyNetworkIdle(
+  targetPage,
+  label,
+  idleMs = 750,
+  includeProductEvents = false,
+) {
+  const pendingRequests = browserPendingRequests.get(targetPage);
+  assert(pendingRequests, `${label} has no first-party request tracker`);
+  const blockingRequests = () => [...pendingRequests].filter((request) => {
+    try {
+      // Product telemetry is a keepalive background beacon. It must still be observed
+      // for failures and is verified through API + PostgreSQL below, but it cannot gate
+      // history restoration for an unrelated page.
+      return includeProductEvents || new URL(request.url()).pathname !== "/api/product-events";
+    } catch {
+      return true;
+    }
+  });
+  const deadline = Date.now() + UI_WAIT_TIMEOUT_MS;
+  let idleSince = null;
+  while (Date.now() < deadline) {
+    if (blockingRequests().length === 0) {
+      idleSince ??= Date.now();
+      if (Date.now() - idleSince >= idleMs) return;
+    } else {
+      idleSince = null;
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+  }
+  const pendingUrls = blockingRequests().map((request) => request.url()).slice(0, 8);
+  throw new Error(`${label} first-party requests did not settle: ${pendingUrls.join(", ")}`);
 }
 
 async function runKeyboardOnlyCriticalPass(targetPage) {
   await targetPage.setViewportSize({ width: 390, height: 844 });
   await targetPage.goto("/app/calendar");
   await targetPage.getByRole("heading", { name: "Календарь", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
-  await targetPage.evaluate(() => {
-    document.body.setAttribute("tabindex", "-1");
-    document.body.focus();
-    document.body.removeAttribute("tabindex");
-  });
+  await focusKeyboardStart(targetPage);
 
   const menuTrigger = targetPage.getByRole("button", { name: "Открыть меню", exact: true });
   const menuTabs = await tabTo(targetPage, menuTrigger, "mobile menu trigger");
+  await releaseKeyboardStart(targetPage);
   assert(await menuTrigger.evaluate((element) => element === document.activeElement), "Tab did not focus the mobile menu trigger");
   await targetPage.keyboard.press("Enter");
   const menuDialog = targetPage.getByRole("dialog", { name: "Меню платформы", exact: true });
@@ -1068,7 +1475,11 @@ async function runKeyboardOnlyCriticalPass(targetPage) {
     "Enter did not move focus into the mobile menu",
     5_000,
   );
-  await targetPage.keyboard.press("Shift+Tab");
+  await targetPage.keyboard.press(resolveE2eTabKey({
+    engine: browserEngine,
+    platform: globalThis.process.platform,
+    reverse: true,
+  }));
   assert(
     await menuDialog.evaluate((element) => element.contains(document.activeElement)),
     "Shift+Tab escaped the mobile menu focus scope",
@@ -1088,7 +1499,10 @@ async function runKeyboardOnlyCriticalPass(targetPage) {
     "Space did not move focus into the export dialog",
     5_000,
   );
-  await targetPage.keyboard.press("Tab");
+  await targetPage.keyboard.press(resolveE2eTabKey({
+    engine: browserEngine,
+    platform: globalThis.process.platform,
+  }));
   assert(
     await exportDialog.evaluate((element) => element.contains(document.activeElement)),
     "Tab escaped the export dialog focus scope",
@@ -1096,7 +1510,16 @@ async function runKeyboardOnlyCriticalPass(targetPage) {
   await targetPage.keyboard.press("Escape");
   await exportDialog.waitFor({ state: "hidden", timeout: UI_WAIT_TIMEOUT_MS });
   assert(await exportTrigger.evaluate((element) => element === document.activeElement), "export dialog did not restore trigger focus");
-  return { menuTabs, exportTabs, keys: ["Tab", "Shift+Tab", "Enter", "Space"] };
+  return {
+    menuTabs,
+    exportTabs,
+    keys: [
+      resolveE2eTabKey({ engine: browserEngine, platform: globalThis.process.platform }),
+      resolveE2eTabKey({ engine: browserEngine, platform: globalThis.process.platform, reverse: true }),
+      "Enter",
+      "Space",
+    ],
+  };
 }
 
 async function runTodayWorkspacePass(targetPage, channels, draftId) {
@@ -1127,13 +1550,10 @@ async function runTodayWorkspacePass(targetPage, channels, draftId) {
   await assertNoHorizontalOverflow(targetPage, "Today mobile");
 
   await targetPage.setViewportSize({ width: 1280, height: 900 });
-  await targetPage.evaluate(() => {
-    document.body.setAttribute("tabindex", "-1");
-    document.body.focus();
-    document.body.removeAttribute("tabindex");
-  });
+  await focusKeyboardStart(targetPage);
   const quick = targetPage.getByRole("button", { name: "Разобрать за 5 минут", exact: true });
   const quickTabs = await tabTo(targetPage, quick, "Today five-minute mode");
+  await releaseKeyboardStart(targetPage);
   await targetPage.keyboard.press("Enter");
   await targetPage.getByRole("heading", { name: "Разобрать за 5 минут", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const done = targetPage.getByRole("button", { name: "Готово", exact: true });
@@ -1192,7 +1612,11 @@ async function runTodayWorkspacePass(targetPage, channels, draftId) {
 
 async function assertTouch(locator, label) {
   const box = await locator.boundingBox();
-  assert(box && box.width >= 44 && box.height >= 44, `${label} touch target is below 44x44`);
+  const tolerance = 0.01;
+  assert(
+    box && box.width + tolerance >= 44 && box.height + tolerance >= 44,
+    `${label} touch target is below 44x44: ${box ? `${box.width}x${box.height}` : "no bounding box"}`,
+  );
 }
 
 async function openComposerSection(targetPage, id) {
@@ -1333,14 +1757,17 @@ function inspectPdf(buffer) {
   }
 }
 
+const releaseE2eBuildLock = acquireBuildLock({ token: e2eBuildLockToken });
 try {
+  pool = new pg.Pool({ connectionString: databaseUrl, ssl: false, max: 12 });
+  redis = new IORedis(redisUrl, { maxRetriesPerRequest: null });
+  await buildProductionRuntime();
+
   await pool.query("drop schema public cascade");
   await pool.query("create schema public");
   await pool.query(await readFile(resolve("db/schema.sql"), "utf8"));
   await migrate({ env: { ...runtimeEnv, DATABASE_URL: databaseUrl }, logger: { log() {} } });
   await redis.flushdb();
-
-  buildProductionRuntime();
 
   fakeServer = fakeProvider();
   await new Promise((resolve, reject) => {
@@ -1361,8 +1788,9 @@ try {
   publicationReviewReminderQueue = new Queue(PUBLICATION_REVIEW_REMINDER_QUEUE, { connection: redis });
   await waitForFullWorkerSet();
 
-  browser = await chromium.launch({ headless: true, executablePath: await browserExecutable() });
+  browser = await browserType.launch({ headless: true, executablePath: await browserExecutable() });
   browser.on("disconnected", () => {
+    if (browserTeardownStarted) return;
     browserIssues.push({
       context: "browser",
       kind: "browser.disconnected",
@@ -1371,12 +1799,19 @@ try {
       line: 0,
     });
   });
-  const context = await browser.newContext({
+  context = await browser.newContext({
     baseURL: baseUrl,
     viewport: { width: 390, height: 844 },
     reducedMotion: "reduce",
     ignoreHTTPSErrors: true,
+    ...(captureBrowserArtifacts ? {
+      recordVideo: { dir: videoDirectory, size: E2E_EVIDENCE_VIDEO_SIZE },
+    } : {}),
   });
+  if (captureBrowserArtifacts) {
+    await context.tracing.start(E2E_EVIDENCE_TRACE_OPTIONS);
+    mainTraceStarted = true;
+  }
   await installBrowserDiagnostics(context, "main");
   page = await context.newPage();
   interfaceEvidence.reducedMotion.main = await page.evaluate(
@@ -1536,7 +1971,7 @@ try {
     state: "attached",
     timeout: UI_WAIT_TIMEOUT_MS,
   });
-  await page.reload();
+  await reloadInBrowser(page);
   await composerText.waitFor();
   assert(await readEditableText(composerText) === "Локальная несинхронизированная версия E2E", "hard reload lost pending draft text");
   await page.unroute(`**/api/drafts/${draftId}`);
@@ -1882,7 +2317,7 @@ try {
   assert(referenceDraft?.source_ref?.topic === libraryReferenceTopic, "Studio reference draft lost the server-owned topic");
   // A reload while the provider is running must replay the same paid operation. The
   // create intent remains until the terminal result has been persisted as a server draft.
-  await page.reload();
+  await reloadInBrowser(page);
   await page.waitForURL((url) => url.pathname === "/app/composer" && /^\d+$/u.test(url.searchParams.get("draft") || ""));
   const composerDraftUrl = new URL(page.url());
   assert(
@@ -1927,7 +2362,7 @@ try {
       where generation_result_id = $1`,
     [generatedDraft.generation_result_id, JSON.stringify(blockedValidation)],
   );
-  await page.reload();
+  await reloadInBrowser(page);
   assert(
     await page.getByRole("button", { name: "Принять и создать пост", exact: true }).count() === 0,
     "validation-blocked personal draft still exposes the removed takeover",
@@ -1943,8 +2378,27 @@ try {
     "trusted validation receipt did not restore publication controls",
   );
 
-  await page.goBack();
-  await page.waitForURL((url) => url.pathname === "/app/studio" && url.searchParams.get("draft") === String(libraryReferenceDraftId));
+  const studioBackBefore = await page.evaluate(() => ({
+    url: globalThis.location.href,
+    length: globalThis.history.length,
+    stateKeys: Object.keys(globalThis.history.state || {}).sort(),
+    stateIndex: globalThis.history.state?.idx ?? null,
+  }));
+  await page.evaluate(() => globalThis.history.back());
+  try {
+    await page.waitForURL((url) => url.pathname === "/app/studio" && url.searchParams.get("draft") === String(libraryReferenceDraftId));
+  } catch (error) {
+    const studioBackAfter = await page.evaluate(() => ({
+      url: globalThis.location.href,
+      length: globalThis.history.length,
+      stateKeys: Object.keys(globalThis.history.state || {}).sort(),
+      stateIndex: globalThis.history.state?.idx ?? null,
+      events: JSON.parse(globalThis.sessionStorage.getItem("__aurora_e2e_history_events") || "[]"),
+    }));
+    throw new Error(`browser Back did not restore consumed Studio intent: ${JSON.stringify({ before: studioBackBefore, after: studioBackAfter })}`, {
+      cause: error,
+    });
+  }
   assert(!new URL(page.url()).searchParams.has("intent"), "browser Back restarted the completed paid generation");
   const activeStudioLink = desktopSidebar
     .locator('a[aria-current="page"]')
@@ -1954,8 +2408,8 @@ try {
     await activeStudioLink.count() === 1,
     "restored Studio is not active in desktop navigation",
   );
-  await page.goBack();
-  await page.waitForURL((url) => url.pathname === "/app/library" && url.searchParams.get("channel") === String(channels[0]));
+  await page.evaluate(() => globalThis.history.back());
+  await waitForRestoredLibrary(page, channels[0]);
   const discussReference = libraryReferenceCard.getByRole("button", { name: "Обсудить с Авророй", exact: true });
   await discussReference.waitFor();
   await desktopSidebar
@@ -1980,8 +2434,8 @@ try {
     await activeStudioLink.count() === 1,
     "Studio action did not activate the restored desktop navigation item",
   );
-  await page.goBack();
-  await page.waitForURL((url) => url.pathname === "/app/library" && url.searchParams.get("channel") === String(channels[0]));
+  await page.evaluate(() => globalThis.history.back());
+  await waitForRestoredLibrary(page, channels[0]);
 
   await page.setViewportSize({ width: 390, height: 844 });
   await waitForResponsiveLayout(page);
@@ -2062,8 +2516,8 @@ try {
     await activeMobileStudioLink.count() === 1,
     "restored Studio is not active in mobile navigation",
   );
-  await page.goBack();
-  await page.waitForURL((url) => url.pathname === "/app/library" && url.searchParams.get("channel") === String(channels[0]));
+  await page.evaluate(() => globalThis.history.back());
+  await waitForRestoredLibrary(page, channels[0]);
   await page.goto(`/app/trends?channel=${channels[0]}`);
   const activeMobileMarketLink = mobileNav.locator('a[href="/app/competitors"][aria-current="page"]');
   await activeMobileMarketLink.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
@@ -2072,8 +2526,8 @@ try {
       && await mobileNav.getByRole("link", { name: "Конкуренты и тренды", exact: true }).count() === 1,
     "restored Trends route did not activate the mobile market hub",
   );
-  await page.goBack();
-  await page.waitForURL((url) => url.pathname === "/app/library" && url.searchParams.get("channel") === String(channels[0]));
+  await page.evaluate(() => globalThis.history.back());
+  await waitForRestoredLibrary(page, channels[0]);
 
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto("/app/settings?section=profile");
@@ -2083,7 +2537,7 @@ try {
   await page.getByText("Не сохранено", { exact: true }).waitFor();
   await page.getByRole("button", { name: "Сохранить профиль", exact: true }).click();
   await page.getByText("Профиль сохранён.", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
-  await page.reload();
+  await reloadInBrowser(page);
   await page.getByRole("heading", { name: "Профиль", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   assert(await page.getByLabel("Имя", { exact: true }).inputValue() === "Анна", "profile first name did not survive reload");
   assert(await page.getByLabel(/^Отображаемое имя/u).inputValue() === "Анна E2E", "profile display name did not survive reload");
@@ -2120,7 +2574,7 @@ try {
   assert(JSON.stringify(persistedProfile?.formats) === JSON.stringify(["Текст", "Видео"]), "profile formats were not persisted");
   assert(persistedProfile?.author_role === "Управляющий партнёр и автор", "profile author role was not persisted");
   assert(persistedProfile?.source === "manual", "profile edit did not update the existing brief authority");
-  await page.reload();
+  await reloadInBrowser(page);
   await page.getByRole("heading", { name: "Как Аврора пишет", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   assert(await page.getByLabel(/^Тема и ниша/u).inputValue() === "Юридическая безопасность бизнеса", "profile brief did not survive reload");
   assert(await page.getByRole("button", { name: "Текст", exact: true }).getAttribute("aria-pressed") === "true", "text format did not survive reload");
@@ -2313,7 +2767,7 @@ try {
     const downloaded = await context.request.get(href, { timeout: API_REQUEST_TIMEOUT_MS });
     assert(downloaded.status() === 200, `site analysis export failed: ${href}`);
   }
-  await page.reload();
+  await reloadInBrowser(page);
   await page.getByText(`${SITE_INTERVIEW_QUESTIONS.length} вопросов`, { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await page.setViewportSize({ width: 390, height: 844 });
   await assertNoHorizontalOverflow(page, "site analysis mobile");
@@ -3042,12 +3496,19 @@ try {
     "invitation storage did not retain only the token hash",
   );
 
-  const reviewerContext = await browser.newContext({
+  reviewerContext = await browser.newContext({
     baseURL: baseUrl,
     viewport: { width: 390, height: 844 },
     reducedMotion: "reduce",
     ignoreHTTPSErrors: true,
+    ...(captureBrowserArtifacts ? {
+      recordVideo: { dir: videoDirectory, size: E2E_EVIDENCE_VIDEO_SIZE },
+    } : {}),
   });
+  if (captureBrowserArtifacts) {
+    await reviewerContext.tracing.start(E2E_EVIDENCE_TRACE_OPTIONS);
+    reviewerTraceStarted = true;
+  }
   await installBrowserDiagnostics(reviewerContext, "reviewer");
   const reviewerRegistration = await reviewerContext.request.post("/api/auth/register", {
     headers: { origin: baseUrl },
@@ -3092,7 +3553,18 @@ try {
   const reviewerLegacyDraft = await authenticatedRequestViaContext(reviewerContext.request, `/api/drafts/${draftId}`);
   assert([403, 404].includes(reviewerLegacyDraft.status), "selected-project isolation exposed the owner's legacy draft to the reviewer");
 
-  await page.goto("/app/settings?section=dictionary");
+  const [publicationBlocksLoad] = await Promise.all([
+    page.waitForResponse((response) => {
+      try {
+        return new URL(response.url()).pathname === "/api/publication-blocks"
+          && response.request().method() === "GET";
+      } catch {
+        return false;
+      }
+    }, { timeout: UI_WAIT_TIMEOUT_MS }),
+    page.goto("/app/settings?section=dictionary"),
+  ]);
+  assert(publicationBlocksLoad.ok(), `publication blocks hydration failed with ${publicationBlocksLoad.status()}`);
   const publicationBlocksSection = page.locator("#publication-blocks");
   await publicationBlocksSection.waitFor();
   const createPublicationBlock = async (kind, name, content) => {
@@ -3384,7 +3856,7 @@ try {
     "first monthly material is not a durable quality-sized Autopilot draft",
   );
 
-  await page.reload();
+  await reloadInBrowser(page);
   const openMonthlyDraft = page.locator(`#monthly-item-${monthlyItemId}`).getByRole(
     "button",
     { name: "Открыть в редакторе", exact: true },
@@ -3506,7 +3978,7 @@ try {
     trackedDraftResponse.status === 200,
     `tracking was not bound to the draft: ${trackedDraftResponse.status}:${trackedDraftResponse.text}`,
   );
-  await page.reload();
+  await reloadInBrowser(page);
   await criticalComposerText.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   assert(await readEditableText(criticalComposerText) === draftBeforeTracking.text, "tracking binding changed the visible post text");
 
@@ -3574,7 +4046,7 @@ try {
     "corrected editorial text does not preserve the deliberate project terminology",
   );
   await saveCriticalDraft();
-  await page.reload();
+  await reloadInBrowser(page);
   await criticalComposerText.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   assert(await readEditableText(criticalComposerText) === finalEditorialText, "reload lost the corrected editorial text");
 
@@ -3602,7 +4074,7 @@ try {
   await assertTouch(submitCorrectedSource, "submit corrected source revision");
   await submitCorrectedSource.click();
   await page.getByText("Материал отправлен на согласование.", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
-  await reviewerPage.reload();
+  await reloadInBrowser(reviewerPage);
   await reviewerPage.getByRole("heading", { name: "Согласование материала", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const correctedSourceEditorial = await loadEditorial(reviewerPage);
   assert(
@@ -3625,7 +4097,7 @@ try {
       && approvedVisualSource.approvedContentHash === correctedSourceEditorial.currentRevision.contentHash,
     "visual source approval is not bound to the exact revision and hash",
   );
-  await page.reload();
+  await reloadInBrowser(page);
   await criticalComposerText.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   assert(await readEditableText(criticalComposerText) === finalEditorialText, "source approval changed the corrected Composer text");
 
@@ -3840,7 +4312,7 @@ try {
 
   let publicationAt = new Date();
   publicationAt.setUTCSeconds(0, 0);
-  publicationAt.setUTCMinutes(publicationAt.getUTCMinutes() + 3);
+  publicationAt.setUTCMinutes(publicationAt.getUTCMinutes() + (advanceScheduleAfterRestart ? 24 * 60 : 3));
   const reviewAt = new Date(publicationAt.getTime() + 24 * 60 * 60_000);
   let publicationDate = publicationAt.toISOString().slice(0, 10);
   let publicationTime = publicationAt.toISOString().slice(11, 16);
@@ -3863,7 +4335,7 @@ try {
     savePreferencesResponse.status === 200,
     `publication preferences were not saved: ${savePreferencesResponse.status}:${savePreferencesResponse.text}`,
   );
-  await page.reload();
+  await reloadInBrowser(page);
   await criticalComposerText.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   assert(await readEditableText(criticalComposerText) === finalEditorialText, "publication preferences changed the visible post text");
   await openComposerSection(page, "publication-time");
@@ -3960,7 +4432,7 @@ try {
   await assertTouch(submitSecondReview, "submit final media-bearing revision");
   await submitSecondReview.click();
   await page.getByText("Материал отправлен на согласование.", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
-  await reviewerPage.reload();
+  await reloadInBrowser(reviewerPage);
   await reviewerPage.getByRole("heading", { name: "Согласование материала", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const reviewerSecondEditorial = await loadEditorial(reviewerPage);
   assert(
@@ -4145,8 +4617,9 @@ try {
   expectedBrowserConsoleScopes.add("reviewer");
   expectedBrowser5xxScopes.add("main");
   expectedBrowser5xxScopes.add("reviewer");
-  await stopChild(runtimeProcess, "initial full production runtime");
+  const initialShutdown = await stopChild(runtimeProcess, "initial full production runtime");
   await waitForRuntimeUnavailable();
+  assert(initialShutdown.forced === false, "initial full production runtime required SIGKILL");
   await waitForNoRuntimeWorkers();
   const durableWhileStopped = (await pool.query(
     `select post.status, post.scheduled_at, count(outbox.id)::int as outbox_rows,
@@ -4178,6 +4651,20 @@ try {
     jobsAfterRestart.length === 1 && String(jobsAfterRestart[0].id) === criticalPublishJobId,
     "startup reconciliation did not preserve exactly one revision-bound publication job",
   );
+  if (advanceScheduleAfterRestart) {
+    const fixtureDueAt = new Date(Date.now() + 5_000);
+    const advanced = await pool.query(
+      `update posts
+          set scheduled_at = $3
+        where id = $1 and project_id = $2 and status = 'scheduled' and schedule_revision = $4`,
+      [criticalPostId, sharedProjectId, fixtureDueAt, Number(criticalPublication.schedule_revision)],
+    );
+    assert(advanced.rowCount === 1, "disposable publication fixture could not advance to its due point");
+    const preservedJob = await publishQueue.getJob(criticalPublishJobId);
+    assert(preservedJob, "disposable publication fixture lost its preserved job before clock advance");
+    await preservedJob.promote();
+    publicationDate = fixtureDueAt.toISOString().slice(0, 10);
+  }
   await reloadAfterRuntimeRestart(page, "main page");
   await reloadAfterRuntimeRestart(reviewerPage, "reviewer page");
   await page.getByRole("heading", { name: "Настройки", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
@@ -4195,6 +4682,7 @@ try {
     jobCountStopped: jobsWhileStopped.length,
     jobCountAfter: jobsAfterRestart.length,
     sessionsRecovered: true,
+    gracefulShutdown: true,
   };
 
   const criticalPublicationWaitMs = Math.max(
@@ -4373,7 +4861,8 @@ try {
     8_000,
   );
 
-  await reviewerPage.reload();
+  await reloadInBrowser(reviewerPage);
+  await waitForFirstPartyNetworkIdle(reviewerPage, "reviewer Calendar reload");
   const publishedCalendarCard = reviewerPage.locator(`#calendar-real-${criticalPostId}`);
   await publishedCalendarCard.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await publishedCalendarCard.getByRole("button", { name: /^Открыть публикацию в редакторе:/u }).click();
@@ -4599,7 +5088,11 @@ try {
   await exportDialog.waitFor();
   await page.keyboard.press("Escape");
   await waitFor(async () => !(await exportDialog.isVisible()), "Escape did not close the export dialog", 5_000);
-  assert(await exportTrigger.evaluate((element) => element === document.activeElement), "export dialog did not restore focus to its trigger");
+  await waitFor(
+    async () => exportTrigger.evaluate((element) => element === document.activeElement),
+    "export dialog did not restore focus to its trigger",
+    5_000,
+  );
   await page.setViewportSize({ width: 1280, height: 900 });
   await exportTrigger.click();
   await exportDialog.waitFor();
@@ -4696,12 +5189,185 @@ try {
   await page.setViewportSize({ width: 640, height: 800 });
   await assertNoHorizontalOverflow(page, "project export dialog at 200% desktop zoom equivalent");
 
+  // The operations center is exercised with the same authenticated browser and disposable
+  // tenant as the product journeys above. Seed only contract-valid events through the public
+  // ingestion API; the admin must never depend on UI fixtures or fabricated card values.
+  const adminTelemetryAt = new Date().toISOString();
+  const adminTelemetry = await authenticatedRequest("/api/product-events", {
+    method: "POST",
+    data: {
+      events: [
+        {
+          eventId: globalThis.crypto.randomUUID(),
+          sectionId: "studio",
+          featureId: "generation",
+          action: "loaded",
+          stage: "completed",
+          outcome: "success",
+          durationMs: 640,
+          sessionId: globalThis.crypto.randomUUID(),
+          occurredAt: adminTelemetryAt,
+          safeContext: { device: "desktop", source: "ui", operationKind: "page_load", appVersion: "e2e-web" },
+        },
+        {
+          eventId: globalThis.crypto.randomUUID(),
+          sectionId: "studio",
+          featureId: "generation",
+          action: "requested",
+          stage: "started",
+          outcome: "pending",
+          operationId: "e2e-ai-operation",
+          sessionId: globalThis.crypto.randomUUID(),
+          occurredAt: adminTelemetryAt,
+          safeContext: { device: "desktop", source: "api", operationKind: "ai_generation", appVersion: "e2e-web" },
+        },
+        {
+          eventId: globalThis.crypto.randomUUID(),
+          sectionId: "studio",
+          featureId: "generation",
+          action: "result_received",
+          stage: "failed",
+          outcome: "failure",
+          durationMs: 1800,
+          errorCode: "provider_timeout",
+          requestId: "e2e-admin-request",
+          operationId: "e2e-ai-operation",
+          sessionId: globalThis.crypto.randomUUID(),
+          occurredAt: adminTelemetryAt,
+          safeContext: { device: "desktop", source: "api", operationKind: "ai_generation", appVersion: "e2e-web" },
+        },
+      ],
+    },
+  });
+  assert(adminTelemetry.status === 200, `admin telemetry ingestion failed: ${adminTelemetry.status}:${adminTelemetry.text}`);
+  assert(Number((await pool.query(
+    "select count(*)::int as n from product_events where user_id = $1 and section_id = 'studio' and request_id = 'e2e-admin-request'",
+    [userId],
+  )).rows[0]?.n) === 1, "admin telemetry was not tenant-bound and persisted");
+
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto("/admin#system", { waitUntil: "domcontentloaded", timeout: 90_000 });
+  await page.getByRole("heading", { name: "Состояние системы", exact: true }).waitFor({ timeout: RUNTIME_WAIT_TIMEOUT_MS });
+  const postgresCard = page.getByRole("button", { name: /PostgreSQL/u }).first();
+  await postgresCard.waitFor({ state: "visible", timeout: RUNTIME_WAIT_TIMEOUT_MS });
+  await postgresCard.click();
+  await page.getByRole("heading", { name: "PostgreSQL", exact: true }).last().waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  assert(new URL(page.url()).searchParams.get("system") === "postgresql", "system card selection was not persisted in URL");
+  await page.goBack({ waitUntil: "domcontentloaded" });
+  await page.getByRole("heading", { name: "Выберите компонент", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  await page.goForward({ waitUntil: "domcontentloaded" });
+  await page.getByRole("heading", { name: "PostgreSQL", exact: true }).last().waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  await reloadInBrowser(page);
+  assert(await postgresCard.getAttribute("aria-expanded") === "true", "system direct link did not survive reload");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await assertNoHorizontalOverflow(page, "admin system detail at mobile width");
+
+  await page.goto("/admin?range=7d&analyticsSection=studio&analyticsTab=errors#aurora-analytics", {
+    waitUntil: "domcontentloaded",
+    timeout: 90_000,
+  });
+  await page.getByRole("heading", { name: "Аналитика Авроры", exact: true }).waitFor({ timeout: RUNTIME_WAIT_TIMEOUT_MS });
+  const sectionCards = page.locator('section[aria-labelledby="aurora-sections-title"] article');
+  await waitFor(async () => await sectionCards.count() === 15, "admin analytics did not render all 15 APP_ROUTES sections", RUNTIME_WAIT_TIMEOUT_MS);
+  await page.getByText("provider timeout", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  await page.getByText("provider timeout", { exact: true }).click();
+  await page.getByText("e2e-admin-request", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  assert(await page.getByText(/e2e-release/u).count() > 0, "analytics omitted the real release marker");
+  await page.getByRole("button", { name: "Воронка", exact: true }).click();
+  await page.getByText("Сервер принял или обработал действие", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  assert(new URL(page.url()).searchParams.get("analyticsTab") === "funnel", "analytics tab was not persisted in URL");
+  await page.goBack({ waitUntil: "domcontentloaded" });
+  await page.getByText("provider timeout", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  await page.goForward({ waitUntil: "domcontentloaded" });
+  await page.getByText("Сервер принял или обработал действие", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  await reloadInBrowser(page);
+  assert(new URL(page.url()).searchParams.get("analyticsTab") === "funnel", "analytics direct link did not survive reload");
+  await page.getByLabel("Устройство", { exact: true }).selectOption("mobile");
+  await waitFor(() => new URL(page.url()).searchParams.get("device") === "mobile", "analytics device filter did not update URL", UI_WAIT_TIMEOUT_MS);
+  await assertNoHorizontalOverflow(page, "admin analytics detail at mobile width");
+  const adminAuditRows = Number((await pool.query(
+    "select count(*)::int as n from admin_observation_events where actor_user_id = $1 and action in ('admin.system.read','admin.aurora_analytics.read')",
+    [userId],
+  )).rows[0]?.n);
+  assert(adminAuditRows >= 2, "read-only operations-center access was not audited");
+  interfaceEvidence.adminOperationsUi = {
+    allSections: 15,
+    systemDirectLink: true,
+    analyticsDirectLink: true,
+    browserHistory: true,
+    filters: true,
+    funnel: true,
+    errorDetail: true,
+    mobile: true,
+    audited: true,
+  };
+
   interfaceEvidence.viewportWidths = await captureViewportEvidence(page);
   interfaceEvidence.keyboardOnly = await runKeyboardOnlyCriticalPass(page);
+
+  const ownerSecondPage = await context.newPage();
+  await ownerSecondPage.goto("/app/calendar");
+  await ownerSecondPage.getByRole("heading", { name: "Календарь", exact: true }).waitFor({
+    timeout: UI_WAIT_TIMEOUT_MS,
+  });
+  const activeOwnerSessions = Number((await pool.query(
+    "select count(*)::int as n from sessions where user_id = $1 and expires_at > now()",
+    [userId],
+  )).rows[0]?.n);
+  assert(activeOwnerSessions >= 1, "owner has no active session before expiry branch");
+  // Session-backed requests already in flight can observe the expiry as soon as
+  // the database update commits. Open the narrowly classified 401 window before
+  // that commit, not only before the following document navigations.
+  expectedSessionExpiryConsoleScopes.add("main");
+  const expiredOwnerSessions = await pool.query(
+    "update sessions set expires_at = now() - interval '1 second' where user_id = $1 and expires_at > now()",
+    [userId],
+  );
+  assert(expiredOwnerSessions.rowCount === activeOwnerSessions, "session expiry branch did not expire every active owner session");
+  const expiredSessionApi = await context.request.get("/api/auth/me", { timeout: API_REQUEST_TIMEOUT_MS });
+  const expiredSessionBody = await expiredSessionApi.json();
+  assert(
+    expiredSessionApi.status() === 401
+      && expiredSessionBody?.user === null
+      && expiredSessionBody?.error === "unauthorized",
+    "expired owner session did not fail closed at /api/auth/me",
+  );
+  // Protected page loaders may log their expected 401 responses while both tabs
+  // converge to /login. Classify only exact first-party expiry errors in this window.
+  await Promise.all([
+    page.goto("/app/calendar"),
+    ownerSecondPage.goto("/app/calendar"),
+  ]);
+  await Promise.all([
+    page.waitForURL((url) => url.pathname === "/login", { timeout: UI_WAIT_TIMEOUT_MS }),
+    ownerSecondPage.waitForURL((url) => url.pathname === "/login", { timeout: UI_WAIT_TIMEOUT_MS }),
+  ]);
+  await Promise.all([
+    waitForFirstPartyNetworkIdle(page, "expired owner main tab"),
+    waitForFirstPartyNetworkIdle(ownerSecondPage, "expired owner second tab"),
+  ]);
+  await Promise.all([
+    page.evaluate(() => undefined),
+    ownerSecondPage.evaluate(() => undefined),
+  ]);
+  expectedSessionExpiryConsoleScopes.delete("main");
+  interfaceEvidence.sessionExpiry = {
+    activeSessionsExpired: activeOwnerSessions,
+    apiStatus: expiredSessionApi.status(),
+    tabsRedirected: 2,
+    destination: "/login",
+  };
+  const finalInputSnapshot = await captureE2eInputSnapshot();
+  const changedJourneyInputs = changedE2eInputPaths(e2eInputSnapshot, finalInputSnapshot);
+  assert(
+    changedJourneyInputs.length === 0,
+    `E2E inputs changed during browser journey: ${changedJourneyInputs.slice(0, 20).join(", ")}`,
+  );
+  const artifacts = await finalizeBrowserArtifacts();
   await writeFile(resolve(artifactDir, "process.log"), logs.join("\n").slice(-200_000), "utf8");
   await writeFile(
     resolve(artifactDir, "browser-diagnostics.json"),
-    `${JSON.stringify({ issues: browserIssues, interface: interfaceEvidence }, null, 2)}\n`,
+    `${JSON.stringify({ issues: browserIssues, observations: browserObservations, interface: interfaceEvidence }, null, 2)}\n`,
     "utf8",
   );
   const unexpectedRuntimeErrors = unexpectedRuntimeLogLines();
@@ -4719,9 +5385,13 @@ try {
       .join(" | ")}`,
   );
 
-  console.log(JSON.stringify({
+  const result = {
     ok: true,
     runtimeMode: "production",
+    browserEngine,
+    buildMode,
+    fixtureClockAdvanced: advanceScheduleAfterRestart,
+    artifacts,
     browserRoutes: 4,
     draftRecovered: true,
     media: {
@@ -4870,9 +5540,12 @@ try {
         reducedMotion: interfaceEvidence.reducedMotion,
         keyboardOnly: interfaceEvidence.keyboardOnly,
         runtimeRestart: interfaceEvidence.runtimeRestart,
+        sessionExpiry: interfaceEvidence.sessionExpiry,
         analyticsUi: interfaceEvidence.analyticsUi,
         todayUi: interfaceEvidence.todayUi,
+        adminOperationsUi: interfaceEvidence.adminOperationsUi,
         browserRuntimeErrors: browserIssues.length,
+        browserKnownObservations: browserObservations.length,
         touchTargets: true,
       },
     },
@@ -4883,17 +5556,42 @@ try {
       successfulCalls: fakeState.ai.successfulCalls,
       providerIdentityOk: fakeState.ai.providerIdentityOk,
     },
-  }));
+  };
+  await writeFile(
+    resolve(artifactDir, "result.json"),
+    `${JSON.stringify(result, null, 2)}\n`,
+    "utf8",
+  );
+  console.log(JSON.stringify(result));
 } catch (error) {
-  if (page) await page.screenshot({ path: resolve(artifactDir, "failure.png"), fullPage: true }).catch(() => {});
+  if (page) await captureE2eScreenshot(page, { path: resolve(artifactDir, "failure.png"), fullPage: true }).catch(() => {});
+  await finalizeBrowserArtifacts({ requireComplete: false }).catch(() => {});
   await writeFile(resolve(artifactDir, "process.log"), logs.join("\n").slice(-200_000), "utf8").catch(() => {});
   await writeFile(
     resolve(artifactDir, "browser-diagnostics.json"),
-    `${JSON.stringify({ issues: browserIssues, interface: interfaceEvidence }, null, 2)}\n`,
+    `${JSON.stringify({ issues: browserIssues, observations: browserObservations, interface: interfaceEvidence }, null, 2)}\n`,
+    "utf8",
+  ).catch(() => {});
+  await writeFile(
+    resolve(artifactDir, "result.json"),
+    `${JSON.stringify({
+      ok: false,
+      runtimeMode: "production",
+      browserEngine,
+      buildMode,
+      fixtureClockAdvanced: advanceScheduleAfterRestart,
+      browserRuntimeErrors: browserIssues.length,
+      browserKnownObservations: browserObservations.length,
+      artifacts: browserArtifactEvidence,
+      error: error instanceof Error ? error.message : String(error),
+    }, null, 2)}\n`,
     "utf8",
   ).catch(() => {});
   throw error;
 } finally {
+  if (captureBrowserArtifacts && !browserArtifactsFinalized) {
+    await finalizeBrowserArtifacts({ requireComplete: false }).catch(() => {});
+  }
   if (browser) await browser.close().catch(() => {});
   if (publishQueue) await publishQueue.close().catch(() => {});
   if (mediaQueue) await mediaQueue.close().catch(() => {});
@@ -4908,9 +5606,10 @@ try {
   if (fakeServer) await new Promise((resolve) => fakeServer.close(resolve)).catch(() => {});
   if (tlsProxyServer) await new Promise((resolve) => tlsProxyServer.close(resolve)).catch(() => {});
   if (tlsDirectory) rmSync(tlsDirectory, { recursive: true, force: true });
-  await redis.flushdb().catch(() => {});
-  await redis.quit().catch(() => {});
-  await pool.query("drop schema public cascade").catch(() => {});
-  await pool.query("create schema public").catch(() => {});
-  await pool.end().catch(() => {});
+  if (redis) await redis.flushdb().catch(() => {});
+  if (redis) await redis.quit().catch(() => {});
+  if (pool) await pool.query("drop schema public cascade").catch(() => {});
+  if (pool) await pool.query("create schema public").catch(() => {});
+  if (pool) await pool.end().catch(() => {});
+  releaseE2eBuildLock();
 }

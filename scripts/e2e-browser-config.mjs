@@ -1,0 +1,187 @@
+export const E2E_BROWSER_ENGINES = Object.freeze(["chromium", "firefox", "webkit"]);
+export const E2E_BUILD_MODES = Object.freeze(["build", "reuse"]);
+
+const PLAYWRIGHT_WEBKIT_SCREENSHOT_CSP_CONSOLE =
+  "Refused to apply a stylesheet because its hash, its nonce, or 'unsafe-inline' does not appear in the style-src directive of the Content Security Policy.";
+const AURORA_CSP_DIAGNOSTIC_PREFIX = "__AURORA_E2E_CSP_VIOLATION__";
+const WEBKIT_CANCELLED_REQUEST_SUFFIX = " due to access control checks.";
+
+export function resolveE2eBrowserEngine(value) {
+  const engine = String(value || "chromium").trim().toLowerCase();
+  if (!E2E_BROWSER_ENGINES.includes(engine)) {
+    throw new Error(`E2E_BROWSER must be one of: ${E2E_BROWSER_ENGINES.join(", ")}`);
+  }
+  return engine;
+}
+
+export function resolveE2eBuildMode(value) {
+  const mode = String(value || "build").trim().toLowerCase();
+  if (!E2E_BUILD_MODES.includes(mode)) {
+    throw new Error(`E2E_BUILD_MODE must be one of: ${E2E_BUILD_MODES.join(", ")}`);
+  }
+  return mode;
+}
+
+export function resolveE2eBuildTimeoutMs(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return 10 * 60_000;
+  const timeout = Number(raw);
+  if (!Number.isSafeInteger(timeout) || timeout < 60_000 || timeout > 4 * 60 * 60_000) {
+    throw new Error("E2E_BUILD_TIMEOUT_MS must be an integer between 60000 and 14400000");
+  }
+  return timeout;
+}
+
+export function resolveE2eAdvanceSchedule(value) {
+  const raw = String(value || "0").trim();
+  if (raw !== "0" && raw !== "1") {
+    throw new Error("E2E_ADVANCE_SCHEDULE_AFTER_RESTART must be 0 or 1");
+  }
+  return raw === "1";
+}
+
+export function resolveE2eCaptureArtifacts(value) {
+  const raw = String(value || "0").trim();
+  if (raw !== "0" && raw !== "1") {
+    throw new Error("E2E_CAPTURE_ARTIFACTS must be 0 or 1");
+  }
+  return raw === "1";
+}
+
+export function sanitizeE2eNetworkUrl(value, baseUrl) {
+  try {
+    const url = new URL(String(value), String(baseUrl));
+    url.username = "";
+    url.password = "";
+    url.hash = "";
+    for (const name of [...url.searchParams.keys()]) {
+      if (/(?:auth|code|key|password|secret|signature|token)/iu.test(name)) {
+        url.searchParams.set(name, "[REDACTED]");
+      }
+    }
+    const baseOrigin = new URL(String(baseUrl)).origin;
+    return url.origin === baseOrigin
+      ? `${url.pathname}${url.search}`
+      : `${url.origin}${url.pathname}${url.search}`;
+  } catch {
+    return "[invalid-url]";
+  }
+}
+
+export function resolveE2eTabKey({ engine, platform, reverse = false } = {}) {
+  const browserEngine = resolveE2eBrowserEngine(engine);
+  const useMacWebKitFullKeyboardChord = browserEngine === "webkit" && platform === "darwin";
+  return [
+    useMacWebKitFullKeyboardChord ? "Alt" : null,
+    reverse ? "Shift" : null,
+    "Tab",
+  ].filter(Boolean).join("+");
+}
+
+function screenshotCspDetail(message) {
+  if (message === PLAYWRIGHT_WEBKIT_SCREENSHOT_CSP_CONSOLE) return "console";
+  if (!message.startsWith(AURORA_CSP_DIAGNOSTIC_PREFIX)) return null;
+  try {
+    const detail = JSON.parse(message.slice(AURORA_CSP_DIAGNOSTIC_PREFIX.length));
+    if (
+      detail?.blockedURI === "inline"
+      && detail?.effectiveDirective === "style-src-elem"
+      && detail?.sourceFile === ""
+      && detail?.sample === ""
+      && detail?.disposition === "enforce"
+    ) return "securitypolicyviolation";
+  } catch {}
+  return null;
+}
+
+export function classifyE2eKnownBrowserObservation({
+  engine,
+  eventKind,
+  message,
+  currentUrl,
+  webPort,
+  screenshotInProgress = false,
+} = {}) {
+  if (resolveE2eBrowserEngine(engine) !== "webkit") return null;
+  const rawMessage = String(message || "");
+
+  if (eventKind === "console" && screenshotInProgress) {
+    const detail = screenshotCspDetail(rawMessage);
+    if (detail) return { kind: "playwright.webkit-screenshot-csp", detail };
+  }
+
+  if (eventKind !== "pageerror" || !rawMessage.endsWith(WEBKIT_CANCELLED_REQUEST_SUFFIX)) {
+    return null;
+  }
+  const port = Number(webPort);
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) return null;
+  const requestTarget = rawMessage.slice(0, -WEBKIT_CANCELLED_REQUEST_SUFFIX.length);
+  const originPrefix = `/127.0.0.1:${port}`;
+  if (!requestTarget.startsWith(`${originPrefix}/`)) return null;
+  const pathAndQuery = requestTarget.slice(originPrefix.length);
+
+  if (/^\/app\/[a-z0-9-]+\?_rsc=[A-Za-z0-9_-]+$/u.test(pathAndQuery)) {
+    return { kind: "webkit.cancelled-rsc-prefetch", detail: pathAndQuery };
+  }
+
+  let sourcePath = "";
+  try {
+    sourcePath = new URL(String(currentUrl || "")).pathname;
+  } catch {}
+  const studioTransitionRequest = pathAndQuery === "/api/rss/items?summary=unread"
+    || pathAndQuery === "/api/media/generations"
+    || pathAndQuery === "/api/media/capabilities"
+    || /^\/api\/drafts\/\d+$/u.test(pathAndQuery);
+  if (sourcePath === "/app/studio" && studioTransitionRequest) {
+    return { kind: "webkit.cancelled-studio-navigation-request", detail: pathAndQuery };
+  }
+  return null;
+}
+
+export function classifyE2eExpectedSessionExpiryConsole({
+  active = false,
+  message,
+  sourceUrl,
+  baseUrl,
+} = {}) {
+  if (!active) return null;
+  const rawMessage = String(message || "");
+  let source;
+  let base;
+  try {
+    source = new URL(String(sourceUrl || ""));
+    base = new URL(String(baseUrl || ""));
+  } catch {
+    return null;
+  }
+  if (source.origin !== base.origin) return null;
+
+  if (
+    rawMessage === "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+    && source.pathname.startsWith("/api/")
+  ) {
+    return { kind: "session-expiry.expected-api-401", detail: source.pathname };
+  }
+  if (
+    rawMessage.startsWith("[/app/calendar drafts] DraftRequestError: unauthorized")
+    && source.pathname.includes("/app/app/calendar/")
+  ) {
+    return { kind: "session-expiry.expected-calendar-unauthorized", detail: "/api/drafts" };
+  }
+  return null;
+}
+
+export function e2eBrowserExecutableCandidates(input) {
+  const engine = resolveE2eBrowserEngine(input?.engine);
+  const requested = String(input?.requested || "").trim();
+  const bundled = String(input?.bundled || "").trim();
+  const platform = String(input?.platform || "").trim();
+  const candidates = [requested, bundled];
+  if (engine === "chromium") {
+    if (platform === "darwin") {
+      candidates.push("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome");
+    }
+    if (platform === "linux") candidates.push("/usr/bin/google-chrome", "/usr/bin/chromium");
+  }
+  return Object.freeze([...new Set(candidates.filter(Boolean))]);
+}

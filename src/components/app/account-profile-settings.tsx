@@ -35,6 +35,7 @@ type ProfileResponse = {
   reauthMethod?: ReauthMethod;
   pendingEmail?: { email: string; expiresAt: string } | null;
   pendingPhone?: { phone: string; expiresAt: string } | null;
+  phoneVerification?: { state?: "temporary" | "unavailable"; temporary?: boolean };
   savedAt?: string;
 };
 
@@ -95,6 +96,7 @@ export function AccountProfileSettings() {
   const [pendingPhone, setPendingPhone] = useState<{ phone: string; expiresAt: string } | null>(null);
   const [phoneSaving, setPhoneSaving] = useState(false);
   const [phoneMessage, setPhoneMessage] = useState("");
+  const [phoneVerificationState, setPhoneVerificationState] = useState<"temporary" | "unavailable">("unavailable");
   const emailRequestKey = useRef("");
 
   const dirty = Boolean(saved && draft && JSON.stringify(saved) !== JSON.stringify(draft));
@@ -113,6 +115,7 @@ export function AccountProfileSettings() {
       setReauthMethod(body.reauthMethod ?? "unavailable");
       setPendingEmail(body.pendingEmail ?? null);
       setPendingPhone(body.pendingPhone ?? null);
+      setPhoneVerificationState(body.phoneVerification?.state === "temporary" ? "temporary" : "unavailable");
       setSavedAt(body.savedAt ?? "");
       emailRequestKey.current = `email-change:${crypto.randomUUID()}`;
     } catch (loadError) {
@@ -345,14 +348,10 @@ export function AccountProfileSettings() {
             </div>
 
             <div className="rounded-md bg-surface-inset p-4 sm:p-5">
-              <h3 className="flex items-center gap-2 text-[15px] font-extrabold text-text"><Phone className="h-4 w-4 text-brand" aria-hidden />Телефон <Badge tone="neutral">Временно</Badge></h3>
-              <p className="mt-1 text-[12px] text-text-3">Код подтверждения действует 10 минут.</p>
-              <div className="mt-4 space-y-3">
-                <Input type="tel" value={phoneDraft} onChange={(event) => setPhoneDraft(event.currentTarget.value)} placeholder="+7 927 123-45-67" aria-label="Телефон" />
-                <Button type="button" variant="outline" size="sm" loading={phoneSaving} onClick={() => void requestPhone()}>Получить код</Button>
-                {pendingPhone ? <div className="space-y-2"><Input inputMode="numeric" maxLength={6} value={phoneCode} onChange={(event) => setPhoneCode(event.currentTarget.value.replace(/\D/gu, ""))} placeholder="6 цифр" aria-label="Код подтверждения телефона" />{temporaryCode ? <p className="rounded-xs bg-info-soft p-2 font-mono text-[12px] text-info-text">Временный код: {temporaryCode}</p> : null}<Button type="button" variant="soft" size="sm" onClick={() => void confirmPhone()} loading={phoneSaving}>Подтвердить телефон</Button></div> : null}
-                {phoneMessage ? <p className="text-[12px] text-text-2" aria-live="polite">{phoneMessage}</p> : null}
-              </div>
+              <h3 className="flex items-center gap-2 text-[15px] font-extrabold text-text"><Phone className="h-4 w-4 text-brand" aria-hidden />Телефон {phoneVerificationState === "temporary" ? <Badge tone="neutral">Временно</Badge> : null}</h3>
+              {phoneVerificationState === "temporary" ? (
+                <><p className="mt-1 text-[12px] text-text-3">Код подтверждения действует 10 минут.</p><div className="mt-4 space-y-3"><Input type="tel" value={phoneDraft} onChange={(event) => setPhoneDraft(event.currentTarget.value)} placeholder="+7 927 123-45-67" aria-label="Телефон" /><Button type="button" variant="outline" size="sm" loading={phoneSaving} onClick={() => void requestPhone()}>Получить код</Button>{pendingPhone ? <div className="space-y-2"><Input inputMode="numeric" maxLength={6} value={phoneCode} onChange={(event) => setPhoneCode(event.currentTarget.value.replace(/\D/gu, ""))} placeholder="6 цифр" aria-label="Код подтверждения телефона" />{temporaryCode ? <p className="rounded-xs bg-info-soft p-2 font-mono text-[12px] text-info-text">Временный код: {temporaryCode}</p> : null}<Button type="button" variant="soft" size="sm" onClick={() => void confirmPhone()} loading={phoneSaving}>Подтвердить телефон</Button></div> : null}{phoneMessage ? <p className="text-[12px] text-text-2" aria-live="polite">{phoneMessage}</p> : null}</div></>
+              ) : <p className="mt-1 text-[12px] leading-relaxed text-text-3">Подтверждение телефона появится после подключения провайдера доставки кодов.</p>}
             </div>
           </div>
 

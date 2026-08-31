@@ -49,6 +49,23 @@ describe("request security proxy", () => {
     }
   });
 
+  it("allows the stable bot connection page without opening the rest of the bot prefix", () => {
+    const previous = process.env.NEXT_PUBLIC_AURORA_EXPERIMENTAL_ROUTES;
+    delete process.env.NEXT_PUBLIC_AURORA_EXPERIMENTAL_ROUTES;
+    try {
+      const connect = proxy(new NextRequest("https://aurora.example/bot/connect"));
+      expect(connect.status).toBe(200);
+      expect(connect.headers.get("location")).toBeNull();
+
+      const bot = proxy(new NextRequest("https://aurora.example/bot"));
+      expect(bot.status).toBe(307);
+      expect(bot.headers.get("location")).toBe("https://aurora.example/");
+    } finally {
+      if (previous == null) delete process.env.NEXT_PUBLIC_AURORA_EXPERIMENTAL_ROUTES;
+      else process.env.NEXT_PUBLIC_AURORA_EXPERIMENTAL_ROUTES = previous;
+    }
+  });
+
   it("keeps APIs for released product sections available by default", () => {
     const previous = process.env.NEXT_PUBLIC_AURORA_EXPERIMENTAL_ROUTES;
     delete process.env.NEXT_PUBLIC_AURORA_EXPERIMENTAL_ROUTES;

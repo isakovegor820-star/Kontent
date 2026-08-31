@@ -2242,7 +2242,14 @@ export default function AutopilotPage() {
             title="Собери первый контент-план"
             body="Аврора найдёт темы, подготовит посты и покажет их здесь перед добавлением в календарь."
             action={
-              <Button type="button" variant="primary" onClick={generate} loading={busy}>
+              <Button
+                type="button"
+                variant="primary"
+                data-aurora-feature="plan"
+                data-aurora-action="planned"
+                onClick={generate}
+                loading={busy}
+              >
                 <Play className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
                 Собрать план
               </Button>
@@ -2267,6 +2274,8 @@ export default function AutopilotPage() {
             {attentionItems.length > 0 && (
               <Button
                 variant="primary"
+                data-aurora-feature="plan"
+                data-aurora-action="approved"
                 onClick={approveAll}
                 loading={busy}
                 disabled={busy || !planReviewComplete}

@@ -3028,6 +3028,8 @@ function ComposerActionBar() {
                     className="w-full sm:w-auto"
                     disabled={unavailable}
                     loading={c.publicationMode === "calendar"}
+                    data-aurora-feature="draft"
+                    data-aurora-action="published"
                     onClick={c.schedule}
                   >
                     {c.publicationMode !== "calendar" && <CalendarClock className="h-4 w-4" aria-hidden />}
@@ -3075,6 +3077,8 @@ function ComposerActionBar() {
                 className="w-full sm:w-auto"
                 disabled={unavailable}
                 loading={c.publicationMode === "calendar"}
+                data-aurora-feature="draft"
+                data-aurora-action="published"
                 onClick={c.schedule}
               >
                 {c.publicationMode !== "calendar" && <CalendarClock className="h-4 w-4" aria-hidden />}
@@ -3090,6 +3094,8 @@ function ComposerActionBar() {
                     size="sm"
                     disabled={unavailable}
                     loading={c.publicationMode === "now"}
+                    data-aurora-feature="draft"
+                    data-aurora-action="published"
                     onClick={c.publishNow}
                   >
                     {c.publicationMode !== "now" && <Send className="h-4 w-4" aria-hidden />}
@@ -3100,6 +3106,8 @@ function ComposerActionBar() {
                     size="sm"
                     disabled={unavailable}
                     loading={c.publicationMode === "queue"}
+                    data-aurora-feature="draft"
+                    data-aurora-action="published"
                     onClick={c.enqueue}
                   >
                     {c.publicationMode !== "queue" && <ListEnd className="h-4 w-4" aria-hidden />}
@@ -3125,6 +3133,8 @@ function ComposerActionBar() {
                   size="sm"
                   disabled={unavailable}
                   loading={c.publicationMode === "now"}
+                  data-aurora-feature="draft"
+                  data-aurora-action="published"
                   onClick={c.publishNow}
                 >
                   {c.publicationMode !== "now" && <Send className="h-4 w-4" aria-hidden />}
@@ -3135,6 +3145,8 @@ function ComposerActionBar() {
                   size="sm"
                   disabled={unavailable}
                   loading={c.publicationMode === "queue"}
+                  data-aurora-feature="draft"
+                  data-aurora-action="published"
                   onClick={c.enqueue}
                 >
                   {c.publicationMode !== "queue" && <ListEnd className="h-4 w-4" aria-hidden />}
@@ -4326,6 +4338,8 @@ function ComposerInner() {
               <>
             <Button
               variant="primary"
+              data-aurora-feature="draft"
+              data-aurora-action="saved"
               onClick={c.saveDraft}
               loading={c.draftSaveState === "saving"}
               disabled={c.saving || c.typing}

@@ -135,6 +135,8 @@ describe("project export interface", () => {
     expect(source).toContain("<dialog");
     expect(source).toContain("showModal()");
     expect(source).toContain('aria-haspopup="dialog"');
+    expect(source).toContain("const triggerRef = useRef<HTMLButtonElement>(null)");
+    expect(source).toContain("requestAnimationFrame(() => triggerRef.current?.focus())");
     expect(source).toContain('aria-live="polite"');
     expect(source).toContain("previewProjectExport(value)");
     expect(source).toContain('"Проверить выборку"');

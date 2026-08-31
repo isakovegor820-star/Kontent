@@ -11,6 +11,7 @@ const requestedDistDir = String(process.env.AURORA_NEXT_DIST_DIR ?? "").trim();
 const isolatedDistDir = /^\.next-[a-z0-9_-]+$/u.test(requestedDistDir)
   ? requestedDistDir
   : undefined;
+const sentryDisabled = process.env.AURORA_SENTRY_DISABLED === "1";
 const localNetworkOrigins = Object.values(networkInterfaces())
   .flatMap((addresses) => addresses ?? [])
   .filter((address) => address.family === "IPv4" && !address.internal)
@@ -102,8 +103,11 @@ export default withSentryConfig(nextConfig, {
   org: "aurora-9e",
   project: "aurora",
   silent: !process.env.CI,
+  telemetry: !sentryDisabled,
+  sourcemaps: sentryDisabled ? { disable: true } : undefined,
   widenClientFileUpload: true,
   webpack: {
+    disableSentryConfig: sentryDisabled,
     treeshake: {
       removeDebugLogging: true,
     },

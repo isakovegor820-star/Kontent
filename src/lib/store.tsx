@@ -239,8 +239,9 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     try {
       const res = await fetch("/api/auth/me", { cache: "no-store" });
       const data = (await res.json().catch(() => null)) as { user: ServerUser | null } | null;
-      if (!res.ok) throw new Error("auth_unavailable");
-      const nextUser = data?.user ? mapUser(data.user) : null;
+      const credentialRejected = res.status === 401;
+      if (!res.ok && !credentialRejected) throw new Error("auth_unavailable");
+      const nextUser = !credentialRejected && data?.user ? mapUser(data.user) : null;
       const accountChanged = (activeUserRef.current?.id ?? null) !== (nextUser?.id ?? null);
       if (accountChanged) beginWorkspaceTransition();
       activeUserRef.current = nextUser;

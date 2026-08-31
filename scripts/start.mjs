@@ -4,6 +4,7 @@ import {
   safePreflightFailure,
 } from "./runtime-schema-preflight.mjs";
 import { assertAvatarIngressConfigured } from "../src/lib/upload-ingress.mjs";
+import { resolveDatabasePoolConfig } from "../src/lib/db-pool-config.mjs";
 
 // Production entrypoint for a single long-lived container. Aurora is two processes:
 // Next serves HTTP, worker.mjs publishes scheduled posts and consumes background jobs.
@@ -46,6 +47,9 @@ process.once("SIGINT", () => stop("SIGINT", 130));
 process.once("SIGTERM", () => stop("SIGTERM", 143));
 
 try {
+  resolveDatabasePoolConfig({ ...process.env, NODE_ENV: "production", AURORA_RUNTIME_ROLE: "web" });
+  resolveDatabasePoolConfig({ ...process.env, NODE_ENV: "production", AURORA_RUNTIME_ROLE: "worker" });
+  process.env.AURORA_RUNTIME_ROLE = "web";
   assertAvatarIngressConfigured();
   await assertRuntimeSchemaReady();
 } catch (error) {
@@ -54,5 +58,8 @@ try {
 }
 
 const productionEnv = { ...process.env, NODE_ENV: "production" };
-start("worker", ["worker.mjs"], productionEnv);
-start("web", ["node_modules/next/dist/bin/next", "start", ...process.argv.slice(2)], productionEnv);
+start("worker", ["worker.mjs"], { ...productionEnv, AURORA_RUNTIME_ROLE: "worker" });
+start("web", ["node_modules/next/dist/bin/next", "start", ...process.argv.slice(2)], {
+  ...productionEnv,
+  AURORA_RUNTIME_ROLE: "web",
+});

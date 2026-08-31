@@ -604,7 +604,7 @@ function VkConnect() {
             if (error) setError(null);
           }}
         />
-        <Button type="submit" variant="outline" loading={busy} className="shrink-0">
+        <Button type="submit" variant="outline" data-aurora-feature="configuration" data-aurora-action="connected" loading={busy} className="shrink-0">
           <VkIcon className="h-4 w-4" aria-hidden />
           Подключить VK
         </Button>

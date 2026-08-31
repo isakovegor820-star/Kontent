@@ -1569,13 +1569,17 @@ function StudioPageInner() {
           title: "Пост создан",
           body: "Открываем редактор — можно опубликовать сразу или запланировать.",
         });
+        const suggestMedia = generation?.suggestMedia ? "&suggestMedia=1" : "";
+        const composerHref = `/app/composer?draft=${result.draft.id}&from=studio${suggestMedia}`;
         if (generation?.autoOpenComposer && generation.referenceDraftId) {
           // Only now is it safe to consume the one-shot intent: the generated text already
-          // has a durable, idempotent draft. Back returns to Studio without starting again.
-          window.history.replaceState(null, "", `/app/studio?draft=${generation.referenceDraftId}`);
+          // has a durable, idempotent draft. A native navigation creates one deterministic
+          // browser-history entry, so Back returns to Studio without starting again.
+          window.history.replaceState(window.history.state, "", `/app/studio?draft=${generation.referenceDraftId}`);
+          window.location.assign(composerHref);
+          return;
         }
-        const suggestMedia = generation?.suggestMedia ? "&suggestMedia=1" : "";
-        router.push(`/app/composer?draft=${result.draft.id}&from=studio${suggestMedia}`);
+        router.push(composerHref);
       } catch (error) {
         s.toast({
           kind: "danger",
@@ -2493,6 +2497,8 @@ function StudioPageInner() {
                     <Button
                       variant="brand"
                       size="icon"
+                      data-aurora-feature="generation"
+                      data-aurora-action="requested"
                       className="ml-auto shrink-0 rounded-full"
                       aria-label="Отправить"
                       disabled={busy || (draft.trim().length === 0 && postSettings.mainIdea.trim().length === 0)}

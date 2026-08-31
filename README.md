@@ -55,6 +55,14 @@ Ingress также обязан добавлять клиентский адре
 принимается только с браузерным `Sec-Fetch-Site: same-origin`; cookie-less worker/service
 requests проходят собственную route-аутентификацию и не зависят от CSRF-заголовков.
 
+PostgreSQL pool больше не имеет неограниченного ожидания. В production задай общий
+`AURORA_DB_POOL_MAX` либо отдельные `AURORA_DB_POOL_MAX_WEB` и
+`AURORA_DB_POOL_MAX_WORKER` из утверждённого connection budget; без budget web/worker
+и shared process fail-closed. Connection/query/statement/idle-transaction timeouts ограничены и могут быть
+переопределены переменными из `.env.example`. Защищённый `/api/readiness` возвращает
+`databasePool` с active/idle/waiting, acquire wait p95 и счётчиками acquire timeout/error;
+это локальный signal, а не доказательство capacity или замена PgBouncer/load dashboard.
+
 На платформе с отдельными типами процессов запускай `npm run start:web` для HTTP и
 `npm run start:worker` для фонового воркера. Все production-переменные должны быть
 внедрены самой платформой. Serverless-хостинг вроде Vercel подходит для web-процесса,
@@ -80,17 +88,56 @@ npm test
 npm run build
 npm run build                 # повторный build без зависшего lock
 npm run test:e2e:real         # production web + PostgreSQL + Redis + publication worker
+npm run test:e2e:stability    # 30 полных циклов Chromium/Firefox/WebKit с CI-доказательствами
 ```
 
-`test:e2e:real` требует Chromium, OpenSSL, явно выделенную локальную базу
+Production build запускается с ограниченным V8 heap 4096 МБ: текущий объём проекта
+превышает стандартный лимит Node 26 около 2144 МБ. Допустимое явное переопределение —
+`AURORA_BUILD_MAX_OLD_SPACE_SIZE_MB=2048..8192`; невалидное значение останавливает build
+до запуска Next.js. Repo-scoped временный lock не допускает две одновременные production
+build одного checkout: Next.js изменяет общий generated type state, поэтому такая гонка
+считается ошибкой, а не поддерживаемым ускорением. Real E2E удерживает этот lock до
+завершения browser journey и teardown, поэтому другая сборка не может удалить его dist
+или пересечься с disposable DB reset.
+
+`test:e2e:real` требует выбранный `E2E_BROWSER=chromium|firefox|webkit`, OpenSSL, явно выделенную локальную базу
 `aurora_e2e_real` в `E2E_DATABASE_URL` и Redis DB 15 в `E2E_REDIS_URL`. Harness сам
 создаёт изолированную production-сборку, запускает release entrypoint (`next start` и
 workers) за локальным HTTPS ingress и fail-closed отклоняет другие targets. Он пересоздаёт
-схему и очищает Redis, поднимает fake AI/Telegram, QA-пользователя и каналы, проверяет
+свои fixtures без production-данных и принудительно отключает Sentry SDK, build telemetry
+и source-map/release upload, очищая унаследованные Sentry credentials для дочерних процессов.
+Harness пересоздаёт схему и очищает Redis, поднимает fake AI/Telegram, QA-пользователя и каналы, проверяет
 критический browser journey, конкурентную запись настроек и завершает прогон при любом
 first-party HTTP 5xx или необработанной runtime-ошибке. Команда не использует live secrets,
 не публикует в Telegram и удаляет созданные данные.
 Mocked contract suite сохранён отдельно как `npm run test:contracts`; он не считается E2E.
+CI последовательно запускает один и тот же disposable critical journey во всех трёх
+движках; artifacts разделены по имени движка. Chromium создаёт `.next-e2e-real`, а Firefox
+и WebKit используют `E2E_BUILD_MODE=reuse`, который fail-closed требует непустые `BUILD_ID`
+и `build-manifest.json`. Обычный запуск остаётся в режиме `build`; его десятиминутный лимит
+можно явно изменить через `E2E_BUILD_TIMEOUT_MS` (от 60000 до 14400000 мс). Один зелёный
+движок не закрывает gate.
+
+`test:e2e:stability` последовательно выполняет 30 полных трёхдвижковых циклов (90 journey),
+fail-fast останавливается на первом сбое и для каждого journey требует два Playwright trace,
+не менее двух video, интерфейсные screenshots и непустой обезличенный network log. Файлы,
+их размеры и SHA-256 фиксируются в итоговом `manifest.json` под уникальным каталогом
+`test-results/e2e-stability/<timestamp>`. Там же сохраняется SHA-256 snapshot входных
+файлов; изменение кода, схемы или runtime-конфигурации между journeys немедленно делает
+gate красным. Во время production build snapshot проверяется каждые две секунды; при
+изменении входов process group сборки останавливается, а точные пути попадают в ошибку.
+Standalone journey повторно сверяет тот же snapshot перед зелёным `result.json`, поэтому
+изменение source после build также не может получить зелёный статус.
+Режим `E2E_BUILD_MODE=reuse` дополнительно требует, чтобы production build
+был создан из точно такого же snapshot. Значение `E2E_STABILITY_RUNS=1..30` допускается
+только для локальной проверки раннера; результат менее 30 циклов не закрывает release gate.
+Ручной GitHub Actions workflow `E2E stability gate` всегда запускает ровно 30 циклов и
+загружает весь каталог как CI artifact даже при fail-fast ошибке.
+
+При нестабильных системных часах локально допускается только явный
+`E2E_ADVANCE_SCHEDULE_AFTER_RESTART=1`: harness сначала доказывает сохранение единственного
+delayed job и outbox через restart, затем переводит disposable fixture в due и продвигает
+тот же job. CI и обычный запуск всегда используют реальное время.
 
 После deployment запусти удалённый production gate:
 

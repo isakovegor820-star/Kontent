@@ -2184,7 +2184,13 @@ export default function CalendarPage() {
         : "Следите за статусами и открывайте публикации для проверки."}
       action={
         canEdit ? (
-          <Button variant="primary" size="md" onClick={() => router.push("/app/composer?from=calendar")}>
+          <Button
+            variant="primary"
+            size="md"
+            data-aurora-feature="publication"
+            data-aurora-action="created"
+            onClick={() => router.push("/app/composer?from=calendar")}
+          >
             <Plus className="h-[18px] w-[18px]" strokeWidth={2.5} aria-hidden />
             Новый пост
           </Button>

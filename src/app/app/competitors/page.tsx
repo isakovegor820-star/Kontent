@@ -298,7 +298,7 @@ function CompetitorCard({
       <p className="type-caption mt-4 text-text-3">{syncTimeLabel(c.collected_at)}</p>
 
       <div className="mt-auto flex flex-wrap gap-2 border-t border-line pt-4">
-        <Button size="sm" variant="secondary" loading={busy === "refresh"} disabled={isPaused || isUpdating || Boolean(busy)} onClick={() => onAction("refresh")}>
+        <Button size="sm" variant="secondary" data-aurora-feature="competitor" data-aurora-action="synchronized" loading={busy === "refresh"} disabled={isPaused || isUpdating || Boolean(busy)} onClick={() => onAction("refresh")}>
           <RefreshCw className="h-4 w-4" aria-hidden /> Обновить
         </Button>
         <Button size="sm" variant="ghost" loading={busy === "pause" || busy === "resume"} disabled={Boolean(busy) || isUpdating} onClick={() => onAction(isPaused ? "resume" : "pause")}>
@@ -548,7 +548,7 @@ function SuggestionPreviewDialog({
               Выбрать, кого заменить
             </Button>
           ) : (
-            <Button type="button" variant="solid" onClick={onAdd} loading={busy === "add"} disabled={Boolean(busy)}>
+            <Button type="button" variant="solid" data-aurora-feature="competitor" data-aurora-action="added" onClick={onAdd} loading={busy === "add"} disabled={Boolean(busy)}>
               <Plus className="h-4 w-4" aria-hidden />
               Добавить конкурента
             </Button>
@@ -1009,7 +1009,7 @@ function CompetitorsPageContent() {
       title="Конкуренты"
       subtitle="Ищи и веди соседей по нише. Публикации по теме — во вкладке «Интернет» в трендах."
       action={
-        <Button variant="brand" onClick={() => setOpen((v) => !v)} disabled={atLimit}>
+        <Button variant="brand" data-aurora-feature="competitor" data-aurora-action="added" onClick={() => setOpen((v) => !v)} disabled={atLimit}>
           <Plus className="h-[18px] w-[18px]" strokeWidth={2.25} aria-hidden />
           Добавить
         </Button>
@@ -1171,7 +1171,7 @@ function CompetitorsPageContent() {
                   </p>
                 )}
                 <div className="flex flex-wrap items-center gap-2">
-                  <Button type="submit" variant="solid" loading={submitting}>
+                  <Button type="submit" variant="solid" data-aurora-feature="competitor" data-aurora-action="added" loading={submitting}>
                     Добавить
                   </Button>
                   <Button type="button" variant="ghost" onClick={() => setOpen(false)}>

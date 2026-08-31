@@ -1,0 +1,88 @@
+name: E2E stability gate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-stability-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  stability:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: aurora_e2e_real
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d aurora_e2e_real"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6380:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_e2e_real"
+      REDIS_URL: "redis://127.0.0.1:6380/15"
+      E2E_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_e2e_real"
+      E2E_REDIS_URL: "redis://127.0.0.1:6380/15"
+      TG_BOT_TOKEN: "0000000000:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      TG_BOT_USERNAME: "aurora_test_bot"
+      TG_CHAT_ID: "-1000000000000"
+      AI_API_KEY: "test-key"
+      AI_DAILY_LIMIT: "30"
+      TOKENS_MASTER_KEY: "ci-test-master-key-not-for-prod"
+      TOKENS_KEY_ID: "1"
+      VK_APP_ID: "0"
+      VK_APP_SECRET: "test-vk-secret"
+      E2E_STABILITY_RUNS: "30"
+      E2E_STABILITY_ARTIFACT_DIR: "test-results/e2e-stability/ci-${{ github.run_id }}-${{ github.run_attempt }}"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install PDF and browser verification utilities
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes poppler-utils
+          npx playwright-core install --with-deps chromium firefox webkit
+
+      - name: Run 30 complete three-engine cycles
+        run: npm run test:e2e:stability
+
+      - name: Upload traces, videos, screenshots, network logs and manifest
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-stability-${{ github.run_id }}-${{ github.run_attempt }}
+          path: test-results/e2e-stability
+          if-no-files-found: error
+          retention-days: 14

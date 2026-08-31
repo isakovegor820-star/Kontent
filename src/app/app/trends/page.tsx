@@ -671,10 +671,12 @@ export default function TrendsPage() {
         void load();
       }
     };
+    window.addEventListener("beforeunload", cancelPendingLoad);
     window.addEventListener("pagehide", cancelPendingLoad);
     window.addEventListener("pageshow", resumePage);
     return () => {
       mountedRef.current = false;
+      window.removeEventListener("beforeunload", cancelPendingLoad);
       window.removeEventListener("pagehide", cancelPendingLoad);
       window.removeEventListener("pageshow", resumePage);
       cancelPendingLoad();

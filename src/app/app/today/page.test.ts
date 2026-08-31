@@ -43,6 +43,17 @@ describe("Today page resilience and interface contract", () => {
     expect(source).toContain("titleRefs.current.get(pendingFocus)");
   });
 
+  it("keeps contextual undo keyboard-reachable after programmatic summary focus across browsers", () => {
+    expect(source).toContain("const undoButtonRef = useRef<HTMLButtonElement>(null)");
+    expect(source).toContain("routeUndoFromDecisionFocus");
+    expect(source).toContain("Array.from(titleRefs.current.values()).includes");
+    expect(source).toContain('event.key !== "Tab" || event.shiftKey');
+    expect(source).toContain("undoButtonRef.current.focus()");
+    expect(source).toContain("onKeyDownCapture={routeUndoFromDecisionFocus}");
+    expect(source).toContain("ref={undoButtonRef}");
+    expect(source).toContain("disabled={refreshing || busy !== null}");
+  });
+
   it("refreshes sources through an explicit POST before reloading the board", () => {
     expect(source).toContain('fetch("/api/today/refresh"');
     expect(source).toContain('method: "POST"');

@@ -188,14 +188,19 @@ jobs:
       - name: Test critical journey contracts
         run: npm run test:contracts
 
-      - name: Install deterministic browser
-        run: npx playwright-core install --with-deps chromium
+      - name: Install deterministic browsers
+        run: npx playwright-core install --with-deps chromium firefox webkit
 
       - name: Test production Trends hydration
         run: npm run test:trends-hydration:e2e
 
-      - name: Real critical E2E
-        run: npm run test:e2e:real
+      - name: Real critical E2E in three engines
+        run: |
+          E2E_BROWSER=chromium E2E_BUILD_MODE=build npm run test:e2e:real
+          for browser in firefox webkit
+          do
+            E2E_BROWSER="$browser" E2E_BUILD_MODE=reuse npm run test:e2e:real
+          done
 
       - name: Upload real-E2E failure artifacts
         if: failure()

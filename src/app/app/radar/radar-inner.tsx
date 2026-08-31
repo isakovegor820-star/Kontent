@@ -254,6 +254,8 @@ function ResultCard({
           <Button
             size="sm"
             variant="soft"
+            data-aurora-feature="search"
+            data-aurora-action="saved"
             loading={acting}
             disabled={completedAction}
             onClick={() => onAction(item)}
@@ -488,7 +490,7 @@ export function RadarInner() {
               />
             </div>
           </div>
-          <Button type="submit" variant="brand" loading={searchingLocal}>
+          <Button type="submit" variant="brand" data-aurora-feature="search" data-aurora-action="searched" loading={searchingLocal}>
             <Search className="h-4 w-4" aria-hidden />
             Найти
           </Button>

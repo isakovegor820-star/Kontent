@@ -14,4 +14,10 @@ describe("trends accessibility recovery", () => {
     expect(source).toMatch(/query\.length < 2[\s\S]*?internetSearchInputRef\.current\?\.focus\(\)/);
     expect(source).toMatch(/destinationChannelId <= 0[\s\S]*?internetSearchInputRef\.current\?\.focus\(\)/);
   });
+
+  it("aborts pending loads before Firefox tears down a navigating page", () => {
+    expect(source).toContain('window.addEventListener("beforeunload", cancelPendingLoad)');
+    expect(source).toContain('window.removeEventListener("beforeunload", cancelPendingLoad)');
+    expect(source).toContain('window.addEventListener("pagehide", cancelPendingLoad)');
+  });
 });

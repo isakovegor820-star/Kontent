@@ -265,6 +265,8 @@ function OpportunityCard({
           <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:justify-end">
             <Button
               type="button"
+              data-aurora-feature="legal_opportunity"
+              data-aurora-action="saved"
               variant={saved ? "soft" : "ghost"}
               size="sm"
               loading={stateBusy && saved}
@@ -278,6 +280,8 @@ function OpportunityCard({
             </Button>
             <Button
               type="button"
+              data-aurora-feature="legal_opportunity"
+              data-aurora-action="hidden"
               variant={hidden ? "secondary" : "ghost"}
               size="sm"
               disabled={stateBusy || busy}
@@ -289,6 +293,8 @@ function OpportunityCard({
             </Button>
             <Button
               type="button"
+              data-aurora-feature="legal_opportunity"
+              data-aurora-action="used"
               variant="brand"
               size="sm"
               loading={busy}

@@ -5,6 +5,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { getPool } from "@/lib/db";
 import { PHONE_CODE_MAX_ATTEMPTS, verifyPhoneCode } from "@/lib/phone-verification";
+import { phoneVerificationMode } from "@/lib/phone-verification-mode.mjs";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import { getSessionUser } from "@/lib/session";
 
@@ -17,6 +18,12 @@ export async function POST(req: NextRequest) {
   }
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ ok: false, error: "unauthorized", requestId }, { status: 401 });
+  if (phoneVerificationMode() !== "temporary") {
+    return NextResponse.json(
+      { ok: false, error: "phone_delivery_unavailable", requestId },
+      { status: 503, headers: { "cache-control": "no-store" } },
+    );
+  }
   const body = await readJsonBodyValue(req).catch(() => null) as { code?: unknown } | null;
   const code = typeof body?.code === "string" ? body.code.trim() : "";
   if (!/^[0-9]{6}$/u.test(code)) {

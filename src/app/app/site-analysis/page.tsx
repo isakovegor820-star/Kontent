@@ -1398,7 +1398,7 @@ export default function SiteAnalysisPage() {
                   Я подтверждаю право анализировать публичные страницы этого домена. Аврора не будет обходить авторизацию, подписку или ограничения сайта.
                 </span>
               </label>
-              <Button type="submit" variant="primary" loading={submitting} disabled={submitting}>
+              <Button type="submit" variant="primary" data-aurora-feature="analysis" data-aurora-action="started" loading={submitting} disabled={submitting}>
                 <FileSearch className="h-4 w-4" aria-hidden />
                 Запустить фоновый анализ
               </Button>

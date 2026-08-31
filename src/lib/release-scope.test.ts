@@ -50,6 +50,15 @@ describe("stable release scope", () => {
     expect(stableReleaseRedirect("/app/settings")).toBeNull();
   });
 
+  it("keeps only the bot connection page stable inside the experimental bot prefix", () => {
+    expect(isExperimentalReleasePath("/bot/connect")).toBe(false);
+    expect(stableReleaseRedirect("/bot/connect")).toBeNull();
+    expect(isExperimentalReleasePath("/bot")).toBe(true);
+    expect(stableReleaseRedirect("/bot")).toBe("/");
+    expect(isExperimentalReleasePath("/bot/miniapp")).toBe(true);
+    expect(stableReleaseRedirect("/bot/miniapp")).toBe("/");
+  });
+
   it("keeps APIs for released product sections available", () => {
     expect(isExperimentalReleaseApiPath("/api/autopilot/approve")).toBe(false);
     expect(isExperimentalReleasePath("/api/channels/connect-vk")).toBe(false);

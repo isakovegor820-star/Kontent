@@ -584,6 +584,8 @@ function LibraryInner() {
                       <Button
                         variant="secondary"
                         size="sm"
+                        data-aurora-feature="idea"
+                        data-aurora-action="saved"
                         onClick={() => saveReference(h)}
                         loading={savingReferenceId === h.id}
                         disabled={referenceSaved || (savingReferenceId !== null && savingReferenceId !== h.id)}
@@ -594,6 +596,8 @@ function LibraryInner() {
                       <Button
                         variant="primary"
                         size="sm"
+                        data-aurora-feature="idea"
+                        data-aurora-action="used"
                         onClick={() => openDraftAction("create", cardId)}
                         loading={draftActionBusy === createActionKey}
                         disabled={draftActionBusy !== null && draftActionBusy !== createActionKey}
@@ -604,6 +608,8 @@ function LibraryInner() {
                       <Button
                         variant="ghost"
                         size="sm"
+                        data-aurora-feature="idea"
+                        data-aurora-action="opened"
                         onClick={() => openDraftAction("discuss", cardId)}
                         loading={draftActionBusy === discussActionKey}
                         disabled={draftActionBusy !== null && draftActionBusy !== discussActionKey}
@@ -686,7 +692,7 @@ function LibraryInner() {
               />
             </div>
             <div className="mt-3 flex justify-end">
-              <Button variant="solid" size="sm" onClick={savePost} loading={saving} disabled={!newText.trim()}>
+              <Button variant="solid" size="sm" data-aurora-feature="idea" data-aurora-action="saved" onClick={savePost} loading={saving} disabled={!newText.trim()}>
                 <Plus className="h-4 w-4" />
                 Сохранить для канала
               </Button>

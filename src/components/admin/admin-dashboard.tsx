@@ -5,11 +5,11 @@ import {
   Activity,
   AlertTriangle,
   ArrowUpRight,
+  BarChart3,
   Bot,
   BriefcaseBusiness,
   CheckCircle2,
   Clock3,
-  Database,
   FileClock,
   History,
   Radio,
@@ -26,6 +26,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Wordmark } from "@/components/brand";
 import { AdminBotCenter } from "@/components/admin/admin-bot-center";
+import { AdminAuroraAnalyticsCenter } from "@/components/admin/admin-aurora-analytics";
+import { AdminSystemCenter } from "@/components/admin/admin-system-center";
 import { AdminUsersCenter } from "@/components/admin/admin-users-center";
 import { Button, buttonClassName } from "@/components/ui/button";
 import type { AdminDashboardData, AdminPeriodDays } from "@/lib/admin-dashboard";
@@ -39,6 +41,7 @@ const NAVIGATION = [
   { id: "users", href: "#users", label: "Пользователи", icon: Users },
   { id: "bot-control", href: "#bot-control", label: "Управление ботом", icon: Bot },
   { id: "system", href: "#system", label: "Система", icon: Server },
+  { id: "aurora-analytics", href: "#aurora-analytics", label: "Аналитика Авроры", icon: BarChart3 },
   { id: "audit", href: "#audit", label: "Журнал действий", icon: History },
 ] as const;
 
@@ -288,10 +291,6 @@ function AttentionList({ items }: { items: AdminDashboardData["attention"] }) {
   );
 }
 
-function dependencyState(value: AdminDashboardData["system"]["database"]): "healthy" | "down" | "unknown" {
-  return value === "up" ? "healthy" : value === "down" ? "down" : "unknown";
-}
-
 export function AdminDashboard() {
   const mobileNavigationRef = useRef<HTMLElement>(null);
   const [activeSection, setActiveSection] = useState<AdminSection>("overview");
@@ -305,7 +304,11 @@ export function AdminDashboard() {
     const syncSection = () => setActiveSection(adminSectionFromHash(window.location.hash));
     syncSection();
     window.addEventListener("hashchange", syncSection);
-    return () => window.removeEventListener("hashchange", syncSection);
+    window.addEventListener("popstate", syncSection);
+    return () => {
+      window.removeEventListener("hashchange", syncSection);
+      window.removeEventListener("popstate", syncSection);
+    };
   }, []);
 
   useEffect(() => {
@@ -453,6 +456,7 @@ export function AdminDashboard() {
               Состояние публикаций, подключений и активности клиентов — без демонстрационных данных.
             </p>
           </div>
+          {activeSection !== "system" && activeSection !== "aurora-analytics" ? (
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
             <fieldset>
               <legend className="type-caption mb-1.5 text-text-3">Период сравнения</legend>
@@ -491,6 +495,7 @@ export function AdminDashboard() {
               Обновить данные
             </Button>
           </div>
+          ) : null}
         </header>
 
         {error && (
@@ -615,26 +620,19 @@ export function AdminDashboard() {
             title="Состояние системы"
             description="Проверки показывают только подтверждённое состояние зависимостей. Настроенный, но ещё не наблюдавшийся AI не помечается зелёным."
           />
-          <div className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            {[
-              { label: "PostgreSQL", detail: "Данные платформы", icon: Database, state: dependencyState(data.system.database) },
-              { label: "Redis", detail: "Очереди и координация", icon: Radio, state: dependencyState(data.system.redis) },
-              { label: "Воркер публикаций", detail: "Фоновая отправка", icon: Server, state: dependencyState(data.system.publicationWorker) },
-              { label: "Aurora AI", detail: "Наблюдаемое здоровье", icon: Bot, state: data.system.ai === "healthy" ? "healthy" as const : data.system.ai === "attention" ? "down" as const : "unknown" as const },
-            ].map(({ label, detail, icon: Icon, state }) => (
-              <article key={label} className="card-plain rounded-md p-5">
-                <Icon className="h-6 w-6 text-brand" strokeWidth={1.8} aria-hidden />
-                <h3 className="mt-4 text-text">{label}</h3>
-                <p className="type-caption mt-1 text-text-3">{detail}</p>
-                <div className="mt-4">
-                  <StatusMark
-                    state={state}
-                    label={label === "Aurora AI" && state === "unknown" ? "Ещё не наблюдался" : undefined}
-                  />
-                </div>
-              </article>
-            ))}
-          </div>
+          <AdminSystemCenter />
+        </section>
+        ) : null}
+
+        {activeSection === "aurora-analytics" ? (
+        <section id="aurora-analytics" className="scroll-mt-16 pt-8 pb-12" aria-labelledby="aurora-analytics-title">
+          <SectionHeading
+            id="aurora-analytics-title"
+            eyebrow="Продукт и качество"
+            title="Аналитика Авроры"
+            description="Использование, техническое здоровье и подтверждённый полезный результат для всех 15 пользовательских разделов. Клиентские события не подменяют доменные факты."
+          />
+          <AdminAuroraAnalyticsCenter />
         </section>
         ) : null}
 
