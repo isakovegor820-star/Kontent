@@ -5,6 +5,7 @@ import {
   E2E_BROWSER_ENGINES,
   classifyE2eExpectedSessionExpiryConsole,
   classifyE2eKnownBrowserObservation,
+  classifyE2eKnownWebKitRequestCancellation,
   e2eBrowserExecutableCandidates,
   resolveE2eAdvanceSchedule,
   resolveE2eBuildMode,
@@ -157,6 +158,39 @@ describe("real E2E browser configuration", () => {
       currentUrl: "https://127.0.0.1:43190/app/calendar",
       webPort: 43190,
     })).toBeNull();
+  });
+
+  it("correlates only an observed cancelled first-party request with a known WebKit navigation error", () => {
+    const baseUrl = "https://127.0.0.1:43190";
+    const requestUrl = `${baseUrl}/api/rss/items?summary=unread`;
+    expect(classifyE2eKnownWebKitRequestCancellation({
+      engine: "webkit",
+      requestUrl,
+      failure: "cancelled",
+      currentUrl: `${baseUrl}/app/studio?draft=3&intent=create`,
+      baseUrl,
+      webPort: 43190,
+    })).toEqual({
+      kind: "webkit.cancelled-studio-navigation-request",
+      detail: "/api/rss/items?summary=unread",
+      message: "/127.0.0.1:43190/api/rss/items?summary=unread due to access control checks.",
+    });
+    for (const override of [
+      { failure: "Failed to load resource" },
+      { requestUrl: "https://example.com/api/rss/items?summary=unread" },
+      { currentUrl: `${baseUrl}/app/calendar` },
+      { engine: "chromium" },
+    ]) {
+      expect(classifyE2eKnownWebKitRequestCancellation({
+        engine: "webkit",
+        requestUrl,
+        failure: "cancelled",
+        currentUrl: `${baseUrl}/app/studio`,
+        baseUrl,
+        webPort: 43190,
+        ...override,
+      })).toBeNull();
+    }
   });
 
   it("classifies only exact first-party expiry 401 console output inside the expiry window", () => {

@@ -43,4 +43,9 @@ describe("legal visual studio brand-kit interface", () => {
     expect(source).toContain('className="w-full sm:w-auto"');
     expect(source).toContain("min-h-11");
   });
+
+  it("marks the private production brief as a same-origin download in every browser", () => {
+    expect(source).toContain('href={`/api/legal-video-scripts/${selected.id}/production-brief`}');
+    expect(source).toContain('download={`legal-video-${selected.id}-r${selected.revision}.txt`}');
+  });
 });

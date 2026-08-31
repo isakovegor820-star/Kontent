@@ -125,6 +125,9 @@ describe("real E2E runtime isolation", () => {
     expect(source).toContain('waitForFirstPartyNetworkIdle(reviewerPage, "reviewer Calendar reload")');
     expect(source).toContain('targetPage.on("requestfinished", settleRequest)');
     expect(source).toContain('targetPage.on("requestfailed", settleRequest)');
+    expect(source).toContain("classifyE2eKnownWebKitRequestCancellation({");
+    expect(source).toContain("WEBKIT_DEFERRED_CANCELLATION_WINDOW_MS = 120_000");
+    expect(source).toContain("deferredKnownWebKitPageErrors.delete(rawMessage)");
     expect(source).toContain('!url.searchParams.has("_rsc")');
     expect(source.match(/await waitForRestoredLibrary\(page, channels\[0\]\)/gu)).toHaveLength(4);
   });
@@ -212,6 +215,8 @@ describe("real E2E runtime isolation", () => {
     expect(source).toContain('expiredSessionBody?.error === "unauthorized"');
     expect(source).toContain('expectedSessionExpiryConsoleScopes.add("main")');
     expect(source).toContain("classifyE2eExpectedSessionExpiryConsole({");
+    expect(source).toContain("const expiredNavigationResults = await Promise.allSettled");
+    expect(source).toContain('/app/calendar" is interrupted by another navigation to "${baseUrl}/login"');
     expect(source).toContain('waitForFirstPartyNetworkIdle(page, "expired owner main tab")');
     expect(source).toContain("tabsRedirected: 2");
     expect(source).not.toContain("update sessions set expires_at = now() + interval");

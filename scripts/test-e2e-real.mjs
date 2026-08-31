@@ -23,6 +23,7 @@ import {
   e2eBrowserExecutableCandidates,
   classifyE2eExpectedSessionExpiryConsole,
   classifyE2eKnownBrowserObservation,
+  classifyE2eKnownWebKitRequestCancellation,
   resolveE2eAdvanceSchedule,
   resolveE2eBuildMode,
   resolveE2eBuildTimeoutMs,
@@ -164,6 +165,7 @@ let browserArtifactEvidence = { enabled: false, traces: [], videos: [], networkL
 const expectedBrowserConsoleScopes = new Set();
 const expectedBrowser5xxScopes = new Set();
 const expectedSessionExpiryConsoleScopes = new Set();
+const WEBKIT_DEFERRED_CANCELLATION_WINDOW_MS = 120_000;
 const interfaceEvidence = {
   reducedMotion: { main: false, reviewer: false },
   viewportWidths: [],
@@ -330,6 +332,7 @@ async function installBrowserDiagnostics(context, label) {
   });
   context.on("page", (targetPage) => {
     const pendingRequests = new Set();
+    const deferredKnownWebKitPageErrors = new Map();
     browserPendingRequests.set(targetPage, pendingRequests);
     const firstPartyRequest = (request) => {
       try {
@@ -356,6 +359,20 @@ async function installBrowserDiagnostics(context, label) {
     targetPage.on("requestfinished", settleRequest);
     targetPage.on("requestfailed", settleRequest);
     targetPage.on("requestfailed", (request) => {
+      const failure = String(request.failure()?.errorText || "request_failed");
+      const knownCancellation = classifyE2eKnownWebKitRequestCancellation({
+        engine: browserEngine,
+        requestUrl: request.url(),
+        failure,
+        currentUrl: targetPage.url(),
+        baseUrl,
+        webPort,
+      });
+      if (knownCancellation) {
+        const queued = deferredKnownWebKitPageErrors.get(knownCancellation.message) || [];
+        queued.push({ recordedAt: Date.now(), observation: knownCancellation });
+        deferredKnownWebKitPageErrors.set(knownCancellation.message, queued);
+      }
       if (!browserTeardownStarted && captureBrowserArtifacts) {
         browserNetworkEvents.push({
           at: new Date().toISOString(),
@@ -364,7 +381,7 @@ async function installBrowserDiagnostics(context, label) {
           method: request.method(),
           resourceType: request.resourceType(),
           url: sanitizeE2eNetworkUrl(request.url(), baseUrl),
-          failure: String(request.failure()?.errorText || "request_failed").slice(0, 500),
+          failure: failure.slice(0, 500),
         });
       }
     });
@@ -444,7 +461,13 @@ async function installBrowserDiagnostics(context, label) {
     targetPage.on("pageerror", (error) => {
       if (browserTeardownStarted) return;
       const rawMessage = String(error?.message || error);
-      const knownObservation = classifyE2eKnownBrowserObservation({
+      const now = Date.now();
+      const deferred = (deferredKnownWebKitPageErrors.get(rawMessage) || [])
+        .filter((entry) => now - entry.recordedAt <= WEBKIT_DEFERRED_CANCELLATION_WINDOW_MS);
+      const deferredObservation = deferred.shift()?.observation || null;
+      if (deferred.length > 0) deferredKnownWebKitPageErrors.set(rawMessage, deferred);
+      else deferredKnownWebKitPageErrors.delete(rawMessage);
+      const knownObservation = deferredObservation || classifyE2eKnownBrowserObservation({
         engine: browserEngine,
         eventKind: "pageerror",
         message: rawMessage,
@@ -5335,14 +5358,22 @@ try {
   );
   // Protected page loaders may log their expected 401 responses while both tabs
   // converge to /login. Classify only exact first-party expiry errors in this window.
-  await Promise.all([
+  const expiredNavigationResults = await Promise.allSettled([
     page.goto("/app/calendar"),
     ownerSecondPage.goto("/app/calendar"),
   ]);
-  await Promise.all([
-    page.waitForURL((url) => url.pathname === "/login", { timeout: UI_WAIT_TIMEOUT_MS }),
-    ownerSecondPage.waitForURL((url) => url.pathname === "/login", { timeout: UI_WAIT_TIMEOUT_MS }),
-  ]);
+  const expiredOwnerTabs = [page, ownerSecondPage];
+  await Promise.all(expiredOwnerTabs.map((targetPage) =>
+    targetPage.waitForURL((url) => url.pathname === "/login", { timeout: UI_WAIT_TIMEOUT_MS })));
+  for (const [index, navigation] of expiredNavigationResults.entries()) {
+    if (navigation.status === "fulfilled") continue;
+    const message = String(navigation.reason?.message || navigation.reason);
+    assert(
+      message.includes(`/app/calendar" is interrupted by another navigation to "${baseUrl}/login"`)
+        && new URL(expiredOwnerTabs[index].url()).pathname === "/login",
+      `expired-session navigation failed outside the expected login convergence: ${message}`,
+    );
+  }
   await Promise.all([
     waitForFirstPartyNetworkIdle(page, "expired owner main tab"),
     waitForFirstPartyNetworkIdle(ownerSecondPage, "expired owner second tab"),

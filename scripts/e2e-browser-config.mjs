@@ -145,6 +145,37 @@ export function classifyE2eKnownBrowserObservation({
   return null;
 }
 
+export function classifyE2eKnownWebKitRequestCancellation({
+  engine,
+  requestUrl,
+  failure,
+  currentUrl,
+  baseUrl,
+  webPort,
+} = {}) {
+  if (resolveE2eBrowserEngine(engine) !== "webkit" || String(failure || "") !== "cancelled") {
+    return null;
+  }
+  let request;
+  let expectedBase;
+  try {
+    request = new URL(String(requestUrl || ""));
+    expectedBase = new URL(String(baseUrl || ""));
+  } catch {
+    return null;
+  }
+  if (request.origin !== expectedBase.origin) return null;
+  const rawMessage = `/${request.hostname}:${request.port}${request.pathname}${request.search}${WEBKIT_CANCELLED_REQUEST_SUFFIX}`;
+  const observation = classifyE2eKnownBrowserObservation({
+    engine,
+    eventKind: "pageerror",
+    message: rawMessage,
+    currentUrl,
+    webPort,
+  });
+  return observation ? { ...observation, message: rawMessage } : null;
+}
+
 export function classifyE2eExpectedSessionExpiryConsole({
   active = false,
   message,
