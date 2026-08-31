@@ -320,6 +320,22 @@ if ! services_active; then
   exit 1
 fi
 
+# The monthly-campaign profile digest no longer covers `content_brief.updated_at`, so plans
+# written by earlier releases carry the previous digest and would read as outdated. This
+# re-baseline only rewrites rows that still match that exact digest, runs on the runtime
+# identity because it touches no schema, and stays recoverable from Autopilot -> Month, so a
+# failure here must not roll a healthy release back.
+echo "REBASE_MONTHLY_PROFILE_HASHES"
+if ! (
+  set -a
+  # shellcheck disable=SC1091
+  . ./.env.production
+  set +a
+  node scripts/rebase-monthly-profile-hashes.mjs
+); then
+  echo "monthly profile hash rebase failed; plans stay usable via Refresh in Autopilot" >&2
+fi
+
 current="$(readlink -f "$CURRENT_LINK")"
 # Keep the live release, the previous release, and the newest KEEP_RELEASES dirs.
 keep_list="$(printf '%s\n%s\n' "$current" "$previous")"
