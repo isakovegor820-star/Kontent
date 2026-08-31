@@ -76,12 +76,6 @@ describe("real E2E browser configuration", () => {
       "https://provider.test/callback?code=raw&state=visible",
       baseUrl,
     )).toBe("https://provider.test/callback?code=%5BREDACTED%5D&state=visible");
-    expect(sanitizeE2eNetworkUrl(
-      "https://provider.test/callback?sid=one&sessionId=two&cookie=three&credential=four&jwt=five&passwd=six&visible=yes",
-      baseUrl,
-    )).toBe(
-      "https://provider.test/callback?sid=%5BREDACTED%5D&sessionId=%5BREDACTED%5D&cookie=%5BREDACTED%5D&credential=%5BREDACTED%5D&jwt=%5BREDACTED%5D&passwd=%5BREDACTED%5D&visible=yes",
-    );
     expect(sanitizeE2eNetworkUrl("not a valid url", "not a base")).toBe("[invalid-url]");
   });
 

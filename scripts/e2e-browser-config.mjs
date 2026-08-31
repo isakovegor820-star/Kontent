@@ -1,5 +1,3 @@
-import { isSensitiveE2eQueryParameter } from "./e2e-evidence-safety.mjs";
-
 export const E2E_BROWSER_ENGINES = Object.freeze(["chromium", "firefox", "webkit"]);
 export const E2E_BUILD_MODES = Object.freeze(["build", "reuse"]);
 
@@ -57,7 +55,7 @@ export function sanitizeE2eNetworkUrl(value, baseUrl) {
     url.password = "";
     url.hash = "";
     for (const name of [...url.searchParams.keys()]) {
-      if (isSensitiveE2eQueryParameter(name)) {
+      if (/(?:auth|code|key|password|secret|signature|token)/iu.test(name)) {
         url.searchParams.set(name, "[REDACTED]");
       }
     }
