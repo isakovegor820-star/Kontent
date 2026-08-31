@@ -71,9 +71,31 @@ section "WORKER JOURNAL (Autopilot build decisions, last 3 h)"
 # `[bot] конфликт` repeats every 10 s while a second Telegram poller holds the lease, which
 # is enough to push every Autopilot line out of any plain tail. These are the lines that say
 # whether a build even started and why it stopped, so they get their own window.
-journalctl -u aurora-worker.service --since '-3 hours' --no-pager -o cat 2>/dev/null \
-  | grep -aE '^\[(auto|autopilot|worker ai)\]|нет брифа|канал .* недоступен|устарела|no_brief|no_channel' \
+# Timestamped on purpose: these lines are how we tell a build that ran on the current
+# release from one that failed on the previous one.
+journalctl -u aurora-worker.service --since '-3 hours' --no-pager -o short-iso 2>/dev/null \
+  | grep -aE '\[auto\]|нет брифа|канал .* недоступен|устарела|no_brief|no_channel' \
   | tail -n 80 | redact || echo "(no Autopilot journal lines)"
+
+section "AI TELEMETRY CODE HISTOGRAM (current release only)"
+# Scoped to the running worker's start, because a window that spans a deploy mixes the
+# behaviour of two different builds and reads as "the fix did nothing".
+release_since="$(systemctl show aurora-worker.service -p ActiveEnterTimestamp --value 2>/dev/null || true)"
+if [[ -z "$release_since" ]]; then
+  echo "(no worker start timestamp)"
+else
+  echo "since=$release_since"
+  release_ai_log="$(journalctl -u aurora-worker.service --since "$release_since" --no-pager -o cat 2>/dev/null || true)"
+  if [[ -z "$release_ai_log" ]]; then
+    echo "(no journal since restart)"
+  else
+    printf '%s\n' "$release_ai_log" \
+      | grep -aA 9 -E '^\[worker ai\]' \
+      | grep -aE '^\s+(code|engine|outcome):' \
+      | sed -E 's/^\s+//; s/,$//' \
+      | sort | uniq -c | sort -rn | head -30 || echo "(no [worker ai] telemetry on this release)"
+  fi
+fi
 
 section "AI TELEMETRY CODE HISTOGRAM (worker, last 6 h)"
 # `[worker ai]` logs an object, so journalctl renders `code:`/`engine:` on their own lines
