@@ -48,7 +48,7 @@ describe("shared direct/background AI completion service", () => {
     );
     expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toMatchObject({
       model: "deepseek-v4-flash",
-      max_tokens: 1_200,
+      max_tokens: 3_000,
     });
   });
 
@@ -67,7 +67,11 @@ describe("shared direct/background AI completion service", () => {
     expect(headers.get("x-request-id")).toBe("req-site-analysis-41");
   });
 
-  it("keeps a bounded output budget for fast Navy engines", async () => {
+  it("gives every Navy engine room for hidden reasoning plus a visible answer", async () => {
+    // MiniMax and Qwen do not accept `reasoning_effort: "none"`, so a small budget was spent
+    // on reasoning and `content` came back empty. Autopilot read that as `empty_generation`
+    // on every draft until each engine's circuit opened and the fleet answered
+    // `provider_unavailable`.
     const fetchImpl = vi.fn(async () => Response.json({
       choices: [{ message: { content: "DONE" }, finish_reason: "stop" }],
     }));
@@ -77,10 +81,9 @@ describe("shared direct/background AI completion service", () => {
       allowFallback: false,
     });
 
-    expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toMatchObject({
-      model: "minimax-m3",
-      max_tokens: 1_200,
-    });
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body).toMatchObject({ model: "minimax-m3", max_tokens: 3_000 });
+    expect(body).not.toHaveProperty("reasoning_effort");
   });
 
   it("uses a surface-specific fallback fleet instead of an unhealthy local override", async () => {

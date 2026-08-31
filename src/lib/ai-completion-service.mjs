@@ -162,10 +162,14 @@ async function oneCompletion(request, runtime, { fetchImpl, signal, timeoutMs })
         }),
       });
     } else if (runtime.protocol === "openai") {
-      const providerMaxTokens = runtime.id === "navy-gpt-5-4" || runtime.id === "navy-deepseek-pro"
+      // Every Navy model on this endpoint can spend output tokens on hidden reasoning before
+      // it emits anything visible, and only DeepSeek accepts `reasoning_effort: "none"`.
+      // MiniMax and Qwen therefore used to burn a 1_200-token budget on reasoning and return
+      // an empty `content`, which this service reports as `empty_generation`. Autopilot saw
+      // that on every draft until each engine's circuit opened and the whole fleet answered
+      // `provider_unavailable`. One budget for the whole endpoint keeps room for both phases.
+      const providerMaxTokens = runtime.id.startsWith("navy-")
         ? Math.max(3_000, maxTokens)
-        : runtime.id.startsWith("navy-")
-          ? Math.max(1_200, maxTokens)
         : maxTokens;
       response = await fetchImpl(`${runtime.baseUrl}/chat/completions`, {
         method: "POST",
