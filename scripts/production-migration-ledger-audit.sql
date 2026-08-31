@@ -53,6 +53,11 @@ session_rows as (
              and expires_at > (select applied_at from session_boundary)
          )::bigint as non_invalidated_pre_migration_rows
     from public.sessions as s
+),
+database_capacity as (
+  select current_setting('max_connections')::integer as max_connections,
+         current_setting('superuser_reserved_connections')::integer as superuser_reserved_connections,
+         (select count(*)::integer from pg_stat_activity) as observed_connections
 )
 select jsonb_build_object(
   'transactionReadOnly', current_setting('transaction_read_only'),
@@ -68,7 +73,8 @@ select jsonb_build_object(
     (select jsonb_agg(to_jsonb(entry) order by entry.conname) from session_constraints as entry),
     '[]'::jsonb
   ),
-  'sessionRows', (select to_jsonb(entry) from session_rows as entry)
+  'sessionRows', (select to_jsonb(entry) from session_rows as entry),
+  'databaseCapacity', (select to_jsonb(entry) from database_capacity as entry)
 )::text;
 
 commit;

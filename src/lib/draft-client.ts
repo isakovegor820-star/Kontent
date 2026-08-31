@@ -30,6 +30,22 @@ export class DraftRequestError extends Error {
   }
 }
 
+export function draftRequestDiagnostic(error: unknown): string {
+  if (error instanceof DraftRequestError) {
+    return JSON.stringify({
+      name: error.name,
+      kind: error.kind,
+      status: error.status,
+      code: error.code,
+      requestId: error.requestId ?? null,
+    });
+  }
+  return JSON.stringify({
+    name: error instanceof Error ? error.name : "UnknownError",
+    code: "unexpected",
+  });
+}
+
 const DRAFT_CLIENT_KEY_PATTERN = /^draft_[A-Za-z0-9-]{16,}$/u;
 
 /**

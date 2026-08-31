@@ -24,4 +24,13 @@ describe("production migration ledger audit contract", () => {
     expect(sql).toContain("created_at <= (select applied_at from session_boundary)");
     expect(sql).not.toMatch(/select\s+(?:s\.)?(?:token|token_hash)\b/iu);
   });
+
+  it("reports only aggregate PostgreSQL connection capacity for pool budgeting", () => {
+    expect(sql).toContain("current_setting('max_connections')");
+    expect(sql).toContain("current_setting('superuser_reserved_connections')");
+    expect(sql).toContain("count(*)::integer from pg_stat_activity");
+    expect(sql).toContain("'databaseCapacity'");
+    expect(sql).not.toContain("client_addr");
+    expect(sql).not.toContain("query");
+  });
 });

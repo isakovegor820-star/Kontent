@@ -17,6 +17,8 @@ CLEANUP_RELEASE_SHA="${AURORA_INCOMPLETE_RELEASE_SHA:-}"
 BUILD_ARCHIVE="${AURORA_BUILD_ARCHIVE:-}"
 BUILD_ARCHIVE_SHA256="${AURORA_BUILD_ARCHIVE_SHA256:-}"
 AVATAR_BODY_LIMIT_BYTES="${AURORA_AVATAR_BODY_LIMIT_BYTES:-}"
+DB_POOL_MAX_WEB="${AURORA_DB_POOL_MAX_WEB:-}"
+DB_POOL_MAX_WORKER="${AURORA_DB_POOL_MAX_WORKER:-}"
 HEALTH_URL="${AURORA_HEALTH_URL:-http://127.0.0.1:3002/api/health}"
 HEALTH_ATTEMPTS="${AURORA_HEALTH_ATTEMPTS:-30}"
 HEALTH_SLEEP_SECS="${AURORA_HEALTH_SLEEP_SECS:-2}"
@@ -48,6 +50,12 @@ if [[ "$DEPLOY_ACTION" == "deploy" ]]; then
     echo "AURORA_AVATAR_BODY_LIMIT_BYTES must be between 10485760 and 11010048" >&2
     exit 1
   fi
+  for pool_max in "$DB_POOL_MAX_WEB" "$DB_POOL_MAX_WORKER"; do
+    if [[ ! "$pool_max" =~ ^[0-9]+$ ]] || (( pool_max < 1 || pool_max > 100 )); then
+      echo "AURORA_DB_POOL_MAX_WEB and AURORA_DB_POOL_MAX_WORKER must be integers between 1 and 100" >&2
+      exit 1
+    fi
+  done
 fi
 
 mkdir -p "$RELEASES_DIR"
@@ -196,20 +204,32 @@ fi
 
 cp --preserve=mode,ownership "${CURRENT_LINK}/.env.production" "${release}/.env.production"
 
-# The avatar ingress contract is release-specific. Keep the previous release's env
-# untouched so a rollback can still boot its smaller upload contract.
+# Runtime capacity and ingress contracts are release-specific. Keep the previous
+# release's env untouched so rollback boots against its original configuration.
 runtime_env="${release}/.env.production"
 runtime_env_next="$(mktemp "${release}/.env.production.next.XXXXXX")"
-awk -v value="$AVATAR_BODY_LIMIT_BYTES" '
-  BEGIN { written = 0 }
+awk -v avatar="$AVATAR_BODY_LIMIT_BYTES" -v web_pool="$DB_POOL_MAX_WEB" -v worker_pool="$DB_POOL_MAX_WORKER" '
+  BEGIN { avatar_written = 0; web_pool_written = 0; worker_pool_written = 0 }
   /^AURORA_AVATAR_BODY_LIMIT_BYTES=/ {
-    if (!written) print "AURORA_AVATAR_BODY_LIMIT_BYTES=" value
-    written = 1
+    if (!avatar_written) print "AURORA_AVATAR_BODY_LIMIT_BYTES=" avatar
+    avatar_written = 1
+    next
+  }
+  /^AURORA_DB_POOL_MAX_WEB=/ {
+    if (!web_pool_written) print "AURORA_DB_POOL_MAX_WEB=" web_pool
+    web_pool_written = 1
+    next
+  }
+  /^AURORA_DB_POOL_MAX_WORKER=/ {
+    if (!worker_pool_written) print "AURORA_DB_POOL_MAX_WORKER=" worker_pool
+    worker_pool_written = 1
     next
   }
   { print }
   END {
-    if (!written) print "AURORA_AVATAR_BODY_LIMIT_BYTES=" value
+    if (!avatar_written) print "AURORA_AVATAR_BODY_LIMIT_BYTES=" avatar
+    if (!web_pool_written) print "AURORA_DB_POOL_MAX_WEB=" web_pool
+    if (!worker_pool_written) print "AURORA_DB_POOL_MAX_WORKER=" worker_pool
   }
 ' "$runtime_env" > "$runtime_env_next"
 chmod --reference="$runtime_env" "$runtime_env_next"

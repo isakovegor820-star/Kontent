@@ -2526,6 +2526,7 @@ try {
       && await mobileNav.getByRole("link", { name: "Конкуренты и тренды", exact: true }).count() === 1,
     "restored Trends route did not activate the mobile market hub",
   );
+  await waitForFirstPartyNetworkIdle(page, "Trends before history restoration");
   await page.evaluate(() => globalThis.history.back());
   await waitForRestoredLibrary(page, channels[0]);
 

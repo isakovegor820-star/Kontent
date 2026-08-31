@@ -57,6 +57,23 @@ describe("production deployment shell contract", () => {
     expect(workflow).toContain("AURORA_AVATAR_BODY_LIMIT_BYTES=${AURORA_AVATAR_BODY_LIMIT_BYTES}");
   });
 
+  it("injects bounded per-role database pool budgets into only the target release", () => {
+    const copyEnvironment = script.indexOf('cp --preserve=mode,ownership "${CURRENT_LINK}/.env.production"');
+    const targetEnvironment = script.indexOf('runtime_env="${release}/.env.production"', copyEnvironment);
+    const migrate = script.indexOf("bash scripts/run-production-migrations.sh", targetEnvironment);
+
+    expect(script).toContain('DB_POOL_MAX_WEB="${AURORA_DB_POOL_MAX_WEB:-}"');
+    expect(script).toContain('DB_POOL_MAX_WORKER="${AURORA_DB_POOL_MAX_WORKER:-}"');
+    expect(script).toContain('print "AURORA_DB_POOL_MAX_WEB=" web_pool');
+    expect(script).toContain('print "AURORA_DB_POOL_MAX_WORKER=" worker_pool');
+    expect(targetEnvironment).toBeGreaterThan(copyEnvironment);
+    expect(migrate).toBeGreaterThan(targetEnvironment);
+    expect(workflow).toContain("AURORA_DB_POOL_MAX_WEB: ${{ vars.DB_POOL_MAX_WEB }}");
+    expect(workflow).toContain("AURORA_DB_POOL_MAX_WORKER: ${{ vars.DB_POOL_MAX_WORKER }}");
+    expect(workflow).toContain("AURORA_DB_POOL_MAX_WEB=${AURORA_DB_POOL_MAX_WEB}");
+    expect(workflow).toContain("AURORA_DB_POOL_MAX_WORKER=${AURORA_DB_POOL_MAX_WORKER}");
+  });
+
   it("rolls back restart, health, and partial web/worker activation failures", () => {
     expect(script).toContain("if ! systemctl restart aurora-web.service aurora-worker.service");
     expect(script).toContain("if ! wait_for_health");

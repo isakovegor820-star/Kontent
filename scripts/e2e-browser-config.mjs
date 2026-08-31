@@ -120,9 +120,16 @@ export function classifyE2eKnownBrowserObservation({
   if (!requestTarget.startsWith(`${originPrefix}/`)) return null;
   const pathAndQuery = requestTarget.slice(originPrefix.length);
 
-  if (/^\/app\/[a-z0-9-]+\?_rsc=[A-Za-z0-9_-]+$/u.test(pathAndQuery)) {
-    return { kind: "webkit.cancelled-rsc-prefetch", detail: pathAndQuery };
-  }
+  try {
+    const rscUrl = new URL(pathAndQuery, "https://aurora-e2e.invalid");
+    const rscToken = rscUrl.searchParams.get("_rsc");
+    if (
+      /^\/app(?:\/[a-z0-9-]+)+$/u.test(rscUrl.pathname)
+      && /^[A-Za-z0-9_-]+$/u.test(rscToken || "")
+    ) {
+      return { kind: "webkit.cancelled-rsc-prefetch", detail: pathAndQuery };
+    }
+  } catch {}
 
   let sourcePath = "";
   try {
@@ -162,11 +169,19 @@ export function classifyE2eExpectedSessionExpiryConsole({
   ) {
     return { kind: "session-expiry.expected-api-401", detail: source.pathname };
   }
-  if (
-    rawMessage.startsWith("[/app/calendar drafts] DraftRequestError: unauthorized")
-    && source.pathname.includes("/app/app/calendar/")
-  ) {
-    return { kind: "session-expiry.expected-calendar-unauthorized", detail: "/api/drafts" };
+  const calendarPrefix = "[/app/calendar drafts] ";
+  if (rawMessage.startsWith(calendarPrefix) && source.pathname.includes("/app/app/calendar/")) {
+    try {
+      const detail = JSON.parse(rawMessage.slice(calendarPrefix.length));
+      if (
+        detail?.name === "DraftRequestError"
+        && detail?.kind === "failed"
+        && detail?.status === 401
+        && detail?.code === "unauthorized"
+      ) {
+        return { kind: "session-expiry.expected-calendar-unauthorized", detail: "/api/drafts" };
+      }
+    } catch {}
   }
   return null;
 }

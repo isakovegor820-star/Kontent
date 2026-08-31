@@ -132,6 +132,10 @@ describe("real E2E browser configuration", () => {
 
     expect(classify("/127.0.0.1:43190/app/library?_rsc=abc_123 due to access control checks.")?.kind)
       .toBe("webkit.cancelled-rsc-prefetch");
+    expect(classify("/127.0.0.1:43190/app/settings?section=profile&_rsc=abc_123 due to access control checks.")?.kind)
+      .toBe("webkit.cancelled-rsc-prefetch");
+    expect(classify("/127.0.0.1:43190/app/autopilot/month?view=week&_rsc=abc_123 due to access control checks.")?.kind)
+      .toBe("webkit.cancelled-rsc-prefetch");
     expect(classify(
       "/127.0.0.1:43190/api/media/generations due to access control checks.",
       "https://127.0.0.1:43190/app/studio?draft=3&intent=create",
@@ -141,6 +145,10 @@ describe("real E2E browser configuration", () => {
     expect(classify("/127.0.0.1:43190/api/projects due to access control checks."))
       .toBeNull();
     expect(classify("/127.0.0.1:43190/app/library due to access control checks."))
+      .toBeNull();
+    expect(classify("/127.0.0.1:43190/app/settings?section=profile due to access control checks."))
+      .toBeNull();
+    expect(classify("/127.0.0.1:43190/api/settings?_rsc=abc due to access control checks."))
       .toBeNull();
     expect(classifyE2eKnownBrowserObservation({
       engine: "chromium",
@@ -165,7 +173,12 @@ describe("real E2E browser configuration", () => {
     });
     expect(classifyE2eExpectedSessionExpiryConsole({
       active: true,
-      message: "[/app/calendar drafts] DraftRequestError: unauthorized\n at compiled code",
+      message: `[/app/calendar drafts] ${JSON.stringify({
+        name: "DraftRequestError",
+        kind: "failed",
+        status: 401,
+        code: "unauthorized",
+      })}`,
       sourceUrl: `${baseUrl}/_next/static/chunks/app/app/calendar/page.js`,
       baseUrl,
     })?.kind).toBe("session-expiry.expected-calendar-unauthorized");
@@ -184,6 +197,17 @@ describe("real E2E browser configuration", () => {
     expect(classifyE2eExpectedSessionExpiryConsole({
       active: true,
       message: "TypeError: unexpected application failure",
+      sourceUrl: `${baseUrl}/_next/static/chunks/app/app/calendar/page.js`,
+      baseUrl,
+    })).toBeNull();
+    expect(classifyE2eExpectedSessionExpiryConsole({
+      active: true,
+      message: `[/app/calendar drafts] ${JSON.stringify({
+        name: "DraftRequestError",
+        kind: "failed",
+        status: 500,
+        code: "server",
+      })}`,
       sourceUrl: `${baseUrl}/_next/static/chunks/app/app/calendar/page.js`,
       baseUrl,
     })).toBeNull();

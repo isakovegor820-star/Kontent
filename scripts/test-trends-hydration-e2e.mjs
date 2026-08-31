@@ -35,6 +35,11 @@ const runtimeEnv = {
   HOSTNAME: "127.0.0.1",
   PORT: String(port),
   NEXT_PUBLIC_AURORA_EXPERIMENTAL_ROUTES: "1",
+  AURORA_RUNTIME_ROLE: "web",
+  AURORA_DB_POOL_MAX_WEB: "3",
+  AURORA_SENTRY_DISABLED: "1",
+  NEXT_PUBLIC_AURORA_SENTRY_DISABLED: "1",
+  SENTRY_AUTH_TOKEN: "",
   TOKENS_MASTER_KEY: "trends-e2e-only-master-key-with-enough-entropy-2026",
   TOKENS_KEY_ID: "1",
 };
@@ -152,8 +157,15 @@ try {
     [userId, projectId],
   );
 
-  await page.goto("/app/trends?scope=internet", { waitUntil: "networkidle", timeout: 60_000 });
+  // Product telemetry uses a keepalive beacon, so global network-idle is not a
+  // meaningful readiness boundary. Hydration is ready when the route has loaded
+  // and the selected tab from the direct URL is visible and committed in the DOM.
+  await page.goto("/app/trends?scope=internet", { waitUntil: "domcontentloaded", timeout: 60_000 });
   const internetTab = page.getByRole("tab", { name: "Интернет", exact: true });
+  await internetTab.waitFor({ state: "visible", timeout: 60_000 });
+  await page.waitForFunction(() => Array.from(
+    document.querySelectorAll('[role="tab"][aria-selected="true"]'),
+  ).some((tab) => tab.textContent?.trim() === "Интернет"), undefined, { timeout: 60_000 });
   if (await internetTab.getAttribute("aria-selected") !== "true") {
     throw new Error("Internet tab was not selected after direct navigation");
   }

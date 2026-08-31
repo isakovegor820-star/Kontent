@@ -56,6 +56,7 @@ import {
 } from "@/components/ui/primitives";
 import {
   claimUnownedLegacyDraft,
+  draftRequestDiagnostic,
   DraftRequestError,
   isRecoverableLegacyDraft,
   isUnownedLegacyDraftCandidate,
@@ -1496,7 +1497,7 @@ export default function CalendarPage() {
       setDraftOwner(owner);
       setDraftsError(true);
       if (!(error instanceof DraftRequestError && error.kind === "offline")) {
-        console.error("[/app/calendar drafts]", error);
+        console.error(`[/app/calendar drafts] ${draftRequestDiagnostic(error)}`);
       }
     } finally {
       if (!signal?.aborted) setDraftsReady(true);

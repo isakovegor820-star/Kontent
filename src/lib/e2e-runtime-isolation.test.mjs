@@ -121,6 +121,7 @@ describe("real E2E runtime isolation", () => {
     expect(source).toContain("async function waitForRestoredLibrary(targetPage, channelId)");
     expect(source).toContain('name: "Идеи и примеры", exact: true');
     expect(source).toContain('waitForFirstPartyNetworkIdle(targetPage, "history-restored Library")');
+    expect(source).toContain('waitForFirstPartyNetworkIdle(page, "Trends before history restoration")');
     expect(source).toContain('waitForFirstPartyNetworkIdle(reviewerPage, "reviewer Calendar reload")');
     expect(source).toContain('targetPage.on("requestfinished", settleRequest)');
     expect(source).toContain('targetPage.on("requestfailed", settleRequest)');
@@ -135,13 +136,27 @@ describe("real E2E runtime isolation", () => {
     }
   });
 
+  it("uses the rendered Trends tab as hydration readiness instead of global network idle", () => {
+    const source = readFileSync(resolve("scripts/test-trends-hydration-e2e.mjs"), "utf8");
+
+    expect(source).toContain('waitUntil: "domcontentloaded"');
+    expect(source).toContain('internetTab.waitFor({ state: "visible"');
+    expect(source).toContain("document.querySelectorAll('[role=\"tab\"][aria-selected=\"true\"]')");
+    expect(source).not.toContain('waitUntil: "networkidle"');
+  });
+
   it("keeps the disposable E2E build and runtime outside external Sentry", () => {
     const harness = readFileSync(resolve("scripts/test-e2e-real.mjs"), "utf8");
+    const trendsHarness = readFileSync(resolve("scripts/test-trends-hydration-e2e.mjs"), "utf8");
     const nextConfig = readFileSync(resolve("next.config.ts"), "utf8");
 
-    expect(harness).toContain('AURORA_SENTRY_DISABLED: "1"');
-    expect(harness).toContain('NEXT_PUBLIC_AURORA_SENTRY_DISABLED: "1"');
-    expect(harness).toContain('SENTRY_AUTH_TOKEN: ""');
+    for (const source of [harness, trendsHarness]) {
+      expect(source).toContain('AURORA_SENTRY_DISABLED: "1"');
+      expect(source).toContain('NEXT_PUBLIC_AURORA_SENTRY_DISABLED: "1"');
+      expect(source).toContain('SENTRY_AUTH_TOKEN: ""');
+    }
+    expect(trendsHarness).toContain('AURORA_RUNTIME_ROLE: "web"');
+    expect(trendsHarness).toContain('AURORA_DB_POOL_MAX_WEB: "3"');
     expect(nextConfig).toContain('sourcemaps: sentryDisabled ? { disable: true } : undefined');
     expect(nextConfig).toContain("telemetry: !sentryDisabled");
     expect(nextConfig).toContain("disableSentryConfig: sentryDisabled");

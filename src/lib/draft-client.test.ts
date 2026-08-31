@@ -9,6 +9,7 @@ import {
   createDraftClientKey,
   deleteDraftAfterAck,
   DRAFT_AUTOSAVE_DELAY_MS,
+  draftRequestDiagnostic,
   draftMatchesWrite,
   DraftRequestError,
   ensureDraftClientKey,
@@ -24,6 +25,29 @@ import {
   shouldAutosaveDraft,
 } from "./draft-client";
 import type { Post } from "./types";
+
+describe("draft request diagnostics", () => {
+  it("serializes a stable safe code instead of a browser-specific Error object", () => {
+    const diagnostic = draftRequestDiagnostic(new DraftRequestError(
+      "failed",
+      401,
+      "unauthorized",
+      undefined,
+      "req-expired-1",
+    ));
+
+    expect(JSON.parse(diagnostic)).toEqual({
+      name: "DraftRequestError",
+      kind: "failed",
+      status: 401,
+      code: "unauthorized",
+      requestId: "req-expired-1",
+    });
+    expect(draftRequestDiagnostic(new Error("sensitive details"))).toBe(
+      JSON.stringify({ name: "Error", code: "unexpected" }),
+    );
+  });
+});
 
 describe("draft client coordination", () => {
   afterEach(() => {

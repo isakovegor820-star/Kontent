@@ -165,6 +165,8 @@ jobs:
           AURORA_ALLOW_LOCAL_PEER_MIGRATIONS: ${{ vars.ALLOW_LOCAL_PEER_MIGRATIONS }}
           AURORA_INCOMPLETE_RELEASE_SHA: ${{ vars.INCOMPLETE_RELEASE_SHA }}
           AURORA_AVATAR_BODY_LIMIT_BYTES: ${{ vars.AVATAR_BODY_LIMIT_BYTES }}
+          AURORA_DB_POOL_MAX_WEB: ${{ vars.DB_POOL_MAX_WEB }}
+          AURORA_DB_POOL_MAX_WORKER: ${{ vars.DB_POOL_MAX_WORKER }}
         run: |
           test -n "$PRODUCTION_SSH_USER"
           [[ "$AURORA_DEPLOY_SHA" =~ ^[0-9a-f]{40}$ ]]
@@ -178,6 +180,12 @@ jobs:
             echo "ALLOW_LOCAL_PEER_MIGRATIONS must be true or false" >&2
             exit 1
           fi
+          for pool_max in "$AURORA_DB_POOL_MAX_WEB" "$AURORA_DB_POOL_MAX_WORKER"; do
+            if [[ ! "$pool_max" =~ ^[0-9]+$ ]] || (( pool_max < 1 || pool_max > 100 )); then
+              echo "DB pool limits must be integers between 1 and 100" >&2
+              exit 1
+            fi
+          done
           build_archive="${RUNNER_TEMP}/aurora-build-${AURORA_DEPLOY_SHA}.tar.gz"
           remote_archive="/tmp/aurora-build-${AURORA_DEPLOY_SHA}.tar.gz"
           test -f "$build_archive"
@@ -203,7 +211,7 @@ jobs:
             -o ServerAliveInterval=15 \
             -o ServerAliveCountMax=8 \
             "${PRODUCTION_SSH_USER}@${PRODUCTION_SSH_HOST}" \
-            "AURORA_DEPLOY_SHA=${AURORA_DEPLOY_SHA} AURORA_SCHEMA_ROLLBACK_AUDIT=${AURORA_SCHEMA_ROLLBACK_AUDIT} AURORA_ALLOW_LOCAL_PEER_MIGRATIONS=${AURORA_ALLOW_LOCAL_PEER_MIGRATIONS} AURORA_INCOMPLETE_RELEASE_SHA=${AURORA_INCOMPLETE_RELEASE_SHA} AURORA_AVATAR_BODY_LIMIT_BYTES=${AURORA_AVATAR_BODY_LIMIT_BYTES} AURORA_BUILD_ARCHIVE=${remote_archive} AURORA_BUILD_ARCHIVE_SHA256=${build_archive_sha256} bash -s" \
+            "AURORA_DEPLOY_SHA=${AURORA_DEPLOY_SHA} AURORA_SCHEMA_ROLLBACK_AUDIT=${AURORA_SCHEMA_ROLLBACK_AUDIT} AURORA_ALLOW_LOCAL_PEER_MIGRATIONS=${AURORA_ALLOW_LOCAL_PEER_MIGRATIONS} AURORA_INCOMPLETE_RELEASE_SHA=${AURORA_INCOMPLETE_RELEASE_SHA} AURORA_AVATAR_BODY_LIMIT_BYTES=${AURORA_AVATAR_BODY_LIMIT_BYTES} AURORA_DB_POOL_MAX_WEB=${AURORA_DB_POOL_MAX_WEB} AURORA_DB_POOL_MAX_WORKER=${AURORA_DB_POOL_MAX_WORKER} AURORA_BUILD_ARCHIVE=${remote_archive} AURORA_BUILD_ARCHIVE_SHA256=${build_archive_sha256} bash -s" \
             < scripts/deploy-production.sh
 
       - name: Verify production deployment
