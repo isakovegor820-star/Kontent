@@ -1,0 +1,111 @@
+\set ON_ERROR_STOP on
+\pset tuples_only on
+\pset format unaligned
+
+-- Read-only Autopilot incident probe. It never writes, never migrates and never
+-- selects free-text drafts: only counts, statuses and short diagnostic codes leave
+-- the database so the report can be pasted into an incident review.
+begin transaction isolation level repeatable read read only;
+
+with ledger_tail as (
+  select name, applied_at
+    from public.schema_migrations
+   order by name desc
+   limit 14
+),
+ledger_total as (
+  select count(*)::bigint as applied_migrations from public.schema_migrations
+),
+settings_rows as (
+  select s.project_id,
+         s.channel_id,
+         s.enabled,
+         s.mode,
+         s.post_frequency,
+         s.planning_weeks,
+         s.planning_months,
+         s.approvals_streak,
+         s.generation_engine,
+         jsonb_array_length(coalesce(s.news_sources, '[]'::jsonb)) as news_source_count,
+         s.quick_settings,
+         s.updated_at
+    from public.autopilot_settings as s
+   order by s.updated_at desc
+   limit 20
+),
+brief_rows as (
+  select b.user_id,
+         b.ready,
+         b.source,
+         (nullif(btrim(coalesce(b.niche, '')), '') is not null) as has_niche,
+         (nullif(btrim(coalesce(b.audience, '')), '') is not null) as has_audience,
+         coalesce(array_length(b.rubrics, 1), 0) as rubric_count,
+         b.updated_at
+    from public.content_brief as b
+   order by b.updated_at desc
+   limit 20
+),
+plan_status_counts as (
+  select status, count(*)::bigint as plans
+    from public.autopilot_plan
+   group by status
+),
+plan_rows as (
+  select p.id,
+         p.status,
+         p.week_start,
+         p.created_at,
+         p.build_activity_at,
+         jsonb_array_length(coalesce(p.items, '[]'::jsonb)) as item_count,
+         p.expected_post_count,
+         p.planning_weeks,
+         p.generation_engine,
+         -- `rules` carries the machine diagnosis for failed builds. Truncate hard: the
+         -- successful-build variant of the same column holds editorial prose.
+         left(coalesce(p.rules, ''), 300) as rules_head,
+         (to_jsonb(p) - 'items' - 'candidate_items' - 'rules') as meta
+    from public.autopilot_plan as p
+   order by p.created_at desc
+   limit 12
+),
+stuck_building as (
+  select count(*)::bigint as building_plans,
+         min(created_at) as oldest_building_at,
+         max(created_at) as newest_building_at
+    from public.autopilot_plan
+   where status = 'building'
+),
+ai_usage_today as (
+  select count(*)::bigint as calls_today,
+         count(*) filter (where kind = 'autopilot-plan')::bigint as autopilot_plan_calls_today
+    from public.ai_usage
+   where usage_date = current_date
+),
+ai_usage_recent as (
+  select usage_date, kind, count(*)::bigint as calls
+    from public.ai_usage
+   where usage_date >= current_date - 7
+   group by usage_date, kind
+   order by usage_date desc, kind
+),
+channel_rows as (
+  select count(*)::bigint as channels,
+         count(*) filter (where coalesce(to_jsonb(c)->>'status', '') = 'active')::bigint as active_channels
+    from public.channels as c
+)
+select jsonb_pretty(jsonb_build_object(
+  'transactionReadOnly', current_setting('transaction_read_only'),
+  'databaseNow', clock_timestamp(),
+  'appliedMigrations', (select applied_migrations from ledger_total),
+  'ledgerTail', coalesce((select jsonb_agg(to_jsonb(e) order by e.name desc) from ledger_tail as e), '[]'::jsonb),
+  'autopilotSettings', coalesce((select jsonb_agg(to_jsonb(e)) from settings_rows as e), '[]'::jsonb),
+  'contentBriefs', coalesce((select jsonb_agg(to_jsonb(e)) from brief_rows as e), '[]'::jsonb),
+  'planStatusCounts', coalesce((select jsonb_agg(to_jsonb(e) order by e.status) from plan_status_counts as e), '[]'::jsonb),
+  'recentPlans', coalesce((select jsonb_agg(to_jsonb(e)) from plan_rows as e), '[]'::jsonb),
+  'stuckBuilding', (select to_jsonb(e) from stuck_building as e),
+  'aiUsageToday', (select to_jsonb(e) from ai_usage_today as e),
+  'aiUsageRecent', coalesce((select jsonb_agg(to_jsonb(e)) from ai_usage_recent as e), '[]'::jsonb),
+  'channels', (select to_jsonb(e) from channel_rows as e)
+))::text;
+
+commit;

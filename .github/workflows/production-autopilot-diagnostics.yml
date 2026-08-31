@@ -1,0 +1,88 @@
+# Read-only Autopilot incident probe.
+#
+# It answers one question with evidence instead of guesses: why does a production
+# Autopilot build never produce a weekly plan? The worker owns the BullMQ consumer,
+# the Sunday cron and the plan builder, so a worker that cannot boot looks — from the
+# UI — like "Autopilot is broken" with no error anyone can read.
+#
+# This workflow never restarts a service, never switches the release symlink and never
+# writes to the database. It reproduces the worker's own startup gate using the code of
+# the currently deployed release, then dumps redacted runtime and Autopilot state.
+name: Production Autopilot diagnostics
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Never read half-swapped state: serialize against releases and rollbacks.
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Configure SSH
+        env:
+          PRODUCTION_SSH_KEY: ${{ secrets.PRODUCTION_SSH_KEY }}
+          PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
+          PRODUCTION_SSH_KNOWN_HOSTS: ${{ secrets.PRODUCTION_SSH_KNOWN_HOSTS }}
+          PRODUCTION_SSH_HOST_FINGERPRINT: ${{ secrets.PRODUCTION_SSH_HOST_FINGERPRINT }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$PRODUCTION_SSH_KEY"
+          test -n "$PRODUCTION_SSH_HOST"
+          test -n "$PRODUCTION_SSH_KNOWN_HOSTS"
+          test -n "$PRODUCTION_SSH_HOST_FINGERPRINT"
+          umask 077
+          mkdir -p ~/.ssh
+          printf '%s\n' "$PRODUCTION_SSH_KEY" > ~/.ssh/deploy_key
+          printf '%s\n' "$PRODUCTION_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          bash scripts/verify-ssh-host-identity.sh \
+            ~/.ssh/known_hosts \
+            "$PRODUCTION_SSH_HOST" \
+            "$PRODUCTION_SSH_HOST_FINGERPRINT"
+
+      - name: Collect redacted Autopilot diagnostics
+        env:
+          PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
+          PRODUCTION_SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$PRODUCTION_SSH_HOST"
+          test -n "$PRODUCTION_SSH_USER"
+          diag_sql_b64="$(base64 -w0 < scripts/production-autopilot-diagnostics.sql)"
+          ssh -i ~/.ssh/deploy_key \
+            -o StrictHostKeyChecking=yes \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=8 \
+            "${PRODUCTION_SSH_USER}@${PRODUCTION_SSH_HOST}" \
+            "AURORA_DIAG_SQL_B64=${diag_sql_b64} bash -s" \
+            < scripts/production-autopilot-diagnostics.sh \
+            > autopilot-diagnostics.txt
+
+          test -s autopilot-diagnostics.txt
+          echo "::group::Production Autopilot diagnostics"
+          cat autopilot-diagnostics.txt
+          echo "::endgroup::"
+
+      - name: Upload diagnostics report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: autopilot-diagnostics
+          path: autopilot-diagnostics.txt
+          if-no-files-found: warn
+          retention-days: 7
