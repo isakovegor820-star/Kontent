@@ -16,7 +16,6 @@ describe("MediaGenerator", () => {
 
   it("keeps a stable polite status region and explicitly labelled prompt controls", () => {
     const html = renderToStaticMarkup(createElement(MediaGenerator, {
-      initialKind: "image",
       channelId: 18,
       sourceText: "Текущая публикация",
       onUse: vi.fn(),
@@ -27,9 +26,11 @@ describe("MediaGenerator", () => {
     expect(html).toContain('for="media-prompt"');
     expect(html).toContain("Что создаём?");
     expect(html).toContain("Обложка к посту");
-    expect(html).toContain("Напиши, что нужно создать");
+    expect(html).toContain("Напиши, какое изображение нужно создать");
     expect(html).toContain("Взять последний пост");
     expect(html).toContain("Изображение");
+    expect(html).not.toContain("Видео");
+    expect(html).not.toContain("скоро");
     expect(html).not.toContain("Flux");
   });
 

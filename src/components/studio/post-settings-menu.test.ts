@@ -9,14 +9,23 @@ describe("post settings automatic selection contract", () => {
     "utf8",
   );
 
-  it("applies the complete automatic profile in one click and exposes its saved state", () => {
+  it("prepares a fresh automatic profile on every click and keeps saving explicit", () => {
     expect(source).toContain("const next = automaticPostSettings();");
     expect(source).toContain("setDraft(next);");
-    expect(source).toContain("onChange(next);");
+    expect(source).toContain("setAutomaticSelectionPending(true);");
+    expect(source).toContain("dirty || automaticSelectionPending");
+    expect(source).toContain("disabled={!hasPendingChanges || saving}");
     expect(source).toContain("postSettingsAreAutomatic(settings)");
-    expect(source).toContain("Выбрано автоматически");
+    expect(source).toContain("Подобрать заново");
+    expect(source).toContain("Автоподбор готов");
     expect(source).toContain('role="status"');
-    expect(source).toContain("ручные ограничения очищены");
+    expect(source).toContain("Нажми «Сохранить настройки»");
+  });
+
+  it("offers the same automatic selection in quick and advanced modes", () => {
+    expect(source).toContain("Автоподбор всех расширенных настроек");
+    expect(source).toContain("advanced");
+    expect(source.match(/onSelect=\{useAutomaticQuickSettings\}/gu)).toHaveLength(2);
   });
 
   it("exposes the focus-trapped settings panel as a modal to assistive technology", () => {

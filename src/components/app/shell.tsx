@@ -95,7 +95,7 @@ const NAV_CHILDREN: Partial<Record<keyof typeof APP_ROUTES, readonly NavChild[]>
   studio: [
     { href: "/app/studio?mode=chat", label: "Чат" },
     { href: "/app/studio/questions", label: "Запросы аудитории" },
-    { href: "/app/studio?mode=media", label: "Картинки и видео" },
+    { href: "/app/studio?mode=media", label: "Картинки" },
   ],
   autopilot: [
     { href: "/app/autopilot", label: "Обзор" },
