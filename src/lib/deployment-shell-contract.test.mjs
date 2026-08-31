@@ -75,6 +75,38 @@ describe("production deployment shell contract", () => {
     expect(workflow).toContain("AURORA_DB_POOL_MAX_WORKER=${AURORA_DB_POOL_MAX_WORKER}");
   });
 
+  it("routes the AI engine selection through the release without stranding a rollback", () => {
+    // An engine whose upstream route stops answering has to be routable away from without a
+    // hand-edit on the box: production pinned a dead engine and took Autopilot and the
+    // pre-deploy readiness gate down with it. An empty variable must leave the deployed
+    // value alone so a rollback release keeps its own configuration.
+    expect(script).toContain('AI_SERVICE_ENGINE="${AURORA_AI_SERVICE_ENGINE:-}"');
+    expect(script).toContain('AI_FALLBACK_ENGINES="${AURORA_AI_FALLBACK_ENGINES:-}"');
+    expect(script).toContain('AI_SEMANTIC_ENGINE="${AURORA_AI_SEMANTIC_ENGINE:-}"');
+    expect(script).toContain(
+      'AI_SEMANTIC_FALLBACK_ENGINES="${AURORA_AI_SEMANTIC_FALLBACK_ENGINES:-}"',
+    );
+    for (const key of [
+      "AI_SERVICE_ENGINE",
+      "AI_FALLBACK_ENGINES",
+      "AI_SEMANTIC_ENGINE",
+      "AI_SEMANTIC_FALLBACK_ENGINES",
+    ]) {
+      expect(script).toContain(`/^${key}=/`);
+      expect(workflow).toContain(`AURORA_${key}: \${{ vars.${key} }}`);
+      expect(workflow).toContain(`AURORA_${key}=\${AURORA_${key}}`);
+    }
+    expect(script).toContain('if (ai_service == "") { print; next }');
+    expect(script).toContain('if (ai_fallbacks == "") { print; next }');
+    expect(script).toContain('if (ai_semantic == "") { print; next }');
+    expect(script).toContain('if (ai_semantic_fallbacks == "") { print; next }');
+    // Both hops interpolate these into a remote command line, so both must bound the charset.
+    expect(script).toMatch(/engine_id.*=~ \^\[a-z0-9\]\[a-z0-9-\]\*\$/u);
+    expect(script).toMatch(/engine_list.*=~ \^\[a-z0-9\]\[a-z0-9,-\]\*\$/u);
+    expect(workflow).toMatch(/engine_id.*=~ \^\[a-z0-9\]\[a-z0-9-\]\*\$/u);
+    expect(workflow).toMatch(/engine_list.*=~ \^\[a-z0-9\]\[a-z0-9,-\]\*\$/u);
+  });
+
   it("declares a runtime role so the role-less web unit resolves a configured pool budget", () => {
     // systemd runs `next start` directly, so only the runtime env file can carry the role.
     expect(script).toContain('print "AURORA_RUNTIME_ROLE=web"');
