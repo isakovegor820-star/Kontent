@@ -202,6 +202,11 @@ describe("real E2E runtime isolation", () => {
     expect(harness).toContain("!botConnectDom.includes(E2E_BOT_CONNECT_TOKEN_CANARY)");
     expect(harness).toContain("!botConnectHistory.includes(E2E_BOT_CONNECT_TOKEN_CANARY)");
     expect(harness).toContain("!botConnectNetworkUrls.some");
+    expect(harness).toContain("queryKeys: Array.from(parsed.searchParams.keys()).sort()");
+    expect(harness).toContain("hasHash: parsed.hash.length > 0");
+    expect(harness).toContain("from: describeHistoryUrl(null)");
+    expect(harness).toContain("to: url == null ? null : describeHistoryUrl(url)");
+    expect(harness).not.toContain("to: url == null ? null : String(url)");
     expect(harness).toContain("traceCaptureStartedAfterTokenConsumption: true");
     expect(tokenJourney).toBeGreaterThan(0);
     expect(mainTraceStart).toBeGreaterThan(tokenJourney);

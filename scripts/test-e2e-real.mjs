@@ -295,13 +295,31 @@ async function stopChild(subprocess, label, timeoutMs = 12_000) {
 async function installBrowserDiagnostics(context, label) {
   await context.addInitScript(() => {
     const historyStorageKey = "__aurora_e2e_history_events";
+    const describeHistoryUrl = (value) => {
+      try {
+        const parsed = new URL(value == null ? globalThis.location.href : String(value), globalThis.location.href);
+        return {
+          origin: parsed.origin === globalThis.location.origin ? "same-origin" : "cross-origin",
+          pathname: parsed.pathname,
+          queryKeys: Array.from(parsed.searchParams.keys()).sort(),
+          hasHash: parsed.hash.length > 0,
+        };
+      } catch {
+        return {
+          origin: "unparseable",
+          pathname: "",
+          queryKeys: [],
+          hasHash: false,
+        };
+      }
+    };
     const recordHistory = (method, url) => {
       try {
         const events = JSON.parse(globalThis.sessionStorage.getItem(historyStorageKey) || "[]");
         events.push({
           method,
-          from: `${globalThis.location.pathname}${globalThis.location.search}`,
-          to: url == null ? null : String(url),
+          from: describeHistoryUrl(null),
+          to: url == null ? null : describeHistoryUrl(url),
           length: globalThis.history.length,
           stateKeys: Object.keys(globalThis.history.state || {}).sort(),
         });
