@@ -216,6 +216,22 @@ export function composerReturnTarget(source: ComposerSource | null, draftId?: nu
   return { href: "/app/calendar", label: "Вернуться в календарь" } as const;
 }
 
+export function composerPersistedDraftHref(search: string, draftId: number): string {
+  if (!Number.isSafeInteger(draftId) || draftId <= 0) {
+    throw new RangeError("draftId must be a positive safe integer");
+  }
+
+  const current = new URLSearchParams(search);
+  const next = new URLSearchParams({ draft: String(draftId) });
+  const publicationId = Number(current.get("publication"));
+  if (Number.isSafeInteger(publicationId) && publicationId > 0) {
+    next.set("publication", String(publicationId));
+  }
+  const source = composerSource(current.get("from"));
+  if (source) next.set("from", source);
+  return `/app/composer?${next.toString()}`;
+}
+
 export function composerHydrationIdentity(input: {
   userId: number | null;
   projectId?: number | null;

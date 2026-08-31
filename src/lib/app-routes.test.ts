@@ -7,6 +7,7 @@ import {
   APP_NAV_GROUPS,
   APP_ROUTES,
   appDraftActionHref,
+  composerPersistedDraftHref,
   composerReturnTarget,
   composerSource,
   composerHydrationIdentity,
@@ -143,5 +144,17 @@ describe("app action registry", () => {
       href: "/app/calendar",
       label: "Вернуться в календарь",
     });
+  });
+
+  it("keeps calendar publication edit mode after a draft autosave", () => {
+    expect(composerPersistedDraftHref(
+      "?draft=41&publication=73&from=calendar&date=2026-09-05",
+      41,
+    )).toBe("/app/composer?draft=41&publication=73&from=calendar");
+
+    expect(composerPersistedDraftHref("?publication=invalid&from=calendar", 42))
+      .toBe("/app/composer?draft=42&from=calendar");
+    expect(composerPersistedDraftHref("?from=today", 42))
+      .toBe("/app/composer?draft=42");
   });
 });

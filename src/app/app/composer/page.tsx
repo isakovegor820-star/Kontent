@@ -103,6 +103,7 @@ import {
 import { getAiUsageMetrics } from "@/lib/ai-usage-sync";
 import {
   composerHydrationIdentity,
+  composerPersistedDraftHref,
   composerReturnTarget,
   composerSource,
 } from "@/lib/app-routes";
@@ -1712,11 +1713,14 @@ export default function ComposerPage() {
           }
           // Меняем адрес только после ACK сервера. Hard reload теперь восстановит именно
           // серверную версию; локальная legacy-копия при этом остаётся нетронутой.
-          const nextParams = new URLSearchParams();
-          nextParams.set("draft", String(draft.id));
-          const safeSource = composerSource(new URLSearchParams(window.location.search).get("from"));
-          if (safeSource) nextParams.set("from", safeSource);
-          window.history.replaceState(null, "", `/app/composer?${nextParams.toString()}`);
+          // Calendar publication identity is part of the editor mode, not disposable
+          // navigation decoration. Keep it through every autosave so formatting or text
+          // edits cannot turn "Update publication" into the new-post action bar.
+          window.history.replaceState(
+            null,
+            "",
+            composerPersistedDraftHref(window.location.search, draft.id),
+          );
           lastSavedRevisionRef.current = Math.max(lastSavedRevisionRef.current, acknowledgedRevision.revision);
           lastAttemptedRevisionRef.current = Math.max(lastAttemptedRevisionRef.current, acknowledgedRevision.revision);
           setLastSavedRevision((current) => Math.max(current, acknowledgedRevision.revision));

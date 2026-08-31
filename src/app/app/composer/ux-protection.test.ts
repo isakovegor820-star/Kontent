@@ -55,6 +55,7 @@ describe("composer UX protection contract", () => {
   it("edits calendar publications without reopening the removed management modal", () => {
     expect(source).toContain('params.get("publication")');
     expect(source).toContain("getPublicationOperationEditorContext(publicationParam");
+    expect(source).toContain("composerPersistedDraftHref(window.location.search, draft.id)");
     expect(source).toContain("Обновить публикацию");
     expect(source).toContain("Запланировать снова");
     expect(source).toContain("Отменить запланированную публикацию?");
