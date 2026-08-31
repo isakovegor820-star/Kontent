@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   probeUploadIngressConfiguration: vi.fn(),
   probeTrackingSecretsConfiguration: vi.fn(),
   getSessionUser: vi.fn(),
+  getDatabasePoolSnapshot: vi.fn(),
 }));
 
 vi.mock("@/lib/readiness-probes", () => ({
@@ -22,6 +23,7 @@ vi.mock("@/lib/readiness-probes", () => ({
   probeTrackingSecretsConfiguration: mocks.probeTrackingSecretsConfiguration,
 }));
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
+vi.mock("@/lib/db", () => ({ getDatabasePoolSnapshot: mocks.getDatabasePoolSnapshot }));
 
 import { GET } from "./route";
 
@@ -55,6 +57,23 @@ describe("GET /api/readiness", () => {
     mocks.probeMailDeliveryConfiguration.mockReturnValue("up");
     mocks.probeUploadIngressConfiguration.mockReturnValue("up");
     mocks.probeTrackingSecretsConfiguration.mockReturnValue("up");
+    mocks.getDatabasePoolSnapshot.mockReturnValue({
+      schemaVersion: 1,
+      role: "web",
+      max: 3,
+      total: 0,
+      active: 0,
+      idle: 0,
+      waiting: 0,
+      acquireWaitP95Ms: null,
+      acquireSamples: 0,
+      acquireTimeouts: 0,
+      acquireErrors: 0,
+      connectionTimeoutMillis: 2_000,
+      queryTimeoutMillis: 30_000,
+      statementTimeoutMillis: 30_000,
+      idleInTransactionTimeoutMillis: 15_000,
+    });
     mocks.probeAiProviderReadiness.mockResolvedValue([{
       engine: "openai",
       state: "closed",
@@ -113,6 +132,18 @@ describe("GET /api/readiness", () => {
     await expect(response.json()).resolves.toMatchObject({
       status: "not_ready",
       webReady: false,
+    });
+  });
+
+  it("keeps readiness JSON available when optional pool telemetry throws", async () => {
+    mocks.getDatabasePoolSnapshot.mockImplementation(() => {
+      throw new Error("database_pool_max_not_configured:web");
+    });
+    const response = await GET(operatorRequest());
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      webReady: true,
+      databasePool: null,
     });
   });
 

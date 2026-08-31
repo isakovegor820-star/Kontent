@@ -17,6 +17,17 @@ import { getDatabasePoolSnapshot } from "@/lib/db";
 
 export const runtime = "nodejs";
 
+function databasePoolSnapshot() {
+  try {
+    return getDatabasePoolSnapshot();
+  } catch {
+    // Pool telemetry is diagnostic only. Dependency probes above remain the
+    // authoritative readiness signal and must still return a bounded JSON
+    // response when runtime pool configuration itself is unavailable.
+    return null;
+  }
+}
+
 function validOperatorBearer(req: NextRequest): boolean {
   const configured = String(process.env.AURORA_READINESS_TOKEN || "");
   const supplied = req.headers.get("authorization")?.match(/^Bearer\s+(.+)$/iu)?.[1] || "";
@@ -62,7 +73,7 @@ export async function GET(req: NextRequest) {
     tokenEncryption: database.tokenEncryption,
     trackingSecrets: probeTrackingSecretsConfiguration(),
   });
-  return NextResponse.json({ ...report, databasePool: getDatabasePoolSnapshot() }, {
+  return NextResponse.json({ ...report, databasePool: databasePoolSnapshot() }, {
     status: report.webReady ? 200 : 503,
     headers: { "Cache-Control": "no-store" },
   });
