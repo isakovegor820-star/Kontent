@@ -167,6 +167,10 @@ jobs:
           AURORA_AVATAR_BODY_LIMIT_BYTES: ${{ vars.AVATAR_BODY_LIMIT_BYTES }}
           AURORA_DB_POOL_MAX_WEB: ${{ vars.DB_POOL_MAX_WEB }}
           AURORA_DB_POOL_MAX_WORKER: ${{ vars.DB_POOL_MAX_WORKER }}
+          AURORA_AI_SERVICE_ENGINE: ${{ vars.AI_SERVICE_ENGINE }}
+          AURORA_AI_FALLBACK_ENGINES: ${{ vars.AI_FALLBACK_ENGINES }}
+          AURORA_AI_SEMANTIC_ENGINE: ${{ vars.AI_SEMANTIC_ENGINE }}
+          AURORA_AI_SEMANTIC_FALLBACK_ENGINES: ${{ vars.AI_SEMANTIC_FALLBACK_ENGINES }}
         run: |
           test -n "$PRODUCTION_SSH_USER"
           [[ "$AURORA_DEPLOY_SHA" =~ ^[0-9a-f]{40}$ ]]
@@ -183,6 +187,20 @@ jobs:
           for pool_max in "$AURORA_DB_POOL_MAX_WEB" "$AURORA_DB_POOL_MAX_WORKER"; do
             if [[ ! "$pool_max" =~ ^[0-9]+$ ]] || (( pool_max < 1 || pool_max > 100 )); then
               echo "DB pool limits must be integers between 1 and 100" >&2
+              exit 1
+            fi
+          done
+          # These are interpolated into the remote command line below, so they are held to
+          # the engine-id charset here as well as inside the deploy script.
+          for engine_id in "$AURORA_AI_SERVICE_ENGINE" "$AURORA_AI_SEMANTIC_ENGINE"; do
+            if [[ -n "$engine_id" && ! "$engine_id" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+              echo "AI_SERVICE_ENGINE and AI_SEMANTIC_ENGINE must be single engine ids" >&2
+              exit 1
+            fi
+          done
+          for engine_list in "$AURORA_AI_FALLBACK_ENGINES" "$AURORA_AI_SEMANTIC_FALLBACK_ENGINES"; do
+            if [[ -n "$engine_list" && ! "$engine_list" =~ ^[a-z0-9][a-z0-9,-]*$ ]]; then
+              echo "AI_FALLBACK_ENGINES and AI_SEMANTIC_FALLBACK_ENGINES must be comma-separated engine ids" >&2
               exit 1
             fi
           done
@@ -211,7 +229,7 @@ jobs:
             -o ServerAliveInterval=15 \
             -o ServerAliveCountMax=8 \
             "${PRODUCTION_SSH_USER}@${PRODUCTION_SSH_HOST}" \
-            "AURORA_DEPLOY_SHA=${AURORA_DEPLOY_SHA} AURORA_SCHEMA_ROLLBACK_AUDIT=${AURORA_SCHEMA_ROLLBACK_AUDIT} AURORA_ALLOW_LOCAL_PEER_MIGRATIONS=${AURORA_ALLOW_LOCAL_PEER_MIGRATIONS} AURORA_INCOMPLETE_RELEASE_SHA=${AURORA_INCOMPLETE_RELEASE_SHA} AURORA_AVATAR_BODY_LIMIT_BYTES=${AURORA_AVATAR_BODY_LIMIT_BYTES} AURORA_DB_POOL_MAX_WEB=${AURORA_DB_POOL_MAX_WEB} AURORA_DB_POOL_MAX_WORKER=${AURORA_DB_POOL_MAX_WORKER} AURORA_BUILD_ARCHIVE=${remote_archive} AURORA_BUILD_ARCHIVE_SHA256=${build_archive_sha256} bash -s" \
+            "AURORA_DEPLOY_SHA=${AURORA_DEPLOY_SHA} AURORA_SCHEMA_ROLLBACK_AUDIT=${AURORA_SCHEMA_ROLLBACK_AUDIT} AURORA_ALLOW_LOCAL_PEER_MIGRATIONS=${AURORA_ALLOW_LOCAL_PEER_MIGRATIONS} AURORA_INCOMPLETE_RELEASE_SHA=${AURORA_INCOMPLETE_RELEASE_SHA} AURORA_AVATAR_BODY_LIMIT_BYTES=${AURORA_AVATAR_BODY_LIMIT_BYTES} AURORA_DB_POOL_MAX_WEB=${AURORA_DB_POOL_MAX_WEB} AURORA_DB_POOL_MAX_WORKER=${AURORA_DB_POOL_MAX_WORKER} AURORA_AI_SERVICE_ENGINE=${AURORA_AI_SERVICE_ENGINE} AURORA_AI_FALLBACK_ENGINES=${AURORA_AI_FALLBACK_ENGINES} AURORA_AI_SEMANTIC_ENGINE=${AURORA_AI_SEMANTIC_ENGINE} AURORA_AI_SEMANTIC_FALLBACK_ENGINES=${AURORA_AI_SEMANTIC_FALLBACK_ENGINES} AURORA_BUILD_ARCHIVE=${remote_archive} AURORA_BUILD_ARCHIVE_SHA256=${build_archive_sha256} bash -s" \
             < scripts/deploy-production.sh
 
       - name: Verify production deployment

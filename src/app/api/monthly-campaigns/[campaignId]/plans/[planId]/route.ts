@@ -1,7 +1,10 @@
 import { NextRequest } from "next/server";
 
 import { getPool } from "@/lib/db";
-import { transitionMonthlyCampaignPlan } from "@/lib/monthly-campaign-service";
+import {
+  refreshMonthlyCampaignPlanProfile,
+  transitionMonthlyCampaignPlan,
+} from "@/lib/monthly-campaign-service";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import { getSessionUser } from "@/lib/session";
 import {
@@ -30,10 +33,15 @@ export async function PATCH(req: NextRequest, context: Context) {
   if (!parsed.ok) return monthlyCampaignJson({ ok: false, error: parsed.error }, parsed.status, requestId);
   const body = parsed.body;
   try {
-    const plan = await transitionMonthlyCampaignPlan({
-      pool: getPool(), actorUserId: user.id, campaignId, planId,
-      action: body.action, expectedPlanVersion: body.expectedPlanVersion, requestId,
-    });
+    const plan = body.action === "refresh"
+      ? await refreshMonthlyCampaignPlanProfile({
+        pool: getPool(), actorUserId: user.id, campaignId, planId,
+        expectedPlanVersion: body.expectedPlanVersion, requestId,
+      })
+      : await transitionMonthlyCampaignPlan({
+        pool: getPool(), actorUserId: user.id, campaignId, planId,
+        action: body.action, expectedPlanVersion: body.expectedPlanVersion, requestId,
+      });
     return monthlyCampaignJson({ ok: true, plan }, 200, requestId);
   } catch (error) {
     return monthlyCampaignApiError(error, requestId);

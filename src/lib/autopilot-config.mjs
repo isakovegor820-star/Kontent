@@ -34,11 +34,16 @@ export const AUTOPILOT_ENGINE_OPTIONS = Object.freeze([
 // inside the worker attempt budget. MiniMax and GPT-5.4 stay selectable, but they are
 // too slow or too bursty to be the automatic first hop.
 export const DEFAULT_AUTOPILOT_ENGINE = "navy-deepseek-flash";
+// Fallback order is recovery order, so it must be ranked by observed reliability rather
+// than by capability. GPT-5.4 was the second hop while the upstream route behind it
+// answered every Autopilot request with a provider error, which spent one attempt of every
+// draft's budget before recovery could even begin. It stays in the fleet — the same route
+// recovers — but only after the models that actually complete a draft.
 export const AUTOPILOT_FAST_FALLBACK_FLEET = Object.freeze([
   "navy-deepseek-flash",
-  "navy-gpt-5-4",
   "navy-qwen-3-6",
   "navy-minimax-m3",
+  "navy-gpt-5-4",
 ]);
 
 // A provider wave can fail without invalidating the plan. BullMQ retries the same durable

@@ -1,12 +1,18 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { AiCompletionError, completeAiText } from "./ai-completion-service.mjs";
+import {
+  AiCompletionError,
+  completeAiText,
+  resetAiCompletionCircuits,
+} from "./ai-completion-service.mjs";
 import { configuredAiConcurrency, configuredServiceEngine } from "./ai-engine-policy.mjs";
 import { autopilotFallbackEngines } from "./autopilot-config.mjs";
 
 const request = { system: "SYSTEM", user: "USER", temperature: 0.2, maxTokens: 300 };
 
 describe("shared direct/background AI completion service", () => {
+  beforeEach(resetAiCompletionCircuits);
+
   it("keeps cloud plan concurrency even when local Ollama is the last fallback", () => {
     const env = {
       NAVYAI_API_KEY: "secret",
@@ -26,17 +32,23 @@ describe("shared direct/background AI completion service", () => {
     const fetchImpl = vi.fn(async () => Response.json({
       choices: [{ message: { content: "DONE" }, finish_reason: "stop" }],
     }));
-    expect(configuredServiceEngine(null, env)).toBe("navy-gpt-5-4");
+    // An unpinned surface must land on a route that answers. GPT-5.4 held this slot while
+    // returning HTTP 500 for every Autopilot request, so no unpinned plan could generate.
+    expect(configuredServiceEngine(null, env)).toBe("navy-deepseek-flash");
     const result = await completeAiText(request, { env, fetchImpl });
 
-    expect(result).toMatchObject({ text: "DONE", engine: "navy-gpt-5-4", fallbackUsed: false });
+    expect(result).toMatchObject({
+      text: "DONE",
+      engine: "navy-deepseek-flash",
+      fallbackUsed: false,
+    });
     expect(fetchImpl).toHaveBeenCalledWith(
       "https://navy.example/v1/chat/completions",
       expect.objectContaining({ method: "POST" }),
     );
     expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toMatchObject({
-      model: "gpt-5.4",
-      max_tokens: 3_000,
+      model: "deepseek-v4-flash",
+      max_tokens: 1_200,
     });
   });
 
@@ -256,7 +268,7 @@ describe("shared direct/background AI completion service", () => {
 
     expect(result).toMatchObject({
       text: "ГОТОВЫЙ НЕДЕЛЬНЫЙ ПЛАН",
-      engine: "navy-gpt-5-4",
+      engine: "navy-deepseek-flash",
       fallbackUsed: true,
     });
     expect(fetchImpl).toHaveBeenCalledTimes(2);
@@ -280,7 +292,7 @@ describe("shared direct/background AI completion service", () => {
 
     expect(result).toMatchObject({
       text: "FALLBACK POST",
-      engine: "navy-gpt-5-4",
+      engine: "navy-deepseek-flash",
       fallbackUsed: true,
     });
     expect(fetchImpl).toHaveBeenCalledTimes(2);
@@ -319,7 +331,7 @@ describe("shared direct/background AI completion service", () => {
 
     expect(result).toMatchObject({
       text: "NAVY FALLBACK",
-      engine: "navy-gpt-5-4",
+      engine: "navy-deepseek-flash",
       attempts: 2,
     });
     expect(fetchImpl).toHaveBeenCalledTimes(2);

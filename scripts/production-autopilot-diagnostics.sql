@@ -92,6 +92,36 @@ channel_rows as (
   select count(*)::bigint as channels,
          count(*) filter (where coalesce(to_jsonb(c)->>'status', '') = 'active')::bigint as active_channels
     from public.channels as c
+),
+-- A plan the recovery scan cannot see is indistinguishable, from the UI, from a plan that
+-- is still building. reconcileBuildingAutopilotPlans() inner-joins the channel, an active
+-- privileged member and the settings row, so one failing predicate silently removes the
+-- plan from every retry path forever. Evaluate each predicate separately per stuck plan.
+recovery_visibility as (
+  select p.id as plan_id,
+         p.status,
+         p.project_id,
+         p.channel_id,
+         p.repair_strategy,
+         exists (
+           select 1 from public.channels c
+            where c.id = p.channel_id and c.project_id = p.project_id
+              and c.network = 'tg' and c.is_active = true
+         ) as channel_join_ok,
+         exists (
+           select 1 from public.project_members m
+            where m.project_id = p.project_id and m.user_id = p.user_id
+              and m.status = 'active' and m.role in ('owner','author','approver')
+         ) as member_join_ok,
+         exists (
+           select 1 from public.autopilot_settings s
+            where s.project_id = p.project_id and s.channel_id = p.channel_id
+         ) as settings_join_ok,
+         (p.build_report -> 'autoRecovery' ->> 'jobId') as auto_recovery_job_id
+    from public.autopilot_plan as p
+   where p.status in ('building', 'partial')
+   order by p.id desc
+   limit 20
 )
 select jsonb_pretty(jsonb_build_object(
   'transactionReadOnly', current_setting('transaction_read_only'),
@@ -105,7 +135,11 @@ select jsonb_pretty(jsonb_build_object(
   'stuckBuilding', (select to_jsonb(e) from stuck_building as e),
   'aiUsageToday', (select to_jsonb(e) from ai_usage_today as e),
   'aiUsageRecent', coalesce((select jsonb_agg(to_jsonb(e)) from ai_usage_recent as e), '[]'::jsonb),
-  'channels', (select to_jsonb(e) from channel_rows as e)
+  'channels', (select to_jsonb(e) from channel_rows as e),
+  'recoveryVisibility', coalesce(
+    (select jsonb_agg(to_jsonb(e) order by e.plan_id desc) from recovery_visibility as e),
+    '[]'::jsonb
+  )
 ))::text;
 
 commit;

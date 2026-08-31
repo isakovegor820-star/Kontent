@@ -188,6 +188,17 @@ describe("production deployment shell contract", () => {
     }
   });
 
+  it("re-baselines monthly profile digests after the release is proven, without rolling back", () => {
+    const services = script.indexOf("if ! services_active; then");
+    const rebase = script.indexOf("REBASE_MONTHLY_PROFILE_HASHES");
+    const rebaseBlock = script.slice(rebase, script.indexOf("current=\"$(readlink -f", rebase));
+    expect(rebase).toBeGreaterThan(services);
+    expect(rebaseBlock).toContain("node scripts/rebase-monthly-profile-hashes.mjs");
+    // A data re-baseline is recoverable from the UI, so it must never trigger a rollback.
+    expect(rebaseBlock).not.toContain("rollback_to");
+    expect(rebaseBlock).not.toContain("exit 1");
+  });
+
   it("preserves the guarded remote retention default from current main", () => {
     expect(script).toContain('KEEP_RELEASES="${AURORA_KEEP_RELEASES:-2}"');
   });

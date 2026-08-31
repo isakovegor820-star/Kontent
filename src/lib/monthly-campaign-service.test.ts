@@ -23,6 +23,7 @@ import {
   normalizeMonthlyCampaignBrief,
   normalizeMonthlyCampaignItems,
   ensureMonthlyCampaignItemDraft,
+  refreshMonthlyCampaignPlanProfile,
   requestMonthlyCampaignRegeneration,
   transitionMonthlyCampaignPlan,
   updateMonthlyCampaign,
@@ -542,6 +543,88 @@ describe("monthly campaign project service", () => {
       idempotencyKey: "regenerate:item:62",
     })).rejects.toMatchObject({ code: "stale_campaign" });
     expect(h.query.mock.calls.some(([sql]) => String(sql).startsWith("update monthly_campaigns"))).toBe(false);
+  });
+
+  function refreshHarness(plan: Record<string, unknown>, campaign = campaignRow()) {
+    return transactionHarness((sql) => {
+      if (sql.includes("from monthly_campaigns")) return { rows: [campaign] };
+      if (sql.includes("from monthly_campaign_plans")) return { rows: [plan] };
+      if (sql.includes("from monthly_campaign_regeneration_operations")) return { rows: [] };
+      if (sql.includes("from content_brief")) return { rows: [] };
+      if (sql.startsWith("update monthly_campaigns")) return { rows: [] };
+      if (sql.startsWith("update monthly_campaign_plans")) {
+        return { rows: [{ id: 52, status: plan.status, version: 5 }] };
+      }
+      if (sql.startsWith("insert into audit_events")) return { rows: [] };
+      throw new Error(`unexpected SQL: ${sql}`);
+    });
+  }
+
+  it("lifts a profile-only block without rewriting topics or spending a generation", async () => {
+    const drifted = "f".repeat(64);
+    const h = refreshHarness(
+      planRow({ status: "approved", source_profile_hash: drifted }),
+      campaignRow({ profile_hash: drifted }),
+    );
+    const result = await refreshMonthlyCampaignPlanProfile({
+      pool: h.pool as never, actorUserId: 11, campaignId: 41, planId: 52, expectedPlanVersion: 4,
+    });
+    expect(result).toEqual({ id: 52, status: "approved", version: 5 });
+    expect(h.query.mock.calls.find(([sql]) => String(sql).startsWith("update monthly_campaigns"))?.[1])
+      .toEqual([41, 7, EMPTY_PROFILE_HASH]);
+    expect(h.query.mock.calls.find(([sql]) => String(sql).startsWith("update monthly_campaign_plans"))?.[1])
+      .toEqual([52, 41, 7, EMPTY_PROFILE_HASH, 4]);
+    const written = h.query.mock.calls.map(([sql]) => String(sql));
+    expect(written.some((sql) => sql.includes("monthly_campaign_items"))).toBe(false);
+    expect(written.some((sql) => sql.startsWith("insert into monthly_campaign_regeneration_operations"))).toBe(false);
+  });
+
+  it("takes the campaign before the plan while refreshing, matching every other writer", async () => {
+    const drifted = "f".repeat(64);
+    const h = refreshHarness(
+      planRow({ source_profile_hash: drifted }),
+      campaignRow({ profile_hash: drifted }),
+    );
+    await refreshMonthlyCampaignPlanProfile({
+      pool: h.pool as never, actorUserId: 11, campaignId: 41, planId: 52, expectedPlanVersion: 4,
+    });
+    const locks = h.query.mock.calls.map(([sql]) => String(sql)).filter((sql) => sql.includes("for update"));
+    expect(locks[0]).toContain("from monthly_campaigns");
+    expect(locks[1]).toContain("from monthly_campaign_plans");
+  });
+
+  it("demands a full rebuild when the campaign brief itself changed, not just the channel", async () => {
+    const h = refreshHarness(planRow({ source_brief_hash: "a".repeat(64) }));
+    await expect(refreshMonthlyCampaignPlanProfile({
+      pool: h.pool as never, actorUserId: 11, campaignId: 41, planId: 52, expectedPlanVersion: 4,
+    })).rejects.toMatchObject({ code: "rebuild_required" });
+    expect(h.query.mock.calls.some(([sql]) => String(sql).startsWith("update"))).toBe(false);
+  });
+
+  it("writes nothing when the plan already matches the current profile", async () => {
+    const h = refreshHarness(planRow());
+    const result = await refreshMonthlyCampaignPlanProfile({
+      pool: h.pool as never, actorUserId: 11, campaignId: 41, planId: 52, expectedPlanVersion: 4,
+    });
+    expect(result).toEqual({ id: 52, status: "draft", version: 4 });
+    expect(h.query.mock.calls.some(([sql]) => String(sql).startsWith("update"))).toBe(false);
+  });
+
+  it("refuses a refresh from a stale tab and while a rebuild is running", async () => {
+    const conflicted = refreshHarness(planRow({ version: 6 }));
+    await expect(refreshMonthlyCampaignPlanProfile({
+      pool: conflicted.pool as never, actorUserId: 11, campaignId: 41, planId: 52, expectedPlanVersion: 4,
+    })).rejects.toMatchObject({ code: "version_conflict" });
+
+    const busy = transactionHarness((sql) => {
+      if (sql.includes("from monthly_campaigns")) return { rows: [campaignRow()] };
+      if (sql.includes("from monthly_campaign_plans")) return { rows: [planRow()] };
+      if (sql.includes("from monthly_campaign_regeneration_operations")) return { rows: [{ id: 91 }] };
+      throw new Error(`unexpected SQL: ${sql}`);
+    });
+    await expect(refreshMonthlyCampaignPlanProfile({
+      pool: busy.pool as never, actorUserId: 11, campaignId: 41, planId: 52, expectedPlanVersion: 4,
+    })).rejects.toMatchObject({ code: "regeneration_in_progress" });
   });
 
   it("reuses an already linked topic draft instead of inserting another", async () => {

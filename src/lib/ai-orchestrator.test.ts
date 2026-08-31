@@ -231,11 +231,13 @@ describe("AI provider orchestration", () => {
 
   it("по умолчанию держит fallback внутри NavyAI и не отправляет local primary в облако", () => {
     const env = { NAVYAI_API_KEY: "test" };
+    // Recovery is ordered by which routes answer, so the models observed failing upstream
+    // are asked last instead of consuming the attempt budget first.
     expect(configuredFallbackEngines("navy-deepseek-pro", env)).toEqual([
-      "navy-gpt-5-4",
-      "navy-minimax-m3",
       "navy-deepseek-flash",
       "navy-qwen-3-6",
+      "navy-minimax-m3",
+      "navy-gpt-5-4",
     ]);
     expect(configuredFallbackEngines("local", { ...env, AI_FALLBACK_ENGINES: "openai" })).toEqual([]);
   });

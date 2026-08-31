@@ -36,6 +36,7 @@
     "test:trends-hydration:e2e": "node scripts/test-trends-hydration-e2e.mjs",
     "db:migrate": "node --env-file-if-exists=.env.local scripts/migrate.mjs",
     "tokens:reencrypt": "node --env-file-if-exists=.env.local scripts/reencrypt-token-envelopes.mjs",
+    "campaigns:rebase-profile-hashes": "node --env-file-if-exists=.env.local scripts/rebase-monthly-profile-hashes.mjs",
     "media:cleanup-orphans": "node --env-file-if-exists=.env.local scripts/cleanup-media-orphans.mjs",
     "worker": "AURORA_RUNTIME_ROLE=worker node --env-file=.env.local worker.mjs",
     "worker:site-analysis": "AURORA_RUNTIME_ROLE=worker node --env-file=.env.local scripts/site-analysis-worker.mjs",

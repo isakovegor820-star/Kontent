@@ -67,6 +67,19 @@ journalctl -u aurora-worker.service --since '-25 min' --no-pager -o cat 2>/dev/n
   | grep -aE '^\[(worker|start|autopilot)\]|schema preflight|preflight failed|database_pool|Error:|error:|ECONNREFUSED|ENOTFOUND|listen|ready' \
   | tail -n 60 | redact || echo "(no matching journal lines)"
 
+section "WORKER JOURNAL (unfiltered tail since the newest restart)"
+# The prefix filter above answers "did the gate fail". It cannot answer "how far did
+# startup get", and a worker that is `active (running)` while registering no BullMQ
+# consumer has stopped somewhere in top-level initialization that logs nothing matching
+# those prefixes. Every line is redacted, same contract as the rest of this report.
+worker_since="$(systemctl show aurora-worker.service -p ActiveEnterTimestamp --value 2>/dev/null || true)"
+if [[ -n "$worker_since" ]]; then
+  journalctl -u aurora-worker.service --since "$worker_since" --no-pager -o cat 2>/dev/null \
+    | tail -n 120 | redact || echo "(no journal lines since restart)"
+else
+  journalctl -u aurora-worker.service --no-pager -o cat -n 120 2>/dev/null | redact || true
+fi
+
 section "WEB JOURNAL (Aurora log prefixes only, last 25 min)"
 journalctl -u aurora-web.service --since '-25 min' --no-pager -o cat 2>/dev/null \
   | grep -aE '^\[(worker|start|web)\]|preflight|database_pool|Error:|error:' \
@@ -77,13 +90,21 @@ if [[ -n "$current_path" && -f "$current_path/.env.production" ]]; then
   printf 'env_file=%s\n' "$current_path/.env.production"
   printf 'env_keys=%s\n' \
     "$(sed -nE 's/^([A-Za-z_][A-Za-z0-9_]*)=.*/\1/p' "$current_path/.env.production" | sort -u | paste -sd, -)"
+  # The AI_*_ENGINE values are model identifiers rather than credentials, and they decide
+  # which upstream route every unpinned surface and the fact-check gate actually call, so a
+  # single dead pinned engine is indistinguishable from "Autopilot is broken" without them.
   for key in AI_API_KEY AI_DAILY_LIMIT REDIS_URL DATABASE_URL TG_BOT_TOKEN \
              AURORA_WORKER_MODE AURORA_RUNTIME_ROLE AURORA_DB_POOL_MAX \
-             AURORA_DB_POOL_MAX_WEB AURORA_DB_POOL_MAX_WORKER; do
+             AURORA_DB_POOL_MAX_WEB AURORA_DB_POOL_MAX_WORKER \
+             AI_SERVICE_ENGINE AI_FALLBACK_ENGINES AI_FALLBACK_STRICT \
+             AI_SEMANTIC_ENGINE AI_SEMANTIC_FALLBACK_ENGINES AI_SEMANTIC_TIMEOUT_MS \
+             SITE_ANALYSIS_ENGINE; do
     value="$(sed -nE "s/^${key}=(.*)$/\1/p" "$current_path/.env.production" | tail -n 1)"
     if [[ -z "$value" ]]; then
       printf '%s=<absent-or-empty>\n' "$key"
-    elif [[ "$key" == "AI_DAILY_LIMIT" || "$key" == AURORA_* ]]; then
+    elif [[ "$key" == "AI_DAILY_LIMIT" || "$key" == AURORA_* || "$key" == AI_*ENGINE* \
+            || "$key" == "AI_FALLBACK_STRICT" || "$key" == "AI_SEMANTIC_TIMEOUT_MS" \
+            || "$key" == "SITE_ANALYSIS_ENGINE" ]]; then
       # Non-secret tuning knobs: the exact value is the diagnosis.
       printf '%s=%s\n' "$key" "$value"
     else
@@ -149,15 +170,71 @@ if [[ -n "$current_path" && -f "$current_path/.env.production" ]]; then
           "$(redis-cli -u "$REDIS_URL" zcard "bull:${queue}:failed" 2>/dev/null)" \
           "$(redis-cli -u "$REDIS_URL" zcard "bull:${queue}:completed" 2>/dev/null)" \
           "$(redis-cli -u "$REDIS_URL" exists "bull:${queue}:paused" 2>/dev/null)"
-        # A registered BullMQ consumer is exactly what /api/autopilot/generate counts.
+        # A registered BullMQ consumer is exactly what /api/autopilot/generate counts, and
+        # BullMQ names that client after the base64 of the queue name, not the queue name.
+        # Matching the plain name reported zero consumers for a fully healthy worker.
+        queue_b64="$(printf '%s' "$queue" | base64 -w0)"
         printf '%s consumers=%s\n' \
           "$queue" \
-          "$(redis-cli -u "$REDIS_URL" --no-raw client list 2>/dev/null | grep -c "bull:${queue}" || echo 0)"
+          "$(redis-cli -u "$REDIS_URL" --no-raw client list 2>/dev/null \
+              | grep -c "name=bull:${queue_b64}" || echo 0)"
+        # A job that exhausted its attempts keeps its deterministic id, and BullMQ ignores a
+        # later `add` for an id it already holds, so these ids are what silently swallows
+        # every replay of the matching plan.
+        printf '%s failed_job_ids=%s\n' \
+          "$queue" \
+          "$(redis-cli -u "$REDIS_URL" zrange "bull:${queue}:failed" 0 -1 2>/dev/null \
+              | paste -sd, - || true)"
       done
       printf 'autopilot_meta_keys=%s\n' \
         "$(redis-cli -u "$REDIS_URL" --scan --pattern 'bull:autopilot-plans:*' --count 200 2>/dev/null | wc -l)"
+      # Which BullMQ consumers exist at all. The worker builds them in a fixed order, so
+      # the set that registered says how far top-level startup actually got.
+      printf 'registered_bull_consumers=%s\n' \
+        "$(redis-cli -u "$REDIS_URL" --no-raw client list 2>/dev/null \
+            | sed -nE 's/.*[[:space:]]name=(bull:[^[:space:]]+).*/\1/p' \
+            | sort | uniq -c | awk '{printf "%s(%s) ", $2, $1}' || true)"
     fi
   ) || echo "(redis probe failed)"
+fi
+
+section "WEB READINESS (AI capability detail)"
+# `aiReady` gates every release: the deploy workflow refuses to ship onto a host that
+# reports it false. It is computed from the web process's in-memory provider circuit
+# snapshot and demands that *every* engine ever called reports a successful last outcome,
+# so one dead engine reached through a fallback keeps production degraded until a restart.
+# The engine ids and their last outcome are what explain a red gate.
+if [[ -z "$current_path" || ! -f "$current_path/.env.production" ]]; then
+  echo "(skipped: no runtime env)"
+else
+  (
+    cd "$current_path"
+    set -a
+    # shellcheck disable=SC1091
+    . ./.env.production
+    set +a
+    if [[ -z "${AURORA_READINESS_TOKEN:-}" ]]; then
+      echo "(skipped: AURORA_READINESS_TOKEN absent)"
+      exit 0
+    fi
+    payload="$(curl -fsS --max-time 10 \
+      -H "Authorization: Bearer ${AURORA_READINESS_TOKEN}" \
+      http://127.0.0.1:3002/api/readiness 2>/dev/null || true)"
+    if [[ -z "$payload" ]]; then
+      echo "(readiness request failed)"
+      exit 0
+    fi
+    AURORA_DIAG_READINESS="$payload" node --input-type=module -e '
+      const report = JSON.parse(process.env.AURORA_DIAG_READINESS);
+      console.log(JSON.stringify({
+        status: report.status,
+        aiReady: report.aiReady,
+        aiConfigured: report.checks?.aiConfigured,
+        reasons: report.reasons,
+        aiProviders: report.checks?.aiProviders,
+      }, null, 2));
+    '
+  ) | redact || echo "(readiness probe failed)"
 fi
 
 section "AI PROVIDER PROBE (bounded, opt-in)"

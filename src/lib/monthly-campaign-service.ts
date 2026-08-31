@@ -159,6 +159,7 @@ export class MonthlyCampaignServiceError extends Error {
     | "not_found"
     | "version_conflict"
     | "stale_campaign"
+    | "rebuild_required"
     | "invalid_items"
     | "invalid_item"
     | "duplicate_topics"
@@ -1121,6 +1122,70 @@ export async function transitionMonthlyCampaignPlan(input: {
         planRow.id,
         expectedPlanVersion, Number(next.version), campaign.id, currentStatus, nextStatus,
         campaign.briefHash, input.requestId?.slice(0, 128) || null],
+    );
+    return { id: Number(next.id), status: next.status as MonthlyCampaignPlanStatus, version: Number(next.version) };
+  });
+}
+
+/**
+ * Topics are written from the campaign brief, so a drifted channel profile does not
+ * invalidate them — it only blocks the plan. Re-stamping the plan with the current profile
+ * lifts that block without touching topics or detaching prepared drafts.
+ */
+export async function refreshMonthlyCampaignPlanProfile(input: {
+  pool: TransactionPool;
+  actorUserId: number;
+  campaignId: number;
+  planId: number;
+  expectedPlanVersion: unknown;
+  requestId?: string | null;
+}): Promise<{ id: number; status: MonthlyCampaignPlanStatus; version: number }> {
+  const expectedPlanVersion = positiveVersion(input.expectedPlanVersion);
+  return withTransaction(input.pool, async (client) => {
+    const projectId = await authorizeSelected(client, input.actorUserId, "content.edit");
+    const { campaign, planRow } = await lockedPlanContext(
+      client, projectId, positiveId(input.campaignId), positiveId(input.planId), true,
+    );
+    if (campaign.archived) throw new MonthlyCampaignServiceError("archived");
+    await ensureNoActivePlanRegeneration(client, projectId, Number(planRow.id));
+    if (Number(planRow.version) !== expectedPlanVersion) {
+      throw new MonthlyCampaignServiceError("version_conflict");
+    }
+    // A changed campaign brief means the topics themselves came from another goal, and no
+    // amount of re-stamping makes them current again.
+    if (String(planRow.source_brief_hash) !== campaign.briefHash) {
+      throw new MonthlyCampaignServiceError("rebuild_required");
+    }
+    const currentProfileHash = await readProjectContentProfileHash(client, projectId);
+    const previousProfileHash = String(planRow.source_profile_hash);
+    if (previousProfileHash === currentProfileHash && campaign.profileHash === currentProfileHash) {
+      return {
+        id: Number(planRow.id),
+        status: String(planRow.status) as MonthlyCampaignPlanStatus,
+        version: expectedPlanVersion,
+      };
+    }
+    await rebaseCampaignProfile(client, projectId, campaign.id, currentProfileHash);
+    const updated = await client.query<{ id: number | string; status: string; version: number | string }>(
+      `update monthly_campaign_plans
+          set source_profile_hash = $4, version = version + 1, updated_at = now()
+        where id = $1 and campaign_id = $2 and project_id = $3 and version = $5
+        returning id, status, version`,
+      [planRow.id, campaign.id, projectId, currentProfileHash, expectedPlanVersion],
+    );
+    if (!updated.rows[0]) throw new MonthlyCampaignServiceError("version_conflict");
+    const next = updated.rows[0];
+    await client.query(
+      `insert into audit_events (
+         project_id, actor_user_id, action, entity_type, entity_id,
+         before_version, after_version, safe_data, request_id
+       ) values (
+         $1, $2, 'monthly_campaign.plan_profile_refreshed', 'monthly_campaign_plan', $3::text, $4, $5,
+         jsonb_build_object('campaign_id', $6::bigint, 'from_profile_hash', $7::text,
+              'to_profile_hash', $8::text), $9
+       )`,
+      [projectId, input.actorUserId, planRow.id, expectedPlanVersion, Number(next.version),
+        campaign.id, previousProfileHash, currentProfileHash, input.requestId?.slice(0, 128) || null],
     );
     return { id: Number(next.id), status: next.status as MonthlyCampaignPlanStatus, version: Number(next.version) };
   });
