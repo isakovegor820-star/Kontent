@@ -3974,8 +3974,20 @@ try {
     await saveButton.waitFor();
     const alreadySaved = await saveButton.getAttribute("data-loading") !== "true"
       && (await saveButton.textContent())?.trim() === "Сохранено";
-    await saveButton.click();
     if (!alreadySaved) {
+      await waitFor(
+        () => saveButton.isEnabled().catch(() => false),
+        "Composer save button did not become enabled",
+        UI_WAIT_TIMEOUT_MS,
+      );
+      const stillNeedsSave = (await saveButton.textContent().catch(() => ""))?.trim() !== "Сохранено";
+      if (stillNeedsSave) {
+        // The typing-to-save transition can replace this React button between
+        // Playwright's stability check and the native click in WebKit. Resolve
+        // the current enabled node and invoke its real DOM click atomically;
+        // the UI acknowledgement and database equality below remain the proof.
+        await saveButton.evaluate((button) => button.click());
+      }
       await waitFor(async () => {
         const summary = await protection.locator("summary").textContent();
         return summary?.includes("Сохранено") === true;
