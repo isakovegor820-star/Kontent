@@ -127,6 +127,26 @@ channel_rows as (
 -- is still building. reconcileBuildingAutopilotPlans() inner-joins the channel, an active
 -- privileged member and the settings row, so one failing predicate silently removes the
 -- plan from every retry path forever. Evaluate each predicate separately per stuck plan.
+-- The quota reservation key is deterministic per plan (`worker:autopilot-plan:<proj>:<plan>`).
+-- A `committed` row against a plan that is still `building` is the wedge: the build charged
+-- quota, died before writing a result, and every later replay returns "already done" without
+-- doing anything, so the plan never leaves `building` and never records a failure.
+building_plan_quota as (
+  select p.id as plan_id,
+         p.channel_id,
+         p.status,
+         p.created_at,
+         'worker:autopilot-plan:' || p.project_id || ':' || p.id as reservation_key,
+         u.status as reservation_status,
+         u.finalized_at
+    from public.autopilot_plan as p
+    left join public.ai_usage as u
+      on u.user_id = p.user_id
+     and u.reservation_key = 'worker:autopilot-plan:' || p.project_id || ':' || p.id
+   where p.status = 'building'
+   order by p.id desc
+   limit 20
+),
 recovery_visibility as (
   select p.id as plan_id,
          p.status,
@@ -160,6 +180,10 @@ select jsonb_pretty(jsonb_build_object(
   'ledgerTail', coalesce((select jsonb_agg(to_jsonb(e) order by e.name desc) from ledger_tail as e), '[]'::jsonb),
   'autopilotSettings', coalesce((select jsonb_agg(to_jsonb(e)) from settings_rows as e), '[]'::jsonb),
   'contentBriefs', coalesce((select jsonb_agg(to_jsonb(e)) from brief_rows as e), '[]'::jsonb),
+  'buildingPlanQuota', coalesce(
+    (select jsonb_agg(to_jsonb(e) order by e.plan_id desc) from building_plan_quota as e),
+    '[]'::jsonb
+  ),
   'buildingPlanBriefs', coalesce(
     (select jsonb_agg(to_jsonb(e) order by e.channel_id) from building_plan_briefs as e),
     '[]'::jsonb

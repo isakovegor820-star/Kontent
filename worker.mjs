@@ -11467,7 +11467,28 @@ async function processAutopilotPlanJob(job) {
           : [projectId, planId],
     ),
   });
-  if (usage.state === "committed") return { ok: true, replayed: true, planId };
+  if (usage.state === "committed") {
+    // A committed reservation records that this plan's quota was charged — not that the plan
+    // was delivered. PostgreSQL owns build state, and the reservation key is deterministic
+    // per plan, so an attempt that charged quota and then died before writing a result left
+    // a row in `building` that every later replay short-circuits here. The job then completes
+    // successfully, `removeOnComplete` deletes it, and the plan sits in `building` with
+    // nothing queued, no failure recorded and no log line — while reconciliation replays that
+    // same no-op every 30 s. Two production plans stayed that way for eight days, which is
+    // what "it will not build a weekly plan" actually looked like. Resume the build instead,
+    // reusing the reservation that was already paid for so the retry cannot double-charge.
+    const unfinished = await pool.query(
+      `select 1 from autopilot_plan
+        where id = $1 and project_id = $2 and channel_id = $3 and status = 'building'`,
+      [planId, projectId, channelId],
+    );
+    if (!unfinished.rowCount) return { ok: true, replayed: true, planId };
+    console.warn("[autopilot] resuming a build whose quota was already charged", {
+      projectId,
+      channelId,
+      planId,
+    });
+  }
   if (usage.state === "in_progress") return { ok: true, inProgress: true, planId };
   if (usage.state === "limit") {
     const recoverySource = (
