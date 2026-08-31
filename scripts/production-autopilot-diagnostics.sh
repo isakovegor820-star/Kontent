@@ -77,13 +77,21 @@ if [[ -n "$current_path" && -f "$current_path/.env.production" ]]; then
   printf 'env_file=%s\n' "$current_path/.env.production"
   printf 'env_keys=%s\n' \
     "$(sed -nE 's/^([A-Za-z_][A-Za-z0-9_]*)=.*/\1/p' "$current_path/.env.production" | sort -u | paste -sd, -)"
+  # The AI_*_ENGINE values are model identifiers rather than credentials, and they decide
+  # which upstream route every unpinned surface and the fact-check gate actually call, so a
+  # single dead pinned engine is indistinguishable from "Autopilot is broken" without them.
   for key in AI_API_KEY AI_DAILY_LIMIT REDIS_URL DATABASE_URL TG_BOT_TOKEN \
              AURORA_WORKER_MODE AURORA_RUNTIME_ROLE AURORA_DB_POOL_MAX \
-             AURORA_DB_POOL_MAX_WEB AURORA_DB_POOL_MAX_WORKER; do
+             AURORA_DB_POOL_MAX_WEB AURORA_DB_POOL_MAX_WORKER \
+             AI_SERVICE_ENGINE AI_FALLBACK_ENGINES AI_FALLBACK_STRICT \
+             AI_SEMANTIC_ENGINE AI_SEMANTIC_FALLBACK_ENGINES AI_SEMANTIC_TIMEOUT_MS \
+             SITE_ANALYSIS_ENGINE; do
     value="$(sed -nE "s/^${key}=(.*)$/\1/p" "$current_path/.env.production" | tail -n 1)"
     if [[ -z "$value" ]]; then
       printf '%s=<absent-or-empty>\n' "$key"
-    elif [[ "$key" == "AI_DAILY_LIMIT" || "$key" == AURORA_* ]]; then
+    elif [[ "$key" == "AI_DAILY_LIMIT" || "$key" == AURORA_* || "$key" == AI_*ENGINE* \
+            || "$key" == "AI_FALLBACK_STRICT" || "$key" == "AI_SEMANTIC_TIMEOUT_MS" \
+            || "$key" == "SITE_ANALYSIS_ENGINE" ]]; then
       # Non-secret tuning knobs: the exact value is the diagnosis.
       printf '%s=%s\n' "$key" "$value"
     else

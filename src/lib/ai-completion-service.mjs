@@ -54,6 +54,15 @@ function recordCircuitSuccess(engine) {
   completionCircuits.delete(engine);
 }
 
+/**
+ * Circuit state is process-global on purpose so one broken route stops being retried across
+ * concurrent calls. Tests share that process, so without an explicit reset a failure staged
+ * by one case silently decides which engine a later case reaches.
+ */
+export function resetAiCompletionCircuits() {
+  completionCircuits.clear();
+}
+
 function recordCircuitFailure(engine, error, now, threshold, openMs) {
   if (!isRetryableAiCompletionError(error)) return;
   const previous = completionCircuits.get(engine);

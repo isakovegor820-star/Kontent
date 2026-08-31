@@ -81,7 +81,12 @@ export function resolveAiEngineRuntime(engineId, env = process.env) {
 export function configuredServiceEngine(requested = null, env = process.env) {
   if (isConfiguredEngineId(requested)) return requested;
   if (isConfiguredEngineId(env.AI_SERVICE_ENGINE)) return env.AI_SERVICE_ENGINE;
-  if (env.NAVYAI_API_KEY) return "navy-gpt-5-4";
+  // Every surface that does not pin an engine lands here, so this constant decides the
+  // health of the whole background fleet. GPT-5.4's upstream route answers Autopilot's
+  // request shape with HTTP 500, which is why unpinned plans recorded
+  // `generation_engine: navy-gpt-5-4` and died on `provider_error` before any fallback
+  // could earn a draft. DeepSeek Flash serves the same key and completes in a few seconds.
+  if (env.NAVYAI_API_KEY) return "navy-deepseek-flash";
   if (env.OPENAI_API_KEY || env.AI_API_KEY) return "openai";
   if (env.ANTHROPIC_API_KEY) return "claude";
   if (env.GEMINI_API_KEY) return "gemini";
@@ -100,12 +105,17 @@ export function configuredAiFallbacks(primary, env = process.env) {
   // as an automatic safety net; this neither changes data residency nor sends the prompt to
   // another vendor. Explicit operator fallbacks are attempted first because they encode the
   // latest observed provider health; the remaining same-provider fleet is the final tier.
+  // This tier is recovery order, so it is ranked by which routes actually answer rather
+  // than by capability. GPT-5.4 (HTTP 500) and DeepSeek Pro (no response inside 45s) are
+  // the two that currently fail, and leading with them spent the attempt budget before a
+  // healthy model was ever asked. They stay last so recovery still reaches them once the
+  // upstream route heals.
   const sameProvider = primary.startsWith("navy-")
     ? [
-        "navy-gpt-5-4",
-        "navy-minimax-m3",
         "navy-deepseek-flash",
         "navy-qwen-3-6",
+        "navy-minimax-m3",
+        "navy-gpt-5-4",
         "navy-deepseek-pro",
       ]
     : [];
