@@ -80,6 +80,7 @@ export function monthlyCampaignApiError(error: unknown, requestId: string) {
       not_found: 404,
       version_conflict: 409,
       stale_campaign: 409,
+      rebuild_required: 409,
       invalid_items: 422,
       invalid_item: 422,
       duplicate_topics: 409,

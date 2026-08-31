@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   listMonthlyCampaigns: vi.fn(),
   requestMonthlyCampaignRegeneration: vi.fn(),
   transitionMonthlyCampaignPlan: vi.fn(),
+  refreshMonthlyCampaignPlanProfile: vi.fn(),
   getMonthlyCampaign: vi.fn(),
   createMonthlyCampaignPlan: vi.fn(),
   ensureMonthlyCampaignItemDraft: vi.fn(),
@@ -28,6 +29,7 @@ vi.mock("@/lib/monthly-campaign-service", async (importOriginal) => {
     listMonthlyCampaigns: mocks.listMonthlyCampaigns,
     requestMonthlyCampaignRegeneration: mocks.requestMonthlyCampaignRegeneration,
     transitionMonthlyCampaignPlan: mocks.transitionMonthlyCampaignPlan,
+    refreshMonthlyCampaignPlanProfile: mocks.refreshMonthlyCampaignPlanProfile,
     getMonthlyCampaign: mocks.getMonthlyCampaign,
     createMonthlyCampaignPlan: mocks.createMonthlyCampaignPlan,
     ensureMonthlyCampaignItemDraft: mocks.ensureMonthlyCampaignItemDraft,
@@ -61,6 +63,7 @@ describe("monthly campaign API", () => {
       operationId: 91, status: "pending", duplicate: false, planVersion: 5, targetItemIds: [62],
     });
     mocks.transitionMonthlyCampaignPlan.mockResolvedValue({ id: 52, status: "in_review", version: 5 });
+    mocks.refreshMonthlyCampaignPlanProfile.mockResolvedValue({ id: 52, status: "draft", version: 5 });
     mocks.getMonthlyCampaign.mockResolvedValue({
       campaign: {
         startsOn: "2026-09-01",
@@ -172,6 +175,21 @@ describe("monthly campaign API", () => {
     expect(mocks.transitionMonthlyCampaignPlan).toHaveBeenCalledWith(expect.objectContaining({
       actorUserId: 11, campaignId: 41, planId: 52, action: "approve", expectedPlanVersion: 7,
     }));
+  });
+
+  it("routes a profile refresh away from the status transitions", async () => {
+    const response = await transition(
+      request("/api/monthly-campaigns/41/plans/52", "PATCH", {
+        action: "refresh", expectedPlanVersion: 7,
+      }),
+      { params: Promise.resolve({ campaignId: "41", planId: "52" }) },
+    );
+    expect(response.status).toBe(200);
+    expect(mocks.refreshMonthlyCampaignPlanProfile).toHaveBeenCalledWith(expect.objectContaining({
+      actorUserId: 11, campaignId: 41, planId: 52, expectedPlanVersion: 7,
+    }));
+    expect(mocks.refreshMonthlyCampaignPlanProfile.mock.calls[0][0]).not.toHaveProperty("action");
+    expect(mocks.transitionMonthlyCampaignPlan).not.toHaveBeenCalled();
   });
 
   it("builds the initial month on the server instead of trusting client-supplied topics", async () => {

@@ -19,6 +19,7 @@ import {
   Plus,
   RefreshCw,
   Send,
+  Settings2,
   Sparkles,
 } from "lucide-react";
 
@@ -151,7 +152,8 @@ function apiError(code: string | undefined): string {
     duplicate_topics: "Несколько тем слишком похожи на прошлые материалы. Пересобери план.",
     version_conflict: "План изменился в другой вкладке. Данные обновлены — повтори действие.",
     regeneration_in_progress: "Дождись завершения пересборки. Аврора покажет новую версию плана автоматически.",
-    stale_campaign: "Настройки канала изменились. Пересобери весь месяц — отдельную тему или неделю по устаревшему брифу собрать нельзя.",
+    stale_campaign: "Настройки канала изменились. Нажми «Обновить под настройки» — отдельную тему или неделю по устаревшему брифу собрать нельзя.",
+    rebuild_required: "Бриф кампании изменился, темы устарели по сути. Обновления настроек недостаточно — пересобери весь месяц.",
     access_denied: "Для этого действия недостаточно прав в выбранном проекте.",
     worker_unavailable: "Фоновая подготовка сейчас недоступна. Запусти приложение вместе с обработчиком задач и повтори.",
     engine_unavailable: "Для выбранной модели не настроено подключение.",
@@ -485,6 +487,30 @@ export function MonthlyCampaignPlanner() {
       setMessage({
         kind: "success",
         text: action === "submit" ? "План отправлен на согласование." : "План согласован. Теперь можно подготовить первую неделю.",
+      });
+    } catch (error) {
+      setMessage({ kind: "error", text: apiError(error instanceof Error ? error.message : undefined) });
+      await loadDetail(detail.campaign.id, true).catch(() => {});
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const refreshProfile = async () => {
+    if (!detail || !plan || busy || hasActiveRegeneration) return;
+    setBusy("refresh");
+    try {
+      const response = await fetch(`/api/monthly-campaigns/${detail.campaign.id}/plans/${plan.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "refresh", expectedPlanVersion: plan.version }),
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || payload?.ok !== true) throw new Error(payload?.error || "server");
+      await loadDetail(detail.campaign.id);
+      setMessage({
+        kind: "success",
+        text: "План снова актуален: темы и готовые тексты сохранены, генерация не потрачена.",
       });
     } catch (error) {
       setMessage({ kind: "error", text: apiError(error instanceof Error ? error.message : undefined) });
@@ -964,9 +990,21 @@ export function MonthlyCampaignPlanner() {
               </div>
               {(canEdit || primaryAction) && (
                 <div className="flex flex-wrap gap-2">
+                  {canEdit && plan?.stale && (
+                    <Button
+                      variant="primary"
+                      onClick={refreshProfile}
+                      loading={busy === "refresh"}
+                      disabled={Boolean(busy) || hasActiveRegeneration}
+                      title="Снять блокировку по актуальным настройкам, сохранив темы и готовые тексты"
+                    >
+                      <Settings2 className="h-4 w-4" aria-hidden />
+                      Обновить под настройки
+                    </Button>
+                  )}
                   {canEdit && plan && (
                     <Button
-                      variant={plan.stale ? "primary" : "secondary"}
+                      variant="secondary"
                       onClick={() => regenerate("month")}
                       loading={busy === "regen:month"}
                       disabled={Boolean(busy) || hasActiveRegeneration}
@@ -1003,8 +1041,8 @@ export function MonthlyCampaignPlanner() {
               <span>
                 Настройки канала изменились после создания этого плана. Согласование и подготовка текстов остановлены, чтобы не использовать устаревший бриф.{" "}
                 {canEdit
-                  ? "Нажми «Пересобрать весь месяц» — Аврора соберёт темы по актуальным настройкам, а текущая версия останется в истории."
-                  : "Автор или владелец проекта может пересобрать месяц по актуальным настройкам."}
+                  ? "Темы собраны из брифа кампании и остаются в силе — нажми «Обновить под настройки», чтобы продолжить с ними без новых генераций. «Пересобрать весь месяц» нужен только если хочешь другие темы."
+                  : "Автор или владелец проекта может обновить план под актуальные настройки."}
               </span>
             </div>
           )}
@@ -1347,7 +1385,7 @@ function WeekSection({
             variant="ghost"
             onClick={() => week.items[0] && onRegenerate("week", week.items[0])}
             disabled={Boolean(busy) || hasActiveRegeneration || plan.stale}
-            title={plan.stale ? "Бриф канала изменился — сначала пересобери весь месяц" : undefined}
+            title={plan.stale ? "Настройки канала изменились — сначала нажми «Обновить под настройки»" : undefined}
           >
             <RefreshCw className="h-4 w-4" aria-hidden />
             Пересобрать неделю
@@ -1504,7 +1542,7 @@ function TopicRow({
                 variant="ghost"
                 onClick={() => onRegenerate("item", item)}
                 disabled={Boolean(busy) || regenerating || hasActiveRegeneration || staleBrief}
-                title={staleBrief ? "Бриф канала изменился — сначала пересобери весь месяц" : undefined}
+                title={staleBrief ? "Настройки канала изменились — сначала нажми «Обновить под настройки»" : undefined}
                 aria-label={`Пересобрать только тему «${item.title}»`}
               >
                 <RefreshCw className="h-4 w-4" aria-hidden />Только эту тему

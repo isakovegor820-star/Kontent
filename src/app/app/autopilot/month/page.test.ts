@@ -22,7 +22,15 @@ describe("monthly campaign page contract", () => {
     const disabled = rebuild.slice(rebuild.indexOf("disabled="), rebuild.indexOf(">", rebuild.indexOf("disabled=")));
     expect(disabled).toContain("hasActiveRegeneration");
     expect(disabled).not.toContain("stale");
-    expect(planner).toContain("Нажми «Пересобрать весь месяц»");
+  });
+
+  it("offers the non-destructive refresh as the way out of a drifted profile", () => {
+    expect(planner).toContain("Обновить под настройки");
+    expect(planner).toContain('action: "refresh"');
+    expect(planner).toContain("expectedPlanVersion: plan.version");
+    // The banner has to name the cheap recovery, otherwise the only visible exit rewrites 30 topics.
+    const banner = planner.slice(planner.indexOf("Настройки канала изменились после создания"));
+    expect(banner.slice(0, 700)).toContain("«Обновить под настройки»");
   });
 
   it("opens Composer and Studio by campaign ids, not by putting the prompt in the URL", () => {
