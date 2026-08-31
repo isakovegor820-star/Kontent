@@ -1,3 +1,5 @@
+import { isSensitiveE2eQueryParameter } from "./e2e-evidence-safety.mjs";
+
 export const E2E_BROWSER_ENGINES = Object.freeze(["chromium", "firefox", "webkit"]);
 export const E2E_BUILD_MODES = Object.freeze(["build", "reuse"]);
 
@@ -55,7 +57,7 @@ export function sanitizeE2eNetworkUrl(value, baseUrl) {
     url.password = "";
     url.hash = "";
     for (const name of [...url.searchParams.keys()]) {
-      if (/(?:auth|code|key|password|secret|signature|token)/iu.test(name)) {
+      if (isSensitiveE2eQueryParameter(name)) {
         url.searchParams.set(name, "[REDACTED]");
       }
     }
@@ -251,7 +253,6 @@ export function classifyE2eExpectedSessionExpiryWebKitPageError({
   }
   if (
     current.origin !== base.origin
-    || current.pathname !== "/app/calendar"
     || base.hostname !== "127.0.0.1"
     || Number(base.port) !== port
   ) return null;
@@ -259,7 +260,17 @@ export function classifyE2eExpectedSessionExpiryWebKitPageError({
   const originPrefix = `/127.0.0.1:${port}`;
   if (!requestTarget.startsWith(`${originPrefix}/`)) return null;
   const pathAndQuery = requestTarget.slice(originPrefix.length);
-  if (!["/api/drafts", "/api/projects", "/api/projects/current"].includes(pathAndQuery)) {
+  const expectedPaths = {
+    "/app/calendar": ["/api/drafts", "/api/projects", "/api/projects/current"],
+    "/app/studio": [
+      "/api/studio/session",
+      "/api/settings",
+      "/api/ai/engines",
+      "/api/channels",
+      "/api/posts",
+    ],
+  }[current.pathname];
+  if (!expectedPaths?.includes(pathAndQuery)) {
     return null;
   }
   return { kind: "session-expiry.webkit-cancelled-api-request", detail: pathAndQuery };

@@ -76,6 +76,12 @@ describe("real E2E browser configuration", () => {
       "https://provider.test/callback?code=raw&state=visible",
       baseUrl,
     )).toBe("https://provider.test/callback?code=%5BREDACTED%5D&state=visible");
+    expect(sanitizeE2eNetworkUrl(
+      "https://provider.test/callback?sid=one&sessionId=two&cookie=three&credential=four&jwt=five&passwd=six&visible=yes",
+      baseUrl,
+    )).toBe(
+      "https://provider.test/callback?sid=%5BREDACTED%5D&sessionId=%5BREDACTED%5D&cookie=%5BREDACTED%5D&credential=%5BREDACTED%5D&jwt=%5BREDACTED%5D&passwd=%5BREDACTED%5D&visible=yes",
+    );
     expect(sanitizeE2eNetworkUrl("not a valid url", "not a base")).toBe("[invalid-url]");
   });
 
@@ -311,6 +317,19 @@ describe("real E2E browser configuration", () => {
         message: `/127.0.0.1:43190${path} due to access control checks.`,
       })?.detail).toBe(path);
     }
+    for (const path of [
+      "/api/studio/session",
+      "/api/settings",
+      "/api/ai/engines",
+      "/api/channels",
+      "/api/posts",
+    ]) {
+      expect(classifyE2eExpectedSessionExpiryWebKitPageError({
+        ...input,
+        currentUrl: `${baseUrl}/app/studio`,
+        message: `/127.0.0.1:43190${path} due to access control checks.`,
+      })?.detail).toBe(path);
+    }
     for (const override of [
       { active: false },
       { engine: "firefox" },
@@ -319,6 +338,7 @@ describe("real E2E browser configuration", () => {
       { message: "/127.0.0.1:43191/api/drafts due to access control checks." },
       { message: "/127.0.0.1:43190/api/drafts failed with 500" },
       { currentUrl: `${baseUrl}/app/today` },
+      { currentUrl: `${baseUrl}/app/studio`, message: "/127.0.0.1:43190/api/drafts due to access control checks." },
       { currentUrl: "https://example.com/app/calendar" },
       { baseUrl: "https://localhost:43190" },
       { webPort: 43191 },
