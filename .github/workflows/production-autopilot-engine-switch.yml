@@ -26,6 +26,10 @@ on:
           - navy-gpt-5-4
           - navy-qwen-3-6
           - navy-deepseek-pro
+      force_build:
+        description: "Rebuild the listed channels now, the way the build button does"
+        type: boolean
+        default: false
       trigger_weekly:
         description: "Start a real weekly build for every enabled channel afterwards"
         type: boolean
@@ -92,6 +96,7 @@ jobs:
             exit 1
           }
           trigger_weekly="${{ inputs.trigger_weekly && 'true' || 'false' }}"
+          force_build="${{ inputs.force_build && 'true' || 'false' }}"
           ssh -i ~/.ssh/deploy_key \
             -o StrictHostKeyChecking=yes \
             -o BatchMode=yes \
@@ -99,5 +104,5 @@ jobs:
             -o ServerAliveInterval=15 \
             -o ServerAliveCountMax=8 \
             "${PRODUCTION_SSH_USER}@${PRODUCTION_SSH_HOST}" \
-            "AURORA_ENGINE_CHANNELS=${AURORA_ENGINE_CHANNELS} AURORA_ENGINE_ID=${AURORA_ENGINE_ID} AURORA_TRIGGER_WEEKLY=${trigger_weekly} bash -s" \
+            "AURORA_ENGINE_CHANNELS=${AURORA_ENGINE_CHANNELS} AURORA_ENGINE_ID=${AURORA_ENGINE_ID} AURORA_FORCE_BUILD=${force_build} AURORA_TRIGGER_WEEKLY=${trigger_weekly} bash -s" \
             < scripts/production-autopilot-engine-switch.sh
