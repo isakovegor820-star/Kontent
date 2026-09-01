@@ -28,8 +28,11 @@ describe("analytics dashboard interface contract", () => {
   });
 
   it("shows provenance, coverage and unavailable metrics without fake zeroes", () => {
-    expect(source).toContain("Подтверждённые публикации");
-    expect(source).toContain("со статистикой");
+    expect(source).toContain("История публикаций");
+    expect(source).toContain("Со статистикой");
+    expect(source).toContain("Последний пост");
+    expect(source).toContain("Открыть статистику");
+    expect(source).toContain('safePostId(searchParams.get("post"))');
     expect(source).toContain("Охват и комментарии");
     expect(source).toContain("не заменяются нулями");
     expect(source).toContain("Последний сбор");

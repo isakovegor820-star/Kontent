@@ -82,7 +82,7 @@ describe("telegram polling heartbeat", () => {
     expect(polling.indexOf("await refreshTelegramPollingHeartbeat();")).toBeLessThan(
       polling.indexOf('"getUpdates"'),
     );
-    expect(polling).toContain("{ offset, timeout: 25, limit: 100 }");
+    expect(polling).toContain("{ offset, timeout: 25, limit: 100, allowed_updates: TELEGRAM_POLLING_GUARD?.allowed_updates }");
     expect(opening.indexOf("enableTelegramPollingGuard()")).toBeLessThan(
       opening.indexOf('tg("deleteWebhook"'),
     );

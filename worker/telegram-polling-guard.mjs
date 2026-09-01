@@ -7,6 +7,9 @@ const TELEGRAM_POLLING_GUARD_ORIGIN = "https://api.telegram.org";
 
 export const TELEGRAM_POLLING_ALLOWED_UPDATES = Object.freeze([
   "message",
+  "channel_post",
+  "edited_channel_post",
+  "message_reaction_count",
   "callback_query",
   "my_chat_member",
   "business_message",

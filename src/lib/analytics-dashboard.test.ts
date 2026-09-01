@@ -19,6 +19,7 @@ describe("analytics dashboard calculations", () => {
   it("accepts only supported report periods", () => {
     expect(parseAnalyticsPeriodDays("7")).toBe(7);
     expect(parseAnalyticsPeriodDays("90")).toBe(90);
+    expect(parseAnalyticsPeriodDays("365")).toBe(365);
     expect(parseAnalyticsPeriodDays("14")).toBe(30);
     expect(parseAnalyticsPeriodDays(null)).toBe(30);
   });

@@ -32,6 +32,17 @@ export type TodayPulse = {
     engagementPoints: number | null;
   };
   bestPost: { id: number; title: string; views: number | null; reactions: number | null; href: string } | null;
+  latestPost: {
+    id: number;
+    title: string;
+    publishedAt: string;
+    views: number | null;
+    reactions: number | null;
+    engagementRate: number | null;
+    metricsCollectedAt: string | null;
+    source: "channel" | "aurora";
+    href: string;
+  } | null;
   series: Array<{ postId: number; publishedAt: string; views: number }>;
   insight: string;
   collectedAt: string | null;
@@ -115,6 +126,7 @@ const EMPTY_PULSE: TodayPulse = {
   engagementRate: null,
   comparison: { viewsPerPostPercent: null, reactionsPerPostPercent: null, engagementPoints: null },
   bestPost: null,
+  latestPost: null,
   series: [],
   insight: "Пульс появится, когда станут доступны публикации и их статистика.",
   collectedAt: null,
@@ -344,7 +356,7 @@ async function reviewItems(db: Queryable, scope: { projectId: number; channelId:
 type ResultRow = {
   post_id: string; post_text: string; stats_id: string | null; draft_id: string | null; source_topic: string | null;
   views: number | null; reactions: number | null; previous_views: number | null; previous_reactions: number | null;
-  collected_at: string | null; published_at: string;
+  collected_at: string | null; published_at: string; publication_source?: "channel" | "aurora" | null;
 };
 
 function localDate(value: string, timezone: string): Temporal.PlainDate {
@@ -361,7 +373,7 @@ function shortPostTitle(text: string): string {
   return line.length > 90 ? `${line.slice(0, 87)}…` : line;
 }
 
-export function buildTodayPulse(rows: ResultRow[], timezone: string): TodayPulse {
+export function buildTodayPulse(rows: ResultRow[], timezone: string, channelId: number | null = null): TodayPulse {
   const today = Temporal.Instant.from(new Date().toISOString()).toZonedDateTimeISO(timezone).toPlainDate();
   const currentStart = today.subtract({ days: 6 });
   const previousStart = today.subtract({ days: 13 });
@@ -384,6 +396,7 @@ export function buildTodayPulse(rows: ResultRow[], timezone: string): TodayPulse
   const previousViewsPerPost = previousMeasured.length > 0 ? previousViews / previousMeasured.length : null;
   const previousReactionsPerPost = previousMeasured.length > 0 ? previousReactions / previousMeasured.length : null;
   const best = [...measured].sort((a, b) => Number(b.views ?? 0) - Number(a.views ?? 0) || Number(b.reactions ?? 0) - Number(a.reactions ?? 0) || Number(b.post_id) - Number(a.post_id))[0];
+  const latest = [...rows].sort((a, b) => new Date(b.published_at).getTime() - new Date(a.published_at).getTime() || Number(b.post_id) - Number(a.post_id))[0];
   const viewsDelta = percentChange(viewsPerPost, previousViewsPerPost);
   const engagementDelta = engagementRate != null && previousEngagement != null
     ? Number((engagementRate - previousEngagement).toFixed(1)) : null;
@@ -408,7 +421,21 @@ export function buildTodayPulse(rows: ResultRow[], timezone: string): TodayPulse
       engagementPoints: engagementDelta,
     },
     bestPost: best ? {
-      id: Number(best.post_id), title: shortPostTitle(best.post_text), views: best.views, reactions: best.reactions, href: "/app/analytics",
+      id: Number(best.post_id), title: shortPostTitle(best.post_text), views: best.views, reactions: best.reactions,
+      href: `/app/analytics?${channelId ? `channel=${channelId}&` : ""}section=posts&post=${best.post_id}`,
+    } : null,
+    latestPost: latest ? {
+      id: Number(latest.post_id),
+      title: shortPostTitle(latest.post_text),
+      publishedAt: latest.published_at,
+      views: latest.views,
+      reactions: latest.reactions,
+      engagementRate: latest.views != null && latest.views > 0 && latest.reactions != null
+        ? Number(((latest.reactions / latest.views) * 100).toFixed(1))
+        : null,
+      metricsCollectedAt: latest.collected_at,
+      source: latest.publication_source === "channel" ? "channel" : "aurora",
+      href: `/app/analytics?${channelId ? `channel=${channelId}&` : ""}section=posts&post=${latest.post_id}`,
     } : null,
     series: current
       .filter((row): row is ResultRow & { views: number } => Number.isFinite(row.views))
@@ -426,7 +453,11 @@ async function resultSource(
   timezone: string,
 ): Promise<{ items: TodayItem[]; pulse: TodayPulse }> {
   const rows = (await db.query<ResultRow>(
-    `select post.id as post_id, coalesce(post.text, '') as post_text, stats.id as stats_id, operation.draft_id,
+    `select post.id as post_id, coalesce(post.text, '') as post_text,
+            case when post.publication_operation_id is null
+                   and post.verification_result->>'source' in ('telegram_public_feed', 'telegram_channel_post')
+                 then 'channel' else 'aurora' end as publication_source,
+            stats.id as stats_id, operation.draft_id,
             source_draft.source_ref->>'topic' as source_topic,
             stats.views, stats.reactions, stats.previous_views, stats.previous_reactions,
             stats.collected_at::text, post.published_at::text
@@ -448,11 +479,11 @@ async function resultSource(
        left join drafts source_draft on source_draft.id = operation.draft_id and source_draft.project_id = post.project_id
       where post.project_id = $1 and post.channel_id = $2
         and post.status in ('published','published_unverified')
-        and post.published_at >= now() - interval '30 days'
+        and post.published_at >= now() - interval '365 days'
       order by post.published_at desc, post.id desc limit 100`,
     [scope.projectId, scope.channelId],
   )).rows;
-  const pulse = buildTodayPulse(rows, timezone);
+  const pulse = buildTodayPulse(rows, timezone, scope.channelId);
   const currentStart = Temporal.Instant.from(new Date().toISOString()).toZonedDateTimeISO(timezone).toPlainDate().subtract({ days: 6 });
   const measured = rows.filter((row) => (row.views != null || row.reactions != null)
     && Temporal.PlainDate.compare(localDate(row.published_at, timezone), currentStart) >= 0);

@@ -20,16 +20,22 @@ interface PostRow {
   id: number | string;
   text: string;
   published_at: string;
+  tg_message_id: number | string | null;
+  publication_origin: string;
+  publication_source: "channel" | "aurora";
   status: string;
   verification_state: string | null;
   stats_state: string | null;
   views: number | null;
   reactions: number | null;
+  previous_views: number | null;
+  previous_reactions: number | null;
+  stats_collected_at: string | null;
   monthly_campaign_id: number | null;
   monthly_campaign_goal: string | null;
   monthly_item_id: number | null;
   monthly_item_title: string | null;
-  period_bucket: "current" | "previous";
+  period_bucket: "current" | "previous" | "outside";
 }
 
 interface CompetitorRow {
@@ -77,8 +83,8 @@ export async function GET(req: NextRequest) {
     const pool = getPool();
     const membership = await requireSelectedProjectPermission(pool, user.id, "project.read");
     const channels = (
-      await pool.query<{ id: string; title: string | null; timezone: string }>(
-        `select channel.id, channel.title, project.timezone
+      await pool.query<{ id: string; title: string | null; timezone: string; handle: string | null }>(
+        `select channel.id, channel.title, project.timezone, channel.handle
            from channels channel
            join projects project on project.id = channel.project_id
           where channel.project_id = $1 and channel.network = 'tg' and channel.is_active = true
@@ -114,22 +120,36 @@ export async function GET(req: NextRequest) {
 
     const posts = (
       await pool.query<PostRow>(
-        `select p.id, p.text, p.published_at, p.status, p.verification_state,
-                p.stats_state, ps.views, ps.reactions,
+        `select p.id, p.text, p.published_at, p.tg_message_id, p.publication_origin,
+                case when p.publication_operation_id is null
+                       and p.verification_result->>'source' in ('telegram_public_feed', 'telegram_channel_post')
+                     then 'channel' else 'aurora' end as publication_source,
+                p.status, p.verification_state, p.stats_state,
+                ps.views, ps.reactions, ps.previous_views, ps.previous_reactions,
+                ps.collected_at::text as stats_collected_at,
                 monthly.campaign_id as monthly_campaign_id,
                 monthly.campaign_goal as monthly_campaign_goal,
                 monthly.item_id as monthly_item_id,
                 monthly.item_title as monthly_item_title,
                 case when p.published_at >= (
                   date_trunc('day', now() at time zone $3) - (($4::int - 1) * interval '1 day')
-                ) at time zone $3 then 'current' else 'previous' end as period_bucket
+                ) at time zone $3 then 'current'
+                when p.published_at >= (
+                  date_trunc('day', now() at time zone $3) - (($4::int * 2 - 1) * interval '1 day')
+                ) at time zone $3 then 'previous'
+                else 'outside' end as period_bucket
            from posts p
            left join lateral (
-             select views, reactions
-               from post_stats
-              where project_id = p.project_id and post_id = p.id
-              order by snapshot_date desc, collected_at desc, id desc
-              limit 1
+             select ranked.views, ranked.reactions, ranked.collected_at,
+                    ranked.previous_views, ranked.previous_reactions
+               from (
+                 select snapshot.views, snapshot.reactions, snapshot.collected_at, snapshot.id,
+                        lag(snapshot.views) over (order by snapshot.snapshot_date, snapshot.collected_at, snapshot.id) as previous_views,
+                        lag(snapshot.reactions) over (order by snapshot.snapshot_date, snapshot.collected_at, snapshot.id) as previous_reactions
+                   from post_stats snapshot
+                  where snapshot.project_id = p.project_id and snapshot.post_id = p.id
+               ) ranked
+              order by ranked.collected_at desc, ranked.id desc limit 1
           ) ps on true
           left join lateral (
             select campaign.id as campaign_id, campaign.goal as campaign_goal,
@@ -146,9 +166,17 @@ export async function GET(req: NextRequest) {
           where p.channel_id = $1
             and p.project_id = $2
             and p.status in ('published', 'published_unverified', 'missing', 'deleted_external')
-            and p.published_at >= (
-              date_trunc('day', now() at time zone $3) - (($4::int * 2 - 1) * interval '1 day')
-            ) at time zone $3
+            and (
+              p.published_at >= (
+                date_trunc('day', now() at time zone $3) - (($4::int * 2 - 1) * interval '1 day')
+              ) at time zone $3
+              or p.id = (
+                select latest.id from posts latest
+                 where latest.channel_id = $1 and latest.project_id = $2
+                   and latest.status in ('published', 'published_unverified', 'missing', 'deleted_external')
+                 order by latest.published_at desc nulls last, latest.id desc limit 1
+              )
+            )
           order by p.published_at desc`,
         [channelId, membership.projectId, timezone, days],
       )
@@ -222,13 +250,23 @@ export async function GET(req: NextRequest) {
     const summary = summarizeDashboardPeriod(currentPosts, previousPosts);
     const verifiedPosts = summary.current.verifiedPosts;
     const withViews = summary.current.withMetrics;
-    const serializedPosts = verifiedPosts.map((post) => ({
+    const handle = String(selectedChannel.handle || "").replace(/^@/u, "");
+    const serializePost = (post: PostRow) => ({
       ...post,
       id: Number(post.id),
+      tg_message_id: post.tg_message_id == null ? null : Number(post.tg_message_id),
+      metricsCollectedAt: post.stats_collected_at,
+      previousViews: post.previous_views,
+      previousReactions: post.previous_reactions,
+      externalUrl: handle && post.tg_message_id
+        ? `https://t.me/${handle}/${post.tg_message_id}`
+        : null,
       engagementRate: post.views != null && post.views > 0 && Number.isFinite(post.reactions)
         ? Number((((post.reactions as number) / post.views) * 100).toFixed(1))
         : null,
-    }));
+    });
+    const latestPost = posts[0] ? serializePost(posts[0]) : null;
+    const serializedPosts = currentPosts.map(serializePost);
     const subscriberDelta = subscriberGrowth(subSeries);
     const latestSubs = subSeries.at(-1)?.subscribers ?? null;
     const bestPostRow = withViews.length
@@ -288,6 +326,7 @@ export async function GET(req: NextRequest) {
       subscriberGrowth: subscriberDelta,
       subscriberSeries: subSeries,
       posts: serializedPosts,
+      latestPost,
       totals: {
         published: verifiedPosts.length,
         withMetrics: withViews.length,

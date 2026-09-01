@@ -7,7 +7,9 @@ import {
   Activity,
   ArrowRight,
   BarChart3,
+  ChevronDown,
   Eye,
+  ExternalLink,
   FileText,
   Gauge,
   Heart,
@@ -18,7 +20,6 @@ import {
   Sparkles,
   TrendingDown,
   TrendingUp,
-  Trophy,
   UserRoundSearch,
   Users,
 } from "lucide-react";
@@ -41,6 +42,11 @@ function safeChannelId(value: string | null): number | null {
   return Number.isSafeInteger(channelId) && channelId > 0 ? channelId : null;
 }
 
+function safePostId(value: string | null): number | null {
+  const postId = Number(value);
+  return Number.isSafeInteger(postId) && postId > 0 ? postId : null;
+}
+
 interface SubscriberPoint {
   snapshot_date: string;
   subscribers: number;
@@ -50,10 +56,18 @@ interface PostStat {
   id: number;
   text: string;
   published_at: string;
+  publication_origin: string;
+  publication_source: "channel" | "aurora";
+  status: string;
+  verification_state: string | null;
   stats_state: string | null;
   views: number | null;
   reactions: number | null;
+  previousViews: number | null;
+  previousReactions: number | null;
   engagementRate: number | null;
+  metricsCollectedAt: string | null;
+  externalUrl: string | null;
   monthly_campaign_id: number | null;
   monthly_campaign_goal: string | null;
   monthly_item_id: number | null;
@@ -83,6 +97,7 @@ interface StatsData {
   subscriberGrowth?: number | null;
   subscriberSeries?: SubscriberPoint[];
   posts?: PostStat[];
+  latestPost?: PostStat | null;
   competitors?: CompetitorStat[];
   totals?: {
     published: number;
@@ -123,6 +138,10 @@ const SECTIONS: Array<{ id: AnalyticsSection; label: string; icon: typeof Activi
   { id: "competitors", label: "Конкуренты", icon: UserRoundSearch },
   { id: "tracking", label: "Переходы", icon: MousePointerClick },
 ];
+
+function safeSection(value: string | null): AnalyticsSection | null {
+  return SECTIONS.some((section) => section.id === value) ? value as AnalyticsSection : null;
+}
 
 const CONFIDENCE_LABELS = {
   insufficient: "данных недостаточно",
@@ -165,6 +184,17 @@ function comparisonText(value: number | null, unit = "%"): string {
   if (value == null) return "Нет сопоставимого прошлого периода";
   if (value === 0) return "Без изменений к прошлому периоду";
   return `${value > 0 ? "+" : "−"}${Math.abs(value).toLocaleString("ru-RU")}${unit} к прошлому периоду`;
+}
+
+function metricDelta(current: number | null, previous: number | null): string | null {
+  if (current == null || previous == null) return null;
+  const delta = current - previous;
+  if (delta === 0) return "без изменений к прошлому снимку";
+  return `${delta > 0 ? "+" : "−"}${Math.abs(delta).toLocaleString("ru-RU")} к прошлому снимку`;
+}
+
+function postSourceLabel(source: "channel" | "aurora"): string {
+  return source === "channel" ? "Опубликовано напрямую" : "Опубликовано через Аврору";
 }
 
 function selectClassName(): string {
@@ -382,7 +412,11 @@ function CompetitorBenchmarkChart({ ownLabel, ownMedian, ownPosts, competitors }
   );
 }
 
-function OverviewSection({ data, onOpen }: { data: StatsData; onOpen: (section: AnalyticsSection) => void }) {
+function OverviewSection({ data, onOpen, onOpenPost }: {
+  data: StatsData;
+  onOpen: (section: AnalyticsSection) => void;
+  onOpenPost: (postId: number) => void;
+}) {
   const growth = data.subscriberGrowth ?? null;
   const averageComparison = data.comparisons?.averageViewsPercent ?? null;
   const engagementComparison = data.comparisons?.engagementPoints ?? null;
@@ -404,7 +438,7 @@ function OverviewSection({ data, onOpen }: { data: StatsData; onOpen: (section: 
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <MetricCard icon={<Users className="h-4 w-4" aria-hidden />} label="Подписчики" value={data.latestSubs == null ? "—" : fmtNum(data.latestSubs)} note={growth == null ? "Нужны минимум две точки" : `${signed(growth)} за период`} tone={growth == null || growth === 0 ? undefined : growth > 0 ? "up" : "down"} />
-        <MetricCard icon={<Eye className="h-4 w-4" aria-hidden />} label="Просмотров на пост" value={data.totals?.avgViews == null ? "—" : fmtNum(data.totals.avgViews)} note={comparisonText(averageComparison)} tone={averageComparison == null || averageComparison === 0 ? undefined : averageComparison > 0 ? "up" : "down"} />
+        <MetricCard icon={<Eye className="h-4 w-4" aria-hidden />} label="Средние просмотры" value={data.totals?.avgViews == null ? "—" : fmtNum(data.totals.avgViews)} note={comparisonText(averageComparison)} tone={averageComparison == null || averageComparison === 0 ? undefined : averageComparison > 0 ? "up" : "down"} />
         <MetricCard icon={<Heart className="h-4 w-4" aria-hidden />} label="Доля реакций" value={data.totals?.engagementRate == null ? "—" : `${data.totals.engagementRate.toLocaleString("ru-RU")}%`} note={comparisonText(engagementComparison, " п. п.")} tone={engagementComparison == null || engagementComparison === 0 ? undefined : engagementComparison > 0 ? "up" : "down"} />
         <MetricCard icon={<FileText className="h-4 w-4" aria-hidden />} label="Подтверждённые посты" value={fmtNum(data.totals?.published ?? 0)} note={`${data.totals?.withMetrics ?? 0} со статистикой`} />
       </div>
@@ -415,17 +449,35 @@ function OverviewSection({ data, onOpen }: { data: StatsData; onOpen: (section: 
           <div className="mt-4"><SubscriberLineChart series={data.subscriberSeries ?? []} compact /></div>
         </Card>
         <Card className="p-5 sm:p-6">
-          <Trophy className="h-6 w-6 text-fire-text" aria-hidden />
-          <h2 className="mt-4 text-[17px] font-bold text-text">Лучший результат</h2>
-          {data.bestPost ? <><p className="mt-3 text-pretty text-[14px] leading-relaxed font-semibold text-text">{shortTitle(data.bestPost.text)}</p><p className="nums mt-3 text-[24px] font-extrabold tabular-nums text-text">{fmtNum(data.bestPost.views)} <span className="text-[13px] font-semibold text-text-3">просмотров</span></p>{data.bestPost.reactions != null ? <p className="mt-1 text-[13px] text-text-3">{fmtNum(data.bestPost.reactions)} реакций</p> : null}</> : <p className="mt-3 text-[14px] leading-relaxed text-text-3">Лучший пост появится после получения просмотров минимум одной подтверждённой публикации.</p>}
+          <FileText className="h-6 w-6 text-fire-text" aria-hidden />
+          <h2 className="mt-4 text-[17px] font-bold text-text">Последний пост</h2>
+          {data.latestPost ? <>
+            <p className="mt-3 text-pretty text-[14px] leading-relaxed font-semibold text-text">{shortTitle(data.latestPost.text)}</p>
+            <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[13px] text-text-3">
+              <span><b className="nums font-extrabold tabular-nums text-text">{data.latestPost.views == null ? "—" : fmtNum(data.latestPost.views)}</b> просмотров</span>
+              <span><b className="nums font-extrabold tabular-nums text-text">{data.latestPost.reactions == null ? "—" : fmtNum(data.latestPost.reactions)}</b> реакций</span>
+            </div>
+            <p className="mt-2 text-[12px] text-text-3">{postSourceLabel(data.latestPost.publication_source)}</p>
+            <Button variant="ghost" size="sm" className="mt-3" onClick={() => onOpenPost(data.latestPost!.id)}>Открыть статистику <ArrowRight className="h-4 w-4" aria-hidden /></Button>
+          </> : <p className="mt-3 text-[14px] leading-relaxed text-text-3">После первой публикации здесь появится её фактический результат.</p>}
         </Card>
       </div>
     </div>
   );
 }
 
-function PostsSection({ data, metric, onMetricChange }: { data: StatsData; metric: PostMetric; onMetricChange: (metric: PostMetric) => void }) {
+function PostsSection({ data, metric, onMetricChange, selectedPostId, onSelectPost }: {
+  data: StatsData;
+  metric: PostMetric;
+  onMetricChange: (metric: PostMetric) => void;
+  selectedPostId: number | null;
+  onSelectPost: (postId: number | null) => void;
+}) {
   const posts = data.posts ?? [];
+  const latestOutsidePeriod = data.latestPost && !posts.some((post) => post.id === data.latestPost?.id)
+    ? data.latestPost
+    : null;
+  const historyPosts = latestOutsidePeriod ? [latestOutsidePeriod, ...posts] : posts;
   const timezone = data.period?.timeZone ?? "Europe/Moscow";
   const bestViews = Math.max(...posts.map((post) => post.views ?? 0), 0);
   return (
@@ -433,16 +485,26 @@ function PostsSection({ data, metric, onMetricChange }: { data: StatsData; metri
       <div><h2 className="text-balance text-[20px] font-bold text-text">Статистика публикаций</h2><p className="mt-1 max-w-[68ch] text-pretty text-[14px] leading-relaxed text-text-3">Какие материалы получили больше просмотров и реакций в выбранном периоде.</p></div>
       <PostPerformanceChart posts={posts} metric={metric} onMetricChange={onMetricChange} />
       <Card className="p-5 sm:p-6">
-        <div className="flex flex-wrap items-center justify-between gap-3"><h2 className="text-[17px] font-bold text-text">Подтверждённые публикации</h2><Badge tone="neutral">Данные: {data.totals?.withMetrics ?? 0} из {data.totals?.published ?? 0}</Badge></div>
-        {posts.length === 0 ? <div className="mt-4"><ChartEmpty title="Публикаций в периоде нет" body="Выберите более длинный период или опубликуйте первый материал." /></div> : (
+        <div className="flex flex-wrap items-center justify-between gap-3"><h2 className="text-[17px] font-bold text-text">История публикаций</h2><Badge tone="neutral">Со статистикой: {data.totals?.withMetrics ?? 0} из {posts.length}</Badge></div>
+        {historyPosts.length === 0 ? <div className="mt-4"><ChartEmpty title="Публикаций в периоде нет" body="Выберите более длинный период или опубликуйте первый материал." /></div> : (
           <ol className="mt-5 divide-y divide-line">
-            {posts.map((post) => (
-              <li key={post.id} className="py-4 first:pt-0 last:pb-0">
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                  <div className="min-w-0"><p className="text-pretty text-[14px] leading-relaxed font-semibold text-text">{shortTitle(post.text, 110)}</p><p className="mt-1 text-[12px] text-text-3">{formatPublishedAt(post.published_at, timezone)}</p></div>
-                  <div className="flex shrink-0 flex-wrap gap-2 text-[12px] font-semibold"><Badge tone="neutral"><Eye className="h-3.5 w-3.5" aria-hidden />{post.views == null ? "ещё нет" : fmtNum(post.views)}</Badge><Badge tone="neutral"><Heart className="h-3.5 w-3.5" aria-hidden />{post.reactions == null ? "недоступно" : fmtNum(post.reactions)}</Badge>{post.views != null && post.views === bestViews && bestViews > 0 ? <Badge tone="fire">лучший</Badge> : null}</div>
-                </div>
-                {post.views == null ? <p className="mt-2 text-[12px] leading-relaxed text-text-3">{post.stats_state === "gone" ? "Публикация удалена из канала." : post.stats_state === "private" ? "У канала нет публичного адреса — просмотры недоступны." : "Цифры ещё не собраны — обычно они появляются после следующего обхода."}</p> : null}
+            {historyPosts.map((post) => (
+              <li key={post.id} className="py-2 first:pt-0 last:pb-0">
+                <button type="button" aria-expanded={selectedPostId === post.id} onClick={() => onSelectPost(selectedPostId === post.id ? null : post.id)} className="flex min-h-16 w-full flex-col gap-3 rounded-sm px-2 py-3 text-left hover:bg-surface-inset focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand sm:flex-row sm:items-start sm:justify-between">
+                  <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><p className="text-pretty text-[14px] leading-relaxed font-semibold text-text">{shortTitle(post.text, 110)}</p>{data.latestPost?.id === post.id ? <Badge tone="brand">последний</Badge> : null}{latestOutsidePeriod?.id === post.id ? <Badge tone="neutral">вне периода</Badge> : null}</div><p className="mt-1 text-[12px] text-text-3">{formatPublishedAt(post.published_at, timezone)} · {postSourceLabel(post.publication_source)}</p></div>
+                  <div className="flex shrink-0 flex-wrap items-center gap-2 text-[12px] font-semibold"><Badge tone="neutral"><Eye className="h-3.5 w-3.5" aria-hidden />{post.views == null ? "собираем" : fmtNum(post.views)}</Badge><Badge tone="neutral"><Heart className="h-3.5 w-3.5" aria-hidden />{post.reactions == null ? "собираем" : fmtNum(post.reactions)}</Badge>{post.views != null && post.views === bestViews && bestViews > 0 ? <Badge tone="fire">лучший</Badge> : null}<ChevronDown className={cn("h-4 w-4 text-text-3 transition-transform", selectedPostId === post.id && "rotate-180")} aria-hidden /></div>
+                </button>
+                {selectedPostId === post.id ? (
+                  <div className="mx-2 mb-3 rounded-sm border border-line bg-surface-inset p-4 sm:p-5">
+                    <dl className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                      <div><dt className="text-[11px] text-text-3">Просмотры</dt><dd className="nums mt-1 text-[22px] font-extrabold tabular-nums text-text">{post.views == null ? "—" : fmtNum(post.views)}</dd><dd className="mt-1 text-[11px] text-text-3">{metricDelta(post.views, post.previousViews) ?? "первый снимок"}</dd></div>
+                      <div><dt className="text-[11px] text-text-3">Реакции</dt><dd className="nums mt-1 text-[22px] font-extrabold tabular-nums text-text">{post.reactions == null ? "—" : fmtNum(post.reactions)}</dd><dd className="mt-1 text-[11px] text-text-3">{metricDelta(post.reactions, post.previousReactions) ?? "первый снимок"}</dd></div>
+                      <div><dt className="text-[11px] text-text-3">Доля реакций</dt><dd className="nums mt-1 text-[22px] font-extrabold tabular-nums text-text">{post.engagementRate == null ? "—" : `${post.engagementRate.toLocaleString("ru-RU")}%`}</dd><dd className="mt-1 text-[11px] text-text-3">реакции / просмотры</dd></div>
+                    </dl>
+                    <p className="mt-4 text-[12px] leading-relaxed text-text-3">{post.metricsCollectedAt ? `Статистика обновлена ${new Date(post.metricsCollectedAt).toLocaleString("ru-RU", { timeZone: timezone })}.` : post.stats_state === "gone" ? "Публикация удалена из канала." : "Первый снимок ещё собирается. Пост остаётся в истории и не будет скрыт."}</p>
+                    {post.externalUrl ? <a className={buttonClassName({ variant: "secondary", size: "sm", className: "mt-4" })} href={post.externalUrl} target="_blank" rel="noreferrer">Открыть пост в Telegram <ExternalLink className="h-4 w-4" aria-hidden /></a> : null}
+                  </div>
+                ) : null}
               </li>
             ))}
           </ol>
@@ -505,7 +567,7 @@ function CompetitorsSection({ data, channelId }: { data: StatsData; channelId: n
   );
 }
 
-function AnalyticsContent({ data, section, onSectionChange, metric, onMetricChange, channelId, periodDays }: {
+function AnalyticsContent({ data, section, onSectionChange, metric, onMetricChange, channelId, periodDays, selectedPostId, onSelectPost }: {
   data: StatsData;
   section: AnalyticsSection;
   onSectionChange: (section: AnalyticsSection) => void;
@@ -513,12 +575,14 @@ function AnalyticsContent({ data, section, onSectionChange, metric, onMetricChan
   onMetricChange: (metric: PostMetric) => void;
   channelId: number | null;
   periodDays: AnalyticsPeriodDays;
+  selectedPostId: number | null;
+  onSelectPost: (postId: number | null) => void;
 }) {
-  if (section === "posts") return <PostsSection data={data} metric={metric} onMetricChange={onMetricChange} />;
+  if (section === "posts") return <PostsSection data={data} metric={metric} onMetricChange={onMetricChange} selectedPostId={selectedPostId} onSelectPost={onSelectPost} />;
   if (section === "growth") return <GrowthSection data={data} />;
   if (section === "competitors") return <CompetitorsSection data={data} channelId={channelId} />;
   if (section === "tracking") return <TrackingAnalyticsSection periodDays={periodDays} channelId={channelId} showPeriodControl={false} />;
-  return <OverviewSection data={data} onOpen={onSectionChange} />;
+  return <OverviewSection data={data} onOpen={onSectionChange} onOpenPost={(postId) => onSelectPost(postId)} />;
 }
 
 function AnalyticsPageContent() {
@@ -528,19 +592,45 @@ function AnalyticsPageContent() {
   const searchParams = useSearchParams();
   const searchString = searchParams.toString();
   const requestedChannelId = safeChannelId(searchParams.get("channel"));
+  const requestedPostId = safePostId(searchParams.get("post"));
+  const requestedSection = safeSection(searchParams.get("section"));
   const [data, setData] = useState<StatsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [sending, setSending] = useState(false);
   const [periodDays, setPeriodDays] = useState<AnalyticsPeriodDays>(30);
-  const [section, setSection] = useState<AnalyticsSection>("overview");
+  const [section, setSection] = useState<AnalyticsSection>(requestedPostId ? "posts" : requestedSection ?? "overview");
+  const [selectedPostId, setSelectedPostId] = useState<number | null>(requestedPostId);
   const [postMetric, setPostMetric] = useState<PostMetric>("views");
   const { tgChannels, channelId } = useChannelChoice(store.realChannels, requestedChannelId);
 
   const handleChannelChange = (nextChannelId: number) => {
     const params = new URLSearchParams(searchString);
     params.set("channel", String(nextChannelId));
+    params.delete("post");
+    setSelectedPostId(null);
+    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+  };
+
+  const handleSectionChange = (nextSection: AnalyticsSection) => {
+    const params = new URLSearchParams(searchString);
+    params.set("section", nextSection);
+    if (nextSection !== "posts") {
+      params.delete("post");
+      setSelectedPostId(null);
+    }
+    setSection(nextSection);
+    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+  };
+
+  const handlePostSelect = (postId: number | null) => {
+    const params = new URLSearchParams(searchString);
+    params.set("section", "posts");
+    if (postId) params.set("post", String(postId));
+    else params.delete("post");
+    setSection("posts");
+    setSelectedPostId(postId);
     router.replace(`${pathname}?${params.toString()}`, { scroll: false });
   };
 
@@ -586,7 +676,11 @@ function AnalyticsPageContent() {
         const next = await response.json() as StatsData;
         setData(next);
         if (next.collectedAt && next.collectedAt !== before) {
-          store.toast({ kind: "success", title: "Статистика обновлена", body: "Получены свежие показатели публикаций, аудитории и открытых источников." });
+          if (next.latestPost && !next.latestPost.metricsCollectedAt) {
+            store.toast({ kind: "info", title: "Пост найден", body: "Telegram ещё формирует первый снимок просмотров. Пост уже сохранён в истории — цифры появятся автоматически." });
+          } else {
+            store.toast({ kind: "success", title: "Статистика обновлена", body: "Получены свежие показатели публикаций, аудитории и открытых источников." });
+          }
           return;
         }
       }
@@ -616,17 +710,17 @@ function AnalyticsPageContent() {
         <Card className="p-4 sm:p-5">
           <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
             <div className="min-w-0"><h2 id="channel-statistics-heading" className="text-balance text-[20px] leading-tight font-bold text-text">Аналитика канала</h2><p className="mt-1 max-w-[64ch] text-pretty text-[14px] leading-relaxed text-text-3">Каждый раздел отвечает на отдельный вопрос и использует только фактические данные.</p><ChannelPicker channels={tgChannels} value={channelId} onChange={handleChannelChange} label="Канал" className="mt-4" /></div>
-            <div className="w-full lg:w-56"><label htmlFor="analytics-period" className="mb-2 block text-[13px] font-semibold text-text-2">Период</label><select id="analytics-period" className={selectClassName()} value={periodDays} onChange={(event) => setPeriodDays(Number(event.target.value) as AnalyticsPeriodDays)}><option value={7}>Последние 7 дней</option><option value={30}>Последние 30 дней</option><option value={90}>Последние 90 дней</option></select></div>
+            <div className="w-full lg:w-56"><label htmlFor="analytics-period" className="mb-2 block text-[13px] font-semibold text-text-2">Период</label><select id="analytics-period" className={selectClassName()} value={periodDays} onChange={(event) => setPeriodDays(Number(event.target.value) as AnalyticsPeriodDays)}><option value={7}>Последние 7 дней</option><option value={30}>Последние 30 дней</option><option value={90}>Последние 90 дней</option><option value={365}>Последний год</option></select></div>
           </div>
           <nav className="mt-5 flex max-w-full gap-2 overflow-x-auto border-t border-line pt-4" aria-label="Разделы статистики">
-            {SECTIONS.map((item) => { const Icon = item.icon; const active = section === item.id; return <button key={item.id} type="button" data-aurora-feature="report" data-aurora-action="filtered" aria-pressed={active} onClick={() => setSection(item.id)} className={cn("inline-flex min-h-11 shrink-0 items-center gap-2 rounded-xs px-3.5 text-[13px] font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand", active ? "bg-info-soft text-info-text ring-1 ring-brand/30 ring-inset" : "bg-surface-inset text-text-2 hover:text-text")}><Icon className="h-4 w-4" aria-hidden />{item.label}</button>; })}
+            {SECTIONS.map((item) => { const Icon = item.icon; const active = section === item.id; return <button key={item.id} type="button" data-aurora-feature="report" data-aurora-action="filtered" aria-pressed={active} onClick={() => handleSectionChange(item.id)} className={cn("inline-flex min-h-11 shrink-0 items-center gap-2 rounded-xs px-3.5 text-[13px] font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand", active ? "bg-info-soft text-info-text ring-1 ring-brand/30 ring-inset" : "bg-surface-inset text-text-2 hover:text-text")}><Icon className="h-4 w-4" aria-hidden />{item.label}</button>; })}
           </nav>
         </Card>
 
         {loading ? <div className="space-y-4" aria-busy="true"><div className="skeleton h-32 rounded-md" /><div className="grid grid-cols-2 gap-3 lg:grid-cols-4">{[0, 1, 2, 3].map((item) => <div key={item} className="skeleton h-28 rounded-md" />)}</div><div className="skeleton h-72 rounded-md" /></div> : null}
         {!loading && loadError && !data ? <Card><EmptyState icon={<BarChart3 className="h-6 w-6" aria-hidden />} title="Не удалось загрузить статистику" body="Последние данные не обнулены. Проверьте соединение и повторите загрузку." action={<Button variant="primary" size="sm" onClick={() => void load()}>Попробовать снова</Button>} /></Card> : null}
         {!loading && !loadError && !data?.hasChannel ? <Card><EmptyState icon={<BarChart3 className="h-6 w-6" aria-hidden />} title="Подключите канал" body="После первой публикации и сбора данных здесь появятся графики просмотров, аудитории и сравнение с конкурентами." action={<Link className={buttonClassName({ variant: "primary", size: "sm" })} href="/app/settings?section=channels">Подключить канал</Link>} /></Card> : null}
-        {!loading && data?.hasChannel ? <AnalyticsContent data={data} section={section} onSectionChange={setSection} metric={postMetric} onMetricChange={setPostMetric} channelId={channelId} periodDays={periodDays} /> : null}
+        {!loading && data?.hasChannel ? <AnalyticsContent data={data} section={section} onSectionChange={handleSectionChange} metric={postMetric} onMetricChange={setPostMetric} channelId={channelId} periodDays={periodDays} selectedPostId={selectedPostId} onSelectPost={handlePostSelect} /> : null}
 
         {!loading && data?.hasChannel && section !== "tracking" ? <div className="flex flex-col gap-3 rounded-md bg-surface-inset p-4 sm:flex-row sm:items-start sm:justify-between"><div className="flex min-w-0 items-start gap-2.5"><Info className="mt-0.5 h-4 w-4 shrink-0 text-text-3" aria-hidden /><p className="text-[13px] leading-relaxed text-text-2">Показываем просмотры и реакции подтверждённых публикаций, снимки подписчиков и открытые данные конкурентов. Охват и комментарии, которых текущая интеграция не получает, не заменяются нулями.{data.cohort && (data.cohort.missing > 0 || data.cohort.unverified > 0) ? ` Исключено: отсутствующих — ${data.cohort.missing}, неподтверждённых — ${data.cohort.unverified}.` : ""}{data.collectedAt ? ` Последний сбор: ${new Date(data.collectedAt).toLocaleString("ru-RU", { timeZone: data.period?.timeZone })}.` : ""}</p></div><Button variant="ghost" size="sm" data-aurora-feature="report" data-aurora-action="acted" className="shrink-0" onClick={sendReport} loading={sending}><Send className="h-4 w-4" aria-hidden />Отправить недельный отчёт</Button></div> : null}
       </section>

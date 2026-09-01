@@ -81,7 +81,7 @@ describe("GET /api/stats availability", () => {
       const sql = sqlValue.replace(/\s+/g, " ").trim();
       if (sql.includes("from user_project_preferences preference")) return membership();
       if (sql.startsWith("select channel.id, channel.title, project.timezone")) {
-        return { rows: [{ id: "17", title: "Судебная практика", timezone: "Europe/Saratov" }], rowCount: 1 };
+        return { rows: [{ id: "17", title: "Судебная практика", timezone: "Europe/Saratov", handle: "law_channel" }], rowCount: 1 };
       }
       if (sql.startsWith("select to_char(stats.snapshot_date")) return { rows: [], rowCount: 0 };
       if (sql.startsWith("select p.id, p.text")) {
@@ -115,7 +115,7 @@ describe("GET /api/stats availability", () => {
       const sql = sqlValue.replace(/\s+/g, " ").trim();
       if (sql.includes("from user_project_preferences preference")) return membership();
       if (sql.startsWith("select channel.id, channel.title, project.timezone")) {
-        return { rows: [{ id: "17", title: "Судебная практика", timezone: "Europe/Saratov" }], rowCount: 1 };
+        return { rows: [{ id: "17", title: "Судебная практика", timezone: "Europe/Saratov", handle: "law_channel" }], rowCount: 1 };
       }
       if (sql.startsWith("select to_char(stats.snapshot_date")) {
         expect(params).toEqual([17, 44, "Europe/Saratov", 90]);
@@ -127,14 +127,40 @@ describe("GET /api/stats availability", () => {
       if (sql.startsWith("select p.id, p.text")) {
         return {
           rows: [{
+            id: "502",
+            text: "Самый свежий ручной пост",
+            published_at: "2026-08-25T10:00:00.000Z",
+            tg_message_id: "702",
+            publication_origin: "manual",
+            publication_source: "channel",
+            status: "published_unverified",
+            verification_state: "unverified",
+            stats_state: null,
+            views: null,
+            reactions: null,
+            previous_views: null,
+            previous_reactions: null,
+            stats_collected_at: null,
+            monthly_campaign_id: null,
+            monthly_campaign_goal: null,
+            monthly_item_id: null,
+            monthly_item_title: null,
+            period_bucket: "current",
+          }, {
             id: "501",
             text: "Опубликованный пост",
             published_at: "2026-08-24T10:00:00.000Z",
+            tg_message_id: "701",
+            publication_origin: "ai",
+            publication_source: "aurora",
             status: "published",
             verification_state: "verified",
             stats_state: "ok",
             views: 120,
             reactions: 12,
+            previous_views: 100,
+            previous_reactions: 8,
+            stats_collected_at: "2026-08-28T10:00:00.000Z",
             monthly_campaign_id: null,
             monthly_campaign_goal: null,
             monthly_item_id: null,
@@ -167,7 +193,12 @@ describe("GET /api/stats availability", () => {
     const response = await GET(new NextRequest("http://localhost/api/stats?channel=17&days=90"));
 
     await expect(response.json()).resolves.toMatchObject({
-      posts: [{ id: 501, views: 120, reactions: 12 }],
+      posts: [
+        { id: 502, publication_source: "channel", views: null, externalUrl: "https://t.me/law_channel/702" },
+        { id: 501, views: 120, reactions: 12, previousViews: 100, previousReactions: 8 },
+      ],
+      latestPost: { id: 502, publication_origin: "manual" },
+      totals: { published: 1, withMetrics: 1 },
       period: { days: 90, timeZone: "Europe/Saratov" },
       subscriberGrowth: 20,
       competitors: [{ id: 91, medianViews: 450, subscriberGrowth: 100 }],

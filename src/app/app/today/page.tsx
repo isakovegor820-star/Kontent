@@ -13,6 +13,7 @@ import {
   Clock3,
   Compass,
   Database,
+  Eye,
   EyeOff,
   FileCheck2,
   Lightbulb,
@@ -312,6 +313,7 @@ function ChannelPulse({ pulse, channelId, refreshing, onRefresh }: {
             ) : (
               <Button variant="secondary" size="sm" className="mt-4" loading={refreshing} onClick={onRefresh}>Обновить статистику</Button>
             )}
+            {pulse.latestPost ? <LatestPostSummary pulse={pulse} /> : null}
           </div>
           <div className="min-w-0"><PulseEmptyGraphic text={pulse.state === "no_posts" ? "График появится после первой публикации" : "График появится после получения просмотров"} /></div>
         </div>
@@ -330,14 +332,32 @@ function ChannelPulse({ pulse, channelId, refreshing, onRefresh }: {
             <div><dt className="type-caption text-text-3">Просмотры</dt><dd className="mt-0.5 font-bold tabular-nums text-text">{metric(pulse.views)}</dd><dd className="type-caption text-text-3">{comparisonLabel(pulse.comparison.viewsPerPostPercent)}</dd></div>
             <div><dt className="type-caption text-text-3">Реакции</dt><dd className="mt-0.5 font-bold tabular-nums text-text">{metric(pulse.reactions)}</dd><dd className="type-caption text-text-3">{comparisonLabel(pulse.comparison.reactionsPerPostPercent)}</dd></div>
           </dl>
-          {pulse.bestPost ? (
-            <Link className="mt-4 inline-flex min-h-11 items-center break-words text-[14px] font-semibold leading-relaxed text-brand underline decoration-brand/35 underline-offset-4 hover:decoration-brand focus-visible:rounded-xs" href={pulse.bestPost.href}>Открыть лучший результат</Link>
-          ) : null}
+          {pulse.latestPost ? <LatestPostSummary pulse={pulse} /> : null}
         </div>
         <div className="min-w-0" role="img" aria-label={`${pulse.publishedCount} публикаций за 7 дней, ${pulse.postsWithStats} со статистикой. Линия построена по просмотрам публикаций.`}>{pulse.series.length > 0 ? <PulseArtwork values={pulse.series.map((point) => point.views)} /> : <PulseEmptyGraphic text="Просмотры пока недоступны" />}</div>
       </div>
       <PulseDetails pulse={pulse} channelId={channelId} />
     </Card>
+  );
+}
+
+function LatestPostSummary({ pulse }: { pulse: TodayPulse }) {
+  const post = pulse.latestPost;
+  if (!post) return null;
+  return (
+    <div className="mt-5 rounded-sm border border-line bg-surface-inset p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="type-caption font-semibold text-text-3">Последний пост</p>
+        <Badge tone="neutral">{post.source === "channel" ? "Напрямую в канале" : "Через Аврору"}</Badge>
+      </div>
+      <p className="mt-2 text-pretty text-[14px] leading-relaxed font-semibold text-text">{post.title}</p>
+      <p className="mt-1 text-[11px] leading-relaxed text-text-3">Опубликован {new Date(post.publishedAt).toLocaleString("ru-RU")}{post.metricsCollectedAt ? ` · статистика обновлена ${new Date(post.metricsCollectedAt).toLocaleString("ru-RU")}` : " · первый снимок собирается"}</p>
+      <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-[13px] text-text-2">
+        <span className="inline-flex items-center gap-1.5"><Eye className="h-4 w-4 text-brand" aria-hidden />{post.views == null ? "Просмотры собираются" : `${metric(post.views)} просмотров`}</span>
+        <span className="inline-flex items-center gap-1.5"><Sparkles className="h-4 w-4 text-danger-text" aria-hidden />{post.reactions == null ? "Реакции собираются" : `${metric(post.reactions)} реакций`}</span>
+      </div>
+      <Link className="mt-3 inline-flex min-h-11 items-center text-[13px] font-semibold text-brand underline decoration-brand/35 underline-offset-4 hover:decoration-brand" href={post.href}>Открыть статистику поста</Link>
+    </div>
   );
 }
 

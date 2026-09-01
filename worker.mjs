@@ -277,6 +277,10 @@ import {
 } from "./worker/telegram-reconciliation.mjs";
 import { importTelegramPublicPosts } from "./worker/telegram-public-import.mjs";
 import {
+  captureTelegramChannelPost,
+  captureTelegramReactionCount,
+} from "./worker/telegram-channel-stats.mjs";
+import {
   PUBLICATION_HEARTBEAT_KEY,
   PUBLICATION_HEARTBEAT_INTERVAL_MS,
   parsePublicationHeartbeat,
@@ -10562,6 +10566,17 @@ async function handleUpdate(u) {
       await botCaptureBusinessInquiry(u.business_message);
       return;
     }
+    if (u.channel_post || u.edited_channel_post) {
+      const captured = await captureTelegramChannelPost(pool, u.channel_post || u.edited_channel_post);
+      if (captured.captured && u.channel_post) {
+        await enqueueTelegramPostStats(captured);
+      }
+      return;
+    }
+    if (u.message_reaction_count) {
+      await captureTelegramReactionCount(pool, u.message_reaction_count, mskToday());
+      return;
+    }
     // Telegram delivers the channel → discussion mapping as an automatic-forward
     // update, often without user text. Persist it before command routing so the durable
     // first-comment operation can reply to the exact linked discussion message.
@@ -11051,7 +11066,7 @@ async function pollUpdates() {
         Number((await pool.query(`select last_update from bot_state where id = 1`)).rows[0]?.last_update ?? 0) + 1;
       const r = await tg(
         "getUpdates",
-        { offset, timeout: 25, limit: 100 },
+        { offset, timeout: 25, limit: 100, allowed_updates: TELEGRAM_POLLING_GUARD?.allowed_updates },
         35_000,
       ).catch(() => null);
       if (!r?.ok) {
@@ -11779,6 +11794,23 @@ autopilotWorker?.on("failed", recoverFailedAutopilotPlan);
 const statsProducerQueue = MEDIA_ONLY || AUTOPILOT_ONLY || PUBLICATION_ONLY
   ? null
   : new Queue("stats", { connection });
+
+async function enqueueTelegramPostStats(scope) {
+  if (!statsProducerQueue || !scope?.captured) return;
+  const delays = [30_000, 60 * 60_000];
+  await Promise.all(delays.map((delay) => statsProducerQueue.add(
+    "collect",
+    { userId: scope.userId, projectId: scope.projectId, channelId: scope.channelId },
+    {
+      jobId: `telegram-post-stats-${scope.projectId}-${scope.messageId}-${delay}`,
+      delay,
+      attempts: 2,
+      backoff: { type: "fixed", delay: 5_000 },
+      removeOnComplete: true,
+      removeOnFail: true,
+    },
+  )));
+}
 const statsWorker = MEDIA_ONLY || AUTOPILOT_ONLY || PUBLICATION_ONLY ? null : new Worker(
   "stats",
   async (job) => {

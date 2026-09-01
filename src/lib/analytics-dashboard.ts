@@ -1,6 +1,6 @@
 import { analyticsConfidence, summarizeAnalyticsCohort } from "./analytics-cohort";
 
-export const ANALYTICS_PERIODS = [7, 30, 90] as const;
+export const ANALYTICS_PERIODS = [7, 30, 90, 365] as const;
 export type AnalyticsPeriodDays = (typeof ANALYTICS_PERIODS)[number];
 
 export type DashboardPost = {
