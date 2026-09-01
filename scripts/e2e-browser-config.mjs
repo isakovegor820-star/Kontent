@@ -135,10 +135,18 @@ export function classifyE2eKnownBrowserObservation({
   try {
     sourcePath = new URL(String(currentUrl || "")).pathname;
   } catch {}
-  const studioTransitionRequest = pathAndQuery === "/api/rss/items?summary=unread"
-    || pathAndQuery === "/api/media/generations"
-    || pathAndQuery === "/api/media/capabilities"
-    || /^\/api\/drafts\/\d+$/u.test(pathAndQuery);
+  const studioTransitionRequest = [
+    "/api/rss/items?summary=unread",
+    "/api/media/generations",
+    "/api/media/capabilities",
+    "/api/studio/session",
+    "/api/settings",
+    "/api/ai/engines",
+    "/api/channels",
+    "/api/posts",
+    "/api/ai/usage",
+    "/api/project-notifications?limit=20",
+  ].includes(pathAndQuery) || /^\/api\/drafts\/\d+$/u.test(pathAndQuery);
   if (sourcePath === "/app/studio" && studioTransitionRequest) {
     return { kind: "webkit.cancelled-studio-navigation-request", detail: pathAndQuery };
   }

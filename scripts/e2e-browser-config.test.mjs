@@ -139,10 +139,24 @@ describe("real E2E browser configuration", () => {
       .toBe("webkit.cancelled-rsc-prefetch");
     expect(classify("/127.0.0.1:43190/app/autopilot/month?view=week&_rsc=abc_123 due to access control checks.")?.kind)
       .toBe("webkit.cancelled-rsc-prefetch");
-    expect(classify(
-      "/127.0.0.1:43190/api/media/generations due to access control checks.",
-      "https://127.0.0.1:43190/app/studio?draft=3&intent=create",
-    )?.kind).toBe("webkit.cancelled-studio-navigation-request");
+    for (const path of [
+      "/api/rss/items?summary=unread",
+      "/api/media/generations",
+      "/api/media/capabilities",
+      "/api/studio/session",
+      "/api/settings",
+      "/api/ai/engines",
+      "/api/channels",
+      "/api/posts",
+      "/api/ai/usage",
+      "/api/project-notifications?limit=20",
+      "/api/drafts/3",
+    ]) {
+      expect(classify(
+        `/127.0.0.1:43190${path} due to access control checks.`,
+        "https://127.0.0.1:43190/app/studio?draft=3&intent=create",
+      )).toEqual({ kind: "webkit.cancelled-studio-navigation-request", detail: path });
+    }
     expect(classify("/127.0.0.1:43191/app/library?_rsc=abc due to access control checks."))
       .toBeNull();
     expect(classify("/127.0.0.1:43190/api/projects due to access control checks."))
@@ -153,6 +167,10 @@ describe("real E2E browser configuration", () => {
       .toBeNull();
     expect(classify("/127.0.0.1:43190/api/settings?_rsc=abc due to access control checks."))
       .toBeNull();
+    expect(classify(
+      "/127.0.0.1:43190/api/project-notifications?limit=50 due to access control checks.",
+      "https://127.0.0.1:43190/app/studio?draft=3&intent=create",
+    )).toBeNull();
     expect(classifyE2eKnownBrowserObservation({
       engine: "chromium",
       eventKind: "pageerror",
