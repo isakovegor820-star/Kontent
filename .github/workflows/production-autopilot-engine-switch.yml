@@ -1,0 +1,103 @@
+# Repoint an Autopilot channel at a different generation engine.
+#
+# `autopilot_settings.generation_engine` is a per-channel pin that overrides every
+# environment default, so a channel pinned to a route that does not answer keeps failing
+# however healthy the rest of the fleet is. This workflow writes that one column on
+# explicitly named channels and nothing else, printing the row before and after.
+#
+# It can also enqueue the scheduler's own `weekly` job so the switch is verifiable through
+# the normal build path rather than by waiting for Sunday.
+name: Production Autopilot engine switch
+
+on:
+  workflow_dispatch:
+    inputs:
+      channels:
+        description: "Channel ids to repoint, comma separated (e.g. 18,3)"
+        type: string
+        required: true
+      engine:
+        description: "Engine id to pin"
+        type: choice
+        required: true
+        options:
+          - navy-deepseek-flash
+          - navy-minimax-m3
+          - navy-gpt-5-4
+          - navy-qwen-3-6
+          - navy-deepseek-pro
+      trigger_weekly:
+        description: "Start a real weekly build for every enabled channel afterwards"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Never write settings against a half-swapped release.
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  switch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Configure SSH
+        env:
+          PRODUCTION_SSH_KEY: ${{ secrets.PRODUCTION_SSH_KEY }}
+          PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
+          PRODUCTION_SSH_KNOWN_HOSTS: ${{ secrets.PRODUCTION_SSH_KNOWN_HOSTS }}
+          PRODUCTION_SSH_HOST_FINGERPRINT: ${{ secrets.PRODUCTION_SSH_HOST_FINGERPRINT }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$PRODUCTION_SSH_KEY"
+          test -n "$PRODUCTION_SSH_HOST"
+          test -n "$PRODUCTION_SSH_KNOWN_HOSTS"
+          test -n "$PRODUCTION_SSH_HOST_FINGERPRINT"
+          umask 077
+          mkdir -p ~/.ssh
+          printf '%s\n' "$PRODUCTION_SSH_KEY" > ~/.ssh/deploy_key
+          printf '%s\n' "$PRODUCTION_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          bash scripts/verify-ssh-host-identity.sh \
+            ~/.ssh/known_hosts \
+            "$PRODUCTION_SSH_HOST" \
+            "$PRODUCTION_SSH_HOST_FINGERPRINT"
+
+      - name: Apply the engine pin
+        env:
+          PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
+          PRODUCTION_SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
+          AURORA_ENGINE_CHANNELS: ${{ inputs.channels }}
+          AURORA_ENGINE_ID: ${{ inputs.engine }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$PRODUCTION_SSH_HOST"
+          test -n "$PRODUCTION_SSH_USER"
+          # Both values are interpolated into a remote command line, so bound the charset
+          # here as well as in the script that consumes them.
+          [[ "$AURORA_ENGINE_CHANNELS" =~ ^[0-9]+(,[0-9]+)*$ ]] || {
+            echo "channels must be a comma-separated list of ids" >&2
+            exit 1
+          }
+          [[ "$AURORA_ENGINE_ID" =~ ^[a-z0-9][a-z0-9-]*$ ]] || {
+            echo "engine must be a single engine id" >&2
+            exit 1
+          }
+          trigger_weekly="${{ inputs.trigger_weekly && 'true' || 'false' }}"
+          ssh -i ~/.ssh/deploy_key \
+            -o StrictHostKeyChecking=yes \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=8 \
+            "${PRODUCTION_SSH_USER}@${PRODUCTION_SSH_HOST}" \
+            "AURORA_ENGINE_CHANNELS=${AURORA_ENGINE_CHANNELS} AURORA_ENGINE_ID=${AURORA_ENGINE_ID} AURORA_TRIGGER_WEEKLY=${trigger_weekly} bash -s" \
+            < scripts/production-autopilot-engine-switch.sh
