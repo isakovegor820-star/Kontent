@@ -16,7 +16,7 @@ describe("Today page resilience and interface contract", () => {
     expect(source).toContain("setItemErrors");
     expect(source).toContain('aria-live="polite"');
     expect(source).toContain('state: "active" | ItemState');
-    expect(source).toContain('type ItemState = "done" | "snoozed"');
+    expect(source).toContain('type ItemState = "done" | "snoozed" | "dismissed"');
     expect(source).toContain("Вернуть");
   });
 
@@ -78,6 +78,7 @@ describe("Today page resilience and interface contract", () => {
     expect(source).toContain("Только реальные данные");
     expect(source).toContain("Развернуть статистику");
     expect(source).toContain("Открыть все графики");
+    expect(source).toContain("посты, размещённые напрямую в канале");
     expect(source).toContain("Создать план в автопилоте");
     expect(source).toContain("/app/autopilot");
     expect(source).toContain("/app/competitors?channel=");
@@ -93,10 +94,20 @@ describe("Today page resilience and interface contract", () => {
   it("keeps the Today command center compact, data-backed and keyboard discoverable", () => {
     expect(source).toContain("function TodaySummaryMetrics");
     expect(source).toContain('aria-label="Краткая сводка на сегодня"');
-    expect(source).toContain('item.confidence === "high"');
+    expect(source).toContain("Публикации за 7 дней");
+    expect(source).toContain("Просмотры за 7 дней");
+    expect(source).toContain("Реакции за 7 дней");
+    expect(source).toContain("Вовлечённость");
     expect(source).toContain("function PulseArtwork");
     expect(source).toContain('aria-label="Дополнительные действия"');
     expect(source).toContain("MoreHorizontal");
+  });
+
+  it("lets the user dismiss an optional decision and undo that choice", () => {
+    expect(source).toContain('item.type === "risk" || item.type === "review"');
+    expect(source).toContain("Отклонить");
+    expect(source).toContain('changeState(candidate, "dismissed")');
+    expect(source).toContain("Решение отклонено");
   });
 
   it("uses buttons for mutations, links for navigation and keeps recommendation feedback reversible", () => {

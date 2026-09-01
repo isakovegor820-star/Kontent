@@ -12,13 +12,18 @@ const sumReactions = () => 3;
 describe("Telegram reconciliation", () => {
   it("recognizes a live external message and its metrics", () => {
     const result = parseTelegramPublicStats(
-      '<div data-post="channel/42"><span class="tgme_widget_message_views">5</span></div>',
+      '<div data-post="channel/42"><div class="tgme_widget_message_text">Пост<br>вручную &amp; честно</div><time datetime="2026-09-01T10:00:00+00:00"></time><span class="tgme_widget_message_views">5</span></div>',
       parseCount,
       sumReactions,
     );
     expect(
       decideTelegramReconciliation({ externalMessageId: 42, result }),
     ).toEqual({ kind: "seen", metrics: { views: 5, reactions: 3 } });
+    expect(result.posts).toEqual([{
+      externalMessageId: 42,
+      text: "Пост\nвручную & честно",
+      publishedAt: "2026-09-01T10:00:00.000Z",
+    }]);
   });
 
   it("requires two successful in-window misses before declaring a message missing", () => {

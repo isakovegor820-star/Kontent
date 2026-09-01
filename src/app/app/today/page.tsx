@@ -7,7 +7,6 @@ import {
   AlertTriangle,
   BarChart3,
   BadgeCheck,
-  BrainCircuit,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -16,13 +15,13 @@ import {
   Database,
   EyeOff,
   FileCheck2,
-  Flame,
   Lightbulb,
   MoreHorizontal,
   RefreshCw,
   RotateCcw,
   Sparkles,
   TimerReset,
+  X,
 } from "lucide-react";
 
 import { AppShell } from "@/components/app/shell";
@@ -88,7 +87,7 @@ const GROUPS: Array<{
 ];
 
 type LoadStatus = "loading" | "ready" | "error";
-type ItemState = "done" | "snoozed";
+type ItemState = "done" | "snoozed" | "dismissed";
 type UndoNotice =
   | { kind: "state"; item: TodayItem; channelId: number; state: ItemState }
   | { kind: "feedback"; item: TodayItem; channelId: number; recommendationKind: TodayRecommendationKind; hiddenItems: TodayItem[] };
@@ -257,7 +256,7 @@ function PulseDetails({ pulse, channelId }: { pulse: TodayPulse; channelId: numb
         <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-[13px] leading-relaxed text-text-3">
             {hasMetrics
-              ? "Здесь всегда доступна последняя подтверждённая сводка по выбранному каналу."
+              ? "Здесь всегда доступна последняя подтверждённая сводка по выбранному каналу. Для публичного Telegram-канала учитываются публикации из Авроры и посты, размещённые напрямую в канале."
               : "Показываем доступные факты и не подменяем отсутствующие показатели нулями."}
           </p>
           <Link className={buttonClassName({ variant: "secondary", size: "sm", className: "shrink-0" })} href={analyticsHref}>
@@ -342,15 +341,14 @@ function ChannelPulse({ pulse, channelId, refreshing, onRefresh }: {
   );
 }
 
-function TodaySummaryMetrics({ board, items }: { board: TodayBoard; items: TodayItem[] }) {
-  const highConfidenceShare = items.length === 0
-    ? 0
-    : Math.round((items.filter((item) => item.confidence === "high").length / items.length) * 100);
+function TodaySummaryMetrics({ board }: { board: TodayBoard }) {
+  const pulseAvailable = board.pulse.state !== "unavailable";
+  const hasMetrics = board.pulse.postsWithStats > 0;
   const entries = [
-    { label: "Решения в фокусе", value: String(items.length), icon: Flame, tone: "text-fire-text" },
-    { label: "Период аналитики", value: "7 дней", icon: BarChart3, tone: "text-brand" },
-    { label: "Возможности", value: String(board.readiness.opportunityCount), icon: BrainCircuit, tone: "text-danger-text" },
-    { label: "Высокая уверенность", value: items.length > 0 ? `${highConfidenceShare}%` : "—", icon: BadgeCheck, tone: "text-success-text" },
+    { label: "Публикации за 7 дней", value: pulseAvailable ? metric(board.pulse.publishedCount) : "—", icon: FileCheck2, tone: "text-fire-text" },
+    { label: "Просмотры за 7 дней", value: hasMetrics ? metric(board.pulse.views) : "—", icon: BarChart3, tone: "text-brand" },
+    { label: "Реакции за 7 дней", value: hasMetrics ? metric(board.pulse.reactions) : "—", icon: Sparkles, tone: "text-danger-text" },
+    { label: "Вовлечённость", value: board.pulse.engagementRate == null ? "—" : `${board.pulse.engagementRate.toLocaleString("ru-RU")}%`, icon: BadgeCheck, tone: "text-success-text" },
   ];
   return (
     <dl className="grid grid-cols-2 gap-3 lg:grid-cols-4" aria-label="Краткая сводка на сегодня">
@@ -436,7 +434,7 @@ function CompletedToday({ items, timezone }: { items: TodayCompletedItem[]; time
   );
 }
 
-function TodayItemCard({ item, featured, actionsDisabled, actionLoading, error, setTitleRef, onPrimary, onDone, onSnooze, onHide }: {
+function TodayItemCard({ item, featured, actionsDisabled, actionLoading, error, setTitleRef, onPrimary, onDone, onSnooze, onDismiss, onHide }: {
   item: TodayItem;
   featured: boolean;
   actionsDisabled: boolean;
@@ -446,6 +444,7 @@ function TodayItemCard({ item, featured, actionsDisabled, actionLoading, error, 
   onPrimary: (item: TodayItem) => void;
   onDone: (item: TodayItem) => void;
   onSnooze: (item: TodayItem) => void;
+  onDismiss: (item: TodayItem) => void;
   onHide: (item: TodayItem) => void;
 }) {
   const Icon = ICONS[item.type];
@@ -493,6 +492,11 @@ function TodayItemCard({ item, featured, actionsDisabled, actionLoading, error, 
                 <Button variant="ghost" size="sm" data-aurora-feature="work_item" data-aurora-action="task_deferred" className="w-full justify-start whitespace-normal text-left" disabled={actionsDisabled} onClick={() => onSnooze(item)}>
                   <Clock3 className="h-4 w-4 shrink-0" aria-hidden />Напомнить завтра
                 </Button>
+                {item.type === "risk" || item.type === "review" ? (
+                  <Button variant="ghost" size="sm" data-aurora-feature="work_item" data-aurora-action="task_dismissed" className="w-full justify-start whitespace-normal text-left" disabled={actionsDisabled} onClick={() => onDismiss(item)}>
+                    <X className="h-4 w-4 shrink-0" aria-hidden />Отклонить
+                  </Button>
+                ) : null}
                 {item.recommendationKind ? (
                   <Button variant="ghost" size="sm" className="w-full justify-start whitespace-normal text-left" disabled={actionsDisabled} onClick={() => onHide(item)}>
                     <EyeOff className="h-4 w-4 shrink-0" aria-hidden />Больше не показывать такое
@@ -687,7 +691,11 @@ function TodayPageContent() {
     });
     setUndo({ kind: "state", item, channelId, state: nextState });
     if (quickMode) setQuickCompleted((value) => Math.min(quickTotal, value + 1));
-    setAnnouncement(nextState === "done" ? `«${item.title}» отмечено готовым.` : `«${item.title}» отложено до завтра, 09:00.`);
+    setAnnouncement(nextState === "done"
+      ? `«${item.title}» отмечено готовым.`
+      : nextState === "dismissed"
+        ? `«${item.title}» отклонено и убрано из активного списка.`
+        : `«${item.title}» отложено до завтра, 09:00.`);
     try {
       await postState(item, channelId, nextState, controller.signal);
       if (controller.signal.aborted || sequence !== stateSequence.current) return;
@@ -707,7 +715,9 @@ function TodayPageContent() {
       setUndo((notice) => notice?.item.fingerprint === item.fingerprint ? null : notice);
       setItemErrors((errors) => ({ ...errors, [item.fingerprint]: nextState === "done"
         ? "Не удалось отметить решение готовым. Карточка возвращена — попробуйте ещё раз."
-        : "Не удалось отложить решение. Карточка возвращена — попробуйте ещё раз." }));
+        : nextState === "dismissed"
+          ? "Не удалось отклонить решение. Карточка возвращена — попробуйте ещё раз."
+          : "Не удалось отложить решение. Карточка возвращена — попробуйте ещё раз." }));
       setAnnouncement(`Не удалось изменить «${item.title}». Карточка возвращена.`);
     } finally { if (sequence === stateSequence.current) setBusy(null); }
   }, [busy, commitBoard, load, postState, quickMode, quickTotal]);
@@ -1020,7 +1030,7 @@ function TodayPageContent() {
               ) : null}
             </Card>
 
-            <TodaySummaryMetrics board={board} items={actionableItems} />
+            <TodaySummaryMetrics board={board} />
 
             <ChannelPulse pulse={board.pulse} channelId={board.channelId} refreshing={refreshing} onRefresh={() => void refreshSources()} />
 
@@ -1032,7 +1042,7 @@ function TodayPageContent() {
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <div className="min-w-0">
                     <p className="font-semibold text-success-text">
-                      {undo.kind === "feedback" ? "Тип рекомендаций скрыт" : undo.state === "done" ? "Решение отмечено готовым" : "Напомним завтра в 09:00"}
+                      {undo.kind === "feedback" ? "Тип рекомендаций скрыт" : undo.state === "done" ? "Решение отмечено готовым" : undo.state === "dismissed" ? "Решение отклонено" : "Напомним завтра в 09:00"}
                     </p>
                     <p className="mt-1 break-words text-[13px] text-text-2">{undo.item.title}</p>
                     {itemErrors[undo.item.fingerprint] ? <p className="mt-2 text-[13px] font-semibold text-danger-text" role="alert">{itemErrors[undo.item.fingerprint]}</p> : null}
@@ -1079,7 +1089,7 @@ function TodayPageContent() {
                       <h2 id="today-quick-title" className="mt-1">Разобрать за 5 минут</h2>
                       <p className="mt-1 text-[14px] leading-relaxed text-text-2">
                         {firstItem
-                          ? `Шаг ${Math.min(quickCompleted + 1, quickTotal)} из ${quickTotal}. Откройте действие, затем явно выберите «Готово», «Напомнить завтра» или скройте нерелевантный тип.`
+                          ? `Шаг ${Math.min(quickCompleted + 1, quickTotal)} из ${quickTotal}. Откройте действие, затем явно выберите «Готово», «Напомнить завтра», «Отклонить» или скройте нерелевантный тип.`
                           : `Разобрано: ${quickCompleted} из ${quickTotal}.`}
                       </p>
                     </div>
@@ -1097,6 +1107,7 @@ function TodayPageContent() {
                     onPrimary={(candidate) => void runPrimary(candidate)}
                     onDone={(candidate) => void changeState(candidate, "done")}
                     onSnooze={(candidate) => void changeState(candidate, "snoozed")}
+                    onDismiss={(candidate) => void changeState(candidate, "dismissed")}
                     onHide={(candidate) => void hideRecommendation(candidate)}
                   />
                 ) : (
@@ -1126,6 +1137,7 @@ function TodayPageContent() {
                               setTitleRef={(element) => { if (element) titleRefs.current.set(item.fingerprint, element); else titleRefs.current.delete(item.fingerprint); }}
                               onPrimary={(candidate) => void runPrimary(candidate)}
                               onDone={(candidate) => void changeState(candidate, "done")} onSnooze={(candidate) => void changeState(candidate, "snoozed")}
+                              onDismiss={(candidate) => void changeState(candidate, "dismissed")}
                               onHide={(candidate) => void hideRecommendation(candidate)} />
                           </li>
                         ))}

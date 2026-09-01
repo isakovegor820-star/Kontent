@@ -84,15 +84,14 @@ describe("POST /api/today/state", () => {
     expect((await POST(request({ channelId: 11, fingerprint: "a".repeat(64), state: "done" }))).status).toBe(403);
   });
 
-  it("rejects the legacy permanent-dismiss state", async () => {
+  it("accepts dismissed as an explicit persisted state", async () => {
     const response = await POST(request({
       channelId: 11,
       fingerprint: "d".repeat(64),
       state: "dismissed",
     }));
 
-    expect(response.status).toBe(422);
-    await expect(response.json()).resolves.toEqual({ error: "bad_state" });
-    expect(mocks.updateTodayItemState).not.toHaveBeenCalled();
+    expect(response.status).toBe(200);
+    expect(mocks.updateTodayItemState).toHaveBeenCalledWith(expect.objectContaining({ state: "dismissed" }));
   });
 });

@@ -275,6 +275,7 @@ import {
   parseTelegramPublicStats,
   temporaryTelegramVerification,
 } from "./worker/telegram-reconciliation.mjs";
+import { importTelegramPublicPosts } from "./worker/telegram-public-import.mjs";
 import {
   PUBLICATION_HEARTBEAT_KEY,
   PUBLICATION_HEARTBEAT_INTERVAL_MS,
@@ -3227,7 +3228,7 @@ async function collectStats(projectId) {
   const today = mskToday();
   const chans = (
     await pool.query(
-      `select id, tg_chat_id, handle from channels
+      `select id, project_id, user_id, tg_chat_id, handle from channels
         where project_id = $1 and network = 'tg' and is_active = true`,
       [scopedProjectId],
     )
@@ -3263,6 +3264,15 @@ async function collectStats(projectId) {
     // 2) Просмотры/реакции постов — из публичной страницы, по message_id.
     if (ch.handle) {
       const verification = await fetchPublicStats(ch.handle);
+
+      // The public feed is the channel truth, including messages published directly in
+      // Telegram. Materialize those messages before collecting metrics so Today and
+      // Results analyze the whole connected public channel, not only Aurora deliveries.
+      await importTelegramPublicPosts(pool, {
+        projectId: ch.project_id,
+        userId: ch.user_id,
+        channelId: ch.id,
+      }, verification);
 
       const posts = (
         await pool.query(

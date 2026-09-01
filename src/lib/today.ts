@@ -662,8 +662,7 @@ async function applyUserState(db: Queryable, userId: number, scope: { projectId:
   return items.filter((item) => {
     if (item.recommendationKind && hiddenKinds.has(item.recommendationKind)) return false;
     const state = states.get(item.fingerprint);
-    // Старое действие «Не сегодня» не должно продолжать скрывать карточку навсегда.
-    if (!state || state.state === "active" || state.state === "dismissed") return true;
+    if (!state || state.state === "active") return true;
     if (state.state === "snoozed" && state.snoozed_until && new Date(state.snoozed_until).getTime() <= Date.now()) return true;
     return false;
   });
@@ -912,7 +911,7 @@ export async function updateTodayItemState(input: {
   actorUserId: number;
   channelId: number;
   fingerprint: string;
-  state: "active" | "snoozed" | "done";
+  state: "active" | "snoozed" | "done" | "dismissed";
   snoozedUntil?: string | null;
 }, db: Queryable = getPool()) {
   if (!/^[0-9a-f]{64}$/u.test(input.fingerprint)) throw new TodayError("bad_fingerprint");

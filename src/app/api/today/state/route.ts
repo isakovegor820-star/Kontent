@@ -15,7 +15,7 @@ export async function POST(req: NextRequest) {
   try {
     const body = await readJsonBodyValue(req) as Record<string, unknown>;
     const state = body.state;
-    if (state !== "active" && state !== "snoozed" && state !== "done") {
+    if (state !== "active" && state !== "snoozed" && state !== "done" && state !== "dismissed") {
       throw new TodayError("bad_state");
     }
     const channelId = Number(body.channelId);

@@ -1,21 +1,47 @@
+function decodeTelegramText(value) {
+  return String(value || "")
+    .replace(/<br\s*\/?>/giu, "\n")
+    .replace(/<[^>]+>/gu, "")
+    .replace(/&lt;/gu, "<")
+    .replace(/&gt;/gu, ">")
+    .replace(/&quot;/gu, '"')
+    .replace(/&#0?39;/gu, "'")
+    .replace(/&nbsp;/gu, " ")
+    .replace(/&#(\d+);/gu, (_, codePoint) => {
+      try { return String.fromCodePoint(Number(codePoint)); } catch { return ""; }
+    })
+    .replace(/&amp;/gu, "&")
+    .trim();
+}
+
 /** Parse the public Telegram channel page without assigning publication truth yet. */
 export function parseTelegramPublicStats(html, parseCount, sumReactions) {
   const messages = {};
+  const posts = [];
   const parts = String(html || "").split('data-post="');
   for (let i = 1; i < parts.length; i++) {
     const block = parts[i];
     const message = block.match(/^[^/]+\/(\d+)"/);
     if (!message) continue;
+    const messageId = Number(message[1]);
     const views = block.match(/tgme_widget_message_views">([^<]+)</);
-    messages[Number(message[1])] = {
+    messages[messageId] = {
       views: views ? parseCount(views[1]) : null,
       reactions: sumReactions(block),
     };
+    const text = block.match(/tgme_widget_message_text[^>]*>([\s\S]*?)<\/div>/u);
+    const datetime = block.match(/datetime="([^"]+)"/u);
+    posts.push({
+      externalMessageId: messageId,
+      text: text ? decodeTelegramText(text[1]) : "",
+      publishedAt: datetime && Number.isFinite(Date.parse(datetime[1])) ? new Date(datetime[1]).toISOString() : null,
+    });
   }
   const ids = Object.keys(messages).map(Number);
   return {
     kind: ids.length ? "window" : "unverifiable",
     messages,
+    posts,
     oldestSeen: ids.length ? Math.min(...ids) : null,
   };
 }

@@ -264,15 +264,14 @@ describe("Today board states", () => {
     expect(board.items).toHaveLength(1);
   });
 
-  it("does not keep legacy dismissed cards hidden forever", async () => {
+  it("keeps an explicitly dismissed card out of the active list", async () => {
     vi.stubEnv("AURORA_RELEASE1_DEV_ENABLED", "false");
     const board = await loadTodayBoard(
       { actorUserId: 9, channelId: 11 },
       todayDb({ userState: "dismissed" }) as never,
     );
 
-    expect(board.items).toHaveLength(1);
-    expect(board.items[0]?.type).toBe("review");
+    expect(board.items).toEqual([]);
   });
 
   it("restores a snoozed item by deleting only its user-owned state", async () => {
@@ -308,6 +307,28 @@ describe("Today board states", () => {
       "done",
       null,
       expect.stringContaining(`"fingerprint":"${board.items[0].fingerprint}"`),
+    ]);
+  });
+
+  it("persists a dismissed decision without adding it to completed items", async () => {
+    const db = todayDb();
+    const board = await loadTodayBoard({ actorUserId: 9, channelId: 11 }, db as never);
+    await updateTodayItemState({
+      actorUserId: 9,
+      channelId: 11,
+      fingerprint: board.items[0].fingerprint,
+      state: "dismissed",
+    }, db as never);
+    const insert = db.query.mock.calls.find(([sql]) => String(sql).includes("insert into today_item_states"));
+    expect(insert?.[1]).toEqual([
+      7,
+      11,
+      9,
+      board.items[0].fingerprint,
+      "today-rank-v1",
+      "dismissed",
+      null,
+      null,
     ]);
   });
 
