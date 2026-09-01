@@ -74,7 +74,7 @@ section "WORKER JOURNAL (Autopilot build decisions, last 3 h)"
 # Timestamped on purpose: these lines are how we tell a build that ran on the current
 # release from one that failed on the previous one.
 journalctl -u aurora-worker.service --since '-3 hours' --no-pager -o short-iso 2>/dev/null \
-  | grep -aE '\[auto\]|нет брифа|канал .* недоступен|устарела|no_brief|no_channel' \
+  | grep -aE '\[auto\]|\[autopilot\]|\[cron\]|weekly|нет брифа|канал .* недоступен|устарела|no_brief|no_channel' \
   | tail -n 80 | redact || echo "(no Autopilot journal lines)"
 
 section "AI TELEMETRY CODE HISTOGRAM (current release only)"
