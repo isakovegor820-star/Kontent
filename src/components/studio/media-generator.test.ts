@@ -16,6 +16,7 @@ describe("MediaGenerator", () => {
 
   it("keeps a stable polite status region and explicitly labelled prompt controls", () => {
     const html = renderToStaticMarkup(createElement(MediaGenerator, {
+      initialKind: "image",
       channelId: 18,
       sourceText: "Текущая публикация",
       onUse: vi.fn(),
@@ -29,9 +30,23 @@ describe("MediaGenerator", () => {
     expect(html).toContain("Напиши, какое изображение нужно создать");
     expect(html).toContain("Взять последний пост");
     expect(html).toContain("Изображение");
-    expect(html).not.toContain("Видео");
-    expect(html).not.toContain("скоро");
+    expect(html).toContain("Видео");
+    expect(html).toContain("Вертикальный рилс");
     expect(html).not.toContain("Flux");
+  });
+
+  it("preserves the video entry point and initializes the video generation mode", () => {
+    const html = renderToStaticMarkup(createElement(MediaGenerator, {
+      initialKind: "video",
+      channelId: 18,
+      sourceText: "Текущая публикация",
+      onUse: vi.fn(),
+    }));
+
+    expect(html).toContain('aria-label="Создать видео"');
+    expect(html).toContain("создай короткий ролик");
+    expect(html).toContain('aria-pressed="true"');
+    expect(html).toContain("Видео");
   });
 
   it("builds an editable visual brief automatically and bounds the post context", () => {

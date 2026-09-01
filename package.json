@@ -30,6 +30,7 @@
     "test:tracking-lifecycle:integration": "vitest run --config vitest.integration.config.ts src/e2e/tracking-lifecycle.integration.ts",
     "test:registration:integration": "vitest run --config vitest.integration.config.ts src/e2e/registration.integration.ts",
     "test:password-recovery:integration": "vitest run --config vitest.integration.config.ts src/e2e/password-recovery.integration.ts",
+    "test:database-pool-timeout:integration": "vitest run --config vitest.integration.config.ts src/e2e/database-pool-timeout.integration.ts",
     "test:contracts": "vitest run src/e2e/critical-journeys.test.ts",
     "test:e2e:real": "node scripts/test-e2e-real.mjs",
     "test:e2e:stability": "node scripts/test-e2e-stability.mjs",

@@ -1,8 +1,10 @@
 # Product event contract операционного центра
 
-Статус: реализован. Исполняемый allowlist находится в
+Статус: технический operational-контур реализован. Исполняемый allowlist находится в
 `src/lib/product-event-contract.mjs`, каталог разделов и SLO — в
-`src/lib/aurora-section-catalog.ts`.
+`src/lib/aurora-section-catalog.ts`. Это не означает закрытие BLK-04: минимальная
+taxonomy раздела 9.1 пока не связана с production lifecycle emitters, а 95% synthetic
+reconciliation, consent/DPA approval и freshness/volume alerts не подтверждены.
 
 ## Назначение источников
 
@@ -16,7 +18,8 @@
 
 Клиент может передать только валидированные `eventId`, `sectionId`, `featureId`,
 `action`, `stage`, `outcome`, `durationMs`, `errorCode`, `requestId`, `operationId`,
-`sessionId`, `occurredAt`, `safeContext` и `important`.
+`sessionId`, `occurredAt` и `safeContext`. Поле `important` вычисляет валидатор из
+`stage`/`outcome`/`errorCode`; присланное клиентом значение отклоняется.
 
 `user_id`, `project_id` и release metadata выбирает сервер после проверки live session
 и активного membership. Присланные клиентом `userId`, `projectId` или `release`

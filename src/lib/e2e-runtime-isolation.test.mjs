@@ -49,9 +49,16 @@ describe("real E2E runtime isolation", () => {
   it("accepts the visible save summary when a resolved error collapses its details", () => {
     const source = readFileSync(resolve("scripts/test-e2e-real.mjs"), "utf8");
 
+    expect(source).toContain("() => saveButton.isEnabled().catch(() => false)");
+    expect(source).toContain('"Composer save button did not become enabled"');
+    expect(source).toContain('const stillNeedsSave = (await saveButton.textContent().catch(() => ""))?.trim() !== "Сохранено"');
+    expect(source).toContain("await saveButton.evaluate((button) => button.click())");
+    expect(source).not.toContain("    await saveButton.click();");
     expect(source).toContain('const summary = await protection.locator("summary").textContent()');
     expect(source).toContain('summary?.includes("Сохранено") === true');
     expect(source).toContain('select text from drafts where id = $1 and project_id = $2');
+    expect(source.indexOf("await saveButton.evaluate((button) => button.click())"))
+      .toBeLessThan(source.indexOf('const summary = await protection.locator("summary").textContent()'));
   });
 
   it("gives cold API compilation the same bounded budget as runtime readiness", () => {
@@ -182,6 +189,36 @@ describe("real E2E runtime isolation", () => {
     expect(source).toContain("sanitizeE2eNetworkUrl(request.url(), baseUrl)");
     expect(source).toContain("assert(traces.length === 2");
     expect(source).toContain("assert(videos.length >= 2");
+  });
+
+  it("keeps the BLK-01 token canary out of portable evidence and scans every journey fail-closed", () => {
+    const harness = readFileSync(resolve("scripts/test-e2e-real.mjs"), "utf8");
+    const stability = readFileSync(resolve("scripts/test-e2e-stability.mjs"), "utf8");
+    const tokenJourney = harness.indexOf("bot connect token hygiene");
+    const mainTraceStart = harness.indexOf("await context.tracing.start(E2E_EVIDENCE_TRACE_OPTIONS)");
+
+    expect(harness).toContain("E2E_BOT_CONNECT_TOKEN_CANARY");
+    expect(harness).toContain('botConnectCleanUrl.pathname === "/bot/connect"');
+    expect(harness).toContain("!botConnectDom.includes(E2E_BOT_CONNECT_TOKEN_CANARY)");
+    expect(harness).toContain("!botConnectHistory.includes(E2E_BOT_CONNECT_TOKEN_CANARY)");
+    expect(harness).toContain("!botConnectNetworkUrls.some");
+    expect(harness).toContain("queryKeys: Array.from(parsed.searchParams.keys()).sort()");
+    expect(harness).toContain("hasHash: parsed.hash.length > 0");
+    expect(harness).toContain("from: describeHistoryUrl(null)");
+    expect(harness).toContain("to: url == null ? null : describeHistoryUrl(url)");
+    expect(harness).not.toContain("to: url == null ? null : String(url)");
+    expect(harness).toContain("traceCaptureStartedAfterTokenConsumption: true");
+    expect(tokenJourney).toBeGreaterThan(0);
+    expect(mainTraceStart).toBeGreaterThan(tokenJourney);
+
+    expect(stability).toContain("async function scanJourneyEvidence(directory, inventory, networkEvents)");
+    expect(stability).toContain("inspectE2eNetworkEvents(networkEvents)");
+    expect(stability).toContain("inspectE2eTextEvidence(entry.path");
+    expect(stability).toContain("extractArchiveContent(path)");
+    expect(stability).toContain("inspectE2eCanaryBuffer(");
+    expect(stability).toContain("const evidenceSafety = await scanJourneyEvidence");
+    expect(stability.indexOf("const evidenceSafety = await scanJourneyEvidence"))
+      .toBeLessThan(stability.indexOf("return {", stability.indexOf("async function verifyJourney")));
   });
 
   it("runs the stability matrix sequentially and rejects incomplete evidence", () => {

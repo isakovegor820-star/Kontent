@@ -38,6 +38,66 @@ Accessibility, Security или Legal sign-off.
   `admin-operations-center.integration.ts` не запускался: он требует отдельную локальную
   БД `aurora_migration_test`, на reset которой разрешение не предоставлялось.
 
+## Обновление доказательств 2026-08-31
+
+- Текущий проверенный worktree находится на ветке `codex/fix-content-studio`, HEAD
+  `c1b4bc362f69ba5856357a86cc135213c8172e88`. Во время работы параллельные git-операции,
+  зафиксированные reflog, несколько раз меняли `HEAD`, выполнили rebase/merge и затем
+  checkout с `main` на эту ветку. Эти операции не выполнялись в рамках данного аудита;
+  откат, commit и push не выполнялись.
+- Для последнего локального non-browser gate зафиксирован SHA-256 snapshot E2E-входов
+  `cd65d99be9532adf282b2b6a838a1fa3709c4132e05f55b5e1f64b1dd9744974`, 1674 файла.
+  На неизменном snapshot прошли 546 test files / 2900 tests, 4 связанных test files /
+  59 tests, ESLint, TypeScript, focus-policy, `git diff --check` и policy-check 107
+  additive transactional migrations.
+- `npm run build` на том же snapshot завершился code 0: webpack compile 60 s,
+  встроенный TypeScript 21,4 s, static page generation 237/237. Digest после build
+  совпал с исходным; результат не переносится на staging или production performance.
+- Обнаруженная image-only правка Studio удаляла существующий клиентский путь видео и
+  скрывала provenance резервной AI-модели, хотя API, очередь, worker и persisted media
+  contract продолжают поддерживать `kind: "video"` и `veo-3.1`. В worktree восстановлены
+  обратносуместимые entry points, video settings/render/retry, fallback provenance и
+  регрессионные проверки; доступные image-модели по-прежнему фильтруются серверными
+  capabilities. Это локальное исправление, не Product sign-off.
+- Три поздние попытки 30 × 3 были корректно остановлены snapshot guard, а не продуктовым
+  assertion: `blk-03-30-run-clean-snapshot-20260831-1503` — 32 зелёных journey перед
+  изменением readiness route; `blk-03-30-run-readiness-snapshot-build-20260831-1601` —
+  16 зелёных перед изменением harness; `blk-03-30-run-digest-5192c2f5-20260831-1635` —
+  48 зелёных перед добавлением шести Calendar/stream файлов. Ни один прогон не считается
+  30-run evidence.
+- На snapshot `5192c2f531876ca323ec4f9ef255f9a7b28b0bfc5ff21cd26eec9b3614df3aaa`
+  контроль `control-webkit-composer-save-20260831-1628` прошёл 3/3 движка, failed 0,
+  flake rate 0. Этот результат нельзя автоматически переносить на текущий snapshot.
+- Для BLK-01 добавлены exact synthetic canary, расширенная URL-санитизация и fail-closed
+  scan текстовых evidence, структурированного network log, всех файлов и распакованного
+  содержимого trace/XLSX. Read-only scan указанного предыдущего 3-engine control проверил
+  по 22 файла, 7 текстовых файлов и 3 архива на движок, а также 7692 / 6544 / 6672
+  network events; находок 0. Новый browser journey дополнен проверкой `/bot/connect`:
+  clean URL, DOM, history evidence, recorded network URL и diagnostics, причём trace
+  запускается после bounded token flow. Код и старые артефакты проверены, но этот journey
+  ещё не запускался на текущем snapshot, поэтому полный token/network gate не заявляется.
+- Для BLK-02 добавлена отдельная integration-проверка на новом временном PostgreSQL 16
+  cluster без доступа к существующим БД. Фактически прошли 3/3 сценария: acquire timeout
+  при pool max 1, server `statement_timeout` (`57014`), idle-transaction termination
+  (`25P03`) и рабочий запрос после замены соединения. Успешный temp cluster остановлен,
+  evidence сохранён. Это не controlled saturation/load, PgBouncer, dashboard или alert.
+- Повторный аудит BLK-04 устранил устаревшее утверждение об отсутствии ingestion/storage:
+  текущий код содержит authenticated `/api/product-events`, server-owned user/project,
+  session/request/operation correlation, raw retention, transactional daily aggregates,
+  клиентский operational emitter и admin funnel/errors/speed/events. Шесть связанных
+  test files / 53 tests прошли. При этом taxonomy раздела 9.1 вызывается только тестами:
+  lifecycle/worker emitters, terminal publish reconciliation ≥95%, cohort и
+  freshness/volume alerts отсутствуют; consent/DPA/retention approval не предоставлен.
+- Новый browser-контроль текущего snapshot не запускался: команда была отклонена до
+  старта из-за destructive reset PostgreSQL `aurora_e2e_real` и Redis DB 15. Без browser
+  и reset успешно выполнены dry-run `dry-run-studio-restored-20260831-1850` (1 × 3) и
+  `dry-run-30x3-studio-restored-20260831-1855` (30 × 3, 90 запланированных journey),
+  а после BLK-01 evidence changes — `dry-run-evidence-safety-20260831-1915` (30 × 3,
+  90 запланированных journey). Финальный текущий snapshot после BLK-02 integration имеет
+  отдельный `dry-run-blk01-blk02-20260831-1930` (30 × 3, 90 journey).
+  Это проверка плана runner, а не продукта. Требуется отдельное явное
+  разрешение на эти disposable targets; BLK-03 остаётся частичным.
+
 ### Противоречие ролей BLK-03 — требуется решение владельца
 
 - Требование плана: критический путь для `owner/editor/viewer`.
@@ -77,14 +137,14 @@ Accessibility, Security или Legal sign-off.
 | Схема | 106 SQL migration; policy-check подтверждает additive/transactional форму. Локальный disposable PostgreSQL 17 использован полным browser E2E. | `npm run test:migrations` — pass; 3-engine `test:e2e:real` мигрировал и пересоздавал только `aurora_e2e_real`. |
 | Redis | Локальный disposable Redis подтверждён полным browser E2E. | 3-engine `test:e2e:real` использовал только DB 15; production/live Redis не использовался. |
 | Unit/contracts | 512 test files, 2673 tests прошли до изменений. | `npm test` — pass, 29.05 s. |
-| Текущая регрессия | После локальных исправлений 520 test files, 2729 tests. | `npm test` — pass, 56.80 s; lint, TypeScript, focus и diff-check — pass. |
+| Текущая регрессия | На snapshot `cd65d99b…44974` прошли 546 test files, 2900 tests. | `npm test` — pass, 32.06 s; ESLint, TypeScript, focus, migration policy и diff-check — pass; отдельно DB timeout integration 1 file / 3 tests — pass; digest до/после совпал. |
 | Focus policy | Focused/skipped tests не обнаружены. | `npm run test:focus` — pass. |
 | Static quality | Lint и TypeScript прошли до изменений; после BLK-01/02 также прошли. | `npm run lint`; `npx tsc --noEmit`. |
-| Production build | Next 16.2.12 webpack build успешен; 234 route artifact. | `npm run build` — pass; compile 2.4 min, TypeScript 32.0 s. |
+| Production build | Последний Next 16.2.12 webpack build успешен; 237 static pages generated. | `npm run build` — pass; compile 60 s, TypeScript 21.4 s, pages 237/237; snapshot digest не изменился. |
 | Bundle snapshot | Сумма gzip отдельных `.next/static/chunks/*.js` — 1,425,210 bytes; крупнейший отдельный chunk — 143,618 bytes gzip. Это не route-level JS budget и не RUM/CWV. | Локальный анализ output последнего успешного build. |
 | Монолиты | `worker.mjs` — 12,578 строк; Composer — 4,547; Calendar — 2,867. | `wc -l`. |
-| Browser E2E | Production-topology harness fail-closed допускает только локальные disposable DB `aurora_e2e_real` и Redis DB 15. Полный критический journey прошёл в Chromium, Firefox и WebKit: `ok=true`, browser issues `0`, graceful restart/session recovery, exports и ширины 1440/1024/390/320/640. Chromium использовал реальную задержку (`fixtureClockAdvanced=false`). | `test-results/e2e-real/{chromium,firefox,webkit}/result.json` и `browser-diagnostics.json`; все три команды завершились code 0. WebKit отдельно сохранил 24 известных наблюдения, а не скрыл их: 10 событий от пяти Playwright screenshots под strict CSP, 10 отменённых RSC-prefetch и 4 отменённых Studio background request при документной навигации. |
-| Event taxonomy | Минимальные имена/properties раздела 9.1 оформлены как fail-closed code contract. Production emitters, correlation envelope, sink и policy отсутствуют. | `src/lib/product-event-contract.mjs` и contract/privacy tests; это prerequisite, не funnel evidence. |
+| Browser E2E | На предыдущих snapshots production-topology critical journey проходил Chromium/Firefox/WebKit; текущий snapshot имеет только безопасный 30 × 3 dry-run. Три реальные 30 × 3 попытки остановлены fail-closed при изменении входов после 32, 16 и 48 зелёных journey. | Предыдущие `test-results/e2e-real/{chromium,firefox,webkit}` и `control-webkit-composer-save-20260831-1628`; текущий `dry-run-blk01-blk02-20260831-1930`. Более ранние dry-run относятся к прежним snapshots. Свежий browser reset не был запущен. |
+| Event taxonomy | Минимальные имена/properties раздела 9.1 оформлены как fail-closed contract. Отдельный generic operational-контур имеет ingestion, server-owned tenant, correlation, storage, retention, aggregates, UI emitter и admin analytics. Минимальная taxonomy не подключена к lifecycle/worker emitters; policy approval и 95% reconciliation отсутствуют. | `src/lib/product-event-contract.mjs`, `src/lib/product-events.ts`, `/api/product-events`, `AuroraProductTelemetry`, admin analytics; 6 связанных test files / 53 tests — pass. |
 | Load/capacity | Production-like staging, утверждённый mix, load output и capacity report не предоставлены. | `docs/stabilization/release-readiness-2026-08-26.md`; локального load gate нет. |
 
 ## F0 prerequisites и состояние gate
@@ -108,10 +168,10 @@ F0 exit gate не выполнен. Независимые локальные и
 
 | ID | Приоритет / владелец по плану | Компоненты и доказательство | Зависимости / проверка | Состояние |
 | --- | --- | --- | --- | --- |
-| BLK-01 | P1; BE/FE/QA | `src/lib/release-scope.ts`, proxy, `/bot/connect`, one-time hashed session service. До исправления exact path редиректился из-за `/bot`; browser run дополнительно нашёл same-page hashchange gap. | QA tenant, Telegram stub; proxy + token/server tests; затем 3-engine browser и token scan. | **Частично:** allowlist, initial/hashchange hygiene, token/service contracts и 3-engine critical journey green. Независимый полный token/network scan и 30-run gate не подтверждены. |
-| BLK-02 | P1; BE/SRE | `src/lib/db.ts` до исправления имел `max: 3` без timeout. Добавлены env policy, bounded timeouts, protected readiness pool snapshot и локальный runbook. | Staging DB/Redis, connection budget, PgBouncer/equivalent, saturation/load dashboard. | **Частично:** unit/static gates green. Реальная DB timeout integration, slow-query/transaction metric, PgBouncer, рабочий alert route и p95<50 load evidence отсутствуют. |
-| BLK-03 | P1; QA/Eng | Harness автоматизирует production topology и fail-closed ограничивает reset локальными disposable DB/Redis. Три browser engines создают отдельные artifacts; test pool budgets сохранены на прежнем `3`. | QA tenant → deterministic reset/fixtures/stubs → roles → 3 engines/mobile → 30 runs. | **Частично:** локальные engine binaries установлены; разрешённый disposable reset, owner + reviewer/publisher contexts и полный Chromium/Firefox/WebKit critical journey green. Полная owner/editor/viewer матрица, 30 последовательных прогонов, flake report и внешний QA tenant отсутствуют. |
-| BLK-04 | P1; Data/Product | Минимальные события/properties раздела 9.1 теперь зафиксированы fail-closed contract; доменные audit/tracking/AI signals всё ещё не образуют требуемый funnel. | DPA/consent/retention и correlation contract до sink/dashboard; schema tests и synthetic reconciliation. | **Частично / заблокировано:** code contract и privacy tests есть; emitters, correlation, sink, dashboard и решения владельца отсутствуют. |
+| BLK-01 | P1; BE/FE/QA | `src/lib/release-scope.ts`, proxy, `/bot/connect`, one-time hashed session service. До исправления exact path редиректился из-за `/bot`; browser run дополнительно нашёл same-page hashchange gap. | QA tenant, Telegram stub; proxy + token/server tests; затем 3-engine browser и token scan. | **Частично:** allowlist, initial/hashchange hygiene, token/service contracts, synthetic token-hygiene journey и fail-closed evidence scanner реализованы. Scanner прошёл на предыдущем 3-engine control без находок, но текущий snapshot не проходил browser journey/30-run; полный third-party telemetry capture и внешний QA sign-off не подтверждены. |
+| BLK-02 | P1; BE/SRE | `src/lib/db.ts` до исправления имел `max: 3` без timeout. Добавлены env policy, bounded timeouts, protected readiness pool snapshot, локальный runbook и isolated PostgreSQL timeout integration. | Staging DB/Redis, connection budget, PgBouncer/equivalent, saturation/load dashboard. | **Частично:** unit/static gates и локальная реальная DB timeout/recovery integration green. Controlled saturation, slow-query/transaction metric, PgBouncer, рабочий alert route и p95<50 load evidence отсутствуют. |
+| BLK-03 | P1; QA/Eng | Harness автоматизирует production topology и fail-closed ограничивает reset локальными disposable DB/Redis. Три browser engines создают отдельные artifacts; test pool budgets сохранены на прежнем `3`. | QA tenant → deterministic reset/fixtures/stubs → roles → 3 engines/mobile → 30 runs. | **Частично:** 1 × 3 control на snapshot `5192c2f5…` green; поздние 30 × 3 попытки корректно инвалидированы конкурентными изменениями после 32, 16 и 48 зелёных journey. Для текущего snapshot выполнен только dry-run: reset не разрешён проверкой выполнения. Полная owner/editor/viewer матрица, 30 последовательных прогонов, flake report и внешний QA tenant отсутствуют. |
+| BLK-04 | P1; Data/Product | Минимальные события/properties раздела 9.1 зафиксированы fail-closed. Generic operational ingestion/storage/aggregate/admin dashboard реализованы отдельно и не принимают client tenant identity. | DPA/consent/retention approval; lifecycle/worker mapping; schema tests, synthetic reconciliation ≥95%, privacy review, cohort и freshness/volume alerts. | **Частично / требуется решение владельца:** correlation/storage/retention mechanics, UI operational emitter и funnel/errors/speed/events dashboard есть. Минимальная taxonomy вызывается только тестами; terminal publish lifecycle events, ≥95% reconciliation, cohort/alerts и внешняя privacy approval отсутствуют. |
 | BLK-05 | P1; SRE/BE | Реального load output/capacity report нет. | BLK-02 + BLK-04 + production-like staging + seeded tenants; baseline/ramp/peak/spike/soak/stress. | **Заблокировано:** нет безопасного staging и утверждённой concurrency/mix/cost model. Никакие load-метрики не заявлены. |
 
 ## Карта последующего backlog
