@@ -127,6 +127,48 @@ channel_rows as (
 -- is still building. reconcileBuildingAutopilotPlans() inner-joins the channel, an active
 -- privileged member and the settings row, so one failing predicate silently removes the
 -- plan from every retry path forever. Evaluate each predicate separately per stuck plan.
+-- Replays what enqueueWeeklyAutopilotPlan() decides for each enabled channel. It logs a
+-- line when it queues and when it fails, but nothing when it skips, so a skipped channel is
+-- indistinguishable from the scheduler never running. `target_ok` is its eligibility join;
+-- `current_status` is the newest plan that owns the channel; `coverage_days_ahead` is how far
+-- that plan's items reach, and anything beyond 7 makes it skip as already covered.
+weekly_decision as (
+  select s.project_id,
+         s.channel_id,
+         s.user_id,
+         s.enabled,
+         s.generation_engine,
+         exists (
+           select 1 from public.channels c
+             join public.project_members m
+               on m.project_id = s.project_id and m.user_id = s.user_id
+              and m.status = 'active' and m.role in ('owner','author','approver')
+            where c.id = s.channel_id and c.project_id = s.project_id
+              and c.network = 'tg' and c.is_active = true
+         ) as target_ok,
+         cur.id as current_plan_id,
+         cur.status as current_status,
+         cur.week_start as current_week_start,
+         round(
+           extract(epoch from (cur.max_scheduled - now())) / 86400.0, 1
+         ) as coverage_days_ahead
+    from public.autopilot_settings as s
+    left join lateral (
+      select p.id, p.status, p.week_start,
+             (
+               select max((item ->> 'scheduledAt')::timestamptz)
+                 from jsonb_array_elements(coalesce(p.items, '[]'::jsonb)) as item
+                where (item ->> 'scheduledAt') is not null
+             ) as max_scheduled
+        from public.autopilot_plan as p
+       where p.project_id = s.project_id and p.channel_id = s.channel_id
+         and p.status in ('building', 'partial', 'pending', 'approved', 'approving')
+       order by p.created_at desc, p.id desc
+       limit 1
+    ) as cur on true
+   where s.enabled = true
+   order by s.project_id, s.channel_id
+),
 -- The quota reservation key is deterministic per plan (`worker:autopilot-plan:<proj>:<plan>`).
 -- A `committed` row against a plan that is still `building` is the wedge: the build charged
 -- quota, died before writing a result, and every later replay returns "already done" without
@@ -180,6 +222,10 @@ select jsonb_pretty(jsonb_build_object(
   'ledgerTail', coalesce((select jsonb_agg(to_jsonb(e) order by e.name desc) from ledger_tail as e), '[]'::jsonb),
   'autopilotSettings', coalesce((select jsonb_agg(to_jsonb(e)) from settings_rows as e), '[]'::jsonb),
   'contentBriefs', coalesce((select jsonb_agg(to_jsonb(e)) from brief_rows as e), '[]'::jsonb),
+  'weeklyDecision', coalesce(
+    (select jsonb_agg(to_jsonb(e) order by e.project_id, e.channel_id) from weekly_decision as e),
+    '[]'::jsonb
+  ),
   'buildingPlanQuota', coalesce(
     (select jsonb_agg(to_jsonb(e) order by e.plan_id desc) from building_plan_quota as e),
     '[]'::jsonb
