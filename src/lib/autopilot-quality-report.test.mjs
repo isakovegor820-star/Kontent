@@ -100,6 +100,46 @@ describe("Autopilot quality failure diagnosis", () => {
       expect.objectContaining({ code: "empty", count: 1, repairStrategy: "provider_retry" }),
     ]);
   });
+
+  it("names the reason when a post failed only by needing a person", () => {
+    // Production's first finished build delivered four of ten posts and reported
+    // "готово только 4/10 (без разбора)": every dropped post carried
+    // semantic_review_required, which is advisory rather than a blocker, so counting only
+    // blockers left the reader with a partial week, no cause and no next step.
+    const report = autopilotQualityFailureReport([
+      {
+        aiReady: true,
+        draft: "готовый пост",
+        quality: { passed: true, publicationDisposition: "ready", violations: [] },
+      },
+      {
+        aiReady: true,
+        draft: "пост, ждущий подтверждения",
+        reviewRequired: true,
+        quality: {
+          passed: true,
+          publicationDisposition: "confirmation_required",
+          violations: [{ code: "semantic_review_required", blocker: false }],
+        },
+      },
+    ], 2);
+
+    expect(report).toMatchObject({ total: 2, passed: 1, failed: 1, drafts: 2 });
+    expect(report.causes).toEqual([
+      expect.objectContaining({ code: "semantic_review_required", count: 1 }),
+    ]);
+  });
+
+  it("still ignores advisory notes on a post that passed", () => {
+    const report = autopilotQualityFailureReport([{
+      aiReady: true,
+      draft: "готовый пост с мелким замечанием",
+      quality: { passed: true, publicationDisposition: "ready", violations: [{ code: "bold", blocker: false }] },
+    }], 1);
+
+    expect(report).toMatchObject({ passed: 1, failed: 0 });
+    expect(report.causes).toEqual([]);
+  });
 });
 
 describe("Generation prompt agrees with the semantic gate", () => {

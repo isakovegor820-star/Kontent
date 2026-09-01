@@ -6,6 +6,17 @@ import { QUALITY_FAILURE_GUIDE } from "./autopilot-quality-report.mjs";
 
 const SERVER_ATTESTATION = Symbol("aurora.autopilot.server_attestation");
 
+/**
+ * Reason codes that mean the semantic checker reached no verdict, rather than a negative one.
+ * Only an unsettled claim may leave a post approvable by a person; a claim the checker
+ * actually found fault with is the caller's to fix.
+ */
+const SEMANTIC_UNSETTLED_REASON_CODES = new Set([
+  "semantic_provider_unavailable",
+  "semantic_provider_failed",
+  "adapter_unknown",
+]);
+
 function hardQualityViolations(quality) {
   return (Array.isArray(quality?.violations) ? quality.violations : [])
     .filter((violation) =>
@@ -42,18 +53,31 @@ export function isAutopilotHumanReviewItem(item) {
   const semanticOnlyViolation = (Array.isArray(item.quality.violations)
     ? item.quality.violations
     : []).some((violation) => violation?.code === "semantic_review_required");
-  const semanticProviderUnavailable =
-    semantic?.provenance?.provider === "unavailable" &&
-    Array.isArray(semantic.claimVerdicts) &&
-    semantic.claimVerdicts.every((verdict) =>
-      verdict?.verdict === "unknown" && verdict?.reasonCode === "semantic_provider_unavailable"
-    );
-  const semanticProviderFailed =
-    semantic?.provenance?.provider === "aurora-semantic-ai-v1" &&
-    Array.isArray(semantic.claimVerdicts) &&
-    semantic.claimVerdicts.every((verdict) =>
-      verdict?.verdict === "unknown" && verdict?.reasonCode === "semantic_provider_failed"
-    );
+  const claimVerdicts = Array.isArray(semantic?.claimVerdicts) ? semantic.claimVerdicts : [];
+  // Every claim is either a non-finding, or one the checker openly failed to settle, and at
+  // least one is unsettled. Nothing here was contradicted, so a reader is the resolution.
+  //
+  // This previously demanded that *every* verdict be `unknown` under one of two provider
+  // outage codes. No real response has that shape: the adapter answers, correctly labels
+  // headings and calls to action `non_factual`, and returns `adapter_unknown` for what it
+  // cannot settle. A post with nothing at all against it therefore matched neither branch,
+  // was demoted to `failed`, and was dropped from the week. In the first production build
+  // that got this far, six of ten finished posts were lost that way — three of them holding
+  // `adapter_unknown` as their only unsettled verdict — and the plan landed `partial` at
+  // four posts with an empty cause list, which is what "it does not collect a week" was.
+  //
+  // `unverified_*` and `unsupported_*` stay out: those are findings about the claim, not the
+  // checker giving up, and they are the caller's to fix rather than a reader's to wave
+  // through. `semantic_verdict_missing` also stays out: a claim the adapter silently skipped
+  // is an integrity gap in its answer, not a considered "I cannot tell".
+  const semanticCouldNotSettle = claimVerdicts.length > 0
+    && claimVerdicts.every((verdict) => (
+      verdict?.verdict === "supported"
+      || verdict?.verdict === "non_factual"
+      || (verdict?.verdict === "unknown"
+        && SEMANTIC_UNSETTLED_REASON_CODES.has(String(verdict?.reasonCode)))
+    ))
+    && claimVerdicts.some((verdict) => verdict?.verdict === "unknown");
   return Boolean(
     semanticOnlyViolation &&
       semantic && typeof semantic === "object" &&
@@ -63,9 +87,9 @@ export function isAutopilotHumanReviewItem(item) {
       semantic.requiresReview === true &&
       semantic.provenance?.validatorVersion === "semantic-publication-v1" &&
       semantic.provenance?.terminalVerdict === "not_checked" &&
-      Array.isArray(semantic.claimVerdicts) &&
-      semantic.claimVerdicts.length > 0 &&
-      (semanticProviderUnavailable || semanticProviderFailed)
+      typeof semantic.provenance?.provider === "string" &&
+      semantic.provenance.provider.length > 0 &&
+      semanticCouldNotSettle
   );
 }
 

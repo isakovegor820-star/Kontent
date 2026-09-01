@@ -270,7 +270,7 @@ export function autopilotQualityFailureReport(items, expected = null) {
       continue;
     }
     const violations = Array.isArray(item?.quality?.violations) ? item.quality.violations : [];
-    const codes = new Set(
+    const blocking = new Set(
       violations
         .filter((violation) => {
           const guide = guideFor(String(violation?.code || ""));
@@ -279,6 +279,14 @@ export function autopilotQualityFailureReport(items, expected = null) {
         .map((violation) => String(violation?.code || ""))
         .filter(Boolean),
     );
+    // A post can fail without a single blocker: needing a person's confirmation is enough.
+    // Its advisory codes are then the entire reason it is missing from the week, so counting
+    // only blockers left the one number that explains a partial plan empty. Production's
+    // first finished build reported "готово только 4/10 (без разбора)" and offered the reader
+    // no cause and no next step, while every dropped post carried semantic_review_required.
+    const codes = blocking.size > 0
+      ? blocking
+      : new Set(violations.map((violation) => String(violation?.code || "")).filter(Boolean));
     for (const code of codes) counts.set(code, (counts.get(code) || 0) + 1);
   }
 
