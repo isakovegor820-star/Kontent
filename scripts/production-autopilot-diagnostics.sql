@@ -236,6 +236,47 @@ plan_item_verdicts as (
          (item.value ->> 'reviewRequired') = 'true' as review_required,
          (item.value -> '_providerFailure' ->> 'code') as provider_failure_code,
          (item.value -> '_providerFailure' ->> 'engine') as provider_failure_engine,
+         -- `isAutopilotHumanReviewItem` lets a post through to a human only when the semantic
+         -- fact-check could not run at all, and it demands an exact shape to prove that. Any
+         -- single mismatch here demotes an otherwise clean post to `failed`, which is why six
+         -- posts that passed every editorial gate were dropped from the week. These are the
+         -- fields it reads, in the order it reads them — verdict codes only, never claim text.
+         (item.value ->> 'reviewState') as review_state,
+         (item.value ->> 'reviewReason') as review_reason,
+         jsonb_array_length(
+           case when jsonb_typeof(item.value -> 'invented') = 'array'
+                then item.value -> 'invented' else '[]'::jsonb end
+         ) as invented_count,
+         (item.value -> 'quality' -> 'metadata' -> 'provenance' ->> 'validator') as quality_validator,
+         (item.value -> 'quality' -> 'metadata' -> 'provenance' ->> 'trigger') as quality_trigger,
+         (item.value -> 'quality' -> 'metadata' -> 'rules' ->> 'version') as quality_rules_version,
+         jsonb_array_length(
+           case when jsonb_typeof(item.value -> 'quality' -> 'blockers') = 'array'
+                then item.value -> 'quality' -> 'blockers' else '[]'::jsonb end
+         ) as quality_blocker_count,
+         (item.value -> 'quality' -> 'semantic' ->> 'status') as semantic_status,
+         (item.value -> 'quality' -> 'semantic' ->> 'version') as semantic_version,
+         (item.value -> 'quality' -> 'semantic' ->> 'passed') as semantic_passed,
+         (item.value -> 'quality' -> 'semantic' ->> 'requiresReview') as semantic_requires_review,
+         (item.value -> 'quality' -> 'semantic' -> 'provenance' ->> 'provider') as semantic_provider,
+         (item.value -> 'quality' -> 'semantic' -> 'provenance' ->> 'validatorVersion')
+           as semantic_validator_version,
+         (item.value -> 'quality' -> 'semantic' -> 'provenance' ->> 'terminalVerdict')
+           as semantic_terminal_verdict,
+         jsonb_array_length(
+           case when jsonb_typeof(item.value -> 'quality' -> 'semantic' -> 'claimVerdicts') = 'array'
+                then item.value -> 'quality' -> 'semantic' -> 'claimVerdicts' else '[]'::jsonb end
+         ) as semantic_claim_count,
+         (
+           select string_agg(distinct
+                    coalesce(v ->> 'verdict', 'null') || '/' || coalesce(v ->> 'reasonCode', 'null'),
+                    ', ')
+             from jsonb_array_elements(
+                    case when jsonb_typeof(item.value -> 'quality' -> 'semantic' -> 'claimVerdicts') = 'array'
+                         then item.value -> 'quality' -> 'semantic' -> 'claimVerdicts'
+                         else '[]'::jsonb end
+                  ) as v
+         ) as semantic_verdicts,
          (
            select string_agg(distinct v ->> 'code', ',')
              from jsonb_array_elements(
