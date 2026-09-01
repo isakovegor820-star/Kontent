@@ -214,7 +214,7 @@ recovery_visibility as (
    where p.status in ('building', 'partial')
    order by p.id desc
    limit 20
-)
+),
 -- Why each post of the newest finished plan did or did not count as deliverable.
 --
 -- `build_report.causes` is empty whenever an item fails only through
@@ -227,20 +227,22 @@ plan_item_verdicts as (
          p.channel_id,
          p.status,
          (item.ordinality - 1) as item_index,
-         (item.value ->> 'aiReady')::boolean as ai_ready,
+         (item.value ->> 'buildState') as build_state,
+         (item.value ->> 'aiReady') = 'true' as ai_ready,
          length(coalesce(item.value ->> 'draft', '')) as draft_chars,
-         (item.value -> 'quality' ->> 'passed')::boolean as quality_passed,
+         (item.value -> 'quality' ->> 'passed') = 'true' as quality_passed,
          (item.value -> 'quality' ->> 'publicationDisposition') as disposition,
-         (item.value ->> 'qualityBlocked')::boolean as quality_blocked,
-         (item.value ->> 'reviewRequired')::boolean as review_required,
-         (item.value -> 'providerWaiting' ->> 'code') as provider_waiting_code,
+         (item.value ->> 'qualityBlocked') = 'true' as quality_blocked,
+         (item.value ->> 'reviewRequired') = 'true' as review_required,
+         (item.value -> '_providerFailure' ->> 'code') as provider_failure_code,
+         (item.value -> '_providerFailure' ->> 'engine') as provider_failure_engine,
          (
            select string_agg(distinct v ->> 'code', ',')
              from jsonb_array_elements(
                     case when jsonb_typeof(item.value -> 'quality' -> 'violations') = 'array'
                          then item.value -> 'quality' -> 'violations' else '[]'::jsonb end
                   ) as v
-            where (v ->> 'blocker')::boolean is true
+            where (v ->> 'blocker') = 'true'
          ) as blocker_codes,
          (
            select string_agg(distinct v ->> 'code', ',')
@@ -248,7 +250,7 @@ plan_item_verdicts as (
                     case when jsonb_typeof(item.value -> 'quality' -> 'violations') = 'array'
                          then item.value -> 'quality' -> 'violations' else '[]'::jsonb end
                   ) as v
-            where (v ->> 'blocker')::boolean is not true
+            where (v ->> 'blocker') is distinct from 'true'
          ) as advisory_codes
     from public.autopilot_plan as p
     cross join lateral jsonb_array_elements(coalesce(p.items, '[]'::jsonb))
