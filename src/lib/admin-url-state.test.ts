@@ -3,6 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   adminAnalyticsHref,
   adminAnalyticsQuery,
+  adminPublicationsApiParams,
+  adminPublicationsHref,
+  adminPublicationsQuery,
   adminSystemHref,
   adminSystemSelection,
   adminUsersHref,
@@ -37,6 +40,22 @@ describe("admin users URL state", () => {
       q: "ivan", status: "all", network: "all", sort: "activity_desc", page: "2", user: "7",
     });
     expect(adminUsersQuery("")).toEqual({ q: "", status: "all", network: "all", sort: "activity_desc", page: "1", user: "" });
+  });
+});
+
+describe("admin publications URL state", () => {
+  it("uses prefixed keys so publications filters coexist with users state", () => {
+    expect(adminPublicationsHref("/admin?user=42#users", { pstatus: "failed", pq: "4302", ppage: 1 }))
+      .toBe("/admin?user=42&pstatus=failed&pq=4302#publications");
+    expect(adminPublicationsHref("/admin?pstatus=failed&ppage=3#publications", { pstatus: "attention", ppage: 1 }))
+      .toBe("/admin#publications");
+  });
+
+  it("maps URL state onto the API query with safe defaults", () => {
+    const state = adminPublicationsQuery("?pq=4302&pnetwork=vk&perror=vk_token_expired&junk=1");
+    expect(state).toEqual({ pq: "4302", pstatus: "attention", pnetwork: "vk", pproject: "", perror: "vk_token_expired", psort: "recent", ppage: "1" });
+    expect(adminPublicationsApiParams(state).toString())
+      .toBe("q=4302&status=attention&network=vk&project=&error=vk_token_expired&sort=recent&page=1");
   });
 });
 

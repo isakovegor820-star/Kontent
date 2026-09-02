@@ -27,12 +27,13 @@ import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { Wordmark } from "@/components/brand";
 import { AdminBotCenter } from "@/components/admin/admin-bot-center";
 import { AdminAuroraAnalyticsCenter } from "@/components/admin/admin-aurora-analytics";
+import { AdminPublicationsCenter } from "@/components/admin/admin-publications-center";
 import { AdminSystemCenter } from "@/components/admin/admin-system-center";
 import { AdminUsersCenter } from "@/components/admin/admin-users-center";
 import { Button, buttonClassName } from "@/components/ui/button";
 import type { AdminDashboardData, AdminPeriodDays } from "@/lib/admin-dashboard";
 import { adminAuditActionLabel, adminAuditEntityLabel } from "@/lib/admin-labels";
-import { adminUsersHref } from "@/lib/admin-url-state";
+import { adminPublicationsHref, adminUsersHref } from "@/lib/admin-url-state";
 import { cn, fmtAgo, fmtNum, NETWORK_LABEL, plural } from "@/lib/utils";
 
 type LoadError = "unauthorized" | "access_denied" | "unavailable";
@@ -50,19 +51,12 @@ const NAVIGATION = [
 type AdminSection = (typeof NAVIGATION)[number]["id"];
 
 /** Sections that render data from `/api/admin/overview`; the rest load their own APIs. */
-const OVERVIEW_SECTIONS: ReadonlySet<AdminSection> = new Set<AdminSection>(["overview", "publications", "users", "audit"]);
+const OVERVIEW_SECTIONS: ReadonlySet<AdminSection> = new Set<AdminSection>(["overview", "users", "audit"]);
 
 function adminSectionFromHash(hash: string): AdminSection {
   const candidate = hash.replace(/^#/, "");
   return NAVIGATION.some(({ id }) => id === candidate) ? candidate as AdminSection : "overview";
 }
-
-const ATTENTION_LABEL: Record<AdminDashboardData["attention"][number]["status"], string> = {
-  failed: "Ошибка отправки",
-  quarantined: "Карантин",
-  overdue: "Задержка очереди",
-  auth: "Нужна авторизация",
-};
 
 function numberLabel(value: number, one: string, few: string, many: string) {
   return `${fmtNum(value)} ${plural(value, one, few, many)}`;
@@ -246,85 +240,6 @@ function DailyBars({ data }: { data: AdminDashboardData["daily"] }) {
   );
 }
 
-function AttentionList({ items }: { items: AdminDashboardData["attention"] }) {
-  if (items.length === 0) {
-    return (
-      <div className="card-plain rounded-md p-8 text-center">
-        <CheckCircle2 className="mx-auto h-9 w-9 text-success" aria-hidden />
-        <h3 className="mt-3 text-text">Публикации не требуют вмешательства</h3>
-        <p className="type-secondary mt-2 text-text-2">Очередь работает без просроченных и аварийных задач.</p>
-      </div>
-    );
-  }
-  return (
-    <div className="overflow-hidden rounded-md border border-line bg-surface shadow-soft">
-      <div className="hidden overflow-x-auto md:block">
-        <table className="w-full min-w-[960px] text-start">
-          <thead className="bg-surface-2 text-start">
-            <tr>
-              <th className="px-5 py-3 text-start">Проблема</th>
-              <th className="px-5 py-3 text-start">Публикация</th>
-              <th className="px-5 py-3 text-start">Проект и канал</th>
-              <th className="px-5 py-3 text-start">Автор</th>
-              <th className="px-5 py-3 text-start">Попытки</th>
-              <th className="px-5 py-3 text-start">Время</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-line">
-            {items.map((item) => (
-              <tr key={item.id} className="align-top">
-                <td className="px-5 py-4">
-                  <StatusMark state={item.status === "overdue" ? "attention" : "down"} label={ATTENTION_LABEL[item.status]} />
-                </td>
-                <td className="max-w-sm px-5 py-4">
-                  <p className="type-body-strong line-clamp-2 text-text">{item.text}</p>
-                  <p className="type-caption mt-1 text-text-3">
-                    <span className="nums">ID {item.id}</span> · <span className="font-mono">{item.errorCode}</span>
-                  </p>
-                </td>
-                <td className="px-5 py-4">
-                  <p className="type-secondary font-semibold text-text">{item.project}</p>
-                  <p className="type-caption mt-1 text-text-3">{NETWORK_LABEL[item.network] || item.network} · {item.channel}</p>
-                </td>
-                <td className="px-5 py-4">
-                  {item.authorId > 0 ? (
-                    <a href={adminUsersHref("/admin", { user: item.authorId })} className="type-secondary font-semibold text-brand hover:underline">{item.author}</a>
-                  ) : (
-                    <span className="type-secondary text-text-2">{item.author}</span>
-                  )}
-                </td>
-                <td className="nums px-5 py-4 text-text-2">{item.attempts}</td>
-                <td className="px-5 py-4 text-text-2">
-                  <time dateTime={item.scheduledAt || item.createdAt} title={new Date(item.scheduledAt || item.createdAt).toLocaleString("ru-RU")}>
-                    {fmtAgo(item.scheduledAt || item.createdAt)}
-                  </time>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <ul className="divide-y divide-line md:hidden">
-        {items.map((item) => (
-          <li key={item.id} className="p-4">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <StatusMark state={item.status === "overdue" ? "attention" : "down"} label={ATTENTION_LABEL[item.status]} />
-              <span className="nums type-caption text-text-3">ID {item.id}</span>
-            </div>
-            <p className="type-body-strong mt-3 line-clamp-3 text-text">{item.text}</p>
-            <p className="type-caption mt-2 text-text-2">{item.project} · {item.channel}</p>
-            <p className="type-caption mt-1 text-text-2">
-              {item.authorId > 0 ? <a href={adminUsersHref("/admin", { user: item.authorId })} className="text-brand hover:underline">{item.author}</a> : item.author}
-              {" · "}{fmtAgo(item.scheduledAt || item.createdAt)}
-            </p>
-            <p className="type-caption mt-1 font-mono text-text-3">{item.errorCode}</p>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
 function SectionNavigation({
   activeSection,
   onSelect,
@@ -466,7 +381,6 @@ export function AdminDashboard() {
   const overviewLoading = needsOverview && !data && !error;
   const overviewFailed = needsOverview && !data && error === "unavailable";
   const showPeriodControls = activeSection !== "system" && activeSection !== "aurora-analytics";
-  const maxAttentionPreview = data?.attention.slice(0, 12) ?? [];
 
   return (
     <div className="mx-auto min-h-dvh w-full max-w-[1680px] lg:grid lg:grid-cols-[17rem_minmax(0,1fr)]">
@@ -583,8 +497,8 @@ export function AdminDashboard() {
                   <MetricCard label="Заходили за 30 дней" value={data.summary.activeUsers} helper="Аккаунты с неистёкшей сессией" icon={Activity} tone="brand" href={adminUsersHref("/admin", { status: "active" })} />
                   <MetricCard label="Команды и проекты" value={data.summary.projectsTotal} helper="Только неархивные пространства" icon={BriefcaseBusiness} />
                   <MetricCard label="Опубликовано сегодня" value={data.summary.publishedToday} helper={`${fmtNum(data.summary.scheduled)} сейчас запланировано`} icon={Send} tone="brand" />
-                  <MetricCard label="Ошибки за период" value={data.summary.failed} helper="Требуют диагностики или повтора" icon={AlertTriangle} tone={data.summary.failed > 0 ? "danger" : "neutral"} href="#publications" />
-                  <MetricCard label="Задержка очереди" value={data.summary.overdue} helper="Старше пяти минут" icon={FileClock} tone={data.summary.overdue > 0 ? "danger" : "neutral"} href="#publications" />
+                  <MetricCard label="Ошибки за период" value={data.summary.failed} helper="Требуют диагностики или повтора" icon={AlertTriangle} tone={data.summary.failed > 0 ? "danger" : "neutral"} href={adminPublicationsHref("/admin", { pstatus: "failed" })} />
+                  <MetricCard label="Задержка очереди" value={data.summary.overdue} helper="Старше пяти минут" icon={FileClock} tone={data.summary.overdue > 0 ? "danger" : "neutral"} href={adminPublicationsHref("/admin", { pstatus: "overdue" })} />
                   <MetricCard label="AI сегодня" value={data.summary.aiToday} helper={`${fmtNum(data.summary.aiPeriod)} генераций за период`} icon={Sparkles} href="/admin?system=aurora_ai#system" />
                   <MetricCard label="Нужно переподключение" value={data.summary.authAttention} helper="Активные каналы с ошибкой доступа" icon={Radio} tone={data.summary.authAttention > 0 ? "danger" : "neutral"} href={adminUsersHref("/admin", { status: "attention" })} />
                 </div>
@@ -624,25 +538,11 @@ export function AdminDashboard() {
               id="publications-title"
               eyebrow="Операции"
               title="Центр публикаций"
-              description="Сначала показываем задачи, где команда может восстановить публикацию или связь с социальной сетью. Сырые ответы провайдеров намеренно не выводятся."
+              description="Поиск по ID, тексту, проекту и автору; фильтры по состоянию, сети и коду ошибки. Повтор, перенос и отмена выполняются с записью в журнал действий."
             />
-            {overviewLoading ? <div className="mt-6"><OverviewSkeleton /></div> : null}
-            {overviewFailed ? <div className="mt-6"><OverviewUnavailable onRetry={requestRefresh} retrying={refreshing} /></div> : null}
-            {data ? (
-              <>
-                <div className="mt-6 flex flex-wrap gap-3" aria-label="Сводка статусов публикаций">
-                  <span className="type-label rounded-full bg-info-soft px-3 py-1.5 text-info-text">Запланировано · {fmtNum(data.summary.scheduled)}</span>
-                  <span className="type-label rounded-full bg-danger-soft px-3 py-1.5 text-danger-text">Ошибка · {fmtNum(data.summary.failed)}</span>
-                  <span className="type-label rounded-full bg-fire-soft px-3 py-1.5 text-fire-text">Карантин · {fmtNum(data.summary.quarantined)}</span>
-                  <span className="type-label rounded-full bg-fire-soft px-3 py-1.5 text-fire-text">Задержка · {fmtNum(data.summary.overdue)}</span>
-                  <span className="type-label rounded-full bg-surface-inset px-3 py-1.5 text-text-2">Всего · {fmtNum(data.summary.publicationsTotal)}</span>
-                </div>
-                <div className="mt-5"><AttentionList items={maxAttentionPreview} /></div>
-                {data.attention.length > maxAttentionPreview.length && (
-                  <p className="type-caption mt-3 text-text-3">Показаны первые {maxAttentionPreview.length} из {fmtNum(data.attention.length)} задач.</p>
-                )}
-              </>
-            ) : null}
+            <div className="mt-6">
+              <AdminPublicationsCenter refreshKey={refreshKey} />
+            </div>
           </section>
         ) : null}
 
