@@ -225,8 +225,8 @@ if [[ ! -f "$SOURCE_BUNDLE" ]]; then
   exit 1
 fi
 printf '%s  %s\n' "$SOURCE_BUNDLE_SHA256" "$SOURCE_BUNDLE" | sha256sum --check --status
-git bundle verify "$SOURCE_BUNDLE"
 git clone "$SOURCE_BUNDLE" "$release"
+git -C "$release" bundle verify "$SOURCE_BUNDLE"
 rm -f -- "$SOURCE_BUNDLE"
 SOURCE_BUNDLE=""
 git -C "$release" checkout --detach "$DEPLOY_SHA"
