@@ -212,11 +212,13 @@ export function TrackingBuilder({
   onChange,
   disabled = false,
   validationError,
+  defaultOpen = false,
 }: {
   value?: ComposerTrackingValue;
   onChange: (value: ComposerTrackingValue) => void;
   disabled?: boolean;
   validationError?: string;
+  defaultOpen?: boolean;
 }) {
   const baseId = useId();
   const destinationRef = useRef<HTMLInputElement>(null);
@@ -235,6 +237,8 @@ export function TrackingBuilder({
   const [confirmRevoke, setConfirmRevoke] = useState(false);
   const [ttlDays, setTtlDays] = useState("30");
   const [copied, setCopied] = useState(false);
+  const [open, setOpen] = useState(defaultOpen || Boolean(validationError));
+  const expanded = open || Boolean(validationError);
 
   const load = useCallback(async () => {
     setLoadMessage("");
@@ -264,6 +268,7 @@ export function TrackingBuilder({
   }, []);
 
   useEffect(() => {
+    if (!expanded) return;
     const initialLoad = window.setTimeout(() => void load(), 0);
     const refresh = () => void load();
     window.addEventListener("aurora:project-changed", refresh);
@@ -271,7 +276,7 @@ export function TrackingBuilder({
       window.clearTimeout(initialLoad);
       window.removeEventListener("aurora:project-changed", refresh);
     };
-  }, [load]);
+  }, [expanded, load]);
 
   const update = (next: Partial<ComposerTrackingValue>) => {
     requestKey.current = null;
@@ -414,9 +419,18 @@ export function TrackingBuilder({
 
   return (
     <>
-    <details className="group border-block border-line py-1">
-      <summary className="flex min-h-11 cursor-pointer list-none items-center gap-3 rounded-xs px-1 py-2 text-start focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15">
-        <Link2 className="h-5 w-5 shrink-0 text-text-2" aria-hidden="true" />
+    <details
+      id="composer-tracking"
+      open={expanded}
+      onToggle={(event) => {
+        if (!validationError) setOpen(event.currentTarget.open);
+      }}
+      className="group scroll-mt-24 scroll-mb-72 overflow-hidden rounded-sm border border-line bg-surface lg:scroll-mb-32"
+    >
+      <summary className="flex min-h-16 cursor-pointer list-none items-center gap-3 px-4 py-3 text-start focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15">
+        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xs bg-surface-inset text-text-2" aria-hidden="true">
+          <Link2 className="h-5 w-5" />
+        </span>
         <span className="min-w-0 flex-1">
           <span className="block text-[15px] font-semibold text-text">Ссылка и отслеживание</span>
           <span className="block text-[13px] leading-relaxed text-text-3 text-pretty">
@@ -426,7 +440,7 @@ export function TrackingBuilder({
         <ChevronDown className="h-5 w-5 shrink-0 text-text-3 transition-transform duration-200 group-open:rotate-180 motion-reduce:transition-none" aria-hidden="true" />
       </summary>
 
-      <div className="space-y-6 pb-5 pt-3 ps-0 sm:ps-8">
+      <div className="space-y-6 border-t border-line px-4 py-4 sm:px-5">
         {loadMessage && <p className="max-w-2xl text-[13px] leading-relaxed text-warning-text">{loadMessage}</p>}
 
         <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-[minmax(0,1.2fr)_repeat(3,minmax(10rem,0.5fr))]">

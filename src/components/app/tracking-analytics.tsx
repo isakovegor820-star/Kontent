@@ -2,10 +2,10 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CircleAlert, MousePointerClick, RefreshCw } from "lucide-react";
+import { CheckCircle2, CircleAlert, Link2, MousePointerClick, RefreshCw, Send } from "lucide-react";
 
 import { useProjects } from "@/components/app/project-provider";
-import { Button } from "@/components/ui/button";
+import { Button, buttonClassName } from "@/components/ui/button";
 import { cn, fmtNum } from "@/lib/utils";
 
 const ALL = "all";
@@ -272,10 +272,6 @@ function selectClassName() {
   return "min-h-11 w-full rounded-xs border border-line bg-surface px-3 text-base text-text focus:border-brand focus:outline-none focus-visible:ring-4 focus-visible:ring-brand/15 sm:text-[14px]";
 }
 
-function selectionLabel(value: string, options: Array<{ value: string; label: string }>, fallback: string) {
-  return options.find((option) => option.value === value)?.label ?? fallback;
-}
-
 export function TrackingAnalyticsView({
   projectName,
   report,
@@ -312,9 +308,9 @@ export function TrackingAnalyticsView({
     }
     return [...values].map(([value, label]) => ({ value, label })).sort((a, b) => a.label.localeCompare(b.label, "ru"));
   }, [campaignRows]);
-  const selectedChannel = channel === ALL || channelOptions.some((option) => option.value === channel)
-    ? channel
-    : ALL;
+  const preferredChannelValue = preferredChannelId == null ? null : channelValue(preferredChannelId);
+  const selectedChannel = preferredChannelValue
+    ?? (channel === ALL || channelOptions.some((option) => option.value === channel) ? channel : ALL);
   const channelRows = useMemo(
     () => filterTrackingRows(campaignRows, { campaign: ALL, channel: selectedChannel, post: ALL }),
     [campaignRows, selectedChannel],
@@ -346,15 +342,25 @@ export function TrackingAnalyticsView({
     { totalClicks: 0, uniqueClicks: 0, confirmedConversions: 0 },
   );
   const trackerConnected = report?.tracker.status === "active";
+  const hasLinks = Boolean(report?.rows.length);
+  const hasFilteredLinks = grouped.length > 0;
+  const composerHref = preferredChannelId == null
+    ? "/app/composer?tracking=1#composer-tracking"
+    : `/app/composer?channel=${preferredChannelId}&tracking=1#composer-tracking`;
+  const resetFilters = () => {
+    setCampaign(ALL);
+    setChannel(preferredChannelValue ?? ALL);
+    setPost(ALL);
+  };
 
   return (
     <section className={cn("space-y-4", className)} aria-labelledby="tracking-analytics-heading">
       <div>
         <h2 id="tracking-analytics-heading" className="text-balance text-[20px] leading-tight font-bold text-text">
-          Переходы и заявки
+          Ссылки и заявки
         </h2>
         <p className="mt-1 max-w-[68ch] text-pretty text-[14px] leading-relaxed text-text-3">
-          Путь от короткой ссылки до подтверждённого действия на сайте. Числа относятся только к выбранному проекту и периоду.
+          Узнайте, сколько людей пришло из публикаций и сколько из них оставило заявку на сайте.
         </p>
       </div>
 
@@ -382,7 +388,7 @@ export function TrackingAnalyticsView({
             : error
               ? ""
               : report
-                ? `Показано коротких ссылок: ${grouped.length}. Всего переходов: ${totals.totalClicks}. Уникальных: ${totals.uniqueClicks}. Подтверждённых конверсий: ${totals.confirmedConversions}.`
+                ? `Показано коротких ссылок: ${grouped.length}. Всего переходов: ${totals.totalClicks}. Уникальных: ${totals.uniqueClicks}.${trackerConnected ? ` Подтверждённых заявок: ${totals.confirmedConversions}.` : " Трекер заявок не подключён."}`
                 : ""}
         </div>
 
@@ -402,6 +408,71 @@ export function TrackingAnalyticsView({
               Повторить загрузку
             </Button>
           </div>
+        ) : !hasLinks ? (
+          <div className="mt-6 overflow-hidden rounded-md border border-brand/20 bg-info-soft/40">
+            <div className="px-4 py-7 text-center sm:px-7 sm:py-9">
+              <span className="mx-auto grid h-12 w-12 place-items-center rounded-full bg-surface text-brand shadow-sm" aria-hidden="true">
+                <MousePointerClick className="h-6 w-6" />
+              </span>
+              <h3 className="mx-auto mt-4 max-w-[28ch] text-balance text-[20px] leading-tight font-bold text-text">
+                Начните считать переходы из публикаций
+              </h3>
+              <p className="mx-auto mt-2 max-w-[58ch] text-pretty text-[14px] leading-relaxed text-text-2">
+                Создайте короткую ссылку на нужную страницу. Аврора добавит её в пост и покажет, сколько читателей перешло по ней.
+              </p>
+              <div className="mt-5 flex flex-col justify-center gap-2 sm:flex-row">
+                <Link href={composerHref} className={cn(buttonClassName({ variant: "primary" }), "w-full sm:w-auto")}>
+                  <Link2 className="h-4 w-4" aria-hidden="true" />
+                  Создать отслеживаемую ссылку
+                </Link>
+                {!trackerConnected && (
+                  <Link href="/app/settings#tracking" className={cn(buttonClassName({ variant: "outline" }), "w-full sm:w-auto")}>
+                    Подключить заявки с сайта
+                  </Link>
+                )}
+              </div>
+            </div>
+
+            <ol aria-label="Как настроить ссылки и заявки" className="grid border-t border-brand/15 bg-surface/70 sm:grid-cols-3 sm:divide-x sm:divide-line">
+              {[
+                { icon: Link2, title: "Создайте ссылку", text: "Укажите страницу, куда вести читателя.", done: false },
+                { icon: Send, title: "Опубликуйте её", text: "Ссылка автоматически попадёт в выбранное место поста.", done: false },
+                { icon: CheckCircle2, title: "Подключите сайт", text: trackerConnected ? "Трекер заявок уже готов к работе." : "Чтобы видеть не только клики, но и заявки.", done: trackerConnected },
+              ].map((step, index) => {
+                const Icon = step.icon;
+                return (
+                  <li key={step.title} className="flex min-w-0 gap-3 border-b border-line p-4 last:border-b-0 sm:border-b-0">
+                    <span className={cn(
+                      "grid h-8 w-8 shrink-0 place-items-center rounded-full text-[12px] font-bold",
+                      step.done ? "bg-success-soft text-success-text" : index === 0 ? "bg-brand text-white" : "bg-surface-inset text-text-3",
+                    )}>
+                      {step.done ? <Icon className="h-4 w-4" aria-hidden="true" /> : index + 1}
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block text-[13px] font-semibold text-text">{step.title}</span>
+                      <span className="mt-0.5 block text-pretty text-[12px] leading-relaxed text-text-3">{step.text}</span>
+                    </span>
+                  </li>
+                );
+              })}
+            </ol>
+
+            <dl className="grid gap-px border-t border-brand/15 bg-line sm:grid-cols-3">
+              {[
+                ["Все переходы", "Ждём первую ссылку"],
+                ["Уникальные переходы", "Появятся после первого клика"],
+                ["Подтверждённые заявки", trackerConnected ? "Трекер сайта готов" : "Сначала подключите сайт"],
+              ].map(([label, hint]) => (
+                <div key={label} className="bg-surface px-4 py-3">
+                  <dt className="text-[12px] font-semibold text-text-2">{label}</dt>
+                  <dd className="mt-1 flex items-baseline gap-2">
+                    <span className="text-[24px] leading-none font-extrabold text-text">—</span>
+                    <span className="text-[12px] leading-relaxed text-text-3">{hint}</span>
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          </div>
         ) : (
           <div className="mt-6 space-y-6">
             {!trackerConnected && (
@@ -409,9 +480,9 @@ export function TrackingAnalyticsView({
                 <div className="flex min-w-0 items-start gap-3">
                   <CircleAlert className="mt-0.5 h-5 w-5 shrink-0 text-text-3" aria-hidden="true" />
                   <div className="min-w-0">
-                    <h3 className="font-semibold text-text">Трекер сайта не подключён</h3>
+                    <h3 className="font-semibold text-text">Переходы уже считаются</h3>
                     <p className="mt-1 max-w-[62ch] text-pretty text-[14px] leading-relaxed text-text-2">
-                      Переходы по коротким ссылкам продолжат считаться. Подтверждённые заявки появятся только после подключения и проверки трекера на сайте.
+                      Подключите сайт, чтобы дополнить клики подтверждёнными заявками и видеть полный путь читателя.
                     </p>
                   </div>
                 </div>
@@ -419,14 +490,14 @@ export function TrackingAnalyticsView({
                   href="/app/settings#tracking"
                   className="inline-flex min-h-11 shrink-0 items-center justify-center rounded-[10px] border border-line-strong bg-surface px-3.5 py-2 text-[13px] font-semibold text-text transition-[background-color,border-color,transform] duration-200 hover:bg-surface-2 active:scale-[0.96] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand motion-reduce:transition-none"
                 >
-                  Открыть настройки
+                  Подключить заявки
                 </Link>
               </div>
             )}
 
             <fieldset>
               <legend className="text-[15px] font-bold text-text">Срез отчёта</legend>
-              <div className="mt-3 grid gap-4 md:grid-cols-3">
+              <div className={cn("mt-3 grid gap-4", preferredChannelId == null ? "md:grid-cols-3" : "md:grid-cols-2")}>
                 <label className="block min-w-0 text-[13px] font-semibold text-text-2">
                   Кампания
                   <select
@@ -442,20 +513,22 @@ export function TrackingAnalyticsView({
                     {campaignOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                   </select>
                 </label>
-                <label className="block min-w-0 text-[13px] font-semibold text-text-2">
-                  Канал
-                  <select
-                    value={selectedChannel}
-                    onChange={(event) => {
-                      setChannel(event.target.value);
-                      setPost(ALL);
-                    }}
-                    className={cn("mt-2", selectClassName())}
-                  >
-                    <option value={ALL}>Все каналы</option>
-                    {channelOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-                  </select>
-                </label>
+                {preferredChannelId == null && (
+                  <label className="block min-w-0 text-[13px] font-semibold text-text-2">
+                    Канал
+                    <select
+                      value={selectedChannel}
+                      onChange={(event) => {
+                        setChannel(event.target.value);
+                        setPost(ALL);
+                      }}
+                      className={cn("mt-2", selectClassName())}
+                    >
+                      <option value={ALL}>Все каналы</option>
+                      {channelOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                    </select>
+                  </label>
+                )}
                 <label className="block min-w-0 text-[13px] font-semibold text-text-2">
                   Публикация
                   <select value={selectedPost} onChange={(event) => setPost(event.target.value)} className={cn("mt-2", selectClassName())}>
@@ -466,49 +539,34 @@ export function TrackingAnalyticsView({
               </div>
             </fieldset>
 
-            <ol aria-label="Путь выбранного среза" className="grid gap-x-5 gap-y-3 border-y border-line py-4 text-[13px] sm:grid-cols-2 lg:grid-cols-4">
-              {[
-                ["Проект", projectName],
-                ["Кампания", selectionLabel(selectedCampaign, campaignOptions, "Все кампании")],
-                ["Канал", selectionLabel(selectedChannel, channelOptions, "Все каналы")],
-                ["Публикация", selectionLabel(selectedPost, postOptions, "Все публикации")],
-              ].map(([label, value], index) => (
-                <li key={label} className="min-w-0 break-words [overflow-wrap:anywhere]">
-                  <span className="mr-2 text-text-3" aria-hidden="true">{index + 1}</span>
-                  <span className="font-semibold text-text-2">{label}:</span>{" "}
-                  <span className="text-text">{value}</span>
-                </li>
-              ))}
-            </ol>
-
             <div>
               <p className="text-[13px] text-text-3">{formatPeriod(report)}</p>
               <ol aria-label="Воронка переходов и заявок" className="mt-3 grid overflow-hidden rounded-sm bg-surface-inset sm:grid-cols-3 sm:divide-x sm:divide-line">
                 {[
-                  ["Все переходы", totals.totalClicks],
-                  ["Уникальные переходы", totals.uniqueClicks],
-                  ["Подтверждённые конверсии", totals.confirmedConversions],
-                ].map(([label, value]) => (
-                  <li key={label} className="min-w-0 border-b border-line p-4 last:border-b-0 sm:border-b-0">
-                    <p className="text-pretty text-[13px] leading-snug font-semibold text-text-2">{label}</p>
-                    <p className="nums mt-2 text-[28px] leading-none font-extrabold tabular-nums text-text">{fmtNum(Number(value))}</p>
+                  { label: "Все переходы", value: hasFilteredLinks ? fmtNum(totals.totalClicks) : "—", hint: hasFilteredLinks ? "Все клики без очевидных ботов" : "В этом срезе ссылок нет" },
+                  { label: "Уникальные переходы", value: hasFilteredLinks ? fmtNum(totals.uniqueClicks) : "—", hint: hasFilteredLinks ? "Один браузер в сутки" : "В этом срезе ссылок нет" },
+                  { label: "Подтверждённые заявки", value: trackerConnected && hasFilteredLinks ? fmtNum(totals.confirmedConversions) : "—", hint: !hasFilteredLinks ? "В этом срезе ссылок нет" : trackerConnected ? "Действия, подтверждённые сайтом" : "Подключите трекер сайта" },
+                ].map((metric) => (
+                  <li key={metric.label} className="min-w-0 border-b border-line p-4 last:border-b-0 sm:border-b-0">
+                    <p className="text-pretty text-[13px] leading-snug font-semibold text-text-2">{metric.label}</p>
+                    <p className="nums mt-2 text-[28px] leading-none font-extrabold tabular-nums text-text">{metric.value}</p>
+                    <p className="mt-1 text-pretty text-[12px] leading-relaxed text-text-3">{metric.hint}</p>
                   </li>
                 ))}
               </ol>
-              {!trackerConnected && (
-                <p className="mt-2 text-[13px] leading-relaxed text-text-3">
-                  Ноль подтверждённых конверсий при отключённом трекере не означает, что заявок на сайте не было.
-                </p>
-              )}
             </div>
 
             {grouped.length === 0 ? (
               <div className="py-5 text-center">
                 <MousePointerClick className="mx-auto h-6 w-6 text-text-3" aria-hidden="true" />
-                <p className="mt-2 font-semibold text-text">Коротких ссылок пока нет</p>
+                <p className="mt-2 font-semibold text-text">В выбранном срезе ссылок нет</p>
                 <p className="mx-auto mt-1 max-w-[58ch] text-pretty text-[14px] leading-relaxed text-text-3">
-                  Создай короткую ссылку в Композиторе или выбери другой период. Нулевые значения сохранены без подмены данных.
+                  Измените кампанию или публикацию. Если ссылка ещё не создана для этого канала, добавьте её в новый пост.
                 </p>
+                <div className="mt-4 flex flex-col justify-center gap-2 sm:flex-row">
+                  <Button type="button" variant="outline" size="sm" onClick={resetFilters}>Сбросить фильтры</Button>
+                  <Link href={composerHref} className={buttonClassName({ variant: "primary", size: "sm" })}>Создать ссылку</Link>
+                </div>
               </div>
             ) : (
               <div>
@@ -516,12 +574,12 @@ export function TrackingAnalyticsView({
                 <div
                   className="mt-3 max-w-full overflow-x-auto rounded-sm border border-line focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
                   role="region"
-                  aria-label="Таблица переходов и подтверждённых конверсий"
+                  aria-label="Таблица переходов и подтверждённых заявок"
                   tabIndex={0}
                 >
                   <table className="w-full min-w-[760px] border-collapse text-start text-[13px]">
                     <caption className="sr-only">
-                      Переходы и подтверждённые конверсии коротких ссылок проекта {projectName}
+                      Переходы и подтверждённые заявки коротких ссылок проекта {projectName}
                     </caption>
                     <thead className="bg-surface-inset text-text-2">
                       <tr>
@@ -531,7 +589,7 @@ export function TrackingAnalyticsView({
                         <th scope="col" className="px-3 py-3 text-start font-semibold">Публикация</th>
                         <th scope="col" className="px-3 py-3 text-end font-semibold">Все переходы</th>
                         <th scope="col" className="px-3 py-3 text-end font-semibold">Уникальные</th>
-                        <th scope="col" className="px-3 py-3 text-end font-semibold">Конверсии</th>
+                        <th scope="col" className="px-3 py-3 text-end font-semibold">Заявки</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-line">
@@ -543,7 +601,7 @@ export function TrackingAnalyticsView({
                           <td className="max-w-48 break-words px-3 py-3 text-text-2 [overflow-wrap:anywhere]">{row.posts.join(", ")}</td>
                           <td className="nums px-3 py-3 text-end font-semibold tabular-nums text-text">{fmtNum(row.totalClicks)}</td>
                           <td className="nums px-3 py-3 text-end font-semibold tabular-nums text-text">{fmtNum(row.uniqueClicks)}</td>
-                          <td className="nums px-3 py-3 text-end font-semibold tabular-nums text-text">{fmtNum(row.confirmedConversions)}</td>
+                          <td className="nums px-3 py-3 text-end font-semibold tabular-nums text-text">{trackerConnected ? fmtNum(row.confirmedConversions) : "—"}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -566,7 +624,7 @@ export function TrackingAnalyticsView({
                   <dd className="mt-0.5">{report.methodology.uniqueClicks}</dd>
                 </div>
                 <div>
-                  <dt className="font-semibold text-text">Подтверждённые конверсии</dt>
+                  <dt className="font-semibold text-text">Подтверждённые заявки</dt>
                   <dd className="mt-0.5">{report.methodology.conversions}</dd>
                 </div>
                 <div>

@@ -101,6 +101,8 @@ describe("TrackingBuilder contracts", () => {
   it("keeps the contextual tool semantic, labelled and narrow-screen safe", () => {
     const source = fs.readFileSync(path.join(process.cwd(), "src/components/app/tracking-builder.tsx"), "utf8");
     expect(source).toContain("<details");
+    expect(source).toContain('id="composer-tracking"');
+    expect(source).toContain("defaultOpen");
     expect(source).toContain("<summary");
     expect(source).toContain("<fieldset");
     expect(source).toContain("<legend");
@@ -111,7 +113,7 @@ describe("TrackingBuilder contracts", () => {
     expect(source).toContain("Срок ссылки");
     expect(source).toContain("Отозвать ссылку");
     expect(source).toContain('role="status"');
-    expect(source).toContain("min-h-11");
+    expect(source).toContain("min-h-16");
     expect(source).toContain("break-all");
     expect(source).toContain("motion-reduce:transition-none");
     expect(source).not.toContain("transition-all");

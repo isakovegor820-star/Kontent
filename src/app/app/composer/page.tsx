@@ -67,6 +67,7 @@ import {
   composerTrackingDraftSelection,
   composerTrackingHasInput,
   EMPTY_COMPOSER_TRACKING,
+  TrackingBuilder,
   type ComposerTrackingValue,
 } from "@/components/app/tracking-builder";
 import { Button, buttonClassName } from "@/components/ui/button";
@@ -3249,6 +3250,7 @@ function ComposerInner() {
       : dateRaw;
   const timeParam = params.get("time");
   const channelParam = Number(params.get("channel")) || null;
+  const trackingRequested = params.get("tracking") === "1";
   const fromMedia = params.get("fromMedia") === "1";
   const suggestMedia = params.get("suggestMedia") === "1";
   const ideaParam = params.get("idea")?.trim().slice(0, 1_000) ?? "";
@@ -3295,6 +3297,16 @@ function ComposerInner() {
   const currentProjectPersonal = projects.current?.personal === true;
   const currentWorkspaceId = currentProjectId == null ? null : projectDraftWorkspaceId(currentProjectId);
   const toast = s.toast;
+
+  useEffect(() => {
+    if (!hydrated || !trackingRequested) return;
+    const frame = window.requestAnimationFrame(() => {
+      const section = document.getElementById("composer-tracking");
+      section?.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "center" });
+      section?.querySelector<HTMLInputElement>('input[type="url"]')?.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [hydrated, reduce, trackingRequested]);
 
   // Pending outbox is selected before the server snapshot, so a hard reload never flashes
   // and then overwrites the newer local text with an older acknowledged version.
@@ -4210,6 +4222,14 @@ function ComposerInner() {
           )}
         </div>
         </EditorSection>
+
+        <TrackingBuilder
+          value={c.tracking}
+          onChange={c.setTracking}
+          disabled={!canEditContent}
+          validationError={c.errors.tracking}
+          defaultOpen={trackingRequested}
+        />
 
         {!currentProjectPersonal && (
           <>

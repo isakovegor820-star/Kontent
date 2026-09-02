@@ -124,13 +124,16 @@ describe("tracking analytics client contract", () => {
       periodDays: 30,
       onPeriodChange: vi.fn(),
       onRetry: vi.fn(),
+      preferredChannelId: 4,
     }));
-    expect(html).toContain("Трекер сайта не подключён");
-    expect(html).toContain("не означает, что заявок на сайте не было");
+    expect(html).toContain("Переходы уже считаются");
+    expect(html).toContain("Подключите трекер сайта");
     expect(html).toContain("Практика банкротства");
     expect(html).toContain("ТехнологИИ Права");
     expect(html).toContain("Публикация №31");
     expect(html).toContain("Публикация №32");
+    expect(html).not.toContain("Все каналы");
+    expect(html).not.toContain('aria-label="Путь выбранного среза"');
     expect(html).toContain("<fieldset");
     expect(html).toContain("<select");
     expect(html).toContain("<ol");
@@ -140,7 +143,7 @@ describe("tracking analytics client contract", () => {
     expect(html).toContain('role="region"');
   });
 
-  it("renders real zeros and a useful empty and retry state", () => {
+  it("renders guided setup instead of misleading zeros, plus a useful retry state", () => {
     const emptyHtml = renderToStaticMarkup(createElement(TrackingAnalyticsView, {
       projectName: "ТехнологИИ Права",
       report: { ...report, tracker: { ...report.tracker, status: "active" }, rows: [] },
@@ -150,9 +153,15 @@ describe("tracking analytics client contract", () => {
       onPeriodChange: vi.fn(),
       onRetry: vi.fn(),
     }));
-    expect(emptyHtml).toContain("Коротких ссылок пока нет");
-    expect(emptyHtml).toContain("Нулевые значения сохранены без подмены данных");
-    expect(emptyHtml).toContain(">0<");
+    expect(emptyHtml).toContain("Начните считать переходы из публикаций");
+    expect(emptyHtml).toContain("Создать отслеживаемую ссылку");
+    expect(emptyHtml).toContain("/app/composer?tracking=1#composer-tracking");
+    expect(emptyHtml).toContain("Создайте ссылку");
+    expect(emptyHtml).toContain("Опубликуйте её");
+    expect(emptyHtml).toContain("Трекер сайта готов");
+    expect(emptyHtml).toContain(">—<");
+    expect(emptyHtml).not.toContain(">0<");
+    expect(emptyHtml).not.toContain("<table");
 
     const errorHtml = renderToStaticMarkup(createElement(TrackingAnalyticsView, {
       projectName: "ТехнологИИ Права",
@@ -182,6 +191,7 @@ describe("tracking analytics client contract", () => {
 
     const pageSource = fs.readFileSync(path.join(process.cwd(), "src/app/app/analytics/page.tsx"), "utf8");
     expect(pageSource).toContain("<TrackingAnalyticsSection");
+    expect(pageSource).toContain('label: "Ссылки и заявки"');
     expect(pageSource).toContain('aria-labelledby="channel-statistics-heading"');
   });
 });

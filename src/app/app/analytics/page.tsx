@@ -136,7 +136,7 @@ const SECTIONS: Array<{ id: AnalyticsSection; label: string; icon: typeof Activi
   { id: "posts", label: "Публикации", icon: FileText },
   { id: "growth", label: "Рост", icon: TrendingUp },
   { id: "competitors", label: "Конкуренты", icon: UserRoundSearch },
-  { id: "tracking", label: "Переходы", icon: MousePointerClick },
+  { id: "tracking", label: "Ссылки и заявки", icon: MousePointerClick },
 ];
 
 function safeSection(value: string | null): AnalyticsSection | null {
@@ -704,7 +704,7 @@ function AnalyticsPageContent() {
   }, [sending, store]);
 
   return (
-    <AppShell title="Статистика" subtitle="Публикации, рост, конкуренты и переходы — по одному каналу и периоду." action={<div className="grid grid-cols-1 gap-2 min-[24rem]:grid-cols-2"><ProjectExportButton channels={store.realChannels} defaultKind="analytics" initialChannelId={channelId} /><Button variant="primary" data-aurora-feature="report" data-aurora-action="analyzed" onClick={refresh} loading={refreshing}><RefreshCw className="h-4 w-4" aria-hidden />Обновить данные</Button></div>}>
+    <AppShell title="Статистика" subtitle="Публикации, рост, конкуренты, ссылки и заявки — по одному каналу и периоду." action={<div className="grid grid-cols-1 gap-2 min-[24rem]:grid-cols-2"><ProjectExportButton channels={store.realChannels} defaultKind="analytics" initialChannelId={channelId} /><Button variant="primary" data-aurora-feature="report" data-aurora-action="analyzed" onClick={refresh} loading={refreshing}><RefreshCw className="h-4 w-4" aria-hidden />Обновить данные</Button></div>}>
       <section aria-labelledby="channel-statistics-heading" className="space-y-6">
         <div className="sr-only" aria-live="polite">{loading ? "Загружаем статистику выбранного канала." : loadError ? "Не удалось загрузить статистику." : `Открыт раздел ${SECTIONS.find((item) => item.id === section)?.label}.`}</div>
         <Card className="p-4 sm:p-5">
@@ -730,7 +730,7 @@ function AnalyticsPageContent() {
 
 function AnalyticsPageFallback() {
   return (
-    <AppShell title="Статистика" subtitle="Публикации, рост, конкуренты и переходы — по одному каналу и периоду.">
+    <AppShell title="Статистика" subtitle="Публикации, рост, конкуренты, ссылки и заявки — по одному каналу и периоду.">
       <div className="space-y-4" aria-busy="true">
         <div className="skeleton h-32 rounded-md" />
         <div className="skeleton h-72 rounded-md" />

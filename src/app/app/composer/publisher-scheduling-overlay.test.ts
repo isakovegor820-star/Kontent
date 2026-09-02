@@ -93,18 +93,20 @@ describe("publisher scheduling overlay contract", () => {
     expect(source).toContain("один текст, оформление — только для Telegram");
   });
 
-  it("keeps removed advanced panels out of the composer", () => {
+  it("keeps unrelated advanced panels out of the composer", () => {
     for (const removed of [
       "Семантическая проверка недоступна",
       "Я проверил(а) факты",
       "Типограф и словарь",
       "Скачать пакет TenChat",
       "<TenChatExportCard",
-      "<TrackingBuilder",
       "<PublicationSettingsPanel",
       "<TypographerPanel",
     ]) {
       expect(source).not.toContain(removed);
     }
+    expect(source).toContain("<TrackingBuilder");
+    expect(source).toContain("defaultOpen={trackingRequested}");
+    expect(source).toContain('document.getElementById("composer-tracking")');
   });
 });
