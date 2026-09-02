@@ -17,8 +17,14 @@ URL: `/admin?system=<component>#system`.
 Каждая из 15 независимых проверок возвращает `state`, `checkedAt`, `durationMs`,
 `evidence`, `safeErrorCode`, `lastSuccessAt`. Probes запускаются через
 `Promise.allSettled`; один отказ не скрывает остальные. Допустимы только состояния
-`healthy`, `degraded`, `down`, `unobserved`, `not_configured`, `conflict`. Healthy
-требует свежего успешного доказательства.
+`healthy`, `degraded`, `down`, `unobserved`, `not_configured`, `configured`, `conflict`.
+Healthy требует свежего успешного доказательства. `configured` означает, что проверена
+только конфигурация (наличие секретов, схема origin, лимит ingress) — такие компоненты
+не считаются ни исправными, ни предупреждениями.
+
+Релиз (`AURORA_RELEASE`, `AURORA_RELEASE_SHA`, `AURORA_DEPLOYED_AT`) записывается в
+`.env.production` скриптом `scripts/deploy-production.sh` на каждом деплое; browser-версия
+`NEXT_PUBLIC_AURORA_APP_VERSION` задаётся на этапе сборки в workflow.
 
 При инциденте:
 
