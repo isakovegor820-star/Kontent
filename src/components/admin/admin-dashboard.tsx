@@ -22,7 +22,7 @@ import {
   XCircle,
   type LucideIcon,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 
 import { Wordmark } from "@/components/brand";
 import { AdminBotCenter } from "@/components/admin/admin-bot-center";
@@ -31,6 +31,8 @@ import { AdminSystemCenter } from "@/components/admin/admin-system-center";
 import { AdminUsersCenter } from "@/components/admin/admin-users-center";
 import { Button, buttonClassName } from "@/components/ui/button";
 import type { AdminDashboardData, AdminPeriodDays } from "@/lib/admin-dashboard";
+import { adminAuditActionLabel, adminAuditEntityLabel } from "@/lib/admin-labels";
+import { adminUsersHref } from "@/lib/admin-url-state";
 import { cn, fmtAgo, fmtNum, NETWORK_LABEL, plural } from "@/lib/utils";
 
 type LoadError = "unauthorized" | "access_denied" | "unavailable";
@@ -46,6 +48,9 @@ const NAVIGATION = [
 ] as const;
 
 type AdminSection = (typeof NAVIGATION)[number]["id"];
+
+/** Sections that render data from `/api/admin/overview`; the rest load their own APIs. */
+const OVERVIEW_SECTIONS: ReadonlySet<AdminSection> = new Set<AdminSection>(["overview", "publications", "users", "audit"]);
 
 function adminSectionFromHash(hash: string): AdminSection {
   const candidate = hash.replace(/^#/, "");
@@ -89,15 +94,17 @@ function MetricCard({
   helper,
   icon: Icon,
   tone = "neutral",
+  href,
 }: {
   label: string;
   value: number;
   helper: string;
   icon: LucideIcon;
   tone?: "neutral" | "brand" | "danger";
+  href?: string;
 }) {
-  return (
-    <article className="card-plain rounded-md p-5">
+  const body = (
+    <>
       <div className="flex items-start justify-between gap-4">
         <p className="type-label text-text-2">{label}</p>
         <span className={cn(
@@ -111,8 +118,16 @@ function MetricCard({
         {fmtNum(value)}
       </p>
       <p className="type-caption mt-2 text-text-3">{helper}</p>
-    </article>
+    </>
   );
+  if (href) {
+    return (
+      <a href={href} className="card-plain block rounded-md p-5 transition-[border-color,transform] duration-150 hover:-translate-y-0.5 hover:border-brand/35 motion-reduce:transform-none">
+        {body}
+      </a>
+    );
+  }
+  return <article className="card-plain rounded-md p-5">{body}</article>;
 }
 
 function StatusMark({
@@ -126,7 +141,7 @@ function StatusMark({
   const label = customLabel || (state === "healthy" ? "Работает" : state === "attention" ? "Требует внимания" : state === "down" ? "Недоступно" : "Нет подтверждения");
   return (
     <span className={cn(
-      "type-caption inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 font-semibold",
+      "type-caption inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 font-semibold whitespace-nowrap",
       state === "healthy" ? "bg-success-soft text-success-text" : state === "down" ? "bg-danger-soft text-danger-text" : "bg-fire-soft text-fire-text",
     )}>
       <Icon className="h-3.5 w-3.5" aria-hidden />
@@ -135,53 +150,53 @@ function StatusMark({
   );
 }
 
-function AdminLoading() {
+function OverviewSkeleton() {
   return (
-    <div className="mx-auto grid min-h-dvh w-full max-w-[1680px] lg:grid-cols-[17rem_minmax(0,1fr)]">
-      <aside className="hidden border-r border-line bg-surface/80 p-5 lg:block">
-        <div className="skeleton h-10 w-36 rounded-sm" />
-        <div className="mt-10 space-y-3" aria-hidden>
-          {NAVIGATION.map((item) => <div key={item.href} className="skeleton h-11 rounded-sm" />)}
-        </div>
-      </aside>
-      <main id="main" className="p-4 sm:p-6 lg:p-10" aria-busy="true">
-        <div className="skeleton h-8 w-56 rounded-sm" />
-        <div className="mt-8 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-          {Array.from({ length: 8 }, (_, index) => <div key={index} className="skeleton h-40 rounded-md" />)}
-        </div>
-        <p role="status" className="sr-only">Загружаем операционные данные Авроры…</p>
-      </main>
+    <div aria-busy="true">
+      <div className="skeleton h-8 w-56 rounded-sm" />
+      <div className="mt-8 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        {Array.from({ length: 8 }, (_, index) => <div key={index} className="skeleton h-40 rounded-md" />)}
+      </div>
+      <p role="status" className="sr-only">Загружаем операционные данные Авроры…</p>
     </div>
   );
 }
 
-function AdminError({ error }: { error: LoadError }) {
+function OverviewUnavailable({ onRetry, retrying }: { onRetry: () => void; retrying: boolean }) {
+  return (
+    <div className="rounded-md border border-danger/20 bg-danger-soft p-6 sm:p-8">
+      <XCircle className="h-8 w-8 text-danger-text" aria-hidden />
+      <h3 className="mt-3 text-text">Сводка недоступна</h3>
+      <p className="type-secondary mt-2 max-w-xl text-pretty text-text-2">
+        Не удалось получить данные из базы. Раздел «Система» работает независимо — откройте его, чтобы увидеть, какая зависимость упала.
+      </p>
+      <div className="mt-5 flex flex-col gap-3 sm:flex-row">
+        <a href="#system" className={buttonClassName({ variant: "primary" })}>Открыть «Систему»<ArrowUpRight className="h-4 w-4" aria-hidden /></a>
+        <Button variant="secondary" loading={retrying} onClick={onRetry}><RefreshCw className="h-4 w-4" aria-hidden />Повторить</Button>
+      </div>
+    </div>
+  );
+}
+
+function AdminAccessError({ error }: { error: Exclude<LoadError, "unavailable"> }) {
   const unauthorized = error === "unauthorized";
-  const denied = error === "access_denied";
   return (
     <main id="main" className="grid min-h-dvh place-items-center p-5">
       <section className="card-plain w-full max-w-xl rounded-lg p-7 text-center sm:p-10">
         <span className="mx-auto grid h-14 w-14 place-items-center rounded-md bg-danger-soft text-danger-text">
           <ShieldCheck className="h-7 w-7" aria-hidden />
         </span>
-        <h1 className="mt-5 text-text">
-          {unauthorized ? "Войдите в Аврору" : denied ? "Нет доступа к управлению" : "Пульс временно недоступен"}
-        </h1>
+        <h1 className="mt-5 text-text">{unauthorized ? "Войдите в Аврору" : "Нет доступа к управлению"}</h1>
         <p className="type-body mx-auto mt-3 max-w-md text-pretty text-text-2">
           {unauthorized
             ? "Админ-панель использует ту же защищённую сессию, что и основной кабинет."
-            : denied
-              ? "Доступ к данным всех проектов выдаётся только через серверный список администраторов."
-              : "Не удалось получить подтверждённые данные. Проверьте базу и повторите попытку."}
+            : "Доступ к данным всех проектов выдаётся только через серверный список администраторов."}
         </p>
         <div className="mt-6 flex flex-col justify-center gap-3 sm:flex-row">
           {unauthorized ? (
             <Link href="/admin/login" className={buttonClassName({ variant: "primary" })}>Войти как администратор</Link>
           ) : (
             <Link href="/app/calendar" className={buttonClassName({ variant: "secondary" })}>Вернуться в кабинет</Link>
-          )}
-          {!denied && !unauthorized && (
-            <Button variant="primary" onClick={() => window.location.reload()}>Повторить загрузку</Button>
           )}
         </div>
       </section>
@@ -213,8 +228,9 @@ function DailyBars({ data }: { data: AdminDashboardData["daily"] }) {
             return (
               <li
                 key={item.date}
-                className="flex w-8 shrink-0 flex-col items-center justify-end gap-1"
+                className={cn("flex shrink-0 flex-col items-center justify-end gap-1", data.length <= 7 ? "w-14" : "w-8")}
                 aria-label={`${date}: создано ${item.publications}, опубликовано ${item.published}`}
+                title={`${date}: создано ${item.publications}, опубликовано ${item.published}`}
               >
                 <div className="flex h-36 items-end gap-0.5" aria-hidden>
                   <span className="w-3 rounded-t-sm bg-brand" style={{ height: createdHeight }} />
@@ -243,12 +259,13 @@ function AttentionList({ items }: { items: AdminDashboardData["attention"] }) {
   return (
     <div className="overflow-hidden rounded-md border border-line bg-surface shadow-soft">
       <div className="hidden overflow-x-auto md:block">
-        <table className="w-full min-w-[880px] text-start">
+        <table className="w-full min-w-[960px] text-start">
           <thead className="bg-surface-2 text-start">
             <tr>
-              <th className="px-5 py-3 text-start">Состояние</th>
+              <th className="px-5 py-3 text-start">Проблема</th>
               <th className="px-5 py-3 text-start">Публикация</th>
               <th className="px-5 py-3 text-start">Проект и канал</th>
+              <th className="px-5 py-3 text-start">Автор</th>
               <th className="px-5 py-3 text-start">Попытки</th>
               <th className="px-5 py-3 text-start">Время</th>
             </tr>
@@ -256,18 +273,31 @@ function AttentionList({ items }: { items: AdminDashboardData["attention"] }) {
           <tbody className="divide-y divide-line">
             {items.map((item) => (
               <tr key={item.id} className="align-top">
-                <td className="px-5 py-4"><StatusMark state={item.status === "overdue" ? "attention" : "down"} /></td>
+                <td className="px-5 py-4">
+                  <StatusMark state={item.status === "overdue" ? "attention" : "down"} label={ATTENTION_LABEL[item.status]} />
+                </td>
                 <td className="max-w-sm px-5 py-4">
                   <p className="type-body-strong line-clamp-2 text-text">{item.text}</p>
-                  <p className="type-caption mt-1 font-mono text-text-3">{item.errorCode}</p>
+                  <p className="type-caption mt-1 text-text-3">
+                    <span className="nums">ID {item.id}</span> · <span className="font-mono">{item.errorCode}</span>
+                  </p>
                 </td>
                 <td className="px-5 py-4">
                   <p className="type-secondary font-semibold text-text">{item.project}</p>
                   <p className="type-caption mt-1 text-text-3">{NETWORK_LABEL[item.network] || item.network} · {item.channel}</p>
                 </td>
+                <td className="px-5 py-4">
+                  {item.authorId > 0 ? (
+                    <a href={adminUsersHref("/admin", { user: item.authorId })} className="type-secondary font-semibold text-brand hover:underline">{item.author}</a>
+                  ) : (
+                    <span className="type-secondary text-text-2">{item.author}</span>
+                  )}
+                </td>
                 <td className="nums px-5 py-4 text-text-2">{item.attempts}</td>
                 <td className="px-5 py-4 text-text-2">
-                  <time dateTime={item.scheduledAt || item.createdAt}>{fmtAgo(item.scheduledAt || item.createdAt)}</time>
+                  <time dateTime={item.scheduledAt || item.createdAt} title={new Date(item.scheduledAt || item.createdAt).toLocaleString("ru-RU")}>
+                    {fmtAgo(item.scheduledAt || item.createdAt)}
+                  </time>
                 </td>
               </tr>
             ))}
@@ -278,11 +308,15 @@ function AttentionList({ items }: { items: AdminDashboardData["attention"] }) {
         {items.map((item) => (
           <li key={item.id} className="p-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <StatusMark state={item.status === "overdue" ? "attention" : "down"} />
-              <span className="type-caption text-text-3">{ATTENTION_LABEL[item.status]}</span>
+              <StatusMark state={item.status === "overdue" ? "attention" : "down"} label={ATTENTION_LABEL[item.status]} />
+              <span className="nums type-caption text-text-3">ID {item.id}</span>
             </div>
             <p className="type-body-strong mt-3 line-clamp-3 text-text">{item.text}</p>
             <p className="type-caption mt-2 text-text-2">{item.project} · {item.channel}</p>
+            <p className="type-caption mt-1 text-text-2">
+              {item.authorId > 0 ? <a href={adminUsersHref("/admin", { user: item.authorId })} className="text-brand hover:underline">{item.author}</a> : item.author}
+              {" · "}{fmtAgo(item.scheduledAt || item.createdAt)}
+            </p>
             <p className="type-caption mt-1 font-mono text-text-3">{item.errorCode}</p>
           </li>
         ))}
@@ -291,17 +325,64 @@ function AttentionList({ items }: { items: AdminDashboardData["attention"] }) {
   );
 }
 
+function SectionNavigation({
+  activeSection,
+  onSelect,
+  className,
+  itemClassName,
+  navRef,
+}: {
+  activeSection: AdminSection;
+  onSelect: (section: AdminSection) => void;
+  className: string;
+  itemClassName?: string;
+  navRef?: RefObject<HTMLElement | null>;
+}) {
+  return (
+    <nav ref={navRef} aria-label="Разделы админ-панели" className={className}>
+      <ul className={cn("flex gap-2", itemClassName)}>
+        {NAVIGATION.map(({ id, href, label, icon: Icon }) => (
+          <li key={href}>
+            <a
+              href={href}
+              aria-current={activeSection === id ? "page" : undefined}
+              onClick={() => onSelect(id)}
+              className={cn(
+                "type-button flex min-h-11 items-center gap-3 rounded-sm px-3.5 whitespace-nowrap transition-[background-color,color,transform] duration-150 active:scale-[0.96] motion-reduce:transform-none motion-reduce:transition-none",
+                activeSection === id
+                  ? "bg-info-soft text-info-text shadow-soft"
+                  : "text-text-2 hover:bg-surface-inset hover:text-text",
+              )}
+            >
+              <Icon className="h-[18px] w-[18px]" strokeWidth={1.8} aria-hidden />
+              {label}
+            </a>
+          </li>
+        ))}
+      </ul>
+    </nav>
+  );
+}
+
 export function AdminDashboard() {
   const mobileNavigationRef = useRef<HTMLElement>(null);
   const [activeSection, setActiveSection] = useState<AdminSection>("overview");
+  const [sectionSynced, setSectionSynced] = useState(false);
   const [period, setPeriod] = useState<AdminPeriodDays>(7);
   const [data, setData] = useState<AdminDashboardData | null>(null);
   const [error, setError] = useState<LoadError | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
 
+  // Until the hash is read on the client the section is unknown; fetching overview for the
+  // SSR default would hit the summary query even when the admin opened «Система».
+  const needsOverview = sectionSynced && OVERVIEW_SECTIONS.has(activeSection);
+
   useEffect(() => {
-    const syncSection = () => setActiveSection(adminSectionFromHash(window.location.hash));
+    const syncSection = () => {
+      setActiveSection(adminSectionFromHash(window.location.hash));
+      setSectionSynced(true);
+    };
     syncSection();
     window.addEventListener("hashchange", syncSection);
     window.addEventListener("popstate", syncSection);
@@ -311,7 +392,10 @@ export function AdminDashboard() {
     };
   }, []);
 
+  // The overview payload is fetched only for the sections that render it, so an outage
+  // of the summary query never blocks «Система», «Бот» or «Аналитика».
   useEffect(() => {
+    if (!needsOverview) return;
     const controller = new AbortController();
     void fetch(`/api/admin/overview?days=${period}`, { cache: "no-store", signal: controller.signal })
       .then(async (response) => {
@@ -320,7 +404,10 @@ export function AdminDashboard() {
         if (!response.ok) throw new Error("unavailable");
         return response.json() as Promise<AdminDashboardData>;
       })
-      .then((payload) => setData(payload))
+      .then((payload) => {
+        setData(payload);
+        setError(null);
+      })
       .catch((loadError) => {
         if (controller.signal.aborted) return;
         const message = loadError instanceof Error ? loadError.message : "unavailable";
@@ -330,11 +417,9 @@ export function AdminDashboard() {
         if (!controller.signal.aborted) setRefreshing(false);
       });
     return () => controller.abort();
-  }, [period, refreshKey]);
+  }, [period, refreshKey, needsOverview]);
 
-  const dashboardReady = data !== null;
   useEffect(() => {
-    if (!dashboardReady) return;
     const frame = window.requestAnimationFrame(() => {
       const desktopNavigation = window.matchMedia("(min-width: 64rem)").matches;
       document.getElementById(desktopNavigation ? "main" : activeSection)?.scrollIntoView({ block: "start" });
@@ -348,7 +433,7 @@ export function AdminDashboard() {
       }
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [activeSection, dashboardReady]);
+  }, [activeSection]);
 
   const pulse = useMemo(() => {
     if (!data) return null;
@@ -370,11 +455,19 @@ export function AdminDashboard() {
     };
   }, [data]);
 
-  if (!data && !error) return <AdminLoading />;
-  if (!data && error) return <AdminError error={error} />;
-  if (!data || !pulse) return null;
+  if (error === "unauthorized" || error === "access_denied") return <AdminAccessError error={error} />;
 
-  const maxAttentionPreview = data.attention.slice(0, 12);
+  const requestRefresh = () => {
+    if (needsOverview) setRefreshing(true);
+    setError(null);
+    setRefreshKey((value) => value + 1);
+  };
+
+  const overviewLoading = needsOverview && !data && !error;
+  const overviewFailed = needsOverview && !data && error === "unavailable";
+  const showPeriodControls = activeSection !== "system" && activeSection !== "aurora-analytics";
+  const maxAttentionPreview = data?.attention.slice(0, 12) ?? [];
+
   return (
     <div className="mx-auto min-h-dvh w-full max-w-[1680px] lg:grid lg:grid-cols-[17rem_minmax(0,1fr)]">
       <aside className="border-b border-line bg-surface/85 px-4 py-4 backdrop-blur-xl lg:sticky lg:top-0 lg:flex lg:h-dvh lg:flex-col lg:border-r lg:border-b-0 lg:p-5">
@@ -387,28 +480,7 @@ export function AdminDashboard() {
             В кабинет
           </Link>
         </div>
-        <nav aria-label="Разделы админ-панели" className="mt-10 hidden lg:block">
-          <ul className="flex flex-col gap-2">
-            {NAVIGATION.map(({ id, href, label, icon: Icon }) => (
-              <li key={href}>
-                <a
-                  href={href}
-                  aria-current={activeSection === id ? "page" : undefined}
-                  onClick={() => setActiveSection(id)}
-                  className={cn(
-                    "type-button flex min-h-11 items-center gap-3 rounded-sm px-3.5 transition-[background-color,color,transform] duration-150 active:scale-[0.96] motion-reduce:transform-none motion-reduce:transition-none",
-                    activeSection === id
-                      ? "bg-info-soft text-info-text shadow-soft"
-                      : "text-text-2 hover:bg-surface-inset hover:text-text",
-                  )}
-                >
-                  <Icon className="h-[18px] w-[18px]" strokeWidth={1.8} aria-hidden />
-                  {label}
-                </a>
-              </li>
-            ))}
-          </ul>
-        </nav>
+        <SectionNavigation activeSection={activeSection} onSelect={setActiveSection} className="mt-10 hidden lg:block" itemClassName="flex-col" />
         <div className="mt-auto hidden pt-8 lg:block">
           <div className="rounded-sm bg-info-soft p-4 text-info-text">
             <ShieldCheck className="h-5 w-5" aria-hidden />
@@ -426,28 +498,13 @@ export function AdminDashboard() {
         <span role="status" aria-live="polite" className="sr-only">
           Открыт раздел «{NAVIGATION.find(({ id }) => id === activeSection)?.label}».
         </span>
-        <nav ref={mobileNavigationRef} aria-label="Разделы админ-панели" className="sticky top-0 z-20 -mx-4 -mt-6 mb-6 overflow-x-auto border-y border-line bg-surface/95 px-4 py-2 backdrop-blur-xl sm:-mx-6 sm:px-6 lg:hidden">
-          <ul className="flex min-w-max gap-2">
-            {NAVIGATION.map(({ id, href, label, icon: Icon }) => (
-              <li key={href}>
-                <a
-                  href={href}
-                  aria-current={activeSection === id ? "page" : undefined}
-                  onClick={() => setActiveSection(id)}
-                  className={cn(
-                    "type-button flex min-h-11 items-center gap-2.5 rounded-sm px-3.5 transition-[background-color,color,transform] duration-150 active:scale-[0.96] motion-reduce:transform-none motion-reduce:transition-none",
-                    activeSection === id
-                      ? "bg-info-soft text-info-text shadow-soft"
-                      : "text-text-2 hover:bg-surface-inset hover:text-text",
-                  )}
-                >
-                  <Icon className="h-[18px] w-[18px]" strokeWidth={1.8} aria-hidden />
-                  {label}
-                </a>
-              </li>
-            ))}
-          </ul>
-        </nav>
+        <SectionNavigation
+          navRef={mobileNavigationRef}
+          activeSection={activeSection}
+          onSelect={setActiveSection}
+          className="sticky top-0 z-20 -mx-4 -mt-6 mb-6 overflow-x-auto border-y border-line bg-surface/95 px-4 py-2 backdrop-blur-xl sm:-mx-6 sm:px-6 lg:hidden"
+          itemClassName="min-w-max"
+        />
         <header className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
           <div>
             <p className="type-label text-brand">Пульс Авроры</p>
@@ -456,211 +513,226 @@ export function AdminDashboard() {
               Состояние публикаций, подключений и активности клиентов — без демонстрационных данных.
             </p>
           </div>
-          {activeSection !== "system" && activeSection !== "aurora-analytics" ? (
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
-            <fieldset>
-              <legend className="type-caption mb-1.5 text-text-3">Период сравнения</legend>
-              <div className="inline-flex rounded-sm border border-line bg-surface p-1">
-                {([7, 30] as const).map((days) => (
-                  <button
-                    key={days}
-                    type="button"
-                    aria-pressed={period === days}
-                    className={cn(
-                      "type-button min-h-11 rounded-xs px-3.5 transition-[background-color,color,transform] duration-150 active:scale-[0.96] motion-reduce:transform-none motion-reduce:transition-none",
-                      period === days ? "bg-text text-white" : "text-text-2 hover:bg-surface-inset hover:text-text",
-                    )}
-                    onClick={() => {
-                      if (period === days) return;
-                      setRefreshing(true);
-                      setError(null);
-                      setPeriod(days);
-                    }}
-                  >
-                    {days} дней
-                  </button>
-                ))}
-              </div>
-            </fieldset>
-            <Button
-              variant="secondary"
-              loading={refreshing}
-              onClick={() => {
-                setRefreshing(true);
-                setError(null);
-                setRefreshKey((value) => value + 1);
-              }}
-            >
-              <RefreshCw className="h-4 w-4" aria-hidden />
-              Обновить данные
-            </Button>
-          </div>
+          {showPeriodControls ? (
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+              <fieldset>
+                <legend className="type-caption mb-1.5 text-text-3">Период сравнения</legend>
+                <div className="inline-flex rounded-sm border border-line bg-surface p-1">
+                  {([7, 30] as const).map((days) => (
+                    <button
+                      key={days}
+                      type="button"
+                      aria-pressed={period === days}
+                      className={cn(
+                        "type-button min-h-11 rounded-xs px-3.5 whitespace-nowrap transition-[background-color,color,transform] duration-150 active:scale-[0.96] motion-reduce:transform-none motion-reduce:transition-none",
+                        period === days ? "bg-brand text-white shadow-soft" : "text-text-2 hover:bg-surface-inset hover:text-text",
+                      )}
+                      onClick={() => {
+                        if (period === days) return;
+                        if (needsOverview) setRefreshing(true);
+                        setError(null);
+                        setPeriod(days);
+                      }}
+                    >
+                      {days} дней
+                    </button>
+                  ))}
+                </div>
+              </fieldset>
+              <Button variant="secondary" loading={refreshing} onClick={requestRefresh}>
+                <RefreshCw className="h-4 w-4" aria-hidden />
+                Обновить данные
+              </Button>
+            </div>
           ) : null}
         </header>
 
-        {error && (
+        {needsOverview && error === "unavailable" && data ? (
           <p role="alert" className="mt-5 rounded-sm bg-danger-soft p-4 text-danger-text">
             Не удалось обновить данные. Ниже сохранён последний подтверждённый снимок.
           </p>
-        )}
+        ) : null}
 
         {activeSection === "overview" ? (
-        <section id="overview" className="scroll-mt-16 pt-8 pb-12" aria-labelledby="pulse-title">
-          <div className={cn(
-            "relative overflow-hidden rounded-lg border p-6 shadow-soft sm:p-7",
-            pulse.state === "healthy" ? "border-success/20 bg-success-soft" : pulse.state === "down" ? "border-danger/20 bg-danger-soft" : "border-fire/25 bg-fire-soft",
-          )}>
-            <div className="relative z-10 flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
-              <div className="max-w-3xl">
-                <StatusMark state={pulse.state} />
-                <h2 id="pulse-title" className="mt-4 text-text">{pulse.title}</h2>
-                <p className="type-body mt-2 text-pretty text-text-2">{pulse.description}</p>
-              </div>
-              {pulse.attention > 0 && (
-                <a href="#publications" className={buttonClassName({ variant: pulse.state === "down" ? "danger" : "primary" })}>
-                  Открыть задачи
-                  <ArrowUpRight className="h-4 w-4" aria-hidden />
-                </a>
-              )}
-            </div>
-          </div>
-
-          <div className="mt-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            <MetricCard label="Пользователи" value={data.summary.usersTotal} helper={`${fmtNum(data.summary.newUsers)} новых за период`} icon={Users} />
-            <MetricCard label="Активные сессии" value={data.summary.activeUsers} helper="Подтверждены живыми сессиями" icon={Activity} tone="brand" />
-            <MetricCard label="Команды и проекты" value={data.summary.projectsTotal} helper="Только неархивные пространства" icon={BriefcaseBusiness} />
-            <MetricCard label="Опубликовано сегодня" value={data.summary.publishedToday} helper={`${fmtNum(data.summary.scheduled)} сейчас запланировано`} icon={Send} tone="brand" />
-            <MetricCard label="Ошибки за период" value={data.summary.failed} helper="Требуют диагностики или повтора" icon={AlertTriangle} tone={data.summary.failed > 0 ? "danger" : "neutral"} />
-            <MetricCard label="Задержка очереди" value={data.summary.overdue} helper="Старше пяти минут" icon={FileClock} tone={data.summary.overdue > 0 ? "danger" : "neutral"} />
-            <MetricCard label="AI сегодня" value={data.summary.aiToday} helper={`${fmtNum(data.summary.aiPeriod)} генераций за период`} icon={Sparkles} />
-            <MetricCard label="Нужно переподключение" value={data.summary.authAttention} helper="Активные каналы с ошибкой доступа" icon={Radio} tone={data.summary.authAttention > 0 ? "danger" : "neutral"} />
-          </div>
-
-          <div className="mt-5 grid min-w-0 max-w-full gap-5 xl:grid-cols-[minmax(0,1.55fr)_minmax(20rem,0.8fr)]">
-            <DailyBars data={data.daily} />
-            <div className="card-plain min-w-0 max-w-full rounded-md p-5 sm:p-6">
-              <h3 className="text-text">Подключённые соцсети</h3>
-              <p className="type-caption mt-1 text-text-3">Состояние реальных подключений</p>
-              <ul className="mt-5 space-y-3">
-                {data.providers.length === 0 ? (
-                  <li className="rounded-sm bg-surface-inset p-4 text-text-2">Подключений пока нет.</li>
-                ) : data.providers.map((provider) => (
-                  <li key={provider.network} className="flex items-center justify-between gap-4 rounded-sm border border-line p-3.5">
-                    <div className="min-w-0">
-                      <p className="type-body-strong truncate text-text">{NETWORK_LABEL[provider.network] || provider.network}</p>
-                      <p className="type-caption mt-0.5 text-text-3">{fmtNum(provider.active)} из {fmtNum(provider.total)} работают</p>
+          <section id="overview" className="scroll-mt-16 pt-8 pb-12" aria-labelledby="pulse-title">
+            {overviewLoading ? <OverviewSkeleton /> : null}
+            {overviewFailed ? <OverviewUnavailable onRetry={requestRefresh} retrying={refreshing} /> : null}
+            {data && pulse ? (
+              <>
+                <div className={cn(
+                  "relative overflow-hidden rounded-lg border p-6 shadow-soft sm:p-7",
+                  pulse.state === "healthy" ? "border-success/20 bg-success-soft" : pulse.state === "down" ? "border-danger/20 bg-danger-soft" : "border-fire/25 bg-fire-soft",
+                )}>
+                  <div className="relative z-10 flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
+                    <div className="max-w-3xl">
+                      <StatusMark state={pulse.state} />
+                      <h2 id="pulse-title" className="mt-4 text-text">{pulse.title}</h2>
+                      <p className="type-body mt-2 text-pretty text-text-2">{pulse.description}</p>
                     </div>
-                    <StatusMark state={provider.attention > 0 ? "attention" : "healthy"} />
-                  </li>
-                ))}
-              </ul>
-            </div>
-          </div>
-        </section>
+                    {pulse.attention > 0 && (
+                      <a href="#publications" className={buttonClassName({ variant: pulse.state === "down" ? "danger" : "primary" })}>
+                        Открыть задачи
+                        <ArrowUpRight className="h-4 w-4" aria-hidden />
+                      </a>
+                    )}
+                  </div>
+                </div>
+
+                <div className="mt-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                  <MetricCard label="Пользователи" value={data.summary.usersTotal} helper={`${fmtNum(data.summary.newUsers)} новых за период`} icon={Users} href="#users" />
+                  <MetricCard label="Заходили за 30 дней" value={data.summary.activeUsers} helper="Аккаунты с неистёкшей сессией" icon={Activity} tone="brand" href={adminUsersHref("/admin", { status: "active" })} />
+                  <MetricCard label="Команды и проекты" value={data.summary.projectsTotal} helper="Только неархивные пространства" icon={BriefcaseBusiness} />
+                  <MetricCard label="Опубликовано сегодня" value={data.summary.publishedToday} helper={`${fmtNum(data.summary.scheduled)} сейчас запланировано`} icon={Send} tone="brand" />
+                  <MetricCard label="Ошибки за период" value={data.summary.failed} helper="Требуют диагностики или повтора" icon={AlertTriangle} tone={data.summary.failed > 0 ? "danger" : "neutral"} href="#publications" />
+                  <MetricCard label="Задержка очереди" value={data.summary.overdue} helper="Старше пяти минут" icon={FileClock} tone={data.summary.overdue > 0 ? "danger" : "neutral"} href="#publications" />
+                  <MetricCard label="AI сегодня" value={data.summary.aiToday} helper={`${fmtNum(data.summary.aiPeriod)} генераций за период`} icon={Sparkles} href="/admin?system=aurora_ai#system" />
+                  <MetricCard label="Нужно переподключение" value={data.summary.authAttention} helper="Активные каналы с ошибкой доступа" icon={Radio} tone={data.summary.authAttention > 0 ? "danger" : "neutral"} href={adminUsersHref("/admin", { status: "attention" })} />
+                </div>
+
+                <div className="mt-5 grid min-w-0 max-w-full gap-5 xl:grid-cols-[minmax(0,1.55fr)_minmax(20rem,0.8fr)]">
+                  <DailyBars data={data.daily} />
+                  <div className="card-plain min-w-0 max-w-full rounded-md p-5 sm:p-6">
+                    <h3 className="text-text">Подключённые соцсети</h3>
+                    <p className="type-caption mt-1 text-text-3">Состояние реальных подключений</p>
+                    <ul className="mt-5 space-y-3">
+                      {data.providers.length === 0 ? (
+                        <li className="rounded-sm bg-surface-inset p-4 text-text-2">Подключений пока нет.</li>
+                      ) : data.providers.map((provider) => (
+                        <li key={provider.network} className="flex items-center justify-between gap-4 rounded-sm border border-line p-3.5">
+                          <div className="min-w-0">
+                            <p className="type-body-strong truncate text-text">{NETWORK_LABEL[provider.network] || provider.network}</p>
+                            <p className="type-caption mt-0.5 text-text-3">{fmtNum(provider.active)} из {fmtNum(provider.total)} работают</p>
+                          </div>
+                          {provider.attention > 0 ? (
+                            <a href={adminUsersHref("/admin", { status: "attention", network: provider.network })} aria-label={`Показать аккаунты с проблемными каналами ${NETWORK_LABEL[provider.network] || provider.network}`}>
+                              <StatusMark state="attention" label={`${fmtNum(provider.attention)} · внимание`} />
+                            </a>
+                          ) : <StatusMark state="healthy" />}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              </>
+            ) : null}
+          </section>
         ) : null}
 
         {activeSection === "publications" ? (
-        <section id="publications" className="scroll-mt-16 pt-8 pb-12" aria-labelledby="publications-title">
-          <SectionHeading
-            id="publications-title"
-            eyebrow="Операции"
-            title="Центр публикаций"
-            description="Сначала показываем задачи, где команда может восстановить публикацию или связь с социальной сетью. Сырые ответы провайдеров намеренно не выводятся."
-          />
-          <div className="mt-6 flex flex-wrap gap-3" aria-label="Сводка статусов публикаций">
-            <span className="type-label rounded-full bg-info-soft px-3 py-1.5 text-info-text">Запланировано · {fmtNum(data.summary.scheduled)}</span>
-            <span className="type-label rounded-full bg-danger-soft px-3 py-1.5 text-danger-text">Ошибка · {fmtNum(data.summary.failed)}</span>
-            <span className="type-label rounded-full bg-fire-soft px-3 py-1.5 text-fire-text">Карантин · {fmtNum(data.summary.quarantined)}</span>
-            <span className="type-label rounded-full bg-surface-inset px-3 py-1.5 text-text-2">Всего · {fmtNum(data.summary.publicationsTotal)}</span>
-          </div>
-          <div className="mt-5"><AttentionList items={maxAttentionPreview} /></div>
-          {data.attention.length > maxAttentionPreview.length && (
-            <p className="type-caption mt-3 text-text-3">Показаны первые {maxAttentionPreview.length} из {fmtNum(data.attention.length)} задач.</p>
-          )}
-        </section>
+          <section id="publications" className="scroll-mt-16 pt-8 pb-12" aria-labelledby="publications-title">
+            <SectionHeading
+              id="publications-title"
+              eyebrow="Операции"
+              title="Центр публикаций"
+              description="Сначала показываем задачи, где команда может восстановить публикацию или связь с социальной сетью. Сырые ответы провайдеров намеренно не выводятся."
+            />
+            {overviewLoading ? <div className="mt-6"><OverviewSkeleton /></div> : null}
+            {overviewFailed ? <div className="mt-6"><OverviewUnavailable onRetry={requestRefresh} retrying={refreshing} /></div> : null}
+            {data ? (
+              <>
+                <div className="mt-6 flex flex-wrap gap-3" aria-label="Сводка статусов публикаций">
+                  <span className="type-label rounded-full bg-info-soft px-3 py-1.5 text-info-text">Запланировано · {fmtNum(data.summary.scheduled)}</span>
+                  <span className="type-label rounded-full bg-danger-soft px-3 py-1.5 text-danger-text">Ошибка · {fmtNum(data.summary.failed)}</span>
+                  <span className="type-label rounded-full bg-fire-soft px-3 py-1.5 text-fire-text">Карантин · {fmtNum(data.summary.quarantined)}</span>
+                  <span className="type-label rounded-full bg-fire-soft px-3 py-1.5 text-fire-text">Задержка · {fmtNum(data.summary.overdue)}</span>
+                  <span className="type-label rounded-full bg-surface-inset px-3 py-1.5 text-text-2">Всего · {fmtNum(data.summary.publicationsTotal)}</span>
+                </div>
+                <div className="mt-5"><AttentionList items={maxAttentionPreview} /></div>
+                {data.attention.length > maxAttentionPreview.length && (
+                  <p className="type-caption mt-3 text-text-3">Показаны первые {maxAttentionPreview.length} из {fmtNum(data.attention.length)} задач.</p>
+                )}
+              </>
+            ) : null}
+          </section>
         ) : null}
 
         {activeSection === "users" ? (
-        <section id="users" className="scroll-mt-16 pt-8 pb-12" aria-labelledby="users-title">
-          <SectionHeading
-            id="users-title"
-            eyebrow="Аккаунты"
-            title="Пользователи и регистрации"
-            description={`Полная операционная картина за ${data.periodDays} дней: способы входа, активность, проекты, каналы, публикации, AI и состояние каждого аккаунта.`}
-          />
-          <div className="mt-6">
-            <AdminUsersCenter
-              key={period}
-              period={period}
-              registrations={data.daily.map(({ date, registrations }) => ({ date, registrations }))}
+          <section id="users" className="scroll-mt-16 pt-8 pb-12" aria-labelledby="users-title">
+            <SectionHeading
+              id="users-title"
+              eyebrow="Аккаунты"
+              title="Пользователи и регистрации"
+              description={`Полная операционная картина за ${period} дней: способы входа, активность, проекты, каналы, публикации, AI и состояние каждого аккаунта.`}
             />
-          </div>
-        </section>
+            <div className="mt-6">
+              <AdminUsersCenter
+                period={period}
+                refreshKey={refreshKey}
+                registrations={data?.daily.map(({ date, registrations }) => ({ date, registrations })) ?? null}
+              />
+            </div>
+          </section>
         ) : null}
 
         {activeSection === "bot-control" ? (
-        <section id="bot-control" className="scroll-mt-16 pt-8 pb-12" aria-labelledby="bot-control-title">
-          <SectionHeading
-            id="bot-control-title"
-            eyebrow="Telegram"
-            title="Управление ботом"
-            description="Состояние основного бота, подключённые аккаунты, активность, доставка, уведомления и Telegram Business — с обратимыми bot-only действиями администратора."
-          />
-          <div className="mt-6">
-            <AdminBotCenter key={period} period={period} />
-          </div>
-        </section>
+          <section id="bot-control" className="scroll-mt-16 pt-8 pb-12" aria-labelledby="bot-control-title">
+            <SectionHeading
+              id="bot-control-title"
+              eyebrow="Telegram"
+              title="Управление ботом"
+              description="Состояние основного бота, подключённые аккаунты, активность, доставка, уведомления и Telegram Business — с обратимыми bot-only действиями администратора."
+            />
+            <div className="mt-6">
+              <AdminBotCenter period={period} refreshKey={refreshKey} />
+            </div>
+          </section>
         ) : null}
 
         {activeSection === "system" ? (
-        <section id="system" className="scroll-mt-16 pt-8 pb-12" aria-labelledby="system-title">
-          <SectionHeading
-            id="system-title"
-            eyebrow="Платформа"
-            title="Состояние системы"
-            description="Проверки показывают только подтверждённое состояние зависимостей. Настроенный, но ещё не наблюдавшийся AI не помечается зелёным."
-          />
-          <AdminSystemCenter />
-        </section>
+          <section id="system" className="scroll-mt-16 pt-8 pb-12" aria-labelledby="system-title">
+            <SectionHeading
+              id="system-title"
+              eyebrow="Платформа"
+              title="Состояние системы"
+              description="Проверки показывают только подтверждённое состояние зависимостей. Настроенный, но ещё не наблюдавшийся AI не помечается зелёным."
+            />
+            <AdminSystemCenter />
+          </section>
         ) : null}
 
         {activeSection === "aurora-analytics" ? (
-        <section id="aurora-analytics" className="scroll-mt-16 pt-8 pb-12" aria-labelledby="aurora-analytics-title">
-          <SectionHeading
-            id="aurora-analytics-title"
-            eyebrow="Продукт и качество"
-            title="Аналитика Авроры"
-            description="Использование, техническое здоровье и подтверждённый полезный результат для всех 15 пользовательских разделов. Клиентские события не подменяют доменные факты."
-          />
-          <AdminAuroraAnalyticsCenter />
-        </section>
+          <section id="aurora-analytics" className="scroll-mt-16 pt-8 pb-12" aria-labelledby="aurora-analytics-title">
+            <SectionHeading
+              id="aurora-analytics-title"
+              eyebrow="Продукт и качество"
+              title="Аналитика Авроры"
+              description="Использование, техническое здоровье и подтверждённый полезный результат для всех 15 пользовательских разделов. Клиентские события не подменяют доменные факты."
+            />
+            <AdminAuroraAnalyticsCenter />
+          </section>
         ) : null}
 
         {activeSection === "audit" ? (
-        <section id="audit" className="scroll-mt-16 pt-8 pb-12" aria-labelledby="audit-title">
-          <SectionHeading
-            id="audit-title"
-            eyebrow="Контроль"
-            title="Последние действия"
-            description="Журнал помогает восстановить последовательность изменений внутри проектов без показа чувствительных полей."
-          />
-          <ol className="mt-6 overflow-hidden rounded-md border border-line bg-surface shadow-soft">
-            {data.audit.length === 0 ? (
-              <li className="p-6 text-text-2">Записей пока нет.</li>
-            ) : data.audit.map((event) => (
-              <li key={event.id} className="flex gap-3 border-b border-line p-4 last:border-b-0 sm:items-center sm:px-5">
-                <span className="mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-sm bg-surface-inset text-text-2 sm:mt-0">
-                  <History className="h-4 w-4" aria-hidden />
-                </span>
-                <div className="min-w-0 flex-1">
-                  <p className="type-secondary font-semibold text-text">{event.action}</p>
-                  <p className="type-caption mt-1 truncate text-text-3">{event.project} · {event.actor} · {event.entityType}{event.entityId ? ` ${event.entityId}` : ""}</p>
-                </div>
-                <time className="type-caption shrink-0 text-text-3" dateTime={event.createdAt}>{fmtAgo(event.createdAt)}</time>
-              </li>
-            ))}
-          </ol>
-        </section>
+          <section id="audit" className="scroll-mt-16 pt-8 pb-12" aria-labelledby="audit-title">
+            <SectionHeading
+              id="audit-title"
+              eyebrow="Контроль"
+              title="Последние действия"
+              description="Журнал помогает восстановить последовательность изменений внутри проектов без показа чувствительных полей."
+            />
+            {overviewLoading ? <div className="mt-6"><OverviewSkeleton /></div> : null}
+            {overviewFailed ? <div className="mt-6"><OverviewUnavailable onRetry={requestRefresh} retrying={refreshing} /></div> : null}
+            {data ? (
+              <ol className="mt-6 overflow-hidden rounded-md border border-line bg-surface shadow-soft">
+                {data.audit.length === 0 ? (
+                  <li className="p-6 text-text-2">Записей пока нет.</li>
+                ) : data.audit.map((event) => (
+                  <li key={event.id} className="flex gap-3 border-b border-line p-4 last:border-b-0 sm:items-center sm:px-5">
+                    <span className="mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-sm bg-surface-inset text-text-2 sm:mt-0">
+                      <History className="h-4 w-4" aria-hidden />
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="type-secondary font-semibold text-text" title={event.action}>{adminAuditActionLabel(event.action)}</p>
+                      <p className="type-caption mt-1 truncate text-text-3">
+                        {event.project} · {event.actor} · {adminAuditEntityLabel(event.entityType)}{event.entityId ? ` ${event.entityId}` : ""}
+                      </p>
+                    </div>
+                    <time className="type-caption shrink-0 text-text-3" dateTime={event.createdAt} title={new Date(event.createdAt).toLocaleString("ru-RU")}>{fmtAgo(event.createdAt)}</time>
+                  </li>
+                ))}
+              </ol>
+            ) : null}
+          </section>
         ) : null}
       </main>
     </div>
