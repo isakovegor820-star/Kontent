@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   ADMIN_QUEUE_NAMES,
   loadAdminSystemDiagnostics,
+  measureEventLoopLag,
   runDiagnosticDefinitions,
   type DiagnosticDefinition,
 } from "./admin-system-diagnostics";
@@ -49,7 +50,31 @@ describe("admin system diagnostics", () => {
     ];
     const report = await loadAdminSystemDiagnostics({ definitions });
     expect(report.state).toBe("down");
-    expect(report.summary).toEqual({ total: 3, healthy: 1, warnings: 1, critical: 1 });
+    expect(report.summary).toEqual({ total: 3, healthy: 1, configured: 0, warnings: 1, critical: 1 });
+  });
+
+  it("keeps configuration-only checks out of both healthy and warning totals", async () => {
+    const definitions: DiagnosticDefinition[] = [
+      {
+        id: "postgresql", group: "core", label: "PostgreSQL", description: "DB",
+        run: async () => ({ state: "healthy", evidence: [] }),
+      },
+      {
+        id: "https_origin", group: "security", label: "HTTPS", description: "Origin",
+        run: async () => ({ state: "configured", evidence: [{ label: "Протокол", value: "https" }] }),
+      },
+    ];
+    const report = await loadAdminSystemDiagnostics({ definitions });
+    expect(report.state).toBe("healthy");
+    expect(report.summary).toEqual({ total: 2, healthy: 1, configured: 1, warnings: 0, critical: 0 });
+    // A configured-only component never earns a "last success" timestamp: nothing was observed.
+    expect(report.components[1]).toMatchObject({ state: "configured", lastSuccessAt: null });
+  });
+
+  it("measures event loop lag as a non-negative integer", async () => {
+    const lag = await measureEventLoopLag();
+    expect(Number.isInteger(lag)).toBe(true);
+    expect(lag).toBeGreaterThanOrEqual(0);
   });
 
   it("includes every queue that is actually declared by Aurora runtimes", () => {

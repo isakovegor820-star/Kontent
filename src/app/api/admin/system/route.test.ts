@@ -36,7 +36,7 @@ describe("GET /api/admin/system", () => {
       checkedAt: "2026-08-30T10:00:00.000Z",
       durationMs: 42,
       state: "degraded",
-      summary: { total: 2, healthy: 1, warnings: 1, critical: 0 },
+      summary: { total: 2, healthy: 1, configured: 0, warnings: 1, critical: 0 },
       release: { release: null, commitSha: null, deployedAt: null },
       components: [],
     });
