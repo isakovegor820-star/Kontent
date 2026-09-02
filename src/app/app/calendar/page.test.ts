@@ -79,6 +79,10 @@ describe("calendar role-aware interface", () => {
     expect(source).toContain("Вовлечённость");
   });
 
+  it("aligns the supporting calendar cards to one bottom edge on wide screens", () => {
+    expect(source).toContain('className="grid gap-4 lg:grid-cols-2 lg:items-stretch"');
+  });
+
   it("moves eligible weekly cards between future days and persists the new date", () => {
     expect(source).toContain('data-calendar-draggable={canMove && !moving ? "true" : undefined}');
     expect(source).toContain("<CalendarDragOverlay");

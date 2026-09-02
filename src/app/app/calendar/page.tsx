@@ -2646,7 +2646,7 @@ export default function CalendarPage() {
           {!s.ready ? (
             <SideSkeleton />
           ) : (
-            <div className="grid gap-4 lg:grid-cols-2 lg:items-start">
+            <div className="grid gap-4 lg:grid-cols-2 lg:items-stretch">
               {/* Очередь без дат */}
               <Card as="section" className="p-4">
                 <header className="flex items-center justify-between gap-2">
