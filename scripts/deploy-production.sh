@@ -7,7 +7,6 @@
 #   systemd units: aurora-web.service, aurora-worker.service
 set -euo pipefail
 
-REPO_URL="${AURORA_DEPLOY_REPO_URL:-https://github.com/isakovegor820-star/Kontent.git}"
 DEPLOY_SHA="${AURORA_DEPLOY_SHA:?AURORA_DEPLOY_SHA is required}"
 DEPLOY_ACTION="${AURORA_DEPLOY_ACTION:-deploy}"
 RELEASES_DIR="${AURORA_RELEASES_DIR:-/opt/aurora-releases}"
@@ -16,6 +15,8 @@ KEEP_RELEASES="${AURORA_KEEP_RELEASES:-2}"
 CLEANUP_RELEASE_SHA="${AURORA_INCOMPLETE_RELEASE_SHA:-}"
 BUILD_ARCHIVE="${AURORA_BUILD_ARCHIVE:-}"
 BUILD_ARCHIVE_SHA256="${AURORA_BUILD_ARCHIVE_SHA256:-}"
+SOURCE_BUNDLE="${AURORA_SOURCE_BUNDLE:-}"
+SOURCE_BUNDLE_SHA256="${AURORA_SOURCE_BUNDLE_SHA256:-}"
 AVATAR_BODY_LIMIT_BYTES="${AURORA_AVATAR_BODY_LIMIT_BYTES:-}"
 DB_POOL_MAX_WEB="${AURORA_DB_POOL_MAX_WEB:-}"
 DB_POOL_MAX_WORKER="${AURORA_DB_POOL_MAX_WORKER:-}"
@@ -47,6 +48,15 @@ if [[ "$DEPLOY_ACTION" == "deploy" ]]; then
   fi
   if [[ ! "$BUILD_ARCHIVE_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
     echo "AURORA_BUILD_ARCHIVE_SHA256 must be an exact lowercase SHA-256" >&2
+    exit 1
+  fi
+  expected_source_bundle="/tmp/aurora-source-${DEPLOY_SHA}.bundle"
+  if [[ "$SOURCE_BUNDLE" != "$expected_source_bundle" ]]; then
+    echo "AURORA_SOURCE_BUNDLE must equal $expected_source_bundle" >&2
+    exit 1
+  fi
+  if [[ ! "$SOURCE_BUNDLE_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "AURORA_SOURCE_BUNDLE_SHA256 must be an exact lowercase SHA-256" >&2
     exit 1
   fi
   if [[ ! "$AVATAR_BODY_LIMIT_BYTES" =~ ^[0-9]+$ ]] \
@@ -186,6 +196,7 @@ cleanup_failed_release() {
   local status="$?" current=""
   trap - EXIT
   [[ -z "$BUILD_ARCHIVE" ]] || rm -f -- "$BUILD_ARCHIVE"
+  [[ -z "$SOURCE_BUNDLE" ]] || rm -f -- "$SOURCE_BUNDLE"
   current="$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)"
   if [[ "$status" -ne 0 && -n "$release" && -d "$release" && "$current" != "$release" ]]; then
     echo "PRUNE_FAILED $release" >&2
@@ -209,10 +220,15 @@ if [[ ! "$previous_sha" =~ ^[0-9a-f]{40}$ ]]; then
 fi
 
 echo "CLONE $release"
-git clone --branch main --single-branch "$REPO_URL" "$release"
-if ! git -C "$release" cat-file -e "${DEPLOY_SHA}^{commit}"; then
-  git -C "$release" fetch --depth 1 origin "$DEPLOY_SHA"
+if [[ ! -f "$SOURCE_BUNDLE" ]]; then
+  echo "missing source bundle: $SOURCE_BUNDLE" >&2
+  exit 1
 fi
+printf '%s  %s\n' "$SOURCE_BUNDLE_SHA256" "$SOURCE_BUNDLE" | sha256sum --check --status
+git bundle verify "$SOURCE_BUNDLE"
+git clone "$SOURCE_BUNDLE" "$release"
+rm -f -- "$SOURCE_BUNDLE"
+SOURCE_BUNDLE=""
 git -C "$release" checkout --detach "$DEPLOY_SHA"
 checked_out_sha="$(git -C "$release" rev-parse --verify HEAD)"
 if [[ "$checked_out_sha" != "$DEPLOY_SHA" ]]; then
