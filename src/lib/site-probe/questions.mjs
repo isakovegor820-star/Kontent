@@ -88,7 +88,11 @@ export function extractMentions({ answer, brandName = null, domain = null, compe
   const brandMentioned = Boolean(brand && brand.test(text));
   const hosts = new Set();
   for (const match of text.matchAll(HOST_PATTERN)) hosts.add(normalizeHost(match[1]));
-  const siteCited = Boolean(ownDomain && [...hosts].some((host) => host === ownDomain || host.endsWith(`.${ownDomain}`)));
+  // Свой домен ищем и напрямую: список TLD в HOST_PATTERN не обязан знать редкую зону клиента.
+  const siteCited = Boolean(ownDomain && (
+    [...hosts].some((host) => host === ownDomain || host.endsWith(`.${ownDomain}`))
+    || new RegExp(`(?<![a-z0-9-])${ownDomain.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}(?![a-z0-9-])`, "iu").test(lower)
+  ));
   const competitors = new Map();
   for (const host of hosts) {
     if (ownDomain && (host === ownDomain || host.endsWith(`.${ownDomain}`))) continue;
