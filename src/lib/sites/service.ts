@@ -3,6 +3,7 @@ import type { Pool, PoolClient } from "pg";
 import { serializeSiteAnalysis, siteAnalysisFingerprint, type SiteAnalysisRow } from "../site-analysis";
 import { enqueueSiteAnalysis, hasSiteAnalysisWorker } from "../site-analysis-queue";
 import { SiteCrawlerError, normalizeSiteLimits, normalizeSiteTarget } from "../site-crawler.mjs";
+import { hostedSectionOrigin } from "../site-destinations/index.mjs";
 import {
   generateSiteVerificationToken,
   siteVerificationInstructions,
@@ -34,6 +35,8 @@ export type SiteRow = {
   approved_streak: string | number;
   cadence: Record<string, unknown>;
   status: "active" | "paused" | "disconnected";
+  hosted_slug: string | null;
+  brand_name: string | null;
   created_at: Date | string;
   updated_at: Date | string;
 };
@@ -68,7 +71,7 @@ export type SiteReportRow = {
 
 export const SITE_FIELDS = `id, project_id, user_id, confirmed_domain, canonical_url, verification_state,
   verification_method, verification_token, verified_at, latest_analysis_id, latest_profile_id,
-  publishing_mode, auto_unlock_streak, approved_streak, cadence, status, created_at, updated_at`;
+  publishing_mode, auto_unlock_streak, approved_streak, cadence, status, hosted_slug, brand_name, created_at, updated_at`;
 
 function iso(value: Date | string | null | undefined): string | null {
   if (!value) return null;
@@ -92,7 +95,12 @@ export function serializeSite(row: SiteRow) {
     publishingMode: row.publishing_mode,
     autoUnlockStreak: Number(row.auto_unlock_streak),
     approvedStreak: Number(row.approved_streak),
+    autoModeUnlocked: Number(row.approved_streak) >= Number(row.auto_unlock_streak),
+    cadence: row.cadence ?? {},
     status: row.status,
+    hostedSlug: row.hosted_slug,
+    hostedOrigin: hostedSectionOrigin(row.hosted_slug),
+    brandName: row.brand_name,
     latestAnalysisId: row.latest_analysis_id === null ? null : Number(row.latest_analysis_id),
     latestProfileId: row.latest_profile_id === null ? null : Number(row.latest_profile_id),
     createdAt: iso(row.created_at),
