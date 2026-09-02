@@ -61,6 +61,22 @@ project, role segment, new/returning, device, app version и release. Если �
 Он выделяет рост ошибок, provider/release regression, падение conversion, page SLO,
 действия без доменного результата и latest non-terminal stage старше 15 минут.
 
+## Источники product events
+
+- Браузер (`src/components/app/aurora-product-telemetry.tsx`): открытие раздела
+  (`loaded`), клики по `data-aurora-action`, runtime-ошибки UI.
+- Сервер (`src/lib/server-product-events.mjs`, общий для web и worker):
+  - `calendar/publication/scheduled` — `accepted` из `POST /api/posts/create`,
+    затем `completed|retried|failed` из publish-воркера с `queue`, `attempt`
+    и безопасным `errorCode`;
+  - `studio/generation/requested|result_received` — из `POST /api/ai/generate`;
+  - `autopilot/plan/approved` — из `POST /api/autopilot/approve`.
+
+Серверные события никогда не содержат текст, промпты, причины ошибок или payload
+провайдера: `errorCode` проходит через `safeProductErrorCode`, tenant берётся из
+доменной строки. Эмиттер best-effort: сбой записи логируется и не меняет исход
+доменной операции.
+
 ## Конфигурация
 
 - `AURORA_RELEASE`, `AURORA_RELEASE_SHA`, `AURORA_DEPLOYED_AT` — server release marker.

@@ -1143,8 +1143,12 @@ function buildFunnel(
   const openingPrevious = funnelMetric(rows, "previous", (row) => row.action === "loaded");
   const actionCurrent = funnelMetric(rows, "current", (row) => row.action === startAction);
   const actionPrevious = funnelMetric(rows, "previous", (row) => row.action === startAction);
-  const serverCurrent = funnelMetric(rows, "current", (row) => ["accepted", "queued", "processing", "completed"].includes(row.stage));
-  const serverPrevious = funnelMetric(rows, "previous", (row) => ["accepted", "queued", "processing", "completed"].includes(row.stage));
+  // Browser page loads are emitted as `loaded/completed`; only non-navigation actions prove
+  // that the server accepted or processed something.
+  const serverConfirmed = (row: FunnelRow) => row.action !== "loaded"
+    && ["accepted", "queued", "processing", "completed"].includes(row.stage);
+  const serverCurrent = funnelMetric(rows, "current", serverConfirmed);
+  const serverPrevious = funnelMetric(rows, "previous", serverConfirmed);
   const useCurrent = funnelMetric(rows, "current", (row) => useActions.has(row.action) && row.stage === "completed");
   const usePrevious = funnelMetric(rows, "previous", (row) => useActions.has(row.action) && row.stage === "completed");
   const stages = [
