@@ -27,6 +27,7 @@ import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { Wordmark } from "@/components/brand";
 import { AdminBotCenter } from "@/components/admin/admin-bot-center";
 import { AdminAuroraAnalyticsCenter } from "@/components/admin/admin-aurora-analytics";
+import { AdminProjectsCenter } from "@/components/admin/admin-projects-center";
 import { AdminPublicationsCenter } from "@/components/admin/admin-publications-center";
 import { AdminSystemCenter } from "@/components/admin/admin-system-center";
 import { AdminUsersCenter } from "@/components/admin/admin-users-center";
@@ -42,6 +43,7 @@ const NAVIGATION = [
   { id: "overview", href: "#overview", label: "Обзор", icon: Activity },
   { id: "publications", href: "#publications", label: "Публикации", icon: Send },
   { id: "users", href: "#users", label: "Пользователи", icon: Users },
+  { id: "projects", href: "#projects", label: "Проекты", icon: BriefcaseBusiness },
   { id: "bot-control", href: "#bot-control", label: "Управление ботом", icon: Bot },
   { id: "system", href: "#system", label: "Система", icon: Server },
   { id: "aurora-analytics", href: "#aurora-analytics", label: "Аналитика Авроры", icon: BarChart3 },
@@ -495,7 +497,7 @@ export function AdminDashboard() {
                 <div className="mt-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
                   <MetricCard label="Пользователи" value={data.summary.usersTotal} helper={`${fmtNum(data.summary.newUsers)} новых за период`} icon={Users} href="#users" />
                   <MetricCard label="Заходили за 30 дней" value={data.summary.activeUsers} helper="Аккаунты с неистёкшей сессией" icon={Activity} tone="brand" href={adminUsersHref("/admin", { status: "active" })} />
-                  <MetricCard label="Команды и проекты" value={data.summary.projectsTotal} helper="Только неархивные пространства" icon={BriefcaseBusiness} />
+                  <MetricCard label="Команды и проекты" value={data.summary.projectsTotal} helper="Только неархивные пространства" icon={BriefcaseBusiness} href="#projects" />
                   <MetricCard label="Опубликовано сегодня" value={data.summary.publishedToday} helper={`${fmtNum(data.summary.scheduled)} сейчас запланировано`} icon={Send} tone="brand" />
                   <MetricCard label="Ошибки за период" value={data.summary.failed} helper="Требуют диагностики или повтора" icon={AlertTriangle} tone={data.summary.failed > 0 ? "danger" : "neutral"} href={adminPublicationsHref("/admin", { pstatus: "failed" })} />
                   <MetricCard label="Задержка очереди" value={data.summary.overdue} helper="Старше пяти минут" icon={FileClock} tone={data.summary.overdue > 0 ? "danger" : "neutral"} href={adminPublicationsHref("/admin", { pstatus: "overdue" })} />
@@ -560,6 +562,20 @@ export function AdminDashboard() {
                 refreshKey={refreshKey}
                 registrations={data?.daily.map(({ date, registrations }) => ({ date, registrations })) ?? null}
               />
+            </div>
+          </section>
+        ) : null}
+
+        {activeSection === "projects" ? (
+          <section id="projects" className="scroll-mt-16 pt-8 pb-12" aria-labelledby="projects-title">
+            <SectionHeading
+              id="projects-title"
+              eyebrow="Тенанты"
+              title="Проекты"
+              description={`Все рабочие пространства за ${period} дней: владелец, команда, каналы, публикации, автопилот и бот. Карточка ведёт к участникам и публикациям проекта.`}
+            />
+            <div className="mt-6">
+              <AdminProjectsCenter period={period} refreshKey={refreshKey} />
             </div>
           </section>
         ) : null}

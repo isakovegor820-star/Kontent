@@ -10,6 +10,15 @@
 Запрещённые действия намеренно отсутствуют: restart, очистка Redis, массовый retry,
 запуск миграций, изменение env и удаление событий.
 
+## «Проекты»
+
+URL: `/admin?prq=&prstatus=&prnetwork=&prsort=&prpage=&prid=<id>#projects`.
+`GET /api/admin/projects` — список тенантов с владельцем, командой, каналами,
+публикациями за период, автопилотом и состоянием бота; фильтры `all / attention /
+active / inactive / team / personal / archived`. `GET /api/admin/projects/:id` — карточка:
+участники (ссылки на аккаунты), каналы, последние публикации, журнал проекта, динамика.
+Ключ `prid` намеренно отличается от `project` (фильтр аналитики). Раздел read-only.
+
 ## «Публикации»
 
 URL: `/admin?pq=&pstatus=&pnetwork=&pproject=&perror=&psort=&ppage=#publications`.
