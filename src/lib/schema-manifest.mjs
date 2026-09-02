@@ -5,7 +5,7 @@
  */
 export const SCHEMA_MANIFEST = Object.freeze({
   manifestVersion: 1,
-  schemaVersion: "2026-10-05.105",
+  schemaVersion: "2026-10-06.106",
   migrations: Object.freeze([
     ["20260801_account_onboarding.sql", "ac0e1f10046cf620185570ab5f40437991d08513473f67d4e93bdafa07b86614"],
     ["20260801_ai_usage_reservations.sql", "991c3a92dce16df55011d9df52fb65af1a7f4310b27f61dc519705f05528d7a0"],
@@ -116,6 +116,7 @@ export const SCHEMA_MANIFEST = Object.freeze({
     ["20261003_monthly_campaign_full_regeneration.sql", "d09148b6259b12048a187106d8b281541bc97ae3a9daa3bc165d93fc68b7e9c2"],
     ["20261004_radar_osint_web.sql", "00c3210b9963871c7c3712a06f817b728217d39d21d0115718fe9464c319b774"],
     ["20261005_admin_operations_center.sql", "ce0078b28cf28f45f1ac9d95cdd146212c85af675a3dbce4215647e1483b961c"],
+    ["20261006_admin_account_controls.sql", "98ea34adc3b732a85a8db2b4165d8cb648c163ac981d2a0a1505d3360317205e"],
   ].map(([name, checksum, acceptedChecksums]) => Object.freeze({
     name,
     checksum,
@@ -244,9 +245,15 @@ export const SCHEMA_MANIFEST = Object.freeze({
       "product_events",
       "product_event_daily",
       "admin_observation_events",
+      "admin_account_actions",
     ]),
     columns: Object.freeze([
       "users.onboarding_completed_at",
+      "users.blocked_at",
+      "users.blocked_reason",
+      "users.ai_daily_limit",
+      "admin_account_actions.target_user_id",
+      "admin_account_actions.action",
       "onboarding_progress.project_id",
       "onboarding_progress.step",
       "onboarding_progress.channel_id",

@@ -3,7 +3,7 @@
 // что и для платного облака — сменим движок, не трогая продукт.
 
 import { getPool } from "./db";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { createHash, randomUUID } from "node:crypto";
 import {
   profileFieldsFromStoredText,
@@ -158,6 +158,28 @@ function safePositiveInt(value: number | undefined, fallback: number, max: numbe
   return Number.isFinite(value) ? Math.min(max, Math.max(1, Math.round(Number(value)))) : fallback;
 }
 
+/**
+ * Daily generation allowance for one account: an explicit per-request limit wins, then an
+ * administrator override stored on the user row, then the platform default.
+ */
+async function effectiveDailyLimit(
+  client: Pick<PoolClient, "query">,
+  userId: number,
+  requested: number | undefined,
+): Promise<number> {
+  if (Number.isFinite(requested)) return safePositiveInt(requested, AI_DAILY_LIMIT, 100_000);
+  const row = await client.query<{ ai_daily_limit: number | string | null }>(
+    `select ai_daily_limit from users where id = $1`,
+    [userId],
+  );
+  const custom = Number(row.rows[0]?.ai_daily_limit);
+  return Number.isSafeInteger(custom) && custom > 0 ? Math.min(custom, 100_000) : AI_DAILY_LIMIT;
+}
+
+export async function aiDailyLimitFor(userId: number, pool: Pick<Pool, "query"> = getPool()): Promise<number> {
+  return effectiveDailyLimit(pool, userId, undefined);
+}
+
 function reservationKey(value?: string): string {
   const clean = String(value ?? "").trim();
   return /^[A-Za-z0-9:_-]{8,128}$/u.test(clean) ? clean : randomUUID();
@@ -238,7 +260,7 @@ export async function acquireAiUsageRequest(
   options: AiUsageRequestOptions,
   pool: Pick<Pool, "connect"> = getPool(),
 ): Promise<AiUsageReservation> {
-  const limit = safePositiveInt(options.limit, AI_DAILY_LIMIT, 100_000);
+  let limit = safePositiveInt(options.limit, AI_DAILY_LIMIT, 100_000);
   const ttlMs = safePositiveInt(options.ttlMs, AI_RESERVATION_TTL_MS, 60 * 60_000);
   const cleanupBatch = safePositiveInt(options.cleanupBatch, RESERVATION_CLEANUP_BATCH, 1_000);
   const key = reservationKey(options.reservationKey);
@@ -252,6 +274,7 @@ export async function acquireAiUsageRequest(
     await client.query("begin");
     const owner = await client.query(`select id from users where id = $1 for update`, [userId]);
     if (!owner.rowCount) throw new Error("ai usage: user not found");
+    limit = await effectiveDailyLimit(client, userId, options.limit);
 
     await client.query(
       `with stale as (
@@ -426,7 +449,7 @@ export async function reserveAiUsage(
   options: AiUsageReservationOptions = {},
   pool: Pick<Pool, "connect"> = getPool(),
 ): Promise<AiUsageReservation> {
-  const limit = safePositiveInt(options.limit, AI_DAILY_LIMIT, 100_000);
+  let limit = safePositiveInt(options.limit, AI_DAILY_LIMIT, 100_000);
   const ttlMs = safePositiveInt(options.ttlMs, AI_RESERVATION_TTL_MS, 60 * 60_000);
   const cleanupBatch = safePositiveInt(options.cleanupBatch, RESERVATION_CLEANUP_BATCH, 1_000);
   const key = reservationKey(options.reservationKey);
@@ -435,6 +458,7 @@ export async function reserveAiUsage(
     await client.query("begin");
     const owner = await client.query(`select id from users where id = $1 for update`, [userId]);
     if (owner.rowCount === 0) throw new Error("ai usage: user not found");
+    limit = await effectiveDailyLimit(client, userId, options.limit);
 
     // Bounded cleanup под тем же user lock: старый crashed request не занимает дневной
     // слот, но остаётся в audit trail со статусом expired.

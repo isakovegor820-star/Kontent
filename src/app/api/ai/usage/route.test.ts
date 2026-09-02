@@ -4,12 +4,14 @@ import { NextRequest } from "next/server";
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
   aiUsedToday: vi.fn(),
+  aiDailyLimitFor: vi.fn(),
 }));
 
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
 vi.mock("@/lib/ai-usage", () => ({
   AI_DAILY_LIMIT: 30,
   aiUsedToday: mocks.aiUsedToday,
+  aiDailyLimitFor: mocks.aiDailyLimitFor,
 }));
 
 import { GET } from "./route";
@@ -20,6 +22,7 @@ describe("GET /api/ai/usage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.getSessionUser.mockResolvedValue({ id: 7 });
+    mocks.aiDailyLimitFor.mockResolvedValue(30);
   });
 
   it("returns the confirmed server counter", async () => {
@@ -29,6 +32,12 @@ describe("GET /api/ai/usage", () => {
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ used: 12, limit: 30, status: "ok" });
+  });
+
+  it("reports an administrator override instead of the platform default", async () => {
+    mocks.aiUsedToday.mockResolvedValue(3);
+    mocks.aiDailyLimitFor.mockResolvedValue(120);
+    await expect((await GET(request())).json()).resolves.toEqual({ used: 3, limit: 120, status: "ok" });
   });
 
   it("returns 503/unknown instead of a false zero when usage storage fails", async () => {
