@@ -12,7 +12,7 @@ function page(url, overrides = {}) {
 
 function siteRow(overrides = {}) {
   return {
-    id: 5, project_id: 3, confirmed_domain: "example.ru", canonical_url: "https://example.ru/",
+    id: 5, project_id: 3, user_id: 9, confirmed_domain: "example.ru", canonical_url: "https://example.ru/",
     verification_state: "unverified", status: "active", ...overrides,
   };
 }
@@ -60,10 +60,10 @@ describe("persistSiteProfileForAnalysis", () => {
   it("locks the site, stores profile and initial audit, then points the site at them", async () => {
     const client = clientWith();
     const result = await persistSiteProfileForAnalysis(client, input);
-    expect(result).toEqual({ siteId: 5, profileId: 77, reportId: 91, reportKind: "initial_audit", pageCount: 1, gaps: result.gaps });
+    expect(result).toEqual({ siteId: 5, profileId: 77, reportId: 91, reportKind: "initial_audit", pageCount: 1, gaps: result.gaps, indexedPages: 0 });
     expect(result.gaps).toBeGreaterThan(0);
 
-    const [lock, profile, previous, report, site] = client.calls;
+    const [lock, profile, previous, report, site, knowledgeReset] = client.calls;
     expect(lock.sql).toContain("for update");
     expect(lock.params).toEqual([5]);
 
@@ -88,6 +88,20 @@ describe("persistSiteProfileForAnalysis", () => {
 
     expect(site.sql).toContain("update sites");
     expect(site.params).toEqual([5, 41, 77]);
+    expect(knowledgeReset.sql).toContain("delete from knowledge_sources");
+    expect(knowledgeReset.params).toEqual([5]);
+  });
+
+  it("indexes long pages into the site knowledge base as pending site_page sources", async () => {
+    const client = clientWith();
+    const longPage = page("https://example.ru/uslugi", { title: "Услуги", technical: { wordCount: 300 }, mainContent: "слово ".repeat(120) });
+    const result = await persistSiteProfileForAnalysis(client, { ...input, pages: [...input.pages, longPage] });
+    expect(result.indexedPages).toBe(1);
+    const insert = client.calls.find((call) => call.sql.includes("insert into knowledge_sources"));
+    expect(insert.params[0]).toBe(9);
+    expect(insert.params[1]).toBe(5);
+    expect(insert.params[2]).toBe("https://example.ru/uslugi");
+    expect(insert.params[3].startsWith("Услуги\n\n")).toBe(true);
   });
 
   it("marks a re-run as on_demand and links it to the previous report", async () => {

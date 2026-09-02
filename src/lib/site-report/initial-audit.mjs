@@ -39,7 +39,7 @@ function gapRecommendation(gap) {
   }
 }
 
-function buildRecommendations(profile) {
+export function buildRecommendations(profile) {
   const items = [];
   for (const issue of [...profile.technical.seoIssues, ...profile.technical.geoIssues]) {
     items.push(Object.freeze({

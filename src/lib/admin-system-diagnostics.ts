@@ -94,6 +94,7 @@ export const ADMIN_QUEUE_NAMES = Object.freeze([
   "media-generation",
   "autopilot-plans",
   "site-analysis",
+  "site-articles",
   "project-export",
   "publication-extra",
   "monthly-campaign-regeneration",

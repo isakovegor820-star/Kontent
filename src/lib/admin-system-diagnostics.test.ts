@@ -59,6 +59,7 @@ describe("admin system diagnostics", () => {
       "media-generation",
       "autopilot-plans",
       "site-analysis",
+      "site-articles",
       "project-export",
       "publication-extra",
       "monthly-campaign-regeneration",

@@ -72,11 +72,21 @@ export function buildSiteReportSections(report) {
     },
   });
 
+  const probe = geo.probe || {};
+  const probeFacts = probe.status === "answered"
+    ? [
+        ["Зонд видимости", `прогон ${probe.runKey || "—"}, движков: ${(probe.engines || []).length}`],
+        ["Вопросов ниши", probe.questions ?? "—"],
+        ["Бренд упомянут", `${probe.brandMentioned ?? 0}${probe.deltaVsPrevious?.brandMentioned ? ` (${probe.deltaVsPrevious.brandMentioned})` : ""}`],
+        ["Сайт процитирован", `${probe.siteCited ?? 0}${probe.deltaVsPrevious?.siteCited ? ` (${probe.deltaVsPrevious.siteCited})` : ""}`],
+        ["Кого называют вместо вас", (probe.competitorsTop || []).map((item) => `${item.name} (${item.mentions})`).join(", ") || "—"],
+      ]
+    : [["Зонд видимости", probe.status === "skipped_budget" ? "пропущен: лимит ИИ" : probe.status === "failed" ? "не удался" : "не запускался"]];
   sections.push({
     title: "GEO (генеративный поиск)",
     facts: [
       ["Оценка готовности", score(geo.score)],
-      ["Зонд видимости", geo.probe?.status === "not_run" ? "не запускался" : geo.probe?.status || "—"],
+      ...probeFacts,
     ],
     table: {
       headers: ["Проверка", "Статус", "Что найдено", "Что сделать"],
@@ -110,6 +120,20 @@ export function buildSiteReportSections(report) {
       empty: "Устойчивых тем не найдено.",
     },
   });
+
+  if (payload.publications) {
+    const publications = payload.publications;
+    sections.push({
+      title: "Публикации за период",
+      facts: [
+        ["Опубликовано", publications.published ?? 0],
+        ["По типам", Object.entries(publications.byType || {}).map(([type, count]) => `${type}: ${count}`).join(", ") || "—"],
+        ["Отклонено как дубли", publications.rejectedDuplicates ?? 0],
+        ["Ждут одобрения", publications.pendingReview ?? 0],
+        ["Не удалось опубликовать", publications.failed ?? 0],
+      ],
+    });
+  }
 
   sections.push({
     title: "Пробелы",

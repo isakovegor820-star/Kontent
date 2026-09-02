@@ -22,7 +22,7 @@ export async function persistSiteProfileForAnalysis(client, {
   if (!Number.isSafeInteger(id) || id <= 0) return null;
 
   const siteRow = await client.query(
-    `select id, project_id, confirmed_domain, canonical_url, verification_state, status
+    `select id, project_id, user_id, confirmed_domain, canonical_url, verification_state, status
        from sites
       where id = $1
       for update`,
@@ -113,6 +113,8 @@ export async function persistSiteProfileForAnalysis(client, {
     [id, analysisId, profileId],
   );
 
+  const indexedPages = await syncSitePageKnowledge(client, { siteId: id, userId: Number(site.user_id), pages });
+
   return {
     siteId: id,
     profileId,
@@ -120,5 +122,34 @@ export async function persistSiteProfileForAnalysis(client, {
     reportKind: hasReports ? "on_demand" : "initial_audit",
     pageCount: profile.pageCount,
     gaps: profile.gaps.length,
+    indexedPages,
   };
+}
+
+const KNOWLEDGE_PAGE_MIN_CHARS = 400;
+const KNOWLEDGE_PAGE_LIMIT = 150;
+
+/**
+ * Страницы сайта становятся базой знаний сайта (kind = site_page): по ним проверяются дубли
+ * и из них берутся факты для материалов. Срез заменяется целиком — старые страницы не должны
+ * годами оставаться «фактами». Векторы досчитает cron knowledge-index по статусу pending.
+ */
+export async function syncSitePageKnowledge(client, { siteId, userId, pages }) {
+  await client.query(`delete from knowledge_sources where site_id = $1 and kind = 'site_page'`, [siteId]);
+  let indexed = 0;
+  for (const page of Array.isArray(pages) ? pages : []) {
+    if (indexed >= KNOWLEDGE_PAGE_LIMIT) break;
+    const status = Number(page?.status ?? 0);
+    const content = String(page?.mainContent || "").trim();
+    if (status < 200 || status >= 400 || content.length < KNOWLEDGE_PAGE_MIN_CHARS) continue;
+    await client.query(
+      `insert into knowledge_sources (user_id, site_id, kind, title, raw_text, status)
+       values ($1, $2, 'site_page', $3, $4, 'pending')`,
+      [userId, siteId, String(page.url).slice(0, 300), `${String(page.title || "").trim()}
+
+${content}`.slice(0, 60_000)],
+    );
+    indexed += 1;
+  }
+  return indexed;
 }
