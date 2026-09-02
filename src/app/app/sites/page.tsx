@@ -16,10 +16,15 @@ import {
 
 import { AppShell } from "@/components/app/shell";
 import { Button } from "@/components/ui/button";
-import { Badge, Card, Checkbox, EmptyState, Field, Input } from "@/components/ui/primitives";
+import { Badge, Card, Checkbox, EmptyState, Field, Input, Tabs } from "@/components/ui/primitives";
 import { siteAnalysisErrorMessage, type SiteAnalysisStatus } from "@/lib/site-analysis-contract";
 import { createSiteAnalysisUuid } from "@/lib/site-analysis-client-key";
 import { cn } from "@/lib/utils";
+
+import { ArticlesPanel } from "./articles-panel";
+import { errorMessage, formatDate, requestJson } from "./client";
+import { DestinationsPanel } from "./destinations-panel";
+import { ProbePanel } from "./probe-panel";
 
 type VerificationState = "unverified" | "verified" | "revoked";
 
@@ -38,9 +43,18 @@ type SiteSummary = {
     };
   };
   publishingMode: "confirm" | "auto";
+  approvedStreak: number;
+  autoUnlockStreak: number;
+  autoModeUnlocked: boolean;
+  hostedSlug: string | null;
+  hostedOrigin: string | null;
+  brandName: string | null;
+  latestProfileId: number | null;
   status: "active" | "paused" | "disconnected";
   createdAt: string | null;
 };
+
+type SiteTab = "profile" | "articles" | "publishing" | "visibility" | "reports";
 
 type SiteListItem = SiteSummary & {
   latestAnalysis: { status: string; progress: number } | null;
@@ -112,12 +126,6 @@ const REPORT_KIND_LABEL: Record<ReportView["kind"], string> = {
 const SEVERITY_TONE = { high: "danger", medium: "fire", low: "neutral" } as const;
 const SEVERITY_LABEL = { high: "Критично", medium: "Важно", low: "Желательно" } as const;
 
-function formatDate(value: string | null | undefined) {
-  if (!value) return "—";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "—" : date.toLocaleDateString("ru-RU", { day: "2-digit", month: "long", year: "numeric" });
-}
-
 function analysisLabel(status: string | null | undefined) {
   switch (status) {
     case "queued": return "В очереди";
@@ -128,31 +136,6 @@ function analysisLabel(status: string | null | undefined) {
     case "ready": return "Готово";
     case "failed": return "Ошибка";
     default: return "Не запускался";
-  }
-}
-
-async function requestJson<T>(input: string, init?: RequestInit): Promise<{ status: number; body: T }> {
-  const response = await fetch(input, {
-    ...init,
-    headers: { "content-type": "application/json", accept: "application/json", ...(init?.headers || {}) },
-    credentials: "same-origin",
-    cache: "no-store",
-  });
-  const body = (await response.json().catch(() => ({}))) as T;
-  return { status: response.status, body };
-}
-
-function errorMessage(code: string | undefined, fallback: string) {
-  switch (code) {
-    case "consent_required": return "Подтверди, что у тебя есть право анализировать этот сайт.";
-    case "bad_url":
-    case "domain_mismatch": return "Укажи адрес сайта вместе с протоколом, например https://example.ru.";
-    case "private_address": return "Адрес ведёт во внутреннюю сеть — подключить можно только публичный сайт.";
-    case "worker_unavailable": return "Фоновый анализ временно недоступен. Сайт сохранён, запусти анализ позже.";
-    case "analysis_in_progress": return "Анализ этого сайта уже выполняется.";
-    case "access_denied": return "Недостаточно прав в проекте.";
-    case "idempotency_conflict": return "Похожий запрос уже обрабатывается с другими параметрами. Обнови страницу.";
-    default: return fallback;
   }
 }
 
@@ -225,6 +208,9 @@ export default function SitesPage() {
   const [verifyMessage, setVerifyMessage] = useState<{ tone: "success" | "danger"; text: string } | null>(null);
   const [reanalyzing, setReanalyzing] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [tab, setTab] = useState<SiteTab>("profile");
+  const [destinationCount, setDestinationCount] = useState(0);
+  const [reportRequested, setReportRequested] = useState(false);
 
   const loadSites = useCallback(async () => {
     try {
@@ -245,6 +231,9 @@ export default function SitesPage() {
       const { status, body } = await requestJson<SiteDetails & { error?: string }>(`/api/sites/${id}`);
       if (status !== 200 || !body.site) throw Object.assign(new Error("details_failed"), { code: body.error });
       setDetails({ site: body.site, latestAnalysis: body.latestAnalysis, profile: body.profile, reports: body.reports });
+      void requestJson<{ destinations?: Array<{ status: string; readyToPublish: boolean }> }>(`/api/sites/${id}/destinations`).then((result) => {
+        setDestinationCount((result.body.destinations || []).filter((item) => item.status === "active" && item.readyToPublish).length);
+      });
       return body;
     } catch (error) {
       setActionError(errorMessage((error as { code?: string }).code, "Не удалось загрузить сайт."));
@@ -268,8 +257,26 @@ export default function SitesPage() {
   const selectSite = useCallback((id: number) => {
     setVerifyMessage(null);
     setActionError(null);
+    setTab("profile");
     setSelectedId(id);
   }, []);
+
+  const refreshCurrent = useCallback(() => {
+    if (activeId !== null) void loadDetails(activeId);
+    void loadSites();
+  }, [activeId, loadDetails, loadSites]);
+
+  const requestReport = useCallback(async () => {
+    if (activeId === null) return;
+    setReportRequested(true);
+    const { status, body } = await requestJson<{ error?: string }>(`/api/sites/${activeId}/reports`, { method: "POST", body: JSON.stringify({}) });
+    if (status >= 400) {
+      setActionError(errorMessage(body.error, "Не удалось запросить отчёт."));
+      setReportRequested(false);
+      return;
+    }
+    setTimeout(() => { void loadDetails(activeId); setReportRequested(false); }, 6000);
+  }, [activeId, loadDetails]);
 
   const analysisActive = Boolean(current?.latestAnalysis && ACTIVE_STATUSES.has(current.latestAnalysis.status));
   useEffect(() => {
@@ -533,7 +540,45 @@ export default function SitesPage() {
                 </div>
               </Card>
 
-              {detailsLoading ? (
+              <Tabs<SiteTab>
+                value={tab}
+                onChange={setTab}
+                ariaLabel="Разделы сайта"
+                items={[
+                  { value: "profile", label: "Профиль" },
+                  { value: "articles", label: "Материалы" },
+                  { value: "publishing", label: "Публикация" },
+                  { value: "visibility", label: "Видимость в ИИ" },
+                  { value: "reports", label: "Отчёты" },
+                ]}
+              />
+
+              {tab === "articles" && (
+                <ArticlesPanel
+                  siteId={selected.id}
+                  verified={selected.verification.state === "verified"}
+                  hasDestinations={destinationCount > 0}
+                  hasProfile={Boolean(profile)}
+                  onSiteChanged={refreshCurrent}
+                />
+              )}
+              {tab === "publishing" && (
+                <DestinationsPanel
+                  siteId={selected.id}
+                  verified={selected.verification.state === "verified"}
+                  publishingMode={selected.publishingMode}
+                  approvedStreak={selected.approvedStreak}
+                  autoUnlockStreak={selected.autoUnlockStreak}
+                  hostedOrigin={selected.hostedOrigin}
+                  brandName={selected.brandName}
+                  onChanged={refreshCurrent}
+                />
+              )}
+              {tab === "visibility" && (
+                <ProbePanel siteId={selected.id} verified={selected.verification.state === "verified"} hasProfile={Boolean(profile)} />
+              )}
+
+              {tab === "profile" && (detailsLoading ? (
                 <Card className="p-6"><p className="type-secondary text-text-2">Загружаем профиль…</p></Card>
               ) : profile ? (
                 <Card className="p-5 sm:p-6">
@@ -610,10 +655,16 @@ export default function SitesPage() {
                 <Card className="p-6">
                   <p className="type-secondary text-text-2">Профиль появится, как только анализ завершится.</p>
                 </Card>
-              ) : null}
+              ) : null)}
 
-              <Card className="p-5 sm:p-6">
-                <h3 className="type-h3 text-text">Отчёты</h3>
+              {tab === "reports" && <Card className="p-5 sm:p-6">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <h3 className="type-h3 text-text">Отчёты</h3>
+                  <Button type="button" size="sm" variant="secondary" onClick={requestReport} disabled={reportRequested || !profile}>
+                    {reportRequested ? "Собираем…" : "Отчёт за 30 дней"}
+                  </Button>
+                </div>
+                <p className="type-caption mt-1 text-text-3">Ежемесячный отчёт с динамикой собирается автоматически 1-го числа; Markdown-версия попадает в базу знаний сайта.</p>
                 {current?.reports.length ? (
                   <ul className="mt-4 space-y-3">
                     {current.reports.map((report) => (
@@ -641,7 +692,7 @@ export default function SitesPage() {
                 ) : (
                   <p className="type-secondary mt-2 text-text-2">Первый отчёт появится после завершения стартового аудита.</p>
                 )}
-              </Card>
+              </Card>}
             </>
           )}
         </div>
