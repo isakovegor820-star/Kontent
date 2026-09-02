@@ -278,6 +278,7 @@ import {
   parseTelegramPublicStats,
   temporaryTelegramVerification,
 } from "./worker/telegram-reconciliation.mjs";
+import { resolveTelegramStatsHandle } from "./worker/telegram-stats-channel.mjs";
 import { importTelegramPublicPosts } from "./worker/telegram-public-import.mjs";
 import {
   captureTelegramChannelPost,
@@ -3212,6 +3213,16 @@ async function collectStats(projectId) {
   ).rows;
 
   await mapConcurrent(chans, RECON_CONCURRENCY, async (ch) => {
+    const statsChannel = await resolveTelegramStatsHandle(
+      pool,
+      ch,
+      (chatId) => tg("getChat", { chat_id: chatId }, 8_000),
+    );
+    const statsHandle = statsChannel.handle;
+    if (statsChannel.refreshed) {
+      console.log(`[stats] Telegram username канала ${ch.id} обновлён: @${statsHandle}`);
+    }
+
     // 1) Подписчики — реальное число + прирост за день.
     const subs = await tgMemberCount(ch.tg_chat_id);
     if (subs != null) {
@@ -3239,8 +3250,8 @@ async function collectStats(projectId) {
     }
 
     // 2) Просмотры/реакции постов — из публичной страницы, по message_id.
-    if (ch.handle) {
-      const verification = await fetchPublicStats(ch.handle);
+    if (statsHandle) {
+      const verification = await fetchPublicStats(statsHandle);
 
       // The public feed is the channel truth, including messages published directly in
       // Telegram. Materialize those messages before collecting metrics so Today and
