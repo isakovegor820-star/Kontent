@@ -264,7 +264,8 @@ describe("production deployment shell contract", () => {
     expect(script).toContain('expected_build_archive="/tmp/aurora-build-${DEPLOY_SHA}.tar.gz"');
     expect(script).toContain('expected_source_bundle="/tmp/aurora-source-${DEPLOY_SHA}.bundle"');
     expect(script).toContain("sha256sum --check --status");
-    expect(script).toContain('git bundle verify "$SOURCE_BUNDLE"');
+    expect(script).toContain('git -C "$previous" bundle verify "$SOURCE_BUNDLE"');
+    expect(script).not.toMatch(/^git bundle verify/mu);
     expect(script).toContain('git clone "$SOURCE_BUNDLE" "$release"');
     expect(script).toContain("production build artifact contains invalid paths");
     expect(script).toContain('npm ci --omit=dev --no-audit --no-fund');

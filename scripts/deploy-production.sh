@@ -225,7 +225,9 @@ if [[ ! -f "$SOURCE_BUNDLE" ]]; then
   exit 1
 fi
 printf '%s  %s\n' "$SOURCE_BUNDLE_SHA256" "$SOURCE_BUNDLE" | sha256sum --check --status
-git bundle verify "$SOURCE_BUNDLE"
+# `git bundle verify` needs a repository to resolve prerequisites against; the deploy
+# shell itself runs outside any checkout, so verify from the previous release's repo.
+git -C "$previous" bundle verify "$SOURCE_BUNDLE"
 git clone "$SOURCE_BUNDLE" "$release"
 rm -f -- "$SOURCE_BUNDLE"
 SOURCE_BUNDLE=""
