@@ -192,22 +192,25 @@ function profileFromRow(row) {
  * Ежемесячный отчёт по каждому активному сайту с профилем. Markdown отчёта сразу попадает
  * в базу знаний сайта (kind = site_report), чтобы следующий отчёт видел прошлые рекомендации.
  */
-export async function runSiteMonthlyReports(pool, { now = new Date(), period = null } = {}) {
+export async function runSiteMonthlyReports(pool, { now = new Date(), period = null, siteId = null, kind = "monthly" } = {}) {
   const window = period || previousMonthPeriod(now);
   const sites = await pool.query(
     `select s.id, s.user_id, s.confirmed_domain, s.canonical_url, s.verification_state,
             p.profile_version, p.page_count, p.publication_count, p.topics, p.gaps, p.technical, p.linkable_pages, p.summary,
             p.created_at as profile_created_at, p.id as profile_id
        from sites s join site_profiles p on p.id = s.latest_profile_id
-      where s.status = 'active' order by s.id limit 500`,
+      where s.status = 'active' and ($1::bigint is null or s.id = $1) order by s.id limit 500`,
+    [siteId],
   );
   let created = 0;
   for (const row of sites.rows) {
-    const existing = await pool.query(
-      `select id from site_reports where site_id = $1 and kind = 'monthly' and period_start = $2::timestamptz limit 1`,
-      [row.id, window.start],
-    );
-    if (existing.rows[0]) continue;
+    if (kind === "monthly") {
+      const existing = await pool.query(
+        `select id from site_reports where site_id = $1 and kind = 'monthly' and period_start = $2::timestamptz limit 1`,
+        [row.id, window.start],
+      );
+      if (existing.rows[0]) continue;
+    }
     const [publications, byTypeRows, previous, probe] = await Promise.all([
       pool.query(
         `select
@@ -240,14 +243,15 @@ export async function runSiteMonthlyReports(pool, { now = new Date(), period = n
       probe: probe ? { ...probe, answers: probe.answers } : null,
       previousReport: previous.rows[0] ? { id: Number(previous.rows[0].id), payload: previous.rows[0].payload } : null,
       generatedAt: now,
+      kind,
     });
     const client = await pool.connect();
     try {
       await client.query("begin");
       const stored = await client.query(
         `insert into site_reports (site_id, kind, period_start, period_end, profile_id, previous_report_id, probe_run_key, payload, summary_ru, status)
-         values ($1, 'monthly', $2::timestamptz, $3::timestamptz, $4, $5, $6, $7::jsonb, $8, 'ready') returning id`,
-        [row.id, window.start, window.end, row.profile_id, previous.rows[0]?.id ?? null, probe?.runKey ?? null, JSON.stringify(report.payload), report.summaryRu],
+         values ($1, $9, $2::timestamptz, $3::timestamptz, $4, $5, $6, $7::jsonb, $8, 'ready') returning id`,
+        [row.id, window.start, window.end, row.profile_id, previous.rows[0]?.id ?? null, probe?.runKey ?? null, JSON.stringify(report.payload), report.summaryRu, kind],
       );
       const markdown = renderSiteReportMarkdown(report).toString("utf8");
       await client.query(
@@ -264,4 +268,11 @@ export async function runSiteMonthlyReports(pool, { now = new Date(), period = n
     }
   }
   return { sites: sites.rows.length, created, period: window };
+}
+
+/** Отчёт по запросу пользователя: последние 30 дней, тип on_demand, та же сборка и та же дельта. */
+export async function runSiteReportOnDemand(pool, { siteId, now = new Date() }) {
+  const end = now.toISOString();
+  const start = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  return runSiteMonthlyReports(pool, { now, period: { start, end }, siteId: Number(siteId), kind: "on_demand" });
 }

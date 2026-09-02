@@ -25,9 +25,11 @@ import {
   workerAiUsageCompositeKey,
 } from "./ai-usage-reservation.mjs";
 import { createEmbedder, toVector } from "./embeddings.mjs";
+import { runSiteVisibilityProbe } from "./site-visibility-probe.mjs";
+import { runSiteReportOnDemand } from "./site-scheduler.mjs";
 
 export const SITE_ARTICLES_QUEUE = "site-articles";
-export const SITE_ARTICLE_JOBS = Object.freeze({ PLAN: "plan", GENERATE: "generate", PUBLISH: "publish", RECONCILE: "reconcile" });
+export const SITE_ARTICLE_JOBS = Object.freeze({ PLAN: "plan", GENERATE: "generate", PUBLISH: "publish", RECONCILE: "reconcile", PROBE: "probe", REPORT: "report" });
 
 const MAX_PUBLISH_ATTEMPTS = 3;
 const GENERATION_MAX_TOKENS = 3_500;
@@ -557,6 +559,8 @@ export function createSiteArticlesWorker({ connection, pool, queue, concurrency 
         case SITE_ARTICLE_JOBS.GENERATE: return generateSiteArticle(pool, job.data, deps);
         case SITE_ARTICLE_JOBS.PUBLISH: return publishSiteArticle(pool, job.data, deps);
         case SITE_ARTICLE_JOBS.RECONCILE: return reconcileSitePublication(pool, job.data, deps);
+        case SITE_ARTICLE_JOBS.PROBE: return (deps.runProbe || runSiteVisibilityProbe)(pool, { siteId: Number(job.data.siteId) }, deps);
+        case SITE_ARTICLE_JOBS.REPORT: return (deps.runReport || runSiteReportOnDemand)(pool, { siteId: Number(job.data.siteId) }, deps);
         default: return { ok: true, skipped: "unknown_job" };
       }
     },
