@@ -65,6 +65,7 @@ import {
   parseMediaDataUrl,
 } from "./src/lib/media-generation.mjs";
 import { createNavyMediaClient } from "./src/lib/navy-media.mjs";
+import { productDurationMs, recordServerProductEvent, safeProductErrorCode } from "./src/lib/server-product-events.mjs";
 import { cleanGeneratedImage } from "./src/lib/media-image-cleanup.mjs";
 import { fetchPublicBuffer, fetchPublicText } from "./src/lib/safe-http.mjs";
 import { extractSitePage } from "./src/lib/site-crawler.mjs";
@@ -2090,9 +2091,34 @@ async function saveGapAnswer(userId, q, text) {
   console.log(`[gap] user ${userId}: ответ на «${q.topic}» ушёл в базу`);
 }
 
+/**
+ * Server-confirmed outcome of a scheduled publication for the Calendar funnel in the
+ * admin analytics. Best-effort: the post row is already in its terminal state.
+ */
+function recordPublicationOutcome(input) {
+  void recordServerProductEvent(pool, {
+    userId: Number(input.userId),
+    projectId: Number(input.projectId),
+    sectionId: "calendar",
+    featureId: "publication",
+    action: "scheduled",
+    stage: input.stage,
+    outcome: input.outcome,
+    source: "worker",
+    operationKind: "worker_execution",
+    operationId: `post:${input.postId}`,
+    durationMs: productDurationMs(input.startedAt),
+    errorCode: input.errorCode ?? null,
+    resultKind: input.resultKind ?? null,
+    queue: "publish",
+    attempt: input.attempt,
+  });
+}
+
 const worker = AUTOPILOT_ONLY || MEDIA_ONLY ? null : new Worker(
   "publish",
   async (job) => {
+    const jobStartedAt = Date.now();
     const postId = job.data.postId;
     let projectId = Number(job.data.projectId);
     if (!Number.isSafeInteger(projectId) || projectId <= 0) {
@@ -2182,6 +2208,12 @@ const worker = AUTOPILOT_ONLY || MEDIA_ONLY ? null : new Worker(
           terminal: true,
           livePublished: false,
         });
+        recordPublicationOutcome({
+          userId: post.user_id, projectId, postId, startedAt: jobStartedAt, attempt: post.attempts + 1,
+          stage: "failed", outcome: "failure",
+          errorCode: safeProductErrorCode(terminalProviderFailure.errorCode, "provider_write_blocked"),
+          resultKind: safeProductErrorCode(channel?.network, "unknown"),
+        });
         const blockedNotice = terminalProviderFailure.providerId === "tenchat"
           ? "TenChat не получил публикацию: для автопостинга нужен официальный доступ. В Композиторе можно скачать пакет для ручной публикации."
           : `Площадка ${terminalProviderFailure.providerId || "назначения"} не получила публикацию: live-операция не поддерживается.`;
@@ -2212,6 +2244,11 @@ const worker = AUTOPILOT_ONLY || MEDIA_ONLY ? null : new Worker(
         "канал не подключён",
         leaseToken,
       ]);
+      recordPublicationOutcome({
+        userId: post.user_id, projectId, postId, startedAt: jobStartedAt, attempt: post.attempts + 1,
+        stage: "failed", outcome: "failure", errorCode: "channel_not_connected",
+        resultKind: safeProductErrorCode(channel?.network, "unknown"),
+      });
       return;
     }
 
@@ -2309,6 +2346,12 @@ const worker = AUTOPILOT_ONLY || MEDIA_ONLY ? null : new Worker(
         undefined,
         { kind: "failure", projectId },
       );
+      recordPublicationOutcome({
+        userId: post.user_id, projectId, postId, startedAt: jobStartedAt, attempt: post.attempts + 1,
+        stage: "failed", outcome: "failure",
+        errorCode: safeProductErrorCode(channelFailure.errorCode, "provider_auth_failed"),
+        resultKind: safeProductErrorCode(channel.network, "unknown"),
+      });
       return;
     }
 
@@ -2350,6 +2393,11 @@ const worker = AUTOPILOT_ONLY || MEDIA_ONLY ? null : new Worker(
         undefined,
         { kind: "failure", projectId },
       );
+      // Delivery is unknown, not failed: the stage is terminal but the outcome stays pending.
+      recordPublicationOutcome({
+        userId: post.user_id, projectId, postId, startedAt: jobStartedAt, attempt: post.attempts + 1,
+        stage: "completed", outcome: "pending", resultKind: "delivery_unknown",
+      });
       return;
     }
 
@@ -2402,6 +2450,10 @@ const worker = AUTOPILOT_ONLY || MEDIA_ONLY ? null : new Worker(
         return;
       }
       console.log(`[worker] ✅ пост ${postId} вышел (${channel.network} id ${out.externalId})`);
+      recordPublicationOutcome({
+        userId: post.user_id, projectId, postId, startedAt: jobStartedAt, attempt: post.attempts + 1,
+        stage: "completed", outcome: "success", resultKind: safeProductErrorCode(channel.network, "unknown"),
+      });
       const okText =
         `✅ Пост вышел${channel.title ? ` в «${channel.title}»` : ""}. Посмотрим, как зайдёт — цифры пришлю позже.`;
       const okBtns = out.postUrl ? [[{ text: "Открыть пост", url: out.postUrl }]] : undefined;
@@ -2472,6 +2524,12 @@ const worker = AUTOPILOT_ONLY || MEDIA_ONLY ? null : new Worker(
       console.log(
         `[worker] ⚠️ пост ${postId} не вышел (${reason}); повтор через ${Math.round(delay / 1000)}с (попытка ${attempts})`,
       );
+      recordPublicationOutcome({
+        userId: post.user_id, projectId, postId, startedAt: jobStartedAt, attempt: attempts,
+        stage: "retried", outcome: "failure",
+        errorCode: safeProductErrorCode(out.errorCode, "provider_error"),
+        resultKind: safeProductErrorCode(channel.network, "unknown"),
+      });
       // Успокаиваем АВТОРА поста после ПЕРВОГО сбоя — тоном из ТЗ 7.5. Раньше сообщение
       // уходило владельцу: чужой пост и причина сбоя светились в чате платформы (утечка).
       // Нет привязанного чата — notifyUser молча пропустит, это не ошибка.
@@ -2493,6 +2551,12 @@ const worker = AUTOPILOT_ONLY || MEDIA_ONLY ? null : new Worker(
         [postId, attempts, reason, leaseToken],
       );
       console.log(`[worker] ❌ пост ${postId} провалился после ${attempts} попыток (${reason})`);
+      recordPublicationOutcome({
+        userId: post.user_id, projectId, postId, startedAt: jobStartedAt, attempt: attempts,
+        stage: "failed", outcome: "failure",
+        errorCode: safeProductErrorCode(out.errorCode, "provider_error"),
+        resultKind: safeProductErrorCode(channel.network, "unknown"),
+      });
       // Кнопка вместо «загляни в приложение»: повтор делается прямо из телефона.
       const failText =
         `❌ Пост не вышел за 3 попытки — ${reason}.\n` +

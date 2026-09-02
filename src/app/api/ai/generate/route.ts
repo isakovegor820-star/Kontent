@@ -87,10 +87,48 @@ import {
   recordAiProviderAttempt,
   type AiAttemptPhase,
 } from "@/lib/ai-attempt-budget";
+import { productDurationMs, recordChannelProductEvent, safeProductErrorCode } from "@/lib/server-product-events.mjs";
 
 export const runtime = "nodejs";
 
 const KINDS: AiKind[] = ["write", "rewrite", "shorten", "plan", "script", "image", "poll", "longread"];
+
+/**
+ * Server confirmation for the Studio funnel. The channel row is the tenant anchor of a
+ * generation operation; the lookup is best-effort and telemetry never affects the result.
+ */
+async function recordStudioGeneration(input: {
+  userId: number;
+  channelId: number;
+  requestId: string;
+  action: "requested" | "result_received";
+  stage: "accepted" | "completed" | "failed";
+  operationKind: "interactive_api" | "ai_generation";
+  startedAt: number;
+  errorCode?: string | null;
+  resultKind?: string | null;
+}) {
+  try {
+    await recordChannelProductEvent(getPool(), {
+      userId: input.userId,
+      channelId: input.channelId,
+      sectionId: "studio",
+      featureId: "generation",
+      action: input.action,
+      stage: input.stage,
+      outcome: input.stage === "failed" ? "failure" : "success",
+      source: "api",
+      operationKind: input.operationKind,
+      requestId: input.requestId,
+      operationId: `generation:${input.requestId}`,
+      durationMs: productDurationMs(input.startedAt),
+      errorCode: input.errorCode ?? null,
+      resultKind: input.resultKind ?? null,
+    });
+  } catch {
+    // Telemetry failures are already logged by the emitter; the generation result stands.
+  }
+}
 const ROLES: AiRole[] = ["copywriter", "strategist", "critic"];
 const EDITORIAL_KINDS: AiKind[] = ["write", "rewrite", "shorten", "script", "poll", "longread"];
 const VALIDATED_POST_KINDS: AiKind[] = ["write", "rewrite", "shorten", "script", "poll", "longread"];
@@ -557,7 +595,7 @@ function studioStreamResponse(
   factLedger: FactLedger,
   semanticAdapter: SemanticEntailmentAdapter | null,
   deliverGeneratedResult: boolean,
-  operation: { providerEngine: string; providerModel: string },
+  operation: { providerEngine: string; providerModel: string; channelId: number; startedAt: number },
 ) {
   const settings = normalizePostSettings(params.postSettings);
   const deadlines = generationDeadlines(settings.qualityMode);
@@ -1041,6 +1079,16 @@ function studioStreamResponse(
             failure.code || failure.error || "generation_failed",
             failure.retryable === true,
           ).catch(() => {});
+          void recordStudioGeneration({
+            userId,
+            channelId: operation.channelId,
+            requestId,
+            action: "result_received",
+            stage: "failed",
+            operationKind: "ai_generation",
+            startedAt: operation.startedAt,
+            errorCode: safeProductErrorCode(failure.code || failure.error, "generation_failed"),
+          });
           send({ type: "error", requestId, ...failure });
         }
       } finally {
@@ -1048,6 +1096,18 @@ function studioStreamResponse(
           await releaseAiUsageRequest(userId, reservationId, requestId).catch((error) => {
             void error;
             logAiRequest("error", requestId, "usage_release_failed", { engine: finalEngine });
+          });
+        } else {
+          // Both the single-pass and the editorial branches end here with a staged result.
+          void recordStudioGeneration({
+            userId,
+            channelId: operation.channelId,
+            requestId,
+            action: "result_received",
+            stage: "completed",
+            operationKind: "ai_generation",
+            startedAt: operation.startedAt,
+            resultKind: anyFallback ? "fallback" : "primary",
           });
         }
         close();
@@ -1080,6 +1140,7 @@ export async function POST(req: NextRequest) {
     logAiRequest("warn", requestId, "forbidden_origin", { status: 403 });
     return aiJson(requestId, { error: "forbidden_origin", retryable: false }, { status: 403 });
   }
+  const startedAt = Date.now();
   let user: Awaited<ReturnType<typeof getSessionUser>>;
   try {
     user = await getSessionUser(req);
@@ -1545,6 +1606,16 @@ export async function POST(req: NextRequest) {
     const status = code.endsWith("_conflict") ? 409 : 503;
     return aiJson(requestId, { error: code, retryable: status === 503 }, { status });
   }
+  void recordStudioGeneration({
+    userId: user.id,
+    channelId,
+    requestId,
+    action: "requested",
+    stage: "accepted",
+    operationKind: "interactive_api",
+    startedAt,
+    resultKind: kind,
+  });
 
   // Studio stays responsive in its everyday modes: one strong pass plus deterministic
   // validation. A second full provider pass is reserved for an explicit maximum-quality
@@ -1565,6 +1636,6 @@ export async function POST(req: NextRequest) {
     factLedger,
     semanticAdapter,
     deliverGeneratedResult,
-    { providerEngine: chosen, providerModel: runtime.model },
+    { providerEngine: chosen, providerModel: runtime.model, channelId, startedAt },
   );
 }

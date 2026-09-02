@@ -27,6 +27,7 @@ import {
 import type { QualityResult } from "@/lib/post-quality.mjs";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/project-permissions";
+import { productDurationMs, recordServerProductEvent } from "@/lib/server-product-events.mjs";
 
 export const runtime = "nodejs";
 
@@ -161,8 +162,35 @@ export async function POST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
+  const startedAt = Date.now();
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
+
+  // Server confirmation for the Autopilot funnel; never affects the approval outcome.
+  const recordApproval = (input: {
+    projectId: number;
+    operationId: number;
+    stage: "completed" | "failed";
+    errorCode?: string;
+    resultKind?: string;
+  }) => {
+    void recordServerProductEvent(getPool(), {
+      userId: user.id,
+      projectId: input.projectId,
+      sectionId: "autopilot",
+      featureId: "plan",
+      action: "approved",
+      stage: input.stage,
+      outcome: input.stage === "completed" ? "success" : "failure",
+      source: "api",
+      operationKind: "interactive_api",
+      operationId: `autopilot_approval:${input.operationId}`,
+      durationMs: productDurationMs(startedAt),
+      errorCode: input.errorCode ?? null,
+      resultKind: input.resultKind ?? null,
+      queue: "autopilot-plans",
+    });
+  };
 
   let body: RequestBody;
   try {
@@ -473,6 +501,7 @@ export async function POST(req: NextRequest) {
       });
       claimedContext = null;
       console.error("[/api/autopilot/approve] checkpoint", outcome.error);
+      recordApproval({ projectId, operationId, stage: "failed", errorCode: "autopilot_scheduling_failed", resultKind: scheduled > 0 ? "partial" : "failed" });
       return NextResponse.json(result, { status: 503 });
     }
 
@@ -505,6 +534,7 @@ export async function POST(req: NextRequest) {
       edited: plan.edited,
     });
     claimedContext = null;
+    recordApproval({ projectId, operationId, stage: "completed", resultKind: unresolved ? "pending" : "approved" });
     return NextResponse.json(result);
   } catch (err) {
     if (err instanceof ProjectAccessError) {
@@ -539,6 +569,10 @@ export async function POST(req: NextRequest) {
           fallback,
           500,
         ).catch(() => {});
+      }
+      const failedProjectId = claimedContext?.projectId ?? authorizedProjectId;
+      if (failedProjectId) {
+        recordApproval({ projectId: failedProjectId, operationId, stage: "failed", errorCode: "autopilot_approve_failed" });
       }
     }
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });

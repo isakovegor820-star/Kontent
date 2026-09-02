@@ -22,6 +22,7 @@ import {
   ProjectAccessError,
   requireSelectedProjectPermission,
 } from "@/lib/project-permissions";
+import { productDurationMs, recordServerProductEvent } from "@/lib/server-product-events.mjs";
 
 export const runtime = "nodejs";
 
@@ -29,6 +30,7 @@ export async function POST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
+  const startedAt = Date.now();
   const user = await getSessionUser(req);
   if (!user) {
     return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
@@ -342,7 +344,41 @@ export async function POST(req: NextRequest) {
           [postId, projectId, idempotencyKey],
         ).catch(() => {});
       }
+      void recordServerProductEvent(pool, {
+        userId: user.id,
+        projectId,
+        sectionId: "calendar",
+        featureId: "publication",
+        action: "scheduled",
+        stage: "failed",
+        outcome: "failure",
+        source: "api",
+        operationKind: "interactive_api",
+        errorCode: "publish_queue_unavailable",
+        operationId: `post:${postId}`,
+        durationMs: productDurationMs(startedAt),
+        queue: "publish",
+      });
       throw error;
+    }
+
+    if (created) {
+      // Server confirmation for the calendar funnel; the domain row is already committed.
+      void recordServerProductEvent(pool, {
+        userId: user.id,
+        projectId,
+        sectionId: "calendar",
+        featureId: "publication",
+        action: "scheduled",
+        stage: "accepted",
+        outcome: "success",
+        source: "api",
+        operationKind: "interactive_api",
+        operationId: `post:${postId}`,
+        durationMs: productDurationMs(startedAt),
+        resultKind: publicationOrigin,
+        queue: "publish",
+      });
     }
 
     return NextResponse.json({

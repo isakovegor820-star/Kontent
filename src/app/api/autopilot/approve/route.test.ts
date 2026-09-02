@@ -18,9 +18,14 @@ const mocks = vi.hoisted(() => ({
   finalizeApproval: vi.fn(),
   abortApproval: vi.fn(),
   requireSelectedProjectPermission: vi.fn(),
+  recordProductEvent: vi.fn(),
 }));
 
 vi.mock("@/lib/db", () => ({ getPool: () => ({ query: mocks.query }) }));
+vi.mock("@/lib/server-product-events.mjs", () => ({
+  recordServerProductEvent: mocks.recordProductEvent,
+  productDurationMs: () => 5,
+}));
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
 vi.mock("@/lib/autopilot", () => ({
   resolveChannel: mocks.resolveChannel,
@@ -387,6 +392,11 @@ describe("POST /api/autopilot/approve", () => {
     expect(savedItems[0]).toMatchObject({ status: "approved", postId: 501 });
     expect(savedItems[1]).toMatchObject({ status: "pending" });
     expect(savedItems[2]).toMatchObject({ status: "pending" });
+    expect(mocks.recordProductEvent).toHaveBeenCalledTimes(1);
+    expect(mocks.recordProductEvent.mock.calls[0][1]).toMatchObject({
+      sectionId: "autopilot", featureId: "plan", action: "approved",
+      stage: "failed", outcome: "failure", errorCode: "autopilot_scheduling_failed", resultKind: "partial",
+    });
   });
 
   it("commits every durable checkpoint and reports queue reconciliation without failing approval", async () => {
@@ -413,6 +423,13 @@ describe("POST /api/autopilot/approve", () => {
         expect.objectContaining({ i: 1, status: "approved", postId: 502 }),
       ]),
     }));
+    // Server confirmation for the Autopilot funnel carries the operation, never plan content.
+    expect(mocks.recordProductEvent).toHaveBeenCalledTimes(1);
+    expect(mocks.recordProductEvent.mock.calls[0][1]).toMatchObject({
+      sectionId: "autopilot", featureId: "plan", action: "approved",
+      stage: "completed", outcome: "success", source: "api", resultKind: "approved", queue: "autopilot-plans",
+    });
+    expect(mocks.recordProductEvent.mock.calls[0][1].operationId).toMatch(/^autopilot_approval:\d+$/u);
   });
 
   it("stops before any DB mutation for a project A channel while project B is selected", async () => {
