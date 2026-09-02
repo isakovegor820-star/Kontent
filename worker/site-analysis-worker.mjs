@@ -14,6 +14,7 @@ import {
 } from "../src/lib/site-analysis/questions.data.mjs";
 import { finalizeWorkerAiUsage } from "./ai-usage-reservation.mjs";
 import { runSiteInterview, SiteInterviewWorkerError } from "./site-analysis-interview.mjs";
+import { persistSiteProfileForAnalysis } from "./site-profile-persistence.mjs";
 
 const SITE_ANALYSIS_QUEUE = "site-analysis";
 
@@ -153,7 +154,7 @@ export async function processSiteAnalysisJob(pool, data, dependencies = {}) {
       where id = $1 and run_revision = $2
         and status in ('queued', 'crawling', 'analyzing', 'planning', 'saving')
         and queue_confirmed_at is not null
-      returning id, user_id, request_id, target_url, confirmed_domain, limits, run_revision, created_at`,
+      returning id, user_id, request_id, target_url, confirmed_domain, limits, run_revision, created_at, site_id`,
     [analysisId, runRevision, leaseToken],
   );
   if (!claimed.rows[0]) {
@@ -181,7 +182,7 @@ export async function processSiteAnalysisJob(pool, data, dependencies = {}) {
           where id = $1 and run_revision = $2
             and status in ('queued', 'crawling', 'analyzing', 'planning', 'saving')
             and queue_confirmed_at is not null
-          returning id, user_id, request_id, target_url, confirmed_domain, limits, run_revision, created_at`,
+          returning id, user_id, request_id, target_url, confirmed_domain, limits, run_revision, created_at, site_id`,
         [analysisId, runRevision, leaseToken],
       );
     } else if (
@@ -212,6 +213,7 @@ export async function processSiteAnalysisJob(pool, data, dependencies = {}) {
   const buildSnapshot = dependencies.buildSnapshot || buildSiteEvidenceSnapshot;
   const interviewRunner = dependencies.runInterview || runSiteInterview;
   const finalizeUsage = dependencies.finalizeUsage || finalizeWorkerAiUsage;
+  const persistSiteProfile = dependencies.persistSiteProfile || persistSiteProfileForAnalysis;
   let interviewRun = null;
   let failureStage = "robots";
   const heartbeat = setInterval(() => {
@@ -539,6 +541,19 @@ export async function processSiteAnalysisJob(pool, data, dependencies = {}) {
         await interviewRun.release?.();
         return { ok: true, skipped: "superseded" };
       }
+      // Прогон от имени сайта достраивает профиль и отчёт в той же транзакции:
+      // «готово» без профиля пользователь увидеть не должен.
+      const siteProfile = analysis.site_id
+        ? await persistSiteProfile(client, {
+          analysisId,
+          runRevision,
+          siteId: Number(analysis.site_id),
+          pages: output.pages,
+          report: output.report,
+          snapshotHash: snapshot.snapshotHash,
+          checkedAt: analysis.created_at || new Date().toISOString(),
+        })
+        : null;
       const quota = await finalizeUsage(
         client,
         Number(analysis.user_id),
@@ -556,6 +571,7 @@ export async function processSiteAnalysisJob(pool, data, dependencies = {}) {
         pages: storedUrls.size,
         questions: osintReport.answers.length,
         snapshotHash: snapshot.snapshotHash,
+        siteProfile,
       };
     } catch (error) {
       await client.query("rollback").catch(() => undefined);

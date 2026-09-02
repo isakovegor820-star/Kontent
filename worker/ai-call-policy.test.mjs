@@ -16,6 +16,8 @@ describe("worker AI call policy", () => {
       "radar-osint-profile",
       "rss-summary",
       "site-analysis-interview",
+      "site-article",
+      "site-visibility-probe",
     ]);
     expect(assertWorkerAiCallPolicy("rss-summary", 91)).toMatchObject({
       billing: "user",

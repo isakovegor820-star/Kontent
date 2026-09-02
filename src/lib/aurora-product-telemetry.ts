@@ -15,6 +15,7 @@ let activeSink: Sink | null = null;
 
 const ROUTES: Array<{ prefix: string; sectionId: AuroraSectionId }> = [
   { prefix: "/app/site-analysis", sectionId: "siteAnalysis" },
+  { prefix: "/app/sites", sectionId: "siteAnalysis" },
   { prefix: "/app/opportunities", sectionId: "opportunities" },
   { prefix: "/app/competitors", sectionId: "recon" },
   { prefix: "/app/trends", sectionId: "recon" },

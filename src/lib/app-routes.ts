@@ -63,6 +63,11 @@ export const APP_ROUTES = {
   siteAnalysis: {
     href: "/app/site-analysis",
     label: "Анализ сайта",
+    activeAliases: ["/app/sites"],
+  },
+  sites: {
+    href: "/app/sites",
+    label: "Мои сайты",
     activeAliases: [],
   },
   competitors: {
