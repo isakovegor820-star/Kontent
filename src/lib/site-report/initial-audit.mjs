@@ -62,7 +62,10 @@ function buildRecommendations(profile) {
     }));
   }
   const order = { P0: 0, P1: 1, P2: 2 };
-  return items.sort((a, b) => order[a.priority] - order[b.priority] || a.key.localeCompare(b.key));
+  const sourceOrder = { seo: 0, geo: 1, content: 2 };
+  return items.sort((a, b) => order[a.priority] - order[b.priority]
+    || sourceOrder[a.source] - sourceOrder[b.source]
+    || a.key.localeCompare(b.key));
 }
 
 function scoreWord(score) {
