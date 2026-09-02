@@ -36,6 +36,7 @@ import type {
   AdminUserSort,
   AdminUserStatusFilter,
 } from "@/lib/admin-users";
+import { adminUsersHref, adminUsersQuery, type AdminUsersUrlChange } from "@/lib/admin-url-state";
 import { cn, fmtAgo, fmtNum, initials, NETWORK_LABEL, plural } from "@/lib/utils";
 
 type ListState = "loading" | "ready" | "error";
@@ -47,18 +48,20 @@ interface UserRequest {
   network: string;
   sort: AdminUserSort;
   page: number;
+  /** Selected account id from `?user=`; 0 when the card is closed. */
+  user: number;
 }
 
 const STATUS_OPTIONS: Array<{ value: AdminUserStatusFilter; label: string }> = [
   { value: "all", label: "Все аккаунты" },
-  { value: "active", label: "С активной сессией" },
+  { value: "active", label: "Заходили за 30 дней" },
   { value: "attention", label: "Требуют внимания" },
   { value: "new", label: "Новые за период" },
   { value: "onboarding", label: "Не завершили настройку" },
 ];
 
 const SORT_OPTIONS: Array<{ value: AdminUserSort; label: string }> = [
-  { value: "activity_desc", label: "По последней активности" },
+  { value: "activity_desc", label: "По последнему действию" },
   { value: "registered_desc", label: "Сначала новые регистрации" },
   { value: "posts_desc", label: "По публикациям за период" },
   { value: "ai_desc", label: "По AI за период" },
@@ -141,12 +144,12 @@ function userState(user: AdminUserListItem) {
     return { label: "Требует внимания", tone: "danger" as const, icon: ShieldAlert };
   }
   if (user.activeSessions > 0) {
-    return { label: "Есть активная сессия", tone: "success" as const, icon: Activity };
+    return { label: "Заходил за 30 дней", tone: "success" as const, icon: Activity };
   }
   if (!user.onboardingCompleted) {
     return { label: "Настройка не завершена", tone: "warning" as const, icon: Clock3 };
   }
-  return { label: "Без активной сессии", tone: "neutral" as const, icon: UserRound };
+  return { label: "Не заходил 30 дней", tone: "neutral" as const, icon: UserRound };
 }
 
 function postState(status: string) {
@@ -246,7 +249,7 @@ function AccountMaturity({ summary }: { summary: AdminUsersResponse["summary"] }
   const rows = [
     { label: "Завершили первичную настройку", value: summary.onboardingComplete, color: "bg-success" },
     { label: "Подключили хотя бы один канал", value: summary.withChannels, color: "bg-brand" },
-    { label: "Имеют активную сессию", value: summary.activeAccounts, color: "bg-fire" },
+    { label: "Заходили за последние 30 дней", value: summary.activeAccounts, color: "bg-fire" },
     { label: "Привязали Telegram-чат", value: summary.botLinked, color: "bg-info-text" },
   ];
   return (
@@ -340,7 +343,7 @@ function DetailContent({ detail }: { detail: AdminUserDetail }) {
           <SummaryCard label="Ошибки" value={summary.failed} helper={`${fmtNum(summary.quarantined)} в карантине`} icon={ShieldAlert} />
           <SummaryCard label="Черновики" value={summary.drafts} helper="Сохранённый контент" icon={CalendarDays} />
           <SummaryCard label="AI-операции" value={summary.aiTotal} helper={`${fmtNum(summary.aiPeriod)} за период`} icon={Sparkles} />
-          <SummaryCard label="Активные сессии" value={summary.activeSessions} helper={`${fmtNum(summary.sessions)} создано всего`} icon={Activity} />
+          <SummaryCard label="Неистёкшие сессии" value={summary.activeSessions} helper={`${fmtNum(summary.sessions)} входов всего`} icon={Activity} />
         </div>
       </section>
 
@@ -349,7 +352,7 @@ function DetailContent({ detail }: { detail: AdminUserDetail }) {
           <h3 id="account-data-title" className="text-text">Аккаунт</h3>
           <dl className="mt-5 grid gap-4 sm:grid-cols-2">
             <div><dt className="type-caption text-text-3">Регистрация</dt><dd className="type-secondary mt-1 text-text"><time dateTime={user.createdAt}>{fullDate(user.createdAt)}</time></dd></div>
-            <div><dt className="type-caption text-text-3">Последняя активность</dt><dd className="type-secondary mt-1 text-text"><time dateTime={user.lastActivityAt}>{fullDate(user.lastActivityAt)}</time></dd></div>
+            <div><dt className="type-caption text-text-3" title="Максимум из последнего входа, публикации и AI-операции; просмотры страниц не учитываются">Последнее действие</dt><dd className="type-secondary mt-1 text-text"><time dateTime={user.lastActivityAt}>{fullDate(user.lastActivityAt)}</time></dd></div>
             <div><dt className="type-caption text-text-3">Первичная настройка</dt><dd className="mt-1"><StatusPill label={user.onboardingCompletedAt ? "Завершена" : "Не завершена"} tone={user.onboardingCompletedAt ? "success" : "warning"} icon={user.onboardingCompletedAt ? CheckCircle2 : Clock3} /></dd></div>
             <div><dt className="type-caption text-text-3">Telegram-чат</dt><dd className="mt-1"><StatusPill label={user.botLinked ? "Привязан" : "Не привязан"} tone={user.botLinked ? "success" : "neutral"} icon={Bot} /></dd></div>
             <div className="sm:col-span-2"><dt className="type-caption text-text-3">Выбранный AI-движок</dt><dd className="type-secondary mt-1 break-words text-text">{user.aiEngine || "Используется настройка платформы"}</dd></div>
@@ -569,59 +572,142 @@ function DetailContent({ detail }: { detail: AdminUserDetail }) {
   );
 }
 
+const DEFAULT_REQUEST: UserRequest = { query: "", status: "all", network: "all", sort: "activity_desc", page: 1, user: 0 };
+
+/** Query string → validated request; unknown values fall back to defaults instead of hitting the API. */
+function requestFromSearch(search: string): UserRequest {
+  const raw = adminUsersQuery(search);
+  const status = STATUS_OPTIONS.some((option) => option.value === raw.status) ? raw.status as AdminUserStatusFilter : "all";
+  const sort = SORT_OPTIONS.some((option) => option.value === raw.sort) ? raw.sort as AdminUserSort : "activity_desc";
+  const network = NETWORK_OPTIONS.includes(raw.network) ? raw.network : "all";
+  const page = Number(raw.page);
+  const user = Number(raw.user);
+  return {
+    query: raw.q.slice(0, 200),
+    status,
+    network,
+    sort,
+    page: Number.isSafeInteger(page) && page > 0 ? page : 1,
+    user: Number.isSafeInteger(user) && user > 0 ? user : 0,
+  };
+}
+
 export function AdminUsersCenter({
   period,
+  refreshKey = 0,
   registrations,
 }: {
   period: AdminPeriodDays;
-  registrations: Array<{ date: string; registrations: number }>;
+  refreshKey?: number;
+  registrations: Array<{ date: string; registrations: number }> | null;
 }) {
   const [input, setInput] = useState("");
-  const [request, setRequest] = useState<UserRequest>({ query: "", status: "all", network: "all", sort: "activity_desc", page: 1 });
+  const [request, setRequest] = useState<UserRequest>(DEFAULT_REQUEST);
+  const [urlSynced, setUrlSynced] = useState(false);
+  const [retryKey, setRetryKey] = useState(0);
   const [data, setData] = useState<AdminUsersResponse | null>(null);
-  const [listState, setListState] = useState<ListState>("loading");
-  const [statusMessage, setStatusMessage] = useState("");
-  const [detail, setDetail] = useState<AdminUserDetail | null>(null);
-  const [detailState, setDetailState] = useState<DetailState>("idle");
   const [selectedName, setSelectedName] = useState("");
   const dialogRef = useRef<HTMLDialogElement>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const detailAbortRef = useRef<AbortController | null>(null);
   const searchId = useId();
   const dialogTitleId = useId();
   const dialogDescriptionId = useId();
 
+  // Loading states are derived from request identity: a settlement for an older key means
+  // the current request is still in flight, so no state needs to be reset inside effects.
+  const listParams = new URLSearchParams({
+    days: String(period),
+    query: request.query,
+    status: request.status,
+    network: request.network,
+    sort: request.sort,
+    page: String(request.page),
+  }).toString();
+  const listKey = `${listParams}:${refreshKey}:${retryKey}`;
+  const [listSettled, setListSettled] = useState<{ key: string; ok: boolean; total: number } | null>(null);
+  const listState: ListState = !urlSynced || listSettled?.key !== listKey ? "loading" : listSettled.ok ? "ready" : "error";
+  const statusMessage = listState === "ready" && listSettled
+    ? numberLabel(listSettled.total, "аккаунт найден", "аккаунта найдено", "аккаунтов найдено")
+    : listState === "error" ? "Не удалось загрузить аккаунты." : "";
+
+  const detailKey = request.user ? `${request.user}:${period}:${refreshKey}` : null;
+  const [detailSettled, setDetailSettled] = useState<{ key: string; state: Exclude<DetailState, "idle" | "loading">; detail: AdminUserDetail | null } | null>(null);
+  const detailState: DetailState = !detailKey ? "idle" : detailSettled?.key !== detailKey ? "loading" : detailSettled.state;
+  const detail = detailState === "ready" ? detailSettled?.detail ?? null : null;
+
+  // Filters, page and the open account live in the URL: reload, back/forward and shared
+  // links reproduce the same screen, and leaving the section no longer resets the search.
   useEffect(() => {
+    const sync = () => {
+      const next = requestFromSearch(window.location.search);
+      setRequest(next);
+      setInput(next.query);
+      setUrlSynced(true);
+    };
+    sync();
+    window.addEventListener("popstate", sync);
+    return () => window.removeEventListener("popstate", sync);
+  }, []);
+
+  useEffect(() => {
+    if (!urlSynced) return;
     const controller = new AbortController();
-    const params = new URLSearchParams({
-      days: String(period),
-      query: request.query,
-      status: request.status,
-      network: request.network,
-      sort: request.sort,
-      page: String(request.page),
-    });
-    void fetch(`/api/admin/users?${params}`, { cache: "no-store", signal: controller.signal })
+    void fetch(`/api/admin/users?${listParams}`, { cache: "no-store", signal: controller.signal })
       .then(async (response) => {
         if (!response.ok) throw new Error("unavailable");
         return response.json() as Promise<AdminUsersResponse>;
       })
       .then((payload) => {
         setData(payload);
-        setListState("ready");
-        setStatusMessage(numberLabel(payload.pagination.total, "аккаунт найден", "аккаунта найдено", "аккаунтов найдено"));
+        setListSettled({ key: listKey, ok: true, total: payload.pagination.total });
       })
       .catch(() => {
         if (controller.signal.aborted) return;
-        setListState("error");
-        setStatusMessage("Не удалось загрузить аккаунты.");
+        setListSettled({ key: listKey, ok: false, total: 0 });
       });
     return () => controller.abort();
-  }, [period, request]);
+  }, [urlSynced, listParams, listKey]);
 
-  function updateRequest(patch: Partial<UserRequest>) {
-    setListState("loading");
-    setRequest((current) => ({ ...current, ...patch }));
+  // The open account card follows `?user=<id>`: opening pushes history, closing pops it.
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!detailKey) {
+      if (dialog?.open) dialog.close();
+      return;
+    }
+    if (dialog && !dialog.open) dialog.showModal();
+    const controller = new AbortController();
+    void fetch(`/api/admin/users/${request.user}?days=${period}`, { cache: "no-store", signal: controller.signal })
+      .then(async (response) => {
+        if (response.status === 404) throw new Error("not_found");
+        if (!response.ok) throw new Error("unavailable");
+        return response.json() as Promise<AdminUserDetail>;
+      })
+      .then((payload) => {
+        setSelectedName(payload.user.name);
+        setDetailSettled({ key: detailKey, state: "ready", detail: payload });
+      })
+      .catch((error) => {
+        if (controller.signal.aborted) return;
+        setDetailSettled({ key: detailKey, state: error instanceof Error && error.message === "not_found" ? "not_found" : "error", detail: null });
+      });
+    return () => controller.abort();
+  }, [detailKey, request.user, period]);
+
+  function navigate(changes: AdminUsersUrlChange) {
+    const href = adminUsersHref(window.location.href, changes);
+    window.history.pushState({}, "", href);
+    setRequest(requestFromSearch(window.location.search));
+  }
+
+  function updateRequest(patch: Partial<Omit<UserRequest, "user">>) {
+    navigate({
+      ...(patch.query !== undefined ? { q: patch.query } : {}),
+      ...(patch.status !== undefined ? { status: patch.status } : {}),
+      ...(patch.network !== undefined ? { network: patch.network } : {}),
+      ...(patch.sort !== undefined ? { sort: patch.sort } : {}),
+      ...(patch.page !== undefined ? { page: patch.page } : {}),
+    });
   }
 
   function submitSearch(event: FormEvent<HTMLFormElement>) {
@@ -630,33 +716,14 @@ export function AdminUsersCenter({
   }
 
   function closeDetail() {
-    detailAbortRef.current?.abort();
-    dialogRef.current?.close();
+    if (request.user) navigate({ user: null });
+    else dialogRef.current?.close();
   }
 
   function openDetail(user: AdminUserListItem, trigger: HTMLButtonElement) {
-    detailAbortRef.current?.abort();
-    const controller = new AbortController();
-    detailAbortRef.current = controller;
     triggerRef.current = trigger;
     setSelectedName(user.name);
-    setDetail(null);
-    setDetailState("loading");
-    dialogRef.current?.showModal();
-    void fetch(`/api/admin/users/${user.id}?days=${period}`, { cache: "no-store", signal: controller.signal })
-      .then(async (response) => {
-        if (response.status === 404) throw new Error("not_found");
-        if (!response.ok) throw new Error("unavailable");
-        return response.json() as Promise<AdminUserDetail>;
-      })
-      .then((payload) => {
-        setDetail(payload);
-        setDetailState("ready");
-      })
-      .catch((error) => {
-        if (controller.signal.aborted) return;
-        setDetailState(error instanceof Error && error.message === "not_found" ? "not_found" : "error");
-      });
+    navigate({ user: user.id });
   }
 
   const hasActiveFilters = request.query || request.status !== "all" || request.network !== "all";
@@ -669,13 +736,13 @@ export function AdminUsersCenter({
           <div className="grid min-w-0 max-w-full gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
             <SummaryCard label="Все аккаунты" value={data.summary.accounts} helper="Зарегистрированы в Авроре" icon={Users} />
             <SummaryCard label="Новые" value={data.summary.newAccounts} helper={`За ${data.periodDays} дней`} icon={UserCheck} />
-            <SummaryCard label="Активные" value={data.summary.activeAccounts} helper="Есть живая сессия" icon={Activity} />
+            <SummaryCard label="Заходили за 30 дней" value={data.summary.activeAccounts} helper="Сессия ещё не истекла" icon={Activity} />
             <SummaryCard label="Завершили настройку" value={data.summary.onboardingComplete} helper="Прошли первичную настройку" icon={CheckCircle2} />
             <SummaryCard label="С каналами" value={data.summary.withChannels} helper="Подключили хотя бы один" icon={Radio} />
             <SummaryCard label="Привязали чат" value={data.summary.botLinked} helper="Сохранили связь с Telegram" icon={Bot} />
           </div>
           <div className="mt-5 grid min-w-0 max-w-full gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(20rem,0.65fr)]">
-            <RegistrationBars data={registrations} />
+            {registrations ? <RegistrationBars data={registrations} /> : <div className="skeleton min-h-56 rounded-md" aria-hidden />}
             <AccountMaturity summary={data.summary} />
           </div>
         </>
@@ -740,7 +807,7 @@ export function AdminUsersCenter({
           <ShieldAlert className="mx-auto h-7 w-7" aria-hidden />
           <h3 className="mt-3">Не удалось загрузить аккаунты</h3>
           <p className="type-secondary mt-2">Проверьте соединение с базой и повторите загрузку.</p>
-          <Button variant="danger" className="mt-4" onClick={() => updateRequest({})}>Повторить загрузку</Button>
+          <Button variant="danger" className="mt-4" onClick={() => setRetryKey((value) => value + 1)}>Повторить загрузку</Button>
         </div>
       ) : null}
 
@@ -777,7 +844,7 @@ export function AdminUsersCenter({
                               <div className="min-w-0"><p className="type-body-strong max-w-52 truncate text-text" title={user.name}>{user.name}</p><p className="type-caption mt-1 max-w-52 truncate text-text-3" title={user.email || undefined}>{user.email || `ID ${user.id}`}</p><div className="mt-2"><AuthMethods auth={user.auth} /></div></div>
                             </div>
                           </td>
-                          <td className="px-5 py-4"><p className="type-secondary text-text"><time dateTime={user.createdAt}>{fullDate(user.createdAt)}</time></p><p className="type-caption mt-1 text-text-3">Активность {fmtAgo(user.lastActivityAt)}</p><p className="type-caption mt-1 text-text-3">Сессии: {user.activeSessions}</p></td>
+                          <td className="px-5 py-4"><p className="type-secondary text-text"><time dateTime={user.createdAt}>{fullDate(user.createdAt)}</time></p><p className="type-caption mt-1 text-text-3">Последнее действие {fmtAgo(user.lastActivityAt)}</p><p className="type-caption mt-1 text-text-3">Сессии: {user.activeSessions}</p></td>
                           <td className="px-5 py-4"><p className="nums type-secondary font-semibold text-text">{numberLabel(user.projects, "проект", "проекта", "проектов")} · {numberLabel(user.channels, "канал", "канала", "каналов")}</p><div className="mt-2 flex flex-wrap gap-1.5">{user.networks.length === 0 ? <span className="type-caption text-text-3">Нет подключений</span> : user.networks.map((network) => <StatusPill key={network} label={NETWORK_LABEL[network] || network} tone="neutral" />)}</div>{user.channelAttention > 0 ? <p className="type-caption mt-2 text-danger-text">Проблемных каналов: {user.channelAttention}</p> : null}</td>
                           <td className="px-5 py-4"><p className="nums type-secondary font-semibold text-text">{user.postsPeriod} за период</p><p className="type-caption mt-1 text-text-3">{user.publishedPeriod} вышло · {user.scheduled} в плане</p>{user.failedPeriod > 0 ? <p className="type-caption mt-1 text-danger-text">Ошибок: {user.failedPeriod}</p> : null}</td>
                           <td className="px-5 py-4"><p className="nums type-secondary font-semibold text-text">{user.aiPeriod} за период</p><p className="type-caption mt-1 text-text-3">{user.aiTotal} всего</p></td>
@@ -831,9 +898,6 @@ export function AdminUsersCenter({
           closeDetail();
         }}
         onClose={() => {
-          detailAbortRef.current?.abort();
-          setDetail(null);
-          setDetailState("idle");
           requestAnimationFrame(() => triggerRef.current?.focus());
         }}
         onClick={(event) => {

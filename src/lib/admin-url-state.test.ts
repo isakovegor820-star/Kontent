@@ -5,6 +5,8 @@ import {
   adminAnalyticsQuery,
   adminSystemHref,
   adminSystemSelection,
+  adminUsersHref,
+  adminUsersQuery,
 } from "./admin-url-state";
 
 describe("admin system URL state", () => {
@@ -18,6 +20,23 @@ describe("admin system URL state", () => {
       .toBe("/admin?days=30&system=redis#system");
     expect(adminSystemHref("https://aurora.example/admin?system=redis#system", null))
       .toBe("/admin#system");
+  });
+});
+
+describe("admin users URL state", () => {
+  it("drops defaults, keeps unrelated params and anchors the Users section", () => {
+    expect(adminUsersHref("https://aurora.test/admin?system=redis#system", { q: "ivan", status: "attention", page: 1, sort: "activity_desc" }))
+      .toBe("/admin?system=redis&q=ivan&status=attention#users");
+    expect(adminUsersHref("/admin?q=ivan&page=3#users", { q: "", page: 1, user: 42 }))
+      .toBe("/admin?user=42#users");
+    expect(adminUsersHref("/admin?user=42#users", { user: null })).toBe("/admin#users");
+  });
+
+  it("parses the query string back into a complete request with defaults", () => {
+    expect(adminUsersQuery("?q=ivan&page=2&user=7&unknown=1")).toEqual({
+      q: "ivan", status: "all", network: "all", sort: "activity_desc", page: "2", user: "7",
+    });
+    expect(adminUsersQuery("")).toEqual({ q: "", status: "all", network: "all", sort: "activity_desc", page: "1", user: "" });
   });
 });
 
