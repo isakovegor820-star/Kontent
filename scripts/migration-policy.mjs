@@ -40,6 +40,7 @@ const APPROVED_REPLACED_CONSTRAINTS = new Set([
   "monthly_campaign_regeneration_week_check",
   "radar_search_results_type_check",
   "radar_search_results_url_check",
+  "knowledge_sources_kind_check",
 ]);
 
 function withoutSqlComments(sql) {
