@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   adminAnalyticsHref,
   adminAnalyticsQuery,
+  adminProjectsHref,
+  adminProjectsQuery,
   adminPublicationsApiParams,
   adminPublicationsHref,
   adminPublicationsQuery,
@@ -40,6 +42,15 @@ describe("admin users URL state", () => {
       q: "ivan", status: "all", network: "all", sort: "activity_desc", page: "2", user: "7",
     });
     expect(adminUsersQuery("")).toEqual({ q: "", status: "all", network: "all", sort: "activity_desc", page: "1", user: "" });
+  });
+});
+
+describe("admin projects URL state", () => {
+  it("keeps the open project card in a key that does not collide with the analytics project filter", () => {
+    expect(adminProjectsHref("/admin?project=2&range=7d#aurora-analytics", { prid: 12, prstatus: "attention" }))
+      .toBe("/admin?project=2&range=7d&prid=12&prstatus=attention#projects");
+    expect(adminProjectsQuery("?prid=12&prstatus=attention&project=2"))
+      .toEqual({ prq: "", prstatus: "attention", prnetwork: "all", prsort: "activity_desc", prpage: "1", prid: "12" });
   });
 });
 

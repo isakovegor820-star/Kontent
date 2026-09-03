@@ -64,6 +64,36 @@ export function adminUsersQuery(search: string | URLSearchParams): Record<AdminU
   return result;
 }
 
+export const ADMIN_PROJECTS_QUERY_KEYS = ["prq", "prstatus", "prnetwork", "prsort", "prpage", "prid"] as const;
+export type AdminProjectsUrlKey = (typeof ADMIN_PROJECTS_QUERY_KEYS)[number];
+export type AdminProjectsUrlChange = Partial<Record<AdminProjectsUrlKey, string | number | null>>;
+
+const ADMIN_PROJECTS_DEFAULTS: Readonly<Record<AdminProjectsUrlKey, string>> = Object.freeze({
+  prq: "", prstatus: "all", prnetwork: "all", prsort: "activity_desc", prpage: "1", prid: "",
+});
+
+export function adminProjectsHref(currentUrl: string, changes: AdminProjectsUrlChange): string {
+  const url = new URL(currentUrl, "http://localhost");
+  for (const [key, value] of Object.entries(changes)) {
+    if (!ADMIN_PROJECTS_QUERY_KEYS.includes(key as AdminProjectsUrlKey)) continue;
+    const normalized = value == null ? "" : String(value);
+    if (normalized === "" || normalized === ADMIN_PROJECTS_DEFAULTS[key as AdminProjectsUrlKey]) url.searchParams.delete(key);
+    else url.searchParams.set(key, normalized);
+  }
+  url.hash = "projects";
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
+export function adminProjectsQuery(search: string | URLSearchParams): Record<AdminProjectsUrlKey, string> {
+  const source = typeof search === "string" ? new URLSearchParams(search) : search;
+  const result = { ...ADMIN_PROJECTS_DEFAULTS };
+  for (const key of ADMIN_PROJECTS_QUERY_KEYS) {
+    const value = source.get(key);
+    if (value) result[key] = value;
+  }
+  return result;
+}
+
 export const ADMIN_PUBLICATIONS_QUERY_KEYS = ["pq", "pstatus", "pnetwork", "pproject", "perror", "psort", "ppage"] as const;
 export type AdminPublicationsUrlKey = (typeof ADMIN_PUBLICATIONS_QUERY_KEYS)[number];
 export type AdminPublicationsUrlChange = Partial<Record<AdminPublicationsUrlKey, string | number | null>>;
