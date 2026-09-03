@@ -6059,3 +6059,374 @@ alter table monthly_campaign_regeneration_operations
     (scope in ('item','month') and week_starts_on is null)
     or (scope = 'week' and week_starts_on is not null)
   );
+
+-- ------------------------------------------------ Сайт как площадка: sites, профили, отчёты
+-- Зеркало db/migrations/20261006_sites_and_site_profiles.sql (см. docs/site-publishing-and-seo-spec.md).
+
+-- Сайт клиента как долгоживущая сущность проекта. Отдельный прогон анализа
+-- (site_analysis_jobs) остаётся одноразовым срезом; сайт хранит подтверждение
+-- владения доменом, режим публикации и ссылки на актуальный профиль и анализ.
+-- См. docs/site-publishing-and-seo-spec.md, раздел 4.1 и решение 13.6/13.7.
+create table if not exists sites (
+  id                   bigint generated always as identity primary key,
+  project_id           bigint not null references projects (id) on delete restrict,
+  user_id              bigint not null references users (id) on delete cascade,
+  confirmed_domain     text not null,
+  canonical_url        text not null,
+  verification_state   text not null default 'unverified',
+  verification_method  text,
+  verification_token   text not null,
+  verified_at          timestamptz,
+  latest_analysis_id   bigint references site_analysis_jobs (id) on delete set null,
+  latest_profile_id    bigint,
+  publishing_mode      text not null default 'confirm',
+  auto_unlock_streak   integer not null default 10,
+  approved_streak      integer not null default 0,
+  cadence              jsonb not null default '{}'::jsonb,
+  status               text not null default 'active',
+  created_at           timestamptz not null default now(),
+  updated_at           timestamptz not null default now(),
+  constraint sites_project_domain_uniq unique (project_id, confirmed_domain),
+  constraint sites_domain_check check (
+    length(confirmed_domain) between 1 and 253 and confirmed_domain !~ '[/?#@\s]'
+  ),
+  constraint sites_canonical_url_check check (canonical_url ~ '^https?://'),
+  constraint sites_verification_state_check check (
+    verification_state in ('unverified', 'verified', 'revoked')
+  ),
+  constraint sites_verification_method_check check (
+    verification_method is null or verification_method in ('dns_txt', 'meta_tag')
+  ),
+  constraint sites_verification_token_check check (length(verification_token) between 16 and 128),
+  constraint sites_publishing_mode_check check (publishing_mode in ('confirm', 'auto')),
+  constraint sites_auto_unlock_streak_check check (auto_unlock_streak > 0),
+  constraint sites_approved_streak_check check (approved_streak >= 0),
+  constraint sites_cadence_check check (jsonb_typeof(cadence) = 'object'),
+  constraint sites_status_check check (status in ('active', 'paused', 'disconnected'))
+);
+create index if not exists sites_project_created_idx
+  on sites (project_id, created_at desc, id desc);
+
+-- Профиль сайта: выводы поверх инвентаря страниц одного прогона анализа.
+-- Инвентарь не дублируется — он остаётся в site_analysis_pages / site_analysis_sources.
+create table if not exists site_profiles (
+  id                 bigint generated always as identity primary key,
+  site_id            bigint not null references sites (id) on delete cascade,
+  analysis_job_id    bigint references site_analysis_jobs (id) on delete set null,
+  run_revision       integer not null default 1,
+  profile_version    text not null default 'site-profile-v1',
+  page_count         integer not null default 0,
+  publication_count  integer not null default 0,
+  topics             jsonb not null default '[]'::jsonb,
+  gaps               jsonb not null default '[]'::jsonb,
+  technical          jsonb not null default '{}'::jsonb,
+  linkable_pages     jsonb not null default '[]'::jsonb,
+  summary            text,
+  created_at         timestamptz not null default now(),
+  constraint site_profiles_run_revision_check check (run_revision > 0),
+  constraint site_profiles_counts_check check (
+    page_count >= 0 and publication_count >= 0 and publication_count <= page_count
+  ),
+  constraint site_profiles_topics_check check (jsonb_typeof(topics) = 'array'),
+  constraint site_profiles_gaps_check check (jsonb_typeof(gaps) = 'array'),
+  constraint site_profiles_technical_check check (jsonb_typeof(technical) = 'object'),
+  constraint site_profiles_linkable_pages_check check (jsonb_typeof(linkable_pages) = 'array')
+);
+create index if not exists site_profiles_site_created_idx
+  on site_profiles (site_id, created_at desc, id desc);
+create unique index if not exists site_profiles_site_analysis_revision_uniq
+  on site_profiles (site_id, analysis_job_id, run_revision)
+  where analysis_job_id is not null;
+
+do $$ begin
+  if not exists (select 1 from pg_constraint where conname = 'sites_latest_profile_fkey') then
+    alter table sites
+      add constraint sites_latest_profile_fkey
+      foreign key (latest_profile_id) references site_profiles (id) on delete set null;
+  end if;
+end $$;
+
+-- Отчёты по сайту. payload — источник истины, файлы рендерятся из него по запросу.
+create table if not exists site_reports (
+  id                  bigint generated always as identity primary key,
+  site_id             bigint not null references sites (id) on delete cascade,
+  kind                text not null,
+  period_start        timestamptz,
+  period_end          timestamptz,
+  profile_id          bigint references site_profiles (id) on delete set null,
+  previous_report_id  bigint references site_reports (id) on delete set null,
+  probe_run_key       text,
+  payload             jsonb not null,
+  summary_ru          text not null,
+  status              text not null default 'ready',
+  created_at          timestamptz not null default now(),
+  constraint site_reports_kind_check check (kind in ('initial_audit', 'monthly', 'on_demand')),
+  constraint site_reports_status_check check (status in ('generating', 'ready', 'failed')),
+  constraint site_reports_payload_check check (jsonb_typeof(payload) = 'object'),
+  constraint site_reports_period_check check (
+    period_start is null or period_end is null or period_start <= period_end
+  )
+);
+create index if not exists site_reports_site_created_idx
+  on site_reports (site_id, created_at desc, id desc);
+
+-- Прогон анализа, запущенный от имени сайта. Существующий конвейер не меняется:
+-- worker после стадии saving достраивает профиль и стартовый отчёт для job с site_id.
+alter table site_analysis_jobs
+  add column if not exists site_id bigint references sites (id) on delete set null;
+create index if not exists site_analysis_jobs_site_created_idx
+  on site_analysis_jobs (site_id, created_at desc, id desc)
+  where site_id is not null;
+
+
+-- ------------------------------------------------ Сайт как площадка: назначения, материалы, зонд, база знаний сайта
+-- Зеркало db/migrations/20261007_site_publishing.sql.
+
+-- Этапы 2–5 спецификации docs/site-publishing-and-seo-spec.md: назначения публикации,
+-- материалы для сайта, операции публикации, зонд видимости и база знаний сайта.
+
+-- Служебный поддомен хостируемого раздела (<slug>.sites.<домен Авроры>). Решение 13.1.
+alter table sites add column if not exists hosted_slug text;
+alter table sites add column if not exists brand_name text;
+create unique index if not exists sites_hosted_slug_uniq on sites (hosted_slug) where hosted_slug is not null;
+do $$ begin
+  if not exists (select 1 from pg_constraint where conname = 'sites_hosted_slug_check') then
+    alter table sites add constraint sites_hosted_slug_check
+      check (hosted_slug is null or hosted_slug ~ '^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])?$');
+  end if;
+end $$;
+
+-- Куда физически публикуем. Учётные данные — только AES-GCM-конверт (src/lib/token-crypto.mjs).
+create table if not exists site_destinations (
+  id                bigint generated always as identity primary key,
+  site_id           bigint not null references sites (id) on delete cascade,
+  kind              text not null,
+  base_url          text not null,
+  credentials       text,
+  credential_state  text not null default 'not_configured',
+  section_path      text,
+  settings          jsonb not null default '{}'::jsonb,
+  status            text not null default 'active',
+  last_verified_at  timestamptz,
+  last_error_code   text,
+  created_at        timestamptz not null default now(),
+  updated_at        timestamptz not null default now(),
+  constraint site_destinations_site_kind_uniq unique (site_id, kind),
+  constraint site_destinations_kind_check check (kind in ('wordpress', 'site_hosted')),
+  constraint site_destinations_base_url_check check (base_url ~ '^https?://'),
+  constraint site_destinations_credential_state_check check (
+    credential_state in ('not_required', 'ready', 'not_configured', 'expired', 'revoked', 'invalid', 'unknown')
+  ),
+  constraint site_destinations_settings_check check (jsonb_typeof(settings) = 'object'),
+  constraint site_destinations_status_check check (status in ('active', 'needs_reconnect', 'revoked', 'disconnected'))
+);
+create index if not exists site_destinations_site_idx on site_destinations (site_id, kind);
+
+-- Материалы для сайта. Живут отдельно от drafts: у статьи есть slug, SEO-поля, HTML и ревизии.
+create table if not exists site_articles (
+  id                bigint generated always as identity primary key,
+  site_id           bigint not null references sites (id) on delete cascade,
+  project_id        bigint not null references projects (id) on delete restrict,
+  user_id           bigint not null references users (id) on delete cascade,
+  article_type      text not null,
+  origin            text not null,
+  source_key        text,
+  source_ref        jsonb,
+  title             text not null default '',
+  slug              text not null,
+  meta_description  text,
+  body_markdown     text not null default '',
+  body_html         text,
+  internal_links    jsonb not null default '[]'::jsonb,
+  structured_data   jsonb,
+  evidence_keys     jsonb not null default '[]'::jsonb,
+  similarity_check  jsonb,
+  quality           jsonb,
+  generation        jsonb,
+  version           bigint not null default 1,
+  status            text not null default 'draft',
+  status_reason     text,
+  approved_by       bigint references users (id) on delete set null,
+  approved_version  bigint,
+  approved_at       timestamptz,
+  published_url     text,
+  provider_ref      jsonb,
+  scheduled_at      timestamptz,
+  published_at      timestamptz,
+  retired_at        timestamptz,
+  created_at        timestamptz not null default now(),
+  updated_at        timestamptz not null default now(),
+  constraint site_articles_site_slug_uniq unique (site_id, slug),
+  constraint site_articles_type_check check (article_type in (
+    'company_news', 'industry_explainer', 'audience_answer', 'evergreen_guide', 'case_study', 'machine_readable_page'
+  )),
+  constraint site_articles_origin_check check (origin in ('rss', 'channel_post', 'audience_question', 'gap', 'manual')),
+  constraint site_articles_slug_check check (slug ~ '^[a-z0-9](?:[a-z0-9-]{0,118}[a-z0-9])?$'),
+  constraint site_articles_version_check check (version > 0),
+  constraint site_articles_status_check check (status in (
+    'draft', 'generating', 'needs_review', 'approved', 'scheduled', 'publishing', 'published', 'failed', 'rejected', 'retired'
+  )),
+  constraint site_articles_internal_links_check check (jsonb_typeof(internal_links) = 'array'),
+  constraint site_articles_evidence_keys_check check (jsonb_typeof(evidence_keys) = 'array'),
+  constraint site_articles_source_ref_check check (source_ref is null or jsonb_typeof(source_ref) = 'object'),
+  constraint site_articles_approved_check check (
+    (approved_at is null) = (approved_by is null) and (approved_at is null) = (approved_version is null)
+  )
+);
+create index if not exists site_articles_site_status_idx on site_articles (site_id, status, updated_at desc, id desc);
+create index if not exists site_articles_site_published_idx on site_articles (site_id, published_at desc) where status = 'published';
+-- Один источник — один материал (решение 3 спецификации).
+create unique index if not exists site_articles_site_source_uniq on site_articles (site_id, source_key) where source_key is not null;
+
+create table if not exists site_article_revisions (
+  id               bigint generated always as identity primary key,
+  article_id       bigint not null references site_articles (id) on delete cascade,
+  version          bigint not null,
+  author_user_id   bigint references users (id) on delete set null,
+  change_kind      text not null,
+  content_hash     text not null,
+  snapshot         jsonb not null,
+  created_at       timestamptz not null default now(),
+  constraint site_article_revisions_article_version_uniq unique (article_id, version),
+  constraint site_article_revisions_version_check check (version > 0),
+  constraint site_article_revisions_change_kind_check check (change_kind in ('generated', 'edited', 'approved', 'rejected', 'published', 'retired')),
+  constraint site_article_revisions_snapshot_check check (jsonb_typeof(snapshot) = 'object')
+);
+
+-- Операция публикации статьи. Отдельная от publication_operations: та привязана к постам
+-- (text + media + destination_ids), а здесь — версия статьи и одно назначение. Контракт
+-- исходов тот же: success / definite_failure / delivery_unknown / rate_limited / auth_failed.
+create table if not exists site_article_publications (
+  id                    bigint generated always as identity primary key,
+  article_id            bigint not null references site_articles (id) on delete cascade,
+  destination_id        bigint not null references site_destinations (id) on delete cascade,
+  article_version       bigint not null,
+  idempotency_key       text not null,
+  action                text not null default 'publish',
+  status                text not null default 'pending',
+  outcome               text,
+  provider_operation_id text,
+  provider_ref          jsonb,
+  published_url         text,
+  attempts              integer not null default 0,
+  last_error_code       text,
+  reconcile_state       text not null default 'none',
+  worker_lease_token    text,
+  created_at            timestamptz not null default now(),
+  updated_at            timestamptz not null default now(),
+  completed_at          timestamptz,
+  constraint site_article_publications_idempotency_uniq unique (idempotency_key),
+  constraint site_article_publications_article_version_uniq unique (article_id, destination_id, article_version, action),
+  constraint site_article_publications_action_check check (action in ('publish', 'update', 'unpublish')),
+  constraint site_article_publications_status_check check (
+    status in ('pending', 'publishing', 'published_unverified', 'published', 'failed', 'cancelled')
+  ),
+  constraint site_article_publications_outcome_check check (
+    outcome is null or outcome in ('success', 'definite_failure', 'delivery_unknown', 'rate_limited', 'auth_failed')
+  ),
+  constraint site_article_publications_reconcile_check check (reconcile_state in ('none', 'pending', 'confirmed', 'unresolved', 'failed')),
+  constraint site_article_publications_attempts_check check (attempts >= 0)
+);
+create index if not exists site_article_publications_pending_idx
+  on site_article_publications (status, updated_at) where status in ('pending', 'publishing', 'published_unverified');
+
+-- Зонд видимости: один и тот же набор вопросов × движков, ценность — в динамике.
+create table if not exists site_visibility_probes (
+  id                     bigint generated always as identity primary key,
+  site_id                bigint not null references sites (id) on delete cascade,
+  run_key                text not null,
+  question_key           text not null,
+  question_text          text not null,
+  engine                 text not null,
+  brand_mentioned        boolean not null,
+  site_cited             boolean not null,
+  competitors_mentioned  jsonb not null default '[]'::jsonb,
+  answer_excerpt         text,
+  status                 text not null default 'answered',
+  checked_at             timestamptz not null default now(),
+  constraint site_visibility_probes_run_uniq unique (site_id, run_key, question_key, engine),
+  constraint site_visibility_probes_competitors_check check (jsonb_typeof(competitors_mentioned) = 'array'),
+  constraint site_visibility_probes_status_check check (status in ('answered', 'skipped_budget', 'failed'))
+);
+create index if not exists site_visibility_probes_site_run_idx on site_visibility_probes (site_id, checked_at desc, run_key);
+
+-- База знаний сайта (раздел 4.4). Источник принадлежит либо каналу, либо сайту.
+-- Таблицы знаний исторически создавались только bootstrap-схемой; для баз, поднятых
+-- из legacy-пути, создаём их здесь в целевой форме (pgvector подключён миграцией 20260906).
+create table if not exists knowledge_sources (
+  id          bigint generated always as identity primary key,
+  user_id     bigint      not null references users (id) on delete cascade,
+  channel_id  bigint      references channels (id) on delete cascade,
+  kind        text        not null,
+  title       text        not null,
+  raw_text    text        not null,
+  status      text        not null default 'pending'
+                          check (status in ('pending', 'ready', 'error')),
+  last_error  text,
+  added_at    timestamptz not null default now(),
+  indexed_at  timestamptz
+);
+create index if not exists knowledge_sources_channel_idx on knowledge_sources (channel_id);
+create table if not exists knowledge_chunks (
+  id          bigint generated always as identity primary key,
+  user_id     bigint      not null references users (id) on delete cascade,
+  channel_id  bigint      references channels (id) on delete cascade,
+  source_id   bigint      not null references knowledge_sources (id) on delete cascade,
+  kind        text        not null
+                          check (kind in ('voice', 'fact', 'law', 'case', 'qa', 'service')),
+  text        text        not null,
+  embedding   vector(1024),
+  tsv         tsvector generated always as (to_tsvector('russian', text)) stored,
+  valid_until date,
+  used_count  int         not null default 0
+);
+create index if not exists knowledge_chunks_embedding_idx
+  on knowledge_chunks using hnsw (embedding vector_cosine_ops);
+create index if not exists knowledge_chunks_tsv_idx on knowledge_chunks using gin (tsv);
+create index if not exists knowledge_chunks_channel_kind_idx on knowledge_chunks (channel_id, kind);
+
+alter table knowledge_sources add column if not exists site_id bigint references sites (id) on delete cascade;
+alter table knowledge_sources alter column channel_id drop not null;
+alter table knowledge_sources drop constraint if exists knowledge_sources_kind_check;
+alter table knowledge_sources add constraint knowledge_sources_kind_check
+  check (kind in ('form', 'paste', 'channel', 'profile', 'profile_edit', 'site_page', 'site_publication', 'site_report'));
+do $$ begin
+  if not exists (select 1 from pg_constraint where conname = 'knowledge_sources_owner_check') then
+    alter table knowledge_sources add constraint knowledge_sources_owner_check
+      check ((channel_id is not null)::int + (site_id is not null)::int = 1);
+  end if;
+end $$;
+create index if not exists knowledge_sources_site_idx on knowledge_sources (site_id, kind) where site_id is not null;
+
+alter table knowledge_chunks add column if not exists site_id bigint references sites (id) on delete cascade;
+alter table knowledge_chunks alter column channel_id drop not null;
+do $$ begin
+  if not exists (select 1 from pg_constraint where conname = 'knowledge_chunks_owner_check') then
+    alter table knowledge_chunks add constraint knowledge_chunks_owner_check
+      check ((channel_id is not null)::int + (site_id is not null)::int = 1);
+  end if;
+end $$;
+create index if not exists knowledge_chunks_site_kind_idx on knowledge_chunks (site_id, kind) where site_id is not null;
+
+
+-- ------------------------------------------------ Раздел «Мои сайты» в телеметрии продукта
+-- Зеркало db/migrations/20261008_sites_section_telemetry.sql.
+
+-- «Мои сайты» становится отдельным разделом навигации (sectionId = 'sites'); телеметрия
+-- продукта проверяет section_id check-ограничением, поэтому список расширяется здесь.
+alter table product_events drop constraint if exists product_events_section_check;
+alter table product_events add constraint product_events_section_check check (
+  section_id in (
+    'today','calendar','studio','autopilot','composer','library','rss','knowledge',
+    'recon','opportunities','radar','siteAnalysis','sites','growth','analytics','settings'
+  )
+);
+
+alter table product_event_daily drop constraint if exists product_event_daily_section_check;
+alter table product_event_daily add constraint product_event_daily_section_check check (
+  section_id in (
+    'today','calendar','studio','autopilot','composer','library','rss','knowledge',
+    'recon','opportunities','radar','siteAnalysis','sites','growth','analytics','settings'
+  )
+);
+

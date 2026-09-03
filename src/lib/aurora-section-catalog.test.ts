@@ -14,7 +14,8 @@ describe("Aurora section operational catalog", () => {
     expect(AURORA_SECTION_CATALOG.map((section) => section.id)).toEqual(
       APP_NAV_GROUPS.flatMap((group) => group.routeIds),
     );
-    expect(AURORA_SECTION_CATALOG).toHaveLength(15);
+    expect(AURORA_SECTION_CATALOG).toHaveLength(16);
+    expect(AURORA_SECTION_BY_ID.sites).toMatchObject({ groupId: "market", href: "/app/sites", label: "Мои сайты" });
     expect(AURORA_SECTION_CATALOG.some((section) => section.id === "competitors" as never)).toBe(false);
     expect(AURORA_SECTION_CATALOG.some((section) => section.id === "trends" as never)).toBe(false);
   });
