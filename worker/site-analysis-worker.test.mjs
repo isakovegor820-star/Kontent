@@ -103,6 +103,85 @@ describe("site analysis BullMQ worker core", () => {
     expect(release).toHaveBeenCalled();
   });
 
+  it("builds the site profile inside the saving transaction only for site-bound analyses", async () => {
+    const makePool = (siteId) => {
+      const txQuery = vi.fn(async (sql) => {
+        if (String(sql).includes("select status, run_revision")) return { rows: [{ status: "analyzing", run_revision: 2, worker_lease_token: "lease-1" }] };
+        if (String(sql).includes("update site_analysis_jobs") && String(sql).includes("returning id")) return { rows: [{ id: 41 }] };
+        return { rows: [] };
+      });
+      return {
+        txQuery,
+        pool: {
+          query: vi.fn(async (sql) => String(sql).includes("returning id, user_id") ? { rows: [{ ...analysisRow(), site_id: siteId }] } : { rows: [] }),
+          connect: vi.fn(async () => ({ query: txQuery, release: vi.fn() })),
+        },
+      };
+    };
+    const page = {
+      url: "https://example.com/", status: 200, title: "Главная", description: "",
+      headings: [], mainContent: "", schemaTypes: [], links: [], ctas: [], forms: [], publicComments: [],
+      technical: { wordCount: 10 },
+    };
+    const crawl = vi.fn(async () => ({ pages: [page], report: { policyVersion: "v1" } }));
+    const deps = (persistSiteProfile) => ({
+      crawl,
+      leaseToken: "lease-1",
+      buildSnapshot: vi.fn(() => testSnapshot),
+      runInterview: vi.fn(async () => interviewResult()),
+      finalizeUsage: vi.fn(async () => ({ status: "committed" })),
+      persistSiteProfile,
+    });
+
+    const bound = makePool(5);
+    const persist = vi.fn(async () => ({ siteId: 5, profileId: 77, reportId: 91, reportKind: "initial_audit", pageCount: 1, gaps: 3 }));
+    await expect(processSiteAnalysisJob(bound.pool, { analysisId: 41, runRevision: 2 }, deps(persist)))
+      .resolves.toMatchObject({ ok: true, siteProfile: { siteId: 5, reportId: 91 } });
+    expect(persist).toHaveBeenCalledTimes(1);
+    const [client, payload] = persist.mock.calls[0];
+    expect(client.query).toBe(bound.txQuery);
+    expect(payload).toMatchObject({ analysisId: 41, runRevision: 2, siteId: 5, snapshotHash: testSnapshot.snapshotHash });
+    expect(payload.pages).toEqual([page]);
+    expect(payload.report).toEqual({ policyVersion: "v1" });
+    const readyIndex = bound.txQuery.mock.calls.findIndex(([sql]) => String(sql).includes("status = 'ready'"));
+    const commitIndex = bound.txQuery.mock.calls.findIndex(([sql]) => String(sql) === "commit");
+    expect(readyIndex).toBeGreaterThan(-1);
+    expect(commitIndex).toBeGreaterThan(readyIndex);
+    expect(persist.mock.invocationCallOrder[0]).toBeGreaterThan(bound.txQuery.mock.invocationCallOrder[readyIndex]);
+    expect(persist.mock.invocationCallOrder[0]).toBeLessThan(bound.txQuery.mock.invocationCallOrder[commitIndex]);
+
+    const unbound = makePool(null);
+    const skipped = vi.fn();
+    await expect(processSiteAnalysisJob(unbound.pool, { analysisId: 41, runRevision: 2 }, deps(skipped)))
+      .resolves.toMatchObject({ ok: true, siteProfile: null });
+    expect(skipped).not.toHaveBeenCalled();
+  });
+
+  it("fails the analysis instead of publishing a result without its site profile", async () => {
+    const txQuery = vi.fn(async (sql) => {
+      if (String(sql).includes("select status, run_revision")) return { rows: [{ status: "analyzing", run_revision: 2, worker_lease_token: "lease-1" }] };
+      if (String(sql).includes("update site_analysis_jobs") && String(sql).includes("returning id")) return { rows: [{ id: 41 }] };
+      return { rows: [] };
+    });
+    const pool = {
+      query: vi.fn(async (sql) => String(sql).includes("returning id, user_id") ? { rows: [{ ...analysisRow(), site_id: 5 }] } : { rows: [] }),
+      connect: vi.fn(async () => ({ query: txQuery, release: vi.fn() })),
+    };
+    const release = vi.fn(async () => true);
+    await expect(processSiteAnalysisJob(pool, { analysisId: 41, runRevision: 2 }, {
+      crawl: vi.fn(async () => ({ pages: [], report: {} })),
+      leaseToken: "lease-1",
+      buildSnapshot: vi.fn(() => testSnapshot),
+      runInterview: vi.fn(async () => interviewResult(release)),
+      finalizeUsage: vi.fn(async () => ({ status: "committed" })),
+      persistSiteProfile: vi.fn(async () => { throw new Error("profile boom"); }),
+    })).rejects.toMatchObject({ code: "worker_failed" });
+    expect(txQuery).toHaveBeenCalledWith("rollback");
+    expect(txQuery).not.toHaveBeenCalledWith("commit");
+    expect(release).toHaveBeenCalled();
+    expect(pool.query.mock.calls.at(-1)?.[0]).toContain("status = 'failed'");
+  });
+
   it("makes a stale or terminal BullMQ delivery inert", async () => {
     const pool = { query: vi.fn().mockResolvedValue({ rows: [] }) };
     const crawl = vi.fn();

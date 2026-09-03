@@ -19,7 +19,7 @@
 через штатный `password_reset_outbox` — админ не видит токен. `ai_daily_limit`
 переопределяет `AI_DAILY_LIMIT` для одного аккаунта (1–100 000, `null` — платформенный).
 Нельзя заблокировать себя и аккаунты из admin allowlist. Журнал —
-`admin_account_actions` (миграция `20261006_admin_account_controls.sql`).
+`admin_account_actions` (миграция `20261009_admin_account_controls.sql`).
 
 ## Telegram-алерты администраторам
 
@@ -89,7 +89,7 @@ Back/forward и reload сохраняют выбранный компонент.
 
 URL: `/admin?<filters>&analyticsSection=<section>&analyticsTab=<tab>#aurora-analytics`.
 
-Карточки строятся для всех 15 разделов из `APP_ROUTES`. Активность, техническое
+Карточки строятся для всех разделов из `APP_ROUTES` (сейчас 16). Активность, техническое
 здоровье и полезный доменный результат разделены. Фильтры: 24h/7d/30d/custom,
 project, role segment, new/returning, device, app version и release. Если доменная
 таблица не содержит выбранное измерение device/version/release, результат маркируется
