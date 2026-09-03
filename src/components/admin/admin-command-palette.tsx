@@ -2,6 +2,7 @@
 
 import { BriefcaseBusiness, Search, Send, UserRound, type LucideIcon } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 import type { AdminSearchHit, AdminSearchResponse } from "@/lib/admin-search";
 import { adminProjectsHref, adminPublicationsHref, adminUsersHref } from "@/lib/admin-url-state";
@@ -96,8 +97,10 @@ export function AdminCommandPalette() {
     );
   }
 
-  return (
-    <div role="dialog" aria-modal="true" aria-labelledby={titleId} className="fixed inset-0 z-50 grid place-items-start justify-center bg-text/45 p-4 pt-[12vh] backdrop-blur-sm" onClick={(event) => { if (event.target === event.currentTarget) setOpen(false); }}>
+  // The sidebar uses backdrop-filter, which turns it into the containing block for
+  // position: fixed; the dialog is portalled to <body> so it covers the whole page.
+  return createPortal(
+    <div role="dialog" aria-modal="true" aria-labelledby={titleId} className="app-v3 fixed inset-0 z-50 grid place-items-start justify-center bg-text/45 p-4 pt-[12vh] backdrop-blur-sm" onClick={(event) => { if (event.target === event.currentTarget) setOpen(false); }}>
       <div className="card-plain w-full max-w-2xl overflow-hidden rounded-lg p-0 shadow-float">
         <h2 id={titleId} className="sr-only">Поиск по админ-панели</h2>
         <div className="flex items-center gap-3 border-b border-line px-4">
@@ -158,6 +161,7 @@ export function AdminCommandPalette() {
           })}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
