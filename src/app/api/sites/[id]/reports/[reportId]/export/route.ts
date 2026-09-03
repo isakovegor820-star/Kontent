@@ -23,14 +23,18 @@ export async function GET(req: NextRequest, context: Context) {
     const found = await requireSite(resolved.context, params.id);
     if (!found.ok) return found.response;
     const queried = await pool.query<SiteReportRow>(
-      `select id, site_id, kind, profile_id, previous_report_id, payload, summary_ru, status, created_at
+      `select id, site_id, kind, profile_id, previous_report_id, payload, summary_ru, status, interpretation, interpretation_status, created_at
          from site_reports
         where id = $1 and site_id = $2 and status = 'ready'`,
       [reportId, found.site.id],
     );
     const row = queried.rows[0];
     if (!row || !row.payload) return jsonWithRequest({ error: "not_found" }, 404, requestId);
-    const rendered = await renderSiteReportExport(format, { payload: row.payload, summaryRu: row.summary_ru });
+    const rendered = await renderSiteReportExport(format, {
+      payload: row.payload,
+      summaryRu: row.summary_ru,
+      interpretation: row.interpretation_status === "ready" ? row.interpretation ?? null : null,
+    });
     const filename = `aurora-site-${found.site.confirmed_domain}-${row.kind}-${reportId}.${rendered.extension}`;
     return new NextResponse(new Uint8Array(rendered.bytes), {
       status: 200,

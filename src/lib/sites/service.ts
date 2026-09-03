@@ -54,6 +54,8 @@ export type SiteProfileRow = {
   technical: Record<string, unknown>;
   linkable_pages: unknown[];
   summary: string | null;
+  ai_classification?: Record<string, unknown> | null;
+  refined_at?: Date | string | null;
   created_at: Date | string;
 };
 
@@ -66,6 +68,8 @@ export type SiteReportRow = {
   payload?: Record<string, unknown>;
   summary_ru: string;
   status: "generating" | "ready" | "failed";
+  interpretation?: Record<string, unknown> | null;
+  interpretation_status?: "pending" | "ready" | "skipped" | "failed";
   created_at: Date | string;
 };
 
@@ -121,6 +125,15 @@ export function serializeSiteProfile(row: SiteProfileRow) {
     technical: row.technical,
     linkablePages: row.linkable_pages,
     summary: row.summary,
+    refinedAt: iso(row.refined_at),
+    aiClassification: row.ai_classification
+      ? {
+          status: String(row.ai_classification.status ?? "ready"),
+          engine: (row.ai_classification.engine as string | null) ?? null,
+          pageTypeOverrides: Number(row.ai_classification.pageTypeOverrides ?? 0),
+          topicClusters: Number(row.ai_classification.topicClusters ?? 0),
+        }
+      : null,
     createdAt: iso(row.created_at),
   };
 }
@@ -133,6 +146,8 @@ export function serializeSiteReport(row: SiteReportRow, includePayload = false) 
     profileId: row.profile_id === null ? null : Number(row.profile_id),
     previousReportId: row.previous_report_id === null ? null : Number(row.previous_report_id),
     summaryRu: row.summary_ru,
+    interpretation: row.interpretation_status === "ready" ? row.interpretation ?? null : null,
+    interpretationStatus: row.interpretation_status ?? "pending",
     createdAt: iso(row.created_at),
     ...(includePayload ? { payload: row.payload ?? null } : {}),
   };
@@ -309,13 +324,13 @@ export async function loadSiteDetails(db: Queryable, site: SiteRow) {
       ? Promise.resolve({ rows: [] as SiteProfileRow[] })
       : db.query<SiteProfileRow>(
         `select id, site_id, analysis_job_id, run_revision, profile_version, page_count,
-                publication_count, topics, gaps, technical, linkable_pages, summary, created_at
+                publication_count, topics, gaps, technical, linkable_pages, summary, ai_classification, refined_at, created_at
            from site_profiles
           where id = $1 and site_id = $2`,
         [site.latest_profile_id, siteId],
       ),
     db.query<SiteReportRow>(
-      `select id, site_id, kind, profile_id, previous_report_id, summary_ru, status, created_at
+      `select id, site_id, kind, profile_id, previous_report_id, summary_ru, status, interpretation, interpretation_status, created_at
          from site_reports
         where site_id = $1
         order by created_at desc, id desc

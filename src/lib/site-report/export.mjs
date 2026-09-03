@@ -56,6 +56,28 @@ export function buildSiteReportSections(report) {
     ],
   });
 
+  const interpretation = report?.interpretation;
+  if (interpretation && typeof interpretation === "object" && interpretation.summary) {
+    sections.push({
+      title: "Интерпретация Авроры",
+      paragraphs: [clean(interpretation.summary)],
+      bullets: [
+        ...(Array.isArray(interpretation.whatItMeans) ? interpretation.whatItMeans.map((item) => clean(item)) : []),
+      ],
+      table: Array.isArray(interpretation.startWith) && interpretation.startWith.length
+        ? {
+            headers: ["С чего начать", "Почему"],
+            rows: interpretation.startWith.map((item) => [item.title || item.key, item.why]),
+            empty: "",
+          }
+        : undefined,
+      footnote: [
+        ...(Array.isArray(interpretation.watchOut) && interpretation.watchOut.length ? [`Ограничения: ${interpretation.watchOut.map((item) => clean(item)).join(" ")}`] : []),
+        clean(interpretation.disclaimer),
+      ].filter(Boolean).join(" "),
+    });
+  }
+
   sections.push({
     title: "SEO (on-page)",
     facts: [
@@ -162,7 +184,7 @@ export function buildSiteReportSections(report) {
 }
 
 export function renderSiteReportJson(report) {
-  return Buffer.from(`${JSON.stringify({ summaryRu: report.summaryRu, ...report.payload }, null, 2)}\n`, "utf8");
+  return Buffer.from(`${JSON.stringify({ summaryRu: report.summaryRu, interpretation: report.interpretation ?? null, ...report.payload }, null, 2)}\n`, "utf8");
 }
 
 export function renderSiteReportMarkdown(report) {
@@ -175,6 +197,7 @@ export function renderSiteReportMarkdown(report) {
     if (section.facts?.length) lines.push("");
     for (const bullet of section.bullets || []) lines.push(`- ${markdownCell(bullet)}`);
     if (section.bullets?.length) lines.push("");
+    if (section.footnote) lines.push(`_${markdownCell(section.footnote)}_`, "");
     if (section.table) {
       if (!section.table.rows.length) {
         lines.push(section.table.empty, "");
@@ -199,6 +222,7 @@ export function renderSiteReportHtml(report) {
       parts.push(`<dl>${section.facts.map(([label, value]) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd>`).join("")}</dl>`);
     }
     if (section.bullets?.length) parts.push(`<ul>${section.bullets.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`);
+    if (section.footnote) parts.push(`<p class="muted">${escapeHtml(section.footnote)}</p>`);
     if (section.table) {
       if (!section.table.rows.length) parts.push(`<p class="muted">${escapeHtml(section.table.empty)}</p>`);
       else {
@@ -238,6 +262,10 @@ export async function renderSiteReportPdf(report) {
     for (const bullet of section.bullets || []) {
       ensureSpace();
       document.fontSize(8.5).fillColor("#172b4d").text(`• ${clean(bullet)}`);
+    }
+    if (section.footnote) {
+      ensureSpace();
+      document.moveDown(0.2).fontSize(8).fillColor("#64748b").text(clean(section.footnote));
     }
     if (section.table) {
       if (!section.table.rows.length) {

@@ -69,8 +69,38 @@ function normalizeDate(value) {
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
+export const SITE_PROFILE_PAGE_TYPES = Object.freeze([
+  "home", "team", "case", "partner", "event", "product", "service", "contact", "about", "article", "other",
+]);
+
+/**
+ * Нормализует кэшированную классификацию модели: типы страниц только из известного списка,
+ * кластеры тем — только с двумя и более ключами. Всё остальное отбрасывается молча —
+ * профиль остаётся детерминированным при любом ответе классификатора.
+ */
+export function normalizeSiteClassification(raw) {
+  const pageTypes = {};
+  for (const [url, type] of Object.entries(raw?.pageTypes || {})) {
+    const clean = sanitizeEvidenceUrl(url);
+    if (clean && SITE_PROFILE_PAGE_TYPES.includes(String(type))) pageTypes[clean] = String(type);
+  }
+  const topicClusters = [];
+  const usedKeys = new Set();
+  for (const cluster of Array.isArray(raw?.topicClusters) ? raw.topicClusters : []) {
+    const label = cleanText(cluster?.label, 80).toLocaleLowerCase("ru-RU");
+    const keys = [...new Set((Array.isArray(cluster?.keys) ? cluster.keys : [])
+      .map((key) => cleanText(key, 80).toLocaleLowerCase("ru-RU"))
+      .filter((key) => key && !usedKeys.has(key)))];
+    if (!label || keys.length < 2) continue;
+    for (const key of keys) usedKeys.add(key);
+    topicClusters.push(Object.freeze({ label, keys: Object.freeze(keys) }));
+  }
+  return Object.freeze({ pageTypes: Object.freeze(pageTypes), topicClusters: Object.freeze(topicClusters) });
+}
+
 /** Классифицированный инвентарь: один элемент на URL, без служебных страниц. */
-export function classifySitePages(pages) {
+export function classifySitePages(pages, classification = null) {
+  const overrides = classification ? normalizeSiteClassification(classification).pageTypes : {};
   const seen = new Set();
   const result = [];
   for (const page of Array.isArray(pages) ? pages : []) {
@@ -79,7 +109,7 @@ export function classifySitePages(pages) {
     seen.add(url);
     result.push(Object.freeze({
       url,
-      pageType: isOkPage(page) ? classifySitePage({ ...page, url }) : "unavailable",
+      pageType: isOkPage(page) ? (overrides[url] || classifySitePage({ ...page, url })) : "unavailable",
       title: cleanText(page?.title, 300) || null,
       words: pageWords(page),
       ok: isOkPage(page),
@@ -91,7 +121,34 @@ export function classifySitePages(pages) {
   return result;
 }
 
-function buildTopics(inventory) {
+function mergeTopicClusters(topics, clusters) {
+  if (!clusters?.length) return topics;
+  const byKey = new Map(topics.map((topic) => [topic.key, topic]));
+  const consumed = new Set();
+  const merged = [];
+  for (const cluster of clusters) {
+    const members = cluster.keys.map((key) => byKey.get(key)).filter(Boolean);
+    if (!members.length) continue;
+    const pageUrls = [...new Set(members.flatMap((topic) => topic.pageUrls))];
+    const pageCount = pageUrls.length;
+    const deep = members.some((topic) => topic.coverage === "strong");
+    for (const topic of members) consumed.add(topic.key);
+    merged.push(Object.freeze({
+      key: cluster.label,
+      label: cluster.label,
+      pageCount,
+      occurrences: members.reduce((sum, topic) => sum + topic.occurrences, 0),
+      coverage: pageCount >= STRONG_TOPIC_PAGES && deep ? "strong" : "thin",
+      pageUrls: pageUrls.slice(0, MAX_TOPIC_PAGES),
+      mergedFrom: Object.freeze(members.map((topic) => topic.key)),
+    }));
+  }
+  return [...merged, ...topics.filter((topic) => !consumed.has(topic.key))]
+    .sort((a, b) => b.pageCount - a.pageCount || b.occurrences - a.occurrences || a.key.localeCompare(b.key, "ru"))
+    .slice(0, MAX_TOPICS);
+}
+
+function buildTopics(inventory, clusters = null) {
   const pagesByWord = new Map();
   const occurrences = new Map();
   for (const page of inventory) {
@@ -108,7 +165,7 @@ function buildTopics(inventory) {
       pagesByWord.set(word, list);
     }
   }
-  return [...pagesByWord.entries()]
+  const topics = [...pagesByWord.entries()]
     .filter(([, pages]) => pages.length >= 2)
     .sort((a, b) => b[1].length - a[1].length || (occurrences.get(b[0]) || 0) - (occurrences.get(a[0]) || 0) || a[0].localeCompare(b[0], "ru"))
     .slice(0, MAX_TOPICS)
@@ -124,6 +181,7 @@ function buildTopics(inventory) {
         pageUrls: pages.slice(0, MAX_TOPIC_PAGES).map((page) => page.url),
       });
     });
+  return mergeTopicClusters(topics, clusters);
 }
 
 function gap(key, kind, severity, label, detail, evidenceUrls = []) {
@@ -294,10 +352,11 @@ function buildSummary({ confirmedDomain, inventory, publicationCount, topics, ga
  * Детерминированный профиль сайта поверх результатов одного прогона анализа.
  * Не обращается к сети и к моделям: те же страницы всегда дают тот же профиль.
  */
-export function buildSiteProfile({ confirmedDomain, pages, report = null, checkedAt = null } = {}) {
+export function buildSiteProfile({ confirmedDomain, pages, report = null, checkedAt = null, classification = null } = {}) {
   const domain = cleanText(confirmedDomain, 253).toLocaleLowerCase("ru-RU");
   if (!domain) throw new TypeError("site_profile_domain_required");
-  const inventory = classifySitePages(pages);
+  const normalizedClassification = classification ? normalizeSiteClassification(classification) : null;
+  const inventory = classifySitePages(pages, normalizedClassification);
   const pageTypeCounts = {};
   for (const page of inventory) {
     if (!page.ok) continue;
@@ -309,7 +368,7 @@ export function buildSiteProfile({ confirmedDomain, pages, report = null, checke
     .filter(Boolean)
     .sort()
     .at(-1) || null;
-  const topics = buildTopics(inventory);
+  const topics = buildTopics(inventory, normalizedClassification?.topicClusters || null);
   const gaps = buildGaps(inventory, topics, pageTypeCounts);
   const technical = buildTechnical(report, inventory);
   const linkablePages = buildLinkablePages(inventory);
@@ -319,6 +378,7 @@ export function buildSiteProfile({ confirmedDomain, pages, report = null, checke
     profileVersion: SITE_PROFILE_VERSION,
     confirmedDomain: domain,
     checkedAt: normalizeDate(checkedAt) || new Date().toISOString(),
+    refined: Boolean(normalizedClassification && (Object.keys(normalizedClassification.pageTypes).length || normalizedClassification.topicClusters.length)),
     pageCount: inventory.length,
     publicationCount: publications.length,
     lastPublishedAt,

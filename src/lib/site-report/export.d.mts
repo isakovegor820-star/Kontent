@@ -1,6 +1,6 @@
 export const SITE_REPORT_EXPORT_FORMATS: readonly ["json", "markdown", "html", "pdf"];
 
-export type SiteReportExportInput = Readonly<{ payload: Record<string, unknown>; summaryRu: string }>;
+export type SiteReportExportInput = Readonly<{ payload: Record<string, unknown>; summaryRu: string; interpretation?: Record<string, unknown> | null }>;
 
 export function buildSiteReportSections(report: SiteReportExportInput): ReadonlyArray<Record<string, unknown>>;
 export function renderSiteReportJson(report: SiteReportExportInput): Buffer;

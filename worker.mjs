@@ -790,12 +790,12 @@ const projectExportQueue = AUTOPILOT_ONLY || MEDIA_ONLY || PUBLICATION_ONLY
 const projectExportWorker = AUTOPILOT_ONLY || MEDIA_ONLY || PUBLICATION_ONLY
   ? null
   : createProjectExportWorker({ connection, pool, concurrency: 1 });
-const siteAnalysisWorker = AUTOPILOT_ONLY || MEDIA_ONLY || PUBLICATION_ONLY
-  ? null
-  : createSiteAnalysisWorker({ connection, pool, concurrency: 1 });
 const siteArticlesQueue = AUTOPILOT_ONLY || MEDIA_ONLY || PUBLICATION_ONLY
   ? null
   : new Queue(SITE_ARTICLES_QUEUE, { connection });
+const siteAnalysisWorker = AUTOPILOT_ONLY || MEDIA_ONLY || PUBLICATION_ONLY
+  ? null
+  : createSiteAnalysisWorker({ connection, pool, concurrency: 1, siteArticlesQueue });
 const siteArticlesWorker = AUTOPILOT_ONLY || MEDIA_ONLY || PUBLICATION_ONLY
   ? null
   : createSiteArticlesWorker({ connection, pool, queue: siteArticlesQueue, concurrency: 1 });
@@ -12336,7 +12336,7 @@ const cronWorker = AUTOPILOT_ONLY || MEDIA_ONLY || PUBLICATION_ONLY ? null : new
       case "exports":  return reconcileProjectExports();
       case "bot-digest": return runBotDigests();
       case "site-daily": return runSiteDailyMaintenance(pool, { siteArticlesQueue, siteAnalysisQueue: new Queue("site-analysis", { connection }) });
-      case "site-monthly": return runSiteMonthlyReports(pool);
+      case "site-monthly": return runSiteMonthlyReports(pool, { siteArticlesQueue });
       default:         console.warn(`[cron] неизвестная задача: ${job.name}`);
     }
   },

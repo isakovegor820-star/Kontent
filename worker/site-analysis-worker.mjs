@@ -609,12 +609,26 @@ export async function processSiteAnalysisJob(pool, data, dependencies = {}) {
   }
 }
 
-export function createSiteAnalysisWorker({ connection, pool, concurrency = 1 }) {
+export function createSiteAnalysisWorker({ connection, pool, concurrency = 1, siteArticlesQueue = null }) {
   const worker = new Worker(
     SITE_ANALYSIS_QUEUE,
-    async (job) => processSiteAnalysisJob(pool, job.data, {
-      finalAttempt: job.attemptsMade + 1 >= Number(job.opts.attempts || 1),
-    }),
+    async (job) => {
+      const result = await processSiteAnalysisJob(pool, job.data, {
+        finalAttempt: job.attemptsMade + 1 >= Number(job.opts.attempts || 1),
+      });
+      // Профиль сайта записан детерминированно; уточнение моделью и интерпретация отчёта —
+      // отдельные задания, чтобы вызовы ИИ не жили внутри транзакции сохранения анализа.
+      if (result?.siteProfile?.profileId && siteArticlesQueue) {
+        await siteArticlesQueue.add("refine", { profileId: result.siteProfile.profileId }, {
+          jobId: `site-articles-refine-${result.siteProfile.profileId}`,
+          attempts: 2,
+          backoff: { type: "exponential", delay: 30_000 },
+          removeOnComplete: 100,
+          removeOnFail: 100,
+        }).catch((error) => console.error("[site-analysis] refine enqueue failed", { code: error?.code || error?.name }));
+      }
+      return result;
+    },
     { connection, concurrency },
   );
   worker.on("ready", () => console.log("[site-analysis] очередь анализа сайтов слушается"));

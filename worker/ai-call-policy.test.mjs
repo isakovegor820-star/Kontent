@@ -17,6 +17,7 @@ describe("worker AI call policy", () => {
       "rss-summary",
       "site-analysis-interview",
       "site-article",
+      "site-report-interpretation",
       "site-visibility-probe",
     ]);
     expect(assertWorkerAiCallPolicy("rss-summary", 91)).toMatchObject({
@@ -40,6 +41,7 @@ describe("worker AI call policy", () => {
       "knowledge-embedding",
       "profile-refresh",
       "radar-query-expansion",
+      "site-page-classifier",
     ]);
     expect(assertWorkerAiCallPolicy("profile-refresh")).toMatchObject({ billing: "system" });
     expect(() => assertWorkerAiCallPolicy("profile-refresh", 12)).toThrow(/non-billable/u);
