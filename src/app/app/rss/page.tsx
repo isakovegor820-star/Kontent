@@ -161,13 +161,23 @@ function OpportunityCard({
 }) {
   const ready = item.post_id != null || item.opportunity_state === "used";
   const saved = item.opportunity_state === "saved";
+  const [expanded, setExpanded] = useState(false);
   const visualState = legalOpportunityVisualState(item);
   const hidden = visualState === "hidden";
   const visualCopy = VISUAL_STATE_COPY[visualState];
+  const detailsId = `legal-opportunity-details-${item.id}`;
+  const detailsTriggerId = `${detailsId}-trigger`;
+
+  function toggleDetails() {
+    const next = !expanded;
+    setExpanded(next);
+    if (next) onViewed(item.id);
+  }
 
   return (
     <Card
       as="article"
+      data-ui="legal-opportunity-card"
       data-opportunity-id={item.id}
       data-opportunity-state={visualState}
       className={cn(
@@ -176,7 +186,7 @@ function OpportunityCard({
         hidden && "bg-surface-inset/65",
       )}
     >
-      <div className="p-5 sm:p-7 lg:p-8">
+      <div className="p-4 sm:p-5 lg:p-6">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="flex flex-wrap items-center gap-2">
             <Badge tone={visualCopy.tone} className="nums">
@@ -190,6 +200,11 @@ function OpportunityCard({
               {item.insight.priority === "high" ? <Clock3 className="h-3.5 w-3.5" aria-hidden /> : <Lightbulb className="h-3.5 w-3.5" aria-hidden />}
               {item.insight.priorityLabel}
             </Badge>
+            <Badge tone="brand">
+              <Scale className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />
+              {item.insight.status}
+            </Badge>
+            <Badge tone="neutral">{item.insight.practice}</Badge>
             {ready && <Badge tone="success"><CheckCircle2 className="h-3.5 w-3.5" aria-hidden />Материал готов</Badge>}
           </div>
           <Caption className="nums shrink-0 text-text-3">
@@ -197,115 +212,144 @@ function OpportunityCard({
           </Caption>
         </div>
 
-        <div className="mt-5 flex flex-wrap items-center gap-x-4 gap-y-2 text-text-3">
-          <Caption as="span" className="inline-flex items-center gap-1.5 font-semibold">
-            <Scale className="h-3.5 w-3.5 text-brand" strokeWidth={2} aria-hidden />
-            {item.insight.status}
-          </Caption>
-          <Caption as="span">{item.insight.practice}</Caption>
-        </div>
-
-        <H3 className="mt-3 max-w-[70ch] line-clamp-5 text-balance" title={item.insight.title}>
+        <H3 className="mt-4 max-w-[88ch] line-clamp-4 text-balance" title={item.insight.title}>
           {item.insight.title}
         </H3>
-        <SecondaryText className="mt-3 max-w-[72ch] line-clamp-4 text-pretty" title={item.insight.summary}>
+        <SecondaryText className="mt-2.5 max-w-[90ch] line-clamp-3 text-pretty" title={item.insight.summary}>
           {item.insight.summary}
         </SecondaryText>
 
-        <div className="mt-6 grid gap-4 md:grid-cols-2">
-          <div className="rounded-sm bg-info-soft/65 p-4 sm:p-5">
+        <div className="mt-4 grid gap-3 md:grid-cols-2">
+          <div className="rounded-sm border border-brand/10 bg-info-soft/55 p-4">
             <div className="flex items-center gap-2 text-info-text">
               <Target className="h-4 w-4 shrink-0" strokeWidth={2} aria-hidden />
               <Caption className="font-bold tracking-[0.06em] uppercase">Почему это важно</Caption>
             </div>
-            <SecondaryText className="mt-2 text-pretty">{item.insight.whyImportant}</SecondaryText>
+            <SecondaryText className="mt-1.5 text-pretty">{item.insight.whyImportant}</SecondaryText>
           </div>
-          <div className="rounded-sm bg-surface-inset/75 p-4 sm:p-5">
+          <div className="rounded-sm border border-line bg-surface-inset/55 p-4">
             <div className="flex items-center gap-2 text-text-2">
               <BriefcaseBusiness className="h-4 w-4 shrink-0" strokeWidth={2} aria-hidden />
               <Caption className="font-bold tracking-[0.06em] uppercase">Кого касается</Caption>
             </div>
-            <SecondaryText className="mt-2 text-pretty">{item.insight.audience}</SecondaryText>
+            <SecondaryText className="mt-1.5 text-pretty">{item.insight.audience}</SecondaryText>
           </div>
         </div>
 
-        <details
-          className="group mt-5 border-t border-line pt-2"
-          onToggle={(event) => {
-            if (event.currentTarget.open) onViewed(item.id);
-          }}
+        <button
+          id={detailsTriggerId}
+          type="button"
+          aria-expanded={expanded}
+          aria-controls={detailsId}
+          onClick={toggleDetails}
+          className="mt-4 flex min-h-11 w-full items-center justify-between gap-3 rounded-xs border border-line bg-surface px-4 py-2.5 text-left type-label text-text-2 transition-[background-color,border-color,color] duration-150 hover:border-line-strong hover:bg-surface-inset/45 hover:text-text focus-visible:ring-4 focus-visible:ring-brand/15 motion-reduce:transition-none"
         >
-          <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 rounded-xs px-1 type-label text-text-2 marker:hidden hover:text-text focus-visible:ring-4 focus-visible:ring-brand/15">
-            Подробнее о событии
-            <ArrowRight className="h-4 w-4 shrink-0 transition-transform duration-200 group-open:rotate-90 motion-reduce:transition-none" aria-hidden />
-          </summary>
-          <div className="pb-2 pl-1">
-            <Caption className="font-bold tracking-[0.06em] text-text-3 uppercase">Идея подачи</Caption>
-            <SecondaryText className="mt-1.5 text-pretty">{item.insight.contentAngle}</SecondaryText>
-            <Caption className="mt-3 max-w-[72ch] text-pretty text-text-3">
-              Перед публикацией Аврора повторно передаст модели заголовок, описание и ссылку на этот материал. Юридический статус показан по формулировкам источника.
-            </Caption>
-          </div>
-        </details>
+          <span>{expanded ? "Свернуть подробности" : "Подробнее о событии"}</span>
+          <ArrowRight
+            className={cn(
+              "h-4 w-4 shrink-0 transition-transform duration-200 motion-reduce:transition-none",
+              expanded ? "-rotate-90" : "rotate-90",
+            )}
+            aria-hidden
+          />
+        </button>
 
-        <div className="mt-5 flex flex-col gap-4 border-t border-line pt-5 sm:flex-row sm:items-center sm:justify-between">
-          <div className="min-w-0">
-            <a
-              href={item.link || item.feed_url}
-              target="_blank"
-              rel="noreferrer"
-              className="type-caption inline-flex min-h-11 max-w-full items-center gap-1.5 font-semibold text-text-2 underline-offset-4 hover:text-brand hover:underline focus-visible:rounded-xs focus-visible:ring-4 focus-visible:ring-brand/15"
-              aria-label={`Открыть источник: ${item.insight.sourceLabel}`}
-            >
-              <span className="truncate">{item.insight.sourceLabel}</span>
-              <ExternalLink className="h-3.5 w-3.5 shrink-0" aria-hidden />
-            </a>
+        {expanded ? (
+          <div
+            id={detailsId}
+            role="region"
+            aria-labelledby={detailsTriggerId}
+            className="mt-2 overflow-hidden rounded-sm border border-line bg-surface"
+          >
+            <div className="grid gap-4 p-4 lg:grid-cols-[minmax(0,1.35fr)_minmax(220px,0.65fr)]">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 text-text-2">
+                  <Gavel className="h-4 w-4 shrink-0 text-brand" aria-hidden />
+                  <Caption className="font-bold tracking-[0.06em] uppercase">Суть события</Caption>
+                </div>
+                <SecondaryText className="mt-1.5 text-pretty">{item.insight.summary}</SecondaryText>
+              </div>
+              <div className="min-w-0 lg:border-l lg:border-line lg:pl-4">
+                <div className="flex items-center gap-2 text-text-2">
+                  <Scale className="h-4 w-4 shrink-0 text-brand" aria-hidden />
+                  <Caption className="font-bold tracking-[0.06em] uppercase">Правовой контекст</Caption>
+                </div>
+                <SecondaryText className="mt-1.5 text-pretty">
+                  {item.insight.status} · {item.insight.practice}
+                </SecondaryText>
+              </div>
+            </div>
+            <div className="border-t border-line bg-surface-inset/35 p-4">
+              <div className="flex items-center gap-2 text-text-2">
+                <Lightbulb className="h-4 w-4 shrink-0 text-brand" aria-hidden />
+                <Caption className="font-bold tracking-[0.06em] uppercase">Идея подачи</Caption>
+              </div>
+              <SecondaryText className="mt-1.5 text-pretty">{item.insight.contentAngle}</SecondaryText>
+              <Caption className="mt-2 max-w-[92ch] text-pretty text-text-3">
+                Юридический статус сформирован по тексту источника. Перед публикацией проверьте документ по ссылке ниже.
+              </Caption>
+            </div>
           </div>
+        ) : null}
+      </div>
 
-          <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:justify-end">
-            <Button
-              type="button"
-              data-aurora-feature="legal_opportunity"
-              data-aurora-action="saved"
-              variant={saved ? "soft" : "ghost"}
-              size="sm"
-              loading={stateBusy && saved}
-              disabled={stateBusy || busy}
-              onClick={() => onState(item, saved ? null : "saved")}
-              aria-pressed={saved}
-              className="w-full sm:w-auto"
-            >
-              {saved ? <BookmarkCheck className="h-4 w-4" aria-hidden /> : <Bookmark className="h-4 w-4" aria-hidden />}
-              {saved ? "Сохранено" : "Сохранить"}
-            </Button>
-            <Button
-              type="button"
-              data-aurora-feature="legal_opportunity"
-              data-aurora-action="hidden"
-              variant={hidden ? "secondary" : "ghost"}
-              size="sm"
-              disabled={stateBusy || busy}
-              onClick={() => onState(item, hidden ? null : "dismissed")}
-              className="w-full sm:w-auto"
-            >
-              {hidden ? <Eye className="h-4 w-4" aria-hidden /> : <EyeOff className="h-4 w-4" aria-hidden />}
-              {hidden ? "Вернуть в подборку" : "Скрыть"}
-            </Button>
-            <Button
-              type="button"
-              data-aurora-feature="legal_opportunity"
-              data-aurora-action="used"
-              variant="brand"
-              size="sm"
-              loading={busy}
-              disabled={stateBusy}
-              onClick={() => onCreate(item)}
-              className="col-span-2 w-full sm:w-auto"
-            >
-              {item.post_id ? <CalendarCheck2 className="h-4 w-4" aria-hidden /> : <Sparkles className="h-4 w-4" aria-hidden />}
-              {item.post_id ? "Открыть в календаре" : "Создать пост"}
-            </Button>
-          </div>
+      <div className="flex flex-col gap-3 border-t border-line bg-surface-inset/25 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5 lg:px-6">
+        <a
+          href={item.link || item.feed_url}
+          target="_blank"
+          rel="noreferrer"
+          className="type-caption inline-flex min-h-11 min-w-0 max-w-full items-center gap-1.5 font-semibold text-text-2 underline-offset-4 hover:text-brand hover:underline focus-visible:rounded-xs focus-visible:ring-4 focus-visible:ring-brand/15"
+          aria-label={`Открыть источник: ${item.insight.sourceLabel}`}
+        >
+          <span className="truncate">{item.insight.sourceLabel}</span>
+          <span aria-hidden className="text-text-3">·</span>
+          <span className="shrink-0 text-brand">Открыть источник</span>
+          <ExternalLink className="h-3.5 w-3.5 shrink-0" aria-hidden />
+        </a>
+
+        <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:justify-end">
+          <Button
+            type="button"
+            data-aurora-feature="legal_opportunity"
+            data-aurora-action="saved"
+            variant="secondary"
+            size="sm"
+            loading={stateBusy && saved}
+            disabled={stateBusy || busy}
+            onClick={() => onState(item, saved ? null : "saved")}
+            aria-pressed={saved}
+            className="w-full sm:w-auto"
+          >
+            {saved ? <BookmarkCheck className="h-4 w-4" aria-hidden /> : <Bookmark className="h-4 w-4" aria-hidden />}
+            {saved ? "Сохранено" : "Сохранить"}
+          </Button>
+          <Button
+            type="button"
+            data-aurora-feature="legal_opportunity"
+            data-aurora-action="hidden"
+            variant="secondary"
+            size="sm"
+            disabled={stateBusy || busy}
+            onClick={() => onState(item, hidden ? null : "dismissed")}
+            className="w-full sm:w-auto"
+          >
+            {hidden ? <Eye className="h-4 w-4" aria-hidden /> : <EyeOff className="h-4 w-4" aria-hidden />}
+            {hidden ? "Вернуть в подборку" : "Скрыть"}
+          </Button>
+          <Button
+            type="button"
+            data-aurora-feature="legal_opportunity"
+            data-aurora-action="used"
+            variant="brand"
+            size="sm"
+            loading={busy}
+            disabled={stateBusy}
+            onClick={() => onCreate(item)}
+            className="col-span-2 w-full sm:w-auto"
+          >
+            {item.post_id ? <CalendarCheck2 className="h-4 w-4" aria-hidden /> : <Sparkles className="h-4 w-4" aria-hidden />}
+            {item.post_id ? "Открыть в календаре" : "Создать пост"}
+          </Button>
         </div>
       </div>
     </Card>
@@ -833,10 +877,15 @@ function LegalOpportunitiesScreen() {
           </Card>
         ) : (
           <>
-            <Card as="section" className="overflow-hidden" aria-labelledby="automation-title">
-              <div className="grid gap-7 p-5 sm:p-7 lg:grid-cols-[minmax(0,1fr)_minmax(300px,380px)] lg:items-start lg:gap-10">
-                <div className="min-w-0">
-                  <div className="flex items-start gap-4">
+            <Card
+              as="section"
+              data-ui="legal-monitoring-compact"
+              className="overflow-hidden"
+              aria-labelledby="automation-title"
+            >
+              <div className="grid lg:grid-cols-[minmax(0,1fr)_minmax(320px,400px)]">
+                <div className="min-w-0 p-5 sm:p-6">
+                  <div className="flex items-start gap-3.5">
                     <span className="grid h-11 w-11 shrink-0 place-items-center rounded-sm bg-info-soft text-brand" aria-hidden>
                       <Sparkles className="h-5 w-5" strokeWidth={2} />
                     </span>
@@ -848,92 +897,119 @@ function LegalOpportunitiesScreen() {
                           {automationError ? "Обновление задерживается" : "Работает"}
                         </Badge>
                       </div>
-                      <SecondaryText className="mt-2 max-w-2xl text-pretty">
+                      <SecondaryText className="mt-1.5 max-w-3xl text-pretty">
                         Аврора собирает события из проверенных источников и убирает повторы. Без вашего разрешения ничего не публикуется.
                       </SecondaryText>
-                      <Caption role="status" aria-live="polite" className="nums mt-3 font-semibold text-text-3">
-                        {preparing
-                          ? "Проверяем свежие юридические события…"
-                          : `${activeFeeds.length} ${plural(activeFeeds.length, "источник подключён", "источника подключены", "источников подключены")} · ${updatingFeeds.length} ${plural(updatingFeeds.length, "обновляется", "обновляются", "обновляются")} · ${enriched.length} ${plural(enriched.length, "инфоповод", "инфоповода", "инфоповодов")} в подборке`}
-                      </Caption>
                     </div>
                   </div>
 
-                  <dl className="mt-7 grid grid-cols-2 gap-x-6 gap-y-5 sm:grid-cols-3">
-                    <div>
+                  <div
+                    role="status"
+                    aria-live="polite"
+                    className="nums mt-4 flex min-h-6 flex-wrap items-center gap-x-4 gap-y-2 text-text-3"
+                  >
+                    {preparing ? (
+                      <Caption as="span" className="inline-flex items-center gap-1.5 font-semibold">
+                        <RefreshCw className="h-3.5 w-3.5 animate-spin text-brand motion-reduce:animate-none" aria-hidden />
+                        Проверяем свежие юридические события…
+                      </Caption>
+                    ) : (
+                      <>
+                        <Caption as="span" className="inline-flex items-center gap-1.5 font-semibold">
+                          <Scale className="h-3.5 w-3.5 text-brand" aria-hidden />
+                          {activeFeeds.length} {plural(activeFeeds.length, "источник подключён", "источника подключены", "источников подключены")}
+                        </Caption>
+                        <Caption as="span" className="inline-flex items-center gap-1.5 font-semibold">
+                          <RefreshCw className="h-3.5 w-3.5 text-brand" aria-hidden />
+                          {updatingFeeds.length} {plural(updatingFeeds.length, "обновляется", "обновляются", "обновляются")}
+                        </Caption>
+                        <Caption as="span" className="inline-flex items-center gap-1.5 font-semibold">
+                          <Bookmark className="h-3.5 w-3.5 text-brand" aria-hidden />
+                          {enriched.length} {plural(enriched.length, "инфоповод", "инфоповода", "инфоповодов")} в подборке
+                        </Caption>
+                      </>
+                    )}
+                  </div>
+
+                  <dl className="mt-4 grid gap-3 sm:grid-cols-3">
+                    <div className="rounded-sm border border-line bg-surface px-4 py-3.5">
                       <dt className="type-caption font-semibold text-text-3">Новых для вас</dt>
-                      <dd className="nums mt-1 type-h3 text-text">{unreadCount}</dd>
+                      <dd className="nums mt-1.5 type-h3 text-text">{unreadCount}</dd>
                     </div>
-                    <div>
+                    <div className="rounded-sm border border-line bg-surface px-4 py-3.5">
                       <dt className="type-caption font-semibold text-text-3">Готовых материалов</dt>
-                      <dd className="mt-1 flex min-h-11 flex-wrap items-center gap-x-3">
+                      <dd className="mt-1.5 flex min-h-9 flex-wrap items-center gap-x-3">
                         <span className="nums type-h3 text-text">{readyItems.length}</span>
                         {readyItems.length > 0 ? (
                           <Link
                             href={readyItemsHref}
                             className="type-caption inline-flex min-h-11 items-center gap-1 font-semibold text-brand underline-offset-4 hover:underline focus-visible:rounded-xs focus-visible:ring-4 focus-visible:ring-brand/15"
                           >
-                            Открыть готовые
+                            Открыть
                             <ArrowRight className="h-3.5 w-3.5" aria-hidden />
                           </Link>
                         ) : null}
                       </dd>
                     </div>
-                    <div className="col-span-2 sm:col-span-1">
+                    <div className="rounded-sm border border-line bg-surface px-4 py-3.5">
                       <dt className="type-caption font-semibold text-text-3">Последняя проверка</dt>
-                      <dd className="nums mt-1 type-body-strong text-text">
+                      <dd className="nums mt-2 type-body-strong text-text">
                         {lastFetchedAt ? fmtAgo(lastFetchedAt) : lastUpdatedAt ? fmtAgo(lastUpdatedAt.toISOString()) : "Запускается"}
                       </dd>
                     </div>
                   </dl>
                 </div>
 
-                <div
-                  className="rounded-md bg-surface-inset/65 p-4 sm:p-5"
-                  aria-busy={autoPublishSaving || undefined}
-                >
-                  {monitorChannels.length > 1 ? (
-                    <label className="flex min-w-0 flex-col gap-1.5 type-label text-text-2">
-                      Канал для готового контента
-                      <select
-                        value={channelId ?? ""}
-                        onChange={(event) => changeChannel(Number(event.target.value))}
-                        className="h-11 w-full rounded-xs border border-line bg-surface px-3 text-base text-text focus:border-brand focus:outline-none focus-visible:ring-4 focus-visible:ring-brand/15 sm:text-[14px]"
-                      >
-                        {monitorChannels.map((channel) => <option key={channel.id} value={channel.id}>{channel.title}</option>)}
-                      </select>
-                    </label>
-                  ) : (
-                    <div>
-                      <Caption className="font-semibold text-text-3">Канал для готового контента</Caption>
-                      <p className="mt-1 type-body-strong text-text">{selectedChannel?.title || "Канал не выбран"}</p>
-                    </div>
-                  )}
-
-                  <Link
-                    href="/app/settings?section=content"
-                    className="type-caption mt-2 inline-flex min-h-11 items-center gap-1.5 font-semibold text-brand underline-offset-4 hover:underline focus-visible:rounded-xs focus-visible:ring-4 focus-visible:ring-brand/15"
+                <div className="border-t border-line bg-surface-inset/45 p-4 sm:p-5 lg:border-t-0 lg:border-l">
+                  <div
+                    className="rounded-md border border-line bg-surface p-4"
+                    aria-busy={autoPublishSaving || undefined}
                   >
-                    Настроить профиль контента
-                    <ArrowRight className="h-3.5 w-3.5" aria-hidden />
-                  </Link>
+                    {monitorChannels.length > 1 ? (
+                      <label className="flex min-w-0 flex-col gap-1.5 type-label text-text-2">
+                        Канал для готового контента
+                        <select
+                          value={channelId ?? ""}
+                          onChange={(event) => changeChannel(Number(event.target.value))}
+                          className="h-11 w-full rounded-xs border border-line bg-surface px-3 text-base text-text transition-colors duration-150 hover:border-line-strong focus:border-brand focus:outline-none focus-visible:ring-4 focus-visible:ring-brand/15 motion-reduce:transition-none sm:text-[14px]"
+                        >
+                          {monitorChannels.map((channel) => <option key={channel.id} value={channel.id}>{channel.title}</option>)}
+                        </select>
+                      </label>
+                    ) : (
+                      <div>
+                        <Caption className="font-semibold text-text-3">Канал для готового контента</Caption>
+                        <p className="mt-1.5 flex min-h-11 items-center rounded-xs border border-line bg-surface px-3 type-body-strong text-text">
+                          {selectedChannel?.title || "Канал не выбран"}
+                        </p>
+                      </div>
+                    )}
 
-                  <div className="mt-4 border-t border-line pt-5">
-                    <Toggle
-                      id="legal-opportunity-auto-publish"
-                      checked={autoPublishEnabled}
-                      onChange={(next) => void changeAutoPublish(next)}
-                      label="Публиковать новые события автоматически"
-                      description="Только материалы, найденные после включения."
-                      disabled={preparing || autoPublishSaving || activeFeeds.length === 0}
-                    />
-                    <Caption className="mt-3 text-pretty" role="status" aria-live="polite">
-                      {autoPublishSaving
-                        ? "Сохраняем настройку…"
-                        : autoPublishEnabled
-                          ? "Включено — новые материалы будут подготовлены и опубликованы."
-                          : "Выключено — материалы остаются только в подборке."}
-                    </Caption>
+                    <Link
+                      href="/app/settings?section=content"
+                      className="type-caption mt-1.5 inline-flex min-h-11 items-center gap-1.5 font-semibold text-brand underline-offset-4 hover:underline focus-visible:rounded-xs focus-visible:ring-4 focus-visible:ring-brand/15"
+                    >
+                      Настроить профиль контента
+                      <ArrowRight className="h-3.5 w-3.5" aria-hidden />
+                    </Link>
+
+                    <div className="mt-2 border-t border-line pt-4">
+                      <Toggle
+                        id="legal-opportunity-auto-publish"
+                        checked={autoPublishEnabled}
+                        onChange={(next) => void changeAutoPublish(next)}
+                        label="Публиковать новые события автоматически"
+                        description="Только материалы, найденные после включения."
+                        disabled={preparing || autoPublishSaving || activeFeeds.length === 0}
+                      />
+                      <Caption className="mt-2.5 text-pretty text-text-3" role="status" aria-live="polite">
+                        {autoPublishSaving
+                          ? "Сохраняем настройку…"
+                          : autoPublishEnabled
+                            ? "Включено — новые материалы будут подготовлены и опубликованы."
+                            : "Выключено — материалы остаются только в подборке."}
+                      </Caption>
+                    </div>
                   </div>
                 </div>
               </div>

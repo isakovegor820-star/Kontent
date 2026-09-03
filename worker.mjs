@@ -85,6 +85,9 @@ import {
 } from "./worker/media-generation-worker.mjs";
 import { processLegalVisualRender } from "./worker/legal-visual-render-worker.mjs";
 import { createSiteAnalysisWorker } from "./worker/site-analysis-worker.mjs";
+import { SITE_ARTICLES_QUEUE, createSiteArticlesWorker } from "./worker/site-articles-worker.mjs";
+import { runSiteDailyMaintenance, runSiteMonthlyReports } from "./worker/site-scheduler.mjs";
+import { createEmbedder } from "./worker/embeddings.mjs";
 import { createProjectExportWorker } from "./worker/project-export-worker.mjs";
 import { materializeAllOpportunitySnapshots } from "./src/lib/opportunity-snapshot-materializer.mjs";
 import {
@@ -276,6 +279,7 @@ import {
   parseTelegramPublicStats,
   temporaryTelegramVerification,
 } from "./worker/telegram-reconciliation.mjs";
+import { resolveTelegramStatsHandle } from "./worker/telegram-stats-channel.mjs";
 import { importTelegramPublicPosts } from "./worker/telegram-public-import.mjs";
 import {
   captureTelegramChannelPost,
@@ -461,9 +465,6 @@ const semanticPublicationAdapter = createConfiguredSemanticAdapter({
 
 // Embeddings retain their separate model protocol. All text surfaces below resolve the
 // account engine through the shared orchestration policy instead of guessing from AI_API_KEY.
-const OLLAMA_URL = (process.env.OLLAMA_URL || "http://127.0.0.1:11434").replace(/\/+$/, "");
-const CLOUD_KEY = process.env.AI_API_KEY || "";
-const CLOUD_URL = (process.env.AI_API_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
 const TELEGRAM_API_URL = (process.env.TG_API_URL || "https://api.telegram.org").replace(/\/+$/, "");
 
 // ── База знаний (РАГ) ────────────────────────────────────────────────────────
@@ -471,49 +472,16 @@ const TELEGRAM_API_URL = (process.env.TG_API_URL || "https://api.telegram.org").
 // all-MiniLM обучены на английском и на русском путают смыслы. bge-m3 замерена на
 // живых юридических кусках: 4 из 4 в топ-1, релевантный кусок 0.671 против 0.240
 // у постороннего — зазор чистый, по нему и стоит порог.
-const EMBED_MODEL = process.env.EMBED_MODEL || "bge-m3";
 const EMBED_DIM = 1024; // bge-m3. Сменишь модель — меняй и vector(N) в схеме.
-const EMBED_CLOUD_MODEL = process.env.EMBED_CLOUD_MODEL || "text-embedding-3-small";
 
 /**
  * Вектор текста. null — движок недоступен (кусок останется непроиндексированным,
- * и это честно: лучше пустая база, чем база с враньём).
+ * и это честно: лучше пустая база, чем база с враньём). Логика провайдеров — в
+ * worker/embeddings.mjs, общая для базы знаний каналов и сайтов.
  */
+const sharedEmbedder = createEmbedder(process.env);
 async function embed(text) {
-  assertWorkerAiCallPolicy("knowledge-embedding");
-  const input = String(text || "").trim();
-  if (!input) return null;
-  try {
-    if (CLOUD_KEY) {
-      const r = await fetch(`${CLOUD_URL}/embeddings`, {
-        method: "POST",
-        headers: { "content-type": "application/json", authorization: `Bearer ${CLOUD_KEY}` },
-        signal: AbortSignal.timeout(30_000),
-        body: JSON.stringify({ model: EMBED_CLOUD_MODEL, input }),
-      });
-      if (!r.ok) return null;
-      const d = await r.json();
-      return d?.data?.[0]?.embedding ?? null;
-    }
-    const r = await fetch(`${OLLAMA_URL}/api/embed`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      signal: AbortSignal.timeout(30_000),
-      body: JSON.stringify({ model: EMBED_MODEL, input }),
-    });
-    if (!r.ok) return null;
-    const d = await r.json();
-    const v = d?.embeddings?.[0] ?? d?.embedding ?? null;
-    // Размерность сверяем ЗДЕСЬ: иначе несовпадение всплывёт как ошибка Postgres
-    // на вставке, и понять из неё, что дело в подменённой модели, будет нельзя.
-    if (v && v.length !== EMBED_DIM) {
-      console.error(`[база] ${EMBED_MODEL} даёт ${v.length} измерений, схема ждёт ${EMBED_DIM}`);
-      return null;
-    }
-    return v;
-  } catch {
-    return null;
-  }
+  return sharedEmbedder(text);
 }
 
 /** Формат pgvector: '[0.1,0.2,...]'. */
@@ -606,7 +574,7 @@ async function findSupport(channelId, topic, k = TOP_K) {
 async function indexSource(sourceId) {
   const src = (
     await pool.query(
-      `select id, user_id, channel_id, kind, title, raw_text from knowledge_sources where id = $1`,
+      `select id, user_id, channel_id, site_id, kind, title, raw_text from knowledge_sources where id = $1`,
       [sourceId],
     )
   ).rows[0];
@@ -649,9 +617,9 @@ async function indexSource(sourceId) {
     await tx.query(`delete from knowledge_chunks where source_id = $1`, [sourceId]);
     for (const [text, v] of vectors) {
       await tx.query(
-        `insert into knowledge_chunks (user_id, channel_id, source_id, kind, text, embedding)
-         values ($1, $2, $3, $4, $5, $6)`,
-        [src.user_id, src.channel_id, sourceId, kind, text, toVector(v)],
+        `insert into knowledge_chunks (user_id, channel_id, site_id, source_id, kind, text, embedding)
+         values ($1, $2, $3, $4, $5, $6, $7)`,
+        [src.user_id, src.channel_id, src.site_id ?? null, sourceId, kind, text, toVector(v)],
       );
     }
     await tx.query(
@@ -665,7 +633,7 @@ async function indexSource(sourceId) {
   } finally {
     tx?.release();
   }
-  console.log(`[база] «${src.title}» (канал ${src.channel_id}): ${vectors.length} кусков`);
+  console.log(`[база] «${src.title}» (${src.site_id ? `сайт ${src.site_id}` : `канал ${src.channel_id}`}): ${vectors.length} кусков`);
   return { chunks: vectors.length };
 }
 
@@ -825,6 +793,12 @@ const projectExportWorker = AUTOPILOT_ONLY || MEDIA_ONLY || PUBLICATION_ONLY
 const siteAnalysisWorker = AUTOPILOT_ONLY || MEDIA_ONLY || PUBLICATION_ONLY
   ? null
   : createSiteAnalysisWorker({ connection, pool, concurrency: 1 });
+const siteArticlesQueue = AUTOPILOT_ONLY || MEDIA_ONLY || PUBLICATION_ONLY
+  ? null
+  : new Queue(SITE_ARTICLES_QUEUE, { connection });
+const siteArticlesWorker = AUTOPILOT_ONLY || MEDIA_ONLY || PUBLICATION_ONLY
+  ? null
+  : createSiteArticlesWorker({ connection, pool, queue: siteArticlesQueue, concurrency: 1 });
 const publicationExtraQueue = AUTOPILOT_ONLY || MEDIA_ONLY
   ? null
   : new Queue(PUBLICATION_EXTRA_QUEUE, { connection });
@@ -3303,6 +3277,16 @@ async function collectStats(projectId) {
   ).rows;
 
   await mapConcurrent(chans, RECON_CONCURRENCY, async (ch) => {
+    const statsChannel = await resolveTelegramStatsHandle(
+      pool,
+      ch,
+      (chatId) => tg("getChat", { chat_id: chatId }, 8_000),
+    );
+    const statsHandle = statsChannel.handle;
+    if (statsChannel.refreshed) {
+      console.log(`[stats] Telegram username канала ${ch.id} обновлён: @${statsHandle}`);
+    }
+
     // 1) Подписчики — реальное число + прирост за день.
     const subs = await tgMemberCount(ch.tg_chat_id);
     if (subs != null) {
@@ -3330,8 +3314,8 @@ async function collectStats(projectId) {
     }
 
     // 2) Просмотры/реакции постов — из публичной страницы, по message_id.
-    if (ch.handle) {
-      const verification = await fetchPublicStats(ch.handle);
+    if (statsHandle) {
+      const verification = await fetchPublicStats(statsHandle);
 
       // The public feed is the channel truth, including messages published directly in
       // Telegram. Materialize those messages before collecting metrics so Today and
@@ -12331,6 +12315,8 @@ const CRON_SCHEDULES = [
   { name: "profile",  pattern: "0 5 * * 1" },   // переизвлечение профилей каналов, пн 05:00 МСК
   { name: "exports",  pattern: "* * * * *" },    // durable outbox и TTL экспортов, каждую минуту
   { name: "bot-digest", pattern: "*/15 * * * *" }, // сводки по локальному времени проекта
+  { name: "site-daily", pattern: "20 5 * * *" },   // сайты: обновление профилей, план материалов, зонд видимости
+  { name: "site-monthly", pattern: "0 7 1 * *" },  // сайты: ежемесячные отчёты с динамикой
 ];
 
 const cronWorker = AUTOPILOT_ONLY || MEDIA_ONLY || PUBLICATION_ONLY ? null : new Worker(
@@ -12349,6 +12335,8 @@ const cronWorker = AUTOPILOT_ONLY || MEDIA_ONLY || PUBLICATION_ONLY ? null : new
       case "profile":  return refreshProfiles();
       case "exports":  return reconcileProjectExports();
       case "bot-digest": return runBotDigests();
+      case "site-daily": return runSiteDailyMaintenance(pool, { siteArticlesQueue, siteAnalysisQueue: new Queue("site-analysis", { connection }) });
+      case "site-monthly": return runSiteMonthlyReports(pool);
       default:         console.warn(`[cron] неизвестная задача: ${job.name}`);
     }
   },
@@ -12521,6 +12509,8 @@ async function shutdown(sig) {
     await legalVisualRenderWorker?.close();
     await legalVisualRenderQueue?.close();
     await siteAnalysisWorker?.close();
+    await siteArticlesWorker?.close();
+    await siteArticlesQueue?.close();
     await projectExportWorker?.close();
     await projectExportQueue?.close();
     await publicationExtraWorker?.close();

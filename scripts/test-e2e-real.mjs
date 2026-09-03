@@ -5448,7 +5448,7 @@ try {
   });
   await page.getByRole("heading", { name: "Аналитика Авроры", exact: true }).waitFor({ timeout: RUNTIME_WAIT_TIMEOUT_MS });
   const sectionCards = page.locator('section[aria-labelledby="aurora-sections-title"] article');
-  await waitFor(async () => await sectionCards.count() === 15, "admin analytics did not render all 15 APP_ROUTES sections", RUNTIME_WAIT_TIMEOUT_MS);
+  await waitFor(async () => await sectionCards.count() === 16, "admin analytics did not render all 16 APP_ROUTES sections", RUNTIME_WAIT_TIMEOUT_MS);
   await page.getByText("provider timeout", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await page.getByText("provider timeout", { exact: true }).click();
   await page.getByText("e2e-admin-request", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
@@ -5471,7 +5471,7 @@ try {
   )).rows[0]?.n);
   assert(adminAuditRows >= 2, "read-only operations-center access was not audited");
   interfaceEvidence.adminOperationsUi = {
-    allSections: 15,
+    allSections: 16,
     systemDirectLink: true,
     analyticsDirectLink: true,
     browserHistory: true,

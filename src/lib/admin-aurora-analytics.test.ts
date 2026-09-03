@@ -55,7 +55,7 @@ describe("normalizeAdminAnalyticsQuery", () => {
 });
 
 describe("loadAdminAuroraAnalytics", () => {
-  it("uses a fixed tenant predicate and returns all 15 real sections without fabricated observations", async () => {
+  it("uses a fixed tenant predicate and returns all 16 real sections without fabricated observations", async () => {
     const query = vi.fn(async (sql: string, params?: unknown[]) => {
       void params;
       if (sql.includes("admin_aurora_options")) return { rows: [{ kind: "project", id: "42", label: "Проект" }] };
@@ -64,7 +64,7 @@ describe("loadAdminAuroraAnalytics", () => {
     const filters = normalizeAdminAnalyticsQuery(new URLSearchParams({ project: "42" }), new Date("2026-08-30T12:00:00.000Z"));
     const result = await loadAdminAuroraAnalytics({ query } as never, filters, { now: new Date("2026-08-30T12:00:00.000Z") });
 
-    expect(result.sections).toHaveLength(15);
+    expect(result.sections).toHaveLength(16);
     expect(result.sections.every((section) => section.technical.state === "unobserved")).toBe(true);
     expect(result.sections.every((section) => section.activity.launches.current === 0)).toBe(true);
     const metricsCall = query.mock.calls.find(([sql]) => String(sql).includes("admin_aurora_section_metrics"));

@@ -154,6 +154,9 @@ jobs:
           export NEXT_PUBLIC_AURORA_APP_VERSION="web-${AURORA_DEPLOY_SHA:0:12}"
           npm ci --no-audit --no-fund
           npm run build
+          [[ "$(git rev-parse --verify HEAD)" == "$AURORA_DEPLOY_SHA" ]]
+          git bundle create "${RUNNER_TEMP}/aurora-source-${AURORA_DEPLOY_SHA}.bundle" HEAD
+          git bundle verify "${RUNNER_TEMP}/aurora-source-${AURORA_DEPLOY_SHA}.bundle"
           tar --exclude='.next/cache' \
             -czf "${RUNNER_TEMP}/aurora-build-${AURORA_DEPLOY_SHA}.tar.gz" \
             .next
@@ -208,14 +211,18 @@ jobs:
           done
           build_archive="${RUNNER_TEMP}/aurora-build-${AURORA_DEPLOY_SHA}.tar.gz"
           remote_archive="/tmp/aurora-build-${AURORA_DEPLOY_SHA}.tar.gz"
+          source_bundle="${RUNNER_TEMP}/aurora-source-${AURORA_DEPLOY_SHA}.bundle"
+          remote_source_bundle="/tmp/aurora-source-${AURORA_DEPLOY_SHA}.bundle"
           test -f "$build_archive"
+          test -f "$source_bundle"
           build_archive_sha256="$(sha256sum "$build_archive" | cut -d ' ' -f1)"
+          source_bundle_sha256="$(sha256sum "$source_bundle" | cut -d ' ' -f1)"
           cleanup_remote_archive() {
             ssh -i ~/.ssh/deploy_key \
               -o StrictHostKeyChecking=yes \
               -o IdentitiesOnly=yes \
               "${PRODUCTION_SSH_USER}@${PRODUCTION_SSH_HOST}" \
-              "rm -f -- ${remote_archive}" || true
+              "rm -f -- ${remote_archive} ${remote_source_bundle}" || true
           }
           trap cleanup_remote_archive EXIT
           scp -i ~/.ssh/deploy_key \
@@ -225,13 +232,20 @@ jobs:
             -o ServerAliveCountMax=8 \
             "$build_archive" \
             "${PRODUCTION_SSH_USER}@${PRODUCTION_SSH_HOST}:${remote_archive}"
+          scp -i ~/.ssh/deploy_key \
+            -o StrictHostKeyChecking=yes \
+            -o IdentitiesOnly=yes \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=8 \
+            "$source_bundle" \
+            "${PRODUCTION_SSH_USER}@${PRODUCTION_SSH_HOST}:${remote_source_bundle}"
           ssh -i ~/.ssh/deploy_key \
             -o StrictHostKeyChecking=yes \
             -o IdentitiesOnly=yes \
             -o ServerAliveInterval=15 \
             -o ServerAliveCountMax=8 \
             "${PRODUCTION_SSH_USER}@${PRODUCTION_SSH_HOST}" \
-            "AURORA_DEPLOY_SHA=${AURORA_DEPLOY_SHA} AURORA_SCHEMA_ROLLBACK_AUDIT=${AURORA_SCHEMA_ROLLBACK_AUDIT} AURORA_ALLOW_LOCAL_PEER_MIGRATIONS=${AURORA_ALLOW_LOCAL_PEER_MIGRATIONS} AURORA_INCOMPLETE_RELEASE_SHA=${AURORA_INCOMPLETE_RELEASE_SHA} AURORA_AVATAR_BODY_LIMIT_BYTES=${AURORA_AVATAR_BODY_LIMIT_BYTES} AURORA_DB_POOL_MAX_WEB=${AURORA_DB_POOL_MAX_WEB} AURORA_DB_POOL_MAX_WORKER=${AURORA_DB_POOL_MAX_WORKER} AURORA_AI_SERVICE_ENGINE=${AURORA_AI_SERVICE_ENGINE} AURORA_AI_FALLBACK_ENGINES=${AURORA_AI_FALLBACK_ENGINES} AURORA_AI_SEMANTIC_ENGINE=${AURORA_AI_SEMANTIC_ENGINE} AURORA_AI_SEMANTIC_FALLBACK_ENGINES=${AURORA_AI_SEMANTIC_FALLBACK_ENGINES} AURORA_BUILD_ARCHIVE=${remote_archive} AURORA_BUILD_ARCHIVE_SHA256=${build_archive_sha256} bash -s" \
+            "AURORA_DEPLOY_SHA=${AURORA_DEPLOY_SHA} AURORA_SCHEMA_ROLLBACK_AUDIT=${AURORA_SCHEMA_ROLLBACK_AUDIT} AURORA_ALLOW_LOCAL_PEER_MIGRATIONS=${AURORA_ALLOW_LOCAL_PEER_MIGRATIONS} AURORA_INCOMPLETE_RELEASE_SHA=${AURORA_INCOMPLETE_RELEASE_SHA} AURORA_AVATAR_BODY_LIMIT_BYTES=${AURORA_AVATAR_BODY_LIMIT_BYTES} AURORA_DB_POOL_MAX_WEB=${AURORA_DB_POOL_MAX_WEB} AURORA_DB_POOL_MAX_WORKER=${AURORA_DB_POOL_MAX_WORKER} AURORA_AI_SERVICE_ENGINE=${AURORA_AI_SERVICE_ENGINE} AURORA_AI_FALLBACK_ENGINES=${AURORA_AI_FALLBACK_ENGINES} AURORA_AI_SEMANTIC_ENGINE=${AURORA_AI_SEMANTIC_ENGINE} AURORA_AI_SEMANTIC_FALLBACK_ENGINES=${AURORA_AI_SEMANTIC_FALLBACK_ENGINES} AURORA_BUILD_ARCHIVE=${remote_archive} AURORA_BUILD_ARCHIVE_SHA256=${build_archive_sha256} AURORA_SOURCE_BUNDLE=${remote_source_bundle} AURORA_SOURCE_BUNDLE_SHA256=${source_bundle_sha256} bash -s" \
             < scripts/deploy-production.sh
 
       - name: Verify production deployment

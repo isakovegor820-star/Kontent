@@ -65,6 +65,11 @@ export const APP_ROUTES = {
     label: "Анализ сайта",
     activeAliases: [],
   },
+  sites: {
+    href: "/app/sites",
+    label: "Мои сайты",
+    activeAliases: [],
+  },
   competitors: {
     href: "/app/competitors",
     label: "Конкуренты",
@@ -115,7 +120,7 @@ export const APP_NAV_GROUPS = [
   {
     id: "market",
     title: "Рынок",
-    routeIds: ["recon", "opportunities", "radar", "siteAnalysis"],
+    routeIds: ["recon", "opportunities", "radar", "siteAnalysis", "sites"],
   },
   {
     id: "results",

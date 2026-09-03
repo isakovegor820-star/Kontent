@@ -248,7 +248,7 @@ describe("production deployment shell contract", () => {
 
   it("reclaims only incomplete release checkouts before building", () => {
     const cleanup = script.indexOf("cleanup_incomplete_releases");
-    const clone = script.indexOf('git clone --branch main --single-branch "$REPO_URL" "$release"');
+    const clone = script.indexOf('git clone "$SOURCE_BUNDLE" "$release"');
     expect(cleanup).toBeGreaterThan(0);
     expect(cleanup).toBeLessThan(clone);
     expect(script).toContain("release_is_recorded");
@@ -273,13 +273,21 @@ describe("production deployment shell contract", () => {
     expect(script).not.toContain("npm run build");
     expect(script).not.toContain("PAUSE_WORKER_FOR_BUILD");
     expect(script).toContain('expected_build_archive="/tmp/aurora-build-${DEPLOY_SHA}.tar.gz"');
+    expect(script).toContain('expected_source_bundle="/tmp/aurora-source-${DEPLOY_SHA}.bundle"');
     expect(script).toContain("sha256sum --check --status");
+    expect(script).toContain('git -C "$release" bundle verify "$SOURCE_BUNDLE"');
+    expect(script).toContain('git clone "$SOURCE_BUNDLE" "$release"');
+    expect(script.indexOf('git clone "$SOURCE_BUNDLE" "$release"')).toBeLessThan(
+      script.indexOf('git -C "$release" bundle verify "$SOURCE_BUNDLE"'),
+    );
     expect(script).toContain("production build artifact contains invalid paths");
     expect(script).toContain('npm ci --omit=dev --no-audit --no-fund');
     expect(script).toContain('${release}/.next/BUILD_ID');
     expect(workflow).toContain("tar --exclude='.next/cache'");
     expect(workflow).toContain('-czf "${RUNNER_TEMP}/aurora-build-${AURORA_DEPLOY_SHA}.tar.gz"');
+    expect(workflow).toContain('git bundle create "${RUNNER_TEMP}/aurora-source-${AURORA_DEPLOY_SHA}.bundle" HEAD');
     expect(workflow).toContain('"${PRODUCTION_SSH_USER}@${PRODUCTION_SSH_HOST}:${remote_archive}"');
+    expect(workflow).toContain('"${PRODUCTION_SSH_USER}@${PRODUCTION_SSH_HOST}:${remote_source_bundle}"');
     expect(workflow).toContain('build_env="${RUNNER_TEMP}/aurora-public-build.env"');
     expect(workflow).toContain("NEXT_PUBLIC_AURORA_EXPERIMENTAL_ROUTES");
     expect(workflow).toContain("NEXT_PUBLIC_TREND_REFERENCE_STUDIO");

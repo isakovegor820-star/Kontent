@@ -101,6 +101,12 @@ const OPERATIONAL: Record<AuroraSectionId, SectionOperationalDefinition> = {
     dependencies: ["web_api", "postgresql", "site_analysis", "aurora_ai"],
     slos: [PAGE_SLO, API_SLO, QUEUE_SLO, WORKER_SLO, AI_SLO],
   },
+  sites: {
+    scenario: ["connected", "verified", "article_approved", "published", "report_opened"],
+    // The site-articles queue is diagnosed under the Redis component; site analysis has its own.
+    dependencies: ["web_api", "postgresql", "redis", "site_analysis", "aurora_ai"],
+    slos: [PAGE_SLO, API_SLO, QUEUE_SLO, WORKER_SLO, AI_SLO],
+  },
   growth: {
     scenario: ["opened", "accepted", "completed", "result_confirmed"],
     dependencies: ["web_api", "postgresql", "redis"],

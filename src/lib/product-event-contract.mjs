@@ -175,6 +175,9 @@ export const AURORA_PRODUCT_FEATURES = Object.freeze({
   siteAnalysis: Object.freeze({
     analysis: Object.freeze(["loaded", "started", "crawled", "analyzed", "report_opened", "acted"]),
   }),
+  sites: Object.freeze({
+    site: Object.freeze(["loaded", "connected", "verified", "article_approved", "published", "report_opened"]),
+  }),
   growth: Object.freeze({
     recommendation: Object.freeze(["loaded", "opened", "accepted", "completed", "result_confirmed"]),
   }),

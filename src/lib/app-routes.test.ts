@@ -41,6 +41,7 @@ describe("app route registry", () => {
       "opportunities",
       "radar",
       "siteAnalysis",
+      "sites",
     ]);
     expect(APP_BOTTOM_NAV_ROUTE_IDS).toEqual(["today", "studio", "autopilot", "recon", "analytics"]);
   });
@@ -74,6 +75,8 @@ describe("app route registry", () => {
     expect(shell).toContain('{ href: "/app/trends", label: "Тренды" }');
     expect(APP_ROUTES.knowledge.href).toBe("/app/knowledge");
     expect(isAppRouteActive("/app/site-analysis/41", "siteAnalysis")).toBe(true);
+    expect(isAppRouteActive("/app/sites", "sites")).toBe(true);
+    expect(isAppRouteActive("/app/sites", "siteAnalysis")).toBe(false);
   });
 });
 
