@@ -31,6 +31,15 @@
 `AURORA_ADMIN_USER_IDS` / `AURORA_ADMIN_EMAILS` с привязанным `tg_chat_id`.
 Выключить: `AURORA_ADMIN_ALERTS=off`.
 
+## Вход и поиск
+
+Пользователи из allowlist видят в кабинете (`/app`) значок «Операционный центр» рядом с
+выходом — `/api/auth/me` отдаёт `is_admin`, вычисленный тем же `hasAuroraAdminAccess`;
+панель всё равно проверяет доступ на сервере. В панели ⌘K / Ctrl+K открывает поиск
+(`GET /api/admin/search?q=`): цифры ищутся как ID пользователя, проекта и публикации,
+текст — по имени/email/названию/тексту публикации (превью 120 символов, ≤ 6 результатов
+на тип, rate-limit 120/мин).
+
 ## «Проекты»
 
 URL: `/admin?prq=&prstatus=&prnetwork=&prsort=&prpage=&prid=<id>#projects`.
