@@ -203,6 +203,8 @@ export interface User {
   avatar: string | null;
   provider: "email" | "google" | "vk" | "telegram";
   onboarded: boolean;
+  /** Global administrator (server allowlist); shows the «Операционный центр» link. */
+  isAdmin: boolean;
 }
 
 // --- Настоящие данные постинга (Д.3): каналы и посты из базы через API ---

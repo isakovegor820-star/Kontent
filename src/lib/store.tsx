@@ -160,6 +160,7 @@ type ServerUser = {
   name: string | null;
   avatar: string | null;
   onboarding_completed_at: string | null;
+  is_admin?: boolean;
 };
 
 function mapUser(su: ServerUser): User {
@@ -171,6 +172,7 @@ function mapUser(su: ServerUser): User {
     avatar: su.avatar,
     provider,
     onboarded: Boolean(su.onboarding_completed_at),
+    isAdmin: su.is_admin === true,
   };
 }
 

@@ -49,8 +49,23 @@ describe("GET /api/auth/me", () => {
     }));
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ user });
+    await expect(response.json()).resolves.toEqual({ user: { ...user, is_admin: false } });
     expect(mocks.clearSessionCookie).not.toHaveBeenCalled();
+  });
+
+  it("flags allowlisted administrators so the cabinet can show the operations link", async () => {
+    const user = { id: 17, email: "ops@example.test" };
+    mocks.sessionTokenHashFromRequest.mockReturnValue("b".repeat(64));
+    mocks.getSessionUser.mockResolvedValue(user);
+    const previous = process.env.AURORA_ADMIN_EMAILS;
+    process.env.AURORA_ADMIN_EMAILS = "ops@example.test";
+    try {
+      const response = await GET(new NextRequest("http://localhost/api/auth/me", { headers: { cookie: "sid=active-session" } }));
+      await expect(response.json()).resolves.toEqual({ user: { ...user, is_admin: true } });
+    } finally {
+      if (previous === undefined) delete process.env.AURORA_ADMIN_EMAILS;
+      else process.env.AURORA_ADMIN_EMAILS = previous;
+    }
   });
 
   it("does not turn a session-store failure into a logout", async () => {

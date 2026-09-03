@@ -26,6 +26,7 @@ import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 
 import { Wordmark } from "@/components/brand";
 import { AdminBotCenter } from "@/components/admin/admin-bot-center";
+import { AdminCommandPalette } from "@/components/admin/admin-command-palette";
 import { AdminAuditCenter } from "@/components/admin/admin-audit-center";
 import { AdminAuroraAnalyticsCenter } from "@/components/admin/admin-aurora-analytics";
 import { AdminInbox } from "@/components/admin/admin-inbox";
@@ -389,7 +390,8 @@ export function AdminDashboard() {
             В кабинет
           </Link>
         </div>
-        <SectionNavigation activeSection={activeSection} onSelect={setActiveSection} className="mt-10 hidden lg:block" itemClassName="flex-col" />
+        <div className="mt-6 hidden lg:block"><AdminCommandPalette /></div>
+        <SectionNavigation activeSection={activeSection} onSelect={setActiveSection} className="mt-4 hidden lg:block" itemClassName="flex-col" />
         <div className="mt-auto hidden pt-8 lg:block">
           <div className="rounded-sm bg-info-soft p-4 text-info-text">
             <ShieldCheck className="h-5 w-5" aria-hidden />

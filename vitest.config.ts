@@ -1,9 +1,9 @@
 import { defineConfig } from "vitest/config";
 import { fileURLToPath } from "node:url";
 
-// Тестируем только чистую логику: TS-помощники из src/lib и чистое ядро воркера
-// (worker/lib.mjs) и pure E2E config. Файлы с сайд-эффектами (worker.mjs, API-роуты, DB) не трогаем —
-// они требуют живые Redis/Postgres и сюда не включаются.
+// Тестируем чистую логику (src/lib, worker/lib.mjs, pure E2E config) и React-компоненты
+// админ-панели в jsdom с подменённым fetch (`// @vitest-environment jsdom` в файле теста).
+// Файлы с сайд-эффектами (worker.mjs, DB) требуют живые Redis/Postgres и сюда не включаются.
 export default defineConfig({
   resolve: {
     alias: {
@@ -13,7 +13,7 @@ export default defineConfig({
   test: {
     environment: "node",
     include: [
-      "src/**/*.test.{ts,mjs}",
+      "src/**/*.test.{ts,tsx,mjs}",
       "worker/**/*.test.mjs",
       "scripts/build-*.test.mjs",
       "scripts/e2e-*.test.mjs",

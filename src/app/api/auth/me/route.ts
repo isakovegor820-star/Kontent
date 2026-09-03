@@ -1,6 +1,7 @@
 // Д.2 — «кто вошёл». Фронт зовёт при загрузке: null → лендинг, иначе → платформа.
 
 import { NextRequest, NextResponse } from "next/server";
+import { hasAuroraAdminAccess } from "@/lib/admin-access";
 import {
   clearSessionCookie,
   getSessionUser,
@@ -13,7 +14,8 @@ export async function GET(req: NextRequest) {
   try {
     const credentialPresented = sessionTokenHashFromRequest(req) !== null;
     const user = await getSessionUser(req);
-    if (user) return NextResponse.json({ user });
+    // The flag only reveals what the allowlist already grants; the panel re-checks server-side.
+    if (user) return NextResponse.json({ user: { ...user, is_admin: hasAuroraAdminAccess(user) } });
     if (!credentialPresented) return NextResponse.json({ user: null });
 
     const response = NextResponse.json(
