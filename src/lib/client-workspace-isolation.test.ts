@@ -64,6 +64,7 @@ describe("client workspace isolation", () => {
       avatar: null,
       provider: "email",
       onboarded: true,
+      isAdmin: false,
     };
     const identity = { userId: 7, projectId: 11 };
     const otherIdentity = { userId: 7, projectId: 12 };

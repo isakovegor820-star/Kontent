@@ -19,6 +19,7 @@ import {
   Calendar,
   ChevronDown,
   LogOut,
+  ShieldCheck,
   Menu,
   Map,
   Pencil,
@@ -311,6 +312,16 @@ function UserRow({ user, onSignOut }: { user: User; onSignOut: () => void }) {
         <p className="truncate text-[13px] text-text-3">{user.email}</p>
       </div>
       <AppThemeSelector />
+      {user.isAdmin ? (
+        <Link
+          href="/admin#overview"
+          className="grid h-9 w-9 shrink-0 place-items-center rounded-sm text-text-2 transition-colors hover:bg-surface-inset hover:text-text"
+          aria-label="Операционный центр Авроры"
+          title="Операционный центр"
+        >
+          <ShieldCheck className="h-[18px] w-[18px]" strokeWidth={1.75} aria-hidden />
+        </Link>
+      ) : null}
       <Button
         type="button"
         variant="ghost"
