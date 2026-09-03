@@ -141,7 +141,7 @@
 
 - `npm test`: 538 файлов, 2820 тестов, все прошли.
 - `npm run lint`, `npx tsc --noEmit`, `npm run test:focus`, `git diff --check`: прошли без замечаний.
-- `npm run test:migrations`: подтверждены 107 additive transactional migrations; SQL нового analytics query layer также выполнен в транзакции на локальной disposable PostgreSQL.
+- `npm run test:migrations`: подтверждены 107 additive transactional migrations (на дату аудита); SQL нового analytics query layer также выполнен в транзакции на локальной disposable PostgreSQL.
 - Production build: прошёл внутри изолированного real-E2E harness.
 - Chromium real E2E: `ok=true`, `browserRuntimeErrors=0`; подтверждены 15 разделов, обе прямые ссылки, history/reload, filters, funnel, error detail, mobile и audit trail.
 - Намеренное истечение сессии дало `401`, перенаправило обе вкладки на `/login` и оставило только шесть явно классифицированных ожидаемых наблюдений, без неожиданных browser issues.
