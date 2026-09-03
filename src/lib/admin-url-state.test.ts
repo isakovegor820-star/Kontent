@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   adminAnalyticsHref,
   adminAnalyticsQuery,
+  adminAuditHref,
+  adminAuditQuery,
   adminProjectsHref,
   adminProjectsQuery,
   adminPublicationsApiParams,
@@ -51,6 +53,13 @@ describe("admin projects URL state", () => {
       .toBe("/admin?project=2&range=7d&prid=12&prstatus=attention#projects");
     expect(adminProjectsQuery("?prid=12&prstatus=attention&project=2"))
       .toEqual({ prq: "", prstatus: "attention", prnetwork: "all", prsort: "activity_desc", prpage: "1", prid: "12" });
+  });
+});
+
+describe("admin audit URL state", () => {
+  it("keeps journal filters in a-prefixed keys and anchors the Audit section", () => {
+    expect(adminAuditHref("/admin?user=42#users", { aarea: "publication", apage: 2 })).toBe("/admin?user=42&aarea=publication&apage=2#audit");
+    expect(adminAuditQuery("?aq=4302&aarea=publication&apage=2")).toEqual({ aq: "4302", aproject: "", aactor: "", aarea: "publication", apage: "2" });
   });
 });
 
