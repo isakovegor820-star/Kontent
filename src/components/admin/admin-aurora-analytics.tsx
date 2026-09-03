@@ -529,7 +529,7 @@ export function AdminAuroraAnalyticsCenter() {
             <p className="type-label text-brand">Исторические данные</p>
             <div className="mt-2 flex flex-wrap gap-2">
               {[{ id: "24h", label: "24 часа" }, { id: "7d", label: "7 дней" }, { id: "30d", label: "30 дней" }, { id: "custom", label: "Свой период" }].map((range) => (
-                <button key={range.id} type="button" aria-pressed={data.filters.range === range.id} onClick={() => navigate({ range: range.id, ...(range.id === "custom" ? {} : { from: null, to: null }) })} className={cn("type-button min-h-11 rounded-sm px-3.5", data.filters.range === range.id ? "bg-text text-white" : "border border-line text-text-2 hover:bg-surface-inset")}>{range.label}</button>
+                <button key={range.id} type="button" aria-pressed={data.filters.range === range.id} onClick={() => navigate({ range: range.id, ...(range.id === "custom" ? {} : { from: null, to: null }) })} className={cn("type-button min-h-11 rounded-sm px-3.5 whitespace-nowrap", data.filters.range === range.id ? "bg-brand text-white shadow-soft" : "border border-line text-text-2 hover:bg-surface-inset")}>{range.label}</button>
               ))}
             </div>
           </div>

@@ -320,11 +320,14 @@ function BotCenterLoading() {
   );
 }
 
-export function AdminBotCenter({ period }: { period: AdminPeriodDays }) {
+export function AdminBotCenter({ period, refreshKey: externalRefreshKey = 0 }: { period: AdminPeriodDays; refreshKey?: number }) {
   const [data, setData] = useState<AdminBotData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  // Loading is derived: the request identity changes → the previous settlement no longer matches.
+  const requestKey = `${period}:${refreshKey}:${externalRefreshKey}`;
+  const [settled, setSettled] = useState<{ key: string; ok: boolean } | null>(null);
+  const loading = settled?.key !== requestKey;
+  const loadError = settled?.key === requestKey && !settled.ok;
   const [actionKey, setActionKey] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [confirmTarget, setConfirmTarget] = useState<AccessTarget | null>(null);
@@ -336,15 +339,15 @@ export function AdminBotCenter({ period }: { period: AdminPeriodDays }) {
         if (!response.ok) throw new Error("load_failed");
         return response.json() as Promise<AdminBotData>;
       })
-      .then(setData)
-      .catch(() => {
-        if (!controller.signal.aborted) setLoadError(true);
+      .then((payload) => {
+        setData(payload);
+        setSettled({ key: requestKey, ok: true });
       })
-      .finally(() => {
-        if (!controller.signal.aborted) setLoading(false);
+      .catch(() => {
+        if (!controller.signal.aborted) setSettled({ key: requestKey, ok: false });
       });
     return () => controller.abort();
-  }, [period, refreshKey]);
+  }, [period, requestKey]);
 
   const runtimeState = useMemo(() => {
     if (!data) return "neutral" as const;
@@ -395,8 +398,6 @@ export function AdminBotCenter({ period }: { period: AdminPeriodDays }) {
         throw new Error(copy);
       }
       setMessage(successMessage);
-      setLoading(true);
-      setLoadError(false);
       setRefreshKey((value) => value + 1);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Действие не выполнено. Попробуйте снова.");
@@ -413,8 +414,6 @@ export function AdminBotCenter({ period }: { period: AdminPeriodDays }) {
         <h3 className="mt-3 text-text">Не удалось загрузить управление ботом</h3>
         <p className="type-secondary mx-auto mt-2 max-w-lg text-pretty text-text-2">Проверьте базу и состояние воркера, затем повторите загрузку.</p>
         <Button className="mt-5" variant="primary" onClick={() => {
-          setLoading(true);
-          setLoadError(false);
           setRefreshKey((value) => value + 1);
         }}>
           <RefreshCw className="h-4 w-4" aria-hidden />
@@ -502,8 +501,6 @@ export function AdminBotCenter({ period }: { period: AdminPeriodDays }) {
               </Link>
             ) : null}
             <Button variant="secondary" loading={loading} onClick={() => {
-              setLoading(true);
-              setLoadError(false);
               setRefreshKey((value) => value + 1);
             }}>
               <RefreshCw className="h-4 w-4" aria-hidden />

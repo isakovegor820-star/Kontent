@@ -251,14 +251,22 @@ runtime_env_next="$(mktemp "${release}/.env.production.next.XXXXXX")"
 # stops answering has to be routable away from without a hand-edit on the box, and a stale
 # value pinned to a dead route takes Autopilot and /api/readiness down with it. An empty
 # variable leaves the deployed value untouched.
+#
+# Release identity is rewritten on every deploy so the runtime (admin "Система", release
+# markers in analytics, Sentry release) knows which commit it is running. The values are
+# derived from the validated 40-hex SHA and a UTC timestamp, never from operator input.
+release_deployed_at="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
+release_key="$(date -u +%Y.%m.%d)-$(printf '%s' "$DEPLOY_SHA" | cut -c1-12)"
 awk -v avatar="$AVATAR_BODY_LIMIT_BYTES" -v web_pool="$DB_POOL_MAX_WEB" -v worker_pool="$DB_POOL_MAX_WORKER" \
     -v ai_service="$AI_SERVICE_ENGINE" -v ai_fallbacks="$AI_FALLBACK_ENGINES" \
-    -v ai_semantic="$AI_SEMANTIC_ENGINE" -v ai_semantic_fallbacks="$AI_SEMANTIC_FALLBACK_ENGINES" '
+    -v ai_semantic="$AI_SEMANTIC_ENGINE" -v ai_semantic_fallbacks="$AI_SEMANTIC_FALLBACK_ENGINES" \
+    -v release_key="$release_key" -v release_sha="$DEPLOY_SHA" -v release_deployed_at="$release_deployed_at" '
   BEGIN {
     avatar_written = 0; web_pool_written = 0; worker_pool_written = 0; role_written = 0
     ai_service_written = 0; ai_fallbacks_written = 0
     ai_semantic_written = 0; ai_semantic_fallbacks_written = 0
   }
+  /^AURORA_RELEASE=/ || /^AURORA_RELEASE_SHA=/ || /^AURORA_DEPLOYED_AT=/ { next }
   /^AI_SERVICE_ENGINE=/ {
     if (ai_service == "") { print; next }
     if (!ai_service_written) print "AI_SERVICE_ENGINE=" ai_service
@@ -315,6 +323,9 @@ awk -v avatar="$AVATAR_BODY_LIMIT_BYTES" -v web_pool="$DB_POOL_MAX_WEB" -v worke
     if (ai_semantic_fallbacks != "" && !ai_semantic_fallbacks_written) {
       print "AI_SEMANTIC_FALLBACK_ENGINES=" ai_semantic_fallbacks
     }
+    print "AURORA_RELEASE=" release_key
+    print "AURORA_RELEASE_SHA=" release_sha
+    print "AURORA_DEPLOYED_AT=" release_deployed_at
   }
 ' "$runtime_env" > "$runtime_env_next"
 chmod --reference="$runtime_env" "$runtime_env_next"

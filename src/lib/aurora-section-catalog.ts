@@ -11,9 +11,26 @@ export type AuroraSectionSlo = Readonly<{
   p95Ms: number;
 }>;
 
+/**
+ * Infrastructure components a section depends on. The union mirrors
+ * `ADMIN_DIAGNOSTIC_COMPONENT_IDS` (kept apart so this client-safe module never imports
+ * Redis/BullMQ code); a test asserts both lists stay in sync.
+ */
+export type AuroraSectionDependency =
+  | "web_api"
+  | "postgresql"
+  | "database_schema"
+  | "redis"
+  | "publication_worker"
+  | "telegram_worker"
+  | "aurora_ai"
+  | "media_generation"
+  | "site_analysis"
+  | "mail_delivery";
+
 type SectionOperationalDefinition = Readonly<{
   scenario: readonly string[];
-  dependencies: readonly string[];
+  dependencies: readonly AuroraSectionDependency[];
   slos: readonly AuroraSectionSlo[];
 }>;
 
@@ -26,7 +43,7 @@ const AI_SLO = { kind: "provider", operation: "ai_generation", p95Ms: 120_000 } 
 const OPERATIONAL: Record<AuroraSectionId, SectionOperationalDefinition> = {
   today: {
     scenario: ["loaded", "task_selected", "task_completed", "task_deferred"],
-    dependencies: ["web_api", "postgresql", "stats_queue"],
+    dependencies: ["web_api", "postgresql", "redis"],
     slos: [PAGE_SLO, API_SLO, QUEUE_SLO],
   },
   calendar: {
@@ -41,7 +58,7 @@ const OPERATIONAL: Record<AuroraSectionId, SectionOperationalDefinition> = {
   },
   autopilot: {
     scenario: ["planned", "generated", "approved", "scheduled"],
-    dependencies: ["web_api", "postgresql", "redis", "autopilot_worker", "aurora_ai"],
+    dependencies: ["web_api", "postgresql", "redis", "publication_worker", "aurora_ai"],
     slos: [PAGE_SLO, API_SLO, QUEUE_SLO, WORKER_SLO, AI_SLO],
   },
   composer: {
@@ -56,7 +73,7 @@ const OPERATIONAL: Record<AuroraSectionId, SectionOperationalDefinition> = {
   },
   rss: {
     scenario: ["refreshed", "opened", "saved", "hidden", "used"],
-    dependencies: ["web_api", "postgresql", "stats_queue"],
+    dependencies: ["web_api", "postgresql", "redis"],
     slos: [PAGE_SLO, API_SLO, QUEUE_SLO],
   },
   knowledge: {
@@ -66,7 +83,7 @@ const OPERATIONAL: Record<AuroraSectionId, SectionOperationalDefinition> = {
   },
   recon: {
     scenario: ["added", "synchronized", "signal_opened", "used"],
-    dependencies: ["web_api", "postgresql", "stats_queue"],
+    dependencies: ["web_api", "postgresql", "redis"],
     slos: [PAGE_SLO, API_SLO, QUEUE_SLO],
   },
   opportunities: {
@@ -76,27 +93,28 @@ const OPERATIONAL: Record<AuroraSectionId, SectionOperationalDefinition> = {
   },
   radar: {
     scenario: ["searched", "results_received", "saved", "used"],
-    dependencies: ["web_api", "postgresql", "stats_queue"],
+    dependencies: ["web_api", "postgresql", "redis"],
     slos: [PAGE_SLO, API_SLO, QUEUE_SLO],
   },
   siteAnalysis: {
     scenario: ["started", "crawled", "analyzed", "report_opened", "acted"],
-    dependencies: ["web_api", "postgresql", "site_analysis_worker", "aurora_ai"],
+    dependencies: ["web_api", "postgresql", "site_analysis", "aurora_ai"],
     slos: [PAGE_SLO, API_SLO, QUEUE_SLO, WORKER_SLO, AI_SLO],
   },
   sites: {
     scenario: ["connected", "verified", "article_approved", "published", "report_opened"],
-    dependencies: ["web_api", "postgresql", "redis", "site_analysis_worker", "site_articles_worker", "aurora_ai"],
+    // The site-articles queue is diagnosed under the Redis component; site analysis has its own.
+    dependencies: ["web_api", "postgresql", "redis", "site_analysis", "aurora_ai"],
     slos: [PAGE_SLO, API_SLO, QUEUE_SLO, WORKER_SLO, AI_SLO],
   },
   growth: {
     scenario: ["opened", "accepted", "completed", "result_confirmed"],
-    dependencies: ["web_api", "postgresql", "stats_queue"],
+    dependencies: ["web_api", "postgresql", "redis"],
     slos: [PAGE_SLO, API_SLO, QUEUE_SLO],
   },
   analytics: {
     scenario: ["loaded", "filtered", "analyzed", "acted"],
-    dependencies: ["web_api", "postgresql", "stats_queue"],
+    dependencies: ["web_api", "postgresql", "redis"],
     slos: [PAGE_SLO, API_SLO, QUEUE_SLO],
   },
   settings: {

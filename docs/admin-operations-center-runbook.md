@@ -17,8 +17,14 @@ URL: `/admin?system=<component>#system`.
 Каждая из 15 независимых проверок возвращает `state`, `checkedAt`, `durationMs`,
 `evidence`, `safeErrorCode`, `lastSuccessAt`. Probes запускаются через
 `Promise.allSettled`; один отказ не скрывает остальные. Допустимы только состояния
-`healthy`, `degraded`, `down`, `unobserved`, `not_configured`, `conflict`. Healthy
-требует свежего успешного доказательства.
+`healthy`, `degraded`, `down`, `unobserved`, `not_configured`, `configured`, `conflict`.
+Healthy требует свежего успешного доказательства. `configured` означает, что проверена
+только конфигурация (наличие секретов, схема origin, лимит ingress) — такие компоненты
+не считаются ни исправными, ни предупреждениями.
+
+Релиз (`AURORA_RELEASE`, `AURORA_RELEASE_SHA`, `AURORA_DEPLOYED_AT`) записывается в
+`.env.production` скриптом `scripts/deploy-production.sh` на каждом деплое; browser-версия
+`NEXT_PUBLIC_AURORA_APP_VERSION` задаётся на этапе сборки в workflow.
 
 При инциденте:
 
@@ -35,7 +41,7 @@ Back/forward и reload сохраняют выбранный компонент.
 
 URL: `/admin?<filters>&analyticsSection=<section>&analyticsTab=<tab>#aurora-analytics`.
 
-Карточки строятся для всех 15 разделов из `APP_ROUTES`. Активность, техническое
+Карточки строятся для всех разделов из `APP_ROUTES` (сейчас 16). Активность, техническое
 здоровье и полезный доменный результат разделены. Фильтры: 24h/7d/30d/custom,
 project, role segment, new/returning, device, app version и release. Если доменная
 таблица не содержит выбранное измерение device/version/release, результат маркируется

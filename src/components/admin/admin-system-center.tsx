@@ -30,6 +30,7 @@ import type {
   AdminQueueSnapshot,
   AdminSystemDiagnostics,
 } from "@/lib/admin-system-diagnostics";
+import { adminMetricLabel, adminSectionLabel, formatAdminDuration, formatAdminMetric } from "@/lib/admin-labels";
 import { adminSystemHref, adminSystemSelection } from "@/lib/admin-url-state";
 import { cn, fmtAgo, fmtNum } from "@/lib/utils";
 
@@ -66,45 +67,47 @@ const STATE_LABELS: Record<AdminDiagnosticState, string> = {
   down: "Недоступно",
   unobserved: "Нет наблюдения",
   not_configured: "Не настроено",
+  configured: "Настроено",
   conflict: "Конфликт",
 };
 
 function DiagnosticStatus({ state }: { state: AdminDiagnosticState }) {
   const Icon = state === "healthy" ? CheckCircle2
     : state === "down" || state === "conflict" ? XCircle
-      : state === "degraded" ? AlertTriangle : Clock3;
+      : state === "degraded" ? AlertTriangle
+        : state === "configured" ? ShieldCheck : Clock3;
   return (
-    <span className={cn(
-      "type-caption inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 font-semibold",
-      state === "healthy" && "bg-success-soft text-success-text",
-      (state === "down" || state === "conflict") && "bg-danger-soft text-danger-text",
-      (state === "degraded" || state === "unobserved" || state === "not_configured") && "bg-fire-soft text-fire-text",
-    )}>
+    <span
+      className={cn(
+        "type-caption inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 font-semibold",
+        state === "healthy" && "bg-success-soft text-success-text",
+        (state === "down" || state === "conflict") && "bg-danger-soft text-danger-text",
+        (state === "degraded" || state === "unobserved" || state === "not_configured") && "bg-fire-soft text-fire-text",
+        state === "configured" && "bg-surface-inset text-text-2",
+      )}
+      title={state === "configured" ? "Проверена только конфигурация, а не работа в рантайме" : undefined}
+    >
       <Icon className="h-3.5 w-3.5" aria-hidden />
       {STATE_LABELS[state]}
     </span>
   );
 }
 
-function duration(value: number | null) {
-  if (value == null) return "—";
-  if (value < 1_000) return `${fmtNum(value)} мс`;
-  return `${(value / 1_000).toLocaleString("ru-RU", { maximumFractionDigits: 1 })} с`;
-}
+const duration = formatAdminDuration;
 
-function bytes(value: number | null) {
-  if (value == null) return "—";
-  if (value < 1_024) return `${fmtNum(value)} Б`;
-  if (value < 1_048_576) return `${(value / 1_024).toLocaleString("ru-RU", { maximumFractionDigits: 1 })} КБ`;
-  return `${(value / 1_048_576).toLocaleString("ru-RU", { maximumFractionDigits: 1 })} МБ`;
-}
-
-function simpleMetric(value: unknown): string | null {
-  if (value == null) return "—";
-  if (typeof value === "boolean") return value ? "Да" : "Нет";
-  if (typeof value === "number") return fmtNum(value);
-  if (typeof value === "string") return value;
-  return null;
+/** Evidence arrives as raw numbers/ISO strings; the label tells which unit applies. */
+function formatEvidence(label: string, value: string | number | boolean | null): string {
+  if (value == null || value === "") return "Нет подтверждения";
+  if (typeof value === "number") {
+    if (/память|memory/iu.test(label)) return formatAdminMetric("bytes", value) ?? String(value);
+    if (/uptime/iu.test(label)) return formatAdminMetric("seconds", value) ?? String(value);
+    if (/возраст|интервал|задержка|длительность/iu.test(label)) return formatAdminDuration(value);
+    return fmtNum(value);
+  }
+  if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}T/u.test(value) && Number.isFinite(Date.parse(value))) {
+    return `${new Date(value).toLocaleString("ru-RU", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", second: "2-digit" })} · ${fmtAgo(value)}`;
+  }
+  return String(value);
 }
 
 function QueueTable({ queues }: { queues: readonly AdminQueueSnapshot[] }) {
@@ -196,7 +199,9 @@ function ProviderTables({ component }: { component: AdminDiagnosticComponent }) 
 }
 
 function ComponentDetails({ component }: { component: AdminDiagnosticComponent }) {
-  const primitiveMetrics = Object.entries(component.metrics ?? {}).filter(([, value]) => simpleMetric(value) !== null);
+  const primitiveMetrics = Object.entries(component.metrics ?? {})
+    .map(([key, value]) => [key, formatAdminMetric(key, value)] as const)
+    .filter((entry): entry is readonly [string, string] => entry[1] !== null);
   const reasons = Array.isArray(component.metrics?.reasons) ? component.metrics.reasons : [];
   return (
     <article aria-labelledby="system-detail-title">
@@ -219,7 +224,7 @@ function ComponentDetails({ component }: { component: AdminDiagnosticComponent }
             <p className={cn(
               "type-secondary mt-2 break-words font-semibold",
               item.tone === "critical" ? "text-danger-text" : item.tone === "warning" ? "text-fire-text" : "text-text",
-            )}>{item.value == null || item.value === "" ? "Нет подтверждения" : String(item.value)}</p>
+            )}>{formatEvidence(item.label, item.value)}</p>
           </div>
         ))}
         <div className="rounded-sm bg-surface-inset p-4">
@@ -240,10 +245,8 @@ function ComponentDetails({ component }: { component: AdminDiagnosticComponent }
           <dl className="mt-3 grid gap-x-6 gap-y-3 rounded-sm border border-line p-4 sm:grid-cols-2 xl:grid-cols-3">
             {primitiveMetrics.map(([key, value]) => (
               <div key={key} className="flex items-baseline justify-between gap-4 border-b border-line/70 pb-2">
-                <dt className="type-caption break-words text-text-3">{key}</dt>
-                <dd className="nums type-secondary text-end font-semibold text-text">
-                  {key.toLowerCase().includes("memory") ? bytes(Number(value)) : simpleMetric(value)}
-                </dd>
+                <dt className="type-caption break-words text-text-3" title={key}>{adminMetricLabel(key)}</dt>
+                <dd className="nums type-secondary text-end font-semibold text-text">{value}</dd>
               </div>
             ))}
           </dl>
@@ -268,7 +271,7 @@ function ComponentDetails({ component }: { component: AdminDiagnosticComponent }
           <div className="mt-3 flex flex-wrap gap-2">
             {component.affectedSections.map((section) => (
               <Link key={section} href={`/admin?analyticsSection=${section}#aurora-analytics`} className={buttonClassName({ variant: "secondary", size: "sm" })}>
-                {section}
+                {adminSectionLabel(section)}
               </Link>
             ))}
           </div>
@@ -396,6 +399,7 @@ export function AdminSystemCenter() {
             </h3>
             <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-text-2">
               <span className="type-secondary">Исправно: <strong className="nums text-text">{data.summary.healthy}</strong></span>
+              <span className="type-secondary" title="Проверена только конфигурация">Настроено: <strong className="nums text-text">{data.summary.configured}</strong></span>
               <span className="type-secondary">Предупреждения: <strong className="nums text-text">{data.summary.warnings}</strong></span>
               <span className="type-secondary">Критические: <strong className="nums text-text">{data.summary.critical}</strong></span>
             </div>
@@ -403,7 +407,7 @@ export function AdminSystemCenter() {
               Последняя проверка: <time dateTime={data.checkedAt}>{fmtAgo(data.checkedAt)}</time> · {duration(data.durationMs)}
             </p>
             <p className="type-caption mt-1 text-text-3">
-              Релиз: {data.release.release || "не настроен"} · commit {data.release.commitSha || "—"} · развёрнут {data.release.deployedAt ? fmtAgo(data.release.deployedAt) : "—"}
+              Релиз: {data.release.release || "не настроен"} · commit <span className="font-mono" title={data.release.commitSha ?? undefined}>{data.release.commitSha ? data.release.commitSha.slice(0, 12) : "—"}</span> · развёрнут {data.release.deployedAt ? fmtAgo(data.release.deployedAt) : "—"}
             </p>
           </div>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end">

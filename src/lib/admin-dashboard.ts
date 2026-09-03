@@ -45,7 +45,9 @@ export interface AdminDashboardData {
   attention: Array<{
     id: number;
     project: string;
+    projectId: number;
     author: string;
+    authorId: number;
     channel: string;
     network: string;
     status: "failed" | "quarantined" | "overdue" | "auth";
@@ -194,7 +196,9 @@ export async function loadAdminDashboard(
     db.query<{
       id: number | string;
       project: string | null;
+      project_id: number | string;
       author: string | null;
+      author_id: number | string;
       channel: string | null;
       network: string;
       attention_status: "failed" | "quarantined" | "overdue" | "auth";
@@ -206,7 +210,9 @@ export async function loadAdminDashboard(
     }>(
       `select post.id,
               project.name as project,
+              project.id as project_id,
               coalesce(nullif(btrim(author.name), ''), author.email, 'Пользователь ' || author.id::text) as author,
+              author.id as author_id,
               coalesce(nullif(btrim(channel.title), ''), nullif(btrim(channel.handle), ''), 'Канал ' || channel.id::text) as channel,
               channel.network,
               case
@@ -334,7 +340,9 @@ export async function loadAdminDashboard(
     attention: attention.rows.map((row) => ({
       id: positiveId(row.id),
       project: row.project || "Проект",
+      projectId: positiveId(row.project_id),
       author: row.author || "Пользователь",
+      authorId: positiveId(row.author_id),
       channel: row.channel || "Канал",
       network: row.network,
       status: row.attention_status,

@@ -114,6 +114,17 @@ describe("production deployment shell contract", () => {
     expect(worker).toContain('process.env.AURORA_RUNTIME_ROLE = "worker"');
   });
 
+  it("stamps release identity into the runtime env and the browser build on every deploy", () => {
+    // Runtime release metadata feeds admin diagnostics, analytics release markers and Sentry.
+    expect(script).toContain('/^AURORA_RELEASE=/ || /^AURORA_RELEASE_SHA=/ || /^AURORA_DEPLOYED_AT=/ { next }');
+    expect(script).toContain('print "AURORA_RELEASE=" release_key');
+    expect(script).toContain('print "AURORA_RELEASE_SHA=" release_sha');
+    expect(script).toContain('print "AURORA_DEPLOYED_AT=" release_deployed_at');
+    expect(script).toContain('release_deployed_at="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"');
+    expect(script).toContain("-v release_sha=\"$DEPLOY_SHA\"");
+    expect(workflow).toContain('export NEXT_PUBLIC_AURORA_APP_VERSION="web-${AURORA_DEPLOY_SHA:0:12}"');
+  });
+
   it("rolls back restart, health, and partial web/worker activation failures", () => {
     expect(script).toContain("if ! systemctl restart aurora-web.service aurora-worker.service");
     expect(script).toContain("if ! wait_for_health");

@@ -1041,8 +1041,11 @@ function errorSource(value: string | null): AuroraAnalyticsErrorGroup["source"] 
 }
 
 function dependencyFor(sectionId: AuroraSectionId, source: string | null, code: string): string | null {
-  const dependencies = AURORA_SECTION_BY_ID[sectionId].dependencies;
-  if (source === "worker") return dependencies.find((item) => item.includes("worker")) ?? "redis";
+  const dependencies: readonly string[] = AURORA_SECTION_BY_ID[sectionId].dependencies;
+  if (source === "worker") {
+    return ["publication_worker", "site_analysis", "media_generation", "telegram_worker"]
+      .find((component) => dependencies.includes(component)) ?? "redis";
+  }
   if (code.includes("ai_") || code.includes("provider")) return dependencies.includes("aurora_ai") ? "aurora_ai" : null;
   if (code.includes("database") || code.includes("postgres")) return "postgresql";
   if (code.includes("queue") || code.includes("redis")) return "redis";

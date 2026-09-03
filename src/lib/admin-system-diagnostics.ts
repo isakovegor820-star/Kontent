@@ -25,12 +25,18 @@ import {
 import { redisProducerConnectionOptions } from "./queue";
 import { auroraReleaseMetadata } from "./release-metadata";
 
+/**
+ * `configured` is deliberately separate from `healthy`: a check that only inspects
+ * configuration (env presence, URL scheme) proves nothing about runtime behaviour and
+ * must not be counted as a confirmed working dependency.
+ */
 export const ADMIN_DIAGNOSTIC_STATES = [
   "healthy",
   "degraded",
   "down",
   "unobserved",
   "not_configured",
+  "configured",
   "conflict",
 ] as const;
 
@@ -81,6 +87,7 @@ export type AdminSystemDiagnostics = Readonly<{
   summary: Readonly<{
     total: number;
     healthy: number;
+    configured: number;
     warnings: number;
     critical: number;
   }>;
@@ -123,6 +130,19 @@ export type DiagnosticDefinition = Readonly<{
 }>;
 
 const lastSuccessByComponent = new Map<string, string>();
+
+const WEB_EVENT_LOOP_LAG_WARNING_MS = 250;
+const WEB_EVENT_LOOP_LAG_CRITICAL_MS = 2_000;
+const AI_RECENT_WINDOW_MINUTES = 15;
+const AI_QUIET_SUCCESS_MAX_AGE_MS = 24 * 60 * 60_000;
+const REDIS_PING_WARNING_MS = 100;
+
+/** How long a zero-delay timer waits before firing: a direct measure of process saturation. */
+export async function measureEventLoopLag(now: () => number = Date.now): Promise<number> {
+  const startedAt = now();
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  return Math.max(0, Math.round(now() - startedAt) - 1);
+}
 
 function safeCode(value: unknown, fallback: string): string {
   const normalized = String(value || "").trim();
@@ -423,6 +443,35 @@ function queueState(queues: readonly AdminQueueSnapshot[], names: readonly strin
   return "unobserved";
 }
 
+/**
+ * Component ids that `/admin?system=<id>` can select. Section dependencies in
+ * `aurora-section-catalog.ts` must only reference these, otherwise cross-links from
+ * analytics land on an empty detail panel.
+ */
+export const ADMIN_DIAGNOSTIC_COMPONENT_IDS = Object.freeze([
+  "web_api",
+  "postgresql",
+  "database_schema",
+  "redis",
+  "publication_worker",
+  "telegram_worker",
+  "aurora_ai",
+  "media_generation",
+  "site_analysis",
+  "mail_delivery",
+  "token_encryption",
+  "tracking_secrets",
+  "upload_limits",
+  "https_origin",
+  "current_release",
+] as const);
+
+export type AdminDiagnosticComponentId = (typeof ADMIN_DIAGNOSTIC_COMPONENT_IDS)[number];
+
+export function defaultDiagnosticComponentIds(now: () => number = Date.now): string[] {
+  return defaultDefinitions(now).map((definition) => definition.id);
+}
+
 function defaultDefinitions(now: () => number): DiagnosticDefinition[] {
   const pool = () => getPool();
   let redisPromise: Promise<RedisSnapshot> | null = null;
@@ -432,12 +481,31 @@ function defaultDefinitions(now: () => number): DiagnosticDefinition[] {
 
   return [
     {
-      id: "web_api", group: "core", label: "Web/API", description: "Текущий HTTP-процесс и admin route",
-      run: async () => ({
-        state: "healthy",
-        evidence: [{ label: "Запрос", value: "Успешный admin-only ответ", tone: "positive" }],
-        affectedSections: [],
-      }),
+      id: "web_api", group: "core", label: "Web/API", description: "Текущий HTTP-процесс: event loop, память, uptime",
+      run: async () => {
+        const lagMs = await measureEventLoopLag(now);
+        const memory = process.memoryUsage();
+        const uptimeSeconds = Math.round(process.uptime());
+        const state: AdminDiagnosticState = lagMs >= WEB_EVENT_LOOP_LAG_CRITICAL_MS ? "down"
+          : lagMs >= WEB_EVENT_LOOP_LAG_WARNING_MS ? "degraded" : "healthy";
+        return {
+          state,
+          evidence: [
+            { label: "Задержка event loop", value: `${lagMs} мс`, tone: state === "healthy" ? "positive" : state === "down" ? "critical" : "warning" },
+            { label: "Uptime процесса", value: uptimeSeconds },
+            { label: "Память RSS", value: memory.rss },
+          ],
+          safeErrorCode: state === "healthy" ? null : "web_event_loop_lag",
+          metrics: {
+            eventLoopLagMs: lagMs,
+            processUptimeSeconds: uptimeSeconds,
+            rssBytes: memory.rss,
+            heapUsedBytes: memory.heapUsed,
+            heapTotalBytes: memory.heapTotal,
+          },
+          affectedSections: [],
+        };
+      },
     },
     {
       id: "postgresql", group: "core", label: "PostgreSQL", description: "Доступность и пул соединений",
@@ -494,13 +562,18 @@ function defaultDefinitions(now: () => number): DiagnosticDefinition[] {
         const [snapshot, queueSnapshots] = await Promise.all([redis(), queues()]);
         if (!snapshot.configured) return { state: "not_configured", evidence: [{ label: "REDIS_URL", value: "Не настроен" }], queues: queueSnapshots };
         const failedQueues = queueSnapshots.filter((queue) => queue.state === "down").length;
+        const slowPing = snapshot.pingLatencyMs != null && snapshot.pingLatencyMs >= REDIS_PING_WARNING_MS;
         return {
-          state: failedQueues > 0 ? "degraded" : "healthy",
+          state: failedQueues > 0 || slowPing ? "degraded" : "healthy",
           evidence: [
-            { label: "PING", value: `${snapshot.pingLatencyMs ?? 0} мс`, tone: "positive" },
+            {
+              label: "PING",
+              value: snapshot.pingLatencyMs == null ? null : `${snapshot.pingLatencyMs} мс`,
+              tone: snapshot.pingLatencyMs == null ? "warning" : slowPing ? "warning" : "positive",
+            },
             { label: "Подключения", value: snapshot.connectedClients },
           ],
-          safeErrorCode: failedQueues > 0 ? "redis_queue_probe_partial" : null,
+          safeErrorCode: failedQueues > 0 ? "redis_queue_probe_partial" : slowPing ? "redis_ping_slow" : null,
           metrics: {
             pingLatencyMs: snapshot.pingLatencyMs,
             usedMemoryBytes: snapshot.usedMemoryBytes,
@@ -596,29 +669,50 @@ function defaultDefinitions(now: () => number): DiagnosticDefinition[] {
             group by provider, model
             order by provider, model`,
         );
-        const usage = await pool().query<{ today: number | string; period: number | string }>(
-          `select
-             count(*) filter (where status = 'committed' and usage_date = current_date) as today,
-             count(*) filter (where status = 'committed' and created_at >= now() - interval '30 days') as period
-           from ai_usage`,
-        );
+        const [usage, recent] = await Promise.all([
+          pool().query<{ today: number | string; period: number | string }>(
+            `select
+               count(*) filter (where status = 'committed' and usage_date = current_date) as today,
+               count(*) filter (where status = 'committed' and created_at >= now() - interval '30 days') as period
+             from ai_usage`,
+          ),
+          // Persisted attempts cover both the web and worker processes, unlike the in-process
+          // circuit snapshot which only sees calls made by this HTTP process.
+          pool().query<{ successes: number | string; failures: number | string }>(
+            `select
+               count(*) filter (where outcome = 'succeeded') as successes,
+               count(*) filter (where outcome = 'failed') as failures
+             from ai_provider_attempts
+            where created_at >= now() - make_interval(mins => $1::int)`,
+            [AI_RECENT_WINDOW_MINUTES],
+          ),
+        ]);
         const latestSuccess = usageResult.rows.map((row) => nullableIso(row.last_success_at)).filter(Boolean).sort().at(-1) ?? null;
-        const fresh = providers.length > 0 && providers.every((provider) => (
-          provider.lastOutcome === "success"
-          && provider.state === "closed"
-          && provider.updatedAt !== null
-          && now() - Date.parse(provider.updatedAt) < 15 * 60_000
-        ));
-        const state: AdminDiagnosticState = providers.length === 0 ? "unobserved" : fresh ? "healthy" : "degraded";
+        const latestSuccessAgeMs = ageMs(latestSuccess, now());
+        const recentSuccesses = nonNegative(recent.rows[0]?.successes);
+        const recentFailures = nonNegative(recent.rows[0]?.failures);
+        const openCircuit = providers.find((provider) => provider.state === "open");
+        // A quiet period (no calls in the window) is not a failure; healthy is kept while the
+        // last confirmed success is recent enough, otherwise the component is unobserved.
+        const state: AdminDiagnosticState = openCircuit ? "degraded"
+          : recentSuccesses + recentFailures > 0
+            ? (recentFailures > 0 && recentSuccesses === 0 ? "degraded" : "healthy")
+            : latestSuccessAgeMs != null && latestSuccessAgeMs <= AI_QUIET_SUCCESS_MAX_AGE_MS ? "healthy" : "unobserved";
+        const safeErrorCode = openCircuit ? (openCircuit.lastFailureCode ?? "ai_circuit_open")
+          : state === "degraded" ? (providers.find((provider) => provider.lastFailureCode)?.lastFailureCode ?? "ai_recent_failures")
+            : null;
         return {
           state,
           evidence: [
             { label: "Настроенные провайдеры", value: providers.length || usageResult.rows.length },
+            { label: `Вызовы за ${AI_RECENT_WINDOW_MINUTES} мин`, value: `${recentSuccesses} успешных · ${recentFailures} с ошибкой`, tone: recentFailures > 0 && recentSuccesses === 0 ? "critical" : recentFailures > 0 ? "warning" : "neutral" },
             { label: "Последний успешный outcome", value: latestSuccess },
           ],
-          safeErrorCode: providers.find((provider) => provider.lastFailureCode)?.lastFailureCode ?? (state === "degraded" ? "ai_not_fresh" : null),
+          safeErrorCode,
           lastSuccessAt: latestSuccess,
           metrics: {
+            recentSuccesses,
+            recentFailures,
             providers,
             activeModels: usageResult.rows.map((row) => ({
               provider: row.provider,
@@ -709,10 +803,10 @@ function defaultDefinitions(now: () => number): DiagnosticDefinition[] {
       id: "tracking_secrets", group: "security", label: "Tracking secrets", description: "Наличие, длина и разделение секретов",
       run: async () => {
         const result = probeTrackingSecretsConfiguration();
-        const state: AdminDiagnosticState = result === "up" ? "healthy" : result === "not_configured" ? "not_configured" : "down";
+        const state: AdminDiagnosticState = result === "up" ? "configured" : result === "not_configured" ? "not_configured" : "down";
         return {
           state,
-          evidence: [{ label: "Проверка конфигурации", value: state === "healthy" ? "Успешна" : "Не пройдена" }],
+          evidence: [{ label: "Проверка конфигурации", value: state === "configured" ? "Секреты заданы и различаются" : "Не пройдена" }],
           safeErrorCode: state === "down" ? "tracking_secrets_invalid" : null,
         };
       },
@@ -721,10 +815,10 @@ function defaultDefinitions(now: () => number): DiagnosticDefinition[] {
       id: "upload_limits", group: "security", label: "Ограничения загрузки", description: "Ingress body limit",
       run: async () => {
         const result = probeUploadIngressConfiguration();
-        const state: AdminDiagnosticState = result === "up" ? "healthy" : "not_configured";
+        const state: AdminDiagnosticState = result === "up" ? "configured" : "not_configured";
         return {
           state,
-          evidence: [{ label: "Ingress limit", value: state === "healthy" ? "Подтверждён" : "Не настроен" }],
+          evidence: [{ label: "Ingress limit", value: state === "configured" ? "Задан" : "Не настроен" }],
           safeErrorCode: state === "not_configured" ? "avatar_ingress_limit_not_configured" : null,
         };
       },
@@ -737,7 +831,7 @@ function defaultDefinitions(now: () => number): DiagnosticDefinition[] {
         let protocol: string;
         try { protocol = new URL(value).protocol; } catch { return { state: "down", evidence: [{ label: "APP_URL", value: "Некорректен" }], safeErrorCode: "app_origin_invalid" }; }
         const secure = protocol === "https:";
-        const state: AdminDiagnosticState = secure ? "healthy" : process.env.NODE_ENV === "production" ? "down" : "degraded";
+        const state: AdminDiagnosticState = secure ? "configured" : process.env.NODE_ENV === "production" ? "down" : "degraded";
         return {
           state,
           evidence: [{ label: "Протокол", value: protocol.replace(":", "") }],
@@ -773,8 +867,9 @@ export async function loadAdminSystemDiagnostics(
   const startedAt = now();
   const components = await runDiagnosticDefinitions(options.definitions ?? defaultDefinitions(now), { now });
   const healthy = components.filter((component) => component.state === "healthy").length;
+  const configured = components.filter((component) => component.state === "configured").length;
   const critical = components.filter((component) => component.state === "down" || component.state === "conflict").length;
-  const warnings = components.length - healthy - critical;
+  const warnings = components.length - healthy - configured - critical;
   const coreCritical = components.some((component) => component.group === "core" && (component.state === "down" || component.state === "conflict"));
   const state: AdminDiagnosticState = coreCritical ? "down" : critical > 0 || warnings > 0 ? "degraded" : "healthy";
   return {
@@ -782,7 +877,7 @@ export async function loadAdminSystemDiagnostics(
     checkedAt: new Date(now()).toISOString(),
     durationMs: Math.max(0, Math.round(now() - startedAt)),
     state,
-    summary: { total: components.length, healthy, warnings, critical },
+    summary: { total: components.length, healthy, configured, warnings, critical },
     release: auroraReleaseMetadata(),
     components,
   };

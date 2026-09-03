@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { ADMIN_DIAGNOSTIC_COMPONENT_IDS, defaultDiagnosticComponentIds } from "./admin-system-diagnostics";
 import { APP_NAV_GROUPS } from "./app-routes";
 import {
   AURORA_SECTION_BY_ID,
@@ -35,5 +36,16 @@ describe("Aurora section operational catalog", () => {
   it("validates section ids fail-closed", () => {
     expect(isAuroraSectionId("siteAnalysis")).toBe(true);
     expect(isAuroraSectionId("arbitrary")).toBe(false);
+  });
+
+  it("only references dependencies that the system diagnostics can actually select", () => {
+    // Otherwise «Открыть зависимость» from analytics lands on an empty «Система» panel.
+    const known = new Set<string>(ADMIN_DIAGNOSTIC_COMPONENT_IDS);
+    for (const section of AURORA_SECTION_CATALOG) {
+      for (const dependency of section.dependencies) {
+        expect(known.has(dependency), `${section.id} → ${dependency}`).toBe(true);
+      }
+    }
+    expect(defaultDiagnosticComponentIds()).toEqual([...ADMIN_DIAGNOSTIC_COMPONENT_IDS]);
   });
 });
