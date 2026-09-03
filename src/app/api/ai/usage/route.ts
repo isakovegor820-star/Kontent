@@ -2,7 +2,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/session";
-import { AI_DAILY_LIMIT, aiUsedToday } from "@/lib/ai-usage";
+import { AI_DAILY_LIMIT, aiDailyLimitFor, aiUsedToday } from "@/lib/ai-usage";
 
 export const runtime = "nodejs";
 
@@ -10,8 +10,8 @@ export async function GET(req: NextRequest) {
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ used: 0, limit: AI_DAILY_LIMIT });
   try {
-    const used = await aiUsedToday(user.id);
-    return NextResponse.json({ used, limit: AI_DAILY_LIMIT, status: "ok" });
+    const [used, limit] = await Promise.all([aiUsedToday(user.id), aiDailyLimitFor(user.id)]);
+    return NextResponse.json({ used, limit, status: "ok" });
   } catch (error) {
     console.error("[/api/ai/usage] usage unavailable", {
       name: error instanceof Error ? error.name : "error",

@@ -107,7 +107,8 @@ export async function getSessionUser(req: NextRequest): Promise<SessionUser | nu
        from sessions s
        join users u on u.id = s.user_id
       where s.token_hash = $1 and s.expires_at > now()
-        and s.credential_epoch = u.credential_epoch`,
+        and s.credential_epoch = u.credential_epoch
+        and u.blocked_at is null`,
     [tokenHash],
   );
   if (rows.rowCount === 0) return null;

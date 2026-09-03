@@ -86,7 +86,18 @@ export interface AdminUserDetail {
       vk: boolean;
     };
     lastActivityAt: string;
+    blockedAt: string | null;
+    blockedReason: string | null;
+    /** Administrator override; null means the platform default applies. */
+    aiDailyLimit: number | null;
   };
+  adminActions: Array<{
+    id: number;
+    action: string;
+    reason: string | null;
+    actor: string;
+    createdAt: string;
+  }>;
   summary: {
     projects: number;
     channels: number;
@@ -484,8 +495,11 @@ export async function loadAdminUserDetail(
     telegram_login: boolean;
     vk_login: boolean;
     last_activity_at: unknown;
+    blocked_at: unknown;
+    blocked_reason: string | null;
+    ai_daily_limit: unknown;
   }>(
-    `select app_user.id,
+    `select app_user.id, app_user.blocked_at, app_user.blocked_reason, app_user.ai_daily_limit,
             coalesce(nullif(btrim(app_user.name), ''), app_user.email, 'Пользователь ' || app_user.id::text) as name,
             app_user.email, app_user.created_at, app_user.onboarding_completed_at,
             app_user.tg_chat_id is not null as bot_linked,
@@ -505,7 +519,7 @@ export async function loadAdminUserDetail(
   );
   if (identity.rowCount === 0) return null;
 
-  const [summary, activity, projects, channels, posts, aiKinds, recentAi, sessions, audit] = await Promise.all([
+  const [summary, activity, projects, channels, posts, aiKinds, recentAi, sessions, audit, adminActions] = await Promise.all([
     db.query<{
       projects: unknown;
       channels: unknown;
@@ -724,6 +738,15 @@ export async function loadAdminUserDetail(
         order by event.created_at desc, event.id desc limit 20`,
       [userId],
     ),
+    db.query<{ id: unknown; action: string; reason: string | null; actor: string | null; created_at: unknown }>(
+      `select event.id, event.action, event.reason, event.created_at,
+              coalesce(nullif(btrim(actor.name), ''), actor.email, 'Администратор') as actor
+         from admin_account_actions event
+         left join users actor on actor.id = event.actor_user_id
+        where event.target_user_id = $1
+        order by event.created_at desc, event.id desc limit 20`,
+      [userId],
+    ),
   ]);
 
   const row = identity.rows[0];
@@ -745,7 +768,17 @@ export async function loadAdminUserDetail(
         vk: row.vk_login === true,
       },
       lastActivityAt: iso(row.last_activity_at),
+      blockedAt: nullableIso(row.blocked_at),
+      blockedReason: row.blocked_reason == null ? null : String(row.blocked_reason),
+      aiDailyLimit: row.ai_daily_limit == null ? null : count(row.ai_daily_limit),
     },
+    adminActions: adminActions.rows.map((event) => ({
+      id: positiveId(event.id),
+      action: String(event.action),
+      reason: event.reason == null ? null : String(event.reason),
+      actor: String(event.actor || "Администратор"),
+      createdAt: iso(event.created_at),
+    })),
     summary: {
       projects: count(totals?.projects),
       channels: count(totals?.channels),

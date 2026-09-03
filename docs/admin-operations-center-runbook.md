@@ -10,6 +10,27 @@
 Запрещённые действия намеренно отсутствуют: restart, очистка Redis, массовый retry,
 запуск миграций, изменение env и удаление событий.
 
+## Действия над аккаунтом
+
+`POST /api/admin/users/:id/actions` — `block` / `unblock`, `revoke_sessions`,
+`send_password_reset`, `set_ai_limit`. Блокировка и завершение сессий поворачивают
+`users.credential_epoch`, поэтому все живые сессии умирают в той же транзакции;
+`getSessionUser` дополнительно отвергает `blocked_at is not null`. Сброс пароля идёт
+через штатный `password_reset_outbox` — админ не видит токен. `ai_daily_limit`
+переопределяет `AI_DAILY_LIMIT` для одного аккаунта (1–100 000, `null` — платформенный).
+Нельзя заблокировать себя и аккаунты из admin allowlist. Журнал —
+`admin_account_actions` (миграция `20261009_admin_account_controls.sql`).
+
+## Telegram-алерты администраторам
+
+`src/lib/admin-alerts-scheduler.ts` стартует из `instrumentation.ts` только в web-процессе
+(воркер не может сообщить о собственной смерти). Раз в `AURORA_ADMIN_ALERTS_INTERVAL_MS`
+(5 мин) проверяются PostgreSQL, Redis, heartbeat воркера публикаций, Telegram-polling и
+число просроченных публикаций. Сообщение уходит один раз при переходе в сбой, повтор раз
+в `AURORA_ADMIN_ALERTS_REPEAT_MS`, и один раз при восстановлении. Получатели — только
+`AURORA_ADMIN_USER_IDS` / `AURORA_ADMIN_EMAILS` с привязанным `tg_chat_id`.
+Выключить: `AURORA_ADMIN_ALERTS=off`.
+
 ## «Проекты»
 
 URL: `/admin?prq=&prstatus=&prnetwork=&prsort=&prpage=&prid=<id>#projects`.

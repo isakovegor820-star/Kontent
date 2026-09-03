@@ -17,6 +17,10 @@ import {
   Search,
   Send,
   ShieldAlert,
+  ShieldBan,
+  ShieldCheck,
+  LogOut,
+  KeySquare,
   Sparkles,
   UserCheck,
   UserRound,
@@ -28,6 +32,7 @@ import {
 import { FormEvent, useEffect, useId, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import type { AdminPeriodDays } from "@/lib/admin-dashboard";
 import type {
   AdminUserDetail,
@@ -329,7 +334,155 @@ function DetailLoading() {
   );
 }
 
-function DetailContent({ detail }: { detail: AdminUserDetail }) {
+
+const ACCOUNT_ACTION_LABEL: Record<string, string> = {
+  "account.blocked": "Аккаунт заблокирован",
+  "account.unblocked": "Аккаунт разблокирован",
+  "account.sessions_revoked": "Все сессии завершены",
+  "account.password_reset_sent": "Отправлена ссылка для сброса пароля",
+  "account.ai_limit_changed": "Изменён дневной лимит AI",
+};
+
+const ACCOUNT_ACTION_ERROR: Record<string, string> = {
+  not_found: "Аккаунт больше не существует.",
+  self: "Нельзя применить к собственному аккаунту.",
+  protected: "Аккаунт входит в список администраторов — блокировка из панели недоступна.",
+  already: "Аккаунт уже в этом состоянии. Обновите карточку.",
+  no_email: "У аккаунта нет email — сброс пароля отправить некуда.",
+  invalid_limit: "Лимит должен быть целым числом от 1 до 100 000.",
+  forbidden_origin: "Запрос отклонён по origin. Обновите страницу.",
+  unauthorized: "Сессия истекла. Войдите снова.",
+  access_denied: "У сессии нет прав администратора.",
+};
+
+function AccountControls({ detail, onChanged }: { detail: AdminUserDetail; onChanged: () => void }) {
+  const { user } = detail;
+  const [busy, setBusy] = useState<string | null>(null);
+  const [message, setMessage] = useState<{ tone: "success" | "danger"; text: string } | null>(null);
+  const [pending, setPending] = useState<"block" | "revoke" | null>(null);
+  const [reason, setReason] = useState("");
+  const [limitInput, setLimitInput] = useState(user.aiDailyLimit == null ? "" : String(user.aiDailyLimit));
+
+  async function perform(action: string, payload: Record<string, unknown>, successText: string) {
+    setBusy(action);
+    setMessage(null);
+    try {
+      const response = await fetch(`/api/admin/users/${user.id}/actions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action, ...payload }),
+      });
+      const result = await response.json().catch(() => null) as { status?: string; error?: string } | null;
+      if (!response.ok) {
+        const code = result?.status ?? result?.error ?? "unavailable";
+        throw new Error(ACCOUNT_ACTION_ERROR[code] ?? "Действие не выполнено. Обновите карточку и попробуйте снова.");
+      }
+      setMessage({ tone: "success", text: successText });
+      onChanged();
+    } catch (error) {
+      setMessage({ tone: "danger", text: error instanceof Error ? error.message : "Действие не выполнено." });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <section className="rounded-md border border-line bg-surface p-5" aria-labelledby="account-controls-title">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="type-label text-brand">Управление</p>
+          <h3 id="account-controls-title" className="mt-2 text-text">Действия администратора</h3>
+          <p className="type-caption mt-1 text-text-3">Каждое действие записывается в журнал аккаунта с исполнителем и причиной.</p>
+        </div>
+        {user.blockedAt ? <StatusPill label={`Заблокирован ${fmtAgo(user.blockedAt)}`} tone="danger" icon={ShieldBan} /> : <StatusPill label="Вход разрешён" tone="success" icon={ShieldCheck} />}
+      </div>
+      {user.blockedReason ? <p className="type-caption mt-3 rounded-sm bg-danger-soft p-3 text-danger-text">Причина: {user.blockedReason}</p> : null}
+      <div className="mt-4 flex flex-wrap gap-2">
+        <Button variant="secondary" size="sm" disabled={!user.email} loading={busy === "send_password_reset"} onClick={() => void perform("send_password_reset", {}, `Ссылка для сброса пароля отправлена на ${user.email}.`)} title={user.email ? undefined : "У аккаунта нет email"}>
+          <KeySquare className="h-3.5 w-3.5" aria-hidden />Сбросить пароль
+        </Button>
+        <Button variant="secondary" size="sm" onClick={() => setPending("revoke")}>
+          <LogOut className="h-3.5 w-3.5" aria-hidden />Завершить все сессии
+        </Button>
+        {user.blockedAt ? (
+          <Button variant="primary" size="sm" loading={busy === "unblock"} onClick={() => void perform("unblock", {}, "Аккаунт разблокирован. Пользователь может войти снова.")}>
+            <ShieldCheck className="h-3.5 w-3.5" aria-hidden />Разблокировать
+          </Button>
+        ) : (
+          <Button variant="danger" size="sm" onClick={() => { setReason(""); setPending("block"); }}>
+            <ShieldBan className="h-3.5 w-3.5" aria-hidden />Заблокировать
+          </Button>
+        )}
+      </div>
+
+      <form
+        className="mt-5 flex flex-col gap-3 rounded-sm bg-surface-inset p-4 sm:flex-row sm:items-end"
+        onSubmit={(event) => {
+          event.preventDefault();
+          const trimmed = limitInput.trim();
+          const limit = trimmed === "" ? null : Number(trimmed);
+          void perform("set_ai_limit", { limit }, limit === null ? "Лимит AI возвращён к платформенному значению." : `Дневной лимит AI: ${fmtNum(limit)}.`);
+        }}
+      >
+        <label className="block flex-1">
+          <span className="type-caption mb-1.5 block text-text-3">Дневной лимит AI-генераций {user.aiDailyLimit == null ? "(сейчас платформенный)" : "(переопределён)"}</span>
+          <input type="number" min={1} max={100000} step={1} value={limitInput} onChange={(event) => setLimitInput(event.target.value)} placeholder="Пусто — платформенный лимит" className="min-h-11 w-full rounded-xs border border-line-strong bg-surface px-3.5 text-text" />
+        </label>
+        <div className="flex gap-2">
+          <Button type="submit" variant="secondary" loading={busy === "set_ai_limit"}>Сохранить лимит</Button>
+          {user.aiDailyLimit != null ? <Button type="button" variant="ghost" onClick={() => { setLimitInput(""); void perform("set_ai_limit", { limit: null }, "Лимит AI возвращён к платформенному значению."); }}>Сбросить</Button> : null}
+        </div>
+      </form>
+
+      {message ? <p role="status" className={cn("mt-4 rounded-sm p-3", message.tone === "success" ? "bg-success-soft text-success-text" : "bg-danger-soft text-danger-text")}>{message.text}</p> : null}
+
+      {detail.adminActions.length > 0 ? (
+        <ol className="mt-5 space-y-2">
+          {detail.adminActions.map((event) => (
+            <li key={event.id} className="type-caption flex flex-wrap justify-between gap-2 text-text-2">
+              <span><span className="font-semibold text-text">{ACCOUNT_ACTION_LABEL[event.action] ?? event.action}</span> · {event.actor}{event.reason ? ` · ${event.reason}` : ""}</span>
+              <time className="text-text-3" dateTime={event.createdAt}>{fmtAgo(event.createdAt)}</time>
+            </li>
+          ))}
+        </ol>
+      ) : null}
+
+      <ConfirmDialog
+        open={pending === "revoke"}
+        title="Завершить все сессии?"
+        description={`Пользователь «${user.name}» будет разлогинен на всех устройствах и сможет войти заново. Данные не изменятся.`}
+        confirmLabel="Завершить сессии"
+        busy={busy === "revoke_sessions"}
+        onCancel={() => setPending(null)}
+        onConfirm={() => void perform("revoke_sessions", {}, "Все сессии завершены.").then(() => setPending(null))}
+      />
+      {pending === "block" ? (
+        <div role="dialog" aria-modal="true" aria-labelledby="account-block-title" className="fixed inset-0 z-50 grid place-items-center bg-text/45 p-4 backdrop-blur-sm">
+          <form
+            className="card-plain w-full max-w-md rounded-lg p-6"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void perform("block", { reason: reason.trim() || null }, "Аккаунт заблокирован, все сессии завершены.").then(() => setPending(null));
+            }}
+          >
+            <h3 id="account-block-title" className="text-text">Заблокировать «{user.name}»?</h3>
+            <p className="type-secondary mt-2 text-text-2">Вход станет невозможен, все сессии завершатся немедленно. Проекты, каналы и публикации сохранятся; запланированные посты продолжат выходить.</p>
+            <label className="mt-4 block">
+              <span className="type-caption mb-1.5 block text-text-3">Причина (видна только администраторам)</span>
+              <textarea value={reason} onChange={(event) => setReason(event.target.value)} maxLength={500} rows={3} className="w-full rounded-xs border border-line-strong bg-surface px-3.5 py-2 text-text" />
+            </label>
+            <div className="mt-5 flex justify-end gap-3">
+              <Button type="button" variant="ghost" onClick={() => setPending(null)}>Отмена</Button>
+              <Button type="submit" variant="danger" loading={busy === "block"}>Заблокировать</Button>
+            </div>
+          </form>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function DetailContent({ detail, onChanged }: { detail: AdminUserDetail; onChanged: () => void }) {
   const { user, summary } = detail;
   return (
     <div className="space-y-10 p-4 sm:p-6">
@@ -372,6 +525,8 @@ function DetailContent({ detail }: { detail: AdminUserDetail }) {
           </dl>
         </div>
       </section>
+
+      <AccountControls detail={detail} onChanged={onChanged} />
 
       <ActivityBars data={detail.activity} />
 
@@ -630,10 +785,15 @@ export function AdminUsersCenter({
     ? numberLabel(listSettled.total, "аккаунт найден", "аккаунта найдено", "аккаунтов найдено")
     : listState === "error" ? "Не удалось загрузить аккаунты." : "";
 
-  const detailKey = request.user ? `${request.user}:${period}:${refreshKey}` : null;
+  const [detailRetryKey, setDetailRetryKey] = useState(0);
+  const detailKey = request.user ? `${request.user}:${period}:${refreshKey}:${detailRetryKey}` : null;
   const [detailSettled, setDetailSettled] = useState<{ key: string; state: Exclude<DetailState, "idle" | "loading">; detail: AdminUserDetail | null } | null>(null);
   const detailState: DetailState = !detailKey ? "idle" : detailSettled?.key !== detailKey ? "loading" : detailSettled.state;
-  const detail = detailState === "ready" ? detailSettled?.detail ?? null : null;
+  // Stale-while-revalidate: after an admin action the card refetches, but the previous
+  // payload stays on screen so the confirmation message is not wiped by a skeleton.
+  const cachedDetail = detailSettled?.state === "ready" && detailSettled.detail && detailSettled.detail.user.id === request.user
+    ? detailSettled.detail : null;
+  const detail = detailState === "ready" ? detailSettled?.detail ?? null : cachedDetail;
 
   // Filters, page and the open account live in the URL: reload, back/forward and shared
   // links reproduce the same screen, and leaving the section no longer resets the search.
@@ -915,8 +1075,8 @@ export function AdminUsersCenter({
             <Button autoFocus type="button" variant="ghost" size="icon" className="shrink-0" aria-label="Закрыть карточку аккаунта" onClick={closeDetail}><X className="h-5 w-5" aria-hidden /></Button>
           </header>
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-            {detailState === "loading" ? <DetailLoading /> : null}
-            {detailState === "ready" && detail ? <DetailContent detail={detail} /> : null}
+            {detailState === "loading" && !detail ? <DetailLoading /> : null}
+            {detail ? <DetailContent detail={detail} onChanged={() => setDetailRetryKey((value) => value + 1)} /> : null}
             {detailState === "error" || detailState === "not_found" ? (
               <div className="grid min-h-72 place-items-center p-6 text-center">
                 <div><ShieldAlert className="mx-auto h-8 w-8 text-danger-text" aria-hidden /><h3 className="mt-3 text-text">{detailState === "not_found" ? "Аккаунт больше не существует" : "Не удалось загрузить карточку"}</h3><p className="type-secondary mt-2 text-text-2">Закройте карточку и повторите попытку.</p><Button variant="secondary" className="mt-4" onClick={closeDetail}>Закрыть карточку</Button></div>
