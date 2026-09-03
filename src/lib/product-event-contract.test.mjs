@@ -109,11 +109,12 @@ describe("Aurora operational product event envelope", () => {
     safeContext: { device: "desktop", source: "ui", resultKind: "draft" },
   };
 
-  it("contains the fifteen APP_NAV_GROUPS sections and their strict feature actions", () => {
+  it("contains the sixteen APP_NAV_GROUPS sections and their strict feature actions", () => {
     expect(Object.keys(AURORA_PRODUCT_FEATURES)).toEqual([
       "today", "calendar", "studio", "autopilot", "composer", "library", "rss", "knowledge",
-      "recon", "opportunities", "radar", "siteAnalysis", "growth", "analytics", "settings",
+      "recon", "opportunities", "radar", "siteAnalysis", "sites", "growth", "analytics", "settings",
     ]);
+    expect(AURORA_PRODUCT_FEATURES.sites.site).toContain("published");
     expect(AURORA_PRODUCT_FEATURES.siteAnalysis.analysis).toContain("report_opened");
   });
 

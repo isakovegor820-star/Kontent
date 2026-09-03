@@ -1354,6 +1354,10 @@ export default function SiteAnalysisPage() {
                   <p className="mt-1 text-[13px] leading-relaxed text-text-2">
                     Проверяем только открытые страницы подтверждённого домена, соблюдаем правила доступа сайта и не входим в закрытые кабинеты.
                   </p>
+                  <p className="mt-2 text-[13px] leading-relaxed text-text-2">
+                    Чтобы Аврора вела сайт постоянно — профиль, пробелы и отчёты для скачивания — подключи его в разделе{" "}
+                    <a href="/app/sites" className="font-semibold text-brand underline-offset-2 hover:underline">Мои сайты</a>.
+                  </p>
                 </div>
               </div>
             </div>
