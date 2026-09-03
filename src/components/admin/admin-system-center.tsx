@@ -270,7 +270,7 @@ function ComponentDetails({ component }: { component: AdminDiagnosticComponent }
           <h4 className="text-text">Затронутые разделы</h4>
           <div className="mt-3 flex flex-wrap gap-2">
             {component.affectedSections.map((section) => (
-              <Link key={section} href={`/admin?analyticsSection=${section}#aurora-analytics`} className={buttonClassName({ variant: "secondary", size: "sm" })}>
+              <Link prefetch={false} key={section} href={`/admin?analyticsSection=${section}#aurora-analytics`} className={buttonClassName({ variant: "secondary", size: "sm" })}>
                 {adminSectionLabel(section)}
               </Link>
             ))}
@@ -281,7 +281,7 @@ function ComponentDetails({ component }: { component: AdminDiagnosticComponent }
       {component.links && component.links.length > 0 ? (
         <div className="mt-6 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
           {component.links.map((link) => (
-            <Link key={link.href} href={link.href} className={buttonClassName({ variant: "secondary" })}>{link.label}</Link>
+            <Link prefetch={false} key={link.href} href={link.href} className={buttonClassName({ variant: "secondary" })}>{link.label}</Link>
           ))}
         </div>
       ) : null}
