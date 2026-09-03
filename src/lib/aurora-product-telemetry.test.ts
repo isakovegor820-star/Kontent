@@ -11,7 +11,9 @@ import {
 describe("Aurora product telemetry", () => {
   afterEach(() => installAuroraTelemetrySink(null));
 
-  it("maps all public section paths and aliases to the 15-section catalog", () => {
+  it("maps all public section paths and aliases to the 16-section catalog", () => {
+    expect(auroraSectionForPath("/app/sites")).toBe("sites");
+    expect(auroraSectionForPath("/app/site-analysis/41")).toBe("siteAnalysis");
     expect(auroraSectionForPath("/app/today")).toBe("today");
     expect(auroraSectionForPath("/app/studio/visuals")).toBe("studio");
     expect(auroraSectionForPath("/app/competitors/3")).toBe("recon");
