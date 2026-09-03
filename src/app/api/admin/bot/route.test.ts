@@ -11,7 +11,8 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
 vi.mock("@/lib/admin-access", () => ({ hasAuroraAdminAccess: mocks.hasAuroraAdminAccess }));
-vi.mock("@/lib/admin-bot", () => ({
+vi.mock("@/lib/admin-bot", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/admin-bot")>()),
   loadAdminBotData: mocks.loadAdminBotData,
   probeAdminTelegramBot: mocks.probeAdminTelegramBot,
 }));
@@ -61,6 +62,6 @@ describe("GET /api/admin/bot", () => {
       workerState: "up",
       publicationWorkerState: "up",
     });
-    expect(mocks.loadAdminBotData).toHaveBeenCalledWith(expect.anything(), 30);
+    expect(mocks.loadAdminBotData).toHaveBeenCalledWith(expect.anything(), 30, { query: "", page: 1, pageSize: 20 });
   });
 });

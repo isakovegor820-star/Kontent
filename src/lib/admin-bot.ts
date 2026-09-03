@@ -71,6 +71,7 @@ export interface AdminBotData {
     dailyDigest: number;
     weeklyDigest: number;
   };
+  usersPagination: { page: number; pageSize: number; total: number; pages: number };
   users: Array<{
     id: number;
     name: string;
@@ -300,10 +301,28 @@ export async function repairAdminTelegramConfiguration(db: Queryable, input: {
       };
 }
 
+export interface AdminBotUsersQuery {
+  query: string;
+  page: number;
+  pageSize: number;
+}
+
+export function normalizeAdminBotUsersQuery(params: URLSearchParams): AdminBotUsersQuery {
+  const page = Number(params.get("usersPage") ?? "1");
+  return {
+    query: String(params.get("usersQuery") ?? "").trim().slice(0, 200),
+    page: Number.isSafeInteger(page) && page > 0 ? Math.min(page, 10_000) : 1,
+    pageSize: 20,
+  };
+}
+
 export async function loadAdminBotData(
   db: Queryable,
   periodDays: AdminPeriodDays,
+  usersQuery: AdminBotUsersQuery = { query: "", page: 1, pageSize: 20 },
 ): Promise<Omit<AdminBotData, "checkedAt" | "runtime" | "workerState" | "publicationWorkerState">> {
+  const usersSearch = `%${usersQuery.query.replace(/[%_\\]/gu, (char) => `\\${char}`)}%`;
+  const usersOffset = (usersQuery.page - 1) * usersQuery.pageSize;
   const [
     headline,
     daily,
@@ -409,7 +428,7 @@ export async function loadAdminBotData(
       from bot_delivery_events event where event.user_id is not null
       order by event.user_id, event.created_at desc, event.id desc
     )
-    select app_user.id,
+    select app_user.id, count(*) over() as users_total,
       coalesce(nullif(btrim(app_user.name), ''), app_user.email, 'Пользователь ' || app_user.id::text) as name,
       app_user.email, app_user.tg_chat_id is not null as linked,
       coalesce(control.enabled, true) as enabled, control.disabled_reason,
@@ -429,12 +448,13 @@ export async function loadAdminBotData(
     left join activity on activity.user_id = app_user.id
     left join usage on usage.user_id = app_user.id
     left join last_delivery on last_delivery.user_id = app_user.id
-    where app_user.tg_chat_id is not null or control.user_id is not null
-      or activity.user_id is not null or usage.user_id is not null
+    where (app_user.tg_chat_id is not null or control.user_id is not null
+      or activity.user_id is not null or usage.user_id is not null)
+      and ($2::text = '' or app_user.id::text = $2 or app_user.name ilike $3 or coalesce(app_user.email, '') ilike $3)
     order by app_user.tg_chat_id is not null desc,
       greatest(activity.last_activity_at, usage.last_interaction_at) desc nulls last,
       app_user.id desc
-    limit 60`, [periodDays]),
+    limit $4 offset $5`, [periodDays, usersQuery.query, usersSearch, usersQuery.pageSize, usersOffset]),
     db.query(`with activity as (
       select event.project_id,
         count(*) filter (where event.action = 'draft.saved_from_bot') as drafts_created,
@@ -547,6 +567,12 @@ export async function loadAdminBotData(
       publicationFailure: count(n.publication_failure), opportunities: count(n.opportunities),
       postResults: count(n.post_results), reviewReminders: count(n.review_reminders),
       problemDigest: count(n.problem_digest), dailyDigest: count(n.daily_digest), weeklyDigest: count(n.weekly_digest),
+    },
+    usersPagination: {
+      page: usersQuery.page,
+      pageSize: usersQuery.pageSize,
+      total: count(userRows.rows[0]?.users_total),
+      pages: Math.max(1, Math.ceil(count(userRows.rows[0]?.users_total) / usersQuery.pageSize)),
     },
     users: userRows.rows.map((row) => ({
       id: positiveId(row.id), name: String(row.name || "Пользователь"), email: row.email ? String(row.email) : null,

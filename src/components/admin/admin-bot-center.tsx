@@ -12,7 +12,6 @@ import {
   ExternalLink,
   Headphones,
   MessageSquareText,
-  MessageCircleQuestion,
   MousePointerClick,
   RefreshCw,
   Send,
@@ -33,6 +32,26 @@ import type { AdminPeriodDays } from "@/lib/admin-dashboard";
 import { cn, fmtAgo, fmtNum, plural } from "@/lib/utils";
 
 type AccessTarget = { type: "user" | "project"; id: number; name: string };
+type BotTab = "state" | "users" | "projects" | "journal";
+type BotUrlState = { bot: BotTab; botq: string; botpage: string };
+
+const BOT_TABS: Array<{ id: BotTab; label: string }> = [
+  { id: "state", label: "Состояние" },
+  { id: "users", label: "Пользователи" },
+  { id: "projects", label: "Проекты" },
+  { id: "journal", label: "Журнал" },
+];
+
+function botStateFromSearch(search: string): BotUrlState {
+  const params = new URLSearchParams(search);
+  const tab = params.get("bot");
+  const page = Number(params.get("botpage") ?? "1");
+  return {
+    bot: BOT_TABS.some((item) => item.id === tab) ? tab as BotTab : "state",
+    botq: String(params.get("botq") ?? "").trim().slice(0, 200),
+    botpage: Number.isSafeInteger(page) && page > 0 ? String(page) : "1",
+  };
+}
 
 const ACTION_LABEL: Record<string, string> = {
   "bot.access.enabled": "Доступ к боту включён",
@@ -154,13 +173,15 @@ function BotMetric({
 }
 
 function ActivityChart({ data }: { data: AdminBotData["daily"] }) {
-  const maximum = Math.max(1, ...data.flatMap((item) => [item.interactions, item.drafts, item.scheduled, item.published, item.failures]));
+  // Interactions are hundreds per day, outcomes are units: two scales keep failures visible.
+  const interactionsMax = Math.max(1, ...data.map((item) => item.interactions));
+  const outcomesMax = Math.max(1, ...data.flatMap((item) => [item.drafts, item.scheduled, item.published, item.failures]));
   return (
     <section className="card-plain min-w-0 max-w-full rounded-md p-5 sm:p-6" aria-labelledby="bot-activity-title">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h3 id="bot-activity-title" className="text-text">Активность по дням</h3>
-          <p className="type-caption mt-1 text-text-3">Путь от черновика до подтверждённой публикации</p>
+          <p className="type-caption mt-1 text-text-3">Путь от черновика до публикации · действия и результаты в разных шкалах</p>
         </div>
         <div className="type-caption flex flex-wrap gap-3 text-text-2" aria-label="Легенда графика">
           <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-sm bg-info" />Действия</span>
@@ -179,13 +200,13 @@ function ActivityChart({ data }: { data: AdminBotData["daily"] }) {
               <li key={item.date} className="flex w-14 shrink-0 flex-col items-center gap-1" aria-label={`${date}: действия ${item.interactions}, черновики ${item.drafts}, в очередь ${item.scheduled}, опубликовано ${item.published}, ошибки ${item.failures}`}>
                 <div className="flex h-36 items-end gap-0.5" aria-hidden>
                   {[
-                    { value: item.interactions, className: "bg-info" },
-                    { value: item.drafts, className: "bg-brand" },
-                    { value: item.scheduled, className: "bg-fire" },
-                    { value: item.published, className: "bg-success" },
-                    { value: item.failures, className: "bg-danger" },
+                    { value: item.interactions, className: "bg-info", scale: interactionsMax },
+                    { value: item.drafts, className: "bg-brand", scale: outcomesMax },
+                    { value: item.scheduled, className: "bg-fire", scale: outcomesMax },
+                    { value: item.published, className: "bg-success", scale: outcomesMax },
+                    { value: item.failures, className: "bg-danger", scale: outcomesMax },
                   ].map((bar, barIndex) => (
-                    <span key={barIndex} className={cn("w-2 rounded-t-sm", bar.className)} style={{ height: Math.max(bar.value > 0 ? 7 : 2, (bar.value / maximum) * 132) }} />
+                    <span key={barIndex} className={cn("w-2 rounded-t-sm", bar.className)} style={{ height: Math.max(bar.value > 0 ? 7 : 2, (bar.value / bar.scale) * 132) }} />
                   ))}
                 </div>
                 <span className="type-caption h-4 whitespace-nowrap text-text-3" aria-hidden>{showDate ? date : ""}</span>
@@ -323,18 +344,46 @@ function BotCenterLoading() {
 export function AdminBotCenter({ period, refreshKey: externalRefreshKey = 0 }: { period: AdminPeriodDays; refreshKey?: number }) {
   const [data, setData] = useState<AdminBotData | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  // Tab, user search and page live in the URL (bot=, botq=, botpage=) like the other centers.
+  const [botState, setBotState] = useState<BotUrlState>({ bot: "state", botq: "", botpage: "1" });
+  const [usersInput, setUsersInput] = useState("");
+  useEffect(() => {
+    const sync = () => {
+      const next = botStateFromSearch(window.location.search);
+      setBotState(next);
+      setUsersInput(next.botq);
+    };
+    sync();
+    window.addEventListener("popstate", sync);
+    return () => window.removeEventListener("popstate", sync);
+  }, []);
   // Loading is derived: the request identity changes → the previous settlement no longer matches.
-  const requestKey = `${period}:${refreshKey}:${externalRefreshKey}`;
+  const requestKey = `${period}:${refreshKey}:${externalRefreshKey}:${botState.botq}:${botState.botpage}`;
   const [settled, setSettled] = useState<{ key: string; ok: boolean } | null>(null);
   const loading = settled?.key !== requestKey;
   const loadError = settled?.key === requestKey && !settled.ok;
   const [actionKey, setActionKey] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [confirmTarget, setConfirmTarget] = useState<AccessTarget | null>(null);
+  const navigateBot = (changes: Partial<Record<keyof BotUrlState, string | number | null>>) => {
+    const url = new URL(window.location.href);
+    for (const [key, value] of Object.entries(changes)) {
+      const normalized = value == null ? "" : String(value);
+      const isDefault = (key === "bot" && normalized === "state") || (key === "botpage" && normalized === "1") || normalized === "";
+      if (isDefault) url.searchParams.delete(key);
+      else url.searchParams.set(key, normalized);
+    }
+    url.hash = "bot-control";
+    window.history.pushState({}, "", `${url.pathname}${url.search}${url.hash}`);
+    const next = botStateFromSearch(window.location.search);
+    setBotState(next);
+    setUsersInput(next.botq);
+  };
 
   useEffect(() => {
     const controller = new AbortController();
-    void fetch(`/api/admin/bot?days=${period}`, { cache: "no-store", signal: controller.signal })
+    const params = new URLSearchParams({ days: String(period), usersQuery: botState.botq, usersPage: botState.botpage });
+    void fetch(`/api/admin/bot?${params}`, { cache: "no-store", signal: controller.signal })
       .then(async (response) => {
         if (!response.ok) throw new Error("load_failed");
         return response.json() as Promise<AdminBotData>;
@@ -347,7 +396,7 @@ export function AdminBotCenter({ period, refreshKey: externalRefreshKey = 0 }: {
         if (!controller.signal.aborted) setSettled({ key: requestKey, ok: false });
       });
     return () => controller.abort();
-  }, [period, requestKey]);
+  }, [period, requestKey, botState.botq, botState.botpage]);
 
   const runtimeState = useMemo(() => {
     if (!data) return "neutral" as const;
@@ -424,7 +473,7 @@ export function AdminBotCenter({ period, refreshKey: externalRefreshKey = 0 }: {
   }
 
   return (
-    <div className="min-w-0 max-w-full space-y-8">
+    <div className="min-w-0 max-w-full space-y-6">
       <div className={cn(
         "rounded-lg border p-5 shadow-soft sm:p-6",
         runtimeState === "healthy" ? "border-success/20 bg-success-soft" : runtimeState === "danger" ? "border-danger/20 bg-danger-soft" : "border-fire/25 bg-fire-soft",
@@ -523,29 +572,42 @@ export function AdminBotCenter({ period, refreshKey: externalRefreshKey = 0 }: {
         </div>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <BotMetric label="Активны в боте" value={data.summary.activeUsers} helper={`За последние ${period} дней`} icon={Users} />
-        <BotMetric label="Действия в боте" value={data.summary.interactions} helper="Команды, кнопки, сообщения и голос" icon={Activity} />
-        <BotMetric label="Команды" value={data.summary.commandInteractions} helper="Команды из меню Telegram" icon={Command} />
-        <BotMetric label="Нажатия кнопок" value={data.summary.buttonInteractions} helper="Меню и кнопки под сообщениями" icon={MousePointerClick} />
-        <BotMetric label="Подключили бота" value={data.summary.linkedUsers} helper={`${fmtNum(data.summary.disabledUsers)} с приостановленным доступом`} icon={Users} />
-        <BotMetric label="Черновики из бота" value={data.summary.draftsCreated} helper={`За последние ${period} дней`} icon={Sparkles} />
-        <BotMetric label="Поставлено в очередь" value={data.summary.publicationsScheduled} helper={`${fmtNum(data.summary.publicationsPublished)} уже опубликовано`} icon={Send} />
-        <BotMetric label="Ошибки доставки" value={data.summary.deliveryFailures} helper={`За последние ${period} дней`} icon={AlertTriangle} danger={data.summary.deliveryFailures > 0} />
-        <BotMetric label="Каналы готовы" value={data.summary.telegramChannelsReady} helper={`${fmtNum(data.summary.telegramChannelsAttention)} требуют повторного подключения`} icon={Send} danger={data.summary.telegramChannelsAttention > 0} />
-        <BotMetric label="Активные проекты" value={data.summary.activeProjects} helper={`${fmtNum(data.summary.disabledProjects)} приостановлено только в боте`} icon={BriefcaseBusiness} />
-        <BotMetric label="Ожидают результат" value={data.summary.pendingResults} helper="Уведомления о результатах постов" icon={Clock3} />
-        <BotMetric label="Telegram Business" value={data.summary.businessEnabled} helper={`${fmtNum(data.summary.businessConnected)} подключено`} icon={Headphones} />
-        <BotMetric label="Вопросы клиентов" value={data.summary.openClientInquiries} helper="Ждут черновика или решения человека" icon={MessageCircleQuestion} danger={data.summary.openClientInquiries > 0} />
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-3 2xl:grid-cols-6">
+        <BotMetric label="Активны в боте" value={data.summary.activeUsers} helper={`За ${period} дней`} icon={Users} />
+        <BotMetric label="Действия" value={data.summary.interactions} helper={`${fmtNum(data.summary.commandInteractions)} команд · ${fmtNum(data.summary.buttonInteractions)} кнопок`} icon={Activity} />
+        <BotMetric label="Подключили бота" value={data.summary.linkedUsers} helper={`${fmtNum(data.summary.disabledUsers)} приостановлено`} icon={Users} />
+        <BotMetric label="Черновики из бота" value={data.summary.draftsCreated} helper={`${fmtNum(data.summary.publicationsScheduled)} в очередь · ${fmtNum(data.summary.publicationsPublished)} вышло`} icon={Sparkles} />
+        <BotMetric label="Ошибки доставки" value={data.summary.deliveryFailures} helper={`За ${period} дней`} icon={AlertTriangle} danger={data.summary.deliveryFailures > 0} />
+        <BotMetric label="Каналы готовы" value={data.summary.telegramChannelsReady} helper={`${fmtNum(data.summary.telegramChannelsAttention)} требуют переподключения`} icon={Send} danger={data.summary.telegramChannelsAttention > 0} />
       </div>
 
+      <nav aria-label="Разделы управления ботом" className="overflow-x-auto border-b border-line">
+        <div className="flex min-w-max gap-1">
+          {BOT_TABS.map((tab) => (
+            <button key={tab.id} type="button" aria-current={botState.bot === tab.id ? "page" : undefined} onClick={() => navigateBot({ bot: tab.id })} className={cn("type-button min-h-11 border-b-2 px-4", botState.bot === tab.id ? "border-brand text-brand" : "border-transparent text-text-2 hover:text-text")}>
+              {tab.label}
+              {tab.id === "projects" && data.summary.openClientInquiries > 0 ? <span className="nums ml-2 rounded-full bg-danger-soft px-2 py-0.5 text-xs text-danger-text">{data.summary.openClientInquiries}</span> : null}
+            </button>
+          ))}
+        </div>
+      </nav>
+
+      {botState.bot === "state" ? (
+        <>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            <BotMetric label="Активные проекты" value={data.summary.activeProjects} helper={`${fmtNum(data.summary.disabledProjects)} приостановлено в боте`} icon={BriefcaseBusiness} />
+            <BotMetric label="Ожидают результат" value={data.summary.pendingResults} helper="Уведомления о результатах постов" icon={Clock3} />
+            <BotMetric label="Telegram Business" value={data.summary.businessEnabled} helper={`${fmtNum(data.summary.businessConnected)} подключено · ${fmtNum(data.summary.openClientInquiries)} вопросов ждут`} icon={Headphones} danger={data.summary.openClientInquiries > 0} />
+          </div>
       <div className="grid min-w-0 max-w-full gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(22rem,0.85fr)]">
         <ActivityChart data={data.daily} />
         <NotificationCoverage data={data.notifications} />
       </div>
 
       <UsageOverview data={data} />
-
+        </>
+      ) : null}
+      {botState.bot === "users" ? (
       <section aria-labelledby="bot-users-title">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div>
@@ -553,8 +615,16 @@ export function AdminBotCenter({ period, refreshKey: externalRefreshKey = 0 }: {
             <h3 id="bot-users-title" className="mt-2 text-text">Пользователи бота</h3>
             <p className="type-secondary mt-2 max-w-2xl text-pretty text-text-2">Привязка чата, активность, последняя доставка и безопасное bot-only управление доступом.</p>
           </div>
-          <span className="type-caption text-text-3">{numberLabel(data.users.length, "аккаунт показан", "аккаунта показано", "аккаунтов показано")}</span>
+          <span className="type-caption text-text-3">{numberLabel(data.usersPagination.total, "аккаунт", "аккаунта", "аккаунтов")} · страница {data.usersPagination.page} из {data.usersPagination.pages}</span>
         </div>
+        <form
+          className="mt-4 flex flex-col gap-2 sm:flex-row"
+          onSubmit={(event) => { event.preventDefault(); navigateBot({ botq: usersInput.trim(), botpage: 1 }); }}
+        >
+          <input type="search" value={usersInput} onChange={(event) => setUsersInput(event.target.value)} placeholder="Имя, email или ID" aria-label="Поиск пользователя бота" className="min-h-10 flex-1 rounded-xs border border-line-strong bg-surface px-3.5 text-text placeholder:text-text-3" />
+          <Button type="submit" variant="secondary" size="sm">Найти</Button>
+          {botState.botq ? <Button type="button" variant="ghost" size="sm" onClick={() => navigateBot({ botq: "", botpage: 1 })}>Сбросить</Button> : null}
+        </form>
         {data.users.length === 0 ? (
           <div className="card-plain mt-5 rounded-md p-8 text-center">
             <Smartphone className="mx-auto h-8 w-8 text-text-3" aria-hidden />
@@ -600,7 +670,14 @@ export function AdminBotCenter({ period, refreshKey: externalRefreshKey = 0 }: {
                     Проверить доставку
                   </Button>
                   {user.enabled ? (
-                    <Button variant="danger" size="sm" onClick={() => setConfirmTarget({ type: "user", id: user.id, name: user.name })}>Приостановить доступ</Button>
+                    <details className="relative">
+                      <summary className="type-button inline-flex min-h-9 cursor-pointer list-none items-center rounded-sm border border-line px-3 text-text-2 hover:bg-surface-inset marker:hidden" aria-label="Ещё действия">⋯</summary>
+                      <div className="absolute right-0 z-20 mt-1 min-w-56 rounded-md border border-line bg-surface p-1 shadow-float">
+                        <button type="button" className="type-button block w-full whitespace-nowrap rounded-sm px-3 py-2 text-start text-danger-text hover:bg-danger-soft" onClick={(event) => { (event.currentTarget.closest("details") as HTMLDetailsElement | null)?.removeAttribute("open"); setConfirmTarget({ type: "user", id: user.id, name: user.name }); }}>
+                          Приостановить доступ к боту
+                        </button>
+                      </div>
+                    </details>
                   ) : (
                     <Button
                       variant="secondary"
@@ -614,8 +691,16 @@ export function AdminBotCenter({ period, refreshKey: externalRefreshKey = 0 }: {
             ))}
           </ul>
         )}
+        {data.usersPagination.pages > 1 ? (
+          <nav aria-label="Страницы пользователей бота" className="mt-4 flex items-center justify-end gap-2">
+            <Button variant="secondary" size="sm" disabled={data.usersPagination.page <= 1 || loading} onClick={() => navigateBot({ botpage: data.usersPagination.page - 1 })}>Предыдущая</Button>
+            <Button variant="secondary" size="sm" disabled={data.usersPagination.page >= data.usersPagination.pages || loading} onClick={() => navigateBot({ botpage: data.usersPagination.page + 1 })}>Следующая</Button>
+          </nav>
+        ) : null}
       </section>
 
+      ) : null}
+      {botState.bot === "projects" ? (
       <section aria-labelledby="bot-projects-title">
         <p className="type-label text-brand">Проекты</p>
         <h3 id="bot-projects-title" className="mt-2 text-text">Каналы и Telegram Business</h3>
@@ -638,7 +723,7 @@ export function AdminBotCenter({ period, refreshKey: externalRefreshKey = 0 }: {
                       <td className="px-5 py-4"><p className="type-caption text-text-2">{numberLabel(project.interactions, "действие", "действия", "действий")} · {numberLabel(project.draftsCreated, "черновик", "черновика", "черновиков")} · {fmtNum(project.publicationsScheduled)} в очереди</p><p className="type-caption mt-1 text-text-3">{project.lastActivityAt ? fmtAgo(project.lastActivityAt) : "Активности ещё не было"}</p></td>
                       <td className="px-5 py-4"><StatusPill state={project.businessEnabled ? "healthy" : project.businessConnected ? "warning" : "neutral"} label={project.businessEnabled ? "Помощник включён" : project.businessConnected ? "Подключён, но выключен" : "Не подключён"} /><p className="type-caption mt-2 text-text-3">Ожидают решения: {numberLabel(project.openClientInquiries, "вопрос", "вопроса", "вопросов")}</p></td>
                       <td className="px-5 py-4"><div className="flex flex-col items-start gap-2">
-                        {project.enabled ? <Button variant="danger" size="sm" onClick={() => setConfirmTarget({ type: "project", id: project.id, name: project.name })}>Приостановить в боте</Button> : <Button variant="secondary" size="sm" loading={actionKey === `enable-project-${project.id}`} onClick={() => void performAction({ action: "set_access", targetType: "project", targetId: project.id, enabled: true }, `enable-project-${project.id}`, `Проект «${project.name}» снова доступен в боте.`)}>Включить проект</Button>}
+                        {project.enabled ? <details className="relative"><summary className="type-button inline-flex min-h-9 cursor-pointer list-none items-center rounded-sm border border-line px-3 text-text-2 hover:bg-surface-inset marker:hidden" aria-label="Ещё действия">⋯</summary><div className="absolute right-0 z-20 mt-1 min-w-56 rounded-md border border-line bg-surface p-1 shadow-float"><button type="button" className="type-button block w-full whitespace-nowrap rounded-sm px-3 py-2 text-start text-danger-text hover:bg-danger-soft" onClick={(event) => { (event.currentTarget.closest("details") as HTMLDetailsElement | null)?.removeAttribute("open"); setConfirmTarget({ type: "project", id: project.id, name: project.name }); }}>Приостановить проект в боте</button></div></details> : <Button variant="secondary" size="sm" loading={actionKey === `enable-project-${project.id}`} onClick={() => void performAction({ action: "set_access", targetType: "project", targetId: project.id, enabled: true }, `enable-project-${project.id}`, `Проект «${project.name}» снова доступен в боте.`)}>Включить проект</Button>}
                         <Button variant="ghost" size="sm" disabled={!project.businessConnected || !project.enabled} loading={actionKey === `business-${project.id}`} onClick={() => void performAction({ action: "set_business", projectId: project.id, enabled: !project.businessEnabled }, `business-${project.id}`, project.businessEnabled ? `Клиентский помощник проекта «${project.name}» выключен.` : `Клиентский помощник проекта «${project.name}» включён с обязательным подтверждением.`)}>{project.businessEnabled ? "Выключить помощника" : "Включить помощника"}</Button>
                       </div></td>
                     </tr>
@@ -652,7 +737,7 @@ export function AdminBotCenter({ period, refreshKey: externalRefreshKey = 0 }: {
                   <div className="flex flex-wrap items-start justify-between gap-3"><div><h4 className="text-text">{project.name}</h4><p className="type-caption mt-1 text-text-3">{numberLabel(project.linkedMembers, "участник", "участника", "участников")} · {numberLabel(project.telegramChannels, "канал", "канала", "каналов")}</p></div><StatusPill state={project.enabled ? "healthy" : "danger"} label={project.enabled ? "Доступен" : "Приостановлен"} /></div>
                   <div className="mt-4 rounded-sm bg-surface-inset p-4"><StatusPill state={project.businessEnabled ? "healthy" : project.businessConnected ? "warning" : "neutral"} label={project.businessEnabled ? "Business включён" : project.businessConnected ? "Business выключен" : "Business не подключён"} /><p className="type-caption mt-2 text-text-3">{numberLabel(project.interactions, "действие", "действия", "действий")} · {numberLabel(project.draftsCreated, "черновик", "черновика", "черновиков")} · {fmtNum(project.publicationsScheduled)} в очереди · {numberLabel(project.openClientInquiries, "вопрос", "вопроса", "вопросов")}</p></div>
                   <div className="mt-4 flex flex-wrap gap-3">
-                    {project.enabled ? <Button variant="danger" size="sm" onClick={() => setConfirmTarget({ type: "project", id: project.id, name: project.name })}>Приостановить в боте</Button> : <Button variant="secondary" size="sm" loading={actionKey === `enable-project-${project.id}`} onClick={() => void performAction({ action: "set_access", targetType: "project", targetId: project.id, enabled: true }, `enable-project-${project.id}`, `Проект «${project.name}» снова доступен в боте.`)}>Включить проект</Button>}
+                    {project.enabled ? <details className="relative"><summary className="type-button inline-flex min-h-9 cursor-pointer list-none items-center rounded-sm border border-line px-3 text-text-2 hover:bg-surface-inset marker:hidden" aria-label="Ещё действия">⋯</summary><div className="absolute right-0 z-20 mt-1 min-w-56 rounded-md border border-line bg-surface p-1 shadow-float"><button type="button" className="type-button block w-full whitespace-nowrap rounded-sm px-3 py-2 text-start text-danger-text hover:bg-danger-soft" onClick={(event) => { (event.currentTarget.closest("details") as HTMLDetailsElement | null)?.removeAttribute("open"); setConfirmTarget({ type: "project", id: project.id, name: project.name }); }}>Приостановить проект в боте</button></div></details> : <Button variant="secondary" size="sm" loading={actionKey === `enable-project-${project.id}`} onClick={() => void performAction({ action: "set_access", targetType: "project", targetId: project.id, enabled: true }, `enable-project-${project.id}`, `Проект «${project.name}» снова доступен в боте.`)}>Включить проект</Button>}
                     <Button variant="ghost" size="sm" disabled={!project.businessConnected || !project.enabled} loading={actionKey === `business-${project.id}`} onClick={() => void performAction({ action: "set_business", projectId: project.id, enabled: !project.businessEnabled }, `business-${project.id}`, project.businessEnabled ? `Клиентский помощник проекта «${project.name}» выключен.` : `Клиентский помощник проекта «${project.name}» включён с обязательным подтверждением.`)}>{project.businessEnabled ? "Выключить помощника" : "Включить помощника"}</Button>
                   </div>
                 </li>
@@ -662,6 +747,9 @@ export function AdminBotCenter({ period, refreshKey: externalRefreshKey = 0 }: {
         )}
       </section>
 
+      ) : null}
+      {botState.bot === "journal" ? (
+        <>
       <section aria-labelledby="bot-interactions-title">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div>
@@ -736,6 +824,9 @@ export function AdminBotCenter({ period, refreshKey: externalRefreshKey = 0 }: {
           </ol>
         </section>
       </div>
+
+        </>
+      ) : null}
 
       <div className="sr-only" role="status" aria-live="polite">{message}</div>
       {message ? <p className={cn("rounded-sm p-4", /не |сначала|ошиб|недоступ/iu.test(message) ? "bg-danger-soft text-danger-text" : "bg-success-soft text-success-text")}>{message}</p> : null}

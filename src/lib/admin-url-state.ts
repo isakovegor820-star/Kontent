@@ -17,7 +17,7 @@ export function adminSystemHref(currentUrl: string, componentId: string | null):
 
 export const ADMIN_ANALYTICS_QUERY_KEYS = [
   "range", "from", "to", "project", "segment", "tenure", "device",
-  "version", "release", "analyticsSection", "analyticsTab",
+  "version", "release", "analyticsSection", "analyticsTab", "analyticsView",
 ] as const;
 
 export type AdminAnalyticsUrlChange = Partial<Record<(typeof ADMIN_ANALYTICS_QUERY_KEYS)[number], string | null>>;
@@ -88,6 +88,36 @@ export function adminProjectsQuery(search: string | URLSearchParams): Record<Adm
   const source = typeof search === "string" ? new URLSearchParams(search) : search;
   const result = { ...ADMIN_PROJECTS_DEFAULTS };
   for (const key of ADMIN_PROJECTS_QUERY_KEYS) {
+    const value = source.get(key);
+    if (value) result[key] = value;
+  }
+  return result;
+}
+
+export const ADMIN_AUDIT_QUERY_KEYS = ["aq", "aproject", "aactor", "aarea", "apage"] as const;
+export type AdminAuditUrlKey = (typeof ADMIN_AUDIT_QUERY_KEYS)[number];
+export type AdminAuditUrlChange = Partial<Record<AdminAuditUrlKey, string | number | null>>;
+
+const ADMIN_AUDIT_DEFAULTS: Readonly<Record<AdminAuditUrlKey, string>> = Object.freeze({
+  aq: "", aproject: "", aactor: "", aarea: "", apage: "1",
+});
+
+export function adminAuditHref(currentUrl: string, changes: AdminAuditUrlChange): string {
+  const url = new URL(currentUrl, "http://localhost");
+  for (const [key, value] of Object.entries(changes)) {
+    if (!ADMIN_AUDIT_QUERY_KEYS.includes(key as AdminAuditUrlKey)) continue;
+    const normalized = value == null ? "" : String(value);
+    if (normalized === "" || normalized === ADMIN_AUDIT_DEFAULTS[key as AdminAuditUrlKey]) url.searchParams.delete(key);
+    else url.searchParams.set(key, normalized);
+  }
+  url.hash = "audit";
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
+export function adminAuditQuery(search: string | URLSearchParams): Record<AdminAuditUrlKey, string> {
+  const source = typeof search === "string" ? new URLSearchParams(search) : search;
+  const result = { ...ADMIN_AUDIT_DEFAULTS };
+  for (const key of ADMIN_AUDIT_QUERY_KEYS) {
     const value = source.get(key);
     if (value) result[key] = value;
   }

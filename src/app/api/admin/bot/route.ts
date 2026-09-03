@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { hasAuroraAdminAccess } from "@/lib/admin-access";
-import { loadAdminBotData, probeAdminTelegramBot } from "@/lib/admin-bot";
+import { loadAdminBotData, normalizeAdminBotUsersQuery, probeAdminTelegramBot } from "@/lib/admin-bot";
 import { normalizeAdminPeriod } from "@/lib/admin-dashboard";
 import { getPool } from "@/lib/db";
 import { probeRedisAndPublicationWorker } from "@/lib/readiness-probes";
@@ -19,7 +19,7 @@ export async function GET(req: NextRequest) {
   try {
     const periodDays = normalizeAdminPeriod(req.nextUrl.searchParams.get("days"));
     const [data, runtimeState, queue] = await Promise.all([
-      loadAdminBotData(getPool(), periodDays),
+      loadAdminBotData(getPool(), periodDays, normalizeAdminBotUsersQuery(req.nextUrl.searchParams)),
       probeAdminTelegramBot(),
       probeRedisAndPublicationWorker(),
     ]);
