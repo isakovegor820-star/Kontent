@@ -64,6 +64,50 @@ export function adminUsersQuery(search: string | URLSearchParams): Record<AdminU
   return result;
 }
 
+export const ADMIN_PUBLICATIONS_QUERY_KEYS = ["pq", "pstatus", "pnetwork", "pproject", "perror", "psort", "ppage"] as const;
+export type AdminPublicationsUrlKey = (typeof ADMIN_PUBLICATIONS_QUERY_KEYS)[number];
+export type AdminPublicationsUrlChange = Partial<Record<AdminPublicationsUrlKey, string | number | null>>;
+
+const ADMIN_PUBLICATIONS_DEFAULTS: Readonly<Record<AdminPublicationsUrlKey, string>> = Object.freeze({
+  pq: "", pstatus: "attention", pnetwork: "all", pproject: "", perror: "", psort: "recent", ppage: "1",
+});
+
+/** Publications filters are prefixed with `p` so they coexist with users/analytics state in one URL. */
+export function adminPublicationsHref(currentUrl: string, changes: AdminPublicationsUrlChange): string {
+  const url = new URL(currentUrl, "http://localhost");
+  for (const [key, value] of Object.entries(changes)) {
+    if (!ADMIN_PUBLICATIONS_QUERY_KEYS.includes(key as AdminPublicationsUrlKey)) continue;
+    const normalized = value == null ? "" : String(value);
+    if (normalized === "" || normalized === ADMIN_PUBLICATIONS_DEFAULTS[key as AdminPublicationsUrlKey]) url.searchParams.delete(key);
+    else url.searchParams.set(key, normalized);
+  }
+  url.hash = "publications";
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
+export function adminPublicationsQuery(search: string | URLSearchParams): Record<AdminPublicationsUrlKey, string> {
+  const source = typeof search === "string" ? new URLSearchParams(search) : search;
+  const result = { ...ADMIN_PUBLICATIONS_DEFAULTS };
+  for (const key of ADMIN_PUBLICATIONS_QUERY_KEYS) {
+    const value = source.get(key);
+    if (value) result[key] = value;
+  }
+  return result;
+}
+
+/** Maps the prefixed URL keys onto the API query string of `/api/admin/publications`. */
+export function adminPublicationsApiParams(state: Record<AdminPublicationsUrlKey, string>): URLSearchParams {
+  return new URLSearchParams({
+    q: state.pq,
+    status: state.pstatus,
+    network: state.pnetwork,
+    project: state.pproject,
+    error: state.perror,
+    sort: state.psort,
+    page: state.ppage,
+  });
+}
+
 export function adminAnalyticsQuery(search: string | URLSearchParams): URLSearchParams {
   const source = typeof search === "string" ? new URLSearchParams(search) : search;
   const result = new URLSearchParams();

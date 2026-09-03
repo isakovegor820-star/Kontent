@@ -10,6 +10,24 @@
 Запрещённые действия намеренно отсутствуют: restart, очистка Redis, массовый retry,
 запуск миграций, изменение env и удаление событий.
 
+## «Публикации»
+
+URL: `/admin?pq=&pstatus=&pnetwork=&pproject=&perror=&psort=&ppage=#publications`.
+
+`GET /api/admin/publications` — поиск по ID/тексту/проекту/каналу/автору, фильтры по
+состоянию (`attention` по умолчанию), сети, проекту и коду ошибки, серверная пагинация.
+`POST /api/admin/publications/actions` — точечные действия над одной публикацией:
+
+- `retry` — только `failed` / `quarantined` / `failed_retry`: пост возвращается в
+  `scheduled` с `scheduled_at = now()` и новой `schedule_revision`, job ставится сразу;
+- `reschedule` — то же, но на указанное время (не раньше текущего, не дальше года);
+- `cancel` — `scheduled` / `failed_retry` / `failed` / `quarantined` → `cancelled`.
+
+Все три отказывают, если `publish_lease_token` установлен (провайдер вызывается прямо
+сейчас), и пишут `audit_events` с `publication.admin.*`, `from/to`, ревизией и request ID.
+Канал в состоянии `needs_reconnect` блокирует retry/reschedule: сначала владелец должен
+переподключить канал.
+
 ## «Система»
 
 URL: `/admin?system=<component>#system`.
