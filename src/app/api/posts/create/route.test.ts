@@ -9,10 +9,15 @@ const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
   probePublication: vi.fn(),
   requireSelectedProjectPermission: vi.fn(),
+  recordProductEvent: vi.fn(),
 }));
 
 vi.mock("@/lib/db", () => ({
   getPool: () => ({ query: mocks.query, connect: mocks.connect }),
+}));
+vi.mock("@/lib/server-product-events.mjs", () => ({
+  recordServerProductEvent: mocks.recordProductEvent,
+  productDurationMs: () => 5,
 }));
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
 vi.mock("@/lib/project-permissions", () => ({
@@ -184,6 +189,20 @@ describe("POST /api/posts/create draft destination outcomes", () => {
     expect(insertedPost).toBeGreaterThan(lockedDraft);
     expect(commit).toBeGreaterThan(insertedPost);
     expect(mocks.release).toHaveBeenCalledTimes(2);
+    // Server confirmation for the calendar funnel: only the request that created the row.
+    expect(mocks.recordProductEvent).toHaveBeenCalledTimes(1);
+    expect(mocks.recordProductEvent.mock.calls[0][1]).toMatchObject({
+      userId: 5,
+      projectId: 23,
+      sectionId: "calendar",
+      featureId: "publication",
+      action: "scheduled",
+      stage: "accepted",
+      outcome: "success",
+      source: "api",
+      operationId: "post:501",
+      queue: "publish",
+    });
   });
 
   it("does not persist an outcome for a draft destination outside the authenticated account", async () => {

@@ -19,10 +19,17 @@ const mocks = vi.hoisted(() => ({
   stageGenerationArtifact: vi.fn(),
   recordAiProviderAttempt: vi.fn(),
   topicAlignment: vi.fn(),
+  recordProductEvent: vi.fn(),
 }));
 
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
 vi.mock("@/lib/db", () => ({ getPool: () => ({ query: mocks.query }) }));
+vi.mock("@/lib/server-product-events.mjs", () => ({
+  recordChannelProductEvent: mocks.recordProductEvent,
+  productDurationMs: () => 5,
+  safeProductErrorCode: (value: unknown, fallback: string) =>
+    (typeof value === "string" && /^[a-z0-9_]+$/u.test(value) ? value : fallback),
+}));
 vi.mock("@/lib/ai-usage", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/ai-usage")>();
   return {
@@ -597,6 +604,14 @@ describe("POST /api/ai/generate prerequisites", () => {
     }));
     expect(mocks.commitAiUsageResult).not.toHaveBeenCalled();
     expect(mocks.releaseAiUsageRequest).not.toHaveBeenCalled();
+    // Studio funnel: request accepted by the server, then a confirmed result — both anchored
+    // to the channel and the request id, never to prompt or generated text.
+    const telemetry = mocks.recordProductEvent.mock.calls.map(([, input]) => input);
+    expect(telemetry).toEqual([
+      expect.objectContaining({ userId: 7, sectionId: "studio", featureId: "generation", action: "requested", stage: "accepted", outcome: "success", requestId }),
+      expect.objectContaining({ userId: 7, sectionId: "studio", featureId: "generation", action: "result_received", stage: "completed", outcome: "success", operationKind: "ai_generation", requestId }),
+    ]);
+    expect(JSON.stringify(telemetry)).not.toContain("Полный содержательный");
   });
 
   it("keeps balanced Studio generation to one streamed provider pass", async () => {
