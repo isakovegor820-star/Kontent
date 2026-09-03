@@ -139,6 +139,12 @@ describe("real E2E browser configuration", () => {
       .toBe("webkit.cancelled-rsc-prefetch");
     expect(classify("/127.0.0.1:43190/app/autopilot/month?view=week&_rsc=abc_123 due to access control checks.")?.kind)
       .toBe("webkit.cancelled-rsc-prefetch");
+    expect(classify("/127.0.0.1:43190/admin?_rsc=1o2LLqwMyEenqZ_7 due to access control checks.")?.kind)
+      .toBe("webkit.cancelled-rsc-prefetch");
+    expect(classify("/127.0.0.1:43190/admin?system=redis&_rsc=abc_123 due to access control checks.")?.kind)
+      .toBe("webkit.cancelled-rsc-prefetch");
+    expect(classify("/127.0.0.1:43190/admin/login?_rsc=abc_123 due to access control checks.")?.kind)
+      .toBe("webkit.cancelled-rsc-prefetch");
     for (const path of [
       "/api/rss/items?summary=unread",
       "/api/media/generations",
