@@ -5448,14 +5448,15 @@ try {
   });
   await page.getByRole("heading", { name: "Аналитика Авроры", exact: true }).waitFor({ timeout: RUNTIME_WAIT_TIMEOUT_MS });
   // Sections render as a comparable table by default; the cards view stays behind a toggle.
+  const expectedSections = 16; // APP_NAV_GROUPS route ids in src/lib/app-routes.ts
   const sectionRows = page.locator('section[aria-labelledby="aurora-sections-title"] tbody tr');
-  await waitFor(async () => await sectionRows.count() === 15, "admin analytics did not render all 15 APP_ROUTES sections", RUNTIME_WAIT_TIMEOUT_MS);
+  await waitFor(async () => await sectionRows.count() === expectedSections, `admin analytics did not render all ${expectedSections} APP_ROUTES sections`, RUNTIME_WAIT_TIMEOUT_MS);
   await page.getByRole("button", { name: "Карточки", exact: true }).click();
   const sectionCards = page.locator('section[aria-labelledby="aurora-sections-title"] article');
-  await waitFor(async () => await sectionCards.count() === 15, "admin analytics cards view did not render all 15 sections", UI_WAIT_TIMEOUT_MS);
+  await waitFor(async () => await sectionCards.count() === expectedSections, `admin analytics cards view did not render all ${expectedSections} sections`, UI_WAIT_TIMEOUT_MS);
   assert(new URL(page.url()).searchParams.get("analyticsView") === "cards", "analytics view toggle was not persisted in URL");
   await page.getByRole("button", { name: "Таблица", exact: true }).click();
-  await waitFor(async () => await sectionRows.count() === 15, "analytics table view did not come back", UI_WAIT_TIMEOUT_MS);
+  await waitFor(async () => await sectionRows.count() === expectedSections, "analytics table view did not come back", UI_WAIT_TIMEOUT_MS);
   await page.getByText("provider timeout", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await page.getByText("provider timeout", { exact: true }).click();
   await page.getByText("e2e-admin-request", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
@@ -5478,7 +5479,7 @@ try {
   )).rows[0]?.n);
   assert(adminAuditRows >= 2, "read-only operations-center access was not audited");
   interfaceEvidence.adminOperationsUi = {
-    allSections: 15,
+    allSections: 16,
     systemDirectLink: true,
     analyticsDirectLink: true,
     browserHistory: true,

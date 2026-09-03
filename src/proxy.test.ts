@@ -78,3 +78,44 @@ describe("request security proxy", () => {
     }
   });
 });
+
+describe("hosted section proxy", () => {
+  const withSitesDomain = (fn: () => void) => {
+    const previous = process.env.AURORA_SITES_DOMAIN;
+    process.env.AURORA_SITES_DOMAIN = "sites.aurora.example";
+    try {
+      fn();
+    } finally {
+      if (previous == null) delete process.env.AURORA_SITES_DOMAIN;
+      else process.env.AURORA_SITES_DOMAIN = previous;
+    }
+  };
+
+  it("rewrites a client subdomain to the internal hosted route and keeps the CSP", () => {
+    withSitesDomain(() => {
+      const response = proxy(new NextRequest("https://clinic.sites.aurora.example/skolko-stoit", { headers: { host: "clinic.sites.aurora.example" } }));
+      expect(response.headers.get("x-middleware-rewrite")).toContain("/hosted/clinic/skolko-stoit");
+      expect(response.headers.get("content-security-policy")).toContain("script-src");
+      const root = proxy(new NextRequest("https://clinic.sites.aurora.example/", { headers: { host: "clinic.sites.aurora.example" } }));
+      expect(root.headers.get("x-middleware-rewrite")).toMatch(/\/hosted\/clinic$/u);
+    });
+  });
+
+  it("never serves the product UI or API from a hosted host", () => {
+    withSitesDomain(() => {
+      for (const path of ["/app/today", "/api/sites", "/hosted/clinic"]) {
+        const response = proxy(new NextRequest(`https://clinic.sites.aurora.example${path}`, { headers: { host: "clinic.sites.aurora.example" } }));
+        expect(response.status).toBe(404);
+        expect(response.headers.get("x-middleware-rewrite")).toBeNull();
+      }
+    });
+  });
+
+  it("leaves the product host untouched", () => {
+    withSitesDomain(() => {
+      const response = proxy(new NextRequest("https://aurora.example/app/sites", { headers: { host: "aurora.example" } }));
+      expect(response.headers.get("x-middleware-rewrite")).toBeNull();
+      expect(response.status).toBe(200);
+    });
+  });
+});
