@@ -84,6 +84,11 @@ const OPERATIONAL: Record<AuroraSectionId, SectionOperationalDefinition> = {
     dependencies: ["web_api", "postgresql", "site_analysis_worker", "aurora_ai"],
     slos: [PAGE_SLO, API_SLO, QUEUE_SLO, WORKER_SLO, AI_SLO],
   },
+  sites: {
+    scenario: ["connected", "verified", "article_approved", "published", "report_opened"],
+    dependencies: ["web_api", "postgresql", "redis", "site_analysis_worker", "site_articles_worker", "aurora_ai"],
+    slos: [PAGE_SLO, API_SLO, QUEUE_SLO, WORKER_SLO, AI_SLO],
+  },
   growth: {
     scenario: ["opened", "accepted", "completed", "result_confirmed"],
     dependencies: ["web_api", "postgresql", "stats_queue"],

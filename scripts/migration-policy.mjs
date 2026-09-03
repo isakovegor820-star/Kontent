@@ -41,6 +41,8 @@ const APPROVED_REPLACED_CONSTRAINTS = new Set([
   "radar_search_results_type_check",
   "radar_search_results_url_check",
   "knowledge_sources_kind_check",
+  "product_events_section_check",
+  "product_event_daily_section_check",
 ]);
 
 function withoutSqlComments(sql) {
