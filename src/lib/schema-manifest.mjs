@@ -5,7 +5,7 @@
  */
 export const SCHEMA_MANIFEST = Object.freeze({
   manifestVersion: 1,
-  schemaVersion: "2026-10-09.109",
+  schemaVersion: "2026-10-10.110",
   migrations: Object.freeze([
     ["20260801_account_onboarding.sql", "ac0e1f10046cf620185570ab5f40437991d08513473f67d4e93bdafa07b86614"],
     ["20260801_ai_usage_reservations.sql", "991c3a92dce16df55011d9df52fb65af1a7f4310b27f61dc519705f05528d7a0"],
@@ -120,6 +120,7 @@ export const SCHEMA_MANIFEST = Object.freeze({
     ["20261007_site_publishing.sql", "ae965565682c1adbfa0c05a5783fced0b51e388291e59898904ce66a16d73ae2"],
     ["20261008_sites_section_telemetry.sql", "0a9cc1c0fcd3e3e90a485148b736c8201ecf348f1f0d4b7a4771a739fb9bac98"],
     ["20261009_admin_account_controls.sql", "98ea34adc3b732a85a8db2b4165d8cb648c163ac981d2a0a1505d3360317205e"],
+    ["20261010_site_ai_interpretation.sql", "ba3501e703f7899996ce06aa24e10577048ac0bf7b2c9314482dc6caaf941dd4"],
   ].map(([name, checksum, acceptedChecksums]) => Object.freeze({
     name,
     checksum,
@@ -726,6 +727,10 @@ export const SCHEMA_MANIFEST = Object.freeze({
       "site_reports.payload",
       "site_reports.summary_ru",
       "site_analysis_jobs.site_id",
+      "site_profiles.ai_classification",
+      "site_profiles.refined_at",
+      "site_reports.interpretation",
+      "site_reports.interpretation_status",
       "sites.hosted_slug",
       "sites.brand_name",
       "site_destinations.credentials",
@@ -1075,6 +1080,7 @@ export const SCHEMA_MANIFEST = Object.freeze({
       "site_reports.site_reports_kind_check",
       "site_reports.site_reports_status_check",
       "site_reports.site_reports_payload_check",
+      "site_reports.site_reports_interpretation_status_check",
       "sites.sites_hosted_slug_check",
       "site_destinations.site_destinations_site_kind_uniq",
       "site_destinations.site_destinations_kind_check",

@@ -93,7 +93,18 @@ type ProfileView = {
   };
   linkablePages: Array<{ url: string; title: string; pageType: string }>;
   summary: string | null;
+  refinedAt: string | null;
+  aiClassification: { status: string; engine: string | null; pageTypeOverrides: number; topicClusters: number } | null;
   createdAt: string | null;
+};
+
+type Interpretation = {
+  summary: string;
+  whatItMeans: string[];
+  startWith: Array<{ key: string; title: string; priority: string | null; why: string }>;
+  watchOut: string[];
+  disclaimer: string;
+  engine: string | null;
 };
 
 type ReportView = {
@@ -101,6 +112,8 @@ type ReportView = {
   kind: "initial_audit" | "monthly" | "on_demand";
   status: string;
   summaryRu: string;
+  interpretation: Interpretation | null;
+  interpretationStatus: "pending" | "ready" | "skipped" | "failed";
   createdAt: string | null;
 };
 
@@ -173,6 +186,46 @@ function CopyValue({ value, label }: { value: string; label: string }) {
         {copied ? "Скопировано" : "Копировать"}
       </Button>
     </div>
+  );
+}
+
+function InterpretationBlock({ interpretation, status, compact = false }: { interpretation: Interpretation | null; status: ReportView["interpretationStatus"]; compact?: boolean }) {
+  if (!interpretation) {
+    if (status === "pending") return <p className="type-caption mt-3 text-text-3">Интерпретация Авроры готовится…</p>;
+    if (status === "failed") return <p className="type-caption mt-3 text-text-3">Интерпретация не удалась — цифры и рекомендации выше остаются в силе.</p>;
+    return null;
+  }
+  return (
+    <section className={cn("rounded-sm border border-brand/20 bg-info-soft/40 p-4", compact ? "mt-3" : "mt-5")} aria-label="Интерпретация Авроры">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge tone="brand">Интерпретация Авроры</Badge>
+        {interpretation.engine && <span className="type-caption text-text-3">{interpretation.engine}</span>}
+      </div>
+      <p className="type-secondary mt-2 text-text">{interpretation.summary}</p>
+      {interpretation.whatItMeans.length > 0 && (
+        <ul className="mt-3 space-y-1">
+          {interpretation.whatItMeans.map((item, index) => <li key={index} className="type-caption text-text-2">• {item}</li>)}
+        </ul>
+      )}
+      {interpretation.startWith.length > 0 && (
+        <div className="mt-3">
+          <p className="type-label text-text">С чего начать</p>
+          <ol className="mt-1 space-y-1.5">
+            {interpretation.startWith.map((item, index) => (
+              <li key={item.key} className="type-caption text-text-2">
+                <span className="font-semibold text-text">{index + 1}. {item.title || item.key}</span>
+                {item.priority && <Badge tone={item.priority === "P0" ? "danger" : item.priority === "P1" ? "fire" : "neutral"} className="ml-2">{item.priority}</Badge>}
+                <span className="block text-text-3">{item.why}</span>
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
+      {interpretation.watchOut.length > 0 && (
+        <p className="type-caption mt-3 text-text-3">Ограничения: {interpretation.watchOut.join(" ")}</p>
+      )}
+      <p className="type-caption mt-2 text-text-3">{interpretation.disclaimer}</p>
+    </section>
   );
 }
 
@@ -582,8 +635,15 @@ export default function SitesPage() {
                 <Card className="p-6"><p className="type-secondary text-text-2">Загружаем профиль…</p></Card>
               ) : profile ? (
                 <Card className="p-5 sm:p-6">
-                  <h3 className="type-h3 text-text">Профиль сайта</h3>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="type-h3 text-text">Профиль сайта</h3>
+                    {profile.aiClassification?.status === "ready" && (
+                      <Badge tone="brand">уточнён моделью{profile.aiClassification.topicClusters ? ` · тем объединено: ${profile.aiClassification.topicClusters}` : ""}</Badge>
+                    )}
+                    {profile.refinedAt === null && <Badge tone="neutral">уточнение моделью в очереди</Badge>}
+                  </div>
                   <p className="type-secondary mt-2 text-text-2">{profile.summary}</p>
+                  {current?.reports[0] && <InterpretationBlock interpretation={current.reports[0].interpretation} status={current.reports[0].interpretationStatus} />}
                   <div className="mt-5 grid gap-4 sm:grid-cols-2">
                     <Score label="On-page SEO" value={profile.technical.seoScore} />
                     <Score label="Готовность к генеративному поиску (GEO)" value={profile.technical.geoScore} />
@@ -674,6 +734,7 @@ export default function SitesPage() {
                           <span className="type-caption text-text-3">{formatDate(report.createdAt)}</span>
                         </div>
                         <p className="type-secondary mt-2 text-text-2">{report.summaryRu}</p>
+                        <InterpretationBlock interpretation={report.interpretation} status={report.interpretationStatus} compact />
                         <div className="mt-3 flex flex-wrap gap-2">
                           {REPORT_FORMATS.map(([format, label]) => (
                             <a

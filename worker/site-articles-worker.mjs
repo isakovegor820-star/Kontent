@@ -27,9 +27,13 @@ import {
 import { createEmbedder, toVector } from "./embeddings.mjs";
 import { runSiteVisibilityProbe } from "./site-visibility-probe.mjs";
 import { runSiteReportOnDemand } from "./site-scheduler.mjs";
+import { interpretSiteReport, refineSiteProfile } from "./site-ai-worker.mjs";
 
 export const SITE_ARTICLES_QUEUE = "site-articles";
-export const SITE_ARTICLE_JOBS = Object.freeze({ PLAN: "plan", GENERATE: "generate", PUBLISH: "publish", RECONCILE: "reconcile", PROBE: "probe", REPORT: "report" });
+export const SITE_ARTICLE_JOBS = Object.freeze({
+  PLAN: "plan", GENERATE: "generate", PUBLISH: "publish", RECONCILE: "reconcile", PROBE: "probe", REPORT: "report",
+  REFINE: "refine", INTERPRET: "interpret",
+});
 
 const MAX_PUBLISH_ATTEMPTS = 3;
 const GENERATION_MAX_TOKENS = 3_500;
@@ -48,7 +52,7 @@ export function siteArticleJobId(name, id) {
 }
 
 export async function enqueueSiteArticleJob(queue, name, data, { delayMs = 0, jobId = null } = {}) {
-  const id = jobId || siteArticleJobId(name, data.articleId ?? data.publicationId ?? data.siteId ?? randomUUID());
+  const id = jobId || siteArticleJobId(name, data.articleId ?? data.publicationId ?? data.profileId ?? data.reportId ?? data.siteId ?? randomUUID());
   await queue.add(name, data, {
     jobId: id,
     delay: delayMs,
@@ -560,7 +564,18 @@ export function createSiteArticlesWorker({ connection, pool, queue, concurrency 
         case SITE_ARTICLE_JOBS.PUBLISH: return publishSiteArticle(pool, job.data, deps);
         case SITE_ARTICLE_JOBS.RECONCILE: return reconcileSitePublication(pool, job.data, deps);
         case SITE_ARTICLE_JOBS.PROBE: return (deps.runProbe || runSiteVisibilityProbe)(pool, { siteId: Number(job.data.siteId) }, deps);
-        case SITE_ARTICLE_JOBS.REPORT: return (deps.runReport || runSiteReportOnDemand)(pool, { siteId: Number(job.data.siteId) }, deps);
+        case SITE_ARTICLE_JOBS.REPORT: return (deps.runReport || runSiteReportOnDemand)(pool, { siteId: Number(job.data.siteId), siteArticlesQueue: queue }, deps);
+        case SITE_ARTICLE_JOBS.REFINE: {
+          const refined = await (deps.refineProfile || refineSiteProfile)(pool, { profileId: Number(job.data.profileId), force: Boolean(job.data.force) }, deps);
+          // После уточнения профиля интерпретируем отчёты, ждущие модель.
+          const pending = await pool.query(
+            `select id from site_reports where profile_id = $1 and status = 'ready' and interpretation_status = 'pending' order by id`,
+            [Number(job.data.profileId)],
+          );
+          for (const row of pending.rows) await enqueueSiteArticleJob(queue, SITE_ARTICLE_JOBS.INTERPRET, { reportId: Number(row.id) });
+          return { ...refined, interpretationsQueued: pending.rows.length };
+        }
+        case SITE_ARTICLE_JOBS.INTERPRET: return (deps.interpretReport || interpretSiteReport)(pool, { reportId: Number(job.data.reportId), force: Boolean(job.data.force) }, deps);
         default: return { ok: true, skipped: "unknown_job" };
       }
     },

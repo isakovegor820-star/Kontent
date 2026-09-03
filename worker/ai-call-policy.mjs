@@ -15,6 +15,7 @@ export const WORKER_AI_SURFACES = Object.freeze({
   "competitor-reader-classifier": Object.freeze({ billing: "system", purpose: "internal_classification" }),
   "profile-refresh": Object.freeze({ billing: "system", purpose: "background_context_maintenance" }),
   "radar-query-expansion": Object.freeze({ billing: "system", purpose: "search_query_expansion" }),
+  "site-page-classifier": Object.freeze({ billing: "system", purpose: "internal_classification" }),
 
   "radar-osint-profile": Object.freeze({ billing: "user", purpose: "visible_osint_profile" }),
   "competitor-idea": Object.freeze({ billing: "user", purpose: "visible_content_idea" }),
@@ -27,6 +28,7 @@ export const WORKER_AI_SURFACES = Object.freeze({
   "site-analysis-interview": Object.freeze({ billing: "user", purpose: "visible_osint_report" }),
   "site-article": Object.freeze({ billing: "user", purpose: "visible_site_article" }),
   "site-visibility-probe": Object.freeze({ billing: "user", purpose: "visible_visibility_report" }),
+  "site-report-interpretation": Object.freeze({ billing: "user", purpose: "visible_report_interpretation" }),
 });
 
 function positiveReservationId(value) {

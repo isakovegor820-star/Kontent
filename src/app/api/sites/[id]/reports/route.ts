@@ -17,7 +17,7 @@ export async function GET(req: NextRequest, context: Context) {
     const found = await requireSite(resolved.context, (await context.params).id);
     if (!found.ok) return found.response;
     const rows = await pool.query<SiteReportRow>(
-      `select id, site_id, kind, profile_id, previous_report_id, payload, summary_ru, status, created_at
+      `select id, site_id, kind, profile_id, previous_report_id, payload, summary_ru, status, interpretation, interpretation_status, created_at
          from site_reports where site_id = $1 order by created_at desc, id desc limit 36`,
       [found.site.id],
     );

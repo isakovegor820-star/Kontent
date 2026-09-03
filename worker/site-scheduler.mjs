@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { normalizeSiteLimits } from "../src/lib/site-crawler.mjs";
 import { renderSiteReportMarkdown } from "../src/lib/site-report/export.mjs";
 import { buildMonthlyReport } from "../src/lib/site-report/monthly.mjs";
+import { enqueuePendingInterpretations } from "./site-ai-worker.mjs";
 import { SITE_ARTICLE_JOBS, enqueueSiteArticleJob, planSiteArticles, reconcileSitePublication } from "./site-articles-worker.mjs";
 import { SITE_PROBE_INTERVAL_DAYS, latestProbeSummary, runSiteVisibilityProbe } from "./site-visibility-probe.mjs";
 
@@ -147,7 +148,8 @@ export async function runSiteDailyMaintenance(pool, { siteArticlesQueue = null, 
   const articles = await planArticlesForAllSites(pool, { siteArticlesQueue });
   const probes = await runDueVisibilityProbes(pool, { now }, dependencies);
   const publications = await reconcileStuckPublications(pool, { siteArticlesQueue }, dependencies);
-  const summary = { profiles, articles, probes: { due: probes.due }, publications };
+  const interpretations = await enqueuePendingInterpretations(pool, siteArticlesQueue);
+  const summary = { profiles, articles, probes: { due: probes.due }, publications, interpretations };
   console.log("[site-daily]", JSON.stringify(summary));
   return summary;
 }
@@ -192,7 +194,7 @@ function profileFromRow(row) {
  * Ежемесячный отчёт по каждому активному сайту с профилем. Markdown отчёта сразу попадает
  * в базу знаний сайта (kind = site_report), чтобы следующий отчёт видел прошлые рекомендации.
  */
-export async function runSiteMonthlyReports(pool, { now = new Date(), period = null, siteId = null, kind = "monthly" } = {}) {
+export async function runSiteMonthlyReports(pool, { now = new Date(), period = null, siteId = null, kind = "monthly", siteArticlesQueue = null } = {}) {
   const window = period || previousMonthPeriod(now);
   const sites = await pool.query(
     `select s.id, s.user_id, s.confirmed_domain, s.canonical_url, s.verification_state,
@@ -260,6 +262,9 @@ export async function runSiteMonthlyReports(pool, { now = new Date(), period = n
       );
       await client.query("commit");
       created += 1;
+      if (siteArticlesQueue) {
+        await enqueueSiteArticleJob(siteArticlesQueue, SITE_ARTICLE_JOBS.INTERPRET, { reportId: Number(stored.rows[0].id) }).catch(() => undefined);
+      }
     } catch (error) {
       await client.query("rollback").catch(() => undefined);
       console.error("[site-monthly] отчёт не сохранён", { siteId: row.id, code: error?.code || error?.name });
@@ -271,8 +276,8 @@ export async function runSiteMonthlyReports(pool, { now = new Date(), period = n
 }
 
 /** Отчёт по запросу пользователя: последние 30 дней, тип on_demand, та же сборка и та же дельта. */
-export async function runSiteReportOnDemand(pool, { siteId, now = new Date() }) {
+export async function runSiteReportOnDemand(pool, { siteId, now = new Date(), siteArticlesQueue = null }) {
   const end = now.toISOString();
   const start = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString();
-  return runSiteMonthlyReports(pool, { now, period: { start, end }, siteId: Number(siteId), kind: "on_demand" });
+  return runSiteMonthlyReports(pool, { now, period: { start, end }, siteId: Number(siteId), kind: "on_demand", siteArticlesQueue });
 }
