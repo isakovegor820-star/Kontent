@@ -413,6 +413,109 @@ function EventsTab({ data }: { data: AdminAuroraAnalytics }) {
   );
 }
 
+function ProblemsList({ data, onOpen }: { data: AdminAuroraAnalytics; onOpen: (sectionId: AuroraAnalyticsSectionCard["id"]) => void }) {
+  const problems = data.problems.slice(0, 8);
+  return (
+    <section className="card-plain mt-5 rounded-md p-5" aria-labelledby="aurora-problems-title">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h3 id="aurora-problems-title" className="text-text">Проблемы за период</h3>
+          <p className="type-caption mt-1 text-text-3">Рейтинг impact = пользователи × частота × серьёзность, по всем разделам.</p>
+        </div>
+        <span className="type-caption text-text-3">{fmtNum(data.problems.length)} всего</span>
+      </div>
+      {problems.length === 0 ? (
+        <p className="mt-4 rounded-sm bg-success-soft p-4 text-success-text">Подтверждённых отклонений за период нет.</p>
+      ) : (
+        <ol className="mt-4 divide-y divide-line">
+          {problems.map((problem) => (
+            <li key={problem.id} className="flex flex-col gap-2 py-3 sm:flex-row sm:items-start sm:justify-between">
+              <div className="min-w-0">
+                <p className="type-secondary font-semibold text-text">{problem.title}</p>
+                <p className="type-caption mt-0.5 text-text-3">{problem.evidence}</p>
+              </div>
+              <div className="flex shrink-0 flex-wrap items-center gap-2">
+                <span className="nums rounded-full bg-danger-soft px-2.5 py-1 text-sm font-semibold text-danger-text" title={`impact = ${problem.formula}`}>{fmtNum(problem.impact)}</span>
+                <button type="button" onClick={() => onOpen(problem.sectionId)} className={buttonClassName({ variant: "secondary", size: "sm" })}>Открыть раздел</button>
+                {problem.dependencyId ? <Link href={`/admin?system=${problem.dependencyId}#system`} className={buttonClassName({ variant: "ghost", size: "sm" })}>Зависимость</Link> : null}
+              </div>
+            </li>
+          ))}
+        </ol>
+      )}
+    </section>
+  );
+}
+
+function SectionCards({ data, selectedId, onSelect }: {
+  data: AdminAuroraAnalytics;
+  selectedId: string | null;
+  onSelect: (sectionId: AuroraAnalyticsSectionCard["id"]) => void;
+}) {
+  const groups = [...new Set(data.sections.map((section) => section.groupId))];
+  return (
+    <>
+      {groups.map((groupId) => {
+        const sections = data.sections.filter((section) => section.groupId === groupId);
+        return (
+          <div key={groupId} className="mt-5">
+            <h4 className="type-label text-text-2">{sections[0]?.groupTitle}</h4>
+            <div className="mt-3 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+              {sections.map((section) => <SectionCard key={section.id} section={section} selected={selectedId === section.id} onSelect={() => onSelect(section.id)} />)}
+            </div>
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+function SectionsTable({ data, selectedId, onSelect }: {
+  data: AdminAuroraAnalytics;
+  selectedId: string | null;
+  onSelect: (sectionId: AuroraAnalyticsSectionCard["id"]) => void;
+}) {
+  return (
+    <div className="mt-4 overflow-x-auto rounded-md border border-line bg-surface shadow-soft">
+      <table className="w-full min-w-[880px] text-start">
+        <thead className="bg-surface-2">
+          <tr className="type-caption text-text-3">
+            <th className="px-3 py-2 text-start font-semibold">Раздел</th>
+            <th className="px-3 py-2 text-start font-semibold">Здоровье</th>
+            <th className="px-3 py-2 text-end font-semibold">Пользователи</th>
+            <th className="px-3 py-2 text-end font-semibold">Запуски</th>
+            <th className="px-3 py-2 text-end font-semibold">Error rate</th>
+            <th className="px-3 py-2 text-end font-semibold">p95</th>
+            <th className="px-3 py-2 text-end font-semibold">Результат</th>
+            <th className="px-3 py-2 text-end font-semibold">Тренд</th>
+            <th className="px-3 py-2" aria-label="Действие" />
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-line">
+          {data.sections.map((section) => (
+            <tr key={section.id} className={cn("align-middle transition-colors hover:bg-surface-2/60", selectedId === section.id && "bg-info-soft/40")}>
+              <td className="px-3 py-2">
+                <p className="type-secondary font-semibold text-text">{section.label}</p>
+                <p className="type-caption text-text-3">{section.groupTitle}</p>
+              </td>
+              <td className="px-3 py-2"><Health state={section.technical.state} /></td>
+              <td className="nums px-3 py-2 text-end text-text">{fmtNum(section.activity.uniqueUsers.current)}</td>
+              <td className="nums px-3 py-2 text-end text-text-2">{fmtNum(section.activity.launches.current)}</td>
+              <td className={cn("nums px-3 py-2 text-end", section.technical.errorRate.current > 5 ? "text-danger-text" : "text-text-2")}>{percent(section.technical.errorRate.current)}</td>
+              <td className="nums px-3 py-2 text-end text-text-2">{duration(section.technical.p95Ms.current)}</td>
+              <td className="nums px-3 py-2 text-end text-text-2">
+                {section.outcome.coverage === "available" ? `${fmtNum(section.outcome.successes.current)} · ${percent(section.outcome.successRate.current)}` : <span className="text-text-3">нет данных</span>}
+              </td>
+              <td className="px-3 py-2 text-end"><Change value={section.activity.uniqueUsers.changePercent} /></td>
+              <td className="px-3 py-2 text-end"><button type="button" onClick={() => onSelect(section.id)} className={buttonClassName({ variant: "secondary", size: "sm" })}>Открыть</button></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function DetailPanel({ data, onTab }: { data: AdminAuroraAnalytics; onTab: (tab: AuroraAnalyticsTab) => void }) {
   const section = data.sections.find((candidate) => candidate.id === data.detail?.sectionId);
   if (!section || !data.detail) return null;
@@ -505,6 +608,10 @@ export function AdminAuroraAnalyticsCenter() {
 
   const params = useMemo(() => new URLSearchParams(query), [query]);
   const selectedId = data?.filters.sectionId ?? null;
+  const view = params.get("analyticsView") === "cards" ? "cards" : "table";
+  const selectSection = (sectionId: AuroraAnalyticsSectionCard["id"]) => {
+    navigate({ analyticsSection: sectionId, analyticsTab: selectedId === sectionId ? data?.filters.tab ?? "overview" : "overview" }, true);
+  };
 
   if (!data && !error) {
     return <div className="mt-6" aria-busy="true"><div className="skeleton h-28 rounded-md" /><div className="mt-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">{Array.from({ length: 9 }, (_, index) => <div key={index} className="skeleton h-96 rounded-md" />)}</div><p className="sr-only" role="status">Загружаем аналитику разделов…</p></div>;
@@ -520,7 +627,6 @@ export function AdminAuroraAnalyticsCenter() {
     );
   }
 
-  const groups = [...new Set(data.sections.map((section) => section.groupId))];
   return (
     <div className="mt-6">
       <section className="card-plain rounded-md p-4 sm:p-5" aria-label="Фильтры аналитики Авроры">
@@ -553,15 +659,24 @@ export function AdminAuroraAnalyticsCenter() {
       </section>
 
       {error ? <p role="alert" className="mt-4 rounded-sm bg-danger-soft p-4 text-danger-text">Обновление не удалось. Показан последний подтверждённый снимок.</p> : null}
-      <Timeline data={data} />
+
+      <ProblemsList data={data} onOpen={(sectionId) => navigate({ analyticsSection: sectionId, analyticsTab: "errors" }, true)} />
 
       <section className="mt-6" aria-labelledby="aurora-sections-title">
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between"><div><h3 id="aurora-sections-title" className="text-text">Все разделы Авроры</h3><p className="type-caption mt-1 text-text-3">{data.sections.length} разделов из APP_ROUTES · данные не подменяются оценками.</p></div><span className="type-caption text-text-3">Проверено {fmtAgo(data.checkedAt)}</span></div>
-        {groups.map((groupId) => {
-          const sections = data.sections.filter((section) => section.groupId === groupId);
-          return <div key={groupId} className="mt-5"><h4 className="type-label text-text-2">{sections[0]?.groupTitle}</h4><div className="mt-3 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">{sections.map((section) => <SectionCard key={section.id} section={section} selected={selectedId === section.id} onSelect={() => navigate({ analyticsSection: section.id, analyticsTab: selectedId === section.id ? data.filters.tab : "overview" }, true)} />)}</div></div>;
-        })}
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+          <div><h3 id="aurora-sections-title" className="text-text">Все разделы Авроры</h3><p className="type-caption mt-1 text-text-3">{data.sections.length} разделов из APP_ROUTES · проверено {fmtAgo(data.checkedAt)} · данные не подменяются оценками.</p></div>
+          <div className="inline-flex rounded-sm border border-line bg-surface p-1" role="group" aria-label="Вид списка разделов">
+            {([["table", "Таблица"], ["cards", "Карточки"]] as const).map(([id, label]) => (
+              <button key={id} type="button" aria-pressed={view === id} onClick={() => navigate({ analyticsView: id === "table" ? null : id })} className={cn("type-button min-h-9 rounded-xs px-3", view === id ? "bg-brand text-white shadow-soft" : "text-text-2 hover:bg-surface-inset hover:text-text")}>{label}</button>
+            ))}
+          </div>
+        </div>
+        {view === "table" ? (
+          <SectionsTable data={data} selectedId={selectedId} onSelect={selectSection} />
+        ) : <SectionCards data={data} selectedId={selectedId} onSelect={selectSection} />}
       </section>
+
+      <Timeline data={data} />
 
       <div ref={detailRef} className="scroll-mt-20 pt-8">
         {data.detail ? <DetailPanel data={data} onTab={(tab) => navigate({ analyticsTab: tab }, true)} /> : (
