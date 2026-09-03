@@ -529,7 +529,7 @@ async function failurePayloadWithAlternative(
   };
 }
 
-function replayResponse(requestId: string, result: AiUsageStoredResult, used: number | null = null) {
+function replayResponse(requestId: string, result: AiUsageStoredResult, used: number | null = null, limit: number = AI_DAILY_LIMIT) {
   const events: AiStreamEvent[] = [
     { type: "replace", requestId, text: result.text, pipeline: result.pipeline },
     ...(result.validation
@@ -578,7 +578,7 @@ function replayResponse(requestId: string, result: AiUsageStoredResult, used: nu
       "x-ai-replayed": "true",
       "x-ai-ack-required": "true",
       ...(used === null ? {} : { "x-ai-used": String(used) }),
-      "x-ai-limit": String(AI_DAILY_LIMIT),
+      "x-ai-limit": String(limit),
     },
   });
 }
@@ -591,6 +591,7 @@ function studioStreamResponse(
   userId: number,
   reservationId: number | null,
   used: number,
+  limit: number,
   editorial: boolean,
   factLedger: FactLedger,
   semanticAdapter: SemanticEntailmentAdapter | null,
@@ -1127,7 +1128,7 @@ function studioStreamResponse(
       "x-ai-request-id": requestId,
       "x-ai-requested-engine": engineId,
       "x-ai-used": String(used),
-      "x-ai-limit": String(AI_DAILY_LIMIT),
+      "x-ai-limit": String(limit),
       "x-ai-pipeline": editorial ? "author-editor-stream" : "single-pass-stream",
       "x-ai-ack-required": "true",
     },
@@ -1559,7 +1560,7 @@ export async function POST(req: NextRequest) {
     (reservation.requestState === "replay" || reservation.requestState === "terminal_pending_ack")
     && reservation.result
   ) {
-    return replayResponse(requestId, reservation.result, reservation.used || null);
+    return replayResponse(requestId, reservation.result, reservation.used || null, reservation.limit);
   }
   if (reservation.requestState === "in_progress") {
     return aiJson(
@@ -1632,6 +1633,7 @@ export async function POST(req: NextRequest) {
     user.id,
     reservation.reservationId,
     reservation.used,
+    reservation.limit,
     editorial,
     factLedger,
     semanticAdapter,
