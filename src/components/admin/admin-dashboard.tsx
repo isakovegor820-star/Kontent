@@ -183,7 +183,7 @@ function AdminAccessError({ error }: { error: Exclude<LoadError, "unavailable"> 
         </p>
         <div className="mt-6 flex flex-col justify-center gap-3 sm:flex-row">
           {unauthorized ? (
-            <Link href="/admin/login" className={buttonClassName({ variant: "primary" })}>Войти как администратор</Link>
+            <Link prefetch={false} href="/admin/login" className={buttonClassName({ variant: "primary" })}>Войти как администратор</Link>
           ) : (
             <Link href="/app/calendar" className={buttonClassName({ variant: "secondary" })}>Вернуться в кабинет</Link>
           )}

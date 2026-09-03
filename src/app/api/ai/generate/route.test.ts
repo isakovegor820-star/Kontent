@@ -614,6 +614,20 @@ describe("POST /api/ai/generate prerequisites", () => {
     expect(JSON.stringify(telemetry)).not.toContain("Полный содержательный");
   });
 
+  it("reports the effective per-account limit in x-ai-limit instead of the platform constant", async () => {
+    mocks.acquireAiUsageRequest.mockResolvedValueOnce({
+      allowed: true, used: 3, limit: 120, reservationId: 81, reservationKey: "web:studio_stream_test_1",
+      status: "reserved", expiresAt: "2026-08-02T12:00:00.000Z", requestState: "acquired", result: null,
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(
+      '{"message":{"content":"Пост про лимиты, который достаточно длинный для проверки."},"done":true}\n',
+      { status: 200, headers: { "content-type": "application/x-ndjson" } },
+    )));
+    const response = await POST(studioRequest());
+    expect(response.headers.get("x-ai-limit")).toBe("120");
+    expect(response.headers.get("x-ai-used")).toBe("3");
+  });
+
   it("keeps balanced Studio generation to one streamed provider pass", async () => {
     const fetchMock = vi.fn(async () => new Response(
       '{"message":{"content":"Качественный пост готов за один проход."},"done":true}\n',

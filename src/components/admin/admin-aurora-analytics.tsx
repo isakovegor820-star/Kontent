@@ -268,7 +268,7 @@ function OverviewTab({ data, section }: { data: AdminAuroraAnalytics; section: A
                   </div>
                   <p className="type-caption mt-2 font-mono text-text-3">impact = {problem.formula}</p>
                   <div className="mt-3 flex flex-wrap gap-2">
-                    {problem.dependencyId ? <Link href={`/admin?system=${problem.dependencyId}#system`} className={buttonClassName({ variant: "secondary", size: "sm" })}>Открыть зависимость</Link> : null}
+                    {problem.dependencyId ? <Link prefetch={false} href={`/admin?system=${problem.dependencyId}#system`} className={buttonClassName({ variant: "secondary", size: "sm" })}>Открыть зависимость</Link> : null}
                     {problem.sentryUrl ? <a href={problem.sentryUrl} target="_blank" rel="noreferrer" className={buttonClassName({ variant: "secondary", size: "sm" })}>Sentry <ExternalLink className="h-3.5 w-3.5" aria-hidden /></a> : null}
                   </div>
                 </li>
@@ -350,7 +350,7 @@ function ErrorDetail({ error }: { error: AuroraAnalyticsErrorGroup }) {
         </dl>
         <div className="mt-4 flex flex-wrap gap-2">
           {error.requestId ? <Button variant="secondary" size="sm" onClick={() => void navigator.clipboard.writeText(error.requestId ?? "").then(() => setCopied(true))}><Copy className="h-3.5 w-3.5" aria-hidden />{copied ? "Скопировано" : "Копировать request ID"}</Button> : null}
-          {error.dependencyId ? <Link href={`/admin?system=${error.dependencyId}#system`} className={buttonClassName({ variant: "secondary", size: "sm" })}>Открыть зависимость</Link> : null}
+          {error.dependencyId ? <Link prefetch={false} href={`/admin?system=${error.dependencyId}#system`} className={buttonClassName({ variant: "secondary", size: "sm" })}>Открыть зависимость</Link> : null}
           {error.sentryUrl ? <a href={error.sentryUrl} target="_blank" rel="noreferrer" className={buttonClassName({ variant: "secondary", size: "sm" })}>Открыть в Sentry <ExternalLink className="h-3.5 w-3.5" aria-hidden /></a> : null}
         </div>
       </div>
@@ -437,7 +437,7 @@ function ProblemsList({ data, onOpen }: { data: AdminAuroraAnalytics; onOpen: (s
               <div className="flex shrink-0 flex-wrap items-center gap-2">
                 <span className="nums rounded-full bg-danger-soft px-2.5 py-1 text-sm font-semibold text-danger-text" title={`impact = ${problem.formula}`}>{fmtNum(problem.impact)}</span>
                 <button type="button" onClick={() => onOpen(problem.sectionId)} className={buttonClassName({ variant: "secondary", size: "sm" })}>Открыть раздел</button>
-                {problem.dependencyId ? <Link href={`/admin?system=${problem.dependencyId}#system`} className={buttonClassName({ variant: "ghost", size: "sm" })}>Зависимость</Link> : null}
+                {problem.dependencyId ? <Link prefetch={false} href={`/admin?system=${problem.dependencyId}#system`} className={buttonClassName({ variant: "ghost", size: "sm" })}>Зависимость</Link> : null}
               </div>
             </li>
           ))}

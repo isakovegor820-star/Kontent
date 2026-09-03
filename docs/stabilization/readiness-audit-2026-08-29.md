@@ -34,7 +34,7 @@ Accessibility, Security или Legal sign-off.
   2798 tests. После более поздних изменений отдельно прошли 16 связанных unit tests,
   ESLint и TypeScript. Полный suite требуется повторить на окончательно стабильном
   snapshot; прежний результат нельзя переносить автоматически.
-- Migration policy-check подтверждает 107 additive transactional migrations. Новый
+- Migration policy-check подтверждает 107 additive transactional migrations (на дату аудита; актуальное число выводит `npm run test:migrations`). Новый
   `admin-operations-center.integration.ts` не запускался: он требует отдельную локальную
   БД `aurora_migration_test`, на reset которой разрешение не предоставлялось.
 

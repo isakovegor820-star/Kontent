@@ -123,8 +123,10 @@ export function classifyE2eKnownBrowserObservation({
   try {
     const rscUrl = new URL(pathAndQuery, "https://aurora-e2e.invalid");
     const rscToken = rscUrl.searchParams.get("_rsc");
+    // The admin panel is a single route whose navigation is hash/query driven, so a
+    // full navigation there cancels in-flight RSC prefetches exactly like /app pages.
     if (
-      /^\/app(?:\/[a-z0-9-]+)+$/u.test(rscUrl.pathname)
+      (/^\/app(?:\/[a-z0-9-]+)+$/u.test(rscUrl.pathname) || /^\/admin(?:\/[a-z0-9-]+)*$/u.test(rscUrl.pathname))
       && /^[A-Za-z0-9_-]+$/u.test(rscToken || "")
     ) {
       return { kind: "webkit.cancelled-rsc-prefetch", detail: pathAndQuery };
