@@ -238,6 +238,7 @@ const OUTCOME_LABELS: Record<AuroraSectionId, string> = {
   opportunities: "Построенные снимки возможностей",
   radar: "Завершённые поисковые запуски",
   siteAnalysis: "Готовые отчёты анализа сайта",
+  sites: "Опубликованные на сайт материалы",
   growth: "Выполненные рекомендации развития",
   analytics: "Подтверждённые tracking-снимки",
   settings: "Сохранённые изменения настроек",
@@ -544,6 +545,11 @@ const DOMAIN_EVENTS_SQL = `
          case when job.status = 'ready' then 'success' when job.status = 'failed' then 'failure' else 'neutral' end
     from site_analysis_jobs job where job.project_id is not null
   union all
+  select 'sites', article.project_id, article.user_id, article.updated_at,
+         case when article.status = 'published' then 'success'
+              when article.status in ('failed','rejected') then 'failure' else 'neutral' end
+    from site_articles article
+  union all
   select 'growth', move.project_id, channel.user_id, move.updated_at,
          case when move.status = 'done' then 'success' else 'neutral' end
     from growth_moves move join channels channel on channel.id = move.channel_id
@@ -696,6 +702,11 @@ async function loadErrors(db: Queryable, filters: AdminAuroraAnalyticsFilters) {
               job.project_id, job.user_id, job.created_at, job.request_id
          from site_analysis_jobs job
         where job.project_id is not null and job.status = 'failed' and job.error_code ~ '^[a-z0-9_]{1,100}$'
+       union all
+       select 'sites', 'site', 'failed', 'worker', article.status_reason,
+              article.project_id, article.user_id, article.updated_at, null::text
+         from site_articles article
+        where article.status = 'failed' and article.status_reason ~ '^[a-z0-9_]{1,100}$'
        union all
        select 'radar', 'search', 'failed', 'worker', run.error_code,
               channel.project_id, run.user_id, run.created_at, null::text
