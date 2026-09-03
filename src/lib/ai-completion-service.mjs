@@ -127,9 +127,27 @@ async function serializedLocalCompletion(runtime, task, signal) {
   }
 }
 
+// A per-attempt deadline. `AbortSignal.any([caller, AbortSignal.timeout(ms)])` is not
+// used on purpose: on Node 22 the composite holds the timeout signal weakly, so it can be
+// garbage-collected before firing and the attempt only dies at the overall deadline.
+// An explicit controller with a strongly held timer aborts exactly once, with the same
+// TimeoutError reason the classifier below expects.
 function combinedSignal(caller, timeoutMs) {
-  const timeout = AbortSignal.timeout(timeoutMs);
-  return caller ? AbortSignal.any([caller, timeout]) : timeout;
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    controller.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError"));
+  }, timeoutMs);
+  timer.unref?.();
+  const onCallerAbort = () => controller.abort(caller.reason);
+  if (caller) {
+    if (caller.aborted) onCallerAbort();
+    else caller.addEventListener("abort", onCallerAbort, { once: true });
+  }
+  controller.signal.addEventListener("abort", () => {
+    clearTimeout(timer);
+    caller?.removeEventListener("abort", onCallerAbort);
+  }, { once: true });
+  return controller.signal;
 }
 
 async function providerError(runtime, response) {
