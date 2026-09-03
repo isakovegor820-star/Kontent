@@ -488,7 +488,7 @@ function DetailContent({ detail, onChanged }: { detail: AdminUserDetail; onChang
     <div className="space-y-10 p-4 sm:p-6">
       <section aria-labelledby="account-summary-title">
         <h3 id="account-summary-title" className="sr-only">Сводка аккаунта</h3>
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           <SummaryCard label="Проекты" value={summary.projects} helper="Активные членства" icon={BriefcaseBusiness} />
           <SummaryCard label="Каналы" value={summary.channels} helper={`${fmtNum(summary.activeChannels)} активных`} icon={Radio} />
           <SummaryCard label="Публикации" value={summary.posts} helper={`${fmtNum(summary.postsPeriod)} за ${detail.periodDays} дней`} icon={FileText} />
@@ -893,7 +893,7 @@ export function AdminUsersCenter({
 
       {data ? (
         <>
-          <div className="grid min-w-0 max-w-full gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
+          <div className="grid min-w-0 max-w-full grid-cols-2 gap-3 xl:grid-cols-3 2xl:grid-cols-6">
             <SummaryCard label="Все аккаунты" value={data.summary.accounts} helper="Зарегистрированы в Авроре" icon={Users} />
             <SummaryCard label="Новые" value={data.summary.newAccounts} helper={`За ${data.periodDays} дней`} icon={UserCheck} />
             <SummaryCard label="Заходили за 30 дней" value={data.summary.activeAccounts} helper="Сессия ещё не истекла" icon={Activity} />
@@ -976,7 +976,7 @@ export function AdminUsersCenter({
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-4 sm:px-5">
             <div>
               <h3 className="text-text">Аккаунты</h3>
-              <p className="type-caption mt-1 text-text-3">{numberLabel(data.pagination.total, "аккаунт", "аккаунта", "аккаунтов")} в выборке</p>
+              <p className="type-caption mt-1 text-text-3">{numberLabel(data.pagination.total, "аккаунт", "аккаунта", "аккаунтов")} в выборке · «Посты» — создано / вышло за период</p>
             </div>
             {listState === "loading" ? <StatusPill label="Обновляем данные" tone="brand" icon={Clock3} /> : <StatusPill label="Данные подтверждены" tone="success" icon={CheckCircle2} />}
           </div>
@@ -989,27 +989,53 @@ export function AdminUsersCenter({
           ) : (
             <>
               <div className="hidden max-w-full overflow-x-auto lg:block">
-                <table className="w-full min-w-[1120px] text-start">
+                <table className="w-full text-start">
                   <thead className="bg-surface-2">
-                    <tr><th className="px-5 py-3 text-start">Аккаунт</th><th className="px-5 py-3 text-start">Регистрация и вход</th><th className="px-5 py-3 text-start">Проекты и каналы</th><th className="px-5 py-3 text-start">Публикации</th><th className="px-5 py-3 text-start">AI</th><th className="px-5 py-3 text-start">Состояние</th><th className="px-5 py-3" aria-label="Действие" /></tr>
+                    <tr className="type-caption text-text-3">
+                      <th className="px-3 py-2 text-start font-semibold">Аккаунт</th>
+                      <th className="px-3 py-2 text-start font-semibold">Вход</th>
+                      <th className="px-3 py-2 text-start font-semibold">Проекты · каналы</th>
+                      <th className="px-3 py-2 text-end font-semibold">Посты</th>
+                      <th className="px-3 py-2 text-end font-semibold">AI</th>
+                      <th className="px-3 py-2 text-start font-semibold">Последнее действие</th>
+                      <th className="px-3 py-2 text-start font-semibold">Состояние</th>
+                      <th className="px-3 py-2" aria-label="Действие" />
+                    </tr>
                   </thead>
                   <tbody className="divide-y divide-line">
                     {data.users.map((user) => {
                       const state = userState(user);
+                      const authMethods = [user.auth.password && "пароль", user.auth.telegram && "Telegram", user.auth.vk && "VK"].filter(Boolean).join(", ") || "email";
                       return (
-                        <tr key={user.id} className="align-top transition-colors duration-150 hover:bg-surface-2/60">
-                          <td className="px-5 py-4">
-                            <div className="flex items-start gap-3">
-                              <span className="grid h-10 w-10 shrink-0 place-items-center rounded-sm bg-info-soft font-bold text-info-text">{initials(user.name)}</span>
-                              <div className="min-w-0"><p className="type-body-strong max-w-52 truncate text-text" title={user.name}>{user.name}</p><p className="type-caption mt-1 max-w-52 truncate text-text-3" title={user.email || undefined}>{user.email || `ID ${user.id}`}</p><div className="mt-2"><AuthMethods auth={user.auth} /></div></div>
+                        <tr key={user.id} className="align-middle transition-colors duration-150 hover:bg-surface-2/60">
+                          <td className="px-3 py-2">
+                            <div className="flex items-center gap-2.5">
+                              <span className="grid h-8 w-8 shrink-0 place-items-center rounded-sm bg-info-soft text-xs font-bold text-info-text">{initials(user.name)}</span>
+                              <div className="min-w-0">
+                                <p className="type-secondary max-w-56 truncate font-semibold text-text" title={user.name}>{user.name}</p>
+                                <p className="type-caption max-w-56 truncate text-text-3" title={user.email || undefined}>{user.email || `ID ${user.id}`}</p>
+                              </div>
                             </div>
                           </td>
-                          <td className="px-5 py-4"><p className="type-secondary text-text"><time dateTime={user.createdAt}>{fullDate(user.createdAt)}</time></p><p className="type-caption mt-1 text-text-3">Последнее действие {fmtAgo(user.lastActivityAt)}</p><p className="type-caption mt-1 text-text-3">Сессии: {user.activeSessions}</p></td>
-                          <td className="px-5 py-4"><p className="nums type-secondary font-semibold text-text">{numberLabel(user.projects, "проект", "проекта", "проектов")} · {numberLabel(user.channels, "канал", "канала", "каналов")}</p><div className="mt-2 flex flex-wrap gap-1.5">{user.networks.length === 0 ? <span className="type-caption text-text-3">Нет подключений</span> : user.networks.map((network) => <StatusPill key={network} label={NETWORK_LABEL[network] || network} tone="neutral" />)}</div>{user.channelAttention > 0 ? <p className="type-caption mt-2 text-danger-text">Проблемных каналов: {user.channelAttention}</p> : null}</td>
-                          <td className="px-5 py-4"><p className="nums type-secondary font-semibold text-text">{user.postsPeriod} за период</p><p className="type-caption mt-1 text-text-3">{user.publishedPeriod} вышло · {user.scheduled} в плане</p>{user.failedPeriod > 0 ? <p className="type-caption mt-1 text-danger-text">Ошибок: {user.failedPeriod}</p> : null}</td>
-                          <td className="px-5 py-4"><p className="nums type-secondary font-semibold text-text">{user.aiPeriod} за период</p><p className="type-caption mt-1 text-text-3">{user.aiTotal} всего</p></td>
-                          <td className="px-5 py-4"><StatusPill {...state} /><p className="type-caption mt-2 text-text-3">{user.onboardingCompleted ? "Настройка завершена" : "Нужен onboarding"} · {user.botLinked ? "чат привязан" : "чат не привязан"}</p></td>
-                          <td className="px-5 py-4 text-end"><Button variant="secondary" size="sm" onClick={(event) => openDetail(user, event.currentTarget)}>Открыть аккаунт</Button></td>
+                          <td className="px-3 py-2 whitespace-nowrap">
+                            <p className="type-caption text-text-2" title={`Регистрация ${fullDate(user.createdAt)}`}>{authMethods}</p>
+                            <p className="type-caption text-text-3">{user.activeSessions > 0 ? `${user.activeSessions} ${plural(user.activeSessions, "сессия", "сессии", "сессий")}` : "нет сессий"}</p>
+                          </td>
+                          <td className="px-3 py-2 whitespace-nowrap">
+                            <p className="nums type-caption text-text-2">{user.projects} · {user.channels}</p>
+                            <p className="type-caption text-text-3">{user.networks.length ? user.networks.map((network) => NETWORK_LABEL[network] || network).join(", ") : "без подключений"}{user.channelAttention > 0 ? <span className="text-danger-text"> · {user.channelAttention} с ошибкой</span> : null}</p>
+                          </td>
+                          <td className="nums px-3 py-2 text-end whitespace-nowrap">
+                            <p className="type-caption text-text-2">{user.postsPeriod} / {user.publishedPeriod}</p>
+                            <p className="type-caption text-text-3">{user.scheduled} в плане{user.failedPeriod > 0 ? <span className="text-danger-text"> · {user.failedPeriod} ошиб.</span> : null}</p>
+                          </td>
+                          <td className="nums px-3 py-2 text-end whitespace-nowrap">
+                            <p className="type-caption text-text-2">{user.aiPeriod}</p>
+                            <p className="type-caption text-text-3">{user.aiTotal} всего</p>
+                          </td>
+                          <td className="px-3 py-2 whitespace-nowrap text-text-2"><span className="type-caption" title={fullDate(user.lastActivityAt)}>{fmtAgo(user.lastActivityAt)}</span></td>
+                          <td className="px-3 py-2"><StatusPill {...state} /></td>
+                          <td className="px-3 py-2 text-end"><Button variant="secondary" size="sm" onClick={(event) => openDetail(user, event.currentTarget)}>Открыть</Button></td>
                         </tr>
                       );
                     })}

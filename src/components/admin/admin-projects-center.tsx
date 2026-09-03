@@ -179,7 +179,7 @@ function DetailContent({ detail }: { detail: AdminProjectDetail }) {
   return (
     <div className="space-y-10 p-4 sm:p-6">
       <section aria-label="Сводка проекта">
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           <SummaryCard label="Участники" value={summary.members} helper="Активные членства" icon={Users} />
           <SummaryCard label="Каналы" value={summary.channels} helper={`${fmtNum(summary.activeChannels)} активных · ${fmtNum(summary.channelAttention)} с ошибкой`} icon={Radio} />
           <SummaryCard label="Публикации" value={summary.postsTotal} helper={`${fmtNum(summary.postsPeriod)} за ${detail.periodDays} дней`} icon={FileText} />
@@ -408,7 +408,7 @@ export function AdminProjectsCenter({ period, refreshKey = 0 }: { period: AdminP
   return (
     <>
       {data ? (
-        <div className="grid min-w-0 max-w-full gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
+        <div className="grid min-w-0 max-w-full grid-cols-2 gap-3 xl:grid-cols-3 2xl:grid-cols-6">
           <SummaryCard label="Все проекты" value={data.summary.projects} helper={`${fmtNum(data.summary.archived)} в архиве`} icon={BriefcaseBusiness} />
           <SummaryCard label="Активные" value={data.summary.active} helper="Не архивированы" icon={Activity} />
           <SummaryCard label="Командные" value={data.summary.team} helper="Больше одного участника возможно" icon={Users} />
@@ -563,7 +563,7 @@ export function AdminProjectsCenter({ period, refreshKey = 0 }: { period: AdminP
             <Button autoFocus type="button" variant="ghost" size="icon" className="shrink-0" aria-label="Закрыть карточку проекта" onClick={closeDetail}><X className="h-5 w-5" aria-hidden /></Button>
           </header>
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-            {detailState === "loading" ? <div className="space-y-4 p-6" aria-busy="true"><div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{Array.from({ length: 8 }, (_, index) => <div key={index} className="skeleton h-28 rounded-sm" />)}</div><div className="skeleton h-52 rounded-md" /></div> : null}
+            {detailState === "loading" ? <div className="space-y-4 p-6" aria-busy="true"><div className="grid grid-cols-2 gap-3 lg:grid-cols-4">{Array.from({ length: 8 }, (_, index) => <div key={index} className="skeleton h-28 rounded-sm" />)}</div><div className="skeleton h-52 rounded-md" /></div> : null}
             {detailState === "ready" && detail ? <DetailContent detail={detail} /> : null}
             {detailState === "error" || detailState === "not_found" ? (
               <div className="grid min-h-72 place-items-center p-6 text-center">
