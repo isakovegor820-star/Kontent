@@ -425,8 +425,8 @@ describe("POST /api/ai/generate prerequisites", () => {
     mocks.beginGenerationOperation.mockResolvedValue({ id: 301, state: "created" });
     mocks.failGenerationOperation.mockResolvedValue(true);
     mocks.recordAiProviderAttempt.mockResolvedValue({ estimatedCostMicrousd: 0 });
-    mocks.topicAlignment.mockImplementation(async ({ text }: { text: string }) => (
-      /(?:конференц|билет|места в зале)/iu.test(text)
+    mocks.topicAlignment.mockImplementation(async ({ text, topic }: { text: string; topic: string }) => (
+      /(?:конференц|билет|места в зале)/iu.test(text) && !/конференц/iu.test(topic)
         ? { verdict: "misaligned", confidence: 0.99, reasonCode: "unrelated_event" }
         : { verdict: "aligned", confidence: 0.96, reasonCode: "subject_developed" }
     ));
@@ -646,6 +646,48 @@ describe("POST /api/ai/generate prerequisites", () => {
     }));
     expect(events).toContainEqual(expect.objectContaining({ type: "done", pipeline: "single" }));
   });
+
+  it.each(["navy-deepseek-pro", "navy-deepseek-flash", "navy-gpt-5-4", "navy-qwen-3-6", "navy-minimax-m3"])(
+    "repairs a brand/event mismatch in ordinary chat on %s without a second reservation",
+    async (engine) => {
+      vi.stubEnv("NAVYAI_API_KEY", "test-key");
+      mocks.query.mockResolvedValue({ rows: [{ ai_mood: null, ai_engine: engine, ai_post_settings: null }], rowCount: 1 });
+      mocks.channelAiContextFor.mockResolvedValue({
+        id: 42, title: "ТехнологИИ Права", network: "tg", profile: "Канал команды", facts: [], styleSamples: [],
+      });
+      const wrong = "Продажи в legaltech наконец перестали выглядеть как стенды с буклетами. Рынок устал от магии и хочет видеть механику.";
+      const corrected = "«ТехнологИИ Права» начали продажи. Для нашей команды это начало нового этапа — делимся этой новостью с вами.";
+      mocks.topicAlignment.mockImplementation(async ({ text }) => ({
+        verdict: text.includes("legaltech") ? "misaligned" : "aligned",
+        confidence: 0.99, reasonCode: text.includes("legaltech") ? "brand_replaced_by_industry" : "subject_developed",
+      }));
+      const fetchMock = vi.fn();
+      for (const text of [wrong, corrected]) fetchMock.mockResolvedValueOnce(new Response(
+        `data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\ndata: [DONE]\n\n`,
+        { status: 200, headers: { "content-type": "text/event-stream" } },
+      ));
+      vi.stubGlobal("fetch", fetchMock);
+      const response = await POST(new NextRequest("http://localhost/api/ai/generate", {
+        method: "POST",
+        headers: { origin: "http://localhost", "content-type": "application/json", "idempotency-key": `brand-event-${engine}` },
+        body: JSON.stringify({
+          command: "write", input: "Напиши пост на тему: технологии права начали крутые продажи", engine, channelId: 42, surface: "studio",
+          postSettings: { qualityMode: "balanced", autoImprove: false, factStrictness: "off", length: "custom", customMinChars: 20, customMaxChars: 2000 },
+        }),
+      }));
+      const events = (await response.text()).trim().split("\n").map((line) => JSON.parse(line));
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      const repair = JSON.parse(fetchMock.mock.calls[1][1].body);
+      expect(repair.messages[0].content).toContain("Единый редакторский стандарт Авроры");
+      expect(repair.messages.at(-1).content).toContain("Верни весь материал к обязательной теме");
+      expect(mocks.topicAlignment.mock.calls[0][0].semanticGoal).toContain("«ТехнологИИ Права» в запросе — название");
+      expect(events).toContainEqual(expect.objectContaining({ type: "replace", text: corrected, pipeline: "editorial" }));
+      expect(events).toContainEqual(expect.objectContaining({ type: "done", engine, ackRequired: true }));
+      expect(events.some((event) => event.type === "error")).toBe(false);
+      expect(mocks.acquireAiUsageRequest).toHaveBeenCalledOnce();
+      expect(mocks.stageGenerationArtifact).toHaveBeenCalledOnce();
+    },
+  );
 
   it("does not block a dated post when factual validation is explicitly disabled", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(
@@ -915,7 +957,7 @@ describe("POST /api/ai/generate prerequisites", () => {
     );
   });
 
-  it("returns an off-topic Studio result instead of hiding the generated post", async () => {
+  it("repairs an off-topic Studio reference before delivering the final post", async () => {
     mocks.getDraftForUser.mockResolvedValue(ownedReferenceDraft());
     mocks.channelAiContextFor.mockResolvedValue({
       id: 42,
@@ -941,15 +983,15 @@ describe("POST /api/ai/generate prerequisites", () => {
     const response = await POST(studioReferenceRequest());
     const events = (await response.text()).trim().split("\n").map((line) => JSON.parse(line));
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(events).toContainEqual(expect.objectContaining({
       type: "validation",
-      topicAlignment: expect.objectContaining({ status: "failed" }),
+      topicAlignment: expect.objectContaining({ status: "passed" }),
     }));
     expect(events.some((event) => event.type === "done")).toBe(true);
     expect(events).toContainEqual(expect.objectContaining({
       type: "replace",
-      text: "Регистрация на конференцию открыта, места в зале заканчиваются.",
+      text: "Правила работы с реестром источников помогают не потерять предмет проверки и не подменять его случайными данными.",
     }));
   });
 

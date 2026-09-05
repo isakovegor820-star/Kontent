@@ -63,6 +63,7 @@ import {
   validatePostSettingsResult,
 } from "@/lib/post-settings";
 import { validatePostQuality } from "@/lib/post-quality.mjs";
+import { hasActionableTopicFailure, preferEditorialCandidate, studioEditorialIntent } from "@/lib/studio-editorial";
 import { getDraftForUser } from "@/lib/server-drafts";
 import {
   beginGenerationOperation,
@@ -599,6 +600,7 @@ function studioStreamResponse(
   operation: { providerEngine: string; providerModel: string; channelId: number; startedAt: number },
 ) {
   const settings = normalizePostSettings(params.postSettings);
+  const topicIntent = params.referenceAdaptation ?? studioEditorialIntent(params);
   const deadlines = generationDeadlines(settings.qualityMode);
   // Внутренние попытки не показываются человеку. На пользовательских поверхностях
   // успешный ответ провайдера всегда остаётся результатом: проверки могут помочь
@@ -701,8 +703,8 @@ function studioStreamResponse(
         const factualIssues = buildFactualRepairInstructions(factual);
         const postIssues = post ? buildPostRepairInstructions(post) : [];
         const channelIssues = channelQuality?.violations.map((item) => item.message) ?? [];
-        const topic = params.referenceAdaptation
-          ? await validateTopicAlignment(text, params.referenceAdaptation, {
+        const topic = topicIntent
+          ? await validateTopicAlignment(text, topicIntent, {
               adapter: semanticAdapter as (SemanticEntailmentAdapter & TopicAlignmentAdapter) | null,
               signal: pipelineSignal,
             })
@@ -876,6 +878,37 @@ function studioStreamResponse(
           let finalText = finishCandidate(generated.text);
           let finalPipeline: "single" | "editorial" = "single";
           let validation = requireTechnicalReview(await validateResult(finalText), generated);
+          // Normal Studio requests receive the same subject check as references. Repair
+          // confirmed drift in every mode; balanced mode also repairs format/quality
+          // failures. One bounded optional pass preserves responsiveness and quota.
+          const repairInteractive = deliverGeneratedResult && params.grounding === "platform"
+            && params.role !== "critic" && hasAttemptCapacity()
+            && !pipelineSignal.aborted
+            && (hasActionableTopicFailure(validation.topic)
+              || (settings.autoImprove && settings.qualityMode !== "fast" && (validation.post?.passed === false
+                || validation.channelQuality?.passed === false || validation.factual?.status === "blocked")));
+          if (repairInteractive) {
+            try {
+              if (!send({ type: "phase", requestId, phase: "editing" })) return;
+              const repaired = await runOrchestratedText({
+                ...paramsForProviderPhase(params, "studio-repair-1"),
+                draft: finalText.slice(0, 12_000),
+                validationIssues: validation.issues,
+              }, finalEngine, pipelineSignal, requestId, deadlines, send, false, attemptContext("auto-improve"));
+              const candidateText = finishCandidate(repaired.text);
+              const candidateValidation = requireTechnicalReview(await validateResult(candidateText), repaired);
+              anyFallback ||= repaired.fallbackUsed;
+              if (!repaired.interrupted && preferEditorialCandidate(validation, candidateValidation)) {
+                finalText = candidateText;
+                finalEngine = repaired.engine;
+                finalPipeline = "editorial";
+                validation = candidateValidation;
+              }
+            } catch (error) {
+              if (isClientAbort(error, consumerSignal)) throw error;
+              // A failed optional pass must not discard the saved complete first draft.
+            }
+          }
           if (!deliverGeneratedResult && validation.topic?.status === "failed") {
             if (!send({ type: "phase", requestId, phase: "editing" })) return;
             const repaired = await runOrchestratedText({
@@ -978,11 +1011,15 @@ function studioStreamResponse(
           // broke mid-stream. Preserve the complete draft; partial editor text is never used
           // to replace a better result already held by the platform.
           if (!edited.interrupted || generatedDraft.interrupted) {
-            finalText = finishCandidate(edited.text);
-            finalEngine = edited.engine;
             anyFallback ||= edited.fallbackUsed;
-            validation = requireTechnicalReview(await validateResult(finalText), edited);
-            finalPipeline = "editorial";
+            const candidateText = finishCandidate(edited.text);
+            const candidateValidation = requireTechnicalReview(await validateResult(candidateText), edited);
+            if (preferEditorialCandidate(validation, candidateValidation)) {
+              finalText = candidateText;
+              finalEngine = edited.engine;
+              validation = candidateValidation;
+              finalPipeline = "editorial";
+            }
           }
         } catch (error) {
           // Первый готовый текст уже существует. На пользовательской поверхности сбой
@@ -1618,9 +1655,8 @@ export async function POST(req: NextRequest) {
     resultKind: kind,
   });
 
-  // Studio stays responsive in its everyday modes: one strong pass plus deterministic
-  // validation. A second full provider pass is reserved for an explicit maximum-quality
-  // request (including the separate "Improve" action in the client).
+  // Everyday modes start with one pass and repair actionable validation failures.
+  // Maximum quality also edits drafts that passed the initial checks.
   const editorial = interactiveStream
     && effectivePostSettings.qualityMode === "maximum"
     && EDITORIAL_KINDS.includes(kind)

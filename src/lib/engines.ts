@@ -4,8 +4,9 @@
 // нативный Anthropic или OpenAI-совместимый Gemini. Нереализованные адаптеры остаются
 // видны как roadmap, но выбрать их нельзя.
 //
-// ЧЕГО ЗДЕСЬ НЕТ И НЕ БУДЕТ: молчаливой подмены. Если человек выбрал Claude, а ключа нет,
-// мы НЕ пишем тайком локальным Hermes и не делаем вид, что это Claude. Скажем прямо.
+// Пользователь выбирает вариант Авроры. Технические маршруты и резервирование
+// остаются внутри сервиса; ID сохраняются для совместимости настроек.
+import { ENGINE_PRESENTATION } from "./engine-presentation.mjs";
 
 export type EngineId =
   | "navy-deepseek-pro"
@@ -42,7 +43,7 @@ export interface Engine {
   recommended?: boolean;
 }
 
-export const ENGINES: Engine[] = [
+const ENGINE_CONFIGS: Engine[] = [
   {
     id: "navy-deepseek-pro",
     label: "DeepSeek V4 Pro",
@@ -177,6 +178,11 @@ export const ENGINES: Engine[] = [
     ruFriendly: true,
   },
 ];
+
+export const ENGINES: Engine[] = ENGINE_CONFIGS.map((engine) => ({
+  ...engine,
+  ...ENGINE_PRESENTATION[engine.id],
+}));
 
 export const DEFAULT_ENGINE: EngineId = "local";
 

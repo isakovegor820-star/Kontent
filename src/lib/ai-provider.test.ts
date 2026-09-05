@@ -531,7 +531,7 @@ describe("редакторский профиль", () => {
       grounding: "platform",
     });
 
-    expect(prompt).toContain("2. Обязательная тема, проблема читателя и semantic intent");
+    expect(prompt).toContain("2. Тема и событие текущего запроса, действующее лицо, проблема читателя и semantic intent");
     expect(prompt).toContain('Тема: "Ошибки в договоре поставки"');
     expect(prompt).toContain("Semantic intent описывает предмет разговора, а не разрешённые факты");
     expect(prompt).toContain("Подтверждённый факт канала");

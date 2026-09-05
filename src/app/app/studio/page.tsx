@@ -413,12 +413,6 @@ function MessageRow({
           </p>
         )}
 
-        {!msg.streaming && msg.fallbackUsed && msg.requestedEngine && msg.effectiveEngine && (
-          <p className="mt-2 max-w-[72ch] rounded-sm bg-info-soft px-3 py-2 text-[11px] text-info-text">
-            Запрошенная модель: {msg.requestedEngine}. Итоговый проход: {msg.effectiveEngine}.
-            В ходе генерации использовался резервный маршрут; выбор в настройках не менялся.
-          </p>
-        )}
 
         {!msg.streaming && msg.retryable && (
           <div className="mt-2 flex flex-wrap gap-1.5">
@@ -736,20 +730,28 @@ function ModelMenu({
   disabled: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const activeEngine = engines.find((engine) => engine.id === current);
-  const label = loading ? "Модель…" : activeEngine ? `Модель · ${activeEngine.label}` : "Выбрать модель";
+  const label = loading ? "Аврора…" : activeEngine?.label ?? "Выбрать Аврору";
 
   return (
-    <div className="relative min-w-0">
+    <div className="relative min-w-0" onKeyDown={(event) => {
+      if (event.key === "Escape" && open) {
+        event.stopPropagation();
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
+    }}>
       <button
+        ref={triggerRef}
         type="button"
         disabled={disabled || loading}
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
-        aria-label={`Модель: ${label}`}
+        aria-label={`Вариант Авроры: ${label}`}
         className={cn(
           "inline-flex min-h-11 max-w-[180px] min-w-0 shrink cursor-pointer items-center gap-1 rounded-full px-2.5",
-          "text-[12px] font-semibold text-text-2 transition-colors duration-200 hover:bg-surface-2 hover:text-text focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15 motion-reduce:transition-none",
+          "text-[12px] font-semibold text-text-2 transition-colors duration-200 hover:bg-surface-2 hover:text-text focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand motion-reduce:transition-none",
           "disabled:pointer-events-none disabled:opacity-45",
           open && "bg-surface-2 text-text",
         )}
@@ -760,8 +762,8 @@ function ModelMenu({
 
       <Popover open={open} onClose={() => setOpen(false)} className="p-2.5 sm:w-[300px]">
         <div className="px-2 pb-2">
-          <p className="text-[13px] font-extrabold text-text">Выбрать модель</p>
-          <p className="mt-0.5 text-[11px] text-text-3">Нажми на название — модель применится сразу.</p>
+          <p className="text-[13px] font-extrabold text-text">Выбрать Аврору</p>
+          <p className="mt-0.5 text-[11px] text-text-3">Выбери вариант для своей задачи.</p>
         </div>
 
         <div className="grid gap-1">
@@ -774,15 +776,19 @@ function ModelMenu({
                   aria-pressed={selected}
                   onClick={() => {
                     setOpen(false);
+                    triggerRef.current?.focus();
                     void onPick(engine);
                   }}
                   className={cn(
-                    "flex min-h-11 w-full cursor-pointer items-center gap-2.5 rounded-sm px-3 text-left transition-colors",
+                    "flex min-h-11 w-full cursor-pointer items-center gap-2.5 rounded-sm px-3 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand motion-reduce:transition-none",
                     selected ? "bg-info-soft" : "hover:bg-surface-inset",
                   )}
                 >
                   <span className={cn("h-2 w-2 shrink-0 rounded-full", engineDot(engine.status))} aria-hidden />
-                  <span className="min-w-0 flex-1 truncate text-[12px] font-semibold text-text">{engine.label}</span>
+                  <span className="min-w-0 flex-1 py-2">
+                    <span className="block text-[13px] font-semibold text-text">{engine.label}</span>
+                    <span className="mt-0.5 block text-[12px] leading-relaxed text-text-2">{engine.note}</span>
+                  </span>
                   {selected ? (
                     <Check className="h-4 w-4 shrink-0 text-text" strokeWidth={2.5} aria-hidden />
                   ) : null}
@@ -791,7 +797,7 @@ function ModelMenu({
           })}
           {!loading && engines.length === 0 && (
             <p role="status" className="rounded-sm bg-danger-soft px-3 py-2.5 text-[11px] leading-relaxed text-danger-text">
-              Сейчас нет доступных моделей. Обнови страницу или проверь подключение провайдера.
+              Аврора временно недоступна. Попробуй обновить страницу чуть позже.
             </p>
           )}
         </div>
@@ -1740,7 +1746,6 @@ function StudioPageInner() {
         let validationRequiresReview = false;
         let validationReceived = false;
         let doneReceived = false;
-        let fallbackNoticeShown = false;
         let terminalValidation: Msg["aiValidation"];
         let effectiveEngineId: string | undefined;
         let requestedEngineId: string | undefined = engine ?? undefined;
@@ -1774,16 +1779,6 @@ function StudioPageInner() {
             fallbackUsed = true;
             requestedEngineId = event.fromEngine;
             effectiveEngineId = event.toEngine;
-            if (!fallbackNoticeShown) {
-              fallbackNoticeShown = true;
-              const from = engines.find((item) => item.id === event.fromEngine)?.label ?? event.fromEngine;
-              const to = engines.find((item) => item.id === event.toEngine)?.label ?? event.toEngine;
-              s.toast({
-                kind: "info",
-                title: "Ответ создаёт резервная модель",
-                body: `${from} не ответила до начала текста. Этот ответ создаёт ${to}; выбранная модель в настройках не меняется.`,
-              });
-            }
           } else if (event.type === "validation") {
             validationReceived = true;
             validationBlocked = event.status !== "passed";

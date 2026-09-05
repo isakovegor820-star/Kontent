@@ -193,7 +193,7 @@ const SAFE_REASON_CODE = /^[a-z0-9][a-z0-9._-]{0,79}$/u;
  */
 export async function validateTopicAlignment(
   text: string,
-  context: ReferenceAdaptationContext,
+  context: Pick<ReferenceAdaptationContext, "topic" | "readerProblem" | "semanticGoal">,
   options: { adapter?: TopicAlignmentAdapter | null; signal?: AbortSignal } = {},
 ): Promise<TopicAlignmentResult> {
   const adapter = options.adapter ?? null;

@@ -20,16 +20,17 @@ describe("Studio responsive recovery controls", () => {
     );
   });
 
-  it("keeps provider fallback provenance visible on completed messages", () => {
-    expect(pageSource).toContain("Запрошенная модель:");
-    expect(pageSource).toContain("Итоговый проход:");
-    expect(pageSource).toContain("В ходе генерации использовался резервный маршрут");
+  it("keeps fallback diagnostics internal without a caption or toast", () => {
+    expect(pageSource.includes("Запрошенная модель:")).toBe(false);
+    expect(pageSource.includes("Итоговый проход:")).toBe(false);
+    expect(pageSource.includes("Ответ создаёт резервная модель")).toBe(false);
+    expect(pageSource).toContain('event.type === "fallback"');
   });
 
   it("shows only ready text models in a clearly separate model control", () => {
     expect(pageSource).toContain("readyStudioEngines(d.engines ?? [])");
-    expect(pageSource).toContain("Модель · ${activeEngine.label}");
-    expect(pageSource).toContain("Сейчас нет доступных моделей");
+    expect(pageSource).toContain("Вариант Авроры:");
+    expect(pageSource).toContain("Аврора временно недоступна");
   });
 
   it("keeps image and video generation available through the media workspace", () => {

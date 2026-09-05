@@ -579,7 +579,7 @@ export const DEFAULT_POST_SETTINGS: Readonly<PostSettings> = Object.freeze({
   outputParts: ["main"] as OutputPart[],
   variantChange: "full",
   qualityMode: "fast",
-  autoImprove: false,
+  autoImprove: true,
   qualityThreshold: 8,
   hideCriticalResult: true,
 });

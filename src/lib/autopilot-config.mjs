@@ -1,6 +1,7 @@
 // Pure Autopilot planning contract shared by the Next.js UI/API and worker.
 // Keep this module dependency-free: worker.mjs imports it directly and the client bundles
 // the public option lists.
+import { ENGINE_PRESENTATION } from "./engine-presentation.mjs";
 
 // This list is also the order the channel settings dropdown renders, so the first entry
 // reads as the recommendation. DeepSeek Pro used to lead it while being the one model that
@@ -33,7 +34,7 @@ export const AUTOPILOT_ENGINE_OPTIONS = Object.freeze([
     label: "DeepSeek V4 Pro",
     note: "Самый подробный, но часто не укладывается в отведённое время.",
   },
-]);
+].map((engine) => ({ ...engine, ...ENGINE_PRESENTATION[engine.id] })));
 
 // DeepSeek Flash is the only Navy model that reliably finishes an Autopilot topic/post
 // inside the worker attempt budget. MiniMax and GPT-5.4 stay selectable, but they are
