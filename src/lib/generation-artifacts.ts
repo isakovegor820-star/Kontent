@@ -4,7 +4,7 @@ import type { Pool, PoolClient } from "pg";
 import { getPool } from "./db";
 import type { DraftAiValidation } from "./draft-types";
 import { normalizeDraftAiValidation } from "./draft-review";
-import { requireSelectedProjectPermission } from "./project-permissions";
+import { AI_CONTENT_ROLES_SQL, aiChannelPermissionSql } from "./ai-project-access";
 import type { Post } from "./types";
 
 type Queryable = Pick<Pool | PoolClient, "query">;
@@ -148,15 +148,22 @@ export async function beginGenerationOperation(
   const tx = await pool.connect();
   try {
     await tx.query("begin");
-    const channel = await tx.query(
-      `select id from channels where id = $1 and user_id = $2 and is_active = true for share`,
+    const channel = await tx.query<{ project_id: number | string }>(
+      `select channel.id, channel.project_id from channels channel
+         join project_members member on member.project_id = channel.project_id and member.user_id = $2
+         join projects project on project.id = channel.project_id
+        where channel.id = $1 and channel.is_active = true and channel.status = 'active'
+          and member.status = 'active' and member.role in (${AI_CONTENT_ROLES_SQL})
+          and project.is_archived = false
+        for share of channel, member, project`,
       [input.channelId, input.userId],
     );
     if (channel.rowCount !== 1) throw new GenerationArtifactError("generation_channel_forbidden");
+    const projectId = Number(channel.rows[0].project_id);
     if (sourceContextId != null) {
       const source = await tx.query<{ version: number | string; purpose: string }>(
-        `select version, purpose from drafts where id = $1 and user_id = $2 for share`,
-        [sourceContextId, input.userId],
+        `select version, purpose from drafts where id = $1 and project_id = $2 for share`,
+        [sourceContextId, projectId],
       );
       if (
         source.rowCount !== 1
@@ -169,9 +176,9 @@ export async function beginGenerationOperation(
         `select d.version, d.purpose
            from drafts d
            join draft_destinations dd on dd.draft_id = d.id and dd.channel_id = $3
-          where d.id = $1 and d.user_id = $2
+          where d.id = $1 and d.project_id = $2
           for share of d`,
-        [inputDraftId, input.userId, input.channelId],
+        [inputDraftId, projectId, input.channelId],
       );
       if (
         draft.rowCount !== 1
@@ -180,7 +187,6 @@ export async function beginGenerationOperation(
       ) throw new GenerationArtifactError("generation_input_conflict");
     }
     if (monthlyItemId != null) {
-      const membership = await requireSelectedProjectPermission(tx, input.userId, "content.create");
       const monthly = await tx.query(
         `select item.id
            from monthly_campaign_items item
@@ -194,7 +200,7 @@ export async function beginGenerationOperation(
           where campaign.id = $1 and plan.id = $2 and item.id = $3
             and item.project_id = $4 and campaign.is_archived = false
           for share of item, plan, campaign, channel`,
-        [monthlyCampaignId, monthlyPlanId, monthlyItemId, membership.projectId, input.channelId],
+        [monthlyCampaignId, monthlyPlanId, monthlyItemId, projectId, input.channelId],
       );
       if (monthly.rowCount !== 1) {
         throw new GenerationArtifactError("generation_monthly_lineage_conflict");
@@ -306,7 +312,8 @@ export async function lookupTerminalGenerationFailure(
   if (!positiveId(userId) || !validRequestKey(requestKey) || !validFingerprint(fingerprint)) return null;
   const row = (await db.query<{ request_fingerprint: string; error_code: string | null; status: string }>(
     `select request_fingerprint, error_code, status
-       from generation_operations where user_id = $1 and request_key = $2`,
+       from generation_operations where user_id = $1 and request_key = $2
+         and ${aiChannelPermissionSql("channel_id", "$1")}`,
     [userId, requestKey],
   )).rows[0];
   if (!row) return null;
@@ -340,8 +347,13 @@ export async function stageGenerationArtifact(
   try {
     await tx.query("begin");
     const operation = (await tx.query<{ id: number | string; status: GenerationOperationStatus }>(
-      `select id, status from generation_operations
-        where user_id = $1 and server_request_id = $2::uuid for update`,
+      `select operation.id, operation.status from generation_operations operation
+         join channels channel on channel.id = operation.channel_id and channel.is_active = true and channel.status = 'active'
+         join project_members member on member.project_id = channel.project_id and member.user_id = $1
+         join projects project on project.id = channel.project_id
+        where operation.user_id = $1 and operation.server_request_id = $2::uuid
+          and member.status = 'active' and member.role in (${AI_CONTENT_ROLES_SQL}) and project.is_archived = false
+        for update of operation for share of channel, member, project`,
       [input.userId, input.serverRequestId],
     )).rows[0];
     if (!operation || !["running", "pending_ack"].includes(operation.status)) {
@@ -416,6 +428,7 @@ export async function acknowledgeGenerationArtifact(
         and receipt.generation_result_id = result.id
         and receipt.result_hash = result.result_hash
         and operation.status in ('pending_ack', 'acknowledged')
+        and ${aiChannelPermissionSql("operation.channel_id", "$1")}
       returning result.id as generation_result_id`,
     [userId, usageReservationKey],
   );
@@ -456,9 +469,9 @@ export async function resolveGenerationDraft(
        join generation_operations operation on operation.id = result.operation_id
        join validation_receipts receipt on receipt.generation_result_id = result.id
        join channels channel on channel.id = operation.channel_id
-       left join drafts source on source.id = operation.source_context_id and source.user_id = operation.user_id
+       left join drafts source on source.id = operation.source_context_id and source.project_id = channel.project_id
       where result.id = $1 and operation.user_id = $2 and operation.status = 'acknowledged'
-        and channel.user_id = operation.user_id and channel.is_active = true`,
+        and ${aiChannelPermissionSql("channel.id", "$2")}`,
     [id, userId],
   )).rows[0];
   if (!row) throw new GenerationArtifactError("generation_result_forbidden");

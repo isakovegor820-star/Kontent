@@ -1,3 +1,6 @@
+import { withAiSpendScope } from "@/lib/ai-spend-ledger.mjs";
+import { requireAiChannelAccess } from "@/lib/ai-project-access";
+import { ProjectAccessError } from "@/lib/project-permissions";
 // Генерация контента ИИ (ТЗ Д.8). Стримит ответ по мере генерации. Перед генерацией:
 // проверяем дневной лимит, подкладываем прошлые посты пользователя как образец стиля.
 // Движок скрыт за переходником ai-provider — этот роут не знает, Ollama там или облако.
@@ -379,6 +382,7 @@ async function runOrchestratedText(
   emitDeltas: boolean,
   attemptContext: {
     userId: number;
+    channelId: number;
     reservationId: number | null;
     phase: AiAttemptPhase;
     budget: ReturnType<typeof createAiOperationBudget>;
@@ -420,9 +424,13 @@ async function runOrchestratedText(
       fallbackEngines: configuredFallbackEngines(engineId),
       firstTokenMs: deadlines.firstTokenMs,
       overallMs: deadlines.attemptOverallMs,
-      beforeAttempt: (attempt) => attemptTelemetry.beforeAttempt(attempt),
+      beforeAttempt: async (attempt) => {
+        await requireAiChannelAccess(attemptContext.userId, attemptContext.channelId);
+        await attemptTelemetry.beforeAttempt(attempt);
+      },
     })) {
       if (event.type === "delta") {
+        await requireAiChannelAccess(attemptContext.userId, attemptContext.channelId);
         text += event.text;
         engine = event.engine;
         attemptTelemetry.addDelta(event.engine, event.text);
@@ -613,6 +621,7 @@ function studioStreamResponse(
   );
   const attemptContext = (phase: AiAttemptPhase) => ({
     userId,
+    channelId: operation.channelId,
     reservationId,
     phase,
     budget: attemptBudget,
@@ -852,6 +861,7 @@ function studioStreamResponse(
         }
         // This is the sole terminal outcome. It never charges quota: only a client that
         // received `done` can ACK the staged result in the separate second phase.
+        await requireAiChannelAccess(userId, operation.channelId);
         if (!send({ ...terminal, generationResultId: artifact.id })) {
           throw new DOMException("AI stream consumer closed", "AbortError");
         }
@@ -955,6 +965,7 @@ function studioStreamResponse(
           ) {
             throw new PostSettingsValidationError(validation.issues);
           }
+          await requireAiChannelAccess(userId, operation.channelId);
           if (!send({ type: "replace", requestId, text: finalText, pipeline: finalPipeline })) return;
           await stageAndSendTerminal(
             {
@@ -1086,6 +1097,7 @@ function studioStreamResponse(
         ) {
           throw new PostSettingsValidationError(validation.issues, validation.errorCode);
         }
+        await requireAiChannelAccess(userId, operation.channelId);
         if (!send({ type: "replace", requestId, text: finalText, pipeline: finalPipeline })) return;
         await stageAndSendTerminal(
           {
@@ -1301,6 +1313,15 @@ export async function POST(req: NextRequest) {
   }
   if (channelId == null) {
     return aiJson(requestId, { error: "no_channel", retryable: false }, { status: 422 });
+  }
+  let projectId: number;
+  try {
+    projectId = await requireAiChannelAccess(user.id, channelId);
+  } catch (error) {
+    if (error instanceof ProjectAccessError) {
+      return aiJson(requestId, { error: "channel_forbidden", retryable: false }, { status: 403 });
+    }
+    return prerequisiteUnavailable(requestId, error, "context");
   }
   let inputDraftContext: Awaited<ReturnType<typeof getDraftForUser>> = null;
   if (hasInputDraft) {
@@ -1664,7 +1685,7 @@ export async function POST(req: NextRequest) {
     && effectivePostSettings.qualityMode === "maximum"
     && EDITORIAL_KINDS.includes(kind)
     && role !== "critic";
-  return studioStreamResponse(
+  return withAiSpendScope({ pool: getPool(), userId: user.id, projectId }, () => studioStreamResponse(
     requestId,
     params,
     chosen,
@@ -1678,5 +1699,5 @@ export async function POST(req: NextRequest) {
     semanticAdapter,
     deliverGeneratedResult,
     { providerEngine: chosen, providerModel: runtime.model, channelId, startedAt },
-  );
+  ));
 }

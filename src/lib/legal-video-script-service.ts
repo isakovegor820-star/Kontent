@@ -339,8 +339,10 @@ export async function listLegalVideoScripts(input: { pool: Queryable; actorUserI
   return rows.map(fromRow);
 }
 
-export async function getLegalVideoScript(input: { pool: Queryable; actorUserId: number; scriptId: number }) {
-  const membership = await requireSelectedProjectPermission(input.pool, input.actorUserId, "project.read");
+export async function getLegalVideoScript(input: { pool: Queryable; actorUserId: number; scriptId: number; projectId?: number }) {
+  const membership = input.projectId === undefined
+    ? await requireSelectedProjectPermission(input.pool, input.actorUserId, "project.read")
+    : await requireProjectPermission(input.pool, input.actorUserId, input.projectId, "project.read");
   const row = (await input.pool.query<Record<string, unknown>>(
     `select ${SCRIPT_COLUMNS} from legal_video_scripts where id = $1 and project_id = $2`,
     [positiveId(input.scriptId), membership.projectId],
@@ -525,7 +527,10 @@ export async function getLegalVideoProductionBrief(input: {
   pool: Queryable;
   actorUserId: number;
   scriptId: number;
+  projectId?: number;
 }) {
   const record = await getLegalVideoScript(input);
-  return { record, brief: exportLegalVideoProductionBrief(record.script) };
+  const brief = exportLegalVideoProductionBrief(record.script);
+  await requireProjectPermission(input.pool, input.actorUserId, record.projectId, "project.read");
+  return { record, brief };
 }

@@ -85,7 +85,7 @@ describe("generation artifact binding", () => {
   it("never reopens a provider operation after an immutable result is pending ACK", async () => {
     const query = vi.fn(async (sql: string) => {
       if (sql === "begin" || sql === "rollback") return { rows: [], rowCount: null };
-      if (sql.includes("select id from channels")) return { rows: [{ id: 11 }], rowCount: 1 };
+      if (sql.includes("from channels channel")) return { rows: [{ id: 11, project_id: 3 }], rowCount: 1 };
       if (sql.includes("from generation_operations")) {
         return {
           rows: [{

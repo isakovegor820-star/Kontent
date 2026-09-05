@@ -1,3 +1,7 @@
+vi.mock("./ai-spend-ledger.mjs", async (importOriginal) => ({
+  ...await importOriginal(),
+  beginAiSpendAttempt: vi.fn(async () => ({ id: "unit-spend", finish: vi.fn(async () => {}) })),
+}));
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   AiProviderError,

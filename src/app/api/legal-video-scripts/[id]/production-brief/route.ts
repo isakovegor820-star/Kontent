@@ -1,3 +1,4 @@
+import { nativeRequestProjectId } from "@/lib/native-project-request";
 import { randomUUID } from "node:crypto";
 import { NextResponse, type NextRequest } from "next/server";
 
@@ -17,7 +18,7 @@ export async function GET(request: NextRequest, context: Context) {
   if (!id) return legalStudioJson({ ok: false, error: "bad_request" }, 400, requestId);
   try {
     const { record, brief } = await getLegalVideoProductionBrief({
-      pool: getPool(), actorUserId: user.id, scriptId: id,
+      pool: getPool(), actorUserId: user.id, scriptId: id, projectId: nativeRequestProjectId(request),
     });
     return new NextResponse(brief, {
       status: 200,
