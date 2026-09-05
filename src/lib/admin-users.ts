@@ -565,7 +565,7 @@ export async function loadAdminUserDetail(
       `with days as (
          select generate_series(current_date - ($2::int - 1), current_date, interval '1 day')::date as day
        )
-       select days.day,
+       select days.day::text as day,
               (select count(*) from posts post where post.user_id = $1 and post.created_at::date = days.day) as posts,
               (select count(*) from posts post where post.user_id = $1 and post.published_at::date = days.day) as published,
               (select count(*) from ai_usage usage where usage.user_id = $1 and usage.status = 'committed'
