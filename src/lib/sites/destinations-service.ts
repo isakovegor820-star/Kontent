@@ -97,6 +97,62 @@ async function ensureHostedSlug(db: Queryable, site: SiteRow): Promise<string> {
   throw new SiteServiceError("hosted_slug_unavailable", 409);
 }
 
+function canonicalDestinationBase(value: string): string | null {
+  try { const url = new URL(value); return `${url.protocol}//${url.host}${url.pathname.replace(/\/+$/u, "")}`; }
+  catch { return null; }
+}
+
+function sameDestinationIdentity(current: SiteDestinationRow, next: {
+  baseUrl: string; kind: SiteDestinationKind; settings: Record<string, unknown>;
+}): boolean {
+  const previousBase = canonicalDestinationBase(current.base_url);
+  if (!previousBase || previousBase !== canonicalDestinationBase(next.baseUrl)) return false;
+  if (next.kind === "site_hosted") {
+    return typeof current.settings.hostedSlug === "string" && Boolean(current.settings.hostedSlug)
+      && current.settings.hostedSlug === next.settings.hostedSlug;
+  }
+  const previousId = Number((current.settings.account as { id?: unknown } | undefined)?.id);
+  const nextId = Number((next.settings.account as { id?: unknown } | undefined)?.id);
+  return Number.isSafeInteger(previousId) && previousId > 0 && previousId === nextId;
+}
+
+async function persistDestination(db: Queryable, input: {
+  siteId: number; kind: SiteDestinationKind; baseUrl: string; settings: Record<string, unknown>;
+}, write: (client: Queryable) => Promise<{ rows: SiteDestinationRow[] }>): Promise<SiteDestinationRow> {
+  const ownsTransaction = typeof (db as Pool).connect === "function" && typeof (db as PoolClient).release !== "function";
+  const client = ownsTransaction ? await (db as Pool).connect() : db;
+  if (!ownsTransaction && typeof (client as PoolClient).release !== "function") throw new SiteServiceError("destination_transaction_required", 503);
+  try {
+    if (ownsTransaction) await client.query("begin");
+    await client.query("select pg_advisory_xact_lock(hashtextextended($1,0))", [`site-destination:${input.siteId}:${input.kind}`]);
+    // FOR UPDATE conflicts with the publication FK's KEY SHARE. A newly inserted
+    // receipt must commit before the following fresh statement decides replacement.
+    const current = (await client.query<SiteDestinationRow>(
+      `select ${SITE_DESTINATION_FIELDS} from site_destinations where site_id=$1 and kind=$2 for update`,
+      [input.siteId,input.kind],
+    )).rows[0];
+    if (current && !sameDestinationIdentity(current, input)) {
+      const held = (await client.query<{ held: boolean }>(
+        `select exists(select 1 from site_article_publications where destination_id=$1
+           and (status in ('pending','publishing','published_unverified') or outcome='delivery_unknown'))
+          or exists(select 1 from (
+            select distinct on(article_id) action from site_article_publications
+             where destination_id=$1 and status='published'
+             order by article_id,completed_at desc nulls last,id desc
+          ) latest where latest.action <> 'unpublish') as held`,
+        [current.id],
+      )).rows[0]?.held;
+      if (held) throw new SiteServiceError("destination_identity_in_use", 409);
+    }
+    const row = (await write(client)).rows[0];
+    if (ownsTransaction) await client.query("commit");
+    return row;
+  } catch(error) {
+    if (ownsTransaction) await client.query("rollback").catch(()=>{});
+    throw error;
+  } finally { if (ownsTransaction) (client as PoolClient).release(); }
+}
+
 /**
  * Настраивает назначение. WordPress проверяется живым запросом к REST API до сохранения:
  * неверные учётные данные не попадают в базу даже в зашифрованном виде.
@@ -121,7 +177,7 @@ export async function upsertSiteDestination(db: Queryable, input: {
     const verification = await registry.site_hosted.verify({
       id: 0, kind: "site_hosted", baseUrl: origin, sectionPath: null, settings: { hostedSlug }, credentials: null,
     });
-    const stored = await db.query<SiteDestinationRow>(
+    const row = await persistDestination(db, {siteId,kind:"site_hosted",baseUrl:origin,settings:{hostedSlug}}, (client) => client.query<SiteDestinationRow>(
       `insert into site_destinations (site_id, kind, base_url, credential_state, settings, status, last_verified_at, last_error_code)
        values ($1, 'site_hosted', $2, 'not_required', $3::jsonb, 'active', now(), null)
        on conflict (site_id, kind) do update
@@ -129,8 +185,8 @@ export async function upsertSiteDestination(db: Queryable, input: {
              credential_state = 'not_required', last_verified_at = now(), last_error_code = null, updated_at = now()
        returning ${SITE_DESTINATION_FIELDS}`,
       [siteId, origin, JSON.stringify({ hostedSlug })],
-    );
-    return { row: stored.rows[0], verification };
+    ));
+    return { row, verification };
   }
 
   const credentials = normalizeWordPressCredentials(input.credentials);
@@ -138,7 +194,7 @@ export async function upsertSiteDestination(db: Queryable, input: {
   let baseUrl: string;
   try {
     const url = new URL(String(input.baseUrl || "").trim());
-    if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error("protocol");
+    if (url.protocol !== "https:") throw new Error("protocol");
     url.hash = "";
     url.search = "";
     baseUrl = url.toString();
@@ -155,8 +211,8 @@ export async function upsertSiteDestination(db: Queryable, input: {
   if (!verification.ok) {
     throw Object.assign(new SiteServiceError(verification.reason || "destination_verification_failed", 422), { verification });
   }
-  const envelope = encryptDestinationCredentials(credentials, { userId: input.userId });
-  const stored = await db.query<SiteDestinationRow>(
+  const envelope = encryptDestinationCredentials(credentials, { userId: Number(input.site.user_id) });
+  const row = await persistDestination(db, {siteId,kind:"wordpress",baseUrl,settings:{account:verification.account ?? null}}, (client) => client.query<SiteDestinationRow>(
     `insert into site_destinations (site_id, kind, base_url, credentials, credential_state, section_path, settings, status, last_verified_at, last_error_code)
      values ($1, 'wordpress', $2, $3, 'ready', $4, $5::jsonb, 'active', now(), null)
      on conflict (site_id, kind) do update
@@ -165,8 +221,8 @@ export async function upsertSiteDestination(db: Queryable, input: {
            last_verified_at = now(), last_error_code = null, updated_at = now()
      returning ${SITE_DESTINATION_FIELDS}`,
     [siteId, baseUrl, envelope, sectionPath, JSON.stringify({ account: verification.account ?? null })],
-  );
-  return { row: stored.rows[0], verification };
+  ));
+  return { row, verification };
 }
 
 export async function disconnectSiteDestination(db: Queryable, siteId: number, kind: SiteDestinationKind) {
