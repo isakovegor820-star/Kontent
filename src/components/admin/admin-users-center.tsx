@@ -1,5 +1,7 @@
 "use client";
 
+import { checkAdminAccess } from "./admin-ui";
+
 import {
   Activity,
   Bot,
@@ -30,7 +32,9 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { FormEvent, useEffect, useId, useRef, useState } from "react";
+import { useModalFocus } from "@/components/ui/use-modal-focus";
 
+import { adminJson, CopyValue, ReadError, SnapshotNote } from "./admin-ui";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import type { AdminPeriodDays } from "@/lib/admin-dashboard";
@@ -41,7 +45,7 @@ import type {
   AdminUserSort,
   AdminUserStatusFilter,
 } from "@/lib/admin-users";
-import { adminUsersHref, adminUsersQuery, type AdminUsersUrlChange } from "@/lib/admin-url-state";
+import { adminPublicationsHref, adminUsersHref, adminUsersQuery, type AdminUsersUrlChange } from "@/lib/admin-url-state";
 import { cn, fmtAgo, fmtNum, initials, NETWORK_LABEL, plural } from "@/lib/utils";
 
 type ListState = "loading" | "ready" | "error";
@@ -59,7 +63,7 @@ interface UserRequest {
 
 const STATUS_OPTIONS: Array<{ value: AdminUserStatusFilter; label: string }> = [
   { value: "all", label: "Все аккаунты" },
-  { value: "active", label: "Заходили за 30 дней" },
+  { value: "active", label: "С действующей сессией" },
   { value: "attention", label: "Требуют внимания" },
   { value: "new", label: "Новые за период" },
   { value: "onboarding", label: "Не завершили настройку" },
@@ -103,6 +107,7 @@ const VERIFICATION_LABEL: Record<string, string> = {
 };
 
 const POST_ORIGIN_LABEL: Record<string, string> = {
+  manual: "вручную",
   ai: "создан с AI",
   rss: "из RSS",
   retry: "повторная отправка",
@@ -149,12 +154,12 @@ function userState(user: AdminUserListItem) {
     return { label: "Требует внимания", tone: "danger" as const, icon: ShieldAlert };
   }
   if (user.activeSessions > 0) {
-    return { label: "Заходил за 30 дней", tone: "success" as const, icon: Activity };
+    return { label: "Есть действующая сессия", tone: "success" as const, icon: Activity };
   }
   if (!user.onboardingCompleted) {
     return { label: "Настройка не завершена", tone: "warning" as const, icon: Clock3 };
   }
-  return { label: "Не заходил 30 дней", tone: "neutral" as const, icon: UserRound };
+  return { label: "Нет действующей сессии", tone: "neutral" as const, icon: UserRound };
 }
 
 function postState(status: string) {
@@ -254,7 +259,7 @@ function AccountMaturity({ summary }: { summary: AdminUsersResponse["summary"] }
   const rows = [
     { label: "Завершили первичную настройку", value: summary.onboardingComplete, color: "bg-success" },
     { label: "Подключили хотя бы один канал", value: summary.withChannels, color: "bg-brand" },
-    { label: "Заходили за последние 30 дней", value: summary.activeAccounts, color: "bg-fire" },
+    { label: "Есть действующая сессия", value: summary.activeAccounts, color: "bg-fire" },
     { label: "Привязали Telegram-чат", value: summary.botLinked, color: "bg-info-text" },
   ];
   return (
@@ -355,13 +360,17 @@ const ACCOUNT_ACTION_ERROR: Record<string, string> = {
   access_denied: "У сессии нет прав администратора.",
 };
 
-function AccountControls({ detail, onChanged }: { detail: AdminUserDetail; onChanged: () => void }) {
+export function AccountControls({ detail, onChanged, onDirtyChange }: { detail: AdminUserDetail; onChanged: () => void; onDirtyChange?: (dirty: boolean) => void }) {
   const { user } = detail;
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<{ tone: "success" | "danger"; text: string } | null>(null);
   const [pending, setPending] = useState<"block" | "revoke" | null>(null);
   const [reason, setReason] = useState("");
   const [limitInput, setLimitInput] = useState(user.aiDailyLimit == null ? "" : String(user.aiDailyLimit));
+  const dirty = limitInput !== (user.aiDailyLimit == null ? "" : String(user.aiDailyLimit));
+  useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
+  const blockCancelRef = useRef<HTMLButtonElement>(null);
+  const { overlayRef: blockOverlayRef, dialogRef: blockDialogRef, onKeyDown: blockKeyDown } = useModalFocus<HTMLFormElement>({ open: pending === "block", initialFocusRef: blockCancelRef, onEscape: () => setPending(null), busy: busy === "block" });
 
   async function perform(action: string, payload: Record<string, unknown>, successText: string) {
     setBusy(action);
@@ -372,15 +381,18 @@ function AccountControls({ detail, onChanged }: { detail: AdminUserDetail; onCha
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action, ...payload }),
       });
+      checkAdminAccess(response);
       const result = await response.json().catch(() => null) as { status?: string; error?: string } | null;
       if (!response.ok) {
         const code = result?.status ?? result?.error ?? "unavailable";
-        throw new Error(ACCOUNT_ACTION_ERROR[code] ?? "Действие не выполнено. Обновите карточку и попробуйте снова.");
+        throw new Error(ACCOUNT_ACTION_ERROR[code] ?? "Не удалось подтвердить результат. Ввод сохранён. Обновите карточку и проверьте журнал перед повтором.");
       }
       setMessage({ tone: "success", text: successText });
       onChanged();
+      return true;
     } catch (error) {
       setMessage({ tone: "danger", text: error instanceof Error ? error.message : "Действие не выполнено." });
+      return false;
     } finally {
       setBusy(null);
     }
@@ -391,7 +403,7 @@ function AccountControls({ detail, onChanged }: { detail: AdminUserDetail; onCha
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="type-label text-brand">Управление</p>
-          <h3 id="account-controls-title" className="mt-2 text-text">Действия администратора</h3>
+          <h3 id="account-controls-title" tabIndex={-1} className="mt-2 text-text">Действия администратора</h3>
           <p className="type-caption mt-1 text-text-3">Каждое действие записывается в журнал аккаунта с исполнителем и причиной.</p>
         </div>
         {user.blockedAt ? <StatusPill label={`Заблокирован ${fmtAgo(user.blockedAt)}`} tone="danger" icon={ShieldBan} /> : <StatusPill label="Вход разрешён" tone="success" icon={ShieldCheck} />}
@@ -399,7 +411,7 @@ function AccountControls({ detail, onChanged }: { detail: AdminUserDetail; onCha
       {user.blockedReason ? <p className="type-caption mt-3 rounded-sm bg-danger-soft p-3 text-danger-text">Причина: {user.blockedReason}</p> : null}
       <div className="mt-4 flex flex-wrap gap-2">
         <Button variant="secondary" size="sm" disabled={!user.email} loading={busy === "send_password_reset"} onClick={() => void perform("send_password_reset", {}, `Ссылка для сброса пароля отправлена на ${user.email}.`)} title={user.email ? undefined : "У аккаунта нет email"}>
-          <KeySquare className="h-3.5 w-3.5" aria-hidden />Сбросить пароль
+          <KeySquare className="h-3.5 w-3.5" aria-hidden />Отправить ссылку для сброса
         </Button>
         <Button variant="secondary" size="sm" onClick={() => setPending("revoke")}>
           <LogOut className="h-3.5 w-3.5" aria-hidden />Завершить все сессии
@@ -429,11 +441,12 @@ function AccountControls({ detail, onChanged }: { detail: AdminUserDetail; onCha
           <input type="number" min={1} max={100000} step={1} value={limitInput} onChange={(event) => setLimitInput(event.target.value)} placeholder="Пусто — платформенный лимит" className="min-h-11 w-full rounded-xs border border-line-strong bg-surface px-3.5 text-text" />
         </label>
         <div className="flex gap-2">
-          <Button type="submit" variant="secondary" loading={busy === "set_ai_limit"}>Сохранить лимит</Button>
+          <Button type="submit" variant="primary" disabled={Boolean(busy)} loading={busy === "set_ai_limit"}>Сохранить изменения</Button>
           {user.aiDailyLimit != null ? <Button type="button" variant="ghost" onClick={() => { setLimitInput(""); void perform("set_ai_limit", { limit: null }, "Лимит AI возвращён к платформенному значению."); }}>Сбросить</Button> : null}
         </div>
       </form>
 
+      {dirty ? <p role="status" className="type-caption mt-3 text-fire-text">Есть несохранённые изменения лимита AI.</p> : null}
       {message ? <p role="status" className={cn("mt-4 rounded-sm p-3", message.tone === "success" ? "bg-success-soft text-success-text" : "bg-danger-soft text-danger-text")}>{message.text}</p> : null}
 
       {detail.adminActions.length > 0 ? (
@@ -453,26 +466,30 @@ function AccountControls({ detail, onChanged }: { detail: AdminUserDetail; onCha
         description={`Пользователь «${user.name}» будет разлогинен на всех устройствах и сможет войти заново. Данные не изменятся.`}
         confirmLabel="Завершить сессии"
         busy={busy === "revoke_sessions"}
+        error={message?.tone === "danger" ? message.text : undefined}
         onCancel={() => setPending(null)}
-        onConfirm={() => void perform("revoke_sessions", {}, "Все сессии завершены.").then(() => setPending(null))}
+        onConfirm={() => void perform("revoke_sessions", {}, "Все сессии завершены.").then(ok => { if (ok) setPending(null); })}
       />
       {pending === "block" ? (
-        <div role="dialog" aria-modal="true" aria-labelledby="account-block-title" className="fixed inset-0 z-50 grid place-items-center bg-text/45 p-4 backdrop-blur-sm">
+        <div ref={blockOverlayRef} className="fixed inset-0 z-50 grid place-items-center bg-text/45 p-4 backdrop-blur-sm">
           <form
-            className="card-plain w-full max-w-md rounded-lg p-6"
+            ref={blockDialogRef}
+            role="dialog" aria-modal="true" aria-labelledby="account-block-title" tabIndex={-1} onKeyDown={blockKeyDown}
+            className="card-plain max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto rounded-lg p-6"
             onSubmit={(event) => {
               event.preventDefault();
-              void perform("block", { reason: reason.trim() || null }, "Аккаунт заблокирован, все сессии завершены.").then(() => setPending(null));
+              void perform("block", { reason: reason.trim() || null }, "Аккаунт заблокирован, все сессии завершены.").then(ok => { if (ok) setPending(null); });
             }}
           >
             <h3 id="account-block-title" className="text-text">Заблокировать «{user.name}»?</h3>
-            <p className="type-secondary mt-2 text-text-2">Вход станет невозможен, все сессии завершатся немедленно. Проекты, каналы и публикации сохранятся; запланированные посты продолжат выходить.</p>
+            <p className="type-secondary mt-2 text-text-2">Вход станет невозможен, все сессии завершатся немедленно. Проекты, каналы и публикации сохранятся; запланированные посты продолжат выходить. Вы сможете разблокировать аккаунт здесь.</p>
             <label className="mt-4 block">
               <span className="type-caption mb-1.5 block text-text-3">Причина (видна только администраторам)</span>
               <textarea value={reason} onChange={(event) => setReason(event.target.value)} maxLength={500} rows={3} className="w-full rounded-xs border border-line-strong bg-surface px-3.5 py-2 text-text" />
             </label>
-            <div className="mt-5 flex justify-end gap-3">
-              <Button type="button" variant="ghost" onClick={() => setPending(null)}>Отмена</Button>
+            {message?.tone === "danger" ? <p role="alert" className="mt-3 rounded-sm bg-danger-soft p-3 text-danger-text">{message.text}</p> : null}
+            <div className="mt-5 flex flex-wrap justify-end gap-3">
+              <Button ref={blockCancelRef} type="button" variant="ghost" disabled={busy === "block"} onClick={() => setPending(null)}>Отмена</Button>
               <Button type="submit" variant="danger" loading={busy === "block"}>Заблокировать</Button>
             </div>
           </form>
@@ -482,10 +499,19 @@ function AccountControls({ detail, onChanged }: { detail: AdminUserDetail; onCha
   );
 }
 
-function DetailContent({ detail, onChanged }: { detail: AdminUserDetail; onChanged: () => void }) {
+function AccountPostDiagnostics({ post }: { post: AdminUserDetail["posts"][number] }) {
+  return <div className="mt-2">
+    {post.safeErrorCode ? <details><summary className="type-caption">Последняя диагностика</summary><CopyValue value={post.safeErrorCode} label="код ошибки публикации" /></details> : null}
+    <a className="type-caption inline-flex min-h-10 items-center text-info-text underline" href={adminPublicationsHref(typeof window === "undefined" ? "/admin" : window.location.href, { pq: post.id, pstatus: "all", pnetwork: "all", pproject: null, perror: null, ppage: 1 })}>Открыть публикацию {post.id}</a>
+  </div>;
+}
+
+function DetailContent({ detail, onChanged, onDirtyChange }: { detail: AdminUserDetail; onChanged: () => void; onDirtyChange: (dirty: boolean) => void }) {
   const { user, summary } = detail;
   return (
-    <div className="space-y-10 p-4 sm:p-6">
+    <div className="space-y-7 p-4 sm:p-6">
+      <div className="flex flex-wrap items-center gap-3"><CopyValue value={user.id} label="ID пользователя" />{user.email ? <CopyValue value={user.email} label="email пользователя" /> : null}</div>
+      <nav aria-label="Разделы карточки аккаунта" className="flex flex-wrap gap-2">{[["channels-detail-title", "Подключения"], ["posts-detail-title", "Публикации"], ["account-controls-title", "Действия администратора"]].map(([id, label]) => <a key={id} href={`#${id}`} onClick={e => { e.preventDefault(); const target = document.getElementById(id); target?.focus({ preventScroll: true }); target?.scrollIntoView({ block: "start" }); }} className="type-button inline-flex min-h-10 items-center rounded-xs border border-line px-3 text-info-text">{label}</a>)}</nav>
       <section aria-labelledby="account-summary-title">
         <h3 id="account-summary-title" className="sr-only">Сводка аккаунта</h3>
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -526,9 +552,8 @@ function DetailContent({ detail, onChanged }: { detail: AdminUserDetail; onChang
         </div>
       </section>
 
-      <AccountControls detail={detail} onChanged={onChanged} />
 
-      <ActivityBars data={detail.activity} />
+      <details><summary className="type-caption">Динамика публикаций и AI</summary><ActivityBars data={detail.activity} /></details>
 
       <section aria-labelledby="projects-detail-title">
         <div>
@@ -565,7 +590,7 @@ function DetailContent({ detail, onChanged }: { detail: AdminUserDetail; onChang
       <section aria-labelledby="channels-detail-title">
         <div>
           <p className="type-label text-brand">Интеграции</p>
-          <h3 id="channels-detail-title" className="mt-2 text-text">Подключённые каналы</h3>
+          <h3 id="channels-detail-title" tabIndex={-1} className="mt-2 text-text">Подключённые каналы</h3>
         </div>
         {detail.channels.length === 0 ? (
           <p className="mt-4 rounded-sm bg-surface-inset p-4 text-text-2">Каналы ещё не подключены.</p>
@@ -598,9 +623,7 @@ function DetailContent({ detail, onChanged }: { detail: AdminUserDetail; onChang
                     <p className="type-caption">Подключён: <time dateTime={channel.createdAt}>{fullDate(channel.createdAt)}</time></p>
                   </div>
                   {channel.lastAuthErrorCode ? (
-                    <p className="type-caption mt-4 rounded-sm bg-danger-soft p-3 font-mono text-danger-text">
-                      {channel.lastAuthErrorCode}{channel.lastAuthErrorAt ? ` · ${fmtAgo(channel.lastAuthErrorAt)}` : ""}
-                    </p>
+                    <div className="mt-4 rounded-sm bg-danger-soft p-3"><p className="type-secondary text-danger-text">Доступ к каналу требует проверки. Владелец может восстановить права и переподключить канал в настройках проекта.</p><details><summary className="type-caption">Диагностика канала</summary><CopyValue value={channel.lastAuthErrorCode} label="код ошибки канала" />{channel.lastAuthErrorAt ? <p className="type-caption text-text-2">{fullDate(channel.lastAuthErrorAt)}</p> : null}</details></div>
                   ) : null}
                 </li>
               );
@@ -613,7 +636,7 @@ function DetailContent({ detail, onChanged }: { detail: AdminUserDetail; onChang
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
             <p className="type-label text-brand">Контент</p>
-            <h3 id="posts-detail-title" className="mt-2 text-text">Последние публикации</h3>
+            <h3 id="posts-detail-title" tabIndex={-1} className="mt-2 text-text">Последние публикации</h3>
           </div>
           <p className="type-caption text-text-3">До 25 последних записей</p>
         </div>
@@ -621,7 +644,7 @@ function DetailContent({ detail, onChanged }: { detail: AdminUserDetail; onChang
           <p className="mt-4 rounded-sm bg-surface-inset p-4 text-text-2">Публикаций ещё нет.</p>
         ) : (
           <div className="mt-5 overflow-hidden rounded-md border border-line bg-surface">
-            <div className="hidden overflow-x-auto lg:block">
+            <div className="hidden overflow-x-auto 2xl:block" role="region" aria-label="Таблица публикаций аккаунта" tabIndex={0}>
               <table className="w-full min-w-[980px] text-start">
                 <thead className="bg-surface-2"><tr><th className="px-4 py-3 text-start">Публикация</th><th className="px-4 py-3 text-start">Канал</th><th className="px-4 py-3 text-start">Статус</th><th className="px-4 py-3 text-start">Результат</th><th className="px-4 py-3 text-start">Время</th></tr></thead>
                 <tbody className="divide-y divide-line">
@@ -629,7 +652,7 @@ function DetailContent({ detail, onChanged }: { detail: AdminUserDetail; onChang
                     const state = postState(post.status);
                     return (
                     <tr key={post.id} className="align-top">
-                      <td className="max-w-md px-4 py-4"><p className="type-secondary line-clamp-2 text-text">{post.text}</p><p className="type-caption mt-1 text-text-3">ID {post.id} · {POST_ORIGIN_LABEL[post.origin] || post.origin}{post.hasMedia ? " · с медиа" : ""}</p>{post.safeErrorCode ? <p className="type-caption mt-1 font-mono text-danger-text">{post.safeErrorCode}</p> : null}</td>
+                      <td className="max-w-md px-4 py-4"><p className="type-secondary line-clamp-2 text-text">{post.text}</p><p className="type-caption mt-1 text-text-3">ID {post.id} · {POST_ORIGIN_LABEL[post.origin] || post.origin}{post.hasMedia ? " · с медиа" : ""}</p><AccountPostDiagnostics post={post} /></td>
                       <td className="px-4 py-4"><p className="type-secondary font-semibold text-text">{post.channel}</p><p className="type-caption mt-1 text-text-3">{NETWORK_LABEL[post.network] || post.network} · {post.project}</p></td>
                       <td className="px-4 py-4"><StatusPill label={POST_STATUS_LABEL[post.status] || post.status} tone={state.tone} icon={state.icon} /></td>
                       <td className="nums px-4 py-4 text-text-2"><p>{post.views == null ? "Просмотры —" : numberLabel(post.views, "просмотр", "просмотра", "просмотров")}</p><p className="type-caption mt-1 text-text-3">{post.reactions == null ? "Реакции —" : numberLabel(post.reactions, "реакция", "реакции", "реакций")}</p></td>
@@ -640,7 +663,7 @@ function DetailContent({ detail, onChanged }: { detail: AdminUserDetail; onChang
                 </tbody>
               </table>
             </div>
-            <ul className="divide-y divide-line lg:hidden">
+            <ul className="divide-y divide-line 2xl:hidden">
               {detail.posts.map((post) => {
                 const state = postState(post.status);
                 return (
@@ -649,7 +672,7 @@ function DetailContent({ detail, onChanged }: { detail: AdminUserDetail; onChang
                   <p className="type-secondary mt-3 line-clamp-3 text-text">{post.text}</p>
                   <p className="type-caption mt-2 text-text-2">{NETWORK_LABEL[post.network] || post.network} · {post.channel}</p>
                   <p className="type-caption mt-1 text-text-3"><time dateTime={post.publishedAt || post.scheduledAt || post.createdAt}>{fullDate(post.publishedAt || post.scheduledAt || post.createdAt)}</time></p>
-                  {post.safeErrorCode ? <p className="type-caption mt-2 font-mono text-danger-text">{post.safeErrorCode}</p> : null}
+                  <AccountPostDiagnostics post={post} />
                 </li>
                 );
               })}
@@ -658,12 +681,14 @@ function DetailContent({ detail, onChanged }: { detail: AdminUserDetail; onChang
         )}
       </section>
 
+      <AccountControls detail={detail} onChanged={onChanged} onDirtyChange={onDirtyChange} />
+
       <section className="grid gap-5 xl:grid-cols-[minmax(0,1.25fr)_minmax(20rem,0.75fr)]" aria-labelledby="ai-detail-title">
         <div className="rounded-md border border-line bg-surface p-5">
           <p className="type-label text-brand">Использование</p>
           <h3 id="ai-detail-title" className="mt-2 text-text">Aurora AI</h3>
           {detail.aiKinds.length === 0 ? (
-            <p className="mt-4 text-text-2">AI ещё не использовался.</p>
+            <p className="mt-4 text-text-2">Операции AI не зарегистрированы.</p>
           ) : (
             <ul className="mt-5 grid gap-3 sm:grid-cols-2">
               {detail.aiKinds.map((kind) => (
@@ -760,7 +785,19 @@ export function AdminUsersCenter({
   const [request, setRequest] = useState<UserRequest>(DEFAULT_REQUEST);
   const [urlSynced, setUrlSynced] = useState(false);
   const [retryKey, setRetryKey] = useState(0);
-  const [data, setData] = useState<AdminUsersResponse | null>(null);
+  const [data, setData] = useState<(AdminUsersResponse & { checkedAt?: string }) | null>(null);
+  const [detailDirty, setDetailDirty] = useState(false);
+  const dirtyRef = useRef(false);
+  const openUrlRef = useRef("");
+  const leaveUrlRef = useRef<string | null>(null);
+  useEffect(() => { dirtyRef.current = detailDirty; }, [detailDirty]);
+  const [confirmClose, setConfirmClose] = useState(false);
+  useEffect(() => {
+    if (!detailDirty) return;
+    const guard = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
+    window.addEventListener("beforeunload", guard);
+    return () => window.removeEventListener("beforeunload", guard);
+  }, [detailDirty]);
   const [selectedName, setSelectedName] = useState("");
   const dialogRef = useRef<HTMLDialogElement>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
@@ -798,31 +835,38 @@ export function AdminUsersCenter({
   // Filters, page and the open account live in the URL: reload, back/forward and shared
   // links reproduce the same screen, and leaving the section no longer resets the search.
   useEffect(() => {
-    const sync = () => {
+    const sync = (event?: Event) => {
       const next = requestFromSearch(window.location.search);
-      setRequest(next);
-      setInput(next.query);
-      setUrlSynced(true);
+      if (dirtyRef.current && openUrlRef.current && window.location.href !== openUrlRef.current) {
+        event?.preventDefault();
+        event?.stopImmediatePropagation();
+        leaveUrlRef.current = window.location.href;
+        window.history.pushState({}, "", openUrlRef.current);
+        queueMicrotask(() => setConfirmClose(true));
+        return;
+      }
+      openUrlRef.current = window.location.href;
+      queueMicrotask(() => { setRequest(next); setInput(next.query); setUrlSynced(true); });
     };
     sync();
-    window.addEventListener("popstate", sync);
-    return () => window.removeEventListener("popstate", sync);
+    window.addEventListener("popstate", sync, true);
+    window.addEventListener("aurora:admin-before-navigate", sync);
+    return () => { window.removeEventListener("popstate", sync, true); window.removeEventListener("aurora:admin-before-navigate", sync); };
   }, []);
 
   useEffect(() => {
     if (!urlSynced) return;
     const controller = new AbortController();
     void fetch(`/api/admin/users?${listParams}`, { cache: "no-store", signal: controller.signal })
-      .then(async (response) => {
-        if (!response.ok) throw new Error("unavailable");
-        return response.json() as Promise<AdminUsersResponse>;
-      })
+      .then(adminJson<AdminUsersResponse & { checkedAt?: string }>)
       .then((payload) => {
+        if (controller.signal.aborted) return;
         setData(payload);
         setListSettled({ key: listKey, ok: true, total: payload.pagination.total });
       })
       .catch(() => {
         if (controller.signal.aborted) return;
+        setData(null);
         setListSettled({ key: listKey, ok: false, total: 0 });
       });
     return () => controller.abort();
@@ -839,11 +883,12 @@ export function AdminUsersCenter({
     const controller = new AbortController();
     void fetch(`/api/admin/users/${request.user}?days=${period}`, { cache: "no-store", signal: controller.signal })
       .then(async (response) => {
+        checkAdminAccess(response);
         if (response.status === 404) throw new Error("not_found");
-        if (!response.ok) throw new Error("unavailable");
-        return response.json() as Promise<AdminUserDetail>;
+        return adminJson<AdminUserDetail>(response);
       })
       .then((payload) => {
+        if (controller.signal.aborted) return;
         setSelectedName(payload.user.name);
         setDetailSettled({ key: detailKey, state: "ready", detail: payload });
       })
@@ -857,6 +902,7 @@ export function AdminUsersCenter({
   function navigate(changes: AdminUsersUrlChange) {
     const href = adminUsersHref(window.location.href, changes);
     window.history.pushState({}, "", href);
+    openUrlRef.current = window.location.href;
     setRequest(requestFromSearch(window.location.search));
   }
 
@@ -876,6 +922,7 @@ export function AdminUsersCenter({
   }
 
   function closeDetail() {
+    if (detailDirty) { setConfirmClose(true); return; }
     if (request.user) navigate({ user: null });
     else dialogRef.current?.close();
   }
@@ -891,22 +938,6 @@ export function AdminUsersCenter({
     <>
       <span role="status" aria-live="polite" className="sr-only">{statusMessage}</span>
 
-      {data ? (
-        <>
-          <div className="grid min-w-0 max-w-full grid-cols-2 gap-3 xl:grid-cols-3 2xl:grid-cols-6">
-            <SummaryCard label="Все аккаунты" value={data.summary.accounts} helper="Зарегистрированы в Авроре" icon={Users} />
-            <SummaryCard label="Новые" value={data.summary.newAccounts} helper={`За ${data.periodDays} дней`} icon={UserCheck} />
-            <SummaryCard label="Заходили за 30 дней" value={data.summary.activeAccounts} helper="Сессия ещё не истекла" icon={Activity} />
-            <SummaryCard label="Завершили настройку" value={data.summary.onboardingComplete} helper="Прошли первичную настройку" icon={CheckCircle2} />
-            <SummaryCard label="С каналами" value={data.summary.withChannels} helper="Подключили хотя бы один" icon={Radio} />
-            <SummaryCard label="Привязали чат" value={data.summary.botLinked} helper="Сохранили связь с Telegram" icon={Bot} />
-          </div>
-          <div className="mt-5 grid min-w-0 max-w-full gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(20rem,0.65fr)]">
-            {registrations ? <RegistrationBars data={registrations} /> : <div className="skeleton min-h-56 rounded-md" aria-hidden />}
-            <AccountMaturity summary={data.summary} />
-          </div>
-        </>
-      ) : null}
 
       <div className="mt-5 rounded-md border border-line bg-surface p-4 shadow-soft sm:p-5">
         <form onSubmit={submitSearch} className="grid gap-4 lg:grid-cols-2 lg:items-end 2xl:grid-cols-[minmax(16rem,1fr)_12rem_12rem_minmax(14rem,16rem)_auto]">
@@ -947,7 +978,7 @@ export function AdminUsersCenter({
         </form>
         {hasActiveFilters ? (
           <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-            <p className="type-caption text-text-3">Фильтры применены к живым данным платформы.</p>
+            <p className="type-caption text-text-3">{request.query ? `Поиск: «${request.query}» · ` : ""}{STATUS_OPTIONS.find(o => o.value === request.status)?.label}{request.network !== "all" ? ` · ${NETWORK_LABEL[request.network] || request.network}` : ""}</p>
             <Button
               variant="ghost"
               size="sm"
@@ -962,23 +993,18 @@ export function AdminUsersCenter({
         ) : null}
       </div>
 
-      {listState === "error" && !data ? (
-        <div className="mt-5 rounded-md bg-danger-soft p-6 text-center text-danger-text">
-          <ShieldAlert className="mx-auto h-7 w-7" aria-hidden />
-          <h3 className="mt-3">Не удалось загрузить аккаунты</h3>
-          <p className="type-secondary mt-2">Проверьте соединение с базой и повторите загрузку.</p>
-          <Button variant="danger" className="mt-4" onClick={() => setRetryKey((value) => value + 1)}>Повторить загрузку</Button>
-        </div>
-      ) : null}
+      {listState === "error" ? <ReadError title="Не удалось загрузить аккаунты" onRetry={() => setRetryKey(v => v + 1)} /> : null}
+      {listState === "loading" && !data ? <p role="status" className="mt-5 rounded-md border border-line p-6 text-text-2">Загружаем аккаунты…</p> : null}
 
       {data ? (
         <div className="mt-5 min-w-0 max-w-full overflow-hidden rounded-md border border-line bg-surface shadow-soft" aria-busy={listState === "loading" || undefined}>
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-4 sm:px-5">
             <div>
               <h3 className="text-text">Аккаунты</h3>
+              {listState === "loading" ? <p role="status" className="type-caption text-text-2">Обновляем результаты. Ниже — предыдущая выборка.</p> : null}
               <p className="type-caption mt-1 text-text-3">{numberLabel(data.pagination.total, "аккаунт", "аккаунта", "аккаунтов")} в выборке · «Посты» — создано / вышло за период</p>
             </div>
-            {listState === "loading" ? <StatusPill label="Обновляем данные" tone="brand" icon={Clock3} /> : <StatusPill label="Данные подтверждены" tone="success" icon={CheckCircle2} />}
+            <SnapshotNote checkedAt={data.checkedAt} busy={listState === "loading"} onRefresh={() => setRetryKey(v => v + 1)} />
           </div>
           {data.users.length === 0 ? (
             <div className="p-8 text-center">
@@ -988,7 +1014,7 @@ export function AdminUsersCenter({
             </div>
           ) : (
             <>
-              <div className="hidden max-w-full overflow-x-auto lg:block">
+              <div className="hidden max-w-full overflow-x-auto 2xl:block" role="region" aria-label="Таблица аккаунтов" tabIndex={0}>
                 <table className="w-full text-start">
                   <thead className="bg-surface-2">
                     <tr className="type-caption text-text-3">
@@ -1042,7 +1068,7 @@ export function AdminUsersCenter({
                   </tbody>
                 </table>
               </div>
-              <ul className="divide-y divide-line lg:hidden">
+              <ul className="divide-y divide-line 2xl:hidden">
                 {data.users.map((user) => {
                   const state = userState(user);
                   return (
@@ -1070,8 +1096,33 @@ export function AdminUsersCenter({
         </div>
       ) : null}
 
+      {data ? (
+        <details className="mb-4">
+          <summary className="type-caption">Статистика аккаунтов за {data.periodDays} дней</summary>
+          <div className="grid min-w-0 max-w-full grid-cols-2 gap-3 xl:grid-cols-3 2xl:grid-cols-6">
+            <SummaryCard label="Все аккаунты" value={data.summary.accounts} helper="Зарегистрированы в Авроре" icon={Users} />
+            <SummaryCard label="Новые" value={data.summary.newAccounts} helper={`За ${data.periodDays} дней`} icon={UserCheck} />
+            <SummaryCard label="С действующей сессией" value={data.summary.activeAccounts} helper="Сессия ещё не истекла" icon={Activity} />
+            <SummaryCard label="Завершили настройку" value={data.summary.onboardingComplete} helper="Прошли первичную настройку" icon={CheckCircle2} />
+            <SummaryCard label="С каналами" value={data.summary.withChannels} helper="Подключили хотя бы один" icon={Radio} />
+            <SummaryCard label="Привязали чат" value={data.summary.botLinked} helper="Сохранили связь с Telegram" icon={Bot} />
+          </div>
+          <div className="mt-5 grid min-w-0 max-w-full gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(20rem,0.65fr)]">
+            {registrations ? <RegistrationBars data={registrations} /> : null}
+            <AccountMaturity summary={data.summary} />
+          </div>
+        </details>
+      ) : null}
+
+
       <dialog
         ref={dialogRef}
+        onClickCapture={event => {
+          const link = (event.target as HTMLElement).closest("a[href]");
+          if (detailDirty && link instanceof HTMLAnchorElement && !link.getAttribute("href")?.startsWith("#")) {
+            event.preventDefault(); leaveUrlRef.current = link.href; setConfirmClose(true);
+          }
+        }}
         aria-labelledby={dialogTitleId}
         aria-describedby={dialogDescriptionId}
         onCancel={(event) => {
@@ -1094,15 +1145,15 @@ export function AdminUsersCenter({
         <div className="flex max-h-[calc(100dvh-1rem)] flex-col sm:max-h-[calc(100dvh-2rem)]">
           <header className="sticky top-0 z-10 flex shrink-0 items-start justify-between gap-4 border-b border-line bg-surface/95 px-4 py-4 backdrop-blur-md sm:px-6 sm:py-5">
             <div className="min-w-0">
-              <p className="type-label text-brand">Полная карточка аккаунта</p>
-              <h2 id={dialogTitleId} className="mt-1 truncate text-xl font-extrabold tracking-tight text-text sm:text-2xl">{detail?.user.name || selectedName || "Аккаунт"}</h2>
-              <p id={dialogDescriptionId} className="type-caption mt-1 max-w-3xl text-pretty text-text-3">Регистрация, доступ, проекты, каналы, публикации, AI, сессии и действия — только подтверждённые данные.</p>
+              <p className="type-label text-brand">Карточка пользователя</p>
+              <h2 id={dialogTitleId} className="mt-1 break-words text-xl font-extrabold tracking-tight text-text sm:text-2xl">{detail?.user.name || selectedName || "Аккаунт"}</h2>
+              <p id={dialogDescriptionId} className="type-caption mt-1 max-w-3xl text-pretty text-text-3">Проверьте подключения и публикации. Управление доступом — в разделе «Действия администратора».</p>
             </div>
             <Button autoFocus type="button" variant="ghost" size="icon" className="shrink-0" aria-label="Закрыть карточку аккаунта" onClick={closeDetail}><X className="h-5 w-5" aria-hidden /></Button>
           </header>
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
             {detailState === "loading" && !detail ? <DetailLoading /> : null}
-            {detail ? <DetailContent detail={detail} onChanged={() => setDetailRetryKey((value) => value + 1)} /> : null}
+            {detail ? <DetailContent key={detail.user.id} detail={detail} onDirtyChange={setDetailDirty} onChanged={() => setDetailRetryKey((value) => value + 1)} /> : null}
             {detailState === "error" || detailState === "not_found" ? (
               <div className="grid min-h-72 place-items-center p-6 text-center">
                 <div><ShieldAlert className="mx-auto h-8 w-8 text-danger-text" aria-hidden /><h3 className="mt-3 text-text">{detailState === "not_found" ? "Аккаунт больше не существует" : "Не удалось загрузить карточку"}</h3><p className="type-secondary mt-2 text-text-2">Закройте карточку и повторите попытку.</p><Button variant="secondary" className="mt-4" onClick={closeDetail}>Закрыть карточку</Button></div>
@@ -1110,6 +1161,7 @@ export function AdminUsersCenter({
             ) : null}
           </div>
         </div>
+        <ConfirmDialog open={confirmClose} title="Закрыть без сохранения?" description="Изменения лимита AI не сохранены. Вы можете вернуться к форме и сохранить их." confirmLabel="Закрыть без сохранения" cancelLabel="Вернуться к форме" onCancel={() => { leaveUrlRef.current = null; setConfirmClose(false); }} onConfirm={() => { setConfirmClose(false); setDetailDirty(false); dirtyRef.current = false; if (leaveUrlRef.current) { window.location.assign(leaveUrlRef.current); } else navigate({ user: null }); }} />
       </dialog>
     </>
   );

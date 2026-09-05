@@ -1,0 +1,12 @@
+
+> platform@0.1.0 test
+> vitest run
+
+
+ RUN  v4.1.10 /private/tmp/aurora-admin-release
+
+
+ Test Files  582 passed (582)
+      Tests  3119 passed (3119)
+   Start at  13:52:38
+   Duration  18.87s (transform 12.04s, setup 0ms, import 46.34s, tests 16.15s, environment 2.61s)

@@ -1,11 +1,14 @@
 "use client";
 
+import { checkAdminAccess } from "./admin-ui";
+
 import { BriefcaseBusiness, Search, Send, UserRound, type LucideIcon } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import type { AdminSearchHit, AdminSearchResponse } from "@/lib/admin-search";
 import { adminProjectsHref, adminPublicationsHref, adminUsersHref } from "@/lib/admin-url-state";
+import { useModalFocus } from "@/components/ui/use-modal-focus";
 import { cn } from "@/lib/utils";
 
 const KIND_LABEL: Record<AdminSearchHit["kind"], string> = { user: "Пользователи", project: "Проекты", post: "Публикации" };
@@ -31,6 +34,9 @@ export function AdminCommandPalette() {
   const [failed, setFailed] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const titleId = useId();
+  const listId = useId();
+  const triggerId = useId();
+  const { overlayRef, dialogRef, onKeyDown } = useModalFocus({ open, initialFocusRef: inputRef, restoreFocusId: triggerId, onEscape: () => setOpen(false) });
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -44,11 +50,6 @@ export function AdminCommandPalette() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  useEffect(() => {
-    if (!open) return;
-    const frame = window.requestAnimationFrame(() => inputRef.current?.focus());
-    return () => window.cancelAnimationFrame(frame);
-  }, [open]);
 
   useEffect(() => {
     if (!open || !(query.trim().length >= 2 || /^\d+$/u.test(query.trim()))) return;
@@ -56,6 +57,7 @@ export function AdminCommandPalette() {
     const timer = window.setTimeout(() => {
       void fetch(`/api/admin/search?q=${encodeURIComponent(query.trim())}`, { cache: "no-store", signal: controller.signal })
         .then(async (response) => {
+        checkAdminAccess(response);
           if (!response.ok) throw new Error("unavailable");
           return response.json() as Promise<AdminSearchResponse>;
         })
@@ -85,9 +87,10 @@ export function AdminCommandPalette() {
   if (!open) {
     return (
       <button
+        id={triggerId}
         type="button"
         onClick={() => setOpen(true)}
-        className="type-caption hidden min-h-9 items-center gap-2 rounded-sm border border-line bg-surface px-3 text-text-3 hover:border-line-strong hover:text-text lg:inline-flex"
+        className="type-caption inline-flex min-h-11 items-center gap-2 rounded-sm border border-line bg-surface px-3 text-text-3 hover:border-line-strong hover:text-text"
         aria-label="Поиск по админ-панели (⌘K)"
       >
         <Search className="h-3.5 w-3.5" aria-hidden />
@@ -100,14 +103,18 @@ export function AdminCommandPalette() {
   // The sidebar uses backdrop-filter, which turns it into the containing block for
   // position: fixed; the dialog is portalled to <body> so it covers the whole page.
   return createPortal(
-    <div role="dialog" aria-modal="true" aria-labelledby={titleId} className="app-v3 fixed inset-0 z-50 grid place-items-start justify-center bg-text/45 p-4 pt-[12vh] backdrop-blur-sm" onClick={(event) => { if (event.target === event.currentTarget) setOpen(false); }}>
-      <div className="card-plain w-full max-w-2xl overflow-hidden rounded-lg p-0 shadow-float">
+    <div ref={overlayRef} className="app-v3 fixed inset-0 z-50 grid place-items-start justify-center bg-text/45 p-4 pt-[12vh] backdrop-blur-sm" onClick={(event) => { if (event.target === event.currentTarget) setOpen(false); }}>
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} onKeyDown={onKeyDown} className="card-plain w-full max-w-2xl overflow-hidden rounded-lg p-0 shadow-float">
         <h2 id={titleId} className="sr-only">Поиск по админ-панели</h2>
         <div className="flex items-center gap-3 border-b border-line px-4">
           <Search className="h-4 w-4 shrink-0 text-text-3" aria-hidden />
           <input
             ref={inputRef}
             type="search"
+            role="combobox"
+            aria-expanded="true"
+            aria-autocomplete="list"
+            aria-controls={listId}
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             onKeyDown={(event) => {
@@ -122,7 +129,7 @@ export function AdminCommandPalette() {
           />
           <kbd className="type-caption rounded-xs border border-line px-1.5 text-text-3">Esc</kbd>
         </div>
-        <div className="max-h-[60vh] overflow-y-auto p-2" role="listbox" aria-label="Результаты поиска">
+        <div id={listId} className="max-h-[60vh] overflow-y-auto p-2" role="listbox" aria-label="Результаты поиска">
           {!searchable ? <p className="type-caption p-4 text-text-3">Введите минимум два символа или ID. Цифры ищутся как ID пользователя, проекта и публикации.</p> : null}
           {failed ? <p className="type-caption p-4 text-danger-text">Поиск временно недоступен.</p> : null}
           {searchable && result && hits.length === 0 && !failed ? <p className="type-caption p-4 text-text-3">Ничего не найдено по «{result.query}».</p> : null}

@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useId, useRef } from "react";
+import { useId, useRef } from "react";
 
 import { Button, type ButtonVariant } from "@/components/ui/button";
+import { useModalFocus } from "./use-modal-focus";
 import { H2, SecondaryText } from "@/components/ui/typography";
 
 export interface ConfirmDialogProps {
@@ -13,6 +14,7 @@ export interface ConfirmDialogProps {
   cancelLabel?: string;
   confirmVariant?: ButtonVariant;
   busy?: boolean;
+  error?: string;
   onConfirm: () => void;
   onCancel: () => void;
 }
@@ -26,45 +28,14 @@ export function ConfirmDialog({
   cancelLabel = "Отмена",
   confirmVariant = "danger",
   busy = false,
+  error,
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
   const titleId = useId();
   const descriptionId = useId();
-  const overlayRef = useRef<HTMLDivElement>(null);
-  const dialogRef = useRef<HTMLDivElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
-  const confirmRef = useRef<HTMLButtonElement>(null);
-  const previousFocusRef = useRef<HTMLElement | null>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    previousFocusRef.current = document.activeElement instanceof HTMLElement
-      ? document.activeElement
-      : null;
-    const inerted: Array<{ element: HTMLElement; wasInert: boolean }> = [];
-    let branch: HTMLElement | null = overlayRef.current;
-    while (branch?.parentElement && branch.parentElement !== document.documentElement) {
-      const parent: HTMLElement = branch.parentElement;
-      for (const sibling of parent.children) {
-        if (sibling === branch || !(sibling instanceof HTMLElement)) continue;
-        inerted.push({ element: sibling, wasInert: sibling.inert });
-        sibling.inert = true;
-      }
-      if (parent === document.body) break;
-      branch = parent;
-    }
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    const frame = requestAnimationFrame(() => cancelRef.current?.focus());
-    return () => {
-      cancelAnimationFrame(frame);
-      document.body.style.overflow = previousOverflow;
-      for (const { element, wasInert } of inerted.reverse()) element.inert = wasInert;
-      const previous = previousFocusRef.current;
-      if (previous?.isConnected) previous.focus();
-    };
-  }, [open]);
+  const { overlayRef, dialogRef, onKeyDown } = useModalFocus({ open, initialFocusRef: cancelRef, onEscape: onCancel, busy });
 
   if (!open) return null;
 
@@ -85,32 +56,7 @@ export function ConfirmDialog({
         aria-busy={busy || undefined}
         tabIndex={-1}
         className="max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto overscroll-contain rounded-md border-2 border-line bg-surface p-5 shadow-card"
-        onKeyDown={(event) => {
-          if (event.key === "Escape") {
-            event.preventDefault();
-            if (!busy) onCancel();
-            return;
-          }
-          if (event.key !== "Tab") return;
-          const focusable = [cancelRef.current, confirmRef.current].filter(
-            (button): button is HTMLButtonElement => Boolean(button && !button.disabled),
-          );
-          if (focusable.length === 0) {
-            event.preventDefault();
-            dialogRef.current?.focus();
-            return;
-          }
-          const first = focusable[0];
-          const last = focusable[focusable.length - 1];
-          const active = document.activeElement;
-          if (event.shiftKey && (active === first || !dialogRef.current?.contains(active))) {
-            event.preventDefault();
-            last.focus();
-          } else if (!event.shiftKey && (active === last || !dialogRef.current?.contains(active))) {
-            event.preventDefault();
-            first.focus();
-          }
-        }}
+        onKeyDown={onKeyDown}
       >
         <H2 id={titleId}>
           {title}
@@ -118,12 +64,12 @@ export function ConfirmDialog({
         <SecondaryText id={descriptionId} className="mt-2 text-pretty">
           {description}
         </SecondaryText>
+        {error ? <p role="alert" className="mt-3 rounded-sm bg-danger-soft p-3 text-sm text-danger-text">{error}</p> : null}
         <div className="mt-5 flex flex-wrap justify-end gap-2">
           <Button ref={cancelRef} variant="ghost" disabled={busy} onClick={onCancel}>
             {cancelLabel}
           </Button>
           <Button
-            ref={confirmRef}
             variant={confirmVariant}
             loading={busy}
             onClick={onConfirm}

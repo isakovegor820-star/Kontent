@@ -43,6 +43,23 @@ describe("AdminCommandPalette", () => {
     expect(assign).toHaveBeenCalledWith("/admin?prid=12#projects");
   });
 
+  it("contains keyboard focus in the modal and restores it on Escape", async () => {
+    render(<div><button type="button">Outside action</button><AdminCommandPalette /></div>);
+    const outside = screen.getByRole("button", { name: "Outside action" });
+    outside.focus();
+    fireEvent.keyDown(window, { key: "k", ctrlKey: true });
+    const input = await screen.findByLabelText("Строка поиска");
+    await waitFor(() => expect(document.activeElement).toBe(input));
+    expect(fireEvent.keyDown(input, { key: "Tab" })).toBe(false);
+    expect(document.activeElement).toBe(input);
+    const ancestors: HTMLElement[] = [];
+    for (let current: HTMLElement | null = outside; current; current = current.parentElement) ancestors.push(current);
+    expect(ancestors.some((element) => element.inert === true)).toBe(true);
+    fireEvent.keyDown(input, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(document.activeElement).toBe(outside);
+  });
+
   it("maps every hit kind to its admin screen", () => {
     expect(adminSearchHitHref({ kind: "user", id: 5, title: "", subtitle: "", badge: null })).toBe("/admin?user=5#users");
     expect(adminSearchHitHref({ kind: "project", id: 5, title: "", subtitle: "", badge: null })).toBe("/admin?prid=5#projects");

@@ -1,5 +1,7 @@
 "use client";
 
+import { checkAdminAccess } from "./admin-ui";
+
 import Link from "next/link";
 import {
   Activity,
@@ -573,6 +575,7 @@ export function AdminAuroraAnalyticsCenter() {
     const suffix = query ? `?${query}` : "";
     void fetch(`/api/admin/aurora-analytics${suffix}`, { cache: "no-store", signal: controller.signal })
       .then(async (response) => {
+        checkAdminAccess(response);
         if (response.status === 401) throw new Error("unauthorized");
         if (response.status === 403) throw new Error("access_denied");
         if (response.status === 422) throw new Error("invalid_filters");

@@ -1,5 +1,7 @@
 "use client";
 
+import { checkAdminAccess } from "./admin-ui";
+
 import { ChevronLeft, ChevronRight, History, Search, ShieldAlert } from "lucide-react";
 import { FormEvent, useEffect, useId, useState } from "react";
 
@@ -76,6 +78,7 @@ export function AdminAuditCenter({ refreshKey = 0 }: { refreshKey?: number }) {
     const controller = new AbortController();
     void fetch(`/api/admin/audit?${apiQuery}`, { cache: "no-store", signal: controller.signal })
       .then(async (response) => {
+        checkAdminAccess(response);
         if (!response.ok) throw new Error("unavailable");
         return response.json() as Promise<AdminAuditResponse>;
       })

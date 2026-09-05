@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 
 import "../app/app-v3.css";
+import "./admin.css";
 
 export const metadata: Metadata = {
   title: "Пульс Авроры",
@@ -8,5 +9,5 @@ export const metadata: Metadata = {
 };
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
-  return <div className="app-v3">{children}</div>;
+  return <div className="app-v3 admin-workspace">{children}</div>;
 }

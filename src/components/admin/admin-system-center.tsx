@@ -1,5 +1,7 @@
 "use client";
 
+import { checkAdminAccess, CopyValue, SnapshotNote, useSnapshotAge } from "./admin-ui";
+
 import Link from "next/link";
 import {
   Activity,
@@ -93,6 +95,19 @@ function DiagnosticStatus({ state }: { state: AdminDiagnosticState }) {
   );
 }
 
+const SYSTEM_DESCRIPTION: Record<string, string> = {
+  publication_worker: "Обработчик отправляет посты из очереди. Проверяем его последний сигнал работы и результаты отправки.",
+  telegram_worker: "Получение сообщений ботом и наличие работающего обработчика.",
+  aurora_ai: "Доступность AI-провайдеров, временные блокировки после ошибок и результаты запросов.",
+  media_generation: "Очередь создания медиа и результаты завершённых задач.",
+  site_analysis: "Очередь анализа сайтов и этапы обработки.",
+  token_encryption: "Доступность ключей для чтения сохранённых подключений.",
+  tracking_secrets: "Наличие и корректность секретов отслеживания.",
+  upload_limits: "Ограничения размера загружаемых файлов и запросов.",
+  https_origin: "Защищённый адрес сайта, с которого разрешены административные изменения.",
+  database_schema: "Версия базы и наличие необходимых таблиц и полей.",
+  redis: "Доступность очередей, память и время работы сервиса.",
+};
 const duration = formatAdminDuration;
 
 /** Evidence arrives as raw numbers/ISO strings; the label tells which unit applies. */
@@ -115,18 +130,18 @@ function QueueTable({ queues }: { queues: readonly AdminQueueSnapshot[] }) {
   return (
     <div className="mt-6">
       <h4 className="text-text">Очереди</h4>
-      <div className="mt-3 overflow-x-auto rounded-sm border border-line">
+      <div className="mt-3 overflow-x-auto rounded-sm border border-line" role="region" aria-label="Состояние очередей" tabIndex={0}>
         <table className="w-full min-w-[780px] text-start">
           <thead className="bg-surface-2">
             <tr>
               <th className="px-4 py-3 text-start">Очередь</th>
               <th className="px-4 py-3 text-start">Состояние</th>
-              <th className="px-4 py-3 text-start">Workers</th>
-              <th className="px-4 py-3 text-start">Waiting</th>
-              <th className="px-4 py-3 text-start">Active</th>
-              <th className="px-4 py-3 text-start">Delayed</th>
-              <th className="px-4 py-3 text-start">Completed</th>
-              <th className="px-4 py-3 text-start">Failed</th>
+              <th className="px-4 py-3 text-start">Обработчики</th>
+              <th className="px-4 py-3 text-start">Ожидают</th>
+              <th className="px-4 py-3 text-start">В работе</th>
+              <th className="px-4 py-3 text-start">Отложены</th>
+              <th className="px-4 py-3 text-start">Завершены</th>
+              <th className="px-4 py-3 text-start">С ошибкой</th>
               <th className="px-4 py-3 text-start">Старейшая</th>
             </tr>
           </thead>
@@ -159,7 +174,7 @@ function ProviderTables({ component }: { component: AdminDiagnosticComponent }) 
     <div className="mt-6 grid gap-4 xl:grid-cols-2">
       {providers.length > 0 ? (
         <div className="rounded-sm border border-line p-4">
-          <h4 className="text-text">Circuit state</h4>
+          <h4 className="text-text">Защита от повторных ошибок</h4>
           <ul className="mt-3 space-y-3">
             {providers.map((item, index) => {
               const provider = item as Record<string, unknown>;
@@ -167,9 +182,9 @@ function ProviderTables({ component }: { component: AdminDiagnosticComponent }) 
                 <li key={String(provider.engine || index)} className="rounded-sm bg-surface-inset p-3">
                   <p className="type-body-strong text-text">{String(provider.engine || "provider")}</p>
                   <p className="type-caption mt-1 text-text-3">
-                    {String(provider.state || "unknown")} · {fmtNum(Number(provider.successes || 0))} success · {fmtNum(Number(provider.failures || 0))} failure
+                    {String(provider.state || "unknown")} · {fmtNum(Number(provider.successes || 0))} успешно · {fmtNum(Number(provider.failures || 0))} с ошибкой
                   </p>
-                  <p className="type-caption mt-1 text-text-3">Latency: {duration(provider.lastLatencyMs == null ? null : Number(provider.lastLatencyMs))}</p>
+                  <p className="type-caption mt-1 text-text-3">Время ответа: {duration(provider.lastLatencyMs == null ? null : Number(provider.lastLatencyMs))}</p>
                 </li>
               );
             })}
@@ -186,7 +201,7 @@ function ProviderTables({ component }: { component: AdminDiagnosticComponent }) 
                 <li key={`${String(model.provider)}-${String(model.model)}-${index}`} className="rounded-sm bg-surface-inset p-3">
                   <p className="type-body-strong text-text">{String(model.provider || "provider")} · {String(model.model || "model")}</p>
                   <p className="type-caption mt-1 text-text-3">
-                    {fmtNum(Number(model.successes || 0))} success · {fmtNum(Number(model.failures || 0))} failure · avg {duration(model.averageLatencyMs == null ? null : Number(model.averageLatencyMs))}
+                    {fmtNum(Number(model.successes || 0))} успешно · {fmtNum(Number(model.failures || 0))} с ошибкой · среднее {duration(model.averageLatencyMs == null ? null : Number(model.averageLatencyMs))}
                   </p>
                 </li>
               );
@@ -209,7 +224,7 @@ function ComponentDetails({ component }: { component: AdminDiagnosticComponent }
         <div>
           <DiagnosticStatus state={component.state} />
           <h3 id="system-detail-title" className="mt-3 text-text">{component.label}</h3>
-          <p className="type-secondary mt-2 text-text-2">{component.description}</p>
+          <p className="type-secondary mt-2 text-text-2">{SYSTEM_DESCRIPTION[component.id] || component.description}</p>
         </div>
         <div className="type-caption shrink-0 text-text-3 sm:text-end">
           <p>Проверено: <time dateTime={component.checkedAt}>{fmtAgo(component.checkedAt)}</time></p>
@@ -217,6 +232,7 @@ function ComponentDetails({ component }: { component: AdminDiagnosticComponent }
         </div>
       </div>
 
+      {component.state !== "healthy" && component.state !== "configured" ? <p className="type-secondary mt-5 rounded-sm border border-fire/25 bg-fire-soft p-4 text-text-2">{component.safeErrorCode?.endsWith("check_failed") ? "Диагностика не завершилась. Этот снимок не подтверждает работоспособность сервиса. Повторите проверку кнопкой «Обновить»; если ошибка остаётся, передайте код диагностики ответственному за инфраструктуру." : component.id === "publication_worker" ? "Отправка новых публикаций может быть задержана. Проверьте очередь; повторная постановка поста в очередь не запустит остановленный обработчик. После восстановления сервиса обновите проверку." : "Успешная работа сервиса не подтверждена. Проверьте сведения ниже и обновите проверку после устранения причины."}</p> : null}
       <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
         {component.evidence.map((item, index) => (
           <div key={`${item.label}-${index}`} className="rounded-sm bg-surface-inset p-4">
@@ -234,8 +250,7 @@ function ComponentDetails({ component }: { component: AdminDiagnosticComponent }
           </p>
         </div>
         <div className="rounded-sm bg-surface-inset p-4">
-          <p className="type-label text-text-3">Безопасный код ошибки</p>
-          <p className="type-secondary mt-2 break-all font-mono font-semibold text-text">{component.safeErrorCode || "—"}</p>
+          <details><summary className="type-caption">Код диагностики</summary>{component.safeErrorCode ? <CopyValue value={component.safeErrorCode} label="код диагностики сервиса" /> : <p className="type-caption text-text-3">Ошибка не зарегистрирована.</p>}</details>
         </div>
       </div>
 
@@ -296,6 +311,7 @@ export function AdminSystemCenter() {
   const [error, setError] = useState<SystemLoadError | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  const stale = useSnapshotAge(data?.checkedAt);
   const [autoRefresh, setAutoRefresh] = useState<AutoRefresh>(0);
   const requestRefresh = useCallback(() => {
     setRefreshing(true);
@@ -306,6 +322,7 @@ export function AdminSystemCenter() {
     const controller = new AbortController();
     void fetch("/api/admin/system", { cache: "no-store", signal: controller.signal })
       .then(async (response) => {
+        checkAdminAccess(response);
         if (response.status === 401) throw new Error("unauthorized");
         if (response.status === 403) throw new Error("access_denied");
         if (!response.ok) throw new Error("unavailable");
@@ -378,7 +395,7 @@ export function AdminSystemCenter() {
             : error === "access_denied" ? "У этой сессии нет глобального доступа администратора."
               : "Не удалось получить безопасный снимок компонентов."}
         </p>
-        <Button className="mt-4" variant="secondary" onClick={requestRefresh}>Повторить</Button>
+        <Button className="mt-4" variant="secondary" onClick={requestRefresh}>Повторить попытку</Button>
       </div>
     );
   }
@@ -387,14 +404,14 @@ export function AdminSystemCenter() {
     <div className="mt-6">
       <section className={cn(
         "rounded-lg border p-5 shadow-soft sm:p-6",
-        data.state === "healthy" ? "border-success/20 bg-success-soft"
+        stale || error ? "border-line bg-surface" : data.state === "healthy" ? "border-success/20 bg-success-soft"
           : data.state === "down" ? "border-danger/20 bg-danger-soft" : "border-fire/25 bg-fire-soft",
       )} aria-labelledby="system-platform-state">
         <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
           <div>
-            <DiagnosticStatus state={data.state} />
+            <DiagnosticStatus state={stale || error ? "unobserved" : data.state} />
             <h3 id="system-platform-state" className="mt-3 text-text">
-              {data.state === "healthy" ? "Платформа подтверждена"
+              {stale || error ? "Состояние требует новой проверки" : data.state === "healthy" ? "Платформа подтверждена"
                 : data.state === "down" ? "Есть критические зависимости" : "Платформа работает с отклонениями"}
             </h3>
             <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-text-2">
@@ -403,9 +420,7 @@ export function AdminSystemCenter() {
               <span className="type-secondary">Предупреждения: <strong className="nums text-text">{data.summary.warnings}</strong></span>
               <span className="type-secondary">Критические: <strong className="nums text-text">{data.summary.critical}</strong></span>
             </div>
-            <p className="type-caption mt-3 text-text-3">
-              Последняя проверка: <time dateTime={data.checkedAt}>{fmtAgo(data.checkedAt)}</time> · {duration(data.durationMs)}
-            </p>
+            <div className="mt-3"><SnapshotNote checkedAt={data.checkedAt} failed={Boolean(error)} busy={refreshing} onRefresh={requestRefresh} /></div>
             <p className="type-caption mt-1 text-text-3">
               Релиз: {data.release.release || "не настроен"} · commit <span className="font-mono" title={data.release.commitSha ?? undefined}>{data.release.commitSha ? data.release.commitSha.slice(0, 12) : "—"}</span> · развёрнут {data.release.deployedAt ? fmtAgo(data.release.deployedAt) : "—"}
             </p>
@@ -467,7 +482,7 @@ export function AdminSystemCenter() {
                       <DiagnosticStatus state={component.state} />
                     </div>
                     <h4 className="mt-4 text-text">{component.label}</h4>
-                    <p className="type-caption mt-1 text-text-3">{component.description}</p>
+                    <p className="type-caption mt-1 text-text-3">{SYSTEM_DESCRIPTION[component.id] || component.description}</p>
                     <p className="type-caption mt-3 text-text-3">
                       {component.lastSuccessAt ? `Успех ${fmtAgo(component.lastSuccessAt)}` : "Успех ещё не подтверждён"}
                     </p>
