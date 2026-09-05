@@ -8,7 +8,7 @@ const mocks = vi.hoisted(() => ({
   queueAdd: vi.fn(),
 }));
 
-vi.mock("@/lib/db", () => ({ getPool: () => ({ query: mocks.query }) }));
+vi.mock("@/lib/db", () => ({ getPool: () => ({ query: mocks.query,connect:async()=>({query:mocks.query,release:vi.fn()}) }) }));
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
 vi.mock("@/lib/request-origin", () => ({ hasTrustedMutationOrigin: () => true }));
 vi.mock("@/lib/project-permissions", async (importOriginal) => {
@@ -28,6 +28,7 @@ beforeEach(() => {
   mocks.requireSelectedProjectPermission.mockResolvedValue({ projectId: 17, userId: 5, role: "owner" });
   mocks.queueAdd.mockResolvedValue(undefined);
   mocks.query.mockImplementation(async (sql: string) => {
+    if (sql.includes("from projects project"))return {rows:[{role:"owner"}],rowCount:1};
     if (sql.includes("from channels")) return { rows: [{ id: "7" }], rowCount: 1 };
     if (sql.includes("bool_or(auto_publish_enabled)")) {
       return { rows: [{ enabled: false }], rowCount: 1 };
@@ -51,6 +52,6 @@ describe("POST /api/rss/bootstrap", () => {
     });
     const insert = mocks.query.mock.calls.find(([sql]) => String(sql).includes("insert into rss_feeds"));
     expect(insert?.[0]).toContain("auto_publish_enabled = excluded.auto_publish_enabled");
-    expect(insert?.[1]).toEqual([5, 7, "https://law.test/rss", "Law", false]);
+    expect(insert?.[1]).toEqual([5, 7, "https://law.test/rss", "Law", false, 17]);
   });
 });

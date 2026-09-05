@@ -26,7 +26,7 @@ async function lockFeedProject(client: PoolClient, feedId: number): Promise<numb
   const row = (await client.query<{ project_id: number | string }>(
     `select channel.project_id
        from rss_feeds feed
-       join channels channel on channel.id = feed.channel_id
+       join channels channel on channel.id = feed.channel_id and channel.project_id=feed.project_id
       where feed.id = $1
       for update of feed`,
     [feedId],
@@ -110,7 +110,7 @@ export async function DELETE(_req: NextRequest, { params }: Params) {
     await client.query(
       `delete from rss_feeds feed
         using channels channel
-       where feed.id = $1 and channel.id = feed.channel_id and channel.project_id = $2`,
+       where feed.id = $1 and channel.id = feed.channel_id and channel.project_id=feed.project_id and channel.project_id = $2`,
       [feedId, projectId],
     );
     await client.query("commit");
@@ -199,7 +199,7 @@ export async function PATCH(req: NextRequest, { params }: Params) {
           set ${sets.join(", ")}
          from channels channel
         where feed.id = $${i++}
-          and channel.id = feed.channel_id
+          and channel.id = feed.channel_id and channel.project_id=feed.project_id
           and channel.project_id = $${i}`,
       vals,
     );

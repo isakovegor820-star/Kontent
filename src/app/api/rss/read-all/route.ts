@@ -23,7 +23,7 @@ export async function POST(req: NextRequest) {
        select $1, $2, item.id, $3
          from rss_items item
          join rss_feeds feed on feed.id = item.feed_id
-         join channels channel on channel.id = feed.channel_id
+         join channels channel on channel.id = feed.channel_id and channel.project_id=feed.project_id
         where feed.user_id = $1
           and channel.project_id = $2
           and feed.source_kind = 'legal_opportunity'
