@@ -16,9 +16,13 @@ describe("Aurora global admin allowlist", () => {
     expect(hasAuroraAdminAccess({ id: 2, email: null }, env)).toBe(false);
   });
 
+  it("never grants global administration from a self-asserted registration email", () => {
+    expect(hasAuroraAdminAccess({ id: 99, email: "owner@example.com" }, { AURORA_ADMIN_EMAILS: "owner@example.com" })).toBe(false);
+  });
+
   it("normalizes configured emails without granting a partial match", () => {
     const env = { AURORA_ADMIN_EMAILS: "Owner@Example.com, ops@example.com" } as unknown as NodeJS.ProcessEnv;
-    expect(hasAuroraAdminAccess({ id: 2, email: "owner@example.com" }, env)).toBe(true);
+    expect(hasAuroraAdminAccess({ id: 2, email: "owner@example.com", email_verified: true }, env)).toBe(true);
     expect(hasAuroraAdminAccess({ id: 3, email: "owner@example.com.evil" }, env)).toBe(false);
   });
 });

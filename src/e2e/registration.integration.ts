@@ -3,6 +3,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import pg from "pg";
 
 import { migrate } from "../../scripts/migrate.mjs";
+import { hasAuroraAdminAccess } from "@/lib/admin-access";
+import { createPasswordResetToken, consumePasswordReset } from "@/lib/password-reset";
 import { registerPasswordUser } from "@/lib/password-registration";
 
 const databaseUrl = String(process.env.MIGRATION_TEST_DATABASE_URL || "").trim();
@@ -69,4 +71,25 @@ describe("password registration transaction", () => {
       "social-registration@example.test",
     ])).rows[0].password_hash).toBeNull();
   });
+});
+
+
+it("does not turn self-asserted registration email into a global admin grant; mailbox proof does", async () => {
+  const email = "admin-identity@example.test";
+  const result = await registerPasswordUser({pool, email, name: "Unverified", passwordHash: "fake:hash"});
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error("fixture registration failed");
+  const readIdentity = async () => (await pool.query(
+    "select id::int, email, (email is not null and verified_email = email) as email_verified from users where id = $1", [result.userId],
+  )).rows[0];
+  const env = {AURORA_ADMIN_EMAILS: email};
+  expect(hasAuroraAdminAccess(await readIdentity(), env)).toBe(false);
+  await pool.query("update users set password_reset_generation = 1 where id = $1", [result.userId]);
+  const proof = createPasswordResetToken();
+  await pool.query("insert into password_reset_tokens(user_id, token_hash, expires_at, generation) values($1,$2,$3,1)", [result.userId, proof.tokenHash, proof.expiresAt]);
+  expect(await consumePasswordReset({token: proof.token, password: "fake-reset-password"}, pool, async () => "fake:new-hash")).toBe("ok");
+  expect(hasAuroraAdminAccess(await readIdentity(), env)).toBe(true);
+  expect(await consumePasswordReset({token: proof.token, password: "fake-reset-password"}, pool, async () => "fake:new-hash")).toBe("used");
+  await pool.query("update users set email = 'different@example.test' where id = $1", [result.userId]);
+  expect(hasAuroraAdminAccess(await readIdentity(), {AURORA_ADMIN_EMAILS:"different@example.test"})).toBe(false);
 });

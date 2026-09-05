@@ -54,7 +54,7 @@ describe("GET /api/auth/me", () => {
   });
 
   it("flags allowlisted administrators so the cabinet can show the operations link", async () => {
-    const user = { id: 17, email: "ops@example.test" };
+    const user = { id: 17, email: "ops@example.test", email_verified: true };
     mocks.sessionTokenHashFromRequest.mockReturnValue("b".repeat(64));
     mocks.getSessionUser.mockResolvedValue(user);
     const previous = process.env.AURORA_ADMIN_EMAILS;
@@ -62,6 +62,20 @@ describe("GET /api/auth/me", () => {
     try {
       const response = await GET(new NextRequest("http://localhost/api/auth/me", { headers: { cookie: "sid=active-session" } }));
       await expect(response.json()).resolves.toEqual({ user: { ...user, is_admin: true } });
+    } finally {
+      if (previous === undefined) delete process.env.AURORA_ADMIN_EMAILS;
+      else process.env.AURORA_ADMIN_EMAILS = previous;
+    }
+  });
+
+  it("does not expose admin controls to an unverified allowlisted registration", async () => {
+    const user = { id: 17, email: "ops@example.test", email_verified: false };
+    mocks.getSessionUser.mockResolvedValue(user);
+    const previous = process.env.AURORA_ADMIN_EMAILS;
+    process.env.AURORA_ADMIN_EMAILS = user.email;
+    try {
+      const response = await GET(new NextRequest("http://localhost/api/auth/me"));
+      await expect(response.json()).resolves.toEqual({ user: { ...user, is_admin: false } });
     } finally {
       if (previous === undefined) delete process.env.AURORA_ADMIN_EMAILS;
       else process.env.AURORA_ADMIN_EMAILS = previous;
