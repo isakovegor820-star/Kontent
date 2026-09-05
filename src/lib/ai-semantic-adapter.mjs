@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { completeAiText } from "./ai-completion-service.mjs";
 import { isConfiguredEngineId, resolveAiEngineRuntime } from "./ai-engine-policy.mjs";
 
@@ -90,6 +91,14 @@ export function createConfiguredSemanticAdapter(options = {}) {
     engine,
     temperature: 0,
     maxTokens,
+    // Keep every check in the originating operation, but never reuse a provider
+    // idempotency key across different drafts or factual/topic payloads.
+    ...(options.providerRequestKey ? {
+      providerRequestKey: createHash("sha256")
+        .update(JSON.stringify(["semantic-check-v1", options.providerRequestKey, system, user]))
+        .digest("hex"),
+    } : {}),
+    ...(options.providerRequestId ? { providerRequestId: options.providerRequestId } : {}),
   }, {
     env,
     signal,

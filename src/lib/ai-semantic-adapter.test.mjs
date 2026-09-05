@@ -11,6 +11,31 @@ const evidence = [{
 const claims = [{ id: "claim-1", text: "Статья 446 ГПК РФ регулирует исполнительский иммунитет." }];
 
 describe("configured semantic AI adapter", () => {
+  it("correlates checks to the operation and isolates idempotency by payload", async () => {
+    const fetchImpl = vi.fn(async () => Response.json({
+      choices: [{ finish_reason: "stop", message: { content: JSON.stringify({
+        verdict: "aligned", confidence: 0.95, reasonCode: "same_topic", verdicts: [],
+      }) } }],
+    }));
+    const adapter = createConfiguredSemanticAdapter({
+      env: { AI_SEMANTIC_ENGINE: "openai", OPENAI_API_KEY: "test-key" },
+      providerRequestKey: "studio-operation-123",
+      providerRequestId: "request-123",
+      fetchImpl,
+    });
+    const input = { topic: "Старт продаж бренда", text: "Бренд открыл продажи." };
+    await adapter.checkTopicAlignment(input);
+    await adapter.checkTopicAlignment(input);
+    await adapter.checkTopicAlignment({ ...input, text: "Другая версия поста." });
+    await adapter.check({ claims, evidence });
+    const headers = fetchImpl.mock.calls.map(([, request]) => request.headers);
+    expect(headers.every((value) => value["x-request-id"] === "request-123")).toBe(true);
+    const keys = headers.map((value) => value["idempotency-key"]);
+    expect(keys.every((value) => /^[a-f0-9]{64}(?::.*)?$/u.test(value))).toBe(true);
+    expect(keys[0]).toBe(keys[1]);
+    expect(new Set([keys[0], keys[2], keys[3]]).size).toBe(3);
+  });
+
   it("is fail-closed unless a supported configured engine is explicitly selected", () => {
     expect(createConfiguredSemanticAdapter({ env: { NAVYAI_API_KEY: "secret" } })).toBeNull();
     expect(createConfiguredSemanticAdapter({

@@ -1572,7 +1572,10 @@ export async function POST(req: NextRequest) {
       { status: 422 },
     );
   }
-  const semanticAdapter = createConfiguredSemanticAdapter() as
+  const semanticAdapter = createConfiguredSemanticAdapter({
+    providerRequestKey: params.providerRequestKey,
+    providerRequestId: requestId,
+  }) as
     | (SemanticEntailmentAdapter & TopicAlignmentAdapter)
     | null;
 
