@@ -175,6 +175,7 @@ export async function loadAdminPublications(
   const [summary, rows, options] = await Promise.all([
     db.query<Record<string, unknown>>(
       `select
+         count(*) filter (where (${ATTENTION_SQL}) is not null) as attention,
          count(*) filter (where post.status = 'failed') as failed,
          count(*) filter (where post.status = 'quarantined' or (post.quarantined_at is not null and post.status <> 'published')) as quarantined,
          count(*) filter (where post.status = 'scheduled' and post.scheduled_at < now() - ${OVERDUE_INTERVAL_SQL}) as overdue,
@@ -196,8 +197,8 @@ export async function loadAdminPublications(
                 post.publication_operation_id as operation_id,
                 post.scheduled_at, post.published_at, post.created_at,
                 post.publish_lease_token is not null as in_flight,
-                left(regexp_replace(post.text, '\\s+', ' ', 'g'), 200) as text,
-                post.text ilike $2 as text_match,
+                post.text as text,
+                post.text ilike $2 as text_match, author.email ilike $2 as email_match,
                 channel.network, channel.status as channel_status,
                 coalesce(nullif(btrim(channel.title), ''), nullif(btrim(channel.handle), ''), 'Канал ' || channel.id::text) as channel,
                 project.name as project,
@@ -213,6 +214,7 @@ export async function loadAdminPublications(
           where ($1::text = ''
                  or base.id::text = $1
                  or base.text_match
+                 or base.email_match
                  or base.project ilike $2
                  or base.channel ilike $2
                  or base.author ilike $2)
@@ -250,7 +252,7 @@ export async function loadAdminPublications(
   return {
     checkedAt: new Date().toISOString(),
     summary: {
-      attention: count(totals.failed) + count(totals.quarantined) + count(totals.overdue) + count(totals.auth),
+      attention: count(totals.attention),
       failed: count(totals.failed),
       quarantined: count(totals.quarantined),
       overdue: count(totals.overdue),

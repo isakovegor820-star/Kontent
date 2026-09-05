@@ -1,5 +1,7 @@
 "use client";
 
+import { checkAdminAccess } from "./admin-ui";
+
 import Link from "next/link";
 import {
   Activity,
@@ -385,6 +387,7 @@ export function AdminBotCenter({ period, refreshKey: externalRefreshKey = 0 }: {
     const params = new URLSearchParams({ days: String(period), usersQuery: botState.botq, usersPage: botState.botpage });
     void fetch(`/api/admin/bot?${params}`, { cache: "no-store", signal: controller.signal })
       .then(async (response) => {
+        checkAdminAccess(response);
         if (!response.ok) throw new Error("load_failed");
         return response.json() as Promise<AdminBotData>;
       })
@@ -437,6 +440,7 @@ export function AdminBotCenter({ period, refreshKey: externalRefreshKey = 0 }: {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(payload),
       });
+      checkAdminAccess(response);
       const result = await response.json().catch(() => null) as { status?: string; description?: string } | null;
       if (!response.ok) {
         const copy = result?.status === "not_linked" ? "Пользователь ещё не подключил чат к боту."

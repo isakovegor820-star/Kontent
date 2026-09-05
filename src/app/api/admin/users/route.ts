@@ -17,7 +17,7 @@ export async function GET(req: NextRequest) {
   try {
     const query = normalizeAdminUsersQuery(req.nextUrl.searchParams);
     const payload = await loadAdminUsers(getPool(), query);
-    return NextResponse.json(payload, { headers: { "Cache-Control": "no-store" } });
+    return NextResponse.json({ ...payload, checkedAt: new Date().toISOString() }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     console.error("[/api/admin/users]", {
       errorName: error instanceof Error ? error.name : "Error",

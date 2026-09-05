@@ -1,0 +1,46 @@
+{
+  "date": "2026-09-05",
+  "interfaceReview": "better-interface full, six domains",
+  "vitest": {
+    "files": 9,
+    "tests": 45,
+    "exitCode": 0
+  },
+  "eslint": {
+    "exitCode": 0
+  },
+  "typescript": {
+    "scope": "all source code except concurrently edited src/e2e/**/*",
+    "exitCode": 0
+  },
+  "latestFullBuild": {
+    "bundle": "compiled successfully",
+    "typecheck": "blocked by concurrent src/e2e/telegram-ownership.integration.ts:209, missing beforeSend"
+  },
+  "browser": {
+    "environment": "isolated local PostgreSQL and Redis, synthetic data, outbound disabled, no worker",
+    "viewports": [
+      320,
+      390,
+      1190,
+      1440,
+      1600
+    ],
+    "userTable": {
+      "clientWidth": 1302,
+      "scrollWidth": 1302
+    },
+    "mobileSevenDayChart": {
+      "clientWidth": 306,
+      "scrollWidth": 306
+    },
+    "navigationGuard": "passed cross-section Back; value 46 retained; no new React errors after final fix",
+    "productionScreens": "intermediate complete production build checked; final navigation and graph fixes verified in dev",
+    "notVerified": [
+      "external delivery",
+      "VoiceOver speech output",
+      "native browser zoom exactly 200%"
+    ]
+  },
+  "deployed": false
+}

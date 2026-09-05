@@ -168,7 +168,7 @@ export async function loadAdminDashboard(
            interval '1 day'
          )::date as day
        )
-       select days.day,
+       select days.day::text as day,
               (select count(*) from users app_user where app_user.created_at::date = days.day) as registrations,
               (select count(*) from posts post where post.created_at::date = days.day) as publications,
               (select count(*) from posts post where post.published_at::date = days.day) as published,

@@ -1,0 +1,110 @@
+{
+  "method": "WCAG relative luminance, computed RGB values read from rendered Aurora admin UI; alpha backgrounds resolved to nearest opaque surface",
+  "samples": [
+    {
+      "sample": "Основной текст",
+      "foreground": [
+        247,
+        249,
+        252
+      ],
+      "background": [
+        17,
+        24,
+        36
+      ],
+      "ratio": 16.87,
+      "passesNormalText": true
+    },
+    {
+      "sample": "Вторичный текст",
+      "foreground": [
+        201,
+        210,
+        223
+      ],
+      "background": [
+        17,
+        24,
+        36
+      ],
+      "ratio": 11.67,
+      "passesNormalText": true
+    },
+    {
+      "sample": "Подписи",
+      "foreground": [
+        149,
+        163,
+        183
+      ],
+      "background": [
+        17,
+        24,
+        36
+      ],
+      "ratio": 6.95,
+      "passesNormalText": true
+    },
+    {
+      "sample": "Ссылка / активный раздел",
+      "foreground": [
+        157,
+        187,
+        255
+      ],
+      "background": [
+        16,
+        35,
+        67
+      ],
+      "ratio": 8.18,
+      "passesNormalText": true
+    },
+    {
+      "sample": "Ошибка",
+      "foreground": [
+        255,
+        158,
+        163
+      ],
+      "background": [
+        50,
+        23,
+        28
+      ],
+      "ratio": 8.37,
+      "passesNormalText": true
+    },
+    {
+      "sample": "Предупреждение",
+      "foreground": [
+        255,
+        208,
+        120
+      ],
+      "background": [
+        48,
+        36,
+        17
+      ],
+      "ratio": 10.49,
+      "passesNormalText": true
+    },
+    {
+      "sample": "Акцентный текст",
+      "foreground": [
+        157,
+        187,
+        255
+      ],
+      "background": [
+        7,
+        10,
+        16
+      ],
+      "ratio": 10.36,
+      "passesNormalText": true
+    }
+  ]
+}
