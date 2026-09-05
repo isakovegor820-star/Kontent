@@ -2159,7 +2159,9 @@ try {
   for (const route of ["/app/calendar", `/app/composer?draft=${draftId}`, "/app/studio", "/app/autopilot"]) {
     await page.goto(route);
     await page.waitForLoadState("domcontentloaded");
-    await page.waitForTimeout(350);
+    // Measure the loaded screen and settle its API reads before the next hard
+    // navigation. A fixed delay raced Calendar's suggestion fetch in WebKit.
+    await waitForFirstPartyNetworkIdle(page, `mobile layout ${route}`);
     assert(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 2), `${route} has mobile horizontal overflow`);
   }
 
