@@ -1,3 +1,5 @@
+import { ProjectAccessError } from "@/lib/project-permissions";
+import { withResearchProject, researchChannel } from "@/lib/research-project-access";
 // Универсальное добавление источника конкурента. Сеть выбирает адаптер воркера, а не
 // отдельный API-роут: у Telegram/Instagram одинаковые лимит, жизненный цикл и карточка.
 
@@ -11,7 +13,6 @@ import {
   isCompetitorNetwork,
   parseCompetitorSource,
 } from "@/lib/competitors";
-import { resolveChannel } from "@/lib/autopilot";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 
 export const runtime = "nodejs";
@@ -46,10 +47,10 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const pool = getPool();
+    return await withResearchProject(getPool(), user.id, "content.create", async (pool, projectId, afterCommit) => {
     // Конкурент — сосед КАНАЛА. Лимит и дубликаты тоже считаем по каналу: 20 соседей у канала
     // про банкротство не должны съедать место у канала про ИИ в праве.
-    const channelId = await resolveChannel(user.id, Number(body.channelId) || null);
+    const channelId = await researchChannel(pool, projectId, Number(body.channelId) || null, true);
     if (!channelId) return NextResponse.json({ ok: false, error: "no_channel" }, { status: 422 });
 
     const cnt = (
@@ -70,8 +71,8 @@ export async function POST(req: NextRequest) {
 
     const ins = await pool.query<{ id: number }>(
       `insert into competitors
-         (user_id, channel_id, network, handle, custom_title, status, connection_method, is_active)
-       values ($1, $2, $3, $4, $5, 'pending', $6, true) returning id`,
+         (user_id, collection_requested_by_user_id, channel_id, network, handle, custom_title, status, connection_method, is_active)
+       values ($1, $1, $2, $3, $4, $5, 'pending', $6, true) returning id`,
       [
         user.id,
         channelId,
@@ -84,10 +85,11 @@ export async function POST(req: NextRequest) {
     const id = ins.rows[0].id;
 
     // Первичный сбор сразу — досье готово за секунды. attempts на случай сетевого сбоя.
+    afterCommit(async (pool) => {
     try {
       await getStatsQueue().add(
         "competitor",
-        { id },
+        { id, userId: user.id, projectId },
         { removeOnComplete: true, attempts: 2, backoff: { type: "fixed", delay: 15000 } },
       );
     } catch (error) {
@@ -95,9 +97,12 @@ export async function POST(req: NextRequest) {
       await pool.query(`delete from competitors where id = $1 and status = 'pending'`, [id]);
       throw error;
     }
+    });
 
     return NextResponse.json({ ok: true, id, handle, network });
+    });
   } catch (err) {
+    if (err instanceof ProjectAccessError) return NextResponse.json({ error: "forbidden" }, { status: 403 });
     console.error("[/api/competitors/add]", err);
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }

@@ -1,7 +1,10 @@
+import type { PoolClient } from "pg";
+import { ProjectAccessError, roleAllows, type ActiveProjectMembership, type ProjectPermission, type ProjectRole } from "@/lib/project-permissions";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
+  role: "owner" as ProjectRole,
   query: vi.fn(),
   session: vi.fn(),
   resolveChannel: vi.fn(),
@@ -15,10 +18,24 @@ vi.mock("@/lib/autopilot", () => ({ resolveChannel: mocks.resolveChannel }));
 vi.mock("@/lib/radar-search-queue", () => ({ enqueueRadarSearch: mocks.enqueue }));
 vi.mock("@/lib/request-origin", () => ({ hasTrustedMutationOrigin: mocks.trusted }));
 
+// Route behavior is isolated here; real PostgreSQL authority/locks are covered by N21 integration.
+vi.mock("@/lib/selected-project-transaction", () => ({
+  withSelectedProjectPermission: async (pool: PoolClient, userId: number, permission: ProjectPermission,
+    action: (client: PoolClient, membership: ActiveProjectMembership) => Promise<Response>) => {
+    if (!roleAllows(mocks.role, permission)) throw new ProjectAccessError("permission_denied");
+    return action(pool, { projectId: 3, userId, role: mocks.role, version: 1 });
+  },
+}));
+vi.mock("@/lib/research-project-access", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/research-project-access")>(),
+  researchChannel: mocks.resolveChannel,
+}));
+
 import { GET, POST } from "./route";
 
 const queuedRun = {
   id: "91",
+  project_id: 3,
   query: "садоводство",
   normalized_query: "садоводство",
   status: "queued",
@@ -38,11 +55,13 @@ const queuedRun = {
 describe("hybrid radar search route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.role = "owner";
     mocks.session.mockResolvedValue({ id: 7 });
     mocks.resolveChannel.mockResolvedValue(11);
     mocks.trusted.mockReturnValue(true);
     mocks.enqueue.mockResolvedValue({ jobId: "radar-search-91", recovered: false });
     mocks.query.mockImplementation(async (sql: string) => {
+      if (sql.includes("from user_project_preferences")) return { rowCount: 1, rows: [{ project_id: 3, user_id: 7, role: "owner", version: 1 }] };
       if (sql.includes("insert into radar_search_runs")) return { rowCount: 1, rows: [queuedRun] };
       if (sql.includes("queue_confirmed_at = now()")) return { rowCount: 1, rows: [queuedRun] };
       return { rowCount: 0, rows: [] };
@@ -207,13 +226,26 @@ describe("hybrid radar search route", () => {
     expect(mocks.enqueue).toHaveBeenCalledWith({ runId: 91, userId: 7 });
     expect(mocks.query).toHaveBeenCalledWith(
       expect.stringContaining("insert into radar_search_runs"),
-      [7, 11, "radar_garden_1234", "Садоводство", "садоводство", 0],
+      [7, 11, "radar_garden_1234", "Садоводство", "садоводство", 0, 3],
     );
+  });
+
+  it("denies a current publisher before queueing a paid background search", async () => {
+    mocks.role = "publisher";
+    mocks.query.mockResolvedValue({ rowCount: 1, rows: [{ project_id: 3, user_id: 7, role: "publisher", version: 2 }] });
+    const response = await POST(new NextRequest("http://localhost/api/radar/search", {
+      method: "POST", headers: { "content-type": "application/json", "idempotency-key": "radar_no_permission_1234" },
+      body: JSON.stringify({ q: "садоводство", channelId: 11 }),
+    }));
+    expect(response.status).toBe(403);
+    expect(mocks.enqueue).not.toHaveBeenCalled();
+    expect(mocks.query.mock.calls.some(([sql]) => String(sql).includes("insert into radar_search_runs"))).toBe(false);
   });
 
   it("keeps local results available when queue dispatch fails", async () => {
     mocks.enqueue.mockRejectedValue(new Error("redis offline"));
     mocks.query.mockImplementation(async (sql: string) => {
+      if (sql.includes("from user_project_preferences")) return { rowCount: 1, rows: [{ project_id: 3, user_id: 7, role: "owner", version: 1 }] };
       if (sql.includes("insert into radar_search_runs")) return { rowCount: 1, rows: [queuedRun] };
       if (sql.includes("error_code = 'queue_unavailable'")) {
         return { rowCount: 1, rows: [{ ...queuedRun, status: "failed", stage: "failed", progress: 100 }] };
@@ -237,7 +269,7 @@ describe("hybrid radar search route", () => {
     mocks.query.mockResolvedValue({ rowCount: 0, rows: [] });
     const response = await GET(new NextRequest("http://localhost/api/radar/search?run=999"));
     expect(response.status).toBe(404);
-    expect(mocks.query).toHaveBeenCalledWith(expect.stringContaining("user_id = $2"), [999, 7]);
+    expect(mocks.query).toHaveBeenCalledWith(expect.stringContaining("user_id = $2"), [999, 7, 3]);
   });
 
   it("shows a popular publication once, preferring its trend classification", async () => {

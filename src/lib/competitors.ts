@@ -1,7 +1,7 @@
 // Универсальные источники конкурентов. UI/API/воркер используют один и тот же реестр:
 // добавление следующей сети не требует нового формата карточки или отдельного парсера URL.
 
-export const MAX_COMPETITORS = 20;
+export { MAX_COMPETITORS } from "./competitor-policy.mjs";
 export const COMPETITOR_NETWORKS = ["tg", "instagram"] as const;
 export type CompetitorNetwork = (typeof COMPETITOR_NETWORKS)[number];
 
