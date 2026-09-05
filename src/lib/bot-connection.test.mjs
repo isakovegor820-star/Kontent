@@ -203,7 +203,7 @@ describe("legacy Telegram connection links", () => {
       "commit",
     ]));
     expect(queries.find((entry) => entry.sql.includes("insert into bot_links")).params)
-      .toEqual([link.code, 7, 15]);
+      .toEqual([link.code, 7, 15, null]);
     expect(queries.at(-1).sql).toBe("commit");
     expect(client.release).toHaveBeenCalledOnce();
   });
@@ -233,7 +233,7 @@ describe("legacy Telegram connection links", () => {
       query: vi.fn(async (sql) => {
         const text = String(sql);
         queries.push(text);
-        if (text.includes("select user_id from bot_links")) return { rows: [{ user_id: "7" }] };
+        if (text.includes("select user_id, channel_project_id from bot_links")) return { rows: [{ user_id: "7" }] };
         if (text.includes("from users app_user")) {
           return { rows: [{ id: "7", tg_chat_id: null, enabled: false }] };
         }
@@ -259,7 +259,7 @@ describe("legacy Telegram connection links", () => {
       query: vi.fn(async (sql, params) => {
         const text = String(sql);
         queries.push({ sql: text, params });
-        if (text.includes("select user_id from bot_links")) return { rows: [{ user_id: "7" }] };
+        if (text.includes("select user_id, channel_project_id from bot_links")) return { rows: [{ user_id: "7" }] };
         if (text.includes("from users app_user")) {
           return { rows: [{ id: "7", tg_chat_id: "999", enabled: true }] };
         }
@@ -279,6 +279,7 @@ describe("legacy Telegram connection links", () => {
       userId: 7,
       telegramChatId: 123,
       moved: true,
+      projectId: null,
     });
     const accountUpdate = queries.find((entry) => entry.sql.includes("set tg_chat_id = case"));
     const linkUpdate = queries.find((entry) => entry.sql.includes("update bot_links set used_at"));

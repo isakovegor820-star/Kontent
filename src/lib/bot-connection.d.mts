@@ -16,6 +16,7 @@ export function parseLegacyBotStartPayload(value: unknown): {
 
 export function createLegacyBotLink(pool: Pool, input: {
   userId: number;
+  projectId?: number | null;
 }): Promise<{
   code: string;
   expiresInMinutes: number;
@@ -29,6 +30,7 @@ export function consumeLegacyBotLink(pool: Pool, input: {
   userId?: number;
   telegramChatId?: number;
   moved?: boolean;
+  projectId?: number | null;
 }>;
 
 export interface BotConnectionTelegramIdentity {

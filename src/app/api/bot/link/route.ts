@@ -16,6 +16,9 @@ import { getSessionUser } from "@/lib/session";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import { probeRedisAndPublicationWorker } from "@/lib/readiness-probes";
 
+import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/project-permissions";
+import { checkRateLimit, rateLimitResponse } from "@/lib/rate-limit";
+
 export const runtime = "nodejs";
 
 /** Имя бота из токена не достать — берём из env, иначе ссылку не собрать. */
@@ -66,11 +69,16 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  const limit = await checkRateLimit(`telegram-link:user:${user.id}`, 10, 60, { failureMode: "closed" });
+  if (!limit.allowed) return rateLimitResponse(limit);
   try {
+    const body = await req.json().catch(() => null) as { intent?: unknown } | null;
+    const projectId = body?.intent === "channel"
+      ? (await requireSelectedProjectPermission(getPool(), user.id, "project.manage")).projectId
+      : null;
     // Замена старого кода и выпуск нового происходят одной транзакцией: при сбое
     // предыдущая рабочая ссылка не исчезнет без новой ссылки на замену.
-    const link = await createLegacyBotLink(getPool(), { userId: user.id });
-    const body = await req.json().catch(() => null) as { intent?: unknown } | null;
+    const link = await createLegacyBotLink(getPool(), { userId: user.id, ...(projectId ? { projectId } : {}) });
     const startPayload = body?.intent === "channel" ? `${link.code}_channel` : link.code;
 
     return NextResponse.json({
@@ -79,6 +87,7 @@ export async function POST(req: NextRequest) {
       expiresInMin: link.expiresInMinutes,
     });
   } catch (err) {
+    if (err instanceof ProjectAccessError) return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
     console.error("[/api/bot/link] POST", err);
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }

@@ -16,7 +16,9 @@ export async function GET(req: NextRequest) {
     await pool.query(
       `select user_account.id
          from users user_account
-        where user_account.tg_chat_id = $1`,
+         left join bot_user_controls control on control.user_id = user_account.id
+        where user_account.tg_chat_id = $1 and user_account.blocked_at is null
+          and coalesce(control.enabled, true) = true`,
       [identity.userId],
     )
   ).rows[0];
@@ -40,7 +42,8 @@ export async function GET(req: NextRequest) {
          join projects project on project.id = preference.selected_project_id and project.is_archived = false
          join project_members member
            on member.project_id = project.id and member.user_id = preference.user_id and member.status = 'active'
-        where preference.user_id = $1`,
+         left join bot_project_controls control on control.project_id = project.id
+        where preference.user_id = $1 and coalesce(control.enabled, true) = true`,
       [account.id],
     )
   ).rows[0];
@@ -56,6 +59,19 @@ export async function GET(req: NextRequest) {
       [overview.id],
     )
   ).rows;
+  // Init data authenticates Telegram identity, not continuing project authority.
+  // Recheck after the overview/content reads so revoke/block cannot expose that result.
+  const authorized = await pool.query(
+    `select actor.id from users actor
+       join project_members member on member.user_id=actor.id and member.project_id=$2 and member.status='active'
+       join projects project on project.id=member.project_id and not project.is_archived
+       left join bot_user_controls user_control on user_control.user_id=actor.id
+       left join bot_project_controls project_control on project_control.project_id=project.id
+      where actor.id=$1 and actor.tg_chat_id=$3 and actor.blocked_at is null
+        and coalesce(user_control.enabled,true) and coalesce(project_control.enabled,true)`,
+    [account.id, overview.id, identity.userId],
+  );
+  if (!authorized.rowCount) return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403, headers: { "Cache-Control": "no-store" } });
   return NextResponse.json({
     ok: true,
     overview: {
@@ -74,5 +90,5 @@ export async function GET(req: NextRequest) {
         channel: item.channel,
       })),
     },
-  });
+  }, { headers: { "Cache-Control": "no-store" } });
 }

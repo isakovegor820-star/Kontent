@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
@@ -7,9 +7,12 @@ const mocks = vi.hoisted(() => ({
   buildAuthUrl: vi.fn(),
   randomState: vi.fn(),
   randomPkce: vi.fn(),
+  requireProjectPermission: vi.fn(),
 }));
 
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
+vi.mock("@/lib/db", () => ({ getPool: () => ({}) }));
+vi.mock("@/lib/project-permissions", async (original) => ({ ...await original<typeof import("@/lib/project-permissions")>(), requireProjectPermission: mocks.requireProjectPermission }));
 vi.mock("@/lib/social-providers.mjs", () => ({ getOAuthConfig: mocks.getOAuthConfig }));
 vi.mock("@/lib/oauth.mjs", () => ({
   buildAuthUrl: mocks.buildAuthUrl,
@@ -18,11 +21,18 @@ vi.mock("@/lib/oauth.mjs", () => ({
 }));
 
 import { GET } from "./route";
+import * as capabilities from "@/lib/oauth-capabilities";
+import { openOAuthState } from "@/lib/oauth-state";
 
 describe("GET /api/channels/oauth/start", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.getSessionUser.mockResolvedValue({ id: 5 });
+    mocks.requireProjectPermission.mockResolvedValue({ projectId: 23, role: "owner" });
+    mocks.randomState.mockReturnValue("fixture-state");
+    mocks.randomPkce.mockReturnValue({ verifier: "fixture-verifier", challenge: "fixture-challenge" });
+    mocks.buildAuthUrl.mockReturnValue("https://provider.example/authorize");
+    vi.stubEnv("TOKENS_MASTER_KEY", "isolated-oauth-fixture-key");
     mocks.getOAuthConfig.mockReturnValue({
       id: "youtube",
       authEndpoint: "https://provider.example/authorize",
@@ -32,6 +42,7 @@ describe("GET /api/channels/oauth/start", () => {
       scopes: ["publish"],
     });
   });
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
   it.each(["youtube", "instagram"])(
     "does not launch configured %s OAuth before Composer supports it",
@@ -90,6 +101,28 @@ describe("GET /api/channels/oauth/start", () => {
       "http://localhost/app/settings?oauth=unauthorized",
     );
     expect(mocks.getOAuthConfig).not.toHaveBeenCalled();
+    expect(mocks.buildAuthUrl).not.toHaveBeenCalled();
+  });
+  it("binds a supported OAuth flow to the explicit native query project", async () => {
+    vi.spyOn(capabilities, "getOAuthProviderCapability").mockReturnValue({ available: true, status: "available", reason: null, message: null });
+    const response = await GET(new NextRequest("http://localhost/api/channels/oauth/start?network=youtube&projectId=23"));
+    expect(mocks.requireProjectPermission).toHaveBeenCalledWith(expect.anything(), 5, 23, "project.manage");
+    expect(openOAuthState(response.cookies.get("oauth_state")!.value, 5, "youtube")).toMatchObject({ projectId: 23, state: "fixture-state", verifier: "fixture-verifier" });
+    expect(response.headers.get("location")).toBe("https://provider.example/authorize");
+  });
+  it.each(["", "&projectId=0", "&projectId=2&projectId=23"])("refuses absent or ambiguous native scope %s", async (query) => {
+    vi.spyOn(capabilities, "getOAuthProviderCapability").mockReturnValue({ available: true, status: "available", reason: null, message: null });
+    const response = await GET(new NextRequest(`http://localhost/api/channels/oauth/start?network=youtube${query}`));
+    expect(response.headers.get("location")).toContain("oauth=forbidden");
+    expect(mocks.buildAuthUrl).not.toHaveBeenCalled();
+    expect(mocks.requireProjectPermission).not.toHaveBeenCalled();
+  });
+  it("denies a project member without project management permission before provider redirect", async () => {
+    vi.spyOn(capabilities, "getOAuthProviderCapability").mockReturnValue({ available: true, status: "available", reason: null, message: null });
+    const { ProjectAccessError } = await import("@/lib/project-permissions");
+    mocks.requireProjectPermission.mockRejectedValue(new ProjectAccessError("permission_denied"));
+    const response = await GET(new NextRequest("http://localhost/api/channels/oauth/start?network=youtube&projectId=23"));
+    expect(response.headers.get("location")).toContain("oauth=forbidden");
     expect(mocks.buildAuthUrl).not.toHaveBeenCalled();
   });
 });

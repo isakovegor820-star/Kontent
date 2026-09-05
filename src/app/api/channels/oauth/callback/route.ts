@@ -15,6 +15,9 @@ import { getOAuthConfig, getAdapter } from "@/lib/social-providers.mjs";
 import { exchangeCode } from "@/lib/oauth.mjs";
 import { encryptToken } from "@/lib/token-crypto.mjs";
 import { OAUTH_STATE_COOKIE, callbackUrlFromReq } from "@/lib/oauth-request";
+import { openOAuthState } from "@/lib/oauth-state";
+import { ProjectAccessError, requireProjectPermission } from "@/lib/project-permissions";
+import { hasComposerPayloadSupport } from "@/lib/oauth-capabilities";
 
 export const runtime = "nodejs";
 
@@ -68,14 +71,12 @@ export async function GET(req: NextRequest) {
   const code = req.nextUrl.searchParams.get("code") || "";
   const state = req.nextUrl.searchParams.get("state") || "";
 
-  // Достаём и сразу жгём cookie состояния (одноразовое использование).
+  // Clear the browser cookie in every response; the provider consumes its OAuth code.
   const raw = req.cookies.get(OAUTH_STATE_COOKIE)?.value;
   if (!raw) return settingsRedirect(req, `oauth=expired&network=${network}`);
 
-  let saved: { state?: string; verifier?: string; network?: string; userId?: number };
-  try {
-    saved = JSON.parse(raw);
-  } catch {
+  const saved = openOAuthState(raw, user.id, network);
+  if (!saved) {
     return settingsRedirect(req, `oauth=expired&network=${network}`);
   }
 
@@ -90,6 +91,9 @@ export async function GET(req: NextRequest) {
   if (!cfg || !adapter || !idCol) {
     return settingsRedirect(req, `oauth=not_configured&network=${network}`);
   }
+  if (!hasComposerPayloadSupport(network)) {
+    return settingsRedirect(req, `oauth=unsupported&network=${network}`);
+  }
 
   if (!process.env.TOKENS_MASTER_KEY) {
     console.error("[/api/channels/oauth/callback] TOKENS_MASTER_KEY не задан — шифровать токен нечем");
@@ -97,6 +101,9 @@ export async function GET(req: NextRequest) {
   }
 
   try {
+    const pool = getPool();
+    // Never consult another tab's shared server preference during a callback.
+    await requireProjectPermission(pool, user.id, saved.projectId, "project.manage");
     // 1) code → токены (с PKCE-verifier).
     const redirectUri = callbackUrlFromReq(req, network);
     const tokens = await exchangeCode(cfg, { code, redirectUri, codeVerifier: saved.verifier });
@@ -122,11 +129,18 @@ export async function GET(req: NextRequest) {
       ? encryptToken(storeRefresh, { userId: user.id, provider: network })
       : null;
 
-    const pool = getPool();
     const meta = JSON.stringify(fin.meta ?? {});
     const client = await pool.connect();
     try {
       await client.query("begin");
+      // Serialize permission revocation with the write, then use the common guard.
+      await client.query(
+        `select member.user_id from project_members member
+          join projects project on project.id = member.project_id
+         where member.project_id = $1 and member.user_id = $2
+         for share of member, project`, [saved.projectId, user.id],
+      );
+      await requireProjectPermission(client, user.id, saved.projectId, "project.manage");
       const tok = await client.query<{ id: number }>(
         `insert into oauth_tokens
          (user_id, provider, external_id, access_token, refresh_token, scopes, expires_at, meta)
@@ -146,22 +160,22 @@ export async function GET(req: NextRequest) {
 
       // 4) Канал и token живут в одной транзакции: конфликт владения не оставляет orphan token.
       const existing = await client.query<{ id: number }>(
-        `select id from channels where user_id = $1 and ${idCol} = $2 for update`,
-        [user.id, fin.externalId],
+        `select id from channels where user_id = $1 and ${idCol} = $2 and project_id = $3 for update`,
+        [user.id, fin.externalId, saved.projectId],
       );
       if (existing.rowCount) {
         await client.query(
           `update channels set title = $2, handle = $3, oauth_token_id = $4,
               is_active = true, status = 'active', last_auth_error_code = null,
               last_auth_error_at = null, disconnected_at = null, updated_at = now()
-            where id = $1`,
-          [existing.rows[0].id, fin.meta?.title ?? null, fin.meta?.handle ?? null, tokenId],
+            where id = $1 and project_id = $5`,
+          [existing.rows[0].id, fin.meta?.title ?? null, fin.meta?.handle ?? null, tokenId, saved.projectId],
         );
       } else {
         await client.query(
-          `insert into channels (user_id, network, ${idCol}, oauth_token_id, title, handle)
-           values ($1, $2, $3, $4, $5, $6)`,
-          [user.id, network, fin.externalId, tokenId, fin.meta?.title ?? null, fin.meta?.handle ?? null],
+          `insert into channels (project_id, user_id, network, ${idCol}, oauth_token_id, title, handle)
+           values ($1, $2, $3, $4, $5, $6, $7)`,
+          [saved.projectId, user.id, network, fin.externalId, tokenId, fin.meta?.title ?? null, fin.meta?.handle ?? null],
         );
       }
       await client.query("commit");
@@ -175,8 +189,9 @@ export async function GET(req: NextRequest) {
       client.release();
     }
 
-    return settingsRedirect(req, `connected=${network}`);
+    return settingsRedirect(req, `connected=${network}&oauthProjectId=${saved.projectId}`);
   } catch (err) {
+    if (err instanceof ProjectAccessError) return settingsRedirect(req, `oauth=forbidden&network=${network}`);
     console.error("oauth_callback_failed", { provider: label, ...safeOAuthError(err) });
     return settingsRedirect(req, `oauth=server&network=${network}`);
   }
