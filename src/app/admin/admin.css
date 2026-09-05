@@ -1,0 +1,40 @@
+/* Operations density uses Aurora's existing semantic palette and component tokens. */
+.app-v3.admin-workspace {
+  background-image: none;
+  --type-h1-size: clamp(1.6rem, 2.4vw, 2rem);
+  --type-h1-line: 1.2;
+  --type-h2-size: 1.25rem;
+  --type-h2-line: 1.35;
+  --type-h3-size: 1rem;
+  --type-h3-line: 1.4;
+  --type-caption-size: .8125rem;
+  --type-caption-line: 1.5;
+}
+.admin-workspace .card-plain, .admin-workspace .card-plain:hover { background: var(--surface); box-shadow: none; backdrop-filter: none; }
+.admin-workspace :is(h2, h3) { scroll-margin-top: 7rem; }
+.admin-workspace :is(h1, h2, h3) { text-wrap: balance; }
+.admin-workspace h1 { font-size: clamp(1.6rem, 2.4vw, 2rem); line-height: 1.2; }
+.admin-workspace h2 { font-size: 1.25rem; line-height: 1.35; }
+.admin-workspace h3 { font-size: 1rem; line-height: 1.4; }
+.admin-workspace .type-caption { font-size: .8125rem; line-height: 1.5; }
+.admin-workspace :is(th, td) { font-size: .875rem; line-height: 1.5; }
+.admin-workspace th { color: var(--text-3); font-weight: 500; }
+.admin-workspace :is(p, dd, td) { overflow-wrap: anywhere; }
+.admin-workspace .text-brand { color: var(--info-text); }
+.admin-workspace :focus-visible { outline: 2px solid var(--info-text); outline-offset: 3px; }
+.admin-workspace :is(input, textarea, select) { scroll-margin-block: 6rem; }
+.admin-workspace details > summary { cursor: pointer; padding-block: .5rem; min-height: 2.5rem; color: var(--info-text); }
+.admin-workspace .admin-skip { position: fixed; top: .75rem; left: .75rem; z-index: 200; transform: translateY(-200%); padding: .75rem 1rem; background: var(--surface); color: var(--text); border: 2px solid var(--info-text); border-radius: var(--radius-sm); }
+.admin-workspace .admin-skip:focus { transform: none; }
+.admin-workspace dialog::backdrop { background: rgb(0 0 0 / .6); }
+@media (max-width: 40rem) {
+  .admin-workspace :is(input, select, textarea) { font-size: 1rem; }
+  .admin-workspace .whitespace-nowrap { white-space: normal; }
+  .admin-workspace [role="dialog"] :is(button, a) { overflow-wrap: anywhere; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .admin-workspace *, .admin-workspace *::before, .admin-workspace *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}
+@media (forced-colors: active) {
+  .admin-workspace :focus-visible { outline-color: Highlight; }
+}

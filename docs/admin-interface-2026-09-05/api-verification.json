@@ -1,0 +1,19 @@
+{
+  "environment": "Isolated local synthetic PostgreSQL database; no external delivery",
+  "checkedAt": "2026-09-05T11:06:51.665Z",
+  "checks": [
+    "/api/admin/connections: anonymous 401, project owner 403",
+    "/api/admin/connections: admin 200, no-store, explicit safe fields",
+    "/api/admin/ai-spend: anonymous 401, project owner 403",
+    "/api/admin/ai-spend: admin 200, no-store, explicit safe fields",
+    "AI known costs include the failed billable attempt; unknown reserve separate",
+    "AI unknown filter and totals match",
+    "AI empty search is empty data",
+    "Connections: attention filter, handle search and owner attribution",
+    "Out-of-range pagination clamps to available page",
+    "One publication counted once even with failure + auth error",
+    "Browser reschedule persisted exactly 8 September 16:30 Europe/Amsterdam",
+    "Publications searchable by author email even when name exists",
+    "Search stays parameterized"
+  ]
+}

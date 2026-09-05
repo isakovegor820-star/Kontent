@@ -10,6 +10,7 @@ import { adminFetchMock, analyticsPayload, overviewPayload, systemPayload } from
 const fetchMock = vi.fn();
 
 beforeEach(() => {
+  vi.setSystemTime(new Date("2026-09-03T10:00:00.000Z"));
   vi.stubGlobal("fetch", fetchMock);
   Element.prototype.scrollIntoView = vi.fn();
   Element.prototype.scrollTo = vi.fn();
@@ -18,6 +19,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.clearAllMocks();
 });
@@ -27,7 +29,7 @@ describe("AdminSystemCenter", () => {
     window.history.replaceState({}, "", "/admin#system");
     fetchMock.mockImplementation(adminFetchMock({ "/api/admin/system": () => systemPayload() }));
     render(<AdminSystemCenter />);
-    expect(await screen.findByText("Платформа работает с отклонениями")).toBeTruthy();
+    expect(await screen.findByText("Обнаружены отклонения")).toBeTruthy();
     expect(screen.getByText("Исправно:").parentElement?.textContent).toContain("10");
     expect(screen.getByText("Настроено:").parentElement?.textContent).toContain("3");
     expect(screen.getAllByText("Настроено")).toHaveLength(3);
@@ -39,7 +41,7 @@ describe("AdminSystemCenter", () => {
     window.history.replaceState({}, "", "/admin#system");
     fetchMock.mockImplementation(adminFetchMock({ "/api/admin/system": () => systemPayload() }));
     render(<AdminSystemCenter />);
-    await screen.findByText("Платформа работает с отклонениями");
+    await screen.findByText("Обнаружены отклонения");
     fireEvent.click(screen.getByRole("button", { name: /Redis/u }));
     expect(window.location.search).toBe("?system=redis");
     const detail = await screen.findByRole("article");
@@ -55,7 +57,7 @@ describe("AdminSystemCenter", () => {
     window.history.replaceState({}, "", "/admin?system=autopilot_worker#system");
     fetchMock.mockImplementation(adminFetchMock({ "/api/admin/system": () => systemPayload() }));
     render(<AdminSystemCenter />);
-    await screen.findByText("Платформа работает с отклонениями");
+    await screen.findByText("Обнаружены отклонения");
     expect(screen.getByText("Выберите компонент")).toBeTruthy();
     expect(screen.queryByRole("article")).toBeNull();
   });
@@ -103,22 +105,22 @@ describe("AdminDashboard shell", () => {
     window.history.replaceState({}, "", "/admin#system");
     fetchMock.mockImplementation(adminFetchMock({ "/api/admin/system": () => systemPayload() }));
     render(<AdminDashboard />);
-    await screen.findByText("Платформа работает с отклонениями");
+    await screen.findByText("Обнаружены отклонения");
     expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/api/admin/overview"))).toBe(false);
     expect(screen.getByRole("heading", { level: 1, name: "Состояние системы" })).toBeTruthy();
   });
 
-  it("renders the inbox with publication actions from the overview payload", async () => {
+  it("renders actionable diagnostics links from the overview payload", async () => {
     window.history.replaceState({}, "", "/admin#overview");
     fetchMock.mockImplementation(adminFetchMock({
       "/api/admin/overview": () => overviewPayload(),
       "/api/admin/aurora-analytics": () => ({ status: 503 }),
     }));
     render(<AdminDashboard />);
-    expect(await screen.findByText("Что горит сейчас")).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Требует внимания" })).toBeTruthy();
     expect(await screen.findByText(/Ошибка отправки: «Открыли запись на приём»/u)).toBeTruthy();
-    expect(screen.getByRole("button", { name: /Повторить/u })).toBeTruthy();
-    expect(screen.getByText(/1 канал Telegram требуют переподключения/u)).toBeTruthy();
+    expect(screen.getAllByRole("link", { name: "Открыть публикацию" })).toHaveLength(2);
+    expect(screen.getByText(/1 канал Telegram · требуется переподключение/u)).toBeTruthy();
     expect(screen.getByRole("heading", { level: 1, name: "Обзор" })).toBeTruthy();
     expect(screen.queryByText("Управление платформой")).toBeNull();
   });

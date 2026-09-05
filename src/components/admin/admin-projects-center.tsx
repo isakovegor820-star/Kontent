@@ -1,5 +1,7 @@
 "use client";
 
+import { checkAdminAccess } from "./admin-ui";
+
 import {
   Activity,
   Bot,
@@ -348,6 +350,7 @@ export function AdminProjectsCenter({ period, refreshKey = 0 }: { period: AdminP
     const controller = new AbortController();
     void fetch(`/api/admin/projects?${listParams}`, { cache: "no-store", signal: controller.signal })
       .then(async (response) => {
+        checkAdminAccess(response);
         if (!response.ok) throw new Error("unavailable");
         return response.json() as Promise<AdminProjectsResponse>;
       })
@@ -371,6 +374,7 @@ export function AdminProjectsCenter({ period, refreshKey = 0 }: { period: AdminP
     const controller = new AbortController();
     void fetch(`/api/admin/projects/${state.prid}?days=${period}`, { cache: "no-store", signal: controller.signal })
       .then(async (response) => {
+        checkAdminAccess(response);
         if (response.status === 404) throw new Error("not_found");
         if (!response.ok) throw new Error("unavailable");
         return response.json() as Promise<AdminProjectDetail>;

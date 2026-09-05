@@ -1,0 +1,29 @@
+
+> platform@0.1.0 build
+> node scripts/build.mjs
+
+▲ Next.js 16.2.12 (webpack)
+- Environments: .env.local
+- Experiments (use with caution):
+  · clientTraceMetadata
+  · cpus: 1
+  · proxyClientMaxBodySize: "11mb"
+  ✓ webpackMemoryOptimizations
+
+  Creating an optimized production build ...
+✓ Compiled successfully in 12.0s
+  Running TypeScript ...
+Failed to type check.
+
+./src/e2e/telegram-ownership.integration.ts:209:49
+Type error: Argument of type '{ partIndex: number; body: { text: string; }; send: Mock<() => Promise<{ ok: boolean; result: { message_id: number; }; }>>; pool: Pool; userId: number; projectId: number; eventKey: string; botId: number; chatId: number; }' is not assignable to parameter of type '{ pool: any; userId: any; projectId: any; eventKey: any; botId: any; chatId: any; partIndex?: number | undefined; method?: string | undefined; body: any; send: any; beforeSend: any; }'.
+  Property 'beforeSend' is missing in type '{ partIndex: number; body: { text: string; }; send: Mock<() => Promise<{ ok: boolean; result: { message_id: number; }; }>>; pool: Pool; userId: number; projectId: number; eventKey: string; botId: number; chatId: number; }' but required in type '{ pool: any; userId: any; projectId: any; eventKey: any; botId: any; chatId: any; partIndex?: number | undefined; method?: string | undefined; body: any; send: any; beforeSend: any; }'.
+
+  [90m207 |[0m ...[36monst[0m sendSecond = vi.fn([36masync[0m () => { [36mthrow[0m [36mnew[0m [33mError[0m([32m"isolated lost acknowledgement"[0m)...
+  [90m208 |[0m ...[36monst[0m base = { pool,userId,projectId,eventKey:[32m"parts:1"[0m,botId:[35m999[0m,chatId:actorId };
+[31m[1m>[0m [90m209 |[0m ...xpect(([36mawait[0m deliverTelegramBackgroundCall({...base,partIndex:[35m0[0m,body:{text:[32m"first"[0m},se...
+  [90m    |[0m                                               [31m[1m^[0m
+  [90m210 |[0m ...xpect(([36mawait[0m deliverTelegramBackgroundCall({...base,partIndex:[35m1[0m,body:{text:[32m"second"[0m},s...
+  [90m211 |[0m ...xpect(([36mawait[0m deliverTelegramBackgroundCall({...base,partIndex:[35m0[0m,body:{text:[32m"first"[0m},se...
+  [90m212 |[0m ...xpect(([36mawait[0m deliverTelegramBackgroundCall({...base,partIndex:[35m1[0m,body:{text:[32m"second"[0m},s...
+Next.js build worker exited with code: 1 and signal: null

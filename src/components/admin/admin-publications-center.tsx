@@ -1,5 +1,7 @@
 "use client";
 
+import { checkAdminAccess } from "./admin-ui";
+
 import {
   AlertTriangle,
   CalendarClock,
@@ -13,8 +15,10 @@ import {
   XCircle,
   type LucideIcon,
 } from "lucide-react";
-import { FormEvent, useEffect, useId, useState } from "react";
+import { FormEvent, useEffect, useId, useRef, useState } from "react";
 
+import { adminJson, CopyValue, ReadError, SnapshotNote, useSnapshotAge } from "./admin-ui";
+import { useModalFocus } from "@/components/ui/use-modal-focus";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import type {
@@ -33,7 +37,7 @@ import {
 import { cn, fmtAgo, fmtNum, NETWORK_LABEL, plural } from "@/lib/utils";
 
 type ListState = "loading" | "ready" | "error";
-type PendingAction = { kind: "cancel" | "reschedule"; item: AdminPublicationItem } | null;
+type PendingAction = { kind: "retry" | "cancel" | "reschedule"; item: AdminPublicationItem } | null;
 
 const STATUS_OPTIONS: Array<{ value: AdminPublicationStatusFilter; label: string }> = [
   { value: "attention", label: "Требуют внимания" },
@@ -180,6 +184,9 @@ export function AdminPublicationsCenter({ refreshKey = 0 }: { refreshKey?: numbe
   const [pending, setPending] = useState<PendingAction>(null);
   const [rescheduleValue, setRescheduleValue] = useState(defaultRescheduleValue);
   const searchId = useId();
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const stale = useSnapshotAge(data?.checkedAt);
+  const { overlayRef, dialogRef, onKeyDown } = useModalFocus<HTMLFormElement>({ open: pending?.kind === "reschedule", initialFocusRef: cancelRef, onEscape: () => setPending(null), busy: Boolean(actionKey) });
 
   const apiQuery = state ? adminPublicationsApiParams(state).toString() : null;
   const listKey = `${apiQuery}:${refreshKey}:${retryKey}`;
@@ -200,16 +207,14 @@ export function AdminPublicationsCenter({ refreshKey = 0 }: { refreshKey?: numbe
     if (!apiQuery) return;
     const controller = new AbortController();
     void fetch(`/api/admin/publications?${apiQuery}`, { cache: "no-store", signal: controller.signal })
-      .then(async (response) => {
-        if (!response.ok) throw new Error("unavailable");
-        return response.json() as Promise<AdminPublicationsResponse>;
-      })
+      .then(adminJson<AdminPublicationsResponse>)
       .then((payload) => {
+        if (controller.signal.aborted) return;
         setData(payload);
         setSettled({ key: listKey, ok: true });
       })
       .catch(() => {
-        if (!controller.signal.aborted) setSettled({ key: listKey, ok: false });
+        if (!controller.signal.aborted) { setData(null); setSettled({ key: listKey, ok: false }); }
       });
     return () => controller.abort();
   }, [apiQuery, listKey]);
@@ -236,21 +241,24 @@ export function AdminPublicationsCenter({ refreshKey = 0 }: { refreshKey?: numbe
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ postId: item.id, ...payload }),
       });
+      checkAdminAccess(response);
       const result = await response.json().catch(() => null) as { status?: string; error?: string } | null;
       if (!response.ok) {
         const code = result?.status ?? result?.error ?? "unavailable";
-        throw new Error(ACTION_ERROR_COPY[code] ?? "Действие не выполнено. Обновите список и попробуйте снова.");
+        throw new Error(ACTION_ERROR_COPY[code] ?? "Не удалось подтвердить результат. Обновите список и проверьте журнал перед повтором.");
       }
       setMessage({ tone: "success", text: successText });
       setRetryKey((value) => value + 1);
+      return true;
     } catch (error) {
-      setMessage({ tone: "danger", text: error instanceof Error ? error.message : "Действие не выполнено." });
+      setMessage({ tone: "danger", text: error instanceof Error ? error.message : "Не удалось подтвердить результат. Проверьте состояние публикации." });
+      return false;
     } finally {
       setActionKey(null);
     }
   }
 
-  const hasActiveFilters = state && (state.pq || state.pstatus !== "attention" || state.pnetwork !== "all" || state.pproject || state.perror);
+  const hasActiveFilters = state && (state.pq || state.pstatus !== "all" || state.pnetwork !== "all" || state.pproject || state.perror);
 
   return (
     <div className="min-w-0 max-w-full">
@@ -321,24 +329,19 @@ export function AdminPublicationsCenter({ refreshKey = 0 }: { refreshKey?: numbe
             </select>
           </label>
           {hasActiveFilters ? (
-            <Button variant="ghost" size="sm" onClick={() => navigate({ pq: "", pstatus: "attention", pnetwork: "all", pproject: null, perror: null, ppage: 1 })}>
+            <Button variant="ghost" size="sm" onClick={() => navigate({ pq: "", pstatus: "all", pnetwork: "all", pproject: null, perror: null, psort: "recent", ppage: 1 })}>
               Сбросить фильтры
             </Button>
           ) : null}
         </div>
       </div>
 
-      {message ? (
+      {state ? <p className="type-caption mt-3 text-text-2">Выборка: {STATUS_OPTIONS.find(o => o.value === state.pstatus)?.label}{state.pq ? ` · «${state.pq}»` : ""}{state.pnetwork !== "all" ? ` · ${NETWORK_LABEL[state.pnetwork] || state.pnetwork}` : ""}{state.pproject ? ` · проект ${data?.options.projects.find(p => String(p.id) === state.pproject)?.label || state.pproject}` : ""}{state.perror ? ` · ${state.perror}` : ""}</p> : null}
+      {message && pending?.kind !== "reschedule" ? (
         <p role="status" className={cn("mt-4 rounded-sm p-4", message.tone === "success" ? "bg-success-soft text-success-text" : "bg-danger-soft text-danger-text")}>{message.text}</p>
       ) : null}
 
-      {listState === "error" && !data ? (
-        <div className="mt-5 rounded-md bg-danger-soft p-6 text-center text-danger-text">
-          <ShieldAlert className="mx-auto h-7 w-7" aria-hidden />
-          <h3 className="mt-3">Не удалось загрузить публикации</h3>
-          <Button variant="danger" className="mt-4" onClick={() => setRetryKey((value) => value + 1)}><RefreshCw className="h-4 w-4" aria-hidden />Повторить</Button>
-        </div>
-      ) : null}
+      {listState === "error" ? <ReadError title="Не удалось загрузить публикации" onRetry={() => setRetryKey(v => v + 1)} /> : null}
       {listState === "loading" && !data ? (
         <div className="mt-5 space-y-3" aria-busy="true">
           {Array.from({ length: 6 }, (_, index) => <div key={index} className="skeleton h-20 rounded-md" />)}
@@ -351,19 +354,19 @@ export function AdminPublicationsCenter({ refreshKey = 0 }: { refreshKey?: numbe
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-4 sm:px-5">
             <div>
               <h3 className="text-text">Публикации</h3>
-              <p className="type-caption mt-1 text-text-3">{numberLabel(data.pagination.total, "публикация", "публикации", "публикаций")} в выборке · проверено {fmtAgo(data.checkedAt)}</p>
+              <div className="mt-1"><SnapshotNote checkedAt={data.checkedAt} period={`${numberLabel(data.pagination.total, "публикация", "публикации", "публикаций")} в выборке · все даты`} onRefresh={() => setRetryKey(v => v + 1)} /></div>
             </div>
             <span role="status" aria-live="polite" className="type-caption text-text-3">{listState === "loading" ? "Обновляем…" : ""}</span>
           </div>
           {data.items.length === 0 ? (
             <div className="p-8 text-center">
-              <CheckCircle2 className="mx-auto h-8 w-8 text-success" aria-hidden />
-              <h3 className="mt-3 text-text">{state?.pstatus === "attention" && !state.pq ? "Публикации не требуют вмешательства" : "Ничего не найдено"}</h3>
-              <p className="type-secondary mt-2 text-text-2">{state?.pstatus === "attention" && !state.pq ? "Очередь работает без просроченных и аварийных задач." : "Измените запрос или сбросьте фильтры."}</p>
+              <Search className="mx-auto h-8 w-8 text-text-3" aria-hidden />
+              <h3 className="mt-3 text-text">{hasActiveFilters ? "По этим условиям публикаций нет" : "Публикаций пока нет"}</h3>
+              <p className="type-secondary mt-2 text-text-2">{hasActiveFilters ? "Измените запрос или сбросьте фильтры. Отсутствие записей не подтверждает работу очереди." : "Здесь появятся посты, созданные пользователями."}</p>
             </div>
           ) : (
             <>
-              <div className="hidden overflow-x-auto lg:block">
+              <div className="hidden overflow-x-auto 2xl:block" role="region" aria-label="Список публикаций" tabIndex={0}>
                 <table className="w-full text-start">
                   <thead className="bg-surface-2">
                     <tr>
@@ -381,17 +384,17 @@ export function AdminPublicationsCenter({ refreshKey = 0 }: { refreshKey?: numbe
                         <tr key={item.id} className="align-top">
                           <td className="px-4 py-3">
                             <StatusPill {...pill} />
-                            {item.errorCode ? <p className="type-caption mt-1.5 font-mono text-text-3">{item.errorCode}</p> : null}
+                            <p className="type-caption mt-2 max-w-xs text-text-2">{publicationHelp(item)}</p>
                             <p className="type-caption mt-1 text-text-3">Попыток: {item.attempts}</p>
                           </td>
                           <td className="max-w-md px-4 py-3">
                             <p className="type-secondary line-clamp-2 text-text" title={item.text}>{item.text}</p>
-                            <p className="type-caption mt-1 text-text-3"><span className="nums">ID {item.id}</span> · {ORIGIN_LABEL[item.origin] ?? item.origin}{item.hasMedia ? " · с медиа" : ""}{item.operationId ? ` · операция ${item.operationId}` : ""}</p>
+                            <PublicationDiagnostics item={item} />
                           </td>
                           <td className="px-4 py-3">
                             <p className="type-secondary font-semibold text-text">{item.project}</p>
                             <p className="type-caption mt-1 text-text-3">{NETWORK_LABEL[item.network] || item.network} · {item.channel}</p>
-                            <a href={adminUsersHref("/admin", { user: item.authorId })} className="type-caption mt-1 inline-block text-brand hover:underline">{item.author}</a>
+                            <a href={adminUsersHref(typeof window === "undefined" ? "/admin" : window.location.href, { user: item.authorId })} className="type-caption mt-1 inline-block text-brand hover:underline">{item.author}</a>
                           </td>
                           <td className="px-4 py-3 text-text-2">
                             <p className="type-secondary" title={item.scheduledAt ?? undefined}>{item.status === "published" ? fullDate(item.publishedAt) : fullDate(item.scheduledAt)}</p>
@@ -400,21 +403,21 @@ export function AdminPublicationsCenter({ refreshKey = 0 }: { refreshKey?: numbe
                           <td className="px-4 py-3">
                             <div className="flex flex-wrap gap-2">
                               {item.canRetry ? (
-                                <Button variant="primary" size="sm" loading={actionKey === `retry-${item.id}`} onClick={() => void performAction(item, { action: "retry" }, `retry-${item.id}`, `Публикация ${item.id} снова в очереди.`)}>
-                                  <RefreshCw className="h-3.5 w-3.5" aria-hidden />Повторить сейчас
+                                <Button variant="primary" size="sm" loading={actionKey === `retry-${item.id}`} disabled={Boolean(actionKey) || stale || listState !== "ready"} onClick={() => { setMessage(null); setPending({ kind: "retry", item }); }}>
+                                  <RefreshCw className="h-3.5 w-3.5" aria-hidden />Повторить попытку
                                 </Button>
                               ) : null}
                               {item.canReschedule ? (
-                                <Button variant="secondary" size="sm" onClick={() => { setRescheduleValue(defaultRescheduleValue()); setPending({ kind: "reschedule", item }); }}>
+                                <Button variant="secondary" size="sm" disabled={Boolean(actionKey) || stale || listState !== "ready"} onClick={() => { setMessage(null); setRescheduleValue(defaultRescheduleValue()); setPending({ kind: "reschedule", item }); }}>
                                   <CalendarClock className="h-3.5 w-3.5" aria-hidden />Перенести
                                 </Button>
                               ) : null}
                               {item.canCancel ? (
-                                <Button variant="ghost" size="sm" onClick={() => setPending({ kind: "cancel", item })}>Отменить</Button>
+                                <Button variant="ghost" className="text-danger-text" size="sm" disabled={Boolean(actionKey) || stale || listState !== "ready"} onClick={() => { setMessage(null); setPending({ kind: "cancel", item }); }}>Отменить</Button>
                               ) : null}
                               {item.inFlight ? <span className="type-caption self-center text-text-3">Отправляется в сеть</span> : null}
                               {item.attention === "auth" && !item.inFlight ? (
-                                <a href={adminUsersHref("/admin", { user: item.authorId })} className="type-caption self-center text-fire-text hover:underline">Сначала переподключить канал</a>
+                                <a href={adminUsersHref(typeof window === "undefined" ? "/admin" : window.location.href, { user: item.authorId })} className="type-caption self-center text-fire-text hover:underline">Сначала переподключить канал</a>
                               ) : null}
                             </div>
                           </td>
@@ -424,7 +427,7 @@ export function AdminPublicationsCenter({ refreshKey = 0 }: { refreshKey?: numbe
                   </tbody>
                 </table>
               </div>
-              <ul className="divide-y divide-line lg:hidden">
+              <ul className="divide-y divide-line 2xl:hidden">
                 {data.items.map((item) => {
                   const pill = statusTone(item);
                   return (
@@ -435,12 +438,12 @@ export function AdminPublicationsCenter({ refreshKey = 0 }: { refreshKey?: numbe
                       </div>
                       <p className="type-secondary mt-3 line-clamp-3 text-text">{item.text}</p>
                       <p className="type-caption mt-2 text-text-2">{item.project} · {NETWORK_LABEL[item.network] || item.network} · {item.channel}</p>
-                      <p className="type-caption mt-1 text-text-3"><a href={adminUsersHref("/admin", { user: item.authorId })} className="text-brand hover:underline">{item.author}</a> · {fullDate(item.status === "published" ? item.publishedAt : item.scheduledAt)}</p>
-                      {item.errorCode ? <p className="type-caption mt-1 font-mono text-text-3">{item.errorCode}</p> : null}
+                      <p className="type-caption mt-1 text-text-3"><a href={adminUsersHref(typeof window === "undefined" ? "/admin" : window.location.href, { user: item.authorId })} className="text-brand hover:underline">{item.author}</a> · {fullDate(item.status === "published" ? item.publishedAt : item.scheduledAt)}</p>
+                      <p className="type-secondary mt-3 text-text-2">{publicationHelp(item)}</p><PublicationDiagnostics item={item} />
                       <div className="mt-3 flex flex-wrap gap-2">
-                        {item.canRetry ? <Button variant="primary" size="sm" loading={actionKey === `retry-${item.id}`} onClick={() => void performAction(item, { action: "retry" }, `retry-${item.id}`, `Публикация ${item.id} снова в очереди.`)}>Повторить сейчас</Button> : null}
-                        {item.canReschedule ? <Button variant="secondary" size="sm" onClick={() => { setRescheduleValue(defaultRescheduleValue()); setPending({ kind: "reschedule", item }); }}>Перенести</Button> : null}
-                        {item.canCancel ? <Button variant="ghost" size="sm" onClick={() => setPending({ kind: "cancel", item })}>Отменить</Button> : null}
+                        {item.canRetry ? <Button variant="primary" size="sm" loading={actionKey === `retry-${item.id}`} disabled={Boolean(actionKey) || stale || listState !== "ready"} onClick={() => { setMessage(null); setPending({ kind: "retry", item }); }}>Повторить попытку</Button> : null}
+                        {item.canReschedule ? <Button variant="secondary" size="sm" disabled={Boolean(actionKey) || stale || listState !== "ready"} onClick={() => { setMessage(null); setRescheduleValue(defaultRescheduleValue()); setPending({ kind: "reschedule", item }); }}>Перенести публикацию</Button> : null}
+                        {item.canCancel ? <Button variant="ghost" className="text-danger-text" size="sm" disabled={Boolean(actionKey) || stale || listState !== "ready"} onClick={() => { setMessage(null); setPending({ kind: "cancel", item }); }}>Отменить</Button> : null}
                       </div>
                     </li>
                   );
@@ -461,44 +464,79 @@ export function AdminPublicationsCenter({ refreshKey = 0 }: { refreshKey?: numbe
       ) : null}
 
       <ConfirmDialog
+        open={pending?.kind === "retry"}
+        error={message?.tone === "danger" ? message.text : undefined}
+        title="Повторить отправку публикации?"
+        description={pending ? `Публикация ${pending.item.id} «${pending.item.text.slice(0, 100)}» в канале «${pending.item.channel}» будет снова поставлена в очередь. Обработчик сможет отправить её сразу. Сначала устраните причину ошибки; результат появится в статусе публикации и журнале.` : ""}
+        confirmLabel="Поставить в очередь" confirmVariant="primary" busy={Boolean(actionKey)}
+        onCancel={() => setPending(null)}
+        onConfirm={() => { if (pending) void performAction(pending.item, { action: "retry" }, `retry-${pending.item.id}`, `Публикация ${pending.item.id} снова в очереди. Отправка ещё не подтверждена.`).then(ok => { if (ok) setPending(null); }); }}
+      />
+      <ConfirmDialog
         open={pending?.kind === "cancel"}
+        error={message?.tone === "danger" ? message.text : undefined}
         title="Отменить публикацию?"
-        description={pending ? `Публикация ${pending.item.id} в «${pending.item.channel}» будет отменена; очередь её больше не отправит. Текст сохранится, автор увидит статус «Отменён».` : ""}
+        description={pending ? `Публикация ${pending.item.id} в «${pending.item.channel}» будет отменена; очередь её больше не отправит. Текст сохранится, автор увидит статус «Отменён». В этой панели отмену нельзя обратить; для отправки понадобится новая публикация.` : ""}
         confirmLabel="Отменить публикацию"
         busy={Boolean(pending && actionKey === `cancel-${pending.item.id}`)}
         onCancel={() => setPending(null)}
         onConfirm={() => {
           if (!pending) return;
           const target = pending.item;
-          void performAction(target, { action: "cancel", reason: "Отменено администратором" }, `cancel-${target.id}`, `Публикация ${target.id} отменена.`).then(() => setPending(null));
+          void performAction(target, { action: "cancel", reason: "Отменено администратором" }, `cancel-${target.id}`, `Публикация ${target.id} отменена.`).then(ok => { if (ok) setPending(null); });
         }}
       />
 
       {pending?.kind === "reschedule" ? (
-        <div role="dialog" aria-modal="true" aria-labelledby="admin-reschedule-title" className="fixed inset-0 z-50 grid place-items-center bg-text/45 p-4 backdrop-blur-sm">
-          <form
-            className="card-plain w-full max-w-md rounded-lg p-6"
+        <div ref={overlayRef} className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4">
+          <form ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="admin-reschedule-title" aria-describedby="admin-reschedule-description" onKeyDown={onKeyDown} tabIndex={-1}
+            className="card-plain max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto overscroll-contain rounded-lg p-6"
             onSubmit={(event) => {
               event.preventDefault();
               const target = pending.item;
               const scheduledAt = new Date(rescheduleValue);
               if (!Number.isFinite(scheduledAt.getTime())) return;
-              void performAction(target, { action: "reschedule", scheduledAt: scheduledAt.toISOString() }, `reschedule-${target.id}`, `Публикация ${target.id} перенесена на ${fullDate(scheduledAt.toISOString())}.`).then(() => setPending(null));
+              void performAction(target, { action: "reschedule", scheduledAt: scheduledAt.toISOString() }, `reschedule-${target.id}`, `Публикация ${target.id} перенесена на ${fullDate(scheduledAt.toISOString())}.`).then(ok => { if (ok) setPending(null); });
             }}
           >
             <h3 id="admin-reschedule-title" className="text-text">Перенести публикацию {pending.item.id}</h3>
-            <p className="type-secondary mt-2 text-text-2">Новая дата в вашем часовом поясе. Карантин и ошибки будут сняты, публикация вернётся в очередь.</p>
+            <p id="admin-reschedule-description" className="type-secondary mt-2 text-text-2">Канал «{pending.item.channel}». Время: {Intl.DateTimeFormat().resolvedOptions().timeZone}. Публикация вернётся в очередь; карантин будет снят. Сначала устраните причину ошибки.</p>
             <label className="mt-4 block">
               <span className="type-caption mb-1.5 block text-text-3">Когда опубликовать</span>
-              <input type="datetime-local" required value={rescheduleValue} onChange={(event) => setRescheduleValue(event.target.value)} className="min-h-11 w-full rounded-xs border border-line-strong bg-surface px-3.5 text-text" />
+              <input type="datetime-local" required value={rescheduleValue} onInput={(event) => setRescheduleValue(event.currentTarget.value)} onChange={(event) => setRescheduleValue(event.target.value)} className="min-h-11 w-full rounded-xs border border-line-strong bg-surface px-3.5 text-text" />
             </label>
-            <div className="mt-5 flex justify-end gap-3">
-              <Button type="button" variant="ghost" onClick={() => setPending(null)}>Не переносить</Button>
-              <Button type="submit" variant="primary" loading={actionKey === `reschedule-${pending.item.id}`}>Перенести</Button>
+            <p className="type-caption mt-3 text-text-3">Дата сохранится после нажатия «Перенести публикацию».</p>
+            {message?.tone === "danger" ? <p role="alert" className="mt-3 rounded-sm bg-danger-soft p-3 text-danger-text">{message.text} Введённая дата сохранена в форме.</p> : null}
+            <div className="mt-5 flex flex-wrap justify-end gap-3">
+              <Button ref={cancelRef} disabled={Boolean(actionKey)} type="button" variant="ghost" onClick={() => setPending(null)}>Не переносить</Button>
+              <Button type="submit" variant="primary" loading={actionKey === `reschedule-${pending.item.id}`}>Перенести публикацию</Button>
             </div>
           </form>
         </div>
       ) : null}
     </div>
   );
+}
+
+export function publicationHelp(item: AdminPublicationItem) {
+  if (item.attention === "auth" || ["needs_reconnect", "permission_lost", "revoked"].includes(item.channelStatus)) return "Доступ к каналу потерян. Откройте владельца и проверьте подключение до повторной отправки.";
+  if (item.errorCode?.includes("too_long")) return "Текст превышает ограничение соцсети. Автору нужно сократить публикацию перед повтором.";
+  if (item.attention === "overdue") return "Время публикации прошло более пяти минут назад. Проверьте очередь и обработчик в разделе «Система».";
+  if (item.attention === "quarantined") return "Автоматическая отправка приостановлена после ошибок. Проверьте диагностику; повтор снимет блокировку.";
+  if (item.errorCode?.includes("timeout")) return "Соцсеть не ответила вовремя. Проверьте, появился ли пост в канале, прежде чем повторять отправку.";
+  if (item.attention === "failed") return "Отправка завершилась ошибкой. Текст сохранён. Проверьте диагностический код и подключение канала.";
+  if (item.inFlight) return "Соцсеть обрабатывает отправку. Дождитесь результата; изменение публикации сейчас недоступно.";
+  if (item.status === "published_unverified") return "Отправка принята, но наличие поста в соцсети ещё не подтверждено.";
+  return "";
+}
+function PublicationDiagnostics({ item }: { item: AdminPublicationItem }) {
+  return <details className="mt-2"><summary className="type-caption">Текст и диагностика · ID {item.id}</summary><div className="mt-2 space-y-2 rounded-sm bg-surface-inset p-3">
+    <p className="type-secondary whitespace-pre-wrap text-text">{item.text || "Без текста"}</p>
+    <CopyValue value={item.id} label="ID публикации" />
+    {item.errorCode ? <div><CopyValue value={item.errorCode} label="код ошибки публикации" /></div> : null}
+    {item.operationId ? <div><CopyValue value={item.operationId} label="ID операции" /></div> : null}
+    <p className="type-caption text-text-3">Источник: {ORIGIN_LABEL[item.origin] ?? item.origin} · Попыток: {item.attempts} · Создано: {fullDate(item.createdAt)}</p>
+    <a href="/admin#audit" className="type-caption inline-flex min-h-10 items-center text-info-text underline">Открыть журнал действий</a>
+    <a href="/admin#system" className="type-caption ml-3 inline-flex min-h-10 items-center text-info-text underline">Проверить систему</a>
+  </div></details>;
 }
