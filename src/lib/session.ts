@@ -150,8 +150,9 @@ export async function destroySession(req: NextRequest, res: NextResponse): Promi
       await getPool().query(`delete from sessions where token_hash = $1`, [hashSessionToken(token)]);
     }
   } finally {
-    // Local logout must not depend on PostgreSQL availability. The server-side row may
-    // be cleaned up later, but this browser must stop presenting the credential now.
+    // Stage cookie clearing on the supplied response. If deletion fails, the caller
+    // must discard this response and report the failure; only confirmed revocation
+    // may complete logout and remove the credential needed for an explicit retry.
     clearSessionCookie(res);
   }
 }
