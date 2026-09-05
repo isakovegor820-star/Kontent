@@ -1,3 +1,4 @@
+import { classifyTelegramDelivery } from "../src/lib/telegram-response.mjs";
 import {
   buildTelegramCarouselParts,
   TELEGRAM_CAPTION_LIMIT,
@@ -25,8 +26,8 @@ export async function deliverTelegramCarousel({
   if (mediaParts.length !== assets.length || mediaParts.length < 3 || mediaParts.length > 7) {
     return { ok: false, reason: "telegram_carousel_plan_invalid", deliveryUnknown: false };
   }
-  const completedMedia = mediaParts.filter((part) => part.send_status === "sent" && part.external_message_id);
-  const ambiguous = mediaParts.some((part) => part.send_status === "sending" || part.send_status === "unknown")
+  const completedMedia = mediaParts.filter((part) => part.send_status === "sent" && Number.isSafeInteger(Number(part.external_message_id)) && Number(part.external_message_id) > 0);
+  const ambiguous = mediaParts.some((part) => !["pending", "failed", "sent"].includes(part.send_status) || (part.send_status === "sent" && !completedMedia.includes(part)))
     || (completedMedia.length > 0 && completedMedia.length !== mediaParts.length);
   if (ambiguous) {
     return {
@@ -43,7 +44,10 @@ export async function deliverTelegramCarousel({
       await Promise.all(mediaParts.map((part) => markFailed(part, { description: "telegram_payload_invalid" })));
       return { ok: false, reason: "telegram_payload_invalid", deliveryUnknown: false, parts: [] };
     }
-    await Promise.all(mediaParts.map((part) => markSending(part)));
+    const claims = await Promise.all(mediaParts.map((part) => markSending(part)));
+    if (claims.some((claim) => claim === false || claim?.rowCount === 0)) {
+      return { ok: false, reason: "telegram_part_claim_lost", deliveryUnknown: true, parts: [] };
+    }
     let response;
     try {
       response = await sendGroup(assets, caption);
@@ -56,24 +60,29 @@ export async function deliverTelegramCarousel({
         parts: [],
       };
     }
-    const messages = Array.isArray(response?.result) ? response.result : [];
-    const messageIds = messages.map((message) => Number(message?.message_id));
-    if (!response?.ok || messageIds.length !== mediaParts.length
-      || messageIds.some((messageId) => !Number.isSafeInteger(messageId) || messageId <= 0)) {
+    const outcome = classifyTelegramDelivery(response, { messageCount: mediaParts.length, group: true });
+    if (outcome.kind === "unknown") {
+      await Promise.all(mediaParts.map((part) => markUnknown(part, response).catch(() => null)));
+      return { ok: false, reason: "telegram_receipt_unconfirmed", deliveryUnknown: true, parts: [] };
+    }
+    if (outcome.kind === "rejected") {
       await Promise.all(mediaParts.map((part) => markFailed(part, response)));
       return {
         ok: false,
         reason: response?.description || "Telegram не подтвердил карусель",
-        providerErrorCode: Number(response?.error_code) || null,
-        retryAfterSeconds: Number(response?.parameters?.retry_after) || null,
+        providerErrorCode: outcome.providerErrorCode,
+        retryAfterSeconds: outcome.retryAfterSeconds,
         deliveryUnknown: false,
         parts: [],
       };
     }
+    const messageIds = outcome.messageIds;
     try {
       completed = [];
       for (let index = 0; index < mediaParts.length; index += 1) {
-        completed.push(await markSent(mediaParts[index], String(messageIds[index])));
+        const receipt = await markSent(mediaParts[index], String(messageIds[index]));
+        if (!receipt) throw new Error("telegram_receipt_persist_failed");
+        completed.push(receipt);
       }
     } catch (error) {
       return {
