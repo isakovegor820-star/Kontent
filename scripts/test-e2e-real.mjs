@@ -2096,6 +2096,10 @@ try {
   const userId = Number((await pool.query(
     "select id from users where email = 'qa-e2e@aurora.test'",
   )).rows[0].id);
+  const unverifiedAdmin = await context.request.get("/api/admin/overview");
+  assert(unverifiedAdmin.status() === 403, "self-asserted registration email granted global admin");
+  // Local fixture represents mailbox verification; real delivery is a separate sandbox gate.
+  await pool.query("update users set verified_email = email where id = $1", [userId]);
   await pool.query("update users set onboarding_completed_at = now(), ai_engine = 'openai' where id = $1", [userId]);
   const channels = (await pool.query(
     `insert into channels (user_id, network, tg_chat_id, title, handle, is_active)
@@ -2159,7 +2163,9 @@ try {
   for (const route of ["/app/calendar", `/app/composer?draft=${draftId}`, "/app/studio", "/app/autopilot"]) {
     await page.goto(route);
     await page.waitForLoadState("domcontentloaded");
-    await page.waitForTimeout(350);
+    // Measure the loaded screen and settle its API reads before the next hard
+    // navigation. A fixed delay raced Calendar's suggestion fetch in WebKit.
+    await waitForFirstPartyNetworkIdle(page, `mobile layout ${route}`);
     assert(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 2), `${route} has mobile horizontal overflow`);
   }
 
