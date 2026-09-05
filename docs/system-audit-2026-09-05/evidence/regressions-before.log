@@ -1,0 +1,162 @@
+
+ RUN  v4.1.10 /Users/egor/mvp and prod/platform
+
+ ❯ src/lib/admin-system-integrity.test.ts (9 tests | 9 failed) 415ms
+     × does not mark an idle registered consumer healthy without execution evidence 91ms
+     × preserves retained failures as history after fresh processing recovered 6ms
+     × does not claim a paused queue is healthy 2ms
+     × expires execution evidence even while a consumer remains registered 9ms
+     × separates a failed probe from a confirmed component outage 26ms
+     × does not turn configuration alone into a green platform 76ms
+     × does not carry lifetime pool failures into current health 100ms
+     × does not claim an old mail acceptance proves current delivery 5ms
+     × does not treat an unused Telegram bot as a broken integration 17ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 9 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/lib/admin-system-integrity.test.ts > system monitoring integrity regressions > does not mark an idle registered consumer healthy without execution evidence
+AssertionError: expected 'healthy' to be 'unobserved' // Object.is equality
+
+Expected: "unobserved"
+Received: "healthy"
+
+ ❯ src/lib/admin-system-integrity.test.ts:52:49
+     50| describe("system monitoring integrity regressions", () => {
+     51|   it("does not mark an idle registered consumer healthy without execut…
+     52|     expect((await probeAdminQueues())[0].state).toBe("unobserved");
+       |                                                 ^
+     53|   });
+     54|   it("preserves retained failures as history after fresh processing re…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/9]⎯
+
+ FAIL  src/lib/admin-system-integrity.test.ts > system monitoring integrity regressions > preserves retained failures as history after fresh processing recovered
+AssertionError: expected 'degraded' to be 'healthy' // Object.is equality
+
+Expected: "healthy"
+Received: "degraded"
+
+ ❯ src/lib/admin-system-integrity.test.ts:58:25
+     56|     const queue = (await probeAdminQueues())[0];
+     57|     expect(queue.failed).toBe(12);
+     58|     expect(queue.state).toBe("healthy");
+       |                         ^
+     59|     expect(queue.safeErrorCode).toBeNull();
+     60|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/9]⎯
+
+ FAIL  src/lib/admin-system-integrity.test.ts > system monitoring integrity regressions > does not claim a paused queue is healthy
+AssertionError: expected 'healthy' to be 'degraded' // Object.is equality
+
+Expected: "degraded"
+Received: "healthy"
+
+ ❯ src/lib/admin-system-integrity.test.ts:63:49
+     61|   it("does not claim a paused queue is healthy", async () => {
+     62|     fixture.paused = true; fixture.completedAt = Date.now();
+     63|     expect((await probeAdminQueues())[0].state).toBe("degraded");
+       |                                                 ^
+     64|   });
+     65|   it("expires execution evidence even while a consumer remains registe…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/9]⎯
+
+ FAIL  src/lib/admin-system-integrity.test.ts > system monitoring integrity regressions > expires execution evidence even while a consumer remains registered
+AssertionError: expected 'healthy' to be 'stale' // Object.is equality
+
+Expected: "stale"
+Received: "healthy"
+
+ ❯ src/lib/admin-system-integrity.test.ts:67:49
+     65|   it("expires execution evidence even while a consumer remains registe…
+     66|     fixture.completedAt = Date.now() - 86_400_000;
+     67|     expect((await probeAdminQueues())[0].state).toBe("stale");
+       |                                                 ^
+     68|   });
+     69|   it("separates a failed probe from a confirmed component outage", asy…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/9]⎯
+
+ FAIL  src/lib/admin-system-integrity.test.ts > system monitoring integrity regressions > separates a failed probe from a confirmed component outage
+AssertionError: expected 'down' to be 'unavailable' // Object.is equality
+
+Expected: "unavailable"
+Received: "down"
+
+ ❯ src/lib/admin-system-integrity.test.ts:71:29
+     69|   it("separates a failed probe from a confirmed component outage", asy…
+     70|     const [component] = await runDiagnosticDefinitions([{ id: "probe",…
+     71|     expect(component.state).toBe("unavailable");
+       |                             ^
+     72|     expect(JSON.stringify(component)).not.toContain("secret");
+     73|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/9]⎯
+
+ FAIL  src/lib/admin-system-integrity.test.ts > system monitoring integrity regressions > does not turn configuration alone into a green platform
+AssertionError: expected 'healthy' not to be 'healthy' // Object.is equality
+ ❯ src/lib/admin-system-integrity.test.ts:76:30
+     74|   it("does not turn configuration alone into a green platform", async …
+     75|     const report = await loadAdminSystemDiagnostics({ definitions: [{ …
+     76|     expect(report.state).not.toBe("healthy");
+       |                              ^
+     77|   });
+     78|   it("does not carry lifetime pool failures into current health", asyn…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/9]⎯
+
+ FAIL  src/lib/admin-system-integrity.test.ts > system monitoring integrity regressions > does not carry lifetime pool failures into current health
+AssertionError: expected 'degraded' to be 'healthy' // Object.is equality
+
+Expected: "healthy"
+Received: "degraded"
+
+ ❯ src/lib/admin-system-integrity.test.ts:80:71
+     78|   it("does not carry lifetime pool failures into current health", asyn…
+     79|     const report = await loadAdminSystemDiagnostics();
+     80|     expect(report.components.find(c => c.id === "postgresql")?.state).…
+       |                                                                       ^
+     81|   });
+     82|   it("does not claim an old mail acceptance proves current delivery", …
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/9]⎯
+
+ FAIL  src/lib/admin-system-integrity.test.ts > system monitoring integrity regressions > does not claim an old mail acceptance proves current delivery
+AssertionError: expected 'healthy' to be 'stale' // Object.is equality
+
+Expected: "stale"
+Received: "healthy"
+
+ ❯ src/lib/admin-system-integrity.test.ts:84:74
+     82|   it("does not claim an old mail acceptance proves current delivery", …
+     83|     const report = await loadAdminSystemDiagnostics();
+     84|     expect(report.components.find(c => c.id === "mail_delivery")?.stat…
+       |                                                                          ^
+     85|   });
+     86|   it("does not treat an unused Telegram bot as a broken integration", …
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/9]⎯
+
+ FAIL  src/lib/admin-system-integrity.test.ts > system monitoring integrity regressions > does not treat an unused Telegram bot as a broken integration
+AssertionError: expected 'not_configured' to be 'not_used' // Object.is equality
+
+Expected: "not_used"
+Received: "not_configured"
+
+ ❯ src/lib/admin-system-integrity.test.ts:88:76
+     86|   it("does not treat an unused Telegram bot as a broken integration", …
+     87|     const report = await loadAdminSystemDiagnostics();
+     88|     expect(report.components.find(c => c.id === "telegram_worker")?.st…
+       |                                                                            ^
+     89|   });
+     90| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[9/9]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  9 failed (9)
+   Start at  14:46:46
+   Duration  1.81s (transform 320ms, setup 0ms, import 478ms, tests 415ms, environment 0ms)
+

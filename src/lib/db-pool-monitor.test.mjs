@@ -30,6 +30,9 @@ describe("database pool monitoring", () => {
       acquireSamples: 4,
       acquireTimeouts: 0,
       acquireErrors: 0,
+      recentAcquireErrors: 0,
+      recentWindowMs: 60_000,
+      lastAcquireErrorAt: null,
       connectionTimeoutMillis: 2_000,
       queryTimeoutMillis: 30_000,
       statementTimeoutMillis: 30_000,
@@ -43,5 +46,15 @@ describe("database pool monitoring", () => {
     const snapshot = monitor.snapshot(null, config);
     expect(snapshot).toMatchObject({ acquireTimeouts: 1, acquireErrors: 1 });
     expect(JSON.stringify(snapshot)).not.toContain("timeout exceeded");
+  });
+
+  it("recovers its current signal without deleting lifetime failures", () => {
+    let now = 1_000_000;
+    const monitor = new DatabasePoolMonitor(() => now);
+    monitor.recordAcquire(2001, new Error("timeout exceeded when trying to connect"));
+    expect(monitor.snapshot(null, config).recentAcquireErrors).toBe(1);
+    now += 60_000;
+    monitor.recordAcquire(1);
+    expect(monitor.snapshot(null, config)).toMatchObject({ recentAcquireErrors: 0, acquireErrors: 1, acquireTimeouts: 1, lastAcquireErrorAt: new Date(1_000_000).toISOString() });
   });
 });

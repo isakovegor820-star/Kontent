@@ -20,7 +20,8 @@ vi.mock("@/lib/server-product-events.mjs", () => ({
   productDurationMs: () => 5,
 }));
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
-vi.mock("@/lib/project-permissions", () => ({
+vi.mock("@/lib/project-permissions", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/project-permissions")>(),
   ProjectAccessError: class ProjectAccessError extends Error {},
   requireSelectedProjectPermission: mocks.requireSelectedProjectPermission,
 }));

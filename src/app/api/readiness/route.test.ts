@@ -226,9 +226,17 @@ describe("GET /api/readiness", () => {
     expect(mocks.probeDatabaseAndSchema).not.toHaveBeenCalled();
   });
 
+  it("rejects an unverified allowlisted email before probing internal services", async () => {
+    vi.stubEnv("AURORA_ADMIN_EMAILS", "admin@example.test");
+    mocks.getSessionUser.mockResolvedValue({ id: 9, email: "admin@example.test", email_verified: false });
+    const response = await GET(new NextRequest("https://aurora.example/api/readiness"));
+    expect(response.status).toBe(401);
+    expect(mocks.probeDatabaseAndSchema).not.toHaveBeenCalled();
+  });
+
   it("allows a global administrator session", async () => {
     vi.stubEnv("AURORA_ADMIN_EMAILS", "admin@example.test");
-    mocks.getSessionUser.mockResolvedValue({ id: 9, email: "admin@example.test" });
+    mocks.getSessionUser.mockResolvedValue({ id: 9, email: "admin@example.test", email_verified: true });
     const response = await GET(new NextRequest("https://aurora.example/api/readiness", {
       headers: { cookie: "sid=admin-session" },
     }));

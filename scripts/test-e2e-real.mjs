@@ -42,6 +42,11 @@ import {
   PUBLICATION_REVIEW_REMINDER_QUEUE,
 } from "../worker/publication-review-reminder.mjs";
 import { migrate } from "./migrate.mjs";
+import { fakeAiSpendEnv } from "../src/e2e/fixtures/ai-spend-env.mjs";
+import { sitesNetworkShim, handleFakeSitesRequest, runSitesCoverage } from "./e2e-sites-coverage.mjs";
+import { runProjectCalendarCoverage } from "./e2e-project-calendar-coverage.mjs";
+import { runAuthCoverage, handleFakeMailRequest } from "./e2e-auth-coverage.mjs";
+import { runTrueZoomCoverage } from "./e2e-true-zoom-coverage.mjs";
 
 const databaseUrl = String(process.env.E2E_DATABASE_URL || "").trim();
 const redisUrl = String(process.env.E2E_REDIS_URL || "").trim();
@@ -158,6 +163,9 @@ let publicationReviewReminderQueue;
 const browserIssues = [];
 const browserObservations = [];
 const browserPendingRequests = new WeakMap();
+const browserRequestIds = new WeakMap();
+const browserRequestResponses = new WeakMap();
+let browserRequestSequence = 0;
 const browserNetworkEvents = [];
 let browserScreenshotDepth = 0;
 let browserTeardownStarted = false;
@@ -179,6 +187,7 @@ const interfaceEvidence = {
   analyticsUi: null,
   todayUi: null,
   adminOperationsUi: null,
+  sitesUi: null,
   botConnectTokenHygiene: null,
 };
 
@@ -388,6 +397,7 @@ async function installBrowserDiagnostics(context, label) {
       }
     };
     targetPage.on("request", (request) => {
+      browserRequestIds.set(request, ++browserRequestSequence);
       if (request.resourceType() === "document") {
         const documentAt = Date.now();
         recentDocumentRequest = { at: documentAt, url: request.url() };
@@ -409,6 +419,7 @@ async function installBrowserDiagnostics(context, label) {
           at: new Date().toISOString(),
           context: label,
           event: "request",
+          requestId: browserRequestIds.get(request),
           method: request.method(),
           resourceType: request.resourceType(),
           url: sanitizeE2eNetworkUrl(request.url(), baseUrl),
@@ -417,6 +428,13 @@ async function installBrowserDiagnostics(context, label) {
     });
     const settleRequest = (request) => pendingRequests.delete(request);
     targetPage.on("requestfinished", settleRequest);
+    targetPage.on("requestfinished", (request) => {
+      if (!browserTeardownStarted && captureBrowserArtifacts) browserNetworkEvents.push({
+        at: new Date().toISOString(), context: label, event: "requestfinished",
+        requestId: browserRequestIds.get(request), method: request.method(),
+        url: sanitizeE2eNetworkUrl(request.url(), baseUrl),
+      });
+    });
     targetPage.on("requestfailed", settleRequest);
     targetPage.on("requestfailed", (request) => {
       const failure = String(request.failure()?.errorText || "request_failed");
@@ -456,6 +474,7 @@ async function installBrowserDiagnostics(context, label) {
           at: new Date().toISOString(),
           context: label,
           event: "requestfailed",
+          requestId: browserRequestIds.get(request),
           method: request.method(),
           resourceType: request.resourceType(),
           url: sanitizeE2eNetworkUrl(request.url(), baseUrl),
@@ -474,7 +493,7 @@ async function installBrowserDiagnostics(context, label) {
       });
     });
     targetPage.on("close", () => {
-      if (!browserTeardownStarted && browser?.isConnected()) {
+      if (!browserTeardownStarted && browser?.isConnected() && !expectedCompletedPages.has(targetPage)) {
         browserIssues.push({
           context: label,
           kind: "page.close",
@@ -580,11 +599,13 @@ async function installBrowserDiagnostics(context, label) {
     });
     targetPage.on("response", (response) => {
       const status = response.status();
+      browserRequestResponses.set(response.request(), { status, at: new Date().toISOString() });
       if (!browserTeardownStarted && captureBrowserArtifacts) {
         browserNetworkEvents.push({
           at: new Date().toISOString(),
           context: label,
           event: "response",
+          requestId: browserRequestIds.get(response.request()),
           method: response.request().method(),
           resourceType: response.request().resourceType(),
           url: sanitizeE2eNetworkUrl(response.url(), baseUrl),
@@ -743,6 +764,8 @@ const fakeState = {
     calls: 0,
     truncatedCalls: 0,
     successfulCalls: 0,
+    libraryGenerationCalls: 0,
+    holdLibraryCompletion: false,
     providerIdentityOk: true,
     identities: [],
   },
@@ -814,19 +837,25 @@ globalThis.fetch = (input, init) => {
     if (input instanceof Request) return upstreamFetch(new Request(rewritten, input), init);
     return upstreamFetch(rewritten, init);
   }
+  if (url.origin === "https://api.resend.com" && url.pathname === "/emails") return upstreamFetch(new URL("/resend/emails", fakeBase), init);
   return upstreamFetch(input, init);
 };
-`,
+` + sitesNetworkShim(fakeBase),
   "utf8",
 );
 
+const fakeAutopilotVariants = new Map();
+const expectedCompletedPages = new WeakSet();
 function fakeAutopilotPost(messageText) {
   const topic = messageText.match(/на тему:\s*([^\n.]{8,120})/iu)?.[1]?.trim() || "Рабочая тема";
   const safeTopic = topic.replace(/[«»"']/gu, "").slice(0, 46).replace(/[,:;—-]+$/u, "");
   const presentation = messageText.match(/— форма:\s*([^;\n]+)/iu)?.[1]?.trim() || "объяснение";
   const presentationSeed = `${safeTopic}\0${presentation}`;
-  const variant = [...presentationSeed]
-    .reduce((sum, character) => sum + character.codePointAt(0), 0) % 3;
+  // Three independently requested week items need three genuinely distinct fixture
+  // bodies. Hash modulo 3 randomly collided for real monthly titles and made the
+  // safety duplicate guard correctly reject the fake provider's output.
+  if (!fakeAutopilotVariants.has(presentationSeed)) fakeAutopilotVariants.set(presentationSeed, fakeAutopilotVariants.size % 3);
+  const variant = fakeAutopilotVariants.get(presentationSeed);
   const bodies = [
     [
       "Начните не с готового ответа, а с рамки: для кого вы готовите материал, какой вопрос хотите прояснить и какое действие читатель сможет выбрать самостоятельно.",
@@ -876,11 +905,22 @@ assert(
   "fake Autopilot provider must satisfy the default detail length contract",
 );
 
+// These topics collide under the previous modulo hash. The provider fixture must
+// satisfy the same diversity guard as the production pipeline, not bypass it.
+fakeAutopilotVariants.clear();
+const fixtureWeek = [1, 4, 7].map((n) => fakeAutopilotPost(`— форма: объяснение;\nНапиши пост на тему: Редакционная проверка ${n}.`));
+for (const [index, draft] of fixtureWeek.entries()) {
+  assert(!findAutopilotNearDuplicate({ topic: "", draft }, fixtureWeek.slice(0, index).map((previous) => ({ topic: "", draft: previous }))), "fake provider returned duplicate week items");
+}
+fakeAutopilotVariants.clear();
+
 function fakeProvider() {
   return http.createServer(async (req, res) => {
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
     const raw = Buffer.concat(chunks).toString("utf8");
+    if (handleFakeSitesRequest(req, res, raw)) return;
+    if (handleFakeMailRequest(req, res, raw)) return;
     if (req.url?.startsWith("/vk/method/") && req.method === "POST") {
       const method = decodeURIComponent(req.url.slice("/vk/method/".length).split("?", 1)[0] || "");
       const form = new URLSearchParams(raw);
@@ -944,6 +984,7 @@ function fakeProvider() {
       const successful = text.includes("Короткая редакционная заметка без новых фактических утверждений");
       const libraryComposer = text.includes("E2E_LIBRARY_REFERENCE");
       const semantic = text.includes("conservative textual-entailment classifier");
+      if (libraryComposer && !semantic) fakeState.ai.libraryGenerationCalls += 1;
       const autopilot = text.includes("строгий выпускающий редактор Telegram-канала");
       const monthlyRegeneration = text.includes("выпускающий редактор месячного контент-плана");
       let completionText = "Безопасный тестовый текст.";
@@ -961,7 +1002,7 @@ function fakeProvider() {
           })),
         });
       } else if (autopilot) {
-        completionText = fakeAutopilotPost(text);
+        completionText = fakeAutopilotPost(messages.map((message) => String(message.content || "")).join("\n"));
       } else if (libraryComposer) {
         completionText = libraryComposerResult;
       } else if (monthlyRegeneration) {
@@ -995,7 +1036,9 @@ function fakeProvider() {
       if (body?.stream === true) {
         res.setHeader("content-type", "text/event-stream");
         res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: completionText } }] })}\n\n`);
-        if (libraryComposer) await new Promise((resolveDelay) => setTimeout(resolveDelay, 220));
+        if (libraryComposer && !semantic) {
+          await waitFor(() => !fakeState.ai.holdLibraryCompletion, "test did not release the held Library generation", 30_000);
+        }
         if (!truncate) res.write("data: [DONE]\n\n");
         else fakeState.ai.truncatedCalls += 1;
         res.end();
@@ -1164,6 +1207,7 @@ function fakeProvider() {
 
 const runtimeEnv = {
   ...process.env,
+  ...fakeAiSpendEnv(),
   NODE_OPTIONS: [
     String(process.env.NODE_OPTIONS || "").trim(),
     `--import=${pathToFileURL(vkFetchShimPath).href}`,
@@ -1181,6 +1225,7 @@ const runtimeEnv = {
   SENTRY_PROJECT: "",
   SENTRY_URL: "",
   AURORA_ADMIN_EMAILS: "qa-e2e@aurora.test",
+  AURORA_SITES_DOMAIN: "sites.aurora.test",
   AURORA_RELEASE: "e2e-release",
   AURORA_RELEASE_SHA: "0123456789abcdef0123456789abcdef01234567",
   NEXT_PUBLIC_AURORA_APP_VERSION: "e2e-web",
@@ -1204,6 +1249,8 @@ const runtimeEnv = {
   NAVYAI_API_URL: `${fakeBase}/v1`,
   TOKENS_MASTER_KEY: "e2e-only-master-key-with-enough-entropy-2026",
   TOKENS_KEY_ID: "1",
+  RESEND_API_KEY: "e2e-resend-not-live",
+  PASSWORD_RESET_FROM: "Aurora Test <fixture@aurora.test>",
   TRACKING_ATTRIBUTION_SECRET: "e2e-attribution-secret-isolated-2026-08-12",
   TRACKING_FINGERPRINT_SECRET: "e2e-fingerprint-secret-distinct-2026-08-12",
   AURORA_TRACKER_ALLOW_LOCAL_VERIFICATION: "true",
@@ -1563,8 +1610,11 @@ async function waitForFirstPartyNetworkIdle(
     }
     await new Promise((resolveWait) => setTimeout(resolveWait, 50));
   }
-  const pendingUrls = blockingRequests().map((request) => request.url()).slice(0, 8);
-  throw new Error(`${label} first-party requests did not settle: ${pendingUrls.join(", ")}`);
+  const pending = blockingRequests().slice(0, 8).map((request) => ({
+    id: browserRequestIds.get(request), url: sanitizeE2eNetworkUrl(request.url(), baseUrl),
+    timing: request.timing(), failure: request.failure(), response: browserRequestResponses.get(request),
+  }));
+  throw new Error(`${label} first-party requests did not settle: ${JSON.stringify(pending)}`);
 }
 
 async function runKeyboardOnlyCriticalPass(targetPage) {
@@ -1877,6 +1927,8 @@ try {
   await pool.query("create schema public");
   await pool.query(await readFile(resolve("db/schema.sql"), "utf8"));
   await migrate({ env: { ...runtimeEnv, DATABASE_URL: databaseUrl }, logger: { log() {} } });
+  // Explicit synthetic storage limits for this disposable fixture; no production defaults.
+  await pool.query("insert into media_storage_policy(id,user_max_bytes,project_max_bytes,global_max_bytes) values(1,1073741824,2147483648,4294967296)");
   await redis.flushdb();
 
   fakeServer = fakeProvider();
@@ -2087,12 +2139,18 @@ try {
   await assertTouch(page.locator('button[type="submit"]').first(), "auth submit");
   await assertTouch(page.getByRole("link", { name: "Войти", exact: true }), "auth login link");
 
-  const registration = await context.request.post("/api/auth/register", {
-    headers: { origin: baseUrl },
-    data: { email: "qa-e2e@aurora.test", password: "qa-password-2026", name: "QA E2E" },
-    timeout: API_REQUEST_TIMEOUT_MS,
-  });
-  assert(registration.ok(), `QA registration failed with ${registration.status()}`);
+  await page.locator("#name").fill("Q");
+  await page.locator("#email").fill("qa-e2e@aurora.test");
+  await page.locator("#password").fill("qa-password-2026");
+  await page.locator('button[type="submit"]').click();
+  await page.getByText("Введите имя — хотя бы 2 символа.", { exact: true }).waitFor();
+  assert(await page.locator("#name").evaluate((element) => element === document.activeElement), "registration validation did not focus the invalid name");
+  await page.locator("#name").fill("QA E2E");
+  const registrationPromise = page.waitForResponse((response) => response.url() === baseUrl + "/api/auth/register" && response.request().method() === "POST");
+  await page.locator('button[type="submit"]').click();
+  const registration = await registrationPromise;
+  assert(registration.ok(), `QA registration form failed with ${registration.status()}`);
+  await page.waitForURL(/\/app(?:\/|$)/u);
   const userId = Number((await pool.query(
     "select id from users where email = 'qa-e2e@aurora.test'",
   )).rows[0].id);
@@ -2469,6 +2527,7 @@ try {
   assert((await originalLink.getAttribute("href")) === "https://t.me/qa_competitor_a/91001", "original action lost source URL");
   assert(await originalLink.getAttribute("target") === "_blank", "original action does not stay external");
 
+  fakeState.ai.holdLibraryCompletion = true;
   await page.getByRole("button", { name: "Создать публикацию", exact: true }).click();
   await page.waitForURL((url) => url.pathname === "/app/studio"
     && /^\d+$/u.test(url.searchParams.get("draft") || "")
@@ -2477,7 +2536,7 @@ try {
   assert([...createStudioUrl.searchParams.keys()].join(",") === "draft,intent", "Library leaked text or channel through Studio URL");
   const libraryReferenceDraftId = Number(createStudioUrl.searchParams.get("draft"));
   const referenceDraft = (await pool.query(
-    `select d.text, d.origin, d.source_ref, destination.channel_id
+    `select d.text, d.origin, d.source_ref, d.version, destination.channel_id
        from drafts d
        join draft_destinations destination on destination.draft_id = d.id
       where d.id = $1 and d.user_id = $2`,
@@ -2488,10 +2547,43 @@ try {
   assert(Number(referenceDraft?.channel_id) === channels[0], "Studio reference draft lost selected channel id");
   assert(String(referenceDraft?.source_ref?.id) === String(libraryReferenceId), "Studio reference draft lost source post id");
   assert(referenceDraft?.source_ref?.topic === libraryReferenceTopic, "Studio reference draft lost the server-owned topic");
-  // A reload while the provider is running must replay the same paid operation. The
-  // create intent remains until the terminal result has been persisted as a server draft.
+  // Force the pending-operation branch in every engine. A reload must retain the
+  // same key and offer safe recovery while the first provider call is still running.
+  await waitFor(() => fakeState.ai.libraryGenerationCalls === 1, "Library generation did not reach the provider");
+  const pendingDiagnosticsStart = browserIssues.length;
+  const pendingResponsePromise = page.waitForResponse(response => new URL(response.url()).pathname === "/api/ai/generate" && response.request().method() === "POST");
   await reloadInBrowser(page);
+  const pendingResponse = await pendingResponsePromise;
+  assert(pendingResponse.status() === 409, "reload did not join the existing pending AI operation");
+  assert((await pendingResponse.json()).error === "request_in_progress", "reload changed AI operation identity or failed authorization");
+  const retryReference = page.getByRole("alert")
+    .filter({ hasText: "Этот запрос ещё выполняется" })
+    .locator("..")
+    .getByRole("button", { name: "Повторить запрос", exact: true });
+  await retryReference.waitFor();
+  // Only the exact HTTP diagnostic for the asserted 409 is expected. Keep every
+  // other error, rejection, CSP violation and status in the normal safety gate.
+  for (let index = browserIssues.length - 1; index >= pendingDiagnosticsStart; index -= 1) {
+    const issue = browserIssues[index];
+    if (issue.context === "main" && issue.kind === "console.error"
+      && issue.url === pendingResponse.url()
+      && /Failed to load resource:.*(?:status of|server responded with a status of) 409\b/u.test(issue.message)) {
+      browserObservations.push({ ...issue, kind: "expected.pending-ai-replay", detail: "request_in_progress body asserted; original provider call held" });
+      browserIssues.splice(index, 1);
+    }
+  }
+  fakeState.ai.holdLibraryCompletion = false;
+  const referenceUsageKey = `web:studio_reference_${libraryReferenceDraftId}_v${referenceDraft.version}`;
+  await waitFor(async () => Boolean((await pool.query(
+    "select result_payload from ai_usage where user_id=$1 and reservation_key=$2",
+    [userId, referenceUsageKey],
+  )).rows[0]?.result_payload), "disconnected AI generation did not persist its terminal result");
+  const libraryCallsBeforeReplay = fakeState.ai.libraryGenerationCalls;
+  assert(libraryCallsBeforeReplay >= 1, "no original Library provider work recorded");
+  await retryReference.click();
   await page.waitForURL((url) => url.pathname === "/app/composer" && /^\d+$/u.test(url.searchParams.get("draft") || ""));
+  assert(fakeState.ai.libraryGenerationCalls === libraryCallsBeforeReplay, "pending AI recovery repeated paid draft or auto-improve work");
+  assert((await pool.query("select count(*)::int as count from ai_usage where user_id=$1 and reservation_key=$2", [userId, referenceUsageKey])).rows[0]?.count === 1, "reload created a second usage operation");
   const composerDraftUrl = new URL(page.url());
   assert(
     composerDraftUrl.searchParams.get("from") === "studio"
@@ -5496,8 +5588,18 @@ try {
     audited: true,
   };
 
+  interfaceEvidence.sitesUi = await runSitesCoverage({ page, pool, userId, projectId: sharedProjectId, waitFor, artifactDir, captureScreenshot: captureE2eScreenshot });
+  interfaceEvidence.projectCalendarUi = await runProjectCalendarCoverage({ page, context, pool, userId, sharedProjectId, legacyProjectId, sharedChannelId, waitFor, artifactDir, closeCompletedPage: async (completed) => { expectedCompletedPages.add(completed); await completed.close(); } });
   interfaceEvidence.viewportWidths = await captureViewportEvidence(page);
   interfaceEvidence.keyboardOnly = await runKeyboardOnlyCriticalPass(page);
+  if (browserEngine === "chromium") {
+    interfaceEvidence.trueZoom = await runTrueZoomCoverage({
+      baseUrl,
+      cookies: await context.cookies(),
+      projectId: Number(await page.evaluate(() => sessionStorage.getItem("aurora:request-project-id"))),
+      artifactDir,
+    });
+  }
 
   const ownerSecondPage = await context.newPage();
   await ownerSecondPage.goto("/app/calendar");
@@ -5560,6 +5662,7 @@ try {
     tabsRedirected: 2,
     destination: "/login",
   };
+  interfaceEvidence.authUi = await runAuthCoverage({ captureScreenshot: captureE2eScreenshot, browser, baseUrl, pool, userId, waitFor, artifactDir });
   const finalInputSnapshot = await captureE2eInputSnapshot();
   const changedJourneyInputs = changedE2eInputPaths(e2eInputSnapshot, finalInputSnapshot);
   assert(
@@ -5747,6 +5850,15 @@ try {
         analyticsUi: interfaceEvidence.analyticsUi,
         todayUi: interfaceEvidence.todayUi,
         adminOperationsUi: interfaceEvidence.adminOperationsUi,
+        sitesUi: interfaceEvidence.sitesUi,
+        projectCalendarUi: interfaceEvidence.projectCalendarUi,
+        authUi: interfaceEvidence.authUi,
+        trueZoom: interfaceEvidence.trueZoom ? {
+          zoom: interfaceEvidence.trueZoom.zoom,
+          screens: interfaceEvidence.trueZoom.screens.map(screen => screen.label),
+          errors: interfaceEvidence.trueZoom.errors,
+          evidence: "true-zoom-coverage.json",
+        } : null,
         botConnectTokenHygiene: interfaceEvidence.botConnectTokenHygiene,
         browserRuntimeErrors: browserIssues.length,
         browserKnownObservations: browserObservations.length,
@@ -5758,6 +5870,7 @@ try {
       calls: fakeState.ai.calls,
       truncatedCalls: fakeState.ai.truncatedCalls,
       successfulCalls: fakeState.ai.successfulCalls,
+      libraryGenerationCalls: fakeState.ai.libraryGenerationCalls,
       providerIdentityOk: fakeState.ai.providerIdentityOk,
     },
   };

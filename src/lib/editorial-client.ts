@@ -1,3 +1,4 @@
+import { projectFetch as fetch } from "@/lib/project-fetch";
 import type { ProjectRole } from "./project-permissions";
 
 export type ClientEditorialState = "draft" | "in_review" | "changes_requested" | "approved";
