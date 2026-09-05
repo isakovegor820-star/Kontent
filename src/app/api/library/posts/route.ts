@@ -4,9 +4,12 @@ import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { normalizeLibraryLabels } from "@/lib/library";
-import { resolveLibraryChannel } from "@/lib/library-server";
+import { findLibraryChannel, resolveLibraryChannel } from "@/lib/library-server";
 import { getSessionUser } from "@/lib/session";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
+
+import { ProjectAccessError } from "@/lib/project-permissions";
+import { withSelectedProjectPermission } from "@/lib/selected-project-transaction";
 
 export const runtime = "nodejs";
 
@@ -42,6 +45,7 @@ export async function GET(req: NextRequest) {
     );
     return NextResponse.json({ channelId, posts: r.rows });
   } catch (err) {
+    if (err instanceof ProjectAccessError) return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
     console.error("[/api/library/posts] GET", err);
     return NextResponse.json({ error: "server" }, { status: 500 });
   }
@@ -73,13 +77,14 @@ export async function POST(req: NextRequest) {
   const tags = normalizeLibraryLabels(body.tags);
 
   try {
-    const channelId = await resolveLibraryChannel(user.id, Number(body.channelId) || null);
+    return await withSelectedProjectPermission(getPool(), user.id, "content.create", async (pool, membership) => {
+    const channelId = await findLibraryChannel(pool, membership.projectId, Number(body.channelId) || null);
     if (!channelId) return NextResponse.json({ ok: false, error: "no_channel" }, { status: 422 });
 
     if (kind === "reference") {
       const sourcePostId = Number(body.sourcePostId);
       if (!sourcePostId) return NextResponse.json({ ok: false, error: "bad_reference" }, { status: 422 });
-      const source = await getPool().query<{
+      const source = await pool.query<{
         id: string;
         text: string;
         title: string | null;
@@ -99,7 +104,7 @@ export async function POST(req: NextRequest) {
       const item = source.rows[0];
       const handle = item.handle?.replace(/^@/u, "") ?? null;
       const sourceUrl = handle && item.tg_msg_id ? `https://t.me/${handle}/${item.tg_msg_id}` : null;
-      const saved = await getPool().query(
+      const saved = await pool.query(
         `insert into saved_posts
            (user_id, channel_id, kind, source_post_id, source_title, source_url, text, note, tags)
          values ($1, $2, 'reference', $3, $4, $5, $6, $7, $8)
@@ -115,13 +120,15 @@ export async function POST(req: NextRequest) {
 
     const text = String(body.text ?? "").trim().slice(0, 16384);
     if (!text) return NextResponse.json({ ok: false, error: "empty" }, { status: 422 });
-    const r = await getPool().query(
+    const r = await pool.query(
       `insert into saved_posts (user_id, channel_id, kind, text, note, tags)
        values ($1, $2, 'own', $3, $4, $5) returning id`,
       [user.id, channelId, text, note, tags],
     );
     return NextResponse.json({ ok: true, id: r.rows[0]?.id, channelId, kind });
+    });
   } catch (err) {
+    if (err instanceof ProjectAccessError) return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
     console.error("[/api/library/posts] POST", err);
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
@@ -138,9 +145,14 @@ export async function DELETE(req: NextRequest) {
   if (!id) return NextResponse.json({ ok: false, error: "bad_request" }, { status: 400 });
 
   try {
-    await getPool().query(`delete from saved_posts where id = $1 and user_id = $2`, [id, user.id]);
-    return NextResponse.json({ ok: true });
+    return await withSelectedProjectPermission(getPool(), user.id, "content.edit", async (pool, membership) => {
+      const removed = await pool.query(`delete from saved_posts saved using channels channel
+        where saved.id = $1 and saved.user_id = $2 and saved.channel_id = channel.id and channel.project_id = $3`, [id, user.id, membership.projectId]);
+      if (!removed.rowCount) return NextResponse.json({ ok: false, error: "not_found" }, { status: 404 });
+      return NextResponse.json({ ok: true });
+    });
   } catch (err) {
+    if (err instanceof ProjectAccessError) return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
     console.error("[/api/library/posts] DELETE", err);
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }

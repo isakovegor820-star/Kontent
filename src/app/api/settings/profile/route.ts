@@ -14,6 +14,9 @@ import { profileUpdateFingerprint } from "@/lib/profile-server";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import { getSessionUser } from "@/lib/session";
 
+import { ProjectAccessError } from "@/lib/project-permissions";
+import { withSelectedProjectPermission } from "@/lib/selected-project-transaction";
+
 export const runtime = "nodejs";
 
 const noStore = { "Cache-Control": "no-store" };
@@ -35,15 +38,16 @@ async function ownedChannelId(
   client: Pick<PoolClient, "query">,
   userId: number,
   wanted: number | null,
+  projectId: number,
 ): Promise<number | null> {
   const result = wanted
     ? await client.query<{ id: string }>(
-        `select id from channels where id = $1 and user_id = $2 and is_active = true`,
-        [wanted, userId],
+        `select id from channels where id = $1 and user_id = $2 and project_id = $3 and is_active = true for share`,
+        [wanted, userId, projectId],
       )
     : await client.query<{ id: string }>(
-        `select id from channels where user_id = $1 and is_active = true order by id limit 1`,
-        [userId],
+        `select id from channels where user_id = $1 and project_id = $2 and is_active = true order by id limit 1 for share`,
+        [userId, projectId],
       );
   return result.rows[0] ? Number(result.rows[0].id) : null;
 }
@@ -54,7 +58,7 @@ export async function GET(req: NextRequest) {
   if (!user) return response(requestId, { ok: false, error: "unauthorized" }, 401);
 
   try {
-    const pool = getPool();
+    return await withSelectedProjectPermission(getPool(), user.id, "project.read", async (pool, membership) => {
     const account = (
       await pool.query<{
         name: string | null;
@@ -71,7 +75,8 @@ export async function GET(req: NextRequest) {
     if (!account) return response(requestId, { ok: false, error: "unauthorized" }, 401);
 
     const wanted = Number(req.nextUrl.searchParams.get("channel"));
-    const channelId = await ownedChannelId(pool as Pick<PoolClient, "query">, user.id, Number.isSafeInteger(wanted) && wanted > 0 ? wanted : null);
+    const channelId = await ownedChannelId(pool as Pick<PoolClient, "query">, user.id, Number.isSafeInteger(wanted) && wanted > 0 ? wanted : null, membership.projectId);
+    if (Number.isSafeInteger(wanted) && wanted > 0 && !channelId) return response(requestId, { ok: false, error: "channel_not_found" }, 404);
     const briefRow = channelId
       ? (
           await pool.query(
@@ -108,7 +113,9 @@ export async function GET(req: NextRequest) {
       channelId,
       brief: channelId ? normalizeBrief(briefRow ?? {}) : null,
     });
+    });
   } catch (error) {
+    if (error instanceof ProjectAccessError) return response(requestId, { ok: false, error: "access_denied" }, 403);
     console.error("[/api/settings/profile] GET", { requestId, ...safeError(error) });
     return response(requestId, { ok: false, error: "unavailable" }, 503);
   }
@@ -135,16 +142,12 @@ export async function POST(req: NextRequest) {
     avatar: input.avatar,
     brief: input.brief,
   });
-  let client: PoolClient;
   try {
-    client = await getPool().connect();
-  } catch (error) {
-    console.error("[/api/settings/profile] connect", { requestId, ...safeError(error) });
-    return response(requestId, { ok: false, error: "unavailable" }, 503);
-  }
-
-  try {
-    await client.query("begin");
+    return await withSelectedProjectPermission(getPool(), user.id, "content.edit", async (client, membership) => {
+    // Authorize the current channel before any idempotent response can reveal a brief.
+    if (!(await ownedChannelId(client, user.id, input.channelId, membership.projectId))) {
+      return response(requestId, { ok: false, error: "channel_not_found" }, 404);
+    }
     await client.query(`select pg_advisory_xact_lock($1::bigint)`, [user.id]);
     const previous = (
       await client.query<{ request_fingerprint: string; result_payload: Record<string, unknown> }>(
@@ -155,16 +158,10 @@ export async function POST(req: NextRequest) {
       )
     ).rows[0];
     if (previous) {
-      await client.query("rollback");
       if (previous.request_fingerprint !== fingerprint) {
         return response(requestId, { ok: false, error: "idempotency_conflict" }, 409);
       }
       return response(requestId, { ...previous.result_payload, replayed: true });
-    }
-
-    if (!(await ownedChannelId(client, user.id, input.channelId))) {
-      await client.query("rollback");
-      return response(requestId, { ok: false, error: "channel_not_found" }, 404);
     }
 
     const account = (
@@ -216,13 +213,11 @@ export async function POST(req: NextRequest) {
        values ($1, $2, $3, $4::jsonb)`,
       [user.id, input.requestKey, fingerprint, JSON.stringify(payload)],
     );
-    await client.query("commit");
     return response(requestId, payload);
+    }, { actorLock: "update" });
   } catch (error) {
-    await client.query("rollback").catch(() => undefined);
+    if (error instanceof ProjectAccessError) return response(requestId, { ok: false, error: "access_denied" }, 403);
     console.error("[/api/settings/profile] POST", { requestId, ...safeError(error) });
     return response(requestId, { ok: false, error: "unavailable" }, 503);
-  } finally {
-    client.release();
   }
 }
