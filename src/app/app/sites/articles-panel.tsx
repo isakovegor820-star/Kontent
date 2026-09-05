@@ -105,11 +105,13 @@ export function ArticlesPanel({ siteId, verified, hasDestinations, hasProfile, o
   }, [siteId]);
 
   const act = useCallback(async (id: number, action: string, extra: Record<string, unknown> = {}) => {
+    const reviewed = detail?.id === id ? detail : articles.find((article) => article.id === id);
+    if (!reviewed) return;
     setBusy(`${id}:${action}`);
     setError(null);
     const { status, body } = await requestJson<{ error?: string }>(`/api/sites/${siteId}/articles/${id}`, {
       method: "POST",
-      body: JSON.stringify({ action, ...extra }),
+      body: JSON.stringify({ ...extra, action, version: reviewed.version, status: reviewed.status }),
     });
     setBusy(null);
     if (status >= 400) {
@@ -119,14 +121,14 @@ export function ArticlesPanel({ siteId, verified, hasDestinations, hasProfile, o
     await load();
     if (openId === id) await openArticle(id);
     onSiteChanged();
-  }, [siteId, load, openId, openArticle, onSiteChanged]);
+  }, [siteId, load, openId, openArticle, onSiteChanged, detail, articles]);
 
   const saveEdit = useCallback(async () => {
     if (!detail) return;
     setBusy(`${detail.id}:edit`);
     const { status, body } = await requestJson<{ error?: string; issues?: Array<{ message: string; severity: string }> }>(`/api/sites/${siteId}/articles/${detail.id}`, {
       method: "PATCH",
-      body: JSON.stringify(draft),
+      body: JSON.stringify({ ...draft, version: detail.version, status: detail.status }),
     });
     setBusy(null);
     if (status >= 400) {
@@ -289,7 +291,7 @@ export function ArticlesPanel({ siteId, verified, hasDestinations, hasProfile, o
 
               <div className="mt-5 flex flex-wrap gap-2">
                 {["needs_review", "approved", "failed"].includes(detail.status) && (
-                  <Button type="button" size="sm" onClick={() => act(detail.id, "approve")} disabled={busy !== null}>
+                  <Button type="button" size="sm" onClick={() => act(detail.id, detail.status === "approved" ? "publish" : "approve")} disabled={busy !== null}>
                     <CheckCircle2 className="h-4 w-4" aria-hidden />{detail.status === "approved" ? "Опубликовать" : "Одобрить"}
                   </Button>
                 )}
