@@ -1,5 +1,7 @@
 "use client";
 
+import { projectFetch as fetch } from "@/lib/project-fetch";
+
 /**
  * КАРКАС РАБОЧИХ ЭКРАНОВ ПЛАТФОРМЫ (Приложение А: экраны А4–А12).
  *
@@ -294,9 +296,12 @@ function AiLimitCard() {
 /* ------------------------------------------------------------ СТРОКА ЮЗЕРА */
 
 function UserRow({ user, onSignOut }: { user: User; onSignOut: () => void }) {
+  const { signOutStatus, signOutError } = useStore();
+  const signingOut = signOutStatus === "pending";
   const initial = user.name.trim().charAt(0).toUpperCase() || "А";
 
   return (
+    <div className="space-y-2">
     <div className="flex items-center gap-2">
       {user.avatar ? (
         // eslint-disable-next-line @next/next/no-img-element -- authenticated account asset
@@ -328,12 +333,18 @@ function UserRow({ user, onSignOut }: { user: User; onSignOut: () => void }) {
         type="button"
         variant="ghost"
         size="icon"
+        loading={signingOut}
         onClick={onSignOut}
-        aria-label="Выйти из аккаунта"
+        aria-label={signOutError ? "Повторить выход" : "Выйти из аккаунта"}
         title="Выйти"
       >
         <LogOut className="h-[18px] w-[18px]" strokeWidth={1.75} aria-hidden />
       </Button>
+    </div>
+    <p role="status" className={cn("text-[12px] leading-relaxed text-text-2", !signingOut && "sr-only")}>
+      {signingOut ? "Завершаем сессию…" : ""}
+    </p>
+    {signOutError ? <p role="alert" className="text-[13px] leading-relaxed text-danger-text">{signOutError}</p> : null}
     </div>
   );
 }
@@ -659,7 +670,7 @@ export function AppShell({
   action?: React.ReactNode;
   stickyHeaderOnMobile?: boolean;
 }) {
-  const { ready, authReady, authError, user, signOut, refreshAuth } = useStore();
+  const { ready, authReady, authError, user, signOut, signOutStatus, refreshAuth } = useStore();
   const router = useRouter();
   const pathname = usePathname();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -670,13 +681,16 @@ export function AppShell({
   const burgerRef = useRef<HTMLButtonElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const drawerRef = useRef<HTMLElement>(null);
-  // Выход уводит на лендинг — защита не должна перехватить и увести на /login
-  const leavingRef = useRef(false);
 
   /* ЗАЩИТА: без входа — на страницу входа, без мастера — в мастер.
      Ждём ответа сервера о сессии (authReady), иначе выкинем вошедшего по ошибке. */
   useEffect(() => {
-    if (!ready || !authReady || authError || leavingRef.current) return;
+    // Both the sidebar and settings share the same server-confirmed completion.
+    if (signOutStatus === "complete") {
+      router.push("/");
+      return;
+    }
+    if (!ready || !authReady || authError) return;
     if (!user) {
       router.replace("/login");
       return;
@@ -684,7 +698,7 @@ export function AppShell({
     if (!user.onboarded && pathname !== "/app/onboarding") {
       router.replace("/app/onboarding");
     }
-  }, [ready, authReady, authError, user, pathname, router]);
+  }, [ready, authReady, authError, user, pathname, router, signOutStatus]);
 
   /* На широком экране меню не существует — гасим, если экран вырос */
   useEffect(() => {
@@ -747,10 +761,8 @@ export function AppShell({
   const closeMenu = useCallback(() => setMenuOpen(false), []);
 
   const handleSignOut = useCallback(() => {
-    leavingRef.current = true;
-    signOut();
-    router.push("/");
-  }, [signOut, router]);
+    void signOut();
+  }, [signOut]);
 
   // Ошибка проверки сессии не равна «гость»: не выкидываем человека на регистрацию
   // и не показываем бесконечный скелетон, а даём явный повтор запроса.

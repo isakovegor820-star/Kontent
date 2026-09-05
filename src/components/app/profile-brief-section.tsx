@@ -1,5 +1,9 @@
 "use client";
 
+import { projectNativeUrl } from "@/lib/project-native-url";
+
+import { projectFetch as fetch } from "@/lib/project-fetch";
+
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AtSign, Check, Save, ShieldCheck, Trash2, Upload, UserRound } from "lucide-react";
@@ -442,7 +446,7 @@ export function ProfileBriefSection() {
                     {avatarSrc && !avatarBroken ? (
                       // eslint-disable-next-line @next/next/no-img-element -- user-controlled remote avatar is not proxied server-side
                       <img
-                        src={avatarSrc}
+                        src={projectNativeUrl(avatarSrc)}
                         alt="Фотография профиля"
                         className="h-28 w-28 rounded-full object-cover shadow-soft outline outline-1 outline-[var(--image-outline)] ring-4 ring-surface"
                         onError={() => setAvatarBroken(true)}

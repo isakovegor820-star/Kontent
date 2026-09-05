@@ -1,3 +1,4 @@
+import { projectFetch as fetch } from "@/lib/project-fetch";
 export type ClientProjectNotification = Readonly<{
   id: number;
   projectId: number;

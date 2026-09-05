@@ -1,7 +1,10 @@
 "use client";
 
+import { projectFetch as fetch } from "@/lib/project-fetch";
+
 import {
   createContext,
+  Fragment,
   useCallback,
   useContext,
   useEffect,
@@ -15,6 +18,7 @@ import {
   parseProjectsResponse,
   type ClientProject,
 } from "@/lib/project-client";
+import { getClientProjectId, setClientProjectId } from "@/lib/project-fetch";
 import { useStore } from "@/lib/store";
 
 type ProjectContextValue = {
@@ -52,7 +56,16 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
       const parsed = response.ok ? parseProjectsResponse(body) : null;
       if (!parsed) throw new Error("projects_unavailable");
       if (sequence !== requestSequence.current) return;
-      setProjects(parsed);
+      const selectedId = getClientProjectId();
+      const selected = parsed.find((project) => project.id === selectedId) ?? parsed.find((project) => project.selected);
+      // A revoked/archived selection is not replaced behind the user's current editor.
+      if (selectedId !== null && !parsed.some((project) => project.id === selectedId)) {
+        setProjects(parsed.map((project) => ({ ...project, selected: false })));
+        setError(true);
+        return;
+      }
+      if (selected) setClientProjectId(selected.id);
+      setProjects(parsed.map((project) => ({ ...project, selected: project.id === selected?.id })));
       setError(false);
     } catch {
       if (sequence !== requestSequence.current) return;
@@ -69,6 +82,7 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
       if (cancelled) return;
       requestSequence.current += 1;
       if (!authReady || userId == null) {
+        if (authReady && userId == null) setClientProjectId(null);
         setProjects([]);
         setReady(authReady);
         setError(false);
@@ -94,6 +108,8 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
       const body = await response.json().catch(() => null) as Record<string, unknown> | null;
       const selected = response.ok && body && body.ok === true ? parseClientProject(body.project) : null;
       if (!selected) throw new Error("project_switch_failed");
+      requestSequence.current += 1;
+      setClientProjectId(selected.id);
       setProjects((current) => current.map((project) => ({
         ...project,
         selected: project.id === selected.id,
@@ -123,6 +139,7 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
       } | null;
       const created = response.ok && body?.ok === true ? parseClientProject(body.project) : null;
       if (!created) return { ok: false, error: body?.error ?? "server" };
+      setClientProjectId(created.id);
       await refresh();
       setProjects((current) => {
         const byId = new Map(current.map((project) => [project.id, project]));
@@ -152,5 +169,5 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
     createProject,
   }), [projects, current, ready, error, switching, refresh, selectProject, createProject]);
 
-  return <ProjectContext.Provider value={value}>{children}</ProjectContext.Provider>;
+  return <ProjectContext.Provider value={value}><Fragment key={current?.id ?? "unselected"}>{children}</Fragment></ProjectContext.Provider>;
 }

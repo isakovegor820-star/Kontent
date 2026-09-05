@@ -1,9 +1,10 @@
+import { nativeRequestProjectId } from "@/lib/native-project-request";
 import { randomUUID } from "node:crypto";
 
 import { NextRequest, NextResponse } from "next/server";
 
 import { getPool } from "@/lib/db";
-import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/project-permissions";
+import { ProjectAccessError, requireProjectPermission } from "@/lib/project-permissions";
 import {
   buildSiteAnalysisExportSnapshot,
   renderSiteAnalysisExport,
@@ -35,7 +36,7 @@ export async function GET(req: NextRequest, context: Context) {
   }
   try {
     const pool = getPool();
-    const membership = await requireSelectedProjectPermission(pool, user.id, "project.read");
+    const membership = await requireProjectPermission(pool, user.id, nativeRequestProjectId(req), "project.read");
     const queried = await pool.query<ExportRow>(
       `select id, request_id, target_url, confirmed_domain, run_revision, result, completed_at
          from site_analysis_jobs
@@ -55,6 +56,7 @@ export async function GET(req: NextRequest, context: Context) {
     });
     const rendered = await renderSiteAnalysisExport(format, snapshot);
     const snapshotHash = (snapshot.analysis as { snapshotHash?: string } | undefined)?.snapshotHash || "";
+    await requireProjectPermission(pool, user.id, membership.projectId, "project.read");
     const filename = `aurora-site-osint-${id}-r${Number(row.run_revision)}.${rendered.extension}`;
     return new NextResponse(new Uint8Array(rendered.bytes), {
       status: 200,

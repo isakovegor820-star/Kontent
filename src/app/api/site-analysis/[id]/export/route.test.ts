@@ -6,14 +6,14 @@ const mocks = vi.hoisted(() => ({
   query: vi.fn(),
   buildSnapshot: vi.fn(),
   renderExport: vi.fn(),
-  requireSelectedProjectPermission: vi.fn(),
+  requireProjectPermission: vi.fn(),
 }));
 
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
 vi.mock("@/lib/db", () => ({ getPool: () => ({ query: mocks.query }) }));
 vi.mock("@/lib/project-permissions", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/lib/project-permissions")>(),
-  requireSelectedProjectPermission: mocks.requireSelectedProjectPermission,
+  requireProjectPermission: mocks.requireProjectPermission,
 }));
 vi.mock("@/lib/site-analysis/export.mjs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/site-analysis/export.mjs")>();
@@ -30,7 +30,7 @@ describe("GET /api/site-analysis/:id/export", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.getSessionUser.mockResolvedValue({ id: 7 });
-    mocks.requireSelectedProjectPermission.mockResolvedValue({ projectId: 31, userId: 7, role: "owner", version: 1 });
+    mocks.requireProjectPermission.mockResolvedValue({ projectId: 31, userId: 7, role: "owner", version: 1 });
     mocks.query.mockResolvedValue({ rows: [{
       id: 41,
       request_id: "req-41",
@@ -46,7 +46,7 @@ describe("GET /api/site-analysis/:id/export", () => {
 
   it("exports only the authenticated user's immutable ready result", async () => {
     const response = await GET(
-      new NextRequest("http://localhost/api/site-analysis/41/export?format=json"),
+      new NextRequest("http://localhost/api/site-analysis/41/export?format=json&projectId=31"),
       { params: Promise.resolve({ id: "41" }) },
     );
     expect(response.status).toBe(200);
@@ -57,7 +57,7 @@ describe("GET /api/site-analysis/:id/export", () => {
 
   it("fails closed for unauthenticated and unsupported requests", async () => {
     mocks.getSessionUser.mockResolvedValueOnce(null);
-    expect((await GET(new NextRequest("http://localhost/api/site-analysis/41/export?format=json"), { params: Promise.resolve({ id: "41" }) })).status).toBe(401);
+    expect((await GET(new NextRequest("http://localhost/api/site-analysis/41/export?format=json&projectId=31"), { params: Promise.resolve({ id: "41" }) })).status).toBe(401);
     mocks.getSessionUser.mockResolvedValueOnce({ id: 7 });
     expect((await GET(new NextRequest("http://localhost/api/site-analysis/41/export?format=xml"), { params: Promise.resolve({ id: "41" }) })).status).toBe(400);
     expect(mocks.query).not.toHaveBeenCalled();

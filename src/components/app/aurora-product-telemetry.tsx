@@ -1,5 +1,7 @@
 "use client";
 
+import { projectFetch as fetch } from "@/lib/project-fetch";
+
 import { usePathname } from "next/navigation";
 import { useEffect, useRef } from "react";
 

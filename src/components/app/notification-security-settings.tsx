@@ -1,5 +1,7 @@
 "use client";
 
+import { projectFetch as fetch } from "@/lib/project-fetch";
+
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import {
@@ -147,8 +149,8 @@ export function NotificationSecuritySettings() {
           <Link href="/forgot-password" className={buttonClassName({ variant: "outline" })}>Сменить пароль</Link>
         </div>
         <div className="flex flex-col gap-4 border-t border-line px-5 py-6 sm:flex-row sm:items-center sm:justify-between sm:px-7">
-          <div><p className="text-[14px] font-bold text-text">Выйти из аккаунта</p><p className="mt-1 text-[12px] text-text-3">Текущая сессия на этом устройстве будет завершена.</p></div>
-          <Button variant="danger" onClick={() => store.signOut()}><LogOut className="h-4 w-4" aria-hidden />Выйти</Button>
+          <div className="min-w-0"><p className="text-[14px] font-bold text-text">Выйти из аккаунта</p><p role="status" className="mt-1 text-[12px] leading-relaxed text-text-3">{store.signOutStatus === "pending" ? "Завершаем сессию…" : "Текущая сессия на этом устройстве будет завершена."}</p>{store.signOutError ? <p role="alert" className="mt-2 max-w-md text-[13px] leading-relaxed text-danger-text">{store.signOutError}</p> : null}</div>
+          <Button variant="danger" loading={store.signOutStatus === "pending"} onClick={() => void store.signOut()}><LogOut className="h-4 w-4" aria-hidden />{store.signOutError ? "Повторить выход" : "Выйти"}</Button>
         </div>
       </Card>
     </div>

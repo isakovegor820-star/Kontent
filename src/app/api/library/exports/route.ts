@@ -1,3 +1,5 @@
+import { projectNativeUrl } from "@/lib/project-native-url";
+import { ProjectAccessError, requireSelectedProjectPermission, requireProjectPermission } from "@/lib/project-permissions";
 import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -18,7 +20,7 @@ type StoredExportSnapshot = {
   snapshot: LibraryRegistrySnapshot;
 };
 
-function exportResponse(stored: StoredExportSnapshot, replay: boolean) {
+function exportResponse(stored: StoredExportSnapshot, replay: boolean, projectId: number) {
   const id = Number(stored.id);
   return NextResponse.json(
     {
@@ -29,7 +31,7 @@ function exportResponse(stored: StoredExportSnapshot, replay: boolean) {
       count: stored.snapshot.items.length,
       formats: LIBRARY_EXPORT_FORMATS.map((format) => ({
         format,
-        href: `/api/library/exports/${id}?format=${format}`,
+        href: projectNativeUrl(`/api/library/exports/${id}?format=${format}`, projectId),
       })),
     },
     { status: replay ? 200 : 201 },
@@ -54,14 +56,20 @@ export async function POST(req: NextRequest) {
   }
   try {
     const pool = getPool();
+    const membership = await requireSelectedProjectPermission(pool, user.id, "project.read");
     const existing = (
       await pool.query<StoredExportSnapshot>(
-        `select id, snapshot from library_export_snapshots
-          where user_id = $1 and request_key = $2 and expires_at > now()`,
-        [user.id, requestKey],
+        `select snapshot_row.id, snapshot_row.snapshot from library_export_snapshots snapshot_row
+           join channels channel on channel.id = snapshot_row.channel_id
+          where snapshot_row.user_id = $1 and snapshot_row.request_key = $2 and snapshot_row.expires_at > now()
+            and channel.project_id = $3`,
+        [user.id, requestKey, membership.projectId],
       )
     ).rows[0];
-    if (existing) return exportResponse(existing, true);
+    if (existing) {
+      await requireProjectPermission(pool, user.id, membership.projectId, "project.read");
+      return exportResponse(existing, true, membership.projectId);
+    }
 
     const snapshot = await buildLibraryRegistrySnapshot(
       user.id,
@@ -71,22 +79,30 @@ export async function POST(req: NextRequest) {
     const inserted = await pool.query<StoredExportSnapshot>(
       `insert into library_export_snapshots
          (user_id, channel_id, request_key, formula_version, snapshot)
-       values ($1, $2, $3, $4, $5::jsonb)
+       select $1, channel.id, $3, $4, $5::jsonb
+         from channels channel
+         join project_members member on member.project_id = channel.project_id and member.user_id = $1 and member.status = 'active'
+         join projects project on project.id = channel.project_id and project.is_archived = false
+        where channel.id = $2 and channel.project_id = $6
        on conflict (user_id, request_key) do nothing
        returning id, snapshot`,
-      [user.id, snapshot.channelId, requestKey, snapshot.formulaVersion, JSON.stringify(snapshot)],
+      [user.id, snapshot.channelId, requestKey, snapshot.formulaVersion, JSON.stringify(snapshot), membership.projectId],
     );
     const replay = !inserted.rows[0];
     const stored = inserted.rows[0] ?? (
       await pool.query<StoredExportSnapshot>(
-        `select id, snapshot from library_export_snapshots
-          where user_id = $1 and request_key = $2 and expires_at > now()`,
-        [user.id, requestKey],
+        `select snapshot_row.id, snapshot_row.snapshot from library_export_snapshots snapshot_row
+           join channels channel on channel.id = snapshot_row.channel_id
+          where snapshot_row.user_id = $1 and snapshot_row.request_key = $2 and snapshot_row.expires_at > now()
+            and channel.project_id = $3`,
+        [user.id, requestKey, membership.projectId],
       )
     ).rows[0];
     if (!stored) return NextResponse.json({ ok: false, error: "snapshot_expired" }, { status: 410 });
-    return exportResponse(stored, replay);
+    await requireProjectPermission(pool, user.id, membership.projectId, "project.read");
+    return exportResponse(stored, replay, membership.projectId);
   } catch (error) {
+    if (error instanceof ProjectAccessError) return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
     console.error("[/api/library/exports] POST", { errorName: error instanceof Error ? error.name : "Error" });
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }

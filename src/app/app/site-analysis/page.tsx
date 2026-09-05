@@ -1,5 +1,9 @@
 "use client";
 
+import { projectNativeUrl } from "@/lib/project-native-url";
+
+import { projectFetch as fetch } from "@/lib/project-fetch";
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
@@ -1114,7 +1118,7 @@ function ReportView({ report, analysisId }: { report: SiteReport; analysisId: nu
             ].map(([format, label]) => (
               <a
                 key={format}
-                href={`/api/site-analysis/${analysisId}/export?format=${format}`}
+                href={projectNativeUrl(`/api/site-analysis/${analysisId}/export?format=${format}`)}
                 download
                 className="inline-flex min-h-10 items-center rounded-sm border border-line px-3 py-2 text-[12px] font-bold text-brand hover:border-brand/35 hover:bg-info-soft"
               >

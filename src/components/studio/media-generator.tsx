@@ -1,5 +1,9 @@
 "use client";
 
+import { projectNativeUrl } from "@/lib/project-native-url";
+
+import { projectFetch as fetch } from "@/lib/project-fetch";
+
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
@@ -593,7 +597,7 @@ export function MediaGenerator({
                       >
                         {generation.kind === "video" ? (
                           <video
-                            src={generation.assetUrl}
+                            src={projectNativeUrl(generation.assetUrl)}
                             controls
                             preload="metadata"
                             className="max-h-[640px] w-full object-contain"
@@ -601,7 +605,7 @@ export function MediaGenerator({
                         ) : (
                           // eslint-disable-next-line @next/next/no-img-element
                           <img
-                            src={generation.assetUrl}
+                            src={projectNativeUrl(generation.assetUrl)}
                             alt={`Результат по запросу: ${generation.prompt}`}
                             className="block h-auto w-full"
                           />
@@ -613,7 +617,7 @@ export function MediaGenerator({
                       <div className="mt-3 flex flex-wrap gap-2">
                         {generation.status === "ready" && generation.downloadUrl && (
                           <a
-                            href={generation.downloadUrl}
+                            href={projectNativeUrl(generation.downloadUrl)}
                             download
                             className={cn(
                               "inline-flex min-h-11 items-center justify-center gap-2 rounded-[10px] border border-line-strong bg-surface px-4 text-[13px] font-semibold text-text",
