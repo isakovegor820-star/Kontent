@@ -34,6 +34,7 @@ export interface SemanticPublicationResult {
   }>;
   provenance: {
     validatorVersion: "semantic-publication-v1";
+    coverageComplete?: boolean;
     checkedAt: string;
     provider: string;
     model: string | null;

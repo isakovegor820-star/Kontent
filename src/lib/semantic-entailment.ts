@@ -54,8 +54,8 @@ function safeIdentifier(value: unknown, fallback: string): string {
 
 /**
  * Extract declarative units without attempting to decide truth locally. The adapter sees
- * only the generated draft plus the already-authorised ledger evidence. Production does
- * not register an adapter yet, so neither body is sent to an external provider.
+ * only the generated draft plus the already-authorised ledger evidence. An explicitly
+ * configured adapter uses the same monetary and permission boundary as its operation.
  */
 export function extractSemanticClaims(text: string): SemanticClaim[] {
   return extractSharedSemanticClaims(text);
