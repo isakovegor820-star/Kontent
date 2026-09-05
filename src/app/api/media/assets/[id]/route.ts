@@ -1,3 +1,4 @@
+import { nativeRequestProjectId } from "@/lib/native-project-request";
 import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
 
@@ -5,12 +6,13 @@ import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
 import {
   ProjectAccessError,
-  requireSelectedProjectPermission,
+  requireProjectPermission,
 } from "@/lib/project-permissions";
 import {
   parseMediaRange,
   postgresMediaStream,
-  signedMediaObjectUrl,
+  mediaObjectRangeStream,
+  authorizedMediaStream,
 } from "@/lib/media-storage.mjs";
 
 export const runtime = "nodejs";
@@ -35,7 +37,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
 
   try {
     const pool = getPool();
-    const membership = await requireSelectedProjectPermission(pool, user.id, "project.read");
+    const membership = await requireProjectPermission(pool, user.id, nativeRequestProjectId(req), "project.read");
     const asset = (
       await pool.query<{
         storage_backend: "postgres" | "object";
@@ -55,39 +57,23 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
       throw new Error("unsafe_stored_media_type");
     }
 
+    const authorize = () => requireProjectPermission(pool, user.id, membership.projectId, "project.read");
     const etag = `"${asset.sha256}"`;
-    if (req.headers.get("if-none-match") === etag) {
-      return new Response(null, {
-        status: 304,
-        headers: { etag, "cache-control": "private, max-age=3600", "x-request-id": requestId },
-      });
-    }
-
     const download = req.nextUrl.searchParams.get("download") === "1";
     const disposition = `${download ? "attachment" : "inline"}; filename="${asset.file_name.replace(/[^a-z0-9_.-]/gi, "-")}"`;
-    if (asset.storage_backend === "object") {
-      if (!asset.object_key) throw new Error("object_key_missing");
-      const location = await signedMediaObjectUrl({ key: asset.object_key, fileName: asset.file_name, download });
-      return new Response(null, {
-        status: 307,
-        headers: {
-          location,
-          etag,
-          "cache-control": "private, no-store",
-          "x-request-id": requestId,
-        },
-      });
-    }
     const parsedRange = parseMediaRange(req.headers.get("range"), Number(asset.bytes));
     if (parsedRange && "error" in parsedRange) {
       return new Response(null, {
         status: 416,
-        headers: { "content-range": `bytes */${asset.bytes}`, etag, "x-request-id": requestId },
+        headers: { "cache-control": "private, no-store", "content-range": `bytes */${asset.bytes}`, etag, "x-request-id": requestId },
       });
     }
     const range = parsedRange ?? { start: 0, end: Number(asset.bytes) - 1, length: Number(asset.bytes) };
     const startedAt = Date.now();
-    const stream = postgresMediaStream({
+    if (asset.storage_backend === "object" && !asset.object_key) throw new Error("object_key_missing");
+    const source = asset.storage_backend === "object"
+      ? await mediaObjectRangeStream({ key: asset.object_key!, start: range.start, end: range.end, signal: req.signal })
+      : postgresMediaStream({
       pool,
       assetId,
       projectId: membership.projectId,
@@ -103,6 +89,8 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
         latency: Date.now() - startedAt,
       }),
     });
+    try { await authorize(); } catch (error) { await source.cancel(error); throw error; }
+    const stream = authorizedMediaStream(source, authorize, { maxBytes: range.length });
     return new Response(stream, {
       status: parsedRange ? 206 : 200,
       headers: {
@@ -111,7 +99,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
         ...(parsedRange ? { "content-range": `bytes ${range.start}-${range.end}/${asset.bytes}` } : {}),
         "accept-ranges": "bytes",
         "content-disposition": disposition,
-        "cache-control": "private, max-age=3600",
+        "cache-control": "private, no-store",
         etag,
         "x-content-type-options": "nosniff",
         "x-request-id": requestId,
