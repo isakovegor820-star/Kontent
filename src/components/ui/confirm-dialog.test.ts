@@ -1,11 +1,12 @@
+// @vitest-environment jsdom
 import { createElement } from "react";
-import { readFileSync } from "node:fs";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ConfirmDialog } from "./confirm-dialog";
 
-const source = readFileSync(new URL("./confirm-dialog.tsx", import.meta.url), "utf8");
+afterEach(cleanup);
 
 describe("ConfirmDialog", () => {
   it("renders an explicitly labelled modal confirmation with safe cancel first", () => {
@@ -55,11 +56,19 @@ describe("ConfirmDialog", () => {
     expect(html).toContain("Добавить в календарь");
   });
 
-  it("isolates the background and locks page scroll while open", () => {
-    expect(source).toContain("sibling.inert = true");
-    expect(source).toContain("element.inert = wasInert");
-    expect(source).toContain('document.body.style.overflow = "hidden"');
-    expect(source).toContain("document.body.style.overflow = previousOverflow");
-    expect(source).toContain("overscroll-contain");
+  it("isolates the background and restores page scroll and focus when closed", async () => {
+    const props = { title: "Confirm fixture", description: "Fixture", confirmLabel: "Confirm", onConfirm: vi.fn(), onCancel: vi.fn() };
+    const view = render(createElement("div", null, createElement("button", null, "Outside"), createElement(ConfirmDialog, { ...props, open: false })));
+    const outside = screen.getByRole("button", { name: "Outside" });
+    outside.focus();
+    const originalOverflow = document.body.style.overflow;
+    view.rerender(createElement("div", null, createElement("button", null, "Outside"), createElement(ConfirmDialog, { ...props, open: true })));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "Отмена" })));
+    expect(outside.inert).toBe(true);
+    expect(document.body.style.overflow).toBe("hidden");
+    view.rerender(createElement("div", null, createElement("button", null, "Outside"), createElement(ConfirmDialog, { ...props, open: false })));
+    expect(Boolean(outside.inert)).toBe(false);
+    expect(document.body.style.overflow).toBe(originalOverflow);
+    expect(document.activeElement).toBe(outside);
   });
 });
