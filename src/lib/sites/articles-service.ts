@@ -1,6 +1,7 @@
 import type { Pool, PoolClient } from "pg";
 
 import { validateArticle } from "../site-articles/generation.mjs";
+import { requireProjectPermission, roleAllows } from "../project-permissions";
 import {
   SITE_ARTICLE_FIELDS,
   activeDestinationsForSite,
@@ -160,7 +161,7 @@ export async function editSiteArticle(db: Queryable, input: {
             internal_links = $7::jsonb, structured_data = $8::jsonb,
             quality = $9::jsonb, version = version + 1, status = 'needs_review', status_reason = $10,
             approved_by = null, approved_version = null, approved_at = null, updated_at = now()
-      where id = $1
+      where id = $1 and version = $11 and status = $12 and site_id = $13 and project_id = $14
       returning ${SITE_ARTICLE_FIELDS}`,
     [
       input.article.id, validation.article.title, slug, validation.article.metaDescription, validation.article.bodyMarkdown,
@@ -168,9 +169,11 @@ export async function editSiteArticle(db: Queryable, input: {
       validation.article.structuredData ? JSON.stringify(validation.article.structuredData) : null,
       JSON.stringify({ issues: validation.issues, wordCount: validation.article.wordCount, editedByHuman: true }),
       validation.ok ? null : "quality_after_edit",
+      input.article.version, input.article.status, input.site.id, input.site.project_id,
     ],
   );
   const row = updated.rows[0];
+  if (!row) throw new SiteServiceError("article_revision_conflict", 409);
   await recordArticleRevision(db, { article: row, version: row.version, authorUserId: input.userId, changeKind: "edited" });
   return { row, validation };
 }
@@ -188,19 +191,21 @@ async function hasHumanEdit(db: Queryable, articleId: number, version: number) {
  * по активным назначениям, если домен подтверждён. Возвращает publications для постановки в очередь.
  */
 export async function approveSiteArticle(db: Queryable, input: { site: SiteRow; article: SiteArticleRow; userId: number }) {
-  if (!["needs_review", "approved", "failed"].includes(input.article.status)) throw new SiteServiceError("article_not_approvable", 409);
+  const membership = await requireProjectPermission(db, input.userId, Number(input.site.project_id), "content.approve");
+  if (!["needs_review", "failed"].includes(input.article.status)) throw new SiteServiceError("article_not_approvable", 409);
   const edited = await hasHumanEdit(db, Number(input.article.id), Number(input.article.version));
   const updated = await db.query<SiteArticleRow>(
     `update site_articles
         set status = 'approved', approved_by = $2, approved_version = version, approved_at = now(), status_reason = null, updated_at = now()
-      where id = $1 returning ${SITE_ARTICLE_FIELDS}`,
-    [input.article.id, input.userId],
+      where id = $1 and version = $3 and status = $4 and site_id = $5 and project_id = $6 returning ${SITE_ARTICLE_FIELDS}`,
+    [input.article.id, input.userId, input.article.version, input.article.status, input.site.id, input.site.project_id],
   );
   const row = updated.rows[0];
+  if (!row) throw new SiteServiceError("article_revision_conflict", 409);
   await recordArticleRevision(db, { article: row, version: row.version, authorUserId: input.userId, changeKind: "approved" });
   await applyApprovalStreak(db, { siteId: Number(input.site.id), edited, rejected: false });
-  const destinations = input.site.verification_state === "verified" ? await activeDestinationsForSite(db, Number(input.site.id)) : [];
-  const publications = destinations.length ? await createArticlePublications(db, { article: row, destinations, action: "publish" }) : [];
+  const destinations = input.site.verification_state === "verified" && roleAllows(membership.role, "content.publish") ? await activeDestinationsForSite(db, Number(input.site.id)) : [];
+  const publications = destinations.length ? await createArticlePublications(db, { article: row, destinations, action: "publish", requestedByUserId: input.userId }) : [];
   return { row, publications, edited, destinations: destinations.length, verified: input.site.verification_state === "verified" };
 }
 
@@ -208,23 +213,39 @@ export async function rejectSiteArticle(db: Queryable, input: { site: SiteRow; a
   if (!["needs_review", "approved", "failed", "draft"].includes(input.article.status)) throw new SiteServiceError("article_not_rejectable", 409);
   const reason = String(input.reason || "rejected_by_reviewer").trim().slice(0, 80);
   const updated = await db.query<SiteArticleRow>(
-    `update site_articles set status = 'rejected', status_reason = $2, updated_at = now() where id = $1 returning ${SITE_ARTICLE_FIELDS}`,
-    [input.article.id, reason],
+    `update site_articles set status = 'rejected', status_reason = $2, approved_by = null, approved_version = null, approved_at = null, updated_at = now()
+      where id = $1 and version = $3 and status = $4 and site_id = $5 and project_id = $6 returning ${SITE_ARTICLE_FIELDS}`,
+    [input.article.id, reason, input.article.version, input.article.status, input.site.id, input.site.project_id],
   );
   const row = updated.rows[0];
+  if (!row) throw new SiteServiceError("article_revision_conflict", 409);
   await recordArticleRevision(db, { article: row, version: row.version, authorUserId: input.userId, changeKind: "rejected" });
   await applyApprovalStreak(db, { siteId: Number(input.site.id), edited: false, rejected: true });
   return row;
 }
 
-export async function requestPublication(db: Queryable, input: { site: SiteRow; article: SiteArticleRow; action: "publish" | "update" | "unpublish" }) {
+export async function requestPublication(db: Queryable, input: { site: SiteRow; article: SiteArticleRow; userId: number; action: "publish" | "update" | "unpublish" }) {
   if (input.site.verification_state !== "verified") throw new SiteServiceError("domain_unverified", 409);
   if (input.action === "publish" && !["approved", "failed"].includes(input.article.status)) throw new SiteServiceError("article_not_approved", 409);
   if (input.action !== "publish" && input.article.status !== "published") throw new SiteServiceError("article_not_published", 409);
+  if (input.action !== "unpublish" && Number(input.article.approved_version) !== Number(input.article.version)) throw new SiteServiceError("article_not_approved", 409);
+  // Called in the route transaction: hold the current revision through outbox insertion.
+  const locked = await db.query<SiteArticleRow>(
+    `select ${SITE_ARTICLE_FIELDS} from site_articles
+      where id = $1 and site_id = $2 and project_id = $3 and version = $4 and status = $5
+        and approved_version is not distinct from $6::integer for update`,
+    [input.article.id, input.site.id, input.site.project_id, input.article.version, input.article.status, input.article.approved_version],
+  );
+  if (!locked.rows[0]) throw new SiteServiceError("article_revision_conflict", 409);
   const destinations = await activeDestinationsForSite(db, Number(input.site.id));
   if (!destinations.length) throw new SiteServiceError("no_active_destination", 409);
   if (input.action === "publish" && input.article.status === "failed") {
     await db.query(`update site_articles set status = 'approved', status_reason = null, updated_at = now() where id = $1`, [input.article.id]);
   }
-  return createArticlePublications(db, { article: input.article, destinations, action: input.action });
+  const publications = await createArticlePublications(db, { article: input.article, destinations, action: input.action, requestedByUserId: input.userId });
+  if (input.action !== "publish" && publications.some((publication) => ["pending", "publishing", "published_unverified"].includes(publication.status))) {
+    // Serialize competing update/unpublish intents before any worker can claim them.
+    await db.query("update site_articles set status = 'publishing', updated_at = now() where id = $1", [input.article.id]);
+  }
+  return publications;
 }

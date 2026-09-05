@@ -48,7 +48,7 @@ export async function POST(req: NextRequest, context: Context) {
     if (!found.site.latest_profile_id) return jsonWithRequest({ error: "profile_required" }, 409, requestId);
     if (!(await hasSiteArticlesWorker())) return jsonWithRequest({ error: "worker_unavailable" }, 503, requestId);
     if (body.plan === true) {
-      await enqueueSiteArticleJob("plan", { siteId: Number(found.site.id) }, { jobId: `site-articles-plan-${found.site.id}-${Date.now()}` });
+      await enqueueSiteArticleJob("plan", { siteId: Number(found.site.id), requestedByUserId: resolved.context.userId }, { jobId: `site-articles-plan-${found.site.id}-${Date.now()}` });
       return jsonWithRequest({ ok: true, planned: true }, 202, requestId);
     }
     const row = await createManualArticle(pool, { site: found.site, userId, articleType: body.articleType, brief: body.brief, title: body.title });

@@ -70,7 +70,7 @@ export async function POST(req: NextRequest, context: Context) {
     if (found.site.verification_state !== "verified") return jsonWithRequest({ error: "domain_unverified" }, 409, requestId);
     if (!found.site.latest_profile_id) return jsonWithRequest({ error: "profile_required" }, 409, requestId);
     if (!(await hasSiteArticlesWorker())) return jsonWithRequest({ error: "worker_unavailable" }, 503, requestId);
-    await enqueueSiteArticleJob("probe", { siteId: Number(found.site.id) }, { jobId: `site-articles-probe-${found.site.id}-${new Date().toISOString().slice(0, 10)}` });
+    await enqueueSiteArticleJob("probe", { siteId: Number(found.site.id), requestedByUserId: resolved.context.userId }, { jobId: `site-articles-probe-${found.site.id}-${new Date().toISOString().slice(0, 10)}` });
     return jsonWithRequest({ ok: true, queued: true }, 202, requestId);
   } catch (error) {
     return siteErrorResponse(error, "/api/sites/:id/probe POST", requestId);

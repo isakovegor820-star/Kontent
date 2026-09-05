@@ -9,6 +9,7 @@ import {
   rejectSiteArticle,
   requestPublication,
   serializeSiteArticle,
+  type SiteArticleRow,
 } from "@/lib/sites/articles-service";
 import { SiteServiceError } from "@/lib/sites/service";
 import type { ProjectPermission } from "@/lib/project-permissions";
@@ -28,6 +29,15 @@ const ACTION_PERMISSION: Record<Action, ProjectPermission> = {
   unpublish: "content.publish",
   regenerate: "content.create",
 };
+
+function requireReviewedRevision(body: Record<string, unknown>, article: SiteArticleRow) {
+  if (!Number.isSafeInteger(body.version) || Number(body.version) < 1 || typeof body.status !== "string") {
+    throw new SiteServiceError("article_revision_required", 400);
+  }
+  if (body.version !== Number(article.version) || body.status !== article.status) {
+    throw new SiteServiceError("article_revision_conflict", 409);
+  }
+}
 
 export async function GET(req: NextRequest, context: Context) {
   const resolved = await resolveSiteRoute(req, "project.read", { label: "/api/sites/:id/articles/:articleId GET" });
@@ -80,6 +90,7 @@ export async function PATCH(req: NextRequest, context: Context) {
     if (!found.ok) return found.response;
     const article = await findSiteArticle(pool, Number(found.site.id), articleId);
     if (!article) return jsonWithRequest({ error: "not_found" }, 404, requestId);
+    requireReviewedRevision(body, article);
     const profile = found.site.latest_profile_id
       ? await pool.query<{ linkable_pages: Array<{ url: string }> }>(`select linkable_pages from site_profiles where id = $1`, [found.site.latest_profile_id])
       : { rows: [] as Array<{ linkable_pages: Array<{ url: string }> }> };
@@ -113,7 +124,7 @@ export async function POST(req: NextRequest, context: Context) {
     body = {};
   }
   const action = String(body.action || "") as Action;
-  if (!(action in ACTION_PERMISSION)) {
+  if (!Object.hasOwn(ACTION_PERMISSION, action)) {
     const bad = await resolveSiteRoute(req, "project.read", { mutation: true, label: "/api/sites/:id/articles/:articleId POST" });
     return bad.ok ? jsonWithRequest({ error: "bad_request" }, 400, bad.context.requestId) : bad.response;
   }
@@ -128,10 +139,14 @@ export async function POST(req: NextRequest, context: Context) {
     if (!found.ok) return found.response;
     const article = await findSiteArticle(pool, Number(found.site.id), articleId);
     if (!article) return jsonWithRequest({ error: "not_found" }, 404, requestId);
+    requireReviewedRevision(body, article);
 
     if (action === "regenerate") {
       if (!["failed", "rejected", "needs_review"].includes(article.status)) throw new SiteServiceError("article_not_regenerable", 409);
-      await pool.query(`update site_articles set status = 'draft', status_reason = null, version = version + 1, updated_at = now() where id = $1`, [articleId]);
+      const regenerated = await pool.query(`update site_articles set status = 'draft', status_reason = null, version = version + 1,
+        approved_by = null, approved_version = null, approved_at = null, generation_requested_by_user_id = $4, updated_at = now()
+        where id = $1 and version = $2 and status = $3 returning id`, [articleId, article.version, article.status, userId]);
+      if (!regenerated.rows[0]) throw new SiteServiceError("article_revision_conflict", 409);
       await enqueueSiteArticleJob("generate", { articleId }, { jobId: `site-articles-generate-${articleId}-v${Number(article.version) + 1}` });
       return jsonWithRequest({ ok: true, status: "draft" }, 202, requestId);
     }
@@ -149,7 +164,7 @@ export async function POST(req: NextRequest, context: Context) {
         const rejected = await rejectSiteArticle(client, { site: found.site, article, userId, reason: body.reason });
         result = { article: serializeSiteArticle(rejected) };
       } else {
-        publications = await requestPublication(client, { site: found.site, article, action });
+        publications = await requestPublication(client, { site: found.site, article, action, userId });
         result = { publications: publications.length };
       }
       await client.query(

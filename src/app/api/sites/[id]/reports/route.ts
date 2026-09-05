@@ -37,7 +37,7 @@ export async function POST(req: NextRequest, context: Context) {
     if (!found.ok) return found.response;
     if (!found.site.latest_profile_id) return jsonWithRequest({ error: "profile_required" }, 409, requestId);
     if (!(await hasSiteArticlesWorker())) return jsonWithRequest({ error: "worker_unavailable" }, 503, requestId);
-    await enqueueSiteArticleJob("report", { siteId: Number(found.site.id) }, { jobId: `site-articles-report-${found.site.id}-${Date.now()}` });
+    await enqueueSiteArticleJob("report", { siteId: Number(found.site.id), requestedByUserId: resolved.context.userId }, { jobId: `site-articles-report-${found.site.id}-${Date.now()}` });
     return jsonWithRequest({ ok: true, queued: true }, 202, requestId);
   } catch (error) {
     return siteErrorResponse(error, "/api/sites/:id/reports POST", requestId);
