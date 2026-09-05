@@ -1,5 +1,7 @@
 "use client";
 
+import { projectFetch as fetch } from "@/lib/project-fetch";
+
 // А4. Календарь — ГЛАВНЫЙ экран платформы (ТЗ 5.3, Приложение А).
 // Одно главное действие: создать пост кликом в день. Публикует сервер.
 
@@ -93,6 +95,7 @@ import {
   calendarDateKey,
   calendarDateKeyForInstant,
   calendarDayForInstant,
+  calendarInstantRange,
 } from "@/lib/calendar-timezone";
 import { useStore } from "@/lib/store";
 import { reschedulePublication } from "@/lib/publication-lifecycle-client";
@@ -1550,6 +1553,35 @@ export default function CalendarPage() {
     }));
   }, [calendarTimezone, s.ready, s.realPosts]);
 
+  // A same-document hash change must resolve outside the loaded week too.
+  useEffect(() => {
+    if (!currentProjectId || !s.authReady || !s.user) return;
+    let controller: AbortController | undefined;
+    const resolveLink = () => {
+      controller?.abort();
+      const match = window.location.hash.match(/^#calendar-real-(\d+)$/u);
+      if (!match) return;
+      if (focusedPostRef.current !== `calendar-real-${match[1]}`) focusedPostRef.current = null;
+      const request = new AbortController();
+      controller = request;
+      void fetch(`/api/posts?id=${match[1]}`, { cache: "no-store", signal: request.signal })
+        .then(async (response) => {
+          if (!response.ok) return;
+          const body = await response.json();
+          const post = body.posts?.find((candidate: { id: number }) => candidate.id === Number(match[1]));
+          if (request.signal.aborted || !post?.scheduled_at || body.projectId !== Number(currentProjectId)) return;
+          setAnchor(calendarDayForInstant(post.scheduled_at, calendarTimezone));
+          setView("week");
+        }).catch(() => { /* regular calendar request retains its visible failure state */ });
+    };
+    resolveLink();
+    window.addEventListener("hashchange", resolveLink);
+    return () => {
+      controller?.abort();
+      window.removeEventListener("hashchange", resolveLink);
+    };
+  }, [calendarTimezone, currentProjectId, s.authReady, s.user]);
+
   // Полночь сегодняшнего дня. Считается на клиенте — до s.ready ничего датозависимого не рисуем
   const today = useMemo(
     () => calendarDayForInstant(new Date(calendarClock).toISOString(), calendarTimezone),
@@ -1582,6 +1614,15 @@ export default function CalendarPage() {
     const weeks = Math.ceil(span / 7);
     return Array.from({ length: weeks * 7 }, (_, i) => addDays(gridStart, i));
   }, [anchor]);
+
+  const setPostsRange = s.setRealPostsRange;
+  const visiblePostsRange = useMemo(() => {
+    if (view === "list") return null;
+    const days = view === "month" ? monthCells : weekDays;
+    return calendarInstantRange(days[0], addDays(days[days.length - 1], 1), calendarTimezone);
+  }, [calendarTimezone, monthCells, view, weekDays]);
+  useEffect(() => { setPostsRange(visiblePostsRange); }, [setPostsRange, visiblePostsRange]);
+  useEffect(() => () => { setPostsRange(null); }, [setPostsRange]);
 
   /* ------------------------------------------------- ФИЛЬТР ПО КАНАЛАМ */
   // Фильтр — по АККАУНТУ, а не по сети: пять Telegram-каналов это одна сеть,
@@ -2255,6 +2296,7 @@ export default function CalendarPage() {
       <div className="flex flex-col gap-8">
         {/* ------------------------------------------------------- СЕТКА */}
         <div className="min-w-0">
+          <p role="status" className="mb-3 text-[13px] text-muted">{!s.realReady ? "Загружаем расписание…" : ""}</p>
           {s.ready && calendarPartiallyStale && (
             <div className="mb-4 flex flex-wrap items-center gap-3 rounded-sm bg-fire-soft p-3 text-fire-text" role="status">
               <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden />

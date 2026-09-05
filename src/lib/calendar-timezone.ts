@@ -28,3 +28,10 @@ export function calendarDayFromDateKey(value: string): Date {
 export function calendarDayForInstant(instant: string, timezone: string): Date {
   return calendarDayFromDateKey(calendarDateKeyForInstant(instant, timezone));
 }
+
+/** Half-open calendar range, including the actual 23/25-hour day at DST changes. */
+export function calendarInstantRange(first: Date, endExclusive: Date, timezone: string) {
+  const start = (day: Date) => Temporal.PlainDate.from(calendarDateKey(day))
+    .toZonedDateTime(timezone).toInstant().toString();
+  return { from: start(first), to: start(endExclusive) };
+}
