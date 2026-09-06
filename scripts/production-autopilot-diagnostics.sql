@@ -27,7 +27,7 @@ settings_rows as (
          s.approvals_streak,
          s.generation_engine,
          jsonb_array_length(coalesce(s.news_sources, '[]'::jsonb)) as news_source_count,
-         s.quick_settings,
+         jsonb_typeof(s.quick_settings) = 'object' as quick_settings_configured,
          s.updated_at
     from public.autopilot_settings as s
    order by s.updated_at desc
@@ -90,10 +90,17 @@ plan_rows as (
          p.expected_post_count,
          p.planning_weeks,
          p.generation_engine,
-         -- `rules` carries the machine diagnosis for failed builds. Truncate hard: the
-         -- successful-build variant of the same column holds editorial prose.
-         left(coalesce(p.rules, ''), 300) as rules_head,
-         (to_jsonb(p) - 'items' - 'candidate_items' - 'rules') as meta
+         -- Truncation does not make editorial prose safe for a public workflow log.
+         -- Preserve only an entire machine code and explicitly selected metadata.
+         case when p.rules ~ '^[a-z][a-z0-9_.:-]{0,99}$' then p.rules else null end as rules_code,
+         length(coalesce(p.rules, '')) > 0 as rules_present,
+         jsonb_build_object(
+           'project_id', p.project_id,
+           'channel_id', p.channel_id,
+           'terminal_outcome', p.terminal_outcome,
+           'repair_strategy', case when p.repair_strategy ~ '^[a-z][a-z0-9_]{0,79}$'
+                                  then p.repair_strategy else null end
+         ) as meta
     from public.autopilot_plan as p
    order by p.created_at desc
    limit 12
