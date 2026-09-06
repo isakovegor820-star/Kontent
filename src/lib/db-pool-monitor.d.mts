@@ -12,6 +12,9 @@ export type DatabasePoolSnapshot = {
   acquireSamples: number;
   acquireTimeouts: number;
   acquireErrors: number;
+  recentAcquireErrors: number;
+  recentWindowMs: number;
+  lastAcquireErrorAt: string | null;
   connectionTimeoutMillis: number;
   queryTimeoutMillis: number;
   statementTimeoutMillis: number;
@@ -19,6 +22,7 @@ export type DatabasePoolSnapshot = {
 };
 
 export class DatabasePoolMonitor {
+  constructor(now?: () => number);
   recordAcquire(waitMs: number, error?: unknown): void;
   snapshot(
     pool: Pick<import("pg").Pool, "totalCount" | "idleCount" | "waitingCount"> | null,

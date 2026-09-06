@@ -83,7 +83,7 @@ describe("GET /api/readiness", () => {
       lastOutcome: "success",
       lastFailureCode: null,
       lastLatencyMs: 100,
-      updatedAt: "2026-08-02T00:00:00.000Z",
+      updatedAt: new Date().toISOString(),
       retryAt: null,
     }]);
   });

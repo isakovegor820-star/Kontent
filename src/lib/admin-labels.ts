@@ -149,6 +149,27 @@ export function adminMetricLabel(key: string): string {
     .toLowerCase();
 }
 
+const SYSTEM_METRIC_LABELS: Record<string, Record<string, string>> = {
+  publication_worker: {
+    waiting: "Запланировано", active: "Отправляются", retrying: "Ожидают повторной попытки", stuck: "Отправляются более 15 минут",
+    failures: "Посты в состоянии failed сейчас", successes: "Посты published за 24 часа",
+    unverified: "Доставка требует подтверждения",
+    averageDurationMs: "От начала вызова API до публикации, среднее за 24 часа",
+  },
+  mail_delivery: { sent: "Принято почтовым API за 30 дней", failed: "Failed, обновлены за 24 часа", pending: "Ожидают отправки / отправляются", overdue: "Просрочены / истёк lease" },
+  site_analysis: { failed: "Отчёты failed, обновлены за 24 часа", running: "В очереди или в работе" },
+  aurora_ai: { usageToday: "Операции квоты за день БД", usageTimezone: "Часовой пояс дня квоты", usagePeriod: "Операции квоты за 30 дней" },
+  postgresql: {
+    acquireTimeouts: "Таймауты соединения с запуска", acquireErrors: "Ошибки соединения с запуска",
+    recentAcquireErrors: "Ошибки за 60 секунд (до 1024)", recentWindowMs: "Окно текущих ошибок",
+    lastAcquireErrorAt: "Последняя ошибка соединения", waitingBeforeProbe: "Ожидали до запуска диагностики",
+  },
+};
+
+export function adminSystemMetricLabel(componentId: string, key: string): string {
+  return SYSTEM_METRIC_LABELS[componentId]?.[key] ?? (key === "lastFailureAt" ? "Последняя ошибка в истории" : null) ?? adminMetricLabel(key);
+}
+
 export function formatAdminBytes(value: number | null | undefined): string {
   if (value == null || !Number.isFinite(value)) return "—";
   if (value < 1_024) return `${fmtNum(value)} Б`;

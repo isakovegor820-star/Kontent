@@ -1,5 +1,5 @@
 import Redis from "ioredis";
-import { aiReady, serviceEngine } from "./ai-provider";
+import { aiReady, resolveEngineRuntime, serviceEngine } from "./ai-provider";
 import {
   aiProviderCircuitBreaker,
   aiProviderHealthSnapshot,
@@ -9,6 +9,7 @@ import { getPool } from "./db";
 import type { EngineId } from "./engines";
 import {
   isFreshPublicationHeartbeat,
+  isFreshAiProviderEvidence,
   telegramPollingHeartbeatState,
   PUBLICATION_WORKER_HEARTBEAT_KEY,
   TELEGRAM_POLLING_WORKER_HEARTBEAT_KEY,
@@ -86,6 +87,7 @@ export function probeAiConfiguration(env: NodeJS.ProcessEnv = process.env): bool
 interface AiProviderReadinessDependencies {
   configured: () => boolean;
   engine: () => EngineId;
+  canProbe?: (engine: EngineId) => boolean;
   ready: (engine: EngineId) => Promise<boolean>;
   snapshot: () => ProviderHealthSnapshot[];
   recordSuccess: (engine: EngineId, latencyMs: number) => void;
@@ -99,6 +101,9 @@ interface AiProviderReadinessDependencies {
 const defaultAiProviderReadinessDependencies: AiProviderReadinessDependencies = {
   configured: probeAiConfiguration,
   engine: serviceEngine,
+  // aiReady returns configuration-only for protocols without a capability API.
+  // Such a return value must not be recorded as a successful provider request.
+  canProbe: (engine) => ["openai", "ollama"].includes(resolveEngineRuntime(engine).protocol ?? ""),
   ready: aiReady,
   snapshot: aiProviderHealthSnapshot,
   recordSuccess: (engine, latencyMs) => aiProviderCircuitBreaker.recordSuccess(engine, latencyMs),
@@ -108,17 +113,20 @@ const defaultAiProviderReadinessDependencies: AiProviderReadinessDependencies = 
 
 /**
  * A web restart clears the in-process circuit snapshot. On the first authorized
- * readiness check, establish fresh bounded provider evidence instead of waiting
- * for a paid user request. Existing runtime failure evidence is never overwritten.
+ * readiness check (and after expiry), establish bounded capability evidence.
+ * Fresh runtime failures are preserved; expired results must permit recovery.
  */
 export async function probeAiProviderReadiness(
   dependencies: AiProviderReadinessDependencies = defaultAiProviderReadinessDependencies,
 ): Promise<ProviderHealthSnapshot[]> {
   const existing = dependencies.snapshot();
-  if (!dependencies.configured() || existing.length > 0) return existing;
-
+  if (!dependencies.configured()) return existing;
   const engine = dependencies.engine();
   const startedAt = dependencies.now();
+  const relevant = existing.filter(provider => provider.engine === engine);
+  const current = relevant[0];
+  if (current && isFreshAiProviderEvidence(current, startedAt)) return relevant;
+  if (dependencies.canProbe && !dependencies.canProbe(engine)) return relevant;
   let providerReady = false;
   try {
     providerReady = await dependencies.ready(engine);
@@ -135,7 +143,7 @@ export async function probeAiProviderReadiness(
       latencyMs,
     });
   }
-  return dependencies.snapshot();
+  return dependencies.snapshot().filter(provider => provider.engine === engine);
 }
 
 /** Mail is a separate degraded capability; no secret value is returned or logged. */
