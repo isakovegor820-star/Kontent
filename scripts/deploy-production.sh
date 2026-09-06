@@ -267,6 +267,7 @@ awk -v avatar="$AVATAR_BODY_LIMIT_BYTES" -v web_pool="$DB_POOL_MAX_WEB" -v worke
     ai_semantic_written = 0; ai_semantic_fallbacks_written = 0
   }
   /^AURORA_RELEASE=/ || /^AURORA_RELEASE_SHA=/ || /^AURORA_DEPLOYED_AT=/ { next }
+  /^AURORA_ENVIRONMENT=/ { next }
   /^AI_SERVICE_ENGINE=/ {
     if (ai_service == "") { print; next }
     if (!ai_service_written) print "AI_SERVICE_ENGINE=" ai_service
@@ -324,6 +325,7 @@ awk -v avatar="$AVATAR_BODY_LIMIT_BYTES" -v web_pool="$DB_POOL_MAX_WEB" -v worke
       print "AI_SEMANTIC_FALLBACK_ENGINES=" ai_semantic_fallbacks
     }
     print "AURORA_RELEASE=" release_key
+    print "AURORA_ENVIRONMENT=production"
     print "AURORA_RELEASE_SHA=" release_sha
     print "AURORA_DEPLOYED_AT=" release_deployed_at
   }

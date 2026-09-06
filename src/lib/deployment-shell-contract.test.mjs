@@ -1,5 +1,6 @@
 import { readFile, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
+import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 
 const script = await readFile(resolve("scripts/deploy-production.sh"), "utf8");
@@ -123,6 +124,18 @@ describe("production deployment shell contract", () => {
     expect(script).toContain('release_deployed_at="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"');
     expect(script).toContain("-v release_sha=\"$DEPLOY_SHA\"");
     expect(workflow).toContain('export NEXT_PUBLIC_AURORA_APP_VERSION="web-${AURORA_DEPLOY_SHA:0:12}"');
+  });
+
+  it("stamps production into the target environment without duplicate inherited labels", () => {
+    const start = script.indexOf("  BEGIN {", script.indexOf('awk -v avatar='));
+    const end = script.indexOf("' \"$runtime_env\"", start);
+    expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
+    for (const inherited of ['', 'AURORA_ENVIRONMENT=staging\nAURORA_ENVIRONMENT=unknown\n']) {
+      const result = spawnSync('awk', [script.slice(start, end)], { input: inherited + 'UNRELATED=value\n', encoding: 'utf8' });
+      expect(result.status).toBe(0);
+      expect(result.stdout.split('\n').filter(line => line.startsWith('AURORA_ENVIRONMENT='))).toEqual(['AURORA_ENVIRONMENT=production']);
+      expect(result.stdout).toContain('UNRELATED=value');
+    }
   });
 
   it("rolls back restart, health, and partial web/worker activation failures", () => {
