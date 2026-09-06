@@ -5215,22 +5215,21 @@ try {
   const trackingMetric = (label) => trackingFunnel.locator("li").filter({ hasText: label }).locator("p.nums");
   await waitFor(async () => {
     const values = await Promise.all([
-      trackingMetric("Все переходы").textContent(),
-      trackingMetric("Уникальные переходы").textContent(),
-      trackingMetric("Подтверждённые конверсии").textContent(),
+      trackingMetric("Все переходы").allTextContents(),
+      trackingMetric("Уникальные переходы").allTextContents(),
+      trackingMetric("Подтверждённые заявки").allTextContents(),
     ]);
-    return values.every((value) => String(value || "").trim() === "1");
+    return values.every((value) => value.length === 1 && value[0].trim() === "1");
   }, "Analytics UI did not render the created click, unique click, and conversion", 15_000);
-  const trackingPath = page.locator('ol[aria-label="Путь выбранного среза"]');
-  const trackingPathText = String(await trackingPath.textContent() || "").replace(/\s+/gu, "");
-  assert(
-    trackingPathText.includes(`Проект:${criticalProjectName}`.replace(/\s+/gu, "")),
-    "Analytics UI did not attribute the tracking report to the selected critical project",
-  );
   const trackingTableRegion = page.getByRole("region", {
-    name: "Таблица переходов и подтверждённых конверсий",
+    name: "Таблица переходов и подтверждённых заявок",
     exact: true,
   });
+  const trackingProjectCaption = await trackingTableRegion.locator("caption").textContent({ timeout: UI_WAIT_TIMEOUT_MS });
+  assert(
+    String(trackingProjectCaption || "").replace(/\s+/gu, "").includes(`проекта ${criticalProjectName}`.replace(/\s+/gu, "")),
+    "Analytics UI did not attribute the tracking report to the selected critical project",
+  );
   const trackingUiRow = trackingTableRegion.locator("tbody tr").filter({ hasText: criticalShortPath });
   await trackingUiRow.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const trackingUiNumericCells = (await trackingUiRow.locator("td.nums").allTextContents())
