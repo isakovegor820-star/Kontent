@@ -1,3 +1,4 @@
+import { CRON_SCHEDULES } from "./worker/cron-schedules.mjs";
 // Д.3 — воркер публикации. Отдельный «всегда включённый» процесс: слушает очередь
 // и публикует посты точно в срок с сервера. Пользователь может закрыть ноутбук —
 // задача всё равно сработает.
@@ -395,7 +396,6 @@ import {
 import { reconcilePasswordResetOutbox } from "./worker/password-reset-outbox.mjs";
 import { persistCompetitorLibraryAnalytics } from "./worker/library-analytics.mjs";
 import {
-  RECON_CRON_PATTERN,
   selectDueCompetitorSources,
 } from "./worker/reconnaissance-schedule.mjs";
 import { telegramHistoryPageDecision } from "./worker/reconnaissance-pagination.mjs";
@@ -11109,7 +11109,6 @@ async function pollUpdates() {
         continue;
       }
 
-      await refreshTelegramPollingHeartbeat();
       const offset =
         Number((await pool.query(`select last_update from bot_state where id = 1`)).rows[0]?.last_update ?? 0) + 1;
       const r = await tg(
@@ -11138,6 +11137,9 @@ async function pollUpdates() {
       // If the Redis lease expired while Telegram was answering, do not execute the batch.
       // The durable offset stays unchanged, so Telegram replays it for the next owner.
       if (!telegramPollingLeaseHeld) continue;
+      // A request in flight does not prove that Telegram accepted this poller. Preserve
+      // conflict/stale until a successful response confirms the still-owned receive loop.
+      await refreshTelegramPollingHeartbeat();
       for (const u of Array.isArray(r.result) ? r.result : []) {
         const outcome = await handleUpdate(u);
         if (outcome?.retry) {
@@ -12302,22 +12304,7 @@ const cronQueue = AUTOPILOT_ONLY || MEDIA_ONLY || PUBLICATION_ONLY ? null : new 
 
 // Расписания в московском времени. trend сдвинут на 15 мин относительно recon, чтобы не
 // долбить t.me обеими задачами в одну секунду.
-const CRON_SCHEDULES = [
-  { name: "stats",    pattern: "0 */6 * * *" },  // статистика каждые 6ч: один временный сбой не ломает весь день
-  { name: "recon",    pattern: RECON_CRON_PATTERN }, // разведка конкурентов, каждые 2ч
-  { name: "trend",    pattern: "15 */2 * * *" }, // насмотренность, каждые 2ч (сдвиг 15мин от recon)
-  { name: "today-opportunities", pattern: "30 */2 * * *" }, // снимки возможностей, каждые 2ч
-  { name: "knowledge-index", pattern: "*/5 * * * *" }, // восстановление pending-источников базы знаний
-  { name: "discover", pattern: "0 4 * * *" },    // поиск соседей по нише, 04:00 МСК
-  { name: "weekly",   pattern: "0 21 * * 0" },   // недельные планы, вс 21:00 МСК
-  { name: "cleanup",  pattern: "0 3 * * *" },    // чистка протухших sessions/bot_links, 03:00 МСК
-  { name: "rss",      pattern: "*/30 * * * *" }, // RSS-ленты, каждые 30 мин
-  { name: "profile",  pattern: "0 5 * * 1" },   // переизвлечение профилей каналов, пн 05:00 МСК
-  { name: "exports",  pattern: "* * * * *" },    // durable outbox и TTL экспортов, каждую минуту
-  { name: "bot-digest", pattern: "*/15 * * * *" }, // сводки по локальному времени проекта
-  { name: "site-daily", pattern: "20 5 * * *" },   // сайты: обновление профилей, план материалов, зонд видимости
-  { name: "site-monthly", pattern: "0 7 1 * *" },  // сайты: ежемесячные отчёты с динамикой
-];
+
 
 const cronWorker = AUTOPILOT_ONLY || MEDIA_ONLY || PUBLICATION_ONLY ? null : new Worker(
   "cron",

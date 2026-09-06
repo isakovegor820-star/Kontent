@@ -14,6 +14,12 @@ export const PUBLICATION_WORKER_HEARTBEAT_KEY = PUBLICATION_HEARTBEAT_KEY;
 export const PUBLICATION_WORKER_HEARTBEAT_MAX_AGE_MS = PUBLICATION_HEARTBEAT_TTL_SECONDS * 1_000;
 export const TELEGRAM_POLLING_WORKER_HEARTBEAT_KEY = TELEGRAM_POLLING_HEARTBEAT_KEY;
 export const TELEGRAM_POLLING_WORKER_HEARTBEAT_MAX_AGE_MS = TELEGRAM_POLLING_HEARTBEAT_TTL_SECONDS * 1_000;
+export const AI_PROVIDER_READINESS_MAX_AGE_MS = 15 * 60_000;
+
+export function isFreshAiProviderEvidence(provider: ProviderHealthSnapshot, now: number): boolean {
+  const timestamp = provider.updatedAt ? Date.parse(provider.updatedAt) : NaN;
+  return Number.isFinite(timestamp) && timestamp <= now + 10_000 && now - timestamp < AI_PROVIDER_READINESS_MAX_AGE_MS;
+}
 
 export type DependencyState = "up" | "down" | "not_configured" | "conflict";
 
@@ -98,6 +104,7 @@ export function readinessRequestFailure(): ServiceReadiness {
 }
 
 export function evaluateReadiness(input: ReadinessInput): ReadinessReport {
+  const checkedAt = input.checkedAt ?? new Date();
   const databaseReady = input.database === "up";
   const schemaReady = databaseReady && input.schema.ready;
   const uploadReady = input.uploadIngress === "up";
@@ -119,7 +126,7 @@ export function evaluateReadiness(input: ReadinessInput): ReadinessReport {
   const aiReady = input.aiConfigured
     && input.aiProviders.length > 0
     && input.aiProviders.every(
-      (provider) => provider.state !== "open" && provider.lastOutcome === "success",
+      (provider) => provider.state !== "open" && provider.lastOutcome === "success" && isFreshAiProviderEvidence(provider, checkedAt.getTime()),
     );
   const mailDeliveryReady = input.mailDelivery === "up";
   const tokenEncryptionReady = input.tokenEncryption === "up";
@@ -138,6 +145,7 @@ export function evaluateReadiness(input: ReadinessInput): ReadinessReport {
     input.telegramPolling === "conflict" ? "telegram_polling_conflict" : null,
     !input.aiConfigured ? "ai_not_configured" : null,
     input.aiConfigured && input.aiProviders.length === 0 ? "ai_unobserved" : null,
+    input.aiConfigured && input.aiProviders.some(provider => !isFreshAiProviderEvidence(provider, checkedAt.getTime())) ? "ai_evidence_stale" : null,
     input.aiProviders.some((provider) => provider.state === "open") ? "ai_circuit_open" : null,
     input.aiProviders.length > 0
       && input.aiProviders.some((provider) => provider.lastOutcome !== "success")
@@ -169,7 +177,7 @@ export function evaluateReadiness(input: ReadinessInput): ReadinessReport {
     trackingReady,
     passwordRecoveryReady,
     reasons,
-    checkedAt: (input.checkedAt ?? new Date()).toISOString(),
+    checkedAt: checkedAt.toISOString(),
     checks: {
       database: input.database,
       schema: input.schema,

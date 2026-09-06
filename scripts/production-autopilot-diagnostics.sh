@@ -208,6 +208,15 @@ if [[ -n "$current_path" && -f "$current_path/.env.production" ]]; then
       echo "redis-cli not installed on host"
     else
       printf 'ping=%s\n' "$(redis-cli -u "$REDIS_URL" ping 2>&1 | redact)"
+      # CLIENT LIST is server-wide. Restrict consumers to this URL's logical DB.
+      redis_db="$(node -e 'const p = new URL(process.env.REDIS_URL).pathname.slice(1); if (!/^\d*$/.test(p)) process.exit(1); process.stdout.write(String(Number(p || 0)))' 2>/dev/null || true)"
+      redis_clients=""
+      consumers_available=false
+      if [[ -n "$redis_db" ]] && redis_clients="$(redis-cli -u "$REDIS_URL" --raw client list 2>/dev/null)" \
+        && [[ "$redis_clients" == *"id="* ]] \
+        && ! printf '%s\n' "$redis_clients" | awk ' /name=bull:/ && !/ db=[0-9]+( |$)/ {missing=1} END {exit !missing}'; then
+        consumers_available=true
+      fi
       for queue in autopilot-plans publish; do
         printf '%s wait=%s active=%s delayed=%s failed=%s completed=%s paused=%s\n' \
           "$queue" \
@@ -217,14 +226,17 @@ if [[ -n "$current_path" && -f "$current_path/.env.production" ]]; then
           "$(redis-cli -u "$REDIS_URL" zcard "bull:${queue}:failed" 2>/dev/null)" \
           "$(redis-cli -u "$REDIS_URL" zcard "bull:${queue}:completed" 2>/dev/null)" \
           "$(redis-cli -u "$REDIS_URL" exists "bull:${queue}:paused" 2>/dev/null)"
-        # A registered BullMQ consumer is exactly what /api/autopilot/generate counts, and
-        # BullMQ names that client after the base64 of the queue name, not the queue name.
-        # Matching the plain name reported zero consumers for a fully healthy worker.
-        queue_b64="$(printf '%s' "$queue" | base64 -w0)"
-        printf '%s consumers=%s\n' \
-          "$queue" \
-          "$(redis-cli -u "$REDIS_URL" --no-raw client list 2>/dev/null \
-              | grep -c "name=bull:${queue_b64}" || echo 0)"
+        # Registration is not proof that a job executed successfully.
+        queue_b64="$(printf '%s' "$queue" | base64 | tr -d '\n')"
+        if [[ "$consumers_available" == true ]]; then
+          consumer_count="$(printf '%s\n' "$redis_clients" | awk -v db="$redis_db" -v wanted="bull:$queue_b64" '
+            {name=""; client_db=""; for(i=1;i<=NF;i++) {if($i ~ /^name=/) name=substr($i,6); if($i ~ /^db=/) client_db=substr($i,4)}}
+            client_db == db && (name == wanted || index(name,wanted ":") == 1) {count++}
+            END {print count+0}')"
+        else
+          consumer_count=unavailable
+        fi
+        printf '%s consumers=%s\n' "$queue" "$consumer_count"
         # A job that exhausted its attempts keeps its deterministic id, and BullMQ ignores a
         # later `add` for an id it already holds, so these ids are what silently swallows
         # every replay of the matching plan.
@@ -233,14 +245,23 @@ if [[ -n "$current_path" && -f "$current_path/.env.production" ]]; then
           "$(redis-cli -u "$REDIS_URL" zrange "bull:${queue}:failed" 0 -1 2>/dev/null \
               | paste -sd, - || true)"
       done
-      printf 'autopilot_meta_keys=%s\n' \
-        "$(redis-cli -u "$REDIS_URL" --scan --pattern 'bull:autopilot-plans:*' --count 200 2>/dev/null | wc -l)"
-      # Which BullMQ consumers exist at all. The worker builds them in a fixed order, so
-      # the set that registered says how far top-level startup actually got.
-      printf 'registered_bull_consumers=%s\n' \
-        "$(redis-cli -u "$REDIS_URL" --no-raw client list 2>/dev/null \
-            | sed -nE 's/.*[[:space:]]name=(bull:[^[:space:]]+).*/\1/p' \
-            | sort | uniq -c | awk '{printf "%s(%s) ", $2, $1}' || true)"
+      # --count is not a redis-cli SCAN option. Check success before counting,
+      # deduplicate SCAN results, and name the value for all matching queue keys.
+      if queue_keys="$(redis-cli -u "$REDIS_URL" --scan --pattern 'bull:autopilot-plans:*' 2>/dev/null)" \
+        && ! printf '%s\n' "$queue_keys" | grep -Eq '^(ERR |NOAUTH |NOPERM |WRONGPASS |\(error\))'; then
+        printf 'autopilot_queue_keys=%s\n' "$(printf '%s\n' "$queue_keys" | awk 'NF && !seen[$0]++ {count++} END {print count+0}')"
+      else
+        echo 'autopilot_queue_keys=unavailable'
+      fi
+      if [[ "$consumers_available" == true ]]; then
+        printf 'registered_bull_consumers=%s\n' \
+          "$(printf '%s\n' "$redis_clients" | awk -v db="$redis_db" '
+            {name=""; client_db=""; for(i=1;i<=NF;i++) {if($i ~ /^name=/) name=substr($i,6); if($i ~ /^db=/) client_db=substr($i,4)}}
+            client_db == db && name ~ /^bull:/ {print name}' \
+            | sort | uniq -c | awk '{printf "%s(%s) ", $2, $1}')"
+      else
+        echo 'registered_bull_consumers=unavailable'
+      fi
     fi
   ) || echo "(redis probe failed)"
 fi

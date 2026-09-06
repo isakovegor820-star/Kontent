@@ -1,6 +1,6 @@
 "use client";
 
-import { checkAdminAccess, CopyValue, SnapshotNote, useSnapshotAge } from "./admin-ui";
+import { checkAdminAccess, CopyValue, SnapshotNote } from "./admin-ui";
 
 import Link from "next/link";
 import {
@@ -32,7 +32,8 @@ import type {
   AdminQueueSnapshot,
   AdminSystemDiagnostics,
 } from "@/lib/admin-system-diagnostics";
-import { adminMetricLabel, adminSectionLabel, formatAdminDuration, formatAdminMetric } from "@/lib/admin-labels";
+import { adminSystemMetricLabel, adminSectionLabel, formatAdminDuration, formatAdminMetric } from "@/lib/admin-labels";
+import { diagnosticDisplayState, isSystemDiagnostics } from "@/lib/admin-system-freshness";
 import { adminSystemHref, adminSystemSelection } from "@/lib/admin-url-state";
 import { cn, fmtAgo, fmtNum } from "@/lib/utils";
 
@@ -66,8 +67,11 @@ const ICONS: Record<string, LucideIcon> = {
 const STATE_LABELS: Record<AdminDiagnosticState, string> = {
   healthy: "Исправно",
   degraded: "Есть отклонения",
-  down: "Недоступно",
-  unobserved: "Нет наблюдения",
+  down: "Ошибка",
+  unavailable: "Проверка недоступна",
+  stale: "Данные устарели",
+  not_used: "Не используется",
+  unobserved: "Работа не подтверждена",
   not_configured: "Не настроено",
   configured: "Настроено",
   conflict: "Конфликт",
@@ -84,8 +88,8 @@ function DiagnosticStatus({ state }: { state: AdminDiagnosticState }) {
         "type-caption inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 font-semibold",
         state === "healthy" && "bg-success-soft text-success-text",
         (state === "down" || state === "conflict") && "bg-danger-soft text-danger-text",
-        (state === "degraded" || state === "unobserved" || state === "not_configured") && "bg-fire-soft text-fire-text",
-        state === "configured" && "bg-surface-inset text-text-2",
+        (state === "degraded" || state === "unobserved" || state === "not_configured" || state === "stale" || state === "unavailable") && "bg-fire-soft text-fire-text",
+        (state === "configured" || state === "not_used") && "bg-surface-inset text-text-2",
       )}
       title={state === "configured" ? "Проверена только конфигурация, а не работа в рантайме" : undefined}
     >
@@ -98,7 +102,7 @@ function DiagnosticStatus({ state }: { state: AdminDiagnosticState }) {
 const SYSTEM_DESCRIPTION: Record<string, string> = {
   publication_worker: "Обработчик отправляет посты из очереди. Проверяем его последний сигнал работы и результаты отправки.",
   telegram_worker: "Получение сообщений ботом и наличие работающего обработчика.",
-  aurora_ai: "Доступность AI-провайдеров, временные блокировки после ошибок и результаты запросов.",
+  aurora_ai: "Результаты реальных AI-попыток и состояние защиты от повторных ошибок.",
   media_generation: "Очередь создания медиа и результаты завершённых задач.",
   site_analysis: "Очередь анализа сайтов и этапы обработки.",
   token_encryption: "Доступность ключей для чтения сохранённых подключений.",
@@ -129,7 +133,8 @@ function QueueTable({ queues }: { queues: readonly AdminQueueSnapshot[] }) {
   if (queues.length === 0) return null;
   return (
     <div className="mt-6">
-      <h4 className="text-text">Очереди</h4>
+      <h3 className="text-text">Очереди</h3>
+      <p className="type-caption mt-2 max-w-2xl text-text-2">Счётчики показывают записи, сохранённые BullMQ сейчас. Завершённые и неуспешные задачи — история с ограниченным хранением, без фиксированного периода. Consumer без свежего выполнения не подтверждает исправность. Возраст ожидания — по выборке до 100 задач каждого состояния; будущие отложенные задачи исключены.</p>
       <div className="mt-3 overflow-x-auto rounded-sm border border-line" role="region" aria-label="Состояние очередей" tabIndex={0}>
         <table className="w-full min-w-[780px] text-start">
           <thead className="bg-surface-2">
@@ -140,23 +145,25 @@ function QueueTable({ queues }: { queues: readonly AdminQueueSnapshot[] }) {
               <th className="px-4 py-3 text-start">Ожидают</th>
               <th className="px-4 py-3 text-start">В работе</th>
               <th className="px-4 py-3 text-start">Отложены</th>
-              <th className="px-4 py-3 text-start">Завершены</th>
-              <th className="px-4 py-3 text-start">С ошибкой</th>
-              <th className="px-4 py-3 text-start">Старейшая</th>
+              <th className="px-4 py-3 text-start">Приоритетные / ждут дочерние</th>
+              <th className="px-4 py-3 text-start">Завершены, сохранено</th>
+              <th className="px-4 py-3 text-start">Ошибки, сохранено</th>
+              <th className="px-4 py-3 text-start">Возраст ожидания, выборка</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-line">
             {queues.map((queue) => (
               <tr key={queue.name}>
-                <td className="px-4 py-3 font-mono text-sm text-text">{queue.name}</td>
+                <td className="px-4 py-3 font-mono text-sm text-text">{queue.name}{queue.safeErrorCode ? <p className="type-caption break-all">{queue.safeErrorCode}</p> : null}<p className="type-caption">Выполнение: {queue.lastCompletedAt ? fmtAgo(queue.lastCompletedAt) : "не подтверждено"}</p></td>
                 <td className="px-4 py-3"><DiagnosticStatus state={queue.state} /></td>
                 <td className="nums px-4 py-3 text-text-2">{queue.workers ?? "—"}</td>
                 <td className="nums px-4 py-3 text-text-2">{queue.waiting ?? "—"}</td>
                 <td className="nums px-4 py-3 text-text-2">{queue.active ?? "—"}</td>
                 <td className="nums px-4 py-3 text-text-2">{queue.delayed ?? "—"}</td>
+                <td className="nums px-4 py-3 text-text-2">{queue.prioritized ?? "—"} / {queue.waitingChildren ?? "—"}</td>
                 <td className="nums px-4 py-3 text-text-2">{queue.completed ?? "—"}</td>
                 <td className="nums px-4 py-3 text-text-2">{queue.failed ?? "—"}</td>
-                <td className="px-4 py-3 text-text-2">{duration(queue.oldestJobAgeMs)}</td>
+                <td className="px-4 py-3 text-text-2">{duration(queue.oldestJobAgeMs)}<p className="type-caption">Выборка: {queue.sampledJobs ?? "—"}</p>{queue.unmeasuredWaitingJobs ? <p className="type-caption">У {queue.unmeasuredWaitingJobs} повторных задач нет точного времени начала ожидания.</p> : null}</td>
               </tr>
             ))}
           </tbody>
@@ -174,7 +181,8 @@ function ProviderTables({ component }: { component: AdminDiagnosticComponent }) 
     <div className="mt-6 grid gap-4 xl:grid-cols-2">
       {providers.length > 0 ? (
         <div className="rounded-sm border border-line p-4">
-          <h4 className="text-text">Защита от повторных ошибок</h4>
+          <h3 className="text-text">Защита от повторных ошибок</h3>
+          <p className="type-caption mt-2 text-text-2">Только текущий web-процесс, счётчики с его запуска.</p>
           <ul className="mt-3 space-y-3">
             {providers.map((item, index) => {
               const provider = item as Record<string, unknown>;
@@ -193,16 +201,19 @@ function ProviderTables({ component }: { component: AdminDiagnosticComponent }) 
       ) : null}
       {activeModels.length > 0 ? (
         <div className="rounded-sm border border-line p-4">
-          <h4 className="text-text">Активные модели</h4>
+          <h3 className="text-text">История AI-маршрутов за 30 дней</h3>
           <ul className="mt-3 space-y-3">
             {activeModels.map((item, index) => {
               const model = item as Record<string, unknown>;
               return (
                 <li key={`${String(model.provider)}-${String(model.model)}-${index}`} className="rounded-sm bg-surface-inset p-3">
+                  {model.state ? <DiagnosticStatus state={model.state as AdminDiagnosticState} /> : null}
                   <p className="type-body-strong text-text">{String(model.provider || "provider")} · {String(model.model || "model")}</p>
                   <p className="type-caption mt-1 text-text-3">
                     {fmtNum(Number(model.successes || 0))} успешно · {fmtNum(Number(model.failures || 0))} с ошибкой · среднее {duration(model.averageLatencyMs == null ? null : Number(model.averageLatencyMs))}
                   </p>
+                  {model.lastFailureAt ? <p className="type-caption mt-2 text-text-2">Ошибки в периоде: с {formatEvidence("Дата", String(model.firstFailureAt || model.lastFailureAt))} по {formatEvidence("Дата", String(model.lastFailureAt))}. Последний код: {String(model.lastErrorCode || "provider_error")}.</p> : null}
+                  {model.lastSuccessAt ? <p className="type-caption mt-1 text-text-2">Последний успех: {formatEvidence("Дата", String(model.lastSuccessAt))}</p> : null}
                 </li>
               );
             })}
@@ -223,7 +234,7 @@ function ComponentDetails({ component }: { component: AdminDiagnosticComponent }
       <div className="flex flex-col gap-4 border-b border-line pb-5 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <DiagnosticStatus state={component.state} />
-          <h3 id="system-detail-title" className="mt-3 text-text">{component.label}</h3>
+          <h2 id="system-detail-title" className="mt-3 text-text">{component.label}</h2>
           <p className="type-secondary mt-2 text-text-2">{SYSTEM_DESCRIPTION[component.id] || component.description}</p>
         </div>
         <div className="type-caption shrink-0 text-text-3 sm:text-end">
@@ -232,7 +243,8 @@ function ComponentDetails({ component }: { component: AdminDiagnosticComponent }
         </div>
       </div>
 
-      {component.state !== "healthy" && component.state !== "configured" ? <p className="type-secondary mt-5 rounded-sm border border-fire/25 bg-fire-soft p-4 text-text-2">{component.safeErrorCode?.endsWith("check_failed") ? "Диагностика не завершилась. Этот снимок не подтверждает работоспособность сервиса. Повторите проверку кнопкой «Обновить»; если ошибка остаётся, передайте код диагностики ответственному за инфраструктуру." : component.id === "publication_worker" ? "Отправка новых публикаций может быть задержана. Проверьте очередь; повторная постановка поста в очередь не запустит остановленный обработчик. После восстановления сервиса обновите проверку." : "Успешная работа сервиса не подтверждена. Проверьте сведения ниже и обновите проверку после устранения причины."}</p> : null}
+      {component.state !== "healthy" && component.state !== "configured" && component.state !== "not_used" ? <p className="type-secondary mt-5 rounded-sm border border-fire/25 bg-fire-soft p-4 text-text-2">{component.state === "stale" ? "Срок действия проверки истёк. Снимок сохранён для сравнения; обновите данные, чтобы узнать текущее состояние." : component.state === "unavailable" ? "Диагностика не завершилась. Этот снимок не подтверждает работоспособность сервиса. Повторите проверку кнопкой «Обновить»; если ошибка остаётся, передайте код диагностики ответственному за инфраструктуру." : component.id === "publication_worker" ? "Отправка новых публикаций может быть задержана. Проверьте очередь и проблемные публикации. При неподтверждённой доставке сначала сверьте результат у провайдера: повторная отправка может создать дубликат." : "Успешная работа сервиса не подтверждена. Проверьте сведения ниже и обновите проверку после устранения причины."}</p> : null}
+      {component.scope ? <p className="type-secondary mt-4 max-w-2xl text-text-2">{component.scope}</p> : null}
       <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
         {component.evidence.map((item, index) => (
           <div key={`${item.label}-${index}`} className="rounded-sm bg-surface-inset p-4">
@@ -250,17 +262,17 @@ function ComponentDetails({ component }: { component: AdminDiagnosticComponent }
           </p>
         </div>
         <div className="rounded-sm bg-surface-inset p-4">
-          <details><summary className="type-caption">Код диагностики</summary>{component.safeErrorCode ? <CopyValue value={component.safeErrorCode} label="код диагностики сервиса" /> : <p className="type-caption text-text-3">Ошибка не зарегистрирована.</p>}</details>
+          <details><summary className="type-caption">Код диагностики</summary>{component.safeErrorCode ? <CopyValue value={component.safeErrorCode} label="код диагностики сервиса" /> : <p className="type-caption text-text-3">Текущий код отсутствует. Это не подтверждает отсутствие исторических ошибок.</p>}</details>
         </div>
       </div>
 
       {primitiveMetrics.length > 0 ? (
         <div className="mt-6">
-          <h4 className="text-text">Метрики</h4>
+          <h3 className="text-text">Метрики</h3>
           <dl className="mt-3 grid gap-x-6 gap-y-3 rounded-sm border border-line p-4 sm:grid-cols-2 xl:grid-cols-3">
             {primitiveMetrics.map(([key, value]) => (
               <div key={key} className="flex items-baseline justify-between gap-4 border-b border-line/70 pb-2">
-                <dt className="type-caption break-words text-text-3" title={key}>{adminMetricLabel(key)}</dt>
+                <dt className="type-caption break-words text-text-3" title={key}>{adminSystemMetricLabel(component.id, key)}</dt>
                 <dd className="nums type-secondary text-end font-semibold text-text">{value}</dd>
               </div>
             ))}
@@ -270,7 +282,7 @@ function ComponentDetails({ component }: { component: AdminDiagnosticComponent }
 
       {reasons.length > 0 ? (
         <div className="mt-6 rounded-sm border border-fire/20 bg-fire-soft p-4">
-          <h4 className="text-text">Несовпадения схемы</h4>
+          <h3 className="text-text">Несовпадения схемы</h3>
           <ul className="mt-3 space-y-1 font-mono text-sm text-fire-text">
             {reasons.map((reason, index) => <li key={`${String(reason)}-${index}`}>{String(reason)}</li>)}
           </ul>
@@ -278,11 +290,22 @@ function ComponentDetails({ component }: { component: AdminDiagnosticComponent }
       ) : null}
 
       <ProviderTables component={component} />
+      {component.history ? <section className="mt-6" aria-labelledby="system-error-history">
+        <h3 id="system-error-history" className="text-text">История ошибок публикаций за 24 часа</h3>
+        <p className="type-caption mt-2 max-w-2xl text-text-2">События сохраняются после восстановления. Количество событий включает повторы; оно не равно числу уникальных публикаций. Отсутствие событий не подтверждает исправность.</p>
+        {component.history.length ? <ul className="mt-3 space-y-3">{component.history.map(item => <li key={item.code} className="rounded-sm bg-surface-inset p-4">
+          <CopyValue value={item.code} label="код исторической ошибки" />
+          <p className="type-secondary mt-2 text-text">Событий: {item.count} · Записей, требующих внимания сейчас: {item.affectedRecords}</p>
+          <p className="type-caption mt-1 text-text-2">Первое в периоде: {formatEvidence("Дата", item.firstSeenAt)} · Последнее: {formatEvidence("Дата", item.lastSeenAt)}</p>
+          <p className="type-caption mt-1 text-text-2">{item.affectedRecords ? "Проверьте текущее состояние публикаций по идентификаторам ниже." : "В связанных записях не найдены состояния отказа, повтора или неподтверждённой доставки. Само событие не доказывает текущий сбой."}</p>
+          {item.examples.length ? <p className="type-caption mt-2 break-words font-mono text-text-2">{item.examples.join(", ")}</p> : null}
+        </li>)}</ul> : <p className="type-secondary mt-3 text-text-2">Записанных событий ошибок за этот период нет.</p>}
+      </section> : null}
       <QueueTable queues={component.queues ?? []} />
 
       {component.affectedSections && component.affectedSections.length > 0 ? (
         <div className="mt-6">
-          <h4 className="text-text">Затронутые разделы</h4>
+          <h3 className="text-text">Затронутые разделы</h3>
           <div className="mt-3 flex flex-wrap gap-2">
             {component.affectedSections.map((section) => (
               <Link prefetch={false} key={section} href={`/admin?analyticsSection=${section}#aurora-analytics`} className={buttonClassName({ variant: "secondary", size: "sm" })}>
@@ -311,7 +334,19 @@ export function AdminSystemCenter() {
   const [error, setError] = useState<SystemLoadError | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
-  const stale = useSnapshotAge(data?.checkedAt);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const displayed = useMemo(() => data?.components.map(component => {
+    const state = diagnosticDisplayState(component, now, Boolean(error));
+    const invalid = state !== component.state && (state === "stale" || state === "unavailable");
+    return { ...component, state, queues: invalid ? component.queues?.map(queue => ({ ...queue, state })) : component.queues,
+      metrics: invalid && Array.isArray(component.metrics?.activeModels) ? { ...component.metrics,
+        activeModels: component.metrics.activeModels.map(model => ({ ...(model as Record<string, unknown>), state })) } : component.metrics };
+  }) ?? [], [data, now, error]);
+  const stale = displayed.some(component => component.state === "stale");
   const [autoRefresh, setAutoRefresh] = useState<AutoRefresh>(0);
   const requestRefresh = useCallback(() => {
     setRefreshing(true);
@@ -320,15 +355,22 @@ export function AdminSystemCenter() {
 
   useEffect(() => {
     const controller = new AbortController();
+    const timeout = window.setTimeout(() => {
+      setError("unavailable"); setRefreshing(false); controller.abort();
+    }, 15_000);
     void fetch("/api/admin/system", { cache: "no-store", signal: controller.signal })
       .then(async (response) => {
         checkAdminAccess(response);
         if (response.status === 401) throw new Error("unauthorized");
         if (response.status === 403) throw new Error("access_denied");
         if (!response.ok) throw new Error("unavailable");
-        return response.json() as Promise<AdminSystemDiagnostics>;
+        const payload: unknown = await response.json();
+        if (!isSystemDiagnostics(payload)) throw new Error("unavailable");
+        return payload;
       })
       .then((payload) => {
+        if (controller.signal.aborted) return;
+        setNow(Date.now());
         setData(payload);
         setSelectedId(adminSystemSelection(
           window.location.search,
@@ -342,9 +384,10 @@ export function AdminSystemCenter() {
         setError(message === "unauthorized" || message === "access_denied" ? message : "unavailable");
       })
       .finally(() => {
+        window.clearTimeout(timeout);
         if (!controller.signal.aborted) setRefreshing(false);
       });
-    return () => controller.abort();
+    return () => { window.clearTimeout(timeout); controller.abort(); };
   }, [refreshKey]);
 
   useEffect(() => {
@@ -363,14 +406,14 @@ export function AdminSystemCenter() {
     return () => window.removeEventListener("popstate", syncSelection);
   }, [syncSelection]);
 
-  const selected = data?.components.find((component) => component.id === selectedId) ?? null;
+  const selected = displayed.find((component) => component.id === selectedId) ?? null;
 
   const select = (componentId: string) => {
     const next = selectedId === componentId ? null : componentId;
     window.history.pushState({}, "", adminSystemHref(window.location.href, next));
     setSelectedId(next);
     if (next) {
-      window.requestAnimationFrame(() => detailRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
+      window.requestAnimationFrame(() => detailRef.current?.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth", block: "start" }));
     }
   };
 
@@ -409,18 +452,22 @@ export function AdminSystemCenter() {
       )} aria-labelledby="system-platform-state">
         <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
           <div>
-            <DiagnosticStatus state={stale || error ? "unobserved" : data.state} />
-            <h3 id="system-platform-state" className="mt-3 text-text">
+            <DiagnosticStatus state={error ? "unavailable" : stale ? "stale" : data.state} />
+            <h2 id="system-platform-state" className="mt-3 text-text">
               {stale || error ? "Состояние требует новой проверки" : data.state === "healthy" ? "Платформа подтверждена"
-                : data.state === "down" ? "Есть критические зависимости" : "Платформа работает с отклонениями"}
-            </h3>
+                : data.state === "down" ? "Есть критические зависимости" : data.state === "unobserved" ? "Исправность подтверждена не полностью" : "Обнаружены отклонения"}
+            </h2>
             <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-text-2">
-              <span className="type-secondary">Исправно: <strong className="nums text-text">{data.summary.healthy}</strong></span>
-              <span className="type-secondary" title="Проверена только конфигурация">Настроено: <strong className="nums text-text">{data.summary.configured}</strong></span>
-              <span className="type-secondary">Предупреждения: <strong className="nums text-text">{data.summary.warnings}</strong></span>
-              <span className="type-secondary">Критические: <strong className="nums text-text">{data.summary.critical}</strong></span>
+              <span className="type-secondary">Исправно: <strong className="nums text-text">{displayed.filter(component => component.state === "healthy").length}</strong></span>
+              <span className="type-secondary" title="Проверена только конфигурация">Настроено: <strong className="nums text-text">{displayed.filter(component => component.state === "configured").length}</strong></span>
+              <span className="type-secondary">Предупреждения: <strong className="nums text-text">{displayed.filter(component => ["degraded", "unobserved", "not_configured", "unavailable", "stale"].includes(component.state)).length}</strong></span>
+              <span className="type-secondary">Критические: <strong className="nums text-text">{displayed.filter(component => ["down", "conflict"].includes(component.state)).length}</strong></span>
+              <span className="type-secondary">Не используется: <strong className="nums text-text">{displayed.filter(component => component.state === "not_used").length}</strong></span>
             </div>
             <div className="mt-3"><SnapshotNote checkedAt={data.checkedAt} failed={Boolean(error)} busy={refreshing} onRefresh={requestRefresh} /></div>
+            <p className="type-caption mt-1 text-text-3">
+              Среда: {data.environment || "не установлена"} · режим сервера: {data.runtimeMode || "не установлен"} · сборка браузера: {process.env.NEXT_PUBLIC_AURORA_APP_VERSION || "не установлена"}
+            </p>
             <p className="type-caption mt-1 text-text-3">
               Релиз: {data.release.release || "не настроен"} · commit <span className="font-mono" title={data.release.commitSha ?? undefined}>{data.release.commitSha ? data.release.commitSha.slice(0, 12) : "—"}</span> · развёрнут {data.release.deployedAt ? fmtAgo(data.release.deployedAt) : "—"}
             </p>
@@ -457,10 +504,10 @@ export function AdminSystemCenter() {
       ) : null}
 
       {GROUPS.map((group) => {
-        const components = data.components.filter((component) => component.group === group.id);
+        const components = displayed.filter((component) => component.group === group.id);
         return (
           <section key={group.id} className="mt-8" aria-labelledby={`system-group-${group.id}`}>
-            <h3 id={`system-group-${group.id}`} className="text-text">{group.label}</h3>
+            <h2 id={`system-group-${group.id}`} className="text-text">{group.label}</h2>
             <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
               {components.map((component) => {
                 const Icon = ICONS[component.id] ?? Server;
@@ -473,7 +520,7 @@ export function AdminSystemCenter() {
                     aria-controls="system-component-detail"
                     onClick={() => select(component.id)}
                     className={cn(
-                      "card-plain min-h-40 rounded-md p-5 text-start transition-[border-color,background-color,box-shadow,transform] duration-150 hover:-translate-y-0.5 hover:border-brand/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand active:scale-[0.99] motion-reduce:transform-none",
+                      "card-plain min-h-40 rounded-md p-5 text-start transition-[border-color,background-color,box-shadow,transform] duration-150 hover:-translate-y-0.5 hover:border-brand/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand active:scale-[0.96] motion-reduce:transform-none",
                       active && "border-brand bg-info-soft shadow-md ring-1 ring-brand/25",
                     )}
                   >
@@ -481,10 +528,11 @@ export function AdminSystemCenter() {
                       <Icon className="h-6 w-6 text-brand" strokeWidth={1.8} aria-hidden />
                       <DiagnosticStatus state={component.state} />
                     </div>
-                    <h4 className="mt-4 text-text">{component.label}</h4>
+                    <h3 className="mt-4 text-text">{component.label}</h3>
+                    <p className="type-caption mt-2 text-text-2">Проверка: {formatEvidence("Дата", component.checkedAt)}</p>
                     <p className="type-caption mt-1 text-text-3">{SYSTEM_DESCRIPTION[component.id] || component.description}</p>
                     <p className="type-caption mt-3 text-text-3">
-                      {component.lastSuccessAt ? `Успех ${fmtAgo(component.lastSuccessAt)}` : "Успех ещё не подтверждён"}
+                      {component.lastSuccessAt ? `Последний успех: ${fmtAgo(component.lastSuccessAt)}` : "Выполнение ещё не подтверждено"}
                     </p>
                   </button>
                 );

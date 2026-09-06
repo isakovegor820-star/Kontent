@@ -81,6 +81,38 @@ describe("AI provider readiness probe", () => {
       }),
     ]);
   });
+  it("rechecks an expired failure and confirms recovery without resetting historical counters", async () => {
+    const breaker = new ProviderCircuitBreaker();
+    breaker.recordFailure("openai", { code: "readiness_probe_failed", transient: true, latencyMs: 10 }, 1000);
+    const now = 1000 + 15 * 60_000;
+    const ready = vi.fn(async () => true);
+    const providers = await probeAiProviderReadiness({ configured: () => true, engine: () => "openai", ready,
+      snapshot: () => breaker.snapshot(now), now: () => now,
+      recordSuccess: (engine, latency) => breaker.recordSuccess(engine, latency, now),
+      recordFailure: (engine, input) => breaker.recordFailure(engine, input, now),
+    });
+    expect(ready).toHaveBeenCalledOnce();
+    expect(providers[0]).toMatchObject({ lastOutcome: "success", failures: 1, successes: 1, updatedAt: new Date(now).toISOString() });
+  });
+  it("does not reuse an old successful capability check when the provider now fails", async () => {
+    const breaker = new ProviderCircuitBreaker();
+    breaker.recordSuccess("openai", 10, 1000);
+    const now = 1000 + 15 * 60_000;
+    const providers = await probeAiProviderReadiness({ configured: () => true, engine: () => "openai", ready: async () => false,
+      snapshot: () => breaker.snapshot(now), now: () => now,
+      recordSuccess: (engine, latency) => breaker.recordSuccess(engine, latency, now),
+      recordFailure: (engine, input) => breaker.recordFailure(engine, input, now),
+    });
+    expect(providers[0]).toMatchObject({ lastOutcome: "failure", failures: 1, successes: 1 });
+  });
+  it("does not record configuration-only readiness as provider success", async () => {
+    const ready = vi.fn(async () => true);
+    const success = vi.fn();
+    expect(await probeAiProviderReadiness({ configured: () => true, engine: () => "openai", canProbe: () => false,
+      ready, snapshot: () => [], recordSuccess: success, recordFailure: vi.fn(), now: Date.now,
+    })).toEqual([]);
+    expect(ready).not.toHaveBeenCalled(); expect(success).not.toHaveBeenCalled();
+  });
 });
 
 describe("password recovery readiness configuration", () => {

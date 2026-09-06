@@ -27,7 +27,7 @@ describe("admin system diagnostics", () => {
     expect(failed).toHaveBeenCalledOnce();
     expect(components).toMatchObject([
       { id: "one", state: "healthy", safeErrorCode: null, lastSuccessAt: expect.any(String) },
-      { id: "two", state: "down", safeErrorCode: "two_check_failed", lastSuccessAt: null },
+      { id: "two", state: "unavailable", safeErrorCode: "two_check_failed", lastSuccessAt: null },
     ]);
     expect(JSON.stringify(components)).not.toContain("postgresql://");
     expect(JSON.stringify(components)).not.toContain("private");
@@ -65,7 +65,7 @@ describe("admin system diagnostics", () => {
       },
     ];
     const report = await loadAdminSystemDiagnostics({ definitions });
-    expect(report.state).toBe("healthy");
+    expect(report.state).toBe("unobserved");
     expect(report.summary).toEqual({ total: 2, healthy: 1, configured: 1, warnings: 0, critical: 0 });
     // A configured-only component never earns a "last success" timestamp: nothing was observed.
     expect(report.components[1]).toMatchObject({ state: "configured", lastSuccessAt: null });
