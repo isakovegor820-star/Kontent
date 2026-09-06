@@ -1244,7 +1244,7 @@ function AiSection({ index }: { index: number }) {
 
 function SettingsSkeleton() {
   return (
-    <div className="grid items-start gap-5 lg:grid-cols-[15.5rem_minmax(0,1fr)]" role="status" aria-busy="true">
+    <div className="grid items-start gap-5 lg:grid-cols-[15.5rem_minmax(0,1fr)] lg:items-stretch" role="status" aria-busy="true">
       <span className="sr-only">Открываем настройки</span>
       <div className="card-plain space-y-2 rounded-md p-3" aria-hidden>
         <div className="skeleton h-11 rounded-sm" />
@@ -1365,35 +1365,37 @@ function SettingsContent() {
       {!s.ready ? (
         <SettingsSkeleton />
       ) : (
-        <div className="grid items-start gap-5 lg:grid-cols-[15.5rem_minmax(0,1fr)]">
-          <aside className="rounded-md border border-line bg-surface/86 p-3 shadow-soft backdrop-blur-xl lg:sticky lg:top-5">
-            <label className="relative block">
-              <span className="sr-only">Найти настройку</span>
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-3" aria-hidden />
-              <Input value={query} onChange={(event) => setQuery(event.currentTarget.value)} className="pl-9" placeholder="Найти настройку" />
-            </label>
-            <nav className="mt-3 grid grid-cols-2 gap-1 lg:grid-cols-1" aria-label="Разделы настроек Авроры">
-              {visibleSections.map((item) => {
-                const Icon = item.icon;
-                const active = item.id === activeSection;
-                return (
-                  <button
-                    key={item.id}
-                    type="button"
-                    aria-current={active ? "page" : undefined}
-                    onClick={() => selectSection(item.id)}
-                    className={cn(
-                      "flex min-h-14 items-start gap-3 rounded-sm border px-3 py-3 text-left transition-colors",
-                      active ? "border-brand/30 bg-info-soft text-info-text" : "border-transparent text-text-2 hover:border-line hover:bg-surface-inset hover:text-text",
-                    )}
-                  >
-                    <span className={cn("mt-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-xs", active ? "bg-surface text-brand" : "bg-surface-inset text-text-3")}><Icon className="h-4 w-4" aria-hidden /></span>
-                    <span className="min-w-0"><span className="block text-[13px] font-extrabold text-text">{item.label}</span><span className="mt-0.5 hidden text-[11px] leading-snug text-text-3 sm:block">{item.description}</span></span>
-                  </button>
-                );
-              })}
-              {visibleSections.length === 0 ? <p className="rounded-sm bg-surface-inset p-3 text-[12px] text-text-3">Ничего не найдено. Попробуй «юмор», «аватар» или «Telegram».</p> : null}
-            </nav>
+        <div className="grid items-start gap-5 lg:grid-cols-[15.5rem_minmax(0,1fr)] lg:items-stretch">
+          <aside className="rounded-md border border-line bg-surface/86 p-3 shadow-soft backdrop-blur-xl">
+            <div className="lg:sticky lg:top-5">
+              <label className="relative block">
+                <span className="sr-only">Найти настройку</span>
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-3" aria-hidden />
+                <Input value={query} onChange={(event) => setQuery(event.currentTarget.value)} className="pl-9" placeholder="Найти настройку" />
+              </label>
+              <nav className="mt-3 grid grid-cols-2 gap-1 lg:grid-cols-1" aria-label="Разделы настроек Авроры">
+                {visibleSections.map((item) => {
+                  const Icon = item.icon;
+                  const active = item.id === activeSection;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      aria-current={active ? "page" : undefined}
+                      onClick={() => selectSection(item.id)}
+                      className={cn(
+                        "flex min-h-14 items-start gap-3 rounded-sm border px-3 py-3 text-left transition-colors",
+                        active ? "border-brand/30 bg-info-soft text-info-text" : "border-transparent text-text-2 hover:border-line hover:bg-surface-inset hover:text-text",
+                      )}
+                    >
+                      <span className={cn("mt-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-xs", active ? "bg-surface text-brand" : "bg-surface-inset text-text-3")}><Icon className="h-4 w-4" aria-hidden /></span>
+                      <span className="min-w-0"><span className="block text-[13px] font-extrabold text-text">{item.label}</span><span className="mt-0.5 hidden text-[11px] leading-snug text-text-3 sm:block">{item.description}</span></span>
+                    </button>
+                  );
+                })}
+                {visibleSections.length === 0 ? <p className="rounded-sm bg-surface-inset p-3 text-[12px] text-text-3">Ничего не найдено. Попробуй «юмор», «аватар» или «Telegram».</p> : null}
+              </nav>
+            </div>
           </aside>
 
           <main id={`settings-${activeSection}-panel`} aria-label={SETTINGS_SECTIONS.find((item) => item.id === activeSection)?.label}>
