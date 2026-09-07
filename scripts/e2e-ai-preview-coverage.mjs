@@ -39,6 +39,7 @@ export async function runAiPreviewCoverage({
   const preview = page.getByRole('region',{name:'Предварительный вариант от ИИ',exact:true});
   const ackPattern = baseUrl+'/api/ai/generate/ack';
   let activeKey=null;let releaseAck=null;let ackHeld=false;
+  const pendingAckRoutes=new Set();const ackRouteErrors=[];let journeyFailure=null;
   const requestLog=[];
   const observeRequest = request => {
     if(new URL(request.url()).pathname!=='/api/ai/generate'||request.method()!=='POST')return;
@@ -47,11 +48,17 @@ export async function runAiPreviewCoverage({
     activeKey=request.headers()['idempotency-key'];
     requestLog.push({nativeRequest:request,key:activeKey,projectHeader:request.headers()['x-aurora-project-id'],input});
   };
-  const gateAck = async route => {
-    if(route.request().method()==='POST'&&route.request().headers()['idempotency-key']===activeKey&&releaseAck){
-      ackHeld=true;await releaseAck.promise;
-    }
-    await route.continue();
+  const gateAck = route => {
+    const pending=(async()=>{
+      if(route.request().method()==='POST'&&route.request().headers()['idempotency-key']===activeKey&&releaseAck){
+        ackHeld=true;await releaseAck.promise;
+      }
+      await route.continue();
+    })().catch(error=>{ackRouteErrors.push(error);});
+    // Own the dispatcher promise. Every captured failure fails the journey in finally.
+    pendingAckRoutes.add(pending);
+    void pending.then(()=>pendingAckRoutes.delete(pending));
+    return pending;
   };
   page.on('request',observeRequest);
   await page.route(ackPattern,gateAck);
@@ -121,9 +128,16 @@ export async function runAiPreviewCoverage({
     const publications=(await pool.query('select count(*)::int as n from publication_operations where draft_id=$1',[draft.id])).rows[0].n;
     assert.equal(publications,0,'preview decision unexpectedly scheduled a publication');
     evidence.result='PASS';return evidence;
-  } catch(error) {evidence.result='FAIL';evidence.failure=String(error?.message||error);throw error;}
+  } catch(error) {journeyFailure=error;evidence.result='FAIL';evidence.failure=String(error?.message||error);throw error;}
   finally {
-    releaseAck?.resolve();page.off('request',observeRequest);await page.unroute(ackPattern,gateAck);
+    releaseAck?.resolve();page.off('request',observeRequest);
+    while(pendingAckRoutes.size)await Promise.all([...pendingAckRoutes]);
+    await page.unroute(ackPattern,gateAck);
+    if(ackRouteErrors.length){
+      evidence.result='FAIL';evidence.routeFailures=ackRouteErrors.map(error=>String(error?.message||error));
+      evidence.failure=[evidence.failure,...evidence.routeFailures].filter(Boolean).join('; ');
+    }
     if(artifactDir)await writeFile(join(artifactDir,'ai-preview-coverage.json'),JSON.stringify(evidence,null,2)+'\n');
+    if(ackRouteErrors.length)throw new AggregateError([...(journeyFailure?[journeyFailure]:[]),...ackRouteErrors],'AI preview journey or ACK cleanup failed');
   }
 }
