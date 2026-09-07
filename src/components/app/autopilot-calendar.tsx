@@ -11,6 +11,7 @@ import { useModalFocus } from "@/components/ui/use-modal-focus";
 import { toTelegramHtml } from "@/lib/telegram-format.mjs";
 import type { RichTextEntity } from "@/lib/rich-text.mjs";
 import { cn } from "@/lib/utils";
+import { projectNativeUrl } from "@/lib/project-native-url";
 import { localScheduleFieldsForInstant } from "@/lib/timezone-schedule";
 
 export type AutopilotCalendarItem = {
@@ -50,8 +51,8 @@ function MediaPreview({ media }: { media: unknown }) {
     const url = typeof asset.url === "string" ? asset.url : null;
     if (!url || !/^(https?:\/\/|\/)/u.test(url)) return null;
     return asset.kind === "video" || record.kind === "video"
-      ? <video key={index} src={url} controls preload="metadata" className="max-h-80 w-full rounded-md" />
-      : <Image key={index} src={url} alt={`Изображение поста ${index + 1}`} width={640} height={480} unoptimized className="max-h-80 w-full rounded-md object-contain" />;
+      ? <video key={index} src={projectNativeUrl(url)} controls preload="metadata" className="max-h-80 w-full rounded-md" />
+      : <Image key={index} src={projectNativeUrl(url)} alt={`Изображение поста ${index + 1}`} width={640} height={480} unoptimized className="max-h-80 w-full rounded-md object-contain" />;
   })}</div>;
 }
 

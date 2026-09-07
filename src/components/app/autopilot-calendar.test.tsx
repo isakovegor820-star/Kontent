@@ -2,21 +2,33 @@
 import React, { useState } from "react";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { setClientProjectId } from "@/lib/project-fetch";
 import { AutopilotCalendar, type AutopilotCalendarItem } from "./autopilot-calendar";
 
 const pending: AutopilotCalendarItem = { id: "plan-7-0", planIndex: 0, scheduledAt: "2026-09-07T09:00:00Z", title: "Первый пост", text: "Полный текст публикации", state: "review", statusLabel: "Не добавлен в календарь", selectable: true, editable: true, issues: [] };
 const scheduled: AutopilotCalendarItem = { ...pending, id: "real-51", planIndex: undefined, postId: 51, title: "Пост в календаре", state: "scheduled", statusLabel: "В основном календаре", selectable: false };
 const blocked: AutopilotCalendarItem = { ...pending, id: "plan-7-1", planIndex: 1, title: "Проверить факты", statusLabel: "Нужна проверка", selectable: false, issues: ["Проверь источник"] };
 const edit = vi.fn(); const add = vi.fn(); const move = vi.fn(async () => true);
-function Harness({ returnItemId }: { returnItemId?: string }) {
+function Harness({ returnItemId, media }: { returnItemId?: string; media?: unknown }) {
   const [selected, setSelected] = useState<Set<number>>(() => new Set());
-  return <AutopilotCalendar items={[pending, scheduled, blocked]} selected={selected} busy={false} channelName="Тестовый канал" storageKey="qa:autopilot" returnItemId={returnItemId}
+  return <AutopilotCalendar items={[{ ...pending, media }, scheduled, blocked]} selected={selected} busy={false} channelName="Тестовый канал" storageKey="qa:autopilot" returnItemId={returnItemId}
     onSelect={(index) => setSelected((previous) => previous.has(index) ? new Set() : new Set([index]))} onSelectAll={(indexes) => setSelected(new Set(indexes))} onAdd={add} onEdit={edit} onReschedule={move} />;
 }
 beforeEach(() => { vi.stubGlobal("React", React); vi.clearAllMocks(); sessionStorage.clear(); });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); setClientProjectId(null); vi.unstubAllGlobals(); });
 
 describe("calendar inside Autopilot", () => {
+  it.each(["image", "video", "carousel"])("binds %s media to the current tab and fails closed without a project", (kind) => {
+    const asset = { kind: kind === "video" ? "video" : "image", url: "/api/media/assets/41?projectId=7" };
+    const media = kind === "carousel" ? { kind, items: [asset] } : asset;
+    for (const project of [23, null]) {
+      setClientProjectId(project);
+      const view = render(<Harness media={media} returnItemId={pending.id} />);
+      const element = within(screen.getByRole("dialog")).getByText("Полный текст публикации").parentElement!.querySelector("img,video");
+      expect(element?.getAttribute("src")).toBe(`/api/media/assets/41?projectId=${project ?? 0}`);
+      view.unmount();
+    }
+  });
   it("expands in place and selects only eligible posts, never already scheduled or blocked ones", () => {
     render(<Harness />);
     const expand = screen.getByRole("button", { name: "Расписание публикаций" });
