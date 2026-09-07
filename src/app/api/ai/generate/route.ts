@@ -3,6 +3,7 @@
 // Движок скрыт за переходником ai-provider — этот роут не знает, Ollama там или облако.
 
 import { JsonBodyReadError, readJsonBodyValue } from "@/lib/bounded-request-body";
+import { reportGenerationFailure } from "@/lib/generation-failure-observability.mjs";
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
@@ -155,6 +156,7 @@ class AiUsageFinalizationError extends Error {
 type SafeLogLevel = "error" | "warn" | "info";
 type SafeAiLogCode =
   | AiPublicFailureCode
+  | "ai_operation_budget_exhausted"
   | "session_unavailable"
   | "settings_unavailable"
   | "context_unavailable"
@@ -188,6 +190,7 @@ function logAiRequest(
   // Next's dev logger can collapse a second object argument to `{}`. Keep one redacted,
   // machine-parseable line so the browser request id can be correlated end to end.
   console[level](`[/api/ai/generate] ${JSON.stringify(entry)}`);
+  if (level === "error") reportGenerationFailure({ surface: "text", ...entry });
 }
 
 function aiJson(
@@ -257,6 +260,9 @@ function failurePayload(
     };
   }
   if (error instanceof AiOperationBudgetError) {
+    logAiRequest("error", requestId, "ai_operation_budget_exhausted", {
+      engine: engine.id, status: 422, scope: error.dimension,
+    });
     return {
       error: "ai_operation_budget_exhausted",
       engine: engine.id,

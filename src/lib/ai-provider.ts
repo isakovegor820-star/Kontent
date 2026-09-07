@@ -606,16 +606,9 @@ export function estimateGenerateTokenBudget(p: GenerateParams, engineId?: Engine
     messagesFor(p).reduce((sum, message) => sum + message.content.length, 0) / 4,
   ));
   const requested = outputTokens(p);
-  // Reserve for both bounded HTTP calls before starting the model attempt. Actual
-  // usage below is cumulative across a reasoning-only response and its retry.
-  if (engineId?.startsWith("navy-")) {
-    return {
-      inputTokens: inputTokens * 2,
-      maxOutputTokens: providerOutputTokens(engineId, requested)
-        + providerOutputTokens(engineId, requested, true),
-    };
-  }
-  return { inputTokens, maxOutputTokens: requested };
+  // The orchestrator makes one HTTP call per budgeted attempt. Reserve the actual
+  // provider cap without pre-charging a speculative retry that could starve fallback.
+  return { inputTokens, maxOutputTokens: engineId ? providerOutputTokens(engineId, requested) : requested };
 }
 
 async function providerHttpError(runtime: EngineRuntime, res: Response): Promise<AiProviderError> {
@@ -923,9 +916,10 @@ async function* streamOpenAi(
   p: GenerateParams,
   signal?: AbortSignal,
   requestTimeoutMs: number | null = 60_000,
+  allowEmptyRetry = true,
 ): AsyncGenerator<string> {
   const deepseek = runtime.id.startsWith("navy-deepseek");
-  const attempts = runtime.id.startsWith("navy-") ? 2 : 1;
+  const attempts = allowEmptyRetry && runtime.id.startsWith("navy-") ? 2 : 1;
   const requestSignal = withTimeout(signal, requestTimeoutMs);
   let inputTokens = 0;
   let outputTokenCount = 0;
@@ -1048,6 +1042,8 @@ async function* streamAnthropic(
 }
 
 export interface GenerateTextOptions {
+  /** Orchestrated calls spend one budgeted HTTP attempt per model, then use fallback. */
+  allowEmptyRetry?: boolean;
   /** null: deadline полностью контролирует вызывающий orchestration layer. */
   requestTimeoutMs?: number | null;
 }
@@ -1086,6 +1082,6 @@ export function generateText(
     ? streamOllama(runtime, p, signal, requestTimeoutMs)
     : runtime.protocol === "anthropic"
       ? streamAnthropic(runtime, p, signal, requestTimeoutMs)
-      : streamOpenAi(runtime, p, signal, requestTimeoutMs);
+      : streamOpenAi(runtime, p, signal, requestTimeoutMs, options.allowEmptyRetry);
   return runtime.protocol === "openai" ? source : streamVisibleContent(runtime, source);
 }

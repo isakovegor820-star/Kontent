@@ -389,8 +389,8 @@ describe("generateText", () => {
     expect(new Headers(retry.headers).get("idempotency-key")).toBe("operation:visible-answer-expanded");
     expect(onProviderUsage).toHaveBeenLastCalledWith(expect.objectContaining({ inputTokens: 100, outputTokens: 4700 }));
     const projected = estimateGenerateTokenBudget(params, "navy-qwen-3-6");
-    expect(projected.maxOutputTokens).toBe(9000);
-    expect(projected.inputTokens).toBe(estimateGenerateTokenBudget(params, "openai").inputTokens * 2);
+    expect(projected.maxOutputTokens).toBe(3000);
+    expect(projected.inputTokens).toBe(estimateGenerateTokenBudget(params, "openai").inputTokens);
   });
 
   it("does not repeat a response after exposing visible content", async () => {

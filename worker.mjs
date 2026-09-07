@@ -13,6 +13,7 @@ import { CRON_SCHEDULES } from "./worker/cron-schedules.mjs";
 process.env.AURORA_RUNTIME_ROLE = "worker";
 
 import "./sentry.worker.config.mjs";
+import { reportGenerationFailure } from "./src/lib/generation-failure-observability.mjs";
 import { Worker, Queue, UnrecoverableError } from "bullmq";
 import IORedis from "ioredis";
 import { createHash, randomUUID } from "node:crypto";
@@ -1328,6 +1329,10 @@ const mediaWorker = AUTOPILOT_ONLY || PUBLICATION_ONLY ? null : new Worker(
         attempt: job.attemptsMade + 1,
       });
       if (retryable) throw error;
+      reportGenerationFailure({
+        surface: "media", requestId, code,
+        status: error instanceof MediaGenerationAttemptError ? error.httpStatus : null,
+      });
       const terminal = new UnrecoverableError(code);
       terminal.code = code;
       throw terminal;
