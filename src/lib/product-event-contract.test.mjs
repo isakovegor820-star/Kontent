@@ -116,6 +116,7 @@ describe("Aurora operational product event envelope", () => {
     ]);
     expect(AURORA_PRODUCT_FEATURES.sites.site).toContain("published");
     expect(AURORA_PRODUCT_FEATURES.siteAnalysis.analysis).toContain("report_opened");
+    expect(AURORA_PRODUCT_FEATURES.today.work_item).toContain("task_dismissed");
   });
 
   it("normalizes a safe allowlisted event without tenant identity", () => {

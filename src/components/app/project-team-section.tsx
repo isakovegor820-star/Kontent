@@ -238,6 +238,7 @@ export function ProjectTeamSection() {
 
   const [members, setMembers] = useState<ProjectMember[]>([]);
   const [invitations, setInvitations] = useState<ProjectInvitation[]>([]);
+  const [interactive, setInteractive] = useState(false);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState(false);
   const [savingKey, setSavingKey] = useState<string | null>(null);
@@ -259,6 +260,18 @@ export function ProjectTeamSection() {
   const timezoneOptions = useMemo(() => {
     return Array.from(new Set([projectTimezone, ...TIMEZONES])).filter(Boolean);
   }, [projectTimezone]);
+
+  useEffect(() => {
+    // Keep controlled forms inert until React owns their state. Otherwise a fast
+    // pre-hydration edit can remain in the DOM while submit observes an empty state.
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) setInteractive(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const loadTeam = useCallback(async () => {
     const projectId = current?.id;
@@ -466,7 +479,11 @@ export function ProjectTeamSection() {
       : null;
 
   return (
-    <section aria-labelledby={titleId} className="mb-5 break-inside-avoid">
+    <section
+      aria-labelledby={titleId}
+      className="mb-5 break-inside-avoid"
+      data-project-team-interactive={interactive ? "true" : "false"}
+    >
       <Card className="overflow-hidden">
         <header className="flex items-start gap-3.5 border-b border-line px-5 py-5 sm:px-7">
           <span aria-hidden className="grid h-10 w-10 shrink-0 place-items-center rounded-sm bg-surface-inset text-text-2">
@@ -480,7 +497,7 @@ export function ProjectTeamSection() {
           </div>
         </header>
 
-        <div className="space-y-10 px-5 py-6 sm:px-7 sm:py-7" aria-busy={loading || savingKey !== null || undefined}>
+        <div className="space-y-10 px-5 py-6 sm:px-7 sm:py-7" aria-busy={!interactive || loading || savingKey !== null || undefined}>
           {!projects.ready ? (
             <div role="status" className="space-y-2">
               <span className="sr-only">Открываем проект и команду</span>
@@ -663,7 +680,7 @@ export function ProjectTeamSection() {
                     autoComplete="email"
                     value={inviteEmail}
                     placeholder="name@example.ru"
-                    disabled={savingKey === "invitation-create"}
+                    disabled={!interactive || savingKey === "invitation-create"}
                     aria-invalid={inviteEmailError ? true : undefined}
                     aria-describedby={inviteEmailError ? emailMessageId : undefined}
                     onChange={(event) => {
@@ -678,7 +695,7 @@ export function ProjectTeamSection() {
                       id="project-invite-role"
                       name="inviteRole"
                       value={inviteRole}
-                      disabled={savingKey === "invitation-create"}
+                      disabled={!interactive || savingKey === "invitation-create"}
                       className={SELECT_CLASS}
                       onChange={(event) => setInviteRole(event.currentTarget.value as InvitationRole)}
                     >
@@ -692,7 +709,7 @@ export function ProjectTeamSection() {
                       id="project-invite-ttl"
                       name="inviteTtl"
                       value={inviteTtl}
-                      disabled={savingKey === "invitation-create"}
+                      disabled={!interactive || savingKey === "invitation-create"}
                       className={SELECT_CLASS}
                       onChange={(event) => setInviteTtl(Number(event.currentTarget.value))}
                     >
@@ -704,7 +721,7 @@ export function ProjectTeamSection() {
                     </select>
                   </Field>
                 </div>
-                <Button type="submit" variant="outline" loading={savingKey === "invitation-create"}>
+                <Button type="submit" variant="outline" disabled={!interactive} loading={savingKey === "invitation-create"}>
                   <MailPlus className="h-4 w-4" aria-hidden />
                   Создать приглашение
                 </Button>
