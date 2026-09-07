@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-require-imports -- Synchronous CommonJS preload for NODE_OPTIONS=--require. */
 // Test runtime only: no HTTP provider call can leave loopback, including worker children.
 const http = require('node:http');
 const https = require('node:https');

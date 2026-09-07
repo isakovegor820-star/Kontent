@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
 import pg from 'pg';
