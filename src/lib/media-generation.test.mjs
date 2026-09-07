@@ -70,7 +70,7 @@ describe("media generation contract", () => {
       negative_prompt: "водяные знаки",
     });
 
-    expect(payload.prompt).toContain("[aurora-media-prompt v4]");
+    expect(payload.prompt).toContain("[aurora-media-prompt v3]");
     expect(payload.prompt).toContain("Telegram; формат 9:16");
     expect(payload.prompt).toContain("БЕЗОПАСНЫЕ ЗОНЫ");
     expect(payload.prompt).toContain("РАЗМЕЩЕНИЕ ОБЪЕКТА");

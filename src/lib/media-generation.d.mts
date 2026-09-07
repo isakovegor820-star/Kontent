@@ -9,7 +9,7 @@ export type MediaGenerationStatus =
 
 export interface MediaPromptContext {
   policy: "aurora-media-prompt";
-  version: 4;
+  version: 3;
   sourcePost: string;
   visualBrief: string;
   exactText: string;
@@ -22,7 +22,7 @@ export interface MediaPromptContext {
 
 export const MEDIA_QUEUE: "media-generation";
 export const MEDIA_GENERATION_STATUSES: readonly MediaGenerationStatus[];
-export const MEDIA_PROMPT_POLICY: Readonly<{ id: "aurora-media-prompt"; version: 4 }>;
+export const MEDIA_PROMPT_POLICY: Readonly<{ id: "aurora-media-prompt"; version: 3 }>;
 export const MEDIA_MODELS: Readonly<Record<MediaKind, Readonly<Record<string, Readonly<Record<string, unknown>>>>>>;
 export const MEDIA_STYLES: Readonly<Record<string, string>>;
 

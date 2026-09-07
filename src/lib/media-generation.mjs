@@ -12,9 +12,11 @@ export const MEDIA_GENERATION_STATUSES = Object.freeze([
   "failed",
 ]);
 
+// This version identifies the persisted prompt-context schema (DB supports 1..3).
+// Wording refinements within that schema do not require a new persisted version.
 export const MEDIA_PROMPT_POLICY = Object.freeze({
   id: "aurora-media-prompt",
-  version: 4,
+  version: 3,
 });
 
 export const MEDIA_MODELS = Object.freeze({
