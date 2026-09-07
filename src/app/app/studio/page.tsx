@@ -15,13 +15,11 @@ import {
   Clapperboard,
   Copy,
   FileText,
-  ImageIcon,
   ListChecks,
   MessageSquareText,
   Plus,
   RefreshCw,
   Sparkles,
-  Video,
 } from "lucide-react";
 
 import { AppShell } from "@/components/app/shell";
@@ -32,7 +30,6 @@ import { TaskStatus } from "@/components/ui/task-status";
 import {
   MediaGenerator,
   type MediaGeneration,
-  type MediaKind,
 } from "@/components/studio/media-generator";
 import { PostSettingsMenu } from "@/components/studio/post-settings-menu";
 import { requiresBriefConfirmation } from "@/lib/brief-confirmation";
@@ -76,6 +73,7 @@ import {
 import { pickStudioCommand } from "@/lib/studio-command";
 import {
   isStudioGenerationPlaceholder,
+  lastRewritableStudioMessage,
   mergeStudioChatSessions,
   parseStudioChatSession,
   serializeStudioChatSession,
@@ -172,8 +170,6 @@ type Quick = {
   draft?: string;
   /** выполнить сразу, дописывать нечего */
   instant?: string;
-  /** открыть настоящий генератор медиа, а не текстовый промпт */
-  mediaKind?: MediaKind;
 };
 
 const QUICK: Quick[] = [
@@ -206,18 +202,6 @@ const QUICK: Quick[] = [
     label: "Лонгрид",
     icon: <FileText className={ICON} strokeWidth={2} aria-hidden />,
     draft: "Напиши лонгрид про ",
-  },
-  {
-    id: "image",
-    label: "Картинка",
-    icon: <ImageIcon className={ICON} strokeWidth={2} aria-hidden />,
-    mediaKind: "image",
-  },
-  {
-    id: "video",
-    label: "Создать рилс",
-    icon: <Video className={ICON} strokeWidth={2} aria-hidden />,
-    mediaKind: "video",
   },
   {
     id: "rewrite-last",
@@ -750,7 +734,6 @@ function StudioPageInner() {
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("chat");
   const [chatSessionOwner, setChatSessionOwner] = useState<number | null>(null);
   const [chatPersistenceStatus, setChatPersistenceStatus] = useState<ChatPersistenceStatus>("loading");
-  const [mediaKind, setMediaKind] = useState<MediaKind>("image");
   const [pickedChannelId, setPickedChannelId] = useState<number | null>(() => {
     if (typeof window === "undefined") return null;
     const value = Number(new URLSearchParams(window.location.search).get("channel"));
@@ -2149,16 +2132,8 @@ function StudioPageInner() {
   const onQuick = (q: Quick) => {
     if (busy) return;
 
-    if (q.mediaKind) {
-      setMediaKind(q.mediaKind);
-      setWorkspaceMode("studio");
-      return;
-    }
-
     if (q.id === "rewrite-last") {
-      const last = [...messages]
-        .reverse()
-        .find((m) => m.role === "ai" && m.postable && m.text.trim().length > 0);
+      const last = lastRewritableStudioMessage(messages);
 
       if (!last) {
         s.toast({
@@ -2168,7 +2143,11 @@ function StudioPageInner() {
         });
         return;
       }
-      ask("Перепиши последнее", { cmd: "rewrite", input: last.text });
+      ask("Перепиши последнее", {
+        cmd: "rewrite",
+        input: `Перепиши текст ниже: сохрани смысл и факты, сделай формулировки яснее и естественнее.\n\n${last.text}`,
+        skipBrief: true,
+      });
       return;
     }
 
@@ -2441,7 +2420,7 @@ function StudioPageInner() {
 
           <div
             id="studio-workspace"
-            aria-label="Режим Картинки и видео"
+            aria-label="Режим Изображения"
             ref={attachDesignShell}
             className={cn(
               "mx-auto w-full max-w-[1180px]",
@@ -2449,8 +2428,6 @@ function StudioPageInner() {
             )}
           >
             <MediaGenerator
-              key={mediaKind}
-              initialKind={mediaKind}
               channelId={channelId}
               sourceText={primaryPublication([...messages].reverse().find((message) => message.role === "ai" && message.postable)?.text ?? "")}
               onUse={useGeneratedMedia}

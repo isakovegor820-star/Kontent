@@ -15,6 +15,7 @@ import {
   ShieldCheck,
   Sparkles,
   UserRound,
+  Trash2,
 } from "lucide-react";
 
 import { Button, buttonClassName } from "@/components/ui/button";
@@ -151,6 +152,7 @@ function InquiryCard({
   canEdit,
   onGenerate,
   onSend,
+  onDiscard,
   onUpdate,
   onMessage,
 }: {
@@ -158,6 +160,7 @@ function InquiryCard({
   busy: boolean;
   canEdit: boolean;
   onGenerate: (inquiry: AudienceInquiryRecord) => void;
+  onDiscard: (inquiry: AudienceInquiryRecord) => void;
   onSend: (inquiry: AudienceInquiryRecord, reply: string) => void;
   onUpdate: (inquiry: AudienceInquiryRecord, input: { status?: AudienceInquiryStatus; suggestedReply?: string }) => void;
   onMessage: (message: string) => void;
@@ -307,6 +310,12 @@ function InquiryCard({
                   <Button variant="secondary" loading={busy} onClick={() => onGenerate(inquiry)}>
                     {!busy && <Sparkles className="h-4 w-4" aria-hidden />}
                     Другой вариант
+                  </Button>
+                )}
+                {canEdit && canAct && !deliveryUnknown && (
+                  <Button variant="ghost" loading={busy} onClick={() => onDiscard(inquiry)}>
+                    {!busy && <Trash2 className="h-4 w-4" aria-hidden />}
+                    Удалить черновик
                   </Button>
                 )}
                 {canEdit && !inquiry.canSendViaTelegram && (
@@ -464,6 +473,29 @@ export function AudienceAssistantPanel() {
     }
   };
 
+  const discard = async (inquiry: AudienceInquiryRecord) => {
+    setBusyId(inquiry.id);
+    setLoadError("");
+    setStatusMessage("");
+    try {
+      const result = await json<{ inquiry: AudienceInquiryRecord }>(
+        `/api/audience-assistant/${inquiry.id}/draft`,
+        {
+          method: "DELETE",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ expectedVersion: inquiry.version }),
+        },
+      );
+      replaceInquiry(result.inquiry);
+      setStatusMessage("Черновик удалён. Исходное обращение сохранено в разделе «Нужен ответ».");
+      await load(true);
+    } catch (error) {
+      setLoadError((error as Error).message);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   const sendReply = async (inquiry: AudienceInquiryRecord, reply: string) => {
     setBusyId(inquiry.id);
     setLoadError("");
@@ -557,9 +589,10 @@ export function AudienceAssistantPanel() {
                 <InquiryCard
                   key={`${inquiry.id}:${inquiry.version}`}
                   inquiry={inquiry}
-                  busy={busyId === inquiry.id}
+                  busy={busyId != null}
                   canEdit={capabilities?.canEdit ?? EMPTY_CAPABILITIES.canEdit}
                   onGenerate={(next) => void generate(next)}
+                  onDiscard={(next) => void discard(next)}
                   onSend={(next, reply) => void sendReply(next, reply)}
                   onUpdate={(next, input) => void update(next, input)}
                   onMessage={setStatusMessage}

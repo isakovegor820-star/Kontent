@@ -1,3 +1,4 @@
+import { captureTelegramAudienceComment } from "../../worker/publication-extra-worker.mjs";
 import { readFile } from "node:fs/promises";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -5,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { migrate } from "../../scripts/migrate.mjs";
 import {
   deliverAudienceReply,
+  discardAudienceReply,
   updateAudienceInquiry,
 } from "@/lib/audience-assistant";
 import {
@@ -284,5 +286,45 @@ describe.sequential("audience delivery on disposable PostgreSQL", () => {
       [projectId],
     )).rows[0].count);
     expect(auditAfter - auditBefore).toBe(1200);
+  });
+});
+
+describe.sequential("studio audience fixes on PostgreSQL", () => {
+  it("captures a newly linked anonymous comment, deduplicates notifications, and removes its draft", async () => {
+    await pool.query(
+      `insert into channels (project_id, user_id, network, title, handle, tg_chat_id)
+       values ($1, $2, 'tg', 'Audience channel', 'audience_test', -100999001)`,
+      [projectId, ownerId],
+    );
+    const update = { message: {
+      message_id: 301, chat: { id: -100999002, type: "supergroup" },
+      from: { id: 1087968824, is_bot: true },
+      sender_chat: { id: -100999003, title: "Автор комментария" },
+      text: "Как подключить сервис?", reply_to_message: { message_id: 300 },
+    } };
+    const telegramRequest = vi.fn(async () => ({ ok: true, result: { linked_chat_id: -100999001 } }));
+    const captured = await captureTelegramAudienceComment(pool, update, telegramRequest);
+    expect(captured.captured).toBe(true);
+    await captureTelegramAudienceComment(pool, update, telegramRequest);
+    expect(telegramRequest).toHaveBeenCalledOnce();
+    const notifications = await pool.query(
+      `select recipient_user_id from project_notifications
+        where project_id = $1 and event_type = 'audience_comment_received' and entity_id = $2`,
+      [projectId, String(captured.inquiryId)],
+    );
+    expect(notifications.rows.map((row) => Number(row.recipient_user_id)).sort()).toEqual([ownerId, authorId, publisherId].sort());
+    await pool.query(
+      `update bot_client_inquiries set suggested_reply = 'Черновик', status = 'reply_ready' where id = $1`,
+      [captured.inquiryId],
+    );
+    const results = await Promise.allSettled([1, 2].map(() => discardAudienceReply({
+      actorUserId: ownerId, inquiryId: Number(captured.inquiryId), expectedVersion: 1, pool,
+    })));
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.find((result) => result.status === "rejected")).toMatchObject({ reason: { code: "version_conflict" } });
+    const row = (await pool.query(`select incoming_text, suggested_reply, status from bot_client_inquiries where id = $1`, [captured.inquiryId])).rows[0];
+    expect(row).toEqual({ incoming_text: "Как подключить сервис?", suggested_reply: null, status: "pending" });
+    await captureTelegramAudienceComment(pool, update, telegramRequest);
+    expect((await pool.query(`select count(*)::int as count from bot_client_inquiries where request_key = $1`, ["telegram-comment:-100999002:301"])).rows[0].count).toBe(1);
   });
 });

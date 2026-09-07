@@ -411,3 +411,63 @@ describe("publication extra worker", () => {
     ]);
   });
 });
+
+describe("audience comment recovery", () => {
+  const update = { message: {
+    message_id: 91, chat: { id: -100800, type: "supergroup" },
+    from: { id: 1087968824, is_bot: true, first_name: "GroupAnonymousBot" },
+    sender_chat: { id: -100900, title: "Канал автора" }, text: "Подскажите подробнее",
+    reply_to_message: { message_id: 81 },
+  } };
+
+  it("discovers a newly linked discussion and notifies once for a replayed anonymous comment", async () => {
+    const inserts = new Map();
+    const notifications = new Set();
+    let binding = false;
+    const mapping = { project_id: "7", channel_id: "17", title: "Канал", handle: "channel", origin_message_id: null };
+    const query = vi.fn(async (sql, values) => {
+      if (sql.includes("from telegram_discussion_messages mapping")) return { rows: [] };
+      if (sql.includes("channel.tg_discussion_chat_id = $1")) return { rows: binding ? [mapping] : [] };
+      if (sql.includes("channel.tg_chat_id = $1")) {
+        expect(values).toEqual([-100900]);
+        return { rows: [mapping] };
+      }
+      if (sql.includes("update channels")) { binding = true; return { rows: [] }; }
+      if (sql.includes("insert into bot_client_inquiries")) {
+        expect(values[4]).toBe("Канал автора");
+        expect(sql).toContain("do nothing");
+        if (inserts.has(values[1])) return { rows: [] };
+        inserts.set(values[1], { id: "93" }); return { rows: [{ id: "93" }] };
+      }
+      if (sql.includes("select id from bot_client_inquiries")) return { rows: [inserts.get(values[1])] };
+      if (sql.includes("insert into project_notifications")) {
+        expect(sql).toContain("'publisher'");
+        expect(sql).toContain("do nothing");
+        notifications.add(values[2]); return { rows: [] };
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    });
+    const telegramRequest = vi.fn(async () => ({ ok: true, result: { linked_chat_id: -100900 } }));
+    for (let replay = 0; replay < 2; replay += 1) {
+      await expect(captureTelegramAudienceComment({ query }, update, telegramRequest))
+        .resolves.toEqual({ captured: true, inquiryId: 93 });
+    }
+    expect(telegramRequest).toHaveBeenCalledOnce();
+    expect(inserts.size).toBe(1);
+    expect(notifications.size).toBe(1);
+  });
+
+  it("does not acknowledge a transient metadata failure as an unrelated comment", async () => {
+    const query = vi.fn(async () => ({ rows: [] }));
+    await expect(captureTelegramAudienceComment({ query }, update, async () => ({ ok: false, error_code: 503 })))
+      .rejects.toThrow("telegram_discussion_lookup_unavailable");
+    expect(query.mock.calls.some(([sql]) => sql.includes("insert into"))).toBe(false);
+  });
+
+  it("never imports comments from a channel outside connected projects", async () => {
+    const query = vi.fn(async () => ({ rows: [] }));
+    await expect(captureTelegramAudienceComment({ query }, update, async () => ({ ok: true, result: { linked_chat_id: -100999 } })))
+      .resolves.toEqual({ captured: false });
+    expect(query.mock.calls.some(([sql]) => sql.includes("insert into"))).toBe(false);
+  });
+});

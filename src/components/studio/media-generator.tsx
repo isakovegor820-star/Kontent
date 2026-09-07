@@ -12,7 +12,6 @@ import {
   RotateCcw,
   Settings2,
   Sparkles,
-  Video,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -22,7 +21,7 @@ import {
   shouldRetainMediaRequestKey,
   startImmediateMediaPolling,
 } from "@/lib/media-generation-client";
-import type { MediaGenerationStatus } from "@/lib/media-generation.mjs";
+import { MEDIA_MODELS, type MediaGenerationStatus } from "@/lib/media-generation.mjs";
 import { cn } from "@/lib/utils";
 
 export type MediaKind = "image" | "video";
@@ -84,11 +83,6 @@ const DESIGN_STARTERS = [
     kind: "image",
     prompt: "Создай минималистичный визуал: один главный объект, чистый фон и много воздуха.",
   },
-  {
-    label: "Вертикальный рилс",
-    kind: "video",
-    prompt: "Создай короткий вертикальный ролик с одним понятным действием и спокойным движением камеры.",
-  },
 ] as const satisfies readonly { label: string; kind: MediaKind; prompt: string }[];
 
 export type ActiveMediaPollTarget = Pick<MediaGeneration, "id" | "kind">;
@@ -127,6 +121,16 @@ export function startActiveMediaPolling(
     stopInterval();
   };
 }
+
+const IMAGE_RATIO_LABELS: Record<string, string> = {
+  "1:1": "1:1 · квадратный пост",
+  "3:4": "3:4 · портрет",
+  "2:3": "2:3 · портрет",
+  "4:3": "4:3 · горизонтальный пост",
+  "3:2": "3:2 · горизонтальный пост",
+  "9:16": "9:16 · сторис",
+  "16:9": "16:9 · широкая обложка",
+};
 
 const STYLES = [
   ["natural", "Естественный"],
@@ -194,17 +198,15 @@ function formatBytes(bytes: number | null) {
 }
 
 export function MediaGenerator({
-  initialKind = "image",
   channelId,
   sourceText,
   onUse,
 }: {
-  initialKind?: MediaKind;
   channelId: number | null;
   sourceText?: string;
   onUse: (generation: MediaGeneration) => void;
 }) {
-  const [kind, setKind] = useState<MediaKind>(initialKind);
+  const kind: MediaKind = "image";
   const [promptOverride, setPromptOverride] = useState<string | null>(null);
   const [exactText, setExactText] = useState("");
   const [negativePrompt, setNegativePrompt] = useState("водяные знаки, логотипы, нечитаемый текст, искажённые руки");
@@ -212,8 +214,6 @@ export function MediaGenerator({
   const [imageModel, setImageModel] = useState(DEFAULT_IMAGE_MODEL);
   const [imageRatio, setImageRatio] = useState("1:1");
   const [quality, setQuality] = useState("medium");
-  const [videoRatio, setVideoRatio] = useState("9:16");
-  const [seconds, setSeconds] = useState(6);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [generations, setGenerations] = useState<MediaGeneration[]>([]);
   const [currentId, setCurrentId] = useState<string | null>(null);
@@ -235,6 +235,10 @@ export function MediaGenerator({
     ? imageModel
     : imageModels[0]?.id ?? "";
 
+  const imagePreset = MEDIA_MODELS.image[selectedImageModel] ?? MEDIA_MODELS.image[DEFAULT_IMAGE_MODEL];
+  const imageRatios = imagePreset.aspectRatios as readonly string[];
+  const selectedImageRatio = imageRatios.includes(imageRatio) ? imageRatio : String(imagePreset.defaultAspectRatio);
+
   const hasActiveGenerations = generations.some((item) => ACTIVE.has(item.status));
   const activePollPlan = useMemo(() => JSON.stringify(
     generations
@@ -251,8 +255,8 @@ export function MediaGenerator({
         .then(({ res, data }) => {
           if (!cancelled && res.ok) {
             const history = data?.generations ?? [];
-            setGenerations(history);
-            setCurrentId(history[0]?.id ?? null);
+            setGenerations(history.filter((generation) => generation.kind === "image"));
+            setCurrentId(history.find((generation) => generation.kind === "image")?.id ?? null);
           }
         }),
       fetch("/api/media/capabilities", { cache: "no-store" })
@@ -310,13 +314,13 @@ export function MediaGenerator({
   }, [currentId]);
 
   const generate = async (retry?: MediaGeneration) => {
-    const requestedKind = retry?.kind ?? kind;
+    if (retry && retry.kind !== "image") return;
+    const requestedKind = "image";
     const requestedPrompt = retry?.prompt ?? prompt;
     const retryModel = retry?.model === "flux" ? DEFAULT_IMAGE_MODEL : retry?.model;
-    const requestedModel = retryModel ?? (requestedKind === "image" ? selectedImageModel : "veo-3.1");
-    const requestedRatio = retry?.aspectRatio ?? (requestedKind === "image" ? imageRatio : videoRatio);
+    const requestedModel = retryModel ?? selectedImageModel;
+    const requestedRatio = retry?.aspectRatio ?? selectedImageRatio;
     const requestedQuality = retry?.quality ?? quality;
-    const requestedSeconds = retry?.seconds ?? seconds;
     const requestedStyle = retry?.style ?? style;
     const requestedNegativePrompt = retry?.negativePrompt ?? negativePrompt;
     const requestedSourceText = retry?.sourceText ?? sourceText?.trim() ?? "";
@@ -333,9 +337,7 @@ export function MediaGenerator({
     const access = capabilities?.models.find((model) => model.kind === requestedKind && model.id === requestedModel);
     if (!requestedModel || (capabilities && (!capabilities.configured || capabilities.enabled === false || access?.available === false))) {
       setError({
-        message: requestedKind === "video"
-          ? "Видео пока недоступно на сервере. Картинки уже можно создавать."
-          : "Эта модель сейчас недоступна. Выбери другую модель.",
+        message: "Эта модель сейчас недоступна. Выбери другую модель.",
         requestId: null,
       });
       return;
@@ -350,8 +352,7 @@ export function MediaGenerator({
       channelId,
       model: requestedModel,
       aspectRatio: requestedRatio,
-      quality: requestedKind === "image" ? requestedQuality : undefined,
-      seconds: requestedKind === "video" ? requestedSeconds : undefined,
+      quality: requestedQuality,
     };
     const fingerprint = JSON.stringify(payload);
     if (!requestRef.current || requestRef.current.fingerprint !== fingerprint) {
@@ -385,9 +386,7 @@ export function MediaGenerator({
         | null;
       if (!res.ok || !data?.generation) {
         if (!shouldRetainMediaRequestKey(res.status, data?.error)) requestRef.current = null;
-        const creationFailed = requestedKind === "video"
-          ? "Не удалось создать видео. Попробуй ещё раз."
-          : "Не удалось создать изображение. Попробуй ещё раз.";
+        const creationFailed = "Не удалось создать изображение. Попробуй ещё раз.";
         const message =
           data?.error === "limit"
             ? `Лимит на сегодня исчерпан (${data.limit ?? 0}).`
@@ -396,9 +395,7 @@ export function MediaGenerator({
               : data?.error === "not_configured"
                 ? creationFailed
                 : data?.error === "model_unavailable"
-                  ? requestedKind === "video"
-                    ? "Видео пока недоступно на сервере. Картинки уже можно создавать."
-                    : "Эта модель сейчас недоступна. Выбери другую модель."
+                  ? "Эта модель сейчас недоступна. Выбери другую модель."
                 : data?.error === "queue_unavailable"
                   ? creationFailed
                   : data?.error === "worker_unavailable"
@@ -432,7 +429,6 @@ export function MediaGenerator({
   };
 
   const applyStarter = (starter: (typeof DESIGN_STARTERS)[number]) => {
-    setKind(starter.kind);
     setPromptOverride(starter.prompt);
     setError(null);
     requestAnimationFrame(() => {
@@ -444,7 +440,6 @@ export function MediaGenerator({
   };
 
   const editGeneration = (generation: MediaGeneration) => {
-    setKind(generation.kind);
     setPromptOverride(generation.prompt);
     setStyle(generation.style);
     setNegativePrompt(generation.negativePrompt ?? negativePrompt);
@@ -453,10 +448,8 @@ export function MediaGenerator({
       setImageModel(generation.model === "flux" ? DEFAULT_IMAGE_MODEL : generation.model);
       setImageRatio(generation.aspectRatio);
       if (generation.quality) setQuality(generation.quality);
-    } else {
-      setVideoRatio(generation.aspectRatio);
-      if (generation.seconds) setSeconds(generation.seconds);
     }
+
     requestAnimationFrame(() => {
       const input = promptRef.current;
       if (!input) return;
@@ -471,14 +464,8 @@ export function MediaGenerator({
     void generate();
   };
 
-  const imageRatios = selectedImageModel === "gpt-image-2"
-    ? ["1:1", "2:3", "3:2"]
-    : selectedImageModel === "nano-banana-2"
-      ? ["1:1", "3:4", "4:3", "9:16", "16:9"]
-      : ["1:1", "3:4", "9:16", "16:9"];
-  const videoAvailable = capabilities?.models.some((model) => model.kind === "video" && model.available) ?? true;
   const visibleGenerations = useMemo(
-    () => generations.slice(0, 20).reverse(),
+    () => generations.filter((generation) => generation.kind === "image").slice(0, 20).reverse(),
     [generations],
   );
   const latest = generations[0] ?? null;
@@ -517,7 +504,6 @@ export function MediaGenerator({
                   <button
                     key={starter.label}
                     type="button"
-                    disabled={starter.kind === "video" && capabilities?.checked && !videoAvailable}
                     onClick={() => applyStarter(starter)}
                     className={cn(
                       "min-h-11 rounded-full border border-line bg-surface px-4 text-[13px] font-semibold text-text-2 shadow-sm",
@@ -526,7 +512,6 @@ export function MediaGenerator({
                     )}
                   >
                     {starter.label}
-                    {starter.kind === "video" && capabilities?.checked && !videoAvailable ? " · скоро" : ""}
                   </button>
                 ))}
               </div>
@@ -536,7 +521,6 @@ export function MediaGenerator({
               const status = statusCopy(generation);
               const StatusIcon = status.icon;
               const active = ACTIVE.has(generation.status);
-              const vertical = ["9:16", "2:3", "3:4"].includes(generation.aspectRatio);
 
               return (
                 <article key={generation.id} className="space-y-5" aria-label={`Запрос: ${generation.prompt}`}>
@@ -573,28 +557,13 @@ export function MediaGenerator({
                     {active && <TaskStatus label={status.title} />}
 
                     {generation.status === "ready" && generation.assetUrl && (
-                      <div
-                        className={cn(
-                          "mt-4 overflow-hidden rounded-[18px] outline -outline-offset-1 outline-[var(--image-outline)]",
-                          generation.kind === "video" ? "bg-black" : "bg-surface",
-                          vertical ? "max-w-[420px]" : "max-w-[680px]",
-                        )}
-                      >
-                        {generation.kind === "video" ? (
-                          <video
-                            src={generation.assetUrl}
-                            controls
-                            preload="metadata"
-                            className="max-h-[640px] w-full object-contain"
-                          />
-                        ) : (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img
-                            src={generation.assetUrl}
-                            alt={`Результат по запросу: ${generation.prompt}`}
-                            className="block h-auto w-full"
-                          />
-                        )}
+                      <div className="mt-4 flex w-fit max-w-[min(100%,640px)] overflow-hidden rounded-[18px] bg-surface outline -outline-offset-1 outline-[var(--image-outline)]">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={generation.assetUrl}
+                          alt={`Результат по запросу: ${generation.prompt}`}
+                          className="block h-auto max-h-[480px] w-auto max-w-full object-contain"
+                        />
                       </div>
                     )}
 
@@ -679,58 +648,35 @@ export function MediaGenerator({
               </div>
 
               <div className="mt-5 grid gap-3 sm:grid-cols-2">
-                {kind === "image" ? (
-                  <>
-                    <label className="space-y-2 text-[12px] font-semibold text-text-2">
-                      Модель изображения
-                      <select
-                        className={SELECT_CLASS}
-                        value={selectedImageModel}
-                        disabled={imageModels.length === 0}
-                        onChange={(event) => {
-                          setImageModel(event.target.value);
-                          setImageRatio("1:1");
-                        }}
-                      >
-                        {imageModels.length > 0
-                          ? imageModels.map((model) => <option key={model.id} value={model.id}>{model.label}</option>)
-                          : <option value="">Нет доступных моделей</option>}
-                      </select>
-                    </label>
-                    <label className="space-y-2 text-[12px] font-semibold text-text-2">
-                      Формат изображения
-                      <select className={SELECT_CLASS} value={imageRatio} onChange={(event) => setImageRatio(event.target.value)}>
-                        {imageRatios.map((ratio) => <option key={ratio} value={ratio}>{ratio}</option>)}
-                      </select>
-                    </label>
-                    <label className="space-y-2 text-[12px] font-semibold text-text-2 sm:col-span-2">
-                      Качество изображения
-                      <select className={SELECT_CLASS} value={quality} onChange={(event) => setQuality(event.target.value)}>
-                        <option value="low">Черновик · быстрее</option>
-                        <option value="medium">Финал · среднее качество</option>
-                      </select>
-                    </label>
-                  </>
-                ) : (
-                  <>
-                    <label className="space-y-2 text-[12px] font-semibold text-text-2">
-                      Формат видео
-                      <select className={SELECT_CLASS} value={videoRatio} onChange={(event) => setVideoRatio(event.target.value)}>
-                        <option value="9:16">9:16 · вертикальный</option>
-                        <option value="16:9">16:9 · горизонтальный</option>
-                      </select>
-                    </label>
-                    <label className="space-y-2 text-[12px] font-semibold text-text-2">
-                      Длительность
-                      <select className={SELECT_CLASS} value={seconds} onChange={(event) => setSeconds(Number(event.target.value))}>
-                        <option value={4}>4 секунды</option>
-                        <option value={6}>6 секунд</option>
-                        <option value={8}>8 секунд</option>
-                      </select>
-                    </label>
-                  </>
-                )}
-
+                <label className="space-y-2 text-[12px] font-semibold text-text-2">
+                  Модель изображения
+                  <select
+                    className={SELECT_CLASS}
+                    value={selectedImageModel}
+                    disabled={imageModels.length === 0}
+                    onChange={(event) => {
+                      setImageModel(event.target.value);
+                      setImageRatio("1:1");
+                    }}
+                  >
+                    {imageModels.length > 0
+                      ? imageModels.map((model) => <option key={model.id} value={model.id}>{model.label}</option>)
+                      : <option value="">Нет доступных моделей</option>}
+                  </select>
+                </label>
+                <label className="space-y-2 text-[12px] font-semibold text-text-2">
+                  Формат изображения
+                  <select className={SELECT_CLASS} value={selectedImageRatio} onChange={(event) => setImageRatio(event.target.value)}>
+                    {imageRatios.map((ratio) => <option key={ratio} value={ratio}>{IMAGE_RATIO_LABELS[ratio] ?? ratio}</option>)}
+                  </select>
+                </label>
+                <label className="space-y-2 text-[12px] font-semibold text-text-2 sm:col-span-2">
+                  Качество изображения
+                  <select className={SELECT_CLASS} value={quality} onChange={(event) => setQuality(event.target.value)}>
+                    <option value="low">Черновик · быстрее</option>
+                    <option value="medium">Для публикации · детальное изображение</option>
+                  </select>
+                </label>
                 <label className="space-y-2 text-[12px] font-semibold text-text-2 sm:col-span-2">
                   Точный текст в кадре
                   <input
@@ -758,6 +704,9 @@ export function MediaGenerator({
             </div>
           )}
 
+          <p className="px-4 pt-3 text-[12px] text-text-3">
+            {IMAGE_RATIO_LABELS[selectedImageRatio] ?? selectedImageRatio} · {quality === "low" ? "Черновик" : "Для публикации"}
+          </p>
           <label htmlFor="media-prompt" className="sr-only">Опиши, что нужно создать</label>
           <Textarea
             ref={promptRef}
@@ -771,29 +720,16 @@ export function MediaGenerator({
             onKeyDown={handlePromptKeyDown}
             aria-invalid={Boolean(error)}
             aria-describedby={error ? "design-prompt-error" : undefined}
-            placeholder={kind === "video" ? "Например: создай короткий ролик о запуске нового продукта…" : "Напиши, какое изображение нужно создать…"}
+            placeholder="Напиши, какое изображение нужно создать…"
             className="min-h-[76px] max-h-[180px] overflow-y-auto rounded-none border-0 bg-transparent px-5 pt-4 pb-2 text-[16px] hover:border-0 focus:border-0 focus-visible:ring-0"
           />
 
           <div className="flex min-w-0 flex-wrap items-center gap-2 px-3 pb-3">
             <div className="inline-flex rounded-full bg-surface-inset p-1" role="group" aria-label="Тип результата">
-              {(["image", "video"] as const).map((value) => (
-                <button
-                  key={value}
-                  type="button"
-                  aria-pressed={kind === value}
-                  disabled={value === "video" && capabilities?.checked && !videoAvailable}
-                  onClick={() => setKind(value)}
-                  className={cn(
-                    "inline-flex min-h-11 items-center gap-1.5 rounded-full px-3 text-[12px] font-semibold",
-                    "transition-[transform,background-color,color] duration-150 active:scale-[0.96] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand disabled:cursor-not-allowed disabled:opacity-45",
-                    kind === value ? "bg-surface text-text shadow-sm" : "text-text-3 hover:text-text",
-                  )}
-                >
-                  {value === "image" ? <ImageIcon className="h-4 w-4" aria-hidden /> : <Video className="h-4 w-4" aria-hidden />}
-                  {value === "image" ? "Изображение" : capabilities?.checked && !videoAvailable ? "Видео · скоро" : "Видео"}
-                </button>
-              ))}
+              <span className="inline-flex min-h-11 items-center gap-1.5 rounded-full bg-surface px-3 text-[12px] font-semibold text-text shadow-sm">
+                <ImageIcon className="h-4 w-4" aria-hidden />
+                Изображение
+              </span>
             </div>
 
             <Button
@@ -828,20 +764,16 @@ export function MediaGenerator({
               variant="brand"
               size="icon"
               className="ms-auto h-11 w-11 shrink-0 rounded-full active:scale-[0.96]"
-              aria-label={kind === "image" ? "Создать изображение" : "Создать видео"}
+              aria-label="Создать изображение"
               onClick={() => void generate()}
-              disabled={Boolean(capabilities?.checked && (kind === "image" ? imageModels.length === 0 : !videoAvailable))}
+              disabled={Boolean(capabilities?.checked && imageModels.length === 0)}
               loading={submitting}
             >
               {!submitting && <ArrowUp className="h-[18px] w-[18px]" strokeWidth={2.5} aria-hidden />}
             </Button>
           </div>
 
-          {kind === "video" && capabilities?.checked && !videoAvailable && (
-            <p className="border-t border-line px-4 py-2.5 text-[11px] leading-relaxed text-text-3">
-              Видео пока недоступно. Можно создать изображение.
-            </p>
-          )}
+
         </div>
       </div>
     </section>

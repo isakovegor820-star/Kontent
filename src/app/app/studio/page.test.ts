@@ -33,11 +33,11 @@ describe("Studio responsive recovery controls", () => {
     expect(pageSource).toContain("Аврора временно недоступна");
   });
 
-  it("keeps image and video generation available through the media workspace", () => {
-    expect(shellSource).toContain('{ href: "/app/studio?mode=media", label: "Картинки и видео" }');
-    expect(pageSource).toContain('aria-label="Режим Картинки и видео"');
-    expect(pageSource).toContain('id: "video"');
-    expect(pageSource).toContain("Создать рилс");
-    expect(pageSource).toContain("initialKind={mediaKind}");
+  it("offers images in the dedicated workspace and keeps the chat menu focused on text", () => {
+    expect(shellSource).toContain('{ href: "/app/studio?mode=media", label: "Изображения" }');
+    expect(pageSource).toContain('aria-label="Режим Изображения"');
+    expect(pageSource).not.toContain('id: "video"');
+    expect(pageSource).not.toContain('id: "image"');
+    expect(pageSource).not.toContain("Создать рилс");
   });
 });

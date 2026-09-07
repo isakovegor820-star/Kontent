@@ -10657,7 +10657,7 @@ async function handleUpdate(u) {
     // first-comment operation can reply to the exact linked discussion message.
     await observeTelegramDiscussionUpdate(pool, u);
     if (u.message) {
-      const audienceComment = await captureTelegramAudienceComment(pool, u);
+      const audienceComment = await captureTelegramAudienceComment(pool, u, tg);
       if (audienceComment.captured) return;
       // Workspace commands are private-chat only. Group messages that are not mapped
       // to a connected channel must stay silent instead of receiving onboarding copy.

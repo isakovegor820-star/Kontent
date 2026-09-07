@@ -32,6 +32,18 @@ export type StudioChatMessage = {
   generationResultId?: number;
 };
 
+/** Editing is available for complete text even when publication requires review. */
+export function lastRewritableStudioMessage(messages: readonly StudioChatMessage[]): StudioChatMessage | undefined {
+  return [...messages].reverse().find((message) =>
+    message.role === "ai"
+    && !message.streaming
+    && !message.interrupted
+    && (!message.errorMessage || message.reviewable || message.postable)
+    && Boolean(message.text.trim())
+    && !isStudioGenerationPlaceholder(message.text),
+  );
+}
+
 export type StudioChatGeneration = {
   cmd: AiCommand;
   input: string;

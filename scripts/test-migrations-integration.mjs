@@ -2,6 +2,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import pg from "pg";
 import { migrate } from "./migrate.mjs";
+import { MEDIA_PROMPT_POLICY, buildMediaPromptContext } from "../src/lib/media-generation.mjs";
 
 const connectionString = String(process.env.MIGRATION_TEST_DATABASE_URL || "").trim();
 if (!connectionString) throw new Error("MIGRATION_TEST_DATABASE_URL is required");
@@ -53,6 +54,21 @@ try {
   const env = { ...process.env, DATABASE_URL: connectionString };
   await migrate({ env, logger: { log() {} } });
   await migrate({ env, logger: { log() {} } });
+
+  // Verify the real write contract before costly browser builds: a prompt wording
+  // change must not introduce a persisted version rejected by the migrated DB.
+  const mediaPolicyProbe = await pool.query(
+    `insert into media_generations
+       (user_id, project_id, kind, prompt, model, aspect_ratio, quality,
+        provider_request_key, prompt_policy_version, prompt_context)
+     select user_id, project_id, 'image', 'Проверка формата изображения',
+            'nano-banana-2', '1:1', 'medium', 'migration-media-policy-probe', $1, $2
+       from channels where id = 10
+     returning id`,
+    [MEDIA_PROMPT_POLICY.version, buildMediaPromptContext({ prompt: "Проверка формата изображения" })],
+  );
+  if (mediaPolicyProbe.rowCount !== 1) throw new Error("media prompt policy write probe did not insert a generation");
+  await pool.query("delete from media_generations where id = $1", [mediaPolicyProbe.rows[0].id]);
 
   // Регрессия онбординга: приложение сохраняет source='quiz'. До миграции legacy
   // constraint разрешал только ai/manual и пользователь застревал на шаге 2.

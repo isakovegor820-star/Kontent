@@ -387,6 +387,50 @@ export async function updateAudienceInquiry(input: {
   }
 }
 
+/** Remove only the unsent reply; preserve the incoming message and deduplication key. */
+export async function discardAudienceReply(input: {
+  actorUserId: number;
+  inquiryId: number;
+  expectedVersion: unknown;
+  pool?: TransactionPool;
+}): Promise<AudienceInquiryRecord> {
+  const inquiryId = positiveInteger(input.inquiryId);
+  const expectedVersion = positiveInteger(input.expectedVersion);
+  const db = await (input.pool ?? getPool()).connect();
+  try {
+    await db.query("begin");
+    const membership = await requireSelectedProjectPermission(db, input.actorUserId, "content.edit");
+    const canDeliverReply = roleAllows(membership.role, "audience.reply.send");
+    const current = await selectInquiry(db, membership.projectId, inquiryId, "for update of inquiry", canDeliverReply);
+    if (!current) throw new AudienceAssistantError("not_found");
+    if (current.version !== expectedVersion) throw new AudienceAssistantError("version_conflict");
+    if (current.status === "approved") throw new AudienceAssistantError("delivery_in_progress");
+    if (current.deliveryErrorCode === "delivery_unknown") throw new AudienceAssistantError("delivery_unknown");
+    if (!["pending", "reply_ready", "failed"].includes(current.status) || !current.suggestedReply) {
+      throw new AudienceAssistantError("invalid_status");
+    }
+    await db.query(
+      `update bot_client_inquiries
+          set suggested_reply = null, reply_guidance = null, tone = null, risk_level = null,
+              status = 'pending', delivery_request_key = null, provider_started_at = null,
+              sent_external_message_id = null, delivery_error_code = null,
+              resolved_by_user_id = null, resolved_at = null,
+              version = version + 1, updated_at = now()
+        where id = $1 and project_id = $2 and version = $3`,
+      [inquiryId, membership.projectId, expectedVersion],
+    );
+    const updated = await selectInquiry(db, membership.projectId, inquiryId, "", canDeliverReply);
+    if (!updated) throw new AudienceAssistantError("not_found");
+    await db.query("commit");
+    return updated;
+  } catch (error) {
+    await db.query("rollback").catch(() => undefined);
+    throw error;
+  } finally {
+    db.release();
+  }
+}
+
 export async function saveGeneratedAudienceReply(input: {
   actorUserId: number;
   inquiryId: number;
