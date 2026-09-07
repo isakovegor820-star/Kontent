@@ -17,9 +17,9 @@ function apply(events: AiStreamEvent[]) {
 
 describe("AI draft projection", () => {
   it("describes live drafting and the optional editorial pass", () => {
-    expect(aiDraftPhaseLabel("draft")).toBe("Пишу черновик — текст появляется сразу…");
-    expect(aiDraftPhaseLabel("editing")).toBe("Улучшаю готовый черновик…");
-    expect(aiDraftPhaseLabel("writing")).toBe("Пишу пост — текст появляется сразу…");
+    expect(aiDraftPhaseLabel("draft")).toBe("Пишу черновик…");
+    expect(aiDraftPhaseLabel("editing")).toBe("Редактирую…");
+    expect(aiDraftPhaseLabel("writing")).toBe("Пишу пост…");
   });
 
   it("never erases a complete candidate between editorial passes", () => {

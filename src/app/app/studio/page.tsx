@@ -12,18 +12,15 @@ import {
   CalendarRange,
   Check,
   ChevronDown,
-  CircleStop,
   Clapperboard,
   Copy,
   FileText,
   ImageIcon,
   ListChecks,
-  LoaderCircle,
   MessageSquareText,
   Plus,
   RefreshCw,
   Sparkles,
-  Timer,
   Video,
 } from "lucide-react";
 
@@ -31,6 +28,7 @@ import { AppShell } from "@/components/app/shell";
 import { EvidenceCard } from "@/components/app/evidence-card";
 import { Button } from "@/components/ui/button";
 import { Card, Textarea } from "@/components/ui/primitives";
+import { TaskStatus } from "@/components/ui/task-status";
 import {
   MediaGenerator,
   type MediaGeneration,
@@ -253,83 +251,6 @@ function lexicalSimilarity(left: string, right: string): number {
 // Нейтральные по нише — конкретика приедет из настроек и разведки, выдумывать её не надо.
 /* ------------------------------------------------------------- СООБЩЕНИЕ */
 
-function formatGenerationTime(elapsedSeconds: number): string {
-  const safeSeconds = Math.max(0, Math.floor(elapsedSeconds));
-  const minutes = Math.floor(safeSeconds / 60);
-  const seconds = safeSeconds % 60;
-  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
-}
-
-function GenerationStatus({
-  progressLabel,
-  onStop,
-}: {
-  progressLabel?: string;
-  onStop: () => void;
-}) {
-  const [elapsedSeconds, setElapsedSeconds] = useState(0);
-
-  useEffect(() => {
-    const startedAt = Date.now();
-    const updateElapsed = () => {
-      setElapsedSeconds(Math.floor((Date.now() - startedAt) / 1_000));
-    };
-
-    updateElapsed();
-    const timerId = window.setInterval(updateElapsed, 1_000);
-    return () => window.clearInterval(timerId);
-  }, []);
-
-  const formattedTime = formatGenerationTime(elapsedSeconds);
-
-  return (
-    <div className="mt-3 max-w-[72ch] rounded-md border border-brand/25 bg-info-soft p-4 shadow-sm">
-      <div className="flex items-start gap-3">
-        <span
-          className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-brand-gradient text-white shadow-glow"
-          aria-hidden
-        >
-          <LoaderCircle className="h-5 w-5 motion-safe:animate-spin" strokeWidth={2} />
-        </span>
-
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-            <p className="text-[14px] leading-snug font-bold text-text">Генерация идёт</p>
-            <span className="inline-flex items-center gap-1.5 text-[11px] leading-none font-semibold text-info-text">
-              <Timer className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />
-              <span>Прошло</span>
-              <time className="tabular-nums" dateTime={`PT${elapsedSeconds}S`} aria-label={`Прошло времени: ${formattedTime}`}>
-                {formattedTime}
-              </time>
-            </span>
-          </div>
-          <p className="mt-1 text-[12px] leading-relaxed font-medium text-info-text">
-            {progressLabel ?? "Аврора создаёт материал…"}
-          </p>
-        </div>
-      </div>
-
-      <div className="mt-3 flex flex-col items-stretch justify-between gap-3 border-t border-brand/15 pt-3 sm:flex-row sm:items-center">
-        <p className="text-[11px] leading-relaxed text-text-3">
-          Готовые фрагменты появляются в ответе сразу.
-        </p>
-        <Button
-          type="button"
-          variant="danger"
-          size="sm"
-          className="w-full border border-danger-text/20 px-4 shadow-sm sm:w-auto"
-          onClick={onStop}
-          aria-label="Остановить генерацию"
-          title="Остановить генерацию"
-        >
-          <CircleStop className="h-4 w-4" strokeWidth={2} aria-hidden />
-          Остановить
-        </Button>
-      </div>
-    </div>
-  );
-}
-
 function MessageRow({
   msg,
   reduce,
@@ -397,7 +318,9 @@ function MessageRow({
           </p>
         )}
 
-        {msg.streaming && <GenerationStatus progressLabel={msg.progressLabel} onStop={onStop} />}
+        {msg.streaming && (
+          <TaskStatus className="mt-2" label={msg.progressLabel} onStop={onStop} announce={false} />
+        )}
 
         {msg.errorMessage && (
           <div role="alert" className="mt-3 max-w-[72ch] rounded-sm border border-danger-text/25 bg-danger-soft px-3 py-2 text-[12px] leading-relaxed text-danger-text">
@@ -1759,7 +1682,7 @@ function StudioPageInner() {
           if (event.type === "phase") {
             projection = projectAiDraftEvent(projection, event);
             setMsg({
-              progressLabel: aiDraftPhaseLabel(projection.phase),
+              progressLabel: aiDraftPhaseLabel(projection.phase, gen.cmd),
               postable: false,
               requestId: event.requestId,
             });
@@ -2038,7 +1961,7 @@ function StudioPageInner() {
         id: aiId,
         role: "ai",
         text: "",
-        progressLabel: "Начинаю писать — текст появится сразу…",
+        progressLabel: aiDraftPhaseLabel(null, cmd),
         streaming: true,
         postable: false,
       },
@@ -2134,7 +2057,7 @@ function StudioPageInner() {
         m.id === id
           ? {
               ...m,
-              progressLabel: "Готовлю новый вариант — предыдущий текст остаётся на месте…",
+              progressLabel: "Готовлю новый вариант…",
               streaming: true,
               postable: false,
               reviewable: false,
@@ -2168,7 +2091,7 @@ function StudioPageInner() {
     setMessages((prev) => prev.map((message) => message.id === id ? {
       ...message,
       streaming: true,
-      progressLabel: "Повторяю тот же запрос — сохранённый текст остаётся на месте…",
+      progressLabel: "Пробую ещё раз…",
       postable: false,
       reviewable: false,
       requiresReview: false,
@@ -2291,7 +2214,7 @@ function StudioPageInner() {
     .reverse()
     .find((message) => message.role === "ai");
   const generationAnnouncement = latestAiStatus?.streaming
-    ? latestAiStatus.progressLabel ?? "Генерация продолжается"
+    ? latestAiStatus.progressLabel ?? "Думаю…"
     : latestAiStatus?.statusMessage ?? (latestAiStatus?.reviewable ? "Черновик готов." : "");
   const originalityLimit = postSettings.originalityDepth === "all" ? 200 : Number(postSettings.originalityDepth);
   const similarPosts = pendingBrief && postSettings.showSimilarPosts

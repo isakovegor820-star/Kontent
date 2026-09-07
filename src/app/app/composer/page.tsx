@@ -31,7 +31,6 @@ import {
   CalendarClock,
   CheckCircle2,
   ChevronDown,
-  CircleStop,
   Clock,
   ExternalLink,
   Flame,
@@ -73,6 +72,7 @@ import {
 import { Button, buttonClassName } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { RichTextEditor } from "@/components/ui/rich-text-editor";
+import { TaskStatus } from "@/components/ui/task-status";
 import {
   Badge,
   Card,
@@ -3889,27 +3889,34 @@ function ComposerInner() {
                 key="ai-preview"
                 {...fade}
                 aria-label="Предварительный вариант от ИИ"
-                aria-busy={c.aiPreview.status === "running" || undefined}
                 className={cn(
                   "space-y-3 rounded-sm border p-3",
                   c.aiPreview.status === "interrupted"
                     ? "border-fire/30 bg-fire-soft/50"
-                    : "border-brand/25 bg-info-soft/50",
+                    : "border-line bg-surface",
                 )}
               >
-                <div className="flex flex-wrap items-start gap-2">
-                  <div className="min-w-0 flex-1">
-                    <p className="text-[13px] font-semibold text-text">Новый вариант</p>
-                    <p role="status" aria-live="polite" aria-atomic="true" className="text-[12px] text-text-3">
-                      {c.aiPreview.status === "running"
-                        ? aiDraftPhaseLabel(c.aiPreview.phase)
-                        : c.aiPreview.status === "ready"
+                {c.aiPreview.status === "running" ? (
+                  <TaskStatus
+                    label={aiDraftPhaseLabel(c.aiPreview.phase, c.aiBusy ?? "write")}
+                    onStop={c.stopAi}
+                  />
+                ) : (
+                  <div className="flex flex-wrap items-start gap-2">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-[13px] font-semibold text-text">Новый вариант</p>
+                      <p role="status" aria-live="polite" aria-atomic="true" className="text-[12px] text-text-3">
+                        {c.aiPreview.status === "ready"
                           ? "Вариант готов. Исходный текст не изменится, пока ты его не применишь."
                           : "Генерация остановлена. Готовая часть сохранена отдельно; исходный пост не изменён."}
-                    </p>
+                      </p>
+                    </div>
                   </div>
-                </div>
-                <div className="max-h-56 overflow-y-auto whitespace-pre-wrap rounded-xs bg-surface px-3 py-2 text-[14px] leading-relaxed text-text">
+                )}
+                <div
+                  aria-busy={c.aiPreview.status === "running" || undefined}
+                  className="max-h-56 overflow-y-auto whitespace-pre-wrap rounded-xs bg-surface px-3 py-2 text-[14px] leading-relaxed text-text"
+                >
                   {c.aiPreview.text}
                 </div>
                 {c.aiPreview.status !== "running" && (
@@ -3924,20 +3931,12 @@ function ComposerInner() {
                 )}
               </motion.section>
             )}
-            {typing && (
+            {typing && !c.aiPreview && (
               <motion.div
                 key="typing"
                 {...fade}
-                className="flex items-center gap-2 rounded-sm bg-info-soft px-3 py-2"
               >
-                <Sparkles className="h-4 w-4 animate-pulse text-brand motion-reduce:animate-none" aria-hidden />
-                <span role="status" aria-live="polite" aria-atomic="true" className="text-[13px] font-semibold text-info-text">
-                  {c.aiPreview ? aiDraftPhaseLabel(c.aiPreview.phase) : "ИИ готовит черновик…"}
-                </span>
-                <Button variant="ghost" size="sm" onClick={c.stopAi} className="ml-auto">
-                  <CircleStop className="h-4 w-4" aria-hidden />
-                  Стоп
-                </Button>
+                <TaskStatus label={aiDraftPhaseLabel(null, c.aiBusy ?? "write")} onStop={c.stopAi} />
               </motion.div>
             )}
           </AnimatePresence>

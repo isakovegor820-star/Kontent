@@ -1,3 +1,4 @@
+import type { AiCommand } from "./ai";
 import type { AiStreamEvent } from "./ai-stream";
 
 export type AiDraftPhase = "draft" | "editing" | "writing";
@@ -74,8 +75,19 @@ export function projectAiDraftEvent(
   return current;
 }
 
-export function aiDraftPhaseLabel(phase: AiDraftPhase | null): string {
-  if (phase === "draft") return "Пишу черновик — текст появляется сразу…";
-  if (phase === "editing") return "Улучшаю готовый черновик…";
-  return "Пишу пост — текст появляется сразу…";
+const COMMAND_LABELS: Record<AiCommand, string> = {
+  write: "Пишу пост…",
+  rewrite: "Редактирую…",
+  shorten: "Сокращаю текст…",
+  plan: "Собираю план…",
+  script: "Пишу сценарий…",
+  image: "Готовлю описание…",
+  poll: "Составляю опрос…",
+  longread: "Пишу лонгрид…",
+};
+
+export function aiDraftPhaseLabel(phase: AiDraftPhase | null, command: AiCommand = "write"): string {
+  if (phase === "editing") return "Редактирую…";
+  if (phase === "draft" && command === "write") return "Пишу черновик…";
+  return COMMAND_LABELS[command];
 }
