@@ -1,8 +1,11 @@
 /** A tab owns its workspace. Never infer an outgoing request's project from another tab. */
 const STORAGE_KEY = "aurora:request-project-id";
+const USER_STORAGE_KEY = "aurora:request-project-user-id";
 const HEADER = "x-aurora-project-id";
 let activeProjectId: number | null = null;
-let bootstrap: Promise<number> | null = null;
+let projectUserId: number | null = null;
+type ProjectBinding = { projectId: number; generation: number };
+let bootstrap: Promise<ProjectBinding> | null = null;
 let generation = 0;
 
 function validId(value: unknown): number | null {
@@ -28,22 +31,42 @@ export function setClientProjectId(projectId: number | null): void {
   }
 }
 
+/** Bind restored tab state only after the server confirms the account identity. */
+export function setClientProjectUser(userId: number | null): void {
+  const next = validId(userId);
+  if (typeof window !== "undefined") {
+    try { projectUserId = validId(window.sessionStorage.getItem(USER_STORAGE_KEY)); } catch { /* use memory */ }
+  }
+  if (next === null || projectUserId !== next) {
+    setClientProjectId(null);
+    bootstrap = null;
+  }
+  projectUserId = next;
+  if (typeof window !== "undefined") {
+    try {
+      if (next === null) window.sessionStorage.removeItem(USER_STORAGE_KEY);
+      else window.sessionStorage.setItem(USER_STORAGE_KEY, String(next));
+    } catch { /* memory keeps the authenticated account binding */ }
+  }
+}
+
 function changed(): never { throw new DOMException("Workspace changed during request", "AbortError"); }
 
-async function ensureProject(): Promise<number> {
+async function ensureProject(): Promise<ProjectBinding> {
   const known = getClientProjectId();
-  if (known !== null) return known;
+  if (known !== null) return { projectId: known, generation };
   if (!bootstrap) {
     const initialGeneration = generation;
-    bootstrap = (async () => {
+    const pending: Promise<ProjectBinding> = (async () => {
       const response = await globalThis.fetch("/api/projects/current", { cache: "no-store", signal: AbortSignal.timeout(8_000) });
       const body = await response.json();
       const id = response.ok ? validId(body?.project?.projectId ?? body?.project?.id) : null;
       if (id === null) throw new Error("project_context_unavailable");
-      if (generation !== initialGeneration) return getClientProjectId() ?? changed();
+      if (generation !== initialGeneration) changed();
       setClientProjectId(id);
-      return id;
-    })().finally(() => { bootstrap = null; });
+      return { projectId: id, generation };
+    })().finally(() => { if (bootstrap === pending) bootstrap = null; });
+    bootstrap = pending;
   }
   return bootstrap;
 }
@@ -54,8 +77,8 @@ export const projectFetch: typeof fetch = async (input, init) => {
   const scoped = url.origin === window.location.origin && url.pathname.startsWith("/api/")
     && !/^\/api\/(?:auth(?:\/|$)|lead$|health(?:\/|$)|ready(?:\/|$)|admin(?:\/|$)|tracking\/(?:ping|conversions|client\.js)$)/u.test(url.pathname);
   if (!scoped) return globalThis.fetch(input, init);
-  const projectId = await ensureProject();
-  const requestGeneration = generation;
+  const { projectId, generation: requestGeneration } = await ensureProject();
+  if (requestGeneration !== generation || getClientProjectId() !== projectId) changed();
   const headers = new Headers(input instanceof Request ? input.headers : undefined);
   new Headers(init?.headers).forEach((value, key) => headers.set(key, value));
   const explicit = headers.get(HEADER);

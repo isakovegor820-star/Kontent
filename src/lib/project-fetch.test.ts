@@ -23,6 +23,31 @@ describe("tab-bound project requests", () => {
     expect(fetcher.mock.calls.filter(([url]) => url === "/api/projects/current")).toHaveLength(1);
     expect(getClientProjectId()).toBe(11);
   });
+  it("does not dispatch a queued mutation after the selected project changes before fetch", async () => {
+    setClientProjectId(11);
+    const fetcher = vi.fn<typeof fetch>(async () => json({ ok: true }));
+    vi.stubGlobal("fetch", fetcher);
+    const pending = projectFetch("/api/posts/create", { method: "POST", body: "{}" });
+    const outcome = pending.catch((error: unknown) => error);
+    setClientProjectId(22);
+    expect(await outcome).toMatchObject({ name: "AbortError" });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+  it("never retargets a waiting mutation when the old bootstrap resolves after a project switch", async () => {
+    let release!: (response: Response) => void;
+    const fetcher = vi.fn<typeof fetch>(async (url) => String(url) === "/api/projects/current"
+      ? new Promise<Response>((resolve) => { release = resolve; })
+      : json({ ok: true }));
+    vi.stubGlobal("fetch", fetcher);
+    const outcome = projectFetch("/api/posts/create", { method: "POST", body: "{}" })
+      .catch((error: unknown) => error);
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledOnce());
+    setClientProjectId(22);
+    release(json({ project: { projectId: 11 } }));
+    expect(await outcome).toMatchObject({ name: "AbortError" });
+    expect(fetcher.mock.calls.map(([url]) => url)).toEqual(["/api/projects/current"]);
+    expect(getClientProjectId()).toBe(22);
+  });
   it("rejects delayed response after switch without changing its request target", async () => {
     setClientProjectId(11);
     let complete!: (response: Response) => void;

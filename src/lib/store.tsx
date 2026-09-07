@@ -1,6 +1,6 @@
 "use client";
 
-import { projectFetch as fetch } from "@/lib/project-fetch";
+import { projectFetch as fetch, setClientProjectUser } from "@/lib/project-fetch";
 
 // Состояние платформы. Без бэкенда: localStorage + React Context.
 // Публикация «исполняется сервером» — здесь это таймер, который двигает статусы постов,
@@ -262,6 +262,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       const nextUser = !credentialRejected && data?.user ? mapUser(data.user) : null;
       const accountChanged = (activeUserRef.current?.id ?? null) !== (nextUser?.id ?? null);
       if (accountChanged) beginWorkspaceTransition();
+      setClientProjectUser(nextUser?.id ?? null);
       activeUserRef.current = nextUser;
       if (nextUser) {
         setSignOutStatus("idle");
@@ -673,6 +674,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         }
         authRequestFence.invalidate();
         beginWorkspaceTransition();
+        setClientProjectUser(null);
         activeUserRef.current = null;
         setState({ ...seedState(), user: null, onboarded: false });
         setReady(true);
