@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   E2E_BOT_CONNECT_TOKEN_CANARY,
+  E2E_BOT_CONNECT_TOKEN_CANARIES,
+  E2E_PII_SCAN_POLICY,
+  escapeE2eUnzipEntryPattern,
   inspectE2eCanaryBuffer,
   inspectE2eNetworkEvents,
   inspectE2eTextEvidence,
@@ -9,8 +12,28 @@ import {
 } from "./e2e-evidence-safety.mjs";
 
 describe("E2E evidence safety", () => {
+  it("escapes unzip wildcard characters without changing ordinary entry paths", () => {
+    expect(escapeE2eUnzipEntryPattern("[Content_Types].xml")).toBe("[[]Content_Types].xml");
+    expect(escapeE2eUnzipEntryPattern("trace/resources/file?.json")).toBe(
+      "trace/resources/file[?].json",
+    );
+    expect(escapeE2eUnzipEntryPattern("trace/resources/*.json")).toBe(
+      "trace/resources/[*].json",
+    );
+    expect(escapeE2eUnzipEntryPattern("xl/worksheets/sheet1.xml")).toBe(
+      "xl/worksheets/sheet1.xml",
+    );
+  });
+
   it("uses a valid-format synthetic one-time token canary", () => {
     expect(E2E_BOT_CONNECT_TOKEN_CANARY).toMatch(/^[A-Za-z0-9_-]{43}$/u);
+    expect(E2E_BOT_CONNECT_TOKEN_CANARIES.malformed).not.toMatch(/^[A-Za-z0-9_-]{43}$/u);
+    expect(Object.values(E2E_BOT_CONNECT_TOKEN_CANARIES)).toHaveLength(4);
+    expect(new Set(Object.values(E2E_BOT_CONNECT_TOKEN_CANARIES)).size).toBe(4);
+    for (const [state, value] of Object.entries(E2E_BOT_CONNECT_TOKEN_CANARIES)) {
+      if (state !== "malformed") expect(value).toMatch(/^[A-Za-z0-9_-]{43}$/u);
+      expect(value.length).toBeGreaterThanOrEqual(16);
+    }
   });
 
   it.each([
@@ -74,6 +97,37 @@ describe("E2E evidence safety", () => {
       "network-log.json",
       'authorization: Bearer [redacted]\n{"token":"[redacted]"}\n/callback?token=%5BREDACTED%5D',
     )).toEqual([]);
+  });
+
+  it("detects live-like email and international phone PII without echoing values", () => {
+    const findings = inspectE2eTextEvidence(
+      "network-log.json",
+      "mailto:real.person@private-mail.ru tel:+7 (927) 123-45-67 encoded=other%40private-mail.ru",
+    );
+    expect(findings.map(({ kind }) => kind)).toEqual([
+      "email-pii",
+      "email-pii",
+      "international-phone-pii",
+    ]);
+    expect(JSON.stringify(findings)).not.toContain("real.person");
+    expect(JSON.stringify(findings)).not.toContain("927");
+  });
+
+  it("allows documented synthetic addresses and ignores artifact filenames", () => {
+    expect(inspectE2eTextEvidence("result.json", [
+      "qa-e2e@aurora.test",
+      "person@example.com",
+      "nobody@fixture.invalid",
+      "name@example.ru",
+      "page@0540b2d131f43b117dc1f845dbc0b07c.webm",
+    ].join("\n"))).toEqual([]);
+    expect(E2E_PII_SCAN_POLICY).toMatchObject({
+      version: 1,
+      textDetectors: ["email", "international-phone"],
+      archiveTextPayloads: true,
+      imageOcr: false,
+    });
+    expect(E2E_PII_SCAN_POLICY.syntheticEmailAddresses).toEqual(["name@example.ru"]);
   });
 
   it("finds exact canaries in binary evidence without returning their values", () => {

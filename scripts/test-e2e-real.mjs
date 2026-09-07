@@ -13,6 +13,7 @@ import pg from "pg";
 import { chromium, firefox, webkit } from "playwright-core";
 
 import { findAutopilotNearDuplicate } from "../src/lib/autopilot-config.mjs";
+import { hashBotConnectionToken } from "../src/lib/bot-connection.mjs";
 import { MEDIA_PROMPT_POLICY } from "../src/lib/media-generation.mjs";
 import { enqueuePublicationExtraJob } from "../src/lib/publication-extra-queue.mjs";
 import { SITE_INTERVIEW_QUESTIONS } from "../src/lib/site-analysis/questions.data.mjs";
@@ -35,7 +36,10 @@ import {
   sanitizeE2eNetworkUrl,
 } from "./e2e-browser-config.mjs";
 import { captureE2eInputSnapshot, changedE2eInputPaths } from "./e2e-input-snapshot.mjs";
-import { E2E_BOT_CONNECT_TOKEN_CANARY } from "./e2e-evidence-safety.mjs";
+import {
+  E2E_BOT_CONNECT_TOKEN_CANARIES,
+  E2E_BOT_CONNECT_TOKEN_CANARY,
+} from "./e2e-evidence-safety.mjs";
 import {
   enqueuePublicationReviewReminderJob,
   processDuePublicationReviews,
@@ -168,6 +172,15 @@ let browserArtifactEvidence = { enabled: false, traces: [], videos: [], networkL
 const expectedBrowserConsoleScopes = new Set();
 const expectedBrowser5xxScopes = new Set();
 const expectedSessionExpiryConsoleScopes = new Set();
+
+async function withExpectedBrowserConsoleErrors(labels, operation) {
+  for (const label of labels) expectedBrowserConsoleScopes.add(label);
+  try {
+    return await operation();
+  } finally {
+    for (const label of labels) expectedBrowserConsoleScopes.delete(label);
+  }
+}
 const WEBKIT_DEFERRED_CANCELLATION_WINDOW_MS = 120_000;
 const WEBKIT_DOCUMENT_CANCELLATION_WINDOW_MS = 250;
 const interfaceEvidence = {
@@ -313,13 +326,19 @@ async function installBrowserDiagnostics(context, label) {
         };
       }
     };
-    const recordHistory = (method, url) => {
+    const recordHistory = (method, requestedUrl, fromUrl) => {
       try {
         const events = JSON.parse(globalThis.sessionStorage.getItem(historyStorageKey) || "[]");
+        const requested = requestedUrl == null ? null : describeHistoryUrl(requestedUrl);
+        const current = describeHistoryUrl(null);
         events.push({
           method,
-          from: describeHistoryUrl(null),
-          to: url == null ? null : describeHistoryUrl(url),
+          from: describeHistoryUrl(fromUrl),
+          requestedUrl: requested,
+          requestedHadFragment: requested?.hasHash ?? false,
+          requestedQueryKeys: requested?.queryKeys ?? [],
+          currentUrl: current,
+          currentHadFragment: current.hasHash,
           length: globalThis.history.length,
           stateKeys: Object.keys(globalThis.history.state || {}).sort(),
         });
@@ -329,12 +348,14 @@ async function installBrowserDiagnostics(context, label) {
     for (const method of ["pushState", "replaceState"]) {
       const original = globalThis.history[method].bind(globalThis.history);
       globalThis.history[method] = (state, title, url) => {
-        recordHistory(method, url);
-        return original(state, title, url);
+        const fromUrl = globalThis.location.href;
+        const result = original(state, title, url);
+        recordHistory(method, url, fromUrl);
+        return result;
       };
     }
-    globalThis.addEventListener("popstate", () => recordHistory("popstate", null));
-    recordHistory("init", null);
+    globalThis.addEventListener("popstate", () => recordHistory("popstate", null, null));
+    recordHistory("init", null, null);
     globalThis.addEventListener("unhandledrejection", (event) => {
       const reason = event.reason instanceof Error
         ? `${event.reason.name}: ${event.reason.message}`
@@ -1929,46 +1950,272 @@ try {
   const recordBotConnectNetworkUrl = (request) => {
     botConnectNetworkUrls.push(sanitizeE2eNetworkUrl(request.url(), baseUrl));
   };
-  page.on("request", recordBotConnectNetworkUrl);
-  try {
-    await page.goto(
-      `/bot/connect?source=telegram#token=${E2E_BOT_CONNECT_TOKEN_CANARY}`,
+  context.on("request", recordBotConnectNetworkUrl);
+  const botConnectCanaryValues = Object.values(E2E_BOT_CONNECT_TOKEN_CANARIES);
+  const assertBotConnectSurfaceClean = async (targetPage, label) => {
+    const surface = await targetPage.evaluate(() => ({
+      url: globalThis.location.href,
+      dom: document.documentElement.outerHTML,
+      history: globalThis.sessionStorage.getItem("__aurora_e2e_history_events") || "[]",
+    }));
+    const serialized = JSON.stringify(surface);
+    for (const canary of botConnectCanaryValues) {
+      assert(!serialized.includes(canary), `bot connection token leaked into ${label}`);
+    }
+    return surface;
+  };
+  const openBotConnectState = async (targetPage, token, heading, label) => {
+    await targetPage.goto(
+      `/bot/connect?source=telegram#token=${token}`,
       { waitUntil: "domcontentloaded", timeout: 90_000 },
     );
-    await page.getByRole("heading", { name: "Ссылка недействительна", exact: true })
+    await targetPage.getByRole("heading", { name: heading, exact: true })
       .waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
-    await waitForFirstPartyNetworkIdle(page, "bot connect token hygiene");
-  } finally {
-    page.off("request", recordBotConnectNetworkUrl);
-  }
-  const botConnectCleanUrl = new URL(page.url());
-  const botConnectDom = await page.content();
-  const botConnectHistory = await page.evaluate(
-    () => globalThis.sessionStorage.getItem("__aurora_e2e_history_events") || "[]",
+    await waitForFirstPartyNetworkIdle(targetPage, label);
+    const cleanUrl = new URL(targetPage.url());
+    assert(
+      cleanUrl.pathname === "/bot/connect"
+        && cleanUrl.search === "?source=telegram"
+        && cleanUrl.hash === "",
+      `${label} left the token in the visible URL`,
+    );
+    await assertBotConnectSurfaceClean(targetPage, `${label} DOM/history`);
+  };
+
+  const expiredTokenHash = hashBotConnectionToken(E2E_BOT_CONNECT_TOKEN_CANARIES.expired);
+  const lifecycleTokenHash = hashBotConnectionToken(E2E_BOT_CONNECT_TOKEN_CANARIES.lifecycle);
+  assert(expiredTokenHash && lifecycleTokenHash, "bot connection E2E canaries have invalid formats");
+  await pool.query(
+    `insert into bot_connection_sessions (
+       token_hash, telegram_user_id, telegram_chat_id, telegram_username,
+       telegram_display_name, expires_at, created_at
+     ) values ($1, 880000001, 880000001, 'aurora_expired_e2e',
+               'Expired E2E', now() - interval '5 minute', now() - interval '20 minute'),
+              ($2, 880000002, 880000002, 'aurora_connect_e2e',
+               'Connect E2E', now() + interval '15 minute', now())`,
+    [expiredTokenHash, lifecycleTokenHash],
   );
+  const storedBotConnectRows = (await pool.query(
+    `select token_hash, telegram_chat_id, used_at, confirmed_user_id
+       from bot_connection_sessions order by telegram_chat_id`,
+  )).rows;
+  assert(storedBotConnectRows.length === 2, "bot connection matrix did not persist two hashed fixtures");
+  for (const canary of botConnectCanaryValues) {
+    assert(!JSON.stringify(storedBotConnectRows).includes(canary), "raw bot connection token reached PostgreSQL");
+  }
+
+  await openBotConnectState(
+    page,
+    E2E_BOT_CONNECT_TOKEN_CANARY,
+    "Ссылка больше не действует",
+    "unknown bot connection token",
+  );
+  await openBotConnectState(
+    page,
+    E2E_BOT_CONNECT_TOKEN_CANARIES.malformed,
+    "Ссылка больше не действует",
+    "malformed bot connection token",
+  );
+  await openBotConnectState(
+    page,
+    E2E_BOT_CONNECT_TOKEN_CANARIES.expired,
+    "Ссылка больше не действует",
+    "expired bot connection token",
+  );
+
+  await page.goto("/login", { waitUntil: "domcontentloaded", timeout: 90_000 });
+  await waitForFirstPartyNetworkIdle(page, "bot connection login history seed");
+  await openBotConnectState(
+    page,
+    E2E_BOT_CONNECT_TOKEN_CANARIES.lifecycle,
+    "Войдите в Аврору",
+    "pending bot connection token",
+  );
+  await page.reload({ waitUntil: "domcontentloaded", timeout: 90_000 });
+  await page.getByRole("heading", { name: "Войдите в Аврору", exact: true })
+    .waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  await assertBotConnectSurfaceClean(page, "refreshed pending bot connection token");
+  const traverseBotConnectHistory = async (direction, expectedPath, label) => {
+    const method = direction === "back" ? "goBack" : "goForward";
+    for (let step = 1; step <= 4; step += 1) {
+      await page[method]({ waitUntil: "domcontentloaded", timeout: 90_000 });
+      await waitForFirstPartyNetworkIdle(page, `${label} step ${step}`);
+      await assertBotConnectSurfaceClean(page, `${label} step ${step}`);
+      if (new URL(page.url()).pathname === expectedPath) return step;
+    }
+    throw new Error(`${label} did not reach ${expectedPath} within the bounded history depth`);
+  };
+  const botConnectBackSteps = await traverseBotConnectHistory("back", "/login", "bot connection browser Back");
+  const botConnectForwardSteps = await traverseBotConnectHistory("forward", "/bot/connect", "bot connection browser Forward");
+  await page.getByRole("heading", { name: "Войдите в Аврору", exact: true })
+    .waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+
+  const botConnectSecondPage = await context.newPage();
+  await Promise.all([
+    page.reload({ waitUntil: "domcontentloaded", timeout: 90_000 }),
+    openBotConnectState(
+      botConnectSecondPage,
+      E2E_BOT_CONNECT_TOKEN_CANARIES.lifecycle,
+      "Войдите в Аврору",
+      "second-tab pending bot connection token",
+    ),
+  ]);
+  await page.getByRole("heading", { name: "Войдите в Аврору", exact: true })
+    .waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  const unauthorizedBotConfirms = await withExpectedBrowserConsoleErrors(["main"], () =>
+    Promise.all([page, botConnectSecondPage].map((targetPage) =>
+      targetPage.evaluate(async (token) => {
+        const response = await fetch("/api/bot/connect", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ action: "confirm", token }),
+        });
+        return { status: response.status, body: await response.json().catch(() => null) };
+      }, E2E_BOT_CONNECT_TOKEN_CANARIES.lifecycle))));
+  assert(
+    unauthorizedBotConfirms.every((entry) => entry.status === 401 && entry.body?.error === "unauthorized"),
+    "unauthorized bot connection confirmation did not fail closed in both tabs",
+  );
+  browserObservations.push(...unauthorizedBotConfirms.map(() => ({
+    context: "main",
+    kind: "expected.bot-connect-unauthorized",
+    message: "POST /api/bot/connect returned the expected 401",
+    url: "/api/bot/connect",
+  })));
+
+  const tokenOwnerRegistration = await context.request.post("/api/auth/register", {
+    headers: { origin: baseUrl },
+    data: { email: "qa-bot-owner-e2e@aurora.test", password: "qa-password-2026", name: "QA Bot Owner" },
+    timeout: API_REQUEST_TIMEOUT_MS,
+  });
+  assert(tokenOwnerRegistration.ok(), `bot token owner registration failed with ${tokenOwnerRegistration.status()}`);
+  const tokenOwnerUserId = Number((await pool.query(
+    "select id from users where email = 'qa-bot-owner-e2e@aurora.test'",
+  )).rows[0].id);
+  await Promise.all([
+    page.reload({ waitUntil: "domcontentloaded", timeout: 90_000 }),
+    botConnectSecondPage.reload({ waitUntil: "domcontentloaded", timeout: 90_000 }),
+  ]);
+  const connectButtons = [page, botConnectSecondPage].map((targetPage) =>
+    targetPage.getByRole("button", { name: "Подключить этот чат", exact: true }));
+  await Promise.all(connectButtons.map((button) => button.waitFor({ timeout: UI_WAIT_TIMEOUT_MS })));
+  await Promise.all(connectButtons.map((button) => button.click()));
+  await Promise.all([page, botConnectSecondPage].map((targetPage) =>
+    targetPage.getByRole("heading", { name: "Чат подключён", exact: true })
+      .waitFor({ timeout: UI_WAIT_TIMEOUT_MS })));
+  const consumedBotSession = (await pool.query(
+    `select confirmed_user_id, telegram_chat_id, used_at is not null as used
+       from bot_connection_sessions where token_hash = $1`,
+    [lifecycleTokenHash],
+  )).rows[0];
+  assert(
+    Number(consumedBotSession?.confirmed_user_id) === tokenOwnerUserId
+      && Number(consumedBotSession?.telegram_chat_id) === 880000002
+      && consumedBotSession?.used === true,
+    "multi-tab bot confirmation did not consume the token exactly once for its owner",
+  );
+
+  const tokenOwnerLogout = await context.request.post("/api/auth/logout", {
+    headers: { origin: baseUrl },
+    timeout: API_REQUEST_TIMEOUT_MS,
+  });
+  assert(tokenOwnerLogout.ok(), `bot token owner logout failed with ${tokenOwnerLogout.status()}`);
+  const tokenIntruderRegistration = await context.request.post("/api/auth/register", {
+    headers: { origin: baseUrl },
+    data: { email: "qa-bot-reuse-e2e@aurora.test", password: "qa-password-2026", name: "QA Bot Reuse" },
+    timeout: API_REQUEST_TIMEOUT_MS,
+  });
+  assert(tokenIntruderRegistration.ok(), `bot token reuse registration failed with ${tokenIntruderRegistration.status()}`);
+  const tokenIntruderUserId = Number((await pool.query(
+    "select id from users where email = 'qa-bot-reuse-e2e@aurora.test'",
+  )).rows[0].id);
+  await Promise.all([page, botConnectSecondPage].map((targetPage) => openBotConnectState(
+    targetPage,
+    E2E_BOT_CONNECT_TOKEN_CANARIES.lifecycle,
+    "Ссылка больше не действует",
+    "reopened used bot connection token",
+  )));
+  const reusedBotConfirm = await withExpectedBrowserConsoleErrors(["main"], () =>
+    page.evaluate(async (token) => {
+      const response = await fetch("/api/bot/connect", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "confirm", token }),
+      });
+      return { status: response.status, body: await response.json().catch(() => null) };
+    }, E2E_BOT_CONNECT_TOKEN_CANARIES.lifecycle));
+  assert(
+    reusedBotConfirm.status === 410 && reusedBotConfirm.body?.error === "link_unavailable",
+    "reused bot connection token did not return the privacy-preserving unavailable error",
+  );
+  browserObservations.push({
+    context: "main",
+    kind: "expected.bot-connect-unavailable",
+    message: "POST /api/bot/connect returned the expected 410",
+    url: "/api/bot/connect",
+  });
+  const preservedBotOwner = (await pool.query(
+    `select session.confirmed_user_id, owner.tg_chat_id as owner_chat_id,
+            intruder.tg_chat_id as intruder_chat_id
+       from bot_connection_sessions session
+       join users owner on owner.id = session.confirmed_user_id
+       join users intruder on intruder.id = $2
+      where session.token_hash = $1`,
+    [lifecycleTokenHash, tokenIntruderUserId],
+  )).rows[0];
+  assert(
+    Number(preservedBotOwner?.confirmed_user_id) === tokenOwnerUserId
+      && Number(preservedBotOwner?.owner_chat_id) === 880000002
+      && preservedBotOwner?.intruder_chat_id == null,
+    "reused token exposed or moved the original bot connection",
+  );
+  for (const [table, alias] of [["product_events", "event"], ["audit_events", "audit"]]) {
+    for (const canary of botConnectCanaryValues) {
+      const leaked = Number((await pool.query(
+        `select count(*)::int as n from ${table} ${alias}
+          where row_to_json(${alias})::text like $1`,
+        [`%${canary}%`],
+      )).rows[0].n);
+      assert(leaked === 0, `bot connection token leaked into ${table}`);
+    }
+  }
+  const tokenIntruderLogout = await context.request.post("/api/auth/logout", {
+    headers: { origin: baseUrl },
+    timeout: API_REQUEST_TIMEOUT_MS,
+  });
+  assert(tokenIntruderLogout.ok(), `bot token reuse logout failed with ${tokenIntruderLogout.status()}`);
+  context.off("request", recordBotConnectNetworkUrl);
+
+  const botConnectCleanUrl = new URL(page.url());
   const botConnectDiagnostics = JSON.stringify({
     browserIssues,
     browserObservations,
     logs,
   });
+  for (const canary of botConnectCanaryValues) {
+    assert(!botConnectNetworkUrls.some((url) => url.includes(canary)), "bot connection token leaked into a recorded network URL");
+    assert(!botConnectDiagnostics.includes(canary), "bot connection token leaked into browser or runtime diagnostics");
+  }
+  assert(botConnectCleanUrl.pathname === "/bot/connect" && botConnectCleanUrl.hash === "", "bot connection matrix ended on an unsafe URL");
   assert(
-    botConnectCleanUrl.pathname === "/bot/connect"
-      && botConnectCleanUrl.search === "?source=telegram"
-      && botConnectCleanUrl.hash === "",
-    "bot connection token remained in the visible URL",
+    fakeState.telegram.textCalls === 1 && fakeState.telegram.plainTextCalls === 1,
+    "bot connection notification was duplicated by multi-tab confirmation",
   );
-  assert(!botConnectDom.includes(E2E_BOT_CONNECT_TOKEN_CANARY), "bot connection token leaked into DOM");
-  assert(!botConnectHistory.includes(E2E_BOT_CONNECT_TOKEN_CANARY), "bot connection token leaked into browser history evidence");
-  assert(
-    !botConnectNetworkUrls.some((url) => url.includes(E2E_BOT_CONNECT_TOKEN_CANARY)),
-    "bot connection token leaked into a recorded network URL",
-  );
-  assert(
-    !botConnectDiagnostics.includes(E2E_BOT_CONNECT_TOKEN_CANARY),
-    "bot connection token leaked into browser or runtime diagnostics",
-  );
+  fakeState.telegram.textCalls = 0;
+  fakeState.telegram.plainTextCalls = 0;
+  fakeState.telegram.plainTextRateLimited = false;
+  fakeState.telegram.requests.length = 0;
   interfaceEvidence.botConnectTokenHygiene = {
     route: "/bot/connect?source=telegram",
+    states: ["unknown", "malformed", "expired", "pending", "unauthorized", "connected", "reused-unavailable"],
+    navigation: ["refresh", "back", "forward", "reopen"],
+    historySteps: { back: botConnectBackSteps, forward: botConnectForwardSteps },
+    multiTab: true,
+    unauthorizedStatus: 401,
+    reusedStatus: 410,
+    originalConnectionPreserved: true,
+    postgresStoresDigestOnly: true,
+    telemetryTablesClean: ["product_events", "audit_events"],
     visibleUrlClean: true,
     domClean: true,
     historyEvidenceClean: true,
@@ -2486,6 +2733,7 @@ try {
   assert(referenceDraft?.source_ref?.topic === libraryReferenceTopic, "Studio reference draft lost the server-owned topic");
   // A reload while the provider is running must replay the same paid operation. The
   // create intent remains until the terminal result has been persisted as a server draft.
+  await waitForFirstPartyNetworkIdle(page, "Library create Studio before reload");
   await reloadInBrowser(page);
   await page.waitForURL((url) => url.pathname === "/app/composer" && /^\d+$/u.test(url.searchParams.get("draft") || ""));
   const composerDraftUrl = new URL(page.url());
@@ -3643,6 +3891,7 @@ try {
 
   await page.goto("/app/settings?section=project");
   await page.getByRole("heading", { name: "Проект и команда", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  await page.locator('[data-project-team-interactive="true"]').waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const inviteEmailInput = page.locator("#project-invite-email");
   await inviteEmailInput.fill(reviewerEmail);
   await page.locator("#project-invite-role").selectOption("approver");
@@ -4851,6 +5100,12 @@ try {
   await reloadAfterRuntimeRestart(reviewerPage, "reviewer page");
   await page.getByRole("heading", { name: "Настройки", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await reviewerPage.getByRole("heading", { name: "Календарь", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  // Chromium can deliver a failed background-loader console event shortly after
+  // DOMContentLoaded. Keep the intentional restart window open until both restored
+  // documents have drained first-party work, otherwise an expected transport failure
+  // can be misclassified as a post-recovery runtime issue.
+  await waitForFirstPartyNetworkIdle(page, "main Settings after runtime restart");
+  await waitForFirstPartyNetworkIdle(reviewerPage, "reviewer Calendar after runtime restart");
   expectedBrowserConsoleScopes.delete("main");
   expectedBrowserConsoleScopes.delete("reviewer");
   expectedBrowser5xxScopes.delete("main");
@@ -5284,10 +5539,15 @@ try {
   await assertTouch(previewExport, "preview project export");
   await previewExport.click();
   await exportDialog.getByRole("heading", { name: "Предварительная выборка", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
-  await exportDialog.getByText(monthlyItemTitle, { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const previewRowCountText = await exportDialog.getByText(/Найдено строк:/u).textContent();
   const previewRowCount = Number(String(previewRowCountText).replace(/\D/gu, ""));
   assert(previewRowCount === 1, `project export preview expected one published row, received ${previewRowCount}`);
+  const previewTitles = exportDialog.getByText(monthlyItemTitle, { exact: true });
+  assert(
+    await previewTitles.count() === 1,
+    `project export preview duplicated the monthly material title ${await previewTitles.count()} times`,
+  );
+  await previewTitles.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
 
   const exportBuffers = new Map();
   for (const format of ["csv", "xlsx", "pdf"]) {
@@ -5494,7 +5754,7 @@ try {
   interfaceEvidence.viewportWidths = await captureViewportEvidence(page);
   interfaceEvidence.keyboardOnly = await runKeyboardOnlyCriticalPass(page);
 
-  const ownerSecondPage = await context.newPage();
+  const ownerSecondPage = botConnectSecondPage;
   await ownerSecondPage.goto("/app/calendar");
   await ownerSecondPage.getByRole("heading", { name: "Календарь", exact: true }).waitFor({
     timeout: UI_WAIT_TIMEOUT_MS,
