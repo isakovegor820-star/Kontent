@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { createMainRequestEvidence } from "./e2e-main-request-evidence.mjs";
 import { createPostsSnapshotEvidence } from "./e2e-posts-snapshot-evidence.mjs";
 import { readMonthlyPlanReceiptDiagnostics } from "./e2e-monthly-plan-receipt-diagnostics.mjs";
