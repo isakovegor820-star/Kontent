@@ -7,6 +7,7 @@ import { createMainFaultEvidence, nativeMainHttpStatus } from "./e2e-main-fault-
 import { finalizeE2eBrowserLifecycle } from "./e2e-browser-lifecycle.mjs";
 import { deepStrictEqual } from "node:assert";
 import { createE2eIngressBoundary } from "./e2e-ingress-boundary.mjs";
+import { verifyNativeBrowserBoundary } from "./e2e-native-browser-boundary.mjs";
 import { createE2eBrowserContext } from "./e2e-browser-context.mjs";
 import { installE2eBrowserBoundary } from "./e2e-browser-boundary.mjs";
 import { execFileSync, spawn } from "node:child_process";
@@ -2363,6 +2364,7 @@ try {
   await waitForFullWorkerSet();
 
   browser = await browserType.launch({ headless: true, executablePath: await browserExecutable() });
+  await verifyNativeBrowserBoundary(browser);
   browser.on("disconnected", () => {
     if (browserTeardownStarted) return;
     browserIssues.push({
