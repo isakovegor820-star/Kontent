@@ -384,7 +384,6 @@ async function runOrchestratedText(
     budget: ReturnType<typeof createAiOperationBudget>;
   },
 ): Promise<OrchestratedText> {
-  const estimate = estimateGenerateTokenBudget(params);
   const attemptTelemetry = createAiAttemptTelemetry({
     pool: getPool(),
     userId: attemptContext.userId,
@@ -392,11 +391,14 @@ async function runOrchestratedText(
     logicalOperationId: requestId,
     phase: attemptContext.phase,
     budget: attemptContext.budget,
-    projectionFor: (candidate) => ({
-      model: resolveEngineRuntime(candidate as EngineId).model,
-      inputTokens: estimate.inputTokens,
-      outputTokens: estimate.maxOutputTokens,
-    }),
+    projectionFor: (candidate) => {
+      const estimate = estimateGenerateTokenBudget(params, candidate as EngineId);
+      return {
+        model: resolveEngineRuntime(candidate as EngineId).model,
+        inputTokens: estimate.inputTokens,
+        outputTokens: estimate.maxOutputTokens,
+      };
+    },
     // Keep this injected so route tests can verify durable rows without a real DB.
     record: recordAiProviderAttempt,
   });

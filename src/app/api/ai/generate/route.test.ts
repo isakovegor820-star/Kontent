@@ -1371,6 +1371,10 @@ describe("POST /api/ai/generate prerequisites", () => {
         { status: 200, headers: { "content-type": "text/event-stream" } },
       ))
       .mockResolvedValueOnce(new Response(
+        'data: {"choices":[{"delta":{"content":"<think>still unfinished"}}]}\n\ndata: [DONE]\n\n',
+        { status: 200, headers: { "content-type": "text/event-stream" } },
+      ))
+      .mockResolvedValueOnce(new Response(
         `data: ${JSON.stringify({ choices: [{ delta: { content: post } }] })}\n\ndata: [DONE]\n\n`,
         { status: 200, headers: { "content-type": "text/event-stream" } },
       ));
@@ -1401,7 +1405,7 @@ describe("POST /api/ai/generate prerequisites", () => {
     const events = (await response.text()).trim().split("\n").map((line) => JSON.parse(line));
     const serialized = JSON.stringify(events);
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(serialized).not.toContain("<think>");
     expect(serialized).not.toContain("thinking process");
     expect(events).toContainEqual(expect.objectContaining({

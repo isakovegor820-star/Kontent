@@ -3,6 +3,7 @@
 
 import { DEFAULT_ENGINE, getEngine, type EngineId } from "./engines";
 import { configuredServiceEngine } from "./ai-engine-policy.mjs";
+import { providerOutputTokens } from "./ai-provider-budget.mjs";
 import { createVisibleAiContentFilter } from "./ai-visible-content.mjs";
 import { moodPrompt, moodTemp } from "./moods";
 import {
@@ -600,11 +601,21 @@ function outputTokens(p: GenerateParams): number {
   return 900;
 }
 
-export function estimateGenerateTokenBudget(p: GenerateParams) {
+export function estimateGenerateTokenBudget(p: GenerateParams, engineId?: EngineId) {
   const inputTokens = Math.max(1, Math.ceil(
     messagesFor(p).reduce((sum, message) => sum + message.content.length, 0) / 4,
   ));
-  return { inputTokens, maxOutputTokens: outputTokens(p) };
+  const requested = outputTokens(p);
+  // Reserve for both bounded HTTP calls before starting the model attempt. Actual
+  // usage below is cumulative across a reasoning-only response and its retry.
+  if (engineId?.startsWith("navy-")) {
+    return {
+      inputTokens: inputTokens * 2,
+      maxOutputTokens: providerOutputTokens(engineId, requested)
+        + providerOutputTokens(engineId, requested, true),
+    };
+  }
+  return { inputTokens, maxOutputTokens: requested };
 }
 
 async function providerHttpError(runtime: EngineRuntime, res: Response): Promise<AiProviderError> {
@@ -914,35 +925,45 @@ async function* streamOpenAi(
   requestTimeoutMs: number | null = 60_000,
 ): AsyncGenerator<string> {
   const deepseek = runtime.id.startsWith("navy-deepseek");
-  if (!deepseek) {
-    yield* streamOpenAiAttempt(runtime, p, signal, { maxTokens: outputTokens(p) }, requestTimeoutMs);
-    return;
-  }
-
-  try {
-    // NavyAI's DeepSeek routes do not all accept `minimal`; `none` is the compatible
-    // drafting mode already used by background generation. It also prevents the hidden
-    // reasoning phase from consuming the whole visible-answer budget.
-    yield* streamOpenAiAttempt(runtime, p, signal, {
-      maxTokens: Math.max(3000, outputTokens(p)),
-      reasoningEffort: "none",
-      idempotencySuffix: "reasoning-none",
-    }, requestTimeoutMs);
-  } catch (error) {
-    if (
-      !(error instanceof AiProviderError)
-      || (error.code !== "reasoning_without_content" && error.code !== "empty_generation")
-      || signal?.aborted
-    ) {
-      throw error;
+  const attempts = runtime.id.startsWith("navy-") ? 2 : 1;
+  const requestSignal = withTimeout(signal, requestTimeoutMs);
+  let inputTokens = 0;
+  let outputTokenCount = 0;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    let emitted = false;
+    let attemptUsage: Parameters<NonNullable<GenerateParams["onProviderUsage"]>>[0] | undefined;
+    const attemptParams: GenerateParams = {
+      ...p,
+      onProviderUsage: (usage) => { attemptUsage = usage; },
+    };
+    try {
+      const source = streamOpenAiAttempt(runtime, attemptParams, requestSignal, {
+        maxTokens: providerOutputTokens(runtime.id, outputTokens(p), attempt > 0),
+        reasoningEffort: deepseek ? "none" : undefined,
+        idempotencySuffix: deepseek
+          ? attempt > 0 ? "reasoning-none-expanded" : "reasoning-none"
+          : attempt > 0 ? "visible-answer-expanded" : undefined,
+      }, null);
+      // Filter inside the retry boundary: Qwen embeds reasoning in `content`, and
+      // a truncated <think> block must count as an empty attempt, never as a post.
+      for await (const piece of streamVisibleContent(runtime, source)) {
+        emitted = true;
+        yield piece;
+      }
+      return;
+    } catch (error) {
+      if (
+        emitted || attempt + 1 >= attempts || requestSignal?.aborted
+        || !(error instanceof AiProviderError)
+        || !["reasoning_without_content", "empty_generation"].includes(error.code)
+      ) throw error;
+    } finally {
+      if (attemptUsage) {
+        inputTokens += attemptUsage.inputTokens;
+        outputTokenCount += attemptUsage.outputTokens;
+        p.onProviderUsage?.({ ...attemptUsage, inputTokens, outputTokens: outputTokenCount });
+      }
     }
-    // Первый проход ничего не показал пользователю, поэтому один безопасный retry не
-    // дублирует текст. Отключаем reasoning и даём расширенный бюджет именно на ответ.
-    yield* streamOpenAiAttempt(runtime, p, signal, {
-      maxTokens: Math.max(6000, outputTokens(p)),
-      reasoningEffort: "none",
-      idempotencySuffix: "reasoning-none-expanded",
-    }, requestTimeoutMs);
   }
 }
 
@@ -1066,5 +1087,5 @@ export function generateText(
     : runtime.protocol === "anthropic"
       ? streamAnthropic(runtime, p, signal, requestTimeoutMs)
       : streamOpenAi(runtime, p, signal, requestTimeoutMs);
-  return streamVisibleContent(runtime, source);
+  return runtime.protocol === "openai" ? source : streamVisibleContent(runtime, source);
 }

@@ -6,7 +6,7 @@ import {
   type GenerateParams,
 } from "./ai-provider";
 import { isEngineId, type EngineId } from "./engines";
-import { configuredAiFallbacks } from "./ai-engine-policy.mjs";
+import { configuredAiFallbacks, recoveryAttemptTimeoutMs } from "./ai-engine-policy.mjs";
 import {
   aiProviderCircuitBreaker,
   type ProviderCircuitBreaker,
@@ -275,8 +275,9 @@ export async function* orchestrateText(
 
       const firstTokenController = new AbortController();
       const attemptSignal = signals(chainSignal, firstTokenController.signal);
-      const firstTimer = firstTokenMs > 0
-        ? setTimeout(() => firstTokenController.abort(timeoutError(engine, "first_token_timeout")), firstTokenMs)
+      const attemptFirstTokenMs = recoveryAttemptTimeoutMs(engine, firstTokenMs, index + 1 < candidates.length);
+      const firstTimer = attemptFirstTokenMs > 0
+        ? setTimeout(() => firstTokenController.abort(timeoutError(engine, "first_token_timeout")), attemptFirstTokenMs)
         : null;
       let stream: AsyncGenerator<string> | null = null;
       let emitted = false;
