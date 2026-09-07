@@ -28,5 +28,9 @@ describe("Telegram connection confirmation screen", () => {
     expect(page).toContain("Этот чат уже связан с другим аккаунтом");
     expect(page).toContain('role="alert"');
     expect(page).toContain('aria-live="polite"');
+    expect(page).toContain('body.state === "unavailable"');
+    expect(page).toContain('body?.error === "link_unavailable"');
+    expect(page).toContain('setView("used")');
+    expect(page).toContain("Ссылка больше не действует");
   });
 });
