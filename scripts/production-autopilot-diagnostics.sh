@@ -132,6 +132,12 @@ journalctl -u aurora-web.service --since '-25 min' --no-pager -o cat 2>/dev/null
   | grep -aE '^\[(worker|start|web)\]|preflight|database_pool|Error:|error:' \
   | tail -n 40 | redact || echo "(no matching journal lines)"
 
+section "MEDIA WORKER ATTEMPTS (safe diagnostic fields, last 3 h)"
+journalctl -u aurora-worker.service --since '-3 hours' --no-pager -o cat 2>/dev/null \
+  | grep -aA 10 -E '^\[media-worker\]' \
+  | grep -aE '^\[media-worker\]|^  (event|requestId|generationId|code|retryable|attempt|outcome):' \
+  | tail -n 100 | redact || echo "(no media attempt telemetry)"
+
 section "RUNTIME ENV KEY NAMES (values never printed)"
 if [[ -n "$current_path" && -f "$current_path/.env.production" ]]; then
   printf 'env_file=%s\n' "$current_path/.env.production"
@@ -217,7 +223,7 @@ if [[ -n "$current_path" && -f "$current_path/.env.production" ]]; then
         && ! printf '%s\n' "$redis_clients" | awk ' /name=bull:/ && !/ db=[0-9]+( |$)/ {missing=1} END {exit !missing}'; then
         consumers_available=true
       fi
-      for queue in autopilot-plans publish; do
+      for queue in autopilot-plans publish media-generation; do
         printf '%s wait=%s active=%s delayed=%s failed=%s completed=%s paused=%s\n' \
           "$queue" \
           "$(redis-cli -u "$REDIS_URL" llen "bull:${queue}:wait" 2>/dev/null)" \
