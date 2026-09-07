@@ -205,3 +205,18 @@ test("the actual limiter logout slice uses readiness, exact session verification
     else { await run(); assert.deepEqual(order, ["ready", "boundary", "logout-click", "confirmed", "landing", "heading", "landing-settled", "end", "next-screen"]); assert.deepEqual(rows, []); }
   }
 });
+
+test("captures an exact logout rejection before navigation evicts its body, but awaits SQL confirmation", async () => {
+  const f=fixture();const scope=f.diagnostics.beginLogout(f.page,{sessionRowsBefore:1});
+  const logout=f.request('/api/auth/logout','POST');const req=f.request('/api/product-events','POST');
+  let evicted=false;let reads=0;
+  const response={request:()=>req,url:req.url,status:()=>401,headers:()=>({}),json:async()=>{
+    reads++;if(evicted)throw new Error('No resource with given identifier found');return {error:'unauthorized'};
+  }};
+  f.context.emit('response',response);
+  await Promise.resolve();evicted=true;
+  assert.throws(()=>f.diagnostics.assertClean(),'captured body alone must not authorize the exception');
+  await f.diagnostics.confirmLogout(scope,f.response(logout,200,{ok:true}),{sessionRowsAfter:0});
+  f.diagnostics.endLogout(scope);await f.diagnostics.flush();f.diagnostics.assertClean();
+  assert.equal(reads,1);assert.equal(f.diagnostics.snapshot().requests.find(row=>row.path==='/api/product-events').registered,true);
+});

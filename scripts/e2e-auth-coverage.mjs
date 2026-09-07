@@ -75,10 +75,11 @@ export function createAuthCoverageDiagnostics({ context, baseUrl, engine }) {
   } });
   browserErrors.observeContext(context);
   const enqueue = task => { const observed = task.catch(error => { errors.push(error); }); work.push(observed); };
+  const logoutRejection = row => row.response && row.logout && row.status === 401
+    && ((row.method === "GET" && row.exactCurrent) || (row.method === "POST" && row.exactTelemetry)) && row.owned
+    && row.page === row.logout.page && row.id > row.logout.requestId;
   const acknowledge = row => {
-    if (row.registrationStarted || !row.response || !row.logout?.confirmed || row.status !== 401
-      || !((row.method === "GET" && row.exactCurrent) || (row.method === "POST" && row.exactTelemetry)) || !row.owned
-      || row.page !== row.logout.page || row.id <= row.logout.requestId) return;
+    if (row.registrationStarted || !row.logout?.confirmed || !logoutRejection(row)) return;
     // A departing document's telemetry can reach auth after this exact session
     // was deleted. Only the verified unauthorized response explains rejection;
     // incomplete responses, other writes and requests outside this scope fail.
@@ -97,7 +98,11 @@ export function createAuthCoverageDiagnostics({ context, baseUrl, engine }) {
     response(response) {
       readEvidence.observeResponse(response);
       const row = requests.get(response.request()); if (!row) return;
-      row.response = response; row.status = response.status(); acknowledge(row);
+      row.response = response; row.status = response.status();
+      // Reading must start while the departing browser document still owns its body.
+      // Capturing does not register an exception before exact SQL-confirmed logout.
+      if (logoutRejection(row)) void browserErrors.captureHttpErrorBody(response).catch(() => undefined);
+      acknowledge(row);
     },
     requestfinished(request) { readEvidence.observeFinished(request); },
     requestfailed(request) { readEvidence.observeFailure(request); },

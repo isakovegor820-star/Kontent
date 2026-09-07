@@ -7,6 +7,7 @@ import { createHash } from "node:crypto";
 export function createE2eBrowserErrorCollector({ baseUrl, classifyKnownConsole = () => null }) {
   const origin = new URL(baseUrl).origin;
   const contexts = new Map();
+  const capturedErrorBodies = new WeakMap();
   const seenErrors = new WeakSet(); const seenConsoles = new WeakSet(); const knownBrowserObservations = [];
   const pages = new Map(); const consoles = []; const failures = []; const expected = new Map(); const responses = new Map();
   const safePath = (url) => { try { const parsed = new URL(url); return parsed.origin === origin ? parsed.pathname : "[other-origin]"; } catch { return "[unknown]"; } };
@@ -34,6 +35,18 @@ export function createE2eBrowserErrorCollector({ baseUrl, classifyKnownConsole =
     if (page) attach(page);
     responses.set(request, { page, url: response.url(), status: response.status(), method: request.method(), path: safePath(response.url()) });
   }
+  function captureHttpErrorBody(response) {
+    assert(responses.has(response.request()), "error body must belong to an observed response");
+    assert(response.status() >= 400 && response.status() <= 599);
+    if (!capturedErrorBodies.has(response)) {
+      let body;
+      try { body = Promise.resolve(response.json()); } catch (error) { body = Promise.reject(error); }
+      // Capture now; a later exact assertion must still consume any rejection.
+      void body.catch(() => undefined);
+      capturedErrorBodies.set(response, body);
+    }
+    return capturedErrorBodies.get(response);
+  }
   function attach(page) {
     if (pages.has(page)) return;
     const index = pages.size;
@@ -48,6 +61,7 @@ export function createE2eBrowserErrorCollector({ baseUrl, classifyKnownConsole =
   }
   return {
     attach,
+    captureHttpErrorBody,
     observeContext(context) {
       assert(!contexts.has(context), "browser context already observed");
       const handlers = { page: attach, weberror: (event) => recordError(event.error(), event.page()),
@@ -62,7 +76,7 @@ export function createE2eBrowserErrorCollector({ baseUrl, classifyKnownConsole =
       assert.equal(typeof error, "string"); assert(error.length > 0, "expected response error code required");
       const request = response.request(); const url = new URL(response.url());
       assert.equal(url.origin, origin); assert.equal(url.pathname, path); assert.equal(request.method(), method);
-      assert.equal(response.status(), status); assert.equal((await response.json()).error, error);
+      assert.equal(response.status(), status); assert.equal((await captureHttpErrorBody(response)).error, error);
       const page = request.frame().page(); assert(responses.has(request), "expected response must have been observed from this actual request"); assert(pages.has(page), "expected response must belong to an observed page");
       // The same actual request cannot be registered twice to excuse extra errors.
       assert(!expected.has(request), "HTTP error response already registered");
