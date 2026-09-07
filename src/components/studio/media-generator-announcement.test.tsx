@@ -13,9 +13,11 @@ afterEach(() => {
   else delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;
 });
 
-it("announces progress once outside the busy feed and retains the same status node at completion", async () => {
+it.each([false, true])("announces progress once and respects reduced motion=%s through completion", async reduced => {
   vi.stubGlobal("React", React);
-  Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: vi.fn() });
+  vi.stubGlobal("matchMedia", vi.fn(() => ({ matches: reduced })));
+  const scroll = vi.fn();
+  Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: scroll });
   const generation: MediaGeneration = {
     id: "owned-image", requestId: "owned-request", kind: "image", status: "generating",
     prompt: "Нарисуй зимний лес", model: "nano-banana-2", aspectRatio: "1:1", quality: "medium",
@@ -40,6 +42,7 @@ it("announces progress once outside the busy feed and retains the same status no
   expect(announcement.closest('[aria-busy="true"]')).toBeNull();
   expect(view.getAllByRole("status")).toEqual([announcement]);
   expect(view.container.querySelector('article')?.closest('[aria-busy="true"]')).not.toBeNull();
+  expect(scroll).toHaveBeenCalledWith({ behavior: reduced ? "instant" : "smooth", block: "nearest" });
 
   await waitFor(() => expect(complete).toBeTypeOf("function"));
   await act(async () => { complete(Response.json({ generation: { ...generation, status: "ready" } })); });

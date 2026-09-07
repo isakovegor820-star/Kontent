@@ -310,7 +310,8 @@ export function MediaGenerator({
 
   useEffect(() => {
     if (!currentId) return;
-    feedEndRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    feedEndRef.current?.scrollIntoView({ behavior: reduce ? "instant" : "smooth", block: "nearest" });
   }, [currentId]);
 
   const generate = async (retry?: MediaGeneration) => {
