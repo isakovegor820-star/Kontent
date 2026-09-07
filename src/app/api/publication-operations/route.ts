@@ -483,6 +483,7 @@ export async function POST(req: NextRequest) {
       scheduled_local_time: string | null;
       scheduled_offset: string | null;
       scheduled_disambiguation: "reject" | "earlier" | "later" | null;
+      client_key: string;
       origin: "manual" | "ai" | "trend" | "idea" | "competitor" | "rss" | "autopilot";
       purpose: "source_context" | "publishable" | "needs_review";
       generation_result_id: string | null;
@@ -499,7 +500,7 @@ export async function POST(req: NextRequest) {
               d.scheduled_timezone, d.scheduled_local_date::text as scheduled_local_date,
               d.scheduled_local_time::text as scheduled_local_time,
               d.scheduled_offset, d.scheduled_disambiguation,
-              d.origin, d.purpose,
+              d.origin, d.purpose, d.client_key,
               d.generation_result_id, result.result_hash as generation_result_hash,
               receipt.result_hash as receipt_result_hash, receipt.receipt as receipt_payload,
               d.review_policy_version, d.ai_validation,
@@ -515,6 +516,9 @@ export async function POST(req: NextRequest) {
     )).rows[0];
     if (!snapshot) {
       return operationError("draft_not_found", 404);
+    }
+    if (snapshot.client_key?.startsWith("autopilot-item:")) {
+      return operationError("autopilot_confirmation_required", 409);
     }
     const editorialApproval = await requireCurrentDraftApproval(
       tx,

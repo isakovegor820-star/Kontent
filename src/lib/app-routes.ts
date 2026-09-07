@@ -232,6 +232,15 @@ export function composerPersistedDraftHref(search: string, draftId: number): str
   if (Number.isSafeInteger(publicationId) && publicationId > 0) {
     next.set("publication", String(publicationId));
   }
+  for (const key of ["autopilotPost", "autopilotChannel"]) {
+    const value = Number(current.get(key));
+    if (Number.isSafeInteger(value) && value > 0) next.set(key, String(value));
+  }
+  const autopilotView = current.get("autopilotView");
+  const autopilotAnchor = current.get("autopilotAnchor");
+  if ((autopilotView === "month" || autopilotView === "week") && autopilotAnchor && /^\d{4}-\d{2}-\d{2}$/u.test(autopilotAnchor) && Number.isFinite(Date.parse(autopilotAnchor))) {
+    next.set("autopilotView", autopilotView); next.set("autopilotAnchor", autopilotAnchor);
+  }
   const source = composerSource(current.get("from"));
   if (source) next.set("from", source);
   return `/app/composer?${next.toString()}`;

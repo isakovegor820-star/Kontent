@@ -7,11 +7,13 @@
 import { useCallback, useEffect, useId, useRef, useState, type CSSProperties } from "react";
 import Image from "next/image";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useProjects } from "@/components/app/project-provider";
+import { AutopilotCalendar, type AutopilotCalendarItem } from "@/components/app/autopilot-calendar";
 import { useReducedMotion } from "motion/react";
 import {
   AlertTriangle,
   BarChart3,
-  CalendarDays,
   Check,
   ChevronDown,
   Clock,
@@ -99,6 +101,9 @@ interface PlanItem {
   reviewReason?: string;
   postId?: number;
   draftId?: number;
+  editorVersion?: number;
+  media?: unknown;
+  formatting?: import("@/lib/rich-text.mjs").RichTextEntity[];
 }
 interface Settings {
   enabled: boolean;
@@ -208,16 +213,6 @@ interface OverviewStats {
   available?: { views?: boolean; reactions?: boolean; reach?: boolean };
 }
 
-type OverviewScheduleState = "review" | "scheduled" | "published" | "attention";
-
-interface OverviewScheduleItem {
-  id: string;
-  scheduledAt: string;
-  title: string;
-  state: OverviewScheduleState;
-  planIndex?: number;
-}
-
 const MSK = "Europe/Moscow";
 const fmtDayMsk = (iso: string) =>
   new Date(iso).toLocaleDateString("ru-RU", { timeZone: MSK, weekday: "short", day: "numeric" });
@@ -247,7 +242,6 @@ const mondayDateKey = (value: string | Date) => {
   return shiftDateKey(key, 1 - weekday);
 };
 
-const dateForKey = (key: string) => new Date(`${key}T12:00:00Z`);
 
 const realPostMediaUrl = (media: unknown): string | null => {
   if (!media || typeof media !== "object") return null;
@@ -367,10 +361,8 @@ function AutopilotHero({
     ? "Контент-план собирается"
     : enabled && pendingCount > 0
       ? "План ждёт твоей проверки"
-      : enabled && hasPlan && mode === "full"
-        ? "Контент создаётся и публикуется"
-        : enabled && hasPlan
-          ? "Публикации стоят в расписании"
+      : enabled && hasPlan
+        ? "Публикации стоят в расписании"
       : enabled
         ? "Автопилот готов к работе"
         : "Новые планы приостановлены";
@@ -464,105 +456,6 @@ function OverviewMetricCard({
           <p className="nums mt-1 text-[25px] font-extrabold leading-none tracking-tight text-text tabular-nums">{value}</p>
           <p className="mt-1.5 text-[12px] leading-snug text-text-3">{note}</p>
         </div>
-      </div>
-    </Card>
-  );
-}
-
-interface OverviewScheduleDay {
-  key: string;
-  weekday: string;
-  date: number;
-  items: OverviewScheduleItem[];
-}
-
-function WeekSchedule({
-  days,
-  onSelectPlanItem,
-}: {
-  days: OverviewScheduleDay[];
-  onSelectPlanItem: (index: number) => void;
-}) {
-  return (
-    <Card as="section" className="overflow-hidden p-0" aria-labelledby="autopilot-schedule-title">
-      <div className="p-4 pb-0 sm:p-5 sm:pb-0">
-        <h2 id="autopilot-schedule-title" className="text-[17px] font-extrabold tracking-tight text-text">
-          Расписание публикаций
-        </h2>
-      </div>
-      <div className="mt-4 overflow-x-auto overscroll-x-contain px-4 pb-2 sm:px-5">
-        <div className="grid min-w-[54rem] grid-cols-7 lg:min-w-0">
-          {days.map((day, index) => {
-            return (
-              <div key={day.key} className={cn("min-w-0 px-3 py-1 first:pl-0 last:pr-0", index > 0 && "border-l border-line")}>
-                <p className="text-[13px] font-bold capitalize text-text-2">
-                  {day.weekday} <span className="nums ml-1 text-text-3 tabular-nums">{day.date}</span>
-                </p>
-                {day.items.length > 0 ? (
-                  <div className="mt-4 min-h-[6.75rem] space-y-3">
-                    {day.items.map((item) => {
-                      const status = item.state === "published"
-                        ? "Опубликовано"
-                        : item.state === "scheduled"
-                          ? "В календаре"
-                          : item.state === "attention"
-                            ? "Нужно проверить"
-                            : "Ждёт тебя";
-                      const content = (
-                        <>
-                          <span className="nums block text-[13px] font-extrabold text-text tabular-nums">
-                            {fmtTimeMsk(item.scheduledAt)}
-                          </span>
-                          <span className="mt-1 line-clamp-2 block text-[13px] leading-snug text-text-2">
-                            {item.title}
-                          </span>
-                          <span className={cn(
-                            "mt-2 flex items-center gap-1.5 text-[12px] font-semibold",
-                            item.state === "published" && "text-success-text",
-                            item.state === "attention" && "text-danger-text",
-                            (item.state === "scheduled" || item.state === "review") && "text-brand",
-                          )}>
-                            <span className={cn(
-                              "h-1.5 w-1.5 shrink-0 rounded-full",
-                              item.state === "published" && "bg-success",
-                              item.state === "attention" && "bg-danger",
-                              (item.state === "scheduled" || item.state === "review") && "bg-brand",
-                            )} aria-hidden />
-                            {status}
-                          </span>
-                        </>
-                      );
-                      return item.planIndex == null ? (
-                        <div key={item.id}>{content}</div>
-                      ) : (
-                        <button
-                          key={item.id}
-                          type="button"
-                          onClick={() => onSelectPlanItem(item.planIndex!)}
-                          className="-m-2 block w-[calc(100%+1rem)] rounded-sm p-2 text-left transition-colors hover:bg-surface-inset focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand motion-reduce:transition-none"
-                          aria-label={`Открыть пост, который ждёт проверки: ${item.title}`}
-                        >
-                          {content}
-                        </button>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <div className="mt-5 min-h-[6.75rem]">
-                    <p className="text-[13px] text-text-3">—</p>
-                    <p className="mt-1 text-[13px] text-text-3">{index >= 5 ? "Выходной" : "Нет публикаций"}</p>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </div>
-      <div className="p-4 pt-2 sm:p-5 sm:pt-3">
-        <Link href="/app/calendar" className={buttonClassName({ variant: "outline", size: "sm" })}>
-          <CalendarDays className="h-4 w-4" strokeWidth={2} aria-hidden />
-          Смотреть полный календарь
-        </Link>
       </div>
     </Card>
   );
@@ -1098,6 +991,10 @@ function BuildAttemptPanel({
 
 export default function AutopilotPage() {
   const s = useStore();
+  const router = useRouter();
+  const projects = useProjects();
+  const canPublish = ["owner", "publisher"].includes(projects.current?.role ?? "");
+  const canEdit = projects.current?.role != null && projects.current.role !== "publisher";
   const reduce = useReducedMotion();
   const [data, setData] = useState<State | null>(null);
   const [overviewStats, setOverviewStats] = useState<OverviewStats | null>(null);
@@ -1107,8 +1004,6 @@ export default function AutopilotPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [autopilotToggleBusy, setAutopilotToggleBusy] = useState(false);
-  const [editingIndex, setEditingIndex] = useState<number | null>(null);
-  const [editingText, setEditingText] = useState("");
   const [expanded, setExpanded] = useState<number | null>(null); // какая карточка раскрыта целиком
   const [reviewedIndexes, setReviewedIndexes] = useState<Set<number>>(() => new Set());
   const [quickSettingsOpen, setQuickSettingsOpen] = useState(false);
@@ -1120,6 +1015,8 @@ export default function AutopilotPage() {
     ...DEFAULT_AUTOPILOT_QUICK_SETTINGS,
   });
   const [planningAnchorMs] = useState(Date.now);
+  const [calendarNow, setCalendarNow] = useState(Date.now);
+  useEffect(() => { const timer = setInterval(() => setCalendarNow(Date.now()), 30_000); return () => clearInterval(timer); }, []);
   const [visibleLimit, setVisibleLimit] = useState(14);
   const approvalBusy = useRef(false);
   const approvalConfirmationResolver = useRef<((confirmed: boolean) => void) | null>(null);
@@ -1192,8 +1089,6 @@ export default function AutopilotPage() {
         // A confirmation belongs to the exact plan revision the person actually read.
         // Editing or replacing even one post invalidates the previous review checklist.
         setReviewedIndexes(new Set());
-        setEditingIndex(null);
-        setEditingText("");
       }
       activePlanIdentity.current = nextPlanIdentity;
     } catch (error) {
@@ -1213,8 +1108,6 @@ export default function AutopilotPage() {
       setLoading(true);
       setData(null);
       setLoadError(null);
-      setEditingIndex(null);
-      setEditingText("");
       setExpanded(null);
       activePlanIdentity.current = null;
       void load();
@@ -1622,28 +1515,15 @@ export default function AutopilotPage() {
   const requestApprovalConfirmation = (preview: AutopilotApprovalPreview) => {
     const channelName = preview.channel.title ||
       (preview.channel.handle ? `@${preview.channel.handle}` : `канал #${preview.channel.id}`);
-    const formattedDates = preview.dates.map(({ scheduledAt }) =>
-      new Date(String(scheduledAt)).toLocaleString("ru-RU", {
-        timeZone: MSK,
-        day: "numeric",
-        month: "short",
-        hour: "2-digit",
-        minute: "2-digit",
-      }),
-    );
-    const schedule = formattedDates.length > 1
-      ? `${formattedDates[0]} — ${formattedDates[formattedDates.length - 1]}`
-      : formattedDates[0];
-    const skipped = preview.counts.expired + preview.counts.blocked;
     setApprovalConfirmation({
-      title: `Добавить ${preview.counts.eligible} ${plural(preview.counts.eligible, "пост", "поста", "постов")} в календарь?`,
+      title: `Добавить ${preview.counts.eligible} ${plural(preview.counts.eligible, "пост", "поста", "постов")} в основной календарь?`,
       description: [
-        `Канал: ${channelName}.`,
-        schedule ? `Расписание: ${schedule}.` : "",
-        skipped > 0
-          ? `${skipped} ${plural(skipped, "материал не попадёт", "материала не попадут", "материалов не попадут")} в календарь: они неактуальны или ещё не готовы.`
-          : "После подтверждения публикации встанут в очередь автоматически.",
-      ].filter(Boolean).join(" "),
+        `Канал: ${channelName}. Посты будут опубликованы автоматически в указанное время (МСК).`,
+        ...preview.dates.map(({ index, scheduledAt }) => {
+          const item = preview.items.find((entry) => Number(entry.i) === index);
+          return `${item?.topic || "Пост"} — ${new Date(String(scheduledAt)).toLocaleString("ru-RU", { timeZone: MSK, day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}`;
+        }),
+      ].join("\n"),
     });
     return new Promise<boolean>((resolve) => {
       approvalConfirmationResolver.current = resolve;
@@ -1657,25 +1537,13 @@ export default function AutopilotPage() {
     resolve?.(confirmed);
   };
 
-  const approveAll = async () => {
-    if (approvalBusy.current) return;
+  const approveAll = async (indexes?: number[]) => {
+    if (approvalBusy.current || !canPublish) return;
     const currentPlan = data?.activePlan ?? data?.plan;
-    const reviewable = currentPlan?.items.filter((item) => item.status === "pending") ?? [];
-    const scheduledCheckpoints = currentPlan?.items.filter((item) =>
-      Boolean(item.postId) && ["approved", "published"].includes(item.status),
-    ).length ?? 0;
-    const reviewComplete = Boolean(
-      currentPlan &&
-      reviewable.length > 0 &&
-      reviewable.length + scheduledCheckpoints === currentPlan.publicationTargetCount &&
-      reviewable.every((item) => reviewedIndexes.has(item.i)),
-    );
-    if (!reviewComplete) {
-      s.toast({
-        kind: "info",
-        title: "Сначала проверь весь план",
-        body: `Отметь каждый из ${reviewable.length} оставшихся постов после просмотра текста. До этого календарь не изменится.`,
-      });
+    const selectedIndexes = indexes ?? [...reviewedIndexes];
+    const selectedItems = currentPlan?.items.filter((item) => selectedIndexes.includes(item.i)) ?? [];
+    if (!currentPlan || !selectedIndexes.length || selectedItems.length !== selectedIndexes.length || selectedItems.some((item) => item.status !== "pending" || item.postId || !canApproveItem(item) || (item.draftId && !item.editorVersion))) {
+      s.toast({ kind: "info", title: "Выбери готовые посты", body: "Просмотри тексты и отметь публикации для основного календаря." });
       return;
     }
     approvalBusy.current = true;
@@ -1684,7 +1552,7 @@ export default function AutopilotPage() {
       const previewResponse = await fetch("/api/autopilot/approve", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ channelId: chId, action: "preview" }),
+        body: JSON.stringify({ channelId: chId, action: "preview", selectedIndexes, planId: currentPlan.id, planRevision: currentPlan.revision }),
       });
       const previewBody = (await previewResponse.json().catch(() => null)) as
         | { ok?: boolean; preview?: AutopilotApprovalPreview | null; error?: string }
@@ -1708,8 +1576,8 @@ export default function AutopilotPage() {
       if (!preview.complete) {
         s.toast({
           kind: "info",
-          title: "План ещё не готов целиком",
-          body: `Готово ${preview.counts.eligible} из ${preview.expectedCount}. Ничего не добавлено в календарь. Исправь или замени проблемные посты.`,
+          title: "Выбранные посты требуют проверки",
+          body: `Готово ${preview.counts.eligible} из ${preview.expectedCount}. Ничего не добавлено в календарь. Проверь дату и замечания выбранных постов.`,
         });
         return;
       }
@@ -1734,6 +1602,7 @@ export default function AutopilotPage() {
         body: JSON.stringify({
           channelId: chId,
           action: "confirm",
+          selectedIndexes,
           planId: preview.planId,
           idempotencyKey,
           previewToken: preview.token,
@@ -1776,7 +1645,7 @@ export default function AutopilotPage() {
         s.toast({
           kind: "info",
           title: "План изменился и снова требует проверки",
-          body: "Ничего не добавлено в календарь. Проверь актуальные версии всех постов.",
+          body: "Ничего не добавлено в календарь. Проверь актуальные версии выбранных постов.",
         });
         setReviewedIndexes(new Set());
       } else if (result?.ok) {
@@ -1784,7 +1653,7 @@ export default function AutopilotPage() {
         s.toast({
           kind: result.scheduled ? (skipped ? "info" : "success") : "info",
           title: result.scheduled
-            ? `Одобрено — ${result.scheduled} в очереди 🚀`
+            ? `Добавлено в основной календарь: ${result.scheduled}`
             : "Ничего не поставлено в очередь",
           body: skipped
             ? `${result.expired || 0} неактуальных и ${result.blocked || 0} неготовых материалов не попали в очередь.`
@@ -1974,14 +1843,14 @@ export default function AutopilotPage() {
   // Confirm-план показывает и reader-ready тексты, и безопасные тексты на согласовании.
   // Hard-block и внутренние quality-review черновики остаются скрыты.
   const items = planItems.filter((item) =>
-    item.status !== "expired" && item.status !== "rejected" &&
+    item.status !== "rejected" &&
       (
         item.status === "approved" || item.status === "published" ||
-        isAutopilotReaderReadyItem(item) || isAutopilotHumanReviewItem(item)
+        Boolean(item.draftId) || isAutopilotReaderReadyItem(item) || isAutopilotHumanReviewItem(item)
       ),
   );
-  const pending = items.filter((it) => it.status === "pending");
-  const editorPending = pending.filter((item) => Boolean(item.draftId));
+  const pending = items.filter((it) => it.status === "pending" || it.status === "expired");
+  const editorPending = pending.filter((item) => Boolean(item.draftId) && !item.editorVersion);
   const reviewPending = pending.filter(
     (item) => !item.draftId && isAutopilotHumanReviewItem(item),
   );
@@ -1989,19 +1858,9 @@ export default function AutopilotPage() {
   const visible = [...items]
     .sort((a, b) => new Date(a.scheduledAt).getTime() - new Date(b.scheduledAt).getTime());
   const hasUsablePlan = Boolean(plan && visible.length > 0);
-  const attentionItems = visible.filter((item) => item.status === "pending");
-  const scheduledPlanCheckpoints = planItems.filter((item) =>
-    Boolean(item.postId) && ["approved", "published"].includes(item.status),
-  ).length;
+  const attentionItems = visible.filter((item) => item.status === "pending" || item.status === "expired");
   const reviewedCount = attentionItems.filter((item) => reviewedIndexes.has(item.i)).length;
-  const planReviewComplete = Boolean(
-    plan &&
-    attentionItems.length > 0 &&
-    attentionItems.length + scheduledPlanCheckpoints === plan.publicationTargetCount &&
-    attentionItems.every((item) =>
-      reviewedIndexes.has(item.i) && !item.draftId && canApproveItem(item),
-    ),
-  );
+  const planReviewComplete = reviewedCount > 0 && canPublish;
   const plannedCount = plannedPostCountForWeeks(st.post_frequency, planningWeeks);
   const generationWorkCount = autopilotCandidateCount(plannedCount);
   const plannedDuration = fmtBuildEstimate(estimateAutopilotBuildMinutes(generationWorkCount));
@@ -2038,53 +1897,80 @@ export default function AutopilotPage() {
       : weeklyMeasuredStats.length > 0
         ? "за текущую неделю"
         : "Данных за неделю пока нет";
-  const realScheduleItems: OverviewScheduleItem[] = s.realPosts
-    .filter((post) => (
-      Number(post.channel_id) === chId &&
-      post.publication_origin === "autopilot" &&
-      Boolean(post.scheduled_at) &&
-      !["draft", "cancelled"].includes(post.status)
-    ))
-    .map((post) => ({
-      id: `real-${post.id}`,
-      scheduledAt: post.scheduled_at!,
-      title: plainPostText(post.text),
-      state: post.status === "published"
-        ? "published"
-        : ["failed_retry", "failed", "quarantined", "missing", "deleted_external"].includes(post.status)
-          ? "attention"
-          : "scheduled",
-    }));
-  const planScheduleItems: OverviewScheduleItem[] = attentionItems.map((item) => ({
-    id: `plan-${plan?.id ?? "active"}-${item.i}`,
-    scheduledAt: item.scheduledAt,
-    title: item.topic,
-    state: "review",
-    planIndex: item.i,
-  }));
-  const scheduleItems = [...realScheduleItems, ...planScheduleItems]
-    .sort((left, right) => new Date(left.scheduledAt).getTime() - new Date(right.scheduledAt).getTime());
-  const todayKey = moscowDateKey(new Date());
-  const nextScheduleItem = scheduleItems.find((item) => moscowDateKey(item.scheduledAt) >= todayKey);
-  const scheduleWeekStart = nextScheduleItem
-    ? mondayDateKey(nextScheduleItem.scheduledAt)
-    : currentWeekStartKey;
-  const scheduleDays: OverviewScheduleDay[] = Array.from({ length: 7 }, (_, index) => {
-    const key = shiftDateKey(scheduleWeekStart, index);
-    const date = dateForKey(key);
-    return {
-      key,
-      weekday: new Intl.DateTimeFormat("ru-RU", { weekday: "short", timeZone: "UTC" }).format(date).replace(".", ""),
-      date: date.getUTCDate(),
-      items: scheduleItems.filter((item) => moscowDateKey(item.scheduledAt) === key),
-    };
-  });
-  const planningSummary = `До ${planEndLabel} · ${plannedCount} ${plural(plannedCount, "публикация", "публикации", "публикаций")} · сборка — ${plannedDuration}`;
-  const openPlanItemFromSchedule = (index: number) => {
-    setExpanded(index);
-    requestAnimationFrame(() => {
-      document.querySelector<HTMLButtonElement>(`#autopilot-plan-item-${index} button`)?.focus();
+  const realScheduleItems: AutopilotCalendarItem[] = s.realPosts
+    .filter((post) => Number(post.channel_id) === chId && post.publication_origin === "autopilot" && Boolean(post.scheduled_at) && !["draft", "cancelled"].includes(post.status))
+    .map((post) => {
+      const linked = planItems.find((item) => item.postId === post.id);
+      return {
+        id: `real-${post.id}`, scheduledAt: post.scheduled_at!, title: linked?.topic || plainPostText(post.text).slice(0, 120), text: post.text, media: post.media,
+        formatting: linked?.draft === post.text ? linked.formatting : undefined,
+        state: post.status === "published" ? "published" : post.status === "scheduled" ? "scheduled" : "attention",
+        statusLabel: post.status === "published" ? "Опубликован" : post.status === "scheduled" ? "В основном календаре" : post.status === "publishing" ? "Публикуется" : "Требует внимания",
+        postId: post.id, scheduleRevision: post.schedule_revision, selectable: false,
+        editable: canEdit && canPublish && post.status === "scheduled",
+        issues: post.last_error ? [post.last_error] : [], publishedUrl: realPostUrl(post),
+      };
     });
+  const planScheduleItems: AutopilotCalendarItem[] = attentionItems.map((item) => ({
+    id: `plan-${plan?.id}-${item.i}`, scheduledAt: item.scheduledAt, title: item.topic, text: item.draft, media: item.media, formatting: item.formatting,
+    state: "review", planIndex: item.i,
+    statusLabel: Date.parse(item.scheduledAt) < calendarNow + 60_000 ? "Нужно новое время" : item.draftId && !item.editorVersion ? "Правки в редакторе" : !canApproveItem(item) ? "Нужна проверка" : "Не добавлен в календарь",
+    selectable: canPublish && item.status === "pending" && Date.parse(item.scheduledAt) >= calendarNow + 60_000 && !item.postId && canApproveItem(item) && (!item.draftId || Boolean(item.editorVersion)),
+    editable: canEdit,
+    issues: [
+      ...(Date.parse(item.scheduledAt) < calendarNow + 60_000 ? ["Время публикации прошло. Выбери новую дату и время."] : []),
+      ...(item.draftId && !item.editorVersion ? ["Верни сохранённые правки из редактора в автопилот перед добавлением."] : []),
+      ...(item.approvalBlockers?.map((blocker) => blocker.message) ?? []),
+      ...(!canApproveItem(item) ? item.quality?.blockers ?? ["Пост требует проверки."] : []),
+      ...(isAutopilotHumanReviewItem(item) ? ["Перед добавлением проверь факты и текст публикации."] : []),
+    ],
+  }));
+  const scheduleItems = [...realScheduleItems, ...planScheduleItems].sort((a, b) => Date.parse(a.scheduledAt) - Date.parse(b.scheduledAt));
+  const query = typeof window === "undefined" ? null : new URLSearchParams(window.location.search);
+  const returnItemId = query?.get("post") ? `real-${query.get("post")}` : query?.has("item") && Number(query.get("plan")) === plan?.id ? `plan-${plan.id}-${query.get("item")}` : null;
+  const planningSummary = `До ${planEndLabel} · ${plannedCount} ${plural(plannedCount, "публикация", "публикации", "публикаций")} · сборка — ${plannedDuration}`;
+  const openEditor = async (item: AutopilotCalendarItem) => {
+    if (busy || !item.editable) return;
+    setBusy(true);
+    try {
+      const real = item.postId ? s.realPosts.find((post) => post.id === item.postId) : null;
+      if (real?.publication_operation_id && real.publication_draft_id) {
+        router.push(`/app/composer?draft=${real.publication_draft_id}&publication=${real.publication_operation_id}&from=autopilot`);
+        return;
+      }
+      const response = await fetch("/api/autopilot/item/draft", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ channelId: chId, planId: plan?.id, planRevision: plan?.revision, index: item.planIndex, postId: item.postId }) });
+      const result = await response.json();
+      if (!response.ok || !result.ok) throw new Error(result.error);
+      const context = item.returnView && item.returnAnchor ? `&autopilotView=${item.returnView}&autopilotAnchor=${item.returnAnchor}` : "";
+      router.push(`/app/composer?draft=${result.draftId}&from=autopilot&autopilotChannel=${chId}${result.postId ? `&autopilotPost=${result.postId}` : ""}${context}`);
+    } catch {
+      s.toast({ kind: "danger", title: "Не удалось открыть редактор", body: "Пост мог измениться или уже публикуется. Обновил состояние — попробуй ещё раз." });
+      await load();
+    } finally { setBusy(false); }
+  };
+  const rescheduleItem = async (item: AutopilotCalendarItem, localDate: string, localTime: string) => {
+    if (busy || !item.editable) return false;
+    setBusy(true);
+    try {
+      const real = item.postId ? s.realPosts.find((post) => post.id === item.postId) : null;
+      const response = real?.publication_operation_id
+        ? await fetch(`/api/publication-operations/${real.publication_operation_id}`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json", "idempotency-key": crypto.randomUUID() },
+          body: JSON.stringify({ action: "reschedule", expectedScheduleRevision: real.operation_schedule_revision,
+            expectedStatus: real.publication_operation_status, localDate, localTime, timezone: "Europe/Moscow", disambiguation: "reject" }),
+        })
+        : await fetch("/api/autopilot/item/schedule", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ planId: plan?.id, planRevision: plan?.revision, index: item.planIndex, postId: item.postId, scheduleRevision: item.scheduleRevision, localDate, localTime }) });
+      const result = await response.json();
+      if (!response.ok || !result.ok) throw new Error(result.error === "past" ? "Выбери время не раньше чем через минуту." : "Пост изменился или дата недоступна. Обнови карточку и повтори.");
+      await Promise.all([load(), s.refreshReal()]);
+      s.toast({ kind: result.queuePending ? "info" : "success", title: "Время публикации обновлено", body: item.postId ? "В основном календаре обновлена та же публикация." : "Дата сохранена в плане автопилота." });
+      return true;
+    } catch (error) {
+      s.toast({ kind: "danger", title: "Время не изменено", body: error instanceof Error ? error.message : "Повтори попытку." });
+      await load();
+      return false;
+    } finally { setBusy(false); }
   };
 
   return (
@@ -2165,7 +2051,10 @@ export default function AutopilotPage() {
       </div>
 
       <div className="mt-5">
-        <WeekSchedule days={scheduleDays} onSelectPlanItem={openPlanItemFromSchedule} />
+        <AutopilotCalendar key={`${projects.current?.id}:${chId}`} items={scheduleItems} selected={reviewedIndexes} busy={busy}
+          storageKey={`aurora:autopilot-calendar:${projects.current?.id}:${chId}`} channelName={tgChannels.find((channel) => channel.id === chId)?.title ?? "Telegram"} returnItemId={returnItemId}
+          onSelect={(index) => setReviewedIndexes((current) => { const next = new Set(current); if (next.has(index)) next.delete(index); else next.add(index); return next; })}
+          onSelectAll={(indexes) => setReviewedIndexes(new Set(indexes))} onAdd={(indexes) => void approveAll(indexes)} onEdit={(item) => void openEditor(item)} onReschedule={rescheduleItem} />
       </div>
 
       <div className="mt-5">
@@ -2276,14 +2165,14 @@ export default function AutopilotPage() {
                 variant="primary"
                 data-aurora-feature="plan"
                 data-aurora-action="approved"
-                onClick={approveAll}
+                onClick={() => void approveAll()}
                 loading={busy}
                 disabled={busy || !planReviewComplete}
               >
                 <Check className="h-[18px] w-[18px]" strokeWidth={2.5} aria-hidden />
                 {planReviewComplete
-                  ? `Одобрить ${attentionItems.length} и добавить в календарь`
-                  : `Проверено ${reviewedCount} из ${attentionItems.length}`}
+                  ? `Добавить в основной календарь · ${reviewedCount}`
+                  : `Выбери посты для календаря`}
               </Button>
             )}
           </div>
@@ -2320,7 +2209,7 @@ export default function AutopilotPage() {
                         </span>
                       </span>
                       {reviewed ? (
-                        <Badge tone="success">проверен</Badge>
+                        <Badge tone="success">выбран</Badge>
                       ) : it.draftId ? (
                         <Badge tone="brand">в редакторе</Badge>
                       ) : isAutopilotHumanReviewItem(it) ? (
@@ -2342,25 +2231,7 @@ export default function AutopilotPage() {
                     </button>
 
                     <div className="px-4 pb-4">
-                      {editingIndex === it.i ? (
-                        <div className="mt-1">
-                          <label htmlFor={`autopilot-edit-${it.i}`} className="text-[13px] font-semibold text-text">
-                            Текст поста
-                          </label>
-                          <textarea
-                            id={`autopilot-edit-${it.i}`}
-                            value={editingText}
-                            onChange={(event) => setEditingText(event.target.value)}
-                            rows={12}
-                            className="mt-2 w-full resize-y rounded-md border border-line bg-surface px-3 py-2 text-[14px] leading-relaxed text-text outline-none focus-visible:border-brand focus-visible:ring-2 focus-visible:ring-brand/20"
-                          />
-                          <p className="mt-1 text-[12px] text-text-3">
-                            После сохранения Аврора заново проверит качество, а весь план потребуется просмотреть ещё раз.
-                          </p>
-                        </div>
-                      ) : (
-                        <PostPreview text={it.draft} expanded={isOpen} />
-                      )}
+                      <PostPreview text={it.draft} expanded={isOpen} />
 
                       {it.draftId && (
                         <div className="mt-3">
@@ -2386,13 +2257,13 @@ export default function AutopilotPage() {
                         <div className="mt-3 flex items-start gap-2 rounded-sm bg-info-soft p-3">
                           <Pencil className="mt-0.5 h-4 w-4 shrink-0 text-info-text" aria-hidden />
                           <p className="text-[13px] leading-snug text-info-text">
-                            Правки сохранены в редакторе. Поставь пост в календарь оттуда — дата Автопилота уже выбрана.
+                            {it.editorVersion ? "Правки сохранены в автопилоте. Пост можно добавить в основной календарь после проверки." : "Открой редактор и нажми «Сохранить и вернуться в автопилот», чтобы применить правки."}
                           </p>
                         </div>
                       )}
 
                       <div className="mt-3 flex flex-wrap gap-2">
-                        {!it.draftId && canApproveItem(it) && (
+                        {(!it.draftId || it.editorVersion) && canApproveItem(it) && canPublish && it.status === "pending" && (
                           <Button
                             size="sm"
                             variant={reviewed ? "primary" : "secondary"}
@@ -2405,63 +2276,16 @@ export default function AutopilotPage() {
                             })}
                           >
                             <Check className="h-4 w-4" aria-hidden />
-                            {reviewed ? "Проверен" : "Подтвердить просмотр"}
+                            {reviewed ? "Выбран для календаря" : "Выбрать для календаря"}
                           </Button>
                         )}
-                        {!it.draftId && editingIndex !== it.i && (
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            disabled={busy || editingIndex != null}
-                            onClick={() => {
-                              setEditingIndex(it.i);
-                              setEditingText(it.draft);
-                              setReviewedIndexes((current) => {
-                                const next = new Set(current);
-                                next.delete(it.i);
-                                return next;
-                              });
-                            }}
-                          >
-                            <Pencil className="h-4 w-4" aria-hidden />
-                            Редактировать
-                          </Button>
-                        )}
-                        {editingIndex === it.i && (
-                          <>
-                            <Button
-                              size="sm"
-                              variant="primary"
-                              loading={busy}
-                              disabled={busy || !editingText.trim() || editingText.trim() === it.draft.trim()}
-                              onClick={() => {
-                                setBusy(true);
-                                void itemAction(it.i, "edit", editingText).finally(() => {
-                                  setBusy(false);
-                                  setEditingIndex(null);
-                                  setEditingText("");
-                                });
-                              }}
-                            >
-                              Сохранить и проверить
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              disabled={busy}
-                              onClick={() => {
-                                setEditingIndex(null);
-                                setEditingText("");
-                              }}
-                            >
-                              Отмена
-                            </Button>
-                          </>
-                        )}
+                        {canEdit && <Button size="sm" variant="ghost" disabled={busy} onClick={() => { const item = planScheduleItems.find((entry) => entry.planIndex === it.i); if (item) void openEditor(item); }}>
+                          <Pencil className="h-4 w-4" aria-hidden />Редактировать
+                        </Button>}
                         <Button
                           size="sm"
                           variant="ghost"
-                          disabled={busy || editingIndex != null}
+                          disabled={busy || !canPublish}
                           onClick={() => itemAction(it.i, "replace")}
                         >
                           <RefreshCw className="h-4 w-4" aria-hidden />

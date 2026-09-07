@@ -19,7 +19,7 @@ export async function claimPublicationLease(pool, input) {
              )
         )
       returning p.id, p.project_id, p.user_id, p.channel_id, p.text, p.media, p.attempts,
-                p.publication_operation_id`,
+                p.publication_operation_id, p.publication_origin, p.publication_draft_version`,
     [input.postId, input.leaseToken, input.scheduleRevision, input.overdueCutoff, input.projectId],
   );
   if (scheduled.rowCount > 0) return scheduled.rows[0];
@@ -43,7 +43,7 @@ export async function claimPublicationLease(pool, input) {
              )
         )
       returning p.id, p.project_id, p.user_id, p.channel_id, p.text, p.media, p.attempts,
-                p.publication_operation_id`,
+                p.publication_operation_id, p.publication_origin, p.publication_draft_version`,
     [input.postId, input.leaseToken, input.scheduleRevision, input.projectId],
   );
   return retry.rows[0] ?? null;

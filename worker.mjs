@@ -1578,7 +1578,7 @@ async function vkPostStats(token, groupId, postId) {
 
 /** Telegram: текущий путь tgSend, без изменений логики. Текст прогоняем через
  * форматтер-гарант: даже если ИИ или человек дал «простыню», в канал уйдёт структура. */
-async function publishTg(channel, postId, text, media) {
+async function publishTg(channel, postId, text, media, frozenPayload = false) {
   try {
     const isCarousel = media?.kind === "carousel";
     const carouselItems = isCarousel && Array.isArray(media.items) ? media.items : [];
@@ -1624,7 +1624,10 @@ async function publishTg(channel, postId, text, media) {
       && part.part_type === "media"
       && ["sending", "sent", "unknown"].includes(part.send_status),
     );
-    const definitions = isCarousel
+    if (frozenPayload && (previousParts.length === 0 || previousParts.some((part) => !part.payload_hash))) {
+      return { ok: false, reason: "telegram_payload_missing", deliveryUnknown: false };
+    }
+    const definitions = frozenPayload ? [] : isCarousel
       ? telegramCarouselPartDefinitions({ assets: carouselAssets, text })
       : telegramPartDefinitions({
           hasAsset: Boolean(asset),
@@ -2300,7 +2303,7 @@ const worker = AUTOPILOT_ONLY || MEDIA_ONLY ? null : new Worker(
         privacyStatus: media?.privacyStatus || "private",
       });
     } else {
-      out = await publishTg(channel, post.id, post.text, post.media);
+      out = await publishTg(channel, post.id, post.text, post.media, post.publication_origin === "autopilot" && Number(post.publication_draft_version) > 0);
     }
 
     const channelFailure = channel.network === "vk"
