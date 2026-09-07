@@ -156,6 +156,13 @@ export function createMainRequestEvidence({ baseUrl, now = () => performance.tim
       if (call && event.kind === "failure" && call.callerFailure == null) {
         call.callerFailure = event.callerAbort === true;
         call.failedAt = event.at;
+        // A navigation can drop a separate binding event. The actual rejection
+        // also carries this invocation's synchronously observed AbortSignal time.
+        // Missing, future, pre-request or non-causal values remain unproved.
+        if (call.abortedAt == null && call.callerFailure && Number.isSafeInteger(event.signalAbortedAt)
+          && event.signalAbortedAt >= call.at && event.signalAbortedAt <= event.at) {
+          call.abortedAt = event.signalAbortedAt;
+        }
       }
       if (!call || !event.kind.startsWith("body-")) return;
       const body = call.body ??= { readers: 0, readerId: null, pending: 0, chunks: 0, bytes: 0,
@@ -431,14 +438,20 @@ export function createMainRequestEvidence({ baseUrl, now = () => performance.tim
             ? target.headers : init == null ? undefined : Reflect.get(init, key, init) });
           send({ kind: "start", id, identity, method, url: url.href });
           const signal = init?.signal ?? (input instanceof Request ? input.signal : null);
-          if (signal?.aborted) send({ kind: "abort", id, identity });
-          else if (signal) signal.addEventListener("abort", () => send({ kind: "abort", id, identity }), { once: true });
+          let signalAbortedAt = null;
+          const observeAbort = () => {
+            signalAbortedAt = Date.now();
+            send({ kind: "abort", id, identity });
+          };
+          if (signal?.aborted) observeAbort();
+          else if (signal) signal.addEventListener("abort", observeAbort, { once: true });
           const rejected = error => {
             // WebKit clones the native AbortError DOMException; unlike a
             // network TypeError, it still carries this signal's abort cause.
             const nativeAbort = error instanceof DOMException && error.name === "AbortError"
               && signal?.reason instanceof DOMException && signal.reason.name === "AbortError";
-            send({ kind: "failure", id, identity, callerAbort: signal?.aborted === true && (error === signal.reason || nativeAbort) });
+            const callerAbort = signal?.aborted === true && (error === signal.reason || nativeAbort);
+            send({ kind: "failure", id, identity, callerAbort, signalAbortedAt: callerAbort ? signalAbortedAt : null });
             throw error;
           };
           return Reflect.apply(nativeFetch, this, [input, observedInit]).then(response => {

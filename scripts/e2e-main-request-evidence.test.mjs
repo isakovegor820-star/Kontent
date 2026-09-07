@@ -967,3 +967,26 @@ it.each(['no-signal','other-request','POST','late-failure','real-reset'])('Linux
   f.at(kind==='late-failure'?9000:1200);f.evidence.observeFailure(req);
   expect(f.evidence.reason(req)).toBeNull();expect(f.evidence.proofs()).toEqual([]);
 });
+
+it("preserves the native signal timestamp when Firefox drops the separate abort binding", async () => {
+  const f = await installedFetchFixture(); const controller = new AbortController();
+  const send = f.window.__auroraMainReadLifetime;
+  f.window.__auroraMainReadLifetime = async event => { if (event.kind !== "abort") await send(event); };
+  f.originalFetch.mockImplementation((input, init) => new Promise((resolve, reject) => {
+    init.signal.addEventListener("abort", () => reject(init.signal.reason), { once: true });
+  }));
+  const work = f.window.fetch(baseUrl + "/api/drafts", { signal: controller.signal });
+  const start = f.events.find(event => event.kind === "start");
+  const request = f.request({ headers: { "x-aurora-e2e-read-id": start.identity } });
+  f.at(start.at); f.start(request);
+  controller.abort(); await expect(work).rejects.toBe(controller.signal.reason);
+  expect(f.events.some(event => event.kind === "abort")).toBe(false);
+  const failure = f.events.find(event => event.kind === "failure");
+  f.at(failure.at); f.evidence.observeFailure(request);
+  expect(f.evidence.reason(request)).toBe("caller_abort_signal");
+});
+it.each([null, -1, 999, 1200, "1100", NaN, Infinity])("does not replace missing signal evidence with an invalid timestamp: %s", timestamp => {
+  const f = fixture(); const request = f.request(); f.native("start"); f.start(request); f.at(1100);
+  f.native("failure", { callerAbort: true, signalAbortedAt: timestamp }); f.evidence.observeFailure(request);
+  expect(f.evidence.reason(request)).toBeNull();
+});
