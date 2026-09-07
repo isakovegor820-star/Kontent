@@ -1,5 +1,6 @@
 import { createMainRequestEvidence } from "./e2e-main-request-evidence.mjs";
 import { createPostsSnapshotEvidence } from "./e2e-posts-snapshot-evidence.mjs";
+import { readMonthlyPlanReceiptDiagnostics } from "./e2e-monthly-plan-receipt-diagnostics.mjs";
 import { readEditorialReceiptDiagnostics } from "./e2e-editorial-receipt-diagnostics.mjs";
 import { assertEditorialSubmissionReflow } from "./e2e-editorial-review-coverage.mjs";
 import { createMainFaultEvidence, nativeMainHttpStatus } from "./e2e-main-fault-evidence.mjs";
@@ -833,6 +834,7 @@ async function finalizeBrowserContexts() {
   interfaceEvidence.unmatchedNativeReads = mainRequestEvidence.snapshotUnmatchedReads();
   try {
     interfaceEvidence.editorialReceiptDiagnostics = await readEditorialReceiptDiagnostics(pool, interfaceEvidence.mainRequestDiagnostics);
+    interfaceEvidence.monthlyPlanReceiptDiagnostics = await readMonthlyPlanReceiptDiagnostics(pool, interfaceEvidence.mainRequestDiagnostics);
   } catch (error) {
     interfaceEvidence.editorialReceiptDiagnostics = { diagnosticOnly: true, unavailable: "database_read_failed" };
     failures.push(error);

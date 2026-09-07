@@ -280,7 +280,8 @@ export function createMainRequestEvidence({ baseUrl, now = () => performance.tim
             bytes: caller.body.jsonBytes, overflow: caller.body.jsonOverflow } : null,
           identityPresent: Boolean(row.identity), persistedProductEventCount: row.persistedProductEventCount ?? 0,
           identityCollision: collisions.has(row.identity), reason: reasonFor(row),
-          editorialAck: editorialObservers.map(observer => observer.snapshotFor(row)).find(Boolean) ?? null };
+          editorialAck: row.path.startsWith("/api/drafts/") ? editorialObservers.map(observer => observer.snapshotFor(row)).find(Boolean) ?? null : null,
+          monthlyPlanAck: row.path.startsWith("/api/monthly-campaigns/") ? editorialObservers.map(observer => observer.snapshotFor(row)).find(Boolean) ?? null : null };
       });
     },
     snapshotUnmatchedReads() {

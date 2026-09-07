@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-const PATH = /^\/api\/drafts\/[1-9]\d*\/editorial\/decisions$/u;
+const PATH = /^\/api\/(?:drafts\/[1-9]\d*\/editorial\/decisions|monthly-campaigns\/[1-9]\d*\/plans)$/u;
 const HEADER = "x-aurora-e2e-editorial-id";
 const MAX_BYTES = 16_384;
 const hash = value => createHash("sha256").update(String(value)).digest("hex");
@@ -8,7 +8,8 @@ const positive = value => Number.isSafeInteger(value) && value > 0 ? value : nul
 const contentHash = value => typeof value === "string" && /^[a-f0-9]{64}$/u.test(value) ? value : null;
 const errorName = value => ["TypeError", "AbortError", "Error"].includes(value) ? value : "native_error";
 
-/** Diagnostic facts only. No caller may use this observer as a cancellation
+/** Observe only editorial decisions and monthly plan creation.
+ * Diagnostic facts only. No caller may use this observer as a cancellation
  * certificate or as permission to retry a mutation. */
 export async function installEditorialNativeBodyObserver(context, { baseUrl }) {
   const origin = new URL(baseUrl).origin;
@@ -50,13 +51,17 @@ export async function installEditorialNativeBodyObserver(context, { baseUrl }) {
       call.responseRequestIdHash = contentHash(event.responseRequestIdHash); call.bodyRequestIdHash = contentHash(event.bodyRequestIdHash);
       call.jsonValid = event.jsonValid === true; call.bodyOk = event.bodyOk === true; call.overflow = event.overflow === true;
       const source = event.receipt;
-      call.receipt = source && {
+      call.receipt = source && (call.url && new URL(call.url).pathname.startsWith("/api/monthly-campaigns/") ? {
+        planId: positive(source.planId), campaignId: positive(source.campaignId), projectId: positive(source.projectId),
+        version: positive(source.version), revision: positive(source.revision), itemCount: positive(source.itemCount),
+        duplicate: source.duplicate === true,
+      } : {
         decisionId: positive(source.decisionId), draftId: positive(source.draftId), projectId: positive(source.projectId),
         workflowVersion: positive(source.workflowVersion), currentRevisionId: positive(source.currentRevisionId),
         submittedRevisionId: positive(source.submittedRevisionId), approvedRevisionId: positive(source.approvedRevisionId),
         approvedContentHash: contentHash(source.approvedContentHash),
         state: ["approved", "changes_requested"].includes(source.state) ? source.state : null,
-      };
+      });
     }
   });
   await context.addInitScript(({ origin, header, maxBytes }) => {
@@ -91,7 +96,7 @@ export async function installEditorialNativeBodyObserver(context, { baseUrl }) {
     window.fetch = function(input, init) {
       let url; try { url = new URL(input instanceof Request ? input.url : String(input), location.href); }
       catch { return Reflect.apply(nativeFetch, this, [input, init]); }
-      if (url.origin !== origin || !/^\/api\/drafts\/[1-9]\d*\/editorial\/decisions$/u.test(url.pathname)
+      if (url.origin !== origin || !/^\/api\/(?:drafts\/[1-9]\d*\/editorial\/decisions|monthly-campaigns\/[1-9]\d*\/plans)$/u.test(url.pathname)
         || !staticOptions(init)) return Reflect.apply(nativeFetch, this, [input, init]);
       const rawMethod = init?.method;
       if (rawMethod !== undefined && typeof rawMethod !== "string") return Reflect.apply(nativeFetch, this, [input, init]);
@@ -140,7 +145,11 @@ export async function installEditorialNativeBodyObserver(context, { baseUrl }) {
                   const workflow = json?.workflow;
                   emit({ kind: "json", bodySha256: await digest(buffer), jsonValid: json !== undefined, bodyOk: json?.ok === true,
                     responseRequestIdHash: await stringDigest(responseRequestId), bodyRequestIdHash: await stringDigest(json?.requestId),
-                    receipt: workflow && { decisionId: json?.decisionId, draftId: workflow.draftId, projectId: workflow.projectId,
+                    receipt: url.pathname.startsWith("/api/monthly-campaigns/") ? {
+                      planId: json?.plan?.id, campaignId: json?.plan?.campaignId, projectId: json?.plan?.projectId,
+                      version: json?.plan?.version, revision: json?.plan?.revision, itemCount: json?.plan?.items?.length,
+                      duplicate: json?.duplicate,
+                    } : workflow && { decisionId: json?.decisionId, draftId: workflow.draftId, projectId: workflow.projectId,
                       workflowVersion: workflow.version, currentRevisionId: workflow.currentRevisionId, submittedRevisionId: workflow.submittedRevisionId,
                       approvedRevisionId: workflow.approvedRevisionId, approvedContentHash: workflow.approvedContentHash, state: workflow.state } });
                 })().catch(() => emit({ kind: "body-error", error: "observer_error" }));
@@ -189,7 +198,11 @@ export async function installEditorialNativeBodyObserver(context, { baseUrl }) {
       let payload; try { payload = request.postDataJSON(); } catch { /* Missing/invalid request body remains unavailable. */ }
       requests.push({ request, record, page, documentId: documents.get(page), method: record.method, url: request.url(),
         identity: request.headers()[HEADER] ?? null, projectId: positive(Number(request.headers()["x-aurora-project-id"])),
-        payload: payload ? { reviewRequestId: positive(payload.requestId), requestVersion: positive(payload.requestVersion), workflowVersion: positive(payload.workflowVersion),
+        payload: payload && record.path.startsWith("/api/monthly-campaigns/") ? {
+          expectedCampaignVersion: positive(payload.expectedCampaignVersion),
+          idempotencyKeyHash: typeof payload.idempotencyKey === "string" ? hash(payload.idempotencyKey) : null,
+          generationMode: payload.generationMode === "editorial_seed" ? "editorial_seed" : null,
+        } : payload ? { reviewRequestId: positive(payload.requestId), requestVersion: positive(payload.requestVersion), workflowVersion: positive(payload.workflowVersion),
           revisionId: positive(payload.revisionId), contentHash: contentHash(payload.contentHash),
           decision: ["approve", "request_changes"].includes(payload.decision) ? payload.decision : null } : null });
     },

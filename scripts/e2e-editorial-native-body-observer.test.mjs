@@ -15,7 +15,7 @@ const payload = { requestId: 13, requestVersion: 1, workflowVersion: 3, revision
   decision: "approve", note: "PRIVATE_REQUEST_CANARY" };
 const sha = value => createHash("sha256").update(value).digest("hex");
 
-async function fixture({ text = JSON.stringify(ack), mode = "closed", integration = false, transformEvent = event => event } = {}) {
+async function fixture({ targetPath = path, text = JSON.stringify(ack), mode = "closed", integration = false, transformEvent = event => event } = {}) {
   const callbacks = new Map(), scripts = [], events = [], actual = [], chunks = [new TextEncoder().encode(text)];
   let controller, observer, evidence;
   const stream = new ReadableStream({ start(value) { controller = value; controller.enqueue(chunks[0]); if (mode === "closed") controller.close(); } });
@@ -48,10 +48,10 @@ async function fixture({ text = JSON.stringify(ack), mode = "closed", integratio
   vm.createContext(box);
   for (const { fn, args } of scripts) { box.args = args; vm.runInContext(`(${fn.toString()})(args)`, box); }
   page.evaluate = (fn, args) => { box.evaluateArgs = args; return vm.runInContext(`(${fn.toString()})(evaluateArgs)`, box); };
-  const fetch = (init = {}, url = path + "?private=PRIVATE_QUERY_CANARY", receiver = box) => Reflect.apply(box.fetch, receiver,
+  const fetch = (init = {}, url = targetPath + "?private=PRIVATE_QUERY_CANARY", receiver = box) => Reflect.apply(box.fetch, receiver,
     [url, { method: "POST", body: JSON.stringify(payload), headers: { "x-aurora-project-id": "8", authorization: "PRIVATE_HEADER_CANARY" }, ...init }]);
   const flush = async () => { await box.__flushEditorialNativeBody?.(); };
-  const snapshot = () => integration ? evidence.snapshot()[0].editorialAck : observer.snapshotFor(actual[0].record);
+  const snapshot = () => integration ? (targetPath.startsWith("/api/monthly-campaigns/") ? evidence.snapshot()[0].monthlyPlanAck : evidence.snapshot()[0].editorialAck) : observer.snapshotFor(actual[0].record);
   const emit = event => callbacks.get("__auroraEditorialNativeBody")({ page, frame }, { ...events.find(e => e.kind === "start"), readerId: 1, ...event });
   return { page, box, response, stream, chunks, controller, observer, evidence, actual, events, fetch, flush, snapshot, emit };
 }
@@ -270,4 +270,27 @@ it("preserves native dictionary getter order and private accessor receiver by pa
   expect(await request.text()).toBe(await control.text()); expect(request.credentials).toBe(control.credentials);
   expect([...request.headers]).toEqual([...control.headers]); expect(request.signal.aborted).toBe(false);
   expect(f.events.filter(event => event.kind === "start")).toEqual([]);
+});
+
+it.each(["complete", "clone", "cancel", "wrong-response-id"])("monthly plan original-body diagnostic stays observational: %s", async mode => {
+  const responseId = mode === "wrong-response-id" ? "foreign" : requestId;
+  const f = await fixture({ integration: true, targetPath: "/api/monthly-campaigns/3/plans", mode: mode === "cancel" ? "open" : "closed",
+    text: JSON.stringify({ ok: true, requestId: responseId, duplicate: false, plan: { id: 7, campaignId: 3, projectId: 8, version: 1, revision: 2,
+      items: [{ text: "PRIVATE_MONTHLY_TEXT" }] } }) });
+  const response = await f.fetch({ body: JSON.stringify({ expectedCampaignVersion: 4, generationMode: "editorial_seed", idempotencyKey: "PRIVATE_MONTHLY_KEY" }) });
+  if (mode === "clone") await consume(response.clone());
+  else if (mode === "cancel") { const reader = response.body.getReader(); await reader.read(); await reader.cancel(); }
+  else await consume(response);
+  await f.flush(); const data = f.snapshot();
+  expect(data?.matched).toBe(true);
+  expect(data.native.bodyComplete).toBe(["complete", "wrong-response-id"].includes(mode));
+  if (mode === "complete") {
+    expect(data.native.responseCorrelation).toBe(true);
+    expect(data.request).toEqual({ expectedCampaignVersion: 4, generationMode: "editorial_seed", idempotencyKeyHash: sha("PRIVATE_MONTHLY_KEY") });
+    expect(data.receipt).toEqual({ planId: 7, campaignId: 3, projectId: 8, version: 1, revision: 2, itemCount: 1, duplicate: false });
+  }
+  if (mode === "wrong-response-id") expect(data.native.responseCorrelation).toBe(false);
+  f.evidence.observeFailure(f.actual[0].request);
+  expect(f.evidence.snapshot()[0].reason).toBeNull();
+  expect(JSON.stringify(data)).not.toContain("PRIVATE_MONTHLY");
 });
