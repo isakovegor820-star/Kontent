@@ -260,14 +260,17 @@ describe("Telegram ownership safety against real PostgreSQL", () => {
     expect(await botProject(userId, projectId)).toBeNull();
     const notices: string[] = [];
     const issueProof = vi.fn();
+    const tg = vi.fn(async () => { throw new Error("blocked private actor must not call Telegram metadata"); });
+    const workerErrors = vi.fn();
     const handleUpdate = workerFunction("handleUpdate", {
-      pool, userByChat, botProject, createTelegramChannelProof: issueProof,
+      pool, userByChat, botProject, tg, createTelegramChannelProof: issueProof,
       observeTelegramDiscussionUpdate: async () => {}, captureTelegramAudienceComment: async () => ({ captured: false }),
       parseTelegramBotCommand: () => ({ command: "connect", args: "" }), botReplyAction: () => null,
       botMessageInteraction: () => ({}), observeBotInteraction: async () => {},
-      tgSend: async (_chat: number, text: string) => { notices.push(text); }, process: { env: {} }, console,
+      tgSend: async (_chat: number, text: string) => { notices.push(text); }, process: { env: {} }, console: { ...console, error: workerErrors },
     });
     await handleUpdate({ update_id: 9911, message: { chat: { id: actorId, type: "private" }, from: { id: actorId }, text: "/connect" } });
+    expect(workerErrors).not.toHaveBeenCalled(); expect(tg).not.toHaveBeenCalled();
     expect(notices).toHaveLength(1); expect(notices[0]).toContain("приостановлен");
     expect(issueProof).not.toHaveBeenCalled();
     await pool.query("update users set blocked_at=null where id=$1", [userId]);
