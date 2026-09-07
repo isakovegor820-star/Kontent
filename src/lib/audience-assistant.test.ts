@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   audienceDeliveryLeaseExpired,
+  discardAudienceReply,
   deliverAudienceReply,
   listAudienceInquiries,
   updateAudienceInquiry,
@@ -293,5 +294,47 @@ describe("audience assistant", () => {
       expect.stringContaining("audience.reply.delivery_failed"),
       [41, 7, "audience-delivery:44444444-4444-4444-8444-444444444444", "delivery_unknown", 3, "web"],
     );
+  });
+});
+
+describe("discard audience reply", () => {
+  function fixture(overrides = {}, role = "owner") {
+    let row = { ...baseRow, suggested_reply: "Черновик", reply_guidance: "Совет", status: "reply_ready", ...overrides };
+    const query = vi.fn(async (sql: string, values?: unknown[]) => {
+      if (["begin", "commit", "rollback"].includes(sql)) return { rows: [], rowCount: 0 };
+      if (sql.includes("from user_project_preferences")) return { rows: [{ ...membership, role }], rowCount: 1 };
+      if (sql.includes("from bot_client_inquiries inquiry")) return { rows: [row], rowCount: 1 };
+      if (sql.includes("set suggested_reply = null")) {
+        expect(values).toEqual([41, 7, 1]);
+        row = { ...row, suggested_reply: null as never, reply_guidance: null as never, status: "pending", version: 2 };
+        return { rows: [], rowCount: 1 };
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    });
+    return { query, pool: { connect: async () => ({ query, release: vi.fn() }) } };
+  }
+  it("removes reply text and advice but retains the original inquiry", async () => {
+    const { query, pool } = fixture();
+    await expect(discardAudienceReply({ actorUserId: 3, inquiryId: 41, expectedVersion: 1, pool: pool as never }))
+      .resolves.toMatchObject({ suggestedReply: null, replyGuidance: null, status: "pending", incomingText: baseRow.incoming_text, version: 2 });
+    expect(query).toHaveBeenCalledWith("commit");
+  });
+  it.each([
+    [{ status: "approved" }, 1, "delivery_in_progress"],
+    [{ status: "failed", delivery_error_code: "delivery_unknown" }, 1, "delivery_unknown"],
+    [{ status: "sent" }, 1, "invalid_status"],
+    [{ version: 2 }, 1, "version_conflict"],
+  ])("blocks unsafe or stale deletion %j", async (overrides, version, code) => {
+    const { query, pool } = fixture(overrides);
+    await expect(discardAudienceReply({ actorUserId: 3, inquiryId: 41, expectedVersion: version, pool: pool as never }))
+      .rejects.toMatchObject({ code });
+    expect(query).toHaveBeenCalledWith("rollback");
+    expect(query.mock.calls.some(([sql]) => sql.includes("set suggested_reply = null"))).toBe(false);
+  });
+  it("rejects a publisher without content editing permission", async () => {
+    const { query, pool } = fixture({}, "publisher");
+    await expect(discardAudienceReply({ actorUserId: 3, inquiryId: 41, expectedVersion: 1, pool: pool as never }))
+      .rejects.toMatchObject({ code: "permission_denied" });
+    expect(query.mock.calls.some(([sql]) => sql.includes("set suggested_reply = null"))).toBe(false);
   });
 });

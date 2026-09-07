@@ -1,3 +1,4 @@
+import { lastRewritableStudioMessage } from "./studio-chat-session";
 import { describe, expect, it } from "vitest";
 import {
   mergeStudioChatSessions,
@@ -209,5 +210,26 @@ describe("studio chat session", () => {
     );
 
     expect(merged.draft).toBe("Набранный текст");
+  });
+});
+
+describe("last rewrite target", () => {
+  it("rewrites the newest complete answer even if it needs publication review", () => {
+    const messages = [
+      { id: "old", role: "ai" as const, text: "Готовый пост", postable: true },
+      { id: "review", role: "ai" as const, text: "Текст для проверки", postable: false, reviewable: true, errorMessage: "Проверьте факты" },
+      { id: "user", role: "user" as const, text: "Перепиши" },
+    ];
+    expect(lastRewritableStudioMessage(messages)?.id).toBe("review");
+    expect(lastRewritableStudioMessage([{ id: "legacy", role: "ai", text: "Сохранённый ответ" }])?.id).toBe("legacy");
+  });
+  it("skips interrupted generations, errors, placeholders and empty replies", () => {
+    expect(lastRewritableStudioMessage([
+      { id: "a", role: "ai", text: "Часть", streaming: true },
+      { id: "b", role: "ai", text: "Часть", interrupted: true },
+      { id: "c", role: "ai", text: "Ошибка", errorMessage: "Сбой" },
+      { id: "d", role: "ai", text: "Разбираю задачу…" },
+      { id: "e", role: "ai", text: "  " },
+    ])).toBeUndefined();
   });
 });
