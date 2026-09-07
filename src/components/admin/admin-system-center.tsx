@@ -346,7 +346,10 @@ export function AdminSystemCenter() {
       metrics: invalid && Array.isArray(component.metrics?.activeModels) ? { ...component.metrics,
         activeModels: component.metrics.activeModels.map(model => ({ ...(model as Record<string, unknown>), state })) } : component.metrics };
   }) ?? [], [data, now, error]);
-  const stale = displayed.some(component => component.state === "stale");
+  // An old execution outcome can be observed by a fresh check. Only expired check
+  // timestamps make the snapshot itself stale; the component keeps its own state.
+  const stale = data?.components.some(component =>
+    diagnosticDisplayState({ ...component, state: "healthy" }, now) === "stale") ?? false;
   const [autoRefresh, setAutoRefresh] = useState<AutoRefresh>(0);
   const requestRefresh = useCallback(() => {
     setRefreshing(true);

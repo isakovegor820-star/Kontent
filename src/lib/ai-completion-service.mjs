@@ -43,7 +43,8 @@ const isEngineHealthSignal = (error) => (
 const canRetryNavyModelRejection = (error, fromEngine) => (
   error instanceof AiCompletionError
   && String(fromEngine).startsWith("navy-")
-  && [400, 404, 422].includes(Number(error.status))
+  // A retired model route can return 410 while another model on the same endpoint works.
+  && [400, 404, 410, 422].includes(Number(error.status))
 );
 
 const bounded = (value, fallback, min, max) => {

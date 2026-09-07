@@ -18,6 +18,16 @@ async function flush() { await act(async () => { await vi.advanceTimersByTimeAsy
 function success() { return { ok: true, status: 200, json: async () => systemPayload() }; }
 
 describe("system freshness through rendered cards and queue details", () => {
+  it("distinguishes a fresh check with old execution evidence from an expired snapshot", async () => {
+    const payload = systemPayload();
+    const components = payload.components.map(component => component.id === "redis" ? { ...component, state: "stale" as const } : component);
+    fetchMock.mockResolvedValue({ ok: true, status: 200, json: async () => ({ ...payload, state: "unobserved", components }) });
+    render(<AdminSystemCenter />); await flush();
+    expect(screen.getByRole("heading", { name: "Исправность подтверждена не полностью" })).toBeTruthy();
+    expect(within(screen.getByRole("article")).getAllByText("Данные устарели").length).toBeGreaterThan(0);
+    await act(async () => { await vi.advanceTimersByTimeAsync(61_000); });
+    expect(screen.getByRole("heading", { name: "Состояние требует новой проверки" })).toBeTruthy();
+  });
   it("expires healthy cards, summary and nested queue statuses", async () => {
     fetchMock.mockResolvedValue(success());
     render(<AdminSystemCenter />); await flush();

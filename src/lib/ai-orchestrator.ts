@@ -188,7 +188,8 @@ function canRetryNavyModelRejection(
     && fromEngine.startsWith("navy-")
     && toEngine.startsWith("navy-")
     && error instanceof AiProviderError
-    && [400, 404, 422].includes(Number(error.status)),
+    // Retired routes return 410; the existing no-visible-text and same-provider gates apply.
+    && [400, 404, 410, 422].includes(Number(error.status)),
   );
 }
 

@@ -344,13 +344,13 @@ describe("shared direct/background AI completion service", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
-  it("falls through a Navy model-specific 400 before any text exists", async () => {
+  it.each([400, 410])("falls through a Navy model-specific HTTP %i before any text exists", async (status) => {
     const env = {
       NAVYAI_API_KEY: "secret",
       NAVYAI_API_URL: "https://navy.example/v1",
     };
     const fetchImpl = vi.fn()
-      .mockResolvedValueOnce(new Response("bad model parameters", { status: 400 }))
+      .mockResolvedValueOnce(new Response("model route rejected", { status }))
       .mockResolvedValueOnce(Response.json({
         choices: [{ message: { content: "FALLBACK POST" }, finish_reason: "stop" }],
       }));
@@ -368,28 +368,28 @@ describe("shared direct/background AI completion service", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
-  it("does not send a Navy 400 to an explicitly different provider", async () => {
+  it.each([400, 410])("does not send a Navy HTTP %i to an explicitly different provider", async (status) => {
     const env = {
       NAVYAI_API_KEY: "secret",
       OPENAI_API_KEY: "other-secret",
       AI_FALLBACK_ENGINES: "openai",
       AI_FALLBACK_STRICT: "1",
     };
-    const fetchImpl = vi.fn(async () => new Response("bad parameters", { status: 400 }));
+    const fetchImpl = vi.fn(async () => new Response("model route rejected", { status }));
 
     await expect(completeAiText({ ...request, engine: "navy-deepseek-pro" }, { env, fetchImpl }))
-      .rejects.toMatchObject({ status: 400 });
+      .rejects.toMatchObject({ status });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
-  it("skips an explicit cross-provider fallback after a Navy model rejection and reaches the next Navy model", async () => {
+  it.each([400, 410])("skips a cross-provider fallback after Navy HTTP %i and reaches the next Navy model", async (status) => {
     const env = {
       NAVYAI_API_KEY: "secret",
       OPENAI_API_KEY: "other-secret",
       AI_FALLBACK_ENGINES: "openai",
     };
     const fetchImpl = vi.fn()
-      .mockResolvedValueOnce(new Response("bad model parameters", { status: 400 }))
+      .mockResolvedValueOnce(new Response("model route rejected", { status }))
       .mockResolvedValueOnce(Response.json({
         choices: [{ message: { content: "NAVY FALLBACK" }, finish_reason: "stop" }],
       }));

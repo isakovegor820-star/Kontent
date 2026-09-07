@@ -48,11 +48,11 @@ describe("AI provider orchestration", () => {
     ]);
   });
 
-  it("tries another Navy model when one route rejects parameters before first text", async () => {
+  it.each([400, 410])("tries another Navy model after HTTP %i before first text", async (status) => {
     const calls: string[] = [];
     const factory: AiStreamFactory = async function* (_input, engine) {
       calls.push(engine);
-      if (engine === "navy-deepseek-pro") throw new AiProviderError(engine, 400, "bad_request");
+      if (engine === "navy-deepseek-pro") throw new AiProviderError(engine, status, "bad_request");
       yield "готовый пост";
     };
 
@@ -72,11 +72,11 @@ describe("AI provider orchestration", () => {
     expect(events).toContainEqual({ type: "delta", engine: "navy-qwen-3-6", text: "готовый пост" });
   });
 
-  it("does not send a Navy 400 request to a different provider", async () => {
+  it.each([400, 410])("does not send a Navy HTTP %i request to a different provider", async (status) => {
     const calls: string[] = [];
     const factory: AiStreamFactory = async function* (_input, engine) {
       calls.push(engine);
-      throw new AiProviderError(engine, 400, "bad_request");
+      throw new AiProviderError(engine, status, "bad_request");
     };
     const run = collect(orchestrateText(params, "navy-deepseek-pro", {
       fallbackEngines: ["openai"],
@@ -84,7 +84,7 @@ describe("AI provider orchestration", () => {
       circuitBreaker: null,
     }));
 
-    await expect(run).rejects.toMatchObject({ status: 400 });
+    await expect(run).rejects.toMatchObject({ status });
     expect(calls).toEqual(["navy-deepseek-pro"]);
   });
 
@@ -137,12 +137,12 @@ describe("AI provider orchestration", () => {
     expect(calls).toEqual(["navy-deepseek-pro"]);
   });
 
-  it("не склеивает второй движок после уже показанного delta", async () => {
+  it.each([503, 410])("не склеивает второй движок после delta и HTTP %i", async (status) => {
     const calls: string[] = [];
     const factory: AiStreamFactory = async function* (_input, engine) {
       calls.push(engine);
       yield "часть";
-      throw new AiProviderError(engine, 503, "stream_error");
+      throw new AiProviderError(engine, status, "stream_error");
     };
 
     const events: AiOrchestrationEvent[] = [];
@@ -153,7 +153,7 @@ describe("AI provider orchestration", () => {
       })) events.push(event);
     })();
 
-    await expect(run).rejects.toMatchObject({ code: "stream_error" });
+    await expect(run).rejects.toMatchObject({ code: "stream_error", status });
     expect(calls).toEqual(["navy-deepseek-pro"]);
     expect(events.some((event) => event.type === "fallback")).toBe(false);
     expect(events.some((event) => event.type === "delta" && event.text === "часть")).toBe(true);

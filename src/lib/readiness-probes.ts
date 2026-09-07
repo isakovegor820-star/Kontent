@@ -1,5 +1,7 @@
 import Redis from "ioredis";
-import { aiReady, resolveEngineRuntime, serviceEngine } from "./ai-provider";
+import { randomUUID } from "node:crypto";
+import { resolveEngineRuntime, serviceEngine } from "./ai-provider";
+import { completeAiText } from "./ai-completion-service.mjs";
 import {
   aiProviderCircuitBreaker,
   aiProviderHealthSnapshot,
@@ -101,10 +103,17 @@ interface AiProviderReadinessDependencies {
 const defaultAiProviderReadinessDependencies: AiProviderReadinessDependencies = {
   configured: probeAiConfiguration,
   engine: serviceEngine,
-  // aiReady returns configuration-only for protocols without a capability API.
-  // Such a return value must not be recorded as a successful provider request.
-  canProbe: (engine) => ["openai", "ollama"].includes(resolveEngineRuntime(engine).protocol ?? ""),
-  ready: aiReady,
+  canProbe: (engine) => resolveEngineRuntime(engine).configured && resolveEngineRuntime(engine).supported,
+  // A model catalogue can return 200 while the selected completion route returns 410.
+  // Only an actual terminal completion establishes execution evidence. The fixed prompt
+  // contains no account content; one attempt, no fallback, bounded by five seconds.
+  ready: async (engine) => {
+    const result = await completeAiText({
+      engine, system: "This is a synthetic availability check. Reply only READY.",
+      user: "READY", temperature: 0, maxTokens: 8, providerRequestKey: randomUUID(),
+    }, { allowFallback: false, maxAttempts: 1, timeoutMs: 4_000, overallTimeoutMs: 5_000 });
+    return result.engine === engine && result.text.trim().length > 0;
+  },
   snapshot: aiProviderHealthSnapshot,
   recordSuccess: (engine, latencyMs) => aiProviderCircuitBreaker.recordSuccess(engine, latencyMs),
   recordFailure: (engine, input) => aiProviderCircuitBreaker.recordFailure(engine, input),
@@ -116,9 +125,21 @@ const defaultAiProviderReadinessDependencies: AiProviderReadinessDependencies = 
  * readiness check (and after expiry), establish bounded capability evidence.
  * Fresh runtime failures are preserved; expired results must permit recovery.
  */
-export async function probeAiProviderReadiness(
+const aiReadinessFlights = new Map<EngineId, Promise<ProviderHealthSnapshot[]>>();
+
+export function probeAiProviderReadiness(
   dependencies: AiProviderReadinessDependencies = defaultAiProviderReadinessDependencies,
 ): Promise<ProviderHealthSnapshot[]> {
+  if (dependencies !== defaultAiProviderReadinessDependencies) return runAiProviderReadiness(dependencies);
+  const engine = dependencies.engine();
+  const existing = aiReadinessFlights.get(engine);
+  if (existing) return existing;
+  const flight = runAiProviderReadiness(dependencies).finally(() => aiReadinessFlights.delete(engine));
+  aiReadinessFlights.set(engine, flight);
+  return flight;
+}
+
+async function runAiProviderReadiness(dependencies: AiProviderReadinessDependencies): Promise<ProviderHealthSnapshot[]> {
   const existing = dependencies.snapshot();
   if (!dependencies.configured()) return existing;
   const engine = dependencies.engine();

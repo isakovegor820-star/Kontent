@@ -7,6 +7,7 @@ export class AiCompletionError extends Error {
 }
 
 export function isRetryableAiCompletionError(error: unknown): error is AiCompletionError;
+export function resetAiCompletionCircuits(): void;
 
 export function completeAiText(
   request: {
