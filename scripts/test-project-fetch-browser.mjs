@@ -19,6 +19,11 @@ const server=http.createServer((req,res)=>{
 await new Promise(r=>server.listen(0,'127.0.0.1',r));
 const browser=await firefox.launch({headless:true});
 const report=[];
+const fixtureFailures=[];
+async function runFixture(name,check){
+  try{console.log(JSON.stringify({fixture:name,result:await check()}));}
+  catch(error){const failure={fixture:name,error:String(error?.stack||error)};fixtureFailures.push(failure);console.error(JSON.stringify(failure));}
+}
 try{for(const wrap of [false,true])for(const fault of ['abort','reset']){
  const page=await browser.newPage();const errors=[];page.on('console',m=>{if(m.type()==='error')errors.push(m.text());});page.on('pageerror',e=>errors.push('pageerror:'+e.message));
  await page.goto('http://127.0.0.1:'+server.address().port);
@@ -30,15 +35,16 @@ try{for(const wrap of [false,true])for(const fault of ['abort','reset']){
  },{wrap,fault});
  await new Promise(r=>setTimeout(r,80));report.push({wrap,fault,result,errors});await page.close();
 }
-console.log(JSON.stringify({nativeFavicon:await verifyNativeFirefoxFaviconEvidence(browser)}));
-console.log(JSON.stringify({nativeReadTerminal:await verifyNativeReadTerminalEvidence(browser)}));
-console.log(JSON.stringify({workspacePolling:{engine:'firefox',cases:await verifyNativeWorkspacePolling(browser)}}));
-console.log(JSON.stringify({modalFocus:{engine:'firefox',cases:await verifyNativeModalFocus(browser)}}));
+await runFixture('firefox/nativeFavicon',()=>verifyNativeFirefoxFaviconEvidence(browser));
+await runFixture('firefox/nativeReadTerminal',()=>verifyNativeReadTerminalEvidence(browser));
+await runFixture('firefox/workspacePolling',()=>verifyNativeWorkspacePolling(browser));
+await runFixture('firefox/modalFocus',()=>verifyNativeModalFocus(browser));
 for(const [engine,launcher] of Object.entries({chromium,webkit})){
  const owned=await launcher.launch({headless:true});
- try{console.log(JSON.stringify({workspacePolling:{engine,cases:await verifyNativeWorkspacePolling(owned)}}));
-   console.log(JSON.stringify({modalFocus:{engine,cases:await verifyNativeModalFocus(owned)}}));}finally{await owned.close();}
+ try{await runFixture(`${engine}/workspacePolling`,()=>verifyNativeWorkspacePolling(owned));
+   await runFixture(`${engine}/modalFocus`,()=>verifyNativeModalFocus(owned));}finally{await owned.close();}
 }
 }finally{await browser.close();await new Promise(r=>server.close(r));}
 console.log(JSON.stringify(report,null,2));
 for(const row of report){assert.deepEqual(row.errors,[], 'caught body failures must not become browser runtime errors');assert.equal(row.result,row.fault==='reset'?'TypeError':'AbortError','preserve actual failure classification');}
+assert.equal(fixtureFailures.length,0,`Native fixture failures: ${JSON.stringify(fixtureFailures)}`);

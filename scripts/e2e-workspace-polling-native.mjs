@@ -75,8 +75,10 @@ export async function verifyNativeWorkspacePolling(browser) {
         await page.evaluate(() => undefined);
         await new Promise(resolve => setTimeout(resolve, 60));
         const rows = evidence.snapshot().filter(row => row.path.startsWith("/api/"))
-          .map(({ path, callerFailure, failure, reason, nativeMatchCount, requestMatchCount }) =>
-            ({ path, callerFailure, failure, reason, nativeMatchCount, requestMatchCount }));
+          .map(({ path, callerFailure, failure, reason, nativeMatchCount, requestMatchCount,
+            nativeStartedAt, nativeAbortedAt, nativeFailedAt, failedAt, identityCollision, bodyReader }) =>
+            ({ path, callerFailure, failure, reason, nativeMatchCount, requestMatchCount,
+              nativeStartedAt, nativeAbortedAt, nativeFailedAt, failedAt, identityCollision, bodyReader }));
         report.push({ mode, rows, nativeFailures });
       } finally { await context.close(); }
     }
