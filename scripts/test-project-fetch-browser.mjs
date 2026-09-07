@@ -7,7 +7,7 @@ import {verifyNativeWorkspacePolling} from './e2e-workspace-polling-native.mjs';
 import {verifyNativeModalFocus} from './e2e-modal-focus-native.mjs';
 import {verifyNativeReadTerminalEvidence} from './e2e-native-read-terminal.mjs';
 const require=createRequire(new URL('../package.json',import.meta.url));
-const {chromium,firefox,webkit}=require('playwright-core');
+const {chromium,firefox,webkit}=await import('./e2e-playwright.mjs');
 const ts=require('typescript');
 const source=ts.transpileModule(readFileSync(new URL('../src/lib/project-fetch.ts',import.meta.url),'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText.replace(/^export /gm,'');
 const server=http.createServer((req,res)=>{

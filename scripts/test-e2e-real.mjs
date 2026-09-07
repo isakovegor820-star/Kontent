@@ -20,7 +20,7 @@ import { pathToFileURL } from "node:url";
 import { Queue } from "bullmq";
 import IORedis from "ioredis";
 import pg from "pg";
-import { chromium, firefox, webkit } from "playwright-core";
+import { chromium, firefox, webkit } from "./e2e-playwright.mjs";
 
 import { findAutopilotNearDuplicate } from "../src/lib/autopilot-config.mjs";
 import { hashBotConnectionToken } from "../src/lib/bot-connection.mjs";

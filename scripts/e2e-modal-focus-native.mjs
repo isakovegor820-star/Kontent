@@ -100,7 +100,7 @@ export async function verifyNativeModalFocus(browser){
 }
 
 if(process.argv[1]===fileURLToPath(import.meta.url)){
-  const engines=require('playwright-core');const report=[];
+  const engines=await import('./e2e-playwright.mjs');const report=[];
   for(const engine of ['chromium','firefox','webkit']){
     const browser=await engines[engine].launch({headless:true});
     try{report.push({engine,ok:true,cases:await verifyNativeModalFocus(browser)});}
