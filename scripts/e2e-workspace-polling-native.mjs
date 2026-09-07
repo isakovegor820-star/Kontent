@@ -34,6 +34,13 @@ export async function verifyNativeWorkspacePolling(browser) {
       context.on("response", response => evidence.observeResponse(response));
       context.on("requestfinished", request => evidence.observeFinished(request));
       context.on("requestfailed", request => evidence.observeFailure(request));
+      const nativeFailures = [];
+      context.on("requestfailed", request => {
+        const url = new URL(request.url());
+        if (url.origin === baseUrl && ["/api/channels", "/api/posts", "/api/ai/usage"].includes(url.pathname)) {
+          nativeFailures.push({ path: url.pathname, errorText: request.failure()?.errorText ?? null });
+        }
+      });
       try {
         const page = await context.newPage(); await page.goto(baseUrl);
         await page.addScriptTag({ content: source + `;window.startPolling = startVisibleWorkspacePolling;
@@ -70,7 +77,7 @@ export async function verifyNativeWorkspacePolling(browser) {
         const rows = evidence.snapshot().filter(row => row.path.startsWith("/api/"))
           .map(({ path, callerFailure, failure, reason, nativeMatchCount, requestMatchCount }) =>
             ({ path, callerFailure, failure, reason, nativeMatchCount, requestMatchCount }));
-        report.push({ mode, rows });
+        report.push({ mode, rows, nativeFailures });
       } finally { await context.close(); }
     }
   } finally {
@@ -82,6 +89,6 @@ export async function verifyNativeWorkspacePolling(browser) {
     || (mode === "network" ? row.callerFailure !== false || row.reason !== null
       : row.callerFailure !== true || !["caller_abort_signal", "native_caller_abort_without_transport_terminal"].includes(row.reason)))
     .map(row => ({ mode, ...row })));
-  assert.deepEqual(failures, [], `Polling lifecycle left unproved reads: ${JSON.stringify(failures)}`);
+  assert.deepEqual(failures, [], `Polling lifecycle left unproved reads (${browser.browserType().name()}): ${JSON.stringify(report)}`);
   return report;
 }

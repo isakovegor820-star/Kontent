@@ -99,6 +99,12 @@ jobs:
           done
           printf '%s\n' "$postgres_test_bin" >> "$GITHUB_PATH"
 
+      - name: Install deterministic browsers
+        run: npx playwright-core install --with-deps chromium firefox webkit
+
+      - name: Browser body failure classification and project isolation
+        run: npm run test:project-fetch:browser
+
       - name: Create disposable integration databases
         run: |
           for database in \
@@ -431,12 +437,6 @@ jobs:
 
       - name: Test critical journey contracts
         run: npm run test:contracts
-
-      - name: Install deterministic browsers
-        run: npx playwright-core install --with-deps chromium firefox webkit
-
-      - name: Browser body failure classification and project isolation
-        run: npm run test:project-fetch:browser
 
       - name: Test production Trends hydration
         run: npm run test:trends-hydration:e2e
