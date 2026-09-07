@@ -15,5 +15,10 @@ describe("worker graceful shutdown", () => {
     expect(shutdown.indexOf("if (shutdownStarted) return;")).toBeLessThan(
       shutdown.indexOf("await worker?.close();"),
     );
+    expect(shutdown).toContain("await cronWorker?.close(true);");
+    expect(shutdown.indexOf("await cronWorker?.close(true);")).toBeLessThan(
+      shutdown.indexOf("await worker?.close();"),
+    );
+    expect(shutdown).not.toContain("await cronWorker?.close();");
   });
 });

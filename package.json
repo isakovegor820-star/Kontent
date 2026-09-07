@@ -16,6 +16,7 @@
     "test:focus": "node scripts/check-test-focus.mjs",
     "test:migrations:integration": "node scripts/test-migrations-integration.mjs",
     "test:schema-readiness:integration": "node scripts/test-schema-readiness-integration.mjs",
+    "test:db-pool:integration": "node scripts/test-database-pool-integration.mjs",
     "test:publication-quarantine:integration": "node scripts/test-publication-quarantine-integration.mjs",
     "test:autopilot-confirmation:integration": "node scripts/test-autopilot-confirmation-integration.mjs",
     "test:semantic-publication:integration": "node scripts/test-semantic-publication-integration.mjs",
