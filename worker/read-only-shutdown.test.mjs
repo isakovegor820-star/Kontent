@@ -34,17 +34,25 @@ describe("restartable worker reads during shutdown", () => {
     const shutdownText = parsed.statements.find((entry) => ts.isFunctionDeclaration(entry) && entry.name?.text === "shutdown").getText(parsed);
     const queues = Object.fromEntries([...shutdownText.matchAll(/await (\w+)\?\.close\(\)/gu)].map((match) => [match[1], null]));
     const close = vi.fn(() => activeSend);
+    const closeCron = vi.fn(async () => {});
     const exit = vi.fn();
+    const reportWorkerDatabasePool = vi.fn();
+    const clearInterval = vi.fn();
+    const workerDatabasePoolReportTimer = {};
     const shutdown = workerFunction("shutdown", {
-      ...queues, readOnlyWork, shutdownStarted: false, worker: { close },
+      ...queues, readOnlyWork, shutdownStarted: false, worker: { close }, cronWorker: { close: closeCron },
       telegramPollingLeaseHeld: false, TELEGRAM_POLLING_OWNER: null,
       stopPublicationHeartbeat: vi.fn(), stopTelegramPollingLeaseRenewal: vi.fn(),
+      reportWorkerDatabasePool, clearInterval, workerDatabasePoolReportTimer,
       console: { log: vi.fn() }, process: { exit },
     });
     const run = shutdown("SIGTERM");
     await shutdown("SIGTERM");
     expect(readOnlyWork.signal.aborted).toBe(true);
     expect(close).toHaveBeenCalledTimes(1);
+    expect(closeCron).toHaveBeenCalledExactlyOnceWith(true);
+    expect(clearInterval).toHaveBeenCalledExactlyOnceWith(workerDatabasePoolReportTimer);
+    expect(reportWorkerDatabasePool).toHaveBeenCalledTimes(1);
     expect(exit).not.toHaveBeenCalled();
     releaseSend(); await run;
     expect(exit).toHaveBeenCalledExactlyOnceWith(0);
