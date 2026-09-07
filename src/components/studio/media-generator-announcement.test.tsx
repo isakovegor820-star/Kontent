@@ -42,6 +42,8 @@ it.each([false, true])("announces progress once and respects reduced motion=%s t
   expect(announcement.closest('[aria-busy="true"]')).toBeNull();
   expect(view.getAllByRole("status")).toEqual([announcement]);
   expect(view.container.querySelector('article')?.closest('[aria-busy="true"]')).not.toBeNull();
+  // The history DOM can commit before its passive scrolling effect runs.
+  await waitFor(() => expect(scroll).toHaveBeenCalledTimes(1));
   expect(scroll).toHaveBeenCalledWith({ behavior: reduced ? "instant" : "smooth", block: "nearest" });
 
   await waitFor(() => expect(complete).toBeTypeOf("function"));
