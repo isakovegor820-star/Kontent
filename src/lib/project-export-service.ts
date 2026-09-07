@@ -457,6 +457,14 @@ async function loadSourceRows(
          left join channels channel
            on channel.id = weekly.channel_id and channel.project_id = item.project_id
         where item.project_id = $1 and item.post_id is null
+          and not exists (
+            select 1
+              from monthly_campaign_plans newer
+             where newer.project_id = plan.project_id
+               and newer.campaign_id = plan.campaign_id
+               and (newer.revision > plan.revision
+                 or (newer.revision = plan.revision and newer.id > plan.id))
+          )
           and item.scheduled_for between $3::date and $4::date
           ${itemFilters}
         order by item.scheduled_for, item.position, item.id

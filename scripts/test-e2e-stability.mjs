@@ -6,7 +6,9 @@ import { join, relative, resolve } from "node:path";
 
 import { selectFreshJourneyFailureDetail } from "./e2e-stability-artifacts.mjs";
 import {
-  E2E_BOT_CONNECT_TOKEN_CANARY,
+  E2E_BOT_CONNECT_TOKEN_CANARIES,
+  E2E_PII_SCAN_POLICY,
+  escapeE2eUnzipEntryPattern,
   inspectE2eCanaryBuffer,
   inspectE2eNetworkEvents,
   inspectE2eTextEvidence,
@@ -81,7 +83,10 @@ const E2E_TEXT_EVIDENCE_SUFFIXES = Object.freeze([
 ]);
 const E2E_ARCHIVE_EVIDENCE_SUFFIXES = Object.freeze([".xlsx", ".zip"]);
 const E2E_EVIDENCE_CANARIES = Object.freeze([
-  Object.freeze({ label: "bot-connect-token", value: E2E_BOT_CONNECT_TOKEN_CANARY }),
+  ...Object.entries(E2E_BOT_CONNECT_TOKEN_CANARIES).map(([state, value]) => Object.freeze({
+    label: `bot-connect-token-${state}`,
+    value,
+  })),
 ]);
 
 function extractArchiveContent(path) {
@@ -103,10 +108,54 @@ function extractArchiveContent(path) {
   });
 }
 
+export function isE2eArchiveTextEntry(path) {
+  const normalized = String(path || "").toLowerCase();
+  return E2E_TEXT_EVIDENCE_SUFFIXES.some((suffix) => normalized.endsWith(suffix))
+    || [".network", ".rels", ".stacks", ".trace", ".xml"].some(
+      (suffix) => normalized.endsWith(suffix),
+    );
+}
+
+async function extractArchiveTextEntries(path) {
+  const listing = await new Promise((resolveList, rejectList) => {
+    execFile(
+      "unzip",
+      ["-Z1", path],
+      { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
+      (error, stdout, stderr) => {
+        if (error) {
+          rejectList(new Error(
+            `unable to inventory archive ${path}: ${String(stderr || error.message).trim()}`,
+          ));
+          return;
+        }
+        resolveList(String(stdout).split(/\r?\n/gu).filter(isE2eArchiveTextEntry));
+      },
+    );
+  });
+  return Promise.all(listing.map((entry) => new Promise((resolveEntry, rejectEntry) => {
+    execFile(
+      "unzip",
+      ["-p", path, escapeE2eUnzipEntryPattern(entry)],
+      { encoding: "buffer", maxBuffer: 256 * 1024 * 1024 },
+      (error, stdout, stderr) => {
+        if (error) {
+          rejectEntry(new Error(
+            `unable to inspect archive entry ${path}::${entry}: ${String(stderr || error.message).trim()}`,
+          ));
+          return;
+        }
+        resolveEntry({ entry, content: Buffer.from(stdout).toString("utf8") });
+      },
+    );
+  })));
+}
+
 async function scanJourneyEvidence(directory, inventory, networkEvents) {
   const findings = [...inspectE2eNetworkEvents(networkEvents)];
   let textFilesScanned = 0;
   let archivesExpanded = 0;
+  let archiveTextEntriesScanned = 0;
   for (const entry of inventory) {
     const path = join(directory, entry.path);
     const content = await readFile(path);
@@ -123,6 +172,14 @@ async function scanJourneyEvidence(directory, inventory, networkEvents) {
         expanded,
         E2E_EVIDENCE_CANARIES,
       ));
+      const archiveTextEntries = await extractArchiveTextEntries(path);
+      archiveTextEntriesScanned += archiveTextEntries.length;
+      for (const archiveEntry of archiveTextEntries) {
+        findings.push(...inspectE2eTextEvidence(
+          `${entry.path}::${archiveEntry.entry}`,
+          archiveEntry.content,
+        ));
+      }
     }
   }
   if (findings.length > 0) {
@@ -139,8 +196,10 @@ async function scanJourneyEvidence(directory, inventory, networkEvents) {
     filesScanned: inventory.length,
     textFilesScanned,
     archivesExpanded,
+    archiveTextEntriesScanned,
     networkEventsScanned: networkEvents.length,
     canaries: E2E_EVIDENCE_CANARIES.map(({ label }) => label),
+    piiPolicy: E2E_PII_SCAN_POLICY,
     findings: 0,
   };
 }

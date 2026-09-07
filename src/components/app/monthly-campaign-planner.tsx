@@ -39,6 +39,7 @@ import {
   monthlyCampaignWorkflowStep,
   parseMonthlyCampaignDetail,
   parseMonthlyCampaignList,
+  shouldPollMonthlyCampaignRegeneration,
   type MonthlyCampaignClientDetail,
   type MonthlyCampaignClientItem,
   type MonthlyCampaignClientPlan,
@@ -94,8 +95,6 @@ const WORKFLOW = [
 ];
 
 const WEEKDAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"] as const;
-
-const REGENERATION_TERMINAL = new Set(["completed", "stale", "failed", "cancelled"]);
 
 function nextMonth(): string {
   const now = new Date();
@@ -341,9 +340,7 @@ export function MonthlyCampaignPlanner() {
   const latestRegeneration = plan
     ? detail?.regenerations.find((operation) => operation.planId === plan.id) ?? null
     : null;
-  const hasActiveRegeneration = latestRegeneration
-    ? !REGENERATION_TERMINAL.has(latestRegeneration.status)
-    : false;
+  const hasActiveRegeneration = shouldPollMonthlyCampaignRegeneration(detail);
   const regenerationFailed = latestRegeneration?.status === "failed"
     || latestRegeneration?.status === "stale"
     || latestRegeneration?.status === "cancelled";

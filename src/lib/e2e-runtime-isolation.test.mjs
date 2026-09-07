@@ -125,6 +125,23 @@ describe("real E2E runtime isolation", () => {
     expect(source).toContain("publicationBlocksLoad.ok()");
   });
 
+  it("waits for the project invitation form to become interactive before editing it", () => {
+    const source = readFileSync(resolve("scripts/test-e2e-real.mjs"), "utf8");
+
+    expect(source).toContain("data-project-team-interactive");
+    expect(source.indexOf("data-project-team-interactive")).toBeLessThan(source.indexOf('inviteEmailInput.fill(reviewerEmail)'));
+  });
+
+  it("uses the current links-and-leads analytics contract", () => {
+    const source = readFileSync(resolve("scripts/test-e2e-real.mjs"), "utf8");
+
+    expect(source).toContain('name: "Ссылки и заявки", exact: true');
+    expect(source).toContain('trackingMetric("Подтверждённые заявки")');
+    expect(source).toContain('name: "Таблица переходов и подтверждённых заявок"');
+    expect(source).toContain('trackingTableRegion.locator("caption")');
+    expect(source).not.toContain('aria-label="Путь выбранного среза"');
+  });
+
   it("records WebKit screenshot CSP instrumentation without muting CSP outside screenshots", () => {
     const source = readFileSync(resolve("scripts/test-e2e-real.mjs"), "utf8");
 
@@ -209,26 +226,45 @@ describe("real E2E runtime isolation", () => {
   it("keeps the BLK-01 token canary out of portable evidence and scans every journey fail-closed", () => {
     const harness = readFileSync(resolve("scripts/test-e2e-real.mjs"), "utf8");
     const stability = readFileSync(resolve("scripts/test-e2e-stability.mjs"), "utf8");
-    const tokenJourney = harness.indexOf("bot connect token hygiene");
+    const tokenJourney = harness.indexOf("const botConnectNetworkUrls");
     const mainTraceStart = harness.indexOf("await context.tracing.start(E2E_EVIDENCE_TRACE_OPTIONS)");
 
-    expect(harness).toContain("E2E_BOT_CONNECT_TOKEN_CANARY");
+    expect(harness).toContain("E2E_BOT_CONNECT_TOKEN_CANARIES");
     expect(harness).toContain('botConnectCleanUrl.pathname === "/bot/connect"');
-    expect(harness).toContain("!botConnectDom.includes(E2E_BOT_CONNECT_TOKEN_CANARY)");
-    expect(harness).toContain("!botConnectHistory.includes(E2E_BOT_CONNECT_TOKEN_CANARY)");
+    expect(harness).toContain("assertBotConnectSurfaceClean");
     expect(harness).toContain("!botConnectNetworkUrls.some");
+    expect(harness).toContain('reusedBotConfirm.status === 410');
+    expect(harness).toContain('entry.status === 401 && entry.body?.error === "unauthorized"');
+    expect(harness).toContain("async function withExpectedBrowserConsoleErrors(labels, operation)");
+    expect(harness.match(/withExpectedBrowserConsoleErrors\(\["main"\]/gu)).toHaveLength(2);
+    expect(harness).toContain('kind: "expected.bot-connect-unauthorized"');
+    expect(harness).toContain('kind: "expected.bot-connect-unavailable"');
+    expect(harness).toContain('states: ["unknown", "malformed", "expired", "pending", "unauthorized", "connected", "reused-unavailable"]');
+    expect(harness).toContain('navigation: ["refresh", "back", "forward", "reopen"]');
+    expect(harness).toContain("const traverseBotConnectHistory = async (direction, expectedPath, label)");
+    expect(harness).toContain("within the bounded history depth");
+    expect(harness).toContain("historySteps: { back: botConnectBackSteps, forward: botConnectForwardSteps }");
+    expect(harness).toContain("const ownerSecondPage = botConnectSecondPage");
+    expect(harness).toContain("traceCaptureStartedAfterTokenConsumption: true");
     expect(harness).toContain("queryKeys: Array.from(parsed.searchParams.keys()).sort()");
     expect(harness).toContain("hasHash: parsed.hash.length > 0");
-    expect(harness).toContain("from: describeHistoryUrl(null)");
-    expect(harness).toContain("to: url == null ? null : describeHistoryUrl(url)");
-    expect(harness).not.toContain("to: url == null ? null : String(url)");
-    expect(harness).toContain("traceCaptureStartedAfterTokenConsumption: true");
+    expect(harness).toContain("from: describeHistoryUrl(fromUrl)");
+    expect(harness).toContain("requestedUrl: requested");
+    expect(harness).toContain("currentUrl: current");
+    expect(harness).not.toContain("portableHistoryUrl");
+    expect(harness).toContain("const result = original(state, title, url)");
+    expect(harness.indexOf("const result = original(state, title, url)"))
+      .toBeLessThan(harness.indexOf("recordHistory(method, url, fromUrl)"));
     expect(tokenJourney).toBeGreaterThan(0);
     expect(mainTraceStart).toBeGreaterThan(tokenJourney);
 
     expect(stability).toContain("async function scanJourneyEvidence(directory, inventory, networkEvents)");
     expect(stability).toContain("inspectE2eNetworkEvents(networkEvents)");
     expect(stability).toContain("inspectE2eTextEvidence(entry.path");
+    expect(stability).toContain("extractArchiveTextEntries(path)");
+    expect(stability).toContain('`${entry.path}::${archiveEntry.entry}`');
+    expect(stability).toContain("archiveTextEntriesScanned");
+    expect(stability).toContain("piiPolicy: E2E_PII_SCAN_POLICY");
     expect(stability).toContain("extractArchiveContent(path)");
     expect(stability).toContain("inspectE2eCanaryBuffer(");
     expect(stability).toContain("const evidenceSafety = await scanJourneyEvidence");
@@ -281,6 +317,50 @@ describe("real E2E runtime isolation", () => {
       .toBeLessThan(source.indexOf("update sessions set expires_at = now() - interval '1 second'"));
     expect(source.indexOf('waitForFirstPartyNetworkIdle(ownerSecondPage, "owner second Calendar before expiry")'))
       .toBeLessThan(source.indexOf("const activeOwnerSessions"));
+  });
+
+  it("settles the login auth loader before beginning the token history transition", () => {
+    const source = readFileSync(resolve("scripts/test-e2e-real.mjs"), "utf8");
+    const loginSeed = source.indexOf('await page.goto("/login", { waitUntil: "domcontentloaded", timeout: 90_000 })');
+    const loginIdle = source.indexOf('waitForFirstPartyNetworkIdle(page, "bot connection login history seed")');
+    const pendingToken = source.indexOf('E2E_BOT_CONNECT_TOKEN_CANARIES.lifecycle', loginSeed);
+
+    expect(loginSeed).toBeGreaterThan(-1);
+    expect(loginIdle).toBeGreaterThan(loginSeed);
+    expect(loginIdle).toBeLessThan(pendingToken);
+  });
+
+  it("drains Studio first-party loaders before the intentional provider replay reload", () => {
+    const source = readFileSync(resolve("scripts/test-e2e-real.mjs"), "utf8");
+    const studioIdle = source.indexOf(
+      'waitForFirstPartyNetworkIdle(page, "Library create Studio before reload")',
+    );
+    const studioReload = source.indexOf("await reloadInBrowser(page);", studioIdle);
+
+    expect(studioIdle).toBeGreaterThan(-1);
+    expect(studioReload).toBeGreaterThan(studioIdle);
+  });
+
+  it("drains restored first-party loaders before closing the runtime-restart error window", () => {
+    const source = readFileSync(resolve("scripts/test-e2e-real.mjs"), "utf8");
+    const reviewerReload = source.indexOf('reloadAfterRuntimeRestart(reviewerPage, "reviewer page")');
+    const mainIdle = source.indexOf(
+      'waitForFirstPartyNetworkIdle(page, "main Settings after runtime restart")',
+      reviewerReload,
+    );
+    const reviewerIdle = source.indexOf(
+      'waitForFirstPartyNetworkIdle(reviewerPage, "reviewer Calendar after runtime restart")',
+      mainIdle,
+    );
+    const closeRestartWindow = source.indexOf(
+      'expectedBrowserConsoleScopes.delete("main")',
+      reviewerIdle,
+    );
+
+    expect(reviewerReload).toBeGreaterThan(-1);
+    expect(mainIdle).toBeGreaterThan(reviewerReload);
+    expect(reviewerIdle).toBeGreaterThan(mainIdle);
+    expect(closeRestartWindow).toBeGreaterThan(reviewerIdle);
   });
 
   it("finalizes browser evidence before freezing the successful diagnostic result", () => {

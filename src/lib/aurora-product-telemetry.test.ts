@@ -36,7 +36,12 @@ describe("Aurora product telemetry", () => {
       durationMs: null, errorCode: null, requestId: null, operationId: null, sessionId: null,
       safeContext: { device: "desktop", source: "ui", operationKind: "user_action" },
     } as never)).toBe(false);
-    expect(sink).toHaveBeenCalledTimes(1);
+    expect(emitAuroraProductEvent({
+      sectionId: "today", featureId: "work_item", action: "task_dismissed", stage: "started", outcome: "pending",
+      durationMs: null, errorCode: null, requestId: null, operationId: null, sessionId: null,
+      safeContext: { device: "desktop", source: "ui", operationKind: "user_action" },
+    })).toBe(true);
+    expect(sink).toHaveBeenCalledTimes(2);
     const queuedEvent = sink.mock.calls[0][0];
     expect(queuedEvent).toMatchObject({ important: false });
     expect(auroraProductEventWireDraft(queuedEvent)).not.toHaveProperty("important");

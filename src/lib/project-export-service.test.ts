@@ -229,6 +229,10 @@ describe("project export service", () => {
         }
         if (sql.includes("from monthly_campaign_items item")) {
           expect(sql.indexOf("lower(btrim(")).toBeLessThan(sql.indexOf("limit $6"));
+          expect(sql).toContain("not exists (");
+          expect(sql).toContain("newer.project_id = plan.project_id");
+          expect(sql).toContain("newer.campaign_id = plan.campaign_id");
+          expect(sql).toContain("newer.revision > plan.revision");
           expect(values).toEqual([
             7,
             "Europe/Amsterdam",

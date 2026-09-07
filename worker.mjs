@@ -26,9 +26,10 @@ process.env.AURORA_RUNTIME_ROLE = "worker";
 import "./sentry.worker.config.mjs";
 import { Worker, Queue, UnrecoverableError } from "bullmq";
 import IORedis from "ioredis";
-import pg from "pg";
 import { createHash, randomUUID } from "node:crypto";
 import { Temporal } from "@js-temporal/polyfill";
+import { resolveDatabasePoolConfig } from "./src/lib/db-pool-config.mjs";
+import { MonitoredPgPool } from "./src/lib/monitored-pg-pool.mjs";
 // Чистые функции (парсинг, страж фактов, раскладка, разметка) вынесены в отдельный модуль
 // без сайд-эффектов — так их можно тестировать, не поднимая пул/Redis/BullMQ.
 import {
@@ -713,9 +714,25 @@ const isLocal = /\/\/(?:[^@/]+@)?(?:localhost|127\.0\.0\.1)(?::|\/)/u.test(DATAB
 // PGSSL_REJECT_UNAUTHORIZED=false, если cert-chain хоста не доверен Node. Neon использует
 // сертификаты Amazon Trust Services/Let's Encrypt (в стандартном CA-бандле), так что true работает.
 const sslRejectUnauthorized = process.env.PGSSL_REJECT_UNAUTHORIZED !== "false";
-const pool = new pg.Pool({
+const databasePoolConfig = resolveDatabasePoolConfig();
+const pool = new MonitoredPgPool({
   connectionString: DATABASE_URL,
   ssl: isLocal ? false : { rejectUnauthorized: sslRejectUnauthorized },
+  max: databasePoolConfig.max,
+  connectionTimeoutMillis: databasePoolConfig.connectionTimeoutMillis,
+  query_timeout: databasePoolConfig.queryTimeoutMillis,
+  statement_timeout: databasePoolConfig.statementTimeoutMillis,
+  idle_in_transaction_session_timeout: databasePoolConfig.idleInTransactionTimeoutMillis,
+  idleTimeoutMillis: databasePoolConfig.idleTimeoutMillis,
+  maxLifetimeSeconds: databasePoolConfig.maxLifetimeSeconds,
+}, databasePoolConfig);
+console.log("[worker] database pool configured", {
+  role: databasePoolConfig.role,
+  max: databasePoolConfig.max,
+  connectionTimeoutMillis: databasePoolConfig.connectionTimeoutMillis,
+  queryTimeoutMillis: databasePoolConfig.queryTimeoutMillis,
+  statementTimeoutMillis: databasePoolConfig.statementTimeoutMillis,
+  idleInTransactionTimeoutMillis: databasePoolConfig.idleInTransactionTimeoutMillis,
 });
 // Облачный Postgres рвёт простаивающие соединения. Без этого слушателя обрыв idle-клиента
 // = uncaught exception = падение всего воркера. Логируем — пул переподключится сам (ревью).
@@ -732,6 +749,16 @@ try {
   await pool.end().catch(() => {});
   process.exit(1);
 }
+
+const WORKER_DATABASE_POOL_REPORT_INTERVAL_MS = 60_000;
+const reportWorkerDatabasePool = () => {
+  console.log("[worker] database pool snapshot", pool.auroraSnapshot());
+};
+const workerDatabasePoolReportTimer = setInterval(
+  reportWorkerDatabasePool,
+  WORKER_DATABASE_POOL_REPORT_INTERVAL_MS,
+);
+workerDatabasePoolReportTimer.unref();
 
 const PUBLICATION_OVERDUE_GRACE_MS = publicationGraceMs(process.env);
 if (workerModeHasPublication(process.env.AURORA_WORKER_MODE)) {
@@ -12703,6 +12730,8 @@ async function shutdown(sig) {
   // Cancel restartable reads before waiting for publication workers to drain.
   readOnlyWork.stop();
   console.log(`[worker] ${sig} — завершаюсь аккуратно…`);
+  clearInterval(workerDatabasePoolReportTimer);
+  reportWorkerDatabasePool();
   // Stop refreshing immediately. The shared key expires naturally within 30s; deleting it
   // here could hide another healthy publication worker using the same readiness key.
   stopPublicationHeartbeat();
@@ -12716,6 +12745,13 @@ async function shutdown(sig) {
     telegramPollingQueueOpen = false;
   }
   try {
+    // Reconnaissance and the other cron processors are replayable BullMQ jobs and
+    // may be blocked in a provider timeout/backoff when the container is stopped.
+    // Do not let that best-effort work consume the runtime's whole termination
+    // budget: detach it first so the durable publication workers below can drain.
+    // BullMQ will recover the interrupted cron job from its active lock after the
+    // replacement worker starts.
+    await cronWorker?.close(true);
     await worker?.close();
     await mediaWorker?.close();
     await legalVisualRenderWorker?.close();
@@ -12735,7 +12771,6 @@ async function shutdown(sig) {
     await autopilotQueue?.close();
     await statsWorker?.close();
     await statsProducerQueue?.close();
-    await cronWorker?.close();
     await cronQueue?.close();
   } catch {
     /* всё равно выходим */

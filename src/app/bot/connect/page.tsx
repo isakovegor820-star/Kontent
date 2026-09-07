@@ -13,7 +13,7 @@ import {
 import { buttonClassName, Button } from "@/components/ui/button";
 import { clearBotConnectionToken, consumeBotConnectionToken } from "@/lib/bot-connect-token";
 
-type InspectionState = "invalid" | "pending" | "expired" | "revoked" | "confirmed";
+type InspectionState = "pending" | "confirmed" | "unavailable";
 
 type Inspection = {
   ok?: boolean;
@@ -65,8 +65,7 @@ export default function BotConnectPage() {
       if (body.state === "pending" && body.authenticated && body.accountEnabled === false) setView("disabled");
       else if (body.state === "pending") setView("ready");
       else if (body.state === "confirmed") setView("connected");
-      else if (body.state === "expired") setView("expired");
-      else if (body.state === "revoked") setView("revoked");
+      else if (body.state === "unavailable") setView("used");
       else setView("invalid");
     } catch {
       setView("error");
@@ -113,9 +112,7 @@ export default function BotConnectPage() {
         setView("connected");
         return;
       }
-      if (body?.error === "expired") setView("expired");
-      else if (body?.error === "revoked") setView("revoked");
-      else if (body?.error === "used") setView("used");
+      if (body?.error === "link_unavailable") setView("used");
       else if (body?.error === "account_disabled") setView("disabled");
       else if (body?.error === "unauthorized") setView("ready");
       else setView("error");

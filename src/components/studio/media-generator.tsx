@@ -21,6 +21,7 @@ import {
 
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/primitives";
+import { TaskStatus } from "@/components/ui/task-status";
 import {
   shouldRetainMediaRequestKey,
   startImmediateMediaPolling,
@@ -173,17 +174,17 @@ export function mediaGenerationErrorText(value: string | null | undefined) {
 function statusCopy(generation: MediaGeneration) {
   switch (generation.status) {
     case "queued":
-      return { title: "Задача принята", body: "Ждём свободный слот генератора.", icon: Clock3 };
+      return { title: "Жду очереди…", body: "", icon: Clock3 };
     case "submitting":
-      return { title: "Передаём модели", body: "Проверяем задачу и начинаем генерацию.", icon: Sparkles };
+      return { title: "Начинаю…", body: "", icon: Sparkles };
     case "generating":
       return {
-        title: generation.kind === "video" ? "Видео создаётся" : "Изображение создаётся",
+        title: generation.kind === "video" ? "Создаю видео…" : "Создаю изображение…",
         body: "",
         icon: RotateCcw,
       };
     case "saving":
-      return { title: "Сохраняем файл", body: "Копируем результат в медиатеку Авроры.", icon: Download };
+      return { title: "Сохраняю…", body: "", icon: Download };
     case "ready":
       return { title: "Готово", body: "Файл сохранён и не исчезнет после обновления страницы.", icon: CheckCircle2 };
     default:
@@ -540,7 +541,6 @@ export function MediaGenerator({
               const StatusIcon = status.icon;
               const active = ACTIVE.has(generation.status);
               const vertical = ["9:16", "2:3", "3:4"].includes(generation.aspectRatio);
-              const aspectRatio = generation.aspectRatio.replace(":", " / ");
 
               return (
                 <article key={generation.id} className="space-y-5" aria-label={`Запрос: ${generation.prompt}`}>
@@ -574,18 +574,7 @@ export function MediaGenerator({
                       </div>
                     )}
 
-                    {active && (
-                      <div
-                        className={cn(
-                          "relative w-full overflow-hidden rounded-[18px] bg-surface-inset outline -outline-offset-1 outline-[var(--image-outline)]",
-                          vertical ? "max-w-[360px]" : "max-w-[640px]",
-                        )}
-                        style={{ aspectRatio }}
-                        aria-label={status.title}
-                      >
-                        <div className="skeleton absolute inset-0 rounded-none" aria-hidden />
-                      </div>
-                    )}
+                    {active && <TaskStatus label={status.title} />}
 
                     {generation.status === "ready" && generation.assetUrl && (
                       <div

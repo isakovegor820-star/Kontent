@@ -51,6 +51,7 @@ export type MonthlyCampaignClientDetail = {
   regenerations: {
     id: number;
     planId: number;
+    resultPlanId: number | null;
     scope: "item" | "week" | "month";
     weekStartsOn: string | null;
     status: "pending" | "processing" | "completed" | "stale" | "retryable_failed" | "failed" | "cancelled";
@@ -221,16 +222,20 @@ export function parseMonthlyCampaignDetail(value: unknown): MonthlyCampaignClien
     const operation = record(value);
     const id = positive(operation?.id);
     const planId = positive(operation?.planId);
+    const resultPlanId = operation?.resultPlanId == null ? null : positive(operation.resultPlanId);
     const targetItemIds = Array.isArray(operation?.targetItemIds)
       ? operation.targetItemIds.map(positive)
       : [];
-    if (!operation || !id || !planId || targetItemIds.some((item) => item === null)
+    if (!operation || !id || !planId
+        || (operation.resultPlanId != null && !resultPlanId)
+        || targetItemIds.some((item) => item === null)
         || !["item", "week", "month"].includes(String(operation.scope))
         || !["pending", "processing", "completed", "stale", "retryable_failed", "failed", "cancelled"]
           .includes(String(operation.status))) return null;
     return {
       id,
       planId,
+      resultPlanId,
       scope: operation.scope as "item" | "week" | "month",
       weekStartsOn: operation.weekStartsOn == null ? null : dateOnly(operation.weekStartsOn),
       status: operation.status as MonthlyCampaignClientDetail["regenerations"][number]["status"],
@@ -244,6 +249,23 @@ export function parseMonthlyCampaignDetail(value: unknown): MonthlyCampaignClien
     plans: plans as MonthlyCampaignClientPlan[],
     regenerations: regenerations as MonthlyCampaignClientDetail["regenerations"],
   };
+}
+
+export function shouldPollMonthlyCampaignRegeneration(
+  detail: MonthlyCampaignClientDetail | null,
+): boolean {
+  if (!detail) return false;
+  const visiblePlanIds = new Set(detail.plans.map((plan) => plan.id));
+  return detail.regenerations.some((operation) => (
+    operation.status === "pending"
+      || operation.status === "processing"
+      // The detail endpoint is assembled from several READ COMMITTED queries. A worker can
+      // commit between the plan and operation reads, briefly exposing `completed` before the
+      // result revision appears in `plans`; keep polling until that revision is visible.
+      || (operation.status === "completed"
+        && operation.resultPlanId !== null
+        && !visiblePlanIds.has(operation.resultPlanId))
+  ));
 }
 
 export function campaignMonthRange(month: string): { startsOn: string; endsOn: string } | null {
