@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 const PATH = /^\/api\/(?:drafts\/[1-9]\d*\/editorial\/decisions|monthly-campaigns\/[1-9]\d*\/plans)$/u;
 const HEADER = "x-aurora-e2e-editorial-id";
 const MAX_BYTES = 16_384;
+const MAX_PLAN_BYTES = 65_536;
 const hash = value => createHash("sha256").update(String(value)).digest("hex");
 const positive = value => Number.isSafeInteger(value) && value > 0 ? value : null;
 const contentHash = value => typeof value === "string" && /^[a-f0-9]{64}$/u.test(value) ? value : null;
@@ -64,7 +65,7 @@ export async function installEditorialNativeBodyObserver(context, { baseUrl }) {
       });
     }
   });
-  await context.addInitScript(({ origin, header, maxBytes }) => {
+  await context.addInitScript(({ origin, header, maxBytes, maxPlanBytes }) => {
     if (location.origin !== origin) return;
     const documentId = crypto.randomUUID(); let sequence = 0;
     const pending = new Set(); const failures = [];
@@ -106,6 +107,7 @@ export async function installEditorialNativeBodyObserver(context, { baseUrl }) {
       let headers; try { headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined)); }
       catch { return Reflect.apply(nativeFetch, this, [input, init]); }
       if (headers.has(header)) { send({ kind: "collision", identity: headers.get(header) }); return Reflect.apply(nativeFetch, this, [input, init]); }
+      const bodyLimit = url.pathname.startsWith("/api/monthly-campaigns/") ? maxPlanBytes : maxBytes;
       const id = ++sequence; const identity = crypto.randomUUID(); headers.set(header, identity);
       const observedInit = new Proxy({ headers }, { get: (target, key) => key === "headers" ? target.headers
         : init == null ? undefined : Reflect.get(init, key, init) });
@@ -131,7 +133,7 @@ export async function installEditorialNativeBodyObserver(context, { baseUrl }) {
             return Reflect.apply(read, this, readArgs).then(value => {
               if (!value.done) {
                 bytes += value.value?.byteLength ?? 0;
-                if (!(value.value instanceof Uint8Array) || bytes > maxBytes) { overflow = true; chunks.length = 0; }
+                if (!(value.value instanceof Uint8Array) || bytes > bodyLimit) { overflow = true; chunks.length = 0; }
                 else if (!overflow) chunks.push(value.value.slice());
               }
               emit({ kind: "read", done: value.done === true, bytes: value.value?.byteLength ?? 0 });
@@ -164,7 +166,7 @@ export async function installEditorialNativeBodyObserver(context, { baseUrl }) {
         return response;
       }, error => { report({ kind: "fetch-error", error: error.name }); throw error; });
     };
-  }, { origin, header: HEADER, maxBytes: MAX_BYTES });
+  }, { origin, header: HEADER, maxBytes: MAX_BYTES, maxPlanBytes: MAX_PLAN_BYTES });
 
   const snapshotFor = record => {
     const request = requests.find(request => request.record === record); if (!request) return null;
@@ -177,7 +179,7 @@ export async function installEditorialNativeBodyObserver(context, { baseUrl }) {
     const correlation = Boolean(call?.responseRequestIdHash && call.responseRequestIdHash === call.bodyRequestIdHash
       && request.responseRequestIdHash === call.responseRequestIdHash);
     const complete = Boolean(call && call.readers === 1 && call.pending === 0 && call.eofCount === 1 && call.closedCount === 1
-      && call.bytes > 0 && call.bytes <= MAX_BYTES && !call.invalidRead && !call.error && call.cancelCount === 0
+      && call.bytes > 0 && call.bytes <= (record.path.startsWith("/api/monthly-campaigns/") ? MAX_PLAN_BYTES : MAX_BYTES) && !call.invalidRead && !call.error && call.cancelCount === 0
       && call.jsonCompletions === 1 && call.bodySha256 && !call.overflow);
     return { requestId: record.id, path: record.path, identityPresent: Boolean(request.identity), identityHash: request.identity ? hash(request.identity) : null,
       nativeMatchCount: native.length, requestMatchCount: reciprocal.length, matched: Boolean(call), collision: collisions.has(request.identity),

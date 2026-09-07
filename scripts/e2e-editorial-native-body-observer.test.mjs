@@ -294,3 +294,11 @@ it.each(["complete", "clone", "cancel", "wrong-response-id"])("monthly plan orig
   expect(f.evidence.snapshot()[0].reason).toBeNull();
   expect(JSON.stringify(data)).not.toContain("PRIVATE_MONTHLY");
 });
+
+it.each([22_000, 66_000])("monthly diagnostic keeps its own bounded body capacity: %i bytes", async padding => {
+  const f = await fixture({ integration: true, targetPath: "/api/monthly-campaigns/3/plans",
+    text: JSON.stringify({ ok: true, requestId, plan: { id: 7, items: [{ text: "x".repeat(padding) }] } }) });
+  await consume(await f.fetch()); await f.flush();
+  expect(f.snapshot().native.bodyComplete).toBe(padding < 65_536);
+  expect(f.snapshot().native.overflow).toBe(padding > 65_536);
+});
