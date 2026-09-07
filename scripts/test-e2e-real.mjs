@@ -6305,6 +6305,7 @@ try {
     const bytes = await readFile(target);
     assert(bytes.byteLength > 100, `${format.toUpperCase()} project export is empty`);
     exportBuffers.set(format, bytes);
+    await mainRequestEvidence.flushExportDownloads(page);
     await waitFor(
       async () => await exportDialog.getByRole("button", { name: "Сформировать файл", exact: true }).isEnabled(),
       `${format.toUpperCase()} export did not return to an interactive state`,
@@ -6363,6 +6364,12 @@ try {
       && JSON.stringify(projectExportEvidence.map((row) => row.format).sort()) === JSON.stringify(["csv", "pdf", "xlsx"]),
     "durable export operations or artifacts are incomplete",
   );
+  for (const row of projectExportEvidence) {
+    const bytes = exportBuffers.get(row.format);
+    assert(bytes?.byteLength === Number(row.byte_size)
+      && createHash("sha256").update(bytes).digest("hex") === row.sha256,
+    "downloaded UI export differs from its exact durable artifact");
+  }
   const exportSnapshotRows = projectExportEvidence.map((row) => row.snapshot?.rows);
   assert(
     exportSnapshotRows.every((rows) => Array.isArray(rows) && rows.length === previewRowCount)

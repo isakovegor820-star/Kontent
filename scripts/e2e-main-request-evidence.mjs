@@ -9,6 +9,8 @@ import { observeFirefoxFavicons } from "./e2e-firefox-favicon-observer.mjs";
 
 const READ_ID_HEADER = "x-aurora-e2e-read-id";
 const JSON_COMPLETION_MAX_BYTES = 65_536;
+const EXPORT_COMPLETION_MAX_BYTES = 65_536;
+const EXPORT_TYPES = ["text/csv", "application/pdf", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"];
 const certificates = new WeakMap();
 export const readMainCancellationProof = (proof) => certificates.get(proof)?.() ?? null;
 const isAbort = value => /^(?:net::ERR_ABORTED|NS_BINDING_ABORTED|cancelled|Load request cancelled)$/u.test(value ?? "");
@@ -86,6 +88,15 @@ export function createMainRequestEvidence({ baseUrl, now = () => performance.tim
       && body?.readers === 1 && body.pending === 0 && body.eofCount === 1 && body.closedCount === 1
       && body.bytes > 0 && !body.invalidRead && !body.error && body.cancelCount === 0
       && call.callerFailure == null) return "completed_native_rsc_read";
+    // A hash of the original complete body and native EOF establish this exact binary
+    // export's transport completion. Nothing here certifies another request,
+    // a partial file, business content, or a mutating operation.
+    if (row.status === 200 && EXPORT_TYPES.includes(row.contentType)
+      && /^\/api\/project-exports\/[1-9]\d*\/download$/u.test(row.path) && !new URL(row.url).search
+      && body?.readers === 1 && body.pending === 0 && body.eofCount === 1 && body.closedCount === 1
+      && body.bytes > 0 && body.bytes <= EXPORT_COMPLETION_MAX_BYTES && !body.invalidRead && !body.error && body.cancelCount === 0
+      && call.exportBody?.count === 1 && call.exportBody.bytes === body.bytes
+      && /^[a-f0-9]{64}$/u.test(call.exportBody.sha256 ?? "") && call.callerFailure == null) return "completed_native_export_read";
     // This establishes completion of the original JSON transport, not business
     // success or permission. Headers/EOF alone cannot supply valid JSON bytes.
     if (row.status === 200 && row.contentType === "application/json" && row.path.startsWith("/api/")
@@ -163,6 +174,11 @@ export function createMainRequestEvidence({ baseUrl, now = () => performance.tim
           && event.signalAbortedAt >= call.at && event.signalAbortedAt <= event.at) {
           call.abortedAt = event.signalAbortedAt;
         }
+      }
+      if (call && event.kind === "export-body" && call.body?.readers === 1 && event.readerId === call.body.readerId) {
+        call.exportBody = { count: (call.exportBody?.count ?? 0) + 1,
+          bytes: Number.isSafeInteger(event.bytes) && event.bytes >= 0 ? event.bytes : null,
+          sha256: typeof event.sha256 === "string" && /^[a-f0-9]{64}$/u.test(event.sha256) ? event.sha256 : null };
       }
       if (!call || !event.kind.startsWith("body-")) return;
       const body = call.body ??= { readers: 0, readerId: null, pending: 0, chunks: 0, bytes: 0,
@@ -285,6 +301,7 @@ export function createMainRequestEvidence({ baseUrl, now = () => performance.tim
             fulfilledClosedCount: caller.body.closedCount, invalidRead: caller.body.invalidRead } : null,
           bodyJson: caller?.body?.jsonCount ? { observations: caller.body.jsonCount, valid: caller.body.jsonValid,
             bytes: caller.body.jsonBytes, overflow: caller.body.jsonOverflow } : null,
+          exportBody: caller?.exportBody ?? null,
           identityPresent: Boolean(row.identity), persistedProductEventCount: row.persistedProductEventCount ?? 0,
           identityCollision: collisions.has(row.identity), reason: reasonFor(row),
           editorialAck: row.path.startsWith("/api/drafts/") ? editorialObservers.map(observer => observer.snapshotFor(row)).find(Boolean) ?? null : null,
@@ -387,6 +404,13 @@ export function createMainRequestEvidence({ baseUrl, now = () => performance.tim
         await new Promise(resolve => setTimeout(resolve, Math.min(20, timeoutMs, Math.max(1, deadline - performance.now()))));
       }
     },
+    async flushExportDownloads(page) {
+      let timer;
+      try {
+        await Promise.race([page.evaluate(() => window.__auroraMainExportCompletion()),
+          new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("Native export proof flush timed out")), 3_000); })]);
+      } finally { clearTimeout(timer); }
+    },
     async flushNativeDiagnostics(page, { timeoutMs = 3_000 } = {}) {
       assert(Number.isFinite(timeoutMs) && timeoutMs > 0 && timeoutMs <= 10_000, "native diagnostic flush needs a bounded timeout");
       let timer;
@@ -402,11 +426,16 @@ export function createMainRequestEvidence({ baseUrl, now = () => performance.tim
       await context.exposeBinding("__auroraMainReadLifetime", ({ page, frame }, event) => {
         if (page && frame === page.mainFrame()) api.observeNative(page, event);
       });
-      await context.addInitScript(({ origin, readIdHeader, jsonMaxBytes }) => {
+      await context.addInitScript(({ origin, readIdHeader, jsonMaxBytes, exportMaxBytes, exportTypes }) => {
         if (location.origin !== origin) return;
         const documentId = crypto.randomUUID(); let sequence = 0;
         const send = event => { void window.__auroraMainReadLifetime({ ...event, documentId, at: Date.now() }).catch(() => {}); };
         send({ kind: "document" });
+        const exportCompletions = new Set();
+        window.__auroraMainExportCompletion = async () => {
+          await Promise.all([...exportCompletions]);
+          await window.__auroraMainReadLifetime({ kind: "export-barrier", documentId, at: Date.now() });
+        };
         window.__auroraMainReadSettlement = async () => {
           // Complete rendering callbacks and their following task, then await
           // the existing binding so prior native-start events reach Node.
@@ -465,6 +494,9 @@ export function createMainRequestEvidence({ baseUrl, now = () => performance.tim
               const originalBody = response.body; const getReader = originalBody.getReader; let readers = 0;
               const observeJson = url.pathname.startsWith("/api/") && response.status === 200
                 && response.headers.get("content-type")?.split(";")[0] === "application/json";
+              const observeExport = response.status === 200
+                && /^\/api\/project-exports\/[1-9]\d*\/download$/u.test(url.pathname) && !url.search
+                && exportTypes.includes(response.headers.get("content-type")?.split(";")[0]);
               originalBody.getReader = function (...args) {
                 const reader = Reflect.apply(getReader, this, args);
                 if (this !== originalBody) return reader;
@@ -484,22 +516,33 @@ export function createMainRequestEvidence({ baseUrl, now = () => performance.tim
                     if (value.done) eof = true;
                     else if (Number.isSafeInteger(bytes) && bytes > 0) chunks += 1;
                     report({ kind: "body-read", done: value.done === true, bytes: Number.isSafeInteger(bytes) ? bytes : 0 });
-                    if (observeJson) {
+                    if (observeJson || observeExport) {
                       // Copy only bytes already returned by this original read.
                       // Never read/clone a Response for evidence or export JSON.
                       if (!value.done) {
                         jsonBytes += Number.isSafeInteger(bytes) ? bytes : 0;
-                        if (!(value.value instanceof Uint8Array) || jsonBytes > jsonMaxBytes) { jsonOverflow = true; jsonChunks.length = 0; }
+                        if (!(value.value instanceof Uint8Array) || jsonBytes > (observeExport ? exportMaxBytes : jsonMaxBytes)) { jsonOverflow = true; jsonChunks.length = 0; }
                         else if (!jsonOverflow) jsonChunks.push(value.value.slice());
                       } else if (!jsonReported) {
                         jsonReported = true; let valid = false;
                         if (!jsonOverflow && jsonBytes > 0) {
                           const buffer = new Uint8Array(jsonBytes); let offset = 0;
                           for (const chunk of jsonChunks) { buffer.set(chunk, offset); offset += chunk.byteLength; }
-                          try { JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(buffer)); valid = true; } catch { /* Malformed JSON remains unproved. */ }
+                          if (observeJson) {
+                            try { JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(buffer)); valid = true; } catch { /* Malformed JSON remains unproved. */ }
+                          } else {
+                            // Hash only bytes already yielded by the original
+                            // reader. Never alter its result or await telemetry.
+                            const observation = crypto.subtle.digest("SHA-256", buffer).then(hash => {
+                              const sha256 = Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, "0")).join("");
+                              report({ kind: "export-body", bytes: buffer.byteLength, sha256 });
+                            }).catch(() => { /* Missing observation cannot certify completion. */ });
+                            exportCompletions.add(observation);
+                            void observation.finally(() => exportCompletions.delete(observation));
+                          }
                         }
                         jsonChunks.length = 0;
-                        report({ kind: "body-json", valid, bytes: jsonBytes, overflow: jsonOverflow });
+                        if (observeJson) report({ kind: "body-json", valid, bytes: jsonBytes, overflow: jsonOverflow });
                       }
                     }
                     return value;
@@ -526,7 +569,7 @@ export function createMainRequestEvidence({ baseUrl, now = () => performance.tim
             return response;
           }, rejected);
         };
-      }, { origin, readIdHeader: READ_ID_HEADER, jsonMaxBytes: JSON_COMPLETION_MAX_BYTES });
+      }, { origin, readIdHeader: READ_ID_HEADER, jsonMaxBytes: JSON_COMPLETION_MAX_BYTES, exportMaxBytes: EXPORT_COMPLETION_MAX_BYTES, exportTypes: EXPORT_TYPES });
       return native;
     },
   };

@@ -5,6 +5,7 @@ import {createRequire} from 'node:module';
 import {verifyNativeFirefoxFaviconEvidence} from './e2e-firefox-favicon-native.mjs';
 import {verifyNativeWorkspacePolling} from './e2e-workspace-polling-native.mjs';
 import {verifyNativeModalFocus} from './e2e-modal-focus-native.mjs';
+import {verifyNativeExportReads} from './e2e-native-export-read.mjs';
 import {verifyNativeReadTerminalEvidence} from './e2e-native-read-terminal.mjs';
 const require=createRequire(new URL('../package.json',import.meta.url));
 const {chromium,firefox,webkit}=await import('./e2e-playwright.mjs');
@@ -39,10 +40,12 @@ await runFixture('firefox/nativeFavicon',()=>verifyNativeFirefoxFaviconEvidence(
 await runFixture('firefox/nativeReadTerminal',()=>verifyNativeReadTerminalEvidence(browser));
 await runFixture('firefox/workspacePolling',()=>verifyNativeWorkspacePolling(browser));
 await runFixture('firefox/modalFocus',()=>verifyNativeModalFocus(browser));
+await runFixture('firefox/exportReads',()=>verifyNativeExportReads(browser));
 for(const [engine,launcher] of Object.entries({chromium,webkit})){
  const owned=await launcher.launch({headless:true});
  try{await runFixture(`${engine}/workspacePolling`,()=>verifyNativeWorkspacePolling(owned));
-   await runFixture(`${engine}/modalFocus`,()=>verifyNativeModalFocus(owned));}finally{await owned.close();}
+   await runFixture(`${engine}/modalFocus`,()=>verifyNativeModalFocus(owned));
+   await runFixture(`${engine}/exportReads`,()=>verifyNativeExportReads(owned));}finally{await owned.close();}
 }
 }finally{await browser.close();await new Promise(r=>server.close(r));}
 console.log(JSON.stringify(report,null,2));

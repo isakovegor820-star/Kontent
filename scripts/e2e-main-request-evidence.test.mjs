@@ -990,3 +990,45 @@ it.each([null, -1, 999, 1200, "1100", NaN, Infinity])("does not replace missing 
   f.native("failure", { callerAbort: true, signalAbortedAt: timestamp }); f.evidence.observeFailure(request);
   expect(f.evidence.reason(request)).toBeNull();
 });
+
+// The actual PDF GET in the full flow reached native EOF and fulfilled body consumption,
+// while Chromium emitted ERR_ABORTED. Only that exact completed reader qualifies.
+function exportReadFixture({ mime = "application/pdf", path = "/api/project-exports/3/download", status = 200 } = {}) {
+  const f = fixture(); const req = f.request({ path });
+  const event = (kind, fields = {}) => f.native(kind, { url: baseUrl + path, readerId: 1, ...fields });
+  event("start"); f.start(req); f.response(req, status, { "content-type": mime });
+  event("body-reader"); event("body-read-start"); event("body-read", { bytes: 14612 });
+  event("body-read-start"); event("body-read", { done: true }); event("body-closed");
+  f.evidence.observeFailure(req);
+  return { ...f, req, event };
+}
+it("retains a failed export until the original bounded body hash also completes", () => {
+  const f = exportReadFixture(); expect(f.evidence.reason(f.req)).toBeNull();
+  f.event("export-body", { bytes: 14612, sha256: "a".repeat(64) });
+  expect(f.evidence.reason(f.req)).toBe("completed_native_export_read");
+  const proof = f.evidence.proofs()[0]; expect(readMainCancellationProof(proof).request).toBe(f.req);
+  f.event("body-error"); expect(readMainCancellationProof(proof)).toBeNull();
+});
+it.each(["text/csv", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/pdf"])("proves a native completed %s export only", mime => {
+  const f = exportReadFixture({ mime }); f.event("export-body", { bytes: 14612, sha256: "a".repeat(64) });
+  expect(f.evidence.reason(f.req)).toBe("completed_native_export_read");
+});
+it.each([
+  ["mime", { mime: "text/html" }], ["status", { status: 503 }],
+  ["path", { path: "/api/project-exports/3/other" }], ["query", { path: "/api/project-exports/3/download?other=1" }],
+])("does not extend export proof to %s", (_name, options) => {
+  const f = exportReadFixture(options); f.event("export-body", { bytes: 14612, sha256: "a".repeat(64) });
+  expect(f.evidence.reason(f.req)).toBeNull();
+});
+it.each(["size", "hash", "overflow", "duplicate", "error", "cancel", "identity", "reader", "network"])("rejects %s in binary completion", kind => {
+  const f = exportReadFixture();
+  const body = { bytes: kind === "size" ? 14611 : kind === "overflow" ? 65_537 : 14612,
+    sha256: kind === "hash" ? null : "a".repeat(64), ...(kind === "identity" ? { identity: "foreign" } : {}) };
+  f.event("export-body", body);
+  if (kind === "duplicate") f.event("export-body", body);
+  if (kind === "error") f.event("body-error");
+  if (kind === "cancel") f.event("body-cancel-start", { cancelId: 1 });
+  if (kind === "reader") f.event("body-reader", { readerId: 2 });
+  if (kind === "network") { f.req.failure = () => ({ errorText: "net::ERR_CONNECTION_RESET" }); f.evidence.observeFailure(f.req); }
+  expect(f.evidence.reason(f.req)).toBeNull();
+});
