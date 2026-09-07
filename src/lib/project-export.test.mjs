@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   createProjectExportSnapshot,
+  createProjectExportSnapshotFromSqlSelection,
   escapeSpreadsheetFormula,
   projectExportContentDisposition,
   projectExportFilename,
@@ -330,5 +331,67 @@ describe("project export download names", () => {
     expect(disposition).toMatch(/^attachment; filename="[A-Za-z0-9._-]+"; filename\*=UTF-8''/u);
     expect(disposition).toContain("%D0%9E%D0%9E%D0%9E");
     expect(disposition).not.toMatch(/[\r\n]/u);
+  });
+});
+
+
+function legacyUnicodeInput() {
+  return {
+    kind: "content_plan", exportedAt: "2026-08-11T10:00:00.000Z",
+    project: { id: 7, name: "Legacy Unicode", timezone: "UTC" },
+    period: { from: "2026-08-01", to: "2026-08-31" }, filters: { channel: ["i\u0307", "ος"] },
+    rows: [
+      { id: "i", projectId: 7, channel: "İ", title: "Legacy dotted I", status: "Опубликован", scheduledAt: "2026-08-11T10:00:00Z" },
+      { id: "sigma", projectId: 7, channel: "ΟΣ", title: "Legacy sigma", status: "Опубликован", scheduledAt: "2026-08-11T11:00:00Z" },
+    ],
+  };
+}
+
+describe("N47 SQL-selected snapshot version boundary", () => {
+  it("preserves legacy V1 JSON/hash and all three renderer row contracts", async () => {
+    const snapshot = createProjectExportSnapshot(legacyUnicodeInput());
+    expect(snapshot.schemaVersion).toBe("aurora-project-export-v1");
+    expect(snapshot.rows.map(row => row.id)).toEqual(["i", "sigma"]);
+    expect(projectExportHash(snapshot)).toBe("fa6b46fbc8ecbf310734dd2618598f14c3dd21ccea5e4f9c16a36d531974602a");
+    expect(JSON.stringify(createProjectExportSnapshot(JSON.parse(JSON.stringify(snapshot))))).toBe(JSON.stringify(snapshot));
+    const csv = await renderProjectExport("csv", snapshot);
+    const xlsx = await renderProjectExport("xlsx", snapshot);
+    const pdf = await renderProjectExport("pdf", snapshot);
+    expect(parseCsv(csv.bytes).flat().join(" ")).toContain("Legacy dotted I");
+    expect(inspectXlsx(xlsx.bytes).sheet).toContain("Legacy sigma");
+    const pdfText = inspectPdf(pdf.bytes).text;
+    expect(pdfText).toContain("Legacy dotted I");
+    expect(pdfText).toContain("Legacy sigma");
+  });
+
+  it("keeps authoritative Unicode-simple selection and metadata through every V2 renderer", async () => {
+    const snapshot = createProjectExportSnapshotFromSqlSelection({ ...legacyUnicodeInput(), filters: { channel: ["i", "οσ"] } });
+    expect(snapshot.schemaVersion).toBe("aurora-project-export-sql-selection-v2");
+    expect(snapshot.rows.map(row => row.id)).toEqual(["i", "sigma"]);
+    expect(snapshot.filters.channel).toEqual(["i", "οσ"]);
+    expect(Object.isFrozen(snapshot.rows)).toBe(true);
+    expect(createProjectExportSnapshot(JSON.parse(JSON.stringify(snapshot)))).toEqual(snapshot);
+    for (const format of ["csv", "xlsx", "pdf"]) {
+      const rendered = await renderProjectExport(format, snapshot);
+      const text = format === "csv" ? rendered.bytes.toString("utf8")
+        : format === "xlsx" ? inspectXlsx(rendered.bytes).sheet : inspectPdf(rendered.bytes).text;
+      expect(text).toContain("Legacy dotted I");
+      expect(text).toContain("Legacy sigma");
+    }
+  });
+
+  it("keeps project, date, shape and bounded-row validation in V2", () => {
+    const input = legacyUnicodeInput();
+    const snapshot = createProjectExportSnapshotFromSqlSelection({ ...input, filters: { channel: ["i", "οσ"] }, rows: [
+      ...input.rows,
+      { ...input.rows[0], id: "foreign", projectId: 8 },
+      { ...input.rows[0], id: "outside", scheduledAt: "2026-09-01T00:00:00Z" },
+    ] });
+    expect(snapshot.rows.map(row => row.id)).toEqual(["i", "sigma"]);
+    expect(() => createProjectExportSnapshotFromSqlSelection({ ...input, filters: { projectId: 8 } })).toThrow("project_export_filter_project_mismatch");
+    expect(() => createProjectExportSnapshotFromSqlSelection({ ...input, rows: [{ ...input.rows[0], channel: "" }] })).toThrow("invalid_project_export_row_channel");
+    expect(() => createProjectExportSnapshotFromSqlSelection({ ...input, rows: Array(25_002).fill(input.rows[0]) })).toThrow("invalid_project_export_sql_selection_rows");
+    expect(() => createProjectExportSnapshot({ ...input, schemaVersion: "untrusted-skip-filters" })).toThrow("unsupported_project_export_snapshot_version");
+    expect(() => createProjectExportSnapshotFromSqlSelection({ ...input, schemaVersion: "aurora-project-export-v1" })).toThrow("unsupported_project_export_snapshot_version");
   });
 });

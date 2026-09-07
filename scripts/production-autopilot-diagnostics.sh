@@ -213,8 +213,17 @@ if [[ -n "$current_path" && -f "$current_path/.env.production" ]]; then
       redis_clients=""
       consumers_available=false
       if [[ -n "$redis_db" ]] && redis_clients="$(redis-cli -u "$REDIS_URL" --raw client list 2>/dev/null)" \
-        && [[ "$redis_clients" == *"id="* ]] \
-        && ! printf '%s\n' "$redis_clients" | awk ' /name=bull:/ && !/ db=[0-9]+( |$)/ {missing=1} END {exit !missing}'; then
+        && printf '%s\n' "$redis_clients" | awk '
+          NF {
+            id=""; db=""; ids=0; names=0; dbs=0; rows++;
+            for(i=1;i<=NF;i++) {
+              if($i ~ /^id=/) {id=substr($i,4); ids++}
+              if($i ~ /^name=/) names++;
+              if($i ~ /^db=/) {db=substr($i,4); dbs++}
+            }
+            if(ids != 1 || names != 1 || dbs != 1 || id !~ /^[0-9]+$/ || db !~ /^[0-9]+$/ || seen[id]++) invalid=1;
+          }
+          END {exit !(rows > 0 && !invalid)}'; then
         consumers_available=true
       fi
       for queue in autopilot-plans publish; do

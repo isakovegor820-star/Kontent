@@ -211,3 +211,27 @@ describe("studio chat session", () => {
     expect(merged.draft).toBe("Набранный текст");
   });
 });
+
+
+describe("local empty draft intent", () => {
+  it("lets a durable pending clear win but retains remote fallback without local intent", () => {
+    const remote = { messages: [], draft: "Remote text", workspaceMode: "chat" as const, generations: [] };
+    const local = { ...remote, draft: "" };
+    expect(mergeStudioChatSessions(remote, local, { localDraftPending: true }).draft).toBe("");
+    expect(mergeStudioChatSessions(remote, local).draft).toBe("Remote text");
+  });
+});
+
+
+describe("N48 cancellation recovery persistence", () => {
+  it("persists the terminal action and explicit key without automatically restarting", () => {
+    const explicit: StudioChatSession = { ...session,
+      messages: [{ id: "a1", role: "ai", text: "Partial", restartable: true, retryable: false }],
+      generations: [["a1", { ...session.generations[0][1], requestKey: "explicit-new-operation", requestCreatedAt: 100 }]],
+    };
+    const restored = parseStudioChatSession(serializeStudioChatSession(17, explicit), 17);
+    expect(restored?.messages[0]).toMatchObject({ streaming: false, restartable: true, retryable: false });
+    expect(restored?.generations[0][1]).toMatchObject({ requestKey: "explicit-new-operation", requestCreatedAt: 100 });
+    expect(parseStudioChatSession(serializeStudioChatSession(17, explicit), 18)).toBeNull();
+  });
+});

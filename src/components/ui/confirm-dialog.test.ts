@@ -1,12 +1,12 @@
 // @vitest-environment jsdom
 import { createElement } from "react";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ConfirmDialog } from "./confirm-dialog";
 
-afterEach(cleanup);
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe("ConfirmDialog", () => {
   it("renders an explicitly labelled modal confirmation with safe cancel first", () => {
@@ -71,4 +71,32 @@ describe("ConfirmDialog", () => {
     expect(document.body.style.overflow).toBe(originalOverflow);
     expect(document.activeElement).toBe(outside);
   });
+});
+
+
+it("initial focus never steals an already chosen dialog control before keyboard activation", () => {
+  let initialFrame: FrameRequestCallback | undefined;
+  vi.stubGlobal("requestAnimationFrame", vi.fn((callback: FrameRequestCallback) => { initialFrame = callback; return 1; }));
+  vi.stubGlobal("cancelAnimationFrame", vi.fn());
+  const onConfirm = vi.fn(); const onCancel = vi.fn();
+  render(createElement(ConfirmDialog, { open: true, title: "Focus race", description: "Owned fixture",
+    confirmLabel: "Delete owned copy", onConfirm, onCancel }));
+  const confirm = screen.getByRole("button", { name: "Delete owned copy" });
+  confirm.focus(); expect(document.activeElement).toBe(confirm);
+  expect(initialFrame).toBeTypeOf("function");
+  act(() => initialFrame?.(16));
+  expect(document.activeElement).toBe(confirm);
+  // jsdom does not perform native Enter activation; the browser oracle does.
+  fireEvent.click(document.activeElement as HTMLElement);
+  expect(onConfirm).toHaveBeenCalledOnce(); expect(onCancel).not.toHaveBeenCalled();
+});
+
+it("still gives safe initial focus when the user has not entered the dialog", () => {
+  let initialFrame: FrameRequestCallback | undefined;
+  vi.stubGlobal("requestAnimationFrame", vi.fn((callback: FrameRequestCallback) => { initialFrame = callback; return 1; }));
+  vi.stubGlobal("cancelAnimationFrame", vi.fn());
+  render(createElement(ConfirmDialog, { open: true, title: "Safe initial focus", description: "Owned fixture",
+    confirmLabel: "Delete owned copy", onConfirm: vi.fn(), onCancel: vi.fn() }));
+  act(() => initialFrame?.(16));
+  expect(document.activeElement).toBe(screen.getByRole("button", { name: "Отмена" }));
 });

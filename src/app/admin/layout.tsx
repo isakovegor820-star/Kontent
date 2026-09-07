@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { AdminWorkspaceLayout } from "@/components/admin/admin-workspace-layout";
 
 import "../app/app-v3.css";
 import "./admin.css";
@@ -9,5 +10,5 @@ export const metadata: Metadata = {
 };
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
-  return <div className="app-v3 admin-workspace">{children}</div>;
+  return <AdminWorkspaceLayout>{children}</AdminWorkspaceLayout>;
 }

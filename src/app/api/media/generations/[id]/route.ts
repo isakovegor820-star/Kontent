@@ -1,3 +1,4 @@
+import { mediaAssetUrl } from "@/lib/project-native-url";
 import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
 
@@ -93,8 +94,8 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
         seconds: row.seconds,
         style: row.style,
         assetId,
-        assetUrl: assetId ? `/api/media/assets/${assetId}` : null,
-        downloadUrl: assetId ? `/api/media/assets/${assetId}?download=1` : null,
+        assetUrl: assetId ? mediaAssetUrl(assetId, membership.projectId) : null,
+        downloadUrl: assetId ? `${mediaAssetUrl(assetId, membership.projectId)}&download=1` : null,
         mimeType: row.mime_type,
         bytes: row.bytes,
         errorCode: row.error_code,

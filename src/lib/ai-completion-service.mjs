@@ -1,3 +1,4 @@
+import { beginAiSpendAttempt } from "./ai-spend-ledger.mjs";
 import {
   configuredAiFallbacks,
   configuredServiceEngine,
@@ -43,7 +44,7 @@ const isEngineHealthSignal = (error) => (
 const canRetryNavyModelRejection = (error, fromEngine) => (
   error instanceof AiCompletionError
   && String(fromEngine).startsWith("navy-")
-  && [400, 404, 422].includes(Number(error.status))
+  && [400, 404, 410, 422].includes(Number(error.status))
 );
 
 const bounded = (value, fallback, min, max) => {
@@ -158,7 +159,7 @@ async function providerError(runtime, response) {
   );
 }
 
-async function oneCompletion(request, runtime, { fetchImpl, signal, timeoutMs }) {
+async function oneCompletion(request, runtime, { fetchImpl, signal, timeoutMs, onUsage }) {
   if (!runtime.supported || !runtime.protocol) {
     throw new AiCompletionError(runtime.id, "engine_unsupported", 503);
   }
@@ -251,6 +252,10 @@ async function oneCompletion(request, runtime, { fetchImpl, signal, timeoutMs })
     throw new AiCompletionError(runtime.id, "stream_truncated", 502);
   }
 
+  const reportedUsage = runtime.protocol === "anthropic"
+    ? { inputTokens: body.usage?.input_tokens, outputTokens: body.usage?.output_tokens }
+    : { inputTokens: body.usage?.prompt_tokens, outputTokens: body.usage?.completion_tokens };
+  if (Number.isSafeInteger(reportedUsage.inputTokens) && Number.isSafeInteger(reportedUsage.outputTokens)) onUsage?.(reportedUsage);
   let text = "";
   let terminal = false;
   let stoppedAtTokenLimit = false;
@@ -372,14 +377,30 @@ export async function completeAiText(request, options = {}) {
     telemetry({ type: "attempt", engine, attempt: attempts, outcome: "started" });
     try {
       const remainingMs = Math.max(100, overallTimeoutMs - (now() - started));
-      const run = () => oneCompletion(request, runtime, {
-        fetchImpl,
-        signal,
-        timeoutMs: Math.min(
-          runtime.protocol === "ollama" ? localTimeoutMs : timeoutMs,
-          remainingMs,
-        ),
-      });
+      const run = async () => {
+        // Configuration rejection precedes the paid boundary and must not reserve money.
+        if (!runtime.supported || !runtime.protocol || !runtime.configured) {
+          return oneCompletion(request, runtime, { fetchImpl, signal, timeoutMs });
+        }
+        const maxTokens = bounded(request.maxTokens, 700, 1, 12_000);
+        const spend = await beginAiSpendAttempt({
+          provider: runtime.id,
+          model: runtime.model,
+          inputTokens: Buffer.byteLength(JSON.stringify(request.messages || [request.system || "", request.user || ""]), "utf8") + 1024,
+          outputTokens: runtime.id.startsWith("navy-") ? Math.max(3000, maxTokens) : maxTokens,
+        }, { env, ...(options.spendScope ? { scope: options.spendScope } : {}) });
+        let usage = null;
+        let succeeded = false;
+        try {
+          const result = await oneCompletion(request, runtime, {
+            fetchImpl, signal,
+            timeoutMs: Math.min(runtime.protocol === "ollama" ? localTimeoutMs : timeoutMs, remainingMs),
+            onUsage: (value) => { usage = value; },
+          });
+          succeeded = true;
+          return result;
+        } finally { await spend.finish({ outcome: succeeded ? "succeeded" : "unknown", usage }); }
+      };
       const text = runtime.protocol === "ollama"
         ? await serializedLocalCompletion(runtime, run, signal)
         : await run();

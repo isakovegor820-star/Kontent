@@ -1,4 +1,9 @@
+vi.mock("./ai-spend-ledger.mjs", async (importOriginal) => ({
+  ...await importOriginal(),
+  beginAiSpendAttempt: vi.fn(async () => ({ id: "unit-spend", finish: vi.fn(async () => {}) })),
+}));
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { AiSpendError } from "./ai-spend-ledger.mjs";
 import { AiProviderError, type GenerateParams } from "./ai-provider";
 import {
   configuredFallbackEngines,
@@ -48,11 +53,11 @@ describe("AI provider orchestration", () => {
     ]);
   });
 
-  it("tries another Navy model when one route rejects parameters before first text", async () => {
+  it.each([400, 410])("tries another Navy model after HTTP %i before first text", async (status) => {
     const calls: string[] = [];
     const factory: AiStreamFactory = async function* (_input, engine) {
       calls.push(engine);
-      if (engine === "navy-deepseek-pro") throw new AiProviderError(engine, 400, "bad_request");
+      if (engine === "navy-deepseek-pro") throw new AiProviderError(engine, status, "bad_request");
       yield "готовый пост";
     };
 
@@ -72,11 +77,11 @@ describe("AI provider orchestration", () => {
     expect(events).toContainEqual({ type: "delta", engine: "navy-qwen-3-6", text: "готовый пост" });
   });
 
-  it("does not send a Navy 400 request to a different provider", async () => {
+  it.each([400, 410])("does not send a Navy HTTP %i request to a different provider", async (status) => {
     const calls: string[] = [];
     const factory: AiStreamFactory = async function* (_input, engine) {
       calls.push(engine);
-      throw new AiProviderError(engine, 400, "bad_request");
+      throw new AiProviderError(engine, status, "bad_request");
     };
     const run = collect(orchestrateText(params, "navy-deepseek-pro", {
       fallbackEngines: ["openai"],
@@ -84,7 +89,7 @@ describe("AI provider orchestration", () => {
       circuitBreaker: null,
     }));
 
-    await expect(run).rejects.toMatchObject({ status: 400 });
+    await expect(run).rejects.toMatchObject({ status });
     expect(calls).toEqual(["navy-deepseek-pro"]);
   });
 
@@ -137,12 +142,12 @@ describe("AI provider orchestration", () => {
     expect(calls).toEqual(["navy-deepseek-pro"]);
   });
 
-  it("не склеивает второй движок после уже показанного delta", async () => {
+  it.each([503, 410])("не склеивает второй движок после delta и HTTP %i", async (status) => {
     const calls: string[] = [];
     const factory: AiStreamFactory = async function* (_input, engine) {
       calls.push(engine);
       yield "часть";
-      throw new AiProviderError(engine, 503, "stream_error");
+      throw new AiProviderError(engine, status, "stream_error");
     };
 
     const events: AiOrchestrationEvent[] = [];
@@ -153,7 +158,7 @@ describe("AI provider orchestration", () => {
       })) events.push(event);
     })();
 
-    await expect(run).rejects.toMatchObject({ code: "stream_error" });
+    await expect(run).rejects.toMatchObject({ code: "stream_error", status });
     expect(calls).toEqual(["navy-deepseek-pro"]);
     expect(events.some((event) => event.type === "fallback")).toBe(false);
     expect(events.some((event) => event.type === "delta" && event.text === "часть")).toBe(true);
@@ -281,5 +286,64 @@ describe("AI provider orchestration", () => {
       expect.objectContaining({ type: "fallback", reason: "circuit_open", toEngine: "navy-deepseek-flash" }),
       expect.objectContaining({ type: "delta", engine: "navy-deepseek-flash", text: "fallback ok" }),
     ]));
+  });
+});
+
+
+describe("N50 local AI spend policy", () => {
+  it.each(["ai_spend_cap_exceeded", "ai_spend_concurrency_exceeded", "ai_spend_configuration_required", "ai_spend_scope_forbidden", "ai_spend_invalid_projection"])(
+    "preserves %s without fallback or provider-health failure", async (code) => {
+      const denial = new AiSpendError(code, "user");
+      const calls: string[] = [];
+      const breaker = new ProviderCircuitBreaker({ failureThreshold: 1 });
+      const factory: AiStreamFactory = async function* (_input, engine) {
+        calls.push(engine);
+        throw denial;
+      };
+      await expect(collect(orchestrateText(params, "navy-deepseek-pro", {
+        fallbackEngines: ["openai"], streamFactory: factory, circuitBreaker: breaker,
+      }))).rejects.toBe(denial);
+      expect(calls).toEqual(["navy-deepseek-pro"]);
+      expect(breaker.snapshot().find(row => row.engine === "navy-deepseek-pro"))
+        .toMatchObject({ state: "closed", failures: 0, consecutiveTransientFailures: 0 });
+    },
+  );
+});
+
+
+describe("N50 policy denial during admission deadlines", () => {
+  it.each(["first", "overall", "caller"] as const)("preserves causal priority for %s", async (deadline) => {
+    vi.useFakeTimers();
+    const denial = new AiSpendError("ai_spend_cap_exceeded", "user");
+    const caller = new AbortController();
+    const cancelled = new DOMException("owned cancellation", "AbortError");
+    const breaker = new ProviderCircuitBreaker({ failureThreshold: 1 });
+    const calls: string[] = [];
+    const events: AiOrchestrationEvent[] = [];
+    const result = (async () => {
+      try {
+        for await (const event of orchestrateText(params, "navy-deepseek-pro", {
+          signal: caller.signal, firstTokenMs: deadline === "overall" ? 1000 : 10,
+          overallMs: deadline === "overall" ? 10 : 1000,
+          fallbackEngines: ["openai"], circuitBreaker: breaker,
+          streamFactory: async function* (_input, engine) {
+            calls.push(engine);
+            if (engine === "navy-deepseek-pro") {
+              await new Promise(resolve => setTimeout(resolve, 30));
+              throw denial;
+            }
+            yield "unexpected fallback";
+          },
+        })) events.push(event);
+        return null;
+      } catch (error) { return error; }
+    })();
+    if (deadline === "caller") { await vi.advanceTimersByTimeAsync(5); caller.abort(cancelled); }
+    await vi.advanceTimersByTimeAsync(40);
+    expect(await result).toBe(deadline === "caller" ? cancelled : denial);
+    expect(calls).toEqual(["navy-deepseek-pro"]);
+    expect(events.some(event => event.type === "fallback")).toBe(false);
+    expect(breaker.snapshot().find(row => row.engine === "navy-deepseek-pro"))
+      .toMatchObject({ failures: 0, consecutiveTransientFailures: 0 });
   });
 });

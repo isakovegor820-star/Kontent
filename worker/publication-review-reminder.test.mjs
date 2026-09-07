@@ -101,6 +101,7 @@ describe("publication review reminder outbox", () => {
     await expect(processPublicationReviewReminderJob({ pool, notifyUser, data }))
       .resolves.toEqual({ status: "skipped", reason: "completed" });
     expect(notifyUser).toHaveBeenCalledOnce();
+    expect(notifyUser).toHaveBeenCalledWith(13, expect.any(String), undefined, { projectId: 7, eventKey: `review-reminder:5:${data.jobKey}` });
   });
 
   it("closes an ambiguous provider-started attempt without retrying it", async () => {

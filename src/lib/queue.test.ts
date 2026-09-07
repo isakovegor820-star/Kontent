@@ -28,15 +28,15 @@ describe("media queue producer safety", () => {
   });
 
   it("fails closed when no full media worker is registered", async () => {
-    await expect(hasMediaWorker({ getWorkersCount: vi.fn(async () => 0) } as never, 25))
+    await expect(hasMediaWorker({ client: Promise.resolve({ options: { db: 0 } }), getWorkers: vi.fn(async () => []) } as never, 25))
       .resolves.toBe(false);
-    await expect(hasMediaWorker({ getWorkersCount: vi.fn(async () => 1) } as never, 25))
+    await expect(hasMediaWorker({ client: Promise.resolve({ options: { db: 0 } }), getWorkers: vi.fn(async () => [{ db: "0" }]) } as never, 25))
       .resolves.toBe(true);
   });
 
   it("bounds a producer Redis hang", async () => {
     const never = new Promise<number>(() => {});
-    await expect(hasMediaWorker({ getWorkersCount: vi.fn(() => never) } as never, 5))
+    await expect(hasMediaWorker({ client: Promise.resolve({ options: { db: 0 } }), getWorkers: vi.fn(() => never) } as never, 5))
       .resolves.toBe(false);
   });
 

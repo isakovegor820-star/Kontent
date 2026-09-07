@@ -17,7 +17,7 @@ import {
   resolveProjectExportDownload,
   shouldQueueProjectExport,
 } from "./project-export-service";
-import { createProjectExportSnapshot, projectExportHash } from "./project-export.mjs";
+import { createProjectExportSnapshot, projectExportHash, renderProjectCsv, type ProjectExportSnapshot } from "./project-export.mjs";
 
 type Result = { rows: Record<string, unknown>[]; rowCount?: number };
 
@@ -87,6 +87,114 @@ describe("project export service", () => {
     });
   });
 
+
+  it.each([
+    ["published_unverified", "Доставка не подтверждена"],
+    ["Доставка не подтверждена", "Доставка не подтверждена"],
+    ["Опубликован, проверяется", "Доставка не подтверждена"],
+    ["опубликован, проверяется", "Доставка не подтверждена"],
+    ["published", "Опубликован"],
+  ])("serializes truthful preview, snapshot and CSV for status filter %s", async (filter, expectedStatus) => {
+    let insertedSnapshot: ProjectExportSnapshot | undefined;
+    const sourceQueries: Array<{ sql: string; values: unknown[] }> = [];
+    const client = transactionClient((sql, values) => {
+      if (sql.includes("from project_export_operations")) return { rows: [] };
+      if (sql.includes("insert into project_export_operations")) {
+        insertedSnapshot = JSON.parse(String(values[7])) as ProjectExportSnapshot;
+        return { rows: [operationRow(insertedSnapshot, { request_hash: values[5], snapshot_hash: values[8] })] };
+      }
+      return { rows: [], rowCount: 1 };
+    });
+    const pool = {
+      query: vi.fn(async (sql: string, values: unknown[] = []) => {
+        if (sql.includes("from project_export_operations")) return { rows: [] };
+        if (sql.includes("from projects")) return { rows: [{ id: 7, name: "Проект", timezone: "Europe/Amsterdam" }] };
+        if (sql.includes("from posts post")) {
+          sourceQueries.push({ sql, values });
+          // This DB double returns the matching SQL-selected row. The real PG
+          // integration proves exclusion before LIMIT and the snapshot boundary.
+          return { rows: expectedStatus === "Опубликован"
+            ? [{ ...sourceRow(), id: "52", status: "published" }]
+            : [{ ...sourceRow(), status: "published_unverified" }] };
+        }
+        if (sql.includes("from monthly_campaign_items item")) return { rows: [] };
+        throw new Error(`unexpected query: ${sql}`);
+      }),
+      connect: vi.fn(async () => client),
+    };
+    const body = { kind: "content_plan" as const, format: "csv" as const,
+      period: { from: "2026-08-01", to: "2026-08-31" }, filters: { status: filter } };
+    const preview = await previewProjectExport({ db: pool as never, actorUserId: 9, body });
+    expect(preview.rowCount).toBe(1);
+    expect(preview.sample.map((row) => row.status)).toEqual([expectedStatus]);
+    expect(preview.filters.status).toEqual([expectedStatus]);
+    await createProjectExportOperation({ pool: pool as never, actorUserId: 9,
+      requestKey: "export-unknown-001", body: { ...body, previewHash: preview.previewHash },
+      now: () => new Date("2026-08-11T12:00:00.000Z") });
+    expect(insertedSnapshot?.rows.map((row) => row.status)).toEqual([expectedStatus]);
+    if (!insertedSnapshot) throw new Error("snapshot was not persisted");
+    const csv = renderProjectCsv(insertedSnapshot).toString("utf8");
+    expect(csv).toContain(expectedStatus);
+    expect(csv).not.toContain("Опубликован, проверяется");
+    expect(insertedSnapshot.rows[0].id).toBe(expectedStatus === "Опубликован" ? "52" : "51");
+    for (const { sql, values } of sourceQueries) {
+      expect(values[4]).toEqual([expectedStatus]);
+      if (expectedStatus !== "Опубликован") expect(sql).toContain("when 'published_unverified' then 'Доставка не подтверждена'");
+    }
+  });
+
+  it.each([
+    ["published_unverified", "Опубликован, проверяется"],
+    ["Опубликован, проверяется", "Опубликован, проверяется"],
+    ["опубликован, проверяется", "опубликован, проверяется"],
+    ["Доставка не подтверждена", "Опубликован, проверяется"],
+  ])("replays historical unknown snapshot without rewriting bytes for %s", async (filter, historicalFilter) => {
+    const request = { projectId: 7, kind: "content_plan", format: "csv",
+      period: { from: "2026-08-01", to: "2026-08-31" },
+      filters: { channel: [], author: [], campaign: [], status: [historicalFilter] } };
+    const snapshot = createProjectExportSnapshot({ kind: "content_plan",
+      exportedAt: "2026-08-11T12:00:00.000Z", project: { id: 7, name: "Проект", timezone: "UTC" },
+      period: request.period, filters: request.filters,
+      rows: [{ id: "legacy:51", projectId: 7, scheduledAt: "2026-08-11T10:00:00.000Z", channel: "Канал", title: "Старый снимок", status: "Опубликован, проверяется" }] });
+    const stored = operationRow(snapshot, { request_hash: projectExportHash(request) });
+    const originalJson = JSON.stringify(stored);
+    const originalCsv = renderProjectCsv(snapshot);
+    const pool = { query: vi.fn(async (sql: string) => {
+      if (sql.includes("from project_export_operations")) return { rows: [stored] };
+      throw new Error("historical replay must not read current source rows");
+    }), connect: vi.fn() };
+    const result = await createProjectExportOperation({ pool: pool as never, actorUserId: 9,
+      requestKey: "legacy-unknown-001", body: { kind: "content_plan", format: "csv",
+        period: request.period, filters: { status: filter }, previewHash: "b".repeat(64) } });
+    expect(result).toMatchObject({ replayed: true, snapshotHash: projectExportHash(snapshot) });
+    expect(pool.connect).not.toHaveBeenCalled();
+    expect(JSON.stringify(stored)).toBe(originalJson);
+    expect(renderProjectCsv(snapshot)).toEqual(originalCsv);
+  });
+
+  it("does not alias a confirmed status into the unknown operation identity", async () => {
+    const request = { projectId: 7, kind: "content_plan", format: "csv",
+      period: { from: "2026-08-01", to: "2026-08-31" },
+      filters: { channel: [], author: [], campaign: [], status: ["Опубликован, проверяется"] } };
+    const snapshot = createProjectExportSnapshot({ kind: "content_plan", exportedAt: "2026-08-11T12:00:00.000Z",
+      project: { id: 7, name: "Проект", timezone: "UTC" }, period: request.period, rows: [] });
+    const pool = { query: vi.fn(async () => ({ rows: [operationRow(snapshot, { request_hash: projectExportHash(request) })] })), connect: vi.fn() };
+    await expect(createProjectExportOperation({ pool: pool as never, actorUserId: 9, requestKey: "legacy-unknown-001",
+      body: { kind: "content_plan", format: "csv", period: request.period,
+        filters: { status: "published" }, previewHash: "b".repeat(64) } })).rejects.toMatchObject({ code: "idempotency_conflict", status: 409 });
+    expect(pool.connect).not.toHaveBeenCalled();
+  });
+
+  it("rejects a client-supplied SQL snapshot marker or rows before reading data", async () => {
+    const db = { query: vi.fn() };
+    for (const extra of [{ schemaVersion: "aurora-project-export-sql-selection-v2" }, { rows: [] }]) {
+      await expect(previewProjectExport({ db: db as never, actorUserId: 9,
+        body: { kind: "content_plan", format: "csv", period: { from: "2026-08-01", to: "2026-08-31" }, ...extra },
+      })).rejects.toMatchObject({ code: "invalid_export_request", status: 400 });
+    }
+    expect(db.query).not.toHaveBeenCalled();
+  });
+
   it("creates one immutable project-scoped operation and durable outbox row", async () => {
     let insertedSnapshot: Record<string, unknown> | null = null;
     const client = transactionClient((sql, values) => {
@@ -114,7 +222,7 @@ describe("project export service", () => {
             "Europe/Amsterdam",
             "2026-08-01",
             "2026-08-31",
-            ["запланирован"],
+            ["Запланирован"],
             25_001,
           ]);
           return { rows: [sourceRow()] };
@@ -126,7 +234,7 @@ describe("project export service", () => {
             "Europe/Amsterdam",
             "2026-08-01",
             "2026-08-31",
-            ["запланирован"],
+            ["Запланирован"],
             25_001,
           ]);
           return { rows: [] };
@@ -269,17 +377,19 @@ describe("project export service", () => {
     });
     expect(queries).toHaveLength(2);
     for (const { sql, values } of queries) {
-      expect(sql.match(/= any\(\$\d+::text\[\]\)/gu)).toHaveLength(4);
-      expect(sql.indexOf("= any($8::text[])")).toBeLessThan(sql.indexOf("limit $9"));
+      expect(sql.match(/= any\(array\(/gu)).toHaveLength(4);
+      expect(sql.match(/collate pg_catalog.pg_c_utf8/gu)).toHaveLength(8);
+      expect(sql).toContain("lower(btrim(normalize(filter_value, NFKC)) collate pg_catalog.pg_c_utf8)");
+      expect(sql.indexOf("from unnest($8::text[])")).toBeLessThan(sql.indexOf("limit $9"));
       expect(values).toEqual([
         7,
         "Europe/Amsterdam",
         "2026-08-01",
         "2026-08-31",
-        ["технологии права"],
-        ["анна"],
-        ["август"],
-        ["запланирован"],
+        ["ТехнологИИ Права"],
+        ["Анна"],
+        ["Август"],
+        ["Запланирован"],
         25_001,
       ]);
     }
@@ -328,8 +438,8 @@ describe("project export service", () => {
         },
       },
     });
-    expect(analyticsSql.match(/= any\(\$\d+::text\[\]\)/gu)).toHaveLength(4);
-    expect(analyticsSql.indexOf("= any($8::text[])")).toBeLessThan(analyticsSql.indexOf("limit $9"));
+    expect(analyticsSql.match(/= any\(array\(/gu)).toHaveLength(4);
+    expect(analyticsSql.indexOf("from unnest($8::text[])")).toBeLessThan(analyticsSql.indexOf("limit $9"));
     expect(preview.rowCount).toBe(1);
     expect(preview.sample).toHaveLength(1);
     expect(preview.sample[0]?.id).toBe("51");

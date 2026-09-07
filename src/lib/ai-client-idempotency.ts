@@ -1,3 +1,5 @@
+import { projectFetch as fetch } from "@/lib/project-fetch";
+
 export interface AiClientRequestIdentity {
   fingerprint: string;
   key: string;

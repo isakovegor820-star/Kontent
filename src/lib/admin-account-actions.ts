@@ -20,7 +20,7 @@ type BaseInput = {
   targetUserId: number;
   requestId?: string | null;
   /** Global admins cannot be blocked from the panel; the allowlist decides who they are. */
-  isProtected?: (user: { id: number; email: string | null }) => boolean;
+  isProtected?: (user: { id: number; email: string | null; email_verified?: boolean }) => boolean;
 };
 
 function positiveId(value: unknown): number {
@@ -47,8 +47,8 @@ async function journal(
 }
 
 async function lockTarget(client: Pick<Pool, "query">, targetUserId: number) {
-  const result = await client.query<{ id: unknown; email: string | null; blocked_at: unknown; ai_daily_limit: unknown }>(
-    `select id, email, blocked_at, ai_daily_limit from users where id = $1 for update`,
+  const result = await client.query<{ id: unknown; email: string | null; blocked_at: unknown; ai_daily_limit: unknown; email_verified?: boolean }>(
+    `select id, email, blocked_at, ai_daily_limit, (email is not null and verified_email = email) as email_verified from users where id = $1 for update`,
     [targetUserId],
   );
   return result.rows[0] ?? null;
@@ -85,7 +85,7 @@ export async function setAdminAccountBlock(
   return withTransaction(pool, async (client) => {
     const target = await lockTarget(client, input.targetUserId);
     if (!target) return { status: "not_found" };
-    if (input.blocked && input.isProtected?.({ id: positiveId(target.id), email: target.email })) return { status: "protected" };
+    if (input.blocked && input.isProtected?.({ id: positiveId(target.id), email: target.email, email_verified: target.email_verified })) return { status: "protected" };
     const currentlyBlocked = target.blocked_at != null;
     if (currentlyBlocked === input.blocked) return { status: "already" };
     if (input.blocked) {

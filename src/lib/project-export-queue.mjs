@@ -1,4 +1,5 @@
 import { Queue } from "bullmq";
+import { hasQueueWorker } from "./queue-worker-availability.mjs";
 
 export const PROJECT_EXPORT_QUEUE = "project-export";
 
@@ -93,7 +94,7 @@ export async function enqueueProjectExportJob(data, queue = getProjectExportQueu
 
 export async function hasProjectExportWorker(queue = getProjectExportQueue(), timeoutMs = 1_500) {
   try {
-    return (await within(queue.getWorkersCount(), timeoutMs)) > 0;
+    return await hasQueueWorker(queue, timeoutMs);
   } catch {
     return false;
   }

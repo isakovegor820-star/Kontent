@@ -55,11 +55,15 @@ function negated(value) {
   return /(?:^|\s)(?:не|ни|нельзя|отсутств\p{L}*|исключени\p{L}*)(?:\s|$)/iu.test(clean(value));
 }
 
-export function extractSemanticClaims(text) {
+function semanticClaimSentences(text) {
   return String(text ?? "")
     .split(/(?<=[.!?…])\s+|\n+/u)
     .map((sentence) => sentence.replace(/^[-–—*•\d.)\s]+/u, "").trim())
-    .filter((sentence) => sentence.length >= 12 && !sentence.endsWith("?"))
+    .filter((sentence) => sentence.length >= 12 && !sentence.endsWith("?"));
+}
+
+export function extractSemanticClaims(text) {
+  return semanticClaimSentences(text)
     .slice(0, 80)
     .map((sentence, index) => ({ id: `claim-${index + 1}`, text: sentence.slice(0, 1_000) }));
 }
@@ -123,6 +127,8 @@ export async function validateSemanticClaims(
   { text, sources },
   { adapter = null, signal, now = () => new Date() } = {},
 ) {
+  const sentences = semanticClaimSentences(text);
+  const coverageComplete = sentences.length <= 80 && sentences.every((sentence) => sentence.length <= 1_000);
   const claims = extractSemanticClaims(text);
   const spans = evidenceSpans(sources);
   const preliminary = claims.map((claim) => {
@@ -182,7 +188,15 @@ export async function validateSemanticClaims(
         for (const verdict of response.verdicts) {
           if (!claims.some((claim) => claim.id === verdict?.claimId)) continue;
           if (!["supported", "unsupported", "unknown", "non_factual"].includes(verdict?.verdict)) continue;
-          adapterVerdicts.set(verdict.claimId, verdict);
+          const previous = adapterVerdicts.get(verdict.claimId);
+          if (previous) {
+            // A malformed duplicate must never overwrite rejection with approval.
+            // Preserve any explicit unsupported verdict; all other duplicates require review.
+            adapterVerdicts.set(verdict.claimId,
+              previous.verdict === "unsupported" ? previous
+                : verdict.verdict === "unsupported" ? verdict
+                  : { claimId: verdict.claimId, verdict: "unknown" });
+          } else adapterVerdicts.set(verdict.claimId, verdict);
         }
       }
     } catch {
@@ -235,7 +249,7 @@ export async function validateSemanticClaims(
   const unknown = verdicts.filter((verdict) => verdict.verdict === "unknown");
   const status = unsupported.length > 0
     ? "blocked"
-    : claims.length > 0 && unknown.length === 0
+    : coverageComplete && claims.length > 0 && unknown.length === 0
       ? "passed"
       : "not_checked";
   return {
@@ -259,6 +273,7 @@ export async function validateSemanticClaims(
     claimVerdicts: verdicts,
     provenance: {
       validatorVersion: "semantic-publication-v1",
+      coverageComplete,
       checkedAt: now().toISOString(),
       provider: adapterId,
       model: adapterModel,

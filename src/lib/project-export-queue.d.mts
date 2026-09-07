@@ -1,3 +1,4 @@
+import type { QueueWorkerProbe } from "./queue-worker-availability.mjs";
 export const PROJECT_EXPORT_QUEUE: "project-export";
 export class ProjectExportQueueUnavailableError extends Error {
   readonly code: "project_export_queue_unavailable";
@@ -17,6 +18,6 @@ export function enqueueProjectExportJob(
   timeoutMs?: number,
 ): Promise<{ jobId: string; recovered: boolean }>;
 export function hasProjectExportWorker(
-  queue?: { getWorkersCount(): Promise<number> },
+  queue?: QueueWorkerProbe,
   timeoutMs?: number,
 ): Promise<boolean>;

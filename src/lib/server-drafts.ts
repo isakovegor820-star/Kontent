@@ -1018,7 +1018,7 @@ async function resolveSourceContext(
               feed.source_kind
          from rss_items item
          join rss_feeds feed on feed.id = item.feed_id
-         join channels source_channel on source_channel.id = feed.channel_id
+         join channels source_channel on source_channel.id = feed.channel_id and source_channel.project_id=feed.project_id
          join channels destination_channel on destination_channel.id = $3
         where item.id = $1 and feed.user_id = $2
           and source_channel.project_id = destination_channel.project_id`,

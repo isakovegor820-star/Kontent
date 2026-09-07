@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   ensureSettings: vi.fn(),
   loadBrief: vi.fn(),
   getWorkersCount: vi.fn(),
+  getWorkers: vi.fn(),
   getJob: vi.fn(),
   removeJob: vi.fn(),
   add: vi.fn(),
@@ -25,8 +26,11 @@ vi.mock("@/lib/autopilot", () => ({
   loadBrief: mocks.loadBrief,
 }));
 vi.mock("@/lib/brief", () => ({ briefComplete: () => true }));
-vi.mock("@/lib/queue", () => ({
+vi.mock("@/lib/queue", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/queue")>()),
   getAutopilotQueue: () => ({
+    client: Promise.resolve({ options: { db: 13 } }),
+    getWorkers: mocks.getWorkers,
     getWorkersCount: mocks.getWorkersCount,
     add: mocks.add,
     getJob: mocks.getJob,
@@ -85,6 +89,7 @@ describe("POST /api/autopilot/generate", () => {
     });
     mocks.resolveAiEngineRuntime.mockReturnValue({ supported: true, configured: true });
     mocks.getWorkersCount.mockResolvedValue(1);
+    mocks.getWorkers.mockResolvedValue([{ db: "13" }]);
     mocks.clientQuery.mockImplementation(async (sql: string) => {
       if (sql.includes("status = 'building'") && sql.includes("select id")) return { rows: [] };
       if (sql.includes("insert into autopilot_plan")) return { rows: [{ id: "91" }] };
@@ -93,6 +98,15 @@ describe("POST /api/autopilot/generate", () => {
     mocks.add.mockResolvedValue({ id: "autopilot-plan-91" });
     mocks.getJob.mockResolvedValue({ remove: mocks.removeJob });
     mocks.linkGrowthMovePlanInTransaction.mockResolvedValue(undefined);
+  });
+
+  it("rejects a same-name worker in a foreign Redis database before changing the plan", async () => {
+    mocks.getWorkers.mockResolvedValue([{ db: "15" }]);
+    const response = await POST(request({ channelId: 22, generationEngine: "navy-gpt-5-4", planningWeeks: 7 }));
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({ ok: false, error: "worker_unavailable" });
+    expect(mocks.add).not.toHaveBeenCalled();
+    expect(mocks.clientQuery).not.toHaveBeenCalled();
   });
 
   it("rejects an unknown model before creating a plan", async () => {

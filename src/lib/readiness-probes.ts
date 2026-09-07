@@ -1,5 +1,5 @@
 import Redis from "ioredis";
-import { aiReady, resolveEngineRuntime, serviceEngine } from "./ai-provider";
+import { serviceEngine } from "./ai-provider";
 import {
   aiProviderCircuitBreaker,
   aiProviderHealthSnapshot,
@@ -101,10 +101,11 @@ interface AiProviderReadinessDependencies {
 const defaultAiProviderReadinessDependencies: AiProviderReadinessDependencies = {
   configured: probeAiConfiguration,
   engine: serviceEngine,
-  // aiReady returns configuration-only for protocols without a capability API.
-  // Such a return value must not be recorded as a successful provider request.
-  canProbe: (engine) => ["openai", "ollama"].includes(resolveEngineRuntime(engine).protocol ?? ""),
-  ready: aiReady,
+  // Read-only readiness must not manufacture execution success from a model
+  // catalogue, or issue paid completions outside the authorized usage ledger.
+  // Normal, authorized AI operations populate the observed circuit snapshot.
+  canProbe: () => false,
+  ready: async () => false,
   snapshot: aiProviderHealthSnapshot,
   recordSuccess: (engine, latencyMs) => aiProviderCircuitBreaker.recordSuccess(engine, latencyMs),
   recordFailure: (engine, input) => aiProviderCircuitBreaker.recordFailure(engine, input),
@@ -112,13 +113,26 @@ const defaultAiProviderReadinessDependencies: AiProviderReadinessDependencies = 
 };
 
 /**
- * A web restart clears the in-process circuit snapshot. On the first authorized
- * readiness check (and after expiry), establish bounded capability evidence.
- * Fresh runtime failures are preserved; expired results must permit recovery.
+ * A web restart clears in-process execution evidence. The default observer
+ * preserves unknown/stale until a normal AI operation supplies a new outcome.
+ * Explicit injected probe dependencies must provide an authorized execution
+ * oracle; configuration or catalogue availability is insufficient evidence.
  */
-export async function probeAiProviderReadiness(
+const aiReadinessFlights = new Map<EngineId, Promise<ProviderHealthSnapshot[]>>();
+
+export function probeAiProviderReadiness(
   dependencies: AiProviderReadinessDependencies = defaultAiProviderReadinessDependencies,
 ): Promise<ProviderHealthSnapshot[]> {
+  if (dependencies !== defaultAiProviderReadinessDependencies) return runAiProviderReadiness(dependencies);
+  const engine = dependencies.engine();
+  const existing = aiReadinessFlights.get(engine);
+  if (existing) return existing;
+  const flight = runAiProviderReadiness(dependencies).finally(() => aiReadinessFlights.delete(engine));
+  aiReadinessFlights.set(engine, flight);
+  return flight;
+}
+
+async function runAiProviderReadiness(dependencies: AiProviderReadinessDependencies): Promise<ProviderHealthSnapshot[]> {
   const existing = dependencies.snapshot();
   if (!dependencies.configured()) return existing;
   const engine = dependencies.engine();
@@ -133,7 +147,12 @@ export async function probeAiProviderReadiness(
   } catch {
     providerReady = false;
   }
-  const latencyMs = Math.max(0, dependencies.now() - startedAt);
+  // A real request may settle while the capability endpoint is in flight. Its
+  // fresh outcome takes precedence over the weaker capability observation.
+  const completedAt = dependencies.now();
+  const latest = dependencies.snapshot().filter(provider => provider.engine === engine);
+  if (latest.some(provider => isFreshAiProviderEvidence(provider, completedAt))) return latest;
+  const latencyMs = Math.max(0, completedAt - startedAt);
   if (providerReady) {
     dependencies.recordSuccess(engine, latencyMs);
   } else {

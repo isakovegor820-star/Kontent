@@ -42,7 +42,7 @@ describe("project export queue", () => {
       getJob: vi.fn(async () => { throw new Error("offline"); }),
     };
     await expect(enqueueProjectExportJob(data, queue)).rejects.toBeInstanceOf(ProjectExportQueueUnavailableError);
-    await expect(hasProjectExportWorker({ getWorkersCount: vi.fn(async () => 0) })).resolves.toBe(false);
-    await expect(hasProjectExportWorker({ getWorkersCount: vi.fn(async () => 1) })).resolves.toBe(true);
+    await expect(hasProjectExportWorker({ client: Promise.resolve({ options: { db: 0 } }), getWorkers: vi.fn(async () => []) })).resolves.toBe(false);
+    await expect(hasProjectExportWorker({ client: Promise.resolve({ options: { db: 0 } }), getWorkers: vi.fn(async () => [{ db: "0" }]) })).resolves.toBe(true);
   });
 });

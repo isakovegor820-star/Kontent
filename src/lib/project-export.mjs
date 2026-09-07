@@ -9,6 +9,8 @@ export const PROJECT_EXPORT_FORMATS = Object.freeze(["csv", "xlsx", "pdf"]);
 export const PROJECT_EXPORT_KINDS = Object.freeze(["content_plan", "analytics"]);
 
 const SNAPSHOT_VERSION = "aurora-project-export-v1";
+const SQL_SELECTION_SNAPSHOT_VERSION = "aurora-project-export-sql-selection-v2";
+const MAX_SQL_SELECTION_ROWS = 25_001;
 const FILTER_KEYS = Object.freeze(["channel", "author", "campaign", "status"]);
 const SPREADSHEET_FORMULA_PREFIX = /^[\p{Z}\p{Cc}\p{Cf}]*[=+\-@]/u;
 
@@ -228,11 +230,18 @@ export function projectExportHash(value) {
 
 /**
  * Builds the only input accepted by all three renderers. It takes an immutable copy,
- * enforces the selected project, applies the same period and dimension filters, and
- * keeps unavailable analytics metrics as null rather than inventing zeroes.
+ * enforces the selected project and period, preserves the versioned dimension
+ * selection contract, and keeps unavailable analytics metrics as null.
  */
-export function createProjectExportSnapshot(input) {
+function normalizeProjectExportSnapshot(input, sqlSelection) {
   const source = requiredRecord(input, "snapshot");
+  const version = sqlSelection ? SQL_SELECTION_SNAPSHOT_VERSION : SNAPSHOT_VERSION;
+  if (source.schemaVersion != null && source.schemaVersion !== version) {
+    throw new Error("unsupported_project_export_snapshot_version");
+  }
+  if (sqlSelection && (!Array.isArray(source.rows) || source.rows.length > MAX_SQL_SELECTION_ROWS)) {
+    throw new Error("invalid_project_export_sql_selection_rows");
+  }
   const kind = PROJECT_EXPORT_KINDS.includes(source.kind) ? source.kind : null;
   if (!kind) throw new Error("unsupported_project_export_kind");
   const projectInput = requiredRecord(source.project, "project");
@@ -259,10 +268,13 @@ export function createProjectExportSnapshot(input) {
   for (const row of Array.isArray(source.rows) ? source.rows : []) {
     const normalized = normalizeRow(kind, row, project, period);
     if (!normalized) continue;
-    if (FILTER_KEYS.every((key) => matchesFilter(normalized, key, filters[key]))) rows.push(normalized);
+    // V2 rows were selected by the service's project/date/dimension SQL predicates
+    // before LIMIT. Reapplying V1 JavaScript casing would silently discard valid
+    // PostgreSQL Unicode-simple matches (for example Greek sigma or dotted I).
+    if (sqlSelection || FILTER_KEYS.every((key) => matchesFilter(normalized, key, filters[key]))) rows.push(normalized);
   }
   return deepFreeze({
-    schemaVersion: SNAPSHOT_VERSION,
+    schemaVersion: version,
     kind,
     exportedAt: normalizeInstant(source.exportedAt, "exported_at"),
     project,
@@ -271,6 +283,21 @@ export function createProjectExportSnapshot(input) {
     methodology,
     rows,
   });
+}
+
+/** Normalize legacy input or revalidate a persisted, hash-bound V1/V2 snapshot. */
+export function createProjectExportSnapshot(input) {
+  return normalizeProjectExportSnapshot(input, input?.schemaVersion === SQL_SELECTION_SNAPSHOT_VERSION);
+}
+
+/**
+ * Internal service boundary: callers must have applied every dimension in SQL
+ * before its bounded read. V2 preserves that authoritative selection and filter
+ * metadata; project, date, row shape and size validation still run here and in
+ * every renderer. The HTTP request contract accepts neither rows nor a version.
+ */
+export function createProjectExportSnapshotFromSqlSelection(input) {
+  return normalizeProjectExportSnapshot(input, true);
 }
 
 function columnsFor(snapshot) {

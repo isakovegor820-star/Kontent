@@ -545,7 +545,7 @@ function DetailPanel({ data, onTab }: { data: AdminAuroraAnalytics; onTab: (tab:
 
 export function AdminAuroraAnalyticsCenter() {
   const detailRef = useRef<HTMLDivElement>(null);
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState<string | null>(null);
   const [data, setData] = useState<AdminAuroraAnalytics | null>(null);
   const [error, setError] = useState<AnalyticsLoadError | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -571,6 +571,8 @@ export function AdminAuroraAnalyticsCenter() {
   }, []);
 
   useEffect(() => {
+    // The first read belongs to the hydrated URL, including its filters.
+    if (query === null) return;
     const controller = new AbortController();
     const suffix = query ? `?${query}` : "";
     void fetch(`/api/admin/aurora-analytics${suffix}`, { cache: "no-store", signal: controller.signal })
@@ -582,7 +584,7 @@ export function AdminAuroraAnalyticsCenter() {
         if (!response.ok) throw new Error("unavailable");
         return response.json() as Promise<AdminAuroraAnalytics>;
       })
-      .then((payload) => { setData(payload); setError(null); })
+      .then((payload) => { if (!controller.signal.aborted) { setData(payload); setError(null); } })
       .catch((loadError) => {
         if (controller.signal.aborted) return;
         const message = loadError instanceof Error ? loadError.message : "unavailable";
@@ -609,7 +611,7 @@ export function AdminAuroraAnalyticsCenter() {
     setRefreshKey((value) => value + 1);
   };
 
-  const params = useMemo(() => new URLSearchParams(query), [query]);
+  const params = useMemo(() => new URLSearchParams(query ?? ""), [query]);
   const selectedId = data?.filters.sectionId ?? null;
   const view = params.get("analyticsView") === "cards" ? "cards" : "table";
   const selectSection = (sectionId: AuroraAnalyticsSectionCard["id"]) => {

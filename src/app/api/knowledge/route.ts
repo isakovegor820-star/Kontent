@@ -17,6 +17,10 @@ import { resolveChannel } from "@/lib/autopilot";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import { channelAiContextFor } from "@/lib/ai-usage";
 
+import { ProjectAccessError } from "@/lib/project-permissions";
+import { withSelectedProjectPermission } from "@/lib/selected-project-transaction";
+import { researchChannel } from "@/lib/research-project-access";
+
 export const runtime = "nodejs";
 
 const MAX_TEXT = 40_000; // ~20 страниц за раз; больше — это уже файл, а загрузки файлов пока нет
@@ -86,6 +90,7 @@ export async function GET(req: NextRequest) {
       effectiveProfile: context?.profileProvenance ?? {},
     });
   } catch (err) {
+    if (err instanceof ProjectAccessError) return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
     console.error("[/api/knowledge] GET", {
       errorName: err instanceof Error ? err.name : "Error",
     });
@@ -122,8 +127,8 @@ export async function POST(req: NextRequest) {
   if (!title) return NextResponse.json({ ok: false, error: "no_title" }, { status: 422 });
 
   try {
-    const pool = getPool();
-    const channelId = await resolveChannel(user.id, Number(body.channelId) || null);
+    const result = await withSelectedProjectPermission(getPool(), user.id, "content.create", async (pool, membership) => {
+    const channelId = await researchChannel(pool, membership.projectId, Number(body.channelId) || null);
     if (!channelId) return NextResponse.json({ ok: false, error: "no_channel" }, { status: 422 });
 
     const ins = await pool.query<{ id: number }>(
@@ -133,15 +138,16 @@ export async function POST(req: NextRequest) {
     );
     const id = Number(ins.rows[0].id);
 
-    // Векторы считает воркер: это поход наружу (Ollama/облако), у него очередь и повторы.
-    // Роут ждать не должен — человек увидит «считаю» и через секунды «готово».
-    await enqueueKnowledgeIndex(getStatsQueue(), id)
-      .catch(() => {
-        /* Источник сохранён в pending; периодическая DB→queue сверка подберёт его позже. */
-      });
-
-    return NextResponse.json({ ok: true, id });
+    return { id };
+    });
+    if (result instanceof NextResponse) return result;
+    // Commit the source before the worker can consume its queue item.
+    await enqueueKnowledgeIndex(getStatsQueue(), result.id).catch(() => {
+      /* DB→queue reconciliation recovers a committed pending source. */
+    });
+    return NextResponse.json({ ok: true, id: result.id });
   } catch (err) {
+    if (err instanceof ProjectAccessError) return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
     console.error("[/api/knowledge] POST", err);
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
@@ -159,13 +165,15 @@ export async function DELETE(req: NextRequest) {
   if (!Number.isInteger(id)) return NextResponse.json({ ok: false, error: "bad_id" }, { status: 422 });
 
   try {
-    const r = await getPool().query(`delete from knowledge_sources where id = $1 and user_id = $2`, [
-      id,
-      user.id,
-    ]);
-    if (!r.rowCount) return NextResponse.json({ ok: false, error: "not_found" }, { status: 404 });
-    return NextResponse.json({ ok: true });
+    return await withSelectedProjectPermission(getPool(), user.id, "content.edit", async (pool, membership) => {
+      const r = await pool.query(`delete from knowledge_sources source where source.id = $1 and source.user_id = $2
+        and (exists(select 1 from channels channel where channel.id = source.channel_id and channel.project_id = $3)
+          or exists(select 1 from sites site where site.id = source.site_id and site.project_id = $3))`, [id, user.id, membership.projectId]);
+      if (!r.rowCount) return NextResponse.json({ ok: false, error: "not_found" }, { status: 404 });
+      return NextResponse.json({ ok: true });
+    });
   } catch (err) {
+    if (err instanceof ProjectAccessError) return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
     console.error("[/api/knowledge] DELETE", err);
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }

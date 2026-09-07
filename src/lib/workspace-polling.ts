@@ -9,7 +9,9 @@ export type WorkspaceVisibilitySource = {
 type WorkspacePollingInput = {
   refreshReal: () => void | Promise<void>;
   refreshAiUsage: () => void | Promise<void>;
+  cancelReads: () => void;
   visibility: WorkspaceVisibilitySource;
+  lifecycle: Pick<Window, "addEventListener" | "removeEventListener">;
   intervalMs?: number;
 };
 
@@ -24,12 +26,26 @@ export function isWorkspacePollingRoute(pathname: string | null): boolean {
 export function startVisibleWorkspacePolling({
   refreshReal,
   refreshAiUsage,
+  cancelReads,
   visibility,
+  lifecycle,
   intervalMs = WORKSPACE_POLL_MS,
 }: WorkspacePollingInput): () => void {
   const delay = Number.isFinite(intervalMs) && intervalMs > 0 ? intervalMs : WORKSPACE_POLL_MS;
   let realTimer: ReturnType<typeof globalThis.setInterval> | null = null;
   let aiTimer: ReturnType<typeof globalThis.setInterval> | null = null;
+  let pending = 0;
+  // React cleanup/pagehide can run after the browser has already rejected
+  // in-flight fetches. Abort only our refresh reads before document teardown.
+  // Do not prompt or stop timers: another handler may cancel the navigation.
+  const beforeUnload = () => cancelReads();
+  const refresh = async (read: () => void | Promise<void>) => {
+    if (pending++ === 0) lifecycle.addEventListener("beforeunload", beforeUnload);
+    try { await read(); }
+    finally {
+      if (--pending === 0) lifecycle.removeEventListener("beforeunload", beforeUnload);
+    }
+  };
 
   const stopTimers = () => {
     if (realTimer !== null) globalThis.clearInterval(realTimer);
@@ -40,12 +56,12 @@ export function startVisibleWorkspacePolling({
 
   const startTimers = () => {
     stopTimers();
-    if (visibility.hidden) return;
+    if (visibility.hidden) { cancelReads(); return; }
 
-    void refreshReal();
-    void refreshAiUsage();
-    realTimer = globalThis.setInterval(() => void refreshReal(), delay);
-    aiTimer = globalThis.setInterval(() => void refreshAiUsage(), delay);
+    void refresh(refreshReal);
+    void refresh(refreshAiUsage);
+    realTimer = globalThis.setInterval(() => void refresh(refreshReal), delay);
+    aiTimer = globalThis.setInterval(() => void refresh(refreshAiUsage), delay);
   };
 
   const onVisibilityChange = () => startTimers();
@@ -55,5 +71,7 @@ export function startVisibleWorkspacePolling({
   return () => {
     visibility.removeEventListener("visibilitychange", onVisibilityChange);
     stopTimers();
+    lifecycle.removeEventListener("beforeunload", beforeUnload);
+    cancelReads();
   };
 }

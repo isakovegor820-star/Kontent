@@ -39,6 +39,7 @@ describe("Telegram native channel connection", () => {
   it("connects a verified channel and records the Telegram update idempotently", async () => {
     const tx = transactionPool(async (sql) => {
       const text = String(sql);
+      if (text.includes("select proof.id")) return { rows: [{ id: "proof", source: "web", chat_id: -1001 }] };
       if (text.includes("select member.role")) return { rows: [{ role: "owner" }] };
       if (text.includes("project_id <>")) return { rows: [] };
       if (text.includes("order by is_active")) return { rows: [] };
@@ -49,6 +50,7 @@ describe("Telegram native channel connection", () => {
     await expect(saveVerifiedTelegramChannel(tx.pool, {
       userId: 7,
       projectId: 12,
+      actorId: 123, proofId: "11111111-1111-4111-8111-111111111111",
       chat: { id: -1001, title: "Команда", username: "team" },
       requestId: "telegram-my-chat-member:99",
     })).resolves.toMatchObject({ state: "connected", channelId: 41, projectId: 12 });
@@ -63,6 +65,7 @@ describe("Telegram native channel connection", () => {
   it("does not move a channel that is active in another project", async () => {
     const tx = transactionPool(async (sql) => {
       const text = String(sql);
+      if (text.includes("select proof.id")) return { rows: [{ id: "proof", source: "web", chat_id: -1001 }] };
       if (text.includes("select member.role")) return { rows: [{ role: "owner" }] };
       if (text.includes("project_id <>")) return { rows: [{ id: 9, project_id: 3 }] };
       return { rows: [] };
@@ -70,9 +73,17 @@ describe("Telegram native channel connection", () => {
     await expect(saveVerifiedTelegramChannel(tx.pool, {
       userId: 7,
       projectId: 12,
+      actorId: 123, proofId: "11111111-1111-4111-8111-111111111111",
       chat: { id: -1001, title: "Команда" },
     })).resolves.toEqual({ state: "taken" });
     expect(tx.query.mock.calls.some(([sql]) => String(sql).includes("insert into channels"))).toBe(false);
+  });
+
+  it("fails closed when no one-use ownership proof is supplied", async () => {
+    const tx = transactionPool(async () => ({ rows: [] }));
+    await expect(saveVerifiedTelegramChannel(tx.pool, { userId: 7, projectId: 12, chat: { id: -1001 } }))
+      .resolves.toEqual({ state: "proof_required" });
+    expect(tx.pool.connect).not.toHaveBeenCalled();
   });
 
   it("marks a connected channel unavailable when Telegram removes the permission", async () => {

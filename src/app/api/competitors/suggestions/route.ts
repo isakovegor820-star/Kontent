@@ -1,3 +1,5 @@
+import { ProjectAccessError } from "@/lib/project-permissions";
+import { withResearchProject, researchChannel } from "@/lib/research-project-access";
 // Д.6+ — находки агента: «похоже, это твои соседи».
 //
 // Платформа НЕ добавляет их сама. Она приносит проверенный список с обоснованием — кто
@@ -9,7 +11,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
 import { getStatsQueue } from "@/lib/queue";
-import { resolveChannel } from "@/lib/autopilot";
 import { MAX_COMPETITORS } from "@/lib/competitors";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 
@@ -35,8 +36,8 @@ export async function GET(req: NextRequest) {
   if (!user) return NextResponse.json({ suggestions: [] });
 
   try {
-    const pool = getPool();
-    const channelId = await resolveChannel(user.id, Number(req.nextUrl.searchParams.get("channel")) || null);
+    return await withResearchProject(getPool(), user.id, "project.read", async (pool, projectId) => {
+    const channelId = await researchChannel(pool, projectId, Number(req.nextUrl.searchParams.get("channel")) || null);
     if (!channelId) return NextResponse.json({ suggestions: [], seeds: 0 });
     // on_topic = false — ИИ сверил посты кандидата с брифом и сказал «другая тема». Не
     // показываем: именно так сюда приезжали PR-агентство и софтверный блог — на них просто
@@ -96,7 +97,9 @@ export async function GET(req: NextRequest) {
       seeds,
       channelId,
     });
+    });
   } catch (err) {
+    if (err instanceof ProjectAccessError) return NextResponse.json({ error: "forbidden" }, { status: 403 });
     console.error("[/api/competitors/suggestions]", err);
     return NextResponse.json(
       { suggestions: [], seeds: 0, error: "suggestions_unavailable" },
@@ -114,12 +117,14 @@ export async function POST(req: NextRequest) {
   if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
 
   try {
+    return await withResearchProject(getPool(), user.id, "content.create", async (pool, projectId, afterCommit) => {
     // Ищем соседей тому каналу, который человек сейчас смотрит.
-    const channelId = await resolveChannel(user.id, Number(req.nextUrl.searchParams.get("channel")) || null);
+    const channelId = await researchChannel(pool, projectId, Number(req.nextUrl.searchParams.get("channel")) || null);
     if (!channelId) return NextResponse.json({ ok: false, error: "no_channel" }, { status: 422 });
+    afterCommit(async () => {
     await getStatsQueue().add(
       "discover",
-      { userId: user.id, channelId },
+      { userId: user.id, channelId, projectId },
       {
         jobId: `discover-${user.id}-${channelId}`,
         removeOnComplete: true,
@@ -127,8 +132,11 @@ export async function POST(req: NextRequest) {
         backoff: { type: "fixed", delay: 15000 },
       },
     );
+    });
     return NextResponse.json({ ok: true });
+    });
   } catch (err) {
+    if (err instanceof ProjectAccessError) return NextResponse.json({ error: "forbidden" }, { status: 403 });
     console.error("[/api/competitors/suggestions] POST", err);
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
@@ -155,7 +163,7 @@ export async function PATCH(req: NextRequest) {
   }
 
   try {
-    const pool = getPool();
+    return await withResearchProject(getPool(), user.id, "content.edit", async (pool, projectId, afterCommit) => {
     const sug = (
       await pool.query<{ handle: string; channel_id: number }>(
         `select handle, channel_id from competitor_suggestions
@@ -167,7 +175,7 @@ export async function PATCH(req: NextRequest) {
     // Находка принадлежит каналу проекта, а не человеку, который первым запустил
     // поиск. Любой текущий участник того же выбранного проекта должен иметь
     // возможность принять её; чужой канал по-прежнему отсекает серверный scope.
-    const channelId = await resolveChannel(user.id, Number(sug.channel_id));
+    const channelId = await researchChannel(pool, projectId, Number(sug.channel_id), true);
     if (channelId !== Number(sug.channel_id)) {
       return NextResponse.json({ ok: false, error: "not_found" }, { status: 404 });
     }
@@ -184,7 +192,7 @@ export async function PATCH(req: NextRequest) {
     // Тот же лимит, что и при ручном добавлении: находки не должны его обходить.
     const cnt = (
       await pool.query<{ n: number }>(
-        `select count(*)::int as n from competitors where channel_id = $1 and network = 'tg'`,
+        `select count(*)::int as n from competitors where channel_id = $1`,
         [sug.channel_id],
       )
     ).rows[0].n;
@@ -194,8 +202,8 @@ export async function PATCH(req: NextRequest) {
 
     // Канал берём из самой находки: её нашли и признали «своей темой» для конкретного канала.
     const ins = await pool.query<{ id: number }>(
-      `insert into competitors (user_id, channel_id, network, handle, status)
-       values ($1, $2, 'tg', $3, 'pending')
+      `insert into competitors (user_id, collection_requested_by_user_id, channel_id, network, handle, status)
+       values ($1, $1, $2, 'tg', $3, 'pending')
        on conflict (channel_id, network, handle) do nothing
        returning id`,
       [user.id, sug.channel_id, sug.handle],
@@ -207,15 +215,19 @@ export async function PATCH(req: NextRequest) {
     );
 
     // Собираем досье сразу — иначе карточка висела бы пустой до следующего цикла.
+    afterCommit(async () => {
     if (ins.rows[0]) {
       await getStatsQueue().add(
         "competitor",
-        { id: ins.rows[0].id },
+        { id: ins.rows[0].id, userId: user.id, projectId },
         { removeOnComplete: true, attempts: 2, backoff: { type: "fixed", delay: 15000 } },
       );
     }
+    });
     return NextResponse.json({ ok: true, handle: sug.handle });
+    });
   } catch (err) {
+    if (err instanceof ProjectAccessError) return NextResponse.json({ error: "forbidden" }, { status: 403 });
     console.error("[/api/competitors/suggestions] PATCH", err);
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }

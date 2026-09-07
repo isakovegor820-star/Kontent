@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   beginGenerationOperation,
+  lookupTerminalGenerationFailure,
   GenerationArtifactError,
   generationBindingValid,
   generationResultHash,
@@ -82,10 +83,11 @@ describe("generation artifact binding", () => {
     expect(call[1]).toEqual([91, 5]);
   });
 
-  it("never reopens a provider operation after an immutable result is pending ACK", async () => {
+  it.each([["pending_ack", "generation_result_pending_ack"], ["running", "generation_operation_in_progress"]])(
+    "N48 never reopens an existing %s provider operation", async (status, code) => {
     const query = vi.fn(async (sql: string) => {
       if (sql === "begin" || sql === "rollback") return { rows: [], rowCount: null };
-      if (sql.includes("select id from channels")) return { rows: [{ id: 11 }], rowCount: 1 };
+      if (sql.includes("from channels channel")) return { rows: [{ id: 11, project_id: 3 }], rowCount: 1 };
       if (sql.includes("from generation_operations")) {
         return {
           rows: [{
@@ -96,7 +98,7 @@ describe("generation artifact binding", () => {
             source_context_version: null,
             input_draft_id: null,
             input_draft_version: null,
-            status: "pending_ack",
+            status,
           }],
           rowCount: 1,
         };
@@ -116,10 +118,20 @@ describe("generation artifact binding", () => {
       providerEngine: "fake",
       providerModel: "fake-v1",
     }, pool as never)).rejects.toEqual(
-      expect.objectContaining<Partial<GenerationArtifactError>>({ code: "generation_result_pending_ack" }),
+      expect.objectContaining<Partial<GenerationArtifactError>>({ code }),
     );
     expect(query.mock.calls.some(([sql]) => String(sql).includes("status = 'running'"))).toBe(false);
     expect(query).toHaveBeenCalledWith("rollback");
     expect(release).toHaveBeenCalledOnce();
+  });
+});
+
+
+describe("N48 stale generation ownership", () => {
+  it.each([false, true])("keeps a running operation closed when leaseFresh=%s", async (leaseFresh) => {
+    const query = vi.fn(async () => ({ rows: [{ request_fingerprint: "a".repeat(64),
+      status: "running", error_code: null, lease_fresh: leaseFresh }] }));
+    await expect(lookupTerminalGenerationFailure(5, "studio:request-1", "a".repeat(64), { query } as never))
+      .resolves.toEqual(leaseFresh ? null : { code: "ai_generation_interrupted", retryable: false });
   });
 });

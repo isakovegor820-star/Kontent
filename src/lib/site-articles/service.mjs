@@ -7,7 +7,7 @@ import { SITE_ARTICLE_TYPES } from "./types.mjs";
  * (генерация, публикация). Только SQL и детерминированная логика — без сети и моделей.
  */
 
-export const SITE_ARTICLE_FIELDS = `id, site_id, project_id, user_id, article_type, origin, source_key, source_ref,
+export const SITE_ARTICLE_FIELDS = `id, site_id, project_id, user_id, generation_requested_by_user_id, article_type, origin, source_key, source_ref,
   title, slug, meta_description, body_markdown, body_html, internal_links, structured_data, evidence_keys,
   similarity_check, quality, generation, version, status, status_reason, approved_by, approved_version,
   approved_at, published_url, provider_ref, scheduled_at, published_at, retired_at, created_at, updated_at`;
@@ -67,13 +67,14 @@ export function publicationIdempotencyKey({ articleId, destinationId, version, a
  * Создаёт операции публикации для версии статьи по каждому активному назначению.
  * Повторный вызов для той же версии идемпотентен: возвращает существующие строки.
  */
-export async function createArticlePublications(db, { article, destinations, action = "publish" }) {
+export async function createArticlePublications(db, { article, destinations, action = "publish", requestedByUserId }) {
+  if (!Number.isSafeInteger(Number(requestedByUserId)) || Number(requestedByUserId) <= 0) throw new Error("site_publication_actor_required");
   const rows = [];
   for (const destination of destinations) {
     const stored = await db.query(
       `insert into site_article_publications
-         (article_id, destination_id, article_version, idempotency_key, action, status)
-       values ($1, $2, $3, $4, $5, 'pending')
+         (article_id, destination_id, article_version, idempotency_key, action, status, requested_by_user_id)
+       values ($1, $2, $3, $4, $5, 'pending', $6)
        on conflict (idempotency_key) do update set updated_at = site_article_publications.updated_at
        returning id, article_id, destination_id, article_version, idempotency_key, action, status`,
       [
@@ -82,6 +83,7 @@ export async function createArticlePublications(db, { article, destinations, act
         Number(article.version),
         publicationIdempotencyKey({ articleId: article.id, destinationId: destination.id, version: article.version, action }),
         action,
+        Number(requestedByUserId),
       ],
     );
     rows.push(stored.rows[0]);

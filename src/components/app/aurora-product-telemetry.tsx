@@ -1,5 +1,7 @@
 "use client";
 
+import { getClientProjectId, projectFetch as fetch } from "@/lib/project-fetch";
+
 import { usePathname } from "next/navigation";
 import { useEffect, useRef } from "react";
 
@@ -78,6 +80,7 @@ function explicitEvent(target: Element, sectionId: NonNullable<ReturnType<typeof
 export function AuroraProductTelemetry() {
   const pathname = usePathname();
   const queueRef = useRef<AuroraProductEventDraft[]>([]);
+  const queueProjectRef = useRef<number | null>(null);
   const timerRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -86,16 +89,26 @@ export function AuroraProductTelemetry() {
       timerRef.current = null;
       const events = queueRef.current.splice(0, MAX_BATCH);
       if (events.length === 0) return;
+      const projectId = queueProjectRef.current;
+      // A delayed event belongs to the workspace where it occurred. An unknown
+      // or changed selection must never attribute it to a different workspace.
+      if (projectId === null || projectId !== getClientProjectId()) return;
       void fetch("/api/product-events", {
         method: "POST",
         credentials: "same-origin",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "x-aurora-project-id": String(projectId) },
         body: JSON.stringify({ events: events.map(auroraProductEventWireDraft) }),
         keepalive: true,
       }).catch(() => undefined);
       if (queueRef.current.length > 0) timerRef.current = window.setTimeout(flush, FLUSH_DELAY_MS);
     };
     const uninstall = installAuroraTelemetrySink((event) => {
+      const projectId = getClientProjectId();
+      if (projectId === null) return;
+      if (queueProjectRef.current !== projectId) {
+        queueRef.current = [];
+        queueProjectRef.current = projectId;
+      }
       queueRef.current.push(event);
       if (event.important || queueRef.current.length >= MAX_BATCH) flush();
       else if (timerRef.current === null) timerRef.current = window.setTimeout(flush, FLUSH_DELAY_MS);

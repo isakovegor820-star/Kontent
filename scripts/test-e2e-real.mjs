@@ -1,3 +1,13 @@
+import { createMainRequestEvidence } from "./e2e-main-request-evidence.mjs";
+import { createPostsSnapshotEvidence } from "./e2e-posts-snapshot-evidence.mjs";
+import { readEditorialReceiptDiagnostics } from "./e2e-editorial-receipt-diagnostics.mjs";
+import { assertEditorialSubmissionReflow } from "./e2e-editorial-review-coverage.mjs";
+import { createMainFaultEvidence, nativeMainHttpStatus } from "./e2e-main-fault-evidence.mjs";
+import { finalizeE2eBrowserLifecycle } from "./e2e-browser-lifecycle.mjs";
+import { deepStrictEqual } from "node:assert";
+import { createE2eIngressBoundary } from "./e2e-ingress-boundary.mjs";
+import { createE2eBrowserContext } from "./e2e-browser-context.mjs";
+import { installE2eBrowserBoundary } from "./e2e-browser-boundary.mjs";
 import { execFileSync, spawn } from "node:child_process";
 import { access, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { constants, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -42,8 +52,25 @@ import {
   PUBLICATION_REVIEW_REMINDER_QUEUE,
 } from "../worker/publication-review-reminder.mjs";
 import { migrate } from "./migrate.mjs";
+import { fakeAiSpendEnv } from "../src/e2e/fixtures/ai-spend-env.mjs";
+import { sitesNetworkShim, handleFakeSitesRequest, handleFakeSitesAiRequest, runSitesCoverage } from "./e2e-sites-coverage.mjs";
+import { runProjectCalendarCoverage } from "./e2e-project-calendar-coverage.mjs";
+import { runAuthCoverage, handleFakeMailRequest } from "./e2e-auth-coverage.mjs";
+import { runLoginRateLimitCoverage, loginRateLimitFixtureIngress, LOGIN_RATE_LIMIT_FIXTURE_HEADER } from "./e2e-login-rate-limit-coverage.mjs";
+import { createAiConflictResponseEvidence, createAiAcknowledgementEvidence } from "./e2e-ai-response-evidence.mjs";
+import { createStudioSessionEvidence, loadStudioSessionContract, readStudioSessionProof } from "./e2e-studio-session-evidence.mjs";
+import { runTrueZoomCoverage } from "./e2e-true-zoom-coverage.mjs";
+import { runTodayFocusCoverage } from "./e2e-today-focus-coverage.mjs";
+import { runAdminActionsCoverage } from "./e2e-admin-actions-coverage.mjs";
+import { assertE2eTraceSet } from "./e2e-artifact-contract.mjs";
+import { handleFakeChannelOnboardingRequest, takeChannelOnboardingUpdates, runChannelOnboardingCoverage } from "./e2e-channel-onboarding-coverage.mjs";
+import { runAiPreviewCoverage } from "./e2e-ai-preview-coverage.mjs";
+import { runEditorSafetyCoverage } from "./e2e-editor-safety-coverage.mjs";
+import { E2E_MANUAL_PUBLICATION_TEXT, prepareManualPublicationCoverage, verifyManualPublicationDelivery } from "./e2e-manual-publication-coverage.mjs";
 
 const databaseUrl = String(process.env.E2E_DATABASE_URL || "").trim();
+const aiConflictResponseEvidence = createAiConflictResponseEvidence();
+const aiAcknowledgementEvidence = createAiAcknowledgementEvidence();
 const redisUrl = String(process.env.E2E_REDIS_URL || "").trim();
 if (!databaseUrl || !redisUrl) throw new Error("E2E_DATABASE_URL and E2E_REDIS_URL are required");
 const browserEngine = resolveE2eBrowserEngine(process.env.E2E_BROWSER);
@@ -122,7 +149,9 @@ const E2E_EVIDENCE_TRACE_OPTIONS = Object.freeze({
   sources: false,
 });
 const baseUrl = `https://127.0.0.1:${webPort}`;
-const runtimeBaseUrl = `http://127.0.0.1:${nextPort}`;
+// NextURL normalizes loopback IPs to localhost. Match that origin for internal
+// hosted rewrites behind TLS termination, instead of proxying HTTPS to HTTP Next.
+const runtimeBaseUrl = `http://localhost:${nextPort}`;
 const fakeBase = `http://127.0.0.1:${fakePort}`;
 const trackedDestination = "https://example.com/consultation";
 const artifactDir = resolve(
@@ -143,6 +172,7 @@ const logs = [];
 let fakeServer;
 let tlsProxyServer;
 let tlsDirectory;
+let browserServiceTls;
 let browser;
 let page;
 let context;
@@ -156,8 +186,24 @@ let projectExportQueue;
 let publicationExtraQueue;
 let publicationReviewReminderQueue;
 const browserIssues = [];
+const ingressBoundary = createE2eIngressBoundary({ baseUrl, onBlocked: (record) => browserIssues.push({ context: "https-ingress", ...record, message: "Off-origin browser redirect blocked at TLS ingress" }) });
+const browserTransports = [];
+const browserContextEntries = [];
+let browserContextsFinalized = false;
+let runtimeFinalized = false;
+async function isolatedContext(options, label) {
+  const { context: isolated, transport } = await createE2eBrowserContext(browser, {
+    ...options, baseUrl, onBlocked: (record) => browserIssues.push({ context: label, ...record, message: "Unexpected external browser transport blocked" }),
+  });
+  browserTransports.push(transport);
+  browserContextEntries.push({ context: isolated, transport });
+  return isolated;
+}
 const browserObservations = [];
 const browserPendingRequests = new WeakMap();
+const browserRequestIds = new WeakMap();
+const browserRequestResponses = new WeakMap();
+let browserRequestSequence = 0;
 const browserNetworkEvents = [];
 let browserScreenshotDepth = 0;
 let browserTeardownStarted = false;
@@ -165,9 +211,22 @@ let mainTraceStarted = false;
 let reviewerTraceStarted = false;
 let browserArtifactsFinalized = false;
 let browserArtifactEvidence = { enabled: false, traces: [], videos: [], networkLog: null };
-const expectedBrowserConsoleScopes = new Set();
-const expectedBrowser5xxScopes = new Set();
+const mainFaultEvidence = createMainFaultEvidence({ baseUrl });
+const postsSnapshotEvidence = createPostsSnapshotEvidence({ baseUrl });
+const explicitlyAbortedDraftRequests = new WeakSet();
 const expectedSessionExpiryConsoleScopes = new Set();
+const productEventActors = new WeakMap();
+const mainRequestEvidence = createMainRequestEvidence({ baseUrl, actorForPage: page => productEventActors.get(page.context()) });
+const studioSessionContract = loadStudioSessionContract();
+const studioSessionEvidence = createStudioSessionEvidence({ baseUrl, ...studioSessionContract });
+let studioReceiptLedgerReady = false;
+let studioSessionOwner = null;
+const mainFailedRequestIssues = new Map();
+const expiryFaultEvidence = createMainFaultEvidence({ baseUrl });
+const expiryPageLabels = new WeakMap();
+const pendingExpiryStructured = [];
+const pendingCancellationPageErrors = [];
+let expiryPageSequence = 0;
 const WEBKIT_DEFERRED_CANCELLATION_WINDOW_MS = 120_000;
 const WEBKIT_DOCUMENT_CANCELLATION_WINDOW_MS = 250;
 const interfaceEvidence = {
@@ -179,6 +238,7 @@ const interfaceEvidence = {
   analyticsUi: null,
   todayUi: null,
   adminOperationsUi: null,
+  sitesUi: null,
   botConnectTokenHygiene: null,
 };
 
@@ -222,12 +282,23 @@ async function readEditableText(locator) {
   });
 }
 
-function child(label, command, args, env) {
+function child(label, command, args, env, { persistent = false } = {}) {
   const subprocess = spawn(command, args, {
     cwd: globalThis.process.cwd(),
     env,
     stdio: ["ignore", "pipe", "pipe"],
     detached: globalThis.process.platform !== "win32",
+  });
+  subprocess.auroraE2eLifecycle = { label, persistent, stopRequested: false, unexpectedExit: null };
+  subprocess.once("exit", (code, signal) => {
+    const lifecycle = subprocess.auroraE2eLifecycle;
+    // POSIX npm/shell wrappers can translate our SIGTERM to 128 + 15.
+    // The exact code is legitimate only after this harness requested the stop.
+    const shellSigterm = globalThis.process.platform !== "win32" && signal == null && code === 143;
+    const expectedStop = lifecycle.stopRequested && (code === 0 || signal === "SIGTERM" || shellSigterm);
+    if (!expectedStop && (persistent || code !== 0 || signal)) {
+      lifecycle.unexpectedExit = `${label} exited unexpectedly (code=${code}, signal=${signal})`;
+    }
   });
   for (const [stream, name] of [[subprocess.stdout, "stdout"], [subprocess.stderr, "stderr"]]) {
     stream.setEncoding("utf8");
@@ -275,6 +346,7 @@ function signalChild(subprocess, signal) {
 
 async function stopChild(subprocess, label, timeoutMs = 12_000) {
   if (!processTreeAlive(subprocess)) return { forced: false };
+  if (subprocess.auroraE2eLifecycle) subprocess.auroraE2eLifecycle.stopRequested = true;
   signalChild(subprocess, "SIGTERM");
   const graceful = await waitFor(
     () => !processTreeAlive(subprocess),
@@ -293,6 +365,332 @@ async function stopChild(subprocess, label, timeoutMs = 12_000) {
 }
 
 async function installBrowserDiagnostics(context, label) {
+  // Register before init scripts/new pages. Context events can precede the page
+  // event for the initial document; the same event object is delivered twice.
+  const attachedPages = new Map();
+  const seenConsoleMessages = new WeakSet();
+  const seenPageErrors = new WeakSet();
+  const attachPage = (targetPage) => {
+    if (attachedPages.has(targetPage)) return attachedPages.get(targetPage);
+    const pendingRequests = new Set();
+    const expiryLabel = `${label}:page${++expiryPageSequence}`;
+    expiryPageLabels.set(targetPage, expiryLabel);
+    const deferredKnownWebKitPageErrors = new Map();
+    const pendingWebKitDocumentCancellations = [];
+    let recentDocumentRequest = null;
+    browserPendingRequests.set(targetPage, pendingRequests);
+    const queueDeferredWebKitPageError = (observation, request) => {
+      const queued = deferredKnownWebKitPageErrors.get(observation.message) || [];
+      queued.push({ recordedAt: Date.now(), observation, request });
+      deferredKnownWebKitPageErrors.set(observation.message, queued);
+    };
+    const correlateDocumentCancellation = (candidate, documentRequestUrl, elapsedMs) => {
+      const observation = classifyE2eKnownWebKitDocumentNavigationCancellation({
+        engine: browserEngine,
+        requestUrl: candidate.requestUrl,
+        requestMethod: candidate.requestMethod,
+        resourceType: candidate.resourceType,
+        failure: candidate.failure,
+        documentRequestUrl,
+        elapsedMs,
+        baseUrl,
+        webPort,
+      });
+      if (observation) queueDeferredWebKitPageError(observation, candidate.request);
+      return Boolean(observation);
+    };
+    const firstPartyRequest = (request) => {
+      try {
+        const url = new URL(request.url());
+        return url.origin === baseUrl && !url.searchParams.has("_rsc");
+      } catch {
+        return false;
+      }
+    };
+    targetPage.on("request", (request) => {
+      browserRequestIds.set(request, ++browserRequestSequence);
+      mainFaultEvidence.observeRequest(request, label, targetPage);
+      postsSnapshotEvidence.observeRequest(request, label, targetPage);
+      expiryFaultEvidence.observeRequest(request, expiryLabel, targetPage);
+      mainRequestEvidence.observeRequest(request, label, targetPage);
+      studioSessionEvidence.observeRequest(request, label, targetPage);
+      if (request.resourceType() === "document") {
+        const documentAt = Date.now();
+        recentDocumentRequest = { at: documentAt, url: request.url() };
+        const remaining = [];
+        for (const candidate of pendingWebKitDocumentCancellations) {
+          const elapsedMs = documentAt - candidate.recordedAt;
+          if (elapsedMs > WEBKIT_DOCUMENT_CANCELLATION_WINDOW_MS) continue;
+          if (!correlateDocumentCancellation(candidate, request.url(), elapsedMs)) remaining.push(candidate);
+        }
+        pendingWebKitDocumentCancellations.splice(
+          0,
+          pendingWebKitDocumentCancellations.length,
+          ...remaining,
+        );
+      }
+      if (firstPartyRequest(request)) pendingRequests.add(request);
+      if (captureBrowserArtifacts) {
+        browserNetworkEvents.push({
+          at: new Date().toISOString(),
+          context: label,
+          event: "request",
+          requestId: browserRequestIds.get(request),
+          method: request.method(),
+          resourceType: request.resourceType(),
+          url: sanitizeE2eNetworkUrl(request.url(), baseUrl),
+        });
+      }
+    });
+    const settleRequest = (request) => pendingRequests.delete(request);
+    targetPage.on("requestfinished", settleRequest);
+    targetPage.on("requestfinished", request => mainRequestEvidence.observeFinished(request));
+    targetPage.on("requestfinished", (request) => {
+      if (captureBrowserArtifacts) browserNetworkEvents.push({
+        at: new Date().toISOString(), context: label, event: "requestfinished",
+        requestId: browserRequestIds.get(request), method: request.method(),
+        url: sanitizeE2eNetworkUrl(request.url(), baseUrl),
+      });
+    });
+    targetPage.on("requestfailed", settleRequest);
+    targetPage.on("requestfailed", (request) => {
+      const failure = String(request.failure()?.errorText || "request_failed");
+      mainFaultEvidence.observeFailure(request, label, targetPage, { explicitRouteAbort: explicitlyAbortedDraftRequests.has(request) });
+      expiryFaultEvidence.observeFailure(request, expiryLabel, targetPage);
+      mainRequestEvidence.observeFailure(request);
+      studioSessionEvidence.observeFailure(request);
+      const knownCancellation = classifyE2eKnownWebKitRequestCancellation({
+        engine: browserEngine,
+        requestUrl: request.url(),
+        failure,
+        currentUrl: targetPage.url(),
+        baseUrl,
+        webPort,
+      });
+      if (knownCancellation) {
+        queueDeferredWebKitPageError(knownCancellation, request);
+      } else if (
+        browserEngine === "webkit"
+        && request.method() === "GET"
+        && request.resourceType() === "fetch"
+        && failure === "cancelled"
+        && sanitizeE2eNetworkUrl(request.url(), baseUrl).startsWith("/api/")
+      ) {
+        const candidate = {
+          request,
+          recordedAt: Date.now(),
+          requestUrl: request.url(),
+          requestMethod: request.method(),
+          resourceType: request.resourceType(),
+          failure,
+        };
+        const elapsedMs = recentDocumentRequest ? candidate.recordedAt - recentDocumentRequest.at : Infinity;
+        if (
+          !recentDocumentRequest
+          || elapsedMs > WEBKIT_DOCUMENT_CANCELLATION_WINDOW_MS
+          || !correlateDocumentCancellation(candidate, recentDocumentRequest.url, elapsedMs)
+        ) pendingWebKitDocumentCancellations.push(candidate);
+      }
+      const reason = mainRequestEvidence.reason(request);
+      if (reason || mainFaultEvidence.provedFailure(request)) {
+        browserObservations.push({ context: label, kind: "request_cancellation", reason: reason ?? "explicit_route_abort",
+          requestId: browserRequestIds.get(request), url: sanitizeE2eNetworkUrl(request.url(), baseUrl) });
+      } else {
+        const issue = { context: label, kind: "requestfailed",
+          message: `${request.method()} ${sanitizeE2eNetworkUrl(request.url(), baseUrl)}: ${failure}`,
+          requestId: browserRequestIds.get(request), url: sanitizeE2eNetworkUrl(request.url(), baseUrl), line: 0 };
+        mainFailedRequestIssues.set(request, issue); browserIssues.push(issue);
+      }
+      if (captureBrowserArtifacts) {
+        browserNetworkEvents.push({
+          at: new Date().toISOString(),
+          context: label,
+          event: "requestfailed",
+          requestId: browserRequestIds.get(request),
+          method: request.method(),
+          resourceType: request.resourceType(),
+          url: sanitizeE2eNetworkUrl(request.url(), baseUrl),
+          failure: failure.slice(0, 500),
+        });
+      }
+    });
+    targetPage.on("crash", () => {
+      browserIssues.push({
+        context: label,
+        kind: "page.crash",
+        message: "browser page crashed",
+        url: targetPage.url(),
+        line: 0,
+      });
+    });
+    targetPage.on("close", () => {
+      if (!browserTeardownStarted && browser?.isConnected() && !expectedCompletedPages.has(targetPage)) {
+        browserIssues.push({
+          context: label,
+          kind: "page.close",
+          message: "browser page closed before test teardown",
+          url: targetPage.url(),
+          line: 0,
+        });
+      }
+    });
+    const onConsole = (message) => {
+      if (seenConsoleMessages.has(message)) return;
+      seenConsoleMessages.add(message);
+      if (message.type() !== "error") return;
+      const rawText = message.text();
+      const knownObservation = classifyE2eKnownBrowserObservation({
+        engine: browserEngine,
+        eventKind: "console",
+        message: rawText,
+        currentUrl: targetPage.url(),
+        webPort,
+        screenshotInProgress: browserScreenshotDepth > 0,
+      });
+      if (knownObservation) {
+        browserObservations.push({
+          context: label,
+          ...knownObservation,
+          message: rawText,
+          url: targetPage.url(),
+        });
+        return;
+      }
+      const location = message.location();
+      const expectedSessionExpiry = classifyE2eExpectedSessionExpiryConsole({
+        active: expectedSessionExpiryConsoleScopes.has(label),
+        message: rawText,
+        sourceUrl: location?.url,
+        baseUrl,
+      });
+      if (!browserTeardownStarted && expectedSessionExpiry?.kind === "session-expiry.expected-calendar-unauthorized") {
+        const issue = { context: label, kind: "console.error", message: rawText, url: location.url, line: location.lineNumber };
+        browserIssues.push(issue); pendingExpiryStructured.push({ issue, page: targetPage });
+        return;
+      }
+      const unhandled = rawText.startsWith("__AURORA_E2E_UNHANDLED_REJECTION__");
+      const cspViolation = rawText.startsWith("__AURORA_E2E_CSP_VIOLATION__");
+      if (!browserTeardownStarted && !unhandled && !cspViolation
+        && (mainFaultEvidence.recordNativeConsole(message, label, targetPage)
+          || postsSnapshotEvidence.recordNativeConsole(message, label, targetPage)
+          || expiryFaultEvidence.recordNativeConsole(message, expiryLabel, targetPage))) return;
+      browserIssues.push({
+        context: label,
+        kind: unhandled ? "unhandledrejection" : cspViolation ? "securitypolicyviolation" : "console.error",
+        message: unhandled
+          ? rawText.slice("__AURORA_E2E_UNHANDLED_REJECTION__".length)
+          : cspViolation
+            ? rawText.slice("__AURORA_E2E_CSP_VIOLATION__".length)
+          : rawText,
+        url: location?.url || targetPage.url(),
+        line: Number(location?.lineNumber || 0),
+        nativeHttpStatus: nativeMainHttpStatus(message),
+      });
+    };
+    targetPage.on("console", onConsole);
+    const onPageError = (error) => {
+      if (seenPageErrors.has(error)) return;
+      seenPageErrors.add(error);
+      const rawMessage = String(error?.message || error);
+      const now = Date.now();
+      const deferred = (deferredKnownWebKitPageErrors.get(rawMessage) || [])
+        .filter((entry) => now - entry.recordedAt <= WEBKIT_DEFERRED_CANCELLATION_WINDOW_MS);
+      const deferredEntry = deferred.shift();
+      const deferredObservation = deferredEntry?.observation || null;
+      if (deferred.length > 0) deferredKnownWebKitPageErrors.set(rawMessage, deferred);
+      else deferredKnownWebKitPageErrors.delete(rawMessage);
+      const expectedSessionExpiry = classifyE2eExpectedSessionExpiryWebKitPageError({
+        active: expectedSessionExpiryConsoleScopes.has(label),
+        engine: browserEngine,
+        eventKind: "pageerror",
+        message: rawMessage,
+        currentUrl: targetPage.url(),
+        baseUrl,
+        webPort,
+      });
+      const knownObservation = deferredObservation || expectedSessionExpiry || classifyE2eKnownBrowserObservation({
+        engine: browserEngine,
+        eventKind: "pageerror",
+        message: rawMessage,
+        currentUrl: targetPage.url(),
+        webPort,
+      });
+      if (knownObservation) {
+        // A URL-shaped WebKit pageerror is only a candidate. Admit it after
+        // the same actual failed Request has a proved read/caller lifetime.
+        const issue = { context: label, kind: "pageerror", message: rawMessage, url: targetPage.url(), line: 0 };
+        browserIssues.push(issue);
+        if (deferredEntry?.request) pendingCancellationPageErrors.push({ issue, request: deferredEntry.request, observation: knownObservation });
+        return;
+      }
+      browserIssues.push({
+        context: label,
+        kind: "pageerror",
+        message: rawMessage,
+        url: targetPage.url(),
+        line: 0,
+      });
+    };
+    targetPage.on("pageerror", onPageError);
+    targetPage.on("response", (response) => {
+      const status = response.status();
+      const deferredFault = mainFaultEvidence.observeResponse(response, label, targetPage);
+      postsSnapshotEvidence.observeResponse(response, label, targetPage);
+      expiryFaultEvidence.observeResponse(response, expiryLabel, targetPage);
+      mainRequestEvidence.observeResponse(response);
+      browserRequestResponses.set(response.request(), { status, contentType: response.headers()["content-type"], at: new Date().toISOString() });
+      if (captureBrowserArtifacts) {
+        browserNetworkEvents.push({
+          at: new Date().toISOString(),
+          context: label,
+          event: "response",
+          requestId: browserRequestIds.get(response.request()),
+          method: response.request().method(),
+          resourceType: response.request().resourceType(),
+          url: sanitizeE2eNetworkUrl(response.url(), baseUrl),
+          status,
+        });
+      }
+      if (status < 500) return;
+      let firstParty = false;
+      try {
+        firstParty = new URL(response.url()).origin === baseUrl;
+      } catch {}
+      if (!firstParty) return;
+      if (!browserTeardownStarted && deferredFault) return;
+      browserIssues.push({
+        context: label,
+        kind: "http.5xx",
+        message: `${response.request().method()} ${response.url()} returned ${status}`,
+        url: response.url(),
+        line: 0,
+      });
+    });
+    const handlers = { onConsole, onPageError };
+    attachedPages.set(targetPage, handlers);
+    return handlers;
+  };
+  context.on("page", attachPage);
+  context.on("console", (message) => {
+    const targetPage = message.page();
+    if (targetPage) attachPage(targetPage).onConsole(message);
+    else if (message.type() === "error" && !seenConsoleMessages.has(message)) {
+      seenConsoleMessages.add(message);
+      browserIssues.push({ context: label, kind: "console.error", message: message.text(), url: "[no page]", line: 0 });
+    }
+  });
+  context.on("weberror", (event) => {
+    const targetPage = event.page(); const error = event.error();
+    if (targetPage) attachPage(targetPage).onPageError(error);
+    else if (!seenPageErrors.has(error)) {
+      seenPageErrors.add(error);
+      browserIssues.push({ context: label, kind: "pageerror", message: String(error?.message || error), url: "[no page]", line: 0 });
+    }
+  });
+  for (const targetPage of context.pages()) attachPage(targetPage);
+  await mainRequestEvidence.install(context);
+  await studioSessionEvidence.install(context);
+  await installE2eBrowserBoundary(context, { baseUrl, onBlocked: (record) => browserIssues.push({ context: label, ...record, message: "Unexpected external browser request blocked" }) });
   await context.addInitScript(() => {
     const historyStorageKey = "__aurora_e2e_history_events";
     const describeHistoryUrl = (value) => {
@@ -353,297 +751,212 @@ async function installBrowserDiagnostics(context, label) {
       })}`);
     });
   });
-  context.on("page", (targetPage) => {
-    const pendingRequests = new Set();
-    const deferredKnownWebKitPageErrors = new Map();
-    const pendingWebKitDocumentCancellations = [];
-    let recentDocumentRequest = null;
-    browserPendingRequests.set(targetPage, pendingRequests);
-    const queueDeferredWebKitPageError = (observation) => {
-      const queued = deferredKnownWebKitPageErrors.get(observation.message) || [];
-      queued.push({ recordedAt: Date.now(), observation });
-      deferredKnownWebKitPageErrors.set(observation.message, queued);
-    };
-    const correlateDocumentCancellation = (candidate, documentRequestUrl, elapsedMs) => {
-      const observation = classifyE2eKnownWebKitDocumentNavigationCancellation({
-        engine: browserEngine,
-        requestUrl: candidate.requestUrl,
-        requestMethod: candidate.requestMethod,
-        resourceType: candidate.resourceType,
-        failure: candidate.failure,
-        documentRequestUrl,
-        elapsedMs,
-        baseUrl,
-        webPort,
-      });
-      if (observation) queueDeferredWebKitPageError(observation);
-      return Boolean(observation);
-    };
-    const firstPartyRequest = (request) => {
-      try {
-        const url = new URL(request.url());
-        return url.origin === baseUrl && !url.searchParams.has("_rsc");
-      } catch {
-        return false;
-      }
-    };
-    targetPage.on("request", (request) => {
-      if (request.resourceType() === "document") {
-        const documentAt = Date.now();
-        recentDocumentRequest = { at: documentAt, url: request.url() };
-        const remaining = [];
-        for (const candidate of pendingWebKitDocumentCancellations) {
-          const elapsedMs = documentAt - candidate.recordedAt;
-          if (elapsedMs > WEBKIT_DOCUMENT_CANCELLATION_WINDOW_MS) continue;
-          if (!correlateDocumentCancellation(candidate, request.url(), elapsedMs)) remaining.push(candidate);
-        }
-        pendingWebKitDocumentCancellations.splice(
-          0,
-          pendingWebKitDocumentCancellations.length,
-          ...remaining,
-        );
-      }
-      if (firstPartyRequest(request)) pendingRequests.add(request);
-      if (!browserTeardownStarted && captureBrowserArtifacts) {
-        browserNetworkEvents.push({
-          at: new Date().toISOString(),
-          context: label,
-          event: "request",
-          method: request.method(),
-          resourceType: request.resourceType(),
-          url: sanitizeE2eNetworkUrl(request.url(), baseUrl),
-        });
-      }
-    });
-    const settleRequest = (request) => pendingRequests.delete(request);
-    targetPage.on("requestfinished", settleRequest);
-    targetPage.on("requestfailed", settleRequest);
-    targetPage.on("requestfailed", (request) => {
-      const failure = String(request.failure()?.errorText || "request_failed");
-      const knownCancellation = classifyE2eKnownWebKitRequestCancellation({
-        engine: browserEngine,
-        requestUrl: request.url(),
-        failure,
-        currentUrl: targetPage.url(),
-        baseUrl,
-        webPort,
-      });
-      if (knownCancellation) {
-        queueDeferredWebKitPageError(knownCancellation);
-      } else if (
-        browserEngine === "webkit"
-        && request.method() === "GET"
-        && request.resourceType() === "fetch"
-        && failure === "cancelled"
-        && sanitizeE2eNetworkUrl(request.url(), baseUrl).startsWith("/api/")
-      ) {
-        const candidate = {
-          recordedAt: Date.now(),
-          requestUrl: request.url(),
-          requestMethod: request.method(),
-          resourceType: request.resourceType(),
-          failure,
-        };
-        const elapsedMs = recentDocumentRequest ? candidate.recordedAt - recentDocumentRequest.at : Infinity;
-        if (
-          !recentDocumentRequest
-          || elapsedMs > WEBKIT_DOCUMENT_CANCELLATION_WINDOW_MS
-          || !correlateDocumentCancellation(candidate, recentDocumentRequest.url, elapsedMs)
-        ) pendingWebKitDocumentCancellations.push(candidate);
-      }
-      if (!browserTeardownStarted && captureBrowserArtifacts) {
-        browserNetworkEvents.push({
-          at: new Date().toISOString(),
-          context: label,
-          event: "requestfailed",
-          method: request.method(),
-          resourceType: request.resourceType(),
-          url: sanitizeE2eNetworkUrl(request.url(), baseUrl),
-          failure: failure.slice(0, 500),
-        });
-      }
-    });
-    targetPage.on("crash", () => {
-      if (browserTeardownStarted) return;
-      browserIssues.push({
-        context: label,
-        kind: "page.crash",
-        message: "browser page crashed",
-        url: targetPage.url(),
-        line: 0,
-      });
-    });
-    targetPage.on("close", () => {
-      if (!browserTeardownStarted && browser?.isConnected()) {
-        browserIssues.push({
-          context: label,
-          kind: "page.close",
-          message: "browser page closed before test teardown",
-          url: targetPage.url(),
-          line: 0,
-        });
-      }
-    });
-    targetPage.on("console", (message) => {
-      if (browserTeardownStarted) return;
-      if (message.type() !== "error") return;
-      const rawText = message.text();
-      const knownObservation = classifyE2eKnownBrowserObservation({
-        engine: browserEngine,
-        eventKind: "console",
-        message: rawText,
-        currentUrl: targetPage.url(),
-        webPort,
-        screenshotInProgress: browserScreenshotDepth > 0,
-      });
-      if (knownObservation) {
-        browserObservations.push({
-          context: label,
-          ...knownObservation,
-          message: rawText,
-          url: targetPage.url(),
-        });
-        return;
-      }
-      const location = message.location();
-      const expectedSessionExpiry = classifyE2eExpectedSessionExpiryConsole({
-        active: expectedSessionExpiryConsoleScopes.has(label),
-        message: rawText,
-        sourceUrl: location?.url,
-        baseUrl,
-      });
-      if (expectedSessionExpiry) {
-        browserObservations.push({
-          context: label,
-          ...expectedSessionExpiry,
-          message: rawText,
-          url: location?.url || targetPage.url(),
-        });
-        return;
-      }
-      const unhandled = rawText.startsWith("__AURORA_E2E_UNHANDLED_REJECTION__");
-      const cspViolation = rawText.startsWith("__AURORA_E2E_CSP_VIOLATION__");
-      if (!unhandled && !cspViolation && expectedBrowserConsoleScopes.has(label)) return;
-      browserIssues.push({
-        context: label,
-        kind: unhandled ? "unhandledrejection" : cspViolation ? "securitypolicyviolation" : "console.error",
-        message: unhandled
-          ? rawText.slice("__AURORA_E2E_UNHANDLED_REJECTION__".length)
-          : cspViolation
-            ? rawText.slice("__AURORA_E2E_CSP_VIOLATION__".length)
-          : rawText,
-        url: location?.url || targetPage.url(),
-        line: Number(location?.lineNumber || 0),
-      });
-    });
-    targetPage.on("pageerror", (error) => {
-      if (browserTeardownStarted) return;
-      const rawMessage = String(error?.message || error);
-      const now = Date.now();
-      const deferred = (deferredKnownWebKitPageErrors.get(rawMessage) || [])
-        .filter((entry) => now - entry.recordedAt <= WEBKIT_DEFERRED_CANCELLATION_WINDOW_MS);
-      const deferredObservation = deferred.shift()?.observation || null;
-      if (deferred.length > 0) deferredKnownWebKitPageErrors.set(rawMessage, deferred);
-      else deferredKnownWebKitPageErrors.delete(rawMessage);
-      const expectedSessionExpiry = classifyE2eExpectedSessionExpiryWebKitPageError({
-        active: expectedSessionExpiryConsoleScopes.has(label),
-        engine: browserEngine,
-        eventKind: "pageerror",
-        message: rawMessage,
-        currentUrl: targetPage.url(),
-        baseUrl,
-        webPort,
-      });
-      const knownObservation = deferredObservation || expectedSessionExpiry || classifyE2eKnownBrowserObservation({
-        engine: browserEngine,
-        eventKind: "pageerror",
-        message: rawMessage,
-        currentUrl: targetPage.url(),
-        webPort,
-      });
-      if (knownObservation) {
-        browserObservations.push({
-          context: label,
-          ...knownObservation,
-          message: rawMessage,
-          url: targetPage.url(),
-        });
-        return;
-      }
-      browserIssues.push({
-        context: label,
-        kind: "pageerror",
-        message: rawMessage,
-        url: targetPage.url(),
-        line: 0,
-      });
-    });
-    targetPage.on("response", (response) => {
-      const status = response.status();
-      if (!browserTeardownStarted && captureBrowserArtifacts) {
-        browserNetworkEvents.push({
-          at: new Date().toISOString(),
-          context: label,
-          event: "response",
-          method: response.request().method(),
-          resourceType: response.request().resourceType(),
-          url: sanitizeE2eNetworkUrl(response.url(), baseUrl),
-          status,
-        });
-      }
-      if (browserTeardownStarted) return;
-      if (status < 500) return;
-      let firstParty = false;
-      try {
-        firstParty = new URL(response.url()).origin === baseUrl;
-      } catch {}
-      if (!firstParty) return;
-      if (expectedBrowser5xxScopes.has(label)) return;
-      browserIssues.push({
-        context: label,
-        kind: "http.5xx",
-        message: `${response.request().method()} ${response.url()} returned ${status}`,
-        url: response.url(),
-        line: 0,
-      });
-    });
+}
+
+async function finalizeStudioSessionPersistence() {
+  let studioReceipts;
+  const pending = [...mainFailedRequestIssues.keys()].filter(request => {
+    const url = new URL(request.url());
+    return request.method() === "PUT" && url.origin === baseUrl && url.pathname === "/api/studio/session";
   });
+  if (studioReceiptLedgerReady && studioSessionOwner) {
+    // Wait only for already-issued local transactions to commit. This never
+    // retries a mutation or treats missing evidence as a successful write.
+    const deadline = Date.now() + 5_000;
+    const remaining = new Set(pending);
+    do {
+      studioReceipts = (await pool.query(
+        "select user_id, revision, payload from e2e_studio_session_receipts where user_id=$1 order by receipt_id",
+        [studioSessionOwner],
+      )).rows;
+      for (const request of remaining) {
+        try {
+          studioSessionEvidence.confirmPersisted(request, { owner: studioSessionOwner, receipts: studioReceipts });
+          remaining.delete(request);
+        } catch { /* Exact unknowns remain in browserIssues and fail the final gate. */ }
+      }
+      if (!remaining.size || Date.now() >= deadline) break;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    } while (remaining.size);
+  }
+  interfaceEvidence.studioSessionPersistence = studioSessionEvidence.snapshot(studioReceipts
+    ? { owner: studioSessionOwner, receipts: studioReceipts } : undefined);
+  interfaceEvidence.studioSessionRecovery = studioSessionEvidence.recoverySnapshot();
+  interfaceEvidence.studioSessionDepartures = studioSessionEvidence.departureSnapshot();
+  interfaceEvidence.studioSessionParserHashes = studioSessionContract.hashes;
+  return studioSessionEvidence.proofs().map(readStudioSessionProof).filter(Boolean);
+}
+
+async function finalizeBrowserContexts() {
+  if (browserContextsFinalized) return;
+  const outcomes = await Promise.allSettled(browserContextEntries.map((entry) => finalizeE2eBrowserLifecycle({
+    ...entry, beforeClose: [...(entry.beforeClose ?? []), () => flushEditorialNativeDiagnostics(entry.context)],
+  })));
+  const failures = outcomes.filter((outcome) => outcome.status === "rejected").map((outcome) => outcome.reason);
+  // Browser shutdown is part of the checked lifecycle, before the successful
+  // result. Context and transport errors must not bypass this owned cleanup.
+  if (browser) {
+    try { await browser.close(); } catch (error) { failures.push(error); }
+  }
+  for (const transport of browserTransports) {
+    try { transport.assertClean(); } catch (error) { if (!failures.includes(error)) failures.push(error); }
+  }
+  const studioPersistenceProofs = await finalizeStudioSessionPersistence();
+  await finalizeProductEventPersistence();
+  interfaceEvidence.mainRequestDiagnostics = mainRequestEvidence.snapshot();
+  interfaceEvidence.unmatchedNativeReads = mainRequestEvidence.snapshotUnmatchedReads();
+  try {
+    interfaceEvidence.editorialReceiptDiagnostics = await readEditorialReceiptDiagnostics(pool, interfaceEvidence.mainRequestDiagnostics);
+  } catch (error) {
+    interfaceEvidence.editorialReceiptDiagnostics = { diagnosticOnly: true, unavailable: "database_read_failed" };
+    failures.push(error);
+  }
+  const cancellations = mainRequestEvidence.proofs();
+  for (const [request, issue] of mainFailedRequestIssues) {
+    const reason = mainRequestEvidence.reason(request)
+      ?? studioPersistenceProofs.find(proof => proof.request === request)?.reason;
+    if (!reason) continue;
+    const index = browserIssues.indexOf(issue); if (index >= 0) browserIssues.splice(index, 1);
+    browserObservations.push({ ...issue, kind: "proved_request_cancellation", reason });
+  }
+  for (const pending of pendingCancellationPageErrors) {
+    const reason = mainRequestEvidence.reason(pending.request);
+    if (!reason) continue;
+    const index = browserIssues.indexOf(pending.issue); if (index >= 0) browserIssues.splice(index, 1);
+    browserObservations.push({ ...pending.issue, kind: "proved_webkit_cancellation", reason });
+  }
+  const expiry = await expiryFaultEvidence.finalize({ cancellations });
+  const consumedExpiryRequests = new Set();
+  for (const pending of pendingExpiryStructured) {
+    const request = expiryFaultEvidence.provedResponses(pending.page, 401, "/api/drafts").find(item => !consumedExpiryRequests.has(item));
+    if (!request) continue;
+    consumedExpiryRequests.add(request);
+    const index = browserIssues.indexOf(pending.issue); if (index >= 0) browserIssues.splice(index, 1);
+    browserObservations.push({ ...pending.issue, kind: "proved_calendar_session_expiry", requestId: browserRequestIds.get(request) });
+  }
+  browserIssues.push(...expiry.issues); browserObservations.push(...expiry.observations);
+  interfaceEvidence.sessionExpiryDiagnostics = expiry;
+  const faults = await mainFaultEvidence.finalize({ cancellations });
+  browserIssues.push(...faults.issues);
+  browserObservations.push(...faults.observations);
+  interfaceEvidence.expectedFaults = faults;
+  const postsConflicts = await postsSnapshotEvidence.finalize({ cancellations });
+  browserIssues.push(...postsConflicts.issues); browserObservations.push(...postsConflicts.observations);
+  interfaceEvidence.postsSnapshotConflicts = postsConflicts;
+  browserContextsFinalized = true;
+  interfaceEvidence.browserTransport = browserTransports.map((transport) => transport.snapshot());
+  interfaceEvidence.ingressRedirects = ingressBoundary.snapshot();
+  try { ingressBoundary.assertClean(); } catch (error) { failures.push(error); }
+  if (failures.length) throw new AggregateError(failures, "Browser boundary finalization failed", { cause: failures[0] });
+}
+
+async function finalizeProductEventPersistence() {
+  const remaining = new Set([...mainFailedRequestIssues.keys()].filter(request => mainRequestEvidence.productEventReceiptScope(request)));
+  const deadline = Date.now() + 5_000;
+  while (remaining.size) {
+    for (const request of remaining) {
+      const scope = mainRequestEvidence.productEventReceiptScope(request);
+      const receipts = (await pool.query(
+        `select id, event_id, project_id, user_id, section_id, feature_id, action, stage, outcome,
+          duration_ms, error_code, request_id, operation_id, session_id, occurred_at, safe_context, important
+         from product_events where user_id=$1 and project_id=$2 and event_id=any($3::uuid[])`,
+        [scope.actorUserId, scope.projectId, scope.eventIds],
+      )).rows;
+      try {
+        mainRequestEvidence.confirmProductEventPersistence(request, { receipts });
+        remaining.delete(request);
+      } catch { /* Unknown or mismatched effects retain the original failing request. */ }
+    }
+    if (!remaining.size || Date.now() >= deadline) break;
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+}
+
+async function flushEditorialNativeDiagnostics(targetContext) {
+  const outcomes = await Promise.allSettled(targetContext.pages().filter(target => !target.isClosed())
+    .map(target => mainRequestEvidence.flushNativeDiagnostics(target, { timeoutMs: 3_000 })));
+  const errors = outcomes.filter(outcome => outcome.status === "rejected").map(outcome => outcome.reason);
+  if (errors.length) throw new AggregateError(errors, "Editorial native diagnostic flush failed", { cause: errors[0] });
+}
+
+async function finalizeOwnedRuntime() {
+  if (runtimeFinalized) return;
+  runtimeFinalized = true;
+  const failures = [];
+  const attempt = async (action) => {
+    try { await action(); } catch (error) { failures.push(error); }
+  };
+  for (const queue of [publishQueue, mediaQueue, statsQueue, legalVisualQueue, projectExportQueue,
+    publicationExtraQueue, publicationReviewReminderQueue]) {
+    if (queue) await attempt(() => queue.close());
+  }
+  await Promise.all(children.map((subprocess, index) => attempt(async () => {
+    const outcome = await stopChild(subprocess, `full production child ${index + 1}`);
+    assert(!outcome.forced, `full production child ${index + 1} required SIGKILL during final cleanup`);
+    const unexpected = subprocess.auroraE2eLifecycle
+      ? subprocess.auroraE2eLifecycle.unexpectedExit
+      : (subprocess.exitCode != null && subprocess.exitCode !== 0 ? `child exited with code ${subprocess.exitCode}` : null);
+    assert(!unexpected, unexpected ?? "Unexpected owned runtime exit");
+  })));
+  for (const server of [fakeServer, tlsProxyServer]) {
+    if (server) await attempt(() => new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve())));
+  }
+  if (tlsDirectory) await attempt(() => rmSync(tlsDirectory, { recursive: true, force: true }));
+  if (redis) await attempt(() => redis.flushdb());
+  if (redis) await attempt(() => redis.quit());
+  if (pool) await attempt(() => pool.query("drop schema public cascade"));
+  if (pool) await attempt(() => pool.query("create schema public"));
+  if (pool) await attempt(() => pool.end());
+  await attempt(() => releaseE2eBuildLock());
+  interfaceEvidence.runtimeCleanup = { completed: true, errors: failures.map(error => String(error?.message || error)) };
+  if (failures.length) throw new AggregateError(failures, "Owned E2E runtime cleanup failed", { cause: failures[0] });
 }
 
 async function finalizeBrowserArtifacts({ requireComplete = true } = {}) {
-  if (!captureBrowserArtifacts || browserArtifactsFinalized) return browserArtifactEvidence;
-  // The browser journey is complete before trace/video flushing begins. Ignore
-  // console and lifecycle events emitted solely by Playwright's teardown so the
-  // persisted diagnostics and the final result describe the same boundary.
+  if (browserArtifactsFinalized) return browserArtifactEvidence;
+  // Intentional close/disconnect is expected; runtime errors and network/route/
+  // transport/ingress diagnostics remain active through close and drain.
   browserTeardownStarted = true;
+  mainFaultEvidence.beginTeardown();
+  postsSnapshotEvidence.beginTeardown();
+  expiryFaultEvidence.beginTeardown();
+  const errors = [];
+  const attempt = async (action) => {
+    try { return await action(); } catch (error) { errors.push(error); }
+  };
   const traces = [];
-  if (reviewerTraceStarted && reviewerContext) {
-    const path = resolve(artifactDir, "reviewer-trace.zip");
-    await reviewerContext.tracing.stop({ path });
-    reviewerTraceStarted = false;
-    traces.push(path);
+  if (captureBrowserArtifacts) {
+    if (reviewerTraceStarted && reviewerContext) {
+      const path = resolve(artifactDir, "reviewer-trace.zip");
+      await attempt(async () => { await reviewerContext.tracing.stop({ path }); traces.push(path); });
+      reviewerTraceStarted = false;
+    }
+    if (mainTraceStarted && context) {
+      const path = resolve(artifactDir, "main-trace.zip");
+      await attempt(async () => { await context.tracing.stop({ path }); traces.push(path); });
+      mainTraceStarted = false;
+    }
+    const editorSafetyTrace = resolve(artifactDir, "editor-safety-trace.zip");
+    if (await access(editorSafetyTrace).then(() => true, () => false)) traces.push(editorSafetyTrace);
   }
-  if (mainTraceStarted && context) {
-    const path = resolve(artifactDir, "main-trace.zip");
-    await context.tracing.stop({ path });
-    mainTraceStarted = false;
-    traces.push(path);
+  // A trace flush failure must never bypass owned context/proxy cleanup or hide
+  // a denial that occurs while the context is being closed.
+  await attempt(finalizeBrowserContexts);
+  if (captureBrowserArtifacts) {
+    const entries = await attempt(() => readdir(videoDirectory, { withFileTypes: true }));
+    const videos = (entries ?? [])
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".webm"))
+      .map((entry) => resolve(videoDirectory, entry.name)).sort();
+    if (requireComplete) {
+      await attempt(() => assertE2eTraceSet(traces));
+      await attempt(() => assert(videos.length >= 2, `browser evidence produced ${videos.length} video(s), expected at least 2`));
+    }
+    const networkLog = resolve(artifactDir, "network-log.json");
+    await attempt(() => writeFile(networkLog, `${JSON.stringify({ events: browserNetworkEvents }, null, 2)}\n`, "utf8"));
+    browserArtifactEvidence = { enabled: true, traces, videos, networkLog };
   }
-
-  if (reviewerContext) await reviewerContext.close();
-  if (context) await context.close();
-  const videos = (await readdir(videoDirectory, { withFileTypes: true }))
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".webm"))
-    .map((entry) => resolve(videoDirectory, entry.name))
-    .sort();
-  if (requireComplete) {
-    assert(traces.length === 2, `browser evidence produced ${traces.length} trace(s), expected 2`);
-    assert(videos.length >= 2, `browser evidence produced ${videos.length} video(s), expected at least 2`);
-  }
-  const networkLog = resolve(artifactDir, "network-log.json");
-  await writeFile(networkLog, `${JSON.stringify({ events: browserNetworkEvents }, null, 2)}\n`, "utf8");
-  browserArtifactEvidence = { enabled: true, traces, videos, networkLog };
   browserArtifactsFinalized = true;
+  if (errors.length) throw new AggregateError(errors, "Browser artifacts or boundary finalization failed", { cause: errors[0] });
   return browserArtifactEvidence;
 }
 
@@ -671,7 +984,30 @@ async function waitFor(check, message, timeoutMs = 20_000) {
   throw new Error(`${message}${last ? `: ${last.message}` : ""}`);
 }
 
-async function reloadInBrowser(targetPage, timeoutMs = 60_000) {
+async function navigateWithSettledReads(targetPage, url, options) {
+  await mainRequestEvidence.settleReads(targetPage, { timeoutMs: UI_WAIT_TIMEOUT_MS });
+  return targetPage.goto(url, options);
+}
+
+// Additional fresh-document QA visits must preserve the user's Back stack.
+async function replaceWithSettledReads(targetPage, url) {
+  const target = new URL(url, baseUrl);
+  assert(target.origin === new URL(baseUrl).origin, "QA replacement must stay same-origin");
+  await mainRequestEvidence.settleReads(targetPage, { timeoutMs: UI_WAIT_TIMEOUT_MS });
+  await Promise.all([
+    targetPage.waitForURL(target.href, { waitUntil: "domcontentloaded", timeout: UI_WAIT_TIMEOUT_MS }),
+    targetPage.evaluate(href => globalThis.location.replace(href), target.href),
+  ]);
+  assert(targetPage.url() === target.href, "QA replacement did not reach its exact target");
+}
+
+async function backWithSettledReads(targetPage) {
+  await mainRequestEvidence.settleReads(targetPage, { timeoutMs: UI_WAIT_TIMEOUT_MS });
+  await targetPage.evaluate(() => globalThis.history.back());
+}
+
+async function reloadInBrowser(targetPage, timeoutMs = 60_000, { settleReads = true } = {}) {
+  if (settleReads) await mainRequestEvidence.settleReads(targetPage, { timeoutMs: UI_WAIT_TIMEOUT_MS });
   await Promise.all([
     targetPage.waitForNavigation({ waitUntil: "domcontentloaded", timeout: timeoutMs }),
     targetPage.evaluate(() => globalThis.location.reload()),
@@ -682,7 +1018,7 @@ async function reloadAfterRuntimeRestart(targetPage, label) {
   let lastError;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
-      await reloadInBrowser(targetPage);
+      await reloadInBrowser(targetPage, 60_000, { settleReads: false });
       return;
     } catch (error) {
       lastError = error;
@@ -703,6 +1039,13 @@ async function reloadAfterRuntimeRestart(targetPage, label) {
 
 async function browserExecutable() {
   const requested = String(process.env.E2E_BROWSER_EXECUTABLE || "").trim();
+  if (requested) {
+    await access(requested, constants.X_OK);
+    return requested;
+  }
+  // Playwright selects its official headless shell when Chromium has no explicit
+  // executable. Full Chrome is exercised separately for native browser zoom.
+  if (browserEngine === "chromium" && !requested) return undefined;
   const candidates = e2eBrowserExecutableCandidates({
     engine: browserEngine,
     requested,
@@ -737,12 +1080,15 @@ const fakeState = {
     unpinnedMessageId: null,
     discussionUpdateDelivered: false,
     webhookUrl: "",
+    manualImmediateRequests: [],
     requests: [],
   },
   ai: {
     calls: 0,
     truncatedCalls: 0,
     successfulCalls: 0,
+    libraryGenerationCalls: 0,
+    holdLibraryCompletion: false,
     providerIdentityOk: true,
     identities: [],
   },
@@ -804,29 +1150,24 @@ await writeFile(invalidBrandLogoPath, Buffer.from(
 ));
 await writeFile(
   vkFetchShimPath,
-  `const upstreamFetch = globalThis.fetch.bind(globalThis);
-const fakeBase = ${JSON.stringify(fakeBase)};
-globalThis.fetch = (input, init) => {
-  const source = input instanceof Request ? input.url : String(input);
-  const url = new URL(source);
-  if (url.origin === "https://api.vk.com" && url.pathname.startsWith("/method/")) {
-    const rewritten = new URL(\`/vk\${url.pathname}\${url.search}\`, fakeBase);
-    if (input instanceof Request) return upstreamFetch(new Request(rewritten, input), init);
-    return upstreamFetch(rewritten, init);
-  }
-  return upstreamFetch(input, init);
-};
-`,
+  `import { createE2eRuntimeFetch } from ${JSON.stringify(pathToFileURL(resolve("scripts/e2e-runtime-fetch.mjs")).href)};
+globalThis.fetch = createE2eRuntimeFetch(${JSON.stringify(fakeBase)}, globalThis.fetch.bind(globalThis));
+` + sitesNetworkShim(fakeBase),
   "utf8",
 );
 
+const fakeAutopilotVariants = new Map();
+const expectedCompletedPages = new WeakSet();
 function fakeAutopilotPost(messageText) {
   const topic = messageText.match(/на тему:\s*([^\n.]{8,120})/iu)?.[1]?.trim() || "Рабочая тема";
   const safeTopic = topic.replace(/[«»"']/gu, "").slice(0, 46).replace(/[,:;—-]+$/u, "");
   const presentation = messageText.match(/— форма:\s*([^;\n]+)/iu)?.[1]?.trim() || "объяснение";
   const presentationSeed = `${safeTopic}\0${presentation}`;
-  const variant = [...presentationSeed]
-    .reduce((sum, character) => sum + character.codePointAt(0), 0) % 3;
+  // Three independently requested week items need three genuinely distinct fixture
+  // bodies. Hash modulo 3 randomly collided for real monthly titles and made the
+  // safety duplicate guard correctly reject the fake provider's output.
+  if (!fakeAutopilotVariants.has(presentationSeed)) fakeAutopilotVariants.set(presentationSeed, fakeAutopilotVariants.size % 3);
+  const variant = fakeAutopilotVariants.get(presentationSeed);
   const bodies = [
     [
       "Начните не с готового ответа, а с рамки: для кого вы готовите материал, какой вопрос хотите прояснить и какое действие читатель сможет выбрать самостоятельно.",
@@ -876,11 +1217,38 @@ assert(
   "fake Autopilot provider must satisfy the default detail length contract",
 );
 
+// These topics collide under the previous modulo hash. The provider fixture must
+// satisfy the same diversity guard as the production pipeline, not bypass it.
+fakeAutopilotVariants.clear();
+const fixtureWeek = [1, 4, 7].map((n) => fakeAutopilotPost(`— форма: объяснение;\nНапиши пост на тему: Редакционная проверка ${n}.`));
+for (const [index, draft] of fixtureWeek.entries()) {
+  assert(!findAutopilotNearDuplicate({ topic: "", draft }, fixtureWeek.slice(0, index).map((previous) => ({ topic: "", draft: previous }))), "fake provider returned duplicate week items");
+}
+fakeAutopilotVariants.clear();
+
 function fakeProvider() {
   return http.createServer(async (req, res) => {
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
     const raw = Buffer.concat(chunks).toString("utf8");
+    if (handleFakeSitesRequest(req, res, raw)) return;
+    if (handleFakeSitesAiRequest(req, res, raw)) return;
+    if (handleFakeMailRequest(req, res, raw)) return;
+    if (handleFakeChannelOnboardingRequest(req, res, raw)) return;
+    if (req.url?.startsWith("/telegram-public-fixture/")) {
+      // Existing publication/reference fixtures are private synthetic channels.
+      // Their public-page lookup must fail deterministically without live Telegram.
+      res.statusCode = 404;
+      res.setHeader("content-type", "text/html");
+      res.end("<html><body>Synthetic channel has no public feed</body></html>");
+      return;
+    }
+    if (req.url?.startsWith("/discovery-empty?")) {
+      const rss = new URL(req.url, fakeBase).searchParams.get("format") === "rss";
+      res.setHeader("content-type", rss ? "application/rss+xml" : "text/html");
+      res.end(rss ? '<rss version="2.0"><channel><title>Isolated empty search</title></channel></rss>' : "<html><body>No synthetic search results</body></html>");
+      return;
+    }
     if (req.url?.startsWith("/vk/method/") && req.method === "POST") {
       const method = decodeURIComponent(req.url.slice("/vk/method/".length).split("?", 1)[0] || "");
       const form = new URLSearchParams(raw);
@@ -944,6 +1312,7 @@ function fakeProvider() {
       const successful = text.includes("Короткая редакционная заметка без новых фактических утверждений");
       const libraryComposer = text.includes("E2E_LIBRARY_REFERENCE");
       const semantic = text.includes("conservative textual-entailment classifier");
+      if (libraryComposer && !semantic) fakeState.ai.libraryGenerationCalls += 1;
       const autopilot = text.includes("строгий выпускающий редактор Telegram-канала");
       const monthlyRegeneration = text.includes("выпускающий редактор месячного контент-плана");
       let completionText = "Безопасный тестовый текст.";
@@ -961,7 +1330,7 @@ function fakeProvider() {
           })),
         });
       } else if (autopilot) {
-        completionText = fakeAutopilotPost(text);
+        completionText = fakeAutopilotPost(messages.map((message) => String(message.content || "")).join("\n"));
       } else if (libraryComposer) {
         completionText = libraryComposerResult;
       } else if (monthlyRegeneration) {
@@ -995,7 +1364,9 @@ function fakeProvider() {
       if (body?.stream === true) {
         res.setHeader("content-type", "text/event-stream");
         res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: completionText } }] })}\n\n`);
-        if (libraryComposer) await new Promise((resolveDelay) => setTimeout(resolveDelay, 220));
+        if (libraryComposer && !semantic) {
+          await waitFor(() => !fakeState.ai.holdLibraryCompletion, "test did not release the held Library generation", 30_000);
+        }
         if (!truncate) res.write("data: [DONE]\n\n");
         else fakeState.ai.truncatedCalls += 1;
         res.end();
@@ -1059,6 +1430,15 @@ function fakeProvider() {
       return;
     }
     if (/\/bot[^/]+\/sendMessage$/u.test(req.url || "")) {
+      let immediateBody = {};
+      try { immediateBody = JSON.parse(raw); } catch {}
+      if (String(immediateBody.text || "").includes("E2E_MANUAL_IMMEDIATE")) {
+        assert(Number(immediateBody.chat_id) === -100900000002 && immediateBody.text === E2E_MANUAL_PUBLICATION_TEXT, "manual UI fake received the wrong destination or content");
+        fakeState.telegram.manualImmediateRequests.push(immediateBody);
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ ok: true, result: { message_id: 1201 } }));
+        return;
+      }
       fakeState.telegram.textCalls += 1;
       let body = {};
       try { body = JSON.parse(raw); } catch {}
@@ -1152,6 +1532,7 @@ function fakeProvider() {
           },
         },
       }] : [];
+      result.push(...takeChannelOnboardingUpdates());
       if (canDeliver) fakeState.telegram.discussionUpdateDelivered = true;
       res.setHeader("content-type", "application/json");
       res.end(JSON.stringify({ ok: true, result }));
@@ -1164,6 +1545,7 @@ function fakeProvider() {
 
 const runtimeEnv = {
   ...process.env,
+  ...fakeAiSpendEnv(),
   NODE_OPTIONS: [
     String(process.env.NODE_OPTIONS || "").trim(),
     `--import=${pathToFileURL(vkFetchShimPath).href}`,
@@ -1181,11 +1563,12 @@ const runtimeEnv = {
   SENTRY_PROJECT: "",
   SENTRY_URL: "",
   AURORA_ADMIN_EMAILS: "qa-e2e@aurora.test",
+  AURORA_SITES_DOMAIN: "sites.aurora.test",
   AURORA_RELEASE: "e2e-release",
   AURORA_RELEASE_SHA: "0123456789abcdef0123456789abcdef01234567",
   NEXT_PUBLIC_AURORA_APP_VERSION: "e2e-web",
   AURORA_READINESS_TOKEN: "e2e-readiness-token-with-32-characters-minimum",
-  HOSTNAME: "127.0.0.1",
+  HOSTNAME: "localhost",
   PORT: String(nextPort),
   TG_BOT_TOKEN: "9000000000:e2e-fake-token-not-live",
   TG_BOT_USERNAME: "aurora_e2e_bot",
@@ -1204,6 +1587,8 @@ const runtimeEnv = {
   NAVYAI_API_URL: `${fakeBase}/v1`,
   TOKENS_MASTER_KEY: "e2e-only-master-key-with-enough-entropy-2026",
   TOKENS_KEY_ID: "1",
+  RESEND_API_KEY: "e2e-resend-not-live",
+  PASSWORD_RESET_FROM: "Aurora Test <fixture@aurora.test>",
   TRACKING_ATTRIBUTION_SECRET: "e2e-attribution-secret-isolated-2026-08-12",
   TRACKING_FINGERPRINT_SECRET: "e2e-fingerprint-secret-distinct-2026-08-12",
   AURORA_TRACKER_ALLOW_LOCAL_VERIFICATION: "true",
@@ -1232,27 +1617,42 @@ function startHttpsProxy() {
     "-out", certificatePath,
   ], { stdio: "ignore" });
 
-  tlsProxyServer = https.createServer({
+  browserServiceTls = {
     key: readFileSync(keyPath),
     cert: readFileSync(certificatePath),
-  }, (incoming, outgoing) => {
+  };
+  tlsProxyServer = https.createServer(browserServiceTls, (incoming, outgoing) => {
+    const fixtureIp = loginRateLimitFixtureIngress.resolve(incoming.headers);
+    const forwardedHeaders = { ...incoming.headers };
+    delete forwardedHeaders[LOGIN_RATE_LIMIT_FIXTURE_HEADER];
     const upstream = http.request({
-      hostname: "127.0.0.1",
+      hostname: "localhost",
       port: nextPort,
       path: incoming.url,
       method: incoming.method,
       headers: {
-        ...incoming.headers,
+        ...forwardedHeaders,
         "x-forwarded-proto": "https",
         "x-forwarded-host": incoming.headers.host || `127.0.0.1:${webPort}`,
-        "x-forwarded-for": [incoming.headers["x-forwarded-for"], incoming.socket.remoteAddress]
+        "x-forwarded-for": [incoming.headers["x-forwarded-for"], fixtureIp ?? incoming.socket.remoteAddress]
           .filter(Boolean)
           .join(", "),
       },
     }, (response) => {
+      aiConflictResponseEvidence.observe(response, { method: incoming.method, path: incoming.url });
+      aiAcknowledgementEvidence.observe(response, { method: incoming.method, path: incoming.url, headers: incoming.headers });
+      if (!ingressBoundary.accept({ requestUrl: incoming.url, status: response.statusCode || 502, headers: response.headers })) {
+        response.resume();
+        outgoing.writeHead(502, { "content-type": "text/plain" });
+        outgoing.end("Redirect blocked by isolated TLS ingress");
+        return;
+      }
       outgoing.writeHead(response.statusCode || 502, response.headers);
+      response.on("error", () => outgoing.destroy());
       response.pipe(outgoing);
     });
+    incoming.on("aborted", () => upstream.destroy());
+    outgoing.on("close", () => { if (!outgoing.writableEnded) upstream.destroy(); });
     upstream.on("error", () => {
       if (!outgoing.headersSent) outgoing.writeHead(502, { "content-type": "text/plain" });
       outgoing.end("runtime unavailable");
@@ -1355,8 +1755,9 @@ function startFullRuntime(label) {
   runtimeProcess = child(
     label,
     globalThis.process.platform === "win32" ? "npm.cmd" : "npm",
-    ["run", "start", "--", "-H", "127.0.0.1", "-p", String(nextPort)],
+    ["run", "start", "--", "-H", "localhost", "-p", String(nextPort)],
     runtimeEnv,
+    { persistent: true },
   );
   return runtimeProcess;
 }
@@ -1490,7 +1891,7 @@ async function captureViewportEvidence(targetPage) {
     { width: 640, height: 800, label: "desktop-200-percent-zoom-equivalent" },
   ];
   const evidence = [];
-  await targetPage.goto("/app/calendar");
+  await navigateWithSettledReads(targetPage, "/app/calendar");
   await targetPage.getByRole("heading", { name: "Календарь", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await targetPage.locator('main article[id^="calendar-"]').first().waitFor({
     state: "visible",
@@ -1544,6 +1945,9 @@ async function waitForFirstPartyNetworkIdle(
   assert(pendingRequests, `${label} has no first-party request tracker`);
   const blockingRequests = () => [...pendingRequests].filter((request) => {
     try {
+      // Recheck the exact native caller-abort proof on every poll. Keep the raw
+      // Set entry: a later contradictory event must make this request block again.
+      if (mainRequestEvidence.reason(request) === "native_caller_abort_without_transport_terminal") return false;
       // Product telemetry is a keepalive background beacon. It must still be observed
       // for failures and is verified through API + PostgreSQL below, but it cannot gate
       // history restoration for an unrelated page.
@@ -1563,13 +1967,16 @@ async function waitForFirstPartyNetworkIdle(
     }
     await new Promise((resolveWait) => setTimeout(resolveWait, 50));
   }
-  const pendingUrls = blockingRequests().map((request) => request.url()).slice(0, 8);
-  throw new Error(`${label} first-party requests did not settle: ${pendingUrls.join(", ")}`);
+  const pending = blockingRequests().slice(0, 8).map((request) => ({
+    id: browserRequestIds.get(request), url: sanitizeE2eNetworkUrl(request.url(), baseUrl),
+    timing: request.timing(), failure: request.failure(), response: browserRequestResponses.get(request),
+  }));
+  throw new Error(`${label} first-party requests did not settle: ${JSON.stringify(pending)}`);
 }
 
 async function runKeyboardOnlyCriticalPass(targetPage) {
   await targetPage.setViewportSize({ width: 390, height: 844 });
-  await targetPage.goto("/app/calendar");
+  await navigateWithSettledReads(targetPage, "/app/calendar");
   await targetPage.getByRole("heading", { name: "Календарь", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await focusKeyboardStart(targetPage);
 
@@ -1649,7 +2056,7 @@ async function runTodayWorkspacePass(targetPage, channels, draftId) {
     [secondDraftId, channels[0]],
   );
   await targetPage.setViewportSize({ width: 390, height: 844 });
-  await targetPage.goto(`/app/today?channel=${channels[0]}`);
+  await navigateWithSettledReads(targetPage, `/app/today?channel=${channels[0]}`);
   await targetPage.getByRole("heading", { name: "Сегодня", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await targetPage.getByRole("heading", { name: "Пульс канала за 7 дней", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const pulseDisclosure = targetPage.getByText("Развернуть статистику", { exact: true });
@@ -1667,6 +2074,8 @@ async function runTodayWorkspacePass(targetPage, channels, draftId) {
   await targetPage.keyboard.press("Enter");
   await targetPage.getByRole("heading", { name: "Разобрать за 5 минут", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const done = targetPage.getByRole("button", { name: "Готово", exact: true });
+  const doneFocus = await runTodayFocusCoverage({ page: targetPage, engine: browserEngine, artifactDir,
+    phase: "before-done", controlName: "Готово", locator: done, captureScreenshot: captureE2eScreenshot });
   const doneTabs = await tabTo(targetPage, done, "Today done action");
   await targetPage.keyboard.press("Enter");
   const summary = targetPage.getByRole("heading", { name: /решени.+ в фокусе/u });
@@ -1679,6 +2088,8 @@ async function runTodayWorkspacePass(targetPage, channels, draftId) {
   const undo = targetPage.getByRole("button", { name: "Вернуть", exact: true });
   await undo.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await waitFor(async () => await undo.isEnabled(), "Today undo remained disabled", 5_000);
+  const undoFocus = await runTodayFocusCoverage({ page: targetPage, engine: browserEngine, artifactDir,
+    phase: "confirmed-undo", controlName: "Вернуть", locator: undo, captureScreenshot: captureE2eScreenshot });
   await tabTo(targetPage, undo, "Today undo action");
   await targetPage.keyboard.press("Enter");
   await reviewHeading.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
@@ -1717,7 +2128,8 @@ async function runTodayWorkspacePass(targetPage, channels, draftId) {
   await waitFor(async () => refreshCalls === 1 && await refresh.isEnabled(), "Today refresh did not complete", 10_000);
   await targetPage.unroute("**/api/today/refresh");
   await assertNoHorizontalOverflow(targetPage, "Today desktop");
-  return { doneTabs, quickTabs, refreshCalls, channelsSwitched: true, pulse: true, quickMode: true, done: true, undone: true, snoozed: true };
+  return { doneTabs, quickTabs, refreshCalls, focus: { beforeDone: doneFocus, confirmedUndo: undoFocus },
+    channelsSwitched: true, pulse: true, quickMode: true, done: true, undone: true, snoozed: true };
 }
 
 async function assertTouch(locator, label) {
@@ -1877,6 +2289,25 @@ try {
   await pool.query("create schema public");
   await pool.query(await readFile(resolve("db/schema.sql"), "utf8"));
   await migrate({ env: { ...runtimeEnv, DATABASE_URL: databaseUrl }, logger: { log() {} } });
+  // QA-only receipts live in the already-validated disposable schema. Record
+  // each committed revision, including snapshots superseded before reload.
+  await pool.query(`
+    create table e2e_studio_session_receipts (
+      receipt_id bigint generated always as identity primary key,
+      user_id bigint not null, revision bigint not null, payload jsonb not null
+    );
+    create function e2e_record_studio_session_receipt() returns trigger language plpgsql as $$
+    begin
+      insert into e2e_studio_session_receipts(user_id,revision,payload)
+        values(new.user_id,new.revision,new.payload);
+      return new;
+    end $$;
+    create trigger e2e_studio_session_receipt after insert or update on studio_chat_sessions
+      for each row execute function e2e_record_studio_session_receipt();
+  `);
+  studioReceiptLedgerReady = true;
+  // Explicit synthetic storage limits for this disposable fixture; no production defaults.
+  await pool.query("insert into media_storage_policy(id,user_max_bytes,project_max_bytes,global_max_bytes) values(1,1073741824,2147483648,4294967296)");
   await redis.flushdb();
 
   fakeServer = fakeProvider();
@@ -1909,7 +2340,7 @@ try {
       line: 0,
     });
   });
-  context = await browser.newContext({
+  context = await isolatedContext({
     baseURL: baseUrl,
     viewport: { width: 390, height: 844 },
     reducedMotion: "reduce",
@@ -1917,7 +2348,7 @@ try {
     ...(captureBrowserArtifacts ? {
       recordVideo: { dir: videoDirectory, size: E2E_EVIDENCE_VIDEO_SIZE },
     } : {}),
-  });
+  }, "main");
   await installBrowserDiagnostics(context, "main");
   page = await context.newPage();
   interfaceEvidence.reducedMotion.main = await page.evaluate(
@@ -1931,7 +2362,7 @@ try {
   };
   page.on("request", recordBotConnectNetworkUrl);
   try {
-    await page.goto(
+    await navigateWithSettledReads(page,
       `/bot/connect?source=telegram#token=${E2E_BOT_CONNECT_TOKEN_CANARY}`,
       { waitUntil: "domcontentloaded", timeout: 90_000 },
     );
@@ -2081,21 +2512,33 @@ try {
   // framework chunks the default 30-second navigation budget and flakes before the first
   // assertion on slower runners. DOMContentLoaded is the contract needed by the form checks;
   // keep a bounded but explicit cold-compilation budget instead of weakening assertions.
-  await page.goto("/register", { waitUntil: "domcontentloaded", timeout: 90_000 });
+  await navigateWithSettledReads(page, "/register", { waitUntil: "domcontentloaded", timeout: 90_000 });
   await assertTouch(page.locator('input[type="email"]').first(), "auth email");
   await assertTouch(page.locator('input[type="password"]').first(), "auth password");
   await assertTouch(page.locator('button[type="submit"]').first(), "auth submit");
   await assertTouch(page.getByRole("link", { name: "Войти", exact: true }), "auth login link");
 
-  const registration = await context.request.post("/api/auth/register", {
-    headers: { origin: baseUrl },
-    data: { email: "qa-e2e@aurora.test", password: "qa-password-2026", name: "QA E2E" },
-    timeout: API_REQUEST_TIMEOUT_MS,
-  });
-  assert(registration.ok(), `QA registration failed with ${registration.status()}`);
+  await page.locator("#name").fill("Q");
+  await page.locator("#email").fill("qa-e2e@aurora.test");
+  await page.locator("#password").fill("qa-password-2026");
+  await page.locator('button[type="submit"]').click();
+  await page.getByText("Введите имя — хотя бы 2 символа.", { exact: true }).waitFor();
+  assert(await page.locator("#name").evaluate((element) => element === document.activeElement), "registration validation did not focus the invalid name");
+  await page.locator("#name").fill("QA E2E");
+  const registrationPromise = page.waitForResponse((response) => response.url() === baseUrl + "/api/auth/register" && response.request().method() === "POST");
+  await page.locator('button[type="submit"]').click();
+  const registration = await registrationPromise;
+  assert(registration.ok(), `QA registration form failed with ${registration.status()}`);
+  await page.waitForURL(/\/app(?:\/|$)/u);
   const userId = Number((await pool.query(
     "select id from users where email = 'qa-e2e@aurora.test'",
   )).rows[0].id);
+  studioSessionOwner = userId;
+  productEventActors.set(context, userId);
+  const unverifiedAdmin = await context.request.get("/api/admin/overview");
+  assert(unverifiedAdmin.status() === 403, "self-asserted registration email granted global admin");
+  // Local fixture represents mailbox verification; real delivery is a separate sandbox gate.
+  await pool.query("update users set verified_email = email where id = $1", [userId]);
   await pool.query("update users set onboarding_completed_at = now(), ai_engine = 'openai' where id = $1", [userId]);
   const channels = (await pool.query(
     `insert into channels (user_id, network, tg_chat_id, title, handle, is_active)
@@ -2112,6 +2555,10 @@ try {
              'объяснять проверяемые изменения', 'никаких обещаний результата', true, 'manual')`,
     [userId, channels[0]],
   );
+  interfaceEvidence.manualPublicationUi = await prepareManualPublicationCoverage({
+    page, pool, baseUrl, userId, channelId: channels[1], readEditableText, waitFor, waitForFirstPartyNetworkIdle,
+  });
+
   const draftId = Number((await pool.query(
     `insert into drafts (user_id, text, scheduled_at, origin, client_key)
      values ($1, 'Серверная версия', now() + interval '2 hour', 'manual', 'draft_e2e-durable-1234567890') returning id`,
@@ -2119,18 +2566,23 @@ try {
   )).rows[0].id);
   await pool.query("insert into draft_destinations (draft_id, channel_id) values ($1, $2)", [draftId, channels[0]]);
 
+  let offlineDraftAborts = 0;
   await page.route(`**/api/drafts/${draftId}`, async (route) => {
-    if (route.request().method() === "PATCH") await route.abort("internetdisconnected");
-    else await route.continue();
+    if (route.request().method() === "PATCH") {
+      explicitlyAbortedDraftRequests.add(route.request());
+      await route.abort("internetdisconnected");
+      offlineDraftAborts++;
+    } else await route.continue();
   });
-  await page.goto(`/app/composer?draft=${draftId}`);
+  await navigateWithSettledReads(page, `/app/composer?draft=${draftId}`);
   const composerText = page.locator("#composer-text");
   await composerText.waitFor();
-  expectedBrowserConsoleScopes.add("main");
+  mainFaultEvidence.beginScope("main", { page, rules: [{ method: "PATCH", url: `${baseUrl}/api/drafts/${draftId}`,
+    failure: { chromium: "net::ERR_INTERNET_DISCONNECTED", firefox: "NS_ERROR_OFFLINE", webkit: "Blocked by Web Inspector" }[browserEngine],
+    explicitRouteAbort: true }] });
   await composerText.fill("Локальная несинхронизированная версия E2E");
-  // Durable browser write-through is the reload invariant. Under a loaded full runtime the
-  // debounced PATCH may not have reached the intercepted network route yet, so both pending
-  // and explicit offline labels are valid before the hard reload below.
+  // Durable browser write-through is the reload invariant. Wait for both the local
+  // copy and an actual route-aborted PATCH before exercising the hard reload.
   // The compact Composer keeps the detailed save message inside a collapsed
   // disclosure. Its DOM state is still live; the hard reload below is the actual
   // durability proof and must recover the exact pending text.
@@ -2138,13 +2590,14 @@ try {
     state: "attached",
     timeout: UI_WAIT_TIMEOUT_MS,
   });
-  await reloadInBrowser(page);
+  await waitFor(() => offlineDraftAborts > 0, "offline draft fault never reached the actual intercepted PATCH", UI_WAIT_TIMEOUT_MS);
+  await reloadInBrowser(page, 60_000);
   await composerText.waitFor();
   assert(await readEditableText(composerText) === "Локальная несинхронизированная версия E2E", "hard reload lost pending draft text");
   await page.unroute(`**/api/drafts/${draftId}`);
   await page.evaluate(() => window.dispatchEvent(new Event("online")));
   await waitFor(async () => (await pool.query("select text from drafts where id = $1", [draftId])).rows[0]?.text === "Локальная несинхронизированная версия E2E", "pending draft did not synchronize", 12_000);
-  expectedBrowserConsoleScopes.delete("main");
+  mainFaultEvidence.endScope("main");
   assert(Number((await pool.query("select count(*)::int as n from drafts where id = $1", [draftId])).rows[0].n) === 1, "draft sync created a duplicate");
   const composerProtection = await openComposerSection(page, "composer-protection");
   const composerSaveButton = composerProtection.getByRole("button", { name: /^(Сохранено|Сохранить сейчас)$/u });
@@ -2157,7 +2610,7 @@ try {
   await page.setViewportSize({ width: 390, height: 844 });
 
   for (const route of ["/app/calendar", `/app/composer?draft=${draftId}`, "/app/studio", "/app/autopilot"]) {
-    await page.goto(route);
+    await navigateWithSettledReads(page, route);
     await page.waitForLoadState("domcontentloaded");
     // Measure the loaded screen and settle its API reads before the next hard
     // navigation. A fixed delay raced Calendar's suggestion fetch in WebKit.
@@ -2360,10 +2813,17 @@ try {
         method: "POST",
         headers: { "idempotency-key": "e2e_trend_refresh_1" },
       });
-      return response.status;
+      // A resolved fetch only proves headers. Consume the complete receipt
+      // before a navigation can destroy the document's response reader.
+      return { status: response.status, body: await response.json() };
     }),
   ), { channelId: channels[0] });
-  assert([200, 202].includes(refreshA) && [200, 202].includes(refreshB), "parallel Trends refresh returned an unexpected status");
+  for (const response of [refreshA, refreshB]) {
+    assert(response.status === 200
+      ? response.body?.ok === true && Number.isSafeInteger(response.body.queued) && response.body.queued >= 0
+      : response.status === 202 && response.body?.ok === false && response.body.error === "request_in_progress",
+    "parallel Trends refresh returned an invalid or incomplete receipt");
+  }
   assert(Number((await pool.query("select count(*)::int as n from trend_refresh_operations where user_id = $1", [userId])).rows[0].n) === 1, "double Trends refresh created multiple operations");
   assert((await pool.query("select status from competitors where id = $1", [competitorIds[1]])).rows[0].status === "ready", "channel A refresh mutated channel B");
 
@@ -2385,7 +2845,7 @@ try {
   );
 
   await page.setViewportSize({ width: 1280, height: 900 });
-  await page.goto(`/app/library?channel=${channels[0]}`);
+  await navigateWithSettledReads(page, `/app/library?channel=${channels[0]}`);
   await page.getByRole("heading", { name: "Идеи и примеры", exact: true }).waitFor();
   const desktopSidebar = page.locator('aside:visible nav[aria-label="Разделы платформы"]');
   const desktopLibraryActive = desktopSidebar.locator('a[aria-current="page"]');
@@ -2465,6 +2925,11 @@ try {
   assert((await originalLink.getAttribute("href")) === "https://t.me/qa_competitor_a/91001", "original action lost source URL");
   assert(await originalLink.getAttribute("target") === "_blank", "original action does not stay external");
 
+  const selectedReferenceProjectId = Number(await page.evaluate(() => sessionStorage.getItem("aurora:request-project-id")));
+  assert(Number.isSafeInteger(selectedReferenceProjectId) && selectedReferenceProjectId > 0, "Library has no explicit selected project");
+  fakeState.ai.holdLibraryCompletion = true;
+  const initialReferenceRequestPromise = page.waitForRequest((request) => new URL(request.url()).pathname === "/api/ai/generate" && request.method() === "POST");
+  void initialReferenceRequestPromise.catch(() => undefined);
   await page.getByRole("button", { name: "Создать публикацию", exact: true }).click();
   await page.waitForURL((url) => url.pathname === "/app/studio"
     && /^\d+$/u.test(url.searchParams.get("draft") || "")
@@ -2473,21 +2938,231 @@ try {
   assert([...createStudioUrl.searchParams.keys()].join(",") === "draft,intent", "Library leaked text or channel through Studio URL");
   const libraryReferenceDraftId = Number(createStudioUrl.searchParams.get("draft"));
   const referenceDraft = (await pool.query(
-    `select d.text, d.origin, d.source_ref, destination.channel_id
+    `select d.text, d.origin, d.source_ref, d.version, d.project_id, destination.channel_id, channel.project_id as channel_project_id
        from drafts d
        join draft_destinations destination on destination.draft_id = d.id
+       join channels channel on channel.id = destination.channel_id
       where d.id = $1 and d.user_id = $2`,
     [libraryReferenceDraftId, userId],
   )).rows[0];
   assert(referenceDraft?.text === libraryReferenceText, "Studio reference draft lost the full Library text");
   assert(referenceDraft?.origin === "competitor", "Studio reference draft lost provenance");
+  assert(Number(referenceDraft.project_id) === selectedReferenceProjectId && Number(referenceDraft.channel_project_id) === selectedReferenceProjectId, "Library selected project differs from source draft or destination channel");
   assert(Number(referenceDraft?.channel_id) === channels[0], "Studio reference draft lost selected channel id");
   assert(String(referenceDraft?.source_ref?.id) === String(libraryReferenceId), "Studio reference draft lost source post id");
   assert(referenceDraft?.source_ref?.topic === libraryReferenceTopic, "Studio reference draft lost the server-owned topic");
-  // A reload while the provider is running must replay the same paid operation. The
-  // create intent remains until the terminal result has been persisted as a server draft.
-  await reloadInBrowser(page);
+  // First prove concurrent same-key replay while the original provider remains held.
+  // Then exercise actual document cancellation. A cancelled paid attempt is terminal
+  // for its key; only the explicit new-operation action may call the provider again.
+  await waitFor(() => fakeState.ai.libraryGenerationCalls === 1, "Library generation did not reach the provider");
+  const initialReferenceRequest = await initialReferenceRequestPromise;
+  const initialReferenceKey = initialReferenceRequest.headers()["idempotency-key"];
+  assert(initialReferenceKey === `studio_reference_${libraryReferenceDraftId}_v${referenceDraft.version}`, "initial Library operation lost its deterministic identity");
+  const referenceUsageKey = `web:${initialReferenceKey}`;
+  const initialReferenceBody = initialReferenceRequest.postDataJSON();
+  const replayHeaders = { "idempotency-key": initialReferenceKey, "x-aurora-project-id": String(initialReferenceRequest.headers()["x-aurora-project-id"]), origin: baseUrl };
+  assert(Number(replayHeaders["x-aurora-project-id"]) === selectedReferenceProjectId, "Library request used another project");
+  function assertReferenceRequest(request, key) {
+    assert(request.headers()["idempotency-key"] === key, "AI recovery silently changed its operation key");
+    assert(Number(request.headers()["x-aurora-project-id"]) === selectedReferenceProjectId, "AI recovery used another selected project");
+    const body = request.postDataJSON();
+    assert(Number(body.channelId) === channels[0] && Number(body.referenceDraftId) === libraryReferenceDraftId
+      && Number(body.referenceDraftVersion) === Number(referenceDraft.version), "AI recovery changed source revision or destination");
+  }
+  assertReferenceRequest(initialReferenceRequest, initialReferenceKey);
+  const pendingDiagnosticsStart = browserIssues.length;
+  const expectedAiFailures = [];
+  const observedAiFailures = [];
+  const observeAiFailure = response => {
+    if (new URL(response.url()).pathname === "/api/ai/generate" && response.request().method() === "POST" && [409, 422].includes(response.status())) observedAiFailures.push(response);
+  };
+  page.on("response", observeAiFailure);
+  async function readExpectedAiFailure(response, status, code, browserDiagnostic = true) {
+    assert(response.status() === status, `AI recovery returned ${response.status()}, expected ${status}`);
+    const requestId = response.headers()["x-ai-request-id"];
+    assert(requestId, "AI recovery response omitted its correlation ID");
+    const captured = await waitFor(() => {
+      const record = aiConflictResponseEvidence.read(requestId);
+      if (record?.error) throw new Error(`AI recovery evidence failed: ${record.error}`);
+      return record?.complete ? record : null;
+    }, "AI recovery has no complete correlated upstream body");
+    assert(captured.status === status && captured.body.error === code, "AI recovery changed identity, authority or terminal outcome");
+    if (status === 422) assert(captured.body.retryable === false, "terminal AI cancellation became retryable");
+    if (browserDiagnostic) {
+      assertReferenceRequest(response.request(), initialReferenceKey);
+      expectedAiFailures.push({ requestId, status, code, url: response.url(), request: response.request() });
+    }
+    return captured;
+  }
+  const pendingResponse = await context.request.post("/api/ai/generate", { headers: replayHeaders, data: initialReferenceBody });
+  await readExpectedAiFailure(pendingResponse, 409, "request_in_progress", false);
+  assert(fakeState.ai.libraryGenerationCalls === 1, "concurrent same-key replay repeated provider work");
+
+  const cancelledResponsePromise = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/ai/generate" && response.request().method() === "POST");
+  void cancelledResponsePromise.catch(() => undefined);
+  const firstStudioDeparture = await studioSessionEvidence.departureTicket(page, { owner: userId, requestKey: initialReferenceKey });
+  await reloadInBrowser(page, 60_000);
+  let cancelledResponse = await cancelledResponsePromise;
+  // A replay can reach the server just before the cancellation marker commits.
+  // That race may only report the same still-pending operation, never a new send.
+  if (cancelledResponse.status() === 409) {
+    await readExpectedAiFailure(cancelledResponse, 409, "request_in_progress");
+    await page.getByRole("alert").filter({ hasText: "Этот запрос ещё выполняется" }).waitFor();
+  }
+  const cancellation = await waitFor(async () => {
+    const row = (await pool.query(
+      "select status,error_code,retryable,server_request_id from generation_operations where user_id=$1 and request_key=$2",
+      [userId, referenceUsageKey],
+    )).rows[0];
+    return row?.status === "failed" && row.error_code === "ai_generation_cancelled" && row.retryable === false ? row : null;
+  }, "consumer abort did not persist a terminal cancellation");
+  if (cancelledResponse.status() === 409) {
+    const retryResponsePromise = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/ai/generate" && response.request().method() === "POST");
+    void retryResponsePromise.catch(() => undefined);
+    await page.getByRole("alert").filter({ hasText: "Этот запрос ещё выполняется" }).locator("..")
+      .getByRole("button", { name: "Повторить запрос", exact: true }).click();
+    cancelledResponse = await retryResponsePromise;
+  }
+  await readExpectedAiFailure(cancelledResponse, 422, "ai_generation_cancelled");
+  const firstStudioRecovery = await waitFor(() => {
+    try { return studioSessionEvidence.checkpointForDeparture(firstStudioDeparture); }
+    catch { return null; }
+  }, "first Studio departure did not preserve the expected history and generation key");
+  await studioSessionEvidence.assertRestored(firstStudioRecovery, page, { owner: userId });
+  const firstStudioRendered = await waitFor(async () => {
+    try { return await studioSessionEvidence.assertRenderedMessages(firstStudioRecovery, page); }
+    catch { return null; }
+  }, "first Studio reload did not render the complete saved history");
+  await page.getByRole("button", { name: "Начать новый запуск", exact: true }).waitFor();
+  assert(fakeState.ai.libraryGenerationCalls === 1, "cancelled same-key replay started another paid attempt");
+  fakeState.ai.holdLibraryCompletion = false;
+
+  // The durable terminal outcome also survives a second full page reload.
+  const terminalReloadPromise = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/ai/generate" && response.request().method() === "POST");
+  void terminalReloadPromise.catch(() => undefined);
+  const secondStudioDeparture = await studioSessionEvidence.departureTicket(page, { owner: userId, requestKey: initialReferenceKey });
+  await reloadInBrowser(page, 60_000);
+  const terminalReload = await terminalReloadPromise;
+  assert(terminalReload.request().headers()["idempotency-key"] === initialReferenceKey, "reload silently created a new AI key");
+  await readExpectedAiFailure(terminalReload, 422, "ai_generation_cancelled");
+  const secondStudioRecovery = await waitFor(() => {
+    try { return studioSessionEvidence.checkpointForDeparture(secondStudioDeparture); }
+    catch { return null; }
+  }, "second Studio departure did not preserve the expected history and generation key");
+  await studioSessionEvidence.assertRestored(secondStudioRecovery, page, { owner: userId });
+  const secondStudioRendered = await waitFor(async () => {
+    try { return await studioSessionEvidence.assertRenderedMessages(secondStudioRecovery, page); }
+    catch { return null; }
+  }, "second Studio reload did not render the complete saved history");
+  const restartButtons = page.getByRole("button", { name: "Начать новый запуск", exact: true });
+  // Reload retains history and appends the current response. Correlate the latest
+  // saved message before choosing its last rendered action, never a stale error.
+  const terminalMessage = await waitFor(async () => {
+    const saved = (await pool.query("select payload from studio_chat_sessions where user_id=$1", [userId])).rows[0]?.payload;
+    const messages = saved?.messages?.filter(message => message.role === "ai") ?? [];
+    const current = messages.at(-1);
+    if (current?.requestId !== terminalReload.headers()["x-ai-request-id"] || current.restartable !== true || current.streaming === true) return null;
+    const generation = saved.generations?.find(([id]) => id === current.id)?.[1];
+    if (generation?.requestKey !== initialReferenceKey || Number(generation.referenceDraftId) !== libraryReferenceDraftId) return null;
+    const expectedButtons = messages.filter(message => message.restartable && !message.streaming).length;
+    return await restartButtons.count() === expectedButtons ? { id: current.id, requestId: current.requestId, expectedButtons } : null;
+  }, "current terminal message and rendered recovery action were not persisted consistently");
+  const startNewReference = restartButtons.last();
+  await startNewReference.waitFor();
+  assert(fakeState.ai.libraryGenerationCalls === 1, "terminal reload repeated provider work");
+  const usageAfterCancel = (await pool.query("select status,result_payload from ai_usage where user_id=$1 and reservation_key=$2", [userId, referenceUsageKey])).rows[0];
+  assert(usageAfterCancel?.status === "released" && usageAfterCancel.result_payload == null, "consumer cancellation invented a successful result or retained the product quota");
+
+  // Only diagnostics for the exact, body-verified recovery responses are expected.
+  // Preserve CSP/rejections, transport denials and unrelated HTTP errors.
+  page.off("response", observeAiFailure);
+  assert(observedAiFailures.length === expectedAiFailures.length && observedAiFailures.every(response => expectedAiFailures.some(item => item.request === response.request())), "unrelated AI browser failure occurred during recovery");
+  mainRequestEvidence.confirmGenerationCancellation(initialReferenceRequest, { key: initialReferenceKey, cancellation, usage: usageAfterCancel });
+  const remainingExpectedConsole = [...expectedAiFailures];
+  for (let index = browserIssues.length - 1; index >= pendingDiagnosticsStart; index -= 1) {
+    const issue = browserIssues[index];
+    if (issue.context !== "main" || issue.kind !== "console.error") continue;
+    const status = issue.nativeHttpStatus;
+    if (status !== 409 && status !== 422) continue;
+    const matched = remainingExpectedConsole.findIndex((item) => item.status === status && item.url === issue.url);
+    if (matched < 0 || !/Failed to load resource:/u.test(issue.message)) continue;
+    const expected = remainingExpectedConsole.splice(matched, 1)[0];
+    browserObservations.push({ ...issue, kind: "expected.ai-operation-recovery", requestId: expected.requestId, detail: expected.code });
+    browserIssues.splice(index, 1);
+  }
+  interfaceEvidence.pendingAiReplay = {
+    status: 409, error: "request_in_progress", bodySource: "complete original loopback upstream response",
+    concurrentProviderCalls: 1, cancelledStatus: 422, cancelledCode: "ai_generation_cancelled",
+    terminalReloadProviderCalls: 1, durableCancellation: true, cancellationRequestId: cancellation.server_request_id,
+    terminalMessageId: terminalMessage.id, selectedProjectId: selectedReferenceProjectId,
+  };
+  const newReferenceRequestPromise = page.waitForRequest((request) => new URL(request.url()).pathname === "/api/ai/generate" && request.method() === "POST");
+  const newReferenceAckPromise = page.waitForResponse(response => new URL(response.url()).pathname === "/api/ai/generate/ack"
+    && response.request().method() === "POST" && response.request().headers()["idempotency-key"] !== initialReferenceKey);
+  void newReferenceAckPromise.catch(() => undefined);
+  await startNewReference.click();
+  const newReferenceRequest = await newReferenceRequestPromise;
+  const newReferenceKey = newReferenceRequest.headers()["idempotency-key"];
+  assert(newReferenceKey && newReferenceKey !== initialReferenceKey, "explicit new operation reused the cancelled key");
+  assertReferenceRequest(newReferenceRequest, newReferenceKey);
   await page.waitForURL((url) => url.pathname === "/app/composer" && /^\d+$/u.test(url.searchParams.get("draft") || ""));
+  const libraryCallsBeforeReplay = fakeState.ai.libraryGenerationCalls;
+  assert(libraryCallsBeforeReplay > 1, "explicit new operation did not reach the provider");
+  const readGenerationOperation = async key => (await pool.query(
+    `select operation.id, operation.user_id, operation.request_key, operation.server_request_id,
+            operation.status, operation.channel_id, channel.project_id, result.id as result_id, result.text,
+            usage.status as usage_status, usage.operation_id as usage_operation_id, usage.result_payload,
+            (select count(*)::int from generation_results where operation_id=operation.id) as result_count,
+            (select count(*)::int from ai_usage where user_id=$1 and reservation_key=$2) as usage_count
+       from generation_operations operation
+       join ai_usage usage on usage.id=operation.ai_usage_id
+       join generation_results result on result.operation_id=operation.id
+       join channels channel on channel.id=operation.channel_id
+      where operation.user_id=$1 and operation.request_key=$2`, [userId, `web:${key}`],
+  )).rows[0];
+  const storedNewOperation = () => readGenerationOperation(newReferenceKey);
+  const beforeCompletedReplay = await storedNewOperation();
+  const newReferenceAckResponse = await newReferenceAckPromise;
+  const confirmAcknowledgedGeneration = async ({ request, ackResponse }, storedOperation) => {
+    const key = request.headers()["idempotency-key"];
+    const operation = storedOperation ?? await readGenerationOperation(key);
+    const ack = await waitFor(() => {
+      const record = aiAcknowledgementEvidence.read(ackResponse.headers()["x-ai-request-id"]);
+      if (record?.error) throw new Error(`AI acknowledgement evidence failed: ${record.error}`);
+      return record?.complete ? record : null;
+    }, "AI result has no complete original acknowledgement receipt");
+    mainRequestEvidence.confirmGenerationCompletion(request, {
+      key, userId, operation, ackRequest: ackResponse.request(), ack,
+    });
+  };
+  await confirmAcknowledgedGeneration({ request: newReferenceRequest, ackResponse: newReferenceAckResponse }, beforeCompletedReplay);
+  assert(beforeCompletedReplay?.status === "acknowledged" && beforeCompletedReplay.text === libraryComposerResult
+    && beforeCompletedReplay.result_count === 1 && beforeCompletedReplay.usage_count === 1, "new Library result lacks one acknowledged durable artifact");
+  const completedReplay = await context.request.post("/api/ai/generate", {
+    headers: { ...replayHeaders, "idempotency-key": newReferenceKey }, data: newReferenceRequest.postDataJSON(),
+  });
+  assert(completedReplay.status() === 200, "completed new operation did not replay its result");
+  assert(completedReplay.headers()["x-ai-replayed"] === "true", "completed response was not a stored replay");
+  const completedBody = (await completedReplay.body()).toString("utf8");
+  assert(completedBody.endsWith("\n"), "completed AI replay is truncated");
+  const completedEvents = completedBody.trim().split("\n").map(line => JSON.parse(line));
+  assert(completedEvents.every(event => event.requestId === completedReplay.headers()["x-ai-request-id"]), "replayed events lost response identity");
+  assert(completedEvents.map(event => event.type).join(",") === "replace,validation,done", "stored replay omitted validation, added an error or lost terminal completion");
+  const replayedValidation = beforeCompletedReplay.result_payload?.validation;
+  assert(replayedValidation, "acknowledged result has no durable validation");
+  deepStrictEqual(completedEvents[1], {
+    type: "validation", requestId: completedReplay.headers()["x-ai-request-id"],
+    status: replayedValidation.status, requiresReview: replayedValidation.requiresReview,
+    provenance: replayedValidation.provenance, blockerCodes: replayedValidation.blockerCodes,
+    ...(replayedValidation.topicAlignment ? { topicAlignment: replayedValidation.topicAlignment } : {}),
+  }, "replayed validation differs from the durable receipt");
+  assert(completedEvents[0].text === beforeCompletedReplay.text
+    && completedEvents.at(-1).generationResultId === Number(beforeCompletedReplay.result_id)
+    && completedEvents.at(-1).replayed === true && completedEvents.at(-1).ackRequired === true, "stored replay changed its durable result");
+  assert(JSON.stringify(await storedNewOperation()) === JSON.stringify(beforeCompletedReplay), "completed replay changed ledger, operation or artifact");
+  assert(fakeState.ai.libraryGenerationCalls === libraryCallsBeforeReplay, "completed same-key replay repeated paid draft or auto-improve work");
+  assert((await pool.query("select count(*)::int as count from ai_usage where user_id=$1 and reservation_key=$2", [userId, referenceUsageKey])).rows[0]?.count === 1, "reload created a second usage row for the cancelled key");
+  Object.assign(interfaceEvidence.pendingAiReplay, { explicitNewOperation: true, completedReplayProviderCalls: 0 });
   const composerDraftUrl = new URL(page.url());
   assert(
     composerDraftUrl.searchParams.get("from") === "studio"
@@ -2507,6 +3182,46 @@ try {
   assert(String(generatedDraft?.source_ref?.id) === String(libraryReferenceId), "generated post lost reference provenance");
   const composerActive = desktopSidebar.locator('a[aria-current="page"]');
   assert((await composerActive.textContent())?.includes("Редактор"), "Composer did not activate desktop Editor");
+
+  // Native pagehide always stores the recovery snapshot. An already acknowledged
+  // snapshot correctly needs no PUT; recover the actual successful storage write
+  // on a consumed URL without starting another AI operation.
+  const composerStudioCheckpoint = await waitFor(() => {
+    try {
+      return studioSessionEvidence.checkpointForPageHide(page, { owner: userId,
+        generationResultId: Number(beforeCompletedReplay.result_id), text: libraryComposerResult });
+    } catch { return null; } // The native binding can arrive just after navigation.
+  }, "Studio departure has no exact native local checkpoint");
+  const consumedStudioUrl = new URL(createStudioUrl);
+  consumedStudioUrl.searchParams.delete("intent");
+  const providerCallsBeforeStudioReturn = fakeState.ai.libraryGenerationCalls;
+  await replaceWithSettledReads(page, consumedStudioUrl.pathname + consumedStudioUrl.search);
+  const restoredStudioResult = page.getByRole("region", { name: "Диалог с ИИ", exact: true })
+    .getByText(libraryComposerResult, { exact: true });
+  // Distinct retained messages can contain the same provider text. Require all
+  // matching paragraphs to be visible; the checkpoint below verifies their full history.
+  await waitFor(async () => {
+    const count = await restoredStudioResult.count();
+    return count > 0 && (await Promise.all(Array.from({ length: count }, (_, index) =>
+      restoredStudioResult.nth(index).isVisible()))).every(Boolean);
+  }, "returning from Composer did not show the saved Studio result paragraphs");
+  await studioSessionEvidence.assertRestored(composerStudioCheckpoint, page, { owner: userId });
+  const composerStudioRendered = await waitFor(async () => {
+    try { return await studioSessionEvidence.assertRenderedMessages(composerStudioCheckpoint, page); }
+    catch { return null; }
+  }, "returning from Composer did not render the complete saved Studio history");
+  const studioReceipts = (await pool.query(
+    "select user_id,revision,payload from e2e_studio_session_receipts where user_id=$1 order by receipt_id", [userId],
+  )).rows;
+  for (const checkpoint of [firstStudioRecovery, secondStudioRecovery, composerStudioCheckpoint]) {
+    studioSessionEvidence.assertCheckpointPersisted(checkpoint, { owner: userId, receipts: studioReceipts });
+  }
+  assert(fakeState.ai.libraryGenerationCalls === providerCallsBeforeStudioReturn, "returning to consumed Studio intent repeated provider work");
+  Object.assign(interfaceEvidence.pendingAiReplay, { exactStudioRecoveryCheckpoints: 3, studioReturnProviderCalls: 0,
+    restoredStudioUi: [firstStudioRendered, secondStudioRendered, composerStudioRendered] });
+  await replaceWithSettledReads(page, composerDraftUrl.pathname + composerDraftUrl.search);
+  await libraryComposerText.waitFor();
+  assert(await readEditableText(libraryComposerText) === libraryComposerResult, "return from restored Studio changed the acknowledged Composer draft");
 
   const blockedValidation = {
     ...generatedDraft.ai_validation,
@@ -2553,7 +3268,7 @@ try {
     stateKeys: Object.keys(globalThis.history.state || {}).sort(),
     stateIndex: globalThis.history.state?.idx ?? null,
   }));
-  await page.evaluate(() => globalThis.history.back());
+  await backWithSettledReads(page);
   try {
     await page.waitForURL((url) => url.pathname === "/app/studio" && url.searchParams.get("draft") === String(libraryReferenceDraftId));
   } catch (error) {
@@ -2577,7 +3292,7 @@ try {
     await activeStudioLink.count() === 1,
     "restored Studio is not active in desktop navigation",
   );
-  await page.evaluate(() => globalThis.history.back());
+  await backWithSettledReads(page);
   await waitForRestoredLibrary(page, channels[0]);
   const discussReference = libraryReferenceCard.getByRole("button", { name: "Обсудить с Авророй", exact: true });
   await discussReference.waitFor();
@@ -2603,7 +3318,7 @@ try {
     await activeStudioLink.count() === 1,
     "Studio action did not activate the restored desktop navigation item",
   );
-  await page.evaluate(() => globalThis.history.back());
+  await backWithSettledReads(page);
   await waitForRestoredLibrary(page, channels[0]);
 
   await page.setViewportSize({ width: 390, height: 844 });
@@ -2678,16 +3393,16 @@ try {
       && await mobileStudioLink.count() === 1,
     "mobile navigation did not expose the restored Studio destination",
   );
-  await page.goto("/app/studio");
+  await navigateWithSettledReads(page, "/app/studio");
   const activeMobileStudioLink = mobileNav.locator('a[href="/app/studio"][aria-current="page"]');
   await activeMobileStudioLink.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   assert(
     await activeMobileStudioLink.count() === 1,
     "restored Studio is not active in mobile navigation",
   );
-  await page.evaluate(() => globalThis.history.back());
+  await backWithSettledReads(page);
   await waitForRestoredLibrary(page, channels[0]);
-  await page.goto(`/app/trends?channel=${channels[0]}`);
+  await navigateWithSettledReads(page, `/app/trends?channel=${channels[0]}`);
   const activeMobileMarketLink = mobileNav.locator('a[href="/app/competitors"][aria-current="page"]');
   await activeMobileMarketLink.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   assert(
@@ -2696,11 +3411,11 @@ try {
     "restored Trends route did not activate the mobile market hub",
   );
   await waitForFirstPartyNetworkIdle(page, "Trends before history restoration");
-  await page.evaluate(() => globalThis.history.back());
+  await backWithSettledReads(page);
   await waitForRestoredLibrary(page, channels[0]);
 
   await page.setViewportSize({ width: 1280, height: 900 });
-  await page.goto("/app/settings?section=profile");
+  await navigateWithSettledReads(page, "/app/settings?section=profile");
   await page.getByRole("heading", { name: "Профиль", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await page.getByLabel("Имя", { exact: true }).fill("Анна");
   await page.getByLabel(/^Отображаемое имя/u).fill("Анна E2E");
@@ -2712,7 +3427,7 @@ try {
   assert(await page.getByLabel("Имя", { exact: true }).inputValue() === "Анна", "profile first name did not survive reload");
   assert(await page.getByLabel(/^Отображаемое имя/u).inputValue() === "Анна E2E", "profile display name did not survive reload");
 
-  await page.goto(`/app/settings?section=content&channel=${channels[0]}`);
+  await navigateWithSettledReads(page, `/app/settings?section=content&channel=${channels[0]}`);
   await page.getByRole("heading", { name: "Как Аврора пишет", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await page.getByLabel(/^Тема и ниша/u).fill("Юридическая безопасность бизнеса");
   await page.getByLabel(/^Аудитория и её задача/u).fill("Владельцы компаний и legal operations");
@@ -2914,7 +3629,7 @@ try {
     [userId, "c".repeat(64), JSON.stringify(siteReport), siteSnapshotHash, SITE_INTERVIEW_QUESTIONS.length],
   )).rows[0].id);
 
-  await page.goto("/app/site-analysis");
+  await navigateWithSettledReads(page, "/app/site-analysis");
   await page.getByText(`${SITE_INTERVIEW_QUESTIONS.length} вопросов`, { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await page.getByText(`Показано ответов: ${SITE_INTERVIEW_QUESTIONS.length} из ${SITE_INTERVIEW_QUESTIONS.length}`, { exact: true }).waitFor();
   const firstEvidenceDisclosure = page.getByRole("button", { name: /доказательства/u }).first();
@@ -3133,6 +3848,13 @@ try {
     [userId],
   )).rows[0]?.selected_project_id);
   assert(Number.isSafeInteger(publicationProjectId) && publicationProjectId > 0, "publication fixture lost selected project");
+  await waitForFirstPartyNetworkIdle(page, "before current AI preview decisions");
+  interfaceEvidence.aiPreviewUi = await runAiPreviewCoverage({
+    page, context, pool, baseUrl, userId, projectId: publicationProjectId, channelId: channels[0], artifactDir,
+    readEditableText, waitForFirstPartyNetworkIdle, getProviderCallCount: () => fakeState.ai.calls,
+    onAcknowledgedGeneration: proof => confirmAcknowledgedGeneration(proof),
+    fakeProviderConfigured: true,
+  });
   const assetId = Number((await pool.query(
     `insert into media_assets (project_id, user_id, kind, file_name, mime_type, bytes, data, sha256)
      values ($1, $2, 'image', 'qa.png', 'image/png', 4, decode('89504e47','hex'), 'e2e-image') returning id`,
@@ -3479,7 +4201,7 @@ try {
   assert(Number.isSafeInteger(legacyProjectId) && legacyProjectId > 0, "legacy selected project is missing");
 
   await page.setViewportSize({ width: 1280, height: 900 });
-  await page.goto("/app/settings?section=project");
+  await navigateWithSettledReads(page, "/app/settings?section=project");
   await page.getByRole("heading", { name: "Настройки", exact: true }).waitFor();
   await assertNoHorizontalOverflow(page, "project settings desktop");
   const projectNameInput = page.locator("#project-team-name");
@@ -3597,7 +4319,7 @@ try {
     "autopilot generation settings were not persisted in the shared project",
   );
 
-  await page.goto("/app/settings?section=integrations");
+  await navigateWithSettledReads(page, "/app/settings?section=integrations");
   const trackingOriginInput = page.getByRole("textbox", { name: "Адрес сайта", exact: true });
   await trackingOriginInput.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await trackingOriginInput.fill(fakeBase);
@@ -3641,7 +4363,7 @@ try {
     "authenticated well-known challenge verification did not activate tracking",
   );
 
-  await page.goto("/app/settings?section=project");
+  await navigateWithSettledReads(page, "/app/settings?section=project");
   await page.getByRole("heading", { name: "Проект и команда", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const inviteEmailInput = page.locator("#project-invite-email");
   await inviteEmailInput.fill(reviewerEmail);
@@ -3666,7 +4388,7 @@ try {
     "invitation storage did not retain only the token hash",
   );
 
-  reviewerContext = await browser.newContext({
+  reviewerContext = await isolatedContext({
     baseURL: baseUrl,
     viewport: { width: 390, height: 844 },
     reducedMotion: "reduce",
@@ -3674,7 +4396,7 @@ try {
     ...(captureBrowserArtifacts ? {
       recordVideo: { dir: videoDirectory, size: E2E_EVIDENCE_VIDEO_SIZE },
     } : {}),
-  });
+  }, "reviewer");
   if (captureBrowserArtifacts) {
     await reviewerContext.tracing.start(E2E_EVIDENCE_TRACE_OPTIONS);
     reviewerTraceStarted = true;
@@ -3691,6 +4413,7 @@ try {
     [reviewerEmail],
   )).rows[0]?.id);
   assert(Number.isSafeInteger(reviewerUserId) && reviewerUserId > 0, "second project user was not persisted");
+  productEventActors.set(reviewerContext, reviewerUserId);
   await pool.query(
     "update users set onboarding_completed_at = now(), ai_engine = 'openai', tg_chat_id = $2 where id = $1",
     [reviewerUserId, 990_000_001],
@@ -3700,7 +4423,7 @@ try {
     () => globalThis.matchMedia("(prefers-reduced-motion: reduce)").matches,
   );
   assert(interfaceEvidence.reducedMotion.reviewer, "reviewer browser context did not emulate reduced motion");
-  await reviewerPage.goto(inviteUrl);
+  await navigateWithSettledReads(reviewerPage, inviteUrl);
   const acceptInvitation = reviewerPage.getByRole("button", { name: "Принять приглашение", exact: true });
   await acceptInvitation.waitFor();
   await assertTouch(acceptInvitation, "accept project invitation");
@@ -3732,7 +4455,7 @@ try {
         return false;
       }
     }, { timeout: UI_WAIT_TIMEOUT_MS }),
-    page.goto("/app/settings?section=dictionary"),
+    navigateWithSettledReads(page, "/app/settings?section=dictionary"),
   ]);
   assert(publicationBlocksLoad.ok(), `publication blocks hydration failed with ${publicationBlocksLoad.status()}`);
   const publicationBlocksSection = page.locator("#publication-blocks");
@@ -3786,7 +4509,7 @@ try {
     "brand dictionary UI did not persist the prohibited project rule",
   );
 
-  await page.goto("/app/autopilot/month");
+  await navigateWithSettledReads(page, "/app/autopilot/month");
   await page.getByRole("heading", { name: "Сетка тем на месяц", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const monthDate = new Date();
   monthDate.setUTCMonth(monthDate.getUTCMonth() + 1, 1);
@@ -4173,6 +4896,7 @@ try {
   };
   const submitVisualSourceReview = page.getByRole("button", { name: "Сохранить и отправить на согласование", exact: true });
   await assertTouch(submitVisualSourceReview, "submit initial editorial revision");
+  interfaceEvidence.submitVisualSourceReviewReflow = await assertEditorialSubmissionReflow(page, { label: await submitVisualSourceReview.innerText() });
   await submitVisualSourceReview.click();
   try {
     await page.getByText("Материал отправлен на согласование.", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
@@ -4188,7 +4912,7 @@ try {
       cause: error instanceof Error ? error.message : String(error),
     })}`);
   }
-  await reviewerPage.goto(`/app/composer?draft=${monthlyDraftId}`);
+  await navigateWithSettledReads(reviewerPage, `/app/composer?draft=${monthlyDraftId}`);
   await reviewerPage.getByRole("heading", { name: "Согласование материала", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const reviewerFirstEditorial = await loadEditorial(reviewerPage);
   assert(
@@ -4215,7 +4939,7 @@ try {
   ), "editorial change request did not become durable", 12_000);
   await reviewerPage.getByText("Нужны правки", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
 
-  await page.goto(`/app/composer?draft=${monthlyDraftId}&from=autopilot-month`);
+  await navigateWithSettledReads(page, `/app/composer?draft=${monthlyDraftId}&from=autopilot-month`);
   await criticalComposerText.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const finalEditorialText = `${await readEditableText(criticalComposerText)}\n\nВ общем, во-первых, легалтех помогает обсудить следующий шаг с редакцией без спешки.`;
   await criticalComposerText.fill(finalEditorialText);
@@ -4254,6 +4978,7 @@ try {
   }
   const submitCorrectedSource = page.getByRole("button", { name: "Сохранить и отправить повторно", exact: true });
   await assertTouch(submitCorrectedSource, "submit corrected source revision");
+  interfaceEvidence.submitCorrectedSourceReflow = await assertEditorialSubmissionReflow(page, { label: await submitCorrectedSource.innerText() });
   await submitCorrectedSource.click();
   await page.getByText("Материал отправлен на согласование.", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await reloadInBrowser(reviewerPage);
@@ -4295,7 +5020,7 @@ try {
 
   // Legal visuals remain a separately verified internal release surface, but Composer no
   // longer sends users there from the ordinary media action.
-  await page.goto(`/app/studio/visuals?draft=${monthlyDraftId}&returnTo=autopilot-month`);
+  await navigateWithSettledReads(page, `/app/studio/visuals?draft=${monthlyDraftId}&returnTo=autopilot-month`);
   await page.waitForURL(new RegExp(`/app/studio/visuals\\?draft=${monthlyDraftId}&returnTo=autopilot-month$`, "u"));
   const brandKit = page.locator("details").filter({ hasText: "Фирменный стиль проекта" }).first();
   await brandKit.locator("summary").click();
@@ -4312,10 +5037,11 @@ try {
   await brandKit.getByLabel("Описание логотипа", { exact: true }).fill("Знак проекта ТехнологИИ Права");
   const uploadBrandLogo = brandKit.getByRole("button", { name: "Загрузить логотип", exact: true });
   await assertTouch(uploadBrandLogo, "upload project brand logo");
-  expectedBrowserConsoleScopes.add("main");
+  mainFaultEvidence.beginScope("main", { page, rules: [{ method: "POST", url: baseUrl + "/api/media/assets",
+    status: 422, jsonError: "invalid_image" }] });
   await uploadBrandLogo.click();
   await brandKit.getByText("Выберите изображение PNG, JPEG или WebP размером до 10 МБ.", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
-  expectedBrowserConsoleScopes.delete("main");
+  mainFaultEvidence.endScope("main");
   assert(
     Number((await pool.query(
       "select count(*)::int as count from media_assets where project_id = $1",
@@ -4360,7 +5086,14 @@ try {
   await page.getByLabel("Шаблон первой карточки", { exact: true }).selectOption("three_actions");
   const createLegalCarousel = page.getByRole("button", { name: "Создать карусель", exact: true });
   await assertTouch(createLegalCarousel, "create legal carousel");
-  await createLegalCarousel.click();
+  const [createdCarousel] = await Promise.all([
+    page.waitForResponse(response => response.url() === baseUrl + "/api/legal-visuals"
+      && response.request().method() === "POST"),
+    createLegalCarousel.click(),
+  ]);
+  assert(createdCarousel.ok(), "legal carousel creation failed");
+  const createdCarouselId = Number((await createdCarousel.json()).design?.id);
+  assert(Number.isSafeInteger(createdCarouselId) && createdCarouselId > 0, "legal carousel response lacks its exact design identity");
   const carouselCards = page.getByRole("list", { name: "Карточки карусели" }).getByRole("listitem");
   await waitFor(async () => (await carouselCards.count()) === 3, "legal carousel did not create three editable cards", 10_000);
   const addCarouselCard = page.getByRole("button", { name: "Добавить карточку", exact: true });
@@ -4377,10 +5110,11 @@ try {
   await page.getByText("Карточка перемещена на позицию 2", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const renderCarousel = page.getByRole("button", { name: "Собрать PNG", exact: true });
   await assertTouch(renderCarousel, "render legal carousel");
-  expectedBrowserConsoleScopes.add("main");
+  mainFaultEvidence.beginScope("main", { page, rules: [{ method: "POST", url: `${baseUrl}/api/legal-visuals/${createdCarouselId}/renders`,
+    status: 422, jsonError: "unsafe_layout" }] });
   await renderCarousel.click();
   await page.getByText("Текст не помещается в безопасную область. Сократите отмеченные поля.", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
-  expectedBrowserConsoleScopes.delete("main");
+  mainFaultEvidence.endScope("main");
   const layoutIssue = page.getByRole("button", { name: /Карточка \d+ · (Заголовок|Тезисы):/u }).first();
   await layoutIssue.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await assertTouch(layoutIssue, "open legal carousel layout issue");
@@ -4612,6 +5346,7 @@ try {
   );
   const submitSecondReview = page.getByRole("button", { name: "Сохранить и отправить на согласование", exact: true });
   await assertTouch(submitSecondReview, "submit final media-bearing revision");
+  interfaceEvidence.submitSecondReviewReflow = await assertEditorialSubmissionReflow(page, { label: await submitSecondReview.innerText() });
   await submitSecondReview.click();
   await page.getByText("Материал отправлен на согласование.", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await reloadInBrowser(reviewerPage);
@@ -4664,7 +5399,7 @@ try {
     "editorial role decisions are missing from the immutable project audit",
   );
 
-  await page.goto("/app/settings?section=project");
+  await navigateWithSettledReads(page, "/app/settings?section=project");
   const reviewerRoleSelect = page.getByLabel(`Роль участника ${reviewerName}`, { exact: true });
   await reviewerRoleSelect.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await reviewerRoleSelect.selectOption("publisher");
@@ -4675,7 +5410,7 @@ try {
   )).rows[0]?.role === "publisher", "second user was not promoted to publisher through project settings");
 
   await reviewerPage.setViewportSize({ width: 320, height: 780 });
-  await reviewerPage.goto(`/app/composer?draft=${monthlyDraftId}`);
+  await navigateWithSettledReads(reviewerPage, `/app/composer?draft=${monthlyDraftId}`);
   await reviewerPage.locator("#composer-text").waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   assert(await readEditableText(reviewerPage.locator("#composer-text")) === finalEditorialText, "publisher did not receive the approved text revision");
   await assertNoHorizontalOverflow(reviewerPage, "publisher Composer at 320px");
@@ -4795,10 +5530,12 @@ try {
     "scheduled publication was not durably owned by exactly one outbox row before restart",
   );
 
-  expectedBrowserConsoleScopes.add("main");
-  expectedBrowserConsoleScopes.add("reviewer");
-  expectedBrowser5xxScopes.add("main");
-  expectedBrowser5xxScopes.add("reviewer");
+  await waitForFirstPartyNetworkIdle(page, "main page before deliberate runtime outage");
+  await waitForFirstPartyNetworkIdle(reviewerPage, "reviewer page before deliberate runtime outage");
+  const outageRule = { method: "GET", readOnly: true, matchUrl: url => url.pathname.startsWith("/api/"),
+    status: 502, text: "runtime unavailable" };
+  mainFaultEvidence.beginScope("main", { page, rules: [outageRule], required: false });
+  mainFaultEvidence.beginScope("reviewer", { page: reviewerPage, rules: [outageRule], required: false });
   const initialShutdown = await stopChild(runtimeProcess, "initial full production runtime");
   await waitForRuntimeUnavailable();
   assert(initialShutdown.forced === false, "initial full production runtime required SIGKILL");
@@ -4851,10 +5588,8 @@ try {
   await reloadAfterRuntimeRestart(reviewerPage, "reviewer page");
   await page.getByRole("heading", { name: "Настройки", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await reviewerPage.getByRole("heading", { name: "Календарь", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
-  expectedBrowserConsoleScopes.delete("main");
-  expectedBrowserConsoleScopes.delete("reviewer");
-  expectedBrowser5xxScopes.delete("main");
-  expectedBrowser5xxScopes.delete("reviewer");
+  mainFaultEvidence.endScope("main");
+  mainFaultEvidence.endScope("reviewer");
   interfaceEvidence.runtimeRestart = {
     command: "npm run start",
     postId: criticalPostId,
@@ -5005,7 +5740,7 @@ try {
     "publication review reminder replay duplicated durable or Telegram delivery",
   );
 
-  await reviewerPage.goto("/app/calendar");
+  await navigateWithSettledReads(reviewerPage, "/app/calendar");
   const notificationTrigger = reviewerPage.getByRole("button", { name: /^Уведомления:/u });
   await notificationTrigger.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const notificationCount = (label) => label.includes("новых нет")
@@ -5206,7 +5941,7 @@ try {
   );
 
   await page.setViewportSize({ width: 1280, height: 900 });
-  await page.goto("/app/analytics");
+  await navigateWithSettledReads(page, "/app/analytics");
   await page.getByRole("heading", { name: "Статистика", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await page.getByText("Главный вывод периода", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await page.getByRole("button", { name: "Ссылки и заявки", exact: true }).click();
@@ -5257,7 +5992,7 @@ try {
   };
 
   await page.setViewportSize({ width: 320, height: 780 });
-  await page.goto("/app/calendar");
+  await navigateWithSettledReads(page, "/app/calendar");
   await page.getByRole("heading", { name: "Календарь", exact: true }).waitFor();
   await assertNoHorizontalOverflow(page, "calendar export entry at 320px");
   const exportTrigger = page.getByRole("button", { name: "Экспортировать", exact: true });
@@ -5427,7 +6162,7 @@ try {
   )).rows[0]?.n) === 1, "admin telemetry was not tenant-bound and persisted");
 
   await page.setViewportSize({ width: 1280, height: 900 });
-  await page.goto("/admin#system", { waitUntil: "domcontentloaded", timeout: 90_000 });
+  await navigateWithSettledReads(page, "/admin#system", { waitUntil: "domcontentloaded", timeout: 90_000 });
   await page.getByRole("heading", { name: "Состояние системы", exact: true }).waitFor({ timeout: RUNTIME_WAIT_TIMEOUT_MS });
   const postgresCard = page.getByRole("button", { name: /PostgreSQL/u }).first();
   await postgresCard.waitFor({ state: "visible", timeout: RUNTIME_WAIT_TIMEOUT_MS });
@@ -5443,7 +6178,7 @@ try {
   await page.setViewportSize({ width: 390, height: 844 });
   await assertNoHorizontalOverflow(page, "admin system detail at mobile width");
 
-  await page.goto("/admin?range=7d&analyticsSection=studio&analyticsTab=errors#aurora-analytics", {
+  await navigateWithSettledReads(page, "/admin?range=7d&analyticsSection=studio&analyticsTab=errors#aurora-analytics", {
     waitUntil: "domcontentloaded",
     timeout: 90_000,
   });
@@ -5491,11 +6226,43 @@ try {
     audited: true,
   };
 
+  interfaceEvidence.manualPublicationUi = await verifyManualPublicationDelivery({
+    evidence: interfaceEvidence.manualPublicationUi, page, pool, fakeRequests: fakeState.telegram.manualImmediateRequests, waitFor, waitForFirstPartyNetworkIdle,
+    settleReads: target => mainRequestEvidence.settleReads(target),
+  });
+  interfaceEvidence.adminActionsUi = await runAdminActionsCoverage({ page, browser, baseUrl, pool, actorUserId: userId, waitFor, captureScreenshot: captureE2eScreenshot, artifactDir });
+  interfaceEvidence.sitesUi = await runSitesCoverage({ page, pool, userId, projectId: sharedProjectId, waitFor, artifactDir,
+    captureScreenshot: captureE2eScreenshot,
+    navigate: (url, options) => navigateWithSettledReads(page, url, options),
+    reload: () => reloadInBrowser(page),
+  });
+  interfaceEvidence.projectCalendarUi = await runProjectCalendarCoverage({ page, context, pool, userId, sharedProjectId, legacyProjectId, sharedChannelId, waitFor, artifactDir,
+    settleReads: target => mainRequestEvidence.settleReads(target),
+    navigate: navigateWithSettledReads, reload: (targetPage) => reloadInBrowser(targetPage),
+    closeCompletedPage: async (completed) => { expectedCompletedPages.add(completed); await completed.close(); } });
   interfaceEvidence.viewportWidths = await captureViewportEvidence(page);
   interfaceEvidence.keyboardOnly = await runKeyboardOnlyCriticalPass(page);
+  if (browserEngine === "chromium") {
+    interfaceEvidence.trueZoom = await runTrueZoomCoverage({
+      baseUrl,
+      browserServiceTls,
+      cookies: await context.cookies(),
+      projectId: Number(await page.evaluate(() => sessionStorage.getItem("aurora:request-project-id"))),
+      artifactDir,
+    });
+  }
+
+  await waitForFirstPartyNetworkIdle(page, "before isolated editor recovery journey");
+  interfaceEvidence.channelOnboardingUi = await runChannelOnboardingCoverage({
+    browser, cookies: await context.cookies(), baseUrl, pool, userId, projectId: sharedProjectId, waitFor, artifactDir,
+  });
+  interfaceEvidence.editorSafetyUi = await runEditorSafetyCoverage({
+    browser, baseUrl, pool, projectId: sharedProjectId, channelId: sharedChannelId,
+    waitFor, readEditableText, captureScreenshot: captureE2eScreenshot, artifactDir,
+  });
 
   const ownerSecondPage = await context.newPage();
-  await ownerSecondPage.goto("/app/calendar");
+  await navigateWithSettledReads(ownerSecondPage, "/app/calendar");
   await ownerSecondPage.getByRole("heading", { name: "Календарь", exact: true }).waitFor({
     timeout: UI_WAIT_TIMEOUT_MS,
   });
@@ -5509,6 +6276,10 @@ try {
   // the database update commits. Open the narrowly classified 401 window before
   // that commit, not only before the following document navigations.
   expectedSessionExpiryConsoleScopes.add("main");
+  for (const targetPage of [page, ownerSecondPage]) expiryFaultEvidence.beginScope(expiryPageLabels.get(targetPage), {
+    page: targetPage, required: false, rules: [{ method: "GET", readOnly: true,
+      matchUrl: url => url.pathname.startsWith("/api/"), status: 401, jsonError: "unauthorized" }],
+  });
   const expiredOwnerSessions = await pool.query(
     "update sessions set expires_at = now() - interval '1 second' where user_id = $1 and expires_at > now()",
     [userId],
@@ -5549,12 +6320,15 @@ try {
     ownerSecondPage.evaluate(() => undefined),
   ]);
   expectedSessionExpiryConsoleScopes.delete("main");
+  for (const targetPage of [page, ownerSecondPage]) expiryFaultEvidence.endScope(expiryPageLabels.get(targetPage));
   interfaceEvidence.sessionExpiry = {
     activeSessionsExpired: activeOwnerSessions,
     apiStatus: expiredSessionApi.status(),
     tabsRedirected: 2,
     destination: "/login",
   };
+  interfaceEvidence.authUi = await runAuthCoverage({ captureScreenshot: captureE2eScreenshot, browser, baseUrl, pool, userId, waitFor, artifactDir });
+  interfaceEvidence.loginRateLimitUi = await runLoginRateLimitCoverage({ browser, baseUrl, pool, redis, waitFor, artifactDir });
   const finalInputSnapshot = await captureE2eInputSnapshot();
   const changedJourneyInputs = changedE2eInputPaths(e2eInputSnapshot, finalInputSnapshot);
   assert(
@@ -5562,6 +6336,7 @@ try {
     `E2E inputs changed during browser journey: ${changedJourneyInputs.slice(0, 20).join(", ")}`,
   );
   const artifacts = await finalizeBrowserArtifacts();
+  await finalizeOwnedRuntime();
   await writeFile(resolve(artifactDir, "process.log"), logs.join("\n").slice(-200_000), "utf8");
   await writeFile(
     resolve(artifactDir, "browser-diagnostics.json"),
@@ -5742,6 +6517,16 @@ try {
         analyticsUi: interfaceEvidence.analyticsUi,
         todayUi: interfaceEvidence.todayUi,
         adminOperationsUi: interfaceEvidence.adminOperationsUi,
+        sitesUi: interfaceEvidence.sitesUi,
+        projectCalendarUi: interfaceEvidence.projectCalendarUi,
+        authUi: interfaceEvidence.authUi,
+        loginRateLimitUi: interfaceEvidence.loginRateLimitUi,
+        trueZoom: interfaceEvidence.trueZoom ? {
+          zoom: interfaceEvidence.trueZoom.zoom,
+          screens: interfaceEvidence.trueZoom.screens.map(screen => screen.label),
+          errors: interfaceEvidence.trueZoom.errors,
+          evidence: "true-zoom-coverage.json",
+        } : null,
         botConnectTokenHygiene: interfaceEvidence.botConnectTokenHygiene,
         browserRuntimeErrors: browserIssues.length,
         browserKnownObservations: browserObservations.length,
@@ -5753,6 +6538,7 @@ try {
       calls: fakeState.ai.calls,
       truncatedCalls: fakeState.ai.truncatedCalls,
       successfulCalls: fakeState.ai.successfulCalls,
+      libraryGenerationCalls: fakeState.ai.libraryGenerationCalls,
       providerIdentityOk: fakeState.ai.providerIdentityOk,
     },
   };
@@ -5763,8 +6549,11 @@ try {
   );
   console.log(JSON.stringify(result));
 } catch (error) {
+  const failures = [error];
   if (page) await captureE2eScreenshot(page, { path: resolve(artifactDir, "failure.png"), fullPage: true }).catch(() => {});
-  await finalizeBrowserArtifacts({ requireComplete: false }).catch(() => {});
+  await finalizeBrowserArtifacts({ requireComplete: false }).catch(failure => failures.push(failure));
+  await finalizeOwnedRuntime().catch(failure => failures.push(failure));
+  const finalError = failures.length === 1 ? error : new AggregateError(failures, "E2E journey and cleanup failed", { cause: error });
   await writeFile(resolve(artifactDir, "process.log"), logs.join("\n").slice(-200_000), "utf8").catch(() => {});
   await writeFile(
     resolve(artifactDir, "browser-diagnostics.json"),
@@ -5782,33 +6571,15 @@ try {
       browserRuntimeErrors: browserIssues.length,
       browserKnownObservations: browserObservations.length,
       artifacts: browserArtifactEvidence,
-      error: error instanceof Error ? error.message : String(error),
+      error: String(finalError?.message || finalError),
+      failures: failures.map(failure => String(failure?.message || failure)),
     }, null, 2)}\n`,
     "utf8",
   ).catch(() => {});
-  throw error;
+  throw finalError;
 } finally {
-  if (captureBrowserArtifacts && !browserArtifactsFinalized) {
+  if (!browserArtifactsFinalized) {
     await finalizeBrowserArtifacts({ requireComplete: false }).catch(() => {});
   }
-  if (browser) await browser.close().catch(() => {});
-  if (publishQueue) await publishQueue.close().catch(() => {});
-  if (mediaQueue) await mediaQueue.close().catch(() => {});
-  if (statsQueue) await statsQueue.close().catch(() => {});
-  if (legalVisualQueue) await legalVisualQueue.close().catch(() => {});
-  if (projectExportQueue) await projectExportQueue.close().catch(() => {});
-  if (publicationExtraQueue) await publicationExtraQueue.close().catch(() => {});
-  if (publicationReviewReminderQueue) await publicationReviewReminderQueue.close().catch(() => {});
-  await Promise.all(children.map((subprocess, index) => (
-    stopChild(subprocess, `full production child ${index + 1}`).catch(() => {})
-  )));
-  if (fakeServer) await new Promise((resolve) => fakeServer.close(resolve)).catch(() => {});
-  if (tlsProxyServer) await new Promise((resolve) => tlsProxyServer.close(resolve)).catch(() => {});
-  if (tlsDirectory) rmSync(tlsDirectory, { recursive: true, force: true });
-  if (redis) await redis.flushdb().catch(() => {});
-  if (redis) await redis.quit().catch(() => {});
-  if (pool) await pool.query("drop schema public cascade").catch(() => {});
-  if (pool) await pool.query("create schema public").catch(() => {});
-  if (pool) await pool.end().catch(() => {});
-  releaseE2eBuildLock();
+  await finalizeOwnedRuntime();
 }

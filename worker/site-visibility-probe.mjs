@@ -1,3 +1,5 @@
+import { AiWorkAccessError } from "../src/lib/ai-work-access.mjs";
+import { withSiteAiAccess, siteAiScope } from "./site-ai-access.mjs";
 import { completeAiText } from "../src/lib/ai-completion-service.mjs";
 import { configuredAiFallbacks, configuredServiceEngine, isConfiguredEngineId } from "../src/lib/ai-engine-policy.mjs";
 import {
@@ -51,18 +53,18 @@ async function loadProbeContext(pool, siteId) {
     )).rows[0];
     brandName = organization?.name || null;
   }
-  const [questions, competitors] = await Promise.all([
-    pool.query(
+  const [questions, competitors] = [
+    await pool.query(
       `select question, occurrences from audience_questions where project_id = $1 and status <> 'dismissed'
         order by occurrences desc, last_seen_at desc limit 12`,
       [site.project_id],
     ),
-    pool.query(
+    await pool.query(
       `select distinct coalesce(c.title, c.handle) as name from competitors c
          join channels ch on ch.id = c.channel_id where ch.project_id = $1 limit 40`,
       [site.project_id],
     ),
-  ]);
+  ];
   return {
     site,
     brandName: brandName || site.confirmed_domain.replace(/^www\./u, "").split(".")[0],
@@ -75,14 +77,19 @@ async function loadProbeContext(pool, siteId) {
  * Прогон зонда: одни и те же вопросы × движки, бюджет — одна резервация ai_usage (kind site_probe)
  * с потолком 12 × 3 (решение 13.2). При исчерпании лимита прогон записывается как skipped_budget.
  */
-export async function runSiteVisibilityProbe(pool, { siteId, engines = null, now = new Date() }, dependencies = {}) {
+/** @param {import("pg").Pool} pool
+ * @param {{siteId:number,requestedByUserId?:number|null,engines?:string[]|null,now?:Date}} input
+ * @param {Record<string, any>} dependencies */
+export async function runSiteVisibilityProbe(pool, { siteId, requestedByUserId = null, engines = null, now = new Date() }, dependencies = {}) {
   const complete = dependencies.completeAiText || completeAiText;
   const acquire = dependencies.acquireUsage || acquireWorkerAiUsage;
   const commit = dependencies.commitUsage || commitWorkerAiUsage;
   const release = dependencies.releaseUsage || releaseWorkerAiUsage;
-  const context = await loadProbeContext(pool, siteId);
+  const scope = await siteAiScope(pool, siteId, requestedByUserId);
+  const context = await withSiteAiAccess(pool, scope, (client) => loadProbeContext(client, siteId));
   if (!context) return { ok: false, reason: "site_missing" };
   const { site } = context;
+  const accountingUserId = scope.userId;
   if (site.status !== "active" || site.verification_state !== "verified") return { ok: false, reason: "site_not_verified" };
 
   const questions = buildProbeQuestions({
@@ -95,7 +102,7 @@ export async function runSiteVisibilityProbe(pool, { siteId, engines = null, now
   if (!questions.length || !engineList.length) return { ok: false, reason: questions.length ? "no_engines" : "no_questions" };
   const runKey = dependencies.runKey || probeRunKey(now);
 
-  const insertRow = (question, engine, mention, status) => pool.query(
+  const insertRow = (question, engine, mention, status) => withSiteAiAccess(pool, scope, (client) => client.query(
     `insert into site_visibility_probes
        (site_id, run_key, question_key, question_text, engine, brand_mentioned, site_cited, competitors_mentioned, answer_excerpt, status)
      values ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10)
@@ -105,10 +112,10 @@ export async function runSiteVisibilityProbe(pool, { siteId, engines = null, now
            status = excluded.status, checked_at = now()`,
     [siteId, runKey, question.key, question.text, engine, mention?.brandMentioned ?? false, mention?.siteCited ?? false,
       JSON.stringify(mention?.competitors || []), mention?.excerpt || null, status],
-  );
+  ));
 
   const usage = await acquire(pool, {
-    userId: Number(site.user_id),
+    userId: accountingUserId,
     kind: "site_probe",
     key: workerAiUsageCompositeKey("site-probe", [String(siteId), runKey]),
     ttlMs: WORKER_AI_RESERVATION_TTL_MS,
@@ -136,18 +143,19 @@ export async function runSiteVisibilityProbe(pool, { siteId, engines = null, now
             temperature: 0.2,
             maxTokens: 600,
             providerRequestKey: `site-probe:${siteId}:${runKey}:${question.key}:${engine}`,
-          }, { allowFallback: false, timeoutMs: 60_000 });
+          }, { allowFallback: false, timeoutMs: 60_000, spendScope: { pool,userId:accountingUserId,projectId:Number(site.project_id) } });
           mention = extractMentions({ answer: completion.text, brandName: context.brandName, domain: site.confirmed_domain, competitorNames: context.competitorNames });
-        } catch {
+        } catch (error) {
+          if (error instanceof AiWorkAccessError || String(error?.code || "").startsWith("ai_spend_")) throw error;
           status = "failed";
         }
         await insertRow(question, engine, mention, status);
         rows.push({ question_key: question.key, engine, status, brand_mentioned: mention?.brandMentioned ?? false, site_cited: mention?.siteCited ?? false, competitors_mentioned: mention?.competitors || [] });
       }
     }
-    await commit(pool, Number(site.user_id), reservationId);
+    await commit(pool, accountingUserId, reservationId);
   } catch (error) {
-    await release(pool, Number(site.user_id), reservationId).catch(() => undefined);
+    await release(pool, accountingUserId, reservationId).catch(() => undefined);
     throw error;
   }
   return { ok: true, runKey, brandName: context.brandName, ...summarizeProbeRun(rows) };

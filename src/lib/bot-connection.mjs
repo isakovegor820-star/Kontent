@@ -59,9 +59,9 @@ export async function createLegacyBotLink(pool, input) {
       [userId],
     );
     await client.query(
-      `insert into bot_links (code, user_id, expires_at)
-       values ($1, $2, now() + make_interval(mins => $3))`,
-      [code, userId, BOT_CONNECTION_TTL_MINUTES],
+      `insert into bot_links (code, user_id, expires_at, channel_project_id)
+       values ($1, $2, now() + make_interval(mins => $3), $4)`,
+      [code, userId, BOT_CONNECTION_TTL_MINUTES, input?.projectId == null ? null : safeUserId(input.projectId)],
     );
     await client.query("commit");
     return { code, expiresInMinutes: BOT_CONNECTION_TTL_MINUTES };
@@ -82,7 +82,7 @@ export async function consumeLegacyBotLink(pool, input) {
     await client.query("begin");
     const candidate = (
       await client.query(
-        `select user_id from bot_links
+        `select user_id, channel_project_id from bot_links
           where code = $1 and used_at is null and expires_at > now()`,
         [code],
       )
@@ -99,7 +99,7 @@ export async function consumeLegacyBotLink(pool, input) {
     );
     const link = (
       await client.query(
-        `select user_id from bot_links
+        `select user_id, channel_project_id from bot_links
           where code = $1 and user_id = $2
             and used_at is null and expires_at > now()
           for update`,
@@ -113,7 +113,7 @@ export async function consumeLegacyBotLink(pool, input) {
     await client.query("select pg_advisory_xact_lock($1::bigint)", [telegramChatId]);
     const account = (
       await client.query(
-        `select app_user.id, app_user.tg_chat_id, coalesce(control.enabled, true) as enabled
+        `select app_user.id, app_user.tg_chat_id, (app_user.blocked_at is null and coalesce(control.enabled, true)) as enabled
            from users app_user
            left join bot_user_controls control on control.user_id = app_user.id
           where app_user.id = $1
@@ -147,7 +147,7 @@ export async function consumeLegacyBotLink(pool, input) {
       [code],
     );
     await client.query("commit");
-    return { state: "connected", userId, telegramChatId, moved };
+    return { state: "connected", userId, telegramChatId, moved, projectId: link.channel_project_id == null ? null : Number(link.channel_project_id) };
   } catch (error) {
     await client.query("rollback").catch(() => {});
     throw error;
@@ -265,7 +265,7 @@ export async function inspectBotConnectionSession(pool, input) {
   if (state !== "pending" || !Number.isSafeInteger(userId) || userId <= 0) return result;
   const account = (
     await pool.query(
-      `select app_user.tg_chat_id, coalesce(control.enabled, true) as enabled,
+      `select app_user.tg_chat_id, (app_user.blocked_at is null and coalesce(control.enabled, true)) as enabled,
               exists (
                 select 1 from users linked
                  where linked.tg_chat_id = $2 and linked.id <> app_user.id
@@ -324,7 +324,7 @@ export async function confirmBotConnectionSession(pool, input) {
     await client.query("select pg_advisory_xact_lock($1::bigint)", [telegramChatId]);
     const account = (
       await client.query(
-        `select app_user.id, app_user.tg_chat_id, coalesce(control.enabled, true) as enabled
+        `select app_user.id, app_user.tg_chat_id, (app_user.blocked_at is null and coalesce(control.enabled, true)) as enabled
            from users app_user
            left join bot_user_controls control on control.user_id = app_user.id
           where app_user.id = $1

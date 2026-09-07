@@ -1,3 +1,6 @@
+import { AiSpendError, withAiSpendScope } from "@/lib/ai-spend-ledger.mjs";
+import { requireAiChannelAccess } from "@/lib/ai-project-access";
+import { ProjectAccessError } from "@/lib/project-permissions";
 // Генерация контента ИИ (ТЗ Д.8). Стримит ответ по мере генерации. Перед генерацией:
 // проверяем дневной лимит, подкладываем прошлые посты пользователя как образец стиля.
 // Движок скрыт за переходником ai-provider — этот роут не знает, Ollama там или облако.
@@ -256,6 +259,22 @@ function failurePayload(
       status: 503,
     };
   }
+  if (error instanceof AiSpendError) {
+    const code = publicAiFailureCode(error);
+    const capacity = code === "ai_spend_cap_exceeded" || code === "ai_spend_concurrency_exceeded";
+    const forbidden = code === "ai_spend_scope_forbidden";
+    return {
+      error: code,
+      code,
+      engine: engine.id,
+      label: `${engine.label} (${engine.vendor})`,
+      status: capacity ? 429 : forbidden ? 403 : 503,
+      // No provider work began. The same key may be retried explicitly after the
+      // local policy changes; orchestrator fallback remains disabled for this type.
+      retryable: !forbidden,
+      dimension: ["user", "project", "global", "tariff"].includes(error.dimension ?? "") ? error.dimension : undefined,
+    };
+  }
   if (error instanceof AiOperationBudgetError) {
     return {
       error: "ai_operation_budget_exhausted",
@@ -379,6 +398,7 @@ async function runOrchestratedText(
   emitDeltas: boolean,
   attemptContext: {
     userId: number;
+    channelId: number;
     reservationId: number | null;
     phase: AiAttemptPhase;
     budget: ReturnType<typeof createAiOperationBudget>;
@@ -420,9 +440,13 @@ async function runOrchestratedText(
       fallbackEngines: configuredFallbackEngines(engineId),
       firstTokenMs: deadlines.firstTokenMs,
       overallMs: deadlines.attemptOverallMs,
-      beforeAttempt: (attempt) => attemptTelemetry.beforeAttempt(attempt),
+      beforeAttempt: async (attempt) => {
+        await requireAiChannelAccess(attemptContext.userId, attemptContext.channelId);
+        await attemptTelemetry.beforeAttempt(attempt);
+      },
     })) {
       if (event.type === "delta") {
+        await requireAiChannelAccess(attemptContext.userId, attemptContext.channelId);
         text += event.text;
         engine = event.engine;
         attemptTelemetry.addDelta(event.engine, event.text);
@@ -613,6 +637,7 @@ function studioStreamResponse(
   );
   const attemptContext = (phase: AiAttemptPhase) => ({
     userId,
+    channelId: operation.channelId,
     reservationId,
     phase,
     budget: attemptBudget,
@@ -852,6 +877,7 @@ function studioStreamResponse(
         }
         // This is the sole terminal outcome. It never charges quota: only a client that
         // received `done` can ACK the staged result in the separate second phase.
+        await requireAiChannelAccess(userId, operation.channelId);
         if (!send({ ...terminal, generationResultId: artifact.id })) {
           throw new DOMException("AI stream consumer closed", "AbortError");
         }
@@ -955,6 +981,7 @@ function studioStreamResponse(
           ) {
             throw new PostSettingsValidationError(validation.issues);
           }
+          await requireAiChannelAccess(userId, operation.channelId);
           if (!send({ type: "replace", requestId, text: finalText, pipeline: finalPipeline })) return;
           await stageAndSendTerminal(
             {
@@ -1086,6 +1113,7 @@ function studioStreamResponse(
         ) {
           throw new PostSettingsValidationError(validation.issues, validation.errorCode);
         }
+        await requireAiChannelAccess(userId, operation.channelId);
         if (!send({ type: "replace", requestId, text: finalText, pipeline: finalPipeline })) return;
         await stageAndSendTerminal(
           {
@@ -1130,12 +1158,24 @@ function studioStreamResponse(
           send({ type: "error", requestId, ...failure });
         }
       } finally {
-        if (!completed) {
+        let releaseAllowed = true;
+        if (!completed && consumerSignal.aborted) {
+          // Disconnect is not proof that the provider did no work. Preserve a terminal
+          // outcome for this exact key before refunding the separate user quota. A
+          // staged pending-ACK result is immutable; cancellation closes only unfinished work.
+          try {
+            await failGenerationOperation(userId, requestId, "ai_generation_cancelled", false);
+          } catch {
+            releaseAllowed = false;
+            logAiRequest("error", requestId, "generation_artifact_stage_failed", { scope: "cancellation_terminal" });
+          }
+        }
+        if (!completed && releaseAllowed) {
           await releaseAiUsageRequest(userId, reservationId, requestId).catch((error) => {
             void error;
             logAiRequest("error", requestId, "usage_release_failed", { engine: finalEngine });
           });
-        } else {
+        } else if (completed) {
           // Both the single-pass and the editorial branches end here with a staged result.
           void recordStudioGeneration({
             userId,
@@ -1301,6 +1341,15 @@ export async function POST(req: NextRequest) {
   }
   if (channelId == null) {
     return aiJson(requestId, { error: "no_channel", retryable: false }, { status: 422 });
+  }
+  let projectId: number;
+  try {
+    projectId = await requireAiChannelAccess(user.id, channelId);
+  } catch (error) {
+    if (error instanceof ProjectAccessError) {
+      return aiJson(requestId, { error: "channel_forbidden", retryable: false }, { status: 403 });
+    }
+    return prerequisiteUnavailable(requestId, error, "context");
   }
   let inputDraftContext: Awaited<ReturnType<typeof getDraftForUser>> = null;
   if (hasInputDraft) {
@@ -1644,8 +1693,9 @@ export async function POST(req: NextRequest) {
   } catch (error) {
     await releaseAiUsageRequest(user.id, reservation.reservationId, requestId).catch(() => {});
     const code = error instanceof GenerationArtifactError ? error.code : "generation_operation_unavailable";
-    const status = code.endsWith("_conflict") ? 409 : 503;
-    return aiJson(requestId, { error: code, retryable: status === 503 }, { status });
+    const status = code.endsWith("_conflict") || code === "generation_operation_in_progress" ? 409 : 503;
+    return aiJson(requestId, { error: code === "generation_operation_in_progress" ? "request_in_progress" : code,
+      retryable: status === 503 || code === "generation_operation_in_progress" }, { status });
   }
   void recordStudioGeneration({
     userId: user.id,
@@ -1664,7 +1714,7 @@ export async function POST(req: NextRequest) {
     && effectivePostSettings.qualityMode === "maximum"
     && EDITORIAL_KINDS.includes(kind)
     && role !== "critic";
-  return studioStreamResponse(
+  return withAiSpendScope({ pool: getPool(), userId: user.id, projectId }, () => studioStreamResponse(
     requestId,
     params,
     chosen,
@@ -1678,5 +1728,5 @@ export async function POST(req: NextRequest) {
     semanticAdapter,
     deliverGeneratedResult,
     { providerEngine: chosen, providerModel: runtime.model, channelId, startedAt },
-  );
+  ));
 }

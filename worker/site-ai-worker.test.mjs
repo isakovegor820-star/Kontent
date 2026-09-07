@@ -12,7 +12,7 @@ const pageRows = [
 
 const profileRow = {
   id: 77, site_id: 5, analysis_job_id: 41, run_revision: 1, topics: [], ai_classification: null, refined_at: null,
-  user_id: 9, confirmed_domain: "clinic.example", canonical_url: "https://clinic.example/", verification_state: "verified", brand_name: "Улыбка", site_status: "active",
+  user_id: 9, project_id: 3, confirmed_domain: "clinic.example", canonical_url: "https://clinic.example/", verification_state: "verified", brand_name: "Улыбка", site_status: "active",
   analysis_result: { optimization: { seo: { score: 70, status: "needs_work", checks: [] }, geo: { score: 40, status: "needs_work", checks: [] } } },
   analysis_created_at: "2026-09-01T00:00:00Z",
 };
@@ -22,6 +22,9 @@ function refinePool({ profile = profileRow, reports = [] } = {}) {
   const handler = async (sql, params) => {
     const text = String(sql);
     calls.push({ sql: text, params });
+    if (text.includes("select project_id from sites")) return { rows: [{project_id:profile.project_id}] };
+    if (text.includes("select member.role from projects project")) return { rows: [{role:"owner"}] };
+    if (text.includes("select id from sites where id=$1")) return { rows: [{id:profile.site_id}] };
     if (text.includes("from site_profiles p")) return { rows: [profile] };
     if (text.includes("from site_analysis_pages")) return { rows: pageRows };
     if (text.includes("select id, kind, payload from site_reports")) return { rows: reports };
@@ -46,6 +49,7 @@ describe("refineSiteProfile", () => {
     const [request] = completeAiText.mock.calls[0];
     expect(request.system).toContain("классификатор страниц");
     expect(request.temperature).toBe(0);
+    expect(completeAiText).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ spendScope: { pool, userId: 9, projectId: 3 } }));
     const update = calls.find((call) => call.sql.includes("update site_profiles"));
     const topics = JSON.parse(update.params[3]);
     expect(topics.some((topic) => topic.key === "имплантация зубов" && topic.mergedFrom.length === 2)).toBe(true);
@@ -74,11 +78,19 @@ describe("refineSiteProfile", () => {
 describe("interpretSiteReport", () => {
   const baseline = buildSiteProfile({ confirmedDomain: "clinic.example", pages: pageRows.map((row) => ({ url: row.url, status: 200, title: row.title, headings: row.headings, schemaTypes: row.schema_types, technical: { wordCount: row.technical.wordCount }, metadata: {} })) });
   const audit = buildInitialAuditReport({ site: { confirmedDomain: "clinic.example", canonicalUrl: "https://clinic.example/", verificationState: "verified" }, profile: baseline });
-  const reportRow = { id: 3, site_id: 5, kind: "initial_audit", payload: audit.payload, interpretation_status: "pending", user_id: 9, brand_name: "Улыбка", confirmed_domain: "clinic.example", site_status: "active", topics: baseline.topics };
+  const reportRow = { id: 3, site_id: 5, kind: "initial_audit", payload: audit.payload, interpretation_status: "pending", user_id: 9, project_id: 3, brand_name: "Улыбка", confirmed_domain: "clinic.example", site_status: "active", topics: baseline.topics };
 
   function interpretPool(row = reportRow) {
     const calls = [];
-    const pool = { query: vi.fn(async (sql, params) => { calls.push({ sql: String(sql), params }); return String(sql).includes("from site_reports r") ? { rows: [row] } : { rows: [] }; }) };
+    const handler = async (sql, params) => {
+      const text=String(sql);calls.push({sql:text,params});
+      if(text.includes("select project_id from sites")) return {rows:[{project_id:row.project_id}]};
+      if(text.includes("select member.role from projects project")) return {rows:[{role:"owner"}]};
+      if(text.includes("select id from sites where id=$1")) return {rows:[{id:row.site_id}]};
+      return text.includes("from site_reports r") ? {rows:[row]} : {rows:[]};
+    };
+    const client={query:vi.fn(handler),release:vi.fn()};
+    const pool={query:vi.fn(handler),connect:vi.fn(async()=>client)};
     return { pool, calls };
   }
   const usage = () => ({
@@ -95,6 +107,7 @@ describe("interpretSiteReport", () => {
     })) };
     const result = await interpretSiteReport(pool, { reportId: 3 }, deps);
     expect(result).toMatchObject({ ok: true, reportId: 3, startWith: 1 });
+    expect(deps.completeAiText).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ spendScope: { pool, userId: 9, projectId: 3 } }));
     expect(deps.acquireUsage).toHaveBeenCalledWith(pool, expect.objectContaining({ userId: 9, kind: "site_report_interpretation" }));
     const saved = calls.find((call) => call.sql.includes("interpretation_status = 'ready'"));
     const stored = JSON.parse(saved.params[1]);

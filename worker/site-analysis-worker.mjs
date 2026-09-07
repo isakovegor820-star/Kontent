@@ -1,3 +1,4 @@
+import { requireSiteAnalysisAiAccess, siteAnalysisAuthoritySql } from "./site-analysis-access.mjs";
 import { Worker } from "bullmq";
 import { randomUUID } from "node:crypto";
 
@@ -59,6 +60,8 @@ const SAFE_INTERVIEW_CODES = new Set([
 
 function publicErrorMessage(code) {
   switch (code) {
+    case "ai_work_scope_forbidden":
+    case "ai_work_scope_required": return "Доступ к проекту изменился. Для нового анализа требуется повторная авторизация.";
     case "queue_unconfirmed": return "Фоновая очередь не подтвердила запуск анализа.";
     case "robots_denied": return "robots.txt запрещает анализ указанной страницы.";
     case "robots_unavailable": return "Не удалось безопасно проверить robots.txt. Попробуй позже.";
@@ -89,6 +92,7 @@ function publicErrorMessage(code) {
 }
 
 function errorCode(error) {
+  if (/^ai_(?:work|spend)_/u.test(String(error?.code || ""))) return String(error.code);
   if (error instanceof SiteCrawlerError && error.code) {
     const code = String(error.code);
     return TLS_ERROR_CODES.has(code) ? "tls_invalid" : code;
@@ -145,16 +149,19 @@ export async function processSiteAnalysisJob(pool, data, dependencies = {}) {
   if (!Number.isSafeInteger(analysisId) || analysisId <= 0) throw new Error("site-analysis: bad analysis id");
   if (!Number.isSafeInteger(runRevision) || runRevision <= 0) throw new Error("site-analysis: bad run revision");
 
+  const identity = { analysisId, runRevision };
+  const authority = siteAnalysisAuthoritySql().replaceAll("$3", "null").replaceAll("$4", "null");
   let claimed = await pool.query(
-    `update site_analysis_jobs
+    `with authorized as materialized (${authority})
+     update site_analysis_jobs
         set status = 'crawling', stage = 'robots', progress = 1,
             progress_detail = 'Проверяем правила robots.txt', attempts = attempts + 1,
             error_code = null, error_message = null, completed_at = null,
             worker_lease_token = $3, worker_heartbeat_at = now(), updated_at = now()
-      where id = $1 and run_revision = $2
+      where id = $1 and run_revision = $2 and id in (select id from authorized)
         and status in ('queued', 'crawling', 'analyzing', 'planning', 'saving')
         and queue_confirmed_at is not null
-      returning id, user_id, request_id, target_url, confirmed_domain, limits, run_revision, created_at, site_id`,
+      returning id, user_id, project_id, request_id, target_url, confirmed_domain, limits, run_revision, created_at, site_id`,
     [analysisId, runRevision, leaseToken],
   );
   if (!claimed.rows[0]) {
@@ -174,17 +181,19 @@ export async function processSiteAnalysisJob(pool, data, dependencies = {}) {
       // The producer may have confirmed the durable row between our first claim and
       // the diagnostic read. Claim once more so that this delivery cannot be lost.
       claimed = await pool.query(
-        `update site_analysis_jobs
+        `with authorized as materialized (${authority})
+         update site_analysis_jobs
             set status = 'crawling', stage = 'robots', progress = 1,
                 progress_detail = 'Проверяем правила robots.txt', attempts = attempts + 1,
                 error_code = null, error_message = null, completed_at = null,
                 worker_lease_token = $3, worker_heartbeat_at = now(), updated_at = now()
-          where id = $1 and run_revision = $2
+          where id = $1 and run_revision = $2 and id in (select id from authorized)
             and status in ('queued', 'crawling', 'analyzing', 'planning', 'saving')
             and queue_confirmed_at is not null
-          returning id, user_id, request_id, target_url, confirmed_domain, limits, run_revision, created_at, site_id`,
+          returning id, user_id, project_id, request_id, target_url, confirmed_domain, limits, run_revision, created_at, site_id`,
         [analysisId, runRevision, leaseToken],
       );
+      if (!claimed.rows[0]) return { ok: false, reason: "project_access_denied" };
     } else if (
       state
       && Number(state.run_revision) === runRevision
@@ -233,6 +242,7 @@ export async function processSiteAnalysisJob(pool, data, dependencies = {}) {
       limits: analysis.limits,
     }, {
       onProgress: async ({ stage, progress, detail }) => {
+        await requireSiteAnalysisAiAccess(pool, identity);
         failureStage = stage;
         if (["analyzing", "planning", "ready"].includes(stage)) return;
         const boundedProgress = Math.min(58, Math.max(1, Number(progress || 0)));
@@ -256,6 +266,7 @@ export async function processSiteAnalysisJob(pool, data, dependencies = {}) {
           and status not in ('ready', 'failed')`,
       [analysisId, runRevision, leaseToken],
     );
+    await requireSiteAnalysisAiAccess(pool, identity);
     failureStage = "extracting";
     const snapshot = buildSnapshot({
       confirmedDomain: analysis.confirmed_domain,
@@ -287,6 +298,7 @@ export async function processSiteAnalysisJob(pool, data, dependencies = {}) {
       analysisId,
       runRevision,
       userId: Number(analysis.user_id),
+      projectId: Number(analysis.project_id),
       requestId: analysis.request_id,
       snapshot,
       engine: configuredInterviewEngine(dependencies),
@@ -350,6 +362,7 @@ export async function processSiteAnalysisJob(pool, data, dependencies = {}) {
     const client = await pool.connect();
     try {
       await client.query("begin");
+      await requireSiteAnalysisAiAccess(client, identity);
       const current = await client.query(
         `select status, run_revision, worker_lease_token from site_analysis_jobs where id = $1 for update`,
         [analysisId],

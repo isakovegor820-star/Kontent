@@ -57,7 +57,7 @@ export type SiteDestinationAdapter = {
   retryPolicy: "reconcile_before_retry";
   verify(destination: SiteDestinationRuntime): Promise<SiteDestinationVerification>;
   publish(destination: SiteDestinationRuntime, payload: SiteArticlePayload): Promise<SiteDeliveryResult>;
-  reconcile(destination: SiteDestinationRuntime, providerOperationId: string): Promise<SiteDeliveryResult>;
+  reconcile(destination: SiteDestinationRuntime, providerOperationId: string, context?: { action?: "publish" | "update" | "unpublish"; knownProviderRef?: Record<string, unknown> | null; expectedPayload?: SiteArticlePayload }): Promise<SiteDeliveryResult>;
   update(destination: SiteDestinationRuntime, providerRef: Record<string, unknown> | null, payload: SiteArticlePayload): Promise<SiteDeliveryResult>;
   unpublish(destination: SiteDestinationRuntime, providerRef: Record<string, unknown> | null): Promise<SiteDeliveryResult>;
 };
@@ -83,6 +83,7 @@ export class WordPressAdapterError extends Error {
 }
 export function wpPostToRef(post: unknown, baseUrl?: string): Record<string, unknown> | null;
 export function createWordPressAdapter(options?: {
+  requestFn?: typeof import("node:https").request;
   fetchImpl?: typeof fetch;
   lookupFn?: (hostname: string, options: unknown) => Promise<Array<{ address: string; family: number }>>;
   timeoutMs?: number;

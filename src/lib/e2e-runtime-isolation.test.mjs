@@ -1,8 +1,21 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { assertE2eTraceSet } from "../../scripts/e2e-artifact-contract.mjs";
 
 describe("real E2E runtime isolation", () => {
+  it("requires each context trace and rejects missing, duplicate or substituted artifacts", () => {
+    const complete = ["/isolated/main-trace.zip", "/isolated/reviewer-trace.zip", "/isolated/editor-safety-trace.zip"];
+    expect(() => assertE2eTraceSet(complete)).not.toThrow();
+    expect(() => assertE2eTraceSet([...complete].reverse())).not.toThrow();
+    for (let missing = 0; missing < complete.length; missing += 1) {
+      expect(() => assertE2eTraceSet(complete.filter((_, index) => index !== missing))).toThrow(/expected main/);
+      const duplicate = [...complete]; duplicate[missing] = complete[(missing + 1) % complete.length];
+      expect(() => assertE2eTraceSet(duplicate)).toThrow(/expected main/);
+    }
+    expect(() => assertE2eTraceSet([...complete, "/isolated/unexpected-trace.zip"])).toThrow(/expected main/);
+  });
+
   it("builds or validates one isolated artifact and restarts the production entrypoint", () => {
     const source = readFileSync(resolve("scripts/test-e2e-real.mjs"), "utf8");
 
@@ -23,7 +36,9 @@ describe("real E2E runtime isolation", () => {
     expect(source).toContain("Math.min(2_000, remainingMs)");
     expect(source).toContain('await stopChild(buildProcess, "production build")');
     expect(source).toContain("const buildFailureDetail = logs");
-    expect(source).toContain('["run", "start", "--", "-H", "127.0.0.1"');
+    expect(source).toContain('["run", "start", "--", "-H", "localhost"');
+    expect(source).toContain('const runtimeBaseUrl = `http://localhost:${nextPort}`');
+    expect(source).toContain('hostname: "localhost"');
     expect(source).not.toContain('["run", "dev"');
     expect(source).not.toContain(".next-e2e-real-${distSuffix}");
   });
@@ -187,7 +202,7 @@ describe("real E2E runtime isolation", () => {
     expect(source.match(/tracing.start\(E2E_EVIDENCE_TRACE_OPTIONS\)/gu)).toHaveLength(2);
     expect(source).toContain('resolve(artifactDir, "network-log.json")');
     expect(source).toContain("sanitizeE2eNetworkUrl(request.url(), baseUrl)");
-    expect(source).toContain("assert(traces.length === 2");
+    expect(source).toContain("assertE2eTraceSet(traces)");
     expect(source).toContain("assert(videos.length >= 2");
   });
 
@@ -227,7 +242,7 @@ describe("real E2E runtime isolation", () => {
     expect(source).toContain('E2E_CAPTURE_ARTIFACTS: "1"');
     expect(source).toContain("for (const journey of plan.journeys)");
     expect(source).toContain("await runJourney(journey, directory)");
-    expect(source).toContain("if (traces.length !== 2)");
+    expect(source).toContain("assertE2eTraceSet(traces)");
     expect(source).toContain("if (videos.length < 2)");
     expect(source).toContain("if (screenshots.length < 5)");
     expect(source).toContain("async function failedJourneyDetail(directory, output, journeyStartedAtMs)");

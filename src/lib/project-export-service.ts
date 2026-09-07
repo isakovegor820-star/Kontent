@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 
 import {
-  createProjectExportSnapshot,
+  createProjectExportSnapshotFromSqlSelection,
   projectExportHash,
   type ProjectExportFormat,
   type ProjectExportKind,
@@ -54,11 +54,13 @@ export type ProjectExportPreview = {
   }>;
 };
 
+const LEGACY_UNVERIFIED_STATUS = "Опубликован, проверяется";
+
 const CONTENT_STATUS: Readonly<Record<string, string>> = {
   draft: "Черновик",
   scheduled: "Запланирован",
   publishing: "Публикуется",
-  published_unverified: "Опубликован, проверяется",
+  published_unverified: "Доставка не подтверждена",
   published: "Опубликован",
   missing: "Не найден во внешнем канале",
   deleted_external: "Удалён во внешнем канале",
@@ -146,14 +148,28 @@ function normalizeRequestKey(value: unknown): string {
   return key;
 }
 
-function normalizeFilterValue(value: unknown, key: FilterKey): string[] {
+function normalizeFilterValue(value: unknown, key: FilterKey, preserveRequestIdentity = false): string[] {
   const input = value == null || value === "" ? [] : Array.isArray(value) ? value : [value];
   if (input.length > 20) throw new ProjectExportServiceError("invalid_filters");
   const seen = new Set<string>();
   const result: string[] = [];
   for (const item of input) {
     let text = String(item ?? "").normalize("NFKC").trim();
-    if (key === "status") text = CONTENT_STATUS[text] ?? text;
+    if (key === "status") {
+      const comparison = text.toLocaleLowerCase("ru-RU");
+      if (preserveRequestIdentity) {
+        // Existing operation hashes used the old label. Keep that encoding only
+        // for request identity; snapshots and artifacts retain their own bytes.
+        text = text === "published_unverified"
+          || comparison === CONTENT_STATUS.published_unverified.toLocaleLowerCase("ru-RU")
+          ? LEGACY_UNVERIFIED_STATUS
+          : CONTENT_STATUS[text] ?? text;
+      } else {
+        text = comparison === LEGACY_UNVERIFIED_STATUS.toLocaleLowerCase("ru-RU")
+          ? CONTENT_STATUS.published_unverified
+          : CONTENT_STATUS[text] ?? text;
+      }
+    }
     if (!text || text.length > 120 || /[\p{Cc}\p{Cf}]/u.test(text)) {
       throw new ProjectExportServiceError("invalid_filters");
     }
@@ -342,6 +358,12 @@ function sqlStatusLabel(column: string): string {
 
 type SqlFilterExpressions = Record<FilterKey, string>;
 
+function sqlFilterComparison(expression: string): string {
+  // PostgreSQL 17's built-in Unicode mapping is independent of database/libc
+  // locale. Apply the same normalization to the stored value and bound values.
+  return `lower(btrim(normalize(${expression}, NFKC)) collate pg_catalog.pg_c_utf8)`;
+}
+
 function appendSqlFilters(
   parameters: unknown[],
   filters: NormalizedFilters,
@@ -350,8 +372,11 @@ function appendSqlFilters(
   const conditions: string[] = [];
   for (const key of FILTER_KEYS) {
     if (filters[key].length === 0) continue;
-    parameters.push(filters[key].map((value) => value.toLocaleLowerCase("ru-RU")));
-    conditions.push(`lower(btrim(${expressions[key]})) = any($${parameters.length}::text[])`);
+    parameters.push(filters[key]);
+    conditions.push(`${sqlFilterComparison(expressions[key])} = any(array(
+      select ${sqlFilterComparison("filter_value")}
+        from unnest($${parameters.length}::text[]) as filter_values(filter_value)
+    ))`);
   }
   return conditions.length > 0 ? `\n          and ${conditions.join("\n          and ")}` : "";
 }
@@ -569,7 +594,7 @@ async function loadProjectSelection(
     request.filters,
   );
   const mappedRows = mapSourceRows(rawRows, projectId, timezone, request.kind);
-  const normalized = createProjectExportSnapshot({
+  const normalized = createProjectExportSnapshotFromSqlSelection({
     kind: request.kind,
     exportedAt: "2000-01-01T00:00:00.000Z",
     project: { id: projectId, name: String(project.name), timezone },
@@ -708,7 +733,10 @@ export async function createProjectExportOperation(input: {
     kind: request.kind,
     format: request.format,
     period: request.period,
-    filters: request.filters,
+    filters: {
+      ...request.filters,
+      status: normalizeFilterValue(input.body.filters?.status, "status", true),
+    },
   });
   const existing = await selectExistingOperation(
     input.pool,
@@ -729,7 +757,7 @@ export async function createProjectExportOperation(input: {
     throw new ProjectExportServiceError("preview_stale", 409);
   }
   const exportedAt = (input.now ?? (() => new Date()))();
-  const snapshot = createProjectExportSnapshot({
+  const snapshot = createProjectExportSnapshotFromSqlSelection({
     kind: request.kind,
     exportedAt,
     project: {

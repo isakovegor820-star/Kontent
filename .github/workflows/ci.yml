@@ -89,10 +89,42 @@ jobs:
             aurora_ai_gate_test \
             aurora_audience_gate_test \
             aurora_password_gate_test \
-            aurora_tracking_gate_test
+            aurora_tracking_gate_test \
+            aurora_s01_test \
+            aurora_vk_authority_test \
+            aurora_s02_test \
+            aurora_s03_test \
+            aurora_d02_test \
+            aurora_d03_test \
+            aurora_calendar_gate_test \
+            aurora_sites_gate_test \
+            aurora_media_quota_test \
+            aurora_s02_restore_test \
+            aurora_restore_source_test \
+            aurora_media_lifecycle_test \
+            aurora_capacity_test \
+            aurora_oauth_context_test \
+            aurora_publication_authority_test \
+            aurora_adjacent_authority_test \
+            aurora_admin_alert_test \
+            aurora_destination_identity_test \
+            aurora_rss_project_test \
+            aurora_domain_review_test \
+            aurora_legacy_content_test \
+            aurora_sites_ai_auth_test \
+            aurora_admin_resource_test \
+            aurora_admin_system_test \
+            aurora_operations_test \
+            aurora_hosted_projection_test \
+            aurora_native_media_test \
+            aurora_sites_delivery_test \
+            aurora_diagnostics_privacy_test \
+            aurora_admin_access_recovery_test \
+            aurora_admin_gate_test
           do
             createdb -h localhost -U postgres "$database"
           done
+          createdb -h localhost -U postgres --template=template0 --encoding=UTF8 --lc-collate=C --lc-ctype=C aurora_export_filters_test
         env:
           PGPASSWORD: postgres
 
@@ -100,7 +132,7 @@ jobs:
         run: npm run lint
 
       - name: Typecheck
-        run: npx tsc --noEmit
+        run: npm run typecheck
 
       - name: Reject focused or skipped tests
         run: npm run test:focus
@@ -166,10 +198,196 @@ jobs:
         env:
           MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_password_gate_test"
 
+      - name: Content-free production diagnostic SQL export
+        run: env -u DATABASE_URL npm run test:production-diagnostics-privacy:integration
+        env:
+          DIAGNOSTICS_PRIVACY_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_diagnostics_privacy_test"
+
+      - name: Existing-admin recovery and one-use credential lifecycle
+        run: env -u DATABASE_URL npm run test:admin-access-recovery:integration
+        env:
+          ADMIN_RECOVERY_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_admin_access_recovery_test"
+
       - name: Test exact tracking attribution and conversion replay
         run: npm run test:tracking-lifecycle:integration
         env:
           MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_tracking_gate_test"
+
+      - name: Registration identity and transaction races
+        run: env -u DATABASE_URL npm run test:registration:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_publication_gate_test"
+
+      - name: Database pool acquisition deadline
+        run: env -u DATABASE_URL npm run test:database-pool-timeout:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_publication_gate_test"
+
+      - name: Telegram actor ownership, replay and races
+        run: env -u DATABASE_URL npm run test:telegram-ownership:integration
+        env:
+          TELEGRAM_OWNERSHIP_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_s01_test"
+
+      - name: AI author and revoked membership
+        run: env -u DATABASE_URL npm run test:ai-project-authorization:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_s03_test"
+
+      - name: Calendar completeness and stable pagination
+        run: env -u DATABASE_URL npm run test:calendar-pagination:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_calendar_gate_test"
+
+      - name: Explicit project across concurrent requests
+        run: env -u DATABASE_URL npm run test:project-request-context:integration
+        env:
+          PROJECT_CONTEXT_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_d02_test"
+
+      - name: Actual paid AI attempts and cost caps
+        run: env -u DATABASE_URL npm run test:ai-spend:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_d03_test"
+
+      - name: Sites exact reviewed revision
+        run: env -u DATABASE_URL npm run test:sites-revision:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_sites_gate_test"
+
+      - name: Durable Telegram unknown and multipart delivery
+        run: env -u DATABASE_URL npm run test:telegram-delivery:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_s02_test"
+
+      - name: Atomic media byte quotas
+        run: env -u DATABASE_URL npm run test:media-quota:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_media_quota_test"
+
+      - name: Scrub final SDK telemetry envelopes with tracing on and off
+        run: npm run test:telemetry-envelope
+
+      - name: Media lifecycle and orphan cleanup
+        run: env -u DATABASE_URL npm run test:media-lifecycle:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_media_lifecycle_test"
+
+      - name: Calendar load and claim saturation
+        run: env -u DATABASE_URL npm run test:capacity:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_capacity_test"
+
+      - name: Admin operations on fresh migrated schema
+        run: env -u DATABASE_URL npm run test:admin-operations:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_admin_gate_test"
+
+      - name: Verified admin alert recipient identity
+        run: env -u DATABASE_URL npm run test:admin-alert-recipient:integration
+        env:
+          ADMIN_ALERT_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_admin_gate_test"
+
+      - name: Restore rehearsal with outbound held and receipt quarantine
+        run: env -u DATABASE_URL npm run test:restored-publications:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_restore_source_test"
+          RESTORE_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_s02_restore_test"
+          AURORA_OUTBOUND_DISABLED: "1"
+
+      - name: Sites destination receipts and parallel delivery
+        run: env -u DATABASE_URL npm run test:sites-delivery:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_sites_delivery_test"
+
+      - name: Native media and export project access after revoke
+        run: env -u DATABASE_URL npm run test:native-project-media:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_native_media_test"
+
+      - name: Hosted content follows its own exact confirmed revision
+        run: env -u DATABASE_URL npm run test:hosted-projection:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_hosted_projection_test"
+
+      - name: Content-free operational snapshot and incident transitions
+        run: env -u DATABASE_URL npm run test:runtime-operations:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_operations_test"
+
+      - name: OAuth project ownership and callback races
+        run: env -u DATABASE_URL npm run test:oauth-project-context:integration
+        env:
+          PROJECT_CONTEXT_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_oauth_context_test"
+
+      - name: Current authority at every publication boundary
+        run: env -u DATABASE_URL npm run test:publication-authority:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_publication_authority_test"
+
+      - name: Sites and follow-up publication authority
+        run: env -u DATABASE_URL npm run test:publication-adjacent-authority:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_adjacent_authority_test"
+
+      - name: Durable per-recipient operational alert delivery
+        run: env -u DATABASE_URL npm run test:admin-alert-delivery:integration
+        env:
+          ADMIN_ALERT_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_admin_alert_test"
+
+      - name: Destination identity stays bound to existing publication receipts
+        run: env -u DATABASE_URL npm run test:site-destination-identity:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_destination_identity_test"
+
+      - name: RSS explicit identity and worker revoke
+        run: env -u DATABASE_URL npm run test:rss-project-authorization:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_rss_project_test"
+
+      - name: Research domains current project and role
+        run: env -u DATABASE_URL npm run test:research-project-access:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_domain_review_test"
+
+      - name: Legacy content and profile scope after revoke
+        run: env -u DATABASE_URL npm run test:legacy-content-project:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_legacy_content_test"
+
+      - name: Sites AI current access for local and paid engines
+        run: env -u DATABASE_URL npm run test:sites-ai-current-access:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_sites_ai_auth_test"
+
+      - name: Admin resource routes exact session and access policy
+        run: env -u DATABASE_URL npm run test:admin-resource-auth:integration
+        env:
+          ADMIN_RESOURCE_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_admin_resource_test"
+
+      - name: Admin system diagnostics on the actual schema
+        run: env -u DATABASE_URL -u REDIS_URL npm run test:admin-system-integrity:integration
+        env:
+          SYSTEM_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_admin_system_test"
+          SYSTEM_TEST_REDIS_URL: "redis://127.0.0.1:6380/13"
+
+      - name: Admin queue diagnostics with actual execution and recovery
+        run: env -u DATABASE_URL -u REDIS_URL npm run test:admin-system-queues:integration
+        env:
+          SYSTEM_TEST_REDIS_URL: "redis://127.0.0.1:6380/8"
+
+      - name: Queue worker readiness respects the actual Redis database
+        run: env -u DATABASE_URL -u REDIS_URL npm run test:queue-worker-availability:integration
+        env:
+          QUEUE_WORKER_TEST_REDIS_URL: "redis://127.0.0.1:6380/12"
+
+      - name: Project export filters on a C-locale database
+        run: env -u DATABASE_URL -u REDIS_URL npm run test:project-export-filters:integration
+        env:
+          PROJECT_EXPORT_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_export_filters_test"
+
+      - name: VK connection authority and persisted credential owner
+        run: env -u DATABASE_URL -u REDIS_URL npm run test:vk-connection-authority:integration
+        env:
+          VK_AUTHORITY_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_vk_authority_test"
 
       - name: Production build 1
         run: npm run build
@@ -190,6 +408,9 @@ jobs:
 
       - name: Install deterministic browsers
         run: npx playwright-core install --with-deps chromium firefox webkit
+
+      - name: Browser body failure classification and project isolation
+        run: npm run test:project-fetch:browser
 
       - name: Test production Trends hydration
         run: npm run test:trends-hydration:e2e

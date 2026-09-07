@@ -10,11 +10,36 @@ export interface AiFailureInfo {
   dimension?: string;
 }
 
+/** Only a server terminal outcome offers an explicitly new paid operation. */
+export function aiTerminalRestartAllowed(info: AiFailureInfo | null): boolean {
+  return info?.error === "ai_generation_cancelled" || info?.error === "ai_generation_interrupted";
+}
+
+export function isAiSpendPolicyFailure(info: AiFailureInfo | null): boolean {
+  return ["ai_spend_cap_exceeded", "ai_spend_concurrency_exceeded", "ai_spend_configuration_required",
+    "ai_spend_scope_forbidden", "ai_spend_scope_required", "ai_spend_invalid_projection"].includes(info?.error ?? "");
+}
+
 /** Calm, concrete Russian recovery copy for both HTTP preflight and stream failures. */
 export function aiFailureRecoveryRu(info: AiFailureInfo | null, status?: number): string {
   if (status === 400) return "Запрос не принят. Проверь текст и повтори отправку.";
   if (status === 401) return "Сессия завершилась. Обнови страницу, войди снова и повтори запрос.";
+  if (info?.error === "ai_spend_cap_exceeded") {
+    return "Лимит расходов на ИИ исчерпан. Дождись обновления лимита или обратись к владельцу проекта. Исходный текст сохранён.";
+  }
+  if (info?.error === "ai_spend_concurrency_exceeded") {
+    return "Сейчас выполняется слишком много запросов ИИ. Дождись завершения текущих и повтори запрос. Исходный текст сохранён.";
+  }
+  if (info?.error === "ai_spend_scope_forbidden") {
+    return "Нет доступа к запуску ИИ в этом проекте. Обратись к владельцу проекта. Исходный текст сохранён.";
+  }
+  if (isAiSpendPolicyFailure(info)) {
+    return "Настройки расходов на ИИ не готовы. Обратись к владельцу проекта и повтори запрос после настройки. Исходный текст сохранён.";
+  }
   if (status === 403) return "Запрос отклонён проверкой безопасности. Обнови страницу и повтори действие из этого чата.";
+  if (aiTerminalRestartAllowed(info)) {
+    return `${info?.error === "ai_generation_cancelled" ? "Генерация остановлена." : "Результат генерации не подтверждён."} Автоматический повтор остановлен. Новый запуск будет учтён в лимитах.`;
+  }
   if (info?.error === "request_in_progress") {
     return "Этот запрос ещё выполняется. Подожди пару секунд и нажми «Повторить запрос» — второй вызов модели не запустится.";
   }

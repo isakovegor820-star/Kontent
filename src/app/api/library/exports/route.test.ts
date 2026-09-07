@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   hasTrustedMutationOrigin: vi.fn(),
   buildLibraryRegistrySnapshot: vi.fn(),
   query: vi.fn(),
+  stored: null as null | { id: string; snapshot: Record<string, unknown> },
 }));
 
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
@@ -38,15 +39,18 @@ describe("POST /api/library/exports", () => {
     mocks.hasTrustedMutationOrigin.mockReturnValue(true);
     mocks.getSessionUser.mockResolvedValue({ id: 7 });
     mocks.buildLibraryRegistrySnapshot.mockResolvedValue(snapshot);
-    mocks.query
-      .mockResolvedValueOnce({ rows: [] })
-      .mockResolvedValueOnce({ rows: [{ id: "41", snapshot }] });
+    mocks.stored = null;
+    mocks.query.mockImplementation(async (sql: string) => {
+      if (sql.includes("from project_members") || sql.includes("from user_project_preferences")) return { rows: [{ project_id: 23, user_id: 7, role: "owner", version: 1 }] };
+      if (sql.includes("insert into library_export_snapshots")) return { rows: [{ id: "41", snapshot }] };
+      return { rows: mocks.stored ? [mocks.stored] : [] };
+    });
   });
 
   it("creates one immutable snapshot and six download links", async () => {
     const response = await POST(request());
     expect(response.status).toBe(201);
-    await expect(response.json()).resolves.toMatchObject({ ok: true, id: 41, count: 1, formats: expect.any(Array) });
+    await expect(response.json()).resolves.toMatchObject({ ok: true, id: 41, count: 1, formats: expect.arrayContaining([{ format: "csv", href: "/api/library/exports/41?format=csv&projectId=23" }]) });
     expect(mocks.query).toHaveBeenCalledWith(
       expect.stringContaining("insert into library_export_snapshots"),
       expect.arrayContaining([7, 11, "library_export_123456789", "aurora-library-v1"]),
@@ -54,23 +58,17 @@ describe("POST /api/library/exports", () => {
   });
 
   it("replays the same snapshot for the same idempotency key", async () => {
-    mocks.query.mockReset();
-    mocks.query.mockResolvedValueOnce({ rows: [{ id: "41", snapshot }] });
+    mocks.stored = { id: "41", snapshot };
     const response = await POST(request());
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ replay: true, id: 41 });
     expect(mocks.buildLibraryRegistrySnapshot).not.toHaveBeenCalled();
-    expect(mocks.query).toHaveBeenCalledTimes(1);
+    expect(mocks.query.mock.calls.filter(([sql]) => String(sql).includes("from library_export_snapshots"))).toHaveLength(1);
+    expect(mocks.query.mock.calls.filter(([sql]) => String(sql).includes("from project_members"))).toHaveLength(1);
   });
 
   it("returns metadata from the stored snapshot on a replay", async () => {
-    mocks.query.mockReset();
-    mocks.query.mockResolvedValueOnce({
-      rows: [{
-        id: "41",
-        snapshot: { ...snapshot, formulaVersion: "stored-v1", items: [] },
-      }],
-    });
+    mocks.stored = { id: "41", snapshot: { ...snapshot, formulaVersion: "stored-v1", items: [] } };
 
     const response = await POST(request());
 

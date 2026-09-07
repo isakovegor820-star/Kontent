@@ -1,3 +1,5 @@
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import { createDecipheriv, generateKeyPairSync, privateDecrypt } from 'node:crypto';
 import { issueAdminRecovery, recoveryInput } from '../scripts/production-admin-access-recovery.mjs';
@@ -67,5 +69,22 @@ describe('operator recovery retains normal password reset and existing admin bou
     expect(() => recoveryInput({ ...payload, publicKey: 'invalid' }, env)).toThrow('recovery_key_invalid');
     expect(() => recoveryInput({ ...payload, tokenHash: 'invalid' }, env)).toThrow('recovery_payload_invalid');
     expect(() => recoveryInput(payload, { ...env, APP_URL: 'http://example.test' })).toThrow('recovery_origin_invalid');
+  });
+});
+
+
+describe('recovery CLI failure output remains content-free', () => {
+  it.each(['invalid-json', 'invalid-database-url'])('sanitizes %s without opening a real service', (mode) => {
+    const canary = 'synthetic-private-recovery-detail';
+    const input = mode === 'invalid-json' ? canary : JSON.stringify(payload);
+    const result = spawnSync(process.execPath, [fileURLToPath(new URL('../scripts/production-admin-access-recovery.mjs', import.meta.url))], {
+      env: { PATH: process.env.PATH, APP_URL: env.APP_URL, AURORA_ADMIN_USER_IDS: '1',
+        DATABASE_URL: `postgres://[${canary}`, AURORA_ADMIN_RECOVERY_PAYLOAD_B64: Buffer.from(input).toString('base64') },
+      encoding: 'utf8', timeout: 10000,
+    });
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toBe('admin_recovery_failed\n');
+    expect(result.stderr.includes(canary)).toBe(false);
   });
 });

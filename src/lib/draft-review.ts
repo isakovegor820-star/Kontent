@@ -4,6 +4,7 @@ import type {
   ServerDraft,
 } from "./draft-types";
 import type { Post } from "./types";
+import { AI_VALIDATION_TOPIC_MAX_LENGTH } from "./ai-topic-contract";
 
 export const DRAFT_REVIEW_POLICY_VERSION = 1 as const;
 
@@ -86,7 +87,7 @@ export function normalizeDraftAiValidation(value: unknown): DraftAiValidation | 
       || Number(value.topicAlignment.score) > 1
       || typeof value.topicAlignment.topic !== "string"
       || !value.topicAlignment.topic.trim()
-      || value.topicAlignment.topic.length > 500
+      || value.topicAlignment.topic.length > AI_VALIDATION_TOPIC_MAX_LENGTH
     ) return null;
     topicAlignment = {
       status: value.topicAlignment.status,

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import type { DraftAiValidation } from "./draft-types";
+import { studioEditorialIntent } from "./studio-editorial";
+import { generationBindingValid, generationResultHash } from "./generation-artifacts";
 import {
   composerAiReviewState,
   draftReviewAssessment,
@@ -112,5 +114,53 @@ describe("AI draft review policy", () => {
   it("allows recovery only for permanent structural blocks", () => {
     expect(isDraftRecoveryAllowedReason("legacy_generation_missing")).toBe(true);
     expect(isDraftRecoveryAllowedReason(null)).toBe(false);
+  });
+});
+
+
+describe("editorial topic receipt boundary", () => {
+  it("never splits a Unicode scalar at the JSONB receipt boundary", () => {
+    const task = "Д".repeat(1799) + "😀";
+    const intent = studioEditorialIntent({ kind: "rewrite", task, grounding: "platform" });
+    expect(intent?.topic).toBe("Д".repeat(1799));
+    expect(studioEditorialIntent({ kind: "rewrite", task: "Д".repeat(1798) + "😀", grounding: "platform" })?.topic).toBe("Д".repeat(1798) + "😀");
+  });
+
+  it.each([500, 501, 1800, 1801])("preserves the producer topic for a %i-character task through the receipt", (length) => {
+    const task = "Д".repeat(length - 1) + "я";
+    const intent = studioEditorialIntent({ kind: "rewrite", task, grounding: "platform" });
+    expect(intent?.topic).toBe(task.slice(0, 1800));
+    for (const status of ["passed", "blocked", "not_checked"] as const) {
+      const receipt = { ...validation(status), topicAlignment: { status: "passed" as const, score: 0.96, topic: intent!.topic } };
+      expect(normalizeDraftAiValidation(JSON.parse(JSON.stringify(receipt)))).toEqual(receipt);
+    }
+  });
+
+  it.each([500, 501, 1800])("binds only the exact %i-character validation topic to immutable output", (length) => {
+    const receipt = { ...validation("passed"), topicAlignment: { status: "passed" as const, score: 0.96, topic: "Д".repeat(length - 1) + "я" } };
+    const text = "Полный неизменяемый результат";
+    const hash = generationResultHash(text);
+    const binding = { generationResultId: 81, text, resultHash: hash, receiptHash: hash, aiValidation: receipt, receipt };
+    expect(generationBindingValid(binding)).toBe(true);
+    expect(generationBindingValid({ ...binding, receipt: { ...receipt, topicAlignment: { ...receipt.topicAlignment, topic: "Д".repeat(length) } } })).toBe(false);
+    expect(generationBindingValid({ ...binding, text: text + " изменён" })).toBe(false);
+    expect(generationBindingValid({ ...binding, receiptHash: "0".repeat(64) })).toBe(false);
+  });
+
+  it.each([1801, 10000])("rejects an over-limit %i-character receipt without silently truncating it", (length) => {
+    const receipt = { ...validation("passed"), topicAlignment: { status: "passed", score: 0.96, topic: "Д".repeat(length) } };
+    expect(normalizeDraftAiValidation(receipt)).toBeNull();
+    expect(draftReviewAssessment(input({ ai_validation: receipt }))).toEqual({ decision: "blocked", blockedReason: "malformed_validation" });
+  });
+
+  it.each([
+    { topic: " ".repeat(1800) },
+    { topic: 1800 },
+    { status: "unknown" },
+    { score: 1.01 },
+    { score: -0.01 },
+    { score: "0.96" },
+  ])("keeps strict topic validation for %j", (patch) => {
+    expect(normalizeDraftAiValidation({ ...validation("passed"), topicAlignment: { status: "passed", score: 0.96, topic: "Д".repeat(1800), ...patch } })).toBeNull();
   });
 });

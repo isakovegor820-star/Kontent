@@ -1,7 +1,9 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { readFile } from "node:fs/promises";
-import { beforeAll, afterAll, describe, expect, it } from "vitest";
+import { beforeAll, afterAll, describe, expect, it as baseIt } from "vitest";
 import pg from "pg";
+import { withAiSpendScope } from "@/lib/ai-spend-ledger.mjs";
+import { fakeAiSpendEnv } from "./fixtures/ai-spend-env.mjs";
 
 import { completeAiText } from "@/lib/ai-completion-service.mjs";
 import { orchestrateText } from "@/lib/ai-orchestrator";
@@ -25,6 +27,8 @@ if (!target || !["localhost", "127.0.0.1", "::1"].includes(target.hostname)
 
 const pool = new pg.Pool({ connectionString: databaseUrl, ssl: false, max: 8 });
 let userId = 0;
+let projectId = 0;
+const it = (name: string, test: () => Promise<void>) => baseIt(name, () => withAiSpendScope({ pool, userId, projectId }, test));
 let mode: "success" | "primary-timeout" | "all-fail" | "truncated" = "success";
 const requests: Array<{ model?: string; messages?: Array<{ role?: string; content?: string }>; stream?: boolean }> = [];
 
@@ -81,6 +85,7 @@ beforeAll(async () => {
   process.env.NAVYAI_API_KEY = "disposable-test-key";
   process.env.NAVYAI_API_URL = `http://127.0.0.1:${address.port}/v1`;
   process.env.AI_FALLBACK_ENGINES = "navy-deepseek-flash";
+  Object.assign(process.env, fakeAiSpendEnv());
 
   await pool.query("drop schema public cascade");
   await pool.query("create schema public");
@@ -89,6 +94,8 @@ beforeAll(async () => {
   userId = Number((await pool.query(
     "insert into users (email, name, ai_engine) values ('qa-ai-gate@example.test', 'QA AI Gate', 'navy-deepseek-pro') returning id",
   )).rows[0].id);
+  projectId = Number((await pool.query("insert into projects (name,created_by_user_id) values ('AI gate',$1) returning id", [userId])).rows[0].id);
+  await pool.query("insert into project_members(project_id,user_id,role) values ($1,$2,'owner')", [projectId,userId]);
 });
 
 afterAll(async () => {

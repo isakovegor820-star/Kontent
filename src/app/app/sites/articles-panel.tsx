@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { CheckCircle2, ExternalLink, FileText, RefreshCw, Sparkles, XCircle } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -63,24 +63,34 @@ export function ArticlesPanel({ siteId, verified, hasDestinations, hasProfile, o
   const [articles, setArticles] = useState<Article[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [detailError, setDetailError] = useState<{ siteId: number; articleId: number; message: string } | null>(null);
+  const [refreshAttempt, setRefreshAttempt] = useState(0);
   const [busy, setBusy] = useState<string | null>(null);
   const [openId, setOpenId] = useState<number | null>(null);
   const [detail, setDetail] = useState<Article | null>(null);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState({ title: "", metaDescription: "", bodyMarkdown: "" });
+  const draftRef = useRef(draft);
+  const updateDraft = useCallback((value: typeof draft) => { draftRef.current = value; setDraft(value); }, []);
   const [manualType, setManualType] = useState<string>("audience_answer");
   const [manualBrief, setManualBrief] = useState("");
+  const openRequest = useRef(0);
+  const siteEpoch = useRef(0);
+  useEffect(() => () => { openRequest.current += 1; siteEpoch.current += 1; }, [siteId]);
 
   const load = useCallback(async () => {
+    const owner = siteEpoch.current;
     try {
       const { status, body } = await requestJson<{ articles?: Article[]; error?: string }>(`/api/sites/${siteId}/articles`);
+      if (owner !== siteEpoch.current) return;
       if (status !== 200 || !body.articles) throw Object.assign(new Error("list_failed"), { code: body.error });
       setArticles(body.articles);
       setError(null);
     } catch (caught) {
+      if (owner !== siteEpoch.current) return;
       setError(errorMessage((caught as { code?: string }).code, "Не удалось загрузить материалы."));
     } finally {
-      setLoaded(true);
+      if (owner === siteEpoch.current) setLoaded(true);
     }
   }, [siteId]);
 
@@ -95,60 +105,115 @@ export function ArticlesPanel({ siteId, verified, hasDestinations, hasProfile, o
   }, [active, load]);
 
   const openArticle = useCallback(async (id: number) => {
+    const request = ++openRequest.current;
     setOpenId(id);
     setEditing(false);
+    setDetailError(null);
     const { status, body } = await requestJson<{ article?: Article; error?: string }>(`/api/sites/${siteId}/articles/${id}`);
-    if (status === 200 && body.article) {
+    if (request !== openRequest.current) return;
+    if (status === 200 && body.article?.id === id) {
       setDetail(body.article);
-      setDraft({ title: body.article.title, metaDescription: body.article.metaDescription || "", bodyMarkdown: body.article.bodyMarkdown || "" });
+      setArticles((current) => current.map((article) => article.id === id ? body.article! : article));
+      updateDraft({ title: body.article.title, metaDescription: body.article.metaDescription || "", bodyMarkdown: body.article.bodyMarkdown || "" });
     }
-  }, [siteId]);
+  }, [siteId, updateDraft]);
+
+  const listedOpenArticle = articles.find((article) => article.id === openId);
+  const listedVersion = listedOpenArticle?.version;
+  const listedStatus = listedOpenArticle?.status;
+  useEffect(() => {
+    if (openId === null || detail?.id !== openId || editing || busy !== null || listedStatus === undefined) return;
+    if (detail.version === listedVersion && detail.status === listedStatus) return;
+    let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    const failed = (message: string) => {
+      if (cancelled) return;
+      setDetailError({ siteId, articleId: openId, message });
+      // Retry only after a settled failure. List polling must not cancel a slow
+      // detail request, and a terminal list may no longer have its own timer.
+      retryTimer = setTimeout(() => setRefreshAttempt((attempt) => attempt + 1), 4000);
+    };
+    // Polling reads summaries. Fetch the full current revision before changing the
+    // opened article or editor; a later selection/edit invalidates this response.
+    void requestJson<{ article?: Article; error?: string }>(`/api/sites/${siteId}/articles/${openId}`).then(({ status, body }) => {
+      if (cancelled) return;
+      if (status !== 200 || body.article?.id !== openId) {
+        failed(errorMessage(body.error, "Не удалось обновить состояние материала."));
+        return;
+      }
+      setDetail(body.article);
+      updateDraft({ title: body.article.title, metaDescription: body.article.metaDescription || "", bodyMarkdown: body.article.bodyMarkdown || "" });
+      setDetailError(null);
+    }).catch(() => { failed("Не удалось обновить состояние материала."); });
+    return () => { cancelled = true; clearTimeout(retryTimer); };
+  }, [siteId, openId, detail?.id, detail?.version, detail?.status, listedVersion, listedStatus, editing, busy, refreshAttempt, updateDraft]);
 
   const act = useCallback(async (id: number, action: string, extra: Record<string, unknown> = {}) => {
+    if (busy !== null || editing) return;
+    const request = ++openRequest.current;
+    const reviewed = detail?.id === id ? detail : articles.find((article) => article.id === id);
+    if (!reviewed) return;
     setBusy(`${id}:${action}`);
     setError(null);
     const { status, body } = await requestJson<{ error?: string }>(`/api/sites/${siteId}/articles/${id}`, {
       method: "POST",
-      body: JSON.stringify({ action, ...extra }),
+      body: JSON.stringify({ ...extra, action, version: reviewed.version, status: reviewed.status }),
     });
     setBusy(null);
+    if (request !== openRequest.current) return;
     if (status >= 400) {
       setError(errorMessage(body.error, "Действие не выполнено."));
       return;
     }
-    await load();
     if (openId === id) await openArticle(id);
     onSiteChanged();
-  }, [siteId, load, openId, openArticle, onSiteChanged]);
+  }, [siteId, openId, openArticle, onSiteChanged, detail, articles, busy, editing]);
 
   const saveEdit = useCallback(async () => {
-    if (!detail) return;
-    setBusy(`${detail.id}:edit`);
-    const { status, body } = await requestJson<{ error?: string; issues?: Array<{ message: string; severity: string }> }>(`/api/sites/${siteId}/articles/${detail.id}`, {
+    if (!detail || busy !== null) return;
+    const request = ++openRequest.current;
+    const submitted = { ...draftRef.current };
+    const busyKey = `${detail.id}:edit`;
+    setBusy(busyKey);
+    const { status, body } = await requestJson<{ article?: Article; error?: string; issues?: Array<{ message: string; severity: string }> }>(`/api/sites/${siteId}/articles/${detail.id}`, {
       method: "PATCH",
-      body: JSON.stringify(draft),
+      body: JSON.stringify({ ...submitted, version: detail.version, status: detail.status }),
     });
-    setBusy(null);
-    if (status >= 400) {
+    setBusy((current) => current === busyKey ? null : current);
+    if (request !== openRequest.current) return;
+    if (status >= 400 || body.article?.id !== detail.id) {
       setError(errorMessage(body.error, "Не удалось сохранить правку."));
       return;
     }
-    setEditing(false);
-    await load();
-    await openArticle(detail.id);
-  }, [detail, draft, siteId, load, openArticle]);
+    const saved = body.article;
+    setDetail(saved);
+    setArticles((current) => current.map((article) => article.id === saved.id ? saved : article));
+    setError(null);
+    setDetailError(null);
+    const current = draftRef.current;
+    if (current.title === submitted.title && current.metaDescription === submitted.metaDescription && current.bodyMarkdown === submitted.bodyMarkdown) {
+      updateDraft({ title: saved.title, metaDescription: saved.metaDescription || "", bodyMarkdown: saved.bodyMarkdown || "" });
+      setEditing(false);
+    }
+  }, [detail, siteId, updateDraft, busy]);
 
   const plan = useCallback(async () => {
+    if (busy !== null) return;
+    const owner = siteEpoch.current;
     setBusy("plan");
     setError(null);
     const { status, body } = await requestJson<{ error?: string }>(`/api/sites/${siteId}/articles`, { method: "POST", body: JSON.stringify({ plan: true }) });
     setBusy(null);
+    if (owner !== siteEpoch.current) return;
     if (status >= 400) setError(errorMessage(body.error, "Не удалось запустить планирование."));
-    else setTimeout(() => void load(), 1500);
-  }, [siteId, load]);
+    else setTimeout(() => { if (owner === siteEpoch.current) void load(); }, 1500);
+  }, [siteId, load, busy]);
 
   const createManual = useCallback(async (event: React.FormEvent) => {
     event.preventDefault();
+    if (busy !== null) return;
+    const owner = siteEpoch.current;
+    const submitted = manualBrief;
     setBusy("manual");
     setError(null);
     const { status, body } = await requestJson<{ error?: string }>(`/api/sites/${siteId}/articles`, {
@@ -156,19 +221,21 @@ export function ArticlesPanel({ siteId, verified, hasDestinations, hasProfile, o
       body: JSON.stringify({ articleType: manualType, brief: manualBrief }),
     });
     setBusy(null);
+    if (owner !== siteEpoch.current) return;
     if (status >= 400) {
       setError(errorMessage(body.error, "Не удалось создать материал."));
       return;
     }
-    setManualBrief("");
+    setManualBrief((current) => current === submitted ? "" : current);
     await load();
-  }, [siteId, manualType, manualBrief, load]);
+  }, [siteId, manualType, manualBrief, load, busy]);
 
+  const visibleError = error ?? (detailError?.siteId === siteId && detailError.articleId === openId ? detailError.message : null);
   const pending = articles.filter((item) => item.status === "needs_review").length;
 
   return (
     <div className="space-y-6">
-      {error && <p role="alert" className="type-secondary rounded-sm bg-danger-soft p-4 text-danger-text">{error}</p>}
+      {visibleError && <p role="alert" className="type-secondary rounded-sm bg-danger-soft p-4 text-danger-text">{visibleError}</p>}
       <Card className="p-5 sm:p-6">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
@@ -179,7 +246,7 @@ export function ArticlesPanel({ siteId, verified, hasDestinations, hasProfile, o
             {!verified && <p className="type-caption mt-2 text-fire-text">Домен не подтверждён — материалы можно одобрять, но публикация откроется после подтверждения.</p>}
             {verified && !hasDestinations && <p className="type-caption mt-2 text-fire-text">Нет настроенного назначения — добавь WordPress или включи раздел на вкладке «Публикация».</p>}
           </div>
-          <Button type="button" size="sm" variant="secondary" onClick={plan} disabled={busy === "plan" || !hasProfile}>
+          <Button type="button" size="sm" variant="secondary" onClick={plan} disabled={busy !== null || !hasProfile}>
             <Sparkles className="h-4 w-4" aria-hidden />Спланировать сейчас
           </Button>
         </div>
@@ -198,7 +265,7 @@ export function ArticlesPanel({ siteId, verified, hasDestinations, hasProfile, o
             <Input id="manual-brief" value={manualBrief} onChange={(event) => setManualBrief(event.target.value)} placeholder="Например: сколько длится лечение и от чего зависит срок" />
           </Field>
           <div className="flex items-end">
-            <Button type="submit" size="md" disabled={busy === "manual" || manualBrief.trim().length < 10 || !hasProfile}>Создать</Button>
+            <Button type="submit" size="md" disabled={busy !== null || manualBrief.trim().length < 10 || !hasProfile}>Создать</Button>
           </div>
         </form>
       </Card>
@@ -270,12 +337,14 @@ export function ArticlesPanel({ siteId, verified, hasDestinations, hasProfile, o
 
               {editing ? (
                 <div className="mt-4 space-y-3">
-                  <Field label="Заголовок" htmlFor="edit-title"><Input id="edit-title" value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} /></Field>
-                  <Field label="Description" htmlFor="edit-meta"><Input id="edit-meta" value={draft.metaDescription} onChange={(event) => setDraft({ ...draft, metaDescription: event.target.value })} /></Field>
-                  <Field label="Текст (Markdown)" htmlFor="edit-body"><Textarea id="edit-body" rows={18} value={draft.bodyMarkdown} onChange={(event) => setDraft({ ...draft, bodyMarkdown: event.target.value })} /></Field>
-                  <div className="flex gap-2">
-                    <Button type="button" size="sm" onClick={saveEdit} disabled={busy === `${detail.id}:edit`}>Сохранить как новую версию</Button>
-                    <Button type="button" size="sm" variant="ghost" onClick={() => setEditing(false)}>Отмена</Button>
+                  <Field label="Заголовок" htmlFor="edit-title"><Input id="edit-title" value={draft.title} onChange={(event) => updateDraft({ ...draft, title: event.target.value })} /></Field>
+                  <Field label="Description" htmlFor="edit-meta"><Input id="edit-meta" value={draft.metaDescription} onChange={(event) => updateDraft({ ...draft, metaDescription: event.target.value })} /></Field>
+                  <Field label="Текст (Markdown)" htmlFor="edit-body"><Textarea id="edit-body" rows={18} value={draft.bodyMarkdown} onChange={(event) => updateDraft({ ...draft, bodyMarkdown: event.target.value })} /></Field>
+                  <div className="flex flex-wrap gap-2">
+                    <Button type="button" size="sm" className="h-auto min-w-0 max-w-full" onClick={saveEdit} disabled={busy !== null}>
+                      <span className="min-w-0 whitespace-normal">Сохранить как новую версию</span>
+                    </Button>
+                    <Button type="button" size="sm" variant="ghost" onClick={() => { openRequest.current += 1; setEditing(false); }}>Отмена</Button>
                   </div>
                   <p className="type-caption text-text-3">Правка обнуляет серию одобрений без правок — это защита автоматического режима.</p>
                 </div>
@@ -289,27 +358,27 @@ export function ArticlesPanel({ siteId, verified, hasDestinations, hasProfile, o
 
               <div className="mt-5 flex flex-wrap gap-2">
                 {["needs_review", "approved", "failed"].includes(detail.status) && (
-                  <Button type="button" size="sm" onClick={() => act(detail.id, "approve")} disabled={busy !== null}>
+                  <Button type="button" size="sm" onClick={() => act(detail.id, detail.status === "approved" ? "publish" : "approve")} disabled={busy !== null || editing}>
                     <CheckCircle2 className="h-4 w-4" aria-hidden />{detail.status === "approved" ? "Опубликовать" : "Одобрить"}
                   </Button>
                 )}
                 {["needs_review", "approved", "failed"].includes(detail.status) && !editing && (
-                  <Button type="button" size="sm" variant="secondary" onClick={() => setEditing(true)}>Править</Button>
+                  <Button type="button" size="sm" variant="secondary" onClick={() => { openRequest.current += 1; setEditing(true); }}>Править</Button>
                 )}
                 {["needs_review", "approved", "failed", "draft"].includes(detail.status) && (
-                  <Button type="button" size="sm" variant="ghost" onClick={() => act(detail.id, "reject", { reason: "rejected_by_reviewer" })} disabled={busy !== null}>
+                  <Button type="button" size="sm" variant="ghost" onClick={() => act(detail.id, "reject", { reason: "rejected_by_reviewer" })} disabled={busy !== null || editing}>
                     <XCircle className="h-4 w-4" aria-hidden />Отклонить
                   </Button>
                 )}
                 {["failed", "rejected"].includes(detail.status) && (
-                  <Button type="button" size="sm" variant="secondary" onClick={() => act(detail.id, "regenerate")} disabled={busy !== null}>
+                  <Button type="button" size="sm" variant="secondary" onClick={() => act(detail.id, "regenerate")} disabled={busy !== null || editing}>
                     <RefreshCw className="h-4 w-4" aria-hidden />Сгенерировать заново
                   </Button>
                 )}
                 {detail.status === "published" && (
                   <>
-                    <Button type="button" size="sm" variant="secondary" onClick={() => act(detail.id, "update")} disabled={busy !== null}>Обновить на сайте</Button>
-                    <Button type="button" size="sm" variant="ghost" onClick={() => act(detail.id, "unpublish")} disabled={busy !== null}>Снять с публикации</Button>
+                    <Button type="button" size="sm" variant="secondary" onClick={() => act(detail.id, "update")} disabled={busy !== null || editing}>Обновить на сайте</Button>
+                    <Button type="button" size="sm" variant="ghost" onClick={() => act(detail.id, "unpublish")} disabled={busy !== null || editing}>Снять с публикации</Button>
                   </>
                 )}
               </div>

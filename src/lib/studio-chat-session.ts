@@ -24,6 +24,8 @@ export type StudioChatMessage = {
   progressLabel?: string;
   requestId?: string;
   retryable?: boolean;
+  /** A terminal server outcome requires an explicit new request key. */
+  restartable?: boolean;
   interrupted?: boolean;
   requestedEngine?: string;
   effectiveEngine?: string;
@@ -38,6 +40,8 @@ export type StudioChatGeneration = {
   variant: number;
   history: ConversationTurn[];
   requestKey?: string;
+  /** Set only when the user explicitly starts a new operation after interruption. */
+  requestCreatedAt?: number;
   /** Недоверенный библиотечный образец формы; сервер не включает его в factual ledger. */
   referenceText?: string;
   referenceSource?: string;
@@ -63,6 +67,7 @@ export type StudioChatSession = {
 export function mergeStudioChatSessions(
   remote: StudioChatSession,
   local: StudioChatSession,
+  options: { localDraftPending?: boolean } = {},
 ): StudioChatSession {
   const messageOrder: string[] = [];
   const messages = new Map<string, StudioChatMessage>();
@@ -78,7 +83,7 @@ export function mergeStudioChatSessions(
     messages: mergedMessages,
     // При восстановлении важнее не потерять набранный текст: пустой локальный снимок мог
     // появиться до загрузки более свежей серверной версии после Fast Refresh.
-    draft: local.draft || remote.draft,
+    draft: options.localDraftPending ? local.draft : local.draft || remote.draft,
     workspaceMode: local.workspaceMode,
     generations: [...generations].filter(([id]) => messageIds.has(id)),
   };
@@ -208,6 +213,7 @@ function safeMessage(value: unknown): StudioChatMessage | null {
         : undefined,
     requestId: typeof value.requestId === "string" ? value.requestId.slice(0, 100) : undefined,
     retryable: wasStreaming || value.retryable === true,
+    restartable: !wasStreaming && value.restartable === true,
     interrupted: wasStreaming || value.interrupted === true,
     requestedEngine: typeof value.requestedEngine === "string" ? value.requestedEngine.slice(0, 80) : undefined,
     effectiveEngine: typeof value.effectiveEngine === "string" ? value.effectiveEngine.slice(0, 80) : undefined,
@@ -277,6 +283,8 @@ function safeGeneration(value: unknown): StudioChatGeneration | null {
     requestKey: typeof value.requestKey === "string" && /^[A-Za-z0-9:_-]{8,96}$/u.test(value.requestKey)
       ? value.requestKey
       : undefined,
+    requestCreatedAt: Number.isSafeInteger(value.requestCreatedAt) && Number(value.requestCreatedAt) > 0
+      ? Number(value.requestCreatedAt) : undefined,
     referenceText: typeof value.referenceText === "string"
       ? value.referenceText.slice(0, 4000)
       : undefined,

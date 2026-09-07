@@ -1,5 +1,7 @@
 "use client";
 
+import { projectFetch as fetch } from "@/lib/project-fetch";
+
 // А3. Мастер первого запуска (ТЗ, приложение А + сценарий Б1).
 // Главное действие — дойти до календаря за 5 минут. Поэтому: ни сайдбара, ни лишних
 // полей, а на каждом шаге НАГЛЯДНО показано, что происходит (ТЗ 6: «каждая механика
@@ -45,7 +47,7 @@ import { cn, initials, weekdayShort } from "@/lib/utils";
 import { RUBRICS } from "@/lib/brief";
 import { PROFILE_FORMAT_OPTIONS } from "@/lib/profile";
 import { appDraftActionHref } from "@/lib/app-routes";
-import { parseBotLinkStatusResponse } from "@/lib/bot-link-client";
+import { parseBotLinkStatusResponse, requestTelegramChannelConnection } from "@/lib/bot-link-client";
 import { createServerDraft, DraftRequestError, updateServerDraft } from "@/lib/draft-client";
 import { onboardingDraftReplayAction } from "@/lib/onboarding-first-material";
 import {
@@ -499,7 +501,7 @@ function Flow({ channel }: { channel?: RealChannel }) {
   );
 }
 
-function connectError(code?: string): string {
+function connectError(code?: string, retryAfter?: number): string {
   switch (code) {
     case "no_access":
       return "Бот не видит этот канал. Проверь, что добавил бота Авроры администратором.";
@@ -509,6 +511,29 @@ function connectError(code?: string): string {
     // а не прячем за «попробуй ещё раз» — человек иначе будет тыкать кнопку вечно.
     case "taken":
       return "Этот канал уже подключён к другому аккаунту Авроры. Один канал — один аккаунт: так посты не задвоятся. Отключи канал там, где он подключён сейчас, и добавь здесь.";
+    case "telegram_identity_required":
+      return "Сначала подключи личный Telegram к аккаунту в настройках Авроры, затем повтори.";
+    case "telegram_actor_not_admin":
+      return "У подключённого Telegram-аккаунта нет права публикации в этом канале. Проверь аккаунт и права администратора.";
+    case "not_channel":
+      return "Выбери Telegram-канал. Группы и личные чаты здесь не подключаются.";
+    case "provider_timeout":
+    case "request_cancelled":
+      return "Telegram не успел подтвердить права. Проверь подключение к сети и повтори.";
+    case "provider_unavailable":
+    case "provider_invalid_response":
+      return "Telegram временно не подтвердил права. Канал не подключён — повтори чуть позже.";
+    case "rate_limited":
+    case "provider_rate_limited":
+      return typeof retryAfter === "number" && Number.isSafeInteger(retryAfter) && retryAfter > 0
+        ? `Слишком много проверок подключения. Подожди ${retryAfter} с. и повтори.`
+        : "Слишком много проверок подключения. Повтори позже.";
+    case "connection_expired":
+      return "Подтверждение подключения истекло или уже использовано. Начни подключение заново.";
+    case "bot_not_configured":
+    case "bot_credentials_invalid":
+    case "rate_limit_unavailable":
+      return "Сервис подключения временно недоступен. Повтори позже или обратись в поддержку.";
     case "empty":
       return "Вставь @адрес канала — например, @my_channel.";
     case "unauthorized":
@@ -587,34 +612,15 @@ function StepConnect({ onBack, onNext }: { onBack: () => void; onNext: () => voi
     setError(undefined);
     setFastConnecting(true);
     try {
-      const status = await parseBotLinkStatusResponse(
-        await fetch("/api/bot/link", { cache: "no-store" }),
-      );
-      setBotUsername(status.bot);
-      let url = status.channelConnectUrl;
-      let linkingAccount = false;
-      if (!status.linked) {
-        const response = await fetch("/api/bot/link", { method: "POST" });
-        const body = (await response.json().catch(() => null)) as {
-          ok?: boolean;
-          url?: string;
-          error?: string;
-        } | null;
-        if (!response.ok || body?.ok !== true || !body.url) {
-          throw new Error(body?.error || "bot_link_failed");
-        }
-        url = body.url;
-        linkingAccount = true;
-      }
-      if (!url) throw new Error("bot_not_configured");
+      const launch = await requestTelegramChannelConnection();
+      setBotUsername(launch.bot);
+      const { url, linkingAccount } = launch;
 
       scheduleChannelRefresh();
       s.toast({
         kind: "info",
-        title: linkingAccount ? "Открой бота Авроры" : "Выбери Telegram-канал",
-        body: linkingAccount
-          ? "Нажми «Начать», затем «Выбрать канал». Возвращаться на сайт не понадобится."
-          : "Telegram добавит бота с правом публикации, а Аврора проверит и сохранит канал сама.",
+        title: linkingAccount ? "Подключи Telegram-аккаунт" : "Подтверди подключение канала",
+        body: "Нажми «Начать», затем «Выбрать канал». Аврора проверит права твоего аккаунта и бота.",
       });
       window.location.assign(url);
     } catch (reason) {
@@ -655,7 +661,7 @@ function StepConnect({ onBack, onNext }: { onBack: () => void; onNext: () => voi
       // Профиль будет извлечён на следующем шаге с явным channelId. Не запускаем
       // неадресную индексацию: при нескольких каналах она могла выбрать чужой канал.
     } else {
-      setError(connectError(res.error));
+      setError(connectError(res.error, res.retryAfter));
     }
   }
 

@@ -40,7 +40,8 @@ export async function issueAdminRecovery(pool, payload, env) {
     await client.query('select pg_advisory_xact_lock(hashtext($1))', [input.operationId]);
     const candidates = (await client.query(
       `select id, email, blocked_at, password_reset_generation from users
-       where (id = any($1::bigint[]) or lower(email) = any($2::text[]))
+       where (id = any($1::bigint[]) or (email is not null and verified_email = email
+              and lower(btrim(email)) = any($2::text[])))
          and ($3::bigint = 0 or id = $3)
        order by id limit 2 for update`, [input.ids, input.emails, input.userId],
     )).rows;

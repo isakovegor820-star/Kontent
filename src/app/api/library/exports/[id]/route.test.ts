@@ -20,18 +20,20 @@ describe("GET /api/library/exports/:id", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.getSessionUser.mockResolvedValue({ id: 7 });
-    mocks.query.mockResolvedValue({ rows: [{ snapshot: { exportedAt: "x", activeFilters: {}, formulaVersion: "v", items: [] } }] });
+    mocks.query.mockImplementation(async (sql: string) => ({ rows: sql.includes("from project_members")
+      ? [{ project_id: 23, user_id: 7, role: "owner", version: 1 }]
+      : [{ snapshot: { exportedAt: "x", activeFilters: {}, formulaVersion: "v", items: [] } }] }));
     mocks.renderLibraryExport.mockResolvedValue({ bytes: Buffer.from("file"), contentType: "text/csv", extension: "csv" });
   });
 
   it("loads the user-owned snapshot and renders the requested format", async () => {
     const response = await GET(
-      new NextRequest("http://localhost/api/library/exports/41?format=csv"),
+      new NextRequest("http://localhost/api/library/exports/41?format=csv&projectId=23"),
       { params: Promise.resolve({ id: "41" }) },
     );
     expect(response.status).toBe(200);
     expect(response.headers.get("content-disposition")).toContain("aurora-ideas-41.csv");
-    expect(mocks.query).toHaveBeenCalledWith(expect.stringContaining("expires_at > now()"), [41, 7]);
+    expect(mocks.query).toHaveBeenCalledWith(expect.stringContaining("expires_at > now()"), [41, 7, 23]);
   });
 
   it("rejects unsupported formats", async () => {

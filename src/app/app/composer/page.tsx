@@ -1,5 +1,11 @@
 "use client";
 
+import { projectNativeUrl } from "@/lib/project-native-url";
+
+import { mediaStorageErrorLabel } from "@/lib/media-storage-quota.mjs";
+
+import { projectFetch as fetch } from "@/lib/project-fetch";
+
 // А5. Редактор поста (Приложение А). Главное действие — «Добавить в календарь».
 // ТЗ 5.3: один пост адаптируется под обе сети перед публикацией.
 // ТЗ 5.6: ИИ пишет/переписывает/сокращает с опорой на разведку (sourceRef → тренд/конкурент).
@@ -101,6 +107,7 @@ import {
   stableAiClientRequest,
   type AiClientRequestIdentity,
 } from "@/lib/ai-client-idempotency";
+import { aiFailureRecoveryRu, aiTerminalRestartAllowed, isAiSpendPolicyFailure } from "@/lib/ai-client-recovery";
 import { getAiUsageMetrics } from "@/lib/ai-usage-sync";
 import {
   composerHydrationIdentity,
@@ -137,11 +144,16 @@ import type {
 } from "@/lib/draft-types";
 import {
   acknowledgePendingDraft,
+  createDraftCopyId,
+  pendingDraftCopySelector,
+  preferredDraftCopy,
+  rememberDraftCopy,
   findPendingDraft,
   listPendingDrafts,
   persistPendingDraft,
   projectDraftWorkspaceId,
   removePendingDraft,
+  removePendingDraftCopy,
   type PendingDraftRevision,
 } from "@/lib/draft-outbox";
 import {
@@ -163,6 +175,7 @@ import {
   cancelPublication,
   getPublicationOperationEditorContext,
   publicationEditorMutationKind,
+  publicationDeliveryPresentation,
   publicationOperationIsSettled,
   reschedulePublication,
   restorePublicationToDraft,
@@ -552,6 +565,8 @@ export default function ComposerPage() {
   const cancelRef = useRef<(() => void) | null>(null);
   const aiRequestRef = useRef<AiClientRequestIdentity | null>(null);
   const draftClientKeyRef = useRef<string | null>(null);
+  const draftCopyIdRef = useRef<string | null>(null);
+  const lastDurableDraftRef = useRef<string | null>(null);
   const draftRequestRef = useRef<Promise<ServerDraft | null> | null>(null);
   const draftDeleteRequestRef = useRef<Promise<void> | null>(null);
   const recoveryRequestRef = useRef<Promise<void> | null>(null);
@@ -719,7 +734,7 @@ export default function ComposerPage() {
 
     setEditingId(post?.id ?? null);
     setDraftId(draft?.id ?? pending?.draftId ?? null);
-    setDraftVersion(draft?.version ?? pending?.baseVersion ?? null);
+    setDraftVersion(pending?.baseVersion ?? draft?.version ?? null);
     setEditorialState(generatedMediaChanged || pending ? "draft" : draft?.editorial_state ?? "draft");
     setLegacyId(post && !draft ? post.id : null);
     draftRevisionRef.current = initialRevision;
@@ -729,7 +744,10 @@ export default function ComposerPage() {
     setLastSavedRevision(0);
     setLastAttemptedRevision(0);
     draftClientKeyRef.current = ensureDraftClientKey(pending?.clientKey ?? draft?.client_key);
-    acknowledgedDraftRef.current = draft ?? null;
+    // A duplicated tab may inherit sessionStorage, but must never write or acknowledge
+    // the live source editor's recovery record. Server idempotency identity is unchanged.
+    draftCopyIdRef.current = createDraftCopyId();
+    acknowledgedDraftRef.current = pendingConflict ? null : draft ?? null;
     hydratedUserIdRef.current = ownerUserId;
     const pendingTgIds = pending?.form.channelIds.filter((id) =>
       s.realChannels.some((channel) => channel.id === id && channel.network === "tg" && channel.is_active),
@@ -1261,8 +1279,8 @@ export default function ComposerPage() {
           updatePreview("interrupted");
           s.toast({
             kind: "danger",
-            title: "ИИ не закончил текст",
-            body: event.retryable
+            title: isAiSpendPolicyFailure(event) ? "Запуск ИИ ограничен" : "ИИ не закончил текст",
+            body: isAiSpendPolicyFailure(event) ? aiFailureRecoveryRu(event) : event.retryable
               ? "Связь с моделью прервалась. Исходный текст сохранён — можно повторить."
               : "Генерация не завершилась. Исходный текст сохранён — можно повторить.",
           });
@@ -1298,7 +1316,11 @@ export default function ComposerPage() {
         if (!response.ok || !response.body) {
           const info = (await response.json().catch(() => null)) as { error?: string; requestId?: string } | null;
           requestId = info?.requestId ?? requestId;
-          const message = response.status === 429
+          const terminalInterruption = aiTerminalRestartAllowed(info);
+          // The next toolbar click is a deliberate new operation. A late response from
+          // an older request must never discard the current request's stable identity.
+          if (terminalInterruption && aiRequestRef.current === aiRequest) aiRequestRef.current = null;
+          const message = terminalInterruption || isAiSpendPolicyFailure(info) ? aiFailureRecoveryRu(info, response.status) : response.status === 429
             ? "Дневной лимит исчерпан. Счётчик обновлён с сервера."
             : info?.error === "brief_insufficient_facts"
               ? "Для безопасного текста не хватает фактов. Добавь детали в бриф."
@@ -1630,6 +1652,7 @@ export default function ComposerPage() {
       });
       if (unchanged) return Promise.resolve(unchanged);
       const revisionAtStart = draftRevisionRef.current;
+      const copyIdAtStart = (draftCopyIdRef.current ??= createDraftCopyId());
       return runSingleDraftSave(draftRequestRef, async (): Promise<ServerDraft | null> => {
         lastAttemptedRevisionRef.current = Math.max(
           lastAttemptedRevisionRef.current,
@@ -1710,7 +1733,8 @@ export default function ComposerPage() {
           if (composerUserId != null) {
             // A newer local edit may already have replaced this record. Exact revision
             // matching prevents an older ACK from deleting that newer pending copy.
-            acknowledgePendingDraft(composerUserId, clientKey, acknowledgedRevision.revision);
+            acknowledgePendingDraft(composerUserId, clientKey, acknowledgedRevision.revision, undefined, copyIdAtStart);
+            if (draftWorkspaceId) rememberDraftCopy(composerUserId, draftWorkspaceId, draft.id, copyIdAtStart);
           }
           // Меняем адрес только после ACK сервера. Hard reload теперь восстановит именно
           // серверную версию; локальная legacy-копия при этом остаётся нетронутой.
@@ -1796,6 +1820,7 @@ export default function ComposerPage() {
       date,
       draftId,
       draftVersion,
+      draftWorkspaceId,
       formatting,
       generationResultId,
       legacyId,
@@ -1852,11 +1877,13 @@ export default function ComposerPage() {
       ...(networks.includes("tg") ? channelIds : []),
       ...(networks.includes("vk") ? vkChannelIds : []),
     ];
-    const durable = persistPendingDraft({
+    const copyId = (draftCopyIdRef.current ??= createDraftCopyId());
+    const pending: PendingDraftRevision = {
       schema: 1,
       userId: composerUserId,
       workspaceId: draftWorkspaceId,
       clientKey,
+      copyId,
       draftId,
       baseVersion: draftVersion,
       revision: draftRevision,
@@ -1883,7 +1910,17 @@ export default function ComposerPage() {
         tracking: pendingComposerTracking(tracking),
       },
       form: { networks, channelIds: selected, date, time, noDate },
-    });
+    };
+    // Polling can replace arrays without changing the editor. Preserve the
+    // reviewed immutable write identity, and do not recreate a copy explicitly
+    // deleted by another tab until this writer has a new meaningful snapshot.
+    const snapshot = JSON.stringify({ ...pending, writtenAt: undefined });
+    if (lastDurableDraftRef.current === snapshot) return;
+    const durable = persistPendingDraft(pending);
+    if (durable) {
+      lastDurableDraftRef.current = snapshot;
+      rememberDraftCopy(composerUserId, draftWorkspaceId, draftId, copyId);
+    }
     if (!durable) {
       let cancelled = false;
       queueMicrotask(() => {
@@ -2300,7 +2337,7 @@ export default function ComposerPage() {
           scheduledAt: result.scheduledAt ?? scheduleOverlay.scheduledAt,
         });
         if (composerUserId != null && draftClientKeyRef.current) {
-          removePendingDraft(composerUserId, draftClientKeyRef.current);
+          removePendingDraft(composerUserId, draftClientKeyRef.current, undefined, draftCopyIdRef.current ?? undefined);
         }
         s.toast({
           kind: queued ? "success" : "info",
@@ -2473,7 +2510,7 @@ export default function ComposerPage() {
           await deleteServerDraft(currentDraftId, currentDraftVersion);
           acknowledgedDraftRef.current = null;
           if (composerUserId != null && draftClientKeyRef.current) {
-            removePendingDraft(composerUserId, draftClientKeyRef.current);
+            removePendingDraft(composerUserId, draftClientKeyRef.current, undefined, draftCopyIdRef.current ?? undefined);
           }
         } catch (error) {
           setDraftSaveState(
@@ -2869,6 +2906,7 @@ function ComposerActionBar() {
   const activeSettled = c.activePublication == null
     ? false
     : publicationOperationIsSettled(c.activePublication);
+  const deliveryPresentation = c.activePublication == null ? null : publicationDeliveryPresentation(c.activePublication);
   const visible = c.canPublish || blocked != null;
   useLayoutEffect(() => {
     const root = document.documentElement;
@@ -3025,17 +3063,19 @@ function ComposerActionBar() {
             <div className="min-w-0 text-[13px]" aria-live="polite">
               <p className="font-semibold text-text">
                 {activeSettled
-                  ? "Публикация уже завершена"
+                  ? deliveryPresentation?.title
                   : c.activePublication.status === "cancelled"
                     ? "Публикация отменена"
                     : approved
                       ? "Изменения готовы к обновлению публикации"
                       : "Сначала согласуйте изменённую версию"}
               </p>
-              <p className="truncate text-text-3">
+              <p className={cn("break-words", !activeSettled && c.draftSaveState === "failed" ? "text-danger-text" : "text-text-3")}>
                 {activeSettled
-                  ? "Опубликованный пост не изменится — можно создать отдельный новый черновик."
-                  : `${fmtDateTime(c.activePublication.scheduledAt, c.activePublication.timezone)} · ${c.draftSaveState === "saved" ? "изменения сохранены" : "сохраняем изменения"}`}
+                  ? deliveryPresentation?.nextStep
+                  : c.draftSaveState === "failed"
+                    ? "Не удалось сохранить на сервере. Открой «Сохранение и версии» и повтори попытку."
+                    : `${fmtDateTime(c.activePublication.scheduledAt, c.activePublication.timezone)} · ${c.draftSaveState === "saved" ? "изменения сохранены" : "сохраняем изменения"}`}
               </p>
             </div>
             <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap lg:justify-end">
@@ -3091,8 +3131,10 @@ function ComposerActionBar() {
               <p className="font-semibold text-text">
                 {approved ? "Готово к публикации" : "Нужно согласовать пост"}
               </p>
-              <p className="truncate text-text-3">
-                {c.draftSaveState === "offline"
+              <p className={cn("break-words", c.draftSaveState === "failed" ? "text-danger-text" : "text-text-3")}>
+                {c.draftSaveState === "failed"
+                  ? "Не удалось сохранить на сервере. Открой «Сохранение и версии» и повтори попытку."
+                  : c.draftSaveState === "offline"
                   ? "Нет сети — изменения защищены локальной копией"
                   : c.draftSaveState === "saving"
                     ? "Сохраняем изменения…"
@@ -3206,6 +3248,66 @@ function ComposerActionBar() {
 
 /* ---------------------------------------------------------------- РЕДАКТОР */
 
+function DraftRecoveryCopies({ draftId, refreshKey }: { draftId: number | null; refreshKey: string }) {
+  const s = useStore();
+  const projects = useProjects();
+  const params = useSearchParams();
+  const [, refresh] = useState(0);
+  const [deleting, setDeleting] = useState<PendingDraftRevision | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    const onStorage = () => refresh((value) => value + 1);
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+  const userId = s.user?.id ?? null;
+  const projectId = projects.current?.id ?? null;
+  const workspace = projectId == null ? null : projectDraftWorkspaceId(projectId);
+  // The parent key refreshes the external snapshot after this tab's write/ACK;
+  // native storage events refresh it after another tab's changes.
+  void refreshKey;
+  const copies = userId == null || workspace == null || !s.ready || !projects.ready ? []
+    : listPendingDrafts(userId, undefined, workspace).filter((copy) => copy.draftId === draftId);
+  if (copies.length === 0) return null;
+  const href = (copy: string) => {
+    const next = new URLSearchParams(params.toString());
+    if (draftId != null) next.set("draft", String(draftId));
+    next.set("recovery", copy);
+    return `/app/composer?${next}`;
+  };
+  return (
+    <section aria-label="Локальные копии черновика" className="mx-auto w-full max-w-5xl min-w-0 space-y-3 rounded-sm border border-line bg-surface p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-[14px] font-bold text-text">Локальные копии черновика</h2>
+        {draftId != null && <Link href={href("server")} className="inline-flex min-h-11 items-center text-[13px] font-semibold text-brand underline underline-offset-2 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15">Открыть серверную версию</Link>}
+      </div>
+      <p className="text-[13px] leading-relaxed text-text-2">Эти копии хранятся в этом браузере. Серверная версия может отличаться. Открытие серверной версии оставит локальные копии для сравнения и восстановления.</p>
+      <ul className="max-h-64 space-y-2 overflow-y-auto">
+        {copies.map((copy, index) => <li key={`${copy.clientKey}:${copy.copyId ?? "legacy"}`} className="flex flex-wrap items-start justify-between gap-2 rounded-xs border border-line p-3">
+          <div className="min-w-0 flex-1 basis-48">
+            <p className="break-words text-[13px] leading-relaxed text-text">{copy.payload.text.slice(0, 160) || "Копия без текста"}{copy.payload.text.length > 160 ? "…" : ""}</p>
+            <p className="mt-1 text-[12px] text-text-3">{fmtTime(copy.writtenAt)} · серверная версия {copy.baseVersion ?? "ещё не создана"}</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Link href={href(pendingDraftCopySelector(copy))} className="inline-flex min-h-11 items-center rounded-xs px-2 text-[13px] font-semibold text-brand underline underline-offset-2 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15">Открыть локальную копию {index + 1}</Link>
+            <Button variant="ghost" size="sm" onClick={() => { setError(""); setDeleting(copy); }} aria-label={`Удалить локальную копию ${index + 1}`}>Удалить копию</Button>
+          </div>
+        </li>)}
+      </ul>
+      <ConfirmDialog open={deleting !== null} title="Удалить локальную копию?" description="Эта копия может содержать несохранённые изменения. Другие копии и серверный черновик останутся. Текст в открытом редакторе не изменится. Копии старого формата убираются из восстановления; их данные могут оставаться в хранилище браузера." confirmLabel="Удалить копию" error={error} onCancel={() => setDeleting(null)} onConfirm={() => {
+        if (!deleting || userId !== deleting.userId || workspace !== deleting.workspaceId) { setDeleting(null); return; }
+        const result = removePendingDraftCopy(deleting);
+        if (result === "changed") {
+          setError("Копия обновилась в другой вкладке. Новые изменения сохранены. Закройте окно и проверьте обновлённую копию перед удалением.");
+          refresh((value) => value + 1); return;
+        }
+        if (result === "unavailable") { setError("Браузер не подтвердил удаление. Копию оставили."); return; }
+        setDeleting(null); refresh((value) => value + 1);
+      }} />
+    </section>
+  );
+}
+
 function ComposerInner() {
   const s = useStore();
   const projects = useProjects();
@@ -3213,6 +3315,7 @@ function ComposerInner() {
   const params = useSearchParams();
   const reduce = useReducedMotion();
   const c = useComposer();
+  const deliveryPresentation = c.activePublication == null ? null : publicationDeliveryPresentation(c.activePublication);
   const [publicOrigin, setPublicOrigin] = useState("");
   const [mediaLibraryOpen, setMediaLibraryOpen] = useState(false);
   const [mediaGeneratorOpen, setMediaGeneratorOpen] = useState(false);
@@ -3234,6 +3337,7 @@ function ComposerInner() {
 
   const idParam = params.get("id");
   const draftParam = Number(params.get("draft")) || null;
+  const recoveryParam = params.get("recovery");
   const publicationValue = Number(params.get("publication"));
   const publicationParam = Number.isSafeInteger(publicationValue) && publicationValue > 0
     ? publicationValue
@@ -3312,7 +3416,7 @@ function ComposerInner() {
   // and then overwrites the newer local text with an older acknowledged version.
   useEffect(() => {
     if (!storeReady || !authReady || !realReady || !projects.ready || currentProjectId == null || !currentWorkspaceId) return;
-    const key = composerHydrationIdentity({
+    const key = `${composerHydrationIdentity({
       userId: currentUserId,
       projectId: currentProjectId,
       draftId: draftParam,
@@ -3321,7 +3425,7 @@ function ComposerInner() {
       date: dateParam,
       time: timeParam,
       fromMedia,
-    });
+    })}:recovery:${recoveryParam ?? "preferred"}`;
     if (draftParam && currentDraftId === draftParam && hydrated && loadedKey.current === key) {
       loadedKey.current = key;
       return;
@@ -3336,20 +3440,18 @@ function ComposerInner() {
     void (async () => {
       let draft: ServerDraft | null = null;
       let post: Post | null = null;
-      const projectPending = currentUserId == null
-        ? null
-        : draftParam
-          ? findPendingDraft(currentUserId, { draftId: draftParam }, undefined, currentWorkspaceId)
-          : !legacyParam && !fromMedia
-            ? listPendingDrafts(currentUserId, undefined, currentWorkspaceId)[0] ?? null
-            : null;
+      const copySelector = recoveryParam ?? (currentUserId == null ? null
+        : preferredDraftCopy(currentUserId, currentWorkspaceId, draftParam));
+      const loadPending = (workspace: string) => {
+        if (currentUserId == null || copySelector === "server" || legacyParam || fromMedia) return null;
+        if (draftParam || copySelector) {
+          return findPendingDraft(currentUserId, { draftId: draftParam, copyId: copySelector }, undefined, workspace);
+        }
+        return listPendingDrafts(currentUserId, undefined, workspace)[0] ?? null;
+      };
+      const projectPending = loadPending(currentWorkspaceId);
       const pending = projectPending ?? (currentUserId != null && currentProjectPersonal
-        ? draftParam
-          ? findPendingDraft(currentUserId, { draftId: draftParam }, undefined, `personal:${currentUserId}`)
-          : !legacyParam && !fromMedia
-            ? listPendingDrafts(currentUserId, undefined, `personal:${currentUserId}`)[0] ?? null
-            : null
-        : null);
+        ? loadPending(`personal:${currentUserId}`) : null);
       if (draftParam) {
         try {
           draft = await getServerDraft(draftParam, controller.signal);
@@ -3439,6 +3541,7 @@ function ComposerInner() {
     currentWorkspaceId,
     dateParam,
     draftParam,
+    recoveryParam,
     failHydration,
     fromMedia,
     hydrate,
@@ -3616,11 +3719,11 @@ function ComposerInner() {
       });
       setMediaLibraryAssets((assets) => [payload.asset!, ...assets.filter((asset) => asset.id !== payload.asset!.id)]);
       s.toast({ kind: "success", title: "Изображение добавлено" });
-    } catch {
+    } catch (error) {
       s.toast({
         kind: "danger",
         title: "Изображение не загрузилось",
-        body: "Подойдут JPG, PNG или WebP до 10 МБ.",
+        body: mediaStorageErrorLabel(error instanceof Error ? error.message : null) || "Подойдут JPG, PNG или WebP до 10 МБ.",
       });
     } finally {
       setMediaUploading(false);
@@ -3677,6 +3780,8 @@ function ComposerInner() {
         </Link>
       </nav>
 
+      <DraftRecoveryCopies draftId={c.draftId ?? draftParam} refreshKey={`${c.draftSaveState}:${c.text}`} />
+
       <Card
         className="mx-auto w-full max-w-5xl min-w-0 space-y-6 p-5 sm:p-6"
       >
@@ -3684,7 +3789,7 @@ function ComposerInner() {
           <div
             role="status"
             className={cn(
-              "flex flex-wrap items-center gap-3 rounded-sm border px-3 py-2.5",
+              "grid grid-cols-[auto_minmax(0,1fr)] items-start gap-3 rounded-sm border px-3 py-2.5 sm:flex sm:flex-wrap sm:items-center",
               c.activePublicationError
                 ? "border-danger/30 bg-danger-soft"
                 : "border-brand/20 bg-brand/5",
@@ -3703,17 +3808,17 @@ function ComposerInner() {
                 : c.activePublicationError
                   ? c.activePublicationError
                   : c.activePublication
-                    ? publicationOperationIsSettled(c.activePublication)
-                      ? "Публикация завершена. Редактор показывает её исходную версию; новый пост будет создан отдельно."
+                    ? deliveryPresentation
+                      ? deliveryPresentation.description
                       : c.activePublication.status === "cancelled"
                         ? "Публикация отменена. Черновик можно изменить и запланировать снова."
                         : `Запланировано на ${fmtDateTime(c.activePublication.scheduledAt, c.activePublication.timezone)}. Изменения попадут в очередь только после «Обновить публикацию».`
                     : "Публикация не выбрана."}
             </p>
             {c.activePublication && (
-              <Badge tone={publicationOperationIsSettled(c.activePublication) ? "success" : "brand"}>
-                {publicationOperationIsSettled(c.activePublication)
-                  ? "Опубликовано"
+              <Badge className="col-span-2 justify-self-start" tone={deliveryPresentation?.tone ?? "brand"}>
+                {deliveryPresentation
+                  ? deliveryPresentation.label
                   : c.activePublication.status === "cancelled"
                     ? "Отменено"
                     : "Запланировано"}
@@ -4031,7 +4136,7 @@ function ComposerInner() {
                       className="w-32 shrink-0 snap-start rounded-xs border border-line bg-surface p-2 text-left hover:border-line-strong focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15"
                     >
                       {/* eslint-disable-next-line @next/next/no-img-element -- authenticated project media cannot use the image optimizer */}
-                      <img src={asset.url} alt="" className="aspect-square w-full rounded-[8px] object-cover" />
+                      <img src={projectNativeUrl(asset.url)} alt="" className="aspect-square w-full rounded-[8px] object-cover" />
                       <span className="mt-2 block truncate text-[12px] font-semibold text-text">{asset.fileName}</span>
                     </button>
                   ))}
@@ -4054,7 +4159,7 @@ function ComposerInner() {
                 >
                   {c.media.kind === "image" && c.media.url ? (
                     // eslint-disable-next-line @next/next/no-img-element -- authenticated project media cannot use the image optimizer
-                    <img src={c.media.url} alt="" className="h-full w-full object-cover" />
+                    <img src={projectNativeUrl(c.media.url)} alt="" className="h-full w-full object-cover" />
                   ) : <span className="absolute inset-0 flex items-center justify-center text-white">
                     {c.media.kind === "video" ? (
                       <Video className="h-5 w-5" strokeWidth={2} />
@@ -4390,7 +4495,9 @@ function ComposerInner() {
         <EditorSection
           id="composer-protection"
           title="Сохранение и версии"
-          summary={c.draftSaveState === "offline"
+          summary={c.draftSaveState === "failed"
+            ? "Ошибка сохранения"
+            : c.draftSaveState === "offline"
             ? "Защищено локально · ждём сеть"
             : c.draftSaveState === "saved"
               ? `Сохранено${c.draftSavedAt ? ` в ${fmtTime(c.draftSavedAt)}` : ""}`

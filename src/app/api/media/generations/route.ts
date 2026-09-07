@@ -1,3 +1,4 @@
+import { mediaAssetUrl } from "@/lib/project-native-url";
 import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 import { createHash, randomUUID } from "node:crypto";
@@ -52,7 +53,7 @@ type GenerationRow = {
   queue_confirmed_at?: Date | string | null;
 };
 
-function present(row: GenerationRow) {
+function present(row: GenerationRow, projectId: number) {
   const assetId = row.output_asset_id ? String(row.output_asset_id) : null;
   return {
     id: String(row.id),
@@ -69,8 +70,8 @@ function present(row: GenerationRow) {
     seconds: row.seconds,
     style: row.style,
     assetId,
-    assetUrl: assetId ? `/api/media/assets/${assetId}` : null,
-    downloadUrl: assetId ? `/api/media/assets/${assetId}?download=1` : null,
+    assetUrl: assetId ? mediaAssetUrl(assetId, projectId) : null,
+    downloadUrl: assetId ? `${mediaAssetUrl(assetId, projectId)}&download=1` : null,
     mimeType: row.mime_type,
     bytes: row.bytes,
     errorCode: row.error_code,
@@ -142,7 +143,7 @@ export async function GET(req: NextRequest) {
       `${SELECT_GENERATION} where g.project_id = $1 order by g.created_at desc limit 24`,
       [membership.projectId],
     );
-    return mediaResponse(requestId, { generations: rows.rows.map(present) });
+    return mediaResponse(requestId, { generations: rows.rows.map((row) => present(row, membership.projectId)) });
   } catch (error) {
     if (error instanceof ProjectAccessError) {
       return mediaResponse(requestId, { generations: [], error: "project_access_denied" }, 403);
@@ -192,7 +193,7 @@ export async function POST(req: NextRequest) {
       requestId = replay.rows[0].request_id;
       return mediaResponse(
         requestId,
-        { generation: present(replay.rows[0]), replayed: true },
+        { generation: present(replay.rows[0], membership.projectId), replayed: true },
         activeGeneration(replay.rows[0].status) ? 202 : 200,
       );
     }
@@ -447,7 +448,7 @@ export async function POST(req: NextRequest) {
         if (row?.queue_confirmed_at) {
           return mediaResponse(
             row.request_id,
-            { generation: present(row), replayed: true },
+            { generation: present(row, membership.projectId), replayed: true },
             activeGeneration(row.status) ? 202 : 200,
           );
         }
@@ -477,7 +478,7 @@ export async function POST(req: NextRequest) {
     return mediaResponse(
       requestId,
       {
-        generation: present(row.rows[0]),
+        generation: present(row.rows[0], membership.projectId),
         remaining: Math.max(0, dailyLimit - 1),
         aiUsage: { used: reservation.used, limit: AI_DAILY_LIMIT },
       },

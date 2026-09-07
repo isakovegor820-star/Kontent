@@ -63,7 +63,7 @@ const POST_STATUS_LABEL: Record<string, string> = {
   draft: "Черновик",
   scheduled: "Запланирован",
   publishing: "Публикуется",
-  published_unverified: "Опубликован, проверка ожидается",
+  published_unverified: "Доставка не подтверждена",
   published: "Опубликован",
   missing: "Не найден в соцсети",
   deleted_external: "Удалён в соцсети",
@@ -526,7 +526,7 @@ export function publicationHelp(item: AdminPublicationItem) {
   if (item.errorCode?.includes("timeout")) return "Соцсеть не ответила вовремя. Проверьте, появился ли пост в канале, прежде чем повторять отправку.";
   if (item.attention === "failed") return "Отправка завершилась ошибкой. Текст сохранён. Проверьте диагностический код и подключение канала.";
   if (item.inFlight) return "Соцсеть обрабатывает отправку. Дождитесь результата; изменение публикации сейчас недоступно.";
-  if (item.status === "published_unverified") return "Отправка принята, но наличие поста в соцсети ещё не подтверждено.";
+  if (item.status === "published_unverified") return "Соцсеть могла принять пост, но подтверждение не получено. Автоматический повтор остановлен. Проверьте пост и квитанции перед новой отправкой.";
   return "";
 }
 function PublicationDiagnostics({ item }: { item: AdminPublicationItem }) {

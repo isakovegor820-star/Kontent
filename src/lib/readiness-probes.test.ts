@@ -1,5 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
-import { ProviderCircuitBreaker } from "./ai-provider-health";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { aiProviderCircuitBreaker, ProviderCircuitBreaker } from "./ai-provider-health";
 import {
   probeAiProviderReadiness,
   probeMailDeliveryConfiguration,
@@ -7,6 +7,19 @@ import {
 } from "./readiness-probes";
 
 describe("AI provider readiness probe", () => {
+  afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); aiProviderCircuitBreaker.reset(); });
+
+  it("does not claim real default Claude configuration as observed provider success", async () => {
+    aiProviderCircuitBreaker.reset();
+    vi.stubEnv("AI_SERVICE_ENGINE", "claude");
+    vi.stubEnv("ANTHROPIC_API_KEY", "synthetic-readiness-test-key");
+    const fetch = vi.fn(async () => { throw new Error("unexpected_provider_request"); });
+    vi.stubGlobal("fetch", fetch);
+    expect(await probeAiProviderReadiness()).toEqual([]);
+    expect(aiProviderCircuitBreaker.snapshot()).toEqual([]);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("establishes bounded provider evidence after a fresh web-process restart", async () => {
     const breaker = new ProviderCircuitBreaker();
     const ready = vi.fn(async () => true);
@@ -105,6 +118,40 @@ describe("AI provider readiness probe", () => {
     });
     expect(providers[0]).toMatchObject({ lastOutcome: "failure", failures: 1, successes: 1 });
   });
+  it("checks the selected engine even when another engine has a fresh success", async () => {
+    const breaker = new ProviderCircuitBreaker();
+    breaker.recordSuccess("local", 5, 1000);
+    const ready = vi.fn(async () => false);
+    const providers = await probeAiProviderReadiness({
+      configured: () => true, engine: () => "openai", ready,
+      snapshot: () => breaker.snapshot(1100), now: () => 1100,
+      recordSuccess: (engine, latency) => breaker.recordSuccess(engine, latency, 1100),
+      recordFailure: (engine, input) => breaker.recordFailure(engine, input, 1100),
+    });
+    expect(ready).toHaveBeenCalledExactlyOnceWith("openai");
+    expect(providers).toEqual([expect.objectContaining({ engine: "openai", lastOutcome: "failure" })]);
+    expect(breaker.snapshot(1100)).toHaveLength(2);
+  });
+
+  it("preserves a real runtime failure that arrives while a stale capability probe is in flight", async () => {
+    const breaker = new ProviderCircuitBreaker();
+    breaker.recordSuccess("openai", 5, 1000);
+    const now = 1000 + 15 * 60_000;
+    let finishProbe!: (value: boolean) => void;
+    const pending = probeAiProviderReadiness({
+      configured: () => true, engine: () => "openai",
+      ready: () => new Promise<boolean>((resolve) => { finishProbe = resolve; }),
+      snapshot: () => breaker.snapshot(now), now: () => now,
+      recordSuccess: (engine, latency) => breaker.recordSuccess(engine, latency, now),
+      recordFailure: (engine, input) => breaker.recordFailure(engine, input, now),
+    });
+    breaker.recordFailure("openai", { code: "provider_unavailable", transient: true, latencyMs: 20 }, now);
+    finishProbe?.(true);
+    expect(await pending).toEqual([expect.objectContaining({
+      lastOutcome: "failure", lastFailureCode: "provider_unavailable", failures: 1, successes: 1,
+    })]);
+  });
+
   it("does not record configuration-only readiness as provider success", async () => {
     const ready = vi.fn(async () => true);
     const success = vi.fn();

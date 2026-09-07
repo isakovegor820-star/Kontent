@@ -54,7 +54,9 @@ export type ProjectAnalyticsRow = Readonly<{
   conversions?: number | null;
   trackerState?: string;
 }>;
+export type ProjectExportSnapshotVersion = "aurora-project-export-v1" | "aurora-project-export-sql-selection-v2";
 export type ProjectExportSnapshotInput = Readonly<{
+  schemaVersion?: ProjectExportSnapshotVersion;
   kind: ProjectExportKind;
   exportedAt: string | Date;
   project: ProjectExportProject;
@@ -64,7 +66,7 @@ export type ProjectExportSnapshotInput = Readonly<{
   rows: readonly (ProjectContentPlanRow | ProjectAnalyticsRow)[];
 }>;
 export type ProjectExportSnapshot = Readonly<{
-  schemaVersion: "aurora-project-export-v1";
+  schemaVersion: ProjectExportSnapshotVersion;
   kind: ProjectExportKind;
   exportedAt: string;
   project: Readonly<{ id: string; name: string; timezone: string }>;
@@ -76,6 +78,8 @@ export type ProjectExportSnapshot = Readonly<{
 export const PROJECT_EXPORT_FORMATS: readonly ProjectExportFormat[];
 export const PROJECT_EXPORT_KINDS: readonly ProjectExportKind[];
 export function createProjectExportSnapshot(input: ProjectExportSnapshotInput): ProjectExportSnapshot;
+/** Internal SQL-selected rows only; validates scope/shape/bounds and preserves SQL filter results. */
+export function createProjectExportSnapshotFromSqlSelection(input: ProjectExportSnapshotInput): ProjectExportSnapshot;
 export function projectExportHash(value: unknown): string;
 export function escapeSpreadsheetFormula(value: unknown): string;
 export function renderProjectCsv(input: ProjectExportSnapshotInput): Buffer;

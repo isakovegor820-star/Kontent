@@ -411,3 +411,26 @@ describe("publication extra worker", () => {
     ]);
   });
 });
+
+
+describe("first comment acknowledgement safety", () => {
+  for (const provider of ["tg", "vk"]) {
+    for (const fault of ["missing_receipt", "transport_loss"]) {
+      it(`${provider} ${fault} persists unknown instead of permitting retry`, async () => {
+        const row = operationRow({ request_snapshot: { providerId: provider, text: "safe fixture" }, network: provider });
+        const pool = operationPool(row, { query: (sql) => {
+          if (sql.includes("telegram_discussion_messages")) return { rows: [{ discussion_chat_id: -100800, discussion_message_id: 70 }] };
+          throw new Error("unexpected fixture query");
+        } });
+        const request = vi.fn(async () => {
+          if (fault === "transport_loss") throw new SyntaxError("response lost after acceptance");
+          return provider === "tg" ? { ok: true, result: {} } : { response: {} };
+        });
+        await expect(processPublicationExtraOperation({ pool, operationId: 5, projectId: 7, fingerprint, telegramRequest: request, vkRequest: request, decryptToken: () => "synthetic" }))
+          .rejects.toMatchObject({ deliveryUnknown: true, retryable: false });
+        expect(request).toHaveBeenCalledTimes(1);
+        expect(pool.query.mock.calls.find(([sql]) => sql.includes("set status = $4"))[1][3]).toBe("failed");
+      });
+    }
+  }
+});

@@ -11,9 +11,14 @@ import type {
 import {
   calendarProjectExportPeriod,
   channelProjectExportValue,
+  ProjectExportButton,
   ProjectExportOperationPanel,
   ProjectExportPreviewPanel,
 } from "./project-export-button";
+
+vi.mock("@/components/app/project-provider", () => ({
+  useProjects: () => ({ ready: true, current: { id: 7, name: "Проект" } }),
+}));
 
 const readyOperation: ClientProjectExportOperation = {
   id: 71,
@@ -60,6 +65,15 @@ const preview: ClientProjectExportPreview = {
 };
 
 describe("project export interface", () => {
+  it("renders an honest unknown delivery filter with a stable canonical value", () => {
+    const html = renderToStaticMarkup(createElement(ProjectExportButton, {
+      channels: [], defaultKind: "content_plan", initialPeriod: { from: "2026-08-01", to: "2026-08-31" },
+    }));
+    expect(html).toContain('<option value="published_unverified">Доставка не подтверждена</option>');
+    expect(html).toContain('<option value="Опубликован">Опубликован</option>');
+    expect(html).not.toContain("Опубликован, проверяется");
+  });
+
   it("renders a confirmed ready state with explicit download and revocation actions", () => {
     const html = renderToStaticMarkup(createElement(ProjectExportOperationPanel, {
       operation: readyOperation,

@@ -10,6 +10,7 @@ import {
   PROJECT_INVITE_STORAGE_KEY,
   projectInviteTokenFromHash,
 } from "@/lib/project-invite-client";
+import { setClientProjectId } from "@/lib/project-fetch";
 import { useStore } from "@/lib/store";
 
 type InviteState = "loading" | "ready" | "accepting" | "accepted" | "missing" | "error";
@@ -56,12 +57,20 @@ export default function ProjectInvitePage() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ token }),
       });
-      const body = await response.json().catch(() => null) as { error?: string } | null;
+      const body = await response.json().catch(() => null) as { error?: string; ok?: boolean; membership?: { projectId?: number } } | null;
       if (!response.ok) {
         setMessage(ERROR_COPY[body?.error ?? ""] ?? "Не удалось принять приглашение. Попробуйте снова.");
         setState("error");
         return;
       }
+      const projectId = Number(body?.membership?.projectId);
+      if (body?.ok !== true || !Number.isSafeInteger(projectId) || projectId <= 0) {
+        setMessage("Сервер не подтвердил проект. Откройте список проектов и проверьте доступ.");
+        setState("error");
+        return;
+      }
+      // Acceptance selects the project on the server; bind this tab before navigation.
+      setClientProjectId(projectId);
       try {
         sessionStorage.removeItem(PROJECT_INVITE_STORAGE_KEY);
       } catch {
@@ -70,7 +79,7 @@ export default function ProjectInvitePage() {
       tokenRef.current = null;
       setState("accepted");
     } catch {
-      setMessage("Сервер не ответил. Приглашение не использовано — попробуйте снова.");
+      setMessage("Не удалось получить подтверждение. Проверьте список проектов или попробуйте снова.");
       setState("error");
     }
   };

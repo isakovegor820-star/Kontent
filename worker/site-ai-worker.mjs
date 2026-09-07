@@ -1,3 +1,5 @@
+import { AiWorkAccessError } from "../src/lib/ai-work-access.mjs";
+import { requireSiteAiAccess, withSiteAiAccess, siteAiScope } from "./site-ai-access.mjs";
 import { completeAiText } from "../src/lib/ai-completion-service.mjs";
 import { configuredServiceEngine } from "../src/lib/ai-engine-policy.mjs";
 import {
@@ -47,13 +49,19 @@ function pageFromRow(row) {
 }
 
 async function loadProfileContext(pool, profileId) {
+  const identity = (await pool.query(`select p.site_id, j.user_id from site_profiles p
+    join site_analysis_jobs j on j.id=p.analysis_job_id and j.site_id=p.site_id join sites s on s.id=p.site_id and s.project_id=j.project_id
+    where p.id=$1`, [profileId])).rows[0];
+  if (!identity) return null;
+  const scope = await siteAiScope(pool, identity.site_id, identity.user_id);
+  return withSiteAiAccess(pool, scope, async (pool) => {
   const profile = (await pool.query(
     `select p.id, p.site_id, p.analysis_job_id, p.run_revision, p.topics, p.ai_classification, p.refined_at,
-            s.user_id, s.confirmed_domain, s.canonical_url, s.verification_state, s.brand_name, s.status as site_status,
+            j.user_id, s.project_id, s.confirmed_domain, s.canonical_url, s.verification_state, s.brand_name, s.status as site_status,
             j.result as analysis_result, j.created_at as analysis_created_at
        from site_profiles p
        join sites s on s.id = p.site_id
-       left join site_analysis_jobs j on j.id = p.analysis_job_id
+       left join site_analysis_jobs j on j.id = p.analysis_job_id and j.site_id = p.site_id and j.project_id = s.project_id
       where p.id = $1`,
     [profileId],
   )).rows[0];
@@ -63,7 +71,8 @@ async function loadProfileContext(pool, profileId) {
        from site_analysis_pages where analysis_id = $1 order by id limit 400`,
     [profile.analysis_job_id],
   )).rows.map(pageFromRow);
-  return { profile, pages };
+  return { profile, pages, scope };
+  });
 }
 
 /**
@@ -75,7 +84,7 @@ export async function refineSiteProfile(pool, { profileId, force = false }, depe
   const complete = dependencies.completeAiText || completeAiText;
   const context = await loadProfileContext(pool, profileId);
   if (!context) return { ok: false, reason: "profile_context_missing" };
-  const { profile, pages } = context;
+  const { profile, pages, scope } = context;
   if (profile.site_status === "disconnected") return { ok: false, reason: "site_inactive" };
   if (profile.refined_at && !force) return { ok: true, skipped: "already_refined", profileId };
 
@@ -95,18 +104,19 @@ export async function refineSiteProfile(pool, { profileId, force = false }, depe
         temperature: 0,
         maxTokens: 2_500,
         providerRequestKey: `site-classifier:${profileId}`,
-      }, { allowFallback: true, timeoutMs: 90_000 });
+      }, { allowFallback: true, timeoutMs: 90_000, spendScope: { pool, userId: Number(profile.user_id), projectId: Number(profile.project_id) } });
       engine = completion.engine || engine;
       classification = parseClassifierResponse(completion.text, {
         knownUrls: inventory.map((page) => page.url),
         knownTopicKeys: baseline.topics.map((topic) => topic.key),
       });
     } catch (error) {
-      // Классификатор — необязательный слой: при сбое профиль остаётся детерминированным.
-      await pool.query(
+      if (error instanceof AiWorkAccessError || String(error?.code || "").startsWith("ai_spend_")) throw error;
+      // Provider failure may leave the deterministic profile; authorization failure cannot.
+      await withSiteAiAccess(pool, scope, (client) => client.query(
         `update site_profiles set ai_classification = $2::jsonb, refined_at = now() where id = $1`,
         [profileId, JSON.stringify({ status: "failed", code: String(error?.code || error?.name || "classifier_failed").slice(0, 80), promptVersion: prompt.promptVersion })],
-      );
+      ));
       return { ok: false, profileId, reason: "classifier_failed" };
     }
   }
@@ -123,6 +133,7 @@ export async function refineSiteProfile(pool, { profileId, force = false }, depe
   const client = await pool.connect();
   try {
     await client.query("begin");
+    await requireSiteAiAccess(client, scope);
     await client.query(
       `update site_profiles
           set page_count = $2, publication_count = $3, topics = $4::jsonb, gaps = $5::jsonb, technical = $6::jsonb,
@@ -176,14 +187,20 @@ export async function interpretSiteReport(pool, { reportId, force = false }, dep
   const commit = dependencies.commitUsage || commitWorkerAiUsage;
   const release = dependencies.releaseUsage || releaseWorkerAiUsage;
 
-  const report = (await pool.query(
-    `select r.id, r.site_id, r.kind, r.payload, r.interpretation_status, s.user_id, s.brand_name, s.confirmed_domain, s.status as site_status,
+  const identity = (await pool.query(`select r.site_id, coalesce(r.requested_by_user_id,j.user_id) as user_id
+    from site_reports r left join site_profiles p on p.id=r.profile_id and p.site_id=r.site_id
+    left join site_analysis_jobs j on j.id=p.analysis_job_id and j.site_id=r.site_id where r.id=$1`, [reportId])).rows[0];
+  if (!identity) return { ok: false, reason: "report_missing" };
+  const scope = await siteAiScope(pool, identity.site_id, identity.user_id);
+  const report = await withSiteAiAccess(pool, scope, async (client) => (await client.query(
+    `select r.id, r.site_id, r.kind, r.payload, r.interpretation_status, coalesce(r.requested_by_user_id,j.user_id) as user_id, s.project_id, s.brand_name, s.confirmed_domain, s.status as site_status,
             p.topics
        from site_reports r join sites s on s.id = r.site_id
-       left join site_profiles p on p.id = r.profile_id
+       left join site_profiles p on p.id = r.profile_id and p.site_id = r.site_id
+       left join site_analysis_jobs j on j.id = p.analysis_job_id and j.site_id = p.site_id and j.project_id = s.project_id
       where r.id = $1 and r.status = 'ready'`,
     [reportId],
-  )).rows[0];
+  )).rows[0]);
   if (!report) return { ok: false, reason: "report_missing" };
   if (report.interpretation_status === "ready" && !force) return { ok: true, skipped: "already_interpreted", reportId };
   if (report.site_status === "disconnected") return { ok: false, reason: "site_inactive" };
@@ -215,7 +232,7 @@ export async function interpretSiteReport(pool, { reportId, force = false }, dep
         temperature: 0.3,
         maxTokens: 1_800,
         providerRequestKey: `site-interpretation:${reportId}:a${attempt}`,
-      }, { allowFallback: true, timeoutMs: 90_000 });
+      }, { allowFallback: true, timeoutMs: 90_000, spendScope: { pool, userId: Number(report.user_id), projectId: Number(report.project_id) } });
       completionEngine = completion.engine || engine;
       try {
         validation = validateInterpretation(completion.text, { payload: report.payload, engine: completionEngine, promptVersion: prompt.promptVersion });
@@ -226,14 +243,14 @@ export async function interpretSiteReport(pool, { reportId, force = false }, dep
       if (!validation.ok) feedback = `слишком мало содержания после удаления недопустимых формулировок: ${validation.issues.map((issue) => issue.code).join(", ")}.`;
     }
     if (!validation?.ok) {
-      await pool.query(`update site_reports set interpretation_status = 'failed', interpretation = $2::jsonb where id = $1`, [reportId, JSON.stringify({ status: "failed", issues: validation?.issues || [{ code: "schema_invalid" }] })]);
+      await withSiteAiAccess(pool, scope, (client) => client.query(`update site_reports set interpretation_status = 'failed', interpretation = $2::jsonb where id = $1`, [reportId, JSON.stringify({ status: "failed", issues: validation?.issues || [{ code: "schema_invalid" }] })]));
       await commit(pool, Number(report.user_id), reservationId);
       return { ok: false, reportId, reason: "interpretation_rejected", issues: validation?.issues || [] };
     }
-    await pool.query(
+    await withSiteAiAccess(pool, scope, (client) => client.query(
       `update site_reports set interpretation = $2::jsonb, interpretation_status = 'ready' where id = $1`,
       [reportId, JSON.stringify({ ...validation.interpretation, issues: validation.issues })],
-    );
+    ));
     await commit(pool, Number(report.user_id), reservationId);
     return { ok: true, reportId, engine: completionEngine, startWith: validation.interpretation.startWith.length, removed: validation.issues.length };
   } catch (error) {

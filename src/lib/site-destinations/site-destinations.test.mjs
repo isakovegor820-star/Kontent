@@ -72,7 +72,7 @@ describe("WordPress adapter", () => {
     expect((await redirecting.publish(destination, payload)).reason).toBe("redirect_forbidden");
   });
 
-  it("reconciles by slug and distinguishes an existing post from a confirmed absence", async () => {
+  it("preserves uncertainty for an observed or absent slug without a create receipt", async () => {
     const found = createWordPressAdapter({
       fetchImpl: vi.fn(async (url) => {
         const parsed = new URL(url);
@@ -82,9 +82,9 @@ describe("WordPress adapter", () => {
       }),
       lookupFn: publicLookup,
     });
-    expect(await found.reconcile(destination, "skolko-stoit")).toMatchObject({ ok: true, providerRef: { id: 77 }, publishedUrl: "https://blog.example.ru/skolko-stoit/" });
+    expect(await found.reconcile(destination, "skolko-stoit")).toMatchObject({ ok: false, outcome: "delivery_unknown", reason: "publication_receipt_required" });
     const absent = createWordPressAdapter({ fetchImpl: vi.fn(async () => jsonResponse(200, [])), lookupFn: publicLookup });
-    expect(await absent.reconcile(destination, "skolko-stoit")).toMatchObject({ ok: false, outcome: "definite_failure", reason: "not_found" });
+    expect(await absent.reconcile(destination, "skolko-stoit")).toMatchObject({ ok: false, outcome: "delivery_unknown", reason: "publication_receipt_required" });
   });
 
   it("verifies credentials and capability, updates and unpublishes to draft", async () => {

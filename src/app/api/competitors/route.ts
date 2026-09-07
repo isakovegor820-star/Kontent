@@ -1,3 +1,5 @@
+import { ProjectAccessError } from "@/lib/project-permissions";
+import { withResearchProject, researchChannel } from "@/lib/research-project-access";
 // Д.6 — список конкурентов пользователя со сводкой для карточек.
 // Кроме цифр отдаём честные признаки: сколько залётов найдено и хватает ли вообще
 // данных, чтобы этим цифрам верить (thin_data). Пороги — те же, что в воркере.
@@ -5,7 +7,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
-import { resolveChannel } from "@/lib/autopilot";
 import {
   MAX_COMPETITORS,
   competitorPostUrl,
@@ -24,8 +25,8 @@ export async function GET(req: NextRequest) {
   if (!user) return NextResponse.json({ competitors: [], limit: MAX_COMPETITORS });
 
   try {
-    const pool = getPool();
-    const channelId = await resolveChannel(user.id, Number(req.nextUrl.searchParams.get("channel")) || null);
+    return await withResearchProject(getPool(), user.id, "project.read", async (pool, projectId) => {
+    const channelId = await researchChannel(pool, projectId, Number(req.nextUrl.searchParams.get("channel")) || null);
     if (!channelId) return NextResponse.json({ competitors: [], limit: MAX_COMPETITORS });
     const rows = (
       await pool.query(
@@ -85,7 +86,9 @@ export async function GET(req: NextRequest) {
       };
     });
     return NextResponse.json({ competitors, limit: MAX_COMPETITORS });
+    });
   } catch (err) {
+    if (err instanceof ProjectAccessError) return NextResponse.json({ error: "forbidden" }, { status: 403 });
     console.error("[/api/competitors]", err);
     return NextResponse.json({ competitors: [], limit: MAX_COMPETITORS });
   }

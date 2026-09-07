@@ -3,6 +3,7 @@
 // пользователь закрыл ноутбук. Приложение (Next) только КЛАДЁТ задачи; исполняет worker.mjs.
 
 import { Queue, type ConnectionOptions } from "bullmq";
+import { hasQueueWorker, type QueueWorkerProbe } from "./queue-worker-availability.mjs";
 
 export const PUBLISH_QUEUE = "publish";
 export const STATS_QUEUE = "stats";
@@ -101,17 +102,25 @@ async function within<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
   }
 }
 
-type MediaQueueProbe = Pick<Queue, "getWorkersCount">;
+type MediaQueueProbe = QueueWorkerProbe;
 
 export async function hasMediaWorker(
   queue: MediaQueueProbe = getMediaQueue(),
   timeoutMs = 1_500,
 ): Promise<boolean> {
   try {
-    return (await within(queue.getWorkersCount(), timeoutMs)) > 0;
+    return await hasQueueWorker(queue, timeoutMs);
   } catch {
     return false;
   }
+}
+
+/** The Autopilot producer must have a consumer in its own Redis database. */
+export async function hasAutopilotWorker(
+  queue: QueueWorkerProbe = getAutopilotQueue(),
+  timeoutMs = 1_500,
+): Promise<boolean> {
+  return hasQueueWorker(queue, timeoutMs);
 }
 
 type MediaQueueProducer = Pick<Queue, "add" | "getJob">;
