@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 
+import { persistAutopilotEditorPayload } from "./autopilot-editor-payload.mjs";
+
 import { evaluateAutopilotItem } from "./autopilot-approval.mjs";
 import { sanitizeAutopilotPublicText } from "./autopilot-publication.mjs";
 
@@ -54,6 +56,10 @@ function approvalSnapshot(item) {
     reviewState: item?.reviewState ?? null,
     invented: item?.invented ?? null,
     quality: item?.quality ?? null,
+    draftId: item?.draftId ?? null,
+    editorVersion: item?.editorVersion ?? null,
+    media: item?.media ?? null,
+    formatting: item?.formatting ?? [],
   });
 }
 
@@ -149,7 +155,7 @@ export async function reclaimStaleAutopilotApprovals(
               completed_at = now()
          from reclaimed r
         where op.id = r.approval_operation_id and op.project_id = r.project_id
-          and op.status = 'processing' and op.result is null
+          and op.status = 'processing' and op.actor_type in ('web', 'bot') and op.result is null
        returning op.id
      )
      select id, project_id, user_id, channel_id, next_status, scheduled_count, remaining_count
@@ -201,7 +207,7 @@ export async function claimAutopilotPlan(
           select 1 from autopilot_approval_operations op
            where op.id = $5 and op.project_id = $2 and op.user_id = $3
              and op.channel_id = $4 and op.plan_id = $1
-             and op.status = 'processing'
+             and op.status = 'processing' and op.actor_type in ('web', 'bot')
         )
       returning id, items, edited, channel_id, revision`,
     [planId, projectId, userId, channelId, operationId, statuses, expectedRevision],
@@ -293,7 +299,7 @@ export async function scheduleAutopilotItem({
               select 1 from autopilot_approval_operations op
                where op.id = $5 and op.project_id = $2 and op.user_id = $3
                  and op.channel_id = $4 and op.plan_id = $1
-                 and op.status = 'processing'
+                 and op.status = 'processing' and op.actor_type in ('web', 'bot')
             )
           for update`,
         [planId, projectId, userId, channelId, operationId],
@@ -342,7 +348,27 @@ export async function scheduleAutopilotItem({
       if (!evaluation.eligible || !evaluation.scheduledAt) {
         throw new AutopilotScheduleBlockedError(evaluation.blockers);
       }
-      const text = sanitizeAutopilotPublicText(target.draft);
+      if (target.draftId && target.editorVersion) {
+        const draft = (await tx.query(
+          `select version from drafts where id = $1 and project_id = $2 for update`,
+          [target.draftId, projectId],
+        )).rows[0];
+        if (!draft || Number(draft.version) !== Number(target.editorVersion)) {
+          throw new AutopilotScheduleBlockedError([{ code: "editor_draft_linked", message: "В редакторе есть новые правки. Сохрани и верни их в автопилот." }]);
+        }
+      }
+      if (target.draftId) {
+        const existingPublication = await tx.query(
+          `select p.id from posts p join publication_operations operation on operation.id = p.publication_operation_id
+             where p.project_id = $1 and operation.project_id = $1 and operation.draft_id = $2
+             and p.status <> 'cancelled' limit 1`,
+          [projectId, target.draftId],
+        );
+        if (existingPublication.rows[0]) {
+          throw new AutopilotScheduleBlockedError([{ code: "editor_draft_linked", message: "Этот пост уже добавлен в основной календарь через редактор." }]);
+        }
+      }
+      const text = target.editorVersion ? target.draft : sanitizeAutopilotPublicText(target.draft);
       if (!text) {
         throw new AutopilotScheduleBlockedError([{ code: "empty_draft", message: "Черновик пуст." }]);
       }
@@ -362,11 +388,11 @@ export async function scheduleAutopilotItem({
       const inserted = await tx.query(
         `insert into posts
            (project_id, user_id, channel_id, text, scheduled_at, status, idempotency_key,
-            request_fingerprint, publication_origin)
-         values ($1, $2, $3, $4, $5, 'scheduled', $6, $7, 'autopilot')
+            request_fingerprint, publication_origin, media, scheduled_timezone, publication_draft_version)
+         values ($1, $2, $3, $4, $5, 'scheduled', $6, $7, 'autopilot', $8::jsonb, $9, $10)
          on conflict do nothing
          returning id, scheduled_at, status, request_fingerprint, schedule_revision`,
-        [projectId, userId, channelId, text, evaluation.scheduledAt, key, fingerprint],
+        [projectId, userId, channelId, text, evaluation.scheduledAt, key, fingerprint, JSON.stringify(target.media ?? null), target.scheduleTimezone ?? "Europe/Moscow", target.editorVersion ?? null],
       );
       let post = inserted.rows?.[0];
       if (!post) {
@@ -384,6 +410,8 @@ export async function scheduleAutopilotItem({
       if (post.request_fingerprint !== fingerprint) {
         throw new Error("autopilot deterministic post fingerprint conflict");
       }
+
+      if (inserted.rows?.[0]) await persistAutopilotEditorPayload(tx, Number(post.id), target);
 
       checkpoint = (
         await tx.query(
@@ -506,7 +534,7 @@ export async function finalizeAutopilotApproval({
             select 1 from autopilot_approval_operations op
              where op.id = $5 and op.project_id = $2 and op.user_id = $3
                and op.channel_id = $4 and op.plan_id = $1
-               and op.status = 'processing'
+               and op.status = 'processing' and op.actor_type in ('web', 'bot')
           )
         returning id`,
       [planId, projectId, userId, channelId, operationId, JSON.stringify(items), planStatus],
@@ -569,7 +597,7 @@ export async function abortAutopilotApproval({
               select 1 from autopilot_approval_operations op
                where op.id = $5 and op.project_id = $2 and op.user_id = $3
                  and op.channel_id = $4 and op.plan_id = $1
-                 and op.status = 'processing'
+                 and op.status = 'processing' and op.actor_type in ('web', 'bot')
             )
           for update`,
         [planId, projectId, userId, channelId, operationId],

@@ -16,6 +16,9 @@ export interface AutopilotApprovalItem {
   status: string;
   postId?: number;
   draftId?: number;
+  editorVersion?: number;
+  media?: unknown;
+  formatting?: unknown;
   monthlyCampaignItemId?: number;
   qualityBlocked?: boolean;
   reviewRequired?: boolean;
@@ -42,6 +45,7 @@ export interface AutopilotApprovalEvaluation {
 export interface AutopilotApprovalPreview {
   /** Present only on a persisted server preview returned to a caller. */
   token?: string;
+  selectedIndexes?: number[];
   planId: number;
   revision: number;
   hash: string;
@@ -73,6 +77,7 @@ export function autopilotPlanRevisionHash(input: {
   planId: number;
   planRevision: number;
   channelId: number;
+  selectedIndexes?: number[];
 }): string;
 
 export function isAutopilotHumanReviewItem(item: unknown): boolean;
@@ -98,6 +103,7 @@ export function buildAutopilotApprovalPreview(input: {
   planId: number;
   planRevision?: number;
   expectedCount?: number;
+  selectedIndexes?: number[];
   expiresAtMs?: number;
   actor?: "human" | "system";
 }): AutopilotApprovalPreview;
@@ -105,6 +111,7 @@ export function executeAutopilotApproval<T extends AutopilotApprovalItem>(input:
   items: T[];
   nowMs?: number;
   schedule: (item: T, scheduledAt: string) => Promise<number>;
+  selectedIndexes?: number[];
   onCheckpoint?: (items: T[], item: T, scheduled: number) => Promise<void> | void;
   attestor?: { userId: number; attestedAt?: string };
 }): Promise<{ items: T[]; scheduled: number; error: unknown | null }>;

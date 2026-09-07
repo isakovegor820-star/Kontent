@@ -61,7 +61,7 @@ export function ConfirmDialog({
         <H2 id={titleId}>
           {title}
         </H2>
-        <SecondaryText id={descriptionId} className="mt-2 text-pretty">
+        <SecondaryText id={descriptionId} className="mt-2 whitespace-pre-line text-pretty">
           {description}
         </SecondaryText>
         {error ? <p role="alert" className="mt-3 rounded-sm bg-danger-soft p-3 text-sm text-danger-text">{error}</p> : null}

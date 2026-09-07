@@ -530,3 +530,38 @@ describe("Autopilot approval policy", () => {
     expect(retry.items.map((entry) => entry.postId)).toEqual([100, 101, 102]);
   });
 });
+
+describe("selective calendar confirmation", () => {
+  const plan = [item({ i: 0, quality: null }), item({ i: 1 }), item({ i: 2, scheduledAt: "2026-07-01T00:00:00Z" })];
+  const input = { items: plan, nowMs: NOW, planId: 7, planRevision: 3, channel: { id: 9 }, expectedCount: 3, actor: "human" };
+  it("allows a reviewed subset while unrelated blocked/expired posts remain in the plan", () => {
+    const preview = buildAutopilotApprovalPreview({ ...input, selectedIndexes: [1] });
+    expect(preview).toMatchObject({ complete: true, expectedCount: 1, counts: { total: 1, eligible: 1, expired: 0, blocked: 0 }, selectedIndexes: [1] });
+    expect(preview.dates.map((date) => date.index)).toEqual([1]);
+    expect(buildAutopilotApprovalPreview(input).complete).toBe(false);
+    expect(buildAutopilotApprovalPreview({ ...input, selectedIndexes: [99] }).complete).toBe(false);
+  });
+  it("binds the chosen subset and editor content to the confirmation hash", () => {
+    const a = buildAutopilotApprovalPreview({ ...input, selectedIndexes: [1] });
+    const b = buildAutopilotApprovalPreview({ ...input, selectedIndexes: [0, 1] });
+    expect(a.hash).not.toBe(b.hash);
+    const changed = buildAutopilotApprovalPreview({ ...input, items: plan.map((entry) => ({ ...entry, media: { assetId: 17 } })), selectedIndexes: [1] });
+    expect(changed.hash).not.toBe(a.hash);
+    expect(buildAutopilotApprovalPreview({ ...input, selectedIndexes: [1, 0] }).hash).toBe(b.hash);
+  });
+  it("schedules only the selected indexes and leaves other items byte-for-byte unchanged", async () => {
+    const calls = [];
+    const result = await executeAutopilotApproval({ items: plan, nowMs: NOW, selectedIndexes: [1], attestor: { userId: 5 }, schedule: async (entry) => { calls.push(entry.i); return 44; } });
+    expect(calls).toEqual([1]);
+    expect(result.scheduled).toBe(1);
+    expect(result.items[0]).toEqual(plan[0]);
+    expect(result.items[2]).toEqual(plan[2]);
+    expect(result.items[1]).toMatchObject({ status: "approved", postId: 44 });
+    const replay = await executeAutopilotApproval({ items: result.items, nowMs: NOW, selectedIndexes: [1], schedule: async () => { throw new Error("duplicate"); } });
+    expect(replay).toMatchObject({ scheduled: 0, error: null });
+  });
+  it("requires a returned editor version before a linked draft is eligible", () => {
+    expect(evaluateAutopilotItem(item({ draftId: 51 }), NOW).eligible).toBe(false);
+    expect(evaluateAutopilotItem(item({ draftId: 51, editorVersion: 3 }), NOW).eligible).toBe(true);
+  });
+});

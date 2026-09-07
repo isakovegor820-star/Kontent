@@ -100,6 +100,8 @@ function checkpointPool({
   failPlanUpdate = false,
   failDispatchAck = false,
   failMonthlyLineage = false,
+  draftVersion = 3,
+  existingPublication = false,
   items = sourceItems(),
 } = {}) {
   const state = {
@@ -107,6 +109,7 @@ function checkpointPool({
     post: null,
     outbox: null,
     monthlyLink: null,
+    parts: [],
     postInsertions: 0,
     commits: 0,
     rollbacks: 0,
@@ -130,6 +133,12 @@ function checkpointPool({
         if (sql.includes("from autopilot_schedule_outbox o") && sql.includes("for update of o")) {
           return { rows: working.outbox ? [structuredClone(working.outbox)] : [], rowCount: working.outbox ? 1 : 0 };
         }
+        if (sql.startsWith("select version from drafts")) return { rows: [{ version: draftVersion }] };
+        if (sql.includes("operation.draft_id = $2")) return { rows: existingPublication ? [{ id: 99 }] : [] };
+        if (sql.startsWith("insert into publication_parts")) {
+          working.parts.push({ type: params[2], html: params[3], hash: params[4] });
+          return { rows: [], rowCount: 1 };
+        }
         if (sql.startsWith("insert into posts")) {
           if (working.post) return { rows: [], rowCount: 0 };
           working.postInsertions += 1;
@@ -141,6 +150,8 @@ function checkpointPool({
             status: "scheduled",
             idempotency_key: params[5],
             request_fingerprint: params[6],
+            media: JSON.parse(params[7]),
+            publication_draft_version: params[9],
           };
           return { rows: [structuredClone(working.post)], rowCount: 1 };
         }
@@ -181,7 +192,7 @@ function checkpointPool({
         }
         if (sql.startsWith("update autopilot_plan") && sql.includes("approval_heartbeat_at")) {
           if (failPlanUpdate) throw new Error("checkpoint db failure");
-        working.items = JSON.parse(String(params[5]));
+          working.items = JSON.parse(String(params[5]));
           return { rows: [{ id: 44 }], rowCount: 1 };
         }
         if (sql === "commit") {
@@ -228,6 +239,30 @@ const scheduleInput = (pool, enqueue) => ({
 });
 
 describe("transactional Autopilot scheduling", () => {
+  it("freezes the reviewed rich text and media in the same transaction as the post", async () => {
+    const item = { ...sourceItems()[0], draftId: 301, editorVersion: 3,
+      formatting: [{ type: "bold", offset: 0, length: 11 }], media: { kind: "image", assetId: 19 } };
+    const { pool, state } = checkpointPool({ items: [item] });
+    await scheduleAutopilotItem(scheduleInput(pool, vi.fn()));
+    expect(state.post).toMatchObject({ media: item.media, publication_draft_version: 3 });
+    expect(state.parts).toEqual([expect.objectContaining({ type: "media_caption", html: "<b>Проверенный</b> текст", hash: expect.any(String) })]);
+  });
+
+  it("does not schedule an editor version superseded after the preview", async () => {
+    const { pool, state } = checkpointPool({ items: [{ ...sourceItems()[0], draftId: 301, editorVersion: 3 }], draftVersion: 4 });
+    const enqueue = vi.fn();
+    await expect(scheduleAutopilotItem(scheduleInput(pool, enqueue))).rejects.toMatchObject({ code: "AUTOPILOT_ITEM_BLOCKED" });
+    expect(state.post).toBeNull();
+    expect(state.parts).toEqual([]);
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
+  it("does not duplicate a linked draft previously scheduled through Composer", async () => {
+    const { pool, state } = checkpointPool({ items: [{ ...sourceItems()[0], draftId: 301, editorVersion: 3 }], existingPublication: true });
+    await expect(scheduleAutopilotItem(scheduleInput(pool, vi.fn()))).rejects.toMatchObject({ code: "AUTOPILOT_ITEM_BLOCKED" });
+    expect(state.post).toBeNull();
+  });
+
   it("persists one post/checkpoint before enqueue and replays the same outcome after a crash window", async () => {
     const { pool, state, statements } = checkpointPool();
     const enqueue = vi.fn()
