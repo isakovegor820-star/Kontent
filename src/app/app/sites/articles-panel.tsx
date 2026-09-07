@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { CheckCircle2, ExternalLink, FileText, RefreshCw, Sparkles, XCircle } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -66,6 +66,7 @@ export function ArticlesPanel({ siteId, verified, hasDestinations, hasProfile, o
   const [busy, setBusy] = useState<string | null>(null);
   const [openId, setOpenId] = useState<number | null>(null);
   const [detail, setDetail] = useState<Article | null>(null);
+  const detailRequest = useRef(0);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState({ title: "", metaDescription: "", bodyMarkdown: "" });
   const [manualType, setManualType] = useState<string>("audience_answer");
@@ -95,9 +96,12 @@ export function ArticlesPanel({ siteId, verified, hasDestinations, hasProfile, o
   }, [active, load]);
 
   const openArticle = useCallback(async (id: number) => {
+    const requestVersion = ++detailRequest.current;
     setOpenId(id);
+    setDetail(null);
     setEditing(false);
     const { status, body } = await requestJson<{ article?: Article; error?: string }>(`/api/sites/${siteId}/articles/${id}`);
+    if (requestVersion !== detailRequest.current) return;
     if (status === 200 && body.article) {
       setDetail(body.article);
       setDraft({ title: body.article.title, metaDescription: body.article.metaDescription || "", bodyMarkdown: body.article.bodyMarkdown || "" });
@@ -109,7 +113,7 @@ export function ArticlesPanel({ siteId, verified, hasDestinations, hasProfile, o
     setError(null);
     const { status, body } = await requestJson<{ error?: string }>(`/api/sites/${siteId}/articles/${id}`, {
       method: "POST",
-      body: JSON.stringify({ action, ...extra }),
+      body: JSON.stringify({ action, ...extra, expectedVersion: detail?.id === id ? detail.version : articles.find((article) => article.id === id)?.version }),
     });
     setBusy(null);
     if (status >= 400) {
@@ -119,14 +123,14 @@ export function ArticlesPanel({ siteId, verified, hasDestinations, hasProfile, o
     await load();
     if (openId === id) await openArticle(id);
     onSiteChanged();
-  }, [siteId, load, openId, openArticle, onSiteChanged]);
+  }, [siteId, load, openId, openArticle, onSiteChanged, detail, articles]);
 
   const saveEdit = useCallback(async () => {
     if (!detail) return;
     setBusy(`${detail.id}:edit`);
     const { status, body } = await requestJson<{ error?: string; issues?: Array<{ message: string; severity: string }> }>(`/api/sites/${siteId}/articles/${detail.id}`, {
       method: "PATCH",
-      body: JSON.stringify(draft),
+      body: JSON.stringify({ ...draft, expectedVersion: detail.version }),
     });
     setBusy(null);
     if (status >= 400) {

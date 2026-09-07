@@ -102,7 +102,7 @@ export async function POST(req: NextRequest) {
     }
     return res;
   } catch (err) {
-    console.error("[/api/auth/telegram]", err);
+    console.error("[/api/auth/telegram]", { name: err instanceof Error ? err.name : "error" });
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
 }

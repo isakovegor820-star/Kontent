@@ -94,10 +94,20 @@ function toArticle(row: ArticleRow, site: HostedSite, env: Record<string, string
 
 const ARTICLE_FIELDS = `id, slug, title, meta_description, body_html, structured_data, article_type, published_at, updated_at`;
 
+// Publication state belongs to a destination. A sibling WordPress success must not expose hosted content.
+const HOSTED_PUBLISHED = `exists (
+  select 1 from site_article_publications p
+  join site_destinations d on d.id = p.destination_id and d.kind = 'site_hosted' and d.status = 'active'
+  where p.article_id = site_articles.id and p.status = 'published' and p.action in ('publish', 'update')
+    and not exists (select 1 from site_article_publications newer
+      where newer.article_id = p.article_id and newer.destination_id = p.destination_id
+        and newer.status = 'published' and newer.id > p.id)
+)`;
+
 export async function listHostedArticles(db: Queryable, site: HostedSite, limit = 100, env: Record<string, string | undefined> = process.env): Promise<HostedArticle[]> {
   const result = await db.query<ArticleRow>(
     `select ${ARTICLE_FIELDS} from site_articles
-      where site_id = $1 and status = 'published'
+      where site_id = $1 and status in ('published', 'retired') and ${HOSTED_PUBLISHED}
       order by published_at desc nulls last, id desc
       limit $2`,
     [site.id, Math.min(500, Math.max(1, limit))],
@@ -108,7 +118,7 @@ export async function listHostedArticles(db: Queryable, site: HostedSite, limit 
 export async function loadHostedArticle(db: Queryable, site: HostedSite, articleSlug: string, env: Record<string, string | undefined> = process.env): Promise<HostedArticle | null> {
   if (!/^[a-z0-9](?:[a-z0-9-]{0,118}[a-z0-9])?$/u.test(articleSlug)) return null;
   const result = await db.query<ArticleRow>(
-    `select ${ARTICLE_FIELDS} from site_articles where site_id = $1 and slug = $2 and status = 'published'`,
+    `select ${ARTICLE_FIELDS} from site_articles where site_id = $1 and slug = $2 and status in ('published', 'retired') and ${HOSTED_PUBLISHED}`,
     [site.id, articleSlug],
   );
   return result.rows[0] ? toArticle(result.rows[0], site, env) : null;

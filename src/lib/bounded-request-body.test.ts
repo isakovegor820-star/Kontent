@@ -63,7 +63,15 @@ describe("bounded request bodies", () => {
       .resolves.toEqual({ ok: true, value: { ok: true } });
   });
 
-  it("offers a bounded Request.json-compatible helper", async () => {
+  it.each(["null", "[]", '"text"', "42", "true"])("rejects non-object API envelopes: %s", async (json) => {
+    await expect(readJsonBodyValue(chunkedRequest([json])))
+      .rejects.toMatchObject({ code: "bad_request", status: 400 });
+    // The lower-level protocol parser still supports arbitrary JSON.
+    await expect(readJsonBodyLimited(chunkedRequest([json])))
+      .resolves.toEqual({ ok: true, value: JSON.parse(json) });
+  });
+
+  it("offers a bounded API object helper", async () => {
     await expect(readJsonBodyValue<{ ok: boolean }>(chunkedRequest(["{\"ok\":true}"]), 64))
       .resolves.toEqual({ ok: true });
     await expect(readJsonBodyValue(chunkedRequest(["{\"value\":\"too long\"}"]), 8))

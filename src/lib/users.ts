@@ -56,11 +56,20 @@ export async function findOrCreateUser(idn: Identity): Promise<{ id: number; cre
     } else {
       const inserted = await client.query<{ id: number | string }>(
         `insert into users (tg_id, vk_id, email, name, avatar)
-         values ($1, $2, $3, $4, $5) returning id`,
+         values ($1, $2, $3, $4, $5) on conflict do nothing returning id`,
         [tg_id, vk_id, email, name, avatar],
       );
-      id = Number(inserted.rows[0]?.id ?? 0);
-      created = true;
+      created = Boolean(inserted.rows[0]);
+      // A concurrent first login may have committed the same verified identity after our SELECT.
+      const winner = created ? inserted : await client.query<{ id: number | string }>(
+        `select id from users
+          where (tg_id is not null and tg_id = $1)
+             or (vk_id is not null and vk_id = $2)
+             or (email is not null and email = $3)
+          limit 1 for update`,
+        [tg_id, vk_id, email],
+      );
+      id = Number(winner.rows[0]?.id ?? 0);
     }
     if (!Number.isSafeInteger(id) || id <= 0) throw new Error("identity_creation_failed");
     await ensureDefaultPersonalProjectInTransaction(client, id);

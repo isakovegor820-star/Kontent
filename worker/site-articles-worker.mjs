@@ -231,7 +231,7 @@ function sourceForPrompt(article) {
   }
 }
 
-async function autoPublishIfUnlocked(client, site, articleRow, queue) {
+async function autoPublishIfUnlocked(client, site, articleRow) {
   const unlocked = site.publishing_mode === "auto" && Number(site.approved_streak) >= Number(site.auto_unlock_streak);
   if (!unlocked) return { autoPublished: false };
   const destinations = await activeDestinationsForSite(client, site.id);
@@ -241,8 +241,7 @@ async function autoPublishIfUnlocked(client, site, articleRow, queue) {
     [articleRow.id, site.user_id],
   );
   const publications = await createArticlePublications(client, { article: articleRow, destinations, action: "publish" });
-  if (queue) for (const publication of publications) await enqueueSiteArticleJob(queue, SITE_ARTICLE_JOBS.PUBLISH, { publicationId: Number(publication.id) });
-  return { autoPublished: true, publications: publications.length };
+  return { autoPublished: true, publications: publications.length, publicationIds: publications.map((row) => Number(row.id)) };
 }
 
 export async function generateSiteArticle(pool, { articleId }, dependencies = {}) {
@@ -254,37 +253,49 @@ export async function generateSiteArticle(pool, { articleId }, dependencies = {}
 
   const claimed = await pool.query(
     `update site_articles set status = 'generating', updated_at = now()
-      where id = $1 and status in ('draft', 'failed')
+      where id = $1 and (status = 'draft' or (status = 'failed' and status_reason is distinct from 'generation_interrupted'))
       returning ${SITE_ARTICLE_FIELDS}`,
     [articleId],
   );
   const article = claimed.rows[0];
   if (!article) return { ok: true, skipped: "not_generatable" };
-  const site = await loadSite(pool, article.site_id);
-  if (!site || site.status !== "active") {
-    await pool.query(`update site_articles set status = 'failed', status_reason = 'site_inactive', updated_at = now() where id = $1`, [articleId]);
-    return { ok: false, reason: "site_inactive" };
-  }
-  const profile = profileFromSite(site);
-  const source = sourceForPrompt(article);
-  const facts = await siteFacts(pool, site.id, `${source.title || ""} ${source.question || ""} ${source.text || ""}`);
-  const siteInfo = { confirmedDomain: site.confirmed_domain, brandName: site.brand_name, canonicalUrl: site.canonical_url };
-
-  const usage = await acquire(pool, {
-    userId: Number(site.user_id),
-    kind: "site_article",
-    key: workerAiUsageCompositeKey("site-article", [String(articleId), `v${article.version}`]),
-    ttlMs: WORKER_AI_RESERVATION_TTL_MS,
-  });
-  if (usage.state === "limit") {
-    await pool.query(`update site_articles set status = 'draft', status_reason = 'ai_usage_limit', updated_at = now() where id = $1`, [articleId]);
-    throw new SiteArticleWorkerError("ai_usage_limit", "Лимит ИИ на сегодня исчерпан.", { retryable: true });
-  }
-  if (usage.state === "in_progress") throw new SiteArticleWorkerError("generation_in_progress", "Материал уже генерируется.", { retryable: true });
-  const reservationId = Number(usage.reservationId);
-  assertWorkerAiCallPolicy("site-article", reservationId);
-
+  let reservationId = null;
+  let reservationUserId = null;
   try {
+    const site = await loadSite(pool, article.site_id);
+    if (!site || site.status !== "active") {
+      await pool.query(`update site_articles set status = 'failed', status_reason = 'site_inactive', updated_at = now() where id = $1`, [articleId]);
+      return { ok: false, reason: "site_inactive" };
+    }
+    const profile = profileFromSite(site);
+    const source = sourceForPrompt(article);
+    const facts = await siteFacts(pool, site.id, `${source.title || ""} ${source.question || ""} ${source.text || ""}`);
+    const siteInfo = { confirmedDomain: site.confirmed_domain, brandName: site.brand_name, canonicalUrl: site.canonical_url };
+
+    reservationUserId = Number(site.user_id);
+    const usage = await acquire(pool, {
+      userId: Number(site.user_id),
+      kind: "site_article",
+      key: workerAiUsageCompositeKey("site-article", [String(articleId), `v${article.version}`]),
+      // Two completions can each spend 300s on fallback attempts; include validation headroom.
+      ttlMs: Math.max(WORKER_AI_RESERVATION_TTL_MS, 15 * 60_000),
+      reclaimAfterMs: Math.max(WORKER_AI_RESERVATION_TTL_MS, 15 * 60_000),
+    });
+    if (usage.state === "limit") {
+      await pool.query(`update site_articles set status = 'draft', status_reason = 'ai_usage_limit', updated_at = now() where id = $1`, [articleId]);
+      throw new SiteArticleWorkerError("ai_usage_limit", "Лимит ИИ на сегодня исчерпан.", { retryable: true });
+    }
+    if (usage.state === "in_progress") {
+      await pool.query(`update site_articles set status = 'draft', status_reason = 'generation_in_progress', updated_at = now() where id = $1 and status = 'generating' and version = $2`, [articleId, article.version]);
+      throw new SiteArticleWorkerError("generation_in_progress", "Материал уже генерируется.", { retryable: true });
+    }
+    if (usage.state === "committed") {
+      await pool.query(`update site_articles set status = 'failed', status_reason = coalesce(status_reason, 'generation_already_committed'), updated_at = now() where id = $1 and status = 'generating' and version = $2`, [articleId, article.version]);
+      return { ok: true, skipped: "already_committed" };
+    }
+    reservationId = Number(usage.reservationId);
+    assertWorkerAiCallPolicy("site-article", reservationId);
+
     const engine = configuredServiceEngine(dependencies.engine ?? process.env.SITE_ARTICLES_ENGINE ?? null);
     const prompt = buildArticlePrompt({ type: article.article_type, site: siteInfo, profile, source, linkablePages: profile.linkablePages, facts });
     let validation = null;
@@ -318,11 +329,17 @@ export async function generateSiteArticle(pool, { articleId }, dependencies = {}
 
     const generation = { promptVersion: prompt.promptVersion, engine: completion?.engine || engine, fallbackUsed: completion?.fallbackUsed || false, attempts: completion?.attempts || null };
     if (!validation || !validation.ok) {
-      await pool.query(
-        `update site_articles set status = 'failed', status_reason = 'quality', quality = $2::jsonb, generation = $3::jsonb, updated_at = now() where id = $1`,
-        [articleId, JSON.stringify({ issues: validation?.issues || [{ code: "schema_invalid", severity: "error", message: feedback }] }), JSON.stringify(generation)],
-      );
-      await commit(pool, Number(site.user_id), reservationId);
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        if (!await commit(client, Number(site.user_id), reservationId)) throw new SiteArticleWorkerError("ai_usage_reservation_lost", "Резерв лимита ИИ истёк.");
+        await client.query(
+          `update site_articles set status = 'failed', status_reason = 'quality', quality = $2::jsonb, generation = $3::jsonb, updated_at = now() where id = $1 and status = 'generating' and version = $4`,
+          [articleId, JSON.stringify({ issues: validation?.issues || [{ code: "schema_invalid", severity: "error", message: feedback }] }), JSON.stringify(generation), article.version],
+        );
+        await client.query("commit");
+      } catch (error) { await client.query("rollback").catch(() => undefined); throw error; }
+      finally { client.release(); }
       return { ok: false, reason: "quality", issues: validation?.issues || [] };
     }
 
@@ -336,6 +353,7 @@ export async function generateSiteArticle(pool, { articleId }, dependencies = {}
     const client = await pool.connect();
     try {
       await client.query("begin");
+      if (!await commit(client, Number(site.user_id), reservationId)) throw new SiteArticleWorkerError("ai_usage_reservation_lost", "Резерв лимита ИИ истёк.");
       const slug = await nextUniqueSlug(client, { siteId: site.id, base: validation.article.slug, excludeArticleId: articleId });
       const status = similarity.verdict === "reject" ? "rejected" : "needs_review";
       const statusReason = similarity.verdict === "reject" ? "semantic_duplicate" : similarity.verdict === "warn" ? "similarity_warning" : null;
@@ -344,22 +362,28 @@ export async function generateSiteArticle(pool, { articleId }, dependencies = {}
             set title = $2, slug = $3, meta_description = $4, body_markdown = $5, body_html = $6,
                 internal_links = $7::jsonb, structured_data = $8::jsonb, similarity_check = $9::jsonb,
                 quality = $10::jsonb, generation = $11::jsonb, status = $12, status_reason = $13, updated_at = now()
-          where id = $1
+          where id = $1 and status = 'generating' and version = $14
           returning ${SITE_ARTICLE_FIELDS}`,
         [
           articleId, validation.article.title, slug, validation.article.metaDescription, validation.article.bodyMarkdown,
           validation.article.bodyHtml, JSON.stringify(validation.article.internalLinks),
           validation.article.structuredData ? JSON.stringify(validation.article.structuredData) : null,
           JSON.stringify(similarity), JSON.stringify({ issues: validation.issues, wordCount: validation.article.wordCount }),
-          JSON.stringify(generation), status, statusReason,
+          JSON.stringify(generation), status, statusReason, article.version,
         ],
       );
       const row = updated.rows[0];
+      if (!row) throw new SiteArticleWorkerError("article_version_conflict", "Материал изменился во время генерации.");
       await recordArticleRevision(client, { article: row, version: row.version, authorUserId: null, changeKind: "generated" });
       let auto = { autoPublished: false };
-      if (status === "needs_review") auto = await autoPublishIfUnlocked(client, site, row, dependencies.queue);
+      if (status === "needs_review") auto = await autoPublishIfUnlocked(client, site, row);
       await client.query("commit");
-      await commit(pool, Number(site.user_id), reservationId);
+      // The durable publication rows are committed before touching Redis.
+      if (dependencies.queue) for (const publicationId of auto.publicationIds || []) {
+        await enqueueSiteArticleJob(dependencies.queue, SITE_ARTICLE_JOBS.PUBLISH, { publicationId }).catch(() => {
+          console.error("[site-generation] publication enqueue failed", { articleId, publicationId, code: "queue_unavailable" });
+        });
+      }
       return { ok: true, articleId, status: auto.autoPublished ? "approved" : status, similarity: similarity.verdict, ...auto };
     } catch (error) {
       await client.query("rollback").catch(() => undefined);
@@ -368,14 +392,12 @@ export async function generateSiteArticle(pool, { articleId }, dependencies = {}
       client.release();
     }
   } catch (error) {
-    if (!(error instanceof SiteArticleWorkerError)) {
-      await release(pool, Number(site.user_id), reservationId).catch(() => undefined);
-      const code = typeof error?.code === "string" ? error.code : "generation_failed";
-      await pool.query(
-        `update site_articles set status = 'failed', status_reason = $2, updated_at = now() where id = $1 and status = 'generating'`,
-        [articleId, code.slice(0, 80)],
-      );
-    }
+    if (reservationId) await release(pool, reservationUserId, reservationId).catch(() => undefined);
+    const code = typeof error?.code === "string" ? error.code : "generation_failed";
+    await pool.query(
+      `update site_articles set status = 'failed', status_reason = $2, updated_at = now() where id = $1 and status = 'generating' and version = $3`,
+      [articleId, code.slice(0, 80), article.version],
+    );
     throw error;
   }
 }
@@ -392,6 +414,46 @@ async function loadPublication(db, publicationId) {
   return result.rows[0] || null;
 }
 
+/** Serialize the send boundary with editorial writes; never hold a DB lock across the provider call. */
+async function claimArticleForPublication(pool, publication) {
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const article = (await client.query(
+      `select ${SITE_ARTICLE_FIELDS} from site_articles where id = $1 for update`,
+      [publication.article_id],
+    )).rows[0];
+    const allowed = publication.action === "publish"
+      ? ["approved", "scheduled", "publishing", "published"]
+      : publication.action === "unpublish" ? ["published", "publishing", "retired"] : ["published", "publishing"];
+    let reason = !article || !allowed.includes(article.status) ? "article_not_approved" : null;
+    if (!reason && Number(article.version) !== Number(publication.article_version)) reason = "article_version_stale";
+    if (!reason && Number(article.approved_version) !== Number(article.version)) reason = "article_not_approved";
+    if (reason) { await client.query("rollback"); return { reason }; }
+    let providerRef = null;
+    if (publication.action !== "publish") {
+      const previous = await client.query(
+        `select provider_ref from site_article_publications
+          where article_id = $1 and destination_id = $2 and status = 'published'
+            and action in ('publish', 'update') and provider_ref is not null
+          order by id desc limit 1`,
+        [article.id, publication.destination_id],
+      );
+      providerRef = previous.rows[0]?.provider_ref ?? null;
+      if (!providerRef) { await client.query("rollback"); return { reason: "provider_ref_missing" }; }
+    }
+    // A sibling destination may already be public. Keep that confirmed state visible.
+    if (!["published", "retired"].includes(article.status)) {
+      await client.query(`update site_articles set status = 'publishing', updated_at = now() where id = $1`, [article.id]);
+    }
+    await client.query("commit");
+    return { article, providerRef };
+  } catch (error) {
+    await client.query("rollback").catch(() => undefined);
+    throw error;
+  } finally { client.release(); }
+}
+
 export async function publishSiteArticle(pool, { publicationId }, dependencies = {}) {
   const adapters = dependencies.adapters || createSiteDestinationAdapters();
   const leaseToken = randomUUID();
@@ -405,37 +467,45 @@ export async function publishSiteArticle(pool, { publicationId }, dependencies =
   if (!claimed.rows[0]) return { ok: true, skipped: "not_pending" };
   const publication = await loadPublication(pool, publicationId);
   const site = await loadSite(pool, publication.site_id);
-  const article = (await pool.query(`select ${SITE_ARTICLE_FIELDS} from site_articles where id = $1`, [publication.article_id])).rows[0];
   const destinationRow = (await pool.query(
     `select id, site_id, kind, base_url, credentials, credential_state, section_path, settings, status from site_destinations where id = $1`,
     [publication.destination_id],
   )).rows[0];
 
   const fail = async (code, { articleStatus = "failed" } = {}) => {
-    await pool.query(
+    const failed = await pool.query(
       `update site_article_publications set status = 'failed', outcome = 'definite_failure', last_error_code = $2,
-              worker_lease_token = null, completed_at = now(), updated_at = now() where id = $1`,
-      [publicationId, code],
+              worker_lease_token = null, completed_at = now(), updated_at = now()
+        where id = $1 and status = 'publishing' and worker_lease_token = $3 returning id`,
+      [publicationId, code, leaseToken],
     );
+    if (!failed.rows.length) return { ok: true, skipped: "already_finalized_or_lease_lost" };
     if (articleStatus) await pool.query(`update site_articles set status = $2, status_reason = $3, updated_at = now() where id = $1 and status in ('approved', 'scheduled', 'publishing')`, [publication.article_id, articleStatus, code]);
     return { ok: false, reason: code };
   };
 
   if (!site || site.status !== "active") return fail("site_inactive");
   if (site.verification_state !== "verified") return fail("domain_unverified", { articleStatus: "approved" });
-  if (!article || !["approved", "scheduled", "publishing"].includes(article.status)) return fail("article_not_approved", { articleStatus: null });
-  if (Number(article.version) !== Number(publication.article_version)) return fail("article_version_stale", { articleStatus: null });
   if (!destinationRow || destinationRow.status !== "active") return fail("destination_inactive", { articleStatus: "approved" });
 
-  await pool.query(`update site_articles set status = 'publishing', updated_at = now() where id = $1`, [article.id]);
+  if (Number(destinationRow.site_id) !== Number(site.id)) return fail("destination_site_mismatch", { articleStatus: null });
+  const prepared = await claimArticleForPublication(pool, publication);
+  if (prepared.reason) return fail(prepared.reason, { articleStatus: null });
+  const { article, providerRef } = prepared;
   const adapter = adapters[destinationRow.kind];
   const destination = destinationRuntime(destinationRow, { userId: Number(site.user_id), hostedSlug: site.hosted_slug });
   const payload = articlePayload(article, { publishAt: new Date().toISOString() });
-  const result = publication.action === "update" && article.provider_ref
-    ? await adapter.update(destination, article.provider_ref, payload)
-    : publication.action === "unpublish"
-      ? await adapter.unpublish(destination, article.provider_ref)
-      : await adapter.publish(destination, payload);
+  let result;
+  try {
+    result = publication.action === "update"
+      ? await adapter.update(destination, providerRef, payload)
+      : publication.action === "unpublish"
+        ? await adapter.unpublish(destination, providerRef)
+        : await adapter.publish(destination, payload);
+  } catch {
+    // An exception after the send boundary cannot prove that the provider did nothing.
+    result = { ok: false, outcome: "delivery_unknown", providerOperationId: article.slug, reason: "provider_call_failed" };
+  }
 
   return finalizeDelivery(pool, { publication, article, site, destinationRow, result, dependencies });
 }
@@ -446,16 +516,44 @@ async function finalizeDelivery(pool, { publication, article, site, destinationR
     const client = await pool.connect();
     try {
       await client.query("begin");
-      await client.query(
+      await client.query(`select id from site_articles where id = $1 for update`, [article.id]);
+      const finalized = await client.query(
         `update site_article_publications
             set status = 'published', outcome = 'success', provider_operation_id = $2, provider_ref = $3::jsonb,
                 published_url = $4, reconcile_state = 'confirmed', worker_lease_token = null, last_error_code = null,
                 completed_at = now(), updated_at = now()
-          where id = $1`,
-        [publicationId, result.providerOperationId, result.providerRef ? JSON.stringify(result.providerRef) : null, result.publishedUrl],
+          where id = $1 and (
+            (status = 'publishing' and worker_lease_token = $5)
+            or (status = 'published_unverified' and $5::text is null)
+          ) returning id`,
+        [publicationId, result.providerOperationId, result.providerRef ? JSON.stringify(result.providerRef) : null, result.publishedUrl, publication.worker_lease_token ?? null],
       );
+      if (!finalized.rows.length) {
+        await client.query("rollback");
+        return { ok: true, skipped: "already_finalized_or_lease_lost" };
+      }
       if (publication.action === "unpublish") {
-        await client.query(`update site_articles set status = 'retired', retired_at = now(), published_url = null, updated_at = now() where id = $1`, [article.id]);
+        await client.query(`update site_articles set status = 'retired', retired_at = now(), published_url = null, updated_at = now()
+          where id = $1 and not exists (
+            select 1 from site_article_publications p where p.article_id = $1
+              and p.status = 'published' and p.action in ('publish', 'update')
+              and not exists (select 1 from site_article_publications newer
+                where newer.article_id = p.article_id and newer.destination_id = p.destination_id
+                  and newer.status = 'published' and newer.id > p.id)
+          )`, [article.id]);
+        // If another destination remains public, expose its confirmed URL/reference.
+        await client.query(
+          `update site_articles a set published_url = remaining.published_url, provider_ref = remaining.provider_ref
+             from (
+               select p.published_url, p.provider_ref from site_article_publications p
+                where p.article_id = $1 and p.status = 'published' and p.action in ('publish', 'update')
+                  and not exists (select 1 from site_article_publications newer
+                    where newer.article_id = p.article_id and newer.destination_id = p.destination_id
+                      and newer.status = 'published' and newer.id > p.id)
+                order by p.id desc limit 1
+             ) remaining where a.id = $1 and a.status = 'published'`,
+          [article.id],
+        );
         await recordArticleRevision(client, { article, version: article.version, changeKind: "retired" });
       } else {
         await client.query(
@@ -485,31 +583,34 @@ async function finalizeDelivery(pool, { publication, article, site, destinationR
   }
 
   if (result.outcome === "delivery_unknown") {
-    await pool.query(
+    const updated = await pool.query(
       `update site_article_publications
           set status = 'published_unverified', outcome = 'delivery_unknown', provider_operation_id = $2,
               reconcile_state = 'pending', last_error_code = $3, worker_lease_token = null, updated_at = now()
-        where id = $1`,
-      [publicationId, result.providerOperationId, String(result.reason || "delivery_unknown").slice(0, 80)],
+        where id = $1 and status = 'publishing' and worker_lease_token = $4 returning id`,
+      [publicationId, result.providerOperationId, String(result.reason || "delivery_unknown").slice(0, 80), publication.worker_lease_token],
     );
+    if (!updated.rows.length) return { ok: true, skipped: "already_finalized_or_lease_lost" };
     if (dependencies.queue) await enqueueSiteArticleJob(dependencies.queue, SITE_ARTICLE_JOBS.RECONCILE, { publicationId }, { delayMs: 60_000, jobId: `${siteArticleJobId("reconcile", publicationId)}-${publication.attempts}` });
     return { ok: false, publicationId, outcome: "delivery_unknown" };
   }
 
+  const retryable = result.outcome === "rate_limited" || result.retryable === true;
+  const updated = await pool.query(
+    `update site_article_publications
+        set status = $2, outcome = $3, last_error_code = $4, worker_lease_token = null,
+            completed_at = case when $2 = 'failed' then now() else null end, updated_at = now()
+      where id = $1 and status = 'publishing' and worker_lease_token = $5 returning id`,
+    [publicationId, retryable && Number(publication.attempts) < MAX_PUBLISH_ATTEMPTS ? "pending" : "failed", result.outcome, String(result.reason || result.outcome).slice(0, 80), publication.worker_lease_token],
+  );
+  if (!updated.rows.length) return { ok: true, skipped: "already_finalized_or_lease_lost" };
   if (result.outcome === "auth_failed") {
     await pool.query(
       `update site_destinations set status = 'needs_reconnect', credential_state = 'invalid', last_error_code = $2, updated_at = now() where id = $1`,
       [destinationRow.id, String(result.reason || "auth_failed").slice(0, 80)],
     );
   }
-  const retryable = result.outcome === "rate_limited" || result.retryable === true;
-  await pool.query(
-    `update site_article_publications
-        set status = $2, outcome = $3, last_error_code = $4, worker_lease_token = null,
-            completed_at = case when $2 = 'failed' then now() else null end, updated_at = now()
-      where id = $1`,
-    [publicationId, retryable && Number(publication.attempts) < MAX_PUBLISH_ATTEMPTS ? "pending" : "failed", result.outcome, String(result.reason || result.outcome).slice(0, 80)],
-  );
+
   if (retryable && Number(publication.attempts) < MAX_PUBLISH_ATTEMPTS) {
     if (dependencies.queue) await enqueueSiteArticleJob(dependencies.queue, SITE_ARTICLE_JOBS.PUBLISH, { publicationId }, { delayMs: 5 * 60_000, jobId: `${siteArticleJobId("publish", publicationId)}-${publication.attempts}` });
     return { ok: false, publicationId, outcome: result.outcome, retryScheduled: true };
@@ -534,20 +635,36 @@ export async function reconcileSitePublication(pool, { publicationId }, dependen
   if (!site || !article || !destinationRow) return { ok: false, reason: "context_missing" };
   const adapter = adapters[destinationRow.kind];
   const destination = destinationRuntime(destinationRow, { userId: Number(site.user_id), hostedSlug: site.hosted_slug });
-  const result = await adapter.reconcile(destination, publication.provider_operation_id || article.slug);
-  if (result.ok) return finalizeDelivery(pool, { publication, article, site, destinationRow, result, dependencies });
-  if (result.outcome === "definite_failure" && result.reason === "not_found") {
-    // Провайдер подтвердил: статьи нет. Можно безопасно повторить публикацию.
-    await pool.query(
+  const previous = publication.action === "publish" ? null : (await pool.query(
+    `select provider_ref from site_article_publications
+      where article_id = $1 and destination_id = $2 and status = 'published'
+        and action in ('publish', 'update') and provider_ref is not null
+      order by id desc limit 1`,
+    [publication.article_id, publication.destination_id],
+  )).rows[0];
+  const result = await adapter.reconcile(destination, publication.provider_operation_id || article.slug, {
+    action: publication.action,
+    expectedPayload: articlePayload(article),
+    providerRef: previous?.provider_ref ?? null,
+  });
+  const confirmed = result.ok && (publication.action !== "unpublish"
+    || destinationRow.kind === "site_hosted" || result.providerRef?.status === "draft");
+  if (confirmed) return finalizeDelivery(pool, { publication, article, site, destinationRow, result, dependencies });
+  if (destinationRow.kind !== "wordpress" && publication.action === "publish"
+    && result.outcome === "definite_failure" && result.reason === "not_found") {
+    // Only deterministic destinations prove absence. WordPress may rename a slug
+    // on collision, so a missing slug after a timed-out POST cannot authorize resend.
+    const updated = await pool.query(
       `update site_article_publications set status = 'pending', outcome = null, reconcile_state = 'confirmed', updated_at = now()
-        where id = $1 and attempts < $2`,
+        where id = $1 and attempts < $2 and status = 'published_unverified' returning id`,
       [publicationId, MAX_PUBLISH_ATTEMPTS],
     );
+    if (!updated.rows.length) return { ok: true, skipped: "already_finalized_or_lease_lost" };
     if (dependencies.queue) await enqueueSiteArticleJob(dependencies.queue, SITE_ARTICLE_JOBS.PUBLISH, { publicationId }, { jobId: `${siteArticleJobId("publish", publicationId)}-r${publication.attempts}` });
     return { ok: false, publicationId, outcome: "not_found", retryScheduled: true };
   }
   await pool.query(
-    `update site_article_publications set reconcile_state = 'unresolved', last_error_code = $2, updated_at = now() where id = $1`,
+    `update site_article_publications set reconcile_state = 'unresolved', last_error_code = $2, updated_at = now() where id = $1 and status = 'published_unverified'`,
     [publicationId, String(result.reason || result.outcome).slice(0, 80)],
   );
   return { ok: false, publicationId, outcome: result.outcome, reconcile: "unresolved" };

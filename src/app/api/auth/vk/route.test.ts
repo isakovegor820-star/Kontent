@@ -68,6 +68,17 @@ describe("POST /api/auth/vk logging", () => {
     );
   });
 
+  it("rejects JSON null before calling the provider", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const response = await POST(new NextRequest("http://localhost/api/auth/vk", {
+      method: "POST", headers: { origin: "http://localhost" }, body: "null",
+    }));
+    expect(response.status).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mocks.createSession).not.toHaveBeenCalled();
+  });
+
   it("bounds provider latency and returns a stable gateway timeout", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => {
       throw new DOMException("timed out", "TimeoutError");

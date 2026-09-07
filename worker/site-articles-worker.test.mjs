@@ -58,7 +58,7 @@ function makePool({ site = siteRow(), article = articleRow(), corpusPages = [], 
 
 const usageDeps = () => ({
   acquireUsage: vi.fn(async () => ({ state: "acquired", reservationId: 501 })),
-  commitUsage: vi.fn(async () => ({ status: "committed" })),
+  commitUsage: vi.fn(async () => true),
   releaseUsage: vi.fn(async () => true),
   embed: null,
 });
@@ -82,7 +82,7 @@ describe("generateSiteArticle", () => {
     expect(update.params[11]).toBe("needs_review");
     expect(JSON.parse(update.params[7])["@type"]).toBe("FAQPage");
     expect(client.query).toHaveBeenCalledWith("commit");
-    expect(deps.commitUsage).toHaveBeenCalledWith(pool, 9, 501);
+    expect(deps.commitUsage).toHaveBeenCalledWith(client, 9, 501);
     expect(calls.some((call) => call.sql.includes("insert into site_article_revisions"))).toBe(true);
   });
 
@@ -154,7 +154,12 @@ function publicationPool({ site = siteRow(), article, publication, destination, 
     calls.push({ sql: text, params });
     const custom = onQuery?.(text, params);
     if (custom) return custom;
-    if (text.includes("set status = 'publishing', attempts = attempts + 1")) return { rows: [{ id: publication.id }] };
+    if (text.includes("set status = 'publishing', attempts = attempts + 1")) {
+      publication.worker_lease_token = params[1];
+      return { rows: [{ id: publication.id }] };
+    }
+    if (text.includes("set status = 'published', outcome = 'success'")) return { rows: [{ id: publication.id }], rowCount: 1 };
+    if (text.includes("update site_article_publications") && text.includes("returning id")) return { rows: [{ id: publication.id }], rowCount: 1 };
     if (text.includes("from site_article_publications p join site_articles a")) return { rows: [publication] };
     if (text.includes("from sites s") && text.includes("left join site_profiles")) return { rows: [site] };
     if (text.includes("from site_articles where id = $1")) return { rows: [article] };

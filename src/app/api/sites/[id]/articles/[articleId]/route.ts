@@ -83,6 +83,9 @@ export async function PATCH(req: NextRequest, context: Context) {
     const profile = found.site.latest_profile_id
       ? await pool.query<{ linkable_pages: Array<{ url: string }> }>(`select linkable_pages from site_profiles where id = $1`, [found.site.latest_profile_id])
       : { rows: [] as Array<{ linkable_pages: Array<{ url: string }> }> };
+    if (body.expectedVersion !== undefined && body.expectedVersion !== Number(article.version)) {
+      throw new SiteServiceError("article_version_conflict", 409);
+    }
     const client = await pool.connect();
     try {
       await client.query("begin");
@@ -113,7 +116,7 @@ export async function POST(req: NextRequest, context: Context) {
     body = {};
   }
   const action = String(body.action || "") as Action;
-  if (!(action in ACTION_PERMISSION)) {
+  if (!Object.hasOwn(ACTION_PERMISSION, action)) {
     const bad = await resolveSiteRoute(req, "project.read", { mutation: true, label: "/api/sites/:id/articles/:articleId POST" });
     return bad.ok ? jsonWithRequest({ error: "bad_request" }, 400, bad.context.requestId) : bad.response;
   }
@@ -129,9 +132,21 @@ export async function POST(req: NextRequest, context: Context) {
     const article = await findSiteArticle(pool, Number(found.site.id), articleId);
     if (!article) return jsonWithRequest({ error: "not_found" }, 404, requestId);
 
+    if (body.expectedVersion !== undefined && body.expectedVersion !== Number(article.version)) {
+      throw new SiteServiceError("article_version_conflict", 409);
+    }
+
     if (action === "regenerate") {
       if (!["failed", "rejected", "needs_review"].includes(article.status)) throw new SiteServiceError("article_not_regenerable", 409);
-      await pool.query(`update site_articles set status = 'draft', status_reason = null, version = version + 1, updated_at = now() where id = $1`, [articleId]);
+      const updated = await pool.query(
+        `update site_articles set status = 'draft', status_reason = null, version = version + 1,
+           approved_by = null, approved_version = null, approved_at = null, updated_at = now()
+         where id = $1 and version = $2 and status in ('failed', 'rejected', 'needs_review')
+           and not exists (select 1 from site_article_publications where article_id = $1 and status in ('publishing', 'published_unverified'))
+         returning id`,
+        [articleId, article.version],
+      );
+      if (!updated.rowCount) throw new SiteServiceError("article_version_conflict", 409);
       await enqueueSiteArticleJob("generate", { articleId }, { jobId: `site-articles-generate-${articleId}-v${Number(article.version) + 1}` });
       return jsonWithRequest({ ok: true, status: "draft" }, 202, requestId);
     }

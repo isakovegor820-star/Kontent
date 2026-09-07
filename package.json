@@ -43,7 +43,9 @@
     "worker": "AURORA_RUNTIME_ROLE=worker node --env-file=.env.local worker.mjs",
     "worker:site-analysis": "AURORA_RUNTIME_ROLE=worker node --env-file=.env.local scripts/site-analysis-worker.mjs",
     "worker:media": "AURORA_RUNTIME_ROLE=worker AURORA_WORKER_MODE=media node --env-file=.env.local worker.mjs",
-    "worker:publication": "AURORA_RUNTIME_ROLE=worker AURORA_WORKER_MODE=publication node --env-file=.env.local worker.mjs"
+    "worker:publication": "AURORA_RUNTIME_ROLE=worker AURORA_WORKER_MODE=publication node --env-file=.env.local worker.mjs",
+    "test:knowledge-permissions:integration": "vitest run --config vitest.integration.config.ts src/e2e/knowledge-permissions.integration.ts",
+    "test:site-publication:integration": "vitest run --config vitest.integration.config.ts src/e2e/site-publication.integration.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1104.0",

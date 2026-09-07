@@ -67,7 +67,7 @@ export async function createSession(
     `insert into sessions (token_hash, user_id, expires_at, device, credential_epoch)
      select $1, u.id, $3, $4, u.credential_epoch
        from users u
-      where u.id = $2 and ($5::bigint is null or u.credential_epoch = $5)
+      where u.id = $2 and u.blocked_at is null and ($5::bigint is null or u.credential_epoch = $5)
      returning token_hash`,
     [
       tokenHash,

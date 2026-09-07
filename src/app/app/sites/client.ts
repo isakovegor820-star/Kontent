@@ -1,12 +1,19 @@
 export async function requestJson<T>(input: string, init?: RequestInit): Promise<{ status: number; body: T }> {
+  try {
   const response = await fetch(input, {
     ...init,
     headers: { "content-type": "application/json", accept: "application/json", ...(init?.headers || {}) },
     credentials: "same-origin",
     cache: "no-store",
   });
-  const body = (await response.json().catch(() => ({}))) as T;
+  const body = (await response.json()) as T;
+  if (!body || typeof body !== "object" || Array.isArray(body)) throw new TypeError("invalid_response");
   return { status: response.status, body };
+  } catch {
+    // Callers handle HTTP failures through the same result path and can release
+    // loading/busy state. A lost response never becomes a successful mutation.
+    return { status: 503, body: { error: "network_unavailable" } as T };
+  }
 }
 
 export function formatDate(value: string | null | undefined, withTime = false) {
@@ -38,6 +45,9 @@ export function errorMessage(code: string | undefined, fallback: string) {
     case "publish_posts_capability_missing": return "У этого пользователя WordPress нет права публиковать записи.";
     case "hosted_domain_not_configured": return "Служебный домен для хостируемого раздела не настроен на сервере.";
     case "article_not_editable": return "Этот материал сейчас нельзя редактировать.";
+    case "article_version_conflict": return "Материал изменился. Открой его заново и проверь актуальную версию; твоя правка не сохранена.";
+    case "publication_in_progress": return "Публикация ещё выполняется или проверяется. Дождись её результата.";
+    case "network_unavailable": return "Не удалось получить ответ сервера. Проверь состояние материала перед повтором действия.";
     case "article_not_approvable": return "Материал не в статусе, который можно одобрить.";
     case "article_not_approved": return "Сначала одобри материал.";
     case "brief_too_short": return "Опиши задачу подробнее — минимум 10 символов.";

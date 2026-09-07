@@ -1,8 +1,13 @@
 import { readFile } from "node:fs/promises";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import pg from "pg";
 
 import { migrate } from "../../scripts/migrate.mjs";
+import { NextResponse } from "next/server";
+const mocks = vi.hoisted(() => ({ getPool: vi.fn() }));
+vi.mock("@/lib/db", () => ({ getPool: mocks.getPool }));
+import { findOrCreateUser } from "@/lib/users";
+import { createSession } from "@/lib/session";
 import { registerPasswordUser } from "@/lib/password-registration";
 
 const databaseUrl = String(process.env.MIGRATION_TEST_DATABASE_URL || "").trim();
@@ -15,6 +20,7 @@ if (!target || !["localhost", "127.0.0.1", "::1"].includes(target.hostname)
 const pool = new pg.Pool({ connectionString: databaseUrl, ssl: false, max: 24 });
 
 beforeAll(async () => {
+  mocks.getPool.mockReturnValue(pool);
   await pool.query("drop schema public cascade");
   await pool.query("create schema public");
   await pool.query(await readFile(new URL("../../db/schema.sql", import.meta.url), "utf8"));
@@ -69,4 +75,20 @@ describe("password registration transaction", () => {
       "social-registration@example.test",
     ])).rows[0].password_hash).toBeNull();
   });
+});
+
+
+it("linearizes simultaneous first social logins into one identity and one project", async () => {
+  const results = await Promise.all(Array.from({ length: 20 }, () => findOrCreateUser({ tg_id: 88009911, name: "Concurrent social login" })));
+  expect(new Set(results.map(row => row.id)).size).toBe(1);
+  expect(results.filter(row => row.created)).toHaveLength(1);
+  expect((await pool.query("select user_id from project_members where user_id = $1 and role = 'owner'", [results[0].id])).rowCount).toBe(1);
+});
+
+it("does not issue a successful session for a blocked account", async () => {
+  const user = (await pool.query("insert into users (email, blocked_at) values ('blocked-review@example.test', now()) returning id")).rows[0];
+  const response = NextResponse.json({ ok: true });
+  expect(await createSession(response, Number(user.id), "test-device")).toBe(false);
+  expect(response.cookies.get("sid")).toBeUndefined();
+  expect((await pool.query("select user_id from sessions where user_id = $1", [user.id])).rowCount).toBe(0);
 });

@@ -1,4 +1,4 @@
-import { SafeHttpError, parsePublicHttpUrl, resolvePublicTarget } from "../safe-http.mjs";
+import { SafeHttpError, parsePublicHttpUrl, resolvePublicTarget, requestPublicBuffer } from "../safe-http.mjs";
 import {
   PROVIDER_DELIVERY_OUTCOMES,
   classifiedFailure,
@@ -22,6 +22,7 @@ export class WordPressAdapterError extends Error {
 
 function normalizeBaseUrl(value) {
   const url = parsePublicHttpUrl(value);
+  if (url.protocol !== "https:") throw new WordPressAdapterError("https_required", "WordPress: для пароля приложения требуется HTTPS");
   url.hash = "";
   url.search = "";
   // Принимаем и корень сайта, и уже готовый /wp-json.
@@ -50,6 +51,7 @@ async function readJson(response) {
 
 export function wpPostToRef(post, baseUrl) {
   if (!post || typeof post !== "object") return null;
+  if (!Number.isSafeInteger(Number(post.id)) || Number(post.id) <= 0 || typeof post.slug !== "string" || !post.slug) return null;
   const link = typeof post.link === "string" ? post.link : null;
   return {
     id: Number(post.id),
@@ -66,13 +68,12 @@ export function wpPostToRef(post, baseUrl) {
  * (проверка DNS перед запросом — как в safe-http), любой не-JSON и 5xx классифицируются
  * как неизвестная доставка, чтобы повтор шёл через reconcile по slug, а не через второй POST.
  */
-export function createWordPressAdapter({ fetchImpl = fetch, lookupFn, timeoutMs = DEFAULT_TIMEOUT_MS, now = () => new Date() } = {}) {
+export function createWordPressAdapter({ fetchImpl, requestFn, lookupFn, timeoutMs = DEFAULT_TIMEOUT_MS, now = () => new Date() } = {}) {
   async function request(destination, path, { method = "GET", body = null, query = null } = {}) {
     const base = normalizeBaseUrl(destination.baseUrl);
     const url = new URL(`${base.pathname}${path}`, base);
     for (const [key, value] of Object.entries(query || {})) if (value !== undefined && value !== null) url.searchParams.set(key, String(value));
-    await resolvePublicTarget(url, lookupFn);
-    const response = await fetchImpl(url.toString(), {
+    const init = {
       method,
       redirect: "manual",
       headers: {
@@ -83,7 +84,18 @@ export function createWordPressAdapter({ fetchImpl = fetch, lookupFn, timeoutMs 
       },
       body: body ? JSON.stringify(body) : undefined,
       signal: AbortSignal.timeout(timeoutMs),
-    });
+    };
+    let response;
+    if (fetchImpl) {
+      // Explicit test/embedded transport; production uses the pinned exchange below.
+      await resolvePublicTarget(url, lookupFn);
+      response = await fetchImpl(url.toString(), init);
+    } else {
+      const result = await requestPublicBuffer(url, {
+        ...init, lookupFn, requestFn, timeoutMs, maxBytes: MAX_RESPONSE_BYTES, httpsOnly: true,
+      });
+      response = { status: result.status, text: async () => result.buffer.toString("utf8") };
+    }
     if (response.status >= 300 && response.status < 400) {
       throw new WordPressAdapterError("redirect_forbidden", "WordPress: REST API перенаправляет запрос", { status: response.status });
     }
@@ -92,11 +104,18 @@ export function createWordPressAdapter({ fetchImpl = fetch, lookupFn, timeoutMs 
   }
 
   function classify(error) {
-    if (error instanceof SafeHttpError) return definiteFailure(error.code, { code: error.code });
+    if (error instanceof SafeHttpError) {
+      // Failure before connecting is definite; a timeout/oversized reply may follow
+      // a completed provider write and must never cause an automatic duplicate POST.
+      if (["bad_url", "bad_protocol", "credentials", "bad_host", "private_address"].includes(error.code)) {
+        return definiteFailure(error.code, { code: error.code });
+      }
+      return deliveryUnknown(null, error.code);
+    }
     if (error instanceof WordPressAdapterError) {
       if (error.code === "credentials_missing") return classifiedFailure(PROVIDER_DELIVERY_OUTCOMES.AUTH_FAILED, error.code, { code: error.code });
       if (error.code === "response_not_json" || error.code === "response_too_large") return deliveryUnknown(null, error.code);
-      return definiteFailure(error.code, { code: error.code, retryable: error.code === "redirect_forbidden" ? false : true });
+      return definiteFailure(error.code, { code: error.code, retryable: !["redirect_forbidden", "https_required"].includes(error.code) });
     }
     const code = typeof error?.name === "string" && error.name === "TimeoutError" ? "provider_timeout" : "network_error";
     return deliveryUnknown(null, code);
@@ -134,7 +153,7 @@ export function createWordPressAdapter({ fetchImpl = fetch, lookupFn, timeoutMs 
         if (status === 401 || status === 403) return { ok: false, credentialState: "invalid", permissionState: "denied", reason: "auth_failed" };
         if (status !== 200 || !payload) return { ok: false, credentialState: "unknown", permissionState: "unknown", reason: `http_${status}` };
         const capabilities = payload.capabilities || {};
-        const canPublish = Boolean(capabilities.publish_posts || capabilities.edit_posts);
+        const canPublish = capabilities.publish_posts === true;
         return {
           ok: canPublish,
           credentialState: "ready",
@@ -160,6 +179,7 @@ export function createWordPressAdapter({ fetchImpl = fetch, lookupFn, timeoutMs 
         const { status, payload: post } = await request(destination, "/wp/v2/posts", { method: "POST", body: articleBody(payload, "publish") });
         if (status === 201 || status === 200) {
           const ref = wpPostToRef(post, destination.baseUrl);
+          if (!ref || post.status !== "publish") return deliveryUnknown(providerOperationId, "publication_response_invalid");
           return success(providerOperationId, { providerRef: ref, publishedUrl: ref?.link || null });
         }
         return failureFromStatus(status, post, providerOperationId);
@@ -169,15 +189,29 @@ export function createWordPressAdapter({ fetchImpl = fetch, lookupFn, timeoutMs 
       }
     },
 
-    async reconcile(destination, providerOperationId) {
+    async reconcile(destination, providerOperationId, { action = "publish", expectedPayload = null, providerRef = null } = {}) {
       try {
-        const { status, payload } = await request(destination, "/wp/v2/posts", {
-          query: { slug: providerOperationId, status: "publish,future,draft,pending,private", per_page: 5, context: "edit" },
+        const postId = Number(providerRef?.id);
+        const knownPost = Number.isSafeInteger(postId) && postId > 0;
+        const { status, payload } = await request(destination, knownPost ? `/wp/v2/posts/${postId}` : "/wp/v2/posts", {
+          query: knownPost ? { context: "edit" } : { slug: providerOperationId, status: "publish,future,draft,pending,private", per_page: 5, context: "edit" },
         });
-        if (status !== 200 || !Array.isArray(payload)) return failureFromStatus(status, payload, providerOperationId);
-        const match = payload.find((post) => post?.slug === providerOperationId);
+        if (status !== 200 || (!knownPost && !Array.isArray(payload))) return failureFromStatus(status, payload, providerOperationId);
+        const match = knownPost ? payload : payload.find((post) => post?.slug === providerOperationId);
         if (!match) return definiteFailure("not_found", { code: "not_found", providerOperationId });
         const ref = wpPostToRef(match, destination.baseUrl);
+        if (!ref) return deliveryUnknown(providerOperationId, "publication_response_invalid");
+        if (action === "unpublish") {
+          return ref.status === "draft"
+            ? success(providerOperationId, { providerRef: ref, publishedUrl: null })
+            : deliveryUnknown(providerOperationId, "unpublish_not_confirmed");
+        }
+        if (ref.status !== "publish") return deliveryUnknown(providerOperationId, "publication_not_public");
+        // Slug equality alone can select a pre-existing, unrelated post. The worker
+        // supplies the exact approved payload and only matching raw content is proof.
+        if (expectedPayload && (match.title?.raw !== expectedPayload.title || match.content?.raw !== expectedPayload.bodyHtml)) {
+          return deliveryUnknown(providerOperationId, "publication_content_unconfirmed");
+        }
         return success(providerOperationId, { providerRef: ref, publishedUrl: ref.link });
       } catch (error) {
         const failure = classify(error);
@@ -193,6 +227,7 @@ export function createWordPressAdapter({ fetchImpl = fetch, lookupFn, timeoutMs 
         const { status, payload: post } = await request(destination, `/wp/v2/posts/${postId}`, { method: "POST", body: articleBody(payload, "publish") });
         if (status === 200) {
           const ref = wpPostToRef(post, destination.baseUrl);
+          if (!ref || post.status !== "publish") return deliveryUnknown(providerOperationId, "publication_response_invalid");
           return success(providerOperationId, { providerRef: ref, publishedUrl: ref?.link || null });
         }
         return failureFromStatus(status, post, providerOperationId);
@@ -209,7 +244,12 @@ export function createWordPressAdapter({ fetchImpl = fetch, lookupFn, timeoutMs 
       try {
         // Не удаляем безвозвратно: статья уходит в черновики, чтобы владелец мог вернуть её.
         const { status, payload: post } = await request(destination, `/wp/v2/posts/${postId}`, { method: "POST", body: { status: "draft" } });
-        if (status === 200) return success(providerOperationId, { providerRef: wpPostToRef(post, destination.baseUrl), publishedUrl: null });
+        if (status === 200) {
+          const ref = wpPostToRef(post, destination.baseUrl);
+          return ref?.status === "draft"
+            ? success(providerOperationId, { providerRef: ref, publishedUrl: null })
+            : deliveryUnknown(providerOperationId, "unpublish_not_confirmed");
+        }
         if (status === 404) return success(providerOperationId, { providerRef: null, publishedUrl: null });
         return failureFromStatus(status, post, providerOperationId);
       } catch (error) {
