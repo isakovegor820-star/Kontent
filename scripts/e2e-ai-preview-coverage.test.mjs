@@ -24,8 +24,8 @@ function fixture() {
       } else {decisions.push('reject'); visible=false;}
     },
   });
-  const preview={waitFor:async()=>{},getAttribute:async()=>acknowledged?'false':'true',getByRole:(_role,{name})=>button(name),
-    locator:()=>({textContent:async()=>candidate()}),count:async()=>visible?1:0};
+  const preview={waitFor:async()=>{},getAttribute:async()=>null,getByRole:(_role,{name})=>button(name),
+    locator:()=>({textContent:async()=>candidate(),getAttribute:async()=>acknowledged?null:'true'}),count:async()=>visible?1:0};
   const page={locator:()=>({waitFor:async()=>{}}),getByRole:(role,{name})=>role==='region'?preview:button(name),
     on:(_event,listener)=>{observed=listener;},off:vi.fn(),route:async(_pattern,handler)=>{gate=handler;},unroute:vi.fn(),
     goto:async()=>{},reload:async()=>{},waitForResponse:()=>new Promise(resolve=>{ackResolve=resolve;})};

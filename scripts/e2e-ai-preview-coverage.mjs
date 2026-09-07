@@ -77,7 +77,8 @@ export async function runAiPreviewCoverage({
       assert.equal(request.input.command,'rewrite');assert.equal(request.input.surface,'composer');
       assert.equal(request.input.inputDraftId,draft.id);assert.equal(request.input.inputDraftVersion,Number(original.version));
       assert.equal(request.input.channelId,channelId);assert.equal(request.projectHeader,String(projectId));
-      assert.equal(await preview.getAttribute('aria-busy'),'true');
+      assert.equal(await preview.getAttribute('aria-busy'),null,'the live status must remain outside the busy content');
+      assert.equal(await preview.locator('div.whitespace-pre-wrap').getAttribute('aria-busy'),'true','unacknowledged preview content must remain busy');
       assert.equal(await preview.getByRole('button',{name:'Применить вариант',exact:true}).count(),0,'unacknowledged output cannot be applied as complete');
       assert.equal(await readEditableText(text),originalText,'streaming preview replaced the editor before the decision');
       assert.deepEqual(await readDraft(),original,'streaming preview mutated the durable draft before the decision');
