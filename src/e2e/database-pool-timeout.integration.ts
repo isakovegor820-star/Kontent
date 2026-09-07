@@ -40,9 +40,9 @@ async function command(name: string, args: string[]): Promise<void> {
   try {
     await run(name, args, { maxBuffer: 4 * 1024 * 1024 });
   } catch (error) {
-    const detail = error && typeof error === "object" && "stderr" in error
-      ? String(error.stderr || "").trim()
-      : error instanceof Error ? error.message : String(error);
+    const stderr = error && typeof error === "object" && "stderr" in error
+      ? String(error.stderr || "").trim() : "";
+    const detail = stderr || (error instanceof Error ? error.message : String(error));
     throw new Error(`${name} failed${detail ? `: ${detail}` : ""}`);
   }
 }
