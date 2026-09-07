@@ -78,12 +78,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends --yes poppler-utils
 
-      - name: Expose PostgreSQL binaries for isolated cluster tests
+      - name: Install PostgreSQL 17 cluster and backup tools
         run: |
-          postgres_test_bin="$(pg_config --bindir)"
-          test -x "$postgres_test_bin/initdb"
-          test -x "$postgres_test_bin/pg_ctl"
-          "$postgres_test_bin/initdb" --version
+          sudo apt-get install --no-install-recommends --yes postgresql-17 postgresql-client-17
+          postgres_test_bin=/usr/lib/postgresql/17/bin
+          for postgres_tool in initdb pg_ctl pg_dump pg_restore psql createdb; do
+            test -x "$postgres_test_bin/$postgres_tool"
+            postgres_tool_version="$("$postgres_test_bin/$postgres_tool" --version)"
+            printf '%s\n' "$postgres_tool_version"
+            [[ "$postgres_tool_version" == *" 17."* ]]
+          done
           printf '%s\n' "$postgres_test_bin" >> "$GITHUB_PATH"
 
       - name: Create disposable integration databases
