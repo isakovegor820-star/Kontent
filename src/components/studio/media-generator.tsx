@@ -497,10 +497,9 @@ export function MediaGenerator({
     <section
       className="flex h-[var(--studio-h)] min-h-[520px] min-w-0 flex-col overflow-hidden"
       aria-label="Чат с дизайнером"
-      aria-busy={hasActiveGenerations}
     >
       <p role="status" className="sr-only">{announcement}</p>
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="min-h-0 flex-1 overflow-y-auto" aria-busy={hasActiveGenerations}>
         <div
           className={cn(
             "mx-auto flex min-h-full w-full max-w-[820px] flex-col px-4 py-6 md:px-6 md:py-8",
@@ -574,7 +573,7 @@ export function MediaGenerator({
                       </div>
                     )}
 
-                    {active && <TaskStatus label={status.title} />}
+                    {active && <TaskStatus label={status.title} announce={false} />}
 
                     {generation.status === "ready" && generation.assetUrl && (
                       <div
