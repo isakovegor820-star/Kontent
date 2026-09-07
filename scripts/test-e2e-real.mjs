@@ -362,7 +362,9 @@ function signalChild(subprocess, signal) {
 
 async function stopChild(subprocess, label, timeoutMs = 12_000) {
   if (!processTreeAlive(subprocess)) return { forced: false };
-  if (subprocess.auroraE2eLifecycle) subprocess.auroraE2eLifecycle.stopRequested = true;
+  if (subprocess.auroraE2eLifecycle && subprocess.exitCode == null && subprocess.signalCode == null) {
+    subprocess.auroraE2eLifecycle.stopRequested = true;
+  }
   signalChild(subprocess, "SIGTERM");
   const graceful = await waitFor(
     () => !processTreeAlive(subprocess),

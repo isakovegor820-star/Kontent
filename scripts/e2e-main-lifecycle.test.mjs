@@ -426,6 +426,30 @@ it.each(["navigate", "reload", "unresolved-read"])("project/calendar receives th
 });
 
 
+it("cleanup of surviving descendants cannot rewrite the exited parent's stop intent", async () => {
+  const selected = ast.statements.filter(node => ts.isFunctionDeclaration(node)
+    && ["processTreeAlive", "signalChild", "stopChild"].includes(node.name?.text));
+  let groupAlive = true;
+  const kill = vi.fn((_pid, signal) => {
+    if (signal === 0 && groupAlive) return;
+    if (signal !== 0) { groupAlive = false; return; }
+    throw Object.assign(new Error("gone"), { code: "ESRCH" });
+  });
+  const state = {
+    process: { platform: "linux", kill },
+    waitFor: async check => { if (!check()) throw new Error("group not stopped"); },
+    assert: (value, message) => { if (!value) throw new Error(message); },
+  };
+  vm.createContext(state);
+  vm.runInContext(selected.map(node => node.getFullText(ast)).join("\n") + "\nglobalThis.stop = stopChild;", state);
+  const subprocess = { pid: 12345, exitCode: 143, signalCode: null,
+    auroraE2eLifecycle: { stopRequested: false, unexpectedExit: "unrequested parent exit" } };
+  await state.stop(subprocess, "owned fixture descendants");
+  expect(kill).toHaveBeenCalledWith(-12345, "SIGTERM");
+  expect(groupAlive).toBe(false);
+  expect(subprocess.auroraE2eLifecycle).toEqual({ stopRequested: false, unexpectedExit: "unrequested parent exit" });
+});
+
 it.each(["requested-npm-sigterm", "unrequested-npm-sigterm", "unrequested-code143", "requested-other-nonzero"])("actual npm shell exit preserves stop intent: %s", async scenario => {
   const selected = ast.statements.filter(node => ts.isFunctionDeclaration(node)
     && ["child", "processTreeAlive", "signalChild", "stopChild", "finalizeOwnedRuntime"].includes(node.name?.text));
