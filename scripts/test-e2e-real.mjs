@@ -834,9 +834,14 @@ async function finalizeBrowserContexts() {
   interfaceEvidence.unmatchedNativeReads = mainRequestEvidence.snapshotUnmatchedReads();
   try {
     interfaceEvidence.editorialReceiptDiagnostics = await readEditorialReceiptDiagnostics(pool, interfaceEvidence.mainRequestDiagnostics);
-    interfaceEvidence.monthlyPlanReceiptDiagnostics = await readMonthlyPlanReceiptDiagnostics(pool, interfaceEvidence.mainRequestDiagnostics);
   } catch (error) {
     interfaceEvidence.editorialReceiptDiagnostics = { diagnosticOnly: true, unavailable: "database_read_failed" };
+    failures.push(error);
+  }
+  try {
+    interfaceEvidence.monthlyPlanReceiptDiagnostics = await readMonthlyPlanReceiptDiagnostics(pool, interfaceEvidence.mainRequestDiagnostics);
+  } catch (error) {
+    interfaceEvidence.monthlyPlanReceiptDiagnostics = { diagnosticOnly: true, unavailable: "database_read_failed" };
     failures.push(error);
   }
   const cancellations = mainRequestEvidence.proofs();

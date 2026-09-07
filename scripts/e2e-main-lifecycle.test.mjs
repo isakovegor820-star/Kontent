@@ -30,6 +30,7 @@ function fixture(captureBrowserArtifacts, failOnClose = false) {
   const state = { finalizeE2eBrowserLifecycle, Promise, AggregateError, resolve, context, reviewerContext: null, browser: null,
     mainRequestEvidence: { proofs: () => [], reason: () => null, snapshot: () => [], snapshotUnmatchedReads: () => [],
       flushNativeDiagnostics: vi.fn(async () => { order.push("native-flush"); }) },
+    readMonthlyPlanReceiptDiagnostics: vi.fn(async () => []),
     readEditorialReceiptDiagnostics: vi.fn(async () => { order.push("editorial-db"); return { diagnosticOnly: true, facts: [] }; }), pool: {},
     finalizeStudioSessionPersistence: async () => [], finalizeProductEventPersistence: async () => {}, mainFailedRequestIssues: new Map(), pendingCancellationPageErrors: [], pendingExpiryStructured: [],
     expiryFaultEvidence: { beginTeardown: () => {}, finalize: async () => ({ issues: [], observations: [] }), provedResponses: () => [] },
