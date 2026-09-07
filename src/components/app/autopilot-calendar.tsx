@@ -173,7 +173,9 @@ export function AutopilotCalendar({ items, selected, busy, storageKey, channelNa
               {entries.length === 0 ? <p className="text-xs text-text-3">Нет постов</p> : <div className="space-y-2">{entries.map((item) => <div key={item.id} className={cn("rounded-sm border p-2", item.state === "review" ? "border-brand/20 bg-info-soft" : item.state === "attention" ? "border-danger/20 bg-danger-soft" : "border-line bg-surface-inset")}>
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-xs font-bold tabular-nums">{time(item.scheduledAt)}</span>
-                  {item.selectable && item.planIndex != null && <input type="checkbox" checked={selected.has(item.planIndex)} disabled={busy} onChange={() => onSelect(item.planIndex!)} aria-label={`Выбрать пост: ${item.title}`} className="h-5 w-5 accent-brand" />}
+                  {item.selectable && item.planIndex != null && <label className="flex min-h-11 min-w-11 items-center justify-center">
+                    <input type="checkbox" checked={selected.has(item.planIndex)} disabled={busy} onChange={() => onSelect(item.planIndex!)} aria-label={`Выбрать пост: ${item.title}`} className="h-5 w-5 accent-brand" />
+                  </label>}
                 </div>
                 <button type="button" onClick={() => setOpenId(item.id)} className="mt-1 block min-h-11 w-full rounded-sm text-left focus-visible:outline-2 focus-visible:outline-brand" aria-label={`Открыть пост: ${item.title}`}>
                   <span className="line-clamp-3 text-[13px] leading-snug text-text">{item.title}</span>
