@@ -150,8 +150,8 @@ export async function GET(req: NextRequest) {
         .filter((id: number) => Number.isSafeInteger(id) && id > 0);
       const linkedDrafts = draftIds.length
         ? (
-            await pool.query<{ id: string; text: string; scheduled_at: string | null }>(
-              `select id, text, scheduled_at from drafts
+            await pool.query<{ id: string; text: string; scheduled_at: string | null; version: string }>(
+              `select id, text, scheduled_at, version from drafts
                 where project_id = $1 and id = any($2::bigint[])`,
               [membership.projectId, draftIds],
             )
@@ -163,6 +163,7 @@ export async function GET(req: NextRequest) {
         quick_settings: normalizeAutopilotQuickSettings(activeRow.quick_settings),
         items: activeRow.items.map((item: {
           draftId?: unknown;
+          editorVersion?: number;
           draft?: unknown;
           scheduledAt?: string;
           reviewRequired?: boolean;
@@ -170,8 +171,8 @@ export async function GET(req: NextRequest) {
           const linked = draftById.get(Number(item.draftId));
           const hydrated = {
             ...item,
-            draft: sanitizeAutopilotPublicText(linked?.text ?? item.draft),
-            ...(linked?.scheduled_at ? { scheduledAt: new Date(linked.scheduled_at).toISOString() } : {}),
+            draft: item.editorVersion ? item.draft : sanitizeAutopilotPublicText(item.draft),
+            editorVersion: linked && Number(linked.version) === item.editorVersion ? item.editorVersion : undefined,
           };
           return isAutopilotHumanReviewItem(hydrated)
             ? { ...hydrated, reviewRequired: true }

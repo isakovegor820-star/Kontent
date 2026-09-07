@@ -1685,7 +1685,7 @@ export default function CalendarPage() {
 
   const draftsReadyForUser = draftsReady && draftOwner === s.user;
   const serverDraftPosts = useMemo(
-    () => (draftOwner === s.user ? serverDrafts.map(serverDraftToPost) : []),
+    () => (draftOwner === s.user ? serverDrafts.filter((draft) => !draft.client_key?.startsWith("autopilot-item:")).map(serverDraftToPost) : []),
     [draftOwner, s.user, serverDrafts],
   );
 

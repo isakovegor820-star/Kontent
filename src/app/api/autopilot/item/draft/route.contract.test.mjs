@@ -13,10 +13,10 @@ describe("Autopilot full-editor handoff contract", () => {
   });
 
   it("preserves the planned instant and creates a publishable Composer draft", () => {
-    expect(source).toContain("localScheduleFieldsForInstant(item.scheduledAt");
+    expect(source).toContain("localScheduleFieldsForInstant(scheduledAt");
     expect(source).toContain("'autopilot', 'publishable'");
     expect(source).toContain("insert into draft_destinations");
-    expect(source).toContain("item.draftId = draftId");
+    expect(source).toContain("item.draftId = Number(draft.id)");
     expect(source).toContain("revision = revision + 1");
   });
 });

@@ -38,6 +38,7 @@ function stableValue(value) {
 
 export function autopilotApprovalSemantics(preview) {
   return JSON.stringify(stableValue({
+    selectedIndexes: preview?.selectedIndexes,
     expectedCount: preview?.expectedCount,
     complete: preview?.complete,
     counts: preview?.counts,
@@ -46,8 +47,9 @@ export function autopilotApprovalSemantics(preview) {
   }));
 }
 
-export function canonicalAutopilotPlanSnapshot({ items, planId, planRevision, channelId }) {
+export function canonicalAutopilotPlanSnapshot({ items, planId, planRevision, channelId, selectedIndexes }) {
   return stableValue({
+    ...(selectedIndexes == null ? {} : { selectedIndexes: [...selectedIndexes].sort((a, b) => a - b) }),
     planId: Number(planId),
     planRevision: Number(planRevision),
     channelId: Number(channelId),
@@ -59,6 +61,9 @@ export function canonicalAutopilotPlanSnapshot({ items, planId, planRevision, ch
       status: typeof item?.status === "string" ? item.status : "",
       postId: Number.isSafeInteger(Number(item?.postId)) ? Number(item.postId) : null,
       draftId: Number.isSafeInteger(Number(item?.draftId)) ? Number(item.draftId) : null,
+      editorVersion: Number(item?.editorVersion) || null,
+      media: item?.media ?? null,
+      formatting: item?.formatting ?? [],
       monthlyCampaignItemId: Number.isSafeInteger(Number(item?.monthlyCampaignItemId))
         ? Number(item.monthlyCampaignItemId)
         : null,
@@ -91,7 +96,7 @@ const messages = {
   quality_missing: "Пост ещё не прошёл фактическую проверку качества.",
   quality_failed: "Пост не прошёл проверку качества.",
   semantic_review_required: "Автопроверка фактов не отработала. Прочитай текст и нажми «Одобрить».",
-  editor_draft_linked: "Пост открыт в редакторе. Поставь его в календарь из редактора, чтобы сохранить правки.",
+  editor_draft_linked: "Верни сохранённые правки из редактора в автопилот перед добавлением в календарь.",
 };
 
 function qualityIsComplete(value) {
@@ -144,7 +149,7 @@ export function evaluateAutopilotItem(item, nowMs = Date.now(), options = {}) {
   // A standalone plan item linked to Composer may already contain newer text,
   // formatting or media. Never schedule the stale plan snapshot over that draft.
   // Monthly campaign items have their own draft-backed approval lifecycle.
-  if (Number(item.draftId) > 0 && !Number(item.monthlyCampaignItemId)) {
+  if (Number(item.draftId) > 0 && !Number(item.editorVersion) && !Number(item.monthlyCampaignItemId)) {
     blockers.push(blocker("editor_draft_linked"));
   }
 
@@ -219,10 +224,13 @@ export function buildAutopilotApprovalPreview({
   planId,
   planRevision = 1,
   expectedCount: expectedCountValue = null,
+  selectedIndexes,
   expiresAtMs = nowMs + AUTOPILOT_PREVIEW_TTL_MS,
   actor,
 }) {
-  const planItems = Array.isArray(items) ? items : [];
+  const allItems = Array.isArray(items) ? items : [];
+  const selection = selectedIndexes == null ? null : new Set(selectedIndexes);
+  const planItems = selection == null ? allItems : allItems.filter((item) => selection.has(item.i));
   const evaluations = planItems
     .map((item) => ({ item, evaluation: evaluateAutopilotItem(item, nowMs, { actor }) }))
     .filter(({ evaluation }) => evaluation.actionable);
@@ -259,7 +267,7 @@ export function buildAutopilotApprovalPreview({
     });
   }
 
-  const expectedCount = expectedCountValue == null
+  const expectedCount = selection != null ? selection.size : expectedCountValue == null
     ? evaluations.length
     : Math.max(0, Math.round(Number(expectedCountValue) || 0));
   const complete = expectedCount > 0 &&
@@ -273,11 +281,13 @@ export function buildAutopilotApprovalPreview({
     planId,
     planRevision,
     channelId: channel?.id,
+    selectedIndexes,
   });
   return {
     planId: Number(planId),
     revision: Number(planRevision),
-    hash: autopilotPlanRevisionHash({ items, planId, planRevision, channelId: channel?.id }),
+    ...(selectedIndexes == null ? {} : { selectedIndexes: [...selectedIndexes].sort((a, b) => a - b) }),
+    hash: autopilotPlanRevisionHash({ items, planId, planRevision, channelId: channel?.id, selectedIndexes }),
     channel: {
       id: Number(channel?.id),
       title: channel?.title || null,
@@ -305,20 +315,24 @@ export async function executeAutopilotApproval({
   schedule,
   onCheckpoint,
   attestor,
+  selectedIndexes,
 }) {
   const sourceItems = Array.isArray(items) ? items : [];
+  const selection = selectedIndexes == null ? null : new Set(selectedIndexes);
   const prepared = sourceItems.map((item) => (
-    attestor
+    attestor && (selection == null || selection.has(item.i))
       ? attestAutopilotItemForHumanApproval(item, {
           userId: attestor.userId,
           attestedAt: attestor.attestedAt || new Date(nowMs).toISOString(),
         })
       : item
   ));
-  const safeItems = annotateAutopilotItems(prepared, nowMs);
+  const safeItems = prepared.map((item) => selection == null || selection.has(item.i)
+    ? annotateAutopilotItems([item], nowMs)[0] : { ...item });
   let scheduled = 0;
   try {
     for (const item of safeItems) {
+      if (selection != null && !selection.has(item.i)) continue;
       const evaluation = evaluateAutopilotItem(item, nowMs);
       if (!evaluation.eligible || !evaluation.scheduledAt) continue;
       const postId = await schedule(item, evaluation.scheduledAt);

@@ -60,10 +60,10 @@ describe("Autopilot build UI contract", () => {
 
   it("implements the Autopilot overview hierarchy from the approved design", () => {
     expect(source).toContain("Аврора создаёт контент, публикует и анализирует результаты.");
-    expect(source).toContain("Контент создаётся и публикуется");
-    expect(source).toContain("Расписание публикаций");
+    expect(source).toContain("План ждёт твоей проверки");
+    expect(source).toContain("<AutopilotCalendar");
     expect(source).toContain("Последние публикации");
-    expect(source).toContain("Смотреть полный календарь");
+    expect(source).toContain("onReschedule={rescheduleItem}");
     expect(source).toContain("Опубликовано");
     expect(source).toContain("Просмотры");
     expect(source).toContain("Вовлечённость");
@@ -124,14 +124,12 @@ describe("Autopilot build UI contract", () => {
     expect(source).toContain("const hasUsablePlan = Boolean(plan && visible.length > 0)");
     expect(source).not.toContain("Источники и контекст");
     expect(source).toContain("reviewedIndexes");
-    expect(source).toContain("Подтвердить просмотр");
-    expect(source).toContain("attentionItems.length + scheduledPlanCheckpoints === plan.publicationTargetCount");
-    expect(source).toContain("добавить в календарь");
-    expect(source).toContain("Проверено ${reviewedCount} из");
+    expect(source).toContain("selectedIndexes,");
+    expect(source).toContain("Сохранить и вернуться в автопилот");
+    expect(source).toContain("Выбрать для календаря");
+    expect(source).toContain("Добавить в календарь");
     expect(source).toContain("Редактировать");
-    expect(source).toContain("Сохранить и проверить");
     expect(source).toContain("Заменить пост");
-    expect(source).toContain("Поставь пост в календарь оттуда");
     expect(source).toContain("max-w-[68ch]");
     expect(source).not.toContain("нужна правка");
     expect(source).not.toContain("Что здесь поправить");

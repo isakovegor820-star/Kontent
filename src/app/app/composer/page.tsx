@@ -376,6 +376,8 @@ interface HydrateInput {
 }
 
 interface ComposerValue {
+  isAutopilotDraft: boolean;
+  saveToAutopilot: () => Promise<void>;
   hydrated: boolean;
   draftLoadError: "not_found" | "source_context" | null;
   editingId: string | null;
@@ -502,6 +504,8 @@ export default function ComposerPage() {
   const projectTimezone = projects.current?.timezone ?? "UTC";
   const draftWorkspaceId = currentProjectId == null ? null : projectDraftWorkspaceId(currentProjectId);
 
+  const [isAutopilotDraft, setIsAutopilotDraft] = useState(false);
+  const autopilotReturnLock = useRef(false);
   const [hydrated, setHydrated] = useState(false);
   const [draftLoadError, setDraftLoadError] = useState<"not_found" | "source_context" | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -720,6 +724,8 @@ export default function ComposerPage() {
     ownerUserId,
   }: HydrateInput) => {
     setDraftLoadError(null);
+    setIsAutopilotDraft(Boolean((draft?.client_key ?? pending?.clientKey)?.startsWith("autopilot-item:"))
+      && !Number(new URLSearchParams(window.location.search).get("publication")));
     const fallback = new Date(Date.now() + 3600_000);
     fallback.setMinutes(0, 0, 0); // ровный час — по нему легче попадать глазом
     const scheduleFields = localScheduleFieldsForInstant(
@@ -857,6 +863,7 @@ export default function ComposerPage() {
     draftClientKeyRef.current = null;
     setEditingId(null);
     setDraftId(null);
+    setIsAutopilotDraft(false);
     setDraftVersion(null);
     setEditorialState("draft");
     setText("");
@@ -2016,6 +2023,44 @@ export default function ComposerPage() {
     return result ?? await acceptCurrentAcknowledgement(acknowledgedDraftRef.current);
   }, [persistDraft]);
 
+  const saveToAutopilot = useCallback(async () => {
+    if (autopilotReturnLock.current || !isAutopilotDraft) return;
+    autopilotReturnLock.current = true;
+    setSaving(true);
+    try {
+      const draft = await saveDraft();
+      if (!draft) return;
+      const response = await fetch("/api/autopilot/item/draft", {
+        method: "PATCH", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ draftId: draft.id, draftVersion: draft.version }),
+      });
+      const result = await response.json();
+      if (!response.ok || !result.ok) {
+        const messages: Record<string, string> = {
+          invalid_schedule: "Выбери дату и время не раньше чем через минуту.",
+          empty_draft: "Добавь текст поста.",
+          channel_changed: "У поста автопилота должен остаться исходный Telegram-канал. Верни его в настройках публикации.",
+          quality_failed: "Новая версия не прошла проверку качества. Исправь текст: запланированный пост пока не изменён.",
+          post_changed: "Публикация изменилась или уже отправляется. Открой её актуальную версию; правки сохранены в черновике.",
+          publication_in_progress: "Пост уже отправляется. Правки сохранены в черновике.",
+          stale_plan: "План изменился в другой вкладке. Повтори сохранение и возврат.",
+          version_conflict: "Есть более новая версия черновика. Обнови редактор перед повторным сохранением.",
+          access_denied: "Недостаточно прав для изменения этой публикации.",
+        };
+        throw new Error(messages[result.error] ?? "Не удалось вернуть правки в автопилот. Черновик сохранён, попробуй ещё раз.");
+      }
+      await s.refreshReal();
+      s.toast({ kind: result.queuePending ? "info" : "success", title: result.postId ? "Запланированный пост обновлён" : "Правки возвращены в автопилот",
+        body: result.queuePending ? "Изменения сохранены. Очередь публикации восстанавливается." : result.postId ? "В основном календаре сохранена та же публикация." : "Проверь пост и добавь его в основной календарь, когда будешь готов." });
+      const current = new URLSearchParams(window.location.search);
+      const view = current.get("autopilotView"); const anchor = current.get("autopilotAnchor");
+      const context = (view === "month" || view === "week") && anchor && /^\d{4}-\d{2}-\d{2}$/u.test(anchor) && Number.isFinite(Date.parse(anchor)) ? `&autopilotView=${view}&autopilotAnchor=${anchor}` : "";
+      router.push(`/app/autopilot?channel=${result.channelId}&item=${result.index}&plan=${result.planId}${result.postId ? `&post=${result.postId}` : ""}${context}`);
+    } catch (error) {
+      s.toast({ kind: "danger", title: "Правки ещё не применены", body: error instanceof Error ? error.message : "Повтори сохранение и возврат." });
+    } finally { setSaving(false); autopilotReturnLock.current = false; }
+  }, [isAutopilotDraft, saveDraft, router, s]);
+
   const recoverDraft = useCallback((): Promise<void> => runSingleDraftSave(
     recoveryRequestRef,
     async () => {
@@ -2095,6 +2140,7 @@ export default function ComposerPage() {
   ]);
 
   const publish = useCallback(async (mode: PublicationMode) => {
+    if (isAutopilotDraft) { await saveToAutopilot(); return; }
     if (!canPublish) {
       s.toast({
         kind: "danger",
@@ -2386,6 +2432,8 @@ export default function ComposerPage() {
     activePublicationError,
     activePublicationRequested,
     bestTime,
+    isAutopilotDraft,
+    saveToAutopilot,
     canPublish,
     composerUserId,
     date,
@@ -2543,6 +2591,8 @@ export default function ComposerPage() {
 
   const value = useMemo<ComposerValue>(
     () => ({
+      isAutopilotDraft,
+      saveToAutopilot,
       hydrated,
       draftLoadError,
       editingId,
@@ -2642,6 +2692,8 @@ export default function ComposerPage() {
       failHydration,
     }),
     [
+      isAutopilotDraft,
+      saveToAutopilot,
       aiBusy,
       aiPreview,
       aiReview,
@@ -2742,7 +2794,7 @@ export default function ComposerPage() {
     <ComposerCtx.Provider value={value}>
       <AppShell
         title="Редактор поста"
-        subtitle="Создавай, оформляй и добавляй публикации в календарь."
+        subtitle={isAutopilotDraft ? "Отредактируй пост и верни его в план автопилота." : "Создавай, оформляй и добавляй публикации в календарь."}
         action={draftId ? <EvidenceCard kind="draft" id={draftId} label="Доказательства" /> : undefined}
       >
         <Suspense fallback={<ComposerSkeleton />}>
@@ -2907,7 +2959,7 @@ function ComposerActionBar() {
     ? false
     : publicationOperationIsSettled(c.activePublication);
   const deliveryPresentation = c.activePublication == null ? null : publicationDeliveryPresentation(c.activePublication);
-  const visible = c.canPublish || blocked != null;
+  const visible = c.canPublish || blocked != null || (c.isAutopilotDraft && c.canEditContent);
   useLayoutEffect(() => {
     const root = document.documentElement;
     const previousClearance = root.style.getPropertyValue("--composer-action-bar-clearance");
@@ -2952,7 +3004,14 @@ function ComposerActionBar() {
       className="relative z-10 mt-4 lg:fixed lg:right-8 lg:bottom-4 lg:left-[calc(260px+2rem)] lg:mt-0"
     >
       <div className="mx-auto w-full max-w-5xl rounded-md border border-line bg-surface/95 p-3 shadow-lift backdrop-blur-xl sm:p-4">
-        {blocked ? (
+        {c.isAutopilotDraft ? (
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="max-w-[60ch] text-[13px] text-text-2">Правки вернутся в автопилот. Если пост уже в календаре, будет обновлена та же публикация.</p>
+            <Button variant="primary" onClick={() => void c.saveToAutopilot()} disabled={unavailable || !c.canEditContent} loading={c.saving}>
+              Сохранить и вернуться в автопилот
+            </Button>
+          </div>
+        ) : blocked ? (
           <section
             aria-labelledby="composer-recovery-title"
             aria-busy={c.recoveryState === "loading" || undefined}
@@ -3397,7 +3456,7 @@ function ComposerInner() {
   const localPosts = s.posts;
   const currentUserId = s.user?.id ?? null;
   const currentProjectId = projects.current?.id ?? null;
-  const canEditContent = c.canEditContent;
+  const canEditContent = c.canEditContent && !(c.isAutopilotDraft && c.saving);
   const currentProjectPersonal = projects.current?.personal === true;
   const currentWorkspaceId = currentProjectId == null ? null : projectDraftWorkspaceId(currentProjectId);
   const toast = s.toast;
@@ -3748,7 +3807,7 @@ function ComposerInner() {
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    if (c.canPublish && (e.metaKey || e.ctrlKey) && e.key === "Enter") {
+    if ((c.canPublish || (c.isAutopilotDraft && c.canEditContent)) && (e.metaKey || e.ctrlKey) && e.key === "Enter") {
       e.preventDefault();
       c.schedule();
     }
@@ -3769,6 +3828,7 @@ function ComposerInner() {
       >
         <Link
           href={returnTarget.href}
+          onClick={c.isAutopilotDraft ? (event) => { event.preventDefault(); if (!c.saving) void c.saveToAutopilot(); } : undefined}
           className={cn(
             "inline-flex min-h-11 items-center gap-2 rounded-xs px-2 text-[14px] font-semibold text-text-2",
             "transition-colors duration-200 hover:bg-surface-inset hover:text-text",
@@ -3776,7 +3836,7 @@ function ComposerInner() {
           )}
         >
           <ArrowLeft className="h-4 w-4" aria-hidden />
-          {returnTarget.label}
+          {c.isAutopilotDraft ? "Сохранить и вернуться в автопилот" : returnTarget.label}
         </Link>
       </nav>
 
@@ -3908,7 +3968,7 @@ function ComposerInner() {
                 </p>
               ) : (
                 <p className="text-[13px] text-text-3">
-                  {c.canPublish ? "Ctrl + Enter — запланировать" : "Изменения сохраняются автоматически"}
+                  {c.isAutopilotDraft ? "Ctrl + Enter — сохранить и вернуться в автопилот" : c.canPublish ? "Ctrl + Enter — запланировать" : "Изменения сохраняются автоматически"}
                 </p>
               )}
               <span className="nums shrink-0 text-[13px] text-text-3">{chars(len)}</span>
@@ -4217,7 +4277,7 @@ function ComposerInner() {
               <Checkbox
                 id="net-tg"
                 checked={tgOn}
-                disabled={!canEditContent}
+                disabled={!canEditContent || c.isAutopilotDraft}
                 onChange={(v) => c.toggleNetwork("tg", v)}
                 label={
                   <span className="inline-flex items-center gap-1.5">
@@ -4231,7 +4291,7 @@ function ComposerInner() {
               <Checkbox
                 id="net-vk"
                 checked={vkOn}
-                disabled={!canEditContent}
+                disabled={!canEditContent || c.isAutopilotDraft}
                 onChange={(v) => c.toggleNetwork("vk", v)}
                 label={
                   <span className="inline-flex items-center gap-1.5">
@@ -4274,7 +4334,7 @@ function ComposerInner() {
                     <button
                       key={ch.id}
                       type="button"
-                      disabled={!canEditContent}
+                      disabled={!canEditContent || c.isAutopilotDraft}
                       onClick={() => c.toggleChannelId(ch.id)}
                       aria-pressed={on}
                       className={cn(
@@ -4305,7 +4365,7 @@ function ComposerInner() {
                     <button
                       key={ch.id}
                       type="button"
-                      disabled={!canEditContent}
+                      disabled={!canEditContent || c.isAutopilotDraft}
                       onClick={() => c.toggleVkChannelId(ch.id)}
                       aria-pressed={on}
                       className={cn(
@@ -4327,13 +4387,13 @@ function ComposerInner() {
         </div>
         </EditorSection>
 
-        <TrackingBuilder
+        {!c.isAutopilotDraft && <TrackingBuilder
           value={c.tracking}
           onChange={c.setTracking}
           disabled={!canEditContent}
           validationError={c.errors.tracking}
           defaultOpen={trackingRequested}
-        />
+        />}
 
         {!currentProjectPersonal && (
           <>

@@ -133,6 +133,7 @@ export async function POST(req: NextRequest) {
         id: number;
         text: string;
         scheduled_at: Date | string | null;
+        client_key: string;
         origin: "manual" | "ai" | "trend" | "idea" | "competitor" | "rss" | "autopilot";
         purpose: "source_context" | "publishable" | "needs_review";
         generation_result_id: number | string | null;
@@ -145,7 +146,7 @@ export async function POST(req: NextRequest) {
         human_reviewed_version: number | string | null;
         human_reviewed_at: Date | string | null;
       }>(
-        `select d.id, d.text, d.scheduled_at, d.origin, d.purpose, d.version,
+        `select d.id, d.text, d.scheduled_at, d.origin, d.purpose, d.version, d.client_key,
                 d.generation_result_id, result.result_hash as generation_result_hash,
                 receipt.result_hash as receipt_result_hash, receipt.receipt as receipt_payload,
                 d.review_policy_version, d.ai_validation,
@@ -162,6 +163,9 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: false, error: "bad_draft_destination" }, { status: 422 });
       }
       const draft = destination.rows[0];
+      if (draft.client_key?.startsWith("autopilot-item:")) {
+        return NextResponse.json({ ok: false, error: "autopilot_confirmation_required" }, { status: 409 });
+      }
       if (draft.purpose === "source_context") {
         return NextResponse.json({ ok: false, error: "source_context_not_publishable" }, { status: 422 });
       }

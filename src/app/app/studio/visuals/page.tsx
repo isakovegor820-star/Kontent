@@ -330,7 +330,7 @@ function VisualEditor({
 }: {
   design: Design;
   draftId: number | null;
-  returnTo: "calendar" | "studio" | "autopilot-month" | null;
+  returnTo: "calendar" | "studio" | "autopilot" | "autopilot-month" | null;
   assets: MediaAsset[];
   projectBrand: Brand;
   onDesign: (design: Design) => void;
@@ -803,7 +803,9 @@ function BrandKitPanel({
 function LegalVisualStudioInner() {
   const params = useSearchParams();
   const draftId = Number(params.get("draft")) || null;
-  const returnTo = params.get("returnTo") === "autopilot-month"
+  const returnTo = params.get("returnTo") === "autopilot"
+    ? "autopilot"
+    : params.get("returnTo") === "autopilot-month"
     ? "autopilot-month"
     : params.get("returnTo") === "studio"
       ? "studio"
