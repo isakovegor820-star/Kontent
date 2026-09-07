@@ -80,6 +80,15 @@ jobs:
 
       - name: Install PostgreSQL 17 cluster and backup tools
         run: |
+          # The runner's preinstalled PG16 does not include an enabled PGDG source.
+          curl --fail --silent --show-error --location \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            --output "$RUNNER_TEMP/aurora-pgdg.asc"
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo install -m 0644 "$RUNNER_TEMP/aurora-pgdg.asc" /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
+          printf 'deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt %s-pgdg main\n' \
+            "$(lsb_release -cs)" | sudo tee /etc/apt/sources.list.d/aurora-pgdg.list > /dev/null
+          sudo apt-get update
           sudo apt-get install --no-install-recommends --yes postgresql-17 postgresql-client-17
           postgres_test_bin=/usr/lib/postgresql/17/bin
           for postgres_tool in initdb pg_ctl pg_dump pg_restore psql createdb; do
@@ -232,13 +241,13 @@ jobs:
 
       - name: Database pool acquisition deadline
         run: env -u DATABASE_URL npm run test:database-pool-timeout:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_publication_gate_test"
 
       - name: Database pool query and transaction monitoring
         run: env -u DATABASE_URL npm run test:db-pool:integration
         env:
           DATABASE_POOL_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_e2e_real"
-        env:
-          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_publication_gate_test"
 
       - name: Telegram actor ownership, replay and races
         run: env -u DATABASE_URL npm run test:telegram-ownership:integration
