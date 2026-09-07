@@ -6,11 +6,11 @@ const baseUrl = "https://127.0.0.1:12345";
 const payload = (owner = 1, draft = "text", id = "m1") => ({ version: 2, owner, savedAt: "2026-09-06T00:00:00Z",
   messages: [{ id, role: "ai", text: "synthetic partial", streaming: true }], draft, workspaceMode: "chat",
   generations: [[id, { cmd: "write", input: "synthetic", variant: 1, history: [], requestKey: "PRIVATE_KEY_CANARY" }]] });
-function fixture() {
+function fixture(failure="net::ERR_ABORTED") {
   const page = {}; const evidence = createStudioSessionEvidence({ baseUrl, ...contract });
   const body = JSON.stringify({ expectedRevision: 4, session: payload() });
   const request = { url: () => baseUrl + "/api/studio/session", method: () => "PUT", postData: () => body,
-    failure: () => ({ errorText: "net::ERR_ABORTED" }) };
+    failure: () => ({ errorText: failure }) };
   const event = { kind: "put", documentId: "doc", body, local: JSON.stringify(payload()), keepalive: true, leaving: true };
   const receipt = { user_id: 1, revision: 5, payload: payload() };
   evidence.observeRequest(request, "main", page); evidence.observeFailure(request);
@@ -24,13 +24,13 @@ it("uses the current actual v2 parser and streaming recovery normalization", () 
   expect(parsed.messages[0].interrupted).toBe(true);
   expect(Object.keys(contract.hashes)).toHaveLength(3);
 });
-it("ties persisted content to one actual failed PUT while leaving original outcome aborted", () => {
-  const f = fixture(); f.evidence.observeNative(f.page, f.event);
+it.each(["net::ERR_ABORTED", "Load request cancelled"])("ties persisted content to one actual failed PUT retaining %s", failure => {
+  const f = fixture(failure); f.evidence.observeNative(f.page, f.event);
   const proof = f.evidence.confirmPersisted(f.request, { owner: 1, receipts: [f.receipt] });
   expect(proof.reason).toBe("persisted_studio_snapshot");
   expect(readStudioSessionProof(proof).request).toBe(f.request);
   expect(readStudioSessionProof({ ...proof })).toBeNull();
-  expect(f.evidence.snapshot()[0].failure).toBe("net::ERR_ABORTED");
+  expect(f.evidence.snapshot()[0].failure).toBe(failure);
   expect(JSON.stringify(f.evidence.snapshot())).not.toContain("PRIVATE_KEY_CANARY");
   expect(JSON.stringify(f.evidence.snapshot())).not.toContain("synthetic");
 });

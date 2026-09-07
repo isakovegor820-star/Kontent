@@ -22,7 +22,7 @@ const canonicalJson = value => {
   // Match JSON serialization semantics for the parser's optional undefined fields.
   return encode(JSON.parse(JSON.stringify(value)));
 };
-const abort = value => /^(?:net::ERR_ABORTED|NS_BINDING_ABORTED|cancelled)$/u.test(value ?? "");
+const abort = value => /^(?:net::ERR_ABORTED|NS_BINDING_ABORTED|cancelled|Load request cancelled)$/u.test(value ?? "");
 export const readStudioSessionProof = proof => {
   const value = proofs.get(proof);
   return value?.valid() ? value.certificate : null;

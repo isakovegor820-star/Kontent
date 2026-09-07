@@ -11,7 +11,7 @@ const READ_ID_HEADER = "x-aurora-e2e-read-id";
 const JSON_COMPLETION_MAX_BYTES = 65_536;
 const certificates = new WeakMap();
 export const readMainCancellationProof = (proof) => certificates.get(proof)?.() ?? null;
-const isAbort = value => /^(?:net::ERR_ABORTED|NS_BINDING_ABORTED|cancelled)$/u.test(value ?? "");
+const isAbort = value => /^(?:net::ERR_ABORTED|NS_BINDING_ABORTED|cancelled|Load request cancelled)$/u.test(value ?? "");
 
 /** Track every actual request. An expected read lifetime is evidence for one
  * Request, not permission for GET failures elsewhere in a navigation window. */
@@ -266,7 +266,7 @@ export function createMainRequestEvidence({ baseUrl, now = () => performance.tim
           observedDocumentHashAtRequestStart: typeof row.documentId === "string" && row.documentId
             ? createHash("sha256").update(row.documentId).digest("hex") : null,
           urlHash: createHash("sha256").update(row.url).digest("hex"), method: row.method,
-          status: row.status ?? null, failure: row.failure ? (/^(?:net::ERR_[A-Z_]+|NS_BINDING_ABORTED|cancelled)$/u.test(row.failure) ? row.failure : "unrecognized_failure") : null,
+          status: row.status ?? null, failure: row.failure ? (/^(?:net::ERR_[A-Z_]+|NS_BINDING_ABORTED|cancelled|Load request cancelled)$/u.test(row.failure) ? row.failure : "unrecognized_failure") : null,
           callerPresence: matching.calls.length > 0, nativeMatchCount: matching.calls.length,
           requestMatchCount: matching.requests.length, callerMatched: Boolean(caller),
           callerFailure: caller?.callerFailure ?? null,
@@ -297,7 +297,7 @@ export function createMainRequestEvidence({ baseUrl, now = () => performance.tim
           requestIds: matching.requests.map(row => row.id), nativeFailureObserved: call.callerFailure != null,
           callerFailure: call.callerFailure ?? null, failed: call.callerFailure != null || Boolean(body?.error) || failures.length > 0,
           requestFailures: failures.map(row => ({ requestId: row.id, status: row.status ?? null,
-            failure: /^(?:net::ERR_[A-Z_]+|NS_BINDING_ABORTED|cancelled)$/u.test(row.failure) ? row.failure : "unrecognized_failure" })),
+            failure: /^(?:net::ERR_[A-Z_]+|NS_BINDING_ABORTED|cancelled|Load request cancelled)$/u.test(row.failure) ? row.failure : "unrecognized_failure" })),
           body: body ? { readerCount: body.readers, pendingReads: body.pending, byteCount: body.bytes, eofCount: body.eofCount,
             fulfilledClosedCount: body.closedCount, nativeError: body.error, cancelCount: body.cancelCount, invalidRead: body.invalidRead } : null };
       });

@@ -14,7 +14,7 @@ const TIMEOUT = 45_000;
 
 /** Classify only evidenced cancellations; resets, broken bodies and mutations remain failures. */
 export function classifyEditorCancellation(request) {
-  if (!request || !/^(?:net::ERR_ABORTED|NS_BINDING_ABORTED|cancelled)$/u.test(request.failure ?? "")) return null;
+  if (!request || !/^(?:net::ERR_ABORTED|NS_BINDING_ABORTED|cancelled|Load request cancelled)$/u.test(request.failure ?? "")) return null;
   const successful = request.status >= 200 && request.status < 300;
   if (request.method === "POST" && request.path === "/api/product-events" && successful) return "acknowledged_keepalive";
   if (request.method !== "GET") return null;

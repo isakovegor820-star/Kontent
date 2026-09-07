@@ -21,12 +21,12 @@ it.each(["GET", "PATCH", "POST", "DELETE"])("unproved %s abort remains failure",
   const f = fixture(); const req = f.request({ method }); f.start(req); f.evidence.observeFailure(req);
   expect(f.evidence.reason(req)).toBeNull(); expect(f.evidence.proofs()).toEqual([]);
 });
-it.each(["net::ERR_CONNECTION_RESET", "net::ERR_FAILED"])("caller abort cannot forgive %s", failure => {
+it.each(["net::ERR_CONNECTION_RESET", "net::ERR_FAILED", "Connection terminated unexpectedly", "NS_ERROR_NET_RESET"])("caller abort cannot forgive %s", failure => {
   const f = fixture(); const req = f.request({ failure }); f.native("start"); f.start(req); f.at(1100); f.native("abort"); f.native("failure", { callerAbort: true }); f.evidence.observeFailure(req);
   expect(f.evidence.reason(req)).toBeNull();
 });
-it("one native caller's AbortSignal admits only its exact Request", () => {
-  const f = fixture(); const req = f.request(); f.native("start"); f.start(req); f.at(1100); f.native("abort"); f.native("failure", { callerAbort: true }); f.evidence.observeFailure(req);
+it.each(["net::ERR_ABORTED", "NS_BINDING_ABORTED", "cancelled", "Load request cancelled"])("one native caller's %s admits only its exact Request", failure => {
+  const f = fixture(); const req = f.request({ failure }); f.native("start"); f.start(req); f.at(1100); f.native("abort"); f.native("failure", { callerAbort: true }); f.evidence.observeFailure(req);
   expect(f.evidence.reason(req)).toBe("caller_abort_signal");
   const proof = f.evidence.proofs()[0]; expect(readMainCancellationProof(proof).request).toBe(req);
   expect(readMainCancellationProof({ ...proof })).toBeNull();
@@ -958,4 +958,12 @@ it("serializes only RSC protocol facts, never the header or query values", () =>
   const rows = f.evidence.snapshot();
   expect(rows[0].rscProtocol).toEqual({ request: false, query: true, prefetch: true, response: true });
   expect(JSON.stringify(rows)).not.toContain(canary);
+});
+
+it.each(['no-signal','other-request','POST','late-failure','real-reset'])('Linux WebKit cancellation retains causal guards: %s',kind=>{
+  const f=fixture();const req=f.request({method:kind==='POST'?'POST':'GET',failure:kind==='real-reset'?'Connection terminated unexpectedly':'Load request cancelled'});
+  f.native('start');f.start(req);if(kind==='other-request')f.start(f.request());
+  f.at(1100);if(kind!=='no-signal')f.native('abort');f.native('failure',{callerAbort:kind!=='no-signal'});
+  f.at(kind==='late-failure'?9000:1200);f.evidence.observeFailure(req);
+  expect(f.evidence.reason(req)).toBeNull();expect(f.evidence.proofs()).toEqual([]);
 });
