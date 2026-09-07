@@ -186,6 +186,33 @@ describe("AI provider orchestration", () => {
     await expect(stream.next()).rejects.toMatchObject({ code: "first_token_timeout" });
   });
 
+  it("moves a stalled GPT route to Flash before its 60-second first-token budget", async () => {
+    vi.useFakeTimers();
+    const calls: string[] = [];
+    const factory: AiStreamFactory = async function* (_input, engine, signal) {
+      calls.push(engine);
+      if (engine === "navy-gpt-5-4") {
+        await new Promise<never>((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+      }
+      yield "RECOVERED";
+    };
+    const run = collect(orchestrateText(params, "navy-gpt-5-4", {
+      firstTokenMs: 60_000,
+      overallMs: 120_000,
+      fallbackEngines: ["navy-deepseek-flash"],
+      streamFactory: factory,
+    }));
+    await vi.advanceTimersByTimeAsync(12_000);
+    const events = await run;
+    expect(calls).toEqual(["navy-gpt-5-4", "navy-deepseek-flash"]);
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "fallback", reason: "first_token_timeout", toEngine: "navy-deepseek-flash",
+    }));
+    expect(events).toContainEqual({ type: "delta", engine: "navy-deepseek-flash", text: "RECOVERED" });
+  });
+
   it("обрывает весь поток по overall deadline даже после первого token", async () => {
     vi.useFakeTimers();
     const factory: AiStreamFactory = async function* (_input, _engine, signal) {

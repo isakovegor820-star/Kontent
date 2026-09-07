@@ -9,6 +9,7 @@ import {
   buildSystemPrompt,
   serializeUntrustedPromptData,
   generateText,
+  estimateGenerateTokenBudget,
   resolveEngineRuntime,
   type GenerateParams,
 } from "./ai-provider";
@@ -357,6 +358,70 @@ describe("generateText", () => {
     )));
 
     await expect(collect(generateText(params, "navy-qwen-3-6"))).resolves.toBe("ГОТОВЫЙ ПОСТ");
+  });
+
+  it.each(["navy-qwen-3-6", "navy-minimax-m3"] as const)("%s reserves reasoning budget even for a short reply", async (engine) => {
+    vi.stubEnv("NAVYAI_API_KEY", "navy-secret");
+    const fetchMock = vi.fn(async () => new Response(
+      'data: {"choices":[{"delta":{"content":"POST"}}]}\n\ndata: [DONE]\n\n',
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(collect(generateText({ ...params, kind: "reply" }, engine))).resolves.toBe("POST");
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toMatchObject({ max_tokens: 3000 });
+    expect(JSON.parse(String(init.body))).not.toHaveProperty("reasoning_effort");
+  });
+
+  it("retries a truncated inline think block once and accounts for both responses", async () => {
+    vi.stubEnv("NAVYAI_API_KEY", "navy-secret");
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(
+        'data: {"choices":[{"delta":{"content":"<think>private unfinished reasoning"},"finish_reason":"length"}]}\n\n'
+        + 'data: {"usage":{"prompt_tokens":50,"completion_tokens":3000}}\n\ndata: [DONE]\n\n',
+      ))
+      .mockResolvedValueOnce(new Response(
+        'data: {"choices":[{"delta":{"content":"<think>private</think>POST"},"finish_reason":"stop"}]}\n\n'
+        + 'data: {"usage":{"prompt_tokens":50,"completion_tokens":1700}}\n\ndata: [DONE]\n\n',
+      ));
+    vi.stubGlobal("fetch", fetchMock);
+    const onProviderUsage = vi.fn();
+    await expect(collect(generateText({ ...params, providerRequestKey: "operation", onProviderUsage }, "navy-qwen-3-6")))
+      .resolves.toBe("POST");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const retry = fetchMock.mock.calls[1][1] as RequestInit;
+    expect(JSON.parse(String(retry.body))).toMatchObject({ max_tokens: 6000 });
+    expect(new Headers(retry.headers).get("idempotency-key")).toBe("operation:visible-answer-expanded");
+    expect(onProviderUsage).toHaveBeenLastCalledWith(expect.objectContaining({ inputTokens: 100, outputTokens: 4700 }));
+    const projected = estimateGenerateTokenBudget(params, "navy-qwen-3-6");
+    expect(projected.maxOutputTokens).toBe(3000);
+    expect(projected.inputTokens).toBe(estimateGenerateTokenBudget(params, "openai").inputTokens);
+  });
+
+  it("does not repeat a response after exposing visible content", async () => {
+    vi.stubEnv("NAVYAI_API_KEY", "navy-secret");
+    const fetchMock = vi.fn(async () => new Response(
+      'data: {"choices":[{"delta":{"content":"PARTIAL"}}]}\n\n'
+      + 'data: {"error":{"code":"empty_generation"}}\n\n',
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+    const seen: string[] = [];
+    await expect((async () => {
+      for await (const piece of generateText(params, "navy-qwen-3-6")) seen.push(piece);
+    })()).rejects.toMatchObject({ code: "empty_generation" });
+    expect(seen.join("")).toBe("PARTIAL");
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("does not retry an empty response after cancellation", async () => {
+    vi.stubEnv("NAVYAI_API_KEY", "navy-secret");
+    const controller = new AbortController();
+    const fetchMock = vi.fn(async () => {
+      controller.abort();
+      return new Response('data: [DONE]\n\n');
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(collect(generateText(params, "navy-qwen-3-6", controller.signal))).rejects.toBeInstanceOf(Error);
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 
   it("повторяет reasoning-only ответ без reasoning и возвращает готовый текст", async () => {

@@ -130,6 +130,13 @@ export function configuredAiFallbacks(primary, env = process.env) {
     });
 }
 
+/** Leave time for a working fallback while GPT-5.4's upstream is timing out. */
+export function recoveryAttemptTimeoutMs(engine, timeoutMs, hasFallback) {
+  return hasFallback && engine === "navy-gpt-5-4" && timeoutMs > 0
+    ? Math.min(timeoutMs, 12_000)
+    : timeoutMs;
+}
+
 /**
  * Heavy background generations may run concurrently when their primary provider is cloud.
  * Local Ollama calls are serialized by ai-completion-service itself, including calls reached

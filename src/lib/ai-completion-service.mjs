@@ -1,8 +1,10 @@
 import { beginAiSpendAttempt } from "./ai-spend-ledger.mjs";
+import { providerOutputTokens } from "./ai-provider-budget.mjs";
 import {
   configuredAiFallbacks,
   configuredServiceEngine,
   resolveAiEngineRuntime,
+  recoveryAttemptTimeoutMs,
 } from "./ai-engine-policy.mjs";
 import { stripAiReasoning } from "./ai-visible-content.mjs";
 
@@ -206,9 +208,7 @@ async function oneCompletion(request, runtime, { fetchImpl, signal, timeoutMs, o
       // an empty `content`, which this service reports as `empty_generation`. Autopilot saw
       // that on every draft until each engine's circuit opened and the whole fleet answered
       // `provider_unavailable`. One budget for the whole endpoint keeps room for both phases.
-      const providerMaxTokens = runtime.id.startsWith("navy-")
-        ? Math.max(3_000, maxTokens)
-        : maxTokens;
+      const providerMaxTokens = providerOutputTokens(runtime.id, maxTokens);
       response = await fetchImpl(`${runtime.baseUrl}/chat/completions`, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${runtime.key}`, ...correlationHeaders },
@@ -387,14 +387,16 @@ export async function completeAiText(request, options = {}) {
           provider: runtime.id,
           model: runtime.model,
           inputTokens: Buffer.byteLength(JSON.stringify(request.messages || [request.system || "", request.user || ""]), "utf8") + 1024,
-          outputTokens: runtime.id.startsWith("navy-") ? Math.max(3000, maxTokens) : maxTokens,
+          outputTokens: providerOutputTokens(runtime.id, maxTokens),
         }, { env, ...(options.spendScope ? { scope: options.spendScope } : {}) });
         let usage = null;
         let succeeded = false;
         try {
           const result = await oneCompletion(request, runtime, {
             fetchImpl, signal,
-            timeoutMs: Math.min(runtime.protocol === "ollama" ? localTimeoutMs : timeoutMs, remainingMs),
+            timeoutMs: Math.min(runtime.protocol === "ollama" ? localTimeoutMs : recoveryAttemptTimeoutMs(
+              engine, timeoutMs, attempts < maxAttempts && index + 1 < candidates.length,
+            ), remainingMs),
             onUsage: (value) => { usage = value; },
           });
           succeeded = true;

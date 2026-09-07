@@ -313,6 +313,24 @@ plan_item_verdicts as (
       limit 1
    )
    order by item_index
+),
+media_recent as (
+  select g.id, g.request_id, g.kind, g.model, g.status, g.error_code,
+         g.created_at, g.updated_at, g.completed_at,
+         g.output_asset_id is not null as has_asset,
+         g.provider_job_id is not null as has_provider_job,
+         u.status as reservation_status
+    from public.media_generations g
+    left join public.ai_usage u on u.id = g.ai_usage_reservation_id
+   where g.created_at > now() - interval '48 hours'
+   order by g.created_at desc limit 30
+),
+ai_attempts_recent as (
+  select logical_operation_id, phase, attempt_index, provider, model, outcome,
+         safe_error_code, input_tokens, output_tokens, latency_ms, fallback, created_at
+    from public.ai_provider_attempts
+   where created_at > now() - interval '24 hours'
+   order by created_at desc limit 40
 )
 select jsonb_pretty(jsonb_build_object(
   'transactionReadOnly', current_setting('transaction_read_only'),
@@ -338,6 +356,8 @@ select jsonb_pretty(jsonb_build_object(
   'stuckBuilding', (select to_jsonb(e) from stuck_building as e),
   'aiUsageToday', (select to_jsonb(e) from ai_usage_today as e),
   'aiUsageRecent', coalesce((select jsonb_agg(to_jsonb(e)) from ai_usage_recent as e), '[]'::jsonb),
+  'mediaRecent', coalesce((select jsonb_agg(to_jsonb(e)) from media_recent as e), '[]'::jsonb),
+  'aiAttemptsRecent', coalesce((select jsonb_agg(to_jsonb(e)) from ai_attempts_recent as e), '[]'::jsonb),
   'channels', (select to_jsonb(e) from channel_rows as e),
   'recoveryVisibility', coalesce(
     (select jsonb_agg(to_jsonb(e) order by e.plan_id desc) from recovery_visibility as e),
