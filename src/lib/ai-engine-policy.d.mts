@@ -21,3 +21,4 @@ export function configuredAiConcurrency(
   cloudConcurrency?: number,
 ): number;
 export function configuredAiFallbacks(primary: EngineId, env?: Record<string, string | undefined>): EngineId[];
+export function recoveryAttemptTimeoutMs(engine: EngineId, timeoutMs: number, hasFallback: boolean): number;

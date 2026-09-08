@@ -6,6 +6,8 @@ import { migrate } from "../../scripts/migrate.mjs";
 import { ensureDefaultPersonalProject } from "@/lib/project-context";
 import {
   configureProjectTracking,
+  TrackingServiceError,
+  getProjectTrackingSettings,
   createProjectShortLink,
   getProjectTrackingReport,
   getRedirectTarget,
@@ -66,10 +68,19 @@ describe("tracking lifecycle with exact publication placement", () => {
       now,
     });
     expect(signal.status).toBe("pending_verification");
-    const verified = await verifyProjectTrackingSite({
+    const failed = await verifyProjectTrackingSite({
       pool,
       actorUserId: ownerId,
       expectedVersion: settings.version,
+      verifyChallenge: async () => { throw new TrackingServiceError("verification_file_missing"); },
+      now,
+    });
+    expect(failed).toMatchObject({ verified: false, tracking: { status: "verification_failed", verificationErrorCode: "verification_file_missing" } });
+    expect(await getProjectTrackingSettings(pool, ownerId)).toMatchObject({ verificationErrorCode: "verification_file_missing" });
+    const verified = await verifyProjectTrackingSite({
+      pool,
+      actorUserId: ownerId,
+      expectedVersion: failed.tracking.version,
       verifyChallenge: async ({ siteOrigin, challenge }) => {
         expect(siteOrigin).toBe("https://law.example.ru");
         expect(challenge).toBe(settings.verificationFileContent);
@@ -78,6 +89,11 @@ describe("tracking lifecycle with exact publication placement", () => {
       now,
     });
     expect(verified).toMatchObject({ verified: true, tracking: { status: "active" } });
+    const savedAgain = await configureProjectTracking({
+      pool, actorUserId: ownerId, siteOrigin: "https://law.example.ru",
+      attributionWindowDays: 14, expectedVersion: verified.tracking.version,
+    });
+    expect(savedAgain).toMatchObject({ status: "active", verifiedAt: verified.tracking.verifiedAt, verificationFileContent: settings.verificationFileContent, signalReceivedAt: signal.signalReceivedAt });
     const link = await createProjectShortLink({
       pool,
       actorUserId: ownerId,
