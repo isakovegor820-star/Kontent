@@ -1,3 +1,4 @@
+import { waitForE2e as waitFor } from "./e2e-wait.mjs";
 import { execFileSync, spawn } from "node:child_process";
 import { access, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { constants, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -677,21 +678,6 @@ function unexpectedRuntimeLogLines() {
     .filter((line) => fatalPattern.test(line) || firstParty5xxPattern.test(line));
 }
 
-async function waitFor(check, message, timeoutMs = 20_000) {
-  const intervalMs = 150;
-  const attempts = Math.max(1, Math.ceil(timeoutMs / intervalMs));
-  let last;
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    try {
-      const value = await check();
-      if (value) return value;
-    } catch (error) {
-      last = error;
-    }
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
-  }
-  throw new Error(`${message}${last ? `: ${last.message}` : ""}`);
-}
 
 async function reloadInBrowser(targetPage, timeoutMs = 60_000) {
   await Promise.all([
@@ -4296,11 +4282,15 @@ try {
       && (await saveButton.textContent())?.trim() === "Сохранено";
     if (!alreadySaved) {
       await waitFor(
-        () => saveButton.isEnabled().catch(() => false),
+        async () => (await protection.locator("summary").textContent())?.includes("Сохранено")
+          || await saveButton.isEnabled({ timeout: 500 }).catch(() => false),
         "Composer save button did not become enabled",
         UI_WAIT_TIMEOUT_MS,
       );
-      const stillNeedsSave = (await saveButton.textContent().catch(() => ""))?.trim() !== "Сохранено";
+      // Autosave can finish while route hydration replaces/closes the disclosure.
+      // Keep both the UI acknowledgement and database equality as the proof below.
+      const stillNeedsSave = !(await protection.locator("summary").textContent())?.includes("Сохранено")
+        && (await saveButton.textContent().catch(() => ""))?.trim() !== "Сохранено";
       if (stillNeedsSave) {
         // The typing-to-save transition can replace this React button between
         // Playwright's stability check and the native click in WebKit. Resolve
