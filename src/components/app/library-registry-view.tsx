@@ -5,15 +5,24 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   ArrowDownAZ,
+  Bookmark,
+  Check,
   Download,
+  ExternalLink,
+  Eye,
+  EyeOff,
   Filter,
+  Gauge,
+  Heart,
+  MessageSquareText,
   RefreshCw,
   Search,
+  Sparkles,
+  Star,
   X,
 } from "lucide-react";
 
-import { toggleExpandedCardId } from "@/components/app/library-card-text";
-import { LibraryFocusView } from "@/components/app/library-focus-view";
+import { LibraryCardText, libraryCardContentId, toggleExpandedCardId } from "@/components/app/library-card-text";
 import { Button } from "@/components/ui/button";
 import { Badge, Card, EmptyState, Input } from "@/components/ui/primitives";
 import { appDraftActionHref, type DraftBackedAppAction } from "@/lib/app-routes";
@@ -29,6 +38,7 @@ import type {
   LibraryViewedFilter,
 } from "@/lib/library-filters";
 import { useStore } from "@/lib/store";
+import { cn, fmtAgo, fmtNum } from "@/lib/utils";
 
 type Filters = {
   q: string;
@@ -109,9 +119,24 @@ const EXPORT_LABELS: Record<ExportLink["format"], string> = {
   html: "Веб-страница",
   markdown: "Текстовый файл",
 };
+const QUALITY_LABELS: Record<string, string> = {
+  low: "низкое качество",
+  medium: "среднее качество",
+  high: "высокое качество",
+};
+const MATURITY_LABELS: Record<string, string> = {
+  collecting: "данные накапливаются",
+  mature: "данных достаточно",
+};
+
 function finite(value: string) {
   const number = Number(value);
   return value.trim() && Number.isFinite(number) ? number : undefined;
+}
+
+function versionLabel(value: string | null | undefined) {
+  const version = value?.match(/\d+(?:\.\d+)*/u)?.[0];
+  return version || "текущая";
 }
 
 export function libraryRegistryEmptyState(
@@ -189,6 +214,10 @@ export function libraryRegistryQuery(channelId: number, filters: Filters) {
 
 function toggleValue<T extends string>(values: T[], value: T) {
   return values.includes(value) ? values.filter((item) => item !== value) : [...values, value];
+}
+
+function metric(value: number | null, digits = 1) {
+  return value == null || !Number.isFinite(value) ? "—" : value.toFixed(digits);
 }
 
 function itemIdentity(item: LibraryRegistryItem) {
@@ -402,7 +431,7 @@ export function LibraryRegistryView({ channelId, channelName }: { channelId: num
     <div className="mt-5 min-w-0 space-y-4">
       <div>
         <div>
-          <h2 className="text-[18px] font-extrabold text-text">Найди основу для следующего поста</h2>
+          <h2 className="text-[18px] font-extrabold text-text">Аналитический реестр</h2>
           <p className="mt-1 max-w-3xl text-[13px] leading-relaxed text-text-3">
             Сравнение идёт только внутри одного источника, формата и временного окна. Ваша оценка 1–5 не влияет на аналитическую оценку 0–100.
           </p>
@@ -537,9 +566,9 @@ export function LibraryRegistryView({ channelId, channelName }: { channelId: num
           </div>
         </Card>
       ) : loading ? (
-        <div className="mx-auto w-full max-w-4xl" role="status" aria-busy="true">
+        <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-3 lg:grid-cols-2" role="status" aria-busy="true">
           <span className="sr-only">Применяем фильтры</span>
-          <div className="skeleton h-96 rounded-[28px]" />
+          {[0, 1, 2, 3].map((item) => <div key={item} className="skeleton h-72 rounded-md" />)}
         </div>
       ) : items.length === 0 ? (
         <Card>
@@ -557,18 +586,105 @@ export function LibraryRegistryView({ channelId, channelName }: { channelId: num
           />
         </Card>
       ) : (
-        <LibraryFocusView
-          items={items}
-          channelId={channelId}
-          expanded={expanded}
-          formulaVersion={formulaVersion}
-          stateBusy={stateBusy}
-          draftBusy={draftBusy}
-          onToggleText={toggleCard}
-          onSave={(item) => void saveReference(item)}
-          onStateChange={(item, state) => void setItemState(item, state)}
-          onDraft={(action, item) => void openDraft(action, item)}
-        />
+        <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-3 lg:grid-cols-2">
+          {items.map((item) => {
+            const isExpanded = expanded.has(item.id);
+            const primaryAction: DraftBackedAppAction = item.kind === "saved" ? "editor" : "create";
+            const primaryKey = `${primaryAction}:${item.id}:channel:${channelId}`;
+            const discussKey = `discuss:${item.id}:channel:${channelId}`;
+            return (
+              <Card key={item.id} className="min-w-0 flex flex-col p-4 transition-[border-color,box-shadow] hover:border-line-strong hover:shadow-soft">
+                <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                  <Badge tone={item.kind === "reference" ? "fire" : item.kind === "idea" ? "brand" : "neutral"}>
+                    {item.kind === "reference" ? "Референс" : item.kind === "idea" ? "Идея" : "Коллекция"}
+                  </Badge>
+                  <span className="min-w-0 flex-1 truncate font-bold text-text-2">{item.sourceTitle}</span>
+                  <span className="text-text-3">{fmtAgo(item.postedAt)}</span>
+                  {!item.viewedAt && <Badge tone="brand">Новое</Badge>}
+                  {item.isHit && <Badge tone="fire">Лучшие 10% · прирост ≥ 5</Badge>}
+                </div>
+
+                <LibraryCardText
+                  className="mt-3"
+                  contentId={libraryCardContentId("registry", item.id)}
+                  text={item.text}
+                  expanded={isExpanded}
+                  onToggle={() => toggleCard(item)}
+                />
+
+                <div className="mt-3 grid grid-cols-3 gap-2 sm:grid-cols-4">
+                  <div className="rounded-xs bg-surface-inset p-2.5"><p className="text-[10px] text-text-3">Оценка 0–100</p><p className="nums mt-0.5 text-[15px] font-black text-text">{metric(item.analyticsScore, 1)}</p></div>
+                  <div className="rounded-xs bg-surface-inset p-2.5"><p className="text-[10px] text-text-3">Прирост</p><p className="nums mt-0.5 text-[15px] font-black text-text">{item.lift == null ? "—" : `×${metric(item.lift, 2)}`}</p></div>
+                  <div className="rounded-xs bg-surface-inset p-2.5"><p className="text-[10px] text-text-3">Скорость</p><p className="nums mt-0.5 text-[15px] font-black text-text">{metric(item.velocity, 1)}</p></div>
+                  <div className="rounded-xs bg-surface-inset p-2.5"><p className="text-[10px] text-text-3">Вовлечённость</p><p className="nums mt-0.5 text-[15px] font-black text-text">{item.erBayes == null ? "—" : `${(item.erBayes * 100).toFixed(2)}%`}</p></div>
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] text-text-3">
+                  {item.views != null && <span className="flex items-center gap-1"><Eye className="h-3.5 w-3.5" aria-hidden /> {fmtNum(item.views)}</span>}
+                  {item.reactions != null && <span className="flex items-center gap-1"><Heart className="h-3.5 w-3.5" aria-hidden /> {fmtNum(item.reactions)}</span>}
+                  <span className="flex items-center gap-1"><Gauge className="h-3.5 w-3.5" aria-hidden /> Отклонение {metric(item.velocityZ, 2)}</span>
+                  <span>{QUALITY_LABELS[item.dataQuality || ""] || "качество не определено"} · {MATURITY_LABELS[item.dataMaturity || ""] || "зрелость не определена"}</span>
+                  <span>{FORMAT_LABELS[item.format]}</span>
+                </div>
+
+                <details className="mt-3 rounded-xs border border-line bg-surface-2 px-3 py-2">
+                  <summary className="cursor-pointer text-[11px] font-bold text-text-2">Как рассчитана оценка</summary>
+                  <p className="mt-2 text-[11px] leading-relaxed text-text-3">{item.explanation || "Недостаточно сопоставимых данных."}</p>
+                  <p className="mt-1 text-[10px] text-text-3">Версия формулы: {versionLabel(item.formulaVersion || formulaVersion)}</p>
+                </details>
+
+                <fieldset className="mt-3">
+                  <legend className="text-[11px] font-bold text-text-2">Ваша оценка, отдельно от аналитической</legend>
+                  <div className="mt-1 flex flex-wrap items-center gap-1" aria-label="Оценка от 1 до 5">
+                    {[1, 2, 3, 4, 5].map((rating) => (
+                      <button
+                        key={rating}
+                        type="button"
+                        aria-label={`Поставить оценку ${rating} из 5`}
+                        aria-pressed={item.userRating === rating}
+                        disabled={Boolean(stateBusy)}
+                        onClick={() => void setItemState(item, { rating: item.userRating === rating ? null : rating })}
+                        className="grid h-10 w-10 place-items-center rounded-sm text-text-3 hover:bg-fire-soft hover:text-fire focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15 disabled:opacity-50"
+                      >
+                        <Star className={cn("h-4 w-4", item.userRating != null && rating <= item.userRating && "fill-current text-fire")} aria-hidden />
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      disabled={Boolean(stateBusy)}
+                      onClick={() => void setItemState(item, { viewed: !item.viewedAt })}
+                      className="inline-flex min-h-10 basis-full items-center gap-1.5 rounded-sm px-2 text-[11px] font-semibold text-text-2 hover:bg-surface-inset sm:ml-auto sm:basis-auto"
+                    >
+                      {item.viewedAt ? <EyeOff className="h-3.5 w-3.5" aria-hidden /> : <Check className="h-3.5 w-3.5" aria-hidden />}
+                      {item.viewedAt ? "Сделать новым" : "Просмотрено"}
+                    </button>
+                  </div>
+                </fieldset>
+
+                <div className="mt-3 flex flex-wrap items-center gap-1.5 border-t border-line pt-3">
+                  {item.kind === "reference" && (
+                    <Button variant={item.saved ? "ghost" : "solid"} size="sm" disabled={item.saved || Boolean(stateBusy)} loading={stateBusy === `save:${item.id}`} onClick={() => void saveReference(item)}>
+                      {stateBusy !== `save:${item.id}` && <Bookmark className={cn("h-3.5 w-3.5", item.saved && "fill-current")} aria-hidden />}
+                      {item.saved ? "Сохранено" : "Сохранить"}
+                    </Button>
+                  )}
+                  <Button variant="soft" size="sm" loading={draftBusy === primaryKey} disabled={Boolean(draftBusy) && draftBusy !== primaryKey} onClick={() => void openDraft(primaryAction, item)}>
+                    {draftBusy !== primaryKey && <Sparkles className="h-3.5 w-3.5" aria-hidden />}
+                    {item.kind === "saved" ? "Открыть в редакторе" : "Создать публикацию"}
+                  </Button>
+                  <Button variant="ghost" size="sm" loading={draftBusy === discussKey} disabled={Boolean(draftBusy) && draftBusy !== discussKey} onClick={() => void openDraft("discuss", item)}>
+                    {draftBusy !== discussKey && <MessageSquareText className="h-3.5 w-3.5" aria-hidden />}
+                    Обсудить с Авророй
+                  </Button>
+                  {item.sourceUrl && (
+                    <a href={item.sourceUrl} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-10 items-center gap-1.5 rounded-sm px-2.5 text-[12px] font-semibold text-text-2 hover:bg-surface-inset hover:text-text">
+                      <ExternalLink className="h-3.5 w-3.5" aria-hidden /> Открыть оригинал
+                    </a>
+                  )}
+                </div>
+              </Card>
+            );
+          })}
+        </div>
       )}
     </div>
   );

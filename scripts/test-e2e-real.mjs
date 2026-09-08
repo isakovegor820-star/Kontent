@@ -2655,33 +2655,27 @@ try {
   assert((await desktopLibraryActive.textContent())?.includes("Идеи и примеры"), "desktop Library item is not active");
   assert(new URL(page.url()).searchParams.get("channel") === String(channels[0]), "Library lost selected channel in URL");
 
-  const registrySearch = page.getByPlaceholder("Поиск по тексту, источнику или каналу…");
-  await registrySearch.fill("E2E_LIBRARY_REFERENCE");
-  await waitForFirstPartyNetworkIdle(page, "filtered Library");
   const libraryContentId = `library-registry-text-reference-${libraryReferenceId}`;
   const libraryText = page.locator(`#${libraryContentId}`);
-  const libraryReferenceCard = page.getByRole("region", { name: "Просмотр материалов", exact: true }).filter({ has: libraryText });
-  await libraryText.waitFor({ state: "attached", timeout: UI_WAIT_TIMEOUT_MS });
-  const expand = libraryReferenceCard.getByRole("button", { name: "Читать полностью", exact: true });
-  const libraryUrlBeforeExpand = page.url();
-  assert(await expand.getAttribute("aria-expanded") === "false", "Library cover has wrong aria-expanded");
-  assert(await expand.getAttribute("aria-controls") === libraryContentId, "Library cover controls another source");
-  assert(!(await libraryText.isVisible()), "Library cover exposes the full reader before opening");
-  await expand.focus();
-  await page.keyboard.press("Enter");
+  const libraryReferenceCard = libraryText.locator(
+    "xpath=ancestor::div[contains(concat(' ', normalize-space(@class), ' '), ' card-plain ')][1]",
+  );
   await libraryText.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
-  const collapse = libraryReferenceCard.getByRole("button", { name: "К обложке", exact: true });
+  const expand = page.locator(`button[aria-controls="${libraryContentId}"]`);
+  const libraryUrlBeforeExpand = page.url();
+  assert(await expand.getAttribute("aria-expanded") === "false", "closed Library card has wrong aria-expanded");
+  assert((await libraryText.getAttribute("class"))?.includes("line-clamp-4"), "closed Library card is not clamped");
+  await expand.click();
   assert(page.url() === libraryUrlBeforeExpand, "Library expansion navigated away from the card");
-  assert(await collapse.getAttribute("aria-expanded") === "true", "Library reader has wrong aria-expanded");
-  assert(await libraryText.textContent() === libraryReferenceText, "Library reader lost part of the full source text");
-  assert(await libraryText.evaluate((element) => getComputedStyle(element).webkitLineClamp === "none"), "Library reader stayed clamped");
-  assert(await collapse.evaluate((element) => document.activeElement === element), "Library reader did not receive keyboard focus");
-  await collapse.click();
-  await expand.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
-  assert(await expand.getAttribute("aria-expanded") === "false", "Library reader did not collapse independently");
-  assert(!(await libraryText.isVisible()), "Library reader remained visible after collapse");
-  assert(await expand.evaluate((element) => document.activeElement === element), "Library cover did not regain keyboard focus");
+  assert(await expand.getAttribute("aria-expanded") === "true", "expanded Library card has wrong aria-expanded");
+  assert(!(await libraryText.getAttribute("class"))?.includes("line-clamp-4"), "expanded Library card stayed clamped");
+  await expand.click();
+  assert(await expand.getAttribute("aria-expanded") === "false", "Library card did not collapse independently");
 
+  const registrySearch = page.getByPlaceholder("Поиск по тексту, источнику или каналу…");
+  await registrySearch.fill("E2E_LIBRARY_REFERENCE");
+  await page.waitForTimeout(450);
+  await libraryText.waitFor();
   const filtersSummary = page.locator("summary").filter({ hasText: "Все фильтры" });
   await filtersSummary.focus();
   await page.keyboard.press("Enter");
@@ -2844,9 +2838,6 @@ try {
   );
   await page.evaluate(() => globalThis.history.back());
   await waitForRestoredLibrary(page, channels[0]);
-  await registrySearch.fill("E2E_LIBRARY_REFERENCE");
-  await waitForFirstPartyNetworkIdle(page, "restored filtered Library");
-  await libraryText.waitFor({ state: "attached", timeout: UI_WAIT_TIMEOUT_MS });
   const discussReference = libraryReferenceCard.getByRole("button", { name: "Обсудить с Авророй", exact: true });
   await discussReference.waitFor();
   await desktopSidebar
