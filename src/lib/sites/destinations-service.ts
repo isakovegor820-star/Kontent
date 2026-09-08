@@ -155,7 +155,7 @@ export async function upsertSiteDestination(db: Queryable, input: {
   if (!verification.ok) {
     throw Object.assign(new SiteServiceError(verification.reason || "destination_verification_failed", 422), { verification });
   }
-  const envelope = encryptDestinationCredentials(credentials, { userId: input.userId });
+  const envelope = encryptDestinationCredentials(credentials, { userId: Number(input.site.user_id) });
   const stored = await db.query<SiteDestinationRow>(
     `insert into site_destinations (site_id, kind, base_url, credentials, credential_state, section_path, settings, status, last_verified_at, last_error_code)
      values ($1, 'wordpress', $2, $3, 'ready', $4, $5::jsonb, 'active', now(), null)
@@ -182,6 +182,6 @@ export async function disconnectSiteDestination(db: Queryable, siteId: number, k
   return result.rows[0] ?? null;
 }
 
-export function runtimeForDestination(row: SiteDestinationRow, site: SiteRow & { hosted_slug?: string | null }, userId: number) {
-  return destinationRuntime(row, { userId, hostedSlug: site.hosted_slug ?? null });
+export function runtimeForDestination(row: SiteDestinationRow, site: SiteRow & { hosted_slug?: string | null }, _userId: number) {
+  return destinationRuntime(row, { userId: Number(site.user_id), hostedSlug: site.hosted_slug ?? null });
 }

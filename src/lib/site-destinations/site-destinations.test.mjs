@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { assertSiteDestinationAdapter, createSiteDestinationAdapters, isSiteDestinationKind } from "./index.mjs";
+import { assertSiteDestinationAdapter, createSiteDestinationAdapters, isSiteDestinationKind, encryptDestinationCredentials, loadSiteDestinationRuntime } from "./index.mjs";
 import { createHostedAdapter, deriveHostedSlug, hostedArticleUrl, hostedSitesDomain, hostedSlugFromHost } from "./hosted.mjs";
 import { createWordPressAdapter } from "./wordpress-adapter.mjs";
 
@@ -197,5 +197,18 @@ describe("hosted section helpers and adapter", () => {
     expect(await adapter.reconcile(dest, "skolko-stoit")).toMatchObject({ ok: true, publishedUrl: "https://clinic.sites.aurora.test/skolko-stoit" });
     const unconfigured = createHostedAdapter({ env: {} });
     expect(await unconfigured.publish(dest, payload)).toMatchObject({ ok: false, reason: "hosted_domain_not_configured" });
+  });
+});
+
+
+describe("destination credential context", () => {
+  afterEach(() => vi.unstubAllEnvs());
+  it("does not fall back to audit actors when the encryption key is missing", async () => {
+    vi.stubEnv("TOKENS_MASTER_KEY", "isolated-credential-test-key");
+    const credentials = encryptDestinationCredentials({ username: "test", appPassword: "test-password" }, { userId: 9 });
+    vi.stubEnv("TOKENS_MASTER_KEY", "");
+    const db = { query: vi.fn() };
+    await expect(loadSiteDestinationRuntime(db, { id: 7, site_id: 5, kind: "wordpress", credentials }, { id: 5, user_id: 9, project_id: 3 })).rejects.toMatchObject({ code: "token_key_missing" });
+    expect(db.query).not.toHaveBeenCalled();
   });
 });

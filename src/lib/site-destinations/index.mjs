@@ -1,4 +1,4 @@
-import { decryptToken, encryptToken } from "../token-crypto.mjs";
+import { decryptToken, encryptToken, TokenCryptoError } from "../token-crypto.mjs";
 import { assertSiteDestinationAdapter } from "./contract.mjs";
 import { createHostedAdapter } from "./hosted.mjs";
 import { createWordPressAdapter } from "./wordpress-adapter.mjs";
@@ -48,4 +48,28 @@ export function destinationRuntime(row, { userId, hostedSlug = null }) {
     settings: { ...(row.settings || {}), hostedSlug: row.settings?.hostedSlug || hostedSlug || null },
     credentials: row.kind === "wordpress" ? decryptDestinationCredentials(row.credentials, { userId }) : null,
   };
+}
+
+
+/** Read legacy actor-bound envelopes only through this destination's project audit. */
+export async function loadSiteDestinationRuntime(db, row, site) {
+  if (Number(row.site_id) !== Number(site.id)) throw new Error("destination_site_mismatch");
+  const context = { userId: Number(site.user_id), hostedSlug: site.hosted_slug ?? null };
+  try {
+    return destinationRuntime(row, context);
+  } catch (error) {
+    if (!(error instanceof TokenCryptoError) || error.code !== "token_authentication_failed") throw error;
+    // Configuration and this audit record are committed in the same transaction.
+    // Never enumerate other users or relax the authenticated encryption envelope.
+    const audit = await db.query(
+      `select actor_user_id from audit_events
+        where project_id = $1 and entity_type = 'site_destination' and entity_id = $2
+          and action = 'site.destination.configured'
+        order by id desc limit 1`,
+      [site.project_id, String(row.id)],
+    );
+    const actorId = Number(audit.rows[0]?.actor_user_id);
+    if (!Number.isSafeInteger(actorId) || actorId <= 0 || actorId === context.userId) throw error;
+    return destinationRuntime(row, { ...context, userId: actorId });
+  }
 }

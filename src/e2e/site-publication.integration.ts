@@ -8,6 +8,7 @@ import { createArticlePublications } from "@/lib/site-articles/service.mjs";
 import { generateSiteArticle, publishSiteArticle, reconcileSitePublication } from "../../worker/site-articles-worker.mjs";
 import { listHostedArticles, loadHostedArticle, type HostedSite } from "@/lib/site-hosted/service";
 import { recoverSiteArticleGeneration } from "../../worker/site-scheduler.mjs";
+import { upsertSiteDestination } from "@/lib/sites/destinations-service";
 import { encryptDestinationCredentials } from "@/lib/site-destinations/index.mjs";
 
 const databaseUrl = process.env.MIGRATION_TEST_DATABASE_URL || "";
@@ -245,4 +246,63 @@ it.each(["delivery_unknown", "rate_limited"])("does not overwrite confirmed succ
   await job;
   expect((await pool.query("select status, outcome, reconcile_state from site_article_publications where id = $1", [publicationId])).rows[0])
     .toMatchObject({ status: "published", outcome: "success", reconcile_state: "confirmed" });
+});
+
+
+describe("destination credentials across project owners", () => {
+  const credentials = { username: "collaborator", appPassword: "test-app-password" };
+  async function collaborator() {
+    const id = Number((await pool.query("insert into users (email) values ($1) returning id", [`collaborator${sequence}@example.test`])).rows[0].id);
+    await pool.query("insert into project_members (project_id, user_id, role) values ($1, $2, 'owner')", [projectId, id]);
+    return id;
+  }
+  async function approvedPublication() {
+    await pool.query("update site_articles set status = 'approved', approved_version = version, approved_at = now(), approved_by = user_id where id = $1", [articleId]);
+    return operation(wordpressId);
+  }
+  async function legacyCredentials(actorId: number, auditProjectId = projectId) {
+    const envelope = encryptDestinationCredentials(credentials, { userId: actorId });
+    await pool.query("update site_destinations set credentials = $2 where id = $1", [wordpressId, envelope]);
+    await pool.query("insert into audit_events (project_id, actor_user_id, action, entity_type, entity_id, safe_data) values ($1, $2, 'site.destination.configured', 'site_destination', $3, $4::jsonb)", [auditProjectId, actorId, String(wordpressId), JSON.stringify({ siteId: Number(site.id), kind: "wordpress" })]);
+    return envelope;
+  }
+  it("publishes with credentials configured by another project owner", async () => {
+    const actorId = await collaborator();
+    const registry = { wordpress: { ...adapter("wordpress"), verify: vi.fn(async () => ({ ok: true, account: { id: 77, name: "Test" } })) } };
+    await upsertSiteDestination(pool, { site, userId: actorId, kind: "wordpress", baseUrl: "https://wordpress.example.test", credentials, adapters: registry as never });
+    const publicationId = await approvedPublication();
+    expect(await publishSiteArticle(pool, { publicationId }, { adapters: registry })).toMatchObject({ ok: true });
+    expect(registry.wordpress.publish).toHaveBeenCalledWith(expect.objectContaining({ credentials }), expect.anything());
+  });
+  it("reads existing collaborator-encrypted credentials using the scoped configuration audit", async () => {
+    const envelope = await legacyCredentials(await collaborator());
+    const publicationId = await approvedPublication();
+    const registry = { wordpress: adapter("wordpress") };
+    expect(await publishSiteArticle(pool, { publicationId }, { adapters: registry })).toMatchObject({ ok: true });
+    expect(registry.wordpress.publish).toHaveBeenCalledWith(expect.objectContaining({ credentials }), expect.anything());
+    expect((await pool.query("select credentials from site_destinations where id = $1", [wordpressId])).rows[0].credentials).toBe(envelope);
+  });
+  it("cannot use another project's audit to decrypt and fails before any provider send", async () => {
+    const otherProject = Number((await pool.query("insert into projects (name, created_by_user_id) values ('Other project', $1) returning id", [userId])).rows[0].id);
+    await legacyCredentials(await collaborator(), otherProject);
+    const publicationId = await approvedPublication();
+    const registry = { wordpress: adapter("wordpress") };
+    expect(await publishSiteArticle(pool, { publicationId }, { adapters: registry })).toMatchObject({ ok: false, reason: "destination_credentials_unavailable" });
+    expect(registry.wordpress.publish).not.toHaveBeenCalled();
+    expect((await pool.query("select status, outcome, worker_lease_token from site_article_publications where id = $1", [publicationId])).rows[0]).toMatchObject({ status: "failed", outcome: "definite_failure", worker_lease_token: null });
+  });
+  it("reconciles existing collaborator credentials and preserves uncertainty on unreadable credentials", async () => {
+    await legacyCredentials(await collaborator());
+    const publicationId = await approvedPublication();
+    await pool.query("update site_article_publications set status = 'published_unverified', provider_operation_id = 'article' where id = $1", [publicationId]);
+    const registry = { wordpress: adapter("wordpress") };
+    registry.wordpress.reconcile.mockResolvedValue({ ok: false, outcome: "delivery_unknown", reason: "not_found" });
+    await reconcileSitePublication(pool, { publicationId }, { adapters: registry });
+    expect(registry.wordpress.reconcile).toHaveBeenCalledWith(expect.objectContaining({ credentials }), "article", expect.anything());
+    await pool.query("update site_destinations set credentials = 'unreadable-test-envelope' where id = $1", [wordpressId]);
+    registry.wordpress.reconcile.mockClear();
+    expect(await reconcileSitePublication(pool, { publicationId }, { adapters: registry })).toMatchObject({ ok: false, reason: "destination_credentials_unavailable" });
+    expect(registry.wordpress.reconcile).not.toHaveBeenCalled();
+    expect((await pool.query("select status from site_article_publications where id = $1", [publicationId])).rows[0].status).toBe("published_unverified");
+  });
 });

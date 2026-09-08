@@ -15,7 +15,7 @@ import {
 } from "../src/lib/site-articles/service.mjs";
 import { checkSimilarity } from "../src/lib/site-articles/similarity.mjs";
 import { normalizeSiteCadence, planArticleCandidates, sourceKeyFor } from "../src/lib/site-articles/types.mjs";
-import { createSiteDestinationAdapters, destinationRuntime } from "../src/lib/site-destinations/index.mjs";
+import { createSiteDestinationAdapters, loadSiteDestinationRuntime } from "../src/lib/site-destinations/index.mjs";
 import { assertWorkerAiCallPolicy } from "./ai-call-policy.mjs";
 import {
   WORKER_AI_RESERVATION_TTL_MS,
@@ -493,7 +493,13 @@ export async function publishSiteArticle(pool, { publicationId }, dependencies =
   if (prepared.reason) return fail(prepared.reason, { articleStatus: null });
   const { article, providerRef } = prepared;
   const adapter = adapters[destinationRow.kind];
-  const destination = destinationRuntime(destinationRow, { userId: Number(site.user_id), hostedSlug: site.hosted_slug });
+  let destination;
+  try {
+    destination = await loadSiteDestinationRuntime(pool, destinationRow, site);
+  } catch {
+    // No provider call has occurred, so this is a definite local failure.
+    return fail("destination_credentials_unavailable", { articleStatus: "approved" });
+  }
   const payload = articlePayload(article, { publishAt: new Date().toISOString() });
   let result;
   try {
@@ -634,7 +640,18 @@ export async function reconcileSitePublication(pool, { publicationId }, dependen
   )).rows[0];
   if (!site || !article || !destinationRow) return { ok: false, reason: "context_missing" };
   const adapter = adapters[destinationRow.kind];
-  const destination = destinationRuntime(destinationRow, { userId: Number(site.user_id), hostedSlug: site.hosted_slug });
+  let destination;
+  try {
+    destination = await loadSiteDestinationRuntime(pool, destinationRow, site);
+  } catch {
+    await pool.query(
+      `update site_article_publications set reconcile_state = 'unresolved',
+              last_error_code = 'destination_credentials_unavailable', updated_at = now()
+        where id = $1 and status = 'published_unverified'`,
+      [publicationId],
+    );
+    return { ok: false, reason: "destination_credentials_unavailable", reconcile: "unresolved" };
+  }
   const previous = publication.action === "publish" ? null : (await pool.query(
     `select provider_ref from site_article_publications
       where article_id = $1 and destination_id = $2 and status = 'published'
