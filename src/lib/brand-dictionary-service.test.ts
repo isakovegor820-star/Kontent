@@ -74,18 +74,22 @@ describe("brand dictionary service", () => {
     });
   });
 
-  it("requires project.manage, locks the expected version and advances it atomically", async () => {
+  it.each([
+    { kind: "canonical", term: " legal   tech ", replacement: " LegalTech ", expectedTerm: "legal tech", expectedReplacement: "LegalTech" },
+    { kind: "exception", term: " Идеи  --  в дело! ", replacement: null, expectedTerm: "Идеи  --  в дело!", expectedReplacement: null },
+  ])("saves $kind with its intended spacing and advances the locked version", async ({ kind, term, replacement, expectedTerm, expectedReplacement }) => {
     const client = {
-      query: vi.fn(async (sql: string) => {
+      query: vi.fn(async (sql: string, params?: unknown[]) => {
         if (sql === "begin" || sql === "commit" || sql === "rollback") return { rows: [] };
         if (sql.includes("insert into project_brand_dictionaries")) return { rows: [] };
         if (sql.includes("select version") && sql.includes("for update")) return { rows: [{ version: "4" }] };
         if (sql.includes("insert into project_brand_dictionary_entries")) {
+          expect(params).toContain(expectedTerm);
           return { rows: [{
             id: "12",
-            kind: "canonical",
-            term: "legal tech",
-            replacement: "LegalTech",
+            kind,
+            term: expectedTerm,
+            replacement: expectedReplacement,
             expansion: null,
             case_sensitive: false,
             version: "1",
@@ -104,16 +108,16 @@ describe("brand dictionary service", () => {
       pool: pool as never,
       actorUserId: 5,
       expectedDictionaryVersion: 4,
-      kind: "canonical",
-      term: " legal   tech ",
-      replacement: " LegalTech ",
+      kind,
+      term,
+      replacement,
       expansion: null,
       caseSensitive: false,
       requestId: "req-1",
     });
 
     expect(mocks.permission).toHaveBeenCalledWith(client, 5, "project.manage");
-    expect(result).toMatchObject({ projectId: 23, dictionaryVersion: 5, entry: { term: "legal tech", replacement: "LegalTech" } });
+    expect(result).toMatchObject({ projectId: 23, dictionaryVersion: 5, entry: { term: expectedTerm, replacement: expectedReplacement } });
     expect(client.query).toHaveBeenCalledWith("commit");
     expect(client.release).toHaveBeenCalledOnce();
   });

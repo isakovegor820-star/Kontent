@@ -69,10 +69,10 @@ describe("writing rules user journeys", () => {
     render(<BrandDictionarySection />);
     const form = await openForm();
     fireEvent.click(screen.getByRole("radio", { name: label }));
-    fireEvent.change(within(form).getByRole("textbox"), { target: { value: "Идеи  --  в дело!" } });
+    fireEvent.change(within(form).getByRole("textbox"), { target: { value: "Идеи -- в дело!" } });
     fireEvent.submit(form);
     await screen.findByRole("list");
-    const source = "Идеи  --  в дело!";
+    const source = "Идеи -- в дело!";
     const rules = [...dictionary.entries, { kind: "canonical" as const, term: source, replacement: "Другой слоган" }];
     const suggestions = analyzeLegalTypography(source, { dictionary: rules });
     expect(suggestions.some((item) => item.kind === "brand_term")).toBe(false);
