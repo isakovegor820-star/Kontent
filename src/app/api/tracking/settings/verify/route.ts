@@ -19,7 +19,7 @@ export async function POST(req: NextRequest) {
   if (!user) return trackingJson({ ok: false, error: "unauthorized" }, 401, requestId);
   const rate = await checkRateLimit(`tracking:verify:user:${user.id}`, 15, 3_600, { failureMode: "closed" });
   if (!rate.allowed) return rateLimitResponse(rate);
-  const parsed = await readTrackingBodyResult(req, ["expectedVersion"]);
+  const parsed = await readTrackingBodyResult(req, ["expectedVersion", "verificationMethod"]);
   if (!parsed.ok) return trackingBodyFailure(parsed, requestId);
   try {
     const result = await verifyProjectTrackingSite({
@@ -27,6 +27,8 @@ export async function POST(req: NextRequest) {
       actorUserId: user.id,
       expectedVersion: parsed.body.expectedVersion,
       requestId,
+      verificationMethod: parsed.body.verificationMethod,
+      appOrigin: process.env.APP_URL || (process.env.NODE_ENV !== "production" ? req.nextUrl.origin : ""),
     });
     return trackingJson({ ok: true, ...result }, 200, requestId);
   } catch (error) {

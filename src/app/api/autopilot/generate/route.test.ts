@@ -175,6 +175,26 @@ describe("POST /api/autopilot/generate", () => {
     expect(mocks.removeJob).toHaveBeenCalledOnce();
   });
 
+  it("uses saved channel controls when a new build does not override them", async () => {
+    const quickSettings = { newsPerWeek: 1, detail: 3, energy: 1, emoji: 0 };
+    mocks.ensureSettings.mockResolvedValue({
+      enabled: true, mode: "confirm", post_frequency: 3, approvals_streak: 0,
+      generation_engine: "navy-gpt-5-4", planning_months: 2, planning_weeks: 7,
+      quick_settings: quickSettings,
+    });
+
+    const response = await POST(request({ channelId: 22 }));
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).publicationTargetCount).toBe(21);
+    expect(mocks.clientQuery).toHaveBeenCalledWith(
+      expect.stringContaining("insert into autopilot_plan"),
+      [88, 4, 22, "navy-gpt-5-4", 3, 21, 30, 2, 7, null, JSON.stringify(quickSettings)],
+    );
+    expect(mocks.add).toHaveBeenCalledWith("autopilot-plan",
+      { projectId: 88, userId: 4, channelId: 22, planId: "91" }, expect.any(Object));
+  });
+
   it("does not create a plan for a project A channel while project B is selected", async () => {
     mocks.resolveChannel.mockResolvedValue(null);
 

@@ -383,7 +383,6 @@ export function ChannelSettingsCenter({ view = "content" }: { view?: ChannelSett
   const [pendingChannel, setPendingChannel] = useState<number | null>(null);
   const [copyTarget, setCopyTarget] = useState<number | null>(null);
   const [copyOpen, setCopyOpen] = useState(false);
-  const [editing, setEditing] = useState(view === "content");
   const editorRef = useRef<HTMLDivElement>(null);
 
   const dirty = Boolean(saved && draft && JSON.stringify(saved) !== JSON.stringify(draft));
@@ -420,7 +419,6 @@ export function ChannelSettingsCenter({ view = "content" }: { view?: ChannelSett
         setDraft(normalized);
         setStyleText(normalized.brief.quality.styleExamples.join("\n---\n"));
         setAnalysis(null);
-        setEditing(view === "content");
       })
       .catch((error) => {
         if ((error as Error)?.name !== "AbortError") setLoadError(true);
@@ -440,14 +438,6 @@ export function ChannelSettingsCenter({ view = "content" }: { view?: ChannelSett
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
   }, [dirty]);
-
-  useEffect(() => {
-    if (view !== "autopilot" || !editing) return;
-    editorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-    requestAnimationFrame(() => {
-      document.getElementById("channel-autopilot-enabled")?.focus();
-    });
-  }, [editing, view]);
 
   const setBrief = <K extends keyof Brief>(key: K, value: Brief[K]) => {
     setDraft((current) => current
@@ -527,7 +517,6 @@ export function ChannelSettingsCenter({ view = "content" }: { view?: ChannelSett
         const next = { brief: draft.brief, settings: nextSettings };
         setSaved(next);
         setDraft(next);
-        setEditing(false);
         store.toast({
           kind: "success",
           title: "Автопилот настроен",
@@ -712,12 +701,14 @@ export function ChannelSettingsCenter({ view = "content" }: { view?: ChannelSett
                   size="sm"
                   disabled={saving}
                   onClick={() => {
-                    if (view === "autopilot" && !editing) setEditing(true);
-                    else editorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+                    editorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+                    if (view === "autopilot") {
+                      document.getElementById("channel-autopilot-enabled")?.focus({ preventScroll: true });
+                    }
                   }}
                 >
                   <Settings2 className="h-4 w-4" aria-hidden />
-                  {view === "autopilot" && editing ? "К настройкам" : "Изменить"}
+                  {view === "autopilot" ? "К настройкам" : "Изменить"}
                 </Button>
                 {view === "content" && tgChannels.length > 1 && (
                   <Button variant="ghost" size="sm" onClick={() => setCopyOpen((current) => !current)}>
@@ -741,7 +732,7 @@ export function ChannelSettingsCenter({ view = "content" }: { view?: ChannelSett
             )}
           </Card>
 
-          {(view === "content" || editing) && <div ref={editorRef} className="scroll-mt-24">
+          <div ref={editorRef} className="scroll-mt-24">
           <Card className="overflow-hidden" as="section">
             <div className="border-b border-line px-5 py-5 sm:px-6">
               <div className="flex items-start gap-3">
@@ -1756,7 +1747,7 @@ export function ChannelSettingsCenter({ view = "content" }: { view?: ChannelSett
               </div>
             </div>
           </Card>
-          </div>}
+          </div>
         </>
       )}
 

@@ -5,6 +5,8 @@ import { projectFetch as fetch } from "@/lib/project-fetch";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import {
   BookOpenCheck,
+  ArrowRight,
+  Check,
   Pencil,
   Plus,
   RefreshCw,
@@ -24,7 +26,6 @@ import {
   type ClientBrandDictionaryEntry,
 } from "@/lib/brand-dictionary-client";
 import type { BrandDictionaryEntryKind } from "@/lib/legal-typographer";
-import { plural } from "@/lib/utils";
 
 type FormState = {
   kind: BrandDictionaryEntryKind;
@@ -47,40 +48,54 @@ const EMPTY_FORM: FormState = {
 const KIND_COPY: Record<BrandDictionaryEntryKind, {
   label: string;
   description: string;
+  termLabel: string;
+  termExample: string;
+  replacementExample: string;
   tone: "brand" | "success" | "danger" | "neutral" | "fire";
 }> = {
   canonical: {
-    label: "Каноничное написание",
-    description: "Заменяет вариант на единое написание бренда.",
+    label: "Писать правильно",
+    description: "Единое написание названий компании и продуктов.",
+    termLabel: "Как могут написать",
+    termExample: "аврора",
+    replacementExample: "Аврора",
     tone: "brand",
   },
   allowed: {
-    label: "Разрешённый вариант",
-    description: "Оставляет этот вариант без словарной замены.",
+    label: "Разрешить вариант",
+    description: "Оставить слово без замены по словарю. Обычная проверка текста сохраняется.",
+    termLabel: "Какой вариант разрешить",
+    termExample: "Аврора AI",
+    replacementExample: "",
     tone: "success",
   },
   prohibited: {
-    label: "Запрещённый вариант",
-    description: "Требует явной проверки перед заменой или публикацией.",
+    label: "Не использовать",
+    description: "Отметить нежелательную фразу и предложить замену для проверки.",
+    termLabel: "Какую фразу не использовать",
+    termExample: "лучший на рынке",
+    replacementExample: "помогает экономить время",
     tone: "danger",
   },
   exception: {
-    label: "Исключение",
-    description: "Защищает точную фразу от всех автоматических правок.",
+    label: "Сохранить как есть",
+    description: "Защитить фразу, например слоган, от автоматических правок.",
+    termLabel: "Какую фразу сохранить без изменений",
+    termExample: "Идеи — в дело!",
+    replacementExample: "",
     tone: "neutral",
   },
   abbreviation: {
-    label: "Аббревиатура",
-    description: "Предлагает утверждённую краткую форму с расшифровкой.",
+    label: "Использовать сокращение",
+    description: "Задать короткое название вместо полного.",
+    termLabel: "Полное название",
+    termExample: "искусственный интеллект",
+    replacementExample: "ИИ",
     tone: "fire",
   },
 };
 
-const SELECT_CLASS = [
-  "min-h-12 w-full rounded-xs border border-line bg-surface px-4 text-base text-text sm:text-[15px]",
-  "hover:border-line-strong focus:border-brand focus:outline-none focus-visible:ring-4 focus-visible:ring-brand/15",
-  "disabled:cursor-not-allowed disabled:opacity-50",
-].join(" ");
+const KIND_ORDER: BrandDictionaryEntryKind[] = ["canonical", "prohibited", "exception", "allowed", "abbreviation"];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -132,6 +147,7 @@ export function BrandDictionarySection() {
   const replacementMessageId = useId();
   const expansionMessageId = useId();
   const termRef = useRef<HTMLInputElement>(null);
+  const addRef = useRef<HTMLButtonElement>(null);
   const requestSequence = useRef(0);
 
   const [dictionary, setDictionary] = useState<ClientBrandDictionary | null>(null);
@@ -139,6 +155,7 @@ export function BrandDictionarySection() {
   const [loadError, setLoadError] = useState(false);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [editing, setEditing] = useState<ClientBrandDictionaryEntry | null>(null);
+  const [formOpen, setFormOpen] = useState(false);
   const [deleting, setDeleting] = useState<ClientBrandDictionaryEntry | null>(null);
   const [busy, setBusy] = useState<"save" | "delete" | null>(null);
   const [feedback, setFeedback] = useState<Feedback>(null);
@@ -168,6 +185,7 @@ export function BrandDictionarySection() {
       requestSequence.current += 1;
       setDictionary(null);
       setEditing(null);
+      setFormOpen(false);
       setDeleting(null);
       setForm(EMPTY_FORM);
       setFeedback(null);
@@ -181,12 +199,24 @@ export function BrandDictionarySection() {
 
   const resetForm = () => {
     setEditing(null);
+    setFormOpen(false);
     setForm(EMPTY_FORM);
     setFieldError(null);
+    requestAnimationFrame(() => addRef.current?.focus());
+  };
+
+  const startCreate = (kind: BrandDictionaryEntryKind = "canonical") => {
+    setEditing(null);
+    setForm({ ...EMPTY_FORM, kind });
+    setFormOpen(true);
+    setFeedback(null);
+    setFieldError(null);
+    requestAnimationFrame(() => termRef.current?.focus());
   };
 
   const startEdit = (entry: ClientBrandDictionaryEntry) => {
     setEditing(entry);
+    setFormOpen(true);
     setForm(formForEntry(entry));
     setFeedback(null);
     setFieldError(null);
@@ -213,7 +243,7 @@ export function BrandDictionarySection() {
       replacement: form.kind === "allowed" || form.kind === "exception"
         ? null
         : form.replacement.trim(),
-      expansion: form.expansion.trim() || null,
+      expansion: form.kind === "abbreviation" ? form.expansion.trim() || null : null,
       caseSensitive: form.caseSensitive,
     };
     const { response, body } = await requestJson(
@@ -235,7 +265,7 @@ export function BrandDictionarySection() {
     resetForm();
     setFeedback({
       kind: "success",
-      text: savedEditing ? "Правило обновлено. Новая версия словаря уже действует." : "Правило добавлено в словарь проекта.",
+      text: savedEditing ? "Правило обновлено. Оно будет учтено при следующей проверке текста." : "Правило сохранено. Оно будет учтено при генерации и проверке текста.",
     });
     await load();
     setBusy(null);
@@ -264,304 +294,160 @@ export function BrandDictionarySection() {
     }
     if (editing?.id === target.id) resetForm();
     setDeleting(null);
-    setFeedback({ kind: "success", text: "Правило удалено. Новая версия словаря уже действует." });
+    setFeedback({ kind: "success", text: "Правило удалено. Оно больше не применяется при проверке текста." });
     await load();
     setBusy(null);
   };
 
   const requiresReplacement = form.kind !== "allowed" && form.kind !== "exception";
+  const copy = KIND_COPY[form.kind];
+  const originalForm = editing ? formForEntry(editing) : EMPTY_FORM;
+  const dirty = formOpen && JSON.stringify(form) !== JSON.stringify(originalForm);
 
   return (
-    <section aria-labelledby={sectionTitleId} className="mb-5">
+    <section aria-labelledby={sectionTitleId} data-settings-dirty={dirty || undefined}>
       <Card className="overflow-hidden">
-        <div className="flex flex-col gap-4 border-b border-line px-6 py-5 sm:flex-row sm:items-start sm:justify-between sm:px-7">
-          <div className="flex min-w-0 items-start gap-3.5">
-            <span aria-hidden className="grid h-10 w-10 shrink-0 place-items-center rounded-sm bg-surface-inset text-text-2">
-              <BookOpenCheck className="h-5 w-5" strokeWidth={1.75} />
+        <div className="border-b border-line p-5 sm:p-7">
+          <div className="flex items-center gap-3">
+            <span aria-hidden className="grid h-10 w-10 shrink-0 place-items-center rounded-sm bg-info-soft text-info-text">
+              <BookOpenCheck className="h-5 w-5" />
             </span>
-            <div className="min-w-0">
-              <h2 id={sectionTitleId} className="text-[17px] font-extrabold tracking-tight text-text">
-                Словарь бренда
-              </h2>
-              <p className="mt-1 max-w-[68ch] text-[14px] leading-relaxed text-text-2">
-                Закрепи каноничные названия, допустимые варианты, запреты, исключения и аббревиатуры для текущего проекта.
-              </p>
+            <div>
+              <p className="text-[12px] font-medium text-text-3">Для всех каналов проекта</p>
+              <h2 id={sectionTitleId} className="text-xl font-extrabold tracking-tight text-text">Правила написания</h2>
             </div>
           </div>
-          {dictionary && (
-            <Badge tone="neutral" className="self-start tabular-nums">
-              Версия {dictionary.version}
-            </Badge>
-          )}
+          <p className="mt-4 max-w-[65ch] text-[14px] leading-relaxed text-text-2">
+            Задай, как писать названия и какие фразы не использовать. Аврора учтёт эти правила при генерации и проверке постов.
+          </p>
+          {!formOpen && <>
+          <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-sm bg-surface-2 px-4 py-3 text-[14px]">
+            <span className="text-text-3">Например:</span>
+            <span className="text-text-2">аврора</span>
+            <ArrowRight className="h-4 w-4 text-text-3" aria-label="заменить на" />
+            <span className="font-bold text-text">Аврора</span>
+            <span className="text-[13px] text-text-3">— название всегда в одном стиле</span>
+          </div>
+          <p className="mt-3 text-[12px] leading-relaxed text-text-3">Настраивать необязательно. Добавь правило, если Аврора ошибается в названии или использует неподходящие слова.</p>
+          </>}
         </div>
 
-        <div className="space-y-7 px-6 py-6 sm:px-7 sm:py-7">
-          <div className="min-h-6" aria-live="polite" aria-atomic="true">
-            {feedback && (
-              <p
-                role={feedback.kind === "error" ? "alert" : "status"}
-                className={feedback.kind === "error"
-                  ? "flex items-start gap-2 text-[13px] font-medium leading-relaxed text-danger-text"
-                  : feedback.kind === "success"
-                    ? "text-[13px] font-medium leading-relaxed text-success-text"
-                    : "text-[13px] leading-relaxed text-text-2"}
-              >
-                {feedback.kind === "error" && <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />}
-                {feedback.text}
-              </p>
-            )}
+        <div className="space-y-5 p-5 sm:p-7">
+          <div aria-live="polite" aria-atomic="true" className="empty:hidden">
+            {feedback && <p role={feedback.kind === "error" ? "alert" : "status"} className={feedback.kind === "error" ? "text-[14px] text-danger-text" : "text-[14px] text-success-text"}>{feedback.text}</p>}
           </div>
 
-          {loading && !dictionary ? (
+          {!current ? (
+            <p className="text-[14px] text-text-2">Выбери проект, чтобы настроить правила написания.</p>
+          ) : loading && !dictionary ? (
             <div role="status" aria-busy="true" className="space-y-3">
-              <span className="sr-only">Загружаем словарь бренда</span>
+              <span className="sr-only">Загружаем правила написания</span>
               <div className="skeleton h-12 rounded-sm" aria-hidden />
               <div className="skeleton h-20 rounded-sm" aria-hidden />
             </div>
           ) : loadError || !dictionary ? (
             <div role="alert" className="rounded-sm border border-danger/30 bg-danger-soft p-4">
-              <p className="flex items-start gap-2 text-[14px] font-semibold text-danger-text">
-                <TriangleAlert className="mt-0.5 h-5 w-5 shrink-0" aria-hidden />
-                Не удалось загрузить словарь проекта
-              </p>
-              <p className="mt-1.5 text-[13px] leading-relaxed text-text-2">
-                Сохранённые правила не показаны и не применяются в этой форме, пока связь не восстановится.
-              </p>
-              <Button type="button" variant="outline" size="sm" onClick={() => void load()} className="mt-3">
-                <RefreshCw className="h-4 w-4" aria-hidden />
-                Загрузить снова
-              </Button>
+              <p className="flex items-center gap-2 text-[14px] font-semibold text-danger-text"><TriangleAlert className="h-5 w-5" aria-hidden />Не удалось загрузить правила</p>
+              <p className="mt-2 text-[13px] text-text-2">Попробуй ещё раз, чтобы увидеть сохранённые правила.</p>
+              <Button type="button" variant="secondary" size="sm" onClick={() => void load()} className="mt-3"><RefreshCw className="h-4 w-4" aria-hidden />Загрузить снова</Button>
             </div>
           ) : (
             <>
-              {canManage ? (
-                <form onSubmit={save} className="space-y-5 rounded-sm bg-surface-2 p-4 sm:p-5" aria-label={editing ? "Изменение правила словаря" : "Новое правило словаря"}>
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div>
-                      <h3 className="text-[15px] font-bold text-text">
-                        {editing ? "Изменить правило" : "Добавить правило"}
-                      </h3>
-                      <p className="mt-1 text-[13px] leading-relaxed text-text-3">
-                        Изменение сразу создаёт новую версию словаря для следующих проверок.
-                      </p>
-                    </div>
-                    {editing && (
-                      <Button type="button" variant="ghost" size="sm" onClick={resetForm} disabled={busy != null}>
-                        <X className="h-4 w-4" aria-hidden />
-                        Отменить изменение
-                      </Button>
-                    )}
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h3 className="text-[16px] font-bold text-text">Твои правила <span className="ml-1 text-[13px] font-normal text-text-3">{dictionary.entries.length}</span></h3>
+                {canManage && !formOpen && <Button ref={addRef} type="button" variant="primary" size="sm" onClick={() => startCreate()} disabled={busy != null}><Plus className="h-4 w-4" aria-hidden />Добавить правило</Button>}
+              </div>
+
+              {canManage && formOpen && (
+                <form onSubmit={save} className="space-y-5 rounded-sm border border-brand/25 bg-surface-2 p-4 sm:p-5" aria-label={editing ? "Изменение правила" : "Новое правило"}>
+                  <div className="flex items-center justify-between gap-3">
+                    <h3 className="text-[16px] font-bold text-text">{editing ? "Изменить правило" : "Новое правило"}</h3>
+                    <Button type="button" variant="ghost" size="sm" onClick={resetForm} disabled={busy != null}><X className="h-4 w-4" aria-hidden />Отмена</Button>
                   </div>
-
-                  <div className="grid gap-4 lg:grid-cols-2">
-                    <Field label="Тип правила" htmlFor="brand-dictionary-kind" required>
-                      <select
-                        id="brand-dictionary-kind"
-                        required
-                        value={form.kind}
-                        disabled={busy != null}
-                        className={SELECT_CLASS}
-                        onChange={(event) => {
-                          const kind = event.currentTarget.value as BrandDictionaryEntryKind;
-                          setForm((currentForm) => ({
-                            ...currentForm,
-                            kind,
-                            replacement: kind === "allowed" || kind === "exception" ? "" : currentForm.replacement,
-                            expansion: kind === "abbreviation" ? currentForm.expansion : "",
-                          }));
-                          setFieldError(null);
-                        }}
-                      >
-                        {(Object.keys(KIND_COPY) as BrandDictionaryEntryKind[]).map((kind) => (
-                          <option key={kind} value={kind}>{KIND_COPY[kind].label}</option>
-                        ))}
-                      </select>
-                    </Field>
-
-                    <Field
-                      label="Проверяемый вариант"
-                      htmlFor="brand-dictionary-term"
-                      required
-                      error={fieldError?.field === "term" ? fieldError.message : undefined}
-                      messageId={termMessageId}
-                      hint="Например: legal tech"
-                    >
-                      <Input
-                        ref={termRef}
-                        id="brand-dictionary-term"
-                        required
-                        value={form.term}
-                        disabled={busy != null}
-                        maxLength={240}
-                        aria-invalid={fieldError?.field === "term" || undefined}
-                        aria-describedby={termMessageId}
-                        onChange={(event) => {
-                          const term = event.currentTarget.value;
-                          setForm((currentForm) => ({ ...currentForm, term }));
-                          setFieldError(null);
-                        }}
-                      />
-                    </Field>
-                  </div>
-
-                  <p className="rounded-xs bg-surface-inset px-3 py-2 text-[13px] leading-relaxed text-text-2">
-                    {KIND_COPY[form.kind].description}
-                  </p>
-
-                  {requiresReplacement && (
-                    <div className="grid gap-4 lg:grid-cols-2">
-                      <Field
-                        label={form.kind === "abbreviation" ? "Утверждённая аббревиатура" : "Каноничная замена"}
-                        htmlFor="brand-dictionary-replacement"
-                        required
-                        error={fieldError?.field === "replacement" ? fieldError.message : undefined}
-                        messageId={replacementMessageId}
-                        hint={form.kind === "abbreviation" ? "Например: КС РФ" : "Например: LegalTech"}
-                      >
-                        <Input
-                          id="brand-dictionary-replacement"
-                          required
-                          value={form.replacement}
-                          disabled={busy != null}
-                          maxLength={240}
-                          aria-invalid={fieldError?.field === "replacement" || undefined}
-                          aria-describedby={replacementMessageId}
-                          onChange={(event) => {
-                            const replacement = event.currentTarget.value;
-                            setForm((currentForm) => ({ ...currentForm, replacement }));
+                  <fieldset disabled={busy != null}>
+                    <legend className="mb-2 text-[13px] font-semibold text-text-2">Что должна сделать Аврора?</legend>
+                    <div className="flex flex-wrap gap-2">
+                      {KIND_ORDER.map((kind) => (
+                        <label key={kind} className="relative cursor-pointer">
+                          <input type="radio" name="brand-rule-kind" value={kind} checked={form.kind === kind} className="peer sr-only" onChange={() => {
+                            setForm((value) => ({ ...value, kind, replacement: kind === "allowed" || kind === "exception" ? "" : value.replacement, expansion: kind === "abbreviation" ? value.expansion : "" }));
                             setFieldError(null);
-                          }}
-                        />
-                      </Field>
-                      {form.kind === "abbreviation" && (
-                        <Field
-                          label="Расшифровка"
-                          htmlFor="brand-dictionary-expansion"
-                          error={fieldError?.field === "expansion" ? fieldError.message : undefined}
-                          messageId={expansionMessageId}
-                          hint="Необязательно. Помогает проверить смысл аббревиатуры."
-                        >
-                          <Input
-                            id="brand-dictionary-expansion"
-                            value={form.expansion}
-                            disabled={busy != null}
-                            maxLength={500}
-                            aria-invalid={fieldError?.field === "expansion" || undefined}
-                            aria-describedby={expansionMessageId}
-                            onChange={(event) => {
-                              const expansion = event.currentTarget.value;
-                              setForm((currentForm) => ({ ...currentForm, expansion }));
-                              setFieldError(null);
-                            }}
-                          />
-                        </Field>
-                      )}
+                          }} />
+                          <span className="flex min-h-11 items-center rounded-xs border border-line bg-surface px-3 py-2 text-[13px] font-medium text-text-2 peer-checked:border-brand peer-checked:bg-info-soft peer-checked:text-info-text peer-focus-visible:ring-4 peer-focus-visible:ring-brand/20 peer-disabled:opacity-50">{KIND_COPY[kind].label}</span>
+                        </label>
+                      ))}
                     </div>
-                  )}
+                    <p className="mt-2 text-[13px] leading-relaxed text-text-3">{copy.description}</p>
+                  </fieldset>
 
-                  <label className="flex min-h-11 cursor-pointer items-center gap-3 text-[14px] text-text">
-                    <input
-                      type="checkbox"
-                      checked={form.caseSensitive}
-                      disabled={busy != null}
-                      onChange={(event) => {
-                        const caseSensitive = event.currentTarget.checked;
-                        setForm((currentForm) => ({ ...currentForm, caseSensitive }));
-                      }}
-                      className="h-5 w-5 rounded border-line-strong accent-brand focus-visible:ring-4 focus-visible:ring-brand/15"
-                    />
-                    Учитывать регистр букв
-                  </label>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <Field label={copy.termLabel} htmlFor="brand-dictionary-term" required error={fieldError?.field === "term" ? fieldError.message : undefined} messageId={termMessageId} hint={`Например: ${copy.termExample}`}>
+                      <Input ref={termRef} id="brand-dictionary-term" required value={form.term} disabled={busy != null} maxLength={240} placeholder={copy.termExample} aria-invalid={fieldError?.field === "term" || undefined} aria-describedby={termMessageId} onChange={(event) => { const term = event.currentTarget.value; setForm((value) => ({ ...value, term })); setFieldError(null); }} />
+                    </Field>
+                    {requiresReplacement && <Field label={form.kind === "abbreviation" ? "Как сокращать" : "Как нужно написать"} htmlFor="brand-dictionary-replacement" required error={fieldError?.field === "replacement" ? fieldError.message : undefined} messageId={replacementMessageId} hint={`Например: ${copy.replacementExample}`}>
+                      <Input id="brand-dictionary-replacement" required value={form.replacement} disabled={busy != null} maxLength={240} placeholder={copy.replacementExample} aria-invalid={fieldError?.field === "replacement" || undefined} aria-describedby={replacementMessageId} onChange={(event) => { const replacement = event.currentTarget.value; setForm((value) => ({ ...value, replacement })); setFieldError(null); }} />
+                    </Field>}
+                  </div>
+                  {form.kind === "abbreviation" && <Field label="Расшифровка сокращения" htmlFor="brand-dictionary-expansion" error={fieldError?.field === "expansion" ? fieldError.message : undefined} messageId={expansionMessageId} hint="Необязательно. Помогает проверить смысл сокращения.">
+                    <Input id="brand-dictionary-expansion" value={form.expansion} disabled={busy != null} maxLength={500} aria-invalid={fieldError?.field === "expansion" || undefined} aria-describedby={expansionMessageId} onChange={(event) => { const expansion = event.currentTarget.value; setForm((value) => ({ ...value, expansion })); setFieldError(null); }} />
+                  </Field>}
 
-                  <div className="flex justify-end">
-                    <Button type="submit" variant="solid" loading={busy === "save"} disabled={busy === "delete"} className="w-full sm:w-auto">
-                      {editing ? <Pencil className="h-4 w-4" aria-hidden /> : <Plus className="h-4 w-4" aria-hidden />}
-                      {editing ? "Сохранить правило" : "Добавить правило"}
-                    </Button>
+                  <div className="rounded-sm border border-line bg-surface p-4" aria-live="polite" aria-atomic="true">
+                    <p className="text-[12px] font-semibold text-text-3">{form.term.trim() && (!requiresReplacement || form.replacement.trim()) ? "Как сработает правило при проверке" : "Пример правила"}</p>
+                    <div className="mt-2 flex flex-wrap items-center gap-2 break-words text-[16px] text-text [overflow-wrap:anywhere]">
+                      <span>{form.term.trim() || copy.termExample}</span>
+                      {requiresReplacement ? <><ArrowRight className="h-4 w-4 shrink-0 text-text-3" aria-label="заменить на" /><strong>{form.replacement.trim() || copy.replacementExample}</strong></> : <span className="inline-flex items-center gap-1 text-[13px] text-success-text"><Check className="h-4 w-4" aria-hidden />{form.kind === "exception" ? "Без автоматических правок" : "Без замены по словарю"}</span>}
+                    </div>
+                    <p className="mt-2 text-[13px] leading-relaxed text-text-2">{form.kind === "canonical" ? "Аврора предложит привести название к этому написанию." : form.kind === "prohibited" || form.kind === "abbreviation" ? "Аврора предложит замену, которую нужно проверить и подтвердить." : copy.description}</p>
+                  </div>
+
+                  <details className="text-[13px] text-text-2" open={form.caseSensitive || undefined}>
+                    <summary className="min-h-11 cursor-pointer py-3 font-medium focus-visible:outline-brand">Дополнительные настройки{form.caseSensitive ? " · точное совпадение букв" : ""}</summary>
+                    <label className="flex min-h-11 cursor-pointer items-start gap-3 py-2">
+                      <input type="checkbox" checked={form.caseSensitive} disabled={busy != null} onChange={(event) => { const caseSensitive = event.currentTarget.checked; setForm((value) => ({ ...value, caseSensitive })); }} className="mt-0.5 h-5 w-5 shrink-0 accent-brand" />
+                      <span>Различать большие и маленькие буквы<span className="mt-1 block text-[12px] leading-relaxed text-text-3">Если включить, «Аврора» и «аврора» будут считаться разными вариантами.</span></span>
+                    </label>
+                  </details>
+                  <div className="flex flex-col gap-3 border-t border-line pt-4 sm:flex-row sm:items-center sm:justify-between">
+                    <p className="text-[12px] leading-relaxed text-text-3">Применится к следующим генерациям и проверкам.</p>
+                    <Button type="submit" variant="primary" loading={busy === "save"} disabled={busy === "delete"} className="shrink-0"><Check className="h-4 w-4" aria-hidden />Сохранить правило</Button>
                   </div>
                 </form>
-              ) : (
-                <p className="rounded-sm bg-surface-inset p-4 text-[13px] leading-relaxed text-text-2">
-                  Просмотр доступен всем участникам проекта. Добавлять и изменять правила может владелец.
-                </p>
               )}
 
-              <div>
-                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                  <h3 className="text-[15px] font-bold text-text">Правила проекта</h3>
-                  <span className="text-[12px] font-medium text-text-3 tabular-nums">
-                    {dictionary.entries.length} {plural(dictionary.entries.length, "правило", "правила", "правил")}
-                  </span>
-                </div>
-                {dictionary.entries.length === 0 ? (
-                  <div className="rounded-sm bg-surface-inset p-5 text-center">
-                    <p className="text-[14px] font-semibold text-text">Словарь пока пуст</p>
-                    <p className="mx-auto mt-1 max-w-[58ch] text-[13px] leading-relaxed text-text-2">
-                      Добавь первое правило, чтобы Композитор проверял названия и исключения в контексте этого проекта.
-                    </p>
-                  </div>
-                ) : (
-                  <ul className="divide-y divide-line border-y border-line" aria-label="Правила словаря бренда">
-                    {dictionary.entries.map((entry) => {
-                      const copy = KIND_COPY[entry.kind];
-                      return (
-                        <li key={entry.id} className="flex flex-col gap-3 py-4 lg:flex-row lg:items-center lg:justify-between">
-                          <div className="min-w-0">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <Badge tone={copy.tone}>{copy.label}</Badge>
-                              {entry.caseSensitive && <Badge tone="neutral">С учётом регистра</Badge>}
-                            </div>
-                            <p className="mt-2 break-words text-[14px] leading-relaxed text-text">
-                              <span className="font-semibold">{entry.term}</span>
-                              {entry.replacement && (
-                                <>
-                                  <span className="mx-2 text-text-3" aria-hidden>→</span>
-                                  <span className="font-semibold">{entry.replacement}</span>
-                                </>
-                              )}
-                            </p>
-                            {entry.expansion && (
-                              <p className="mt-1 break-words text-[13px] leading-relaxed text-text-3">
-                                Расшифровка: {entry.expansion}
-                              </p>
-                            )}
-                          </div>
-                          {canManage && (
-                            <div className="flex shrink-0 gap-2">
-                              <Button type="button" variant="ghost" size="sm" onClick={() => startEdit(entry)} disabled={busy != null}>
-                                <Pencil className="h-4 w-4" aria-hidden />
-                                Изменить
-                              </Button>
-                              <Button type="button" variant="danger" size="sm" onClick={() => setDeleting(entry)} disabled={busy != null}>
-                                <Trash2 className="h-4 w-4" aria-hidden />
-                                Удалить
-                              </Button>
-                            </div>
-                          )}
-                        </li>
-                      );
-                    })}
-                  </ul>
-                )}
-              </div>
+              {!canManage && <p className="rounded-sm bg-surface-inset p-4 text-[13px] leading-relaxed text-text-2">Правила действуют для всего проекта. Добавлять и изменять их может владелец.</p>}
+
+              {dictionary.entries.length === 0 ? (!formOpen && <div>
+                <p className="text-[14px] font-semibold text-text">{canManage ? "Пока нет правил — с чего начнём?" : "В проекте пока нет правил"}</p>
+                {canManage && <p className="mt-1 text-[13px] leading-relaxed text-text-3">Выбери задачу и добавь своё первое правило.</p>}
+                {canManage && <div className="mt-4 grid gap-3 lg:grid-cols-3">
+                  {(["canonical", "prohibited", "exception"] as const).map((kind) => <button key={kind} type="button" onClick={() => startCreate(kind)} disabled={busy != null} className="group rounded-sm border border-line bg-surface p-4 text-left transition-colors hover:border-brand/40 hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
+                    <span className="flex items-center justify-between gap-2 text-[14px] font-bold text-text">{KIND_COPY[kind].label}<Plus className="h-4 w-4 shrink-0 text-brand" aria-hidden /></span>
+                    <span className="mt-2 block text-[13px] font-normal leading-relaxed text-text-3">{KIND_COPY[kind].description}</span>
+                    <span className="mt-4 block text-[12px] font-medium text-info-text">{kind === "canonical" ? "аврора → Аврора" : kind === "prohibited" ? "Например: «лучший на рынке»" : "Например: слоган компании"}</span>
+                  </button>)}
+                </div>}
+              </div>) : (
+                <ul className="divide-y divide-line" aria-label="Сохранённые правила">
+                  {dictionary.entries.map((entry) => <li key={entry.id} className="flex flex-col gap-3 py-4 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2"><Badge tone={KIND_COPY[entry.kind].tone}>{KIND_COPY[entry.kind].label}</Badge>{entry.caseSensitive && <Badge tone="neutral">Точное совпадение букв</Badge>}</div>
+                      <p className="mt-2 break-words text-[15px] leading-relaxed text-text"><strong>{entry.term}</strong>{entry.replacement && <><span className="mx-2 text-text-3" aria-label="заменить на">→</span><strong>{entry.replacement}</strong></>}</p>
+                      <p className="mt-1 text-[12px] leading-relaxed text-text-3">{KIND_COPY[entry.kind].description}</p>
+                      {entry.expansion && <p className="mt-1 break-words text-[13px] text-text-3">Расшифровка: {entry.expansion}</p>}
+                    </div>
+                    {canManage && <div className="flex shrink-0 gap-1">
+                      <Button type="button" variant="ghost" size="sm" onClick={() => startEdit(entry)} disabled={busy != null || formOpen} aria-label={`Изменить правило: ${entry.term}`}><Pencil className="h-4 w-4" aria-hidden />Изменить</Button>
+                      <Button type="button" variant="ghost" size="icon" onClick={() => setDeleting(entry)} disabled={busy != null || formOpen} aria-label={`Удалить правило: ${entry.term}`} className="text-danger-text"><Trash2 className="h-4 w-4" aria-hidden /></Button>
+                    </div>}
+                  </li>)}
+                </ul>
+              )}
             </>
           )}
         </div>
       </Card>
-
-      <ConfirmDialog
-        open={deleting != null}
-        title="Удалить правило словаря?"
-        description={deleting
-          ? `Правило «${deleting.term}» перестанет действовать в новых проверках и публикациях. История версий сохранится.`
-          : "Правило перестанет действовать в новых проверках."}
-        confirmLabel="Удалить правило"
-        busy={busy === "delete"}
-        onCancel={() => {
-          if (busy == null) setDeleting(null);
-        }}
-        onConfirm={() => void remove()}
-      />
+      <ConfirmDialog open={deleting != null} title="Удалить правило?" description={deleting ? `Правило «${deleting.term}» перестанет применяться при генерации и проверке новых текстов.` : "Правило перестанет применяться."} confirmLabel="Удалить правило" busy={busy === "delete"} onCancel={() => { if (busy == null) setDeleting(null); }} onConfirm={() => void remove()} />
     </section>
   );
 }

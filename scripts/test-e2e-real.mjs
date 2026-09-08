@@ -1141,6 +1141,7 @@ const fakeState = {
     requests: [],
   },
   trackerVerificationChallenge: null,
+  trackerInstallMarkup: null,
 };
 
 const libraryComposerResult = [
@@ -1313,6 +1314,11 @@ function fakeProvider() {
       }
       res.statusCode = 400;
       res.end(JSON.stringify({ error: { error_code: 3, error_msg: "unsupported E2E VK method" } }));
+      return;
+    }
+    if (req.url === "/" && req.method === "GET") {
+      res.setHeader("content-type", "text/html; charset=utf-8");
+      res.end(`<!doctype html><html><head>${fakeState.trackerInstallMarkup ?? ""}</head><body>Tracker test site</body></html>`);
       return;
     }
     if (req.url === "/.well-known/aurora-tracker-verification.txt" && req.method === "GET") {
@@ -4589,19 +4595,22 @@ try {
   const trackingOriginInput = page.getByRole("textbox", { name: "Адрес сайта", exact: true });
   await trackingOriginInput.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await trackingOriginInput.fill(fakeBase);
-  const saveTrackingConnection = page.getByRole("button", { name: "Сохранить подключение", exact: true });
+  const saveTrackingConnection = page.getByRole("button", { name: "Сохранить и получить код", exact: true });
   await assertTouch(saveTrackingConnection, "save tracking connection");
   await saveTrackingConnection.click();
-  await page.getByText("Настройки сохранены. Размести проверочный файл на сайте и подтверди домен.", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
-  const verificationFileInput = page.getByLabel("Содержимое проверочного файла", { exact: true });
-  await verificationFileInput.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  await page.getByText("Адрес сохранён. Вставь код подключения в настройки сайта и нажми «Проверить подключение».", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  const installCode = page.locator('pre[aria-label="Скопировать код подключения"]');
+  await installCode.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  const installMarkup = await installCode.textContent();
   const trackingBeforeVerifyResponse = await authenticatedRequest("/api/tracking/settings");
   assert(trackingBeforeVerifyResponse.status === 200, "tracking settings are unavailable to the project owner");
   const trackingConfigured = JSON.parse(trackingBeforeVerifyResponse.text).tracking;
   assert(typeof trackingConfigured.publicKey === "string" && trackingConfigured.publicKey.length >= 20, "tracking setup omitted the public key");
   assert(
-    await verificationFileInput.inputValue() === trackingConfigured.verificationFileContent,
-    "tracking UI did not show the server-owned domain verification challenge",
+    installMarkup?.includes(`data-aurora-verification="${trackingConfigured.verificationFileContent}"`)
+      && installMarkup.includes(`data-project-key="${trackingConfigured.publicKey}"`)
+      && installMarkup.includes(`src="${baseUrl}/api/tracking/client.js"`),
+    "tracking UI did not issue the complete server-owned installation and verification code",
   );
   const trackerPing = await fetch(`${runtimeBaseUrl}/api/tracking/ping`, {
     method: "POST",
@@ -4617,17 +4626,23 @@ try {
     pingOnlyTracking?.status === "pending_verification" && pingOnlyTracking?.signal_received_at,
     "an unauthenticated tracker ping must record a signal without activating the project",
   );
-  fakeState.trackerVerificationChallenge = trackingConfigured.verificationFileContent;
-  const verifyTrackingDomain = page.getByRole("button", { name: "Подтвердить домен", exact: true });
+  // Install exactly the snippet shown to the user. The fallback file is deliberately absent.
+  fakeState.trackerInstallMarkup = installMarkup;
+  const verifyTrackingDomain = page.getByRole("button", { name: "Проверить подключение", exact: true });
   await assertTouch(verifyTrackingDomain, "verify tracking domain");
   await verifyTrackingDomain.click();
-  await page.getByText("Домен подтверждён. События заявок можно учитывать в аналитике.", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  await page.getByText("Домен подтверждён, подключение сохранено. Повторять настройку для новых публикаций не нужно.", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const trackingVerifiedResponse = await authenticatedRequest("/api/tracking/settings");
   const trackingVerified = JSON.parse(trackingVerifiedResponse.text).tracking;
   assert(
     trackingVerified?.status === "active" && trackingVerified?.verifiedAt,
-    "authenticated well-known challenge verification did not activate tracking",
+    "authenticated server-side HTML verification did not activate tracking",
   );
+  await page.reload();
+  await page.getByText("Подключение сохранено", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  assert(!(await page.getByRole("button", { name: "Скопировать код подключения", exact: true }).isVisible()), "connected site should not repeat installation instructions after reload");
+  const trackingAfterReload = JSON.parse((await authenticatedRequest("/api/tracking/settings")).text).tracking;
+  assert(trackingAfterReload.version === trackingVerified.version && trackingAfterReload.verifiedAt === trackingVerified.verifiedAt, "reopening settings changed the saved verification");
 
   await navigateWithSettledReads(page, "/app/settings?section=project");
   await page.getByRole("heading", { name: "Проект и команда", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
@@ -4725,14 +4740,15 @@ try {
     navigateWithSettledReads(page, "/app/settings?section=dictionary"),
   ]);
   assert(publicationBlocksLoad.ok(), `publication blocks hydration failed with ${publicationBlocksLoad.status()}`);
+  await page.getByRole("button", { name: "Шаблоны для постов", exact: true }).click();
   const publicationBlocksSection = page.locator("#publication-blocks");
   await publicationBlocksSection.waitFor();
   const createPublicationBlock = async (kind, name, content) => {
-    await publicationBlocksSection.getByRole("button", { name: "Добавить блок", exact: true }).click();
-    await publicationBlocksSection.getByRole("combobox", { name: "Тип блока", exact: true }).selectOption(kind);
+    await publicationBlocksSection.getByRole("button", { name: "Создать шаблон", exact: true }).click();
+    await publicationBlocksSection.getByRole("combobox", { name: "Что сохранить", exact: true }).selectOption(kind);
     await publicationBlocksSection.getByLabel("Название", { exact: true }).fill(name);
-    await publicationBlocksSection.getByLabel("Текст блока", { exact: true }).fill(content);
-    const createButton = publicationBlocksSection.getByRole("button", { name: "Создать блок", exact: true });
+    await publicationBlocksSection.getByLabel("Текст шаблона", { exact: true }).fill(content);
+    const createButton = publicationBlocksSection.getByRole("button", { name: "Создать шаблон", exact: true });
     await assertTouch(createButton, `create ${kind} block`);
     await createButton.click();
     await publicationBlocksSection.getByText(name, { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
@@ -4750,15 +4766,18 @@ try {
   const firstCommentBlockId = Number(publicationBlockRows.find((row) => row.kind === "first_comment")?.id);
   assert(signatureBlockId > 0 && firstCommentBlockId > 0, "publication block kinds were not preserved");
 
-  const brandDictionary = page.locator("section").filter({ has: page.getByRole("heading", { name: "Словарь бренда", exact: true }) }).first();
-  await brandDictionary.getByRole("form", { name: "Новое правило словаря", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
-  await brandDictionary.locator("#brand-dictionary-kind").selectOption("prohibited");
+  await page.getByRole("button", { name: "Правила написания", exact: true }).click();
+  const brandDictionary = page.locator("section").filter({ has: page.getByRole("heading", { name: "Правила написания", exact: true }) }).first();
+  await brandDictionary.getByRole("button", { name: "Добавить правило", exact: true }).click();
+  await brandDictionary.getByRole("form", { name: "Новое правило", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  await brandDictionary.getByText("Не использовать", { exact: true }).click();
+  assert(await brandDictionary.getByRole("radio", { name: "Не использовать", exact: true }).isChecked(), "prohibited rule action was not selected");
   await brandDictionary.locator("#brand-dictionary-term").fill("легалтех");
   await brandDictionary.locator("#brand-dictionary-replacement").fill("LegalTech");
-  const addBrandRule = brandDictionary.getByRole("button", { name: "Добавить правило", exact: true });
+  const addBrandRule = brandDictionary.getByRole("button", { name: "Сохранить правило", exact: true });
   await assertTouch(addBrandRule, "add prohibited brand dictionary rule");
   await addBrandRule.click();
-  await brandDictionary.getByText("Правило добавлено в словарь проекта.", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  await brandDictionary.getByText("Правило сохранено. Оно будет учтено при генерации и проверке текста.", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const brandRuleEvidence = (await pool.query(
     `select dictionary.version as dictionary_version, entry.kind, entry.term, entry.replacement, entry.is_active
        from project_brand_dictionaries dictionary

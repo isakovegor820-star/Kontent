@@ -5,6 +5,7 @@ import https from "node:https";
 import { isIP } from "node:net";
 import type { Pool, PoolClient } from "pg";
 
+import { hasTrackerSiteProof } from "./tracking-site-proof";
 import { ProjectAccessError, requireSelectedProjectPermission } from "./project-permissions";
 import {
   buildTrackedDestination,
@@ -45,6 +46,12 @@ export class TrackingServiceError extends Error {
     | "invalid_event"
     | "tracker_not_connected"
     | "verification_unavailable"
+    | "invalid_verification_method"
+    | "verification_script_missing"
+    | "verification_file_missing"
+    | "verification_content_mismatch"
+    | "verification_redirect"
+    | "verification_access_denied"
     | "not_found"
     | "version_conflict"
     | "link_unavailable";
@@ -293,13 +300,14 @@ function fetchPinnedTrackerFile(input: {
   addresses: ResolvedTrackerAddress[];
   timeoutMs: number;
   maxBytes: number;
+  accept?: string;
 }): Promise<{ status: number; location: string | null; body: string }> {
   return new Promise((resolve, reject) => {
     let addressIndex = 0;
     const transport = input.url.protocol === "https:" ? https : http;
     const request = transport.request(input.url, {
       method: "GET",
-      headers: { accept: "text/plain", "user-agent": "Aurora-Tracker-Verification/1.0" },
+      headers: { accept: input.accept ?? "text/plain", "user-agent": "Aurora-Tracker-Verification/1.0" },
       lookup: (_hostname, _options, callback) => {
         const selected = input.addresses[addressIndex % input.addresses.length];
         addressIndex += 1;
@@ -318,6 +326,7 @@ function fetchPinnedTrackerFile(input: {
         }
         chunks.push(bytes);
       });
+      response.on("error", () => reject(new TrackingServiceError("verification_unavailable")));
       response.on("end", () => {
         try {
           const body = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
@@ -358,17 +367,53 @@ export async function verifyTrackerChallengeFile(input: {
     if ([301, 302, 303, 307, 308].includes(response.status) && response.location) {
       const next = new URL(response.location, url);
       if (next.origin !== origin || next.pathname !== TRACKER_VERIFICATION_PATH || next.search || next.hash) {
-        throw new TrackingServiceError("verification_unavailable");
+        throw new TrackingServiceError("verification_redirect");
       }
       url = next;
       continue;
     }
-    if (response.status !== 200 || response.body !== input.challenge) {
-      throw new TrackingServiceError("verification_unavailable");
-    }
+    if (response.status === 404) throw new TrackingServiceError("verification_file_missing");
+    if (response.status === 401 || response.status === 403) throw new TrackingServiceError("verification_access_denied");
+    if (response.status !== 200) throw new TrackingServiceError("verification_unavailable");
+    if (response.body !== input.challenge) throw new TrackingServiceError("verification_content_mismatch");
     return true;
   }
   throw new TrackingServiceError("verification_unavailable");
+}
+
+/** Verify control through the same script the user installs for tracking. A ping alone is never proof. */
+export async function verifyTrackerInstalledScript(input: {
+  siteOrigin: string;
+  challenge: string;
+  publicKey: string;
+  appOrigin: string;
+  resolve?: TrackerResolver;
+  allowedLocalOrigins?: ReadonlySet<string>;
+  fetchPinned?: typeof fetchPinnedTrackerFile;
+}) {
+  if (!/^aurora-site-verification=[A-Za-z0-9_-]{32,128}$/u.test(input.challenge) || !PUBLIC_KEY.test(input.publicKey)) {
+    throw new TrackingServiceError("verification_unavailable");
+  }
+  const origin = normalizeTrackerOrigin(input.siteOrigin, true);
+  const allowedLocalOrigins = input.allowedLocalOrigins ?? localVerificationOrigins();
+  const resolve = input.resolve ?? resolveTrackerHost;
+  const fetchPinned = input.fetchPinned ?? fetchPinnedTrackerFile;
+  let url = new URL("/", origin);
+  for (let redirects = 0; redirects <= 3; redirects += 1) {
+    const addresses = await approvedTrackerAddresses(url, resolve, allowedLocalOrigins);
+    const response = await fetchPinned({ url, addresses, timeoutMs: TRACKER_VERIFICATION_TIMEOUT_MS, maxBytes: 2 * 1024 * 1024, accept: "text/html" });
+    if ([301, 302, 303, 307, 308].includes(response.status) && response.location) {
+      const next = new URL(response.location, url);
+      if (next.origin !== origin || next.search || next.hash) throw new TrackingServiceError("verification_redirect");
+      url = next;
+      continue;
+    }
+    if (response.status === 401 || response.status === 403) throw new TrackingServiceError("verification_access_denied");
+    if (response.status !== 200) throw new TrackingServiceError("verification_unavailable");
+    if (!hasTrackerSiteProof(response.body, input)) throw new TrackingServiceError("verification_script_missing");
+    return true;
+  }
+  throw new TrackingServiceError("verification_redirect");
 }
 
 function normalizeWindow(value: unknown) {
@@ -576,7 +621,7 @@ export async function configureProjectTracking(input: {
     const publicKey = current?.public_key && PUBLIC_KEY.test(String(current.public_key))
       ? String(current.public_key)
       : createShortLinkSlug();
-    const preserveVerification = current?.site_origin === siteOrigin && current?.status === "active";
+    const preserveVerification = current?.site_origin === siteOrigin;
     const challenge = current?.site_origin === siteOrigin && typeof current?.verification_challenge === "string"
       ? current.verification_challenge
       : createTrackerVerificationChallenge();
@@ -688,8 +733,13 @@ export async function verifyProjectTrackingSite(input: {
   expectedVersion: unknown;
   requestId?: string | null;
   verifyChallenge?: typeof verifyTrackerChallengeFile;
+  verifyScript?: typeof verifyTrackerInstalledScript;
+  verificationMethod?: unknown;
+  appOrigin?: string;
   now?: Date;
 }) {
+  const method = input.verificationMethod ?? "file";
+  if (method !== "file" && method !== "script") throw new TrackingServiceError("invalid_verification_method");
   const expectedVersion = Number(input.expectedVersion);
   if (!Number.isSafeInteger(expectedVersion) || expectedVersion <= 0) {
     throw new TrackingServiceError("version_conflict");
@@ -711,10 +761,20 @@ export async function verifyProjectTrackingSite(input: {
   let verified = false;
   let safeErrorCode: string | null = null;
   try {
-    await (input.verifyChallenge ?? verifyTrackerChallengeFile)({ siteOrigin, challenge });
+    if (method === "script") {
+      await (input.verifyScript ?? verifyTrackerInstalledScript)({ siteOrigin, challenge, publicKey: String(before.public_key), appOrigin: input.appOrigin ?? "" });
+    } else {
+      await (input.verifyChallenge ?? verifyTrackerChallengeFile)({ siteOrigin, challenge });
+    }
     verified = true;
-  } catch {
-    safeErrorCode = "challenge_unavailable_or_mismatch";
+  } catch (error) {
+    // Persist only known diagnostics, never remote response bodies or network details.
+    const diagnosticCodes = new Set([
+      "verification_script_missing", "verification_file_missing", "verification_content_mismatch",
+      "verification_redirect", "verification_access_denied",
+    ]);
+    safeErrorCode = error instanceof TrackingServiceError && diagnosticCodes.has(error.code)
+      ? error.code : "challenge_unavailable_or_mismatch";
   }
   const now = input.now ?? new Date();
   return withTransaction(input.pool, async (client) => {
