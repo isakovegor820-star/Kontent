@@ -64,7 +64,7 @@ import { sitesNetworkShim, handleFakeSitesRequest, handleFakeSitesAiRequest, run
 import { runProjectCalendarCoverage } from "./e2e-project-calendar-coverage.mjs";
 import { runAuthCoverage, handleFakeMailRequest } from "./e2e-auth-coverage.mjs";
 import { runLoginRateLimitCoverage, loginRateLimitFixtureIngress, LOGIN_RATE_LIMIT_FIXTURE_HEADER } from "./e2e-login-rate-limit-coverage.mjs";
-import { createAiConflictResponseEvidence, createAiAcknowledgementEvidence } from "./e2e-ai-response-evidence.mjs";
+import { createAiConflictResponseEvidence, createAiAcknowledgementEvidence, createSitesMutationResponseEvidence, readSitesMutationReceipt } from "./e2e-ai-response-evidence.mjs";
 import { createStudioSessionEvidence, loadStudioSessionContract, readStudioSessionProof } from "./e2e-studio-session-evidence.mjs";
 import { runTrueZoomCoverage } from "./e2e-true-zoom-coverage.mjs";
 import { runTodayFocusCoverage } from "./e2e-today-focus-coverage.mjs";
@@ -78,6 +78,7 @@ import { E2E_MANUAL_PUBLICATION_TEXT, prepareManualPublicationCoverage, verifyMa
 const databaseUrl = String(process.env.E2E_DATABASE_URL || "").trim();
 const aiConflictResponseEvidence = createAiConflictResponseEvidence();
 const aiAcknowledgementEvidence = createAiAcknowledgementEvidence();
+const sitesMutationEvidence = createSitesMutationResponseEvidence();
 const redisUrl = String(process.env.E2E_REDIS_URL || "").trim();
 if (!databaseUrl || !redisUrl) throw new Error("E2E_DATABASE_URL and E2E_REDIS_URL are required");
 const browserEngine = resolveE2eBrowserEngine(process.env.E2E_BROWSER);
@@ -1676,6 +1677,7 @@ function startHttpsProxy() {
     }, (response) => {
       aiConflictResponseEvidence.observe(response, { method: incoming.method, path: incoming.url });
       aiAcknowledgementEvidence.observe(response, { method: incoming.method, path: incoming.url, headers: incoming.headers });
+      sitesMutationEvidence.observe(response, { method: incoming.method, path: incoming.url, headers: incoming.headers });
       if (!ingressBoundary.accept({ requestUrl: incoming.url, status: response.statusCode || 502, headers: response.headers })) {
         response.resume();
         outgoing.writeHead(502, { "content-type": "text/plain" });
@@ -6512,6 +6514,7 @@ try {
   interfaceEvidence.adminActionsUi = await runAdminActionsCoverage({ page, browser, baseUrl, pool, actorUserId: userId, waitFor, captureScreenshot: captureE2eScreenshot, artifactDir });
   interfaceEvidence.sitesUi = await runSitesCoverage({ page, pool, userId, projectId: sharedProjectId, waitFor, artifactDir,
     captureScreenshot: captureE2eScreenshot,
+    readMutationReceipt: response => readSitesMutationReceipt({ evidence: sitesMutationEvidence, response, baseUrl, projectId: sharedProjectId, waitFor }),
     navigate: (url, options) => navigateWithSettledReads(page, url, options),
     reload: () => reloadInBrowser(page),
   });

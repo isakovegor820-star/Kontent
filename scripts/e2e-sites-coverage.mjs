@@ -213,7 +213,7 @@ export async function assertSitesEditorActionsReflow(page, { widths = [320, 390,
   return evidence;
 }
 
-export async function runSitesCoverage({ page, pool, userId, projectId, waitFor, artifactDir, captureScreenshot,
+export async function runSitesCoverage({ page, pool, userId, projectId, waitFor, artifactDir, captureScreenshot, readMutationReceipt,
   navigate = (url, options) => page.goto(url, options), reload = () => page.reload() }) {
   const reflow = [];
   const assertReflow = async (stage) => {
@@ -275,7 +275,7 @@ export async function runSitesCoverage({ page, pool, userId, projectId, waitFor,
     assertProjectRequest(response);
     assert.match(response.request().headers()["idempotency-key"], /^[0-9a-f]{8}-[0-9a-f-]{27,}$/iu);
     assert.deepEqual(response.request().postDataJSON(), { url: siteUrl, consent: true });
-    created = await response.json();
+    created = await readMutationReceipt(response);
     assert.equal(created.ok, true);
     assert.equal(created.created, true);
     assert.equal(created.analysisError, null, "Sites was saved but the analysis did not start");
@@ -329,7 +329,7 @@ export async function runSitesCoverage({ page, pool, userId, projectId, waitFor,
   assert.equal(articleResponse.status(), 202);
   assertProjectRequest(articleResponse);
   assert.deepEqual(articleResponse.request().postDataJSON(), { articleType: "machine_readable_page", brief });
-  const articleCreated = await articleResponse.json();
+  const articleCreated = await readMutationReceipt(articleResponse);
   assert.equal(articleCreated.ok, true);
   assert.equal(articleCreated.article.status, "draft");
   const articleId = Number(articleCreated.article.id);

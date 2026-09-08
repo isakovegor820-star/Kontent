@@ -124,3 +124,39 @@ describe("Sites E2E fake boundary with production contracts", () => {
     expect(JSON.parse(res.body).embeddings[0]).toEqual(vector);
   });
 });
+
+
+describe("Sites creation original response boundary", () => {
+  function creationFixture() {
+    const projectId=10, key="12345678-1234-1234-1234-123456789012";
+    const url=`https://${fixture.FAKE_WORDPRESS_HOST}/`;
+    const body={ok:true,created:true,analysisError:null,site:{id:21,projectId,canonicalUrl:url,
+      verification:{state:"unverified",token:"synthetic-challenge-token"}},latestAnalysis:{id:31}};
+    const request={method:()=>"POST",url:()=>"https://127.0.0.1:58801/api/sites",
+      headers:()=>({"x-aurora-project-id":String(projectId),"idempotency-key":key}),postDataJSON:()=>({url,consent:true})};
+    const response={request:()=>request,url:request.url,status:()=>201,
+      json:vi.fn(async()=>{throw new Error("Network.getResponseBody: No data found");})};
+    let consent=false, observe, responseResolve;
+    const page={context:()=>{},evaluate:async()=>({viewport:1280,document:1280,body:1280}),
+      locator:()=>({fill:async()=>{}}),on:(_event,fn)=>{observe=fn;},off:vi.fn(),
+      getByText:()=>({waitFor:async()=>{}}),getByRole:role=>({
+        getAttribute:async()=>"true",click:async()=>{
+          if(role==="checkbox"){consent=true;return;}
+          if(consent){observe(request);responseResolve(response);}
+        },
+      }),waitForResponse:predicate=>{expect(predicate(response)).toBe(true);return new Promise(resolve=>{responseResolve=resolve;});},
+    };
+    const afterReceipt=new Error("reached original analysis polling");
+    return {body,response,afterReceipt,options:{page,projectId,userId:1,pool:{query:async()=>({rows:[{n:0}]})},
+      navigate:async()=>{},waitFor:async()=>{throw afterReceipt;},readMutationReceipt:async()=>body}};
+  }
+  it("reaches durable analysis checks with the exact ingress receipt when CDP body is unavailable",async()=>{
+    const f=creationFixture();
+    await expect(fixture.runSitesCoverage(f.options)).rejects.toBe(f.afterReceipt);
+    expect(f.response.json).not.toHaveBeenCalled();
+  });
+  it("retains a rejected original response proof before polling or another UI operation",async()=>{
+    const f=creationFixture();const failure=new Error("original receipt correlation failed");
+    await expect(fixture.runSitesCoverage({...f.options,readMutationReceipt:async()=>{throw failure;}})).rejects.toBe(failure);
+  });
+});

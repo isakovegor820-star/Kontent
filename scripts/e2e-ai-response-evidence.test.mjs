@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it } from "vitest";
-import { createAiConflictResponseEvidence, createAiAcknowledgementEvidence } from "./e2e-ai-response-evidence.mjs";
+import { createAiConflictResponseEvidence, createAiAcknowledgementEvidence, createSitesMutationResponseEvidence, readSitesMutationReceipt } from "./e2e-ai-response-evidence.mjs";
 
 const response = (id = "first", statusCode = 409) => Object.assign(new EventEmitter(), {
   headers: { "x-ai-request-id": id }, statusCode, complete: true,
@@ -69,5 +69,58 @@ describe("exact upstream AI acknowledgement evidence", () => {
     if (kind === "type") upstream.headers["content-type"] = "text/plain";
     if (kind === "key") delete req.headers["idempotency-key"];
     evidence.observe(upstream, req); expect(evidence.read("ack")).toBeNull();
+  });
+});
+
+
+describe("Sites original creation receipt", () => {
+  function fixture(path="/api/sites", id="sites-request-1") {
+    const baseUrl="https://127.0.0.1:58801", status=path==="/api/sites"?201:202;
+    const headers={"x-aurora-project-id":"2",...(status===201?{"idempotency-key":"sites-create-key"}:{})};
+    const responseHeaders={"x-request-id":id,"content-type":"application/json; charset=utf-8"};
+    const upstream=Object.assign(new EventEmitter(),{statusCode:status,headers:responseHeaders,complete:true});
+    const evidence=createSitesMutationResponseEvidence();
+    evidence.observe(upstream,{method:"POST",path,headers});
+    const nativeRequest={method:()=>"POST",headers:()=>({...headers})};
+    const browserResponse={url:()=>baseUrl+path,status:()=>status,headers:()=>({...responseHeaders}),request:()=>nativeRequest};
+    const body={requestId:id,ok:true,site:{id:9},article:{id:10}};
+    const finish=(raw=JSON.stringify(body))=>{upstream.emit("data",Buffer.from(raw));upstream.emit("end");};
+    const options={evidence,response:browserResponse,baseUrl,projectId:2,waitFor:async predicate=>{
+      const row=predicate();if(!row)throw new Error("original response incomplete");return row;
+    }};
+    return {upstream,evidence,headers,responseHeaders,body,finish,options,path,nativeRequest,browserResponse};
+  }
+  it.each(["/api/sites","/api/sites/9/articles"])("reads the exact original %s body with no repeat request or CDP body call",async path=>{
+    const f=fixture(path);f.finish();
+    expect(await readSitesMutationReceipt(f.options)).toEqual(f.body);
+  });
+  it.each(["aborted","error","incomplete","invalid","oversized","duplicate"])("rejects %s original receipt",async kind=>{
+    const f=fixture();
+    if(kind==="incomplete")f.upstream.complete=false;
+    if(["aborted","error"].includes(kind))f.upstream.emit(kind,new Error("fixture"));
+    if(kind==="duplicate")f.evidence.observe(f.upstream,{method:"POST",path:f.path,headers:f.headers});
+    f.finish(kind==="invalid"?"{":kind==="oversized"?"x".repeat(65537):JSON.stringify(f.body));
+    await expect(readSitesMutationReceipt(f.options)).rejects.toThrow();
+  });
+  it.each(["origin","path","query","method","project","key","status","type","id","body-id"])("rejects another operation's %s",async kind=>{
+    const f=fixture();
+    if(kind==="body-id")f.body.requestId="foreign-response";
+    f.finish();
+    if(kind==="origin")f.browserResponse.url=()=>"https://foreign.invalid/api/sites";
+    if(kind==="path")f.browserResponse.url=()=>f.options.baseUrl+"/api/sites/9/articles";
+    if(kind==="query")f.browserResponse.url=()=>f.options.baseUrl+"/api/sites?extra=1";
+    if(kind==="method")f.nativeRequest.method=()=>"GET";
+    if(kind==="project")f.headers["x-aurora-project-id"]="3";
+    if(kind==="key")f.headers["idempotency-key"]="foreign-create-key";
+    if(kind==="status")f.browserResponse.status=()=>200;
+    if(kind==="type")f.responseHeaders["content-type"]="text/plain";
+    if(kind==="id")f.responseHeaders["x-request-id"]="unknown-id";
+    await expect(readSitesMutationReceipt(f.options)).rejects.toThrow();
+  });
+  it("keeps concurrent creation response identities separate",async()=>{
+    const a=fixture();const b=fixture("/api/sites/9/articles","sites-request-2");
+    a.finish();b.finish();
+    expect(await readSitesMutationReceipt(a.options)).toEqual(a.body);
+    await expect(readSitesMutationReceipt({...b.options,evidence:a.evidence})).rejects.toThrow("incomplete");
   });
 });
