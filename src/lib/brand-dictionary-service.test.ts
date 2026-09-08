@@ -31,7 +31,9 @@ describe("brand dictionary service", () => {
     expect(prompt).toContain("не используй «гарантируем победу»");
     expect(prompt).toContain("расшифровка: «Конституционный Суд Российской Федерации»");
     expect(prompt).toContain("допустимый вариант: «юртех»");
-    expect(prompt).toContain("исключение: вариант «Legal tech» разрешён");
+    expect(prompt).toContain("сохранить как есть: «Legal tech»");
+    expect(prompt).toContain("дословно, без перефразирования и исправлений");
+    expect(prompt).toContain("не заменяй его другим названием из словаря");
   });
 
   it("reads only the server-selected project and maps all legal dictionary kinds", async () => {

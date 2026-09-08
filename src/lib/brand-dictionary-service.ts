@@ -44,10 +44,10 @@ export function brandDictionaryPrompt(
       return [`— аббревиатура: «${entry.term}» → «${entry.replacement}»${expansion}${suffix}`];
     }
     if (entry.kind === "exception") {
-      return [`— исключение: вариант «${entry.term}» разрешён${suffix}`];
+      return [`— сохранить как есть: «${entry.term}»; если используешь эту фразу, сохраняй её дословно, без перефразирования и исправлений${suffix}`];
     }
     if (entry.kind === "allowed") {
-      return [`— допустимый вариант: «${entry.term}»${suffix}`];
+      return [`— допустимый вариант: «${entry.term}»; не заменяй его другим названием из словаря${suffix}`];
     }
     return [];
   });

@@ -89,7 +89,7 @@ export function brandDictionaryErrorMessage(code: unknown) {
   switch (code) {
     case "invalid_kind": return "Выбери тип правила.";
     case "invalid_term": return "Укажи термин длиной до 240 символов без служебных знаков.";
-    case "invalid_replacement": return "Укажи каноничную замену длиной до 240 символов.";
+    case "invalid_replacement": return "Укажи нужное написание длиной до 240 символов.";
     case "invalid_expansion": return "Проверь расшифровку: не более 500 символов.";
     case "duplicate_term": return "Такое правило этого типа уже есть в словаре.";
     case "version_conflict": return "Словарь изменился в другой вкладке. Данные обновлены — повтори действие.";

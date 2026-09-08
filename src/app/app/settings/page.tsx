@@ -41,12 +41,11 @@ import {
 import type { LucideIcon } from "lucide-react";
 import { AppShell } from "@/components/app/shell";
 import { AccountProfileSettings } from "@/components/app/account-profile-settings";
-import { BrandDictionarySection } from "@/components/app/brand-dictionary-section";
+import { WritingSettingsSection } from "@/components/app/writing-settings-section";
 import { ChannelSettingsCenter } from "@/components/app/channel-settings-center";
 import { LegalSourcesSection } from "@/components/app/legal-sources-section";
 import { NotificationSecuritySettings } from "@/components/app/notification-security-settings";
 import { ProjectTeamSection } from "@/components/app/project-team-section";
-import { PublicationBlocksSection } from "@/components/app/publication-blocks-section";
 import {
   ChannelCopySection,
   ProjectBasicsSection,
@@ -1283,7 +1282,7 @@ const SETTINGS_SECTIONS: Array<{
   { id: "channels", label: "Каналы", description: "Подключения и копирование", keywords: "telegram vk сеть канал перенести настройки", icon: Radio },
   { id: "content", label: "Контент и стиль", description: "Голос, структура и тест поста", keywords: "тон юмор длина формат автор аудитория ограничения проверить", icon: Palette },
   { id: "autopilot", label: "Автопилот", description: "Планирование с подтверждением", keywords: "расписание частота режим план публикация", icon: Rocket },
-  { id: "dictionary", label: "Словарь бренда", description: "Термины и блоки публикаций", keywords: "правила слова канон замена подпись комментарий", icon: BookOpen },
+  { id: "dictionary", label: "Правила текста", description: "Названия, запреты и шаблоны", keywords: "словарь бренда правила слова канон замена подпись комментарий шаблоны сокращения", icon: BookOpen },
   { id: "integrations", label: "Интеграции", description: "Бот, аналитика и источники", keywords: "telegram бот пиксель utm метрика право oauth", icon: Plug },
   { id: "notifications", label: "Уведомления и безопасность", description: "Email, Telegram, пароль и выход", keywords: "оповещения тихие часы сессия безопасность", icon: Bell },
 ];
@@ -1404,7 +1403,7 @@ function SettingsContent() {
             {activeSection === "channels" ? <div className="space-y-5"><ChannelsSection index={0} /><ChannelCopySection /></div> : null}
             {activeSection === "content" ? <><SettingsPreviewPanel /><ChannelSettingsCenter view="content" /></> : null}
             {activeSection === "autopilot" ? <ChannelSettingsCenter view="autopilot" /> : null}
-            {activeSection === "dictionary" ? <div className="space-y-5"><BrandDictionarySection /><PublicationBlocksSection /></div> : null}
+            {activeSection === "dictionary" ? <WritingSettingsSection /> : null}
             {activeSection === "integrations" ? <div className="space-y-5"><TrackingSettingsSection /><LegalSourcesSection /><BotSection index={2} /></div> : null}
             {activeSection === "notifications" ? <div className="space-y-5"><NotificationSecuritySettings /><QuietSection index={2} /></div> : null}
           </main>
