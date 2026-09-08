@@ -313,7 +313,7 @@ describe("autopilotBuildComplete", () => {
     expect(autopilotBuildComplete(2, topics, [items[0], blocked])).toBe(false);
   });
 
-  it("доставляет confirm-план с semantic-only review, не считая его полностью готовым", () => {
+  it("не завершает confirm-план, пока проверка фактов ещё требует человека", () => {
     const review = {
       aiReady: true,
       draft: "Черновик для ручной проверки",
@@ -356,7 +356,7 @@ describe("autopilotBuildComplete", () => {
       },
     };
     expect(autopilotBuildComplete(2, topics, [items[0], review])).toBe(false);
-    expect(autopilotDraftsDeliverable(2, topics, [items[0], review])).toBe(true);
+    expect(autopilotDraftsDeliverable(2, topics, [items[0], review])).toBe(false);
 
     // Обычный провал редакционного порога остаётся внутри сборки.
     expect(autopilotDraftsDeliverable(2, topics, [items[0], {

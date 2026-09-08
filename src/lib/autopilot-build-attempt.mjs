@@ -169,6 +169,7 @@ export function autopilotBuildAttemptDto(row, expected) {
   const selectedCount = Number(persistedReport?.selectedCount);
   const readyForPlan = Math.min(
     publicationTargetCount,
+    measuredProgress.ready,
     Math.max(
       0,
       Number.isFinite(selectedCount) ? selectedCount : measuredProgress.ready,
@@ -191,6 +192,7 @@ export function autopilotBuildAttemptDto(row, expected) {
   const persistedDeficit = Number(persistedReport?.selectionDeficit);
   const selectionDeficit = Math.max(
     0,
+    publicationTargetCount - progress.ready,
     Number.isFinite(persistedDeficit)
       ? persistedDeficit
       : publicationTargetCount - progress.ready,

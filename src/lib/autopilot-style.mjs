@@ -65,7 +65,7 @@ export function autopilotDesiredLengthPrompt(quality) {
   const minChars = Number(quality?.desiredMinChars);
   const maxChars = Number(quality?.desiredMaxChars);
   if (!Number.isFinite(minChars) || !Number.isFinite(maxChars)) return "";
-  return `Желаемый объём — ${minChars}–${maxChars} знаков. Это ориентир: закончи мысль полным предложением, даже если текст получится немного короче или длиннее.`;
+  return `Желаемый объём — ${minChars}–${maxChars} знаков с пробелами в готовом посте, без служебных ссылок. Цель — около ${Math.round((minChars + maxChars) / 2)} знаков, чтобы после оформления остаться в диапазоне. Раскрой тему содержательно и закончи мысль полным предложением. Не добирай длину повторениями и общими вопросами.`;
 }
 
 export function autopilotEnergyPrompt(settings) {

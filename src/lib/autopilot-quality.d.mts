@@ -46,6 +46,7 @@ export function assessAutopilotDraft(input: {
   invented?: string[];
   trigger?: QualityCheckTrigger;
   semanticAdapter?: SemanticClaimAdapter | null;
+  semanticRetryLimit?: number;
   signal?: AbortSignal;
   now?: () => Date;
 }): Promise<QualityResult>;
