@@ -193,7 +193,7 @@ async function hasHumanEdit(db: Queryable, articleId: number, version: number) {
  */
 export async function approveSiteArticle(db: Queryable, input: { site: SiteRow; article: SiteArticleRow; userId: number }) {
   const membership = await requireProjectPermission(db, input.userId, Number(input.site.project_id), "content.approve");
-  if (!["needs_review", "approved", "failed"].includes(input.article.status)) throw new SiteServiceError("article_not_approvable", 409);
+  if (!["needs_review", "failed"].includes(input.article.status)) throw new SiteServiceError("article_not_approvable", 409);
   if (articleHasQualityBlock(input.article)) throw new SiteServiceError("article_quality_failed", 422);
   const edited = await hasHumanEdit(db, Number(input.article.id), Number(input.article.version));
   const updated = await db.query<SiteArticleRow>(

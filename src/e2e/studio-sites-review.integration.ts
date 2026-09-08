@@ -276,7 +276,10 @@ describe("concurrent article approval", () => {
       } catch (error) { await client.query("rollback"); throw error; }
       finally { client.release(); }
     };
-    await Promise.all([approve(), approve()]);
+    const outcomes = await Promise.allSettled([approve(), approve()]);
+    expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+    const rejected = outcomes.find((outcome) => outcome.status === "rejected");
+    expect(rejected).toMatchObject({ status: "rejected", reason: { code: "article_not_approvable" } });
     expect((await pool.query("select approved_streak from sites where id=$1", [site.id])).rows[0].approved_streak).toBe(1);
     expect((await pool.query("select count(*)::int as n from site_article_revisions where article_id=$1 and change_kind='approved'", [articleId])).rows[0].n).toBe(1);
   });
