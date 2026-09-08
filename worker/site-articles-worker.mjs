@@ -6,6 +6,7 @@ import { ownedTaskTransaction, startTaskHeartbeat, WorkerTaskLeaseLost } from ".
 import { randomUUID } from "node:crypto";
 
 import { completeAiText } from "../src/lib/ai-completion-service.mjs";
+import { AiWorkAccessError } from "../src/lib/ai-work-access.mjs";
 import { configuredServiceEngine } from "../src/lib/ai-engine-policy.mjs";
 import { buildArticlePrompt, completeArticleInternalLinks, parseArticleGeneration, validateArticle } from "../src/lib/site-articles/generation.mjs";
 import { markdownToText } from "../src/lib/site-articles/markdown.mjs";
@@ -466,10 +467,15 @@ export async function generateSiteArticle(pool, { articleId, version = null }, d
   } catch (error) {
     if (!(error instanceof SiteArticleWorkerError) && !(error instanceof WorkerTaskLeaseLost)) {
       const code = typeof error?.code === "string" ? error.code : "generation_failed";
-      await ownedArticleTransaction(async (client) => {
+      const cleanupTransaction = error instanceof AiWorkAccessError
+        ? (task) => ownedTaskTransaction(pool, identity, task)
+        : ownedArticleTransaction;
+      await cleanupTransaction(async (client) => {
         await client.query(
-          `update site_articles set status = 'failed', status_reason = $2, worker_lease_token = null, worker_heartbeat_at = null, updated_at = now() where id = $1 and status = 'generating'`,
-          [articleId, code.slice(0, 80)],
+          `update site_articles set status = 'failed', status_reason = $2, worker_lease_token = null, worker_heartbeat_at = null,
+                  generation = case when $3 then nullif(generation - 'workerAttempts', '{}'::jsonb) else generation end,
+                  updated_at = now() where id = $1 and status = 'generating'`,
+          [articleId, code.slice(0, 80), error instanceof AiWorkAccessError],
         );
         if (site && reservationId) await release(client, accountingUserId, reservationId);
       }).catch(() => undefined);
