@@ -3397,6 +3397,7 @@ try {
     mainRequestEvidence.confirmGenerationCompletion(request, {
       key, userId, operation, ackRequest: ackResponse.request(), ack,
     });
+    return ack.body;
   };
   await confirmAcknowledgedGeneration({ request: newReferenceRequest, ackResponse: newReferenceAckResponse }, beforeCompletedReplay);
   assert(beforeCompletedReplay?.status === "acknowledged" && beforeCompletedReplay.text === libraryComposerResult

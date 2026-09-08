@@ -70,10 +70,12 @@ export async function runAiPreviewCoverage({
     const original=await readDraft();
     assert.equal(original.text,originalText);assert.equal(original.origin,'manual');assert.equal(original.generation_result_id,null);
     for(const decision of ['reject','apply']) {
-      ackHeld=false;
+      activeKey=null;ackHeld=false;
       let resolveAck;const promise=new Promise(resolve=>{resolveAck=resolve;});releaseAck={promise,resolve:resolveAck};
       const beforeProvider=getProviderCallCount();
-      const ackResponsePromise=page.waitForResponse(response=>response.url()===ackPattern&&response.request().method()==='POST');
+      const ackResponsePromise=page.waitForResponse(response=>response.url()===ackPattern&&response.request().method()==='POST'
+        && activeKey!==null&&response.request().headers()['idempotency-key']===activeKey
+        && response.request().headers()['x-aurora-project-id']===String(projectId));
       // If an earlier assertion fails, cleanup must not add an unhandled timeout.
       void ackResponsePromise.catch(()=>undefined);
       await page.getByRole('button',{name:'Улучшить',exact:true}).click();
@@ -91,7 +93,10 @@ export async function runAiPreviewCoverage({
       assert.deepEqual(await readDraft(),original,'streaming preview mutated the durable draft before the decision');
       releaseAck.resolve();
       const ack=await ackResponsePromise;assert.equal(ack.status(),200,'terminal ACK must succeed durably');
-      const receipt=await ack.json();assert.equal(receipt.ok,true);assert.equal(receipt.status,'committed');assert(Number.isSafeInteger(receipt.generationResultId));
+      // Reuse the original bounded ingress receipt, verified against this exact
+      // Request/ACK and durable operation. CDP may discard an already consumed body.
+      const receipt=await onAcknowledgedGeneration({request:request.nativeRequest,ackResponse:ack});
+      assert.equal(receipt?.ok,true);assert.equal(receipt.status,'committed');assert(Number.isSafeInteger(receipt.generationResultId));
       const apply=preview.getByRole('button',{name:'Применить вариант',exact:true});await apply.waitFor();
       await waitForFirstPartyNetworkIdle(page,'AI preview ready');
       const candidate=await preview.locator('div.whitespace-pre-wrap').textContent();
@@ -102,7 +107,6 @@ export async function runAiPreviewCoverage({
       assert.equal(usage?.status,'committed','delivered preview must retain its accounted AI usage');
       const generated=(await pool.query('select text from generation_results where id=$1',[receipt.generationResultId])).rows[0];
       assert.equal(generated?.text,candidate,'visible preview diverged from its durable generation receipt');
-      await onAcknowledgedGeneration({request:request.nativeRequest,ackResponse:ack});
       const callsAfterReady=getProviderCallCount();assert(callsAfterReady>beforeProvider,'preview never reached the configured fake provider');
       if(decision==='reject') {
         await preview.getByRole('button',{name:'Оставить текущий текст',exact:true}).click();
