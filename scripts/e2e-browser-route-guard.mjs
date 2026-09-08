@@ -74,7 +74,10 @@ export async function installE2eBrowserRouteGuard(context, { baseUrl, onBlocked 
   };
   const samePattern = (a, b) => a === b || (a instanceof RegExp && b instanceof RegExp && a.source === b.source && a.flags === b.flags);
   const boundary = async (route) => {
-    if (requestAllowed(route)) return route.fallback();
+    // This is the final owned handler. Continuing an admitted request closes the
+    // interception chain explicitly; falling through with no earlier handler can
+    // leave Chromium reporting a fully consumed mutation as ERR_ABORTED.
+    if (requestAllowed(route)) return route.continue();
     return deny(route, "request", route.request().url());
   };
   const patch = (target, isContext = false) => {

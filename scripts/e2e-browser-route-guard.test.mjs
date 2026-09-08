@@ -24,6 +24,14 @@ async function wrapped(setup, handler) {
 }
 
 describe("browser route registration guard", () => {
+  it("terminates the final admitted route with continue", async () => {
+    const s = await setup(); const request = route();
+    await s.rawRoute.mock.calls[0][1](request);
+    expect(request.continue).toHaveBeenCalledOnce();
+    expect(request.fallback).not.toHaveBeenCalled();
+    expect(request.abort).not.toHaveBeenCalled();
+    s.guard.assertClean();
+  });
   it.each(["http://unsafe.invalid", "file:///tmp/fixture", "https://user:secret@localhost"])("rejects unsafe base %s", async url => {
     await expect(installE2eBrowserRouteGuard(surface(), { baseUrl: url })).rejects.toThrow("loopback");
   });
