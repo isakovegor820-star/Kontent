@@ -21,7 +21,7 @@ const connected: ProjectTrackingSettings = {
   verificationFileContent: "aurora-site-verification=abcdefghijklmnopqrstuvwxyzABCDEFG",
 };
 let settings: ProjectTrackingSettings;
-let fetchMock: ReturnType<typeof vi.fn>;
+let fetchMock: ReturnType<typeof vi.fn<(url: string, init?: RequestInit) => Promise<Response>>>;
 function reply(body: unknown) { return new Response(JSON.stringify(body), { status: 200 }); }
 beforeEach(() => {
   vi.stubGlobal("React", React);
