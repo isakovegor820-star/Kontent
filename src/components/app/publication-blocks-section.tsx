@@ -2,7 +2,7 @@
 
 import { projectFetch as fetch } from "@/lib/project-fetch";
 
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { FileText, Pencil, Plus, RotateCcw } from "lucide-react";
 
 import { useProjects } from "@/components/app/project-provider";
@@ -46,7 +46,9 @@ export function PublicationBlocksSection() {
   const nameId = useId();
   const textId = useId();
   const textCountId = useId();
+  const requestSequence = useRef(0);
   const [blocks, setBlocks] = useState<ClientPublicationBlock[]>([]);
+  const [blocksProjectId, setBlocksProjectId] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -57,39 +59,53 @@ export function PublicationBlocksSection() {
   const [reloadKey, setReloadKey] = useState(0);
   const current = projects.current;
   const canManage = current?.role === "owner";
+  const currentProjectId = current?.id ?? null;
+  const visibleBlocks = currentProjectId != null && blocksProjectId === currentProjectId ? blocks : [];
 
   useEffect(() => {
-    if (!current) {
-      let cancelled = false;
-      queueMicrotask(() => {
-        if (!cancelled) setBlocks([]);
-      });
-      return () => {
-        cancelled = true;
-      };
-    }
+    const projectId = currentProjectId;
+    const sequence = ++requestSequence.current;
     const controller = new AbortController();
     queueMicrotask(() => {
-      if (controller.signal.aborted) return;
-      setLoading(true);
+      if (controller.signal.aborted || sequence !== requestSequence.current) return;
+      setBlocks([]);
+      setBlocksProjectId(null);
+      setCreating(false);
+      setEditingId(null);
+      setForm(EMPTY_FORM);
+      setBusy(false);
       setError(null);
+      setMessage(null);
+      setLoading(projectId != null);
     });
+    if (projectId == null) {
+      return () => {
+        controller.abort();
+        requestSequence.current += 1;
+      };
+    }
     void fetch("/api/publication-blocks", { cache: "no-store", signal: controller.signal })
       .then(async (response) => {
         const body = await response.json().catch(() => null);
         const parsed = response.ok ? parsePublicationBlocksResponse(body) : null;
         if (!parsed) throw body;
+        if (sequence !== requestSequence.current) return;
         setBlocks(parsed);
+        setBlocksProjectId(projectId);
       })
       .catch((reason) => {
         if (reason instanceof DOMException && reason.name === "AbortError") return;
+        if (sequence !== requestSequence.current) return;
         setError("Шаблоны не загрузились. Другие настройки проекта не затронуты.");
       })
       .finally(() => {
-        if (!controller.signal.aborted) setLoading(false);
+        if (!controller.signal.aborted && sequence === requestSequence.current) setLoading(false);
       });
-    return () => controller.abort();
-  }, [current, reloadKey]);
+    return () => {
+      controller.abort();
+      requestSequence.current += 1;
+    };
+  }, [currentProjectId, reloadKey]);
 
   const beginCreate = () => {
     setEditingId(null);
@@ -122,11 +138,12 @@ export function PublicationBlocksSection() {
       setError("Заполните название и текст шаблона.");
       return;
     }
-    const editing = editingId == null ? null : blocks.find((block) => block.id === editingId);
+    const editing = editingId == null ? null : visibleBlocks.find((block) => block.id === editingId);
     if (editingId != null && !editing) {
       setError("Шаблон уже изменился. Обновите список и повторите.");
       return;
     }
+    const sequence = requestSequence.current;
     setBusy(true);
     setError(null);
     setMessage(null);
@@ -145,6 +162,7 @@ export function PublicationBlocksSection() {
           : { kind: form.kind, name, body: text }),
       });
       const body = await response.json().catch(() => null) as Record<string, unknown> | null;
+      if (sequence !== requestSequence.current) return;
       const saved = response.ok ? parsePublicationBlock(body?.block) : null;
       if (!saved) throw body;
       setBlocks((currentBlocks) => editing
@@ -153,14 +171,16 @@ export function PublicationBlocksSection() {
       setMessage(editing ? "Шаблон обновлён." : "Шаблон создан. Его можно выбрать при создании поста.");
       cancelForm();
     } catch (reason) {
+      if (sequence !== requestSequence.current) return;
       setError(publicationSettingsErrorMessage(reason));
     } finally {
-      setBusy(false);
+      if (sequence === requestSequence.current) setBusy(false);
     }
   };
 
   const setEnabled = async (block: ClientPublicationBlock, enabled: boolean) => {
     if (busy || !canManage) return;
+    const sequence = requestSequence.current;
     setBusy(true);
     setError(null);
     setMessage(null);
@@ -177,18 +197,20 @@ export function PublicationBlocksSection() {
         }),
       });
       const body = await response.json().catch(() => null) as Record<string, unknown> | null;
+      if (sequence !== requestSequence.current) return;
       const saved = response.ok ? parsePublicationBlock(body?.block) : null;
       if (!saved) throw body;
       setBlocks((currentBlocks) => currentBlocks.map((item) => item.id === saved.id ? saved : item));
       setMessage(enabled ? "Шаблон снова доступен при создании поста." : "Шаблон отключён для новых публикаций.");
     } catch (reason) {
+      if (sequence !== requestSequence.current) return;
       setError(publicationSettingsErrorMessage(reason));
     } finally {
-      setBusy(false);
+      if (sequence === requestSequence.current) setBusy(false);
     }
   };
 
-  const originalBlock = blocks.find((block) => block.id === editingId);
+  const originalBlock = visibleBlocks.find((block) => block.id === editingId);
   const formDirty = (creating || editingId != null) && (
     form.kind !== (originalBlock?.kind ?? EMPTY_FORM.kind)
     || form.name !== (originalBlock?.name ?? "")
@@ -219,7 +241,7 @@ export function PublicationBlocksSection() {
         <p className="mt-4 text-[13px] text-text-3">Выберите проект, чтобы увидеть его шаблоны.</p>
       ) : loading ? (
         <p role="status" className="mt-4 text-[13px] text-text-3">Загружаем шаблоны…</p>
-      ) : error && blocks.length === 0 ? (
+      ) : error && visibleBlocks.length === 0 ? (
         <div className="mt-4 flex flex-wrap items-center gap-3">
           <p id={errorId} role="alert" className="text-[13px] text-danger-text">{error}</p>
           <Button type="button" variant="outline" size="sm" onClick={() => setReloadKey((key) => key + 1)}>
@@ -304,7 +326,7 @@ export function PublicationBlocksSection() {
             </form>
           )}
 
-          {blocks.length === 0 && !creating ? (
+          {visibleBlocks.length === 0 && !creating ? (
             <div className="mt-4 border-t border-line pt-4">
               <p className="text-[13px] leading-relaxed text-text-3">
                 Пока нет шаблонов. Начни с подписи автора или контактов, которые часто добавляешь в посты.
@@ -312,7 +334,7 @@ export function PublicationBlocksSection() {
             </div>
           ) : (
             <ul className="mt-4 divide-y divide-line border-y border-line">
-              {blocks.map((block) => (
+              {visibleBlocks.map((block) => (
                 <li key={block.id} className="flex flex-col gap-3 py-3 sm:flex-row sm:items-start">
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
@@ -356,7 +378,7 @@ export function PublicationBlocksSection() {
         </>
       )}
 
-      {error && blocks.length > 0 && !creating && editingId == null && (
+      {error && visibleBlocks.length > 0 && !creating && editingId == null && (
         <p id={errorId} role="alert" className="mt-3 text-[13px] text-danger-text">{error}</p>
       )}
       <p id={statusId} role="status" aria-live="polite" className="mt-2 min-h-5 text-[13px] text-success-text">
