@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import React from "react";
-import { cleanup, configure, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, configure, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TrackingSettingsSection, type ProjectTrackingSettings } from "./tracking-settings-section";
 import { trackingDeveloperInstructions } from "./tracking-connection-guide";
@@ -135,6 +135,30 @@ describe("tracking setup journey", () => {
     await screen.findByText("Сигнал получен");
     expect(fetchMock.mock.calls.some(([url]) => url === "/api/tracking/settings/verify")).toBe(false);
     expect(screen.getByRole("button", { name: "Проверить подключение" })).toBeTruthy();
+  });
+
+  it("does not let a delayed signal refresh overwrite successful verification", async () => {
+    settings = { ...connected };
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    const listen = vi.spyOn(window, "addEventListener");
+    render(<TrackingSettingsSection />);
+    await screen.findByRole("button", { name: "Проверить подключение" });
+    await waitFor(() => expect(listen).toHaveBeenCalledWith("focus", expect.any(Function)));
+    const regularFetch = fetchMock.getMockImplementation()!;
+    let finishRefresh: ((response: Response) => void) | undefined;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === "/api/tracking/settings" && !init?.method) {
+        return new Promise<Response>((resolve) => { finishRefresh = resolve; });
+      }
+      return regularFetch(url, init);
+    });
+    fireEvent.focus(window);
+    await waitFor(() => expect(finishRefresh).toBeTypeOf("function"));
+    fireEvent.click(screen.getByRole("button", { name: "Проверить подключение" }));
+    await screen.findByText("Подключение сохранено");
+    await act(async () => { finishRefresh!(reply({ ok: true, tracking: connected })); });
+    expect(screen.getByText("Подключение сохранено")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Проверить подключение" })).toBeNull();
   });
 
   it("exports project-specific instructions with attribution and successful-submission requirements", () => {

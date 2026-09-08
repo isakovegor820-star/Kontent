@@ -516,6 +516,7 @@ export function TrackingSettingsSection() {
       return;
     }
     const projectId = current.id;
+    settingsSequence.current += 1;
     setBusyKey("settings-save");
     setConnectionFeedback(null);
     const { response, body } = await requestJson("/api/tracking/settings", {
@@ -528,6 +529,7 @@ export function TrackingSettingsSection() {
       }),
     });
     if (currentProjectIdRef.current !== projectId) return;
+    settingsSequence.current += 1;
     const parsed = response?.ok ? parseTrackingSettingsResponse(body) : null;
     if (parsed) {
       setSettings(parsed);
@@ -563,6 +565,7 @@ export function TrackingSettingsSection() {
   const checkConnection = async (verificationMethod: "script" | "file" = "script") => {
     if (!current || !visibleSettings?.publicKey || busyKey || !canManage || settingsDirty) return;
     const projectId = current.id;
+    settingsSequence.current += 1;
     setBusyKey("settings-check");
     setConnectionFeedback(null);
     const { response, body } = await requestJson("/api/tracking/settings/verify", {
@@ -571,6 +574,7 @@ export function TrackingSettingsSection() {
       body: JSON.stringify({ expectedVersion: visibleSettings.version, verificationMethod }),
     });
     if (currentProjectIdRef.current !== projectId) return;
+    settingsSequence.current += 1;
     const parsed = response?.ok ? parseTrackingSettingsResponse(body) : null;
     if (parsed) {
       setSettings(parsed);
