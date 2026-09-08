@@ -102,6 +102,7 @@ import {
   type AiClientRequestIdentity,
 } from "@/lib/ai-client-idempotency";
 import { getAiUsageMetrics } from "@/lib/ai-usage-sync";
+import { createPostFromSource, SourcePostCreationError } from "@/lib/source-post-client";
 import {
   composerHydrationIdentity,
   composerPersistedDraftHref,
@@ -420,6 +421,7 @@ interface ComposerValue {
   canRecoverDraft: boolean;
   recoveryState: DraftRecoveryState;
   recoveryError: string;
+  sourceCreationProgress: string;
   recoverDraft: () => Promise<void>;
   topicOpen: boolean;
   setTopicOpen: (v: boolean) => void;
@@ -524,6 +526,7 @@ export default function ComposerPage() {
   const [blockedReason, setBlockedReason] = useState<DraftReviewBlockedReason | null>(null);
   const [recoveryState, setRecoveryState] = useState<DraftRecoveryState>("idle");
   const [recoveryError, setRecoveryError] = useState("");
+  const [sourceCreationProgress, setSourceCreationProgress] = useState("");
   const [, setAiValidation] = useState<DraftAiValidation | null>(null);
   const [generationResultId, setGenerationResultId] = useState<number | null>(null);
   const [topicOpen, setTopicOpen] = useState(false);
@@ -559,6 +562,7 @@ export default function ComposerPage() {
   const draftRequestRef = useRef<Promise<ServerDraft | null> | null>(null);
   const draftDeleteRequestRef = useRef<Promise<void> | null>(null);
   const recoveryRequestRef = useRef<Promise<void> | null>(null);
+  const sourceCreationAbortRef = useRef<AbortController | null>(null);
   const activePublicationRequestRef = useRef<Promise<void> | null>(null);
   const recoveryClientKeyRef = useRef<string | null>(null);
   const autosaveCancelRef = useRef<(() => void) | null>(null);
@@ -581,6 +585,10 @@ export default function ComposerPage() {
   const canRecoverDraft = roleCanEditContent
     && draftId != null
     && isDraftRecoveryAllowedReason(blockedReason);
+
+  useEffect(() => () => {
+    sourceCreationAbortRef.current?.abort();
+  }, [composerUserId, currentProjectId, draftId]);
 
   useEffect(() => {
     if (!s.authReady || !s.user) return;
@@ -804,6 +812,7 @@ export default function ComposerPage() {
     setRecoveryState("idle");
     setRecoveryError("");
     recoveryClientKeyRef.current = null;
+    setSourceCreationProgress("");
     setDate(pending?.form.date ?? draft?.scheduled_local_date ?? d ?? scheduleFields.localDate);
     setTime(pending?.form.time ?? draft?.scheduled_local_time ?? t ?? scheduleFields.localTime);
     setScheduleTimezone(
@@ -2034,6 +2043,38 @@ export default function ComposerPage() {
         || !isDraftRecoveryAllowedReason(blockedReason)
       ) return;
 
+      const source = acknowledgedDraftRef.current;
+      if (blockedReason === "source_context_not_publishable" && source?.source_ref?.kind === "rss") {
+        const controller = new AbortController();
+        sourceCreationAbortRef.current = controller;
+        setRecoveryState("loading");
+        setRecoveryError("");
+        try {
+          const result = await createPostFromSource(source, {
+            signal: controller.signal,
+            onProgress: setSourceCreationProgress,
+          });
+          if (controller.signal.aborted) return;
+          setRecoveryState("success");
+          s.toast({
+            kind: "success",
+            title: result.created ? "Пост создан" : "Открываем созданный пост",
+            body: "ИИ подготовил отдельный текст. Исходный инфоповод сохранён.",
+          });
+          router.replace(`/app/composer?draft=${result.draft.id}&suggestMedia=1`);
+        } catch (error) {
+          if (controller.signal.aborted) return;
+          setRecoveryState("failed");
+          setRecoveryError(error instanceof SourcePostCreationError
+            ? error.message
+            : "Не удалось создать пост. Источник сохранён — повторите действие.");
+        } finally {
+          if (sourceCreationAbortRef.current === controller) sourceCreationAbortRef.current = null;
+          void s.refreshAiUsage();
+        }
+        return;
+      }
+
       const snapshot = currentDraftWriteRef.current ?? currentDraftWrite;
       const bad = validate(false);
       // Recovery may deliberately create a destination-less safe copy when every old
@@ -2606,6 +2647,7 @@ export default function ComposerPage() {
       canRecoverDraft,
       recoveryState,
       recoveryError,
+      sourceCreationProgress,
       recoverDraft,
       topicOpen,
       setTopicOpen,
@@ -2727,6 +2769,7 @@ export default function ComposerPage() {
       recoverDraft,
       recoveryError,
       recoveryState,
+      sourceCreationProgress,
       removeCurrent,
       runAi,
       saveDraft,
@@ -2918,6 +2961,7 @@ function ComposerActionBar() {
   const personal = projects.current?.personal === true;
   const approved = (personal || c.editorialState === "approved") && c.blockedReason == null;
   const blocked = c.blockedReason ? DRAFT_BLOCKED_COPY[c.blockedReason] : null;
+  const createsSourcePost = c.blockedReason === "source_context_not_publishable" && c.sourceRef?.kind === "rss";
   const activeSettled = c.activePublication == null
     ? false
     : publicationOperationIsSettled(c.activePublication);
@@ -2987,11 +3031,13 @@ function ComposerActionBar() {
                 {blocked.title}
               </h2>
               <p className="mt-1 max-w-[72ch] text-pretty text-[13px] leading-relaxed text-text-2">
-                {blocked.body}
+                {createsSourcePost
+                  ? "ИИ напишет новый пост по фактам инфоповода и откроет его для редактирования. Исходный материал сохранится по прежней ссылке."
+                  : blocked.body}
               </p>
               <div aria-live="polite" aria-atomic="true" className="min-h-5">
                 {c.recoveryState === "loading" && (
-                  <p className="mt-1 text-[13px] font-medium text-brand">Создаём отдельный пост…</p>
+                  <p className="mt-1 text-[13px] font-medium text-brand">{createsSourcePost ? c.sourceCreationProgress || "Подготавливаем новый пост…" : "Создаём отдельный пост…"}</p>
                 )}
                 {c.recoveryState === "success" && (
                   <p className="mt-1 text-[13px] font-medium text-success-text">Новый пост создан. Открываем редактор…</p>
@@ -3013,7 +3059,7 @@ function ComposerActionBar() {
                   loading={c.recoveryState === "loading"}
                   onClick={() => void c.recoverDraft()}
                 >
-                  {blocked.action}
+                  {createsSourcePost && c.recoveryState === "failed" ? "Повторить создание поста" : blocked.action}
                 </Button>
               ) : (
                 <Link
@@ -3345,6 +3391,7 @@ function ComposerInner() {
   const topicRef = useRef<HTMLInputElement>(null);
   const loadedKey = useRef<string | null>(null);
   const seededSuggestionRef = useRef("");
+  const startedSourceCreationRef = useRef("");
   const storeReady = s.ready;
   const authReady = s.authReady;
   const realReady = s.realReady;
@@ -3515,6 +3562,20 @@ function ComposerInner() {
     timeParam,
     toast,
   ]);
+
+  // The RSS dialog already confirmed generation. Opening a source without this intent
+  // remains read-only; a failed attempt waits for an explicit retry from the action bar.
+  const createSourceIntent = params.get("intent") === "create";
+  useEffect(() => {
+    const identity = `${currentUserId}:${currentProjectId}:${draftParam}`;
+    if (
+      !createSourceIntent || !hydrated || currentDraftId !== draftParam
+      || !c.canRecoverDraft || c.blockedReason !== "source_context_not_publishable"
+      || c.sourceRef?.kind !== "rss" || startedSourceCreationRef.current === identity
+    ) return;
+    startedSourceCreationRef.current = identity;
+    void c.recoverDraft();
+  }, [c, createSourceIntent, currentDraftId, currentProjectId, currentUserId, draftParam, hydrated]);
 
   useEffect(() => {
     if (!publicationParam) {
@@ -3837,7 +3898,11 @@ function ComposerInner() {
             {!canEditContent && (
               <p role="status" className="mt-2 text-[13px] leading-relaxed text-text-2">
                 {c.blockedReason === "source_context_not_publishable"
-                  ? "Материал-источник открыт только для чтения. Отдельный пост будет создан только после вашего подтверждения."
+                  ? c.sourceRef?.kind === "rss"
+                    ? c.recoveryState === "loading"
+                      ? "ИИ создаёт отдельный пост. Материал-источник остаётся без изменений."
+                      : "Материал-источник открыт только для чтения. Нажмите «Создать пост из материала», чтобы ИИ написал новый текст."
+                    : "Материал-источник открыт только для чтения. Отдельный пост будет создан только после вашего подтверждения."
                   : c.recoveryState === "loading"
                     ? "Текущий текст зафиксирован для создания отдельного поста."
                     : "Согласованный текст открыт только для чтения. Публикатор выбирает дату и отправляет именно эту версию."}
