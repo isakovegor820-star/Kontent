@@ -122,7 +122,7 @@ describe("Autopilot durable build progress", () => {
       .toBe("2026-08-18T08:02:00.000Z");
   });
 
-  it("preserves human-review checkpoints as deliverable and never retries them", () => {
+  it("keeps an unsettled draft but retries it without counting it as ready", () => {
     const topic = {
       i: 1,
       topic: "Тема на согласовании",
@@ -140,14 +140,14 @@ describe("Autopilot durable build progress", () => {
     }, now);
 
     expect(checkpoint.buildState).toBe("confirmation_required");
-    expect(reusableAutopilotCheckpoint(checkpoint, topic, topic.scheduledAt)).toBe(true);
+    expect(reusableAutopilotCheckpoint(checkpoint, topic, topic.scheduledAt)).toBe(false);
     expect(autopilotBuildProgress([checkpoint], 1)).toMatchObject({
-      completed: 1,
-      ready: 1,
-      failed: 0,
+      completed: 0,
+      ready: 0,
+      failed: 1,
       reviewRequired: 1,
     });
-    expect(autopilotRetryableItemIndexes([checkpoint])).toEqual([]);
+    expect(autopilotRetryableItemIndexes([checkpoint])).toEqual([1]);
   });
 
   it("shows a conservative duration range that shrinks with completed posts", () => {

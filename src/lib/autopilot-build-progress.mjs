@@ -35,9 +35,6 @@ const PROVIDER_WAITING_DISCARDED_KEYS = new Set([
 // countdown: provider load and fallback attempts can legitimately move the finish time.
 const AUTOPILOT_BUILD_SECONDS_PER_POST = Object.freeze({ min: 6, max: 8 });
 
-const isAutopilotDeliverableItem = (item) =>
-  isAutopilotReaderReadyItem(item) || isAutopilotHumanReviewItem(item);
-
 export function estimateAutopilotBuildMinutes(total, completed = 0) {
   const safeTotal = Math.max(0, Math.floor(Number(total) || 0));
   const safeCompleted = Math.min(
@@ -131,7 +128,7 @@ export function autopilotProviderWaitingItem({
 
 export function reusableAutopilotCheckpoint(item, topic, scheduledAt) {
   if (!item || !["ready", "confirmation_required", "review_required"].includes(item.buildState)) return false;
-  if (!isAutopilotDeliverableItem(item)) return false;
+  if (!isAutopilotReaderReadyItem(item)) return false;
   if (String(item.topic || "") !== String(topic?.topic || "")) return false;
   return String(item.scheduledAt || "") === String(scheduledAt || "");
 }
@@ -139,11 +136,11 @@ export function reusableAutopilotCheckpoint(item, topic, scheduledAt) {
 export function autopilotBuildProgress(items, expected) {
   const list = Array.isArray(items) ? items : [];
   const total = Math.max(0, Number(expected) || list.length);
-  const completed = list.filter((item) => isAutopilotDeliverableItem(item)).length;
+  const completed = list.filter((item) => isAutopilotReaderReadyItem(item)).length;
   const failed = list.filter((item) =>
     item?.buildState === "failed" || (
       item?.aiReady === true && String(item?.draft || "").trim() &&
-      !isAutopilotDeliverableItem(item)
+      !isAutopilotReaderReadyItem(item)
     ),
   ).length;
   const reviewRequired = list.filter((item) => item?.reviewRequired === true).length;
@@ -161,7 +158,7 @@ export function autopilotBuildProgress(items, expected) {
 export function autopilotRetryableItemIndexes(items) {
   return (Array.isArray(items) ? items : [])
     .flatMap((item, index) =>
-      !isAutopilotDeliverableItem(item) &&
+      !isAutopilotReaderReadyItem(item) &&
       item?.status !== "approved" &&
       item?.status !== "published" &&
       !Number(item?.postId)
