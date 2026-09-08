@@ -12,8 +12,15 @@ concurrency:
 
 jobs:
   stability:
+    name: stability (${{ matrix.browser }})
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    # Each journey already recreates its disposable runtime and database. Keep
+    # 30 runs per engine on isolated runners so all 90 fit the Actions time limit.
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox, webkit]
 
     services:
       postgres:
@@ -54,7 +61,8 @@ jobs:
       VK_APP_ID: "0"
       VK_APP_SECRET: "test-vk-secret"
       E2E_STABILITY_RUNS: "30"
-      E2E_STABILITY_ARTIFACT_DIR: "test-results/e2e-stability/ci-${{ github.run_id }}-${{ github.run_attempt }}"
+      E2E_STABILITY_ENGINES: ${{ matrix.browser }}
+      E2E_STABILITY_ARTIFACT_DIR: "test-results/e2e-stability/ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.browser }}"
 
     steps:
       - name: Checkout
@@ -75,14 +83,14 @@ jobs:
           sudo apt-get install --no-install-recommends --yes poppler-utils
           npx playwright-core install --with-deps chromium firefox webkit
 
-      - name: Run 30 complete three-engine cycles
+      - name: Run 30 complete ${{ matrix.browser }} journeys
         run: npm run test:e2e:stability
 
       - name: Upload traces, videos, screenshots, network logs and manifest
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: e2e-stability-${{ github.run_id }}-${{ github.run_attempt }}
+          name: e2e-stability-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.browser }}
           path: test-results/e2e-stability
           if-no-files-found: error
           retention-days: 14
