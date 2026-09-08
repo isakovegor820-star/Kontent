@@ -1,4 +1,5 @@
 import { waitForE2e as waitFor } from "./e2e-wait.mjs";
+import { saveE2eComposerDraft } from "./e2e-composer-save.mjs";
 import { execFileSync, spawn } from "node:child_process";
 import { access, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { constants, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -4291,41 +4292,15 @@ try {
 
   const saveCriticalDraft = async (targetPage = page) => {
     const protection = await openComposerSection(targetPage, "composer-protection");
-    const saveButton = protection.getByRole("button", { name: /^(Сохранить сейчас|Сохранено)$/u });
-    await saveButton.waitFor();
-    const alreadySaved = await saveButton.getAttribute("data-loading") !== "true"
-      && (await saveButton.textContent())?.trim() === "Сохранено";
-    if (!alreadySaved) {
-      await waitFor(
-        async () => (await protection.locator("summary").textContent())?.includes("Сохранено")
-          || await saveButton.isEnabled({ timeout: 500 }).catch(() => false),
-        "Composer save button did not become enabled",
-        UI_WAIT_TIMEOUT_MS,
-      );
-      // Autosave can finish while route hydration replaces/closes the disclosure.
-      // Keep both the UI acknowledgement and database equality as the proof below.
-      const stillNeedsSave = !(await protection.locator("summary").textContent())?.includes("Сохранено")
-        && (await saveButton.textContent().catch(() => ""))?.trim() !== "Сохранено";
-      if (stillNeedsSave) {
-        // The typing-to-save transition can replace this React button between
-        // Playwright's stability check and the native click in WebKit. Resolve
-        // the current enabled node and invoke its real DOM click atomically;
-        // the UI acknowledgement and database equality below remain the proof.
-        await saveButton.evaluate((button) => button.click());
-      }
-      await waitFor(async () => {
-        const summary = await protection.locator("summary").textContent();
-        return summary?.includes("Сохранено") === true;
-      }, "Composer save state did not acknowledge the visible text", UI_WAIT_TIMEOUT_MS);
-    }
-    await waitFor(async () => {
-      const row = (await pool.query(
+    await saveE2eComposerDraft({
+      protection,
+      timeoutMs: UI_WAIT_TIMEOUT_MS,
+      readVisibleText: () => readEditableText(targetPage.locator("#composer-text")),
+      readStoredText: async () => (await pool.query(
         "select text from drafts where id = $1 and project_id = $2",
         [monthlyDraftId, sharedProjectId],
-      )).rows[0];
-      const currentText = await readEditableText(targetPage.locator("#composer-text")).catch(() => "");
-      return row?.text === currentText;
-    }, "Composer save button did not acknowledge the visible text", 12_000);
+      )).rows[0]?.text,
+    });
   };
   await saveCriticalDraft();
   await waitFor(async () => {
