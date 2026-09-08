@@ -23,7 +23,7 @@ describe("publication worker project isolation contract", () => {
   });
 
   it("adds projectId to new and reconciled queue jobs", () => {
-    const enqueueBlock = between("async function enqueuePublishJob", "// Вставить scheduled-пост");
+    const enqueueBlock = between("async function enqueuePublishJob", "async function enqueuePost");
     const reconcileBlock = between("async function reconcileScheduledPosts()", "// Graceful shutdown");
 
     expect(enqueueBlock).toContain("select project_id from posts where id = $1");

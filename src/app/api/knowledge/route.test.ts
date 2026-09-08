@@ -1,31 +1,36 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
-  resolveChannel: vi.fn(),
   channelAiContextFor: vi.fn(),
   query: vi.fn(),
 }));
 
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
-vi.mock("@/lib/autopilot", () => ({ resolveChannel: mocks.resolveChannel }));
 vi.mock("@/lib/ai-usage", () => ({ channelAiContextFor: mocks.channelAiContextFor }));
-vi.mock("@/lib/db", () => ({ getPool: () => ({ query: mocks.query }) }));
+vi.mock("@/lib/db", () => ({ getPool: () => ({
+  query: mocks.query,
+  connect: async () => ({ query: mocks.query, release: vi.fn() }),
+}) }));
 vi.mock("@/lib/queue", () => ({ getStatsQueue: vi.fn() }));
 
 import { GET } from "./route";
 
-const request = () => new NextRequest("http://localhost/api/knowledge?channel=22");
+const request = () => new ProjectRequest(8, "http://localhost/api/knowledge?channel=22");
 
 describe("GET /api/knowledge", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.getSessionUser.mockResolvedValue({ id: 5 });
-    mocks.resolveChannel.mockResolvedValue(22);
-    mocks.query
-      .mockResolvedValueOnce({ rows: [{ id: 1, kind: "form", title: "Факты", status: "ready", chunks: 2 }] })
-      .mockResolvedValueOnce({ rows: [{ facts: 2, voice: 1 }] });
+    mocks.query.mockImplementation(async (sql: string) => {
+      if (["begin", "commit", "rollback"].includes(sql)) return { rows: [] };
+      if (sql.includes("from project_members")) return { rows: [{ project_id: 8, user_id: 5, role: "author", version: 1 }] };
+      if (sql.includes("from channels")) return { rows: [{ id: 22, project_id: 8 }], rowCount: 1 };
+      if (sql.includes("from knowledge_sources")) return { rows: [{ id: 1, kind: "form", title: "Факты", status: "ready", chunks: 2 }] };
+      if (sql.includes("from knowledge_chunks")) return { rows: [{ facts: 2, voice: 1 }] };
+      throw new Error(`unexpected query: ${sql}`);
+    });
     mocks.channelAiContextFor.mockResolvedValue({
       profileProvenance: {
         niche: {

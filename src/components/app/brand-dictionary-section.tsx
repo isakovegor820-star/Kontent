@@ -1,4 +1,7 @@
 "use client";
+import { useProjectCall } from "@/lib/use-project-transport";
+import { projectFetch as fetch } from "@/lib/project-transport";
+
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import {
@@ -17,7 +20,7 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Badge, Card, Field, Input } from "@/components/ui/primitives";
 import {
   brandDictionaryErrorMessage,
-  loadBrandDictionary,
+  loadBrandDictionary as unscopedLoadBrandDictionary,
   type ClientBrandDictionary,
   type ClientBrandDictionaryEntry,
 } from "@/lib/brand-dictionary-client";
@@ -84,7 +87,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-async function requestJson(url: string, init: RequestInit) {
+async function unscopedRequestJson(url: string, init: RequestInit) {
   try {
     const response = await fetch(url, { cache: "no-store", ...init });
     const parsed = await response.json().catch(() => null);
@@ -122,6 +125,8 @@ function validateForm(form: FormState) {
 }
 
 export function BrandDictionarySection() {
+  const loadBrandDictionary = useProjectCall(unscopedLoadBrandDictionary);
+  const requestJson = useProjectCall(unscopedRequestJson);
   const projects = useProjects();
   const current = projects.current;
   const canManage = current?.role === "owner";
@@ -156,7 +161,7 @@ export function BrandDictionarySection() {
     } finally {
       if (sequence === requestSequence.current) setLoading(false);
     }
-  }, []);
+  }, [loadBrandDictionary]);
 
   const currentProjectId = current?.id ?? null;
   useEffect(() => {

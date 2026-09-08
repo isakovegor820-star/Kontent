@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 import { ProjectAccessError } from "@/lib/project-permissions";
 
 const mocks = vi.hoisted(() => ({
@@ -44,7 +44,7 @@ const reviewedDraft = {
 };
 
 function request(version: number) {
-  return new NextRequest("http://localhost/api/drafts/41/review", {
+  return new ProjectRequest(1, "http://localhost/api/drafts/41/review", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ version }),
@@ -110,7 +110,7 @@ describe("POST /api/drafts/:id/review", () => {
   });
 
   it("rejects cross-origin review before reading the session", async () => {
-    const response = await POST(new NextRequest("http://localhost/api/drafts/41/review", {
+    const response = await POST(new ProjectRequest(1, "http://localhost/api/drafts/41/review", {
       method: "POST",
       headers: { origin: "https://attacker.example", "sec-fetch-site": "cross-site" },
       body: JSON.stringify({ version: 3 }),

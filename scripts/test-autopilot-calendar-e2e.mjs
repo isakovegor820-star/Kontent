@@ -7,7 +7,7 @@ import { chromium } from 'playwright-core';
 import { Queue } from 'bullmq';
 import IORedis from 'ioredis';
 
-const reportDir = 'reports/autopilot-calendar-2026-09-07';
+const reportDir = process.env.AUTOPILOT_QA_REPORT_DIR || 'reports/autopilot-calendar-2026-09-07';
 const directory = (await readFile(join(reportDir, 'runtime-path.txt'), 'utf8')).trim();
 const runtime = JSON.parse(await readFile(join(directory, 'runtime.json'), 'utf8'));
 const target = new URL(runtime.databaseUrl);
@@ -49,7 +49,7 @@ try {
   page.on('pageerror', (error) => errors.push(error.message));
   page.setDefaultTimeout(30000);
   const request = async (path, method = 'GET', data) => {
-    const response = await context.request.fetch(path, { method, ...(data ? { data } : {}), headers: { origin: runtime.baseUrl } });
+    const response = await context.request.fetch(path, { method, ...(data ? { data } : {}), headers: { origin: runtime.baseUrl, "x-aurora-project-id": String(projectId) } });
     return { status: response.status(), body: await response.json() };
   };
   const countPosts = async () => Number((await db.query(`select count(*) from posts where project_id = $1`, [projectId])).rows[0].count);

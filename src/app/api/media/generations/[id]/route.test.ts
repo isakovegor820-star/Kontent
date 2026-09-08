@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -62,7 +62,7 @@ describe("GET /api/media/generations/[id]", () => {
 
   it("reconciles a missing terminal event before selecting the generation", async () => {
     const response = await GET(
-      new NextRequest("http://localhost/api/media/generations/41"),
+      new ProjectRequest(23, "http://localhost/api/media/generations/41"),
       { params: Promise.resolve({ id: "41" }) },
     );
 

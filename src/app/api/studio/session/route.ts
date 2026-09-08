@@ -1,3 +1,5 @@
+import { ProjectAccessError } from "@/lib/project-permissions";
+import { withProjectRoute } from "@/lib/project-route";
 import { JsonBodyReadError, readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -13,7 +15,7 @@ import {
 
 export const runtime = "nodejs";
 
-export async function GET(req: NextRequest) {
+async function handleGET(req: NextRequest) {
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
   try {
@@ -25,12 +27,13 @@ export async function GET(req: NextRequest) {
       updatedAt: stored?.updatedAt ?? null,
     });
   } catch (error) {
+    if (error instanceof ProjectAccessError) return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
     console.error("[/api/studio/session GET]", { errorName: error instanceof Error ? error.name : "Error" });
     return NextResponse.json({ ok: false, error: "unavailable" }, { status: 503 });
   }
 }
 
-export async function PUT(req: NextRequest) {
+async function handlePUT(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
   }
@@ -63,6 +66,7 @@ export async function PUT(req: NextRequest) {
       updatedAt: result.session.updatedAt,
     });
   } catch (error) {
+    if (error instanceof ProjectAccessError) return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
     if (error instanceof JsonBodyReadError) {
       return NextResponse.json({ ok: false, error: error.code }, { status: error.status });
     }
@@ -79,3 +83,6 @@ export async function PUT(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "unavailable" }, { status: 503 });
   }
 }
+
+export const GET = withProjectRoute(handleGET);
+export const PUT = withProjectRoute(handlePUT);

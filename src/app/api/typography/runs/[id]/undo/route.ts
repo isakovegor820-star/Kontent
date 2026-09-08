@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 import { randomUUID } from "node:crypto";
 import type { NextRequest } from "next/server";
 
@@ -11,7 +12,7 @@ import { readTypographyBody, typographyApiError, typographyJson } from "../../..
 export const runtime = "nodejs";
 type Context = { params: Promise<{ id: string }> };
 
-export async function POST(request: NextRequest, context: Context) {
+async function handlePOST(request: NextRequest, context: Context) {
   const requestId = randomUUID();
   if (!hasTrustedMutationOrigin(request)) {
     return typographyJson({ ok: false, error: "forbidden_origin" }, 403, requestId);
@@ -40,3 +41,5 @@ export async function POST(request: NextRequest, context: Context) {
     return typographyApiError(error, requestId);
   }
 }
+
+export const POST = withProjectRoute(handlePOST);

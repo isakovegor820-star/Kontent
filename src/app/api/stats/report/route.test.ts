@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -14,7 +14,7 @@ vi.mock("@/lib/queue", () => ({ getStatsQueue: () => ({ add: mocks.add }) }));
 import { POST } from "./route";
 
 function request(crossSite = false) {
-  return new NextRequest("http://localhost/api/stats/report", {
+  return new ProjectRequest(44, "http://localhost/api/stats/report", {
     method: "POST",
     headers: crossSite
       ? { origin: "https://attacker.example", "sec-fetch-site": "cross-site" }

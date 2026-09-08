@@ -21,7 +21,7 @@ vi.mock("@/lib/rate-limit", () => ({
   clientIp: mocks.clientIp,
   rateLimitResponse: mocks.rateLimitResponse,
 }));
-vi.mock("@/lib/db", () => ({ getPool: () => ({ connect: mocks.connect }) }));
+vi.mock("@/lib/db", () => ({ getPool: () => ({ query: mocks.query, connect: mocks.connect }) }));
 vi.mock("@/lib/social-providers.mjs", () => ({
   getOAuthConfig: mocks.getOAuthConfig,
   getAdapter: mocks.getAdapter,
@@ -41,6 +41,7 @@ function callbackRequest(overrides: { state?: string; network?: string; userId?:
     verifier: "verifier-1",
     network,
     userId: overrides.userId ?? 7,
+    projectId: 17,
   }));
   return new NextRequest(
     `http://localhost/api/channels/oauth/callback?network=${network}&code=code-1&state=${state}`,
@@ -72,8 +73,9 @@ describe("GET /api/channels/oauth/callback", () => {
     mocks.encryptToken.mockImplementation((value: string) => `encrypted:${value}`);
     mocks.connect.mockResolvedValue({ query: mocks.query, release: mocks.release });
     mocks.query.mockImplementation(async (sql: string) => {
+      if (sql.includes("from project_members member")) return { rows: [{project_id: 17, user_id: 7, role: "owner", version: 1}], rowCount: 1 };
       if (sql.includes("insert into oauth_tokens")) return { rows: [{ id: 91 }], rowCount: 1 };
-      if (sql.includes("select id from channels")) return { rows: [], rowCount: 0 };
+      if (sql.includes("select id, project_id from channels")) return { rows: [], rowCount: 0 };
       return { rows: [], rowCount: 1 };
     });
   });
@@ -91,7 +93,7 @@ describe("GET /api/channels/oauth/callback", () => {
     expect(response.headers.get("set-cookie")).toContain("oauth_state=");
     expect(response.headers.get("set-cookie")).toContain("Max-Age=0");
     const statements = mocks.query.mock.calls.map(([sql]) => String(sql).trim());
-    expect(statements[0]).toBe("begin");
+    expect(statements).toContain("begin");
     expect(statements.some((sql) => sql.includes("insert into oauth_tokens"))).toBe(true);
     expect(statements.some((sql) => sql.includes("insert into channels"))).toBe(true);
     expect(statements.at(-1)).toBe("commit");
@@ -100,8 +102,9 @@ describe("GET /api/channels/oauth/callback", () => {
 
   it("rolls back the token when channel ownership conflicts", async () => {
     mocks.query.mockImplementation(async (sql: string) => {
+      if (sql.includes("from project_members member")) return { rows: [{project_id: 17, user_id: 7, role: "owner", version: 1}], rowCount: 1 };
       if (sql.includes("insert into oauth_tokens")) return { rows: [{ id: 91 }], rowCount: 1 };
-      if (sql.includes("select id from channels")) return { rows: [], rowCount: 0 };
+      if (sql.includes("select id, project_id from channels")) return { rows: [], rowCount: 0 };
       if (sql.includes("insert into channels")) throw Object.assign(new Error("unique"), { code: "23505" });
       return { rows: [], rowCount: 1 };
     });

@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 import { createHash } from "node:crypto";
 
 const mocks = vi.hoisted(() => ({
@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   createProjectInvitation: vi.fn(),
   acceptProjectInvitation: vi.fn(),
   selectProjectForUser: vi.fn(),
+  getSelectedProjectContext: vi.fn(),
 }));
 
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
@@ -29,7 +30,7 @@ vi.mock("@/lib/project-team", async (importOriginal) => {
 });
 vi.mock("@/lib/project-context", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/project-context")>();
-  return { ...actual, selectProjectForUser: mocks.selectProjectForUser };
+  return { ...actual, selectProjectForUser: mocks.selectProjectForUser, getSelectedProjectContext: mocks.getSelectedProjectContext };
 });
 
 import { ProjectAccessError } from "@/lib/project-permissions";
@@ -41,7 +42,7 @@ import { POST as acceptInvitation } from "../project-invitations/accept/route";
 const member = { id: 5, email: "member@example.com" };
 
 function request(path: string, method: string, body?: unknown, headers?: Record<string, string>) {
-  return new NextRequest(`https://aurora.test${path}`, {
+  return new ProjectRequest(2, `https://aurora.test${path}`, {
     method,
     headers: { origin: "https://aurora.test", "content-type": "application/json", ...headers },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -60,6 +61,7 @@ describe("project API routes", () => {
       token: "s".repeat(43),
     });
     mocks.acceptProjectInvitation.mockResolvedValue({ projectId: 2, role: "author" });
+    mocks.getSelectedProjectContext.mockResolvedValue({ projectId: 2, name: "Команда", timezone: "UTC", role: "author", version: 1, personal: false });
   });
 
   it("rejects a cross-site project mutation before auth and persistence", async () => {
@@ -92,7 +94,7 @@ describe("project API routes", () => {
   });
 
   it("rejects unsupported media, unknown keys and the actual oversized stream", async () => {
-    const unsupported = await createProject(new NextRequest("https://aurora.test/api/projects", {
+    const unsupported = await createProject(new ProjectRequest(2, "https://aurora.test/api/projects", {
       method: "POST",
       headers: { origin: "https://aurora.test", "content-type": "text/plain" },
       body: JSON.stringify({ name: "Команда" }),
@@ -105,7 +107,7 @@ describe("project API routes", () => {
     }));
     expect(unknown.status).toBe(400);
 
-    const oversized = await createProject(new NextRequest("https://aurora.test/api/projects", {
+    const oversized = await createProject(new ProjectRequest(2, "https://aurora.test/api/projects", {
       method: "POST",
       headers: {
         origin: "https://aurora.test",
@@ -119,7 +121,7 @@ describe("project API routes", () => {
   });
 
   it("rejects malformed UTF-8 before project persistence", async () => {
-    const response = await createProject(new NextRequest("https://aurora.test/api/projects", {
+    const response = await createProject(new ProjectRequest(2, "https://aurora.test/api/projects", {
       method: "POST",
       headers: { origin: "https://aurora.test", "content-type": "application/json" },
       body: new Uint8Array([0x7b, 0x22, 0x6e, 0x61, 0x6d, 0x65, 0x22, 0x3a, 0x22, 0xc3, 0x28, 0x22, 0x7d]),

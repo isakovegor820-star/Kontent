@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 import { randomUUID } from "node:crypto";
 import type { NextRequest } from "next/server";
 
@@ -10,7 +11,7 @@ import {
 
 export const runtime = "nodejs";
 
-export async function GET(request: NextRequest) {
+async function handleGET(request: NextRequest) {
   const requestId = randomUUID();
   const user = await getSessionUser(request);
   if (!user) return audienceAssistantJson({ ok: false, error: "unauthorized" }, 401, requestId);
@@ -24,3 +25,5 @@ export async function GET(request: NextRequest) {
     return audienceAssistantApiError(error, requestId);
   }
 }
+
+export const GET = withProjectRoute(handleGET);

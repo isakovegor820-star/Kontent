@@ -1,4 +1,5 @@
 "use client";
+import { useProjectCall } from "@/lib/use-project-transport";
 
 import { useCallback, useEffect, useState } from "react";
 import { CheckCircle2, ExternalLink, FileText, RefreshCw, Sparkles, XCircle } from "lucide-react";
@@ -7,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Badge, Card, Field, Input, Textarea } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
 
-import { ARTICLE_STATUS_LABEL, errorMessage, formatDate, requestJson } from "./client";
+import { ARTICLE_STATUS_LABEL, errorMessage, formatDate, requestJson as unscopedRequestJson } from "./client";
 
 type Article = {
   id: number;
@@ -60,6 +61,7 @@ const MANUAL_TYPES = [
 ] as const;
 
 export function ArticlesPanel({ siteId, verified, hasDestinations, hasProfile, onSiteChanged }: Props) {
+  const requestJson = useProjectCall(unscopedRequestJson);
   const [articles, setArticles] = useState<Article[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -82,7 +84,7 @@ export function ArticlesPanel({ siteId, verified, hasDestinations, hasProfile, o
     } finally {
       setLoaded(true);
     }
-  }, [siteId]);
+  }, [requestJson, siteId]);
 
   // eslint-disable-next-line react-hooks/set-state-in-effect -- state changes only after the request settles
   useEffect(() => { void load(); }, [load]);
@@ -102,7 +104,7 @@ export function ArticlesPanel({ siteId, verified, hasDestinations, hasProfile, o
       setDetail(body.article);
       setDraft({ title: body.article.title, metaDescription: body.article.metaDescription || "", bodyMarkdown: body.article.bodyMarkdown || "" });
     }
-  }, [siteId]);
+  }, [requestJson, siteId]);
 
   const act = useCallback(async (id: number, action: string, extra: Record<string, unknown> = {}) => {
     setBusy(`${id}:${action}`);
@@ -119,7 +121,7 @@ export function ArticlesPanel({ siteId, verified, hasDestinations, hasProfile, o
     await load();
     if (openId === id) await openArticle(id);
     onSiteChanged();
-  }, [siteId, load, openId, openArticle, onSiteChanged]);
+  }, [requestJson, siteId, load, openId, openArticle, onSiteChanged]);
 
   const saveEdit = useCallback(async () => {
     if (!detail) return;
@@ -136,7 +138,7 @@ export function ArticlesPanel({ siteId, verified, hasDestinations, hasProfile, o
     setEditing(false);
     await load();
     await openArticle(detail.id);
-  }, [detail, draft, siteId, load, openArticle]);
+  }, [detail, requestJson, siteId, draft, load, openArticle]);
 
   const plan = useCallback(async () => {
     setBusy("plan");
@@ -145,7 +147,7 @@ export function ArticlesPanel({ siteId, verified, hasDestinations, hasProfile, o
     setBusy(null);
     if (status >= 400) setError(errorMessage(body.error, "Не удалось запустить планирование."));
     else setTimeout(() => void load(), 1500);
-  }, [siteId, load]);
+  }, [requestJson, siteId, load]);
 
   const createManual = useCallback(async (event: React.FormEvent) => {
     event.preventDefault();
@@ -162,7 +164,7 @@ export function ArticlesPanel({ siteId, verified, hasDestinations, hasProfile, o
     }
     setManualBrief("");
     await load();
-  }, [siteId, manualType, manualBrief, load]);
+  }, [requestJson, siteId, manualType, manualBrief, load]);
 
   const pending = articles.filter((item) => item.status === "needs_review").length;
 

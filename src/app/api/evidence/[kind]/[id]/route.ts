@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 import { NextRequest, NextResponse } from "next/server";
 
 import { EvidenceProjectionError, loadEvidenceProjection, type EvidenceSubjectKind } from "@/lib/evidence-projection";
@@ -8,7 +9,7 @@ export const runtime = "nodejs";
 
 type Context = { params: Promise<{ kind: string; id: string }> };
 
-export async function GET(req: NextRequest, context: Context) {
+async function handleGET(req: NextRequest, context: Context) {
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   const { kind, id } = await context.params;
@@ -22,3 +23,5 @@ export async function GET(req: NextRequest, context: Context) {
     return NextResponse.json({ error: "evidence_unavailable" }, { status: 503 });
   }
 }
+
+export const GET = withProjectRoute(handleGET);

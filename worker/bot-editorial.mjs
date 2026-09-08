@@ -50,9 +50,10 @@ export async function submitBotDraftReview(pool, input) {
     await client.query("begin");
     const membership = (
       await client.query(
-        `select role from project_members
-          where project_id = $1 and user_id = $2 and status = 'active'
-            and role in ('owner','author','approver')`,
+        `select member.role from project_members member join projects project on project.id=member.project_id
+          where member.project_id = $1 and member.user_id = $2 and member.status = 'active'
+            and member.role in ('owner','author','approver') and project.is_archived=false
+          for share of member,project`,
         [projectId, userId],
       )
     ).rows[0];
@@ -99,7 +100,7 @@ export async function submitBotDraftReview(pool, input) {
          project_id, actor_user_id, action, entity_type, entity_id,
          before_version, after_version, safe_data, idempotency_key
        ) values ($1, $2, 'draft.review_submitted', 'editorial_request', $3::text,
-                 $4, $4 + 1, $5::jsonb, $6)
+                 $4::bigint, $4::bigint + 1, $5::jsonb, $6)
        on conflict (project_id, idempotency_key) where idempotency_key is not null do nothing`,
       [
         projectId,
@@ -146,9 +147,10 @@ export async function decideBotApproval(pool, input) {
     await client.query("begin");
     const membership = (
       await client.query(
-        `select role from project_members
-          where project_id = $1 and user_id = $2 and status = 'active'
-            and role in ('owner','approver')`,
+        `select member.role from project_members member join projects project on project.id=member.project_id
+          where member.project_id = $1 and member.user_id = $2 and member.status = 'active'
+            and member.role in ('owner','approver') and project.is_archived=false
+          for share of member,project`,
         [projectId, userId],
       )
     ).rows[0];
@@ -210,7 +212,7 @@ export async function decideBotApproval(pool, input) {
       `insert into audit_events (
          project_id, actor_user_id, action, entity_type, entity_id,
          before_version, after_version, safe_data, idempotency_key
-       ) values ($1, $2, $3, 'editorial_decision', $4::text, $5, $5 + 1, $6::jsonb, $7)
+       ) values ($1, $2, $3, 'editorial_decision', $4::text, $5::bigint, $5::bigint + 1, $6::jsonb, $7)
        on conflict (project_id, idempotency_key) where idempotency_key is not null do nothing`,
       [projectId, userId, decision === "approve" ? "draft.approved" : "draft.changes_requested", inserted.id, workflow.workflow_version, JSON.stringify({ draftId: Number(workflow.draft_id), requestId, revisionId: Number(workflow.revision_id), source: "telegram_bot" }), `editorial-decision:${inserted.id}:recorded`],
     );

@@ -15,6 +15,7 @@ import { emitOperationalSignal, OPERATIONAL_SIGNAL_EVENTS } from "./operational-
 import {
   ProjectAccessError,
   requireSelectedProjectPermission,
+  requireProjectPermission,
   roleAllows,
 } from "./project-permissions";
 
@@ -400,6 +401,7 @@ export async function discardAudienceReply(input: {
   try {
     await db.query("begin");
     const membership = await requireSelectedProjectPermission(db, input.actorUserId, "content.edit");
+    await requireProjectPermission(db, input.actorUserId, membership.projectId, "content.edit", { lock: true });
     const canDeliverReply = roleAllows(membership.role, "audience.reply.send");
     const current = await selectInquiry(db, membership.projectId, inquiryId, "for update of inquiry", canDeliverReply);
     if (!current) throw new AudienceAssistantError("not_found");

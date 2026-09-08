@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -17,7 +17,7 @@ vi.mock("@/lib/today-refresh", async (importOriginal) => {
 import { POST } from "./route";
 
 function request(body: unknown = { channelId: 11 }) {
-  return new NextRequest("http://localhost/api/today/refresh", {
+  return new ProjectRequest(1, "http://localhost/api/today/refresh", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -49,7 +49,7 @@ describe("POST /api/today/refresh", () => {
   it("refreshes the exact selected channel and disables caching", async () => {
     const response = await POST(request({ channelId: 11 }));
     expect(response.status).toBe(200);
-    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
     expect(mocks.refreshTodaySources).toHaveBeenCalledWith({ actorUserId: 9, channelId: 11 });
   });
 });

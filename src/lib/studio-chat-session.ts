@@ -96,6 +96,25 @@ export function mergeStudioChatSessions(
   };
 }
 
+/**
+ * A pagehide keepalive cannot resolve a revision conflict, so it is safe only
+ * after this tab has learned the server revision for the active account.
+ */
+export function shouldSendStudioSessionPageHide({
+  snapshotOwner,
+  persistenceOwner,
+  serverRevisionKnown,
+}: {
+  snapshotOwner: number;
+  persistenceOwner: number | null;
+  serverRevisionKnown: boolean;
+}): boolean {
+  return serverRevisionKnown
+    && Number.isSafeInteger(snapshotOwner)
+    && snapshotOwner > 0
+    && snapshotOwner === persistenceOwner;
+}
+
 const VERSION = 2;
 const MAX_MESSAGES = 60;
 const MAX_MESSAGE_LENGTH = 100_000;
@@ -314,8 +333,8 @@ function safeGeneration(value: unknown): StudioChatGeneration | null {
   };
 }
 
-export function studioChatStorageKey(owner: number): string {
-  return `aurora:studio-chat:v${VERSION}:user-${normalizedOwner(owner)}`;
+export function studioChatStorageKey(owner: number, projectId?: number): string {
+  return `aurora:studio-chat:v${VERSION}:user-${normalizedOwner(owner)}${projectId ? `:project-${projectId}` : ""}`;
 }
 
 export function serializeStudioChatSession(owner: number, session: StudioChatSession): string {

@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -27,7 +27,7 @@ beforeEach(() => {
 describe("POST /api/rss/items/:id/draft", () => {
   it("creates a stable server-owned source context for the exact item and channel", async () => {
     const response = await POST(
-      new NextRequest("http://localhost/api/rss/items/88/draft", {
+      new ProjectRequest(1, "http://localhost/api/rss/items/88/draft", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ channelId: 11, variant: "expert" }),
@@ -50,7 +50,7 @@ describe("POST /api/rss/items/:id/draft", () => {
 
   it("rejects an invalid channel before touching draft storage", async () => {
     const response = await POST(
-      new NextRequest("http://localhost/api/rss/items/88/draft", {
+      new ProjectRequest(1, "http://localhost/api/rss/items/88/draft", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ channelId: "11" }),
@@ -64,7 +64,7 @@ describe("POST /api/rss/items/:id/draft", () => {
 
   it("rejects an unknown content variant", async () => {
     const response = await POST(
-      new NextRequest("http://localhost/api/rss/items/88/draft", {
+      new ProjectRequest(1, "http://localhost/api/rss/items/88/draft", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ channelId: 11, variant: "copied" }),

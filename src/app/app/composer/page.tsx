@@ -1,4 +1,6 @@
 "use client";
+import { useProjectFetch, useProjectCall, useProjectStorageKey } from "@/lib/use-project-transport";
+
 
 // А5. Редактор поста (Приложение А). Главное действие — «Добавить в календарь».
 // ТЗ 5.3: один пост адаптируется под обе сети перед публикацией.
@@ -97,7 +99,7 @@ import {
   type AiDraftPhase,
 } from "@/lib/ai-draft-projection";
 import {
-  acknowledgeAiTerminal,
+  acknowledgeAiTerminal as unscopedAcknowledgeAiTerminal,
   stableAiClientRequest,
   type AiClientRequestIdentity,
 } from "@/lib/ai-client-idempotency";
@@ -111,21 +113,21 @@ import {
 import {
   activeComposerNetworks,
   createDraftClientKey,
-  createServerDraft,
-  deleteServerDraft,
+  createServerDraft as unscopedCreateServerDraft,
+  deleteServerDraft as unscopedDeleteServerDraft,
   DRAFT_AUTOSAVE_DELAY_MS,
   draftMatchesWrite,
   DraftRequestError,
   ensureDraftClientKey,
-  getServerDraft,
+  getServerDraft as unscopedGetServerDraft,
   isRecoverableLegacyDraft,
-  recoverServerDraft,
+  recoverServerDraft as unscopedRecoverServerDraft,
   resolveAcknowledgedDraftRevision,
   runSingleDraftSave,
   reusableAcknowledgedDraft,
   scheduleDraftAutosave,
   shouldAutosaveDraft,
-  updateServerDraft,
+  updateServerDraft as unscopedUpdateServerDraft,
 } from "@/lib/draft-client";
 import type {
   DraftAiValidation,
@@ -151,7 +153,7 @@ import {
   type DraftReviewBlockedReason,
 } from "@/lib/draft-review";
 import {
-  approvePersonalDraftForPublication,
+  approvePersonalDraftForPublication as unscopedApprovePersonalDraftForPublication,
   editorialErrorMessage,
   type ClientEditorialState,
 } from "@/lib/editorial-client";
@@ -160,12 +162,12 @@ import {
   publicationOperationReachedCalendar,
 } from "@/lib/publication-operation-feedback";
 import {
-  cancelPublication,
-  getPublicationOperationEditorContext,
+  cancelPublication as unscopedCancelPublication,
+  getPublicationOperationEditorContext as unscopedGetPublicationOperationEditorContext,
   publicationEditorMutationKind,
   publicationOperationIsSettled,
-  reschedulePublication,
-  restorePublicationToDraft,
+  reschedulePublication as unscopedReschedulePublication,
+  restorePublicationToDraft as unscopedRestorePublicationToDraft,
   type PublicationOperationEditorContext,
 } from "@/lib/publication-lifecycle-client";
 import { renderPublicationTracking } from "@/lib/publication-tracking";
@@ -479,6 +481,16 @@ function useComposer() {
 /* ---------------------------------------------------------------- СТРАНИЦА */
 
 export default function ComposerPage() {
+  const acknowledgeAiTerminal = useProjectCall(unscopedAcknowledgeAiTerminal);
+  const updateServerDraft = useProjectCall(unscopedUpdateServerDraft);
+  const createServerDraft = useProjectCall(unscopedCreateServerDraft);
+  const recoverServerDraft = useProjectCall(unscopedRecoverServerDraft);
+  const approvePersonalDraftForPublication = useProjectCall(unscopedApprovePersonalDraftForPublication);
+  const reschedulePublication = useProjectCall(unscopedReschedulePublication);
+  const cancelPublication = useProjectCall(unscopedCancelPublication);
+  const restorePublicationToDraft = useProjectCall(unscopedRestorePublicationToDraft);
+  const deleteServerDraft = useProjectCall(unscopedDeleteServerDraft);
+  const fetch = useProjectFetch();
   const s = useStore();
   const projects = useProjects();
   const router = useRouter();
@@ -592,7 +604,7 @@ export default function ComposerPage() {
       })
       .catch(() => {});
     return () => controller.abort();
-  }, [s.authReady, s.user]);
+  }, [fetch, s.authReady, s.user]);
 
   const savePostSettings = useCallback(async (value: PostSettings) => {
     const previous = postSettings;
@@ -619,7 +631,7 @@ export default function ComposerPage() {
     } finally {
       setPostSettingsSaving(false);
     }
-  }, [postSettings, s]);
+  }, [fetch, postSettings, s]);
 
   const markDraftDirty = useCallback(() => {
     currentDraftWriteRef.current = null;
@@ -948,7 +960,7 @@ export default function ComposerPage() {
       })
       .catch(() => {});
     return () => controller.abort();
-  }, [channelId]);
+  }, [channelId, fetch]);
 
   const toggleNetwork = useCallback(
     (n: Network, on: boolean) => {
@@ -1401,19 +1413,7 @@ export default function ComposerPage() {
         void s.refreshAiUsage();
       }
     },
-    [
-      canEditContent,
-      channelId,
-      draftId,
-      draftVersion,
-      networks,
-      postSettings,
-      s,
-      text,
-      topic,
-      typing,
-      vkChannelId,
-    ],
+    [acknowledgeAiTerminal, canEditContent, channelId, draftId, draftVersion, fetch, networks, postSettings, s, text, topic, typing, vkChannelId],
   );
 
   const applyAiPreview = useCallback(() => {
@@ -1796,32 +1796,7 @@ export default function ComposerPage() {
         }
       });
     },
-    [
-      canEditContent,
-      channelIds,
-      composerUserId,
-      date,
-      draftId,
-      draftVersion,
-      formatting,
-      generationResultId,
-      legacyId,
-      media,
-      networks,
-      noDate,
-      origin,
-      s,
-      scheduleTimezone,
-      sourceRef,
-      text,
-      tgChannels,
-      time,
-      timeDisambiguation,
-      tracking,
-      validate,
-      vkChannelIds,
-      vkChannels,
-    ],
+    [canEditContent, channelIds, composerUserId, createServerDraft, date, draftId, draftVersion, formatting, generationResultId, legacyId, media, networks, noDate, origin, s, scheduleTimezone, sourceRef, text, tgChannels, time, timeDisambiguation, tracking, updateServerDraft, validate, vkChannelIds, vkChannels],
   );
 
   const currentSchedule = useMemo(
@@ -2022,7 +1997,7 @@ export default function ComposerPage() {
     } catch (error) {
       s.toast({ kind: "danger", title: "Правки ещё не применены", body: error instanceof Error ? error.message : "Повтори сохранение и возврат." });
     } finally { setSaving(false); autopilotReturnLock.current = false; }
-  }, [isAutopilotDraft, saveDraft, router, s]);
+  }, [fetch, isAutopilotDraft, saveDraft, router, s]);
 
   const recoverDraft = useCallback((): Promise<void> => runSingleDraftSave(
     recoveryRequestRef,
@@ -2091,16 +2066,7 @@ export default function ComposerPage() {
         );
       }
     },
-  ), [
-    blockedReason,
-    currentDraftWrite,
-    draftId,
-    draftVersion,
-    roleCanEditContent,
-    router,
-    s,
-    validate,
-  ]);
+  ), [blockedReason, currentDraftWrite, draftId, draftVersion, recoverServerDraft, roleCanEditContent, router, s, validate]);
 
   const publish = useCallback(async (mode: PublicationMode) => {
     if (isAutopilotDraft) { await saveToAutopilot(); return; }
@@ -2397,6 +2363,9 @@ export default function ComposerPage() {
     bestTime,
     isAutopilotDraft,
     saveToAutopilot,
+    approvePersonalDraftForPublication,
+    reschedulePublication,
+    cancelPublication,
     canPublish,
     composerUserId,
     date,
@@ -2466,7 +2435,7 @@ export default function ComposerPage() {
         setSaving(false);
       }
     },
-  ), [activePublication, s, saving]);
+  ), [activePublication, cancelPublication, s, saving]);
 
   const cloneActivePublication = useCallback(() => runSingleDraftSave(
     activePublicationRequestRef,
@@ -2500,7 +2469,7 @@ export default function ComposerPage() {
         setSaving(false);
       }
     },
-  ), [activePublication, clearActivePublication, router, s, saving]);
+  ), [activePublication, clearActivePublication, restorePublicationToDraft, router, s, saving]);
 
   const removeCurrent = useCallback(() => runSingleDraftSave(
     draftDeleteRequestRef,
@@ -2550,7 +2519,7 @@ export default function ComposerPage() {
       s.toast({ kind: "success", title: "Черновик удалён из календаря" });
       router.push("/app/calendar");
     },
-  ), [canEditContent, composerUserId, draftId, draftVersion, editingId, legacyId, router, s]);
+  ), [canEditContent, composerUserId, deleteServerDraft, draftId, draftVersion, editingId, legacyId, router, s]);
 
   const value = useMemo<ComposerValue>(
     () => ({
@@ -2826,6 +2795,7 @@ type RevisionHistoryItem = {
 };
 
 function RevisionHistoryPanel() {
+  const fetch = useProjectFetch();
   const c = useComposer();
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -2846,7 +2816,7 @@ function RevisionHistoryPanel() {
     } finally {
       setLoading(false);
     }
-  }, [c.draftId]);
+  }, [c.draftId, fetch]);
 
   if (!c.draftId) {
     return <p className="text-[13px] leading-relaxed text-text-3">Первая серверная версия появится после автосохранения.</p>;
@@ -3266,6 +3236,10 @@ function ComposerActionBar() {
 /* ---------------------------------------------------------------- РЕДАКТОР */
 
 function ComposerInner() {
+  const generatedMediaStorageKey = useProjectStorageKey("aurora:generated-media");
+  const getServerDraft = useProjectCall(unscopedGetServerDraft);
+  const getPublicationOperationEditorContext = useProjectCall(unscopedGetPublicationOperationEditorContext);
+  const fetch = useProjectFetch();
   const s = useStore();
   const projects = useProjects();
   const router = useRouter();
@@ -3451,11 +3425,11 @@ function ComposerInner() {
       let generatedMedia: Post["media"] = null;
       if (fromMedia) {
         try {
-          generatedMedia = JSON.parse(sessionStorage.getItem("aurora:generated-media") || "null") as Post["media"];
+          generatedMedia = JSON.parse(sessionStorage.getItem(generatedMediaStorageKey) || "null") as Post["media"];
         } catch {
           generatedMedia = null;
         }
-        sessionStorage.removeItem("aurora:generated-media");
+        sessionStorage.removeItem(generatedMediaStorageKey);
       }
       hydrate({
         ownerUserId: currentUserId,
@@ -3488,33 +3462,7 @@ function ComposerInner() {
       cancelled = true;
       controller.abort();
     };
-  }, [
-    beginHydration,
-    channelParam,
-    currentDraftId,
-    currentProjectId,
-    currentProjectPersonal,
-    currentUserId,
-    currentWorkspaceId,
-    dateParam,
-    draftParam,
-    failHydration,
-    fromMedia,
-    hydrate,
-    hydrated,
-    legacyParam,
-    authReady,
-    localPosts,
-    projects.ready,
-    realChannels,
-    realReady,
-    setComposerChannelId,
-    setComposerNetworks,
-    setComposerVkChannelId,
-    storeReady,
-    timeParam,
-    toast,
-  ]);
+  }, [beginHydration, channelParam, currentDraftId, currentProjectId, currentProjectPersonal, currentUserId, currentWorkspaceId, dateParam, draftParam, failHydration, fromMedia, hydrate, hydrated, legacyParam, authReady, localPosts, generatedMediaStorageKey, projects.ready, realChannels, realReady, setComposerChannelId, setComposerNetworks, setComposerVkChannelId, storeReady, timeParam, toast, getServerDraft]);
 
   useEffect(() => {
     if (!publicationParam) {
@@ -3536,15 +3484,7 @@ function ComposerInner() {
         if (!controller.signal.aborted) failActivePublicationLoad();
       });
     return () => controller.abort();
-  }, [
-    beginActivePublicationLoad,
-    clearActivePublication,
-    currentDraftId,
-    failActivePublicationLoad,
-    hydrated,
-    publicationParam,
-    setActivePublication,
-  ]);
+  }, [beginActivePublicationLoad, clearActivePublication, currentDraftId, failActivePublicationLoad, getPublicationOperationEditorContext, hydrated, publicationParam, setActivePublication]);
 
   useEffect(() => {
     if (

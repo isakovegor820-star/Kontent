@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 import { randomUUID } from "node:crypto";
 import type { NextRequest } from "next/server";
 
@@ -10,7 +11,7 @@ import { readTrackingBodyResult, trackingApiError, trackingBodyFailure, tracking
 
 export const runtime = "nodejs";
 
-export async function POST(req: NextRequest) {
+async function handlePOST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return trackingJson({ ok: false, error: "forbidden_origin" }, 403);
   }
@@ -33,3 +34,5 @@ export async function POST(req: NextRequest) {
     return trackingApiError(error, requestId);
   }
 }
+
+export const POST = withProjectRoute(handlePOST);

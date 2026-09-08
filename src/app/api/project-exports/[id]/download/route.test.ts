@@ -1,5 +1,6 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getPool: vi.fn(() => ({})),
@@ -36,7 +37,7 @@ describe("project export download route", () => {
   });
 
   it("passes only the authenticated actor and header token to project authorization", async () => {
-    const req = new NextRequest("http://localhost/api/project-exports/41/download", {
+    const req = new ProjectRequest(1, "http://localhost/api/project-exports/41/download", {
       headers: { "x-export-download-token": "A".repeat(43) },
     });
     const response = await GET(req, { params: Promise.resolve({ id: "41" }) });
@@ -54,7 +55,7 @@ describe("project export download route", () => {
   it("requires a session before looking at the download token", async () => {
     mocks.getSessionUser.mockResolvedValue(null);
     const response = await GET(
-      new NextRequest("http://localhost/api/project-exports/41/download"),
+      new ProjectRequest(1, "http://localhost/api/project-exports/41/download"),
       { params: Promise.resolve({ id: "41" }) },
     );
     expect(response.status).toBe(401);

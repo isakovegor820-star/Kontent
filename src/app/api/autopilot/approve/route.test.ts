@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 import {
   autopilotPlanRevisionHash,
   buildAutopilotApprovalPreview,
@@ -90,7 +90,7 @@ const previewToken = "abcdefghijklmnop";
 let confirmationItems: ReturnType<typeof planItem>[] = [];
 
 const confirmRequest = (idempotencyKey = "web-test-key-1") =>
-  new NextRequest("http://localhost/api/autopilot/approve", {
+  new ProjectRequest(88, "http://localhost/api/autopilot/approve", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -219,7 +219,7 @@ describe("POST /api/autopilot/approve", () => {
   it("persists an opaque preview token with the canonical revision and hash", async () => {
     const items = [planItem(0)];
     const calls = approvalDb(items);
-    const response = await POST(new NextRequest("http://localhost/api/autopilot/approve", {
+    const response = await POST(new ProjectRequest(88, "http://localhost/api/autopilot/approve", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ channelId: 7, action: "preview" }),

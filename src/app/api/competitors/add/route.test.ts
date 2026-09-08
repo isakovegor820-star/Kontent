@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   query: vi.fn(),
@@ -9,6 +9,10 @@ const mocks = vi.hoisted(() => ({
   trusted: vi.fn(),
 }));
 
+vi.mock("@/lib/project-permissions", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/project-permissions")>();
+  return { ...actual, requireSelectedProjectPermission: vi.fn(async () => ({ projectId: 1, userId: 7, role: "owner", version: 1 })) };
+});
 vi.mock("@/lib/db", () => ({ getPool: () => ({ query: mocks.query }) }));
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.session }));
 vi.mock("@/lib/autopilot", () => ({ resolveChannel: mocks.resolveChannel }));
@@ -18,7 +22,7 @@ vi.mock("@/lib/request-origin", () => ({ hasTrustedMutationOrigin: mocks.trusted
 import { POST } from "./route";
 
 function request(body: unknown) {
-  return new NextRequest("http://localhost/api/competitors/add", {
+  return new ProjectRequest(1, "http://localhost/api/competitors/add", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),

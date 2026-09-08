@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -67,7 +67,7 @@ const analysisRow = {
 };
 
 function post(body: Record<string, unknown>, key = "sites-client-key-1234") {
-  return new NextRequest("http://localhost/api/sites", {
+  return new ProjectRequest(31, "http://localhost/api/sites", {
     method: "POST",
     headers: { origin: "http://localhost", "content-type": "application/json", "idempotency-key": key },
     body: JSON.stringify(body),
@@ -96,9 +96,9 @@ describe("/api/sites", () => {
 
   it("requires an authenticated project member to list sites", async () => {
     mocks.getSessionUser.mockResolvedValueOnce(null);
-    expect((await GET(new NextRequest("http://localhost/api/sites"))).status).toBe(401);
+    expect((await GET(new ProjectRequest(31, "http://localhost/api/sites"))).status).toBe(401);
     mocks.query.mockResolvedValueOnce({ rows: [{ ...siteRow, analysis_status: "ready", analysis_progress: 100, profile_summary: "Сводка", profile_page_count: 12, profile_gap_count: 3, report_count: 1 }] });
-    const response = await GET(new NextRequest("http://localhost/api/sites"));
+    const response = await GET(new ProjectRequest(31, "http://localhost/api/sites"));
     expect(response.status).toBe(200);
     expect(mocks.requireSelectedProjectPermission).toHaveBeenCalledWith(expect.anything(), 7, "project.read");
     const body = await response.json();
@@ -122,7 +122,7 @@ describe("/api/sites", () => {
     const badUrl = await POST(post({ url: "example dot ru", consent: true }));
     expect(badUrl.status).toBe(422);
     expect((await badUrl.json()).error).toBe("bad_url");
-    const noKey = new NextRequest("http://localhost/api/sites", {
+    const noKey = new ProjectRequest(31, "http://localhost/api/sites", {
       method: "POST",
       headers: { origin: "http://localhost", "content-type": "application/json" },
       body: JSON.stringify({ url: "https://example.ru", consent: true }),

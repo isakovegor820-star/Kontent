@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 import { NextRequest } from "next/server";
 
 import { readJsonBodyValue } from "@/lib/bounded-request-body";
@@ -29,7 +30,7 @@ const ACTION_PERMISSION: Record<Action, ProjectPermission> = {
   regenerate: "content.create",
 };
 
-export async function GET(req: NextRequest, context: Context) {
+async function handleGET(req: NextRequest, context: Context) {
   const resolved = await resolveSiteRoute(req, "project.read", { label: "/api/sites/:id/articles/:articleId GET" });
   if (!resolved.ok) return resolved.response;
   const { requestId, pool } = resolved.context;
@@ -62,7 +63,7 @@ export async function GET(req: NextRequest, context: Context) {
   }
 }
 
-export async function PATCH(req: NextRequest, context: Context) {
+async function handlePATCH(req: NextRequest, context: Context) {
   const resolved = await resolveSiteRoute(req, "content.edit", { mutation: true, label: "/api/sites/:id/articles/:articleId PATCH" });
   if (!resolved.ok) return resolved.response;
   const { requestId, pool, userId } = resolved.context;
@@ -105,7 +106,7 @@ export async function PATCH(req: NextRequest, context: Context) {
 }
 
 /** Действия над материалом: approve | reject | publish | update | unpublish | regenerate. */
-export async function POST(req: NextRequest, context: Context) {
+async function handlePOST(req: NextRequest, context: Context) {
   let body: Record<string, unknown> = {};
   try {
     body = await readJsonBodyValue(req);
@@ -172,3 +173,7 @@ export async function POST(req: NextRequest, context: Context) {
     return siteErrorResponse(error, "/api/sites/:id/articles/:articleId POST", requestId);
   }
 }
+
+export const GET = withProjectRoute(handleGET);
+export const PATCH = withProjectRoute(handlePATCH);
+export const POST = withProjectRoute(handlePOST);

@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 // База знаний: прочитать открытую страницу канала и сохранить посты как ОБРАЗЕЦ СТИЛЯ.
 //
 // Это голос, а не факты. Индексатор пометит куски kind='voice' — автопилот берёт их для
@@ -10,13 +11,13 @@ import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
 import { getStatsQueue } from "@/lib/queue";
 import { enqueueKnowledgeIndex } from "@/lib/knowledge-index-queue.mjs";
-import { resolveChannel } from "@/lib/autopilot";
+import { knowledgeChannelSelector, knowledgeFailure, requireKnowledgeChannel, withKnowledgeChannel } from "@/lib/knowledge-access";
 import { fetchPublicPosts } from "@/lib/tg-public";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 
 export const runtime = "nodejs";
 
-export async function POST(req: NextRequest) {
+async function handlePOST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
   }
@@ -26,16 +27,8 @@ export async function POST(req: NextRequest) {
   const body = (await readJsonBodyValue(req).catch(() => ({}))) as { channelId?: number };
 
   try {
-    const pool = getPool();
-    const channelId = await resolveChannel(user.id, body.channelId ?? null);
-    if (!channelId) return NextResponse.json({ ok: false, error: "no_channel" }, { status: 422 });
-
-    const ch = (
-      await pool.query<{ handle: string | null; title: string | null }>(
-        `select handle, title from channels where id = $1`,
-        [channelId],
-      )
-    ).rows[0];
+    const ch = await requireKnowledgeChannel(getPool(), user.id, knowledgeChannelSelector(body.channelId), "content.edit");
+    const channelId = ch.id;
     if (!ch?.handle) return NextResponse.json({ ok: false, error: "no_handle" }, { status: 422 });
 
     const page = await fetchPublicPosts(ch.handle, 20);
@@ -47,37 +40,26 @@ export async function POST(req: NextRequest) {
 
     // Один источник на всё чтение. Перечитал канал — заменяем прежний срез стиля,
     // а не копим дубли: свежие посты вернее старых.
-    const tx = await pool.connect();
-    let sourceId: number;
-    try {
-      await tx.query("begin");
-      await tx.query(
-        `delete from knowledge_sources
-          where user_id = $1 and channel_id = $2 and kind = 'channel'`,
-        [user.id, channelId],
-      );
+    const sourceId = await withKnowledgeChannel(getPool(), user.id, channelId, "content.edit", async (tx, channel) => {
+      await tx.query(`delete from knowledge_sources where channel_id = $1 and kind = 'channel'`, [channel.id]);
       const ins = await tx.query<{ id: number }>(
         `insert into knowledge_sources (user_id, channel_id, kind, title, raw_text)
          values ($1, $2, 'channel', $3, $4) returning id`,
-        // Пустая строка между постами — граница куска: индексатор режет ровно по ней,
-        // и каждый пост становится отдельным образцом стиля.
-        [user.id, channelId, `Стиль канала «${ch.title || ch.handle}»`, posts.join("\n\n")],
+        [user.id, channel.id, `Стиль канала «${channel.title || channel.handle}»`, posts.join("\n\n")],
       );
-      sourceId = Number(ins.rows[0].id);
-      await tx.query("commit");
-    } catch (err) {
-      await tx.query("rollback").catch(() => {});
-      throw err;
-    } finally {
-      tx.release();
-    }
+      return Number(ins.rows[0].id);
+    });
 
     await enqueueKnowledgeIndex(getStatsQueue(), sourceId)
       .catch(() => {});
 
     return NextResponse.json({ ok: true, posts: posts.length });
   } catch (err) {
+    const failure = knowledgeFailure(err);
+    if (failure) return NextResponse.json({ ok: false, error: failure.error }, { status: failure.status });
     console.error("[/api/knowledge/read-channel]", err);
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
 }
+
+export const POST = withProjectRoute(handlePOST);

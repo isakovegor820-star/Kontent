@@ -1,4 +1,6 @@
 "use client";
+import { useProjectCall } from "@/lib/use-project-transport";
+import { projectUrl } from "@/lib/project-transport";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -22,7 +24,7 @@ import { createSiteAnalysisUuid } from "@/lib/site-analysis-client-key";
 import { cn } from "@/lib/utils";
 
 import { ArticlesPanel } from "./articles-panel";
-import { errorMessage, formatDate, requestJson } from "./client";
+import { errorMessage, formatDate, requestJson as unscopedRequestJson } from "./client";
 import { DestinationsPanel } from "./destinations-panel";
 import { ProbePanel } from "./probe-panel";
 
@@ -246,6 +248,7 @@ function Score({ label, value }: { label: string; value: number | null }) {
 }
 
 export default function SitesPage() {
+  const requestJson = useProjectCall(unscopedRequestJson);
   const [sites, setSites] = useState<SiteListItem[]>([]);
   const [listError, setListError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<number | null>(null);
@@ -276,7 +279,7 @@ export default function SitesPage() {
       setListError(errorMessage((error as { code?: string }).code, "Не удалось загрузить список сайтов."));
       return [];
     }
-  }, []);
+  }, [requestJson]);
 
   // Состояние обновляется только после ответа сервера — синхронных setState в эффектах нет.
   const loadDetails = useCallback(async (id: number) => {
@@ -292,7 +295,7 @@ export default function SitesPage() {
       setActionError(errorMessage((error as { code?: string }).code, "Не удалось загрузить сайт."));
       return null;
     }
-  }, []);
+  }, [requestJson]);
 
   // eslint-disable-next-line react-hooks/set-state-in-effect -- state changes only after the request settles
   useEffect(() => { void loadSites(); }, [loadSites]);
@@ -329,7 +332,7 @@ export default function SitesPage() {
       return;
     }
     setTimeout(() => { void loadDetails(activeId); setReportRequested(false); }, 6000);
-  }, [activeId, loadDetails]);
+  }, [activeId, loadDetails, requestJson]);
 
   const analysisActive = Boolean(current?.latestAnalysis && ACTIVE_STATUSES.has(current.latestAnalysis.status));
   useEffect(() => {
@@ -367,7 +370,7 @@ export default function SitesPage() {
     setSelectedId(body.site.id);
     setDetails({ site: body.site, latestAnalysis: body.latestAnalysis, profile: body.profile, reports: body.reports });
     if (body.analysisError) setActionError(errorMessage(body.analysisError, "Сайт подключён, но анализ не запустился."));
-  }, [consent, url, loadSites]);
+  }, [consent, requestJson, url, loadSites]);
 
   const verify = useCallback(async () => {
     if (!details) return;
@@ -389,7 +392,7 @@ export default function SitesPage() {
     } else {
       setVerifyMessage({ tone: "danger", text: verificationReason(body.reason) });
     }
-  }, [details, loadSites]);
+  }, [details, loadSites, requestJson]);
 
   const reanalyze = useCallback(async () => {
     if (!details) return;
@@ -405,7 +408,7 @@ export default function SitesPage() {
       return;
     }
     setDetails((current) => (current ? { ...current, latestAnalysis: body.analysis as AnalysisView } : current));
-  }, [details]);
+  }, [details, requestJson]);
 
   const selected = current?.site ?? null;
   const profile = current?.profile ?? null;
@@ -739,7 +742,7 @@ export default function SitesPage() {
                           {REPORT_FORMATS.map(([format, label]) => (
                             <a
                               key={format}
-                              href={`/api/sites/${selected.id}/reports/${report.id}/export?format=${format}`}
+                              href={projectUrl(`/api/sites/${selected.id}/reports/${report.id}/export?format=${format}`)}
                               download
                               className="inline-flex min-h-9 items-center gap-1.5 rounded-sm border border-line px-2.5 py-1.5 text-[12px] font-semibold text-brand hover:border-brand/35 hover:bg-info-soft"
                             >

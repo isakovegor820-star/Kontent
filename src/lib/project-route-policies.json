@@ -1,0 +1,1467 @@
+[
+  {
+    "path": "/api/admin/ai-spend",
+    "method": "GET",
+    "policy": "account"
+  },
+  {
+    "path": "/api/admin/audit",
+    "method": "GET",
+    "policy": "account"
+  },
+  {
+    "path": "/api/admin/aurora-analytics",
+    "method": "GET",
+    "policy": "account"
+  },
+  {
+    "path": "/api/admin/bot/actions",
+    "method": "POST",
+    "policy": "account"
+  },
+  {
+    "path": "/api/admin/bot",
+    "method": "GET",
+    "policy": "account"
+  },
+  {
+    "path": "/api/admin/connections",
+    "method": "GET",
+    "policy": "account"
+  },
+  {
+    "path": "/api/admin/overview",
+    "method": "GET",
+    "policy": "account"
+  },
+  {
+    "path": "/api/admin/projects/[id]",
+    "method": "GET",
+    "policy": "account"
+  },
+  {
+    "path": "/api/admin/projects",
+    "method": "GET",
+    "policy": "account"
+  },
+  {
+    "path": "/api/admin/publications/actions",
+    "method": "POST",
+    "policy": "account"
+  },
+  {
+    "path": "/api/admin/publications",
+    "method": "GET",
+    "policy": "account"
+  },
+  {
+    "path": "/api/admin/search",
+    "method": "GET",
+    "policy": "account"
+  },
+  {
+    "path": "/api/admin/system",
+    "method": "GET",
+    "policy": "account"
+  },
+  {
+    "path": "/api/admin/users/[id]/actions",
+    "method": "POST",
+    "policy": "account"
+  },
+  {
+    "path": "/api/admin/users/[id]",
+    "method": "GET",
+    "policy": "account"
+  },
+  {
+    "path": "/api/admin/users",
+    "method": "GET",
+    "policy": "account"
+  },
+  {
+    "path": "/api/ai/engines",
+    "method": "GET",
+    "policy": "account"
+  },
+  {
+    "path": "/api/ai/engines",
+    "method": "POST",
+    "policy": "account"
+  },
+  {
+    "path": "/api/ai/generate/ack",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/ai/generate",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/ai/usage",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/audience-assistant/[id]/draft",
+    "method": "DELETE",
+    "policy": "project"
+  },
+  {
+    "path": "/api/audience-assistant/[id]/reply",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/audience-assistant/[id]",
+    "method": "PATCH",
+    "policy": "project"
+  },
+  {
+    "path": "/api/audience-assistant/[id]/send",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/audience-assistant",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/audience-questions/[id]/draft",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/audience-questions/[id]",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/audience-questions/[id]",
+    "method": "PATCH",
+    "policy": "project"
+  },
+  {
+    "path": "/api/audience-questions/[id]/start",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/audience-questions",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/audience-questions",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/auth/login",
+    "method": "POST",
+    "policy": "account"
+  },
+  {
+    "path": "/api/auth/logout",
+    "method": "POST",
+    "policy": "account"
+  },
+  {
+    "path": "/api/auth/me",
+    "method": "GET",
+    "policy": "account"
+  },
+  {
+    "path": "/api/auth/password/forgot",
+    "method": "POST",
+    "policy": "account"
+  },
+  {
+    "path": "/api/auth/password/reset",
+    "method": "POST",
+    "policy": "account"
+  },
+  {
+    "path": "/api/auth/register",
+    "method": "POST",
+    "policy": "account"
+  },
+  {
+    "path": "/api/auth/telegram",
+    "method": "POST",
+    "policy": "account"
+  },
+  {
+    "path": "/api/auth/vk",
+    "method": "POST",
+    "policy": "account"
+  },
+  {
+    "path": "/api/autopilot/approve",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/autopilot/brief",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/autopilot/brief",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/autopilot/brief/suggest",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/autopilot/generate",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/autopilot/generate",
+    "method": "DELETE",
+    "policy": "project"
+  },
+  {
+    "path": "/api/autopilot/item/draft",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/autopilot/item/draft",
+    "method": "PATCH",
+    "policy": "project"
+  },
+  {
+    "path": "/api/autopilot/item",
+    "method": "PATCH",
+    "policy": "project"
+  },
+  {
+    "path": "/api/autopilot/item/schedule",
+    "method": "PATCH",
+    "policy": "project"
+  },
+  {
+    "path": "/api/autopilot/repair",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/autopilot",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/autopilot/settings",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/bot/connect",
+    "method": "POST",
+    "policy": "account"
+  },
+  {
+    "path": "/api/bot/link",
+    "method": "GET",
+    "policy": "account"
+  },
+  {
+    "path": "/api/bot/link",
+    "method": "POST",
+    "policy": "account"
+  },
+  {
+    "path": "/api/bot/link",
+    "method": "DELETE",
+    "policy": "account"
+  },
+  {
+    "path": "/api/bot/miniapp/overview",
+    "method": "GET",
+    "policy": "context"
+  },
+  {
+    "path": "/api/brand-dictionary/[id]",
+    "method": "PATCH",
+    "policy": "project"
+  },
+  {
+    "path": "/api/brand-dictionary/[id]",
+    "method": "DELETE",
+    "policy": "project"
+  },
+  {
+    "path": "/api/brand-dictionary",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/brand-dictionary",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/channels/[id]",
+    "method": "DELETE",
+    "policy": "project"
+  },
+  {
+    "path": "/api/channels/connect",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/channels/connect-vk",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/channels/oauth/callback",
+    "method": "GET",
+    "policy": "callback"
+  },
+  {
+    "path": "/api/channels/oauth/providers",
+    "method": "GET",
+    "policy": "account"
+  },
+  {
+    "path": "/api/channels/oauth/start",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/channels",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/channels/tenchat/export",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/channels/tenchat/publish",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/channels/tenchat",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/competitors/[id]",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/competitors/[id]",
+    "method": "PATCH",
+    "policy": "project"
+  },
+  {
+    "path": "/api/competitors/[id]",
+    "method": "DELETE",
+    "policy": "project"
+  },
+  {
+    "path": "/api/competitors/add",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/competitors",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/competitors/suggestions",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/competitors/suggestions",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/competitors/suggestions",
+    "method": "PATCH",
+    "policy": "project"
+  },
+  {
+    "path": "/api/drafts/[id]/editorial/comments",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/drafts/[id]/editorial/decisions",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/drafts/[id]/editorial",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/drafts/[id]/editorial/submit",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/drafts/[id]/publication-preferences",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/drafts/[id]/publication-preferences",
+    "method": "PUT",
+    "policy": "project"
+  },
+  {
+    "path": "/api/drafts/[id]/recover",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/drafts/[id]/review",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/drafts/[id]/revisions",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/drafts/[id]",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/drafts/[id]",
+    "method": "PATCH",
+    "policy": "project"
+  },
+  {
+    "path": "/api/drafts/[id]",
+    "method": "DELETE",
+    "policy": "project"
+  },
+  {
+    "path": "/api/drafts/[id]/schedule",
+    "method": "PATCH",
+    "policy": "project"
+  },
+  {
+    "path": "/api/drafts",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/drafts",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/evidence/[kind]/[id]",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/growth/events",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/growth/moves/[id]",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/growth/moves/[id]",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/growth",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/growth",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/health",
+    "method": "GET",
+    "policy": "public"
+  },
+  {
+    "path": "/api/ideas/[id]",
+    "method": "PATCH",
+    "policy": "project"
+  },
+  {
+    "path": "/api/ideas",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/knowledge/extract-profile",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/knowledge/extract-profile",
+    "method": "PUT",
+    "policy": "project"
+  },
+  {
+    "path": "/api/knowledge/read-channel",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/knowledge",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/knowledge",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/knowledge",
+    "method": "DELETE",
+    "policy": "project"
+  },
+  {
+    "path": "/api/lead",
+    "method": "POST",
+    "policy": "public"
+  },
+  {
+    "path": "/api/legal-sources/connections/[id]/actions",
+    "method": "POST",
+    "policy": "account"
+  },
+  {
+    "path": "/api/legal-sources/connections",
+    "method": "POST",
+    "policy": "account"
+  },
+  {
+    "path": "/api/legal-sources",
+    "method": "GET",
+    "policy": "account"
+  },
+  {
+    "path": "/api/legal-video-scripts/[id]/production-brief",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/legal-video-scripts/[id]",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/legal-video-scripts/[id]",
+    "method": "PATCH",
+    "policy": "project"
+  },
+  {
+    "path": "/api/legal-video-scripts",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/legal-video-scripts",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/legal-visuals/[id]/renders/[operationId]",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/legal-visuals/[id]/renders",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/legal-visuals/[id]",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/legal-visuals/[id]",
+    "method": "PATCH",
+    "policy": "project"
+  },
+  {
+    "path": "/api/legal-visuals/brand-kit",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/legal-visuals/brand-kit",
+    "method": "PATCH",
+    "policy": "project"
+  },
+  {
+    "path": "/api/legal-visuals",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/legal-visuals",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/library/drafts",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/library/exports/[id]",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/library/exports",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/library/hits",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/library/posts",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/library/posts",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/library/posts",
+    "method": "DELETE",
+    "policy": "project"
+  },
+  {
+    "path": "/api/library/registry",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/library/state",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/library/tags",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/library/tags",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/library/tags",
+    "method": "DELETE",
+    "policy": "project"
+  },
+  {
+    "path": "/api/media/assets/[id]",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/media/assets",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/media/assets",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/media/capabilities",
+    "method": "GET",
+    "policy": "account"
+  },
+  {
+    "path": "/api/media/generations/[id]",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/media/generations",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/media/generations",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/monthly-campaigns/[campaignId]/plans/[planId]/items/[itemId]/draft",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/monthly-campaigns/[campaignId]/plans/[planId]/items/[itemId]/lineage",
+    "method": "PATCH",
+    "policy": "project"
+  },
+  {
+    "path": "/api/monthly-campaigns/[campaignId]/plans/[planId]/move",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/monthly-campaigns/[campaignId]/plans/[planId]/regenerate",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/monthly-campaigns/[campaignId]/plans/[planId]",
+    "method": "PATCH",
+    "policy": "project"
+  },
+  {
+    "path": "/api/monthly-campaigns/[campaignId]/plans",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/monthly-campaigns/[campaignId]",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/monthly-campaigns/[campaignId]",
+    "method": "PATCH",
+    "policy": "project"
+  },
+  {
+    "path": "/api/monthly-campaigns",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/monthly-campaigns",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/onboarding/complete",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/onboarding/progress",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/onboarding/progress",
+    "method": "PATCH",
+    "policy": "project"
+  },
+  {
+    "path": "/api/opportunities/[id]/draft",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/opportunities",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/opportunities",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/posts/[id]/retry",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/posts/create",
+    "method": "POST",
+    "policy": "retired"
+  },
+  {
+    "path": "/api/posts",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/product-events",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/project-exports/[id]/download",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/project-exports/[id]/download-token",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/project-exports/[id]",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/project-exports/[id]",
+    "method": "DELETE",
+    "policy": "project"
+  },
+  {
+    "path": "/api/project-exports/preview",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/project-exports",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/project-exports",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/project-invitations/accept",
+    "method": "POST",
+    "policy": "context"
+  },
+  {
+    "path": "/api/project-notifications/[id]/read",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/project-notifications/read-all",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/project-notifications",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/projects/[projectId]/invitations/[invitationId]",
+    "method": "DELETE",
+    "policy": "project"
+  },
+  {
+    "path": "/api/projects/[projectId]/invitations",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/projects/[projectId]/invitations",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/projects/[projectId]/members/[memberId]",
+    "method": "PATCH",
+    "policy": "project"
+  },
+  {
+    "path": "/api/projects/[projectId]/members/[memberId]",
+    "method": "DELETE",
+    "policy": "project"
+  },
+  {
+    "path": "/api/projects/[projectId]/members",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/projects/[projectId]",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/projects/current",
+    "method": "GET",
+    "policy": "context"
+  },
+  {
+    "path": "/api/projects/current",
+    "method": "PUT",
+    "policy": "context"
+  },
+  {
+    "path": "/api/projects/current",
+    "method": "PATCH",
+    "policy": "project"
+  },
+  {
+    "path": "/api/projects",
+    "method": "GET",
+    "policy": "context"
+  },
+  {
+    "path": "/api/projects",
+    "method": "POST",
+    "policy": "context"
+  },
+  {
+    "path": "/api/publication-blocks/[id]",
+    "method": "PATCH",
+    "policy": "project"
+  },
+  {
+    "path": "/api/publication-blocks",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/publication-blocks",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/publication-extra-operations/[id]/retry",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/publication-operations/[id]/restore-draft",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/publication-operations/[id]",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/publication-operations/[id]",
+    "method": "DELETE",
+    "policy": "project"
+  },
+  {
+    "path": "/api/publication-operations/[id]",
+    "method": "PATCH",
+    "policy": "project"
+  },
+  {
+    "path": "/api/publication-operations",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/publication-review-tasks/[id]/decision",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/radar/alerts",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/radar/alerts",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/radar/alerts",
+    "method": "DELETE",
+    "policy": "project"
+  },
+  {
+    "path": "/api/radar/results/[id]",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/radar/search",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/radar/search",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/readiness",
+    "method": "GET",
+    "policy": "public"
+  },
+  {
+    "path": "/api/rss/[id]",
+    "method": "DELETE",
+    "policy": "project"
+  },
+  {
+    "path": "/api/rss/[id]",
+    "method": "PATCH",
+    "policy": "project"
+  },
+  {
+    "path": "/api/rss/auto-publish",
+    "method": "PATCH",
+    "policy": "project"
+  },
+  {
+    "path": "/api/rss/bootstrap",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/rss/catalog",
+    "method": "GET",
+    "policy": "account"
+  },
+  {
+    "path": "/api/rss/items/[id]/draft",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/rss/items/[id]/state",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/rss/items",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/rss/read-all",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/rss/refresh",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/rss",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/rss",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/settings/account-profile/phone/confirm",
+    "method": "POST",
+    "policy": "account"
+  },
+  {
+    "path": "/api/settings/account-profile/phone/request",
+    "method": "POST",
+    "policy": "account"
+  },
+  {
+    "path": "/api/settings/account-profile",
+    "method": "GET",
+    "policy": "account"
+  },
+  {
+    "path": "/api/settings/account-profile",
+    "method": "POST",
+    "policy": "account"
+  },
+  {
+    "path": "/api/settings/channel",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/settings/channel",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/settings/notifications",
+    "method": "GET",
+    "policy": "account"
+  },
+  {
+    "path": "/api/settings/notifications",
+    "method": "POST",
+    "policy": "account"
+  },
+  {
+    "path": "/api/settings/preview",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/settings/preview",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/settings/profile/avatar",
+    "method": "POST",
+    "policy": "account"
+  },
+  {
+    "path": "/api/settings/profile/avatar-assets/[id]",
+    "method": "GET",
+    "policy": "account"
+  },
+  {
+    "path": "/api/settings/profile/email/confirm",
+    "method": "POST",
+    "policy": "account"
+  },
+  {
+    "path": "/api/settings/profile/email/request",
+    "method": "POST",
+    "policy": "account"
+  },
+  {
+    "path": "/api/settings/profile",
+    "method": "GET",
+    "policy": "account"
+  },
+  {
+    "path": "/api/settings/profile",
+    "method": "POST",
+    "policy": "account"
+  },
+  {
+    "path": "/api/settings",
+    "method": "GET",
+    "policy": "account"
+  },
+  {
+    "path": "/api/settings",
+    "method": "POST",
+    "policy": "account"
+  },
+  {
+    "path": "/api/site-analysis/[id]/compare",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/site-analysis/[id]/export",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/site-analysis/[id]/retry",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/site-analysis/[id]",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/site-analysis",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/site-analysis",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/sites/[id]/analyze",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/sites/[id]/articles/[articleId]",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/sites/[id]/articles/[articleId]",
+    "method": "PATCH",
+    "policy": "project"
+  },
+  {
+    "path": "/api/sites/[id]/articles/[articleId]",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/sites/[id]/articles",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/sites/[id]/articles",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/sites/[id]/destinations",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/sites/[id]/destinations",
+    "method": "PUT",
+    "policy": "project"
+  },
+  {
+    "path": "/api/sites/[id]/destinations",
+    "method": "DELETE",
+    "policy": "project"
+  },
+  {
+    "path": "/api/sites/[id]/probe",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/sites/[id]/probe",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/sites/[id]/reports/[reportId]/export",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/sites/[id]/reports",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/sites/[id]/reports",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/sites/[id]",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/sites/[id]/settings",
+    "method": "PATCH",
+    "policy": "project"
+  },
+  {
+    "path": "/api/sites/[id]/verify",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/sites",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/sites",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/stats/collect",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/stats/report",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/stats",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/studio/session",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/studio/session",
+    "method": "PUT",
+    "policy": "project"
+  },
+  {
+    "path": "/api/today/action",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/today/feedback",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/today/refresh",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/today",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/today/state",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/tracking/client.js",
+    "method": "GET",
+    "policy": "public"
+  },
+  {
+    "path": "/api/tracking/conversions",
+    "method": "OPTIONS",
+    "policy": "public"
+  },
+  {
+    "path": "/api/tracking/conversions",
+    "method": "POST",
+    "policy": "public"
+  },
+  {
+    "path": "/api/tracking/links/[id]",
+    "method": "DELETE",
+    "policy": "project"
+  },
+  {
+    "path": "/api/tracking/links",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/tracking/links",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/tracking/ping",
+    "method": "OPTIONS",
+    "policy": "public"
+  },
+  {
+    "path": "/api/tracking/ping",
+    "method": "POST",
+    "policy": "public"
+  },
+  {
+    "path": "/api/tracking/report",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/tracking/settings",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/tracking/settings",
+    "method": "PUT",
+    "policy": "project"
+  },
+  {
+    "path": "/api/tracking/settings/verify",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/tracking/templates/[id]",
+    "method": "PATCH",
+    "policy": "project"
+  },
+  {
+    "path": "/api/tracking/templates/[id]",
+    "method": "DELETE",
+    "policy": "project"
+  },
+  {
+    "path": "/api/tracking/templates",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/tracking/templates",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/trends",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/trends",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/trends/stats",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/typography/apply",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/typography/runs/[id]/undo",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
+    "path": "/api/typography/runs/latest",
+    "method": "GET",
+    "policy": "project"
+  }
+]

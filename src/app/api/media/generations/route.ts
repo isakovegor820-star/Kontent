@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 import { createHash, randomUUID } from "node:crypto";
@@ -130,7 +131,7 @@ function mediaRequestKey(req: NextRequest): string | null {
   return /^[A-Za-z0-9:_-]{8,96}$/u.test(value) ? value : null;
 }
 
-export async function GET(req: NextRequest) {
+async function handleGET(req: NextRequest) {
   const requestId = randomUUID();
   const user = await getSessionUser(req);
   if (!user) return mediaResponse(requestId, { generations: [], error: "unauthorized" }, 401);
@@ -152,7 +153,7 @@ export async function GET(req: NextRequest) {
   }
 }
 
-export async function POST(req: NextRequest) {
+async function handlePOST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return mediaResponse(randomUUID(), { error: "forbidden_origin" }, 403);
   }
@@ -490,3 +491,6 @@ export async function POST(req: NextRequest) {
     return mediaResponse(requestId, { error: "server", retryable: true }, 500);
   }
 }
+
+export const GET = withProjectRoute(handleGET);
+export const POST = withProjectRoute(handlePOST);

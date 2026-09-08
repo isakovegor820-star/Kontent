@@ -1,4 +1,7 @@
 "use client";
+import { useProjects } from "@/components/app/project-provider";
+import { useProjectFetch, useProjectCall, useProjectStorageKey } from "@/lib/use-project-transport";
+
 
 // А9. ИИ-студия (ТЗ 5.6, Приложение А).
 // Диалог + быстрые команды. ИИ помнит стиль пользователя и следует настройкам платформы.
@@ -34,7 +37,7 @@ import {
 import { PostSettingsMenu } from "@/components/studio/post-settings-menu";
 import { requiresBriefConfirmation } from "@/lib/brief-confirmation";
 import { type AiCommand } from "@/lib/ai";
-import { acknowledgeAiTerminal, AiTerminalAckError } from "@/lib/ai-client-idempotency";
+import { acknowledgeAiTerminal as unscopedAcknowledgeAiTerminal, AiTerminalAckError } from "@/lib/ai-client-idempotency";
 import { aiFailureRecoveryRu, type AiFailureInfo } from "@/lib/ai-client-recovery";
 import {
   aiDraftPhaseLabel,
@@ -46,9 +49,9 @@ import { finalizeAiClientStream, parseAiStreamBuffer, type AiStreamEvent } from 
 import { getAiUsageMetrics } from "@/lib/ai-usage-sync";
 import {
   createDraftClientKey,
-  createServerDraft,
+  createServerDraft as unscopedCreateServerDraft,
   DraftRequestError,
-  getServerDraft,
+  getServerDraft as unscopedGetServerDraft,
 } from "@/lib/draft-client";
 import type { ServerDraft } from "@/lib/draft-types";
 import { buildLibraryAdaptation } from "@/lib/library";
@@ -77,6 +80,7 @@ import {
   mergeStudioChatSessions,
   parseStudioChatSession,
   serializeStudioChatSession,
+  shouldSendStudioSessionPageHide,
   stopStudioStreamingMessages,
   studioChatStorageKey,
   type StudioChatGeneration,
@@ -717,6 +721,12 @@ function ModelMenu({
 /* --------------------------------------------------------------- ЭКРАН */
 
 function StudioPageInner() {
+  const generatedMediaStorageKey = useProjectStorageKey("aurora:generated-media");
+  const getServerDraft = useProjectCall(unscopedGetServerDraft);
+  const createServerDraft = useProjectCall(unscopedCreateServerDraft);
+  const acknowledgeAiTerminal = useProjectCall(unscopedAcknowledgeAiTerminal);
+  const fetch = useProjectFetch();
+  const { current: selectedProject } = useProjects();
   const router = useRouter();
   const searchParams = useSearchParams();
   const requestedWorkspaceMode: WorkspaceMode | null =
@@ -778,6 +788,7 @@ function StudioPageInner() {
   const monthlyCampaignContextRef = useRef<MonthlyCampaignStudioContext | null>(null);
   const growthMoveIdRef = useRef<number | null>(null);
   const sessionRevisionRef = useRef(0);
+  const sessionServerRevisionKnownRef = useRef(false);
   const sessionSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sessionSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const sessionPersistenceOwnerRef = useRef<number | null>(null);
@@ -796,13 +807,14 @@ function StudioPageInner() {
     }
   }, [chatSessionOwner, sessionOwner]);
 
-  // История диалога относится к аккаунту и хранится на сервере. localStorage — аварийная
-  // копия, а старый sessionStorage читаем один раз для бесшовной миграции уже созданных чатов.
+  // История и аварийная локальная копия относятся к проекту и пользователю.
+  // Прежняя история аккаунта сохранена сервером в личном проекте.
   useEffect(() => {
     if (!s.authReady || !sessionOwner || chatSessionOwner === sessionOwner) return;
     let cancelled = false;
     sessionPersistenceOwnerRef.current = sessionOwner;
     sessionRevisionRef.current = 0;
+    sessionServerRevisionKnownRef.current = false;
     if (sessionSaveTimerRef.current) clearTimeout(sessionSaveTimerRef.current);
     // eslint-disable-next-line react-hooks/set-state-in-effect -- начало асинхронного восстановления нового аккаунта
     setChatPersistenceStatus("loading");
@@ -828,9 +840,11 @@ function StudioPageInner() {
 
       let localSession = null;
       try {
-        const key = studioChatStorageKey(sessionOwner);
+        const key = studioChatStorageKey(sessionOwner, selectedProject?.id);
         localSession = parseStudioChatSession(localStorage.getItem(key), sessionOwner)
-          ?? parseStudioChatSession(sessionStorage.getItem(key), sessionOwner);
+          ?? parseStudioChatSession(sessionStorage.getItem(key), sessionOwner)
+          ?? (selectedProject?.personal ? parseStudioChatSession(localStorage.getItem(studioChatStorageKey(sessionOwner)), sessionOwner)
+            ?? parseStudioChatSession(sessionStorage.getItem(studioChatStorageKey(sessionOwner)), sessionOwner) : null);
       } catch {
         // В приватном режиме storage может быть запрещён — сервер остаётся источником правды.
       }
@@ -842,6 +856,7 @@ function StudioPageInner() {
         ? mergeStudioChatSessions(remoteSession, localSession)
         : remoteSession ?? localSession;
       sessionRevisionRef.current = revision;
+      sessionServerRevisionKnownRef.current = !serverUnavailable;
       setMessages(restored?.messages ?? []);
       setDraft(restored?.draft ?? "");
       setWorkspaceMode(requestedWorkspaceMode ?? restored?.workspaceMode ?? "chat");
@@ -853,7 +868,7 @@ function StudioPageInner() {
     return () => {
       cancelled = true;
     };
-  }, [chatSessionOwner, requestedWorkspaceMode, s.authReady, sessionOwner]);
+  }, [chatSessionOwner, fetch, requestedWorkspaceMode, s.authReady, selectedProject?.id, selectedProject?.personal, sessionOwner]);
 
   // Локальную копию обновляем сразу, а PostgreSQL — после короткой паузы и строго
   // последовательно. Так streaming не создаёт запрос на каждый токен, но готовый текст
@@ -869,7 +884,7 @@ function StudioPageInner() {
     const serialized = serializeStudioChatSession(sessionOwner, session);
     latestSessionSnapshotRef.current = { owner: sessionOwner, serialized };
     try {
-      const key = studioChatStorageKey(sessionOwner);
+      const key = studioChatStorageKey(sessionOwner, selectedProject?.id);
       localStorage.setItem(key, serialized);
       sessionStorage.removeItem(key);
     } catch {
@@ -898,6 +913,7 @@ function StudioPageInner() {
             if (response.ok && Number.isSafeInteger(body?.revision)) {
               if (sessionPersistenceOwnerRef.current === owner) {
                 sessionRevisionRef.current = Number(body?.revision);
+                sessionServerRevisionKnownRef.current = true;
                 setChatPersistenceStatus("saved");
               }
               return;
@@ -920,7 +936,7 @@ function StudioPageInner() {
     return () => {
       if (sessionSaveTimerRef.current) clearTimeout(sessionSaveTimerRef.current);
     };
-  }, [chatSessionOwner, draft, messages, sessionOwner, workspaceMode]);
+  }, [chatSessionOwner, draft, fetch, messages, selectedProject?.id, sessionOwner, workspaceMode]);
 
   // Последняя синхронная страховка на случай Fast Refresh, рестарта dev-сервера или
   // перезагрузки браузера. localStorage записывается до ухода страницы; небольшой снимок
@@ -930,11 +946,15 @@ function StudioPageInner() {
       const snapshot = latestSessionSnapshotRef.current;
       if (!snapshot || snapshot.owner !== sessionPersistenceOwnerRef.current) return;
       try {
-        localStorage.setItem(studioChatStorageKey(snapshot.owner), snapshot.serialized);
+        localStorage.setItem(studioChatStorageKey(snapshot.owner, selectedProject?.id), snapshot.serialized);
       } catch {
         // Серверное сохранение всё равно могло завершиться до закрытия страницы.
       }
-      if (new Blob([snapshot.serialized]).size > 60_000) return;
+      if (new Blob([snapshot.serialized]).size > 60_000 || !shouldSendStudioSessionPageHide({
+        snapshotOwner: snapshot.owner,
+        persistenceOwner: sessionPersistenceOwnerRef.current,
+        serverRevisionKnown: sessionServerRevisionKnownRef.current,
+      })) return;
       void fetch("/api/studio/session", {
         method: "PUT",
         headers: { "content-type": "application/json" },
@@ -948,7 +968,7 @@ function StudioPageInner() {
     };
     window.addEventListener("pagehide", persistOnPageHide);
     return () => window.removeEventListener("pagehide", persistOnPageHide);
-  }, []);
+  }, [fetch, selectedProject?.id]);
 
   useEffect(() => () => {
     if (sessionSaveTimerRef.current) clearTimeout(sessionSaveTimerRef.current);
@@ -1095,7 +1115,7 @@ function StudioPageInner() {
         setPendingLibraryReference(null);
       });
     return () => controller.abort();
-  }, [chatSessionOwner, searchParams, sessionOwner]);
+  }, [chatSessionOwner, getServerDraft, searchParams, sessionOwner]);
 
   // A question URL carries only a project-owned id. The server returns the exact
   // editorial prompt and stable request keys created by the explicit "Создать ответ"
@@ -1147,7 +1167,7 @@ function StudioPageInner() {
         });
       });
     return () => controller.abort();
-  }, [chatSessionOwner, searchParams, sessionOwner, showToast]);
+  }, [chatSessionOwner, fetch, searchParams, sessionOwner, showToast]);
 
   useEffect(() => {
     if (chatSessionOwner !== sessionOwner || sessionOwner == null) return;
@@ -1175,7 +1195,7 @@ function StudioPageInner() {
         });
       });
     return () => controller.abort();
-  }, [chatSessionOwner, searchParams, sessionOwner, showToast]);
+  }, [chatSessionOwner, fetch, searchParams, sessionOwner, showToast]);
 
   // A monthly topic URL carries only owned ids. The write prompt is built here
   // from the campaign API and left in the input — the user sends it, or not.
@@ -1231,7 +1251,7 @@ function StudioPageInner() {
         });
       });
     return () => controller.abort();
-  }, [chatSessionOwner, searchParams, sessionOwner, showToast]);
+  }, [chatSessionOwner, fetch, searchParams, sessionOwner, showToast]);
 
   // Технические параметры генерации загружаются из базы; голос канала приходит
   // в серверный контекст из единого поканального профиля Авроры.
@@ -1243,7 +1263,7 @@ function StudioPageInner() {
       })
       .catch(() => {})
       .finally(() => setPostSettingsReady(true));
-  }, []);
+  }, [fetch]);
 
   // Чат должен быть ФИКСИРОВАННОЙ коробки: сообщения ездят внутри, поле ввода не двигается.
   // Раньше стояли min-h/max-h — контейнер рос под содержимое и толкал ввод вниз при каждом
@@ -1338,7 +1358,7 @@ function StudioPageInner() {
       })
       .catch(() => setEngineStatusError("Не удалось проверить модели. Проверь соединение и обнови страницу."))
       .finally(() => setEnginesLoading(false));
-  }, []);
+  }, [fetch]);
 
   const pickEngine = async (e: EngineInfo) => {
     if (!e.supported || e.status !== "ready") return;
@@ -2164,7 +2184,7 @@ function StudioPageInner() {
   const useGeneratedMedia = (generation: MediaGeneration) => {
     if (!generation.assetId || !generation.assetUrl) return;
     sessionStorage.setItem(
-      "aurora:generated-media",
+      generatedMediaStorageKey,
       JSON.stringify({
         kind: generation.kind,
         label: generation.kind === "video" ? `Рилс ${generation.seconds ?? 6} сек.` : `Изображение ${generation.aspectRatio}`,

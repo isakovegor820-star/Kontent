@@ -155,11 +155,15 @@ create table trend_posts (
   unique (source_id, tg_msg_id)
 );
 
+-- URL and its original account uniqueness existed before incremental migrations.
+-- Retain them in the minimal legacy fixture so channel-scoping upgrades are realistic.
 create table rss_feeds (
   id bigint generated always as identity primary key,
   user_id bigint not null references users (id) on delete cascade,
   channel_id bigint not null references channels (id) on delete cascade,
-  is_active boolean not null default true
+  url text not null,
+  is_active boolean not null default true,
+  unique (user_id, url)
 );
 
 create table rss_items (
@@ -207,6 +211,6 @@ insert into post_stats (post_id, snapshot_date, views) values (101, current_date
 insert into ai_usage (user_id, kind) values (1, 'legacy');
 insert into saved_posts (user_id, text) values (1, 'legacy account-wide post');
 insert into hashtag_sets (user_id, name, tags) values (1, 'legacy tags', array['#legacy']);
-insert into rss_feeds (id, user_id, channel_id) overriding system value values (301, 1, 10);
+insert into rss_feeds (id, user_id, channel_id, url) overriding system value values (301, 1, 10, 'https://legacy.example.test/rss');
 insert into rss_items (feed_id, status) values (301, 'skipped');
 insert into media_generations (user_id, kind, status) values (1, 'image', 'failed');

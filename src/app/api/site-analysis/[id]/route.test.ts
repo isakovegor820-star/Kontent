@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({ getSessionUser: vi.fn(), query: vi.fn(), requireSelectedProjectPermission: vi.fn() }));
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
@@ -26,7 +26,7 @@ describe("GET /api/site-analysis/:id", () => {
       error_code: null, error_message: null, attempts: 1, run_revision: 1, queue_confirmed_at: startedAt,
       created_at: new Date(), updated_at: new Date(), completed_at: new Date(),
     }] });
-    const response = await GET(new NextRequest("http://localhost/api/site-analysis/41"), { params: Promise.resolve({ id: "41" }) });
+    const response = await GET(new ProjectRequest(31, "http://localhost/api/site-analysis/41"), { params: Promise.resolve({ id: "41" }) });
     expect(response.status).toBe(200);
     expect(response.headers.get("x-request-id")).toBe("req-41");
     expect(mocks.query).toHaveBeenCalledWith(expect.stringContaining("where id = $1 and project_id = $2"), [41, 31]);
@@ -41,7 +41,7 @@ describe("GET /api/site-analysis/:id", () => {
 
   it("does not reveal an analysis from another selected project or a legacy NULL row", async () => {
     mocks.query.mockResolvedValue({ rows: [] });
-    const response = await GET(new NextRequest("http://localhost/api/site-analysis/41"), { params: Promise.resolve({ id: "41" }) });
+    const response = await GET(new ProjectRequest(31, "http://localhost/api/site-analysis/41"), { params: Promise.resolve({ id: "41" }) });
     expect(response.status).toBe(404);
     expect(mocks.query).toHaveBeenCalledWith(expect.stringContaining("project_id = $2"), [41, 31]);
   });

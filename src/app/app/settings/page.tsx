@@ -1,4 +1,7 @@
 "use client";
+import { projectUrl } from "@/lib/project-transport";
+import { useProjectFetch, useProjectCall, useProjectStorageKey } from "@/lib/use-project-transport";
+
 
 /**
  * А12 — НАСТРОЙКИ (Приложение А).
@@ -74,7 +77,7 @@ import type { Network } from "@/lib/types";
 import { NETWORK_LABEL, cn, fmtNum, plural } from "@/lib/utils";
 import {
   parseBotLinkStatusResponse,
-  requestTelegramChannelConnection,
+  requestTelegramChannelConnection as unscopedRequestTelegramChannelConnection,
   requireBotUnlinkSuccess,
   telegramChannelConnectionSnapshot,
 } from "@/lib/bot-link-client";
@@ -83,6 +86,7 @@ import {
   hasComposerPayloadSupport,
   type OAuthProviderCapability,
 } from "@/lib/oauth-capabilities";
+import { VK_AUTH_FLOW_UNVERIFIED } from "@/lib/provider-capabilities.mjs";
 import type { TenChatIntegrationReadiness } from "@/lib/tenchat-integration.mjs";
 
 const EASE = [0.22, 1, 0.36, 1] as const;
@@ -159,6 +163,9 @@ function Section({
 /* ------------------------------------------------------- 1. СЕТИ (ТЗ 5.2) */
 
 function ChannelsSection({ index }: { index: number }) {
+  const connectionStorageKey = useProjectStorageKey("aurora:telegram-channel-connection");
+  const requestTelegramChannelConnection = useProjectCall(unscopedRequestTelegramChannelConnection);
+  const fetch = useProjectFetch();
   const s = useStore();
   const { refreshReal, toast } = s;
   const [disconnecting, setDisconnecting] = useState<number | null>(null);
@@ -183,7 +190,7 @@ function ChannelsSection({ index }: { index: number }) {
     if (connectionChecking.current) return;
     if (Date.now() >= connectionDeadline.current) {
       stopConnectionPolling();
-      window.sessionStorage.removeItem("aurora:telegram-channel-connection");
+      window.sessionStorage.removeItem(connectionStorageKey);
       setConnectionPhase("error");
       setConnectionMessage("Telegram не подтвердил канал. Проверь, что выбрал именно канал и оставил право «Публикация сообщений», затем повтори.");
       return;
@@ -202,7 +209,7 @@ function ChannelsSection({ index }: { index: number }) {
       if (nextSnapshot === connectionBaseline.current || !connected) return;
 
       stopConnectionPolling();
-      window.sessionStorage.removeItem("aurora:telegram-channel-connection");
+      window.sessionStorage.removeItem(connectionStorageKey);
       await refreshReal();
       const label = connected.title || (connected.handle ? `@${connected.handle}` : "Telegram-канал");
       setConnectionPhase("connected");
@@ -218,7 +225,7 @@ function ChannelsSection({ index }: { index: number }) {
     } finally {
       connectionChecking.current = false;
     }
-  }, [refreshReal, stopConnectionPolling, toast]);
+  }, [connectionStorageKey, fetch, refreshReal, stopConnectionPolling, toast]);
 
   const startConnectionPolling = useCallback((baseline: string, deadline: number) => {
     stopConnectionPolling();
@@ -232,7 +239,7 @@ function ChannelsSection({ index }: { index: number }) {
 
   useEffect(() => {
     let resumeTimer: number | null = null;
-    const pending = window.sessionStorage.getItem("aurora:telegram-channel-connection");
+    const pending = window.sessionStorage.getItem(connectionStorageKey);
     if (pending) {
       try {
         const value = JSON.parse(pending) as { baseline?: unknown; deadline?: unknown };
@@ -240,10 +247,10 @@ function ChannelsSection({ index }: { index: number }) {
         if (typeof value.baseline === "string" && Number.isFinite(deadline) && deadline > Date.now()) {
           resumeTimer = window.setTimeout(() => startConnectionPolling(value.baseline as string, deadline), 0);
         } else {
-          window.sessionStorage.removeItem("aurora:telegram-channel-connection");
+          window.sessionStorage.removeItem(connectionStorageKey);
         }
       } catch {
-        window.sessionStorage.removeItem("aurora:telegram-channel-connection");
+        window.sessionStorage.removeItem(connectionStorageKey);
       }
     }
     const checkWhenVisible = () => {
@@ -259,12 +266,12 @@ function ChannelsSection({ index }: { index: number }) {
       document.removeEventListener("visibilitychange", checkWhenVisible);
       stopConnectionPolling();
     };
-  }, [checkTelegramConnection, startConnectionPolling, stopConnectionPolling]);
+  }, [connectionStorageKey, checkTelegramConnection, startConnectionPolling, stopConnectionPolling]);
 
   const connectTelegram = async () => {
     if (connectionPhase === "opening") return;
     stopConnectionPolling();
-    window.sessionStorage.removeItem("aurora:telegram-channel-connection");
+    window.sessionStorage.removeItem(connectionStorageKey);
     setConnectionPhase("opening");
     setConnectionMessage("");
     // Open synchronously while this still is a trusted click. Async window.open calls are
@@ -275,7 +282,7 @@ function ChannelsSection({ index }: { index: number }) {
       const baseline = telegramChannelConnectionSnapshot(s.realChannels);
       const deadline = Date.now() + 90_000;
       window.sessionStorage.setItem(
-        "aurora:telegram-channel-connection",
+        connectionStorageKey,
         JSON.stringify({ baseline, deadline }),
       );
       startConnectionPolling(baseline, deadline);
@@ -336,13 +343,13 @@ function ChannelsSection({ index }: { index: number }) {
       index={index}
       title={EXPERIMENTAL_ROUTES_ENABLED ? "Подключённые сети" : "Подключённые Telegram-каналы"}
       description={EXPERIMENTAL_ROUTES_ENABLED
-        ? "Telegram и VK публикуют с сервера. Для остальных сетей здесь явно указан текущий статус поддержки."
+        ? "Telegram публикует с сервера. Для остальных сетей здесь указан текущий статус поддержки."
         : "Telegram публикует с сервера, даже когда ваш компьютер выключен."}
     >
       <div className="mb-5 rounded-md border border-brand/20 bg-info-soft p-4">
         <p className="text-[15px] font-bold text-text">Подключение без перехода в мастер</p>
         <p className="mt-1.5 text-[13px] leading-relaxed text-text-2">
-          Аврора откроет Telegram, попросит выбрать канал и проверит право публикации. Эта страница останется открытой и сама покажет результат.
+          Аврора откроет Telegram. Выбери канал, затем подтверди проект в сообщении бота — он проверит право публикации. Эта страница останется открытой и сама покажет результат.
         </p>
         <Button
           type="button"
@@ -395,7 +402,7 @@ function ChannelsSection({ index }: { index: number }) {
           icon={<Link2 className="h-6 w-6" strokeWidth={1.75} />}
           title="Ни одной сети"
           body={EXPERIMENTAL_ROUTES_ENABLED
-            ? "Подключи Telegram или VK — без этого посты некуда отправлять."
+            ? "Подключи Telegram — без канала посты некуда отправлять."
             : "Подключи Telegram — без канала посты некуда отправлять."}
           action={
             <Button variant="outline" onClick={addMore}>
@@ -435,13 +442,13 @@ function ChannelsSection({ index }: { index: number }) {
                       <Check className="h-3.5 w-3.5" strokeWidth={3} aria-hidden />
                       Активен
                     </Badge>
-                  ) : ch.reconnect_required ? (
+                  ) : publishSupported && ch.reconnect_required ? (
                     <Badge tone="fire">Нужно переподключить</Badge>
                   ) : (
                     <Badge tone="neutral">Публикация недоступна</Badge>
                   )}
                 </div>
-                {ch.reconnect_required && (
+                {publishSupported && ch.reconnect_required && (
                   <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
                     <p role="status" className="text-[13px] leading-relaxed text-danger-text">
                       Аврора остановила новые публикации после ошибки доступа. История сохранена.
@@ -451,9 +458,9 @@ function ChannelsSection({ index }: { index: number }) {
                     </Button>
                   </div>
                 )}
-                {!publishSupported && !ch.reconnect_required && (
+                {!publishSupported && (
                   <p className="mt-2 text-[13px] leading-relaxed text-text-3">
-                    Подключение сохранено, но выбрать эту сеть в Композиторе пока нельзя.
+                    {ch.network === "vk" ? VK_AUTH_FLOW_UNVERIFIED : "Подключение сохранено, но выбрать эту сеть в Композиторе пока нельзя."}
                   </p>
                 )}
                 <div className="mt-3 flex justify-end">
@@ -487,7 +494,7 @@ function ChannelsSection({ index }: { index: number }) {
         <>
           <Divider className="my-6" />
 
-          {/* Настоящее подключение VK-сообщества (аналог TG bot-link): ключ доступа сообщества. */}
+          {/* VK connection stays unavailable until its authorization is verified. */}
           <VkConnect />
 
           {/* TenChat остаётся частью общей системы каналов, но не притворяется live-интеграцией. */}
@@ -509,111 +516,14 @@ function ChannelsSection({ index }: { index: number }) {
 
 /* ----------------------------------------- 1б. ПОДКЛЮЧЕНИЕ VK-СООБЩЕСТВА */
 
-/**
- * Настоящее подключение VK (аналог TG bot-link). Админ сообщества создаёт в VK ключ
- * доступа с правом «Стена» (Управление → Работа с API) и вставляет его сюда. Сервер
- * проверяет ключ на живом API, шифрует (AES-GCM) и сохраняет сообщество как канал.
- */
-function vkConnectError(code?: string): string {
-  switch (code) {
-    case "invalid_token":
-      return "Ключ не подошёл. Проверь, что создал ключ сообщества (не личный) и включил право «Стена».";
-    case "taken":
-      return "Это сообщество уже подключено к другому аккаунту Авроры.";
-    case "empty":
-      return "Вставь ключ доступа сообщества.";
-    case "server":
-      return "Сервер не смог зашифровать ключ. Напиши в поддержку.";
-    case "unauthorized":
-      return "Сессия истекла — зайди заново.";
-    default:
-      return "Не получилось подключить. Попробуй ещё раз.";
-  }
-}
-
 function VkConnect() {
-  const s = useStore();
-  const [token, setToken] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const vkChannels = s.realChannels.filter((c) => c.network === "vk" && c.is_active);
-
-  const connect = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    if (busy) return;
-    setError(null);
-    setBusy(true);
-    const res = await s.connectVkChannel(token.trim());
-    setBusy(false);
-    if (res.ok) {
-      s.toast({
-        kind: "success",
-        title: `Сообщество «${res.title ?? "VK"}» подключено`,
-        body: "Теперь сюда можно постить с сервера.",
-      });
-      setToken("");
-    } else {
-      setError(vkConnectError(res.error));
-    }
-  };
-
   return (
     <div className="rounded-md bg-surface-inset p-4">
       <p className="flex items-center gap-2 text-[15px] font-semibold text-text">
-        <VkIcon className="h-5 w-5 text-brand" />
-        VK-сообщество
+        <VkIcon className="h-5 w-5 text-brand" /> VK-сообщество
+        <Badge tone="neutral">Публикация недоступна</Badge>
       </p>
-      <p className="mt-1.5 text-[14px] leading-relaxed text-text-2">
-        Публикация в VK работает так же, как в Telegram: сервер постит сам. В сообществе зайди в{" "}
-        <b className="font-semibold text-text">Управление → Работа с API</b> → «Создать ключ» и
-        включи право <b className="font-semibold text-text">«Стена»</b>, затем вставь ключ сюда.
-      </p>
-
-      {vkChannels.length > 0 && (
-        <ul className="mt-3 space-y-2">
-          {vkChannels.map((ch) => (
-            <li
-              key={ch.id}
-              className="flex items-center gap-2.5 rounded-sm border border-line bg-surface px-3 py-2"
-            >
-              <VkIcon className="h-4 w-4 shrink-0 text-brand" />
-              <span className="min-w-0 flex-1 truncate text-[14px] font-semibold text-text">
-                {ch.title ?? ch.handle ?? "Сообщество"}
-              </span>
-              <Badge tone="success">
-                <Check className="h-3.5 w-3.5" strokeWidth={3} aria-hidden />
-                Подключено
-              </Badge>
-            </li>
-          ))}
-        </ul>
-      )}
-
-      <form onSubmit={connect} className="mt-3 flex flex-col gap-2 sm:flex-row">
-        <Input
-          value={token}
-          disabled={busy}
-          type="password"
-          autoComplete="off"
-          placeholder="Ключ доступа сообщества"
-          aria-label="Ключ доступа VK-сообщества"
-          aria-invalid={error ? true : undefined}
-          onChange={(e) => {
-            setToken(e.target.value);
-            if (error) setError(null);
-          }}
-        />
-        <Button type="submit" variant="outline" data-aurora-feature="configuration" data-aurora-action="connected" loading={busy} className="shrink-0">
-          <VkIcon className="h-4 w-4" aria-hidden />
-          Подключить VK
-        </Button>
-      </form>
-      {error && (
-        <p role="alert" className="mt-2 text-[13px] leading-relaxed font-medium text-danger-text">
-          {error}
-        </p>
-      )}
+      <p className="mt-1.5 text-[14px] leading-relaxed text-text-2">{VK_AUTH_FLOW_UNVERIFIED}</p>
     </div>
   );
 }
@@ -621,6 +531,7 @@ function VkConnect() {
 /* ---------------------------------------- 1в. TENCHAT: OFFICIAL-ACCESS BOUNDARY */
 
 function TenChatIntegration() {
+  const fetch = useProjectFetch();
   const [readiness, setReadiness] = useState<TenChatIntegrationReadiness | null>(null);
   const [statusError, setStatusError] = useState(false);
 
@@ -639,7 +550,7 @@ function TenChatIntegration() {
         if (!controller.signal.aborted) setStatusError(true);
       });
     return () => controller.abort();
-  }, []);
+  }, [fetch]);
 
   return (
     <section
@@ -777,6 +688,7 @@ const OAUTH_NETWORKS: {
 ];
 
 function OAuthNetworks() {
+  const fetch = useProjectFetch();
   const s = useStore();
   const [capabilities, setCapabilities] = useState<
     Partial<Record<Network, OAuthProviderCapability>> | null
@@ -802,7 +714,7 @@ function OAuthNetworks() {
         if (!controller.signal.aborted) setProviderError(true);
       });
     return () => controller.abort();
-  }, []);
+  }, [fetch]);
 
   return (
     <div className="mt-4 rounded-md bg-surface-inset p-4">
@@ -860,7 +772,7 @@ function OAuthNetworks() {
               ) : (
                 // Полная навигация (не SPA): уходим на экран согласия провайдера и обратно.
                 <a
-                  href={`/api/channels/oauth/start?network=${id}`}
+                  href={projectUrl(`/api/channels/oauth/start?network=${id}`)}
                   className={cn(
                     "inline-flex shrink-0 items-center rounded-sm border border-line-strong",
                     "px-3 py-1.5 text-[13px] font-semibold text-text transition-colors hover:bg-surface-2",
@@ -886,6 +798,7 @@ function OAuthNetworks() {
  * Без этого уведомления уходили в один общий чат владельца, а не автору канала.
  */
 function BotLink() {
+  const fetch = useProjectFetch();
   const s = useStore();
   const [phase, setPhase] = useState<"loading" | "ready" | "error">("loading");
   const [linked, setLinked] = useState(false);
@@ -911,7 +824,7 @@ function BotLink() {
       if (seq !== requestSeq.current) return;
       setPhase("error");
     }
-  }, []);
+  }, [fetch]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- load updates state only after the request settles

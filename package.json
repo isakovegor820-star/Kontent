@@ -27,6 +27,8 @@
     "test:publication-operation:integration": "vitest run --config vitest.integration.config.ts src/e2e/publication-operation.integration.ts",
     "test:publication-lifecycle:integration": "vitest run --config vitest.integration.config.ts src/e2e/publication-lifecycle.integration.ts",
     "test:project-collaboration:integration": "vitest run --config vitest.integration.config.ts src/e2e/project-collaboration.integration.ts",
+    "test:knowledge:integration": "vitest run --config vitest.integration.config.ts src/e2e/knowledge-access.integration.ts --maxWorkers=1",
+    "test:bot-publication:integration": "vitest run --config vitest.integration.config.ts src/e2e/bot-draft-publication.integration.ts --maxWorkers=1",
     "test:site-analysis-tenant:integration": "vitest run --config vitest.integration.config.ts src/e2e/site-analysis-tenant.integration.ts",
     "test:tracking-lifecycle:integration": "vitest run --config vitest.integration.config.ts src/e2e/tracking-lifecycle.integration.ts",
     "test:registration:integration": "vitest run --config vitest.integration.config.ts src/e2e/registration.integration.ts",
@@ -35,6 +37,9 @@
     "test:contracts": "vitest run src/e2e/critical-journeys.test.ts",
     "test:e2e:real": "node scripts/test-e2e-real.mjs",
     "test:e2e:stability": "node scripts/test-e2e-stability.mjs",
+    "test:projects:integration": "vitest run --config vitest.integration.config.ts src/e2e/project-request-isolation.integration.ts --maxWorkers=1",
+    "test:vk-storage:integration": "vitest run --config vitest.integration.config.ts src/e2e/vk-channel-connection.integration.ts --maxWorkers=1",
+    "test:projects:browser": "node scripts/test-project-switch-browser.mjs",
     "test:trends-hydration:e2e": "node scripts/test-trends-hydration-e2e.mjs",
     "db:migrate": "node --env-file-if-exists=.env.local scripts/migrate.mjs",
     "tokens:reencrypt": "node --env-file-if-exists=.env.local scripts/reencrypt-token-envelopes.mjs",
@@ -43,7 +48,11 @@
     "worker": "AURORA_RUNTIME_ROLE=worker node --env-file=.env.local worker.mjs",
     "worker:site-analysis": "AURORA_RUNTIME_ROLE=worker node --env-file=.env.local scripts/site-analysis-worker.mjs",
     "worker:media": "AURORA_RUNTIME_ROLE=worker AURORA_WORKER_MODE=media node --env-file=.env.local worker.mjs",
-    "worker:publication": "AURORA_RUNTIME_ROLE=worker AURORA_WORKER_MODE=publication node --env-file=.env.local worker.mjs"
+    "worker:publication": "AURORA_RUNTIME_ROLE=worker AURORA_WORKER_MODE=publication node --env-file=.env.local worker.mjs",
+    "test:calendar:integration": "vitest run --config vitest.integration.config.ts src/e2e/calendar-pagination.integration.ts --maxWorkers=1",
+    "test:calendar:browser": "node scripts/test-calendar-pagination-browser.mjs",
+    "test:launch-monitoring:integration": "vitest run --config vitest.integration.config.ts src/e2e/launch-monitoring.integration.ts --maxWorkers=1",
+    "test:autopilot-editor:integration": "vitest run --config vitest.integration.config.ts src/e2e/autopilot-editor-isolation.integration.ts --maxWorkers=1"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1104.0",

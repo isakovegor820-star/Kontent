@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 import { NextRequest } from "next/server";
 
 import { readJsonBodyValue } from "@/lib/bounded-request-body";
@@ -25,7 +26,7 @@ function parseMethod(value: unknown): SiteVerificationMethod | "auto" | null {
  * Идемпотентная проверка владения доменом. Повторный вызов для уже подтверждённого
  * сайта ничего не меняет; отзыв подтверждения — отдельная операция (не в этом этапе).
  */
-export async function POST(req: NextRequest, context: Context) {
+async function handlePOST(req: NextRequest, context: Context) {
   const resolved = await resolveSiteRoute(req, "content.create", { mutation: true, label: "/api/sites/:id/verify POST" });
   if (!resolved.ok) return resolved.response;
   const { requestId, pool, userId, projectId } = resolved.context;
@@ -109,3 +110,5 @@ export async function POST(req: NextRequest, context: Context) {
     return siteErrorResponse(error, "/api/sites/:id/verify POST", requestId);
   }
 }
+
+export const POST = withProjectRoute(handlePOST);

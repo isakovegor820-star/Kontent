@@ -48,6 +48,64 @@ export function resolveE2eCaptureArtifacts(value) {
   return raw === "1";
 }
 
+export async function performE2eBrowserAuthenticatedRequest({
+  path,
+  method = "GET",
+  headers = {},
+  data,
+  timeoutMs = 120_000,
+} = {}) {
+  const timeout = Number(timeoutMs);
+  if (!Number.isSafeInteger(timeout) || timeout < 1) {
+    throw new Error("E2E browser request timeout must be a positive integer");
+  }
+  const controller = new AbortController();
+  let timeoutId;
+  const request = async () => {
+    const capturedHeaders = { ...headers };
+    if (!capturedHeaders["x-aurora-project-id"] && path !== "/api/projects/current") {
+      const current = await fetch("/api/projects/current", {
+        cache: "no-store",
+        signal: controller.signal,
+      }).then((response) => response.json());
+      if (current.project?.id) capturedHeaders["x-aurora-project-id"] = String(current.project.id);
+    }
+    const response = await fetch(path, {
+      method,
+      headers: { ...capturedHeaders, ...(data === undefined ? {} : { "content-type": "application/json" }) },
+      body: data === undefined ? undefined : JSON.stringify(data),
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    let text = "";
+    try { text = await response.text(); } catch {}
+    return {
+      status: response.status,
+      ok: response.ok,
+      text,
+      headers: {
+        contentType: response.headers.get("content-type"),
+        requestId: response.headers.get("x-ai-request-id") || response.headers.get("x-request-id"),
+        replayed: response.headers.get("x-ai-replayed"),
+        acknowledged: response.headers.get("x-ai-acknowledged"),
+      },
+    };
+  };
+  try {
+    return await Promise.race([
+      request(),
+      new Promise((_, reject) => {
+        timeoutId = globalThis.setTimeout(() => {
+          reject(new Error(`e2e_browser_request_timeout:${method}:${path}`));
+          controller.abort();
+        }, timeout);
+      }),
+    ]);
+  } finally {
+    if (timeoutId !== undefined) globalThis.clearTimeout(timeoutId);
+  }
+}
+
 export function sanitizeE2eNetworkUrl(value, baseUrl) {
   try {
     const url = new URL(String(value), String(baseUrl));
@@ -231,6 +289,54 @@ export function classifyE2eKnownWebKitDocumentNavigationCancellation({
     detail: `${request.pathname}${request.search}`,
     message: `/${request.hostname}:${request.port}${request.pathname}${request.search}${WEBKIT_CANCELLED_REQUEST_SUFFIX}`,
   };
+}
+
+export function classifyE2eKnownWebKitProvisionalWorkspacePoll({
+  engine,
+  errorName,
+  message,
+  navigationPending = false,
+  sourceUrl,
+  documentRequestUrl,
+  elapsedMs,
+  baseUrl,
+} = {}) {
+  if (resolveE2eBrowserEngine(engine) !== "webkit" || !navigationPending) return null;
+  const elapsed = Number(elapsedMs);
+  if (!Number.isFinite(elapsed) || elapsed < 0 || elapsed > 30_000) return null;
+  let base;
+  let source;
+  let destination;
+  try {
+    base = new URL(String(baseUrl || ""));
+    source = new URL(String(sourceUrl || ""));
+    destination = new URL(String(documentRequestUrl || ""));
+  } catch {
+    return null;
+  }
+  if (
+    base.hostname !== "127.0.0.1"
+    || !["http:", "https:"].includes(base.protocol)
+    || source.origin !== base.origin
+    || destination.origin !== base.origin
+    || !/^\/app(?:\/|$)/u.test(source.pathname)
+    || !/^\/app(?:\/|$)/u.test(destination.pathname)
+    || errorName !== `Fetch API cannot load ${base.protocol.slice(0, -1)}`
+  ) return null;
+  // WebKit rejects new fetches while the old document has a provisional loader,
+  // before pagehide/visibilitychange and before emitting any network request.
+  // Only the three exact GET-only workspace polling endpoints reproduced in the browser
+  // fixture qualify. Unhandled rejections still fail via the independent listener.
+  for (const path of ["/api/channels", "/api/posts", "/api/ai/usage"]) {
+    if (message === `/${base.host}${path}${WEBKIT_CANCELLED_REQUEST_SUFFIX}`) {
+      return {
+        kind: "webkit.provisional-document-workspace-poll",
+        detail: path,
+        navigation: { from: source.pathname, to: destination.pathname, elapsedMs: elapsed },
+      };
+    }
+  }
+  return null;
 }
 
 export function classifyE2eExpectedSessionExpiryWebKitPageError({

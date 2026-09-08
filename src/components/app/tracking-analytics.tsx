@@ -1,4 +1,6 @@
 "use client";
+import { useProjectFetch } from "@/lib/use-project-transport";
+
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -654,6 +656,7 @@ export function TrackingAnalyticsSection({
   channelId?: number | null;
   showPeriodControl?: boolean;
 }) {
+  const fetch = useProjectFetch();
   const { current, ready, error: projectError, refresh: refreshProjects } = useProjects();
   const [localPeriodDays, setLocalPeriodDays] = useState(30);
   const periodDays = controlledPeriodDays ?? localPeriodDays;
@@ -684,7 +687,7 @@ export function TrackingAnalyticsSection({
       if (sequence !== requestSequence.current || signal?.aborted || (error instanceof Error && error.name === "AbortError")) return;
       setState({ key, report: null, status: "error" });
     }
-  }, [channelId, periodDays, projectId]);
+  }, [channelId, fetch, periodDays, projectId]);
 
   useEffect(() => {
     if (projectId == null) return;

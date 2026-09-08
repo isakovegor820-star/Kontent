@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -47,7 +47,7 @@ const row = {
 };
 
 function request(body: Record<string, unknown>, key = "site-analysis-client-1234") {
-  return new NextRequest("http://localhost/api/site-analysis", {
+  return new ProjectRequest(31, "http://localhost/api/site-analysis", {
     method: "POST",
     headers: { origin: "http://localhost", "content-type": "application/json", "idempotency-key": key },
     body: JSON.stringify(body),
@@ -72,7 +72,7 @@ describe("POST /api/site-analysis", () => {
 
   it("lists only analyses from the selected project and hides legacy NULL rows", async () => {
     mocks.query.mockResolvedValueOnce({ rows: [{ ...row, project_id: 31 }] });
-    const response = await GET(new NextRequest("http://localhost/api/site-analysis"));
+    const response = await GET(new ProjectRequest(31, "http://localhost/api/site-analysis"));
     expect(response.status).toBe(200);
     expect(mocks.requireSelectedProjectPermission).toHaveBeenCalledWith(expect.anything(), 7, "project.read");
     expect(mocks.query).toHaveBeenCalledWith(

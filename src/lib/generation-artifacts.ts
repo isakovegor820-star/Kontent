@@ -148,15 +148,16 @@ export async function beginGenerationOperation(
   const tx = await pool.connect();
   try {
     await tx.query("begin");
+    const membership = await requireSelectedProjectPermission(tx, input.userId, "content.create");
     const channel = await tx.query(
-      `select id from channels where id = $1 and user_id = $2 and is_active = true for share`,
-      [input.channelId, input.userId],
+      `select id from channels where id = $1 and project_id = $2 and is_active = true for share`,
+      [input.channelId, membership.projectId],
     );
     if (channel.rowCount !== 1) throw new GenerationArtifactError("generation_channel_forbidden");
     if (sourceContextId != null) {
       const source = await tx.query<{ version: number | string; purpose: string }>(
-        `select version, purpose from drafts where id = $1 and user_id = $2 for share`,
-        [sourceContextId, input.userId],
+        `select version, purpose from drafts where id = $1 and project_id = $2 for share`,
+        [sourceContextId, membership.projectId],
       );
       if (
         source.rowCount !== 1
@@ -169,9 +170,9 @@ export async function beginGenerationOperation(
         `select d.version, d.purpose
            from drafts d
            join draft_destinations dd on dd.draft_id = d.id and dd.channel_id = $3
-          where d.id = $1 and d.user_id = $2
+          where d.id = $1 and d.project_id = $2
           for share of d`,
-        [inputDraftId, input.userId, input.channelId],
+        [inputDraftId, membership.projectId, input.channelId],
       );
       if (
         draft.rowCount !== 1
@@ -180,7 +181,6 @@ export async function beginGenerationOperation(
       ) throw new GenerationArtifactError("generation_input_conflict");
     }
     if (monthlyItemId != null) {
-      const membership = await requireSelectedProjectPermission(tx, input.userId, "content.create");
       const monthly = await tx.query(
         `select item.id
            from monthly_campaign_items item
@@ -431,6 +431,7 @@ export async function resolveGenerationDraft(
 ): Promise<ResolvedGenerationDraft> {
   const id = positiveId(generationResultId);
   if (!positiveId(userId) || !id) throw new GenerationArtifactError("bad_generation_result");
+  const membership = await requireSelectedProjectPermission(db, userId, "content.create");
   const row = (await db.query<{
     id: number | string;
     text: string;
@@ -456,10 +457,10 @@ export async function resolveGenerationDraft(
        join generation_operations operation on operation.id = result.operation_id
        join validation_receipts receipt on receipt.generation_result_id = result.id
        join channels channel on channel.id = operation.channel_id
-       left join drafts source on source.id = operation.source_context_id and source.user_id = operation.user_id
+       left join drafts source on source.id = operation.source_context_id and source.project_id = channel.project_id
       where result.id = $1 and operation.user_id = $2 and operation.status = 'acknowledged'
-        and channel.user_id = operation.user_id and channel.is_active = true`,
-    [id, userId],
+        and channel.project_id = $3 and channel.is_active = true`,
+    [id, userId, membership.projectId],
   )).rows[0];
   if (!row) throw new GenerationArtifactError("generation_result_forbidden");
   if (
@@ -489,4 +490,16 @@ export async function resolveGenerationDraft(
     sourceRef: (row.source_ref ?? null) as Post["sourceRef"] | null,
     purpose: validation.status === "passed" ? "publishable" : "needs_review",
   };
+}
+
+/** Validate the terminal operation's project before the separate quota acknowledgement. */
+export async function authorizeGenerationAcknowledgement(userId: number, requestKey: string): Promise<boolean> {
+  const pool = getPool();
+  const membership = await requireSelectedProjectPermission(pool, userId, "content.create");
+  return (await pool.query(
+    `select operation.id from generation_operations operation
+       join channels channel on channel.id = operation.channel_id
+      where operation.user_id = $1 and operation.request_key = $2 and channel.project_id = $3`,
+    [userId, requestKey, membership.projectId],
+  )).rowCount === 1;
 }

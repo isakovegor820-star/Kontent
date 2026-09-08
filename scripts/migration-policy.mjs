@@ -8,6 +8,9 @@ const DESTRUCTIVE_STATEMENTS = [
 ];
 
 const APPROVED_REPLACED_CONSTRAINTS = new Set([
+  // Replaced by project/channel-scoped uniqueness without deleting existing rows.
+  "rss_feeds_user_id_url_key",
+  "radar_search_runs_user_request_key",
   "ai_usage_status_check",
   "ai_usage_reservation_fields_check",
   "hashtag_sets_user_id_name_key",

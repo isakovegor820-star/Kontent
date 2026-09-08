@@ -1,4 +1,7 @@
 "use client";
+import { useProjectCall } from "@/lib/use-project-transport";
+import { projectFetch as fetch } from "@/lib/project-transport";
+
 
 import {
   useCallback,
@@ -234,7 +237,7 @@ export function trackingSettingsErrorMessage(code: unknown): string {
   }
 }
 
-async function requestJson(url: string, init?: RequestInit): Promise<{
+async function unscopedRequestJson(url: string, init?: RequestInit): Promise<{
   response: Response | null;
   body: ApiBody | null;
 }> {
@@ -322,6 +325,7 @@ export function trackingInstallSnippet(appOrigin: string, publicKey: string): st
 }
 
 export function TrackingSettingsSection() {
+  const requestJson = useProjectCall(unscopedRequestJson);
   const projects = useProjects();
   const current = projects.current;
   const canManage = current?.role === "owner";
@@ -422,7 +426,7 @@ export function TrackingSettingsSection() {
             : "Подключение ожидает подтверждения домена и сигнала от сайта." });
     }
     return parsed;
-  }, []);
+  }, [requestJson]);
 
   const loadTemplates = useCallback(async (projectId: number, announce = false) => {
     const sequence = ++templatesSequence.current;
@@ -441,7 +445,7 @@ export function TrackingSettingsSection() {
     setTemplatesProjectId(projectId);
     setTemplatesLoadError(false);
     return parsed;
-  }, []);
+  }, [requestJson]);
 
   useEffect(() => {
     let cancelled = false;

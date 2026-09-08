@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 import { NextRequest, NextResponse } from "next/server";
 import type { PoolClient } from "pg";
 
@@ -9,7 +10,7 @@ import { getSessionUser } from "@/lib/session";
 
 export const runtime = "nodejs";
 
-export async function DELETE(req: NextRequest, context: { params: Promise<{ id: string }> }) {
+async function handleDELETE(req: NextRequest, context: { params: Promise<{ id: string }> }) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
   }
@@ -127,3 +128,5 @@ export async function DELETE(req: NextRequest, context: { params: Promise<{ id: 
     client?.release();
   }
 }
+
+export const DELETE = withProjectRoute(handleDELETE);

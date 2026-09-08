@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 import { NextRequest, NextResponse } from "next/server";
 
 import { ensureGrowthBoard, isGrowthAccessError, loadGrowthBoard } from "@/lib/growth";
@@ -7,7 +8,7 @@ import { getSessionUser } from "@/lib/session";
 
 export const runtime = "nodejs";
 
-export async function GET(req: NextRequest) {
+async function handleGET(req: NextRequest) {
   const user = await getSessionUser(req);
   if (!user) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401, headers: { "Cache-Control": "no-store" } });
@@ -28,7 +29,7 @@ export async function GET(req: NextRequest) {
   }
 }
 
-export async function POST(req: NextRequest) {
+async function handlePOST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ error: "forbidden_origin" }, { status: 403 });
   }
@@ -51,3 +52,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "growth_unavailable" }, { status: 503, headers: { "Cache-Control": "no-store" } });
   }
 }
+
+export const GET = withProjectRoute(handleGET);
+export const POST = withProjectRoute(handlePOST);

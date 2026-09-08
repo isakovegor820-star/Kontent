@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -27,7 +27,7 @@ describe("GET /api/channels project isolation", () => {
   it("returns 401 before querying project data for an expired session", async () => {
     mocks.getSessionUser.mockResolvedValueOnce(null);
 
-    const response = await GET(new NextRequest("http://localhost/api/channels"));
+    const response = await GET(new ProjectRequest(44, "http://localhost/api/channels"));
 
     expect(response.status).toBe(401);
     expect(mocks.query).not.toHaveBeenCalled();
@@ -51,7 +51,7 @@ describe("GET /api/channels project isolation", () => {
         rowCount: 1,
       });
 
-    const response = await GET(new NextRequest("http://localhost/api/channels"));
+    const response = await GET(new ProjectRequest(44, "http://localhost/api/channels"));
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
@@ -59,8 +59,8 @@ describe("GET /api/channels project isolation", () => {
     });
     expect(mocks.query).toHaveBeenCalledTimes(2);
     const [authorizationSql, authorizationParams] = mocks.query.mock.calls[0];
-    expect(String(authorizationSql)).toContain("user_project_preferences");
-    expect(authorizationParams).toEqual([91]);
+    expect(String(authorizationSql)).not.toContain("user_project_preferences");
+    expect(authorizationParams).toEqual([44, 91]);
     const [dataSql, dataParams] = mocks.query.mock.calls[1];
     expect(String(dataSql)).toContain("where project_id = $1");
     expect(String(dataSql)).not.toContain("where user_id = $1");
@@ -70,7 +70,7 @@ describe("GET /api/channels project isolation", () => {
   it("fails closed when the server-owned project selection has no active membership", async () => {
     mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
 
-    const response = await GET(new NextRequest("http://localhost/api/channels"));
+    const response = await GET(new ProjectRequest(44, "http://localhost/api/channels"));
 
     expect(response.status).toBe(403);
     await expect(response.json()).resolves.toEqual({ error: "access_denied" });

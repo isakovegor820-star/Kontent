@@ -447,9 +447,13 @@ export async function probeAdminQueues(nowMs = Date.now()): Promise<AdminQueueSn
   }));
 }
 
-async function publicationMetrics(pool: Pool, checkedAt: string) {
+export async function publicationMetrics(pool: Pick<Pool, "query">, checkedAt: string) {
   const result = await pool.query<{
     waiting: number | string;
+    outbox_pending: number | string;
+    outbox_overdue: number | string;
+    oldest_outbox_age_ms: number | string | null;
+    schedule_lag_ms: number | string | null;
     active: number | string;
     overdue: number | string;
     retrying: number | string;
@@ -463,6 +467,16 @@ async function publicationMetrics(pool: Pool, checkedAt: string) {
   }>(
     `select
        count(*) filter (where status = 'scheduled') as waiting,
+       (select count(*) from publication_outbox o join posts p on p.id = o.post_id
+         where o.status in ('pending','failed','dispatching') and p.status in ('scheduled','publishing','failed_retry')) as outbox_pending,
+       (select count(*) from publication_outbox o join posts p on p.id = o.post_id
+         where o.status in ('pending','failed','dispatching') and p.status in ('scheduled','publishing','failed_retry')
+           and greatest(o.next_attempt_at, coalesce(o.lease_expires_at, o.next_attempt_at)) < $1::timestamptz - interval '5 minutes') as outbox_overdue,
+       (select max(extract(epoch from ($1::timestamptz - o.created_at)) * 1000)
+         from publication_outbox o join posts p on p.id = o.post_id
+         where o.status in ('pending','failed','dispatching') and p.status in ('scheduled','publishing','failed_retry')) as oldest_outbox_age_ms,
+       max(extract(epoch from ($1::timestamptz - scheduled_at)) * 1000)
+         filter (where status = 'scheduled' and scheduled_at <= $1::timestamptz) as schedule_lag_ms,
        count(*) filter (where status = 'publishing') as active,
        count(*) filter (where (status = 'scheduled' and scheduled_at < $1::timestamptz - interval '5 minutes')
          or (status = 'failed_retry' and next_attempt_at < $1::timestamptz - interval '5 minutes')) as overdue,
@@ -482,6 +496,10 @@ async function publicationMetrics(pool: Pool, checkedAt: string) {
   const row = result.rows[0];
   return {
     waiting: nonNegative(row?.waiting),
+    outboxPending: nonNegative(row?.outbox_pending),
+    outboxOverdue: nonNegative(row?.outbox_overdue),
+    oldestOutboxAgeMs: row?.oldest_outbox_age_ms == null ? null : nonNegative(row.oldest_outbox_age_ms),
+    scheduleLagMs: row?.schedule_lag_ms == null ? null : nonNegative(row.schedule_lag_ms),
     active: nonNegative(row?.active),
     overdue: nonNegative(row?.overdue),
     retrying: nonNegative(row?.retrying),
@@ -493,6 +511,19 @@ async function publicationMetrics(pool: Pool, checkedAt: string) {
     lastSuccessAt: nullableIso(row?.last_success_at),
     lastErrorCode: row?.last_error_code ? safeCode(row.last_error_code, "provider_error") : null,
   };
+}
+
+export async function socialConnectionMetrics(pool: Pick<Pool, "query">, checkedAt: string) {
+  const result = await pool.query<{ connected: string; attention: string; expired: string; last_error_at: Date | null }>(
+    `select count(*) filter (where c.is_active) as connected,
+       count(*) filter (where c.status in ('needs_reconnect','permission_lost','revoked')) as attention,
+       count(*) filter (where c.is_active and t.expires_at <= $1::timestamptz) as expired,
+       max(c.last_auth_error_at) filter (where c.status <> 'disconnected') as last_error_at
+     from channels c left join oauth_tokens t on t.id = c.oauth_token_id`, [checkedAt],
+  );
+  const row = result.rows[0];
+  return { connected: nonNegative(row?.connected), attention: nonNegative(row?.attention),
+    expired: nonNegative(row?.expired), lastFailureAt: nullableIso(row?.last_error_at) };
 }
 
 async function publicationErrorHistory(pool: Pool, checkedAt: string): Promise<AdminDiagnosticHistory[]> {
@@ -727,7 +758,7 @@ function defaultDefinitions(now: () => number): DiagnosticDefinition[] {
         const state: AdminDiagnosticState = !parsed ? "down"
           : !publishQueue || publishQueue.state === "unavailable" ? "unavailable"
             : publishQueue.state === "down" ? "down"
-              : metrics.overdue > 0 || metrics.stuck > 0 || metrics.failures > 0 || metrics.unverified > 0 || publishQueue.state === "degraded" ? "degraded"
+              : metrics.outboxOverdue > 0 || metrics.overdue > 0 || metrics.stuck > 0 || metrics.failures > 0 || metrics.unverified > 0 || publishQueue.state === "degraded" ? "degraded"
                 : publishQueue.workers === 0 ? "unobserved" : observationState(metrics.lastSuccessAt, now());
         return {
           state,
@@ -736,14 +767,18 @@ function defaultDefinitions(now: () => number): DiagnosticDefinition[] {
             { label: "Возраст heartbeat", value: heartbeatAgeMs },
             { label: "Допустимый интервал", value: PUBLICATION_HEARTBEAT_TTL_SECONDS * 1_000 },
             { label: "Последняя успешная публикация", value: metrics.lastSuccessAt },
+            { label: "Ожидают передачи в очередь", value: metrics.outboxPending },
+            { label: "Возраст старейшей записи outbox, мс", value: metrics.oldestOutboxAgeMs },
+            { label: "Просрочена передача в очередь", value: metrics.outboxOverdue, tone: metrics.outboxOverdue ? "warning" : "positive" },
+            { label: "Максимальная задержка публикации, мс", value: metrics.scheduleLagMs },
           ],
-          safeErrorCode: !parsed ? "publication_heartbeat_stale" : metrics.stuck > 0 ? "publication_processing_stuck"
+          safeErrorCode: !parsed ? "publication_heartbeat_stale" : metrics.outboxOverdue > 0 ? "publication_outbox_overdue" : metrics.stuck > 0 ? "publication_processing_stuck"
             : metrics.overdue > 0 ? "publication_schedule_overdue" : metrics.unverified > 0 ? "publication_delivery_unverified"
               : metrics.failures > 0 ? "publication_failed_records" : publishQueue?.safeErrorCode ?? null,
           lastSuccessAt: metrics.lastSuccessAt,
           history,
           validUntil: parsed ? new Date(Date.parse(parsed.at) + PUBLICATION_HEARTBEAT_TTL_SECONDS * 1000).toISOString() : undefined,
-          scope: "Heartbeat подтверждает цикл обработчика. Исправность отправки требует успешной публикации за 15 минут. Счётчики постов: текущее состояние, published — за 24 часа. В posts нет времени последнего отказа; даты и частота ошибок доступны только для записанных событий. История — до 20 кодов за 24 часа, повторы считаются событиями; first/last ограничены этим окном.",
+          scope: "Outbox включает не переданные в Redis записи активных постов; просрочка считается через 5 минут после срока попытки или lease. Отменённые и завершённые посты исключены. Heartbeat подтверждает цикл обработчика. Исправность отправки требует успешной публикации за 15 минут. Счётчики постов: текущее состояние, published — за 24 часа. В posts нет времени последнего отказа; даты и частота ошибок доступны только для записанных событий. История — до 20 кодов за 24 часа, повторы считаются событиями; first/last ограничены этим окном.",
           metrics: {
             heartbeatAgeMs,
             heartbeatIntervalMs: PUBLICATION_HEARTBEAT_INTERVAL_MS,
@@ -778,18 +813,10 @@ function defaultDefinitions(now: () => number): DiagnosticDefinition[] {
     {
       id: "social_connections", group: "integrations", label: "Подключения соцсетей", description: "Сохранённые права каналов и срок OAuth-токенов",
       run: async () => {
-        const result = await pool().query<{ connected: string; attention: string; expired: string; last_error_at: Date | null }>(
-          `select count(*) filter (where c.is_active) as connected,
-             count(*) filter (where c.is_active and c.status <> 'active') as attention,
-             count(*) filter (where c.is_active and t.expires_at <= $1::timestamptz) as expired,
-             max(c.last_auth_error_at) as last_error_at
-           from channels c left join oauth_tokens t on t.id = c.oauth_token_id`, [new Date(now()).toISOString()],
-        );
-        const row = result.rows[0];
-        const connected = nonNegative(row?.connected), attention = nonNegative(row?.attention), expired = nonNegative(row?.expired);
-        return { state: !connected ? "not_used" : attention || expired ? "degraded" : "unobserved",
+        const { connected, attention, expired, lastFailureAt } = await socialConnectionMetrics(pool(), new Date(now()).toISOString());
+        return { state: attention || expired ? "degraded" : !connected ? "not_used" : "unobserved",
           evidence: [{ label: "Подключённые каналы", value: connected }, { label: "Требуют восстановления прав", value: attention }, { label: "Истёк access token", value: expired }],
-          metrics: { lastFailureAt: nullableIso(row?.last_error_at) },
+          metrics: { lastFailureAt },
           safeErrorCode: attention ? "channel_access_attention" : expired ? "oauth_access_token_expired" : null,
           scope: "Сохранённые состояния, без вызова внешних API. Истёкший access token может обновляться через refresh token; возможность обновления, права и лимиты провайдера требуют отдельной проверки. Отсутствие каналов означает, что интеграция не используется.",
           links: [{ label: "Открыть подключения", href: "/admin#connections" }], affectedSections: ["settings", "calendar"],

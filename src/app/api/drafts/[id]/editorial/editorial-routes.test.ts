@@ -1,4 +1,4 @@
-import { NextRequest } from "next/server";
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -32,7 +32,7 @@ const HASH = "a".repeat(64);
 const context = { params: Promise.resolve({ id: "41" }) };
 
 function request(path: string, body: Record<string, unknown>) {
-  return new NextRequest(`http://localhost${path}`, {
+  return new ProjectRequest(8, `http://localhost${path}`, {
     method: "POST",
     headers: { origin: "http://localhost", "content-type": "application/json" },
     body: JSON.stringify(body),

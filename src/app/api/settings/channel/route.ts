@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 // Единое сохранение поканального профиля Авроры.
 // Бриф, редакционный стандарт и режим автопилота меняются одной транзакцией:
 // пользователь либо получает целиком новую конфигурацию, либо остаётся на прежней.
@@ -30,7 +31,7 @@ type SettingsBody = {
   };
 };
 
-export async function GET(req: NextRequest) {
+async function handleGET(req: NextRequest) {
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
@@ -60,7 +61,7 @@ export async function GET(req: NextRequest) {
   }
 }
 
-export async function POST(req: NextRequest) {
+async function handlePOST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
   }
@@ -204,3 +205,6 @@ export async function POST(req: NextRequest) {
     client.release();
   }
 }
+
+export const GET = withProjectRoute(handleGET);
+export const POST = withProjectRoute(handlePOST);

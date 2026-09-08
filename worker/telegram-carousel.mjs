@@ -3,7 +3,7 @@ import {
   TELEGRAM_CAPTION_LIMIT,
   telegramEntityLength,
 } from "../src/lib/telegram-payload.mjs";
-import { deliverTelegramParts } from "./telegram-multipart.mjs";
+import { deliverTelegramParts, isConfirmedTelegramRejection } from "./telegram-multipart.mjs";
 
 export function telegramCarouselPartDefinitions({ assets, text }) {
   if (!Array.isArray(assets)) throw new Error("telegram_carousel_asset_count_invalid");
@@ -58,8 +58,13 @@ export async function deliverTelegramCarousel({
     }
     const messages = Array.isArray(response?.result) ? response.result : [];
     const messageIds = messages.map((message) => Number(message?.message_id));
-    if (!response?.ok || messageIds.length !== mediaParts.length
+    if (response?.ok !== true || messageIds.length !== mediaParts.length
+      || new Set(messageIds).size !== messageIds.length
       || messageIds.some((messageId) => !Number.isSafeInteger(messageId) || messageId <= 0)) {
+      if (!isConfirmedTelegramRejection(response)) {
+        await Promise.all(mediaParts.map((part) => markUnknown(part, new Error("telegram_album_acknowledgement_invalid"))));
+        return { ok: false, reason: "Telegram не подтвердил все части карусели", deliveryUnknown: true, parts: [] };
+      }
       await Promise.all(mediaParts.map((part) => markFailed(part, response)));
       return {
         ok: false,

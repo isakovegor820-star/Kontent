@@ -1,4 +1,6 @@
 "use client";
+import { useProjectFetch } from "@/lib/use-project-transport";
+
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import {
@@ -72,6 +74,7 @@ function profileError(code?: string): string {
 }
 
 export function AccountProfileSettings() {
+  const fetch = useProjectFetch();
   const uid = useId();
   const store = useStore();
   const { setPreference } = useAppTheme();
@@ -123,7 +126,7 @@ export function AccountProfileSettings() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [fetch]);
 
   /* eslint-disable react-hooks/set-state-in-effect -- первичная синхронизация формы с серверным профилем */
   useEffect(() => { void load(); }, [load]);

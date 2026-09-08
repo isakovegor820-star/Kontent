@@ -50,7 +50,8 @@ describe("generation artifact binding", () => {
   it("resolves trusted channel, source version, text, and provenance only from the server row", async () => {
     const text = "Материал по выбранной RSS-теме";
     const hash = generationResultHash(text);
-    const query = vi.fn(async () => ({
+    const query = vi.fn(async (sql: string) => sql.includes("from user_project_preferences")
+      ? { rows: [{ project_id: 17, user_id: 5, role: "author", version: 1 }] } : ({
       rows: [{
         id: "91",
         text,
@@ -78,12 +79,13 @@ describe("generation artifact binding", () => {
       sourceRef: { kind: "rss", id: "8" },
       purpose: "publishable",
     });
-    const call = query.mock.calls[0] as unknown as [string, unknown[]];
-    expect(call[1]).toEqual([91, 5]);
+    const call = query.mock.calls[1] as unknown as [string, unknown[]];
+    expect(call[1]).toEqual([91, 5, 17]);
   });
 
   it("never reopens a provider operation after an immutable result is pending ACK", async () => {
     const query = vi.fn(async (sql: string) => {
+      if (sql.includes("from user_project_preferences")) return { rows: [{ project_id: 17, user_id: 5, role: "author", version: 1 }], rowCount: 1 };
       if (sql === "begin" || sql === "rollback") return { rows: [], rowCount: null };
       if (sql.includes("select id from channels")) return { rows: [{ id: 11 }], rowCount: 1 };
       if (sql.includes("from generation_operations")) {

@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -15,7 +16,7 @@ function moveIdFrom(raw: string): number | null {
   return Number.isSafeInteger(id) && id > 0 ? id : null;
 }
 
-export async function GET(req: NextRequest, { params }: Context) {
+async function handleGET(req: NextRequest, { params }: Context) {
   const user = await getSessionUser(req);
   if (!user) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401, headers: { "Cache-Control": "no-store" } });
@@ -38,7 +39,7 @@ export async function GET(req: NextRequest, { params }: Context) {
   }
 }
 
-export async function POST(req: NextRequest, { params }: Context) {
+async function handlePOST(req: NextRequest, { params }: Context) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ error: "forbidden_origin" }, { status: 403 });
   }
@@ -69,3 +70,6 @@ export async function POST(req: NextRequest, { params }: Context) {
     return NextResponse.json({ error: "growth_unavailable" }, { status: 503 });
   }
 }
+
+export const GET = withProjectRoute(handleGET);
+export const POST = withProjectRoute(handlePOST);

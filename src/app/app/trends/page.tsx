@@ -1,4 +1,6 @@
 "use client";
+import { useProjectFetch, useProjectCall } from "@/lib/use-project-transport";
+
 
 // Свежая лента выбранных Telegram-источников + отдельный рейтинг проверенных постов.
 //
@@ -35,11 +37,11 @@ import { Badge, Card, Checkbox, EmptyState, Input, Tabs } from "@/components/ui/
 import { appDraftActionHref } from "@/lib/app-routes";
 import { finalizeAiClientStream, parseAiStreamBuffer, type AiStreamEvent } from "@/lib/ai-stream";
 import {
-  acknowledgeAiTerminal,
+  acknowledgeAiTerminal as unscopedAcknowledgeAiTerminal,
   stableAiClientRequest,
   type AiClientRequestIdentity,
 } from "@/lib/ai-client-idempotency";
-import { createDraftClientKey, createServerDraft, DraftRequestError } from "@/lib/draft-client";
+import { createDraftClientKey, createServerDraft as unscopedCreateServerDraft, DraftRequestError } from "@/lib/draft-client";
 import { isAbortError } from "@/lib/client-workspace-isolation";
 import { useStore } from "@/lib/store";
 import {
@@ -556,6 +558,9 @@ function ItemCard({
 /* -------------------------------------------------------------------- СТРАНИЦА */
 
 export default function TrendsPage() {
+  const createServerDraft = useProjectCall(unscopedCreateServerDraft);
+  const acknowledgeAiTerminal = useProjectCall(unscopedAcknowledgeAiTerminal);
+  const fetch = useProjectFetch();
   const router = useRouter();
   const store = useStore();
   const reduce = useReducedMotion();
@@ -650,7 +655,7 @@ export default function TrendsPage() {
     } finally {
       if (mountedRef.current && requestRef.current === controller) setLoading(false);
     }
-  }, []);
+  }, [fetch]);
 
   useEffect(() => {
     load();

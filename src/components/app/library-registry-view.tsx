@@ -1,4 +1,6 @@
 "use client";
+import { useProjectFetch, useProjectCall } from "@/lib/use-project-transport";
+
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
@@ -26,7 +28,7 @@ import { LibraryCardText, libraryCardContentId, toggleExpandedCardId } from "@/c
 import { Button } from "@/components/ui/button";
 import { Badge, Card, EmptyState, Input } from "@/components/ui/primitives";
 import { appDraftActionHref, type DraftBackedAppAction } from "@/lib/app-routes";
-import { createDraftClientKey, createLibraryServerDraft, libraryDraftErrorMessage } from "@/lib/draft-client";
+import { createDraftClientKey, createLibraryServerDraft as unscopedCreateLibraryServerDraft, libraryDraftErrorMessage } from "@/lib/draft-client";
 import type {
   LibraryFormat,
   LibraryMaturity,
@@ -258,6 +260,8 @@ function NumberRange({
 }
 
 export function LibraryRegistryView({ channelId, channelName }: { channelId: number; channelName: string }) {
+  const createLibraryServerDraft = useProjectCall(unscopedCreateLibraryServerDraft);
+  const fetch = useProjectFetch();
   const router = useRouter();
   const store = useStore();
   const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
@@ -301,7 +305,7 @@ export function LibraryRegistryView({ channelId, channelName }: { channelId: num
     } finally {
       if (sequence === requestSequence.current) setLoading(false);
     }
-  }, [channelId]);
+  }, [channelId, fetch]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void load(filters), 250);

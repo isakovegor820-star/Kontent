@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -18,7 +18,7 @@ vi.mock("@/lib/project-permissions", () => ({
 import { POST } from "./route";
 
 function request() {
-  return new NextRequest("http://localhost/api/channels/tenchat/publish", {
+  return new ProjectRequest(31, "http://localhost/api/channels/tenchat/publish", {
     method: "POST",
     headers: { origin: "http://localhost" },
   });

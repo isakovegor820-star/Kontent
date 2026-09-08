@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -25,7 +25,7 @@ vi.mock("@/lib/project-permissions", async (importOriginal) => {
 import { GET, POST } from "./route";
 
 function request(body: Record<string, unknown>) {
-  return new NextRequest("http://localhost/api/autopilot/brief", {
+  return new ProjectRequest(88, "http://localhost/api/autopilot/brief", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -133,7 +133,7 @@ describe("GET /api/autopilot/brief", () => {
   });
 
   it("loads the shared brief through the selected project scope", async () => {
-    const response = await GET(new NextRequest("http://localhost/api/autopilot/brief?channel=21"));
+    const response = await GET(new ProjectRequest(88, "http://localhost/api/autopilot/brief?channel=21"));
 
     expect(response.status).toBe(200);
     expect(mocks.resolveChannel).toHaveBeenCalledWith(

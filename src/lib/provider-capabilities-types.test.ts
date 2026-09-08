@@ -18,7 +18,7 @@ describe("provider capability TypeScript consumer contract", () => {
   });
 
   it("keeps typed readiness unavailable until the server proves credentials and permissions", () => {
-    const readiness: ProviderOperationReadiness = resolveProviderOperation("vk", "livePublish");
+    const readiness: ProviderOperationReadiness = resolveProviderOperation("tg", "livePublish");
     expect(readiness.available).toBe(false);
     expect(readiness.state).toBe("credential_unknown");
   });

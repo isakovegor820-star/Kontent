@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   query: vi.fn(),
@@ -93,7 +93,7 @@ describe("GET /api/trends internet feed", () => {
       throw new Error(`unexpected query: ${sql}`);
     });
 
-    const response = await GET(new NextRequest(
+    const response = await GET(new ProjectRequest(1,
       "http://localhost/api/trends?scope=internet&period=week&channel=7&q=%D0%A0%D1%8B%D0%B1%D0%B0%D0%BB%D0%BA%D0%B0",
     ));
 
@@ -115,7 +115,7 @@ describe("GET /api/trends internet feed", () => {
   it("does not query internet results without an owned channel", async () => {
     mocks.resolveChannel.mockResolvedValue(null);
 
-    const response = await GET(new NextRequest(
+    const response = await GET(new ProjectRequest(1,
       "http://localhost/api/trends?scope=internet&channel=999",
     ));
 
@@ -145,7 +145,7 @@ describe("POST /api/trends", () => {
 
   it("queues an immediate global collection instead of waiting for cron", async () => {
     const response = await POST(
-      new NextRequest("http://localhost/api/trends?scope=global", {
+      new ProjectRequest(1, "http://localhost/api/trends?scope=global", {
         method: "POST",
         headers: { "idempotency-key": "trend_global_1234" },
       }),
@@ -170,7 +170,7 @@ describe("POST /api/trends", () => {
     mocks.add.mockRejectedValue(new Error("redis down"));
 
     const response = await POST(
-      new NextRequest("http://localhost/api/trends?scope=global", {
+      new ProjectRequest(1, "http://localhost/api/trends?scope=global", {
         method: "POST",
         headers: { "idempotency-key": "trend_global_5678" },
       }),
@@ -219,7 +219,7 @@ describe("POST /api/trends", () => {
       .mockResolvedValueOnce({ id: "competitor-21" })
       .mockRejectedValueOnce(new Error("redis down"));
 
-    const response = await POST(new NextRequest("http://localhost/api/trends", {
+    const response = await POST(new ProjectRequest(1, "http://localhost/api/trends", {
       method: "POST",
       headers: { "idempotency-key": "trend_niche_1234" },
     }));
@@ -255,7 +255,7 @@ describe("POST /api/trends", () => {
       }
       throw new Error("unexpected write");
     });
-    const response = await POST(new NextRequest("http://localhost/api/trends?scope=global", {
+    const response = await POST(new ProjectRequest(1, "http://localhost/api/trends?scope=global", {
       method: "POST",
       headers: { "idempotency-key": "trend_replay_1234" },
     }));
@@ -278,7 +278,7 @@ describe("POST /api/trends", () => {
         }],
       };
     });
-    const response = await POST(new NextRequest("http://localhost/api/trends?scope=global", {
+    const response = await POST(new ProjectRequest(1, "http://localhost/api/trends?scope=global", {
       method: "POST",
       headers: { "idempotency-key": "trend_parallel_1234" },
     }));
