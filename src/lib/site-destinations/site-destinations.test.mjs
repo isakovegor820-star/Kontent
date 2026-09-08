@@ -1,6 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import { EventEmitter } from "node:events";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { assertSiteDestinationAdapter, createSiteDestinationAdapters, isSiteDestinationKind } from "./index.mjs";
+import { assertSiteDestinationAdapter, createSiteDestinationAdapters, isSiteDestinationKind, encryptDestinationCredentials, loadSiteDestinationRuntime } from "./index.mjs";
 import { createHostedAdapter, deriveHostedSlug, hostedArticleUrl, hostedSitesDomain, hostedSlugFromHost } from "./hosted.mjs";
 import { createWordPressAdapter } from "./wordpress-adapter.mjs";
 
@@ -24,6 +25,56 @@ describe("site destination contract", () => {
 });
 
 describe("WordPress adapter", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("pins the verified address for the actual authenticated connection", async () => {
+    // A global fetch implementation would resolve the hostname again (DNS rebinding).
+    const unpinnedFetch = vi.fn(async () => jsonResponse(201, { id: 77, slug: payload.slug, status: "publish" }));
+    vi.stubGlobal("fetch", unpinnedFetch);
+    const lookupFn = vi.fn(publicLookup);
+    const requestFn = vi.fn((options, respond) => {
+      expect(options).toMatchObject({ hostname: "93.184.216.34", servername: "blog.example.ru", method: "POST" });
+      expect(options.headers.host).toBe("blog.example.ru");
+      const request = new EventEmitter();
+      request.setTimeout = vi.fn();
+      request.end = (body) => {
+        expect(JSON.parse(body).slug).toBe(payload.slug);
+        queueMicrotask(() => {
+          const response = new EventEmitter();
+          response.statusCode = 201;
+          response.headers = {};
+          respond(response);
+          response.emit("data", Buffer.from(JSON.stringify({ id: 77, slug: payload.slug, status: "publish" })));
+          response.emit("end");
+        });
+      };
+      return request;
+    });
+    const result = await createWordPressAdapter({ lookupFn, requestFn }).publish(destination, payload);
+    expect(result.ok).toBe(true);
+    expect(requestFn).toHaveBeenCalledOnce();
+    expect(lookupFn).toHaveBeenCalledOnce();
+    expect(unpinnedFetch).not.toHaveBeenCalled();
+  });
+
+  it("does not send application credentials over plaintext HTTP", async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse(201, { id: 77, slug: payload.slug, status: "publish" }));
+    const result = await createWordPressAdapter({ fetchImpl, lookupFn: publicLookup })
+      .publish({ ...destination, baseUrl: "http://blog.example.ru" }, payload);
+    expect(result).toMatchObject({ ok: false, reason: "https_required" });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("does not treat edit_posts alone as permission to publish", async () => {
+    const adapter = createWordPressAdapter({ fetchImpl: async () => jsonResponse(200, { id: 3, capabilities: { edit_posts: true } }), lookupFn: publicLookup });
+    expect(await adapter.verify(destination)).toMatchObject({ ok: false, permissionState: "missing" });
+  });
+
+  it("does not accept a malformed successful publication response", async () => {
+    const adapter = createWordPressAdapter({ fetchImpl: async () => jsonResponse(201, {}), lookupFn: publicLookup });
+    expect(await adapter.publish(destination, payload)).toMatchObject({ ok: false, outcome: "delivery_unknown" });
+  });
+
   it("publishes with application-password auth and maps the created post", async () => {
     const fetchImpl = vi.fn(async (url, init) => {
       expect(url).toBe("https://blog.example.ru/wp-json/wp/v2/posts");
@@ -102,6 +153,23 @@ describe("WordPress adapter", () => {
     const noCap = createWordPressAdapter({ fetchImpl: vi.fn(async () => jsonResponse(200, { id: 3, name: "Sub", capabilities: { read: true } })), lookupFn: publicLookup });
     expect(await noCap.verify(destination)).toMatchObject({ ok: false, permissionState: "missing", reason: "publish_posts_capability_missing" });
   });
+
+  it("does not confuse a draft or unrelated same-slug post with confirmed delivery", async () => {
+    const draft = createWordPressAdapter({ fetchImpl: async () => jsonResponse(200, [{ id: 77, slug: payload.slug, status: "draft" }]), lookupFn: publicLookup });
+    expect(await draft.reconcile(destination, payload.slug)).toMatchObject({ ok: false, outcome: "delivery_unknown" });
+    const unrelated = createWordPressAdapter({ fetchImpl: async () => jsonResponse(200, [{ id: 77, slug: payload.slug, status: "publish", title: { raw: "Other" }, content: { raw: "Other content" } }]), lookupFn: publicLookup });
+    expect(await unrelated.reconcile(destination, payload.slug, { expectedPayload: payload })).toMatchObject({ ok: false, reason: "publication_content_unconfirmed" });
+  });
+
+  it("checks a known destination-specific ID when reconciling unpublish", async () => {
+    const fetchImpl = vi.fn(async (url) => {
+      expect(new URL(url).pathname).toBe("/wp-json/wp/v2/posts/77");
+      return jsonResponse(200, { id: 77, slug: payload.slug, status: "draft" });
+    });
+    const adapter = createWordPressAdapter({ fetchImpl, lookupFn: publicLookup });
+    expect(await adapter.reconcile(destination, payload.slug, { action: "unpublish", providerRef: { id: 77 } }))
+      .toMatchObject({ ok: true, publishedUrl: null });
+  });
 });
 
 describe("hosted section helpers and adapter", () => {
@@ -129,5 +197,18 @@ describe("hosted section helpers and adapter", () => {
     expect(await adapter.reconcile(dest, "skolko-stoit")).toMatchObject({ ok: true, publishedUrl: "https://clinic.sites.aurora.test/skolko-stoit" });
     const unconfigured = createHostedAdapter({ env: {} });
     expect(await unconfigured.publish(dest, payload)).toMatchObject({ ok: false, reason: "hosted_domain_not_configured" });
+  });
+});
+
+
+describe("destination credential context", () => {
+  afterEach(() => vi.unstubAllEnvs());
+  it("does not fall back to audit actors when the encryption key is missing", async () => {
+    vi.stubEnv("TOKENS_MASTER_KEY", "isolated-credential-test-key");
+    const credentials = encryptDestinationCredentials({ username: "test", appPassword: "test-password" }, { userId: 9 });
+    vi.stubEnv("TOKENS_MASTER_KEY", "");
+    const db = { query: vi.fn() };
+    await expect(loadSiteDestinationRuntime(db, { id: 7, site_id: 5, kind: "wordpress", credentials }, { id: 5, user_id: 9, project_id: 3 })).rejects.toMatchObject({ code: "token_key_missing" });
+    expect(db.query).not.toHaveBeenCalled();
   });
 });

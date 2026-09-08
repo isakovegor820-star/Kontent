@@ -144,7 +144,7 @@ async function withinDeadline(work, timeoutMs) {
   }
 }
 
-function requestOnce(url, target, { timeoutMs, maxBytes, headers, requestFn }) {
+function requestOnce(url, target, { timeoutMs, maxBytes, headers, requestFn, method = "GET", body = null, followRedirects = true }) {
   const transport = url.protocol === "https:" ? https : http;
   const hostname = normalizedIpv6(url.hostname);
   return new Promise((resolve, reject) => {
@@ -173,7 +173,7 @@ function requestOnce(url, target, { timeoutMs, maxBytes, headers, requestFn }) {
         hostname: target.address,
         family: target.family,
         port: url.port || undefined,
-        method: "GET",
+        method,
         path: `${url.pathname}${url.search}`,
         servername: isIP(hostname) ? undefined : hostname,
         agent: false,
@@ -186,10 +186,16 @@ function requestOnce(url, target, { timeoutMs, maxBytes, headers, requestFn }) {
       (res) => {
         const status = Number(res.statusCode || 0);
         const location = res.headers.location;
-        if (status >= 300 && status < 400 && location) {
+        if (followRedirects && status >= 300 && status < 400 && location) {
           // The redirect body is irrelevant and must not outlive the bounded request.
           res.destroy();
-          finish(resolve, { redirect: new URL(location, url), status });
+          // This callback runs after the Promise executor has returned. A malformed
+          // external Location must reject the request, never escape as uncaughtException.
+          try {
+            finish(resolve, { redirect: new URL(location, url), status });
+          } catch {
+            fail(new SafeHttpError("bad_redirect", "Некорректный адрес перенаправления"));
+          }
           return;
         }
 
@@ -230,8 +236,32 @@ function requestOnce(url, target, { timeoutMs, maxBytes, headers, requestFn }) {
     deadline.unref?.();
     req.setTimeout(timeoutMs, () => req.destroy(new SafeHttpError("timeout", "Сервер не ответил вовремя")));
     req.on("error", fail);
-    req.end();
+    req.end(body ?? undefined);
   });
+}
+
+/**
+ * One pinned, bounded HTTP exchange for authenticated integrations. Redirects are
+ * returned to the caller, never followed or replayed with credentials/request bodies.
+ */
+export async function requestPublicBuffer(value, options = {}) {
+  const url = parsePublicHttpUrl(value);
+  if (options.httpsOnly && url.protocol !== "https:") {
+    throw new SafeHttpError("bad_protocol", "Требуется HTTPS");
+  }
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const startedAt = Date.now();
+  const target = await withinDeadline(resolvePublicTarget(url, options.lookupFn ?? dnsLookup), timeoutMs);
+  const result = await requestOnce(url, target, {
+    timeoutMs: Math.max(1, timeoutMs - (Date.now() - startedAt)),
+    maxBytes: options.maxBytes ?? DEFAULT_MAX_BYTES,
+    headers: options.headers ?? {},
+    requestFn: options.requestFn,
+    method: options.method ?? "GET",
+    body: options.body ?? null,
+    followRedirects: false,
+  });
+  return { status: result.status, ok: result.ok, headers: result.headers, buffer: result.body };
 }
 
 /**

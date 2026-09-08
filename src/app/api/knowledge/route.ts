@@ -15,6 +15,7 @@ import { getStatsQueue } from "@/lib/queue";
 import { enqueueKnowledgeIndex } from "@/lib/knowledge-index-queue.mjs";
 import { resolveChannel } from "@/lib/autopilot";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
+import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/project-permissions";
 import { channelAiContextFor } from "@/lib/ai-usage";
 
 export const runtime = "nodejs";
@@ -123,7 +124,11 @@ export async function POST(req: NextRequest) {
 
   try {
     const pool = getPool();
-    const channelId = await resolveChannel(user.id, Number(body.channelId) || null);
+    const membership = await requireSelectedProjectPermission(pool, user.id, "content.edit");
+    const channelId = await resolveChannel(
+      { actorUserId: user.id, projectId: membership.projectId },
+      Number(body.channelId) || null,
+    );
     if (!channelId) return NextResponse.json({ ok: false, error: "no_channel" }, { status: 422 });
 
     const ins = await pool.query<{ id: number }>(
@@ -142,6 +147,9 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ ok: true, id });
   } catch (err) {
+    if (err instanceof ProjectAccessError) {
+      return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
+    }
     console.error("[/api/knowledge] POST", err);
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
@@ -156,16 +164,24 @@ export async function DELETE(req: NextRequest) {
   if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
 
   const id = Number(req.nextUrl.searchParams.get("id"));
-  if (!Number.isInteger(id)) return NextResponse.json({ ok: false, error: "bad_id" }, { status: 422 });
+  if (!Number.isSafeInteger(id) || id <= 0) return NextResponse.json({ ok: false, error: "bad_id" }, { status: 422 });
 
   try {
-    const r = await getPool().query(`delete from knowledge_sources where id = $1 and user_id = $2`, [
-      id,
-      user.id,
-    ]);
+    const pool = getPool();
+    const membership = await requireSelectedProjectPermission(pool, user.id, "content.edit");
+    const r = await pool.query(
+      `delete from knowledge_sources source
+        where source.id = $1 and source.user_id = $2
+          and (exists (select 1 from channels channel where channel.id = source.channel_id and channel.project_id = $3)
+            or exists (select 1 from sites site where site.id = source.site_id and site.project_id = $3))`,
+      [id, user.id, membership.projectId],
+    );
     if (!r.rowCount) return NextResponse.json({ ok: false, error: "not_found" }, { status: 404 });
     return NextResponse.json({ ok: true });
   } catch (err) {
+    if (err instanceof ProjectAccessError) {
+      return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
+    }
     console.error("[/api/knowledge] DELETE", err);
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }

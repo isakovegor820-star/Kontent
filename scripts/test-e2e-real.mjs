@@ -1,3 +1,5 @@
+import { waitForE2e as waitFor } from "./e2e-wait.mjs";
+import { saveE2eComposerDraft } from "./e2e-composer-save.mjs";
 import { execFileSync, spawn } from "node:child_process";
 import { access, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { constants, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -36,6 +38,7 @@ import {
   sanitizeE2eNetworkUrl,
 } from "./e2e-browser-config.mjs";
 import { captureE2eInputSnapshot, changedE2eInputPaths } from "./e2e-input-snapshot.mjs";
+import { immediateE2ePublicationSchedule } from "./e2e-publication-schedule.mjs";
 import {
   E2E_BOT_CONNECT_TOKEN_CANARIES,
   E2E_BOT_CONNECT_TOKEN_CANARY,
@@ -676,21 +679,6 @@ function unexpectedRuntimeLogLines() {
     .filter((line) => fatalPattern.test(line) || firstParty5xxPattern.test(line));
 }
 
-async function waitFor(check, message, timeoutMs = 20_000) {
-  const intervalMs = 150;
-  const attempts = Math.max(1, Math.ceil(timeoutMs / intervalMs));
-  let last;
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    try {
-      const value = await check();
-      if (value) return value;
-    } catch (error) {
-      last = error;
-    }
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
-  }
-  throw new Error(`${message}${last ? `: ${last.message}` : ""}`);
-}
 
 async function reloadInBrowser(targetPage, timeoutMs = 60_000) {
   await Promise.all([
@@ -3460,6 +3448,7 @@ try {
       draftId: publicationDraft.id,
       draftVersion: publicationDraft.version,
       timezone: "UTC",
+      schedule: await immediateE2ePublicationSchedule(),
     },
   };
   const [operationLeft, operationRight] = await Promise.all([
@@ -3605,11 +3594,8 @@ try {
   });
   const telegramTextBeforeCommentsPublication = fakeState.telegram.textCalls;
   const telegramPinBeforeCommentsPublication = fakeState.telegram.pinCalls;
-  // Resolve the immediate publication slot at mutation time. Reusing the draft's
-  // minute after the approval/typography setup can cross the API's one-minute
-  // clock-skew boundary and turn this fixture into a request for the past.
-  const commentsOperationInstant = new Date();
-  commentsOperationInstant.setUTCSeconds(0, 0);
+  // Resolve a current-minute slot with time left for the real API transaction.
+  const commentsOperationSchedule = await immediateE2ePublicationSchedule();
   const commentsOperationResponse = await authenticatedRequest("/api/publication-operations", {
     method: "POST",
     headers: { "idempotency-key": "e2e_supported_comments_publication_1" },
@@ -3617,14 +3603,7 @@ try {
       draftId: commentsDraft.id,
       draftVersion: commentsPreferences.draftVersion,
       timezone: "UTC",
-      schedule: {
-        scheduledAt: commentsOperationInstant.toISOString(),
-        localDate: commentsOperationInstant.toISOString().slice(0, 10),
-        localTime: commentsOperationInstant.toISOString().slice(11, 16),
-        timezone: "UTC",
-        offset: "+00:00",
-        disambiguation: "reject",
-      },
+      schedule: commentsOperationSchedule,
     },
   });
   assert(
@@ -4317,37 +4296,15 @@ try {
 
   const saveCriticalDraft = async (targetPage = page) => {
     const protection = await openComposerSection(targetPage, "composer-protection");
-    const saveButton = protection.getByRole("button", { name: /^(Сохранить сейчас|Сохранено)$/u });
-    await saveButton.waitFor();
-    const alreadySaved = await saveButton.getAttribute("data-loading") !== "true"
-      && (await saveButton.textContent())?.trim() === "Сохранено";
-    if (!alreadySaved) {
-      await waitFor(
-        () => saveButton.isEnabled().catch(() => false),
-        "Composer save button did not become enabled",
-        UI_WAIT_TIMEOUT_MS,
-      );
-      const stillNeedsSave = (await saveButton.textContent().catch(() => ""))?.trim() !== "Сохранено";
-      if (stillNeedsSave) {
-        // The typing-to-save transition can replace this React button between
-        // Playwright's stability check and the native click in WebKit. Resolve
-        // the current enabled node and invoke its real DOM click atomically;
-        // the UI acknowledgement and database equality below remain the proof.
-        await saveButton.evaluate((button) => button.click());
-      }
-      await waitFor(async () => {
-        const summary = await protection.locator("summary").textContent();
-        return summary?.includes("Сохранено") === true;
-      }, "Composer save state did not acknowledge the visible text", UI_WAIT_TIMEOUT_MS);
-    }
-    await waitFor(async () => {
-      const row = (await pool.query(
+    await saveE2eComposerDraft({
+      protection,
+      timeoutMs: UI_WAIT_TIMEOUT_MS,
+      readVisibleText: () => readEditableText(targetPage.locator("#composer-text")),
+      readStoredText: async () => (await pool.query(
         "select text from drafts where id = $1 and project_id = $2",
         [monthlyDraftId, sharedProjectId],
-      )).rows[0];
-      const currentText = await readEditableText(targetPage.locator("#composer-text")).catch(() => "");
-      return row?.text === currentText;
-    }, "Composer save button did not acknowledge the visible text", 12_000);
+      )).rows[0]?.text,
+    });
   };
   await saveCriticalDraft();
   await waitFor(async () => {

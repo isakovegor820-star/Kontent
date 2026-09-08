@@ -18,6 +18,7 @@ import { completeAiText } from "@/lib/ai-completion-service.mjs";
 import { isEngineId } from "@/lib/engines";
 import { finalizeAiUsage, releaseAiUsage, reserveAiUsage } from "@/lib/ai-usage";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
+import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/project-permissions";
 import {
   buildExtractionMessages,
   isMeaningfulProfile,
@@ -91,13 +92,18 @@ export async function POST(req: NextRequest) {
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
 
-  const body = (await readJsonBodyValue(req).catch(() => ({}))) as { channelId?: number };
+  const body = (await readJsonBodyValue(req).catch(() => null)) as { channelId?: number } | null;
+  if (!body) return NextResponse.json({ ok: false, error: "bad_request" }, { status: 400 });
 
   let reservationId: number | null = null;
   let committed = false;
   try {
     const pool = getPool();
-    const channelId = await resolveChannel(user.id, body.channelId ?? null);
+    const membership = await requireSelectedProjectPermission(pool, user.id, "content.edit");
+    const channelId = await resolveChannel(
+      { actorUserId: user.id, projectId: membership.projectId },
+      body.channelId ?? null,
+    );
     if (!channelId) return NextResponse.json({ ok: false, error: "no_channel" }, { status: 422 });
 
     const ch = (
@@ -156,6 +162,9 @@ export async function POST(req: NextRequest) {
     committed = true;
     return NextResponse.json({ ok: true, profile, posts: posts.length });
   } catch (err) {
+    if (err instanceof ProjectAccessError) {
+      return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
+    }
     console.error("[/api/knowledge/extract-profile] POST", {
       errorName: (err as Error)?.name || "Error",
     });
@@ -186,7 +195,11 @@ export async function PUT(req: NextRequest) {
 
   try {
     const pool = getPool();
-    const channelId = await resolveChannel(user.id, body.channelId ?? null);
+    const membership = await requireSelectedProjectPermission(pool, user.id, "content.edit");
+    const channelId = await resolveChannel(
+      { actorUserId: user.id, projectId: membership.projectId },
+      body.channelId ?? null,
+    );
     if (!channelId) return NextResponse.json({ ok: false, error: "no_channel" }, { status: 422 });
 
     const ch = (
@@ -200,6 +213,9 @@ export async function PUT(req: NextRequest) {
     await saveProfileSource(user.id, channelId, `Профиль канала «${ch?.title || "без названия"}»`, profile, "profile_edit");
     return NextResponse.json({ ok: true });
   } catch (err) {
+    if (err instanceof ProjectAccessError) {
+      return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
+    }
     console.error("[/api/knowledge/extract-profile] PUT", err);
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }

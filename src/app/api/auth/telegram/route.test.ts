@@ -35,7 +35,7 @@ function signedBody(authDate: number) {
   };
 }
 
-function request(body: Record<string, unknown>, origin = "http://localhost") {
+function request(body: unknown, origin = "http://localhost") {
   return new NextRequest("http://localhost/api/auth/telegram", {
     method: "POST",
     headers: { "content-type": "application/json", origin },
@@ -61,6 +61,13 @@ describe("POST /api/auth/telegram", () => {
     const response = await POST(request(signedBody(Math.floor(Date.now() / 1_000)), "https://evil.example"));
     expect(response.status).toBe(403);
     expect(mocks.rateLimit).not.toHaveBeenCalled();
+  });
+
+  it("rejects a JSON null without creating an identity or session", async () => {
+    const response = await POST(request(null));
+    expect(response.status).toBe(400);
+    expect(mocks.findOrCreateUser).not.toHaveBeenCalled();
+    expect(mocks.createSession).not.toHaveBeenCalled();
   });
 
   it("accepts a fresh signed payload and applies fail-closed IP/account limits", async () => {

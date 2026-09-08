@@ -15,6 +15,24 @@ import { SiteServiceError, type SiteRow } from "./service";
 
 type Queryable = Pick<Pool, "query"> | Pick<PoolClient, "query">;
 
+/** Call inside the mutation transaction, before deciding from a previously read row. */
+async function lockArticleSnapshot(db: Queryable, site: SiteRow, snapshot: SiteArticleRow): Promise<SiteArticleRow> {
+  const current = (await db.query<SiteArticleRow>(
+    `select ${SITE_ARTICLE_FIELDS} from site_articles
+      where id = $1 and site_id = $2 and project_id = $3 for update`,
+    [snapshot.id, site.id, site.project_id],
+  )).rows[0];
+  if (!current) throw new SiteServiceError("not_found", 404);
+  if (Number(current.version) !== Number(snapshot.version)) throw new SiteServiceError("article_version_conflict", 409);
+  const active = await db.query(
+    `select id from site_article_publications where article_id = $1
+      and status in ('publishing', 'published_unverified') limit 1`,
+    [current.id],
+  );
+  if (active.rows.length) throw new SiteServiceError("publication_in_progress", 409);
+  return current;
+}
+
 export type SiteArticleRow = {
   id: string | number;
   site_id: string | number;
@@ -138,6 +156,7 @@ export async function editSiteArticle(db: Queryable, input: {
   bodyMarkdown?: unknown;
   linkablePages: Array<{ url: string }>;
 }) {
+  input = { ...input, article: await lockArticleSnapshot(db, input.site, input.article) };
   if (!["needs_review", "approved", "failed", "rejected"].includes(input.article.status)) throw new SiteServiceError("article_not_editable", 409);
   const validation = validateArticle({
     title: input.title === undefined ? input.article.title : String(input.title),
@@ -188,7 +207,10 @@ async function hasHumanEdit(db: Queryable, articleId: number, version: number) {
  * по активным назначениям, если домен подтверждён. Возвращает publications для постановки в очередь.
  */
 export async function approveSiteArticle(db: Queryable, input: { site: SiteRow; article: SiteArticleRow; userId: number }) {
+  input = { ...input, article: await lockArticleSnapshot(db, input.site, input.article) };
   if (!["needs_review", "approved", "failed"].includes(input.article.status)) throw new SiteServiceError("article_not_approvable", 409);
+  const alreadyApproved = input.article.approved_version !== null
+    && Number(input.article.approved_version) === Number(input.article.version);
   const edited = await hasHumanEdit(db, Number(input.article.id), Number(input.article.version));
   const updated = await db.query<SiteArticleRow>(
     `update site_articles
@@ -198,17 +220,20 @@ export async function approveSiteArticle(db: Queryable, input: { site: SiteRow; 
   );
   const row = updated.rows[0];
   await recordArticleRevision(db, { article: row, version: row.version, authorUserId: input.userId, changeKind: "approved" });
-  await applyApprovalStreak(db, { siteId: Number(input.site.id), edited, rejected: false });
+  if (!alreadyApproved) await applyApprovalStreak(db, { siteId: Number(input.site.id), edited, rejected: false });
   const destinations = input.site.verification_state === "verified" ? await activeDestinationsForSite(db, Number(input.site.id)) : [];
   const publications = destinations.length ? await createArticlePublications(db, { article: row, destinations, action: "publish" }) : [];
   return { row, publications, edited, destinations: destinations.length, verified: input.site.verification_state === "verified" };
 }
 
 export async function rejectSiteArticle(db: Queryable, input: { site: SiteRow; article: SiteArticleRow; userId: number; reason?: unknown }) {
+  input = { ...input, article: await lockArticleSnapshot(db, input.site, input.article) };
   if (!["needs_review", "approved", "failed", "draft"].includes(input.article.status)) throw new SiteServiceError("article_not_rejectable", 409);
   const reason = String(input.reason || "rejected_by_reviewer").trim().slice(0, 80);
   const updated = await db.query<SiteArticleRow>(
-    `update site_articles set status = 'rejected', status_reason = $2, updated_at = now() where id = $1 returning ${SITE_ARTICLE_FIELDS}`,
+    `update site_articles set status = 'rejected', status_reason = $2,
+       approved_by = null, approved_version = null, approved_at = null,
+       updated_at = now() where id = $1 returning ${SITE_ARTICLE_FIELDS}`,
     [input.article.id, reason],
   );
   const row = updated.rows[0];
@@ -218,9 +243,18 @@ export async function rejectSiteArticle(db: Queryable, input: { site: SiteRow; a
 }
 
 export async function requestPublication(db: Queryable, input: { site: SiteRow; article: SiteArticleRow; action: "publish" | "update" | "unpublish" }) {
+  input = { ...input, article: await lockArticleSnapshot(db, input.site, input.article) };
+  const conflicting = await db.query(
+    `select id from site_article_publications where article_id = $1 and status = 'pending' and action <> $2 limit 1`,
+    [input.article.id, input.action],
+  );
+  if (conflicting.rows.length) throw new SiteServiceError("publication_in_progress", 409);
   if (input.site.verification_state !== "verified") throw new SiteServiceError("domain_unverified", 409);
   if (input.action === "publish" && !["approved", "failed"].includes(input.article.status)) throw new SiteServiceError("article_not_approved", 409);
   if (input.action !== "publish" && input.article.status !== "published") throw new SiteServiceError("article_not_published", 409);
+  if (input.article.approved_version === null || Number(input.article.approved_version) !== Number(input.article.version)) {
+    throw new SiteServiceError("article_not_approved", 409);
+  }
   const destinations = await activeDestinationsForSite(db, Number(input.site.id));
   if (!destinations.length) throw new SiteServiceError("no_active_destination", 409);
   if (input.action === "publish" && input.article.status === "failed") {

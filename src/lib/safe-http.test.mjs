@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   SafeHttpError,
   fetchPublicBuffer,
+  fetchPublicText,
   isPublicAddress,
   parsePublicHttpUrl,
   resolvePublicTarget,
@@ -11,6 +12,36 @@ import {
 } from "./safe-http.mjs";
 
 describe("safe public HTTP", () => {
+  it.each([fetchPublicText, fetchPublicBuffer])("rejects malformed redirects inside the request promise", async (fetchPublic) => {
+    let respond;
+    let request;
+    const pending = fetchPublic("https://example.test/start", {
+      lookupFn: async () => [{ address: "93.184.216.34", family: 4 }],
+      requestFn: (_options, callback) => {
+        respond = callback;
+        request = new EventEmitter();
+        request.setTimeout = vi.fn();
+        request.end = vi.fn();
+        return request;
+      },
+    });
+    const failure = pending.catch((error) => error);
+    await vi.waitFor(() => expect(respond).toBeTypeOf("function"));
+    const response = new EventEmitter();
+    response.statusCode = 302;
+    response.headers = { location: "http://[invalid" };
+    response.destroy = vi.fn();
+    try {
+      expect(() => respond(response)).not.toThrow();
+      expect(await failure).toMatchObject({ code: "bad_redirect" });
+      expect(response.destroy).toHaveBeenCalled();
+    } finally {
+      // Also release the pre-fix dangling promise when the reproduction fails.
+      request.emit("error", new Error("test_cleanup"));
+      await failure;
+    }
+  });
+
   it.each([
     "127.0.0.1",
     "10.0.0.1",

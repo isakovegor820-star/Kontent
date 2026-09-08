@@ -57,7 +57,11 @@ export type SiteDestinationAdapter = {
   retryPolicy: "reconcile_before_retry";
   verify(destination: SiteDestinationRuntime): Promise<SiteDestinationVerification>;
   publish(destination: SiteDestinationRuntime, payload: SiteArticlePayload): Promise<SiteDeliveryResult>;
-  reconcile(destination: SiteDestinationRuntime, providerOperationId: string): Promise<SiteDeliveryResult>;
+  reconcile(destination: SiteDestinationRuntime, providerOperationId: string, context?: {
+    action?: "publish" | "update" | "unpublish";
+    expectedPayload?: SiteArticlePayload | null;
+    providerRef?: Record<string, unknown> | null;
+  }): Promise<SiteDeliveryResult>;
   update(destination: SiteDestinationRuntime, providerRef: Record<string, unknown> | null, payload: SiteArticlePayload): Promise<SiteDeliveryResult>;
   unpublish(destination: SiteDestinationRuntime, providerRef: Record<string, unknown> | null): Promise<SiteDeliveryResult>;
 };
@@ -84,6 +88,7 @@ export class WordPressAdapterError extends Error {
 export function wpPostToRef(post: unknown, baseUrl?: string): Record<string, unknown> | null;
 export function createWordPressAdapter(options?: {
   fetchImpl?: typeof fetch;
+  requestFn?: typeof import("node:https").request;
   lookupFn?: (hostname: string, options: unknown) => Promise<Array<{ address: string; family: number }>>;
   timeoutMs?: number;
   now?: () => Date;
@@ -97,3 +102,9 @@ export function destinationRuntime(
   row: { id: number | string; kind: SiteDestinationKind; base_url: string; section_path?: string | null; settings?: Record<string, unknown> | null; credentials?: string | null },
   ctx: { userId: number; hostedSlug?: string | null },
 ): SiteDestinationRuntime;
+
+export function loadSiteDestinationRuntime(
+  db: { query: (text: string, values: unknown[]) => Promise<{ rows: Array<{ actor_user_id: string | number | null }> }> },
+  row: Parameters<typeof destinationRuntime>[0] & { site_id: number | string },
+  site: { id: number | string; user_id: number | string; project_id: number | string; hosted_slug?: string | null },
+): Promise<SiteDestinationRuntime>;

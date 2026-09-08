@@ -115,6 +115,30 @@ export async function runDueVisibilityProbes(pool, { now = new Date() } = {}, de
   return { due: due.rows.length, results };
 }
 
+/** Recover durable generation intents; interrupted AI calls require an explicit new version. */
+export async function recoverSiteArticleGeneration(pool, { siteArticlesQueue }) {
+  const interrupted = await pool.query(
+    `update site_articles set status = 'failed', status_reason = 'generation_interrupted', updated_at = now()
+      where status = 'generating' and updated_at < now() - interval '30 minutes' returning id`,
+  );
+  const drafts = await pool.query(
+    `select a.id, a.version, a.updated_at from site_articles a join sites s on s.id = a.site_id
+      where a.status = 'draft' and s.status = 'active' and a.updated_at < now() - interval '10 minutes'
+      order by a.updated_at, a.id limit 50`,
+  );
+  let requeued = 0;
+  if (siteArticlesQueue) for (const row of drafts.rows) {
+    try {
+      // Include the durable revision/time so a retained failed BullMQ job cannot swallow recovery.
+      await enqueueSiteArticleJob(siteArticlesQueue, SITE_ARTICLE_JOBS.GENERATE, { articleId: Number(row.id) }, {
+        jobId: `site-articles-generate-${row.id}-v${row.version}-${new Date(row.updated_at).getTime()}`,
+      });
+      requeued += 1;
+    } catch { console.error("[site-recovery] enqueue failed", { articleId: Number(row.id), code: "queue_unavailable" }); }
+  }
+  return { interrupted: interrupted.rows.length, requeued };
+}
+
 /** Публикации, зависшие без исхода: неизвестная доставка сверяется, забытые pending — переотправляются. */
 export async function reconcileStuckPublications(pool, { siteArticlesQueue }, dependencies = {}) {
   const unverified = await pool.query(
@@ -145,11 +169,12 @@ export async function reconcileStuckPublications(pool, { siteArticlesQueue }, de
 export async function runSiteDailyMaintenance(pool, { siteArticlesQueue = null, siteAnalysisQueue = null } = {}, dependencies = {}) {
   const now = dependencies.now || new Date();
   const profiles = await refreshStaleSiteProfiles(pool, { siteAnalysisQueue, now });
+  const generationRecovery = await recoverSiteArticleGeneration(pool, { siteArticlesQueue });
   const articles = await planArticlesForAllSites(pool, { siteArticlesQueue });
   const probes = await runDueVisibilityProbes(pool, { now }, dependencies);
   const publications = await reconcileStuckPublications(pool, { siteArticlesQueue }, dependencies);
   const interpretations = await enqueuePendingInterpretations(pool, siteArticlesQueue);
-  const summary = { profiles, articles, probes: { due: probes.due }, publications, interpretations };
+  const summary = { profiles, articles, generationRecovery, probes: { due: probes.due }, publications, interpretations };
   console.log("[site-daily]", JSON.stringify(summary));
   return summary;
 }

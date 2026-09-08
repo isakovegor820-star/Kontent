@@ -46,21 +46,6 @@ describe("real E2E runtime isolation", () => {
     expect(source).toContain("unexpectedRuntimeLogLines()");
   });
 
-  it("accepts the visible save summary when a resolved error collapses its details", () => {
-    const source = readFileSync(resolve("scripts/test-e2e-real.mjs"), "utf8");
-
-    expect(source).toContain("() => saveButton.isEnabled().catch(() => false)");
-    expect(source).toContain('"Composer save button did not become enabled"');
-    expect(source).toContain('const stillNeedsSave = (await saveButton.textContent().catch(() => ""))?.trim() !== "Сохранено"');
-    expect(source).toContain("await saveButton.evaluate((button) => button.click())");
-    expect(source).not.toContain("    await saveButton.click();");
-    expect(source).toContain('const summary = await protection.locator("summary").textContent()');
-    expect(source).toContain('summary?.includes("Сохранено") === true');
-    expect(source).toContain('select text from drafts where id = $1 and project_id = $2');
-    expect(source.indexOf("await saveButton.evaluate((button) => button.click())"))
-      .toBeLessThan(source.indexOf('const summary = await protection.locator("summary").textContent()'));
-  });
-
   it("gives cold API compilation the same bounded budget as runtime readiness", () => {
     const source = readFileSync(resolve("scripts/test-e2e-real.mjs"), "utf8");
     const explicitBudgets = source.match(/timeout: API_REQUEST_TIMEOUT_MS/gu) ?? [];

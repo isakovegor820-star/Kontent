@@ -134,12 +134,19 @@ export async function readJsonBodyLimited<T = unknown>(
   }
 }
 
-/** Drop-in bounded replacement for Request.json(). */
+/**
+ * Bounded parser for API object envelopes. Every production caller accepts named
+ * fields; valid JSON null/scalars/arrays must not reach unchecked property access.
+ * Use readJsonBodyLimited when a protocol explicitly accepts any JSON value.
+ */
 export async function readJsonBodyValue<T = Awaited<ReturnType<Request["json"]>>>(
   request: JsonBodyRequest,
   maxBytes = DEFAULT_JSON_BODY_MAX_BYTES,
 ): Promise<T> {
   const result = await readJsonBodyLimited<T>(request, maxBytes);
   if (!result.ok) throw new JsonBodyReadError(result.error, result.status);
+  if (result.value === null || typeof result.value !== "object" || Array.isArray(result.value)) {
+    throw new JsonBodyReadError("bad_request", 400);
+  }
   return result.value;
 }
