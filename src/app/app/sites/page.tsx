@@ -266,6 +266,7 @@ export default function SitesPage() {
   const [reportRequested, setReportRequested] = useState(false);
   const [retryingAi, setRetryingAi] = useState<string | null>(null);
   const detailsRequest = useRef(0);
+  const activeSiteId = useRef<number | null>(null);
 
   const loadSites = useCallback(async () => {
     try {
@@ -282,6 +283,7 @@ export default function SitesPage() {
 
   // Состояние обновляется только после ответа сервера — синхронных setState в эффектах нет.
   const loadDetails = useCallback(async (id: number) => {
+    if (id !== activeSiteId.current) return null;
     const request = ++detailsRequest.current;
     try {
       const { status, body } = await requestJson<SiteDetails & { error?: string }>(`/api/sites/${id}`);
@@ -307,13 +309,15 @@ export default function SitesPage() {
   const detailsLoading = activeId !== null && current === null;
 
   useEffect(() => {
+    activeSiteId.current = activeId;
     if (activeId === null) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- loadDetails updates state only after the request settles
     void loadDetails(activeId);
-    return () => { detailsRequest.current += 1; };
+    return () => { activeSiteId.current = null; detailsRequest.current += 1; };
   }, [activeId, loadDetails]);
 
   const selectSite = useCallback((id: number) => {
+    activeSiteId.current = id;
     detailsRequest.current += 1;
     setDestinationCount(0);
     setVerifyMessage(null);
@@ -347,7 +351,7 @@ export default function SitesPage() {
       method: "POST", body: JSON.stringify({ target, reportId }),
     });
     setRetryingAi(null);
-    if (status >= 400) setActionError(errorMessage(body.error, "Не удалось повторить задачу."));
+    if (status >= 400 && activeSiteId.current === activeId) setActionError(errorMessage(body.error, "Не удалось повторить задачу."));
     await loadDetails(activeId);
   }, [activeId, retryingAi, loadDetails]);
 

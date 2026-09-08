@@ -53,4 +53,26 @@ describe("Sites AI recovery UI", () => {
     expect((screen.getByRole("button", { name: "Повторить интерпретацию" }) as HTMLButtonElement).disabled).toBe(false);
     expect(screen.getByText(/Не удалось получить ответ сервера/)).toBeTruthy();
   });
+  it("does not replace the selected site with an old report refresh timer", async () => {
+    vi.useFakeTimers();
+    const other = { ...site, id: 6, confirmedDomain: "other.example.test" };
+    const fetcher = vi.fn(async (url: string) => {
+      if (url === "/api/sites") return Response.json({ sites: [site, other] });
+      if (url.endsWith("/destinations")) return Response.json({ destinations: [] });
+      if (url.endsWith("/reports")) return Response.json({ ok: true }, { status: 202 });
+      const second = url === "/api/sites/6";
+      return Response.json({ site: second ? other : site, profile: { ...profile, summary: second ? "Профиль второго сайта" : "Профиль первого сайта" }, reports: [report], latestAnalysis: null });
+    });
+    vi.stubGlobal("fetch", fetcher);
+    render(<SitesPage />); await flush(); await flush();
+    fireEvent.click(screen.getByRole("tab", { name: "Отчёты" }));
+    fireEvent.click(screen.getByRole("button", { name: "Отчёт за 30 дней" })); await flush();
+    fireEvent.click(screen.getByRole("button", { name: /other.example.test/ })); await flush();
+    expect(screen.getByText("Профиль второго сайта")).toBeTruthy();
+    const oldRequests = fetcher.mock.calls.filter(([url]) => url === "/api/sites/5").length;
+    await act(async () => { await vi.advanceTimersByTimeAsync(6000); });
+    expect(screen.getByText("Профиль второго сайта")).toBeTruthy();
+    expect(fetcher.mock.calls.filter(([url]) => url === "/api/sites/5")).toHaveLength(oldRequests);
+  });
+
 });
