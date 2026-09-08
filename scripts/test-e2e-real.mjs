@@ -382,6 +382,7 @@ async function installBrowserDiagnostics(context, label) {
     const deferredKnownWebKitPageErrors = new Map();
     const pendingWebKitDocumentCancellations = [];
     let recentDocumentRequest = null;
+    let activeMainDocumentRequest = null;
     browserPendingRequests.set(targetPage, pendingRequests);
     const queueDeferredWebKitPageError = (observation) => {
       const queued = deferredKnownWebKitPageErrors.get(observation.message) || [];
@@ -415,6 +416,9 @@ async function installBrowserDiagnostics(context, label) {
       if (request.resourceType() === "document") {
         const documentAt = Date.now();
         recentDocumentRequest = { at: documentAt, url: request.url() };
+        if (request.frame() === targetPage.mainFrame()) {
+          activeMainDocumentRequest = { request, at: documentAt, url: request.url() };
+        }
         const remaining = [];
         for (const candidate of pendingWebKitDocumentCancellations) {
           const elapsedMs = documentAt - candidate.recordedAt;
@@ -439,7 +443,13 @@ async function installBrowserDiagnostics(context, label) {
         });
       }
     });
-    const settleRequest = (request) => pendingRequests.delete(request);
+    const settleRequest = (request) => {
+      pendingRequests.delete(request);
+      if (activeMainDocumentRequest?.request === request) activeMainDocumentRequest = null;
+    };
+    targetPage.on("framenavigated", (frame) => {
+      if (frame === targetPage.mainFrame()) activeMainDocumentRequest = null;
+    });
     targetPage.on("requestfinished", settleRequest);
     targetPage.on("requestfailed", settleRequest);
     targetPage.on("requestfailed", (request) => {
@@ -584,6 +594,10 @@ async function installBrowserDiagnostics(context, label) {
         message: rawMessage,
         currentUrl: targetPage.url(),
         webPort,
+        baseUrl,
+        documentNavigationInProgress: activeMainDocumentRequest !== null,
+        documentRequestUrl: activeMainDocumentRequest?.url,
+        documentElapsedMs: activeMainDocumentRequest ? now - activeMainDocumentRequest.at : undefined,
       });
       if (knownObservation) {
         browserObservations.push({

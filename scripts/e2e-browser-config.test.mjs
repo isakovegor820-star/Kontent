@@ -19,6 +19,63 @@ import {
 } from "./e2e-browser-config.mjs";
 
 describe("real E2E browser configuration", () => {
+  it("recognizes WebKit polls blocked in the outgoing document before navigation commits", () => {
+    // The failed stability trace emits these errors 25 ms after Calendar ->
+    // Composer starts, before any corresponding network request can be emitted.
+    const baseUrl = "https://127.0.0.1:36615";
+    for (const path of ["/api/channels", "/api/posts", "/api/ai/usage"]) {
+      expect(classifyE2eKnownBrowserObservation({
+        engine: "webkit",
+        eventKind: "pageerror",
+        message: `/127.0.0.1:36615${path} due to access control checks.`,
+        currentUrl: `${baseUrl}/app/calendar`,
+        baseUrl,
+        webPort: 36615,
+        documentNavigationInProgress: true,
+        documentRequestUrl: `${baseUrl}/app/composer?draft=8`,
+        documentElapsedMs: 25,
+      })).toEqual({ kind: "webkit.unloading-workspace-poll", detail: path });
+    }
+  });
+
+  it("keeps workspace API page errors actionable outside the exact outgoing-document window", () => {
+    const baseUrl = "https://127.0.0.1:36615";
+    const input = {
+      engine: "webkit",
+      eventKind: "pageerror",
+      message: "/127.0.0.1:36615/api/channels due to access control checks.",
+      currentUrl: `${baseUrl}/app/calendar`,
+      baseUrl,
+      webPort: 36615,
+      documentNavigationInProgress: true,
+      documentRequestUrl: `${baseUrl}/app/composer?draft=8`,
+      documentElapsedMs: 25,
+    };
+    for (const override of [
+      { documentNavigationInProgress: false },
+      { documentElapsedMs: 251 },
+      { documentElapsedMs: -1 },
+      { documentElapsedMs: undefined },
+      { documentElapsedMs: null },
+      { documentElapsedMs: "25" },
+      { engine: "chromium" },
+      { engine: "firefox" },
+      { eventKind: "console" },
+      { eventKind: "unhandledrejection" },
+      { message: "/127.0.0.1:36615/api/projects due to access control checks." },
+      { message: "/127.0.0.1:36615/api/posts?channel=2 due to access control checks." },
+      { message: "/127.0.0.1:36615/api/channels failed with 500" },
+      { message: "/127.0.0.1:36616/api/channels due to access control checks." },
+      { currentUrl: `${baseUrl}/login` },
+      { currentUrl: "https://example.com/app/calendar" },
+      { documentRequestUrl: `${baseUrl}/api/projects` },
+      { documentRequestUrl: "https://example.com/app/composer" },
+      { baseUrl: "https://localhost:36615" },
+    ]) {
+      expect(classifyE2eKnownBrowserObservation({ ...input, ...override })).toBeNull();
+    }
+  });
+
   it("defaults to Chromium and accepts the required three-engine matrix", () => {
     expect(resolveE2eBrowserEngine()).toBe("chromium");
     expect(E2E_BROWSER_ENGINES.map((engine) => resolveE2eBrowserEngine(engine)))

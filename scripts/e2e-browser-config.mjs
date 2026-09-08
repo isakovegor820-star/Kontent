@@ -101,6 +101,10 @@ export function classifyE2eKnownBrowserObservation({
   currentUrl,
   webPort,
   screenshotInProgress = false,
+  baseUrl,
+  documentNavigationInProgress = false,
+  documentRequestUrl,
+  documentElapsedMs,
 } = {}) {
   if (resolveE2eBrowserEngine(engine) !== "webkit") return null;
   const rawMessage = String(message || "");
@@ -137,6 +141,32 @@ export function classifyE2eKnownBrowserObservation({
   try {
     sourcePath = new URL(String(currentUrl || "")).pathname;
   } catch {}
+  // WebKit can block an outgoing document's polling timer before it emits a
+  // request/requestfailed pair. A real trace records this 25 ms into a document
+  // navigation, before commit. Recognize only the three workspace read loaders
+  // while that main-frame navigation is still active, on the disposable origin.
+  const navigationElapsed = typeof documentElapsedMs === "number" ? documentElapsedMs : Number.NaN;
+  if (
+    documentNavigationInProgress === true
+    && Number.isFinite(navigationElapsed)
+    && navigationElapsed >= 0
+    && navigationElapsed <= 250
+    && ["/api/channels", "/api/posts", "/api/ai/usage"].includes(pathAndQuery)
+  ) {
+    try {
+      const current = new URL(String(currentUrl || ""));
+      const destination = new URL(String(documentRequestUrl || ""));
+      const base = new URL(String(baseUrl || ""));
+      if (
+        base.hostname === "127.0.0.1"
+        && Number(base.port) === port
+        && current.origin === base.origin
+        && destination.origin === base.origin
+        && /^\/app(?:\/|$)/u.test(current.pathname)
+        && /^\/app(?:\/|$)/u.test(destination.pathname)
+      ) return { kind: "webkit.unloading-workspace-poll", detail: pathAndQuery };
+    } catch {}
+  }
   const studioTransitionRequest = [
     "/api/rss/items?summary=unread",
     "/api/media/generations",
