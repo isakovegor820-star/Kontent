@@ -484,6 +484,8 @@ async function installBrowserDiagnostics(context, label) {
       const knownCancellation = classifyE2eKnownWebKitRequestCancellation({
         engine: browserEngine,
         requestUrl: request.url(),
+        requestMethod: request.method(),
+        resourceType: request.resourceType(),
         failure,
         currentUrl: targetPage.url(),
         baseUrl,
@@ -1210,18 +1212,21 @@ function fakeAutopilotPost(messageText) {
       "Начните не с готового ответа, а с рамки: для кого вы готовите материал, какой вопрос хотите прояснить и какое действие читатель сможет выбрать самостоятельно.",
       "Отделите наблюдение от предположения, уберите неподтверждённые детали и оставьте только те формулировки, которые можно спокойно обсудить с командой.",
       "Затем перечитайте текст вслух: так заметнее тяжёлые обороты, повторяющиеся мысли и места, где автор торопит читателя вместо ясного объяснения.",
+      "Для проверки структуры выпишите рядом с каждым абзацем его задачу: поставить вопрос, объяснить выбор или предложить действие. Если две записи совпадают, объедините абзацы и уточните переход к следующей мысли.",
       "Хорошая редакционная работа начинается с точного вопроса и заканчивается понятным следующим шагом без давления и громких обещаний.",
     ],
     [
       "Полезно посмотреть на тему глазами читателя, который видит её впервые и пока не знает внутреннего контекста команды.",
       "Сначала обозначьте границы разговора, затем соберите вопросы, которые действительно требуют ответа, и только после этого выбирайте структуру публикации.",
       "Проверьте каждую фразу на ясность: профессиональный язык уместен там, где он помогает смыслу, а не создаёт дистанцию.",
+      "Попросите коллегу назвать главный вопрос после первого прочтения. Если его ответ отличается от вашего замысла, уточните начало и добавьте связку между исходной задачей и предложенным способом её обсуждения.",
       "Финальный текст должен оставлять пространство для решения читателя и приглашать к содержательному диалогу, а не подменять его рекламным обещанием.",
     ],
     [
       "Сильный материал можно собрать как спокойный маршрут: сначала контекст, потом развилка вариантов и в конце вопрос для самостоятельной проверки.",
       "Не пытайтесь вместить всё сразу; одна публикация выигрывает, когда держится вокруг одной мысли и последовательно раскрывает её без лишних отступлений.",
       "Уберите слова, которые ничего не добавляют, сравните заголовок с основной частью и убедитесь, что финал продолжает начатый разговор.",
+      "Проверьте развилку на простом рабочем примере: запишите исходную задачу и условия выбора каждого варианта. Затем уберите из примера детали, которые отвлекают от решения, и оставьте понятную связь между шагами.",
       "Такой подход помогает сохранить человеческую интонацию, показать уважение к аудитории и подготовить материал, который удобно читать и обсуждать.",
     ],
   ];
@@ -1250,8 +1255,8 @@ assert(
   "fake Autopilot provider must honor presentation rewrites with a distinct draft",
 );
 assert(
-  [fakeAutopilotBase, fakeAutopilotRewrite].every((draft) => draft.length >= 700 && draft.length <= 1_150),
-  "fake Autopilot provider must satisfy the default detail length contract",
+  [fakeAutopilotBase, fakeAutopilotRewrite].every((draft) => draft.length >= 900 && draft.length <= 1_100),
+  "fake Autopilot provider must satisfy both default and detailed length contracts without padding",
 );
 
 // These topics collide under the previous modulo hash. The provider fixture must
@@ -3128,27 +3133,33 @@ try {
   assert((await desktopLibraryActive.textContent())?.includes("Идеи и примеры"), "desktop Library item is not active");
   assert(new URL(page.url()).searchParams.get("channel") === String(channels[0]), "Library lost selected channel in URL");
 
-  const libraryContentId = `library-registry-text-reference-${libraryReferenceId}`;
-  const libraryText = page.locator(`#${libraryContentId}`);
-  const libraryReferenceCard = libraryText.locator(
-    "xpath=ancestor::div[contains(concat(' ', normalize-space(@class), ' '), ' card-plain ')][1]",
-  );
-  await libraryText.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
-  const expand = page.locator(`button[aria-controls="${libraryContentId}"]`);
-  const libraryUrlBeforeExpand = page.url();
-  assert(await expand.getAttribute("aria-expanded") === "false", "closed Library card has wrong aria-expanded");
-  assert((await libraryText.getAttribute("class"))?.includes("line-clamp-4"), "closed Library card is not clamped");
-  await expand.click();
-  assert(page.url() === libraryUrlBeforeExpand, "Library expansion navigated away from the card");
-  assert(await expand.getAttribute("aria-expanded") === "true", "expanded Library card has wrong aria-expanded");
-  assert(!(await libraryText.getAttribute("class"))?.includes("line-clamp-4"), "expanded Library card stayed clamped");
-  await expand.click();
-  assert(await expand.getAttribute("aria-expanded") === "false", "Library card did not collapse independently");
-
   const registrySearch = page.getByPlaceholder("Поиск по тексту, источнику или каналу…");
   await registrySearch.fill("E2E_LIBRARY_REFERENCE");
-  await page.waitForTimeout(450);
-  await libraryText.waitFor();
+  await waitForFirstPartyNetworkIdle(page, "filtered Library");
+  const libraryContentId = `library-registry-text-reference-${libraryReferenceId}`;
+  const libraryText = page.locator(`#${libraryContentId}`);
+  const libraryReferenceCard = page.getByRole("region", { name: "Просмотр материалов", exact: true }).filter({ has: libraryText });
+  await libraryText.waitFor({ state: "attached", timeout: UI_WAIT_TIMEOUT_MS });
+  const expand = libraryReferenceCard.getByRole("button", { name: "Читать полностью", exact: true });
+  const libraryUrlBeforeExpand = page.url();
+  assert(await expand.getAttribute("aria-expanded") === "false", "Library cover has wrong aria-expanded");
+  assert(await expand.getAttribute("aria-controls") === libraryContentId, "Library cover controls another source");
+  assert(!(await libraryText.isVisible()), "Library cover exposes the full reader before opening");
+  await expand.focus();
+  await page.keyboard.press("Enter");
+  await libraryText.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  const collapse = libraryReferenceCard.getByRole("button", { name: "К обложке", exact: true });
+  assert(page.url() === libraryUrlBeforeExpand, "Library expansion navigated away from the card");
+  assert(await collapse.getAttribute("aria-expanded") === "true", "Library reader has wrong aria-expanded");
+  assert(await libraryText.textContent() === libraryReferenceText, "Library reader lost part of the full source text");
+  assert(await libraryText.evaluate((element) => getComputedStyle(element).webkitLineClamp === "none"), "Library reader stayed clamped");
+  assert(await collapse.evaluate((element) => document.activeElement === element), "Library reader did not receive keyboard focus");
+  await collapse.click();
+  await expand.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  assert(await expand.getAttribute("aria-expanded") === "false", "Library reader did not collapse independently");
+  assert(!(await libraryText.isVisible()), "Library reader remained visible after collapse");
+  assert(await expand.evaluate((element) => document.activeElement === element), "Library cover did not regain keyboard focus");
+
   const filtersSummary = page.locator("summary").filter({ hasText: "Все фильтры" });
   await filtersSummary.focus();
   await page.keyboard.press("Enter");
@@ -3566,6 +3577,9 @@ try {
   );
   await backWithSettledReads(page);
   await waitForRestoredLibrary(page, channels[0]);
+  await registrySearch.fill("E2E_LIBRARY_REFERENCE");
+  await waitForFirstPartyNetworkIdle(page, "restored filtered Library");
+  await libraryText.waitFor({ state: "attached", timeout: UI_WAIT_TIMEOUT_MS });
   const discussReference = libraryReferenceCard.getByRole("button", { name: "Обсудить с Авророй", exact: true });
   await discussReference.waitFor();
   await desktopSidebar

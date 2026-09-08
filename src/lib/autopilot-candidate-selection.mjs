@@ -18,7 +18,16 @@ function compareCandidates(left, right) {
 export function selectAutopilotCandidates(candidates, { targetCount, newsQuota = 0 } = {}) {
   const target = Math.max(0, Math.round(Number(targetCount) || 0));
   const quota = Math.min(target, Math.max(0, Math.round(Number(newsQuota) || 0)));
-  const ranked = [...(Array.isArray(candidates) ? candidates : [])].sort(compareCandidates);
+  // Callers may supply a mixed reserve. An unsettled check cannot displace a finished
+  // post or satisfy the publication target, regardless of its editorial score.
+  const ranked = (Array.isArray(candidates) ? candidates : [])
+    .filter((candidate) =>
+      candidate?.qualityBlocked !== true && candidate?.reviewRequired !== true &&
+      candidate?.aiReady !== false &&
+      candidate?.quality?.passed !== false &&
+      (!candidate?.quality?.publicationDisposition || candidate.quality.publicationDisposition === "ready"),
+    )
+    .sort(compareCandidates);
   const selected = [];
   const picked = new Set();
 

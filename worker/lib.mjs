@@ -4,7 +4,6 @@
 // Тела функций НЕ менялись при переносе — только добавлен export.
 
 import {
-  isAutopilotHumanReviewItem,
   isAutopilotReaderReadyItem,
 } from "../src/lib/autopilot-review.mjs";
 
@@ -112,8 +111,7 @@ export function autopilotBuildComplete(expected, topics, items = null) {
     );
 }
 
-// Confirm-план может содержать как полностью готовые тексты, так и безопасные черновики,
-// которым нужно явное решение человека. Внутренний идеальный критерий выше остаётся строже.
+// Confirmation approves publication of finished posts, not unfinished automatic editing.
 export function autopilotDraftsDeliverable(expected, topics, items = null) {
   const count = Number(expected);
   if (!Number.isInteger(count) || count < 1) return false;
@@ -123,10 +121,7 @@ export function autopilotDraftsDeliverable(expected, topics, items = null) {
     items.every((item) =>
       item?.aiReady === true &&
       String(item?.draft || "").trim().length > 0 &&
-      (
-        isAutopilotReaderReadyItem(item) ||
-        isAutopilotHumanReviewItem(item)
-      ),
+      isAutopilotReaderReadyItem(item),
     );
 }
 
