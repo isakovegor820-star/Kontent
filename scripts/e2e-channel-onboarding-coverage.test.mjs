@@ -125,10 +125,11 @@ describe("onboarding owns its browser boundary", () => {
       exposeBinding: vi.fn(), addInitScript: vi.fn(), addCookies: vi.fn(), newPage: vi.fn(), close: vi.fn() });
     const visit = async (url) => {
       const matches = routes.filter(({ pattern }) => pattern === "**/*" || url.startsWith("https://t.me/"));
-      const outcome = { fallback: 0, aborted: null, fulfilled: null };
+      const outcome = { continued: 0, fallback: 0, aborted: null, fulfilled: null };
       const handle = async (index) => {
         if (index < 0) { outcome.fallback += 1; return; }
         await matches[index].handler({ request: () => ({ url: () => url, method: () => "GET", resourceType: () => "document" }),
+          continue: async () => { outcome.continued += 1; },
           fallback: () => handle(index - 1), abort: async (reason) => { outcome.aborted = reason; },
           fulfill: async (response) => { outcome.fulfilled = response; } });
       };
@@ -156,9 +157,9 @@ describe("onboarding owns its browser boundary", () => {
       await expect(runChannelOnboardingCoverage({ browser: { newContext }, cookies: [], baseUrl,
         pool: { options: { connectionString: "postgres://egor@127.0.0.1:63347/aurora_e2e_real" } },
         userId: 1, projectId: 1, waitFor: vi.fn(), artifactDir })).rejects.toThrow("controlled stop");
-      expect(outcomes[0]).toMatchObject({ fallback: 1, aborted: null, fulfilled: null });
-      expect(outcomes[1]).toMatchObject({ fallback: 0, aborted: null, fulfilled: { status: 200 } });
-      expect(outcomes.slice(2).every((outcome) => outcome.aborted === "blockedbyclient" && outcome.fallback === 0 && outcome.fulfilled === null)).toBe(true);
+      expect(outcomes[0]).toMatchObject({ continued: 1, fallback: 0, aborted: null, fulfilled: null });
+      expect(outcomes[1]).toMatchObject({ continued: 0, fallback: 0, aborted: null, fulfilled: { status: 200 } });
+      expect(outcomes.slice(2).every((outcome) => outcome.aborted === "blockedbyclient" && outcome.continued === 0 && outcome.fallback === 0 && outcome.fulfilled === null)).toBe(true);
       expect(routes.map(({ pattern }) => pattern)).toEqual(["**/*", "**/*", "https://t.me/**"]);
       expect(context.route.mock.invocationCallOrder[0]).toBeLessThan(context.addCookies.mock.invocationCallOrder[0]);
       const serialized = await readFile(join(artifactDir, "channel-onboarding-network.json"), "utf8");
