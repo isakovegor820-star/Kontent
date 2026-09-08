@@ -361,11 +361,13 @@ export async function getServerDraft(id: number, signal?: AbortSignal): Promise<
 
 export async function createServerDraft(
   input: DraftCreateInput,
+  signal?: AbortSignal,
 ): Promise<{ draft: ServerDraft; created: boolean }> {
   const response = await request("/api/drafts", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(input),
+    signal,
   });
   const body = await jsonOrNull<{ draft?: ServerDraft; created?: boolean } & ErrorBody>(response);
   if (response.ok && body?.draft) return { draft: body.draft, created: body.created === true };
