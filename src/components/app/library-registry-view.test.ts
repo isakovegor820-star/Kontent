@@ -41,6 +41,14 @@ describe("library analytical registry client contract", () => {
     expect(source).not.toContain("{items.length} записей");
   });
 
+  it("keeps restored card actions explicit and at least 44px tall", () => {
+    const source = readFileSync(new URL("./library-registry-view.tsx", import.meta.url), "utf8");
+    expect(source).toContain('className="grid h-11 w-11');
+    expect(source).toContain('className="inline-flex min-h-11 basis-full');
+    expect(source).toContain('className="inline-flex min-h-11 items-center');
+    expect(source).toContain('item.viewedAt ? "Сделать новым" : "Отметить просмотренным"');
+  });
+
   it("keeps user rating and analytical Score as separate filter fields", () => {
     expect(libraryFilterPayload(11, filters)).toMatchObject({
       channel: 11,
