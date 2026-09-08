@@ -1,6 +1,7 @@
 import type { Pool, PoolClient } from "pg";
 
 import { validateArticle } from "../site-articles/generation.mjs";
+import { articleHasQualityBlock } from "../site-articles/quality.mjs";
 import {
   SITE_ARTICLE_FIELDS,
   activeDestinationsForSite,
@@ -98,9 +99,9 @@ export async function listSiteArticles(db: Queryable, siteId: number, status: st
   return result.rows;
 }
 
-export async function findSiteArticle(db: Queryable, siteId: number, articleId: number) {
+export async function findSiteArticle(db: Queryable, siteId: number, articleId: number, forUpdate = false) {
   const result = await db.query<SiteArticleRow>(
-    `select ${SITE_ARTICLE_FIELDS} from site_articles where id = $1 and site_id = $2`,
+    `select ${SITE_ARTICLE_FIELDS} from site_articles where id = $1 and site_id = $2${forUpdate ? " for update" : ""}`,
     [articleId, siteId],
   );
   return result.rows[0] ?? null;
@@ -189,6 +190,7 @@ async function hasHumanEdit(db: Queryable, articleId: number, version: number) {
  */
 export async function approveSiteArticle(db: Queryable, input: { site: SiteRow; article: SiteArticleRow; userId: number }) {
   if (!["needs_review", "approved", "failed"].includes(input.article.status)) throw new SiteServiceError("article_not_approvable", 409);
+  if (articleHasQualityBlock(input.article)) throw new SiteServiceError("article_quality_failed", 422);
   const edited = await hasHumanEdit(db, Number(input.article.id), Number(input.article.version));
   const updated = await db.query<SiteArticleRow>(
     `update site_articles
@@ -197,8 +199,10 @@ export async function approveSiteArticle(db: Queryable, input: { site: SiteRow; 
     [input.article.id, input.userId],
   );
   const row = updated.rows[0];
-  await recordArticleRevision(db, { article: row, version: row.version, authorUserId: input.userId, changeKind: "approved" });
-  await applyApprovalStreak(db, { siteId: Number(input.site.id), edited, rejected: false });
+  if (Number(input.article.approved_version) !== Number(input.article.version) || !input.article.approved_at) {
+    await recordArticleRevision(db, { article: row, version: row.version, authorUserId: input.userId, changeKind: "approved" });
+    await applyApprovalStreak(db, { siteId: Number(input.site.id), edited, rejected: false });
+  }
   const destinations = input.site.verification_state === "verified" ? await activeDestinationsForSite(db, Number(input.site.id)) : [];
   const publications = destinations.length ? await createArticlePublications(db, { article: row, destinations, action: "publish" }) : [];
   return { row, publications, edited, destinations: destinations.length, verified: input.site.verification_state === "verified" };
@@ -219,6 +223,7 @@ export async function rejectSiteArticle(db: Queryable, input: { site: SiteRow; a
 
 export async function requestPublication(db: Queryable, input: { site: SiteRow; article: SiteArticleRow; action: "publish" | "update" | "unpublish" }) {
   if (input.site.verification_state !== "verified") throw new SiteServiceError("domain_unverified", 409);
+  if (input.action !== "unpublish" && articleHasQualityBlock(input.article)) throw new SiteServiceError("article_quality_failed", 422);
   if (input.action === "publish" && !["approved", "failed"].includes(input.article.status)) throw new SiteServiceError("article_not_approved", 409);
   if (input.action !== "publish" && input.article.status !== "published") throw new SiteServiceError("article_not_published", 409);
   const destinations = await activeDestinationsForSite(db, Number(input.site.id));

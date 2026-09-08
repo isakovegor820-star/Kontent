@@ -70,7 +70,7 @@ import {
   validatePostSettingsConflicts,
   type PostSettings,
 } from "@/lib/post-settings";
-import { pickStudioCommand } from "@/lib/studio-command";
+import { looksLikeStudioEditFollowUp, pickStudioCommand } from "@/lib/studio-command";
 import {
   isStudioGenerationPlaceholder,
   lastRewritableStudioMessage,
@@ -112,6 +112,7 @@ type Gen = StudioChatGeneration & {
 type AskOptions = {
   cmd?: AiCommand;
   input?: string;
+  history?: ConversationTurn[];
   skipBrief?: boolean;
   requestKey?: string;
   autoOpenComposer?: boolean;
@@ -209,13 +210,6 @@ const QUICK: Quick[] = [
     icon: <RefreshCw className={ICON} strokeWidth={2} aria-hidden />,
   },
 ];
-
-/** Короткая команда после готового ответа означает редактуру, а не новую тему поста. */
-function looksLikeEditFollowUp(text: string): boolean {
-  return /^(сделай|исправь|убери|добавь|замени|оставь|измени|поменяй|перестрой|давай|без|больше|меньше|ещё|слишком)\b/i.test(
-    text.trim(),
-  );
-}
 
 function primaryPublication(text: string): string {
   return text.split(/\n\s*---\s*\n/u)[0].trim();
@@ -1884,16 +1878,16 @@ function StudioPageInner() {
       return;
     }
 
-    const history: ConversationTurn[] = opts?.autoOpenComposer ? [] : messages
+    const history: ConversationTurn[] = opts?.history ?? (opts?.autoOpenComposer ? [] : messages
       .filter((message) => message.text.trim() && !message.streaming)
       .map((message) => ({
         role: message.role === "ai" ? ("assistant" as const) : ("user" as const),
         content: message.text,
       }))
-      .slice(-8);
+      .slice(-8));
     const hasAnswer = history.some((turn) => turn.role === "assistant");
     const detected = opts?.cmd ?? pickStudioCommand(text);
-    const cmd = !opts?.cmd && detected === "write" && hasAnswer && looksLikeEditFollowUp(text)
+    const cmd = !opts?.cmd && detected === "write" && hasAnswer && looksLikeStudioEditFollowUp(text)
       ? "rewrite"
       : detected;
     const needsConfirmation = requiresBriefConfirmation({
@@ -2093,10 +2087,11 @@ function StudioPageInner() {
     void startStream(id, gen);
   };
 
-  const improve = () => {
-    ask("Улучшить последний текст", {
+  const improve = (text: string) => {
+    ask("Улучшить выбранный текст", {
       cmd: "rewrite",
-      input: "Отредактируй последний ответ: сделай текст яснее, сильнее и естественнее. Сохрани смысл, подтверждённые факты и требования выбранной площадки.",
+      input: primaryPublication(text),
+      history: [],
       skipBrief: true,
       postSettings: normalizePostSettings({
         ...postSettings,
@@ -2256,8 +2251,8 @@ function StudioPageInner() {
                       onCopy={() => void copy(message.text)}
                       onRegenerate={() => regenerate(message.id)}
                       onRetry={() => retryGeneration(message.id)}
-                      onImprove={improve}
-                      onShorten={() => ask("Сделай короче")}
+                      onImprove={() => improve(message.text)}
+                      onShorten={() => ask("Сократить выбранный текст", { cmd: "shorten", input: primaryPublication(message.text), history: [], skipBrief: true })}
                       creatingPost={creatingPostId === message.id}
                     />
                   ))}

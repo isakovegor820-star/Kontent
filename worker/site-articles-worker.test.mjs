@@ -37,12 +37,14 @@ function articleRow(overrides = {}) {
 
 function makePool({ site = siteRow(), article = articleRow(), corpusPages = [], onQuery = null } = {}) {
   const calls = [];
+  let leaseToken;
   const handler = async (sql, params) => {
     const text = String(sql);
     calls.push({ sql: text, params });
     const custom = onQuery?.(text, params);
     if (custom) return custom;
-    if (text.includes("update site_articles set status = 'generating'")) return { rows: [article] };
+    if (text.includes("update site_articles set status = 'generating'")) { leaseToken = params[1]; return { rows: [article] }; }
+    if (text.includes("select worker_lease_token from site_articles")) return { rows: [{ worker_lease_token: leaseToken }] };
     if (text.includes("from sites s") && text.includes("left join site_profiles")) return { rows: [site] };
     if (text.includes("from knowledge_chunks c")) return { rows: [{ text: "Клиника работает с 2010 года" }] };
     if (text.includes("from site_analysis_pages")) return { rows: corpusPages };
@@ -57,6 +59,7 @@ function makePool({ site = siteRow(), article = articleRow(), corpusPages = [], 
 }
 
 const usageDeps = () => ({
+  startHeartbeat: vi.fn(async () => ({ checkpoint: vi.fn(async () => {}), stop: vi.fn(async () => {}), signal: new AbortController().signal })),
   acquireUsage: vi.fn(async () => ({ state: "acquired", reservationId: 501 })),
   commitUsage: vi.fn(async () => ({ status: "committed" })),
   releaseUsage: vi.fn(async () => true),
@@ -64,6 +67,30 @@ const usageDeps = () => ({
 });
 
 describe("generateSiteArticle", () => {
+  it("makes acquisition failures retryable instead of stranding the article in generating", async () => {
+    const { pool, calls } = makePool();
+    const deps = { ...usageDeps(), acquireUsage: vi.fn(async () => { throw Object.assign(new Error("db unavailable"), { code: "db_unavailable" }); }), completeAiText: vi.fn() };
+    await expect(generateSiteArticle(pool, { articleId: 100 }, deps)).rejects.toMatchObject({ code: "db_unavailable" });
+    expect(calls.some((call) => call.sql.includes("status = 'failed'") && call.params?.[1] === "db_unavailable")).toBe(true);
+    expect(deps.releaseUsage).not.toHaveBeenCalled();
+    expect(deps.completeAiText).not.toHaveBeenCalled();
+  });
+
+  it("restores draft status for an active reservation and never calls the provider on a committed replay", async () => {
+    for (const state of ["in_progress", "committed"]) {
+      const { pool, calls } = makePool();
+      const deps = { ...usageDeps(), acquireUsage: vi.fn(async () => ({ state, reservationId: 501 })), completeAiText: vi.fn() };
+      if (state === "in_progress") {
+        await expect(generateSiteArticle(pool, { articleId: 100 }, deps)).rejects.toMatchObject({ code: "generation_in_progress", retryable: true });
+        expect(calls.some((call) => call.params?.[1] === "draft" && call.params?.[2] === "generation_in_progress")).toBe(true);
+      } else {
+        await expect(generateSiteArticle(pool, { articleId: 100 }, deps)).resolves.toMatchObject({ ok: false, reason: "generation_already_accounted" });
+      }
+      expect(deps.completeAiText).not.toHaveBeenCalled();
+      expect(deps.releaseUsage).not.toHaveBeenCalled();
+    }
+  });
+
   it("reserves AI usage, validates the completion, stores the article for review and commits", async () => {
     const { pool, client, calls } = makePool();
     const completeAiText = vi.fn(async () => ({ text: goodCompletion, engine: "navy-deepseek", fallbackUsed: false, attempts: 1 }));
@@ -82,7 +109,7 @@ describe("generateSiteArticle", () => {
     expect(update.params[11]).toBe("needs_review");
     expect(JSON.parse(update.params[7])["@type"]).toBe("FAQPage");
     expect(client.query).toHaveBeenCalledWith("commit");
-    expect(deps.commitUsage).toHaveBeenCalledWith(pool, 9, 501);
+    expect(deps.commitUsage).toHaveBeenCalledWith(expect.anything(), 9, 501);
     expect(calls.some((call) => call.sql.includes("insert into site_article_revisions"))).toBe(true);
   });
 
@@ -99,7 +126,33 @@ describe("generateSiteArticle", () => {
     const failed = calls.find((call) => call.sql.includes("status_reason = 'quality'"));
     expect(failed).toBeDefined();
     expect(JSON.parse(failed.params[1]).issues.some((issue) => issue.code === "too_short")).toBe(true);
-    expect(deps.commitUsage).toHaveBeenCalled();
+    expect(failed.params[3]).toBe("Коротко");
+    expect(failed.params[5]).toContain("Слишком коротко.");
+    expect(deps.commitUsage).not.toHaveBeenCalled();
+    expect(deps.releaseUsage).toHaveBeenCalledWith(expect.anything(), 9, 501);
+  });
+
+  it("repairs omitted internal links from audited pages before spending a second provider call", async () => {
+    const { pool, calls } = makePool();
+    const parsed = JSON.parse(goodCompletion);
+    parsed.bodyMarkdown = parsed.bodyMarkdown.replace("[странице услуги](https://clinic.example/uslugi/implantaciya)", "странице услуги");
+    const completeAiText = vi.fn(async () => ({ text: JSON.stringify(parsed), engine: "e" }));
+    const result = await generateSiteArticle(pool, { articleId: 100 }, { ...usageDeps(), completeAiText, engine: "navy-deepseek" });
+    expect(result).toMatchObject({ ok: true, status: "needs_review" });
+    expect(completeAiText).toHaveBeenCalledOnce();
+    const update = calls.find((call) => call.sql.startsWith("update site_articles\n            set title"));
+    expect(update.params[4]).toContain("[Имплантация](https://clinic.example/uslugi/implantaciya)");
+  });
+
+  it("reports the final schema failure rather than stale quality issues from the previous attempt", async () => {
+    const { pool, calls } = makePool();
+    const completeAiText = vi.fn().mockResolvedValueOnce({ text: '{"title":"Коротко","bodyMarkdown":"Текст"}', engine: "e" })
+      .mockResolvedValueOnce({ text: "not json", engine: "e" });
+    const deps = { ...usageDeps(), completeAiText, engine: "navy-deepseek" };
+    await generateSiteArticle(pool, { articleId: 100 }, deps);
+    const failed = calls.find((call) => call.sql.includes("status_reason = 'quality'"));
+    expect(JSON.parse(failed.params[1]).issues).toEqual([expect.objectContaining({ code: "schema_invalid" })]);
+    expect(deps.commitUsage).not.toHaveBeenCalled();
   });
 
   it("rejects a semantic duplicate of an existing page instead of sending it to review", async () => {
@@ -133,7 +186,7 @@ describe("generateSiteArticle", () => {
     const { pool, calls } = makePool();
     const deps = { ...usageDeps(), completeAiText: vi.fn(async () => { throw Object.assign(new Error("boom"), { code: "provider_error" }); }), engine: "navy-deepseek" };
     await expect(generateSiteArticle(pool, { articleId: 100 }, deps)).rejects.toMatchObject({ code: "provider_error" });
-    expect(deps.releaseUsage).toHaveBeenCalledWith(pool, 9, 501);
+    expect(deps.releaseUsage).toHaveBeenCalledWith(expect.anything(), 9, 501);
     expect(deps.commitUsage).not.toHaveBeenCalled();
     expect(calls.some((call) => call.sql.includes("set status = 'failed', status_reason = $2") && call.params[1] === "provider_error")).toBe(true);
   });
@@ -143,7 +196,7 @@ describe("generateSiteArticle", () => {
     const deps = { ...usageDeps(), acquireUsage: vi.fn(async () => ({ state: "limit" })), completeAiText: vi.fn() };
     await expect(generateSiteArticle(pool, { articleId: 100 }, deps)).rejects.toMatchObject({ code: "ai_usage_limit", retryable: true });
     expect(deps.completeAiText).not.toHaveBeenCalled();
-    expect(calls.some((call) => call.sql.includes("status_reason = 'ai_usage_limit'"))).toBe(true);
+    expect(calls.some((call) => call.params?.[2] === "ai_usage_limit")).toBe(true);
   });
 });
 

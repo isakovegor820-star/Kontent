@@ -23,14 +23,14 @@ export async function reconcileStaleMediaGeneration(
     await client.query("begin");
     const failed = await client.query<{ id: string; ai_usage_reservation_id: string | null }>(
       `update media_generations
-          set status = 'failed', error_code = 'stale_generation',
-              error_message = 'Генерация не получила terminal-событие вовремя. Запусти её ещё раз.',
+          set status = 'failed', error_code = 'stale_generation', worker_lease_token = null, worker_heartbeat_at = null,
+              error_message = 'Генерация прервалась и не завершилась вовремя. Можно запустить новую попытку.',
               updated_at = now(), completed_at = now()
         where user_id = $1 and project_id = $2
           and ($3::bigint is null or id = $3)
           and ($4::text is null or request_key = $4)
           and status in ('queued','submitting','generating','saving')
-          and updated_at < now() - ($5::int * interval '1 minute')
+          and coalesce(worker_heartbeat_at, updated_at) < now() - ($5::int * interval '1 minute')
       returning id, ai_usage_reservation_id`,
       [input.userId, input.projectId, generationId, requestKey, staleAfterMinutes],
     );

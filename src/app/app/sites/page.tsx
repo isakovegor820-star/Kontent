@@ -189,10 +189,10 @@ function CopyValue({ value, label }: { value: string; label: string }) {
   );
 }
 
-function InterpretationBlock({ interpretation, status, compact = false }: { interpretation: Interpretation | null; status: ReportView["interpretationStatus"]; compact?: boolean }) {
+function InterpretationBlock({ interpretation, status, compact = false, onRetry, retrying = false }: { interpretation: Interpretation | null; status: ReportView["interpretationStatus"]; compact?: boolean; onRetry?: () => void; retrying?: boolean }) {
   if (!interpretation) {
     if (status === "pending") return <p className="type-caption mt-3 text-text-3">Интерпретация Авроры готовится…</p>;
-    if (status === "failed") return <p className="type-caption mt-3 text-text-3">Интерпретация не удалась — цифры и рекомендации выше остаются в силе.</p>;
+    if (status === "failed") return <div className="mt-3"><p className="type-caption text-text-3">Интерпретация не удалась — цифры и рекомендации выше остаются в силе.</p>{onRetry && <Button type="button" size="sm" variant="secondary" className="mt-2" disabled={retrying} onClick={onRetry}>{retrying ? "Запускаем…" : "Повторить интерпретацию"}</Button>}</div>;
     return null;
   }
   return (
@@ -264,6 +264,9 @@ export default function SitesPage() {
   const [tab, setTab] = useState<SiteTab>("profile");
   const [destinationCount, setDestinationCount] = useState(0);
   const [reportRequested, setReportRequested] = useState(false);
+  const [retryingAi, setRetryingAi] = useState<string | null>(null);
+  const detailsRequest = useRef(0);
+  const activeSiteId = useRef<number | null>(null);
 
   const loadSites = useCallback(async () => {
     try {
@@ -280,16 +283,20 @@ export default function SitesPage() {
 
   // Состояние обновляется только после ответа сервера — синхронных setState в эффектах нет.
   const loadDetails = useCallback(async (id: number) => {
+    if (id !== activeSiteId.current) return null;
+    const request = ++detailsRequest.current;
     try {
       const { status, body } = await requestJson<SiteDetails & { error?: string }>(`/api/sites/${id}`);
+      if (request !== detailsRequest.current) return null;
       if (status !== 200 || !body.site) throw Object.assign(new Error("details_failed"), { code: body.error });
       setDetails({ site: body.site, latestAnalysis: body.latestAnalysis, profile: body.profile, reports: body.reports });
       void requestJson<{ destinations?: Array<{ status: string; readyToPublish: boolean }> }>(`/api/sites/${id}/destinations`).then((result) => {
+        if (request !== detailsRequest.current) return;
         setDestinationCount((result.body.destinations || []).filter((item) => item.status === "active" && item.readyToPublish).length);
       });
       return body;
     } catch (error) {
-      setActionError(errorMessage((error as { code?: string }).code, "Не удалось загрузить сайт."));
+      if (request === detailsRequest.current) setActionError(errorMessage((error as { code?: string }).code, "Не удалось загрузить сайт."));
       return null;
     }
   }, []);
@@ -302,12 +309,17 @@ export default function SitesPage() {
   const detailsLoading = activeId !== null && current === null;
 
   useEffect(() => {
+    activeSiteId.current = activeId;
     if (activeId === null) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- loadDetails updates state only after the request settles
     void loadDetails(activeId);
+    return () => { activeSiteId.current = null; detailsRequest.current += 1; };
   }, [activeId, loadDetails]);
 
   const selectSite = useCallback((id: number) => {
+    activeSiteId.current = id;
+    detailsRequest.current += 1;
+    setDestinationCount(0);
     setVerifyMessage(null);
     setActionError(null);
     setTab("profile");
@@ -331,16 +343,30 @@ export default function SitesPage() {
     setTimeout(() => { void loadDetails(activeId); setReportRequested(false); }, 6000);
   }, [activeId, loadDetails]);
 
+  const retryAi = useCallback(async (target: "profile" | "report", reportId?: number) => {
+    if (activeId === null || retryingAi) return;
+    setRetryingAi(target === "profile" ? "profile" : `report:${reportId}`);
+    setActionError(null);
+    const { status, body } = await requestJson<{ error?: string }>(`/api/sites/${activeId}/ai/retry`, {
+      method: "POST", body: JSON.stringify({ target, reportId }),
+    });
+    setRetryingAi(null);
+    if (status >= 400 && activeSiteId.current === activeId) setActionError(errorMessage(body.error, "Не удалось повторить задачу."));
+    await loadDetails(activeId);
+  }, [activeId, retryingAi, loadDetails]);
+
+  const aiActive = Boolean(current?.profile && !current.profile.refinedAt && current.profile.aiClassification?.status !== "failed")
+    || Boolean(current?.reports.some((report) => report.interpretationStatus === "pending"));
   const analysisActive = Boolean(current?.latestAnalysis && ACTIVE_STATUSES.has(current.latestAnalysis.status));
   useEffect(() => {
-    if (!analysisActive || activeId === null) return;
+    if ((!analysisActive && !aiActive) || activeId === null) return;
     const timer = setInterval(() => {
       void loadDetails(activeId).then((loaded) => {
         if (loaded?.latestAnalysis && !ACTIVE_STATUSES.has(loaded.latestAnalysis.status)) void loadSites();
       });
-    }, 2000);
+    }, analysisActive ? 2000 : 5000);
     return () => clearInterval(timer);
-  }, [analysisActive, activeId, loadDetails, loadSites]);
+  }, [analysisActive, aiActive, activeId, loadDetails, loadSites]);
 
   const submitConnect = useCallback(async (event: React.FormEvent) => {
     event.preventDefault();
@@ -640,10 +666,13 @@ export default function SitesPage() {
                     {profile.aiClassification?.status === "ready" && (
                       <Badge tone="brand">уточнён моделью{profile.aiClassification.topicClusters ? ` · тем объединено: ${profile.aiClassification.topicClusters}` : ""}</Badge>
                     )}
-                    {profile.refinedAt === null && <Badge tone="neutral">уточнение моделью в очереди</Badge>}
+                    {profile.aiClassification?.status === "failed" ? <>
+                      <Badge tone="danger">уточнение не удалось</Badge>
+                      <Button type="button" size="sm" variant="secondary" disabled={retryingAi !== null} onClick={() => void retryAi("profile")}>{retryingAi === "profile" ? "Запускаем…" : "Повторить уточнение"}</Button>
+                    </> : profile.refinedAt === null && <Badge tone="neutral">{profile.aiClassification?.status === "processing" ? "уточняем профиль" : "уточнение ожидает запуска"}</Badge>}
                   </div>
                   <p className="type-secondary mt-2 text-text-2">{profile.summary}</p>
-                  {current?.reports[0] && <InterpretationBlock interpretation={current.reports[0].interpretation} status={current.reports[0].interpretationStatus} />}
+                  {current?.reports[0] && <InterpretationBlock interpretation={current.reports[0].interpretation} status={current.reports[0].interpretationStatus} retrying={retryingAi !== null} onRetry={() => void retryAi("report", current.reports[0].id)} />}
                   <div className="mt-5 grid gap-4 sm:grid-cols-2">
                     <Score label="On-page SEO" value={profile.technical.seoScore} />
                     <Score label="Готовность к генеративному поиску (GEO)" value={profile.technical.geoScore} />
@@ -734,7 +763,7 @@ export default function SitesPage() {
                           <span className="type-caption text-text-3">{formatDate(report.createdAt)}</span>
                         </div>
                         <p className="type-secondary mt-2 text-text-2">{report.summaryRu}</p>
-                        <InterpretationBlock interpretation={report.interpretation} status={report.interpretationStatus} compact />
+                        <InterpretationBlock interpretation={report.interpretation} status={report.interpretationStatus} compact retrying={retryingAi !== null} onRetry={() => void retryAi("report", report.id)} />
                         <div className="mt-3 flex flex-wrap gap-2">
                           {REPORT_FORMATS.map(([format, label]) => (
                             <a
