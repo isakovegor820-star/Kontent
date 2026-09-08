@@ -36,6 +36,7 @@ import {
   sanitizeE2eNetworkUrl,
 } from "./e2e-browser-config.mjs";
 import { captureE2eInputSnapshot, changedE2eInputPaths } from "./e2e-input-snapshot.mjs";
+import { immediateE2ePublicationSchedule } from "./e2e-publication-schedule.mjs";
 import {
   E2E_BOT_CONNECT_TOKEN_CANARIES,
   E2E_BOT_CONNECT_TOKEN_CANARY,
@@ -3454,6 +3455,7 @@ try {
       draftId: publicationDraft.id,
       draftVersion: publicationDraft.version,
       timezone: "UTC",
+      schedule: await immediateE2ePublicationSchedule(),
     },
   };
   const [operationLeft, operationRight] = await Promise.all([
@@ -3599,11 +3601,8 @@ try {
   });
   const telegramTextBeforeCommentsPublication = fakeState.telegram.textCalls;
   const telegramPinBeforeCommentsPublication = fakeState.telegram.pinCalls;
-  // Resolve the immediate publication slot at mutation time. Reusing the draft's
-  // minute after the approval/typography setup can cross the API's one-minute
-  // clock-skew boundary and turn this fixture into a request for the past.
-  const commentsOperationInstant = new Date();
-  commentsOperationInstant.setUTCSeconds(0, 0);
+  // Resolve a current-minute slot with time left for the real API transaction.
+  const commentsOperationSchedule = await immediateE2ePublicationSchedule();
   const commentsOperationResponse = await authenticatedRequest("/api/publication-operations", {
     method: "POST",
     headers: { "idempotency-key": "e2e_supported_comments_publication_1" },
@@ -3611,14 +3610,7 @@ try {
       draftId: commentsDraft.id,
       draftVersion: commentsPreferences.draftVersion,
       timezone: "UTC",
-      schedule: {
-        scheduledAt: commentsOperationInstant.toISOString(),
-        localDate: commentsOperationInstant.toISOString().slice(0, 10),
-        localTime: commentsOperationInstant.toISOString().slice(11, 16),
-        timezone: "UTC",
-        offset: "+00:00",
-        disambiguation: "reject",
-      },
+      schedule: commentsOperationSchedule,
     },
   });
   assert(
