@@ -3999,14 +3999,15 @@ try {
     page.goto("/app/settings?section=dictionary"),
   ]);
   assert(publicationBlocksLoad.ok(), `publication blocks hydration failed with ${publicationBlocksLoad.status()}`);
+  await page.getByRole("button", { name: "Шаблоны для постов", exact: true }).click();
   const publicationBlocksSection = page.locator("#publication-blocks");
   await publicationBlocksSection.waitFor();
   const createPublicationBlock = async (kind, name, content) => {
-    await publicationBlocksSection.getByRole("button", { name: "Добавить блок", exact: true }).click();
-    await publicationBlocksSection.getByRole("combobox", { name: "Тип блока", exact: true }).selectOption(kind);
+    await publicationBlocksSection.getByRole("button", { name: "Создать шаблон", exact: true }).click();
+    await publicationBlocksSection.getByRole("combobox", { name: "Что сохранить", exact: true }).selectOption(kind);
     await publicationBlocksSection.getByLabel("Название", { exact: true }).fill(name);
-    await publicationBlocksSection.getByLabel("Текст блока", { exact: true }).fill(content);
-    const createButton = publicationBlocksSection.getByRole("button", { name: "Создать блок", exact: true });
+    await publicationBlocksSection.getByLabel("Текст шаблона", { exact: true }).fill(content);
+    const createButton = publicationBlocksSection.getByRole("button", { name: "Создать шаблон", exact: true });
     await assertTouch(createButton, `create ${kind} block`);
     await createButton.click();
     await publicationBlocksSection.getByText(name, { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
@@ -4024,15 +4025,18 @@ try {
   const firstCommentBlockId = Number(publicationBlockRows.find((row) => row.kind === "first_comment")?.id);
   assert(signatureBlockId > 0 && firstCommentBlockId > 0, "publication block kinds were not preserved");
 
-  const brandDictionary = page.locator("section").filter({ has: page.getByRole("heading", { name: "Словарь бренда", exact: true }) }).first();
-  await brandDictionary.getByRole("form", { name: "Новое правило словаря", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
-  await brandDictionary.locator("#brand-dictionary-kind").selectOption("prohibited");
+  await page.getByRole("button", { name: "Правила написания", exact: true }).click();
+  const brandDictionary = page.locator("section").filter({ has: page.getByRole("heading", { name: "Правила написания", exact: true }) }).first();
+  await brandDictionary.getByRole("button", { name: "Добавить правило", exact: true }).click();
+  await brandDictionary.getByRole("form", { name: "Новое правило", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  await brandDictionary.getByText("Не использовать", { exact: true }).click();
+  assert(await brandDictionary.getByRole("radio", { name: "Не использовать", exact: true }).isChecked(), "prohibited rule action was not selected");
   await brandDictionary.locator("#brand-dictionary-term").fill("легалтех");
   await brandDictionary.locator("#brand-dictionary-replacement").fill("LegalTech");
-  const addBrandRule = brandDictionary.getByRole("button", { name: "Добавить правило", exact: true });
+  const addBrandRule = brandDictionary.getByRole("button", { name: "Сохранить правило", exact: true });
   await assertTouch(addBrandRule, "add prohibited brand dictionary rule");
   await addBrandRule.click();
-  await brandDictionary.getByText("Правило добавлено в словарь проекта.", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  await brandDictionary.getByText("Правило сохранено. Оно будет учтено при генерации и проверке текста.", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const brandRuleEvidence = (await pool.query(
     `select dictionary.version as dictionary_version, entry.kind, entry.term, entry.replacement, entry.is_active
        from project_brand_dictionaries dictionary
