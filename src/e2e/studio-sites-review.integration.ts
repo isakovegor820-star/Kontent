@@ -36,6 +36,7 @@ beforeAll(async () => {
   await migrate({ env: { ...process.env, DATABASE_URL: connection.href }, logger: { log() {} } });
   userId = Number((await pool.query("insert into users (email,name) values ('review@example.test','QA') returning id")).rows[0].id);
   projectId = Number((await pool.query("insert into projects (name,created_by_user_id) values ('QA',$1) returning id", [userId])).rows[0].id);
+  await pool.query("insert into project_members (project_id,user_id,role,status) values ($1,$2,'owner','active')", [projectId,userId]);
   const channelId = (await pool.query("insert into channels (user_id,project_id,tg_chat_id,title) values ($1,$2,-999,'QA') returning id", [userId,projectId])).rows[0].id;
   const usageId = (await pool.query("insert into ai_usage (user_id,kind) values ($1,'generate') returning id", [userId])).rows[0].id;
   await pool.query(`insert into generation_operations
@@ -184,8 +185,8 @@ describe("durable worker ownership and recovery", () => {
 
   it("recovers missed media, profile and report jobs without calling a provider", async () => {
     const site = await makeSite();
-    const analysisId = (await pool.query(`insert into site_analysis_jobs (user_id,project_id,request_id,idempotency_key,request_fingerprint,target_url,confirmed_domain,consented_at)
-      values ($1,$2,$3,$3,$3,$4,$5,now()) returning id`, [userId,projectId,randomUUID(),site.canonical_url,site.confirmed_domain])).rows[0].id;
+    const analysisId = (await pool.query(`insert into site_analysis_jobs (user_id,project_id,site_id,request_id,idempotency_key,request_fingerprint,target_url,confirmed_domain,consented_at)
+      values ($1,$2,$3,$4,$4,$4,$5,$6,now()) returning id`, [userId,projectId,site.id,randomUUID(),site.canonical_url,site.confirmed_domain])).rows[0].id;
     const profileId = (await pool.query("insert into site_profiles (site_id,analysis_job_id,created_at) values ($1,$2,now()-interval '3 minutes') returning id", [site.id,analysisId])).rows[0].id;
     await pool.query("update sites set latest_profile_id=$2 where id=$1", [site.id,profileId]);
     const queue = { add: vi.fn(async () => ({})) };
@@ -204,7 +205,7 @@ describe("durable worker ownership and recovery", () => {
     const site = await makeSite();
     const baseline = buildSiteProfile({ confirmedDomain: site.confirmed_domain, pages: [] });
     const audit = buildInitialAuditReport({ site: { confirmedDomain: site.confirmed_domain, canonicalUrl: site.canonical_url, verificationState: "unverified" }, profile: baseline });
-    const reportId = Number((await pool.query("insert into site_reports (site_id,kind,payload,summary_ru,interpretation_status) values ($1,'initial_audit',$2,'QA','pending') returning id", [site.id,JSON.stringify(audit.payload)])).rows[0].id);
+    const reportId = Number((await pool.query("insert into site_reports (site_id,kind,payload,summary_ru,interpretation_status,requested_by_user_id) values ($1,'initial_audit',$2,'QA','pending',$3) returning id", [site.id,JSON.stringify(audit.payload),userId])).rows[0].id);
     const complete = vi.fn(async () => ({ text: JSON.stringify({ summary: "Гарантируем рост трафика.", whatItMeans: [], startWith: [], watchOut: [] }), engine: "qa" }));
     expect(await interpretSiteReport(pool, { reportId, revision: 1 }, { completeAiText: complete })).toMatchObject({ ok: false, reason: "interpretation_rejected" });
     expect((await pool.query("select status from ai_usage where reservation_key=$1", [`worker:site-report-interpretation:${reportId}:v1`])).rows[0].status).toBe("released");
