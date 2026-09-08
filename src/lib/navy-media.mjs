@@ -26,6 +26,20 @@ function requestSignal(signal, timeoutMs) {
 }
 
 function providerHttpError(status) {
+  if (status === 401 || status === 403) {
+    return new NavyMediaError(
+      status === 401 ? "provider_authentication_failed" : "provider_access_denied",
+      "Провайдер не разрешил доступ к модели. Проверь подключение и доступность модели в тарифе.",
+      { httpStatus: status, retryable: false },
+    );
+  }
+  if (status === 408 || status === 504) {
+    return new NavyMediaError(
+      "provider_timeout",
+      "Провайдер не ответил вовремя. Результат запроса не подтверждён; попробуй позже.",
+      { httpStatus: status, retryable: false },
+    );
+  }
   if (status === 429) {
     return new NavyMediaError(
       "provider_rate_limited",

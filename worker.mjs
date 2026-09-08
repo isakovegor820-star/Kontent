@@ -1,3 +1,5 @@
+import { createMediaGenerationStore, recoverMediaDeliveries } from "./worker/media-generation-store.mjs";
+import { startTaskHeartbeat, WorkerTaskLeaseLost } from "./worker/task-heartbeat.mjs";
 import { CRON_SCHEDULES } from "./worker/cron-schedules.mjs";
 // Д.3 — воркер публикации. Отдельный «всегда включённый» процесс: слушает очередь
 // и публикует посты точно в срок с сервера. Пользователь может закрыть ноутбук —
@@ -914,8 +916,8 @@ async function persistMediaResult(generation, outputUrl, lease) {
   const saving = await pool.query(
     `update media_generations
         set status = 'saving', updated_at = now()
-      where id = $1 and status in ('submitting','generating') and output_asset_id is null`,
-    [generation.id],
+      where id = $1 and worker_lease_token = $2 and status in ('submitting','generating') and output_asset_id is null`,
+    [generation.id, generation.worker_lease_token],
   );
   if (!saving.rowCount) {
     const current = (await pool.query(
@@ -969,12 +971,13 @@ async function persistMediaResult(generation, outputUrl, lease) {
   try {
     await tx.query("begin");
     const locked = (
-      await tx.query(`select output_asset_id, status from media_generations where id = $1 for update`, [generation.id])
+      await tx.query(`select output_asset_id, status, worker_lease_token from media_generations where id = $1 for update`, [generation.id])
     ).rows[0];
     if (!locked || locked.output_asset_id || locked.status === "ready") {
       await tx.query("rollback");
       return;
     }
+    if (locked.worker_lease_token !== generation.worker_lease_token) throw new WorkerTaskLeaseLost();
     if (locked.status !== "saving") {
       throw new MediaGenerationAttemptError(
         "generation_not_eligible",
@@ -1004,7 +1007,7 @@ async function persistMediaResult(generation, outputUrl, lease) {
     await tx.query(
       `update media_generations
           set status = 'ready', output_asset_id = $2, error_code = null, error_message = null,
-              updated_at = now(), completed_at = now()
+              worker_lease_token = null, worker_heartbeat_at = null, updated_at = now(), completed_at = now()
         where id = $1`,
       [generation.id, asset.rows[0].id],
     );
@@ -1042,237 +1045,16 @@ async function persistMediaResult(generation, outputUrl, lease) {
 
 const navyMedia = createNavyMediaClient({ apiKey: NAVYAI_KEY, baseUrl: NAVYAI_URL });
 
-const mediaGenerationFields = `
-  g.id, g.user_id, g.project_id, g.kind, g.status, g.prompt, g.negative_prompt, g.model,
-  g.aspect_ratio, g.quality, g.seconds, g.style, g.provider_job_id,
-  g.output_asset_id, g.ai_usage_reservation_id, g.request_id,
-  g.request_key, g.provider_request_key, g.prompt_context`;
-
-const mediaStore = {
-  async claim(job) {
-    const claimed = await pool.query(
-      `update media_generations g
-          set status = 'submitting', provider_started_at = coalesce(provider_started_at, now()),
-              error_code = null, error_message = null, updated_at = now(), completed_at = null
-         from ai_usage u
-        where g.id = $1
-          and g.request_key = $2
-          and g.request_id = $3::uuid
-          and g.provider_request_key = $4
-          and g.project_id = $5
-          and g.status = 'queued'
-          and g.queue_confirmed_at is not null
-          and g.updated_at >= now() - interval '15 minutes'
-          and u.id = g.ai_usage_reservation_id
-          and u.user_id = g.user_id
-          and u.status = 'reserved'
-          and u.expires_at > now()
-      returning ${mediaGenerationFields}`,
-      [job.generationId, job.requestKey, job.requestId, job.providerRequestKey, job.projectId],
-    );
-    if (claimed.rows[0]) {
-      assertWorkerAiCallPolicy("media-generation", claimed.rows[0].ai_usage_reservation_id);
-      return { state: "claimed", generation: claimed.rows[0] };
-    }
-
-    const current = (
-      await pool.query(
-        `select ${mediaGenerationFields}, g.queue_confirmed_at, g.updated_at,
-                u.status as usage_status, u.expires_at > now() as usage_live,
-                g.updated_at < now() - interval '15 minutes' as generation_stale
-           from media_generations g
-           left join ai_usage u on u.id = g.ai_usage_reservation_id and u.user_id = g.user_id
-          where g.id = $1 and g.project_id = $2`,
-        [job.generationId, job.projectId],
-      )
-    ).rows[0];
-    if (!current) return { state: "skip", reason: "not_found" };
-    if (
-      current.request_key !== job.requestKey
-      || String(current.request_id) !== job.requestId
-      || current.provider_request_key !== job.providerRequestKey
-    ) {
-      return { state: "skip", reason: "job_identity_mismatch" };
-    }
-    if (current.status === "ready" || current.status === "failed" || current.output_asset_id) {
-      return { state: "skip", reason: current.status };
-    }
-    if (current.status === "queued" && !current.queue_confirmed_at) {
-      return { state: "handoff_pending", generation: current };
-    }
-    if (current.status === "queued" && current.generation_stale) {
-      return {
-        state: "rejected",
-        generation: current,
-        error: new MediaGenerationAttemptError(
-          "stale_generation",
-          "Задача слишком долго ждала worker. Запусти генерацию ещё раз.",
-        ),
-      };
-    }
-    if (current.status === "queued" && (current.usage_status !== "reserved" || current.usage_live !== true)) {
-      return {
-        state: "rejected",
-        generation: current,
-        error: new MediaGenerationAttemptError(
-          "reservation_unavailable",
-          "Резерв генерации больше не действует. Запусти задачу ещё раз.",
-        ),
-      };
-    }
-    return { state: "skip", reason: "not_queued" };
-  },
-
-  async markGenerating(generation, providerJobId) {
-    const updated = await pool.query(
-      `update media_generations
-          set status = 'generating', provider_job_id = $2, updated_at = now()
-        where id = $1 and status = 'submitting'`,
-      [generation.id, providerJobId],
-    );
-    if (!updated.rowCount) {
-      throw new MediaGenerationAttemptError(
-        "generation_not_eligible",
-        "Задача больше не может быть выполнена. Запусти генерацию ещё раз.",
-      );
-    }
-    generation.provider_job_id = providerJobId;
-  },
-
-  persistResult: persistMediaResult,
-
-  async requeue(generation) {
-    await pool.query(
-      `update media_generations
-          set status = 'queued', error_code = null,
-              error_message = 'Провайдер временно занят — повторяем автоматически.',
-              updated_at = now(), completed_at = null
-        where id = $1 and status in ('submitting','generating','saving')
-          and queue_confirmed_at is not null`,
-      [generation.id],
-    );
-  },
-
-  async failAndRelease(generation, error) {
-    const tx = await pool.connect();
-    try {
-      await tx.query("begin");
-      const failed = await tx.query(
-        `update media_generations
-            set status = 'failed', error_code = $2, error_message = $3,
-                updated_at = now(), completed_at = now()
-          where id = $1 and status <> 'ready'
-        returning ai_usage_reservation_id, user_id`,
-        [generation.id, error.code, String(error.message).slice(0, 300)],
-      );
-      if (failed.rows[0]?.ai_usage_reservation_id) {
-        await releaseWorkerAiUsage(
-          tx,
-          failed.rows[0].user_id,
-          failed.rows[0].ai_usage_reservation_id,
-        );
-      }
-      await tx.query("commit");
-    } catch (finalizeError) {
-      await tx.query("rollback").catch(() => {});
-      throw finalizeError;
-    } finally {
-      tx.release();
-    }
-  },
-
-  async failByJobIdentity(job, error) {
-    const tx = await pool.connect();
-    try {
-      await tx.query("begin");
-      const failed = await tx.query(
-        `update media_generations
-            set status = 'failed', error_code = $5, error_message = $6,
-                updated_at = now(), completed_at = now()
-          where id = $1 and request_key = $2 and request_id = $3::uuid
-            and provider_request_key = $4 and queue_confirmed_at is not null
-            and status in ('queued','submitting','generating','saving')
-        returning ai_usage_reservation_id, user_id`,
-        [
-          job.generationId,
-          job.requestKey,
-          job.requestId,
-          job.providerRequestKey,
-          error.code,
-          String(error.message).slice(0, 300),
-        ],
-      );
-      if (failed.rows[0]?.ai_usage_reservation_id) {
-        await releaseWorkerAiUsage(
-          tx,
-          failed.rows[0].user_id,
-          failed.rows[0].ai_usage_reservation_id,
-        );
-      }
-      await tx.query("commit");
-    } catch (finalizeError) {
-      await tx.query("rollback").catch(() => {});
-      throw finalizeError;
-    } finally {
-      tx.release();
-    }
-  },
-};
-
+const mediaStore = createMediaGenerationStore(pool, persistMediaResult);
 const mediaLease = {
   async start(generation) {
     if (!generation.ai_usage_reservation_id) return null;
-    const initial = await heartbeatWorkerAiUsage(
-      pool,
-      generation.user_id,
-      generation.ai_usage_reservation_id,
-      WORKER_AI_RESERVATION_TTL_MS,
-    ).catch(() => false);
-    if (!initial) return null;
-
-    const controller = new AbortController();
-    let lost = null;
-    let heartbeatInFlight = null;
-    const heartbeat = async () => {
-      if (heartbeatInFlight) return heartbeatInFlight;
-      heartbeatInFlight = heartbeatWorkerAiUsage(
-        pool,
-        generation.user_id,
-        generation.ai_usage_reservation_id,
-        WORKER_AI_RESERVATION_TTL_MS,
-      ).then((active) => {
-        if (!active) throw new Error("reservation_not_reserved");
-      }).catch(() => {
-        if (lost) return;
-        lost = new MediaGenerationAttemptError(
-          "reservation_lost",
-          "Резерв генерации перестал действовать. Запусти задачу ещё раз.",
-        );
-        controller.abort(lost);
-        console.error("[media-worker]", {
-          event: "reservation_lost",
-          requestId: String(generation.request_id),
-          generationId: generation.id,
-          code: lost.code,
-        });
-      }).finally(() => {
-        heartbeatInFlight = null;
-      });
-      return heartbeatInFlight;
-    };
-    const intervalMs = Math.max(1_000, Math.min(5_000, Math.floor(WORKER_AI_RESERVATION_TTL_MS / 3)));
-    const timer = setInterval(() => { void heartbeat(); }, intervalMs);
-    timer.unref?.();
-    return {
-      signal: controller.signal,
-      async assertActive() {
-        if (lost) throw lost;
-      },
-      async stop() {
-        clearInterval(timer);
-        await heartbeatInFlight;
-      },
-    };
+    assertWorkerAiCallPolicy("media-generation", generation.ai_usage_reservation_id);
+    return startTaskHeartbeat(pool, { table: "media_generations", id: generation.id, token: generation.worker_lease_token }, {
+      userId: generation.user_id, reservationId: generation.ai_usage_reservation_id,
+      // Match the web media reservation: it must outlive the 2-minute crash-recovery window.
+      ttlMs: 60 * 60_000,
+    });
   },
 };
 
@@ -1325,6 +1107,7 @@ const mediaWorker = AUTOPILOT_ONLY || PUBLICATION_ONLY ? null : new Worker(
         requestId,
         generationId,
         code,
+        httpStatus: error instanceof MediaGenerationAttemptError ? error.httpStatus : null,
         retryable,
         attempt: job.attemptsMade + 1,
       });
@@ -1340,6 +1123,21 @@ const mediaWorker = AUTOPILOT_ONLY || PUBLICATION_ONLY ? null : new Worker(
   },
   { connection, concurrency: 1 },
 );
+if (mediaWorker) {
+  const recoveryQueue = new Queue(MEDIA_QUEUE, { connection });
+  let recovering = false;
+  const recover = async () => {
+    if (recovering) return;
+    recovering = true;
+    try { await recoverMediaDeliveries(pool, recoveryQueue); }
+    catch (error) { console.error("[media-recovery]", { code: error?.code || error?.name }); }
+    finally { recovering = false; }
+  };
+  mediaWorker.on("ready", () => { void recover(); });
+  const recoveryTimer = setInterval(() => { void recover(); }, 60_000);
+  recoveryTimer.unref();
+  mediaWorker.on("closed", () => { clearInterval(recoveryTimer); void recoveryQueue.close(); });
+}
 mediaWorker?.on("ready", () => console.log("[media] очередь изображений и видео слушается"));
 mediaWorker?.on("failed", (job, error) => console.error("[media] generation failed", {
   generationId: job?.data?.generationId || job?.id || null,
