@@ -444,6 +444,8 @@ async function installBrowserDiagnostics(context, label) {
       const knownCancellation = classifyE2eKnownWebKitRequestCancellation({
         engine: browserEngine,
         requestUrl: request.url(),
+        requestMethod: request.method(),
+        resourceType: request.resourceType(),
         failure,
         currentUrl: targetPage.url(),
         baseUrl,

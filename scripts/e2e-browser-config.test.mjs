@@ -219,6 +219,65 @@ describe("real E2E browser configuration", () => {
     }
   });
 
+  it.each([
+    ["/app/settings?section=project", "/api/channels", "webkit.cancelled-project-refresh"],
+    ["/app/settings?section=project", "/api/posts", "webkit.cancelled-project-refresh"],
+    ["/app/settings?section=project", "/api/ai/usage", "webkit.cancelled-project-refresh"],
+    ["/bot/connect?source=telegram", "/login?_rsc=abc_123", "webkit.cancelled-bot-login-prefetch"],
+    ["/bot/connect?source=telegram", "/login?next=%2Fbot%2Fconnect&_rsc=abc_123", "webkit.cancelled-bot-login-prefetch"],
+  ])("requires observed cancellation evidence for %s → %s", (currentPath, requestPath, kind) => {
+    const baseUrl = "https://127.0.0.1:43190";
+    const input = {
+      engine: "webkit",
+      requestUrl: `${baseUrl}${requestPath}`,
+      requestMethod: "GET",
+      resourceType: "fetch",
+      failure: "cancelled",
+      currentUrl: `${baseUrl}${currentPath}`,
+      baseUrl,
+      webPort: 43190,
+    };
+    const message = `/127.0.0.1:43190${requestPath} due to access control checks.`;
+    expect(classifyE2eKnownWebKitRequestCancellation(input)).toEqual({ kind, detail: requestPath, message });
+    expect(classifyE2eKnownBrowserObservation({ ...input, eventKind: "pageerror", message })).toBeNull();
+    for (const override of [
+      { failure: "Blocked by access control" },
+      { requestMethod: "POST" },
+      { resourceType: "xhr" },
+      { engine: "chromium" },
+      { webPort: 43191 },
+      { currentUrl: `${baseUrl}/app/calendar` },
+      { currentUrl: `https://example.com${currentPath}` },
+      { requestUrl: `https://example.com${requestPath}` },
+    ]) {
+      expect(classifyE2eKnownWebKitRequestCancellation({ ...input, ...override })).toBeNull();
+    }
+  });
+
+  it("does not classify unrelated settings loaders or login requests as known cancellations", () => {
+    const baseUrl = "https://127.0.0.1:43190";
+    for (const [currentPath, requestPath] of [
+      ["/app/settings?section=profile", "/api/channels"],
+      ["/app/settings?section=project", "/api/projects"],
+      ["/app/settings?section=project", "/api/channels?unexpected=1"],
+      ["/bot/connect", "/login"],
+      ["/bot/connect", "/login?_rsc="],
+      ["/bot/connect", "/login?_rsc=abc&next=%2Fapp"],
+      ["/bot/connect", "/login?_rsc=abc&unexpected=1"],
+    ]) {
+      expect(classifyE2eKnownWebKitRequestCancellation({
+        engine: "webkit",
+        requestUrl: `${baseUrl}${requestPath}`,
+        requestMethod: "GET",
+        resourceType: "fetch",
+        failure: "cancelled",
+        currentUrl: `${baseUrl}${currentPath}`,
+        baseUrl,
+        webPort: 43190,
+      })).toBeNull();
+    }
+  });
+
   it("correlates only a cancelled first-party GET loader with a simultaneous same-origin document navigation", () => {
     const baseUrl = "https://127.0.0.1:43190";
     const input = {
