@@ -647,6 +647,7 @@ function quickSettingsSummary(settings: AutopilotQuickSettings) {
 function QuickSettingsDialog({
   open,
   settings,
+  postFrequency,
   planningWeeks,
   planningSummary,
   disabled,
@@ -660,6 +661,7 @@ function QuickSettingsDialog({
 }: {
   open: boolean;
   settings: AutopilotQuickSettings;
+  postFrequency: number;
   planningWeeks: number;
   planningSummary: string;
   disabled: boolean;
@@ -762,7 +764,7 @@ function QuickSettingsDialog({
         <fieldset disabled={disabled || saving} className="mt-6">
           <legend className="text-[14px] font-bold text-text">Настроить посты</legend>
           <p className="mt-1 text-[12px] leading-snug text-text-3">
-            {quickSettingsSummary(settings)}
+            {quickSettingsSummary({ ...settings, newsPerWeek: Math.min(settings.newsPerWeek, postFrequency) })}
           </p>
           <div className="mt-4 grid gap-x-6 gap-y-5 sm:grid-cols-2">
             <QuickRange
@@ -770,9 +772,9 @@ function QuickSettingsDialog({
               label="Свежие события"
               hint="Остальные посты — полезные разборы и идеи по теме канала."
               min={0}
-              max={7}
-              value={settings.newsPerWeek}
-              valueLabel={`${settings.newsPerWeek} из 7`}
+              max={postFrequency}
+              value={Math.min(settings.newsPerWeek, postFrequency)}
+              valueLabel={`${Math.min(settings.newsPerWeek, postFrequency)} из ${postFrequency}`}
               disabled={disabled || saving}
               onChange={(newsPerWeek) => onChange({ ...settings, newsPerWeek })}
             />
@@ -818,7 +820,7 @@ function QuickSettingsDialog({
 
         <div className="mt-6 flex flex-col-reverse gap-2 border-t border-line pt-4 sm:flex-row sm:items-center sm:justify-between">
           <Link
-            href={`/app/settings${channelId ? `?channel=${channelId}` : ""}`}
+            href={`/app/settings?section=autopilot${channelId ? `&channel=${channelId}` : ""}`}
             className={buttonClassName({ variant: "ghost", size: "sm", className: "justify-center sm:justify-start" })}
           >
             Настройки канала
@@ -2069,6 +2071,7 @@ export default function AutopilotPage() {
       <QuickSettingsDialog
         open={quickSettingsOpen}
         settings={quickSettings}
+        postFrequency={st.post_frequency}
         planningWeeks={planningWeeks}
         planningSummary={planningSummary}
         disabled={busy || building}
