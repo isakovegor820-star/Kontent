@@ -6,6 +6,7 @@ import { CheckCircle2, ExternalLink, FileText, RefreshCw, Sparkles, XCircle } fr
 import { Button } from "@/components/ui/button";
 import { Badge, Card, Field, Input, Textarea } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
+import { articleHasQualityBlock } from "@/lib/site-articles/quality.mjs";
 
 import { ARTICLE_STATUS_LABEL, errorMessage, formatDate, requestJson } from "./client";
 
@@ -358,7 +359,7 @@ export function ArticlesPanel({ siteId, verified, hasDestinations, hasProfile, o
 
               <div className="mt-5 flex flex-wrap gap-2">
                 {["needs_review", "approved", "failed"].includes(detail.status) && (
-                  <Button type="button" size="sm" onClick={() => act(detail.id, detail.status === "approved" ? "publish" : "approve")} disabled={busy !== null || editing}>
+                  <Button type="button" size="sm" onClick={() => act(detail.id, detail.status === "approved" ? "publish" : "approve")} disabled={busy !== null || editing || articleHasQualityBlock(detail)}>
                     <CheckCircle2 className="h-4 w-4" aria-hidden />{detail.status === "approved" ? "Опубликовать" : "Одобрить"}
                   </Button>
                 )}

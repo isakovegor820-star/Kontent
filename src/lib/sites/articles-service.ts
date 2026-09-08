@@ -2,6 +2,7 @@ import type { Pool, PoolClient } from "pg";
 
 import { validateArticle } from "../site-articles/generation.mjs";
 import { requireProjectPermission, roleAllows } from "../project-permissions";
+import { articleHasQualityBlock } from "../site-articles/quality.mjs";
 import {
   SITE_ARTICLE_FIELDS,
   activeDestinationsForSite,
@@ -99,9 +100,9 @@ export async function listSiteArticles(db: Queryable, siteId: number, status: st
   return result.rows;
 }
 
-export async function findSiteArticle(db: Queryable, siteId: number, articleId: number) {
+export async function findSiteArticle(db: Queryable, siteId: number, articleId: number, forUpdate = false) {
   const result = await db.query<SiteArticleRow>(
-    `select ${SITE_ARTICLE_FIELDS} from site_articles where id = $1 and site_id = $2`,
+    `select ${SITE_ARTICLE_FIELDS} from site_articles where id = $1 and site_id = $2${forUpdate ? " for update" : ""}`,
     [articleId, siteId],
   );
   return result.rows[0] ?? null;
@@ -192,7 +193,8 @@ async function hasHumanEdit(db: Queryable, articleId: number, version: number) {
  */
 export async function approveSiteArticle(db: Queryable, input: { site: SiteRow; article: SiteArticleRow; userId: number }) {
   const membership = await requireProjectPermission(db, input.userId, Number(input.site.project_id), "content.approve");
-  if (!["needs_review", "failed"].includes(input.article.status)) throw new SiteServiceError("article_not_approvable", 409);
+  if (!["needs_review", "approved", "failed"].includes(input.article.status)) throw new SiteServiceError("article_not_approvable", 409);
+  if (articleHasQualityBlock(input.article)) throw new SiteServiceError("article_quality_failed", 422);
   const edited = await hasHumanEdit(db, Number(input.article.id), Number(input.article.version));
   const updated = await db.query<SiteArticleRow>(
     `update site_articles
@@ -202,8 +204,10 @@ export async function approveSiteArticle(db: Queryable, input: { site: SiteRow; 
   );
   const row = updated.rows[0];
   if (!row) throw new SiteServiceError("article_revision_conflict", 409);
-  await recordArticleRevision(db, { article: row, version: row.version, authorUserId: input.userId, changeKind: "approved" });
-  await applyApprovalStreak(db, { siteId: Number(input.site.id), edited, rejected: false });
+  if (Number(input.article.approved_version) !== Number(input.article.version) || !input.article.approved_at) {
+    await recordArticleRevision(db, { article: row, version: row.version, authorUserId: input.userId, changeKind: "approved" });
+    await applyApprovalStreak(db, { siteId: Number(input.site.id), edited, rejected: false });
+  }
   const destinations = input.site.verification_state === "verified" && roleAllows(membership.role, "content.publish") ? await activeDestinationsForSite(db, Number(input.site.id)) : [];
   const publications = destinations.length ? await createArticlePublications(db, { article: row, destinations, action: "publish", requestedByUserId: input.userId }) : [];
   return { row, publications, edited, destinations: destinations.length, verified: input.site.verification_state === "verified" };
@@ -226,6 +230,7 @@ export async function rejectSiteArticle(db: Queryable, input: { site: SiteRow; a
 
 export async function requestPublication(db: Queryable, input: { site: SiteRow; article: SiteArticleRow; userId: number; action: "publish" | "update" | "unpublish" }) {
   if (input.site.verification_state !== "verified") throw new SiteServiceError("domain_unverified", 409);
+  if (input.action !== "unpublish" && articleHasQualityBlock(input.article)) throw new SiteServiceError("article_quality_failed", 422);
   if (input.action === "publish" && !["approved", "failed"].includes(input.article.status)) throw new SiteServiceError("article_not_approved", 409);
   if (input.action !== "publish" && input.article.status !== "published") throw new SiteServiceError("article_not_published", 409);
   if (input.action !== "unpublish" && Number(input.article.approved_version) !== Number(input.article.version)) throw new SiteServiceError("article_not_approved", 409);

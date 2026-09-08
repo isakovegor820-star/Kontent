@@ -14,6 +14,14 @@ function response(status, payload) {
 }
 
 describe("Navy media client", () => {
+  it.each([[401, "provider_authentication_failed"], [403, "provider_access_denied"], [408, "provider_timeout"], [504, "provider_timeout"]])(
+    "classifies HTTP %s without blaming the prompt or exposing provider details", async (status, code) => {
+      const client = createNavyMediaClient({ apiKey: "test", fetchImpl: vi.fn(async () => response(status, { error: { message: "PRIVATE PROVIDER BODY" } })) });
+      const error = await client.create({ payload: {}, requestKey: "stable", requestId: "request" }).catch((error) => error);
+      expect(error).toMatchObject({ code, httpStatus: status, retryable: false });
+      expect(error.message).not.toContain("PRIVATE");
+    },
+  );
   it("sends the stable provider idempotency and correlation headers", async () => {
     const fetchImpl = vi.fn(async () => response(202, { id: "navy-41" }));
     const client = createNavyMediaClient({

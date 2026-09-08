@@ -6836,3 +6836,15 @@ alter table competitors
 comment on column competitors.collection_requested_by_user_id is
   'Actual actor who explicitly enabled or refreshed this collection. Creator identity is unchanged. Legacy null rows require an authorized explicit refresh/resume; never infer an actor or backfill from the creator.';
 
+-- Studio / Sites background ownership; mirror of 20261011_studio_sites_worker_leases.sql
+-- Additive ownership fences for recoverable Studio / Sites background work.
+-- Old releases ignore these nullable columns; no existing content is changed.
+alter table media_generations add column if not exists worker_lease_token uuid;
+alter table media_generations add column if not exists worker_heartbeat_at timestamptz;
+alter table site_articles add column if not exists worker_lease_token uuid;
+alter table site_articles add column if not exists worker_heartbeat_at timestamptz;
+alter table site_profiles add column if not exists worker_lease_token uuid;
+alter table site_profiles add column if not exists worker_heartbeat_at timestamptz;
+alter table site_reports add column if not exists worker_lease_token uuid;
+alter table site_reports add column if not exists worker_heartbeat_at timestamptz;
+alter table site_reports add column if not exists interpretation_revision integer not null default 1;

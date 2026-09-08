@@ -1,12 +1,15 @@
 import { requireSiteAiAccess, withSiteAiAccess, siteAiScope } from "./site-ai-access.mjs";
 import { rssAccessSql } from "./rss-access.mjs";
+import { recoverSiteTasks } from "./site-task-recovery.mjs";
 import { Worker } from "bullmq";
+import { ownedTaskTransaction, startTaskHeartbeat, WorkerTaskLeaseLost } from "./task-heartbeat.mjs";
 import { randomUUID } from "node:crypto";
 
 import { completeAiText } from "../src/lib/ai-completion-service.mjs";
 import { configuredServiceEngine } from "../src/lib/ai-engine-policy.mjs";
-import { buildArticlePrompt, parseArticleGeneration, validateArticle } from "../src/lib/site-articles/generation.mjs";
+import { buildArticlePrompt, completeArticleInternalLinks, parseArticleGeneration, validateArticle } from "../src/lib/site-articles/generation.mjs";
 import { markdownToText } from "../src/lib/site-articles/markdown.mjs";
+import { articleHasQualityBlock } from "../src/lib/site-articles/quality.mjs";
 import {
   SITE_ARTICLE_FIELDS,
   activeDestinationsForSite,
@@ -66,7 +69,7 @@ export async function enqueueSiteArticleJob(queue, name, data, { delayMs = 0, jo
   return id;
 }
 
-async function loadSite(db, siteId) {
+async function loadSite(db, siteId, forUpdate = false) {
   const result = await db.query(
     `select s.id, s.project_id, s.user_id, s.confirmed_domain, s.canonical_url, s.verification_state, s.status,
             s.publishing_mode, s.auto_unlock_streak, s.approved_streak, s.cadence, s.hosted_slug, s.brand_name,
@@ -74,7 +77,7 @@ async function loadSite(db, siteId) {
             p.topics, p.gaps, p.linkable_pages, p.technical, p.summary
        from sites s
        left join site_profiles p on p.id = s.latest_profile_id and p.site_id = s.id
-      where s.id = $1`,
+       where s.id = $1${forUpdate ? " for update of s" : ""}`,
     [siteId],
   );
   return result.rows[0] || null;
@@ -245,7 +248,8 @@ function sourceForPrompt(article) {
   }
 }
 
-async function autoPublishIfUnlocked(client, site, articleRow, queue) {
+async function autoPublishIfUnlocked(client, site, articleRow) {
+  if (!site || site.status !== "active") return { autoPublished: false };
   const unlocked = site.publishing_mode === "auto" && Number(site.approved_streak) >= Number(site.auto_unlock_streak);
   if (!unlocked) return { autoPublished: false };
   const destinations = await activeDestinationsForSite(client, site.id);
@@ -254,64 +258,118 @@ async function autoPublishIfUnlocked(client, site, articleRow, queue) {
     `update site_articles set status = 'approved', approved_by = $2, approved_version = version, approved_at = now(), updated_at = now() where id = $1`,
     [articleRow.id, site.user_id],
   );
-  const publications = await createArticlePublications(client, { article: articleRow, destinations, action: "publish", requestedByUserId: Number(site.user_id) });
-  if (queue) for (const publication of publications) await enqueueSiteArticleJob(queue, SITE_ARTICLE_JOBS.PUBLISH, { publicationId: Number(publication.id) });
-  return { autoPublished: true, publications: publications.length };
+  const publications = await createArticlePublications(client, {
+    article: articleRow,
+    destinations,
+    action: "publish",
+    requestedByUserId: Number(site.user_id),
+  });
+  return {
+    autoPublished: true,
+    publications: publications.length,
+    publicationIds: publications.map((row) => Number(row.id)),
+  };
 }
 
-export async function generateSiteArticle(pool, { articleId }, dependencies = {}) {
+export async function generateSiteArticle(pool, { articleId, version = null }, dependencies = {}) {
   const complete = dependencies.completeAiText || completeAiText;
   const acquire = dependencies.acquireUsage || acquireWorkerAiUsage;
   const commit = dependencies.commitUsage || commitWorkerAiUsage;
   const release = dependencies.releaseUsage || releaseWorkerAiUsage;
   const embed = dependencies.embed === undefined ? createEmbedder(dependencies.env || process.env) : dependencies.embed;
 
-  const identity = (await pool.query(`select site_id, project_id, coalesce(generation_requested_by_user_id,user_id) as user_id
-    from site_articles where id=$1 and status in ('draft','failed')`, [articleId])).rows[0];
-  if (!identity) return { ok: true, skipped: "not_generatable" };
-  const scope = { siteId: Number(identity.site_id), projectId: Number(identity.project_id), userId: Number(identity.user_id) };
-  const context = await withSiteAiAccess(pool, scope, async (client) => {
-    const claimed = await client.query(
-      `update site_articles set status = 'generating', updated_at = now()
-        where id = $1 and status in ('draft', 'failed')
-          and site_id=$2 and project_id=$3 and coalesce(generation_requested_by_user_id,user_id)=$4
-        returning ${SITE_ARTICLE_FIELDS}`,
-      [articleId, scope.siteId, scope.projectId, scope.userId],
-    );
-    const article = claimed.rows[0];
-    if (!article) return null;
-    const site = await loadSite(client, article.site_id);
-    const source = sourceForPrompt(article);
-    const facts = await siteFacts(client, site.id, `${source.title || ""} ${source.question || ""} ${source.text || ""}`);
-    return { article, site, source, facts };
-  });
-  if (!context) return { ok: true, skipped: "not_generatable" };
-  const { article, site, source, facts } = context;
+  const actor = (await pool.query(
+    `select site_id, project_id, coalesce(generation_requested_by_user_id, user_id) as user_id
+       from site_articles where id = $1`,
+    [articleId],
+  )).rows[0];
+  if (!actor) return { ok: true, skipped: "not_generatable" };
+  const scope = {
+    siteId: Number(actor.site_id),
+    projectId: Number(actor.project_id),
+    userId: Number(actor.user_id),
+  };
   const accountingUserId = scope.userId;
-  const profile = profileFromSite(site);
-  const siteInfo = { confirmedDomain: site.confirmed_domain, brandName: site.brand_name, canonicalUrl: site.canonical_url };
-
-  const usage = await acquire(pool, {
-    userId: accountingUserId,
-    kind: "site_article",
-    key: workerAiUsageCompositeKey("site-article", [String(articleId), `v${article.version}`]),
-    ttlMs: WORKER_AI_RESERVATION_TTL_MS,
+  const token = randomUUID();
+  const identity = { table: "site_articles", id: articleId, token };
+  const ownedArticleTransaction = (task) => ownedTaskTransaction(pool, identity, async (client) => {
+    await requireSiteAiAccess(client, scope);
+    return task(client);
   });
-  if (usage.state === "limit") {
-    await pool.query(`update site_articles set status = 'draft', status_reason = 'ai_usage_limit', updated_at = now() where id = $1`, [articleId]);
-    throw new SiteArticleWorkerError("ai_usage_limit", "Лимит ИИ на сегодня исчерпан.", { retryable: true });
-  }
-  if (usage.state === "in_progress") throw new SiteArticleWorkerError("generation_in_progress", "Материал уже генерируется.", { retryable: true });
-  const reservationId = Number(usage.reservationId);
-  assertWorkerAiCallPolicy("site-article", reservationId);
-
+  const claimed = await withSiteAiAccess(pool, scope, (client) => client.query(
+    `update site_articles set status = 'generating', worker_lease_token = $2, worker_heartbeat_at = now(), updated_at = now(),
+           generation = coalesce(generation, '{}'::jsonb) || jsonb_build_object('workerAttempts',
+             case when generation->>'workerAttempts' ~ '^[0-9]{1,3}$' then (generation->>'workerAttempts')::int + 1 else 1 end)
+       where id = $1 and ($3::bigint is null or version = $3)
+         and site_id = $4 and project_id = $5 and coalesce(generation_requested_by_user_id, user_id) = $6
+         and ((status = 'draft' or (status = 'failed' and status_reason not in ('quality','worker_recovery_exhausted','generation_already_accounted','site_inactive')))
+           or (status = 'generating' and coalesce(worker_heartbeat_at, updated_at) < now() - interval '2 minutes'))
+         and (worker_lease_token is null or coalesce(worker_heartbeat_at, updated_at) < now() - interval '2 minutes')
+       returning ${SITE_ARTICLE_FIELDS}`,
+    [articleId, token, version, scope.siteId, scope.projectId, scope.userId],
+  ));
+  const article = claimed.rows[0];
+  if (!article) return { ok: true, skipped: "not_generatable" };
+  let site = null;
+  let reservationId = null;
+  let heartbeat = null;
+  const finishStatus = (status, reason) => ownedArticleTransaction((client) => client.query(
+    `update site_articles set status = $2, status_reason = $3, worker_lease_token = null, worker_heartbeat_at = null,
+           generation = case when $2 = 'draft'
+             then jsonb_set(coalesce(generation, '{}'::jsonb), '{workerAttempts}', to_jsonb(greatest(0, coalesce((generation->>'workerAttempts')::int, 1) - 1)))
+             else generation end,
+           updated_at = now() where id = $1`,
+    [articleId, status, reason],
+  ));
   try {
+    if (Number(article.generation?.workerAttempts || 0) > 3) {
+      await finishStatus("failed", "worker_recovery_exhausted");
+      return { ok: false, reason: "worker_recovery_exhausted" };
+    }
+    const authorizedContext = await withSiteAiAccess(pool, scope, async (client) => {
+      const currentSite = await loadSite(client, article.site_id);
+      if (!currentSite || currentSite.status !== "active") return null;
+      const currentSource = sourceForPrompt(article);
+      const currentFacts = await siteFacts(client, currentSite.id, `${currentSource.title || ""} ${currentSource.question || ""} ${currentSource.text || ""}`);
+      return { site: currentSite, source: currentSource, facts: currentFacts };
+    });
+    if (!authorizedContext) {
+      await finishStatus("failed", "site_inactive");
+      return { ok: false, reason: "site_inactive" };
+    }
+    site = authorizedContext.site;
+    const { source, facts } = authorizedContext;
+    const profile = profileFromSite(site);
+    const siteInfo = { confirmedDomain: site.confirmed_domain, brandName: site.brand_name, canonicalUrl: site.canonical_url };
+
+    const usage = await acquire(pool, {
+      userId: accountingUserId,
+      kind: "site_article",
+      key: workerAiUsageCompositeKey("site-article", [String(articleId), `v${article.version}`]),
+      ttlMs: WORKER_AI_RESERVATION_TTL_MS,
+    });
+    if (usage.state === "limit") {
+      await finishStatus("draft", "ai_usage_limit");
+      throw new SiteArticleWorkerError("ai_usage_limit", "Лимит ИИ на сегодня исчерпан.", { retryable: true });
+    }
+    if (usage.state === "in_progress") {
+      await finishStatus("draft", "generation_in_progress");
+      throw new SiteArticleWorkerError("generation_in_progress", "Материал уже генерируется.", { retryable: true });
+    }
+    if (usage.state === "committed") {
+      await finishStatus("failed", "generation_already_accounted");
+      return { ok: false, reason: "generation_already_accounted" };
+    }
+    reservationId = Number(usage.reservationId);
+    assertWorkerAiCallPolicy("site-article", reservationId);
+    heartbeat = await (dependencies.startHeartbeat || startTaskHeartbeat)(pool, identity, { userId: accountingUserId, reservationId });
     const engine = configuredServiceEngine(dependencies.engine ?? process.env.SITE_ARTICLES_ENGINE ?? null);
     const prompt = buildArticlePrompt({ type: article.article_type, site: siteInfo, profile, source, linkablePages: profile.linkablePages, facts });
     let validation = null;
     let completion = null;
     let feedback = null;
     for (let attempt = 1; attempt <= 2; attempt += 1) {
+      await heartbeat.checkpoint();
       completion = await complete({
         system: prompt.system,
         user: feedback ? `${prompt.user}\n\nПРЕДЫДУЩАЯ ПОПЫТКА ОТКЛОНЕНА. Исправь:\n${feedback}` : prompt.user,
@@ -319,15 +377,22 @@ export async function generateSiteArticle(pool, { articleId }, dependencies = {}
         temperature: 0.4,
         maxTokens: GENERATION_MAX_TOKENS,
         providerRequestKey: `site-article:${articleId}:v${article.version}:a${attempt}`,
-      }, { allowFallback: true, timeoutMs: 120_000, spendScope: { pool, userId: accountingUserId, projectId: Number(site.project_id) } });
+      }, {
+        allowFallback: true,
+        timeoutMs: 120_000,
+        signal: heartbeat.signal,
+        spendScope: { pool, userId: accountingUserId, projectId: Number(site.project_id) },
+      });
       let parsed;
       try {
         parsed = parseArticleGeneration(completion.text);
       } catch (error) {
+        validation = null;
         feedback = `Ответ не является JSON нужной формы (${error.message}).`;
         continue;
       }
-      validation = validateArticle(parsed, {
+      const linked = completeArticleInternalLinks(parsed, { type: article.article_type, linkablePages: profile.linkablePages, site: siteInfo });
+      validation = validateArticle(linked, {
         type: article.article_type,
         allowedLinks: profile.linkablePages.map((page) => page.url),
         sourceUrl: article.source_ref?.url || null,
@@ -338,12 +403,23 @@ export async function generateSiteArticle(pool, { articleId }, dependencies = {}
     }
 
     const generation = { promptVersion: prompt.promptVersion, engine: completion?.engine || engine, fallbackUsed: completion?.fallbackUsed || false, attempts: completion?.attempts || null };
+    await heartbeat.checkpoint();
     if (!validation || !validation.ok) {
-      await withSiteAiAccess(pool, scope, (client) => client.query(
-        `update site_articles set status = 'failed', status_reason = 'quality', quality = $2::jsonb, generation = $3::jsonb, updated_at = now() where id = $1`,
-        [articleId, JSON.stringify({ issues: validation?.issues || [{ code: "schema_invalid", severity: "error", message: feedback }] }), JSON.stringify(generation)],
-      ));
-      await commit(pool, accountingUserId, reservationId);
+      await ownedArticleTransaction(async (client) => {
+        await client.query(
+          `update site_articles set status = 'failed', status_reason = 'quality', quality = $2::jsonb, generation = $3::jsonb,
+                  title = coalesce($4, title), meta_description = coalesce($5, meta_description),
+                  body_markdown = coalesce($6, body_markdown), body_html = coalesce($7, body_html),
+                  internal_links = coalesce($8::jsonb, internal_links), structured_data = $9::jsonb,
+                  worker_lease_token = null, worker_heartbeat_at = null, updated_at = now() where id = $1`,
+          [articleId, JSON.stringify({ issues: validation?.issues || [{ code: "schema_invalid", severity: "error", message: feedback }], wordCount: validation?.article.wordCount ?? 0 }), JSON.stringify(generation),
+            validation?.article.title ?? null, validation?.article.metaDescription ?? null,
+            validation?.article.bodyMarkdown ?? null, validation?.article.bodyHtml ?? null,
+            validation ? JSON.stringify(validation.article.internalLinks) : null,
+            validation?.article.structuredData ? JSON.stringify(validation.article.structuredData) : null],
+        );
+        await release(client, accountingUserId, reservationId);
+      });
       return { ok: false, reason: "quality", issues: validation?.issues || [] };
     }
 
@@ -354,10 +430,8 @@ export async function generateSiteArticle(pool, { articleId }, dependencies = {}
       vectorScores: await vectorScores(pool, { ...site, user_id: accountingUserId }, embed, candidateText),
     });
 
-    const client = await pool.connect();
-    try {
-      await client.query("begin");
-      await requireSiteAiAccess(client, scope);
+    await heartbeat.checkpoint();
+    const result = await ownedArticleTransaction(async (client) => {
       const slug = await nextUniqueSlug(client, { siteId: site.id, base: validation.article.slug, excludeArticleId: articleId });
       const status = similarity.verdict === "reject" ? "rejected" : "needs_review";
       const statusReason = similarity.verdict === "reject" ? "semantic_duplicate" : similarity.verdict === "warn" ? "similarity_warning" : null;
@@ -365,7 +439,7 @@ export async function generateSiteArticle(pool, { articleId }, dependencies = {}
         `update site_articles
             set title = $2, slug = $3, meta_description = $4, body_markdown = $5, body_html = $6,
                 internal_links = $7::jsonb, structured_data = $8::jsonb, similarity_check = $9::jsonb,
-                quality = $10::jsonb, generation = $11::jsonb, status = $12, status_reason = $13, updated_at = now()
+                quality = $10::jsonb, generation = $11::jsonb, status = $12, status_reason = $13, worker_lease_token = null, worker_heartbeat_at = null, updated_at = now()
           where id = $1
           returning ${SITE_ARTICLE_FIELDS}`,
         [
@@ -379,26 +453,30 @@ export async function generateSiteArticle(pool, { articleId }, dependencies = {}
       const row = updated.rows[0];
       await recordArticleRevision(client, { article: row, version: row.version, authorUserId: null, changeKind: "generated" });
       let auto = { autoPublished: false };
-      if (status === "needs_review") auto = await autoPublishIfUnlocked(client, site, row, dependencies.queue);
-      await client.query("commit");
-      await commit(pool, accountingUserId, reservationId);
+      if (status === "needs_review") {
+        auto = await autoPublishIfUnlocked(client, await loadSite(client, site.id, true), row);
+      }
+      if (!await commit(client, accountingUserId, reservationId)) throw new WorkerTaskLeaseLost();
       return { ok: true, articleId, status: auto.autoPublished ? "approved" : status, similarity: similarity.verdict, ...auto };
-    } catch (error) {
-      await client.query("rollback").catch(() => undefined);
-      throw error;
-    } finally {
-      client.release();
+    });
+    if (dependencies.queue) for (const publicationId of result.publicationIds || []) {
+      await enqueueSiteArticleJob(dependencies.queue, SITE_ARTICLE_JOBS.PUBLISH, { publicationId }).catch(() => undefined);
     }
+    return result;
   } catch (error) {
-    if (!(error instanceof SiteArticleWorkerError)) {
-      await release(pool, accountingUserId, reservationId).catch(() => undefined);
+    if (!(error instanceof SiteArticleWorkerError) && !(error instanceof WorkerTaskLeaseLost)) {
       const code = typeof error?.code === "string" ? error.code : "generation_failed";
-      await pool.query(
-        `update site_articles set status = 'failed', status_reason = $2, updated_at = now() where id = $1 and status = 'generating'`,
-        [articleId, code.slice(0, 80)],
-      );
+      await ownedArticleTransaction(async (client) => {
+        await client.query(
+          `update site_articles set status = 'failed', status_reason = $2, worker_lease_token = null, worker_heartbeat_at = null, updated_at = now() where id = $1 and status = 'generating'`,
+          [articleId, code.slice(0, 80)],
+        );
+        if (site && reservationId) await release(client, accountingUserId, reservationId);
+      }).catch(() => undefined);
     }
     throw error;
+  } finally {
+    await heartbeat?.stop();
   }
 }
 
@@ -486,6 +564,7 @@ export async function publishSiteArticle(pool, { publicationId }, dependencies =
   if (site.verification_state !== "verified") return fail("domain_unverified", { articleStatus: "approved" });
   const eligibleStatuses = publication.action === "publish" ? ["approved", "scheduled", "publishing", "published"] : ["published", "publishing"];
   if (!article || !eligibleStatuses.includes(article.status)) return fail("article_not_approved", { articleStatus: null });
+  if (publication.action !== "unpublish" && articleHasQualityBlock(article)) return fail("article_quality_failed", { articleStatus: "failed" });
   if (Number(article.version) !== Number(publication.article_version)) return fail("article_version_stale", { articleStatus: null });
   if (publication.action !== "unpublish" && Number(article.approved_version) !== Number(article.version)) return fail("article_not_approved", { articleStatus: null });
   if (!destinationRow || destinationRow.status !== "active") return fail("destination_inactive", { articleStatus: "approved" });
@@ -713,13 +792,24 @@ export function createSiteArticlesWorker({ connection, pool, queue, concurrency 
           for (const row of pending.rows) await enqueueSiteArticleJob(queue, SITE_ARTICLE_JOBS.INTERPRET, { reportId: Number(row.id) });
           return { ...refined, interpretationsQueued: pending.rows.length };
         }
-        case SITE_ARTICLE_JOBS.INTERPRET: return (deps.interpretReport || interpretSiteReport)(pool, { reportId: Number(job.data.reportId), force: Boolean(job.data.force) }, deps);
+        case SITE_ARTICLE_JOBS.INTERPRET: return (deps.interpretReport || interpretSiteReport)(pool, { reportId: Number(job.data.reportId), force: Boolean(job.data.force), revision: job.data.revision ?? null }, deps);
         default: return { ok: true, skipped: "unknown_job" };
       }
     },
     { connection, concurrency },
   );
-  worker.on("ready", () => console.log("[site-articles] очередь материалов для сайтов слушается"));
+  let recovering = false;
+  const recover = async () => {
+    if (recovering || !queue) return;
+    recovering = true;
+    try { await recoverSiteTasks(pool, queue); }
+    catch (error) { console.error("[site-task-recovery]", { code: error?.code || error?.name }); }
+    finally { recovering = false; }
+  };
+  const recoveryTimer = setInterval(() => { void recover(); }, 60_000);
+  recoveryTimer.unref();
+  worker.on("closed", () => clearInterval(recoveryTimer));
+  worker.on("ready", () => { console.log("[site-articles] очередь материалов для сайтов слушается"); void recover(); });
   worker.on("failed", (job, error) => console.error("[site-articles] job failed", {
     name: job?.name, data: job?.data, code: error?.code || error?.name || "worker_failed",
   }));

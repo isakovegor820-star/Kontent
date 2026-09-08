@@ -181,9 +181,9 @@ export function normalizeSiteInput(url: unknown, consent: unknown) {
   return { confirmedDomain: canonical.hostname.toLowerCase(), canonicalUrl: canonical.toString() };
 }
 
-export async function findSiteForProject(db: Queryable, siteId: number, projectId: number): Promise<SiteRow | null> {
+export async function findSiteForProject(db: Queryable, siteId: number, projectId: number, forUpdate = false): Promise<SiteRow | null> {
   const result = await db.query<SiteRow>(
-    `select ${SITE_FIELDS} from sites where id = $1 and project_id = $2`,
+    `select ${SITE_FIELDS} from sites where id = $1 and project_id = $2${forUpdate ? " for update" : ""}`,
     [siteId, projectId],
   );
   return result.rows[0] ?? null;

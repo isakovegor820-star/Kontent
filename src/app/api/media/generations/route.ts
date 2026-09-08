@@ -325,12 +325,12 @@ export async function POST(req: NextRequest) {
     await tx.query(`select id from users where id = $1 for update`, [user.id]);
     const stale = await tx.query<{ ai_usage_reservation_id: string | null }>(
       `update media_generations
-          set status = 'failed', error_code = 'stale_generation',
+          set status = 'failed', error_code = 'stale_generation', worker_lease_token = null, worker_heartbeat_at = null,
               error_message = 'Предыдущая генерация прервалась. Запусти её ещё раз.',
               updated_at = now(), completed_at = now()
         where user_id = $1 and kind = $2 and project_id = $3
           and status in ('queued','submitting','generating','saving')
-          and updated_at < now() - interval '15 minutes'
+          and coalesce(worker_heartbeat_at, updated_at) < now() - interval '15 minutes'
         returning ai_usage_reservation_id`,
       [user.id, input.kind, membership.projectId],
     );

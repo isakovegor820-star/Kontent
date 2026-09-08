@@ -5,7 +5,7 @@
  */
 export const SCHEMA_MANIFEST = Object.freeze({
   manifestVersion: 1,
-  schemaVersion: "2026-10-21.123",
+  schemaVersion: "2026-10-21.124",
   migrations: Object.freeze([
     ["20260801_account_onboarding.sql", "ac0e1f10046cf620185570ab5f40437991d08513473f67d4e93bdafa07b86614"],
     ["20260801_ai_usage_reservations.sql", "991c3a92dce16df55011d9df52fb65af1a7f4310b27f61dc519705f05528d7a0"],
@@ -121,6 +121,7 @@ export const SCHEMA_MANIFEST = Object.freeze({
     ["20261008_sites_section_telemetry.sql", "0a9cc1c0fcd3e3e90a485148b736c8201ecf348f1f0d4b7a4771a739fb9bac98"],
     ["20261009_admin_account_controls.sql", "98ea34adc3b732a85a8db2b4165d8cb648c163ac981d2a0a1505d3360317205e"],
     ["20261010_site_ai_interpretation.sql", "ba3501e703f7899996ce06aa24e10577048ac0bf7b2c9314482dc6caaf941dd4"],
+    ["20261011_studio_sites_worker_leases.sql", "373af952f70e04dc1a414079542266570346f2c6a3f7724ec6442d03dbdc7fed"],
     ["20261011_telegram_channel_ownership.sql", "69408ee290c76671b00872957cb81148e958ff7dd56653fc2f154a349c0e9a88"],
     ["20261012_ai_spend_ledger.sql", "95bd441d6dec7692e43175015fc8a78139739abae724ffec9718150febb5ac8f"],
     ["20261013_telegram_update_delivery.sql", "5a239e0bb1397895be496d9e0c5bdebd40b68e8d03921bcd33976f0039962c85"],
@@ -831,6 +832,15 @@ export const SCHEMA_MANIFEST = Object.freeze({
       "site_profiles.refined_at",
       "site_reports.interpretation",
       "site_reports.interpretation_status",
+      "media_generations.worker_lease_token",
+      "media_generations.worker_heartbeat_at",
+      "site_articles.worker_lease_token",
+      "site_articles.worker_heartbeat_at",
+      "site_profiles.worker_lease_token",
+      "site_profiles.worker_heartbeat_at",
+      "site_reports.worker_lease_token",
+      "site_reports.worker_heartbeat_at",
+      "site_reports.interpretation_revision",
       "sites.hosted_slug",
       "sites.brand_name",
       "site_destinations.credentials",

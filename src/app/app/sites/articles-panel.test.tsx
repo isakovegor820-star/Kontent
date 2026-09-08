@@ -10,7 +10,9 @@ afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.clear
 
 function article(id: number, status: string) {
   return { id, type: "audience_answer", typeLabel: "Ответ на вопрос", origin: "manual", title: `Article ${id}`, slug: `article-${id}`,
-    metaDescription: null, preview: `Preview ${id}`, similarity: null, quality: null, version: 1, status, statusReason: null,
+    metaDescription: null, preview: `Preview ${id}`, similarity: null,
+    quality: null as { issues: Array<{ code: string; severity: string; message: string }> } | null,
+    version: 1, status, statusReason: null,
     publishedUrl: null as string | null, publishedAt: null, updatedAt: null, bodyMarkdown: `Body ${id}` };
 }
 
@@ -276,4 +278,14 @@ it("preserves the next brief typed while manual article creation acknowledgment 
     expect(f.props.onSiteChanged).not.toHaveBeenCalled();
   });
 
+  it("refreshes a terminal quality failure and blocks approval", async () => {
+    const f = await fixture("generating");
+    f.change({
+      status: "failed",
+      quality: { issues: [{ code: "too_short", severity: "error", message: "Недостаточно текста" }] },
+    });
+    await f.poll();
+    expect(screen.getByText("• Недостаточно текста")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Одобрить" }) as HTMLButtonElement).disabled).toBe(true);
+  });
 });

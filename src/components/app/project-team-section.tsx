@@ -256,7 +256,8 @@ export function ProjectTeamSection() {
   const [inviteRole, setInviteRole] = useState<InvitationRole>("author");
   const [inviteTtl, setInviteTtl] = useState(7);
   const [inviteEmailError, setInviteEmailError] = useState<string | null>(null);
-  const [inviteUrl, setInviteUrl] = useState("");
+  const [createdInvite, setCreatedInvite] = useState<{ id: number; url: string; email: string } | null>(null);
+  const inviteUrl = createdInvite?.url ?? "";
   const [copied, setCopied] = useState(false);
 
   const timezoneOptions = useMemo(() => {
@@ -307,7 +308,7 @@ export function ProjectTeamSection() {
     let cancelled = false;
     queueMicrotask(() => {
       if (cancelled) return;
-      setInviteUrl("");
+      setCreatedInvite(null);
       setCopied(false);
       if (!projects.ready || !current) {
         requestSequence.current += 1;
@@ -402,7 +403,7 @@ export function ProjectTeamSection() {
       }
       setInvitations((items) => [invitation, ...items.filter((item) => item.id !== invitation.id)]);
       setInviteEmail("");
-      setInviteUrl(body.inviteUrl);
+      setCreatedInvite({ id: invitation.id, url: body.inviteUrl, email: invitation.email });
       setCopied(false);
       setFeedback({ kind: "success", text: "Приглашение создано. Скопируй ссылку и передай её лично." });
     } catch (error) {
@@ -456,6 +457,7 @@ export function ProjectTeamSection() {
         setInvitations((items) => items.map((item) => item.id === action.invitation.id
           ? { ...item, status: "revoked", revokedAt: new Date().toISOString() }
           : item));
+        setCreatedInvite((invite) => invite?.id === action.invitation.id ? null : invite);
         setFeedback({ kind: "success", text: "Приглашение отозвано." });
       }
       setConfirmation(null);
@@ -668,7 +670,8 @@ export function ProjectTeamSection() {
             <div>
               <h3 className="text-[15px] font-extrabold text-text">Пригласить участника</h3>
               <p className="mt-1 text-[13px] leading-relaxed text-text-3">
-                Ссылка показывается один раз. Отправь её человеку с указанным адресом.
+                Укажи почту аккаунта участника в Авроре. Чтобы принять приглашение, ему нужно войти
+                или зарегистрироваться именно с этой почтой. Ссылка показывается один раз.
               </p>
               <form noValidate onSubmit={createInvitation} className="mt-4 space-y-4">
                 <Field label="Электронная почта" htmlFor="project-invite-email" required error={inviteEmailError ?? undefined} messageId={emailMessageId}>
@@ -737,6 +740,10 @@ export function ProjectTeamSection() {
                   </p>
                   <p className="mt-1 text-[13px] leading-relaxed text-text-2">
                     Скопируй сейчас: после ухода со страницы восстановить эту ссылку нельзя.
+                  </p>
+                  <p className="mt-2 break-words text-[13px] leading-relaxed text-text-2">
+                    Получатель: <strong>{createdInvite?.email}</strong>. Для принятия ссылки нужно войти
+                    в Аврору с этой почтой. Если открыт другой аккаунт, выбери «Войти в другой аккаунт».
                   </p>
                   <div className="mt-3 flex min-w-0 flex-col gap-2 sm:flex-row">
                     <Input ref={inviteLinkRef} value={inviteUrl} readOnly aria-label="Одноразовая ссылка приглашения" className="min-w-0 font-mono text-[13px]" />

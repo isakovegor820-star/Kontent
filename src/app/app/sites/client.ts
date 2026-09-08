@@ -36,6 +36,9 @@ export function formatDate(value: string | null | undefined, withTime = false) {
 export function errorMessage(code: string | undefined, fallback: string) {
   switch (code) {
     case "result_unconfirmed": return "Не получили подтверждение от сервера. Обнови данные и проверь результат перед повторным действием.";
+    case "article_changed": return "Материал уже изменился. Обнови данные и повтори действие.";
+    case "ai_task_not_retryable": return "Состояние уже изменилось. Обнови данные: возможно, обработка уже началась.";
+    case "article_quality_failed": return "Материал не прошёл проверку качества. Исправь замечания или сгенерируй его заново перед одобрением.";
     case "consent_required": return "Подтверди, что у тебя есть право анализировать этот сайт.";
     case "bad_url":
     case "domain_mismatch": return "Укажи адрес сайта вместе с протоколом, например https://example.ru.";
