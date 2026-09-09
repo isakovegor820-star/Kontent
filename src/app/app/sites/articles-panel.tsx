@@ -35,6 +35,7 @@ type Props = {
   siteId: number;
   verified: boolean;
   hasDestinations: boolean;
+  destinationsLoaded: boolean;
   hasProfile: boolean;
   onSiteChanged: () => void;
 };
@@ -61,7 +62,7 @@ const MANUAL_TYPES = [
   ["machine_readable_page", "Страница о компании"],
 ] as const;
 
-export function ArticlesPanel({ siteId, verified, hasDestinations, hasProfile, onSiteChanged }: Props) {
+export function ArticlesPanel({ siteId, verified, hasDestinations, destinationsLoaded, hasProfile, onSiteChanged }: Props) {
   const requestJson = useProjectCall(unscopedRequestJson);
   const [articles, setArticles] = useState<Article[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -202,10 +203,12 @@ export function ArticlesPanel({ siteId, verified, hasDestinations, hasProfile, o
           <div>
             <h3 className="type-h3 text-text">Материалы для сайта</h3>
             <p className="type-secondary mt-1 text-text-2">
-              Аврора планирует материалы по профилю сайта раз в день. Каждый материал ждёт одобрения; в очереди сейчас: {pending}.
+              {loaded
+                ? `Аврора планирует материалы по профилю сайта раз в день. На одобрении сейчас: ${pending}.`
+                : "Загружаем очередь материалов…"}
             </p>
             {!verified && <p className="type-caption mt-2 text-fire-text">Домен не подтверждён — материалы можно одобрять, но публикация откроется после подтверждения.</p>}
-            {verified && !hasDestinations && <p className="type-caption mt-2 text-fire-text">Нет настроенного назначения — добавь WordPress или включи раздел на вкладке «Публикация».</p>}
+            {verified && destinationsLoaded && !hasDestinations && <p className="type-caption mt-2 text-fire-text">Нет настроенного назначения — добавь WordPress или включи раздел на вкладке «Публикация».</p>}
           </div>
           <Button type="button" size="sm" variant="secondary" onClick={plan} disabled={busy === "plan" || !hasProfile}>
             <Sparkles className="h-4 w-4" aria-hidden />Спланировать сейчас

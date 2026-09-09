@@ -11,6 +11,17 @@ afterEach(() => { cleanup(); setProjectTransport(null); vi.useRealTimers(); vi.u
 const flush = async () => { await act(async () => { await Promise.resolve(); }); };
 
 describe("article detail recovery", () => {
+  it("does not announce an empty approval queue or missing destination before data is known", async () => {
+    let resolveList!: (value: Response) => void;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((resolve) => { resolveList = resolve; })));
+    render(<ArticlesPanel siteId={5} verified hasDestinations={false} destinationsLoaded={false} hasProfile onSiteChanged={vi.fn()} />);
+    expect(screen.getByText("Загружаем очередь материалов…")).toBeTruthy();
+    expect(screen.queryByText(/На одобрении сейчас:/)).toBeNull();
+    expect(screen.queryByText(/Нет настроенного назначения/)).toBeNull();
+    await act(async () => { resolveList(Response.json({ articles: [] })); });
+    expect(screen.getByText(/На одобрении сейчас: 0/)).toBeTruthy();
+  });
+
   it("refreshes an open generating card to its terminal result and blocks failed quality approval", async () => {
     vi.useFakeTimers();
     let article = { ...row };
@@ -19,7 +30,7 @@ describe("article detail recovery", () => {
       if (url.endsWith("/4")) { detailRequests++; return projectJson(7, { article }); }
       return projectJson(7, { articles: [article] });
     }));
-    render(<ArticlesPanel siteId={5} verified={false} hasDestinations={false} hasProfile onSiteChanged={vi.fn()} />);
+    render(<ArticlesPanel siteId={5} verified={false} hasDestinations={false} destinationsLoaded hasProfile onSiteChanged={vi.fn()} />);
     await flush();
     fireEvent.click(screen.getByRole("button", { name: /Тестовый материал/ }));
     await flush();
@@ -37,7 +48,7 @@ describe("article detail recovery", () => {
       if (url.endsWith("/4")) { detailRequests++; return projectJson(7, { article: { ...row, status: "needs_review" } }); }
       return projectJson(7, { articles: [row] });
     }));
-    render(<ArticlesPanel siteId={5} verified={false} hasDestinations={false} hasProfile onSiteChanged={vi.fn()} />);
+    render(<ArticlesPanel siteId={5} verified={false} hasDestinations={false} destinationsLoaded hasProfile onSiteChanged={vi.fn()} />);
     await flush();
     fireEvent.click(screen.getByRole("button", { name: /Тестовый материал/ }));
     await flush();
