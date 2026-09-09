@@ -356,7 +356,7 @@ export default function SitesPage() {
     setRetryingAi(null);
     if (status >= 400 && activeSiteId.current === activeId) setActionError(errorMessage(body.error, "Не удалось повторить задачу."));
     await loadDetails(activeId);
-  }, [activeId, retryingAi, loadDetails]);
+  }, [activeId, retryingAi, loadDetails, requestJson]);
 
   const aiActive = Boolean(current?.profile && !current.profile.refinedAt && current.profile.aiClassification?.status !== "failed")
     || Boolean(current?.reports.some((report) => report.interpretationStatus === "pending"));
