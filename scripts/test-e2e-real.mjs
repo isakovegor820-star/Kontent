@@ -1958,8 +1958,13 @@ try {
   assert(interfaceEvidence.reducedMotion.main, "main browser context did not emulate reduced motion");
 
   const botConnectNetworkUrls = [];
+  let botConnectLoginPrefetches = 0;
   const recordBotConnectNetworkUrl = (request) => {
     botConnectNetworkUrls.push(sanitizeE2eNetworkUrl(request.url(), baseUrl));
+    const url = new URL(request.url());
+    if (url.origin === baseUrl && url.pathname === "/login" && url.searchParams.has("_rsc")) {
+      botConnectLoginPrefetches += 1;
+    }
   };
   context.on("request", recordBotConnectNetworkUrl);
   const botConnectCanaryValues = Object.values(E2E_BOT_CONNECT_TOKEN_CANARIES);
@@ -2196,6 +2201,7 @@ try {
   });
   assert(tokenIntruderLogout.ok(), `bot token reuse logout failed with ${tokenIntruderLogout.status()}`);
   context.off("request", recordBotConnectNetworkUrl);
+  assert(botConnectLoginPrefetches === 0, "bot connection flow speculatively fetched the login route");
 
   const botConnectCleanUrl = new URL(page.url());
   const botConnectDiagnostics = JSON.stringify({

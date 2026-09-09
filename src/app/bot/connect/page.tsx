@@ -208,7 +208,9 @@ export default function BotConnectPage() {
               {inspection.moveRequired ? "Перенести подключение" : "Подключить этот чат"}
             </Button>
           ) : (
-            <Link href={loginHref} className={buttonClassName({ className: "mt-6 w-full", variant: "primary", size: "lg" })}>
+            // This one-time flow can reload or change session before the user signs in.
+            // Fetch the login route on demand, not speculatively across that boundary.
+            <Link href={loginHref} prefetch={false} className={buttonClassName({ className: "mt-6 w-full", variant: "primary", size: "lg" })}>
               Войти и подтвердить
             </Link>
           )
